@@ -14,11 +14,21 @@ const { build } = runtimeRequire("esbuild");
 const ORIGIN = "https://app.example.test";
 test("legacy D1 refuses optional auth before discovery and recovers after the explicit atomic cutover", async (t) => {
 	const f = await harness(t, { legacyAuth: true });
-	for (const path of ["/auth/sign-in", "/v1/auth/account-link-status", "/v1/auth/owner-config"]) {
+	for (const path of ["/auth/sign-in"]) {
 		const response = await f.request(path);
 		assert.equal(response.status, 503);
 		assert.equal(JSON.parse(response.body).error, "coordinator_auth_schema_upgrade_required");
 	}
+	// No owner adapter is mounted; readiness must not replace its normal 404.
+	assert.equal((await f.request("/v1/auth/owner-config")).status, 404);
+	for (let i = 0; i < 20; i++) {
+		assert.equal((await f.request("/auth/sign-in", {
+			method: "POST", headers: { origin: ORIGIN },
+		})).status, 503);
+	}
+	assert.equal((await f.request("/auth/sign-in", {
+		method: "POST", headers: { origin: ORIGIN },
+	})).status, 429);
 	assert.equal(f.discoveries(), 0);
 	const ordinary = await f.request("/v1/peers");
 	assert.equal(ordinary.status, 400);

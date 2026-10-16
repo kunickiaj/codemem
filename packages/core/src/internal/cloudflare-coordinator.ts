@@ -11,6 +11,7 @@ export type {
 	CoordinatorVerifyRequestInput,
 	CreateCoordinatorAppOptions,
 } from "../coordinator-api.js";
+export { authSchemaUpgradeResponse } from "../coordinator-auth-schema.js";
 export type {
 	CoordinatorBrowserAuth,
 	CoordinatorBrowserAuthClientKey,
@@ -25,7 +26,9 @@ export type {
 	CoordinatorBrowserOwnerEnrollmentFactory,
 } from "../coordinator-browser-auth-app.js";
 export {
+	admitCoordinatorBrowserAuthSetup,
 	captureCoordinatorBrowserAuthOptions,
+	coordinatorBrowserAuthDeviceRoutes,
 	coordinatorBrowserAuthUnavailableResponse,
 	createCoordinatorBrowserAuth,
 	maintainCoordinatorBrowserAuth,

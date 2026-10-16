@@ -4,6 +4,7 @@ import type {
 	CoordinatorAuthBrowserTransactionPurposeStore,
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
+import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import {
 	AUTH_SCHEMA_UPGRADE_REQUIRED,
@@ -28,6 +29,10 @@ import {
 } from "./coordinator-browser-auth-config.js";
 import { type BrowserCsrfKey, isBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import {
+	admitBrowserFormSetup,
+	checkBrowserAuthRequestRate,
+} from "./coordinator-browser-form-guard.js";
+import {
 	type CoordinatorBrowserLinkInput,
 	createCoordinatorBrowserLinkHandlers,
 } from "./coordinator-browser-link.js";
@@ -44,6 +49,10 @@ import {
 	createCoordinatorBrowserSigninStart,
 } from "./coordinator-browser-signin-start.js";
 import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
+import {
+	checkCoordinatorOwnerEnrollmentTransport,
+	coordinatorOwnerEnrollmentHttpMethods,
+} from "./coordinator-owner-enrollment-http.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 export interface CoordinatorBrowserAuthOptions {
@@ -106,17 +115,17 @@ export type CoordinatorBrowserAuthResult =
 				| typeof AUTH_SCHEMA_UPGRADE_REQUIRED;
 	  }>;
 
-const FIXED_PATHS = [
-	"/auth/sign-in",
-	"/auth/link/start",
-	"/auth/link/confirm",
-	"/auth/link/cancel",
-	"/auth/link/complete",
-	"/auth/account",
-	"/auth/logout",
-	"/auth/owner/start",
-	"/auth/owner/confirm",
-];
+const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
+	"/auth/sign-in": ["GET", "POST"],
+	"/auth/link/start": ["GET", "POST"],
+	"/auth/link/confirm": ["POST"],
+	"/auth/link/cancel": ["POST"],
+	"/auth/link/complete": ["GET", "POST"],
+	"/auth/account": ["GET"],
+	"/auth/logout": ["POST"],
+	"/auth/owner/start": ["GET", "POST"],
+	"/auth/owner/confirm": ["POST"],
+};
 const OWNER_PATHS = [
 	"/auth/owner/start",
 	"/auth/owner/confirm",
@@ -162,7 +171,10 @@ export function captureCoordinatorBrowserAuthOptions(
 		if (settings.kind === "disabled") return Object.freeze({ kind: "disabled" });
 		if (settings.kind === "invalid") return invalid(settings.field);
 		const callbackPath = new URL(settings.store.redirectUri).pathname;
-		if (!/^\/auth\/[A-Za-z0-9._~/-]+$/.test(callbackPath) || FIXED_PATHS.includes(callbackPath))
+		if (
+			!/^\/auth\/[A-Za-z0-9._~/-]+$/.test(callbackPath) ||
+			Object.hasOwn(FIXED_PATHS, callbackPath)
+		)
 			return invalid("redirectUri");
 		let csrfKey: unknown;
 		try {
@@ -201,6 +213,118 @@ export function captureCoordinatorBrowserAuthOptions(
 	} catch {
 		return invalid("config");
 	}
+}
+
+/** Device routes need the pinned store config, not Google discovery or browser handlers. */
+export function coordinatorBrowserAuthDeviceRoutes(
+	snapshot: CoordinatorBrowserAuthSnapshot,
+): CoordinatorBrowserAuth | undefined {
+	const payload = enabledPayloads.get(snapshot);
+	if (!payload) return undefined;
+	return { storeConfig: payload.settings.store, register: () => {} };
+}
+
+/** null skips setup; a Response rejects before I/O; true admits the actual mounted route. */
+export function admitCoordinatorBrowserAuthSetup(
+	snapshot: CoordinatorBrowserAuthSnapshot,
+	request: Request,
+	limiter: InMemoryRequestRateLimiter,
+	clientKey: string,
+): true | Response | null {
+	const payload = enabledPayloads.get(snapshot);
+	if (!payload) return null;
+	const url = new URL(request.url);
+	const ownerMethods =
+		payload.ownerEnrollment && url.pathname !== payload.callbackPath
+			? coordinatorOwnerEnrollmentHttpMethods(
+					url.pathname,
+					payload.callbackPath,
+					"/v1/auth/owner-config",
+				)
+			: null;
+	let methods = FIXED_PATHS[url.pathname];
+	if (OWNER_PATHS.includes(url.pathname)) methods = ownerMethods?.split(", ") ?? [];
+	if (url.pathname === payload.callbackPath) methods = ["GET"];
+	if (!methods?.length) return null;
+	if (!methods.includes(request.method))
+		return new Response("Method not allowed.", {
+			status: 405,
+			headers: { Allow: methods.join(", ") },
+		});
+	if (url.origin !== payload.settings.publicOrigin)
+		return new Response("Not found.", { status: 404 });
+	if (ownerMethods) return admitOwnerSetup(payload, request, limiter, clientKey);
+	return admitFormSetup(payload, request, limiter, clientKey);
+}
+
+function admitOwnerSetup(
+	payload: EnabledPayload,
+	request: Request,
+	limiter: InMemoryRequestRateLimiter,
+	clientKey: string,
+): true | Response {
+	const transportError = checkCoordinatorOwnerEnrollmentTransport(request, {
+		pin: {
+			coordinatorId: payload.config.coordinatorId,
+			revision: payload.config.revision,
+			issuer: payload.config.issuer,
+			origin: payload.settings.publicOrigin,
+		},
+		callback: payload.callbackPath,
+		pinPath: "/v1/auth/owner-config",
+	});
+	if (transportError) return transportError;
+	if (!isAuthControllerId(clientKey) || clientKey.length > 128)
+		return new Response("Invalid request.", { status: 400 });
+	const rate = checkBrowserAuthRequestRate(
+		request,
+		limiter,
+		JSON.stringify(["owner-http", payload.config.coordinatorId, clientKey]),
+		60,
+		{ admitSetup: true },
+	);
+	if (!rate.allowed)
+		return new Response("Too many requests.", {
+			status: 429,
+			headers: { "Retry-After": String(rate.retryAfterS) },
+		});
+	return true;
+}
+
+function admitFormSetup(
+	payload: EnabledPayload,
+	request: Request,
+	limiter: InMemoryRequestRateLimiter,
+	clientKey: string,
+): true | Response {
+	if (request.method !== "POST") return true;
+	const url = new URL(request.url);
+	let action: "session_logout" | "signin_start" | "link_start" | "transaction_attempt" =
+		"transaction_attempt";
+	if (url.pathname === "/auth/logout") action = "session_logout";
+	if (url.pathname === "/auth/sign-in") action = "signin_start";
+	if (url.pathname === "/auth/link/start") action = "link_start";
+	const failure = admitBrowserFormSetup({
+		request,
+		scope: payload.settings,
+		csrfKey: payload.csrfKey,
+		action,
+		limiter,
+		clientKey,
+	});
+	if (!failure) return true;
+	let status = 503;
+	if (failure.error === "rate_limited") status = 429;
+	if (failure.error === "origin_rejected") status = 403;
+	return new Response("Authentication request rejected.", {
+		status,
+		headers: {
+			"Cache-Control": "no-store",
+			"Referrer-Policy": "no-referrer",
+			"X-Content-Type-Options": "nosniff",
+			...(failure.retryAfterS ? { "Retry-After": String(failure.retryAfterS) } : {}),
+		},
+	});
 }
 
 export function coordinatorBrowserAuthUnavailableResponse(): Response {

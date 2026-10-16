@@ -1,3 +1,4 @@
+import { AUTH_DEVICE_CLAIM_DEFINITION_CHECKS } from "./coordinator-auth-device-claim-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 
 export const AUTH_SCHEMA_UPGRADE_REQUIRED = "coordinator_auth_schema_upgrade_required";
@@ -11,16 +12,14 @@ export class CoordinatorAuthSchemaUpgradeRequiredError extends Error {
 	}
 }
 
-// Inspect six actual columns and three proof triggers, never query the new columns.
-// DDL text containing the same words is not sufficient. No writes or I/O cache.
+// Inspect five actual authority columns and all four reviewed proof definitions.
+// No writes or I/O cache; unknown proof variants fail closed.
 export const AUTH_SCHEMA_READY_COUNT = 9;
 export const AUTH_SCHEMA_READINESS_SQL = `SELECT
  (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_attempts') WHERE lower(name) = 'authority_kind')
  + (SELECT count(*) FROM pragma_table_info('coordinator_auth_account_links') WHERE lower(name) IN ('authority_kind','device_claim_id'))
  + (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_audit_log') WHERE lower(name) IN ('authority_kind','device_claim_id'))
- + (SELECT count(*) FROM pragma_table_info('coordinator_auth_device_claims') WHERE lower(name) = 'claim_id')
- + (SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('coordinator_auth_device_claims_insert_collision',
- 'coordinator_auth_device_claims_immutable_update','coordinator_auth_device_claims_immutable_delete')) AS ready`;
+ + ${AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(({ matches }) => `(${matches})`).join(" + ")} AS ready`;
 
 export interface CoordinatorAuthSchemaStore {
 	assertAuthSchemaReady(): Promise<void>;

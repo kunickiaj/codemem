@@ -15,6 +15,7 @@ import {
 	issueBrowserCsrfToken,
 } from "./coordinator-browser-csrf.js";
 import { parseBrowserFormBody, readBrowserFormBody } from "./coordinator-browser-form-body.js";
+import { checkBrowserAuthRequestRate } from "./coordinator-browser-form-guard.js";
 import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
 import type { OwnerEnrollmentAdmissionKey } from "./owner-enrollment-admission.js";
 import {
@@ -241,7 +242,7 @@ async function jsonAction(request: Request, api: Enrollment, clientKey: string):
 		return json(result);
 	return reject();
 }
-function routeMethod(
+export function coordinatorOwnerEnrollmentHttpMethods(
 	path: string,
 	callback: string,
 	pinPath = "/v1/auth/owner-pilot",
@@ -257,7 +258,7 @@ export function matchesCoordinatorOwnerEnrollmentHttpPath(
 	mode: "private" | "production" = "private",
 ): boolean {
 	return (
-		routeMethod(
+		coordinatorOwnerEnrollmentHttpMethods(
 			path,
 			"",
 			mode === "production" ? "/v1/auth/owner-config" : "/v1/auth/owner-pilot",
@@ -298,7 +299,10 @@ type HttpContext = {
 	pinPath: string;
 	limiter: InMemoryRequestRateLimiter;
 };
-function checkTransport(request: Request, context: HttpContext): Response | null {
+export function checkCoordinatorOwnerEnrollmentTransport(
+	request: Request,
+	context: Pick<HttpContext, "pin" | "callback" | "pinPath">,
+): Response | null {
 	const url = new URL(request.url);
 	if (
 		request.url.length > 8192 ||
@@ -308,7 +312,11 @@ function checkTransport(request: Request, context: HttpContext): Response | null
 		url.hash
 	)
 		return reject();
-	const methods = routeMethod(url.pathname, context.callback, context.pinPath);
+	const methods = coordinatorOwnerEnrollmentHttpMethods(
+		url.pathname,
+		context.callback,
+		context.pinPath,
+	);
 	if (!methods) return reject(404);
 	if (!methods.split(", ").includes(request.method)) return respond(null, 405, { Allow: methods });
 	if (url.search && ![START_PATH, context.callback].includes(url.pathname)) return reject();
@@ -323,11 +331,13 @@ async function handleOwnerRequest(
 	context: HttpContext,
 ): Promise<Response> {
 	try {
-		const error = checkTransport(request, context);
+		const error = checkCoordinatorOwnerEnrollmentTransport(request, context);
 		if (error) return error;
 		if (!isAuthControllerId(trustedClientKey) || trustedClientKey.length > 128) return reject();
 		if (
-			!context.limiter.check(
+			!checkBrowserAuthRequestRate(
+				request,
+				context.limiter,
 				JSON.stringify(["owner-http", context.pin.coordinatorId, trustedClientKey]),
 				60,
 			).allowed

@@ -58,6 +58,42 @@ const ACTION_COOKIE_KINDS: Readonly<Record<BrowserFormAction, CookieKind>> = Obj
 	link_start: "start",
 });
 const ratePolicies = new WeakMap<InMemoryRequestRateLimiter, Map<string, number>>();
+const setupAdmission = Symbol("browser-auth-setup-admission");
+/** Setup may spend the handler's token, but only this exact Request can redeem it once. */
+export function checkBrowserAuthRequestRate(
+	request: Request,
+	limiter: InMemoryRequestRateLimiter,
+	key: string,
+	limit: number,
+	options: { admitSetup?: boolean; check?: InMemoryRequestRateLimiter["check"] } = {},
+) {
+	const admission = Object.getOwnPropertyDescriptor(request, setupAdmission)?.value;
+	if (
+		!options.admitSetup &&
+		admission?.limiter === limiter &&
+		admission.key === key &&
+		admission.limit === limit
+	) {
+		Reflect.deleteProperty(request, setupAdmission);
+		return { allowed: true, retryAfterS: 0 };
+	}
+	const result = (options.check ?? limiter.check).call(limiter, key, limit);
+	if (options.admitSetup && result.allowed)
+		Object.defineProperty(request, setupAdmission, {
+			value: { limiter, key, limit },
+			configurable: true,
+		});
+	return result;
+}
+
+export function admitBrowserFormSetup(input: BrowserFormGuardInput): Failure | null {
+	try {
+		const snapshot = captureInput(input);
+		return checkOrigin(snapshot) ?? checkRate(snapshot, { admitSetup: true });
+	} catch {
+		return INVALID_INPUT;
+	}
+}
 const headersGet = Headers.prototype.get;
 function nativeRequestGetter(name: string): ((this: Request) => unknown) | undefined {
 	let prototype: object | null = Request.prototype;
@@ -75,6 +111,7 @@ const requestGetters = Object.freeze({
 	body: nativeRequestGetter("body"),
 });
 type Snapshot = Readonly<{
+	request: Request;
 	scope: BrowserCsrfScope;
 	csrfKey: BrowserCsrfKey;
 	action: BrowserFormAction;
@@ -172,6 +209,7 @@ function captureInput(input: BrowserFormGuardInput): Snapshot {
 	const body = requestGetters.body?.call(request) as ReadableStream<Uint8Array> | null;
 	if (typeof method !== "string" || typeof url !== "string") throw INVALID_INPUT;
 	return Object.freeze({
+		request,
 		scope,
 		csrfKey,
 		action,
@@ -203,7 +241,7 @@ function pinRatePolicy(snapshot: Snapshot, limit: number): boolean {
 	return true;
 }
 
-function checkRate(snapshot: Snapshot): Failure | null {
+function checkRate(snapshot: Snapshot, options: { admitSetup?: boolean } = {}): Failure | null {
 	const { clientKey, limit } = snapshot;
 	if (!isAuthControllerId(clientKey) || clientKey.length > 128) {
 		return reject("client_unidentified");
@@ -213,10 +251,12 @@ function checkRate(snapshot: Snapshot): Failure | null {
 	}
 	// The injected limiter includes the limit in its internal bucket key.
 	if (!pinRatePolicy(snapshot, limit)) return INVALID_INPUT;
-	const result: unknown = snapshot.check.call(
+	const result: unknown = checkBrowserAuthRequestRate(
+		snapshot.request,
 		snapshot.limiter,
 		JSON.stringify(["browser-form", snapshot.scope.store.coordinatorId, clientKey]),
 		limit,
+		{ ...options, check: snapshot.check },
 	);
 	const allowed = ownData(result, "allowed");
 	const retryAfterS = ownData(result, "retryAfterS");

@@ -1,5 +1,8 @@
 import type { Database } from "better-sqlite3";
-import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS } from "./coordinator-auth-device-claim-schema.js";
+import {
+	AUTH_DEVICE_CLAIM_DEFINITION_CHECKS,
+	COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS,
+} from "./coordinator-auth-device-claim-schema.js";
 
 /**
  * Planned, explicit upgrade source only. Nothing imports this from store-open or
@@ -304,6 +307,7 @@ ${assertion(`NOT EXISTS (SELECT ${select} FROM ${rebuilt} EXCEPT SELECT ${select
  */
 export const AUTH_LINK_AUTHORITY_UPGRADE_SQL = `
 CREATE TABLE ${CHECKS} (passed INTEGER NOT NULL CHECK (passed = 1));
+${AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(({ name, matches }) => assertion(`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ${quote(name)}) OR ${matches}`)).join("\n")}
 ${recognizedSchema()}
 ${assertion(`(SELECT count(*) FROM sqlite_master WHERE tbl_name IN (${tables.map((t) => quote(t.name)).join(",")}) AND type IN ('index','trigger') AND sql IS NOT NULL) = ${indexes.length}`)}
 ${indexes.map((sql) => assertion(`EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND ${canonicalSql("sql")} = ${quote(canonical(sql))})`)).join("\n")}

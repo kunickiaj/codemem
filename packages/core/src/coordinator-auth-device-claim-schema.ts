@@ -84,6 +84,34 @@ END;
 export const COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL =
 	COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS.join("\n");
 
+const quoteSql = (value: string) => `'${value.replaceAll("'", "''")}'`;
+const proofDefinitions = COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS.map((statement) =>
+	statement.replace(/^(?:\s|--[^\n]*\n)*/u, "").replace(/;\s*$/u, ""),
+);
+// Frozen DDL only, not a SQL parser. Protect known literals before removing layout;
+// unknown literals retain their quotes and cannot match a protected literal token.
+const proofLiterals = [...new Set(proofDefinitions.join("\n").match(/'(?:[^']|'')*'/gu))];
+function canonicalProofSql(expression: string): string {
+	let sql = expression;
+	for (const [index, literal] of proofLiterals.entries())
+		sql = `replace(${sql}, ${quoteSql(literal)}, 'literal_${index}')`;
+	return `rtrim(replace(replace(replace(replace(replace(${sql}, 'IF NOT EXISTS', ''), ' ', ''), char(10), ''), char(13), ''), char(9), ''), char(59))`;
+}
+
+/** Same effective-definition checks for SQLite, D1 readiness and explicit cutover. */
+export const AUTH_DEVICE_CLAIM_DEFINITION_CHECKS = proofDefinitions.map((definition) => {
+	const header = /^CREATE (TABLE|TRIGGER) IF NOT EXISTS (\w+)/u.exec(definition);
+	if (!header?.[1] || !header[2]) throw new Error("auth_device_claim_definition_invalid");
+	// Encode the known ASCII DDL so trigger-body semicolons cannot split cutover statements.
+	const hex = [...definition]
+		.map((character) => character.charCodeAt(0).toString(16).padStart(2, "0"))
+		.join("");
+	return {
+		name: header[2],
+		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)})`,
+	};
+});
+
 /**
  * Database columns for an already committed proof, not an authorization input.
  * public_key retains exact enrollment bytes (including PEM line endings);

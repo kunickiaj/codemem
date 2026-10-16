@@ -1,10 +1,13 @@
 import type { D1DatabaseLike } from "@codemem/core/internal/cloudflare-coordinator";
 import {
+	admitCoordinatorBrowserAuthSetup,
+	authSchemaUpgradeResponse,
 	type CoordinatorBrowserAuthOptions,
 	type CoordinatorBrowserAuthResult,
 	type CoordinatorBrowserAuthSnapshot,
 	type CreateD1CoordinatorAppOptions,
 	captureCoordinatorBrowserAuthOptions,
+	coordinatorBrowserAuthDeviceRoutes,
 	createCoordinatorBrowserAuth,
 	createCoordinatorOwnerEnrollmentHttp,
 	createD1AuthLinkBackend,
@@ -88,22 +91,50 @@ async function authenticationUnavailable(
 	}
 }
 
+function createBrowserAuthSetup(snapshot: CoordinatorBrowserAuthSnapshot) {
+	const limiter = createInMemoryRequestRateLimiter();
+	let browserStore: D1CoordinatorStore | undefined;
+	let completed: CoordinatorBrowserAuthResult | undefined;
+	return async (
+		request: Request,
+		db: D1DatabaseLike,
+	): Promise<CoordinatorBrowserAuthResult | Response> => {
+		if (completed) return completed;
+		const admission = admitCoordinatorBrowserAuthSetup(
+			snapshot,
+			request,
+			limiter,
+			request.headers.get("CF-Connecting-IP")?.trim() ?? "",
+		);
+		if (admission instanceof Response) return admission;
+		const deviceRoutes = coordinatorBrowserAuthDeviceRoutes(snapshot);
+		if (admission !== true && deviceRoutes) return { ok: true, auth: deviceRoutes };
+		browserStore ??= new D1CoordinatorStore(db);
+		// Each cold request owns its I/O; refusals and transient failures remain retryable.
+		const result = await createCoordinatorBrowserAuth(snapshot, browserStore, limiter);
+		if (
+			result.ok ||
+			(result.error !== "coordinator_auth_schema_upgrade_required" &&
+				result.error !== "browser_auth_store_unavailable")
+		)
+			completed ??= result;
+		if (!result.ok && result.error === "coordinator_auth_schema_upgrade_required")
+			return authSchemaUpgradeResponse();
+		return result;
+	};
+}
+
 function createBrowserAuthWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions,
 	snapshot: CoordinatorBrowserAuthSnapshot,
 ) {
-	const browserLimiter = createInMemoryRequestRateLimiter();
+	const setup = createBrowserAuthSetup(snapshot);
 	const deviceLimiter = createInMemoryRequestRateLimiter();
 	let pinnedDb: D1DatabaseLike | undefined;
-	let browserStore: D1CoordinatorStore | undefined;
-	let completed: CoordinatorBrowserAuthResult | undefined;
 	function pinBinding(env: CloudflareCoordinatorEnv): D1DatabaseLike | undefined {
 		const db = env.COORDINATOR_DB;
 		if (!db || (pinnedDb && pinnedDb !== db)) return undefined;
-		if (!pinnedDb) {
-			pinnedDb = db;
-			browserStore = new D1CoordinatorStore(db);
-		}
+		pinnedDb ??= db;
 		return pinnedDb;
 	}
 	return {
@@ -112,17 +143,9 @@ function createBrowserAuthWorker(
 			try {
 				if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
 				const db = pinBinding(env);
-				if (!db || !browserStore)
-					return authenticationUnavailable(request, env, opts, { deviceLimiter });
-				// Each cold request owns its I/O. A schema refusal must not survive an explicit upgrade.
-				const result =
-					completed ?? (await createCoordinatorBrowserAuth(snapshot, browserStore, browserLimiter));
-				if (
-					result.ok ||
-					(result.error !== "coordinator_auth_schema_upgrade_required" &&
-						result.error !== "browser_auth_store_unavailable")
-				)
-					completed ??= result;
+				if (!db) return authenticationUnavailable(request, env, opts, { deviceLimiter });
+				const result = await setup(request, db);
+				if (result instanceof Response) return result;
 				const app = createD1CoordinatorApp({
 					db,
 					adminSecret: coordinatorAdminSecret(env, opts),

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type CreateCoordinatorAppOptions, createCoordinatorApp } from "./coordinator-api.js";
 import { materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import { cfg, NOW, TABLES } from "./coordinator-auth-link-test-fixtures.js";
+import { CoordinatorAuthSchemaUpgradeRequiredError } from "./coordinator-auth-schema.js";
 import { type Fixture, review, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -797,6 +798,23 @@ for (const backend of ["SQLite", "D1"] as const) {
 		);
 	});
 	describe(`${backend} signed link faults and limits`, () => {
+		test("checks readiness after signed admission and retries before creating authority", async ({
+			f,
+			key,
+			app,
+		}) => {
+			await authorize(f, key);
+			const readiness = vi
+				.spyOn(f.store, "assertAuthSchemaReady")
+				.mockRejectedValueOnce(new CoordinatorAuthSchemaUpgradeRequiredError());
+			const create = vi.spyOn(f.store, "createAuthLinkAttempt");
+			const refused = await request(app, key);
+			expect(refused.status).toBe(503);
+			expect((await refused.json()).error).toBe("coordinator_auth_schema_upgrade_required");
+			expect(create).not.toHaveBeenCalled();
+			expect((await request(app, key)).status).toBe(201);
+			expect(readiness).toHaveBeenCalledTimes(2);
+		});
 		test("rotating attempt IDs share the anonymous status quota", async ({ f }) => {
 			// Arrange
 			const app = makeApp(f, { requestRateLimit: { unauthenticatedReadLimit: 1 } });
@@ -858,8 +876,12 @@ for (const backend of ["SQLite", "D1"] as const) {
 				review({ ...other, attestationId: "review-other", reviewReceiptId: "receipt-other" }),
 			);
 			// Act
+			const readiness = vi.spyOn(f.store, "assertAuthSchemaReady");
 			const first = await request(app, key);
+			const checksAfterFirst = readiness.mock.calls.length;
 			const blocked = await request(app, key);
+			expect(checksAfterFirst).toBeGreaterThan(0);
+			expect(readiness).toHaveBeenCalledTimes(checksAfterFirst);
 			const independent = await request(
 				app,
 				other,

@@ -5,6 +5,7 @@ import {
 	createCoordinatorApp,
 } from "./coordinator-api.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { CoordinatorAuthSchemaUpgradeRequiredError } from "./coordinator-auth-schema.js";
 import {
 	enroll,
 	type Fixture,
@@ -152,10 +153,12 @@ for (const backend of ["SQLite", "D1"] as const) {
 			async (credential, { f }) => {
 				// Arrange
 				const before = snapshot(f);
+				const readiness = vi.spyOn(f.store, "assertAuthSchemaReady");
 				// Act
 				const response = await request(appFor(f), input, credential);
 				// Assert
 				expect(response.status).toBe(401);
+				expect(readiness).not.toHaveBeenCalled();
 				expect(snapshot(f)).toEqual(before);
 			},
 		);
@@ -207,13 +210,40 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Arrange
 			const app = appFor(f, true, secret, { unauthenticatedMutationLimit: 1 });
 			const before = snapshot(f);
+			const readiness = vi.spyOn(f.store, "assertAuthSchemaReady");
 			// Act
 			const denied = await request(app, input, "wrong-secret");
 			const limited = await request(app, input, "wrong-secret");
+			const checksBeforeOperator = readiness.mock.calls.length;
 			const operator = await request(app);
 			// Assert
+			expect(checksBeforeOperator).toBe(0);
 			expect([denied.status, limited.status, operator.status]).toEqual([401, 429, 200]);
 			expect(snapshot(f)).toEqual(before);
+		});
+		test("schema refusal is read-only and a ready retry returns the preview", async ({ f }) => {
+			// Arrange: a transient schema refusal must not reach review mutations.
+			const app = appFor(f);
+			const before = snapshot(f);
+			const readiness = vi
+				.spyOn(f.store, "assertAuthSchemaReady")
+				.mockRejectedValueOnce(new CoordinatorAuthSchemaUpgradeRequiredError());
+			// Act
+			const refused = await request(app);
+			const afterRefusal = snapshot(f);
+			const retried = await request(app);
+			// Assert
+			expect(refused.status).toBe(503);
+			expect(await refused.json()).toMatchObject({
+				error: "coordinator_auth_schema_upgrade_required",
+			});
+			expect(afterRefusal).toEqual(before);
+			expect(retried.status).toBe(200);
+			expect(await retried.json()).toMatchObject({
+				state: "ready",
+				evidence_digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+			});
+			expect(readiness).toHaveBeenCalledTimes(2);
 		});
 		test("caps the body and fails closed when auth storage is unavailable", async ({ f }) => {
 			// Arrange

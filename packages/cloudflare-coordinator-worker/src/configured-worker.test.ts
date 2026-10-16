@@ -194,6 +194,58 @@ it("retries a transient readiness failure on the next request to the same Worker
 	expect(globalThis.fetch).toHaveBeenCalled();
 });
 
+it("does not open auth storage or discover Google for unmounted routes or methods", async () => {
+	const env = environment();
+	const binding = env.COORDINATOR_DB;
+	if (!binding) throw new Error("Fixture binding missing");
+	const prepare = vi.spyOn(binding, "prepare");
+	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady");
+	const worker = createConfiguredCloudflareCoordinatorWorker();
+	for (let i = 0; i < 3; i++) {
+		for (const path of [
+			"/auth/missing",
+			"/v1/auth/link-attempts/no/such/path",
+			"/v1/auth/owner-config",
+		])
+			expect((await worker.fetch(request(path), env)).status).toBe(404);
+		expect((await worker.fetch(request("/auth/sign-in", { method: "DELETE" }), env)).status).toBe(
+			405,
+		);
+		expect((await worker.fetch(request("/v1/peers"), env)).status).toBe(400);
+	}
+	expect(prepare).not.toHaveBeenCalled();
+	expect(readiness).not.toHaveBeenCalled();
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("spends one browser token on cold setup and rejects quota exhaustion before readiness", async () => {
+	const env = environment();
+	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady");
+	const worker = createConfiguredCloudflareCoordinatorWorker();
+	for (let i = 0; i < 20; i++) {
+		const response = await worker.fetch(signinPost({}, ""), env);
+		expect(response.status).toBe(403);
+	}
+	const queries = readiness.mock.calls.length;
+	expect(queries).toBeGreaterThan(0);
+	expect((await worker.fetch(signinPost({}, ""), env)).status).toBe(429);
+	expect(readiness).toHaveBeenCalledTimes(queries);
+});
+
+it("limits uncached readiness retries before SQL without discovery", async () => {
+	const env = environment();
+	const readiness = vi
+		.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady")
+		.mockRejectedValue(new Error("private-transient-D1-cause"));
+	const worker = createConfiguredCloudflareCoordinatorWorker();
+	for (let i = 0; i < 20; i++)
+		expect((await worker.fetch(signinPost({}, ""), env)).status).toBe(503);
+	expect(readiness).toHaveBeenCalledTimes(20);
+	expect((await worker.fetch(signinPost({}, ""), env)).status).toBe(429);
+	expect(readiness).toHaveBeenCalledTimes(20);
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
 it("contains a throwing admin-secret resolver without rejecting or redispatching", async () => {
 	// Arrange: setup is valid, but the resolver fails before application dispatch.
 	const env = environment();
