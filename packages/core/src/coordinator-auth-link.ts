@@ -98,6 +98,16 @@ export function captureAuthLinkBrowserStartHash(value: unknown): string | null |
 		return false;
 	}
 }
+function captureExpectedIdentity(value: unknown): string | null | false {
+	if (!value || typeof value !== "object") return false;
+	try {
+		const descriptor = Object.getOwnPropertyDescriptor(value, "expectedIdentityId");
+		if (!descriptor) return "expectedIdentityId" in value ? false : null;
+		return "value" in descriptor && isAuthControllerId(descriptor.value) ? descriptor.value : false;
+	} catch {
+		return false;
+	}
+}
 function captureCreateInput(value: unknown):
 	| (Captured & {
 			attemptId: string;
@@ -105,6 +115,7 @@ function captureCreateInput(value: unknown):
 			loopbackRedirect: string;
 			browserStartHash: string | null;
 			authority: CoordinatorAuthLinkCreateInput["authority"];
+			expectedIdentityId: string | null;
 	  })
 	| null {
 	const i = capture(value, [
@@ -116,9 +127,14 @@ function captureCreateInput(value: unknown):
 	]);
 	const authority = captureCreateAuthority(i?.authority);
 	const browserStartHash = captureAuthLinkBrowserStartHash(value);
+	const expectedIdentityId = captureExpectedIdentity(value);
 	if (
 		!i ||
 		!authority ||
+		expectedIdentityId === false ||
+		(expectedIdentityId !== null &&
+			authority.kind === "device_claim" &&
+			authority.identityId !== expectedIdentityId) ||
 		browserStartHash === false ||
 		(authority.kind === "device_claim" && browserStartHash === null) ||
 		!isAuthControllerId(i.attemptId) ||
@@ -133,6 +149,7 @@ function captureCreateInput(value: unknown):
 		loopbackRedirect: i.loopbackRedirect as string,
 		browserStartHash,
 		authority,
+		expectedIdentityId,
 	};
 }
 type CreateInput = NonNullable<ReturnType<typeof captureCreateInput>>;
@@ -211,6 +228,7 @@ function creationMatches(
 		configMatches(row, c) &&
 		signerMatches(row, s) &&
 		row.authority_kind === i.authority.kind &&
+		(i.expectedIdentityId === null || row.identity_id === i.expectedIdentityId) &&
 		(i.authority.kind !== "device_claim" || row.identity_id === i.authority.identityId) &&
 		row.runtime_verifier_hash === i.runtimeVerifierHash &&
 		row.browser_start_hash === i.browserStartHash &&
@@ -549,6 +567,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			return rejected("controller_not_active");
 		}
 		const authority = await deriveAuthority(source);
+		if (i.expectedIdentityId !== null && source.controller_identity_id !== i.expectedIdentityId)
+			return rejected("controller_not_active");
 		const values = [
 			c.coordinatorId,
 			i.attemptId,

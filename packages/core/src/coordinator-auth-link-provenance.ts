@@ -15,7 +15,8 @@ export function authDeviceClaimProvenanceSql(options: {
  JOIN coordinator_auth_account_links pl ON pl.coordinator_id = ct.coordinator_id AND pl.link_id = ct.link_id
  JOIN coordinator_auth_device_claims cd ON cd.coordinator_id = ct.coordinator_id AND cd.claim_id = ${l}.device_claim_id
  JOIN coordinator_auth_link_audit_log ca ON ca.coordinator_id = ct.coordinator_id AND ca.link_id = ct.link_id AND ca.action = 'link_created'
- WHERE ct.coordinator_id = ${l}.coordinator_id AND ct.link_id = ${l}.link_id AND ct.attempt_id = ${l}.attempt_id
+ WHERE ct.coordinator_id = ${options.link}.coordinator_id AND ct.link_id = ${options.link}.link_id
+ AND ct.attempt_id = ${l}.attempt_id
  AND ct.authority_kind = 'device_claim' AND ct.controller_attestation_id IS NULL
  AND ct.controller_review_receipt_id IS NULL AND ct.controller_revision IS NULL AND ct.state IN ('finalized','session_redeemed')
  AND ${l}.authority_kind = 'device_claim' AND ${l}.controller_attestation_id IS NULL

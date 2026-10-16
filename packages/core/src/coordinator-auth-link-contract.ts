@@ -74,6 +74,8 @@ export type CoordinatorAuthLinkOidcResult =
 export interface CoordinatorAuthLinkCreateInput {
 	/** Trusted server-selected source; device claims pin the current local Identity. */
 	authority: { kind: "controller_attestation" } | { kind: "device_claim"; identityId: string };
+	/** Public HTTP callers pin their current Identity for either source kind. */
+	expectedIdentityId?: string;
 	attemptId: string;
 	signer: CoordinatorAuthLinkSigner;
 	runtimeVerifierHash: string;
