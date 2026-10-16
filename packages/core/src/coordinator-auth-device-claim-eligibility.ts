@@ -16,6 +16,7 @@ import {
 	parseSshEd25519PublicKeyForRevocation,
 } from "./coordinator-ed25519-key-id-compat.js";
 import { COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES } from "./coordinator-legacy-team-completion.js";
+import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
 
 export interface CoordinatorDeviceClaimReadinessInput {
 	/** The authenticated enrollment and the caller's pinned current local Identity. */
@@ -207,7 +208,11 @@ export async function captureDeviceClaimEligibility(
 	if (!keyId) return null;
 	const row = await backend.first<{ keys: string; assignment_snapshot: string | null }>({
 		sql: KEY_SNAPSHOT_SQL,
-		values: [COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES, i.signer.groupId],
+		values: [
+			COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+			i.signer.groupId,
+			legacyTeamCandidateId(c.coordinatorId, i.signer.groupId),
+		],
 	});
 	const keys: unknown = JSON.parse(row?.keys ?? "null");
 	if (!Array.isArray(keys) || !keys.every((key): key is string => typeof key === "string"))

@@ -3,6 +3,7 @@ import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
+import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
 
 interface AssignmentRecord {
 	group_id: string;
@@ -12,13 +13,12 @@ interface AssignmentRecord {
 	manifest_json: string;
 }
 
-// Read one record, without filtering malformed evidence into an older grant.
+// The canonical reference scopes one record to this coordinator and group, without fallback.
 export const AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL = `SELECT json_object(
  'group_id', group_id, 'candidate_ref', candidate_ref, 'manifest_version', manifest_version,
  'completed_at', completed_at, 'manifest_json',
  CASE WHEN length(CAST(manifest_json AS BLOB)) <= ? THEN manifest_json ELSE NULL END)
- FROM coordinator_legacy_team_completions WHERE group_id = ?
- ORDER BY completed_at DESC, candidate_ref DESC LIMIT 1`;
+ FROM coordinator_legacy_team_completions WHERE group_id = ? AND candidate_ref = ?`;
 
 /** A capture is not authority: every consumer must recheck it inside its statement. */
 export function captureCurrentLegacyAssignment(
@@ -40,6 +40,7 @@ export function captureCurrentLegacyAssignment(
 		if (
 			canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest) !== row.manifest_json ||
 			row.group_id !== input.signer.groupId ||
+			row.candidate_ref !== legacyTeamCandidateId(input.coordinatorId, input.signer.groupId) ||
 			row.candidate_ref !== manifest.candidate_ref ||
 			row.manifest_version !== manifest.version ||
 			row.completed_at !== manifest.completed_at ||
@@ -69,9 +70,7 @@ export const AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE = `claim_current_assignment AS M
  AND c.manifest_version = json_extract(p.assignment_snapshot, '$.manifest_version')
  AND c.completed_at = json_extract(p.assignment_snapshot, '$.completed_at')
  AND c.manifest_json = json_extract(p.assignment_snapshot, '$.manifest_json')
- WHERE c.candidate_ref = (SELECT latest.candidate_ref FROM coordinator_legacy_team_completions latest
- WHERE latest.group_id = p.group_id ORDER BY latest.completed_at DESC, latest.candidate_ref DESC LIMIT 1)
- AND json_extract(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.coordinator_id') = p.coordinator_id
+ WHERE json_extract(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.coordinator_id') = p.coordinator_id
  AND EXISTS (SELECT 1 FROM json_each(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.device_decisions') d
  WHERE json_extract(d.value, '$.device_id') = p.device_id
  AND json_extract(d.value, '$.key_fingerprint') = p.fingerprint

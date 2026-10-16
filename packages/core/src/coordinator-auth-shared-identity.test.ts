@@ -72,6 +72,7 @@ function seed(f: LinkFixture) {
 			manifest.completed_at,
 			manifest.completed_at,
 		);
+	return manifest;
 }
 const request = () =>
 	attempt({
@@ -274,7 +275,25 @@ for (const backend of ["SQLite", "D1"] as const) {
 		fixture: f,
 	}) => {
 		// Arrange: both different-key devices already belong to the same reviewed Identity.
-		seed(f);
+		const manifest = seed(f);
+		// A newer completion in another coordinator namespace must not shadow this assignment.
+		const foreignManifest = {
+			...manifest,
+			coordinator_id: "coordinator-b",
+			candidate_ref: legacyTeamCandidateId("coordinator-b", "group-a"),
+			completed_at: "2026-10-02T00:00:00.000Z",
+		};
+		f.db
+			.prepare(`INSERT INTO coordinator_legacy_team_completions
+		(group_id,candidate_ref,manifest_version,manifest_json,completed_at,created_at) VALUES (?,?,?,?,?,?)`)
+			.run(
+				"group-a",
+				foreignManifest.candidate_ref,
+				1,
+				canonicalCoordinatorLegacyTeamCompletionManifestJson(foreignManifest),
+				foreignManifest.completed_at,
+				foreignManifest.completed_at,
+			);
 		const before = snapshot(f);
 		const stable = snapshot(f, { stableOnly: true });
 		// Act / Assert: readiness and status are read-only, then use the browser-start proof path.

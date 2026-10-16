@@ -795,48 +795,30 @@ These are not contradictions, and must not block a claim:
   another device or key;
 - evidence that agrees with both the target and the claim.
 
-An exact current assignment is an included, enabled decision for the current
-device, authenticated enrollment fingerprint, and requested Identity in the latest
-completion for the current group and coordinator. Core validates the entire manifest
-with `normalizeCoordinatorLegacyTeamCompletionManifest` and checks its candidate,
-version, and completion time against the stored row. Its raw JSON must also equal
-`canonicalCoordinatorLegacyTeamCompletionManifestJson(normalized)` exactly, so
-duplicate keys and other ambiguous encodings cannot authorize an exception.
-Missing or malformed evidence
-does not grant an exception. One capped record becomes `assignment_snapshot`, the
-15th named input; the winning statement rechecks its exact bytes, metadata, latest
-record, current enrollment, and device/key revocations in a materialized CTE.
-A captured positive assignment must still exist even if its disappearance would
-otherwise leave the Identity eligible under the no-footprint policy. That stale
-operation fails; a new operation captures fresh evidence.
+An exact assignment is an included, enabled decision matching the current device,
+authenticated fingerprint and Identity in the canonical completion selected by
+`legacyTeamCandidateId(coordinator, group)`. Another coordinator's record cannot
+shadow it. Core validates the full manifest, exact canonical JSON, and stored
+candidate/version/completion metadata. Malformed evidence supplies no exception.
+The winning SQL rechecks the captured bytes, scope, current enrollment and
+revocations. A captured assignment cannot disappear during the operation, even
+when that would remove the last footprint; a fresh operation may recapture it.
 
-Only other included, enabled devices with different fingerprints in that same
-validated record may share the Identity without blocking first link. An enrollment
-naming the Identity still denies unless the peer is enabled in the
-current group and its device ID, current fingerprint, and Identity match an
-included, enabled decision in that same record. Its current key must parse as
-Ed25519 and differ canonically from the requester key; key aliases cannot qualify.
-The captured assignment carries those distinct key texts and the statement
-matches them against the live enrollment. All other
-eligibility checks remain in force. This evidence supplies device-claim eligibility,
-never controller, owner-enrollment, invite, or grant authority.
+Only other included, enabled decisions with different fingerprints in that same
+record may avoid the legacy contradiction. A peer enrollment naming the Identity
+must also remain enabled in the current group and match its recorded device,
+fingerprint and Identity, with a canonically different Ed25519 key. Key aliases
+never qualify. All other eligibility checks stay in force; this grants no
+controller, owner-enrollment, invitation or grant authority.
 
-After first link, another device with that exact current assignment may read the
-same Identity's linked or revoked status. The reader still validates the historical
-attempt, proof, link, and creation audit; its origin key need not equal the reader's
-current key. Without the exact assignment, guessing an Identity exposes no new
-link or account metadata. A current requester ownership binding or any enrollment
-of its device or canonical key naming another Identity denies this shared read,
-even if the old completion still names the requested Identity. The requester's
-attestations in this coordinator also deny access when revoked or naming another
-Identity, including in another group or through a text alias of the same key.
-Consumed invitations assigning this requester to another Identity, and its
-committed account-link history for another Identity, also deny the shared read.
-Later token revocation or missing historical controllers do not erase those pins.
-These checks do not require the historical claim's origin device or controller
-to remain active.
-This read exception never permits a second binding or
-replacement of a committed or revoked link.
+An exactly assigned peer may read the Identity's linked/revoked status through
+its historical attempt/proof/link/creation-audit chain. The origin key may differ;
+the origin device or controller need not remain active. Current-requester
+ownership/enrollment mismatches, revoked or other-Identity attestations in any
+group/key alias, consumed other-Identity invitation assignments and committed
+other-Identity link history still deny access. Token revocation or retired
+controllers do not erase those pins. Guessed Identities expose no metadata, and
+this read never permits another binding or replacement of a revoked link.
 
 The local Identity comes from the current profile context, whether config or
 environment selects it. The viewer and runtime pin that context and stop on any
