@@ -8,6 +8,7 @@ import {
 	attempt,
 	backendTest,
 	completionHash,
+	consumeSigninProof,
 	finalize,
 	type LinkFixture,
 } from "./coordinator-auth-link-test-fixtures.js";
@@ -122,6 +123,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			session: { identityId: input.identityId, account },
 		});
 		if (issued.kind !== "issued") throw new Error("device account signin not issued");
+		await consumeSigninProof(f, "6".repeat(64));
 		expect(issued.session.linkId).toBe(rows(f, "coordinator_auth_account_links")[0]?.link_id);
 		expect(await f.store.readAuthSession("7".repeat(64), f.cfg)).toEqual(issued.session);
 		expect(
@@ -140,9 +142,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 		expect(await f.store.readAuthSession("7".repeat(64), f.cfg)).toBeNull();
 		expect(await f.store.readAuthSessionAccount("7".repeat(64), f.cfg)).toBeNull();
 		expect(
-			await f.store.signInWithAuthAccount(
+			await f.store.signInWithConsumedBrowserTransaction(
 				{ browserTransactionHash: "6".repeat(64), account, credentialHash: "5".repeat(64) },
-				f.cfg,
+				browserConfig,
 			),
 		).toEqual({ kind: "rejected", error: "account_not_linked" });
 		expect(rows(f, "coordinator_auth_device_claims")).toEqual(claims);

@@ -1,4 +1,5 @@
 import { env, exports } from "cloudflare:workers";
+import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorBrowserAccount } from "../../core/src/coordinator-browser-account.js";
@@ -206,8 +207,9 @@ async function liveCompletion() {
 	const f = await setup();
 	await ready(f);
 	const session = await issueBrowserCookie("session");
+	await consumeSigninProof({ ...f, cfg: f.config }, "f".repeat(64), f.config);
 	expect(
-		await f.store.signInWithAuthAccount(
+		await f.store.signInWithConsumedBrowserTransaction(
 			{
 				credentialHash: session.cookieHash,
 				browserTransactionHash: "f".repeat(64),
@@ -338,8 +340,9 @@ it("native D1 rejects wrong origin/proof and defers pending completion despite a
 	const f = await setup();
 	await ready(f);
 	const session = await issueBrowserCookie("session");
+	await consumeSigninProof({ ...f, cfg: f.config }, "f".repeat(64), f.config);
 	expect(
-		await f.store.signInWithAuthAccount(
+		await f.store.signInWithConsumedBrowserTransaction(
 			{
 				credentialHash: session.cookieHash,
 				browserTransactionHash: "f".repeat(64),
@@ -439,8 +442,9 @@ it.each(["browser replay", "bound redemption", "legacy redemption"] as const)(
 		const f = await setup();
 		await ready(f);
 		const session = await issueBrowserCookie("session");
+		await consumeSigninProof({ ...f, cfg: f.config }, "f".repeat(64), f.config);
 		expect(
-			await f.store.signInWithAuthAccount(
+			await f.store.signInWithConsumedBrowserTransaction(
 				{
 					credentialHash: session.cookieHash,
 					browserTransactionHash: "f".repeat(64),

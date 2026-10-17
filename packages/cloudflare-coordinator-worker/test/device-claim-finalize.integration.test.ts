@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 import { config, input, NOW, seedEnrollmentSql } from "./device-claim-eligibility-fixture.js";
 
 it("native D1 finalizes atomically, rolls back an audit fault, and retains the exact retry receipt", async () => {
@@ -55,7 +56,8 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	const issued = await store.redeemAuthLinkSessionWithBrowserTransaction(redeem, browserConfig);
 	expect(issued).toMatchObject({ kind: "issued", session: { identityId: input.identityId, linkId: links?.[0]?.link_id, account: { issuer: config.issuer, subject: "trusted-test-google-subject" } } });
 	if (issued.kind !== "issued") throw new Error("device link session not issued");
-	const signedIn = await store.signInWithAuthAccount({ browserTransactionHash: "7".repeat(64), credentialHash: "6".repeat(64), account: issued.session.account }, config);
+	await consumeSigninProof({ store, cfg: config }, "7".repeat(64), browserConfig);
+	const signedIn = await store.signInWithConsumedBrowserTransaction({ browserTransactionHash: "7".repeat(64), credentialHash: "6".repeat(64), account: issued.session.account }, browserConfig);
 	expect(signedIn).toMatchObject({ kind: "issued", session: { identityId: issued.session.identityId, linkId: issued.session.linkId, account: issued.session.account } });
 	if (signedIn.kind !== "issued") throw new Error("device account signin not issued");
 	const profile = { displayName: "Example Person", email: "person@example.test", emailVerified: true };

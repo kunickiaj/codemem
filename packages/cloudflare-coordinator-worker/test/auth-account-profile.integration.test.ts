@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
+import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Issued = Awaited<ReturnType<typeof signIn>>;
@@ -90,7 +91,8 @@ async function fixture() {
 async function signIn(f: Fixture) {
 	const credentialHash = hash();
 	const input = { account: f.account, browserTransactionHash: hash(), credentialHash };
-	const result = await f.store.signInWithAuthAccount(input, f.cfg);
+	await consumeSigninProof(f, input.browserTransactionHash);
+	const result = await f.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(f));
 	if (result.kind !== "issued") throw new Error("fixture_session_not_issued");
 	return { credentialHash, session: result.session };
 }

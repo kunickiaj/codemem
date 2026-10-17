@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
-import { attempt, authorize, finalize, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	attempt,
+	authorize,
+	consumeSigninProof,
+	finalize,
+	NOW,
+} from "./coordinator-auth-link-test-fixtures.js";
 import { SESSION_TTL } from "./coordinator-auth-session-test-fixtures.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { createCoordinatorBrowserAuthCallback } from "./coordinator-browser-auth-callback.js";
@@ -64,7 +70,10 @@ async function existingSessionFixture(
 		browserTransactionHash: "f".repeat(64),
 		account,
 	};
-	expect(await f.store.signInWithAuthAccount(signin, config)).toMatchObject({ kind: "issued" });
+	await consumeSigninProof({ ...f, now: NOW, cfg: config }, signin.browserTransactionHash, config);
+	expect(await f.store.signInWithConsumedBrowserTransaction(signin, config)).toMatchObject({
+		kind: "issued",
+	});
 	return issued.setCookie.split(";")[0];
 }
 
@@ -235,8 +244,9 @@ async function liveCompletion(backend: Backend) {
 	const f = await setup(backend);
 	await ready(f);
 	const session = await issueBrowserCookie("session");
+	await consumeSigninProof({ ...f, now: f.clock.now, cfg: f.config }, "f".repeat(64), f.config);
 	expect(
-		await f.store.signInWithAuthAccount(
+		await f.store.signInWithConsumedBrowserTransaction(
 			{
 				credentialHash: session.cookieHash,
 				browserTransactionHash: "f".repeat(64),
@@ -644,8 +654,9 @@ describe.each(["SQLite", "D1"] as const)("%s live SESSION completion consumption
 			const f = await setup(backend);
 			await ready(f);
 			const issued = await issueBrowserCookie("session");
+			await consumeSigninProof({ ...f, now: f.clock.now, cfg: f.config }, "f".repeat(64), f.config);
 			expect(
-				await f.store.signInWithAuthAccount(
+				await f.store.signInWithConsumedBrowserTransaction(
 					{
 						credentialHash: issued.cookieHash,
 						browserTransactionHash: "f".repeat(64),

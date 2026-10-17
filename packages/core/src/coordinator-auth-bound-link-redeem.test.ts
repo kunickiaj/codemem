@@ -10,6 +10,7 @@ import {
 	attempt,
 	authorize,
 	completionHash,
+	consumeSigninProof,
 	expectRejected,
 	finalize,
 	type LinkFixture,
@@ -369,9 +370,13 @@ function registerAtomicity(test: SessionTest) {
 	test("credential collision atomically rolls back the receipt and attempt transition", async ({
 		fixture: f,
 	}) => {
-		// Arrange: trusted legacy sign-in creates the conflicting credential, not a fabricated SID.
+		// Arrange: consumed sign-in creates the conflicting credential, not a fabricated SID.
 		const input = await ready(f);
-		expectIssued(await f.store.signInWithAuthAccount(signInInput(f), f.cfg), f);
+		await consumeSigninProof(f, signInInput(f).browserTransactionHash);
+		expectIssued(
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserConfig),
+			f,
+		);
 		const before = authority(f);
 		// Act
 		const result = f.store.redeemAuthLinkSessionWithBrowserTransaction(input, browserConfig);

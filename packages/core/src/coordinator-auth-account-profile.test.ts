@@ -1,6 +1,10 @@
 import { describe, expect, vi } from "vitest";
 import type { CoordinatorAuthAccountProfileInput } from "./coordinator-auth-account-profile-contract.js";
-import { type LinkFixture, snapshot } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	browserProofConfig,
+	type LinkFixture,
+	snapshot,
+} from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
 	consumeSigninProof,
@@ -36,20 +40,23 @@ function authority(f: LinkFixture) {
 
 async function signedIn(f: LinkFixture) {
 	await linked(f);
-	const result = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+	const result = await f.store.signInWithConsumedBrowserTransaction(
+		signInInput(f),
+		browserProofConfig(f),
+	);
 	if (result.kind !== "issued") throw new Error("fixture_session_not_issued");
 	return result.session;
 }
 
 async function secondSignIn(f: LinkFixture) {
 	await consumeSigninProof(f, "2".repeat(64));
-	const result = await f.store.signInWithAuthAccount(
+	const result = await f.store.signInWithConsumedBrowserTransaction(
 		{
 			...signInInput(f),
 			credentialHash: otherCredentialHash,
 			browserTransactionHash: "2".repeat(64),
 		},
-		f.cfg,
+		browserProofConfig(f),
 	);
 	if (result.kind !== "issued") throw new Error("fixture_session_not_issued");
 	return result.session;

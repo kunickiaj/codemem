@@ -14,6 +14,7 @@ import {
 	attempt,
 	authorize,
 	backendTest,
+	browserProofConfig,
 	device,
 	expectRejected,
 	type LinkFixture,
@@ -75,7 +76,7 @@ function registerCancellation(test: Test) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		seed(f, 2);
 		const before = transactionRows(f);
 		const protectedBefore = protectedData(f);
@@ -153,7 +154,7 @@ function registerEligibility(test: Test) {
 		async (variant, { fixture: f }) => {
 			// Arrange
 			await linked(f);
-			await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 			seed(f, 3);
 			await f.store.startAuthBrowserTransaction(materials(), config);
 			await f.store.consumeAuthBrowserTransaction(materials(), config);

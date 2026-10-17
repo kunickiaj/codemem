@@ -1,5 +1,9 @@
 import { describe, expect } from "vitest";
-import { expectRejected, snapshot } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	browserProofConfig,
+	expectRejected,
+	snapshot,
+} from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
 	credentialHash,
@@ -44,11 +48,14 @@ function registerIssueInputs(test: SessionTest) {
 		"rejects malformed redemption and sign-in %j without writes",
 		async (input, { fixture: f }) => {
 			// Arrange
-			await linked(f);
+			await linked(f, { signinProof: false });
 			const before = snapshot(f);
 			// Act
 			const redeem = await f.store.redeemAuthLinkSession(input as never, f.cfg);
-			const signIn = await f.store.signInWithAuthAccount(input as never, f.cfg);
+			const signIn = await f.store.signInWithConsumedBrowserTransaction(
+				input as never,
+				browserProofConfig(f),
+			);
 			// Assert
 			expectRejected(redeem, "invalid_input");
 			expectRejected(signIn, "invalid_input");
@@ -60,7 +67,7 @@ function registerIssueInputs(test: SessionTest) {
 		"captures only own data for hostile %s fields",
 		async (kind, { fixture: f }) => {
 			// Arrange
-			await linked(f);
+			await linked(f, { signinProof: false });
 			const before = snapshot(f);
 			// Act
 			const results = [];
@@ -75,9 +82,9 @@ function registerIssueInputs(test: SessionTest) {
 			for (const field of ["browserTransactionHash", "credentialHash", "account"])
 				results.push({
 					field,
-					result: await f.store.signInWithAuthAccount(
+					result: await f.store.signInWithConsumedBrowserTransaction(
 						hostile(field, signInInput(f), kind) as never,
-						f.cfg,
+						browserProofConfig(f),
 					),
 				});
 			// Assert
@@ -94,15 +101,15 @@ function registerIssueInputs(test: SessionTest) {
 		"rejects hostile nested verified account %s",
 		async (kind, { fixture: f }) => {
 			// Arrange
-			await linked(f);
+			await linked(f, { signinProof: false });
 			const input = signInInput(f);
 			// Act
 			const results = [];
 			for (const field of ["issuer", "subject"])
 				results.push(
-					await f.store.signInWithAuthAccount(
+					await f.store.signInWithConsumedBrowserTransaction(
 						{ ...input, account: hostile(field, input.account, kind) } as never,
-						f.cfg,
+						browserProofConfig(f),
 					),
 				);
 			// Assert
@@ -125,7 +132,7 @@ function registerIssueInputs(test: SessionTest) {
 			},
 		});
 		// Act
-		const result = await f.store.signInWithAuthAccount(input, f.cfg);
+		const result = await f.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(f));
 		// Assert
 		expectIssued(result, f);
 		expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
@@ -137,7 +144,7 @@ function registerScopeInputs(test: SessionTest) {
 		async (kind, { fixture: f }) => {
 			// Arrange
 			await linked(f);
-			await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 			const before = sessionRows(f);
 			const links = snapshot(f);
 			const scope = hostile("coordinatorId", { coordinatorId: f.cfg.coordinatorId }, kind);
@@ -156,7 +163,7 @@ function registerScopeInputs(test: SessionTest) {
 		async (hash, { fixture: f }) => {
 			// Arrange
 			await linked(f);
-			await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 			const before = sessionRows(f);
 			// Act
 			const logout = await f.store.signOutAuthSession(hash as never, {
@@ -199,7 +206,10 @@ function registerClock(test: SessionTest) {
 		f.now = now;
 		const before = snapshot(f);
 		// Act
-		const result = f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const result = f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		await expect(result).rejects.toThrow(/^auth_session_invalid_clock$/);
 		expect(sessionRows(f)).toEqual([[], []]);
@@ -209,10 +219,13 @@ function registerClock(test: SessionTest) {
 		"safe clock boundary %s can issue a session",
 		async (now, { fixture: f }) => {
 			// Arrange
-			await linked(f);
 			f.now = now;
+			await linked(f);
 			// Act
-			const result = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			const result = await f.store.signInWithConsumedBrowserTransaction(
+				signInInput(f),
+				browserProofConfig(f),
+			);
 			// Assert
 			expectIssued(result, f);
 			expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);

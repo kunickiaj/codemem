@@ -25,6 +25,7 @@ import {
 	attempt,
 	authorize,
 	backendTest,
+	browserProofConfig,
 	cfg,
 	device,
 	expectRejected,
@@ -201,7 +202,10 @@ function registerCeiling(test: Test) {
 		const before = grants(f);
 		// Act
 		const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		const issued = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const issued = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		const read = await f.store.readAuthSession(credentialHash, f.cfg);
 		// Assert
 		expectRejected(limited, "attempt_limited");
@@ -324,7 +328,7 @@ function registerMaintenance(test: Test) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		seedCopies(f, 1, {
 			state: "confirmed",
 			link_id: null,
@@ -627,7 +631,10 @@ function registerBurns(test: Test) {
 	}) => {
 		// Arrange
 		await linked(f);
-		expect((await f.store.signInWithAuthAccount(signInInput(f), f.cfg)).kind).toBe("issued");
+		expect(
+			(await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)))
+				.kind,
+		).toBe("issued");
 		await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
 		const before = allData(f);
 		// Act
@@ -660,7 +667,10 @@ function registerBurns(test: Test) {
 		await f.store.maintainAuthLinkAttempts(f.cfg);
 		const before = allData(f);
 		// Act
-		const replay = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const replay = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		expectRejected(replay, "browser_transaction_used");
 		expect(allData(f)).toEqual(before);
@@ -677,7 +687,7 @@ function registerBurns(test: Test) {
 				{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
 				f.cfg,
 			),
-			f.store.signInWithAuthAccount(signInInput(f), f.cfg),
+			f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)),
 		]);
 		// Assert
 		expect(

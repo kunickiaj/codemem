@@ -20,10 +20,10 @@ export const SESSION_TABLES = [
 	"coordinator_auth_sessions",
 ] as const;
 
-export async function linked(f: LinkFixture) {
+export async function linked(f: LinkFixture, options = { signinProof: true }) {
 	await authorize(f);
 	await advance(f, "finalized");
-	await consumeSigninProof(f, freshBrowserHash);
+	if (options.signinProof) await consumeSigninProof(f, freshBrowserHash);
 }
 
 export function redeemInput() {

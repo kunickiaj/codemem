@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked } from "./coordinator-auth-session-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { createCoordinatorBrowserAccount } from "./coordinator-browser-account.js";
@@ -55,9 +55,11 @@ async function harness() {
 	const input: Input = { config: config(), csrfKey: key, store, limiter };
 	const result = await createCoordinatorBrowserAccount(input);
 	if (!result.ok) throw new Error("fixture_factory_failed");
-	await linked({ ...f, now: NOW, cfg: config() });
+	const proofFixture = { ...f, now: NOW, cfg: config() };
+	await linked(proofFixture, { signinProof: false });
+	await consumeSigninProof(proofFixture, "f".repeat(64), config());
 	const s = await issueBrowserCookie("session");
-	const issued = await f.store.signInWithAuthAccount(
+	const issued = await f.store.signInWithConsumedBrowserTransaction(
 		{
 			credentialHash: s.cookieHash,
 			browserTransactionHash: "f".repeat(64),
@@ -547,9 +549,14 @@ describe("crypto and request snapshot failures", () => {
 		// Arrange
 		const f = await harness();
 		const other = await issueBrowserCookie("session");
+		await consumeSigninProof(
+			{ ...f, store: f.persistence, now: NOW, cfg: config() },
+			"e".repeat(64),
+			config(),
+		);
 		expect(
 			(
-				await f.persistence.signInWithAuthAccount(
+				await f.persistence.signInWithConsumedBrowserTransaction(
 					{
 						credentialHash: other.cookieHash,
 						browserTransactionHash: "e".repeat(64),

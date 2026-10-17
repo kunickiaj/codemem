@@ -1,6 +1,11 @@
 import { describe, expect } from "vitest";
 import * as browser from "./coordinator-auth-browser-transaction-test-fixtures.js";
-import { expectRejected, type LinkFixture } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	browserProofConfig,
+	consumeSigninProof,
+	expectRejected,
+	type LinkFixture,
+} from "./coordinator-auth-link-test-fixtures.js";
 import * as sessions from "./coordinator-auth-session-test-fixtures.js";
 
 const RETENTION = 32 * 60 * 60 * 1000;
@@ -82,7 +87,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(authority(f)).toEqual(before);
 		});
 		test("legacy signin receipts stay spent after 64h", async ({ fixture: f }) => {
-			// Arrange: historical trusted setup is allowed, but never opts into retention.
+			// Arrange: issue normally, then model older history with retained receipt metadata.
 			await sessions.linked(f);
 			const before = authority(f);
 			const input = {
@@ -90,13 +95,25 @@ for (const backend of ["SQLite", "D1"] as const) {
 				browserTransactionHash: legacyHash,
 				credentialHash,
 			};
-			sessions.expectIssued(await f.store.signInWithAuthAccount(input, f.cfg), f);
+			await consumeSigninProof(f, input.browserTransactionHash);
+			sessions.expectIssued(
+				await f.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(f)),
+				f,
+			);
+			f.db
+				.prepare(
+					"UPDATE coordinator_auth_session_receipts SET purge_eligible = 0 WHERE coordinator_id = ? AND browser_transaction_hash = ?",
+				)
+				.run(f.cfg.coordinatorId, input.browserTransactionHash);
 			const rows = sessions.sessionRows(f);
 			expect(rows[0][0]).toMatchObject({ source: "signin", purge_eligible: 0 });
 			f.now += RETENTION * 2;
 			// Act
 			const cleanup = await purge(f);
-			const replay = await f.store.signInWithAuthAccount(input, f.cfg);
+			const replay = await f.store.signInWithConsumedBrowserTransaction(
+				input,
+				browserProofConfig(f),
+			);
 			// Assert: old trusted replay remains denied and neither row is rewritten.
 			expect(cleanup).toEqual([purged(0), purged(0)]);
 			expectRejected(replay, "browser_transaction_used");

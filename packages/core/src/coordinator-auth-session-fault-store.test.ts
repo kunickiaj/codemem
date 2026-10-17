@@ -1,5 +1,9 @@
 import { describe, expect, vi } from "vitest";
-import { expectRejected, snapshot } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	browserProofConfig,
+	expectRejected,
+	snapshot,
+} from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
 	consumeSigninProof,
@@ -34,7 +38,7 @@ function registerPersistence(test: SessionTest) {
 				const result =
 					operation === "redeem"
 						? f.store.redeemAuthLinkSession(redeemInput(), f.cfg)
-						: f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+						: f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 				// Assert
 				await expect(result).rejects.toThrow(/^auth_session_persistence_error$/);
 				expect(failedReads).toBe(1);
@@ -49,9 +53,9 @@ function registerPersistence(test: SessionTest) {
 							{ ...redeemInput(), credentialHash: otherCredentialHash },
 							f.cfg,
 						)
-					: await f.store.signInWithAuthAccount(
+					: await f.store.signInWithConsumedBrowserTransaction(
 							{ ...signInInput(f), credentialHash: otherCredentialHash },
-							f.cfg,
+							browserProofConfig(f),
 						);
 			// Assert
 			expectRejected(retry, "browser_transaction_used");
@@ -63,7 +67,7 @@ function registerPersistence(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		const before = sessionRows(f);
 		const spy = vi.spyOn(f.db, "prepare").mockImplementation(() => {
 			throw new Error("fixture-private-read-secret");
@@ -87,7 +91,10 @@ function registerPersistence(test: SessionTest) {
 			"CREATE TRIGGER fixture_incomplete BEFORE INSERT ON coordinator_auth_sessions BEGIN SELECT RAISE(IGNORE); END",
 		);
 		// Act
-		const result = f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const result = f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		await expect(result).rejects.toThrow(/^auth_session_persistence_incomplete$/);
 		expect(sessionRows(f)[1]).toEqual([]);
@@ -99,7 +106,10 @@ function registerPersistence(test: SessionTest) {
 		await linked(f);
 		f.db.function("changes", () => 0);
 		// Act
-		const result = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const result = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		expectIssued(result, f);
 		expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
@@ -109,14 +119,14 @@ function registerPersistence(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		await consumeSigninProof(f, "2".repeat(64));
 		const before = sessionRows(f);
 		const links = snapshot(f);
 		// Act
-		const result = f.store.signInWithAuthAccount(
+		const result = f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), browserTransactionHash: "2".repeat(64) },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		// Assert
 		await expect(result).rejects.toThrow(/^auth_session_persistence_error$/);

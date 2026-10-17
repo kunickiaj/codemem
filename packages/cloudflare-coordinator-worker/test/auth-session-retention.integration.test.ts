@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 const NOW = 1790899200000;
 const HOUR = 3600000;
@@ -211,12 +212,18 @@ it("waits for browser cleanup and protects receipts against either partial sessi
 	expect(await f.store.purgeAuthGuardedSigninReceipts(f.cfg)).toEqual(purged(0));
 });
 
-it("retains legacy, redeemed and historical records forever while permitting approved trusted reuse", async () => {
+it("retains historical records forever but rejects reuse of a purged signin proof", async () => {
 	// Arrange: historical guarded metadata models the migration's default-zero policy.
 	const f = await fixture();
 	const legacy = legacyInput(f);
 	const linkedAuthority = await authority(f);
-	expect(await f.store.signInWithAuthAccount(legacy, f.cfg)).toMatchObject({ kind: "issued" });
+	await consumeSigninProof(f, legacy.browserTransactionHash, f.cfg);
+	expect(await f.store.signInWithConsumedBrowserTransaction(legacy, f.cfg)).toMatchObject({ kind: "issued" });
+	await env.COORDINATOR_DB.prepare(
+		`UPDATE ${receipts} SET purge_eligible = 0 WHERE coordinator_id = ? AND browser_transaction_hash = ?`,
+	)
+		.bind(f.cfg.coordinatorId, legacy.browserTransactionHash)
+		.run();
 	expect(await authority(f)).toEqual(linkedAuthority);
 	expect(
 		await f.store.redeemAuthLinkSession({ ...f.browser, credentialHash: hash() }, f.cfg),
@@ -230,31 +237,30 @@ it("retains legacy, redeemed and historical records forever while permitting app
 	const permanentSessions = await rows(f, sessions);
 	const permanentReceipts = await rows(f, receipts);
 	expect(permanentReceipts.map((row) => row.purge_eligible)).toEqual([0, 0, 0]);
+	expect(permanentReceipts.map((row) => row.source)).toEqual(["signin", "link_redeem", "signin"]);
 	const disposable = await guarded(f);
 	const before = await authority(f);
 	f.time.now = NOW + 64 * HOUR;
-	// Act: only the new guarded row is reclaimable; trusted legacy nomination is explicit.
-	expect(await f.store.purgeAuthSigninBrowserTransactions(f.cfg)).toEqual(purged(2));
+	// Act: all three signin proofs expire, but only the new receipt is reclaimable.
+	expect(await f.store.purgeAuthSigninBrowserTransactions(f.cfg)).toEqual(purged(3));
 	expect(await f.store.purgeAuthGuardedSigninSessions(f.cfg)).toEqual(purged(1));
 	expect(await f.store.purgeAuthGuardedSigninReceipts(f.cfg)).toEqual(purged(1));
 	expect(await rows(f, sessions)).toEqual(permanentSessions);
 	expect(await rows(f, receipts)).toEqual(permanentReceipts);
 	const floor = await rows(f, floors);
-	const stillBurned = await f.store.signInWithAuthAccount(
+	const stillBurned = await f.store.signInWithConsumedBrowserTransaction(
 		{ ...legacy, credentialHash: hash() },
 		f.cfg,
 	);
 	const guardedReplay = await f.store.signInWithConsumedBrowserTransaction(disposable.input, f.cfg);
-	const trustedReuse = await f.store.signInWithAuthAccount(disposable.input, f.cfg);
-	// Assert: no public guarded replay; the accepted internal legacy boundary can reuse both hashes.
+	const retry = await f.store.signInWithConsumedBrowserTransaction(disposable.input, f.cfg);
+	// Assert: historical receipts stay spent, and a purged proof cannot mint another session.
 	expect(stillBurned).toEqual(rejected("browser_transaction_used"));
 	expect(guardedReplay).toEqual(rejected("transaction_unavailable"));
-	expect(trustedReuse).toMatchObject({ kind: "issued" });
-	if (trustedReuse.kind !== "issued") throw new Error("expected trusted legacy session");
-	expect(await f.store.readAuthSession(disposable.input.credentialHash, f.cfg)).toEqual(
-		trustedReuse.session,
-	);
-	expect((await rows(f, receipts)).at(-1)).toMatchObject({ purge_eligible: 0, source: "signin" });
+	expect(retry).toEqual(rejected("transaction_unavailable"));
+	expect(await f.store.readAuthSession(disposable.input.credentialHash, f.cfg)).toBeNull();
+	expect(await rows(f, sessions)).toEqual(permanentSessions);
+	expect(await rows(f, receipts)).toEqual(permanentReceipts);
 	expect(await authority(f)).toEqual(before);
 	expect(await rows(f, floors)).toEqual(floor);
 	f.time.now += 64 * HOUR;

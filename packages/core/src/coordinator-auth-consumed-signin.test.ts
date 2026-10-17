@@ -8,6 +8,8 @@ import {
 	transactionRows,
 } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import {
+	browserProofConfig,
+	consumeSigninProof,
 	expectRejected,
 	type LinkFixture,
 	snapshot,
@@ -77,13 +79,15 @@ function capability(
 
 async function fill(f: LinkFixture, count = 10, cfg = f.cfg) {
 	for (let i = 0; i < count; i++) {
-		const result = await f.store.signInWithAuthAccount(
+		const config = { ...browserProofConfig(f), ...cfg };
+		await consumeSigninProof(f, hash(2000 + i), config);
+		const result = await f.store.signInWithConsumedBrowserTransaction(
 			{
 				...signInInput(f),
 				browserTransactionHash: hash(2000 + i),
 				credentialHash: hash(3000 + i),
 			},
-			cfg,
+			config,
 		);
 		expect(result.kind).toBe("issued");
 	}
@@ -330,13 +334,13 @@ function registerTransactionGuards(test: SessionTest) {
 }
 
 function registerSharedReceiptCompatibility(test: SessionTest) {
-	test("legacy trusted signin owns the shared receipt and consumed signin cannot replace it", async ({
+	test("consumed signin owns the shared receipt and replay cannot replace it", async ({
 		fixture: f,
 	}) => {
-		// Arrange: the legacy method wins the shared receipt key for a consumed internal hash.
+		// Arrange: the first consumed proof wins the shared receipt key.
 		await linked(f);
 		const input = await ready(f);
-		const first = await f.store.signInWithAuthAccount(input, f.cfg);
+		const first = await f.store.signInWithConsumedBrowserTransaction(input, browserConfig);
 		expectIssued(first, f);
 		expect(
 			await f.store.recordAuthAccountProfile(
@@ -514,19 +518,6 @@ function registerBudgetIsolation(test: SessionTest) {
 			expect(sessionRows(f)[1]).toHaveLength(11);
 		},
 	);
-	test("legacy trusted signin remains uncapped beyond 10 sessions", async ({ fixture: f }) => {
-		// Arrange
-		await linked(f);
-		await fill(f);
-		// Act
-		const result = await f.store.signInWithAuthAccount(
-			{ ...signInInput(f), browserTransactionHash: hash(800), credentialHash: hash(801) },
-			f.cfg,
-		);
-		// Assert
-		expectIssued(result, f);
-		expect(sessionRows(f).map((rows) => rows.length)).toEqual([11, 11]);
-	});
 }
 
 function registerAtomicity(test: SessionTest) {
@@ -653,9 +644,9 @@ function registerPersistenceFaults(test: SessionTest) {
 			await linked(f);
 			const input = await ready(f);
 			if (change === "duplicate-credential")
-				await f.store.signInWithAuthAccount(
+				await f.store.signInWithConsumedBrowserTransaction(
 					{ ...signInInput(f), credentialHash: input.credentialHash },
-					f.cfg,
+					browserProofConfig(f),
 				);
 			else
 				f.db.exec(
@@ -807,24 +798,6 @@ function registerInputSafety(test: SessionTest) {
 			expect(sessionRows(f)).toEqual(before);
 		},
 	);
-	test("legacy standalone session operations do not require a browser-transaction table", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		f.db.exec(`DROP TABLE ${TABLE}`);
-		const ops = capability(f);
-		// Act
-		const issued = await ops.signInWithAuthAccount(signInInput(f), f.cfg);
-		const live = await ops.readAuthSession(signInInput(f).credentialHash, f.cfg);
-		const revoked = await ops.revokeAuthAccountLink({ linkId: linkId(f) }, f.cfg);
-		const after = await ops.readAuthSession(signInInput(f).credentialHash, f.cfg);
-		// Assert
-		expectIssued(issued, f);
-		expect(live).not.toBeNull();
-		expect(revoked).toEqual({ kind: "revoked" });
-		expect(after).toBeNull();
-	});
 }
 
 describe.each(["SQLite", "D1"] as const)(

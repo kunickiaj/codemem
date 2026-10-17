@@ -6,6 +6,7 @@ import {
 	authorize,
 	backendTest,
 	browserHash,
+	browserProofConfig,
 	expectRejected,
 	finalize,
 	rows,
@@ -85,7 +86,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		}) => {
 			// Arrange: seed the link through the existing reviewed-device flow.
 			await linked(f);
-			const signedIn = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			const signedIn = await f.store.signInWithConsumedBrowserTransaction(
+				signInInput(f),
+				browserProofConfig(f),
+			);
 			const input = attempt({ attemptId: "smoke-new", runtimeVerifierHash: "1".repeat(64) });
 			const created = await f.store.createAuthLinkAttempt(input, f.cfg);
 			const before = rows(f, TABLES[0]);

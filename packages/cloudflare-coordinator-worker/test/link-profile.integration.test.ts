@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
@@ -144,7 +145,9 @@ it("prefers newer sign-in metadata and hides revoked profiles before cleanup", a
 	expect(await status(f)).toMatchObject({ account: { displayName: profile.displayName, email: profile.email } });
 	f.time.now += 1;
 	const credentialHash = hash();
-	const issued = await f.store.signInWithAuthAccount({ account: f.account, browserTransactionHash: hash(), credentialHash }, f.cfg);
+	const browserTransactionHash = hash();
+	await consumeSigninProof(f, browserTransactionHash);
+	const issued = await f.store.signInWithConsumedBrowserTransaction({ account: f.account, browserTransactionHash, credentialHash }, browserProofConfig(f));
 	if (issued.kind !== "issued") throw new Error("synthetic_signin_failed");
 	expect(await f.store.readAuthSessionAccount(credentialHash, f.cfg)).toMatchObject({ profile });
 	const newer = { displayName: "Newer Person", email: "newer@example.test", emailVerified: false };

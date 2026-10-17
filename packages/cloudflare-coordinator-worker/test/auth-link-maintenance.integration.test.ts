@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
@@ -307,8 +308,9 @@ it("burns browser transaction hashes in both sign-in and expired link directions
 	const expiring = await fixture({ coordinatorId: linked.cfg.coordinatorId });
 	expiring.account.subject = "fixture-unlinked-subject";
 	await advance(expiring, "verified");
+	await consumeSigninProof(linked, input.browserTransactionHash);
 	// Act: an issued sign-in consumes its receipt; an expired claim keeps its hash.
-	const issued = await linked.store.signInWithAuthAccount(input, linked.cfg);
+	const issued = await linked.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(linked));
 	const beforeClaim = await rows(linked);
 	const claim = await pending.store.claimAuthLinkAttempt(
 		{ ...pending.browser, browserTransactionHash: input.browserTransactionHash },
@@ -318,13 +320,13 @@ it("burns browser transaction hashes in both sign-in and expired link directions
 	const maintenance = await linked.store.maintainAuthLinkAttempts(linked.cfg);
 	const sessions = await rows(linked, "coordinator_auth_sessions");
 	const receipts = await rows(linked, "coordinator_auth_session_receipts");
-	const deniedSignIn = await linked.store.signInWithAuthAccount(
+	const deniedSignIn = await linked.store.signInWithConsumedBrowserTransaction(
 		{
 			...input,
 			browserTransactionHash: expiring.browser.browserTransactionHash,
 			credentialHash: hash(),
 		},
-		linked.cfg,
+		browserProofConfig(linked),
 	);
 	// Assert: neither collision advances an attempt or creates another session/receipt.
 	expect(issued).toMatchObject({ kind: "issued" });

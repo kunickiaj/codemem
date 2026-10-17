@@ -2,6 +2,7 @@ import { describe, expect } from "vitest";
 import {
 	advance,
 	attempt,
+	browserProofConfig,
 	expectRejected,
 	finalize,
 	type LinkFixture,
@@ -9,6 +10,7 @@ import {
 } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
+	consumeSigninProof,
 	credentialHash,
 	grants,
 	linked,
@@ -53,7 +55,10 @@ function registerRead(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		const issued = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const issued = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		const before = sessionRows(f);
 		f.now += SESSION_TTL - 1;
 		// Act
@@ -78,7 +83,7 @@ function registerRead(test: SessionTest) {
 	] as const)("read uniformly denies %s without mutation", async (change, { fixture: f }) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		const cfg = { ...f.cfg };
 		if (change === "namespace") cfg.coordinatorId = "other-coordinator";
 		if (change === "revision") cfg.revision = "2".repeat(64);
@@ -104,9 +109,9 @@ function registerLogout(test: SessionTest) {
 		// Arrange
 		await linked(f);
 		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
-		await f.store.signInWithAuthAccount(
+		await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), credentialHash: otherCredentialHash },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		const before = grants(f);
 		const attemptRows = snapshot(f)[0];
@@ -139,7 +144,7 @@ function registerLogout(test: SessionTest) {
 		async (change, { fixture: f }) => {
 			// Arrange
 			await linked(f);
-			await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 			const before = sessionRows(f);
 			if (change === "disabled") f.cfg.enabled = false;
 			// Act
@@ -167,13 +172,14 @@ function registerRevoke(test: SessionTest) {
 		// Arrange
 		await linked(f);
 		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
-		await f.store.signInWithAuthAccount(
+		await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), credentialHash: otherCredentialHash },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		const deviceGrants = grants(f).slice(0, 3);
 		const id = linkId(f);
 		const revokedAt = f.now;
+		await consumeSigninProof(f, "4".repeat(64));
 		// Act
 		const first = await f.store.revokeAuthAccountLink(
 			{ linkId: id },
@@ -188,9 +194,9 @@ function registerRevoke(test: SessionTest) {
 			f.store.readAuthSession(credentialHash, f.cfg),
 			f.store.readAuthSession(otherCredentialHash, f.cfg),
 		]);
-		const signIn = await f.store.signInWithAuthAccount(
+		const signIn = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), browserTransactionHash: "4".repeat(64), credentialHash: "5".repeat(64) },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		// Assert
 		expect(first).toEqual({ kind: "revoked" });
@@ -230,7 +236,7 @@ function registerRevoke(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		const before = snapshot(f);
 		f.db.exec(
 			"CREATE TRIGGER fixture_revoke_fault BEFORE INSERT ON coordinator_auth_link_audit_log WHEN NEW.action = 'link_revoked' BEGIN SELECT RAISE(ABORT, 'fixture-private-backend-detail'); END",
@@ -294,7 +300,10 @@ function registerAuditGap(test: SessionTest) {
 	}) => {
 		// Arrange: corrupt only this fixture's creation audit, never restore active access.
 		await linked(f);
-		const issued = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const issued = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		expect(issued.kind).toBe("issued");
 		expect(await f.store.readAuthSession(credentialHash, f.cfg)).not.toBeNull();
 		const id = linkId(f);
@@ -312,6 +321,7 @@ function registerAuditGap(test: SessionTest) {
 				.all(scope.coordinatorId, id);
 		const beforeAudit = auditRows();
 		const revokedAt = f.now;
+		await consumeSigninProof(f, "4".repeat(64));
 		// Act: the thrown result cannot imply that the committed revocation was rolled back.
 		const first = await f.store
 			.revokeAuthAccountLink({ linkId: id }, scope)
@@ -322,9 +332,9 @@ function registerAuditGap(test: SessionTest) {
 			)
 			.get(scope.coordinatorId, id);
 		const session = await f.store.readAuthSession(credentialHash, f.cfg);
-		const signIn = await f.store.signInWithAuthAccount(
+		const signIn = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), browserTransactionHash: "4".repeat(64), credentialHash: "5".repeat(64) },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		f.now += 1_000;
 		const retry = await f.store

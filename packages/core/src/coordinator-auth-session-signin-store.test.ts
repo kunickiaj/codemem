@@ -1,5 +1,9 @@
 import { describe, expect } from "vitest";
-import { expectRejected, snapshot } from "./coordinator-auth-link-test-fixtures.js";
+import {
+	browserProofConfig,
+	expectRejected,
+	snapshot,
+} from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
 	browserHash,
@@ -25,7 +29,10 @@ function registerSuccess(test: SessionTest) {
 		const before = grants(f);
 		const attempts = snapshot(f)[0];
 		// Act
-		const result = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const result = await f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		expectIssued(result, f);
 		expect(grants(f)).toEqual(before);
@@ -44,7 +51,7 @@ function registerSuccess(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		const current = { ...f.cfg, revision: "2".repeat(64) };
 		await consumeSigninProof(f, "3".repeat(64), {
 			...current,
@@ -52,13 +59,13 @@ function registerSuccess(test: SessionTest) {
 		});
 		const before = grants(f);
 		// Act
-		const result = await f.store.signInWithAuthAccount(
+		const result = await f.store.signInWithConsumedBrowserTransaction(
 			{
 				...signInInput(f),
 				browserTransactionHash: "3".repeat(64),
 				credentialHash: otherCredentialHash,
 			},
-			current,
+			{ ...browserProofConfig(f), ...current },
 		);
 		const oldSession = await f.store.readAuthSession(credentialHash, current);
 		const newSession = await f.store.readAuthSession(otherCredentialHash, current);
@@ -93,7 +100,10 @@ function registerSuccess(test: SessionTest) {
 		});
 		const input = { ...signInInput(f), account: { issuer: cfg.issuer, subject } };
 		// Act
-		const issued = await f.store.signInWithAuthAccount(input, cfg);
+		const issued = await f.store.signInWithConsumedBrowserTransaction(input, {
+			...browserProofConfig(f),
+			...cfg,
+		});
 		const wrongScope = await f.store.readAuthSession(credentialHash, f.cfg);
 		const ownScope = await f.store.readAuthSession(credentialHash, cfg);
 		// Assert
@@ -119,7 +129,7 @@ function registerSuccess(test: SessionTest) {
 			rawCredential: "fixture-only-secret",
 		};
 		// Act
-		const result = await f.store.signInWithAuthAccount(input, f.cfg);
+		const result = await f.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(f));
 		// Assert
 		expectIssued(result, f);
 		expect(grants(f)).toEqual(before);
@@ -133,15 +143,15 @@ function registerDenials(test: SessionTest) {
 		"rejects %s sign-in with no writes",
 		async (change, { fixture: f }) => {
 			// Arrange
-			await linked(f);
+			await linked(f, { signinProof: change !== "wrong-issuer" });
 			const input = signInInput(f);
 			if (change === "unknown") input.account.subject = "unknown-subject";
 			if (change === "wrong-issuer") input.account.issuer = "https://other.example.test";
 			if (change === "revoked") revokeLinkRow(f);
 			const before = grants(f);
 			// Act
-			const result = await f.store.signInWithAuthAccount(input, {
-				...f.cfg,
+			const result = await f.store.signInWithConsumedBrowserTransaction(input, {
+				...browserProofConfig(f),
 				enabled: change !== "disabled",
 			});
 			// Assert
@@ -163,9 +173,9 @@ function registerDenials(test: SessionTest) {
 		// Arrange
 		await linked(f);
 		// Act
-		const result = await f.store.signInWithAuthAccount(
+		const result = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), browserTransactionHash: browserHash },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		// Assert
 		expectRejected(result, "browser_transaction_used");
@@ -176,12 +186,12 @@ function registerDenials(test: SessionTest) {
 		async (hash, { fixture: f }) => {
 			// Arrange
 			await linked(f);
-			await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 			const before = sessionRows(f);
 			// Act
-			const result = await f.store.signInWithAuthAccount(
+			const result = await f.store.signInWithConsumedBrowserTransaction(
 				{ ...signInInput(f), credentialHash: hash },
-				f.cfg,
+				browserProofConfig(f),
 			);
 			// Assert
 			expectRejected(result, "browser_transaction_used");
@@ -193,10 +203,10 @@ function registerDenials(test: SessionTest) {
 		await linked(f);
 		// Act
 		const results = await Promise.all([
-			f.store.signInWithAuthAccount(signInInput(f), f.cfg),
-			f.store.signInWithAuthAccount(
+			f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)),
+			f.store.signInWithConsumedBrowserTransaction(
 				{ ...signInInput(f), credentialHash: otherCredentialHash },
-				f.cfg,
+				browserProofConfig(f),
 			),
 		]);
 		// Assert
@@ -214,7 +224,10 @@ function registerDenials(test: SessionTest) {
 			"CREATE TRIGGER fixture_signin_fault BEFORE INSERT ON coordinator_auth_sessions BEGIN SELECT RAISE(ABORT, 'fixture-private-backend-detail'); END",
 		);
 		// Act
-		const result = f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		const result = f.store.signInWithConsumedBrowserTransaction(
+			signInInput(f),
+			browserProofConfig(f),
+		);
 		// Assert
 		await expect(result).rejects.toThrow(/^auth_session_persistence_error$/);
 		expect(snapshot(f)).toEqual(before);

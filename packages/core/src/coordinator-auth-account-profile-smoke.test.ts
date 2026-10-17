@@ -1,5 +1,5 @@
 import { describe, expect } from "vitest";
-import { snapshot } from "./coordinator-auth-link-test-fixtures.js";
+import { browserProofConfig, snapshot } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
 	credentialHash,
@@ -19,7 +19,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		}) => {
 			// Arrange: reviewed account link and ordinary sign-in, with a fixed fixture clock.
 			await linked(f);
-			const issued = await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+			const issued = await f.store.signInWithConsumedBrowserTransaction(
+				signInInput(f),
+				browserProofConfig(f),
+			);
 			expectIssued(issued, f);
 			const authority = [grants(f), snapshot(f), sessionRows(f)];
 			const profile = { displayName: "Example User" };
@@ -53,7 +56,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		}) => {
 			// Arrange: a live session with recorded display metadata.
 			await linked(f);
-			expectIssued(await f.store.signInWithAuthAccount(signInInput(f), f.cfg), f);
+			expectIssued(
+				await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)),
+				f,
+			);
 			expect(
 				await f.store.recordAuthAccountProfile(
 					{ credentialHash, profile: { displayName: "Example User" } },

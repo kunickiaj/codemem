@@ -313,7 +313,7 @@ it("uses consumed SDK material in workerd while verified provider identity alone
 	const verified = await client.verifyCallback({ callbackUrl: input.callbackUrl, material });
 	const replay = await client.verifyCallback({ callbackUrl: input.callbackUrl, material });
 	if (!verified.ok) throw new Error(verified.error);
-	const denied = await f.store.signInWithAuthAccount(
+	const denied = await f.store.signInWithConsumedBrowserTransaction(
 		{
 			account: verified.account,
 			browserTransactionHash: consumed.browserTransactionHash,
@@ -333,7 +333,7 @@ it("uses consumed SDK material in workerd while verified provider identity alone
 		},
 	});
 	expect(replay).toEqual({ ok: false, error: "oidc_verification_failed" });
-	expect(denied.kind).toBe("rejected");
+	expect(denied).toEqual({ kind: "rejected", error: "account_not_linked" });
 	expect(await snapshot(f)).toEqual(before);
 	expect(JSON.stringify(await rows(f))).not.toMatch(
 		/fixture-access-token|fixture-refresh-token|fixture-subject|user@example.test/,

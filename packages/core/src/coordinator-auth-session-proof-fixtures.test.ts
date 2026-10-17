@@ -269,7 +269,7 @@ function registerSessions(test: Test) {
 		const hash = "5".repeat(64);
 		// Act
 		await consumeSigninProof(f, hash, config);
-		const result = await f.store.signInWithAuthAccount(
+		const result = await f.store.signInWithConsumedBrowserTransaction(
 			{
 				...signInInput(f),
 				browserTransactionHash: hash,

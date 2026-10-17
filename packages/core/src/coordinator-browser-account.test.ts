@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderCurrentAccountPage } from "./coordinator-auth-browser-view.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked, SESSION_TTL } from "./coordinator-auth-session-test-fixtures.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { createCoordinatorBrowserAccount } from "./coordinator-browser-account.js";
@@ -72,10 +72,16 @@ async function harness(backend: Backend) {
 type Harness = Awaited<ReturnType<typeof harness>>;
 async function session(f: Harness, index = 0) {
 	const cookie = await issueBrowserCookie("session");
-	const issued = await f.persistence.signInWithAuthAccount(
+	const browserTransactionHash = String(index + 1).repeat(64);
+	await consumeSigninProof(
+		{ ...f, store: f.persistence, now: f.clock.now, cfg: config() },
+		browserTransactionHash,
+		config(),
+	);
+	const issued = await f.persistence.signInWithConsumedBrowserTransaction(
 		{
 			credentialHash: cookie.cookieHash,
-			browserTransactionHash: String(index + 1).repeat(64),
+			browserTransactionHash,
 			account: { issuer: GOOGLE, subject: "opaque-subject-a" },
 		},
 		config(),

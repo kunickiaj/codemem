@@ -2,6 +2,7 @@ import { describe, expect } from "vitest";
 import {
 	advance,
 	authorize,
+	browserProofConfig,
 	expectRejected,
 	finalize,
 	snapshot,
@@ -65,9 +66,9 @@ function registerSuccess(test: SessionTest) {
 				{ ...redeemInput(), credentialHash: hash },
 				f.cfg,
 			);
-			const fresh = await f.store.signInWithAuthAccount(
+			const fresh = await f.store.signInWithConsumedBrowserTransaction(
 				{ ...signInInput(f), credentialHash: otherCredentialHash },
-				f.cfg,
+				browserProofConfig(f),
 			);
 			// Assert
 			expectRejected(replay, "browser_transaction_used");

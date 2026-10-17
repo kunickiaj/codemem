@@ -150,7 +150,7 @@ function registerEligibility(test: Test) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), config);
 		await f.store.recordAuthAccountProfile(
 			{ credentialHash: signInInput(f).credentialHash, profile: { displayName: "Fixture Person" } },
 			f.cfg,
@@ -443,9 +443,9 @@ function registerReplay(test: Test) {
 		} finally {
 			random.mockRestore();
 		}
-		const legacy = await f.store.signInWithAuthAccount(
+		const replay = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...input, credentialHash: hash(900) },
-			f.cfg,
+			config,
 		);
 		await f.store.createAuthLinkAttempt(
 			attempt({ attemptId: "attempt-b", runtimeVerifierHash: hash(999) }),
@@ -458,7 +458,7 @@ function registerReplay(test: Test) {
 		const fresh = await f.store.startAuthBrowserTransaction(materials(), config);
 		// Assert: state/binder collision detection is retention-scoped; receipts are not.
 		expectRejected(collision, "transaction_conflict");
-		expectRejected(legacy, "browser_transaction_used");
+		expectRejected(replay, "browser_transaction_used");
 		expectRejected(oldClaim, "attempt_unavailable");
 		expect(fresh.kind).toBe("started");
 		expect(transactionRows(f).filter((row) => row.purpose === "signin")).toHaveLength(1);

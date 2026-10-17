@@ -7,6 +7,7 @@ import {
 	backendTest,
 	browser,
 	browserHash,
+	browserProofConfig,
 	completionHash,
 	finalize,
 	type LinkFixture,
@@ -74,7 +75,7 @@ function registerPersistenceTests(test: ReturnType<typeof backendTest>) {
 		expect(f.db.prepare("SELECT * FROM coordinator_auth_sessions").all()).toEqual([]);
 		expect(f.db.prepare("SELECT * FROM coordinator_auth_account_profiles").all()).toEqual([]);
 		await consumeSigninProof(f, signInInput(f).browserTransactionHash);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		expect(await f.store.readAuthSessionAccount(credentialHash, f.cfg)).toMatchObject({
 			profile,
 		});
@@ -87,7 +88,7 @@ function registerPersistenceTests(test: ReturnType<typeof backendTest>) {
 		await f.store.finalizeAuthLinkAttempt(finalize(), f.cfg);
 		f.now += 1;
 		await consumeSigninProof(f, signInInput(f).browserTransactionHash);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		expect(await f.store.recordAuthAccountProfile({ credentialHash, profile: {} }, f.cfg)).toEqual({
 			kind: "recorded",
 		});
@@ -292,7 +293,7 @@ function registerPrivacyTests(test: ReturnType<typeof backendTest>) {
 		await confirmed(f);
 		await f.store.finalizeAuthLinkAttempt(finalize(), f.cfg);
 		await consumeSigninProof(f, signInInput(f).browserTransactionHash);
-		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 		const link = f.db.prepare("SELECT link_id FROM coordinator_auth_account_links").get() as {
 			link_id: string;
 		};

@@ -13,6 +13,7 @@ import {
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
 	backendTest,
+	browserProofConfig,
 	expectRejected,
 	type LinkFixture,
 	NOW,
@@ -20,6 +21,7 @@ import {
 } from "./coordinator-auth-link-test-fixtures.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import {
+	grants,
 	linked,
 	redeemInput,
 	SESSION_TTL,
@@ -299,13 +301,23 @@ function registerCoherence(test: Test) {
 }
 
 function registerOrigins(test: Test) {
-	test("only guarded signin marks new receipts eligible; legacy and link redemption remain permanent", async ({
+	test("new signin receipts are eligible; historical signin and link redemption remain permanent", async ({
 		fixture: f,
 	}) => {
 		// Arrange
 		await linked(f);
+		const protectedBefore = grants(f);
 		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
-		await f.store.signInWithAuthAccount({ ...signInInput(f), credentialHash: hash(301) }, f.cfg);
+		const historical = { ...signInInput(f), credentialHash: hash(301) };
+		expect(
+			(await f.store.signInWithConsumedBrowserTransaction(historical, browserProofConfig(f))).kind,
+		).toBe("issued");
+		// Model older retained history using retention metadata, not a different issuance API.
+		f.db
+			.prepare(
+				`UPDATE ${RECEIPTS} SET purge_eligible = 0 WHERE coordinator_id = ? AND browser_transaction_hash = ?`,
+			)
+			.run(f.cfg.coordinatorId, historical.browserTransactionHash);
 		await guarded(f);
 		const before = rows(f, RECEIPTS);
 		f.now += AGE * 100;
@@ -319,6 +331,7 @@ function registerOrigins(test: Test) {
 		]);
 		expect(rows(f, RECEIPTS)).toEqual(before.filter((row) => row.purge_eligible === 0));
 		expect(rows(f, SESSIONS)).toHaveLength(2);
+		expect(grants(f)).toEqual(protectedBefore);
 	});
 	test("legacy-original hash remains rejected before and after very old cleanup", async ({
 		fixture: f,
@@ -326,22 +339,37 @@ function registerOrigins(test: Test) {
 		// Arrange
 		await linked(f);
 		const input = signInInput(f);
-		await f.store.signInWithAuthAccount(input, f.cfg);
+		const protectedBefore = grants(f);
+		expect(
+			(await f.store.signInWithConsumedBrowserTransaction(input, browserProofConfig(f))).kind,
+		).toBe("issued");
+		f.db
+			.prepare(
+				`UPDATE ${RECEIPTS} SET purge_eligible = 0 WHERE coordinator_id = ? AND browser_transaction_hash = ?`,
+			)
+			.run(f.cfg.coordinatorId, input.browserTransactionHash);
 		// Act
-		const before = await f.store.signInWithAuthAccount(
+		const before = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...input, credentialHash: hash(999) },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		f.now += AGE * 100;
 		await cleanup(f);
-		const after = await f.store.signInWithAuthAccount(
+		const after = await f.store.signInWithConsumedBrowserTransaction(
 			{ ...input, credentialHash: hash(998) },
-			f.cfg,
+			browserProofConfig(f),
 		);
 		// Assert
 		expectRejected(before, "browser_transaction_used");
 		expectRejected(after, "browser_transaction_used");
-		expect(rows(f, RECEIPTS)[0].purge_eligible).toBe(0);
+		expect(rows(f, RECEIPTS)).toEqual([
+			expect.objectContaining({
+				source: "signin",
+				purge_eligible: 0,
+				browser_transaction_hash: input.browserTransactionHash,
+			}),
+		]);
+		expect(grants(f)).toEqual(protectedBefore);
 	});
 	test("link-created session and receipt survive while active and long after expiry", async ({
 		fixture: f,
@@ -393,16 +421,14 @@ function registerReplay(test: Test) {
 		// Act
 		const deletion = await purge(f, methods[0]);
 		f.now = NOW;
-		const legacy = await f.store.signInWithAuthAccount(input, f.cfg);
 		const replay = await f.store.signInWithConsumedBrowserTransaction(input, browserConfig);
 		// Assert
 		expect(deletion).toEqual(purged(1));
-		expectRejected(legacy, "browser_transaction_used");
 		expectRejected(replay, "browser_transaction_used");
 		expect(rows(f, RECEIPTS)).toHaveLength(1);
 		expect(await f.store.readAuthSession(input.credentialHash, f.cfg)).toBeNull();
 	});
-	test("approved trusted legacy reuse can mint after all guarded records are gone, not from old proof", async ({
+	test("removed session and receipt cannot mint again from a purged proof", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -414,12 +440,11 @@ function registerReplay(test: Test) {
 		// Act
 		const oldCookie = await f.store.readAuthSession(input.credentialHash, f.cfg);
 		const oldProof = await f.store.signInWithConsumedBrowserTransaction(input, browserConfig);
-		const trustedLegacy = await f.store.signInWithAuthAccount(input, f.cfg);
 		// Assert
 		expect(oldCookie).toBeNull();
 		expectRejected(oldProof, "transaction_unavailable");
-		expect(trustedLegacy.kind).toBe("issued");
-		expect(rows(f, RECEIPTS)[0].purge_eligible).toBe(0);
+		expect(rows(f, RECEIPTS)).toEqual([]);
+		expect(rows(f, SESSIONS)).toEqual([]);
 	});
 	test("cleanup preserves permanent authority, purge floor and dangling profile without exposing it", async ({
 		fixture: f,

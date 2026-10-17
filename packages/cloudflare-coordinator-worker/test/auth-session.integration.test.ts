@@ -2,6 +2,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
+import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
@@ -133,16 +134,16 @@ it("redeems only the original browser once and keeps finalize replay public", as
 	const before = await grants(f);
 	const first = redeem(f);
 	const second = redeem(f);
+	const unknownInput = { ...signIn(f), account: { ...f.account, subject: randomUUID() } };
+	await consumeSigninProof(f, unknownInput.browserTransactionHash);
 	// Act: a wrong browser and an unknown account must not consume anything.
 	const wrongBrowser = await f.store.redeemAuthLinkSession({
 		...first, browserTransactionHash: hash(),
 	}, f.cfg);
-	const unknown = await f.store.signInWithAuthAccount({
-		...signIn(f), account: { ...f.account, subject: randomUUID() },
-	}, f.cfg);
-	const forbiddenSignIn = await f.store.signInWithAuthAccount({
+	const unknown = await f.store.signInWithConsumedBrowserTransaction(unknownInput, browserProofConfig(f));
+	const forbiddenSignIn = await f.store.signInWithConsumedBrowserTransaction({
 		...signIn(f), browserTransactionHash: f.browser.browserTransactionHash,
-	}, f.cfg);
+	}, browserProofConfig(f));
 	const results = await Promise.all([
 		f.store.redeemAuthLinkSession(first, f.cfg),
 		f.store.redeemAuthLinkSession(second, f.cfg),
@@ -168,7 +169,9 @@ it("redeems only the original browser once and keeps finalize replay public", as
 		f.browser.browserTransactionHash, "credentialHash", "browserTransactionHash", "rawCredential"])
 		expect(JSON.stringify([results, publicReplay])).not.toContain(forbidden);
 	// A lost response needs a fresh trusted OIDC transaction, not another device proof.
-	const fresh = await f.store.signInWithAuthAccount(signIn(f), f.cfg);
+	const freshInput = signIn(f);
+	await consumeSigninProof(f, freshInput.browserTransactionHash);
+	const fresh = await f.store.signInWithConsumedBrowserTransaction(freshInput, browserProofConfig(f));
 	await expectIssued(fresh, f);
 	await expectSessionCounts(f, 2);
 	expect(await grants(f)).toEqual(before);
@@ -188,14 +191,16 @@ it("expires absolutely and rotates sessions without reenrolling a known account"
 	const expired = await f.store.readAuthSession(input.credentialHash, f.cfg);
 	const freshInput = signIn(f);
 	const current = { ...f.cfg, revision: "b".repeat(64) };
+	const currentBrowser = { ...browserProofConfig(f), ...current };
+	await consumeSigninProof(f, freshInput.browserTransactionHash, currentBrowser);
 	const rotatedOld = await f.store.readAuthSession(input.credentialHash, current);
-	const fresh = await f.store.signInWithAuthAccount(freshInput, current);
+	const fresh = await f.store.signInWithConsumedBrowserTransaction(freshInput, currentBrowser);
 	const freshSession = await expectIssued(fresh, f);
 	const rotatedFresh = await f.store.readAuthSession(freshInput.credentialHash, {
 		...current, revision: "c".repeat(64),
 	});
 	const disabled = await f.store.readAuthSession(freshInput.credentialHash, { ...current, enabled: false });
-	const disabledSignIn = await f.store.signInWithAuthAccount(signIn(f), { ...current, enabled: false });
+	const disabledSignIn = await f.store.signInWithConsumedBrowserTransaction(signIn(f), { ...currentBrowser, enabled: false });
 	// Assert: no device proof or new actor/grant is needed for the active known account.
 	expect(live).toEqual(issued);
 	expect(expired).toBeNull();
@@ -232,7 +237,7 @@ it("enforces both redemption deadlines and the maximum safe session clock", asyn
 			const session = await expectIssued(denied, f, finalizedAt);
 			expect(session.expiresAtMs).toBe(Number.MAX_SAFE_INTEGER);
 			f.time.now += 1;
-			await expect(f.store.signInWithAuthAccount(signIn(f), f.cfg))
+			await expect(f.store.signInWithConsumedBrowserTransaction(signIn(f), browserProofConfig(f)))
 				.rejects.toThrow(/^auth_session_invalid_clock$/);
 		}
 		await expectSessionCounts(f, 1);
@@ -245,8 +250,9 @@ it("logs out only one session and admin revocation preserves link tombstones", a
 	await linkAccount(f);
 	const first = redeem(f);
 	const second = signIn(f);
+	await consumeSigninProof(f, second.browserTransactionHash);
 	const issued = await expectIssued(await f.store.redeemAuthLinkSession(first, f.cfg), f);
-	const other = await expectIssued(await f.store.signInWithAuthAccount(second, f.cfg), f);
+	const other = await expectIssued(await f.store.signInWithConsumedBrowserTransaction(second, browserProofConfig(f)), f);
 	const before = await grants(f);
 	const scope = { coordinatorId: f.cfg.coordinatorId };
 	// Act: unknown logout is indistinguishable; configured-admin store capability is separate.
@@ -265,7 +271,9 @@ it("logs out only one session and admin revocation preserves link tombstones", a
 	const revoke = await f.store.revokeAuthAccountLink({ linkId: issued.linkId }, scope);
 	const again = await f.store.revokeAuthAccountLink({ linkId: issued.linkId }, scope);
 	const unavailable = await f.store.revokeAuthAccountLink({ linkId: randomUUID() }, scope);
-	const denied = await f.store.signInWithAuthAccount(signIn(f), f.cfg);
+	const deniedInput = signIn(f);
+	await consumeSigninProof(f, deniedInput.browserTransactionHash);
+	const denied = await f.store.signInWithConsumedBrowserTransaction(deniedInput, browserProofConfig(f));
 	// Assert: logout leaves the other session and enrollment alone; revoke denies all sessions.
 	for (const result of [logout, logoutAgain, unknownLogout]) expect(result).toEqual({ kind: "signed_out" });
 	expect(loggedOutRead).toBeNull();

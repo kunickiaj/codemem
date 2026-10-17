@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserCapability, TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked } from "./coordinator-auth-session-test-fixtures.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import {
@@ -523,11 +523,13 @@ describe.each(["SQLite", "D1"] as const)("%s current-session behavior", (backend
 			// Arrange
 			const f = await harness(backend);
 			const c = await ceremony(f);
-			await linked({ ...f, store: f.persistence, now: NOW, cfg: config() });
+			const proofFixture = { ...f, store: f.persistence, now: NOW, cfg: config() };
+			await linked(proofFixture, { signinProof: false });
+			await consumeSigninProof(proofFixture, "f".repeat(64), config());
 			const session = await issueBrowserCookie("session");
 			const txn = await issueBrowserCookie("transaction");
 			expect(
-				await f.persistence.signInWithAuthAccount(
+				await f.persistence.signInWithConsumedBrowserTransaction(
 					{
 						browserTransactionHash: "f".repeat(64),
 						credentialHash: session.cookieHash,
@@ -559,10 +561,11 @@ describe.each(["SQLite", "D1"] as const)("%s current-session behavior", (backend
 			// Arrange
 			const f = await harness(backend);
 			const lf = { ...f, store: f.persistence, now: NOW, cfg: config() };
-			await linked(lf);
+			await linked(lf, { signinProof: false });
+			await consumeSigninProof(lf, "f".repeat(64), config());
 			const session = await issueBrowserCookie("session");
 			expect(
-				await f.persistence.signInWithAuthAccount(
+				await f.persistence.signInWithConsumedBrowserTransaction(
 					{
 						browserTransactionHash: "f".repeat(64),
 						credentialHash: session.cookieHash,
@@ -632,9 +635,11 @@ describe("request snapshots survive asynchronous cookie mutations", () => {
 			const c = await ceremony(f);
 			const session = await issueBrowserCookie("session");
 			if (state !== "missing") {
-				await linked({ ...f, store: f.persistence, now: NOW, cfg: config() });
+				const proofFixture = { ...f, store: f.persistence, now: NOW, cfg: config() };
+				await linked(proofFixture, { signinProof: false });
+				await consumeSigninProof(proofFixture, "f".repeat(64), config());
 				expect(
-					await f.persistence.signInWithAuthAccount(
+					await f.persistence.signInWithConsumedBrowserTransaction(
 						{
 							browserTransactionHash: "f".repeat(64),
 							credentialHash: session.cookieHash,

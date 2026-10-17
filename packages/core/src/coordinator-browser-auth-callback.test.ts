@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserCapability, TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked } from "./coordinator-auth-session-test-fixtures.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { createCoordinatorBrowserAuthCallback } from "./coordinator-browser-auth-callback.js";
@@ -472,8 +472,13 @@ describe("guarded admission and existing session preservation", () => {
 				});
 			if (fault === "ten-sessions")
 				for (let i = 0; i < 10; i++) {
+					await consumeSigninProof(
+						{ ...f, store: f.persistence },
+						createHash("sha256").update(`browser-${i}`).digest("hex"),
+						f.cfg,
+					);
 					expect(
-						await f.persistence.signInWithAuthAccount(
+						await f.persistence.signInWithConsumedBrowserTransaction(
 							{
 								browserTransactionHash: createHash("sha256").update(`browser-${i}`).digest("hex"),
 								credentialHash: createHash("sha256").update(`credential-${i}`).digest("hex"),
@@ -509,10 +514,11 @@ describe("guarded admission and existing session preservation", () => {
 			await linked({ ...f, store: f.persistence });
 			const c = await ceremony(f);
 			const old = await issueBrowserCookie("session");
+			await consumeSigninProof({ ...f, store: f.persistence }, "e".repeat(64), f.cfg);
 			expect(
-				await f.persistence.signInWithAuthAccount(
+				await f.persistence.signInWithConsumedBrowserTransaction(
 					{
-						browserTransactionHash: "f".repeat(64),
+						browserTransactionHash: "e".repeat(64),
 						credentialHash: old.cookieHash,
 						account: { issuer: f.cfg.issuer, subject: "opaque-subject-a" },
 					},
