@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
+import { readBrowserCookie } from "./coordinator-browser-credential.js";
 import { issueBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { oidcFixture } from "./coordinator-oidc-test-fixtures.js";
@@ -13,6 +13,7 @@ import {
 	ORIGIN,
 	type OwnerStartFixture,
 	ownerStartFixture,
+	ownerStartTransaction,
 	pairedReadBackends,
 	proof,
 	TRANSACTIONS,
@@ -274,14 +275,52 @@ it("rejects a valid CSRF token paired with another real start cookie", async () 
 	expect(f.snapshot()).toEqual(before);
 });
 
+it.each(["csrf", "start_code"])(
+	"inactive transaction cannot replace required %s proof",
+	async (field) => {
+		// Arrange
+		const c = await pending();
+		const transaction = await ownerStartTransaction(f, "expired");
+		const cookie = `${c.form.cookie.setCookie.split(";")[0]}; ${transaction}`;
+		const before = f.snapshot();
+		// Act
+		const result = await c.claimBrowser(
+			c.form.request({ cookie, fields: { ...c.form.fields, [field]: proof() } }),
+			"browser-a",
+		);
+		// Assert
+		expect(result).toEqual(unavailable);
+		expect(f.snapshot()).toEqual(before);
+	},
+);
+
 it("keeps an in-progress transaction cookie instead of replacing it with an owner claim", async () => {
+	// Arrange
 	const c = await pending();
-	const transaction = await issueBrowserCookie("transaction");
+	const transaction = await ownerStartTransaction(f, "owner_enroll");
 	const before = f.snapshot();
-	const cookie = `${c.form.cookie.setCookie.split(";")[0]}; ${transaction.setCookie.split(";")[0]}`;
+	const cookie = `${c.form.cookie.setCookie.split(";")[0]}; ${transaction}`;
+	// Act / Assert
 	expect(await c.claimBrowser(c.form.request({ cookie }), "browser-a")).toEqual(unavailable);
 	expect(f.snapshot()).toEqual(before);
 });
+
+it.each(["missing", "expired"] as const)(
+	"claims with a valid form and %s transaction without owner authority writes",
+	async (mode) => {
+		// Arrange
+		const c = await pending();
+		const transaction = await ownerStartTransaction(f, mode);
+		const before = f.snapshot();
+		const cookie = `${c.form.cookie.setCookie.split(";")[0]}; ${transaction}`;
+		// Act
+		const result = await c.claimBrowser(c.form.request({ cookie }), "browser-a");
+		// Assert: replacement is issued only after the new claim is committed.
+		expect(result.kind).toBe("browser_claimed");
+		expect(f.rows(ATTEMPTS)[0]?.state).toBe("browser_claimed");
+		expect(f.snapshot().slice(2)).toEqual(before.slice(2));
+	},
+);
 
 it.each([NOW - 1, NOW + 600000])(
 	"rejects not-yet-created or expired attempt at %i",

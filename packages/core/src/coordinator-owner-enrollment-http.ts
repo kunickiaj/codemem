@@ -1,4 +1,5 @@
 /** Opt-in owner transport; production admission and server dependencies are explicit. */
+import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
@@ -16,6 +17,7 @@ import {
 } from "./coordinator-browser-csrf.js";
 import { parseBrowserFormBody, readBrowserFormBody } from "./coordinator-browser-form-body.js";
 import { checkBrowserAuthRequestRate } from "./coordinator-browser-form-guard.js";
+import { readBrowserStartTransaction } from "./coordinator-browser-start-transaction.js";
 import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
 import type { OwnerEnrollmentAdmissionKey } from "./owner-enrollment-admission.js";
 import {
@@ -116,11 +118,8 @@ function redirect(location: string, cookies: string[]): Response {
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
 	return respond(null, 303, headers);
 }
-async function startPage(
-	request: Request,
-	scope: BrowserCsrfScope,
-	key: BrowserCsrfKey,
-): Promise<Response> {
+async function startPage(request: Request, context: HttpContext): Promise<Response> {
+	const { scope, key } = context;
 	const url = new URL(request.url);
 	const attemptId = url.searchParams.get("attempt_id");
 	const startCode = url.searchParams.get("start_code");
@@ -134,9 +133,10 @@ async function startPage(
 		!parseBrowserFormBody(new TextEncoder().encode(fields.toString()), "link_start").ok
 	)
 		return reject();
-	const transaction = await readBrowserCookie(request.headers.get("cookie"), "transaction");
+	const transaction = await context.transactionActivity(request.headers.get("cookie"));
 	const current = await readBrowserCookie(request.headers.get("cookie"), "start");
-	if (transaction.kind !== "absent" || current.kind === "invalid") return reject();
+	if (transaction === "active" || transaction === "invalid" || current.kind === "invalid")
+		return reject();
 	const issued = current.kind === "absent" ? await issueBrowserCookie("start") : null;
 	const secret = current.kind === "present" ? current.secret : issued?.secret;
 	if (!secret) return reject();
@@ -270,12 +270,12 @@ async function dispatch(
 	clientKey: string,
 	context: HttpContext,
 ): Promise<Response> {
-	const { api, scope, key, pin, callback } = context;
+	const { api, scope, pin, callback } = context;
 	const path = new URL(request.url).pathname;
 	if (path === context.pinPath) return json(pin);
 	if (path === ATTEMPTS_PATH || path === `${ATTEMPTS_PATH}/finalize`)
 		return jsonAction(request, api, clientKey);
-	if (path === START_PATH && request.method === "GET") return startPage(request, scope, key);
+	if (path === START_PATH && request.method === "GET") return startPage(request, context);
 	if (path === START_PATH) {
 		const result = await api.claimBrowser(request, clientKey);
 		return result.kind === "browser_claimed"
@@ -298,6 +298,7 @@ type HttpContext = {
 	callback: string;
 	pinPath: string;
 	limiter: InMemoryRequestRateLimiter;
+	transactionActivity(cookie: string | null): ReturnType<typeof readBrowserStartTransaction>;
 };
 export function checkCoordinatorOwnerEnrollmentTransport(
 	request: Request,
@@ -349,6 +350,32 @@ async function handleOwnerRequest(
 	}
 }
 
+function ownerComposition(
+	options: CoordinatorOwnerEnrollmentHttpOptions,
+	csrfKey: BrowserCsrfKey,
+	limiter: InMemoryRequestRateLimiter,
+	mode: { production: boolean },
+) {
+	if (mode.production) {
+		if (options.mode !== "production") throw new Error("owner_enrollment_http_unavailable");
+		return {
+			...options,
+			mode: "production" as const,
+			purpose: "owner_enroll" as const,
+			csrfKey,
+			limiter,
+		};
+	}
+	return {
+		...options,
+		mode: "local_test" as const,
+		purpose: "owner_enroll" as const,
+		csrfKey,
+		limiter,
+		admissionKey: undefined,
+	};
+}
+
 /** Server supplies the trusted client key; no header or request body can override it. */
 export async function createCoordinatorOwnerEnrollmentHttp(
 	options: CoordinatorOwnerEnrollmentHttpOptions,
@@ -375,22 +402,7 @@ export async function createCoordinatorOwnerEnrollmentHttp(
 	const limiter = production
 		? options.limiter
 		: createInMemoryRequestRateLimiter({ now: options.clock });
-	const composition = production
-		? {
-				...options,
-				mode: "production" as const,
-				purpose: "owner_enroll" as const,
-				csrfKey,
-				limiter,
-			}
-		: {
-				...options,
-				mode: "local_test" as const,
-				purpose: "owner_enroll" as const,
-				csrfKey,
-				limiter,
-				admissionKey: undefined,
-			};
+	const composition = ownerComposition(options, csrfKey, limiter, { production });
 	const created = await createCoordinatorOwnerEnrollment(composition);
 	if (!created.ok) throw new Error("owner_enrollment_http_unavailable");
 	const pin = Object.freeze({
@@ -401,7 +413,21 @@ export async function createCoordinatorOwnerEnrollmentHttp(
 	});
 	const scope = { publicOrigin: pin.origin, store: settings.store };
 	const pinPath = production ? "/v1/auth/owner-config" : "/v1/auth/owner-pilot";
-	const context = { api: created.enrollment, scope, key: csrfKey, pin, callback, pinPath, limiter };
+	const transactions = new CoordinatorAuthBrowserTransactions(
+		composition.backend,
+		composition.clock,
+	);
+	const context: HttpContext = {
+		api: created.enrollment,
+		scope,
+		key: csrfKey,
+		pin,
+		callback,
+		pinPath,
+		limiter,
+		transactionActivity: (cookie) =>
+			readBrowserStartTransaction(cookie, transactions, settings.store),
+	};
 	return httpAdapter(context, { production });
 }
 

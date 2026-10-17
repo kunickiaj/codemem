@@ -1,3 +1,4 @@
+import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
@@ -30,6 +31,7 @@ import {
 } from "./coordinator-browser-csrf.js";
 import { guardBrowserForm } from "./coordinator-browser-form-guard.js";
 import { snapshotBrowserRequest } from "./coordinator-browser-request.js";
+import { readBrowserStartTransaction } from "./coordinator-browser-start-transaction.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import {
 	type CoordinatorOidcClient,
@@ -971,8 +973,12 @@ async function claimBrowser(
 	clientKey: string,
 ): Promise<OwnerEnrollmentStartResult> {
 	const snapshot = snapshotBrowserRequest(request);
-	const transaction = await readBrowserCookie(snapshot.cookie, "transaction");
-	if (transaction.kind !== "absent") return unavailable;
+	const transaction = await readBrowserStartTransaction(
+		snapshot.cookie,
+		new CoordinatorAuthBrowserTransactions(context.backend, context.now),
+		context.c,
+	);
+	if (transaction === "active" || transaction === "invalid") return unavailable;
 	const checked = await guardBrowserForm({
 		request,
 		clientKey,

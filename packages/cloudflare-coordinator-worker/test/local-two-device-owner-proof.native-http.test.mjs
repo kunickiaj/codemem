@@ -429,9 +429,14 @@ async function maintainedOwnerB(f, { expectAdmissionDenied = false } = {}) {
 		oidcOptions: { fetch: f.provider.fetch }, clock: () => f.now });
 	const request = await linkDispatcher(f.t, { fetch: r => http.handle(r, "owner-socket") });
 	const openBrowser = async url => {
-		const page = await request(url);
+		// Reuse A's real finalized link transaction; it never grants owner authority.
+		const inactive = f.browser.transactionCookie;
+		const existing = [inactive, f.browser.sessionCookie].filter(Boolean).join("; ");
+		const page = await request(url, { headers: { cookie: existing } });
+		assert.equal(page.status, 200);
+		assert.ok(page.headers.getSetCookie().every(value => value.startsWith("__Host-codemem-auth-start=")));
 		const claimed = await request(`${origin}/auth/owner/start`, { method: "POST",
-			headers: { origin, cookie: cookie(page), "content-type": "application/x-www-form-urlencoded" },
+			headers: { origin, cookie: `${cookie(page)}; ${existing}`, "content-type": "application/x-www-form-urlencoded" },
 			body: (await fields(page, "/auth/owner/start")).toString() });
 		assert.equal(claimed.status, 303);
 		const binder = cookie(claimed);
@@ -505,6 +510,7 @@ test("fake-only device-owned Google link keeps the current Identity without owne
 		headers: { origin, cookie: f.browser.transactionCookie, "content-type": "application/x-www-form-urlencoded" }, body });
 	assert.equal(completed.status, 303);
 	const sessionCookie = cookie(completed);
+	f.browser.sessionCookie = sessionCookie;
 	const profile = await f.request(completed.headers.get("location"), { headers: { cookie: sessionCookie } });
 	const status = await f.h.readCoordinatorAccountLinkStatus({ dbPath: f.a.dbPath, keysDir: f.a.keysDir,
 		coordinatorUrl: origin, groupId: "group-a", identityId: f.a.store.actorId, fetch: f.request });
@@ -536,11 +542,14 @@ test("fake-only device-owned Google link keeps the current Identity without owne
 	assert.equal((await f.remote.store.issueIdentityGroupGrantFromControllerAttestation({
 		coordinatorId: review.coordinatorId, attestationId: review.attestationId })).kind, "created");
 	const beforeOwner = await deviceOwnedSnapshot(f);
+	const sessionsBeforeOwner = await f.remote.rows("coordinator_auth_sessions");
 	// Act/Assert: maintained owner browser/client cannot enroll B with the device-claim account.
 	await assert.rejects(maintainedOwnerB(f, { expectAdmissionDenied: true }), /Owner pilot incomplete/);
 	assert.equal(f.ownerCallbackStatus, 400);
 	assert.equal(f.ownerCallbackBody, "Owner enrollment unavailable.");
 	assert.deepEqual(f.ownerCallbackCookies, []);
+	assert.deepEqual(await f.remote.rows("coordinator_auth_sessions"), sessionsBeforeOwner);
+	assert.equal((await f.request(completed.headers.get("location"), { headers: { cookie: sessionCookie } })).status, 200);
 	assert.deepEqual(await deviceOwnedSnapshot(f), beforeOwner);
 	assert.equal(f.b, undefined);
 	assert.deepEqual(logs, [], "Private browser URLs, proofs and credentials never reach console logs");

@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { issueBrowserCookie } from "../../core/src/coordinator-browser-credential.js";
 import { oidcFixture } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import type { OwnerAttempt } from "../../core/src/coordinator-owner-enrollment-proof.js";
 import { ownerEnrollmentFinalMessage } from "../../core/src/coordinator-owner-enrollment-proof.js";
@@ -234,7 +235,7 @@ it("requires explicit admin authority for capabilities and grants, rejecting bad
 	expect(await snapshot()).toEqual(before);
 });
 
-it("completes the normal owner flow with stable cross-instance CSRF and the shared callback while link/sign-in coexist", async () => {
+it.each(["absent", "inactive"])("completes the normal owner flow with %s transaction, stable cross-instance CSRF and the shared callback while link/sign-in coexist", async (transactionState) => {
 	// Arrange: historical account link alone confers no group authority; grant it explicitly.
 	const { key, start } = await signedStart();
 	const store = new D1CoordinatorStore(env.COORDINATOR_DB);
@@ -276,12 +277,18 @@ it("completes the normal owner flow with stable cross-instance CSRF and the shar
 	});
 	const first = defaultWorker;
 	const second = createConfiguredCloudflareCoordinatorWorker();
-	// Act: GET and POST intentionally hit different cold instances with the same raw key binding.
+	// Act: GET and POST hit different instances with the same raw key binding.
 	const started = await json(first, ATTEMPTS, start, { authorization: `Bearer ${token}` });
 	expect(started.status, await started.clone().text()).toBe(200);
+	// A missing retained transaction is inactive, not owner proof.
+	let inactive = "";
+	if (transactionState === "inactive") {
+		inactive = (await issueBrowserCookie("transaction")).setCookie.split(";")[0] ?? "";
+	}
 	const page = await request(
 		first,
 		`/auth/owner/start?attempt_id=${start.attemptId}&start_code=${start.browserStartCode}`,
+		{ headers: { cookie: inactive } },
 	);
 	expect(page.status, await page.clone().text()).toBe(200);
 	const body = await fields(page);
@@ -290,10 +297,15 @@ it("completes the normal owner flow with stable cross-instance CSRF and the shar
 		second,
 		"/auth/owner/start",
 		{ ...body, csrf: "invalid" },
-		cookie(page),
+		[cookie(page), inactive].filter(Boolean).join("; "),
 	);
 	expect(await snapshot()).toEqual(beforeInvalid);
-	const claimed = await form(second, "/auth/owner/start", body, cookie(page));
+	const claimed = await form(
+		second,
+		"/auth/owner/start",
+		body,
+		[cookie(page), inactive].filter(Boolean).join("; "),
+	);
 	expect(claimed.status, await claimed.clone().text()).toBe(303);
 	const binder = cookie(claimed);
 	const location = claimed.headers.get("location");
@@ -343,5 +355,8 @@ it("completes the normal owner flow with stable cross-instance CSRF and the shar
 	expect(await rows("coordinator_auth_account_profiles")).toEqual([]);
 	expect([signIn.status, link.status]).toEqual([200, 200]);
 	expect(provider.requests.some(({ url }) => url.endsWith("/token"))).toBe(true);
-	expect(provider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
+	// The default worker retains its SDK client, which may reuse verified signing keys.
+	if (transactionState === "absent") {
+		expect(provider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
+	}
 });

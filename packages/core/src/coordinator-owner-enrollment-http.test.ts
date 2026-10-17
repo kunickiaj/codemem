@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { createCoordinatorOwnerEnrollmentHttp } from "./coordinator-owner-enrollment-http.js";
@@ -10,6 +11,7 @@ import {
 	hash,
 	ORIGIN,
 	ownerStartFixture,
+	ownerStartTransaction,
 	proof,
 	seedOwnerCallbackAuthority,
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
@@ -101,6 +103,94 @@ it("publishes only authenticated coordinator pins and rejects other origins", as
 	expect(response.headers.get("cache-control")).toBe("no-store");
 	expect(wrong.status).toBe(400);
 });
+
+it.each(["missing", "expired"] as const)(
+	"renders and claims with a %s transaction without clearing it on late GET",
+	async (mode) => {
+		// Arrange: session credential must not be cleared or replaced by owner start.
+		const c = await fixture();
+		expect((await c.post("/v1/auth/owner-attempts", c.start)).status).toBe(200);
+		const transaction = await ownerStartTransaction(f, mode);
+		const session = await issueBrowserCookie("session");
+		const existing = `${transaction}; ${session.setCookie.split(";")[0]}`;
+		const path = `/auth/owner/start?attempt_id=${c.start.attemptId}&start_code=${c.start.browserStartCode}`;
+		const before = f.snapshot();
+		// Act
+		const page = await c.send(path, { headers: { cookie: existing } });
+		// Assert: GET issues only start CSRF state, never a transaction/session deletion.
+		expect(page.status).toBe(200);
+		expect(f.snapshot()).toEqual(before);
+		expect(page.headers.getSetCookie()).toHaveLength(1);
+		expect(page.headers.getSetCookie()[0]).toMatch(/^__Host-codemem-auth-start=/);
+		const form = fields(await page.text());
+		const startCookie = page.headers.getSetCookie()[0]?.split(";")[0];
+		// Act: a valid proof and actual rendered CSRF form are still required.
+		const claim = await c.send("/auth/owner/start", {
+			method: "POST",
+			headers: {
+				cookie: `${existing}; ${startCookie}`,
+				origin: ORIGIN,
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams(form),
+		});
+		const late = await c.send(path, { headers: { cookie: existing } });
+		// Assert: only the committed POST replaces the transaction; late GET cannot erase it.
+		expect(claim.status).toBe(303);
+		expect(claim.headers.getSetCookie()).toHaveLength(2);
+		expect(claim.headers.getSetCookie()[0]).toMatch(/^__Host-codemem-auth-transaction=/);
+		expect(
+			claim.headers.getSetCookie().some((value) => value.startsWith("__Host-codemem-session=")),
+		).toBe(false);
+		expect(late.status).toBe(200);
+		expect(
+			late.headers.getSetCookie().every((value) => value.startsWith("__Host-codemem-auth-start=")),
+		).toBe(true);
+		expect(f.rows("coordinator_auth_sessions")).toEqual(before[8]);
+		expect(f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+	},
+);
+
+it.each(["signin", "link", "owner_enroll", "drift", "malformed", "read-fault"] as const)(
+	"denies %s transaction on GET and independently valid POST without writes",
+	async (mode) => {
+		// Arrange: get a valid form before adding the conflicting transaction credential.
+		const c = await fixture();
+		expect((await c.post("/v1/auth/owner-attempts", c.start)).status).toBe(200);
+		const path = `/auth/owner/start?attempt_id=${c.start.attemptId}&start_code=${c.start.browserStartCode}`;
+		const valid = await c.send(path);
+		const body = fields(await valid.text());
+		const transaction =
+			mode === "malformed"
+				? "__Host-codemem-auth-transaction=invalid"
+				: await ownerStartTransaction(f, mode === "read-fault" ? "missing" : mode);
+		const cookie = `${valid.headers.getSetCookie()[0]?.split(";")[0]}; ${transaction}`;
+		const before = f.snapshot();
+		if (mode === "read-fault") {
+			const first = f.backend.first.bind(f.backend);
+			vi.spyOn(f.backend, "first").mockImplementation((statement) => {
+				if (statement.sql.includes("AS activity")) {
+					return Promise.reject(new Error("activity read failed"));
+				}
+				return first(statement);
+			});
+		}
+		// Act
+		const page = await c.send(path, { headers: { cookie } });
+		const claim = await c.send("/auth/owner/start", {
+			method: "POST",
+			headers: { cookie, origin: ORIGIN, "content-type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams(body),
+		});
+		// Assert
+		for (const response of [page, claim]) {
+			expect(response.status).toBeGreaterThanOrEqual(400);
+			expect(response.headers.getSetCookie()).toEqual([]);
+			expect(response.headers.get("location")).toBeNull();
+		}
+		expect(f.snapshot()).toEqual(before);
+	},
+);
 
 it("uses genuine SDK forms then redirects only to signed loopback and returns row identity", async () => {
 	// Arrange

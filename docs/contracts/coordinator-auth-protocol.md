@@ -178,6 +178,12 @@ No other transaction is cancelled or modified. Account confirmation does not cle
 the cookie. Starting again intentionally gives up optional session redemption
 for the previous link; it never redeems that link or switches accounts automatically.
 
+Owner-enrollment start pages and claim POSTs use the same activity check without
+deleting cookies. Only absent or inactive transactions permit the existing owner
+flow to continue; active, malformed, changed-config, or unavailable reads deny it.
+This supplies no ownership evidence: admission, CSRF, pending-key/start proofs,
+fresh provider verification, and attestation-backed owner/grant checks stay required.
+
 Runtime polling requires the attempt device's signed request; browser polling
 requires its original transaction cookie. A public attempt ID is not authorization.
 Polling exposes status only. It never returns a browser-completion secret, raw

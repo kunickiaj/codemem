@@ -31,6 +31,39 @@ export const hash = (value: string | Uint8Array) =>
 	createHash("sha256").update(value).digest("hex");
 export const proof = () => randomBytes(32).toString("base64url");
 
+// Browser credentials are not owner authority; seed only transaction lifecycle facts.
+export async function ownerStartTransaction(
+	f: OwnerStartFixture,
+	mode: "missing" | "expired" | "signin" | "link" | "owner_enroll" | "drift",
+) {
+	const cookie = await issueBrowserCookie("transaction");
+	if (mode !== "missing") {
+		const purpose = mode === "link" || mode === "owner_enroll" ? mode : "signin";
+		const created = mode === "expired" || mode === "drift" ? NOW - 600000 : NOW;
+		f.db
+			.prepare(`INSERT INTO ${TRANSACTIONS}
+ (coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,
+ auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
+ VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`)
+			.run(
+				config.coordinatorId,
+				"c".repeat(64),
+				purpose,
+				purpose === "signin" ? null : "prior-attempt",
+				"d".repeat(64),
+				cookie.cookieHash,
+				config.issuer,
+				mode === "drift" ? "b".repeat(64) : config.revision,
+				config.redirectUri,
+				"n".repeat(43),
+				"p".repeat(43),
+				created,
+				created + 600000,
+			);
+	}
+	return cookie.setCookie.split(";")[0] ?? "";
+}
+
 // Actual SQLite transactions model the atomic batch contract, not mocked SQL success.
 export function nativeBackend(db: Database.Database, beforeBatch?: () => void): AuthLinkBackend {
 	const run = (s: AuthLinkStatement) => db.prepare(s.sql).run(...s.values).changes;
