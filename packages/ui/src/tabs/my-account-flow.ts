@@ -445,8 +445,6 @@ function useBrowserDelivery(flow: Flow): void {
 
 function openFallback(flow: Flow): void {
 	const url = flow.refs.current.privateUrl;
-	flow.refs.current.privateUrl = null;
-	flow.setFallback(false);
 	if (!url || !flow.view?.coordinator || !validAccountBrowserUrl(url, flow.view.coordinator.origin))
 		return;
 	// Keep a close handle without exposing the Viewer through window.opener.
@@ -454,6 +452,8 @@ function openFallback(flow: Flow): void {
 	if (!target) return;
 	target.opener = null;
 	target.location.replace(url);
+	flow.refs.current.privateUrl = null;
+	flow.setFallback(false);
 	if (flow.operation)
 		flow.refs.current.authWindow = {
 			window: target,
@@ -553,6 +553,9 @@ function showCancellation(flow: Flow, result: AccountOperation): void {
 		});
 		return;
 	}
+	const authWindow = flow.refs.current.authWindow;
+	if (authWindow?.operationId === result.operationId)
+		authWindow.succeeded = result.state === "succeeded";
 	flow.setOperation(result);
 	flow.setMessage("Cancellation is pending. Check status to confirm.");
 	if (!active(result))
