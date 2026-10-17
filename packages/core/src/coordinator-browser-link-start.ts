@@ -28,10 +28,7 @@ import {
 } from "./coordinator-browser-csrf.js";
 import { type BrowserFormGuardResult, guardBrowserForm } from "./coordinator-browser-form-guard.js";
 import { snapshotBrowserRequest, snapshotBrowserRoute } from "./coordinator-browser-request.js";
-import {
-	clearInactiveStartTransaction,
-	readBrowserStartTransaction,
-} from "./coordinator-browser-start-transaction.js";
+import { readBrowserStartTransaction } from "./coordinator-browser-start-transaction.js";
 import {
 	type CoordinatorOidcClient,
 	type CoordinatorOidcOptions,
@@ -233,7 +230,7 @@ async function linkStartPage(
 		);
 		const response = pageResponse(await renderAuthLinkStartPage({ ...query, csrfToken }));
 		if ("setCookie" in cookie) response.headers.append("Set-Cookie", cookie.setCookie);
-		return clearInactiveStartTransaction(result(response, "link_start_page"), transaction);
+		return result(response, "link_start_page");
 	} catch {
 		return await notice(503, "internal_error");
 	}
@@ -353,7 +350,7 @@ async function linkStart(
 		if (transaction === "active") return await notice(409, "link_in_progress");
 		if (!guard.ok) return await guardFailure(guard);
 		if (guard.action !== "link_start") return await notice(503, "internal_error");
-		return clearInactiveStartTransaction(await admitStart(context, snapshot, guard), transaction);
+		return await admitStart(context, snapshot, guard);
 	} catch {
 		return await notice(503, "internal_error");
 	}

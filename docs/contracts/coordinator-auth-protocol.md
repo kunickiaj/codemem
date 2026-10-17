@@ -171,9 +171,10 @@ Lookup faults return an unavailable response without exposing storage errors.
 An active sign-in, link, or owner-enrollment transaction still returns 409 without
 changing cookies. A missing or expired transaction, or its exact link attempt in
 `finalized`, `session_redeemed`, `failed`, or `expired` state (or past its deadline),
-allows a fresh start. A successful start replaces the old transaction cookie;
-otherwise a successful start page or existing-session redirect clears it. No
-other transaction is cancelled or modified. Account confirmation does not clear
+allows a fresh start. Only a successful start POST replaces the old transaction
+cookie. Start-page responses and existing-session redirects never delete it:
+a delayed response based on an inactive snapshot must not erase a newer transaction.
+No other transaction is cancelled or modified. Account confirmation does not clear
 the cookie. Starting again intentionally gives up optional session redemption
 for the previous link; it never redeems that link or switches accounts automatically.
 

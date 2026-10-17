@@ -2,7 +2,7 @@ import type {
 	CoordinatorAuthBrowserConfig,
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
-import { clearBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
+import { readBrowserCookie } from "./coordinator-browser-credential.js";
 
 type ActivityStore = Pick<
 	CoordinatorAuthBrowserTransactionStore,
@@ -23,17 +23,4 @@ export async function readBrowserStartTransaction(
 	);
 	if (activity.kind === "rejected") return "invalid";
 	return activity.kind;
-}
-
-/** A newly admitted transaction replaces the old cookie instead of being cleared. */
-export function clearInactiveStartTransaction<T extends { response: Response; outcome: string }>(
-	result: T,
-	activity: string,
-): T {
-	if (
-		activity === "inactive" &&
-		["link_start_page", "signin_page", "session_live"].includes(result.outcome)
-	)
-		result.response.headers.append("Set-Cookie", clearBrowserCookie("transaction"));
-	return result;
 }

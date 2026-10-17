@@ -674,6 +674,100 @@ async function linkStage(
 	return { ...handlers, cookie: admitted.transactionCookie };
 }
 
+describe.each(["SQLite", "D1"] as const)("%s overlapping inactive start pages", (backend) => {
+	it.each(["link", "signin"] as const)(
+		"a delayed inactive %s GET cannot erase a fresh POST transaction",
+		async (kind) => {
+			// Arrange: both GETs carry an old, missing transaction; the first supplies START.
+			const f = await setup(backend);
+			const options = {
+				...f.options,
+				store: {
+					...f.options.store,
+					readAuthSession: f.store.readAuthSession.bind(f.store),
+				},
+			};
+			const signin = await createCoordinatorBrowserSigninStart(options);
+			if (!signin.ok) throw new Error("Signin fixture failed");
+			f.oidc.fetch.mockClear();
+			const url = kind === "link" ? pageUrl(f) : `${ORIGIN}/auth/sign-in`;
+			const getPage = (cookie: string) => {
+				const request = new Request(url, { headers: { cookie } });
+				return kind === "link"
+					? f.handlers.linkStartPage(request)
+					: signin.handlers.signInPage(request);
+			};
+			const old = await issueBrowserCookie("transaction");
+			const oldCookie = old.setCookie.split(";")[0];
+			const first = await getPage(oldCookie);
+			const fields = Object.fromEntries(
+				[...(await first.response.text()).matchAll(/name="([a-z_]+)" value="([^"]+)"/g)].map(
+					(m) => [m[1], m[2]],
+				),
+			);
+			const start = first.response.headers
+				.getSetCookie()
+				.find((value) => value.startsWith(`${BROWSER_COOKIE_NAMES.start}=`))
+				?.split(";")[0];
+			expect(first.response.status).toBe(200);
+			expect(start).toBeTruthy();
+			const cookie = `${start}; ${oldCookie}`;
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			f.options.store.readAuthBrowserTransactionActivity.mockImplementationOnce(async (...args) => {
+				const inactive = await f.store.readAuthBrowserTransactionActivity(...args);
+				entered.resolve();
+				await release.promise;
+				return inactive;
+			});
+			const before = snapshot(f);
+			// Act: hold the second GET's inactive snapshot until POST has issued a new TXN.
+			const delayed = getPage(cookie);
+			await entered.promise;
+			let admitted: Awaited<typeof delayed>;
+			try {
+				const request = new Request(kind === "link" ? URL_START : url, {
+					method: "POST",
+					headers: { origin: ORIGIN, cookie, "content-type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams(fields),
+				});
+				admitted =
+					kind === "link"
+						? await f.handlers.linkStart(request, "overlap")
+						: await signin.handlers.signInStart(request, "overlap");
+			} finally {
+				release.resolve();
+			}
+			const saved = snapshot(f);
+			const late = await delayed;
+			const provider = authorization(await admitted.response.text());
+			const freshCookie = admitted.response.headers.getSetCookie()[0].split(";")[0];
+			const binderHash = hash(Buffer.from(freshCookie.split("=")[1], "base64url"));
+			// Assert: arriving last cannot delete or replace the POST cookie or mutate authority.
+			expect(admitted.response.status).toBe(200);
+			expect(freshCookie).toBe(`${BROWSER_COOKIE_NAMES.transaction}=${start?.split("=")[1]}`);
+			expect(late.response.status).toBe(200);
+			expect(late.response.headers.getSetCookie()).toEqual([]);
+			expect(snapshot(f)).toEqual(saved);
+			expect(saved.slice(2)).toEqual(before.slice(2));
+			if (kind === "link")
+				expect(
+					await f.store.resolveAuthLinkBrowserTransaction(
+						{ binderHash, attemptId: f.input.attemptId },
+						f.config,
+					),
+				).toEqual({ browserTransactionHash: rows(f)[0].browser_transaction_hash });
+			expect(
+				await f.store.consumeAuthBrowserTransaction(
+					{ binderHash, stateHash: hash(provider.searchParams.get("state") ?? "") },
+					f.config,
+				),
+			).toMatchObject({ kind: "consumed", purpose: kind });
+			expect(f.oidc.fetch).not.toHaveBeenCalled();
+		},
+	);
+});
+
 describe.each(["SQLite", "D1"] as const)("%s terminal browser-cookie restart", (backend) => {
 	it.each(["link", "signin"] as const)(
 		"allows %s GET and protected POST after finalization without session redemption",
@@ -708,9 +802,11 @@ describe.each(["SQLite", "D1"] as const)("%s terminal browser-cookie restart", (
 			const start = cookies
 				.find((value) => value.startsWith(`${BROWSER_COOKIE_NAMES.start}=`))
 				?.split(";")[0];
-			// Assert: cleanup depends on the finalized attempt, not browser session issuance.
+			// Assert: GET ignores the inactive cookie without changing browser transaction state.
 			expect(page.response.status).toBe(200);
-			expect(cookies).toContain(clearBrowserCookie("transaction"));
+			expect(
+				cookies.some((value) => value.startsWith(`${BROWSER_COOKIE_NAMES.transaction}=`)),
+			).toBe(false);
 			expect(start).toBeTruthy();
 			expect(snapshot(f)).toEqual(before);
 			const next = new Request(kind === "link" ? URL_START : `${ORIGIN}/auth/sign-in`, {
@@ -736,6 +832,9 @@ describe.each(["SQLite", "D1"] as const)("%s terminal browser-cookie restart", (
 					? await handlers.link.linkStart(next, "restart")
 					: await handlers.signin.signInStart(next, "restart");
 			expect(result.response.status).toBe(200);
+			expect(result.response.headers.getSetCookie()[0]).toContain(
+				`${BROWSER_COOKIE_NAMES.transaction}=${start?.split("=")[1]};`,
+			);
 			expect(authorization(await result.response.text()).origin).toBe(f.config.issuer);
 			expect(rows(f)).toHaveLength(2);
 			expect(rows(f, "coordinator_auth_sessions")).toEqual([]);

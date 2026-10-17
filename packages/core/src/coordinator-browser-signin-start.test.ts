@@ -517,6 +517,42 @@ describe.each(["SQLite", "D1"] as const)("%s durable sign-in admission", (backen
 });
 
 describe.each(["SQLite", "D1"] as const)("%s current-session behavior", (backend) => {
+	it.each(["GET", "POST"] as const)(
+		"%s preserves a live session and inactive TXN cookie without starting a transaction",
+		async (method) => {
+			// Arrange
+			const f = await harness(backend);
+			const c = await ceremony(f);
+			await linked({ ...f, store: f.persistence, now: NOW, cfg: config() });
+			const session = await issueBrowserCookie("session");
+			const txn = await issueBrowserCookie("transaction");
+			expect(
+				await f.persistence.signInWithAuthAccount(
+					{
+						browserTransactionHash: "f".repeat(64),
+						credentialHash: session.cookieHash,
+						account: { issuer: GOOGLE, subject: "opaque-subject-a" },
+					},
+					config(),
+				),
+			).toMatchObject({ kind: "issued" });
+			const cookie = `${c.cookie}; ${session.setCookie.split(";")[0]}; ${txn.setCookie.split(";")[0]}`;
+			const before = snapshot(f);
+			// Act
+			const response =
+				method === "GET"
+					? await f.handlers.signInPageGET(get(cookie))
+					: await f.handlers.signInStartPOST(post(cookie, c.token), "trusted-client");
+			// Assert
+			expect(response.status).toBe(303);
+			expect(response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
+			expect(response.headers.getSetCookie()).toEqual([]);
+			expect(snapshot(f)).toEqual(before);
+			expect(f.store.startAuthBrowserTransaction).not.toHaveBeenCalled();
+			expect(f.oidc.fetch).not.toHaveBeenCalled();
+		},
+	);
+
 	it.each(["live", "expired", "revoked", "config-changed"])(
 		"looks up %s SESSION using current trusted config without clearing it",
 		async (state) => {
