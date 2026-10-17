@@ -209,7 +209,7 @@ The account card must retain the honest distinction between a live linked accoun
 
 ## Schema checks and write ordering
 
-Migration `0034` must recognize the exact predecessor DDL before any copy. It rejects unknown tables, indexes, triggers, views, checks, or row shapes instead of repairing them. It creates migration-owned assertions that fail the transaction when row counts, row IDs, or every preserved raw value differ.
+Migration `0034` must recognize the exact predecessor DDL before any copy. It rejects unsupported shapes or attached objects on affected auth tables, external dependencies on those tables, and reserved migration objects instead of repairing them. Unrelated tables and data stay untouched. Migration-owned assertions fail the transaction when row counts, row IDs, or any preserved raw value differ.
 
 Preflight requires positive existing row IDs in the link and link-audit tables. A nonpositive ID, which supported writers never allocate, stops migration for review rather than being renumbered: SQLite's undefined pre-insert row-ID sentinel must not collide with preserved history.
 
