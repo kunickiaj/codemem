@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES } from "../../core/src/coordinator-auth-historical-migration-test-fixture.js";
 import { AUTH_LIFECYCLE_COPY_TABLE_NAMES } from "../../core/src/coordinator-auth-lifecycle-upgrade-copy.js";
 import { AUTH_LIFECYCLE_UPGRADE_SQL, AUTH_LIFECYCLE_UPGRADE_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-upgrade.js";
 import { AUTH_SCHEMA_V2_READINESS_SQL } from "../../core/src/coordinator-auth-lifecycle-predecessor.js";
@@ -13,25 +14,9 @@ const hash = (index: number) => String(index + 1).repeat(64);
 type Definition = { type: string; name: string; tbl_name: string; sql: string | null };
 type Inventory = { table: string; columns: string[]; rowid: boolean }[];
 const schema = async () => (await db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all<Definition>()).results;
-// Closed historical inputs, independent of whatever the shared setup installs next.
-const predecessorMigrationNames = Object.freeze([
-	"0016_add_auth_controller_attestations.sql",
-	"0017_add_auth_account_links.sql",
-	"0018_add_auth_sessions.sql",
-	"0019_add_auth_link_attempt_limit_indexes.sql",
-	"0020_add_auth_browser_transactions.sql",
-	"0021_add_auth_account_profiles.sql",
-	"0022_add_auth_session_admission_index.sql",
-	"0023_add_auth_signin_purge_floors.sql",
-	"0024_add_auth_guarded_signin_retention.sql",
-	"0025_add_auth_link_browser_start_hash.sql",
-	"0029_add_owner_enrollment_attempts.sql",
-	"0032_device_claim_proofs.sql",
-	"0033_add_auth_link_profiles.sql",
-]);
 type FixtureMigration = (typeof env.TEST_MIGRATIONS)[number];
 function frozenPredecessorMigrations(all: readonly FixtureMigration[]): FixtureMigration[] {
-	return predecessorMigrationNames.map((name) => {
+	return AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES.map((name) => {
 		const matches = all.filter((migration) => migration.name === name);
 		const [migration] = matches;
 		if (matches.length !== 1 || !migration) throw new Error(`Expected exactly one historical fixture migration: ${name}`);
@@ -115,12 +100,12 @@ it("selects only exact historical auth migrations in order despite later setup i
 	// Act
 	const selected = frozenPredecessorMigrations(all);
 	// Assert
-	expect(selected.map(({ name }) => name)).toEqual(predecessorMigrationNames);
+	expect(selected.map(({ name }) => name)).toEqual(AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES);
 	expect(selected).not.toContain(future);
 	expect(selected.flatMap(({ queries }) => queries).join("\n")).not.toContain("coordinator_auth_future");
 });
 
-it.each(predecessorMigrationNames)("rejects a missing historical migration %s", (missing) => {
+it.each(AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES)("rejects a missing historical migration %s", (missing) => {
 	// Arrange
 	const all = env.TEST_MIGRATIONS.filter(({ name }) => name !== missing);
 	// Act / Assert
@@ -140,7 +125,7 @@ it("includes every pre-0034 migration that mentions auth storage", () => {
 	// Act
 	const authNames = historical.filter(({ queries }) => queries.some((sql) => /coordinator_auth_/iu.test(sql))).map(({ name }) => name).sort();
 	// Assert
-	expect(authNames).toEqual([...predecessorMigrationNames]);
+	expect(authNames).toEqual([...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES]);
 });
 
 it("removes later shared-setup auth objects before restoring the frozen predecessor", async () => {
