@@ -211,11 +211,15 @@ The account card must retain the honest distinction between a live linked accoun
 
 Migration `0034` must recognize the exact predecessor DDL before any copy. It rejects unknown tables, indexes, triggers, views, checks, or row shapes instead of repairing them. It creates migration-owned assertions that fail the transaction when row counts, row IDs, or every preserved raw value differ.
 
+Preflight requires positive existing row IDs in the link and link-audit tables. A nonpositive ID, which supported writers never allocate, stops migration for review rather than being renumbered: SQLite's undefined pre-insert row-ID sentinel must not collide with preserved history.
+
 The copy preserves old link IDs, creation values, authority references, device-claim references, proof commitments, attempt records, audit records, browser-transaction secrets, and profile rows. It then creates associations with the old issuer, subject, Identity, first link ID, and creation time. It must reject a duplicate or inconsistent old association rather than pick a winner.
 
 Install the new link-insert, session/receipt, and genesis guards only after copying historical rows, backfilling associations, and passing the preservation checks. They must not reject legitimate historical revoked rows or require reservations before the migration has built them. Finish guard installation and readiness assertions within the same atomic upgrade before any lifecycle writer can run.
 
 New triggers reject updates and deletes of associations and link birth values, enforce association/Identity-revocation checks on link inserts, and reject session or session-receipt inserts for non-live or security-blocked generations. They allow only the defined monotonic end and security-revocation writes. Session and profile queries join a live generation, its association, and the Identity-wide security barrier in their same authoritative statement.
+
+Writers must avoid an insert when an exact audit receipt already exists; `ON CONFLICT DO NOTHING` alone still reaches the collision guard. In particular, repeated admin revocation must return its retained result without trying to reinsert `link_revoked`.
 
 The winning disconnect transaction checks the target link ID, generation, open state, current config, current signer, current authority, browser confirmation, runtime verifier, completion secret, and barrier. It ends the generation, revokes its sessions, deletes its display profile, writes the receipt and audit, and marks the attempt completed as one atomic effect.
 
