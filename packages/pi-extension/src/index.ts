@@ -13,7 +13,7 @@
  *   - Injection → context event: cached framed block replayed onto older user
  *     messages, one new pack appended to the latest user message of the request
  *     copy (never the system prompt, never the saved session)
- *   - Tools → pi.registerTool × 14 when pi.tools_mode === "native"
+ *   - Tools → pi.registerTool × 15 when pi.tools_mode === "native"
  *   - session_before_compact → flush only; it does not skip the next pack fetch
  *   - session_compact with willRetry → one-shot replay skip for the immediate resume
  *   - session_compact_failed, agent_settled, a non-resume compact, or a later user message clears that skip

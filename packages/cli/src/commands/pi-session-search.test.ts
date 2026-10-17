@@ -37,6 +37,23 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+interface PiSessionSearchBody {
+	query: string;
+	results: Array<{
+		source: string;
+		session_id: string;
+		project: string | null;
+		role: string;
+		timestamp: string | null;
+		snippet: string;
+		snippet_truncated: boolean;
+		full_length: number;
+	}>;
+	returned: number;
+	total_matches: number;
+	truncated: boolean;
+}
+
 function createTestApp() {
 	let store: MemoryStore | null = null;
 	let storeCleanup: (() => void) | null = null;
@@ -113,7 +130,69 @@ async function seedPiMessage(
 	expect(res.status).toBe(200);
 }
 
+async function runCliJson(args: string[]): Promise<unknown> {
+	const logs: string[] = [];
+	const log = vi.spyOn(console, "log").mockImplementation((line) => {
+		logs.push(String(line));
+	});
+	await piSessionSearchCommand.parseAsync(["node", "pi-session-search", ...args], { from: "node" });
+	log.mockRestore();
+	return JSON.parse(logs.join("\n"));
+}
+
+async function seedParityFixture(app: ReturnType<typeof createApp>): Promise<void> {
+	await seedPiMessage(app, {
+		sessionId: "pi-sess-search-1",
+		entryId: "e1",
+		role: "user",
+		text: "lighthouse retrofit planning notes",
+		ts: "2026-04-01T12:00:00.000Z",
+	});
+	await seedPiMessage(app, {
+		sessionId: "pi-sess-search-2",
+		entryId: "e2",
+		role: "assistant",
+		text: "lighthouse retrofit completed",
+		ts: "2026-04-02T12:00:00.000Z",
+	});
+}
+
 describe("codemem pi-session-search", () => {
+	it("--json output is identical to the route body for the same fixture query (5.1 parity)", async () => {
+		const testApp = createTestApp();
+		try {
+			await seedParityFixture(testApp.app);
+
+			const routeRes = await testApp.app.request("/api/pi/sessions/search?query=lighthouse", {
+				headers: jsonHeaders(),
+			});
+			expect(routeRes.status).toBe(200);
+			const routeBody = (await routeRes.json()) as PiSessionSearchBody;
+
+			const cliBody = (await runCliJson([
+				"lighthouse",
+				"--json",
+				"--db-path",
+				testApp.storePath(),
+			])) as PiSessionSearchBody;
+
+			expect(cliBody).toEqual(routeBody);
+			expect(cliBody.returned).toBe(2);
+			expect(cliBody.results.map((match) => match.session_id).toSorted()).toEqual([
+				"pi-sess-search-1",
+				"pi-sess-search-2",
+			]);
+			for (const match of cliBody.results) {
+				expect(match.source).toBe("pi");
+				expect(match.project).toBe("pi-search-proj");
+				expect(["user", "assistant"]).toContain(match.role);
+				expect(match.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+			}
+		} finally {
+			testApp.cleanup();
+		}
+	});
+
 	it("forwards --project/--session-id/--limit/--snippet-chars like the tool mapping", async () => {
 		const testApp = createTestApp();
 		try {

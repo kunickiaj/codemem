@@ -65,7 +65,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
 | OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.24` and `@opencode/plugin@2.0.24` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 14 native `memory_*` tools; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
+| pi extension | Supported | Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 15 native `memory_*` tools including `memory_session_search` (MCP remains at 14); session search on CLI, viewer REST, and the native tool plus explicit `codemem pi-import-sessions` history backfill; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -413,9 +413,8 @@ counts and snippets reflect only that effective query. Snippet windows retain ma
 at short caps. Serialized responses are capped at 50,000 characters, including JSON escaping in
 query echoes. The `query` echo preserves the original input when it fits the response budget,
 otherwise it becomes a bounded prefix. Aggregate `truncated` is true when matching input, the
-echo, results, or the recency scan are shortened. The response shape is the shared contract
-consumed by the CLI (`codemem pi-session-search`) today, and later by the viewer REST route
-and the pi-extension native tool.
+echo, results, or the recency scan are shortened. The response shape is the shared contract across
+the CLI (`codemem pi-session-search`), the viewer REST route, and the pi-extension native tool.
 
 Both primitives are exposed on the CLI. `codemem pi-import-sessions` walks
 `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`), streaming per-file progress;

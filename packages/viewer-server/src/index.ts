@@ -260,6 +260,7 @@ export function createApp(opts?: AppOptions) {
 	const viewerTargetGuard = viewerTargetQueryGuard(storeFactory);
 	app.use("/api/memories/*", viewerTargetGuard);
 	app.use("/api/memory", viewerTargetGuard);
+	app.use("/api/pi/sessions/search", viewerTargetGuard);
 
 	// API routes
 	app.route("/", healthRoutes(storeFactory));

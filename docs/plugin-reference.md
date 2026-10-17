@@ -333,7 +333,7 @@ Uninstall: remove the `@codemem/pi-extension` packages entry and restart Pi. The
 | Ingest | Ordinary events prefer `POST /api/pi-hooks` (compatibility alias into the canonical envelope, `source: "pi"`), with `codemem pi-hook-ingest` CLI fallback (spool on failure). `session_before_compact` and `session_shutdown` always attempt the CLI path so a flush can run; failure is fail-open and does not break the session |
 | Injection | `context` appends `## codemem memories` to the latest user message of the request copy. Older messages replay the exact in-memory block. The system prompt and saved transcript are not modified. Decisions clear on `session_start`; a restart refetches |
 | File context | After a successful built-in `read`, related memories may be appended to that tool result. Errors and other tools do not |
-| Tools | 14 native `memory_*` tools via `pi.registerTool` when `pi.tools_mode` is `native` (the default). No MCP required |
+| Tools | 15 native `memory_*` tools via `pi.registerTool` when `pi.tools_mode` is `native` (the default), including `memory_session_search`. No MCP required; the MCP server remains at 14 tools |
 | Compaction | `session_before_compact` attempts a flush only and does not skip recall. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual` (overflow resume). Failed compaction, `agent_settled`, manual compaction, and a later user message clear that skip. A threshold compact skips only if that same guard matches |
 | Project | Nearest Git root, same walk as the other adapters |
 
@@ -345,10 +345,11 @@ Ingest cursors persist as `codemem.cursor` metadata via `appendEntry`. Recall de
 
 ### Session search and history import
 
-Session search covers the Pi conversation text codemem ingests (user/assistant text blocks; thinking, tool-call, and tool-result content is skipped). The CLI and shared core primitive return `{query, query_truncated, results[], returned, total_matches, truncated}`. Each result carries `source: "pi"`, session id, project, role, timestamp, a snippet plus `snippet_truncated`, and `full_length`. Matching uses only the first 8,192 input characters and 64 effective tokens; `query_truncated` marks that reduction independently of query-echo clipping, and counts reflect only the effective query. Empty results are explicit, never an error. Human output warns when only part of the query was matched, including when there are no results; shorten the query before treating an empty partial match as missing history.
+Session search covers the Pi conversation text codemem ingests (user/assistant text blocks; thinking, tool-call, and tool-result content is skipped). The CLI, viewer REST route, Pi native tool, and shared core primitive return `{query, query_truncated, results[], returned, total_matches, truncated}`. Each result carries `source: "pi"`, session id, project, role, timestamp, a snippet plus `snippet_truncated`, and `full_length`. Matching uses only the first 8,192 input characters and 64 effective tokens; `query_truncated` marks that reduction independently of query-echo clipping, and counts reflect only the effective query. Empty results are explicit, never an error. Human output warns when only part of the query was matched, including when there are no results; shorten the query before treating an empty partial match as missing history.
 
 - `codemem pi-session-search <query>` searches stored Pi sessions. Flags: `--project <project>`, `--session-id <id>`, `--limit <n>` (1–20, default 10), `--snippet-chars <n>` (100–4000, default 1200), `--json`, `-d/--db-path`.
 - `codemem pi-import-sessions` backfills `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`) into the raw-event store. Deterministic event ids dedupe against live capture; size/mtime-unchanged files are skipped per destination database. Unsafe partial overlap is reported per file without rewriting stored history; use a separate destination database for a complete import. `--extract` (off by default, observer-model cost scales with backlog) drains pending Pi sessions through the standard sweeper flush so extracted memories carry Pi attribution. Without it, the command stores searchable events without running extraction, though a running viewer's sweeper can still pick them up like any other backlog.
+- `memory_session_search` is available in native tools mode (not `mcp-adapter` mode); it calls `GET /api/pi/sessions/search` and falls back to `codemem pi-session-search --json` when the viewer is unavailable.
 
 Import `--json` preserves the top-level import counters and adds `extraction: {requested, flushedEvents, failedSessions, pendingSessions, error}`. `failedSessions` counts flush errors during this run; `pendingSessions` counts the remaining Pi backlog, or is `null` when extraction was not requested. `error` contains the first observer-initialization or session-flush error, or `null`. Extraction snapshots only Pi pending streams and attempts each once, so older non-Pi streams and failed sessions cannot hide later Pi history. Initialization failure, session failure, or remaining Pi backlog exits with code 1 in both output modes; JSON also includes `error: "pi_extraction_incomplete"` and `message`. Successfully imported events remain stored, and failed batches retain the standard sweeper retry behavior.
 
@@ -359,6 +360,7 @@ Import `--json` preserves the top-level import counters and adds `extraction: {r
 | `memory_search` | Search; return full body text |
 | `memory_search_index` | Search; compact index, no body |
 | `memory_explain` | Ranking diagnostics for a query or IDs |
+| `memory_session_search` | Search stored Pi conversation text |
 | `memory_recent` | Recent memories, newest first |
 | `memory_pack` | One formatted pack for a context string |
 | `memory_get` | One memory by ID |

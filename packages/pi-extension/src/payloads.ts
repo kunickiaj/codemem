@@ -27,6 +27,9 @@ function nowIso(): string {
  * Content hash alone is never an id on its own — always supply a discriminator.
  * Do not use sessionManager.getLeafEntry(): message_end runs before the message is
  * persisted, so the leaf is a prior entry (tool result / codemem.cursor).
+ * Mirrored byte-identically in core (`stablePiMessageEntryId` in
+ * packages/core/src/pi-sessions-import.ts) so historical session imports collide
+ * with these live ids in the raw-events unique index — keep both in sync.
  */
 export function stableMessageEntryId(
 	sessionId: string,
@@ -67,7 +70,11 @@ export function basePayload(input: {
 	return payload;
 }
 
-/** Extract plain text from a pi AgentMessage-like object. */
+/**
+ * Extract plain text from a pi AgentMessage-like object. Mirrored in core as
+ * extractPiMessageText (packages/core/src/pi-sessions-import.ts) for historical
+ * session import — keep both in sync so text-then-id derivation stays identical.
+ */
 export function extractMessageText(message: unknown): string {
 	if (message == null || typeof message !== "object") return "";
 	const msg = message as Record<string, unknown>;
