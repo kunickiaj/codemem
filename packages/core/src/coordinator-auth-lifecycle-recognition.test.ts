@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
-import { AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL } from "./coordinator-auth-lifecycle-recognition.js";
+import { AUTH_LIFECYCLE_SQLITE_PREDECESSOR_RECOGNITION_SQL } from "./coordinator-auth-lifecycle-recognition.js";
 import { AUTH_LINK_AUTHORITY_CUTOVER_SQL } from "./coordinator-auth-link-authority-upgrade.js";
 
 const browser = "coordinator_auth_browser_transactions";
@@ -30,7 +30,7 @@ function setup(source: "inline" | "migrations" = "inline") {
 	return db;
 }
 function recognize(db: SqliteDatabase) {
-	return db.prepare(`SELECT (${AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL}) AS recognized`).get();
+	return db.prepare(AUTH_LIFECYCLE_SQLITE_PREDECESSOR_RECOGNITION_SQL).get();
 }
 function insert(db: SqliteDatabase, table: string, row: Record<string, unknown>) {
 	const columns = Object.keys(row);

@@ -161,9 +161,23 @@ export const AUTH_LIFECYCLE_PREDECESSOR_CHECKS = Object.freeze([
 	}),
 ]);
 
-/** Use individual checks to locate a failed pin without exposing account data. */
+/** Portable main-schema checks for D1. SQLite callers must first apply the
+ * separate temporary-schema check, or use the SQLite recognition statement.
+ * Use individual checks to locate a failed pin without exposing account data.
+ */
 export const AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL = AUTH_LIFECYCLE_PREDECESSOR_CHECKS.map(
 	({ matches }) => `(${matches})`,
 ).join("\n AND ");
 
 export const AUTH_LIFECYCLE_PREDECESSOR_RECOGNITION_SQL = `SELECT (${AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL}) AS recognized`;
+
+/** SQLite-only: any connection-local object can change unqualified resolution
+ * or trigger behavior. Reject it before a preserving upgrade; never clear it.
+ * sqlite_temp_master is unavailable on D1 and must not enter its SQL export.
+ */
+export const AUTH_LIFECYCLE_SQLITE_TEMP_SCHEMA_CHECK_SQL =
+	"NOT EXISTS (SELECT 1 FROM sqlite_temp_master)";
+
+export const AUTH_LIFECYCLE_SQLITE_PREDECESSOR_RECOGNITION_SQL = `SELECT CASE
+ WHEN ${AUTH_LIFECYCLE_SQLITE_TEMP_SCHEMA_CHECK_SQL}
+ THEN (${AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL}) ELSE 0 END AS recognized`;
