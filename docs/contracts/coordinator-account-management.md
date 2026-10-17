@@ -253,6 +253,8 @@ Tests must execute the frozen predecessor readiness SQL against both fresh and u
 
 The migration validates recognized DDL and dependencies, preserves every old raw row, row ID, proof, browser secret, attempt, and audit, and backfills associations exactly. New code stays gated until the full stack and explicit operator migration are ready. The unreleased V2 line can move to coordinated V3 without compatibility shims; no live migration or deployment is approved here.
 
+D1 execution must remain one atomic batch. Before approving a remote run, confirm the target's query budget, statement accounting, and total batch-size limit with Cloudflare; local native tests do not verify those production limits. Every statement must fit the documented 100,000-byte limit. Do not split the upgrade across batches or change billing to bypass an unverified limit.
+
 After lifecycle writes, an old binary must not run because its owner queries ignore ended generations. There is no automatic backup restore, Time Travel restore, or table drop, even before a lifecycle write: those actions can discard unrelated traffic. If needed, operators may disable browser authentication only with explicit approval, preserve rows, and fix forward. Data restoration is a separately informed and approved recovery decision.
 
 ## Required validation
