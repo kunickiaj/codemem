@@ -29,12 +29,17 @@ The lifecycle migration rebuilds `coordinator_auth_account_links` as append-only
 | `ended_at_ms` | Null while live; otherwise write once. |
 | `end_reason` | Null while live; `user_disconnected` for a user disconnect. |
 | `end_attempt_id` | Null while live; immutable completed change-attempt ID when disconnected. |
+| `signin_sequence_floor` | Immutable browser-sequence cutoff captured at generation commit; migrated generation 1 uses zero. |
 
-The rebuilt table removes whole-Identity, whole-account, and device-claim link uniques. It retains `UNIQUE (coordinator_id, identity_id, generation)` and adds partial unique indexes allowing at most one open row per Identity and per `(coordinator_id, issuer, subject)`. An open row has both `revoked_at_ms` and `ended_at_ms` null. Link birth fields are immutable; end and security-revocation fields move only from null to final values.
+The rebuilt table retains `PRIMARY KEY (coordinator_id, link_id)` and `UNIQUE (coordinator_id, attempt_id)`. It removes whole-Identity, whole-account, and device-claim link uniques, adds `UNIQUE (coordinator_id, identity_id, generation)`, and adds partial unique indexes allowing at most one open row per Identity and per `(coordinator_id, issuer, subject)`. An open row has both `revoked_at_ms` and `ended_at_ms` null. Link birth fields are immutable; end and security-revocation fields move only from null to final values.
 
 `coordinator_auth_account_associations` is a new immutable table keyed by `(coordinator_id, issuer, subject)`. It stores `identity_id`, `first_link_id`, and creation time. Migration creates one association from each old link, including revoked links. Account A remains reserved for Identity A after disconnect; it cannot become Identity B's account. Association rows cannot be updated or deleted, and historical link rows cannot be deleted.
 
 Email and profile fields are display data only. They never select an association, reserve an account, or transfer an Identity.
+
+A `BEFORE INSERT` link trigger requires an already inserted association matching the new row's coordinator, issuer, subject, and Identity; missing or differently assigned associations abort. It also aborts if any generation of that Identity is security-revoked. Association insertion, link insertion, and finalization share one atomic batch, so a losing link cannot leave a reservation behind. These are database constraints, not only application checks.
+
+Association and link insert-collision guards run before SQLite conflict handling, like the existing immutable device-claim guards. They reject reuse of permanent keys and eviction of an existing open row, including `INSERT OR REPLACE` when recursive delete triggers are off. Writers insert a reservation only when absent, then validate its owner; they do not replace or upsert historical rows. Exact retries return retained results rather than reinserting them.
 
 ## Security revocation remains stronger than disconnect
 
@@ -56,9 +61,35 @@ A reconnect requires all of the following:
 
 Configuration revision rotation is allowed only if the issuer is unchanged and fresh current proofs pass. An unknown issuer change fails closed. Reconnecting creates a new link ID and cannot revive old sessions, receipts, or browser cookies.
 
+Current session and attempt proofs always use the current revision; immutable link and genesis evidence retain their birth revisions. A fresh same-issuer proof must validate those historical records rather than rewrite their revisions or pretend they were created under the new configuration. Revision rotation invalidates old sessions and in-flight attempts, not historical associations, and never clears a security barrier.
+
 For device-claim continuation, the server starts from the original claimed device, canonical key, and fingerprint. It reruns every current requester contradiction: enrollment and eligibility, attestation, consumed invitation, ownership binding, and committed-link history for another Identity. It does not check enrollment alone. The original claim remains immutable evidence and the new attempt gets its own audit record. Attested continuation requires a current active attestation; it never inherits an old authority kind without checking it.
 
+### Device-claim provenance across generations
+
+Generation 1 keeps the existing committed-claim predicate unchanged. Later device-claim generations require both that complete historical genesis proof and all of this new tuple:
+
+- The new link points to its own finalized or session-redeemed attempt and creation audit, and to the original immutable `device_claim_id`; its controller fields are null.
+- Claim and new attempt match coordinator, Identity, device, exact public-key bytes, fingerprint, and the canonical key ID checked by the signed writer. The original claim's group remains part of its genesis proof; the new attempt and audit pin the currently authorized group.
+- The new attempt's issuer, verified subject, revision, finalization time, and link ID match the new link. Its issuer matches the claim's issuer; its revision and timestamps do **not** have to equal the genesis claim's revision and timestamps.
+- Its immutable `prior_link_id` and prior generation identify the immediately preceding, ended generation of the same Identity. The CAS checked that relationship when this generation committed.
+- A `link_created` audit matches this new link ID, attempt, Identity, group, device, fingerprint, device-claim ID, authority kind, revision, and creation time. All browser/runtime/completion commitments and the existing ordered ceremony checks are present.
+
+Historical genesis validation is independent of normal end state and current enrollment. Account authentication separately requires the current live-generation and Identity-wide security guard; device mutations separately require current device eligibility. Never weaken the genesis join or treat an arbitrary claim row as continuation proof.
+
 Other trusted reader devices may continue their own scoped reads. Management capabilities are derived by the server; being linked alone does not grant a device blanket account-management authority.
+
+### Unlink and refresh authorization
+
+Both intents use the same mandatory predicate at creation and winning finalization:
+
+1. The target is the Identity's current live generation, the configured issuer matches, and no generation has an admin revocation.
+2. The signed device is currently enabled in the selected non-archived group, its Identity assignment is valid, and its device and canonical key are not revoked. The complete current-requester contradiction checks listed above pass; a nullable legacy assignment requires the same validated assignment snapshot and statement-local freshness checks as current linking.
+3. For a `controller_attestation` target, an active attestation binds the signer's exact key, fingerprint, device, current group, and target Identity. It need not be the historical origin attestation, but must be active now.
+4. For a `device_claim` target, the signer is exactly the original claimed device, canonical key, public-key bytes, and fingerprint, with intact genesis/current-generation provenance. Another enrolled or shared-assignment reader does not qualify.
+5. Fresh provider verification proves the target generation's exact issuer/subject, and the browser and device ceremony proofs pass.
+
+All other cases deny without mutation. Google proof alone, an existing website session, a shared reader assignment, or a client-supplied role cannot substitute for this predicate. No management result upgrades a link's authority kind.
 
 ## Proofed change attempts
 
@@ -109,9 +140,25 @@ A successful disconnect atomically ends the target live generation, revokes all 
 
 An ended link's session credential never becomes live again, including after a reconnect to the same provider account. A pending normal sign-in begun before the active generation was created must not mint a session for that later generation after disconnect and reconnect. The session guard needs a generation or birth-watermark fence; wall-clock timestamp ties must not let an old transaction pass. The current generic active-link lookup alone is insufficient.
 
+The concrete fence is `browser_sequence INTEGER PRIMARY KEY AUTOINCREMENT` in the rebuilt browser-transaction table. Migration preserves each old row ID as its sequence and retains the former composite primary key as a unique key, together with every other existing unique. AUTOINCREMENT prevents reuse after transaction cleanup; subsequent copies or explicitly approved recovery must preserve its high-water mark, not infer it from surviving rows. At a new generation's atomic commit, `signin_sequence_floor` records the maximum currently allocated browser sequence for that coordinator, with a minimum of zero; ordinary sign-in may issue a session only when its transaction sequence is strictly greater. Existing migrated generation-1 links receive floor zero. This serializes the fence with transaction creation without relying on wall clocks or cancelling other accounts' transactions.
+
+Only a receipt with `source = 'signin'` uses that sequence-floor comparison. A `source = 'link_redeem'` receipt instead proves the exact current generation's own finalized link attempt and browser transaction; its sequence is naturally at or below the floor. Both sources still require a live generation and the Identity-wide security guard.
+
 Target-pinned owner, link, and change attempts deny when their original target generation ended, even if a new active generation has the same account. Their source target link ID participates in the final compare-and-swap. A fresh normal sign-in begun after the new connection may use that new generation. These checks do not cancel unrelated account sign-ins or global browser transactions.
 
 A successful refresh writes a verified snapshot bound to the live generation. The newest source snapshot wins; an empty source snapshot is valid and clears old display fields. Refresh does not change the account binding or browser sessions. Existing empty profile metadata stays empty until a successful refresh; it is not synthetically backfilled.
+
+### Audit and profile storage
+
+`coordinator_auth_link_audit_log` keeps its existing columns, keys, and `link_created` / `link_revoked` action set, with insert-collision and update/delete guards protecting historical receipts from replacement. Completed `coordinator_auth_link_change_attempts` rows are the immutable disconnect/refresh audit receipts; they carry intent, target, signer/proof pins, and outcome, but no raw provider tokens or display payload. `end_attempt_id` must identify the matching completed disconnect receipt in the same atomic commit.
+
+Refresh snapshots live in new `coordinator_auth_link_profile_refreshes`, keyed by `(coordinator_id, link_id)`, with `display_name`, `email`, `email_verified`, `picture_url`, `source_attempt_id`, `verified_at_ms`, and `source_order`. A refresh never invents a session ID or writes through the sign-in-only profile contract. Existing sign-in profile session/time columns stay unchanged.
+
+Each successful V3 snapshot uses `source_order = browser_sequence + 1`, captured from its verified ceremony. Migration assigns existing link-time snapshots order zero and existing sign-in snapshots order one, preserving today's sign-in precedence, including empty snapshots. Readers select the highest committed order across link-time, sign-in, and refresh sources; all new orders exceed both legacy baselines. This is intent order, not wall-clock order: an older intent finishing late cannot overwrite a later committed snapshot. Exact retries cannot change a snapshot at the same order; timestamps are informational. Sequence/order ranges must fail closed before integer overflow.
+
+Transient change claims reuse the sanitized link-profile staging pattern with an explicit server-selected `source_purpose = 'link_change'`, a null published link ID, and all attempt/account/config/binder pins. Initial linking uses `source_purpose = 'link'`. A management finalization copies only its matching staged payload into the refresh snapshot, then removes it; cleanup recognizes both attempt types. Completed receipts do not retain display payload. Cross-purpose or historical attempt-ID collisions deny rather than select another operation's data.
+
+The shared activity check treats a `link_change` transaction as active only while its exact change attempt is live in `pending`, `browser_claimed`, `oidc_verified`, or `confirmed`. Missing, completed, failed, or expired change attempts are inactive after validating the transaction's coordinator/config pins. Wrong config, malformed cookies, and lookup errors still deny. GET and redirects never delete cookies; only a successful credential-bearing start POST replaces them.
 
 No ordinary website-session completion is required. The implementation reuses the COOP-safe held-loopback acknowledgement. A disconnect receipt reports completion, not “linked,” and cannot imply that a session was issued.
 
@@ -166,7 +213,9 @@ Migration `0034` must recognize the exact predecessor DDL before any copy. It re
 
 The copy preserves old link IDs, creation values, authority references, device-claim references, proof commitments, attempt records, audit records, browser-transaction secrets, and profile rows. It then creates associations with the old issuer, subject, Identity, first link ID, and creation time. It must reject a duplicate or inconsistent old association rather than pick a winner.
 
-New triggers reject updates and deletes of associations and link birth values. They allow only the defined monotonic end and security-revocation writes. Session and profile queries join a live generation, its association, and the Identity-wide security barrier in their same authoritative statement.
+Install the new link-insert, session/receipt, and genesis guards only after copying historical rows, backfilling associations, and passing the preservation checks. They must not reject legitimate historical revoked rows or require reservations before the migration has built them. Finish guard installation and readiness assertions within the same atomic upgrade before any lifecycle writer can run.
+
+New triggers reject updates and deletes of associations and link birth values, enforce association/Identity-revocation checks on link inserts, and reject session or session-receipt inserts for non-live or security-blocked generations. They allow only the defined monotonic end and security-revocation writes. Session and profile queries join a live generation, its association, and the Identity-wide security barrier in their same authoritative statement.
 
 The winning disconnect transaction checks the target link ID, generation, open state, current config, current signer, current authority, browser confirmation, runtime verifier, completion secret, and barrier. It ends the generation, revokes its sessions, deletes its display profile, writes the receipt and audit, and marks the attempt completed as one atomic effect.
 
@@ -174,7 +223,27 @@ The winning refresh transaction checks the same live target and proofs, writes o
 
 ## Migration and activation boundary
 
-The explicit future lifecycle migration is `0034`. Readiness must inspect the actual expected tables, columns, indexes, triggers, and row checks; it must not infer readiness from a migration ledger count such as “11.” Fresh stores may initialize the current schema. For an existing predecessor auth schema, store open must not rebuild it or create shadow legacy tables: account-auth operations return an actionable upgrade-required result while ordinary device-signed sync stays available.
+The explicit future lifecycle migration is `0034`. Its inventory is:
+
+| Object | Change |
+| --- | --- |
+| `coordinator_auth_account_links` | Preserving rebuild: generation/end fields and `signin_sequence_floor`, retained primary/attempt keys, partial open-row uniques, insert and immutability guards. |
+| `coordinator_auth_browser_transactions` | Preserving rebuild: monotonic `browser_sequence`, `link_change` purpose, retained composite and other uniques. |
+| `coordinator_auth_link_attempts` | Add nullable server-selected `prior_link_id` and `prior_generation`; existing rows retain null continuation fields. |
+| `coordinator_auth_account_associations` | Add and backfill immutable provider-to-Identity reservations. |
+| `coordinator_auth_link_change_attempts` | Add proofed disconnect/refresh attempts and immutable completion audit receipts. |
+| `coordinator_auth_account_profiles` | Add `source_order` with legacy baseline one; retain all existing session/time/data columns. |
+| `coordinator_auth_link_profiles` | Add `source_order` with legacy baseline zero and `source_purpose`; preserve all existing payload/pins. |
+| `coordinator_auth_link_profile_refreshes` | Add attempt-sourced refresh snapshots with monotonic source order, never fabricated session provenance. |
+| `coordinator_auth_link_audit_log` | Keep columns, keys, and action checks; add immutable-receipt collision and update/delete guards. |
+| Device-claim proof guards | Add the first-generation insert guard below; retain all old proof rows and original guards. |
+| Sessions and session receipts | Add live-generation/security-barrier insert guards and the ordinary-sign-in sequence fence. |
+
+Readiness inspects the actual expected tables, columns, indexes, triggers, and checks, not a ledger number. Fresh stores initialize **the V3 lifecycle schema**. For a populated predecessor auth schema, store open never rebuilds or creates shadow legacy tables: account-auth operations return upgrade-required while ordinary device-signed sync remains available.
+
+The schema also enforces an older-binary fence. Add a device-claim `BEFORE INSERT` proof guard requiring a matching winning first-link attempt with null continuation pins, device-claim authority, finalized state, matching Identity/device/key/fingerprint/issuer/revision/creation pins, and its generated claim/link ID. Continuations reuse the original claim and cannot mint another genesis claim. This additional guard changes the device-claim table's trigger count from three to four, so the frozen pre-V3 readiness predicate fails its exact three-trigger check. Old `CREATE ... IF NOT EXISTS` initializers cannot remove that guard or restore readiness. V3 checks the updated exact guard set; predecessor recognition and migration definitions remain separately frozen.
+
+Tests must execute the frozen predecessor readiness SQL against both fresh and upgraded V3 schemas, including after rerunning predecessor initialization statements, and prove it still refuses account authentication. An operational instruction not to run old code is not the fence.
 
 The migration validates recognized DDL and dependencies, preserves every old raw row, row ID, proof, browser secret, attempt, and audit, and backfills associations exactly. New code stays gated until the full stack and explicit operator migration are ready. The unreleased V2 line can move to coordinated V3 without compatibility shims; no live migration or deployment is approved here.
 
@@ -195,6 +264,10 @@ It also covers wrong-A proof, missing or revoked proof, canonical-key aliases, r
 | A target or context becomes stale | Finalization denies without changing a generation, session, or profile. |
 | Pending sign-in callback predates a disconnect/reconnect | It cannot mint a session for the later same-account generation. |
 | Old and new attempts have identical clock timestamps | The generation fence still rejects the old attempt. |
+| Transaction cleanup deletes the highest allocated sequence | The next sequence is higher; neither session nor profile fences regress. |
+| A reconnect points to a claim from another Identity or key | Full genesis and continuation tuples reject it without data disclosure. |
+| A completed link-change cookie remains in the browser | A new eligible start can replace it without any stale-response deletion. |
+| `INSERT OR REPLACE` targets a reservation, generation, or audit receipt | It aborts before an implicit deletion, even with recursive triggers off. |
 | Old optional link-session redemption or owner commit resumes | It denies when its pinned source generation ended. |
 
 Browser tests must verify that disconnect has exactly one hosted destructive confirmation after provider proof, refresh has no extra confirmation, and connect retains its existing single hosted confirmation. They must also verify that GET and redirects leave a newer browser transaction cookie intact, while only the matching successful credential POST can replace it.
