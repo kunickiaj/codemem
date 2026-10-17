@@ -117,3 +117,11 @@ actor migration, reinvite, default-sharing change, or existing-key migration
 occurs.
 Any future split is explicit, reviewed, and never inferred from old authorship.
 Separate contexts require both separate databases and separate key directories.
+
+## Planned lifecycle boundary
+
+This metadata-only initial-link contract remains unchanged. The proposed
+[account-management lifecycle](coordinator-account-management.md) introduces
+append-only link generations, user-initiated disconnect, and profile refresh only
+after a separate V3 implementation and explicit migration. It does not relax the
+current revoked-row conflict rule or make email and names account ownership.

@@ -11,6 +11,15 @@ actor, device enrollment, Project access, sync admission, recovery path, relay,
 production coordinator configuration or provider deployment, or mandatory-auth
 activation.
 
+## Future account-management lifecycle boundary
+
+The routes and states in this document describe the current initial-link candidate.
+They do not provide unlink, reconnect, account switching, or profile refresh. A
+separate proposed V3 contract, [Coordinator account-management lifecycle](coordinator-account-management.md),
+defines those future operations, their append-only migration boundary, and the
+Identity-wide revocation barrier. It is not implemented or enabled by this protocol,
+and it does not change the current revoked-link rules.
+
 The mapping remains one Google account to one existing actor-backed Identity per
 coordinator, and one link per Identity. Issuer plus subject is the account key;
 email, name, and picture never prove ownership or select an Identity. Revoked

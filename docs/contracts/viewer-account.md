@@ -92,6 +92,16 @@ metadata stays missing: existing links need no relink, and the Viewer does not
 backfill account data. Missing, blocked, or failed photos fall back to initials
 or a generic Google marker.
 
+### Planned account lifecycle
+
+The current Viewer contract supports initial linking only. It has no unlink,
+reconnect, refresh, or switch action. The proposed
+[account-management lifecycle](coordinator-account-management.md) defines a future
+single-card UI and the explicit `connect`, `disconnect`, and `refresh` operations.
+That proposal is not shipped: current status fields, routes, and revoked-link
+behavior remain unchanged until a separately approved V3 migration and full-stack
+release.
+
 Avatar requests go directly to Google, which can see the browser's network address.
 Images load lazily with `no-referrer` and anonymous CORS (no cross-origin
 credentials). Google must allow that CORS request; otherwise the fallback remains.
