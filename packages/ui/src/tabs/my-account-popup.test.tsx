@@ -76,7 +76,10 @@ function configureFailure(fault: string): void {
 		view = linked({ selectedGroupId: "group-other", groups: ["group-other"] });
 	if (fault === "outcome unknown") polled = operation("outcome_unknown");
 	if (fault === "poll error") pollError = true;
-	if (fault === "not current") current = false;
+	if (fault === "not current") {
+		current = false;
+		view = linked({ contextId: "context-other", selectedGroupId: "group-other" });
+	}
 	if (fault === "different operation") polled = { ...polled, operationId: "op-other" };
 	if (fault === "linked without operation success") polled = operation("awaiting_browser");
 	if (fault === "fresh status failure") {
@@ -120,9 +123,9 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-describe("Viewer-owned Google popup completion", () => {
+describe("Viewer-owned previous-context Google popup completion", () => {
 	it.each(
-		["poll", "cancel"].flatMap((mode) =>
+		["poll", "stale poll", "expired poll", "cancel", "status"].flatMap((mode) =>
 			["linked", "unlinked", "operationId", "contextId", "groupId"].map((outcome) => ({
 				mode,
 				outcome,
@@ -134,8 +137,10 @@ describe("Viewer-owned Google popup completion", () => {
 			await launch();
 			current = false;
 			view = linked({ contextId: "context-other", selectedGroupId: "group-other" });
-			await tick();
-			expect(mount.textContent).toContain("Cancel previous link");
+			if (mode !== "stale poll") {
+				await tick();
+				expect(mount.textContent).toContain("Cancel previous link");
+			}
 			polled = operation("succeeded");
 			if (["operationId", "contextId", "groupId"].includes(outcome))
 				polled = { ...polled, [outcome]: "other" };
@@ -144,15 +149,20 @@ describe("Viewer-owned Google popup completion", () => {
 					? response(view)
 					: response({ version: 1, operation: polled, current: false }),
 			);
+			if (mode === "expired poll") vi.setSystemTime(new Date("2026-01-01T00:05:01Z"));
 			if (mode === "cancel") await click("Cancel previous link");
+			else if (mode === "status" || mode === "expired poll") await click("Check status");
 			else await tick();
 			expect(popup.close).not.toHaveBeenCalled();
 			view = outcome === "unlinked" ? status() : linked();
+			if (mode === "status") view = { ...view, operation: polled };
 			await click("Check status");
 			expect(popup.close).toHaveBeenCalledTimes(outcome === "linked" ? 1 : 0);
 		},
 	);
+});
 
+describe("Viewer-owned Google popup completion", () => {
 	it("retries a blocked fallback without starting or delivering another link", async () => {
 		vi.mocked(window.open).mockReturnValueOnce(null).mockReturnValueOnce(null);
 		await launch();

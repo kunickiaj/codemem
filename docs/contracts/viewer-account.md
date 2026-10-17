@@ -200,36 +200,22 @@ credential. The separate sync listener still exposes no account routes.
 
 ## Browser handoffs and completion
 
-The Viewer opens an isolated window from the user's **Link Google account** click.
-The coordinator start page automatically submits its existing same-origin form;
-the start cookie, CSRF token and private device-issued start proof remain required.
-With scripts disabled, the same form offers **Continue with Google**. After the
-transaction commits, a validated provider URL opens automatically with a manual
-fallback. Google authentication and the verified-account confirmation remain
-separate from device proof; no account is linked by loading a page alone.
+The Viewer opens an isolated window from **Link Google account**; the coordinator automatically submits its same-origin start form.
+The start cookie, CSRF token and private device-issued start proof remain required, with **Continue with Google** as a script-free fallback.
+Only after the transaction commits does the validated provider URL open automatically, with a manual fallback.
 
-After explicit account confirmation commits, the browser automatically navigates
-to the saved literal-loopback receiver, without a referrer. Its receipt says that
-the computer is checking the link, not that linking has succeeded. Device
-finalization still requires the signed runtime proof. Coordinator website session
-redemption remains available separately and is not required to finish Viewer
-linking; an existing browser session is never switched automatically.
+Google sign-in and explicit account confirmation do not replace signed device proof.
+After confirmation commits, the browser navigates to the saved literal-loopback receiver without a referrer, with a manual fallback.
+The receipt reports checking, not success; website-session redemption is optional and never switches an existing session automatically.
 
-The Viewer retains the auth window handle without exposing `window.opener`. It
-closes it only after its own current operation reports success and a fresh status
-read confirms that the same local context and group have a matching linked
-Identity. Poll failures, uncertain outcomes and mismatched status cannot close
-the window. Provider isolation headers can sever this handle. The loopback receipt
-therefore also polls its held listener using a random per-receiver token and
-same-origin fetch checks. Only the runtime's successful signed finalization can
-mark that result as linked; the receipt then closes itself. Cleanup waits at most
-1.5 seconds for that response to flush. Failure or uncertainty never signals
-success. Manually opened tabs and browsers that refuse closure retain a check-status
-message. Neither popup messages nor receipt content can authorize a link.
+The Viewer retains the window handle without exposing `window.opener`.
+Only its own successful operation plus fresh linked status for the matching original context, group and Identity permits closing.
+Success is remembered across context switches; failed, uncertain or mismatched responses cannot close the window.
 
-Hosted pages and the receipt use Codemem's dark mint palette, sans-serif type,
-rounded cards and keyboard focus treatment, with light colors following the OS.
-These separate origins cannot read the Viewer's saved theme preference. Inline
-styles use exact CSP hashes. The start page permits only its fixed form-submission
-script; the receipt permits only its fixed result-checking script and same-origin
-connections. No remote scripts or fonts are loaded.
+Provider isolation can sever the handle, so the receipt also polls its held listener with a random per-receiver token and same-origin fetch checks.
+Only successful signed runtime finalization can mark this result linked and trigger self-close; cleanup waits at most 1.5 seconds for the response to flush.
+Manually opened tabs and browsers refusing closure retain check-status guidance; popup messages and receipt content never authorize a link.
+
+Hosted pages and the receipt use Codemem's dark mint palette, sans-serif type, rounded cards and keyboard focus treatment.
+Light colors follow the OS because these origins cannot read the Viewer's saved theme.
+Exact CSP hashes allow styles and only the fixed start/receipt scripts; receipt connections stay same-origin, with no remote scripts or fonts.

@@ -140,6 +140,7 @@ async function checkExpiredPendingOperation(
 	try {
 		const result = await getAccountOperation(pending.operationId, options.signal);
 		if (options.signal.aborted || options.epoch !== flow.refs.current.generation) return;
+		rememberAuthWindowSuccess(flow, result.operation);
 		if (active(result.operation)) {
 			flow.setPendingOperation(result.operation);
 			return;
@@ -161,6 +162,7 @@ function showStatus(
 	result: AccountView,
 	options: { notice?: string; previousNotice?: string; excludeOperationId?: string },
 ): void {
+	rememberAuthWindowSuccess(flow, result.operation);
 	const verifiedLinked =
 		result.remote.kind === "status" &&
 		result.remote.state === "linked" &&
@@ -290,6 +292,7 @@ async function adoptConflict(
 			operationId,
 			flow.refs.current.controller?.signal,
 		);
+		if (epoch === flow.refs.current.generation) rememberAuthWindowSuccess(flow, candidate);
 		if (
 			epoch !== flow.refs.current.generation ||
 			!current ||
@@ -474,7 +477,7 @@ async function poll(
 	try {
 		const result = await getAccountOperation(operation.operationId, signal);
 		if (epoch !== flow.refs.current.generation) return;
-		if (result.current || !currentView) rememberAuthWindowSuccess(flow, result.operation);
+		rememberAuthWindowSuccess(flow, result.operation);
 		showPolledOperation(flow, result, currentView);
 	} catch (error) {
 		if (signal.aborted || epoch !== flow.refs.current.generation) return;
@@ -487,7 +490,8 @@ async function poll(
 	}
 }
 
-function rememberAuthWindowSuccess(flow: Flow, operation: AccountOperation): void {
+function rememberAuthWindowSuccess(flow: Flow, operation?: AccountOperation | null): void {
+	if (!operation) return;
 	const target = flow.refs.current.authWindow;
 	if (
 		target?.operationId === operation.operationId &&
