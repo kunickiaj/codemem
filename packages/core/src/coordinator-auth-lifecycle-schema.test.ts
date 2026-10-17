@@ -2,6 +2,7 @@ import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
+import { AUTH_SCHEMA_V2_READINESS_SQL as AUTH_SCHEMA_READINESS_SQL } from "./coordinator-auth-lifecycle-predecessor.js";
 import {
 	AUTH_ACCOUNT_ASSOCIATION_GUARD_STATEMENTS,
 	AUTH_ACCOUNT_LINK_GENERATION_INDEX_STATEMENTS,
@@ -13,7 +14,6 @@ import {
 } from "./coordinator-auth-lifecycle-schema.js";
 import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
 import { authLinkLiveGenerationSql } from "./coordinator-auth-link-liveness.js";
-import { AUTH_SCHEMA_READINESS_SQL } from "./coordinator-auth-schema.js";
 
 const links = "coordinator_auth_account_links";
 const associations = "coordinator_auth_account_associations";
@@ -606,7 +606,7 @@ describe("first-generation proof and predecessor fence", () => {
 		expect(rows(db, claims)).toEqual([]);
 	});
 	it("takes unchanged predecessor readiness from ten to nine and old initialization cannot restore it", () => {
-		// Arrange: production readiness remains the pre-V3 predicate in this inert C0 slice.
+		// Arrange: frozen pre-V3 readiness stays independent of the future current predicate.
 		const db = setup();
 		const ready = () => db.prepare(AUTH_SCHEMA_READINESS_SQL).get();
 		expect(ready()).toEqual({ ready: 10 });
