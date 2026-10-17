@@ -3,6 +3,7 @@ import { expectRejected, snapshot } from "./coordinator-auth-link-test-fixtures.
 import {
 	backendTest,
 	browserHash,
+	consumeSigninProof,
 	credentialHash,
 	expectIssued,
 	grants,
@@ -45,6 +46,10 @@ function registerSuccess(test: SessionTest) {
 		await linked(f);
 		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
 		const current = { ...f.cfg, revision: "2".repeat(64) };
+		await consumeSigninProof(f, "3".repeat(64), {
+			...current,
+			redirectUri: "https://coordinator.example.test/auth/callback",
+		});
 		const before = grants(f);
 		// Act
 		const result = await f.store.signInWithAuthAccount(
@@ -82,6 +87,10 @@ function registerSuccess(test: SessionTest) {
 			.prepare("UPDATE coordinator_auth_account_links SET coordinator_id = ?, subject = ?")
 			.run(coordinatorId, subject);
 		const cfg = { ...f.cfg, coordinatorId };
+		await consumeSigninProof(f, signInInput(f).browserTransactionHash, {
+			...cfg,
+			redirectUri: "https://coordinator.example.test/auth/callback",
+		});
 		const input = { ...signInInput(f), account: { issuer: cfg.issuer, subject } };
 		// Act
 		const issued = await f.store.signInWithAuthAccount(input, cfg);

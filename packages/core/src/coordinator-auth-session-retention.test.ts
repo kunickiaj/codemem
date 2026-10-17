@@ -192,7 +192,9 @@ function registerBoundaries(test: Test) {
 		expect(blocked).toEqual(purged());
 		expect(allowed).toEqual(purged(1));
 		expect(receipt).toEqual(purged(1));
-		expect(rows(f, TABLE)[0].browser_transaction_hash).toBe(input.browserTransactionHash);
+		expect(
+			rows(f, TABLE).find((row) => row.browser_transaction_hash === input.browserTransactionHash),
+		).toMatchObject({ browser_transaction_hash: input.browserTransactionHash });
 	});
 }
 

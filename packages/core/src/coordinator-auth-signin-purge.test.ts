@@ -166,7 +166,7 @@ function registerEligibility(test: Test) {
 		seed(f, 1);
 		f.db
 			.prepare(
-				`UPDATE ${TABLE} SET state='expired',nonce=NULL,pkce_verifier=NULL,created_at_ms=?,expires_at_ms=? WHERE purpose='link'`,
+				`UPDATE ${TABLE} SET state='expired',nonce=NULL,pkce_verifier=NULL,claim_token=NULL,consumed_at_ms=NULL,created_at_ms=?,expires_at_ms=? WHERE purpose='link'`,
 			)
 			.run(NOW + AGE + 1, NOW + AGE + TTL + 1);
 		const links = transactionRows(f).filter((row) => row.purpose === "link");
@@ -175,7 +175,7 @@ function registerEligibility(test: Test) {
 		// Act
 		const result = await purge(f);
 		// Assert
-		expect(result).toEqual(purged(1));
+		expect(result).toEqual(purged(2));
 		expect(transactionRows(f)).toEqual(links);
 		expect(protectedData(f)).toEqual(before);
 	});
@@ -414,7 +414,7 @@ function registerReplay(test: Test) {
 		const result = await purge(f);
 		const session = await f.store.readAuthSession(input.credentialHash, f.cfg);
 		// Assert
-		expect(result).toEqual(purged(1));
+		expect(result).toEqual(purged(2));
 		expect(session).toMatchObject({ identityId: "identity-a" });
 		expect(protectedData(f)).toEqual(before);
 		expect(sessionRows(f).map((rows) => rows.length)).toEqual([1, 1]);
@@ -461,8 +461,12 @@ function registerReplay(test: Test) {
 		expectRejected(legacy, "browser_transaction_used");
 		expectRejected(oldClaim, "attempt_unavailable");
 		expect(fresh.kind).toBe("started");
-		expect(transactionRows(f)).toHaveLength(1);
-		expect(transactionRows(f)[0].browser_transaction_hash).not.toBe(input.browserTransactionHash);
+		expect(transactionRows(f).filter((row) => row.purpose === "signin")).toHaveLength(1);
+		expect(
+			transactionRows(f).some(
+				(row) => row.browser_transaction_hash === input.browserTransactionHash,
+			),
+		).toBe(false);
 	});
 }
 

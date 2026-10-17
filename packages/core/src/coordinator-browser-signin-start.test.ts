@@ -644,6 +644,7 @@ describe("request snapshots survive asynchronous cookie mutations", () => {
 					),
 				).toMatchObject({ kind: "issued" });
 			}
+			const browserBefore = rows(f);
 			const request = post(
 				`${c.cookie}; ${session.setCookie.split(";")[0]}`,
 				state === "bad-mac" ? "A".repeat(86) : c.token,
@@ -670,7 +671,8 @@ describe("request snapshots survive asynchronous cookie mutations", () => {
 					expect(response.headers.getSetCookie()).toEqual([]);
 				} else expect(response.headers.getSetCookie()[0]).toContain(c.cookie.split("=")[1]);
 			}
-			expect(rows(f)).toHaveLength(state === "missing" ? 1 : 0);
+			expect(rows(f)).toHaveLength(browserBefore.length + (state === "missing" ? 1 : 0));
+			expect(rows(f).slice(0, browserBefore.length)).toEqual(browserBefore);
 		},
 	);
 	it.each(["replace-start", "add-txn", "remove-txn"])(

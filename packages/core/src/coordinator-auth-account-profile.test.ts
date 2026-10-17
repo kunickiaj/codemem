@@ -3,6 +3,7 @@ import type { CoordinatorAuthAccountProfileInput } from "./coordinator-auth-acco
 import { type LinkFixture, snapshot } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
+	consumeSigninProof,
 	credentialHash,
 	grants,
 	linked,
@@ -41,6 +42,7 @@ async function signedIn(f: LinkFixture) {
 }
 
 async function secondSignIn(f: LinkFixture) {
+	await consumeSigninProof(f, "2".repeat(64));
 	const result = await f.store.signInWithAuthAccount(
 		{
 			...signInInput(f),

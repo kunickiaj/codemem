@@ -4,10 +4,11 @@ import {
 	authorize,
 	backendTest,
 	browserHash,
+	consumeSigninProof,
 	type LinkFixture,
 } from "./coordinator-auth-link-test-fixtures.js";
 
-export { backendTest, browserHash };
+export { backendTest, browserHash, consumeSigninProof };
 export type SessionTest = ReturnType<typeof backendTest>;
 export const SESSION_TTL = 28_800_000;
 export const REDEEM_WINDOW = 120_000;
@@ -22,6 +23,7 @@ export const SESSION_TABLES = [
 export async function linked(f: LinkFixture) {
 	await authorize(f);
 	await advance(f, "finalized");
+	await consumeSigninProof(f, freshBrowserHash);
 }
 
 export function redeemInput() {

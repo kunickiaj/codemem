@@ -85,7 +85,9 @@ function registerCancellation(test: Test) {
 		// Assert
 		expect(result).toEqual({ kind: "cancelled" });
 		expect(retry).toEqual(result);
-		expect(transactionRows(f)).toEqual([expired(before[0]), before[1]]);
+		expect(transactionRows(f)).toEqual(
+			before.map((row) => (row.binder_hash === hash(30001) ? expired(row) : row)),
+		);
 		expect(protectedData(f)).toBe(protectedBefore);
 	});
 	test.for(["wrong", "other-coordinator", "missing", "consumed", "link"])(

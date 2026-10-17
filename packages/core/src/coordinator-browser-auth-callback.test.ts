@@ -136,8 +136,8 @@ type Ceremony = Awaited<ReturnType<typeof ceremony>>;
 function request(c: Ceremony, cookie = c.cookie) {
 	return new Request(c.url, { headers: { cookie } });
 }
-function consumed(f: Harness) {
-	expect(rows(f)[0]).toMatchObject({
+function consumed(f: Harness, c: Ceremony) {
+	expect(rows(f).find((row) => row.state_hash === c.original.state_hash)).toMatchObject({
 		state: "consumed",
 		nonce: null,
 		pkce_verifier: null,
@@ -240,7 +240,7 @@ describe.each(["SQLite", "D1"] as const)(
 				URLSearchParams,
 			);
 			expect(authority(f)).toEqual(before);
-			consumed(f);
+			consumed(f, c);
 			expect(observations.some(({ url }) => url.endsWith("/token"))).toBe(true);
 			assertProviderProof(observations, c);
 			await privateSafe(reply.response, c, reply.outcome);
@@ -358,7 +358,7 @@ describe("pre-consume guards never burn another browser's row", () => {
 		const reply = await f.callback(new Request(encoded, { headers: { cookie: c.cookie } }));
 		// Assert: the maintained SDK interprets decoded parameters, not a raw-percent oracle.
 		expect(reply.response.status).toBe(303);
-		consumed(f);
+		consumed(f, c);
 		expect(rows(f, "coordinator_auth_sessions")).toHaveLength(1);
 	});
 });
@@ -432,7 +432,7 @@ describe("actual SDK rejects token and authorization protocol attacks after cons
 		// Assert
 		expect(reply.response.status).toBe(403);
 		expect(reply.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
-		consumed(f);
+		consumed(f, c);
 		assertProviderProof(observations, c);
 		if (
 			![
@@ -444,7 +444,9 @@ describe("actual SDK rejects token and authorization protocol attacks after cons
 			].includes(fault)
 		)
 			expect(observations.some(({ url }) => url.endsWith("/token"))).toBe(true);
-		expect(rows(f)[1]).toEqual(victim.original);
+		expect(rows(f).find((row) => row.state_hash === victim.original.state_hash)).toEqual(
+			victim.original,
+		);
 		expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
 		expect(f.store.signInWithConsumedBrowserTransaction).not.toHaveBeenCalled();
 		expect(f.store.recordAuthAccountProfile).not.toHaveBeenCalled();
@@ -496,7 +498,7 @@ describe("guarded admission and existing session preservation", () => {
 			expect(reply.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
 			expect(rows(f, "coordinator_auth_sessions")).toEqual(before);
 			expect(f.store.recordAuthAccountProfile).not.toHaveBeenCalled();
-			consumed(f);
+			consumed(f, c);
 		},
 	);
 	it.each(["same-account", "different-account"])(

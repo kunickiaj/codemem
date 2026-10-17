@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import { renderAuthBrowserNotice } from "./coordinator-auth-browser-view.js";
@@ -112,7 +113,19 @@ async function ceremony(f: Harness) {
 	)?.[1];
 	const txn = start.response.headers.getSetCookie()[0]?.split(";")[0];
 	if (!href || !txn) throw new Error("Expected admitted TXN");
-	return { cookie: txn, url: f.oidc.authorize(href.replaceAll("&amp;", "&")) };
+	const url = f.oidc.authorize(href.replaceAll("&amp;", "&"));
+	const stateHash = createHash("sha256")
+		.update(url.searchParams.get("state") ?? "")
+		.digest("hex");
+	const original = rows(f).find((row) => row.state_hash === stateHash);
+	if (!original) throw new Error("Expected matching ceremony row");
+	return { cookie: txn, url, original: { ...original } };
+}
+function ceremonyRow(f: Harness, c: Awaited<ReturnType<typeof ceremony>>) {
+	return rows(f).find((row) => row.state_hash === c.original.state_hash);
+}
+function unrelatedRows(f: Harness, c: Awaited<ReturnType<typeof ceremony>>) {
+	return rows(f).filter((row) => row.state_hash !== c.original.state_hash);
 }
 function request(c: { url: URL; cookie: string }) {
 	return new Request(c.url, { headers: { cookie: c.cookie } });
@@ -320,7 +333,11 @@ describe("runtime purpose and original cookie boundaries fail closed", () => {
 		// Arrange: use real consumption and valid SDK verification; only the union discriminant is corrupt.
 		const f = await harness();
 		await linked({ ...f, store: f.persistence });
+		const unrelated = rows(f);
+		expect(unrelated).toHaveLength(2);
+		expect(unrelated.every((row) => row.state === "consumed")).toBe(true);
 		const c = await ceremony(f);
+		expect(ceremonyRow(f, c)).toMatchObject({ state: "pending" });
 		f.store.consumeAuthBrowserTransaction.mockImplementation(async (...args) => {
 			const consumed = await f.persistence.consumeAuthBrowserTransaction(...args);
 			if (consumed.kind !== "consumed") throw new Error("Expected native consumption");
@@ -331,7 +348,12 @@ describe("runtime purpose and original cookie boundaries fail closed", () => {
 		// Assert: an unknown runtime union value grants no authority or cookie cleanup rights.
 		expect(reply.outcome).toBe("internal_error");
 		await unavailable(reply.response, false);
-		expect(rows(f)[0]).toMatchObject({ state: "consumed", nonce: null, pkce_verifier: null });
+		expect(ceremonyRow(f, c)).toMatchObject({
+			state: "consumed",
+			nonce: null,
+			pkce_verifier: null,
+		});
+		expect(unrelatedRows(f, c)).toEqual(unrelated);
 		expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
 		expect(rows(f, "coordinator_auth_session_receipts")).toEqual([]);
 		expect(rows(f, "coordinator_auth_account_profiles")).toEqual([]);
@@ -361,7 +383,7 @@ describe("runtime purpose and original cookie boundaries fail closed", () => {
 			expect(reply.outcome).toBe("cookie_invalid");
 			expect(reply.response.headers.getSetCookie()).toEqual([]);
 			expect(rows(f)).toEqual(before);
-			expect(before[0]).toMatchObject({
+			expect(before.find((row) => row.state_hash === c.original.state_hash)).toMatchObject({
 				state: "pending",
 				nonce: expect.any(String),
 				pkce_verifier: expect.any(String),
@@ -384,6 +406,7 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 			const f = await harness();
 			const c = await ceremony(f);
 			const before = rows(f);
+			expect(ceremonyRow(f, c)).toMatchObject({ state: "pending" });
 			f.store.consumeAuthBrowserTransaction.mockImplementation(async (...args) => {
 				if (stage === "after-commit") await f.persistence.consumeAuthBrowserTransaction(...args);
 				throw new Error(PRIVATE);
@@ -394,7 +417,11 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 			await unavailable(reply.response, false);
 			if (stage === "before-commit") expect(rows(f)).toEqual(before);
 			else
-				expect(rows(f)[0]).toMatchObject({ state: "consumed", nonce: null, pkce_verifier: null });
+				expect(ceremonyRow(f, c)).toMatchObject({
+					state: "consumed",
+					nonce: null,
+					pkce_verifier: null,
+				});
 			expect(f.oidc.fetch).not.toHaveBeenCalled();
 			expect(f.store.signInWithConsumedBrowserTransaction).not.toHaveBeenCalled();
 		},
@@ -405,7 +432,9 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 			// Arrange
 			const f = await harness();
 			await linked({ ...f, store: f.persistence });
+			const unrelated = rows(f);
 			const c = await ceremony(f);
+			expect(ceremonyRow(f, c)).toMatchObject({ state: "pending" });
 			if (fault === "read-session") {
 				c.cookie += `; ${(await issueBrowserCookie("session")).setCookie.split(";")[0]}`;
 				f.store.readAuthSession.mockRejectedValue(new Error(PRIVATE));
@@ -420,7 +449,12 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 			const reply = await f.callback(request(c));
 			// Assert
 			await unavailable(reply.response, true);
-			expect(rows(f)[0]).toMatchObject({ state: "consumed", nonce: null, pkce_verifier: null });
+			expect(ceremonyRow(f, c)).toMatchObject({
+				state: "consumed",
+				nonce: null,
+				pkce_verifier: null,
+			});
+			expect(unrelatedRows(f, c)).toEqual(unrelated);
 			expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
 			expect(f.store.recordAuthAccountProfile).not.toHaveBeenCalled();
 		},
@@ -451,7 +485,7 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 			expect(await reply.response.text()).toBe(
 				"Sign-in or linking unavailable. Return to the flow you started and try again.",
 			);
-			expect(rows(f)[0]?.state).toBe(stage === "post-consume" ? "consumed" : "pending");
+			expect(ceremonyRow(f, c)?.state).toBe(stage === "post-consume" ? "consumed" : "pending");
 		},
 	);
 	it("hash failure before consume preserves the original cookie and pending row", async () => {
@@ -464,7 +498,7 @@ describe("errors distinguish confirmed consumption from ambiguous backend throws
 		// Assert
 		await unavailable(reply.response, false);
 		expect(f.store.consumeAuthBrowserTransaction).not.toHaveBeenCalled();
-		expect(rows(f)[0]?.state).toBe("pending");
+		expect(ceremonyRow(f, c)?.state).toBe("pending");
 		expect(f.oidc.fetch).not.toHaveBeenCalled();
 	});
 });

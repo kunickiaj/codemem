@@ -1,4 +1,6 @@
-import { expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { expect, it, vi } from "vitest";
+import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import type {
 	CoordinatorAuthLinkConfig as Config,
 	CoordinatorAuthLinkCreateInput as CreateInput,
@@ -42,6 +44,7 @@ export const device: Requester = { kind: "device", signer };
 export const browser: Requester = { kind: "browser", browserTransactionHash: browserHash };
 
 export function attempt(overrides: Partial<CreateInput> = {}): CreateInput {
+	// Keep the legacy creation input for tests of direct claims and frozen schemas.
 	return {
 		authority: { kind: "controller_attestation" },
 		attemptId: "attempt-a",
@@ -50,6 +53,66 @@ export function attempt(overrides: Partial<CreateInput> = {}): CreateInput {
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 		...overrides,
 	};
+}
+
+function fixtureHash(key: string) {
+	return createHash("sha256").update(`codemem-test-browser:${key}`).digest("hex");
+}
+
+/** Synthetic persistence proof, not a provider token or an OIDC signature fixture. */
+export async function startBrowserProof(
+	f: LinkFixture,
+	input: { browserTransactionHash: string; attemptId?: string; browserStartHash?: string },
+	config: CoordinatorAuthBrowserConfig = browserProofConfig(f),
+) {
+	const key = `${config.coordinatorId}:${input.attemptId ?? "signin"}:${input.browserTransactionHash}`;
+	const materials = {
+		stateHash: fixtureHash(`state:${key}`),
+		binderHash: fixtureHash(`binder:${key}`),
+		nonce: fixtureHash(`nonce:${key}`),
+		pkceVerifier: fixtureHash(`pkce:${key}`),
+	};
+	let startInput: Parameters<typeof f.store.startAuthBrowserTransaction>[0];
+	if (input.attemptId === undefined) {
+		startInput = { ...materials, purpose: "signin" };
+	} else {
+		startInput = { ...materials, purpose: "link", attemptId: input.attemptId };
+		if (input.browserStartHash !== undefined) {
+			startInput.browserStartHash = input.browserStartHash;
+		}
+	}
+	// V2 draws its hash before its first await. Fake only that synchronous draw.
+	const entropy = vi
+		.spyOn(globalThis.crypto, "getRandomValues")
+		.mockReturnValueOnce(Uint8Array.from(Buffer.from(input.browserTransactionHash, "hex")));
+	let started: ReturnType<typeof f.store.startAuthBrowserTransaction>;
+	try {
+		started = f.store.startAuthBrowserTransaction(startInput, config);
+	} finally {
+		entropy.mockRestore();
+	}
+	expect(await started).toMatchObject({ kind: "started" });
+	return materials;
+}
+
+export function browserProofConfig(f: LinkFixture): CoordinatorAuthBrowserConfig {
+	return { ...f.cfg, redirectUri: "https://coordinator.example.test/auth/callback" };
+}
+
+export async function consumeSigninProof(
+	f: LinkFixture,
+	hash: string,
+	config = browserProofConfig(f),
+) {
+	const materials = await startBrowserProof(f, { browserTransactionHash: hash }, config);
+	expect(await f.store.consumeAuthBrowserTransaction(materials, config)).toEqual({
+		kind: "consumed",
+		purpose: "signin",
+		browserTransactionHash: hash,
+		nonce: materials.nonce,
+		pkceVerifier: materials.pkceVerifier,
+	});
+	return materials;
 }
 
 export function finalize(overrides: Partial<FinalizeInput> = {}): FinalizeInput {
@@ -99,12 +162,27 @@ export async function advance(
 	input = attempt(),
 	hash = browserHash,
 ) {
-	await f.store.createAuthLinkAttempt(input, f.cfg);
+	const creation = { ...input };
+	if (state !== "pending" && !Object.hasOwn(input, "browserStartHash")) {
+		creation.browserStartHash = fixtureHash(`browser-start:${input.attemptId}`);
+	}
+	await f.store.createAuthLinkAttempt(creation, f.cfg);
 	if (state === "pending") return;
-	await f.store.claimAuthLinkAttempt(
-		{ attemptId: input.attemptId, browserTransactionHash: hash },
-		f.cfg,
-	);
+	const materials = await startBrowserProof(f, {
+		attemptId: input.attemptId,
+		browserTransactionHash: hash,
+		...(creation.browserStartHash === undefined
+			? {}
+			: { browserStartHash: creation.browserStartHash }),
+	});
+	expect(
+		await f.store.consumeAuthBrowserTransaction(materials, browserProofConfig(f)),
+	).toMatchObject({
+		kind: "consumed",
+		purpose: "link",
+		attemptId: input.attemptId,
+		browserTransactionHash: hash,
+	});
 	if (state === "browser_claimed") return;
 	await f.store.recordAuthLinkOidcVerified(
 		{

@@ -286,6 +286,7 @@ function registerLinkAtomicityTests(test: Test) {
 		await authorize(f);
 		await advance(f, "browser_claimed");
 		const before = snapshot(f);
+		const browserBefore = transactionRows(f);
 		const random = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
 			if (array instanceof Uint8Array) array.fill(204);
 			return array;
@@ -295,7 +296,7 @@ function registerLinkAtomicityTests(test: Test) {
 			const result = await f.store.startAuthBrowserTransaction(materials(), config);
 			// Assert
 			expectRejected(result, "transaction_conflict");
-			expect(transactionRows(f)).toEqual([]);
+			expect(transactionRows(f)).toEqual(browserBefore);
 			expect(snapshot(f)).toEqual(before);
 		} finally {
 			random.mockRestore();

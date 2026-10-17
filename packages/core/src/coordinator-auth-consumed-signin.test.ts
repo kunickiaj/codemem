@@ -230,7 +230,7 @@ function registerTransactionGuards(test: SessionTest) {
 			missing: `DELETE FROM ${TABLE}`,
 			pending: `UPDATE ${TABLE} SET state = 'pending', nonce = '${"n".repeat(43)}', pkce_verifier = '${"p".repeat(43)}', consumed_at_ms = NULL, claim_token = NULL`,
 			expired: `UPDATE ${TABLE} SET created_at_ms = ${f.now - 600000}, consumed_at_ms = ${f.now - 1}, expires_at_ms = ${f.now}`,
-			link: `UPDATE ${TABLE} SET purpose = 'link', attempt_id = 'attempt-a'`,
+			link: `UPDATE ${TABLE} SET purpose = 'link', attempt_id = 'purpose-only-attempt' WHERE browser_transaction_hash = '${input.browserTransactionHash}'`,
 			cancelled: "SELECT 1",
 			issuer: `UPDATE ${TABLE} SET issuer = 'https://other.example.test'`,
 			revision: `UPDATE ${TABLE} SET auth_config_revision = '${hash(900)}'`,

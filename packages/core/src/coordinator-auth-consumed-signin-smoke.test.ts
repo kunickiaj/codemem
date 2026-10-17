@@ -58,7 +58,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(await f.store.startAuthBrowserTransaction(material, cfg)).toMatchObject({
 				kind: "started",
 			});
-			const hash = browser.transactionRows(f)[0].browser_transaction_hash;
+			const hash = browser
+				.transactionRows(f)
+				.find((row) => row.state_hash === material.stateHash)?.browser_transaction_hash;
 			if (typeof hash !== "string") throw new Error("Expected generated fixture browser hash");
 			const input = { ...sessions.signInInput(f), browserTransactionHash: hash };
 			// Act / Assert: pending proof cannot create either session row.
@@ -80,7 +82,11 @@ for (const backend of ["SQLite", "D1"] as const) {
 				);
 				expect(sessions.sessionRows(f)).toEqual([[], []]);
 			}
-			f.db.prepare(`UPDATE ${browser.TABLE} SET purpose = 'link', attempt_id = 'attempt-a'`).run();
+			f.db
+				.prepare(
+					`UPDATE ${browser.TABLE} SET purpose = 'link', attempt_id = 'purpose-only-attempt' WHERE browser_transaction_hash = ?`,
+				)
+				.run(hash);
 			expectRejected(
 				await f.store.signInWithConsumedBrowserTransaction(input, cfg),
 				"transaction_unavailable",
@@ -88,7 +94,11 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(sessions.sessionRows(f)).toEqual([[], []]);
 			expect([sessions.grants(f), snapshot(f)]).toEqual(authority);
 			// Act: restoring the correct purpose allows the same unspent proof to issue.
-			f.db.prepare(`UPDATE ${browser.TABLE} SET purpose = 'signin', attempt_id = NULL`).run();
+			f.db
+				.prepare(
+					`UPDATE ${browser.TABLE} SET purpose = 'signin', attempt_id = NULL WHERE browser_transaction_hash = ?`,
+				)
+				.run(hash);
 			const issued = await f.store.signInWithConsumedBrowserTransaction(input, cfg);
 			// Assert: newer current config does not rewrite account, enrollment, or key metadata.
 			sessions.expectIssued(issued, f);

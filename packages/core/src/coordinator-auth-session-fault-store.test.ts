@@ -2,6 +2,7 @@ import { describe, expect, vi } from "vitest";
 import { expectRejected, snapshot } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	backendTest,
+	consumeSigninProof,
 	credentialHash,
 	expectIssued,
 	linked,
@@ -109,6 +110,7 @@ function registerPersistence(test: SessionTest) {
 		// Arrange
 		await linked(f);
 		await f.store.signInWithAuthAccount(signInInput(f), f.cfg);
+		await consumeSigninProof(f, "2".repeat(64));
 		const before = sessionRows(f);
 		const links = snapshot(f);
 		// Act

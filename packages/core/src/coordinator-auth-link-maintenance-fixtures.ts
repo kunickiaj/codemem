@@ -64,6 +64,7 @@ export function seedCopies(
 			};
 			if (template.browser_transaction_hash !== null)
 				row.browser_transaction_hash = digest(n + 100_000);
+			if (template.browser_start_hash !== null) row.browser_start_hash = digest(n + 300_000);
 			if (template.completion_secret_hash !== null)
 				row.completion_secret_hash = digest(n + 200_000);
 			if (template.link_id !== null) row.link_id = `seed-link-${n}`;

@@ -61,8 +61,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const rows = sessions.sessionRows(f);
 			f.now = createdAt + RETENTION - 1;
 			// Act / Assert: S3 removes proof first; S4 keeps both rows until the boundary.
-			expect(await f.store.purgeAuthSigninBrowserTransactions(f.cfg)).toEqual(purged(1));
-			expect(browser.transactionRows(f)).toEqual([]);
+			const retainedLinks = browser.transactionRows(f).filter((row) => row.purpose === "link");
+			expect(await f.store.purgeAuthSigninBrowserTransactions(f.cfg)).toEqual(purged(2));
+			expect(browser.transactionRows(f)).toEqual(retainedLinks);
 			expect(await purge(f)).toEqual([purged(0), purged(0)]);
 			expect(sessions.sessionRows(f)).toEqual(rows);
 			f.now = createdAt + RETENTION;
