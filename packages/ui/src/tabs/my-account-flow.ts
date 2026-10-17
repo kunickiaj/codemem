@@ -474,6 +474,7 @@ async function poll(
 	try {
 		const result = await getAccountOperation(operation.operationId, signal);
 		if (epoch !== flow.refs.current.generation) return;
+		if (result.current || !currentView) rememberAuthWindowSuccess(flow, result.operation);
 		showPolledOperation(flow, result, currentView);
 	} catch (error) {
 		if (signal.aborted || epoch !== flow.refs.current.generation) return;
@@ -484,6 +485,17 @@ async function poll(
 		flow.setPendingOperation(operationMissing(error) ? null : { ...operation });
 		flow.setMessage("We couldn’t confirm whether linking finished. Check status.");
 	}
+}
+
+function rememberAuthWindowSuccess(flow: Flow, operation: AccountOperation): void {
+	const target = flow.refs.current.authWindow;
+	if (
+		target?.operationId === operation.operationId &&
+		target.contextId === operation.contextId &&
+		target.groupId === operation.groupId &&
+		operation.state === "succeeded"
+	)
+		target.succeeded = true;
 }
 
 function showPolledOperation(
@@ -509,9 +521,6 @@ function showPolledOperation(
 	}
 	flow.setOperation(result.operation);
 	if (!terminal) return;
-	const authWindow = flow.refs.current.authWindow;
-	if (authWindow?.operationId === result.operation.operationId)
-		authWindow.succeeded = result.operation.state === "succeeded";
 	flow.setPendingOperation(null);
 	// Fetch verified status, not the callback's claimed account data.
 	void refresh(flow, {
@@ -553,9 +562,6 @@ function showCancellation(flow: Flow, result: AccountOperation): void {
 		});
 		return;
 	}
-	const authWindow = flow.refs.current.authWindow;
-	if (authWindow?.operationId === result.operationId)
-		authWindow.succeeded = result.state === "succeeded";
 	flow.setOperation(result);
 	flow.setMessage("Cancellation is pending. Check status to confirm.");
 	if (!active(result))
@@ -586,6 +592,7 @@ async function cancel(
 	try {
 		const result = await cancelAccountLink(operation.operationId, abort.signal);
 		if (epoch !== flow.refs.current.generation) return;
+		rememberAuthWindowSuccess(flow, result.operation);
 		if (previous) {
 			flow.setPendingOperation(active(result.operation) ? result.operation : null);
 			flow.setMessage("Cancellation is pending. Check status to confirm.");

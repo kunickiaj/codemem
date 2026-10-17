@@ -121,19 +121,46 @@ afterEach(() => {
 });
 
 describe("Viewer-owned Google popup completion", () => {
+	it.each(
+		["poll", "cancel"].flatMap((mode) =>
+			["linked", "unlinked", "operationId", "contextId", "groupId"].map((outcome) => ({
+				mode,
+				outcome,
+			})),
+		),
+	)(
+		"retains previous-context $mode success until fresh original $outcome status",
+		async ({ mode, outcome }) => {
+			await launch();
+			current = false;
+			view = linked({ contextId: "context-other", selectedGroupId: "group-other" });
+			await tick();
+			expect(mount.textContent).toContain("Cancel previous link");
+			polled = operation("succeeded");
+			if (["operationId", "contextId", "groupId"].includes(outcome))
+				polled = { ...polled, [outcome]: "other" };
+			transport.mockImplementation(async (url) =>
+				String(url).includes("link-status")
+					? response(view)
+					: response({ version: 1, operation: polled, current: false }),
+			);
+			if (mode === "cancel") await click("Cancel previous link");
+			else await tick();
+			expect(popup.close).not.toHaveBeenCalled();
+			view = outcome === "unlinked" ? status() : linked();
+			await click("Check status");
+			expect(popup.close).toHaveBeenCalledTimes(outcome === "linked" ? 1 : 0);
+		},
+	);
+
 	it("retries a blocked fallback without starting or delivering another link", async () => {
-		// Arrange
 		vi.mocked(window.open).mockReturnValueOnce(null).mockReturnValueOnce(null);
 		await launch();
 		const requests = transport.mock.calls.length;
-		// Act: a blocked explicit attempt must preserve the URL for the next click.
 		await click("Open Google sign-in");
-		// Assert
 		expect(mount.textContent).toContain("Open Google sign-in");
 		expect(popup.location.replace).not.toHaveBeenCalled();
-		// Act
 		await click("Open Google sign-in");
-		// Assert
 		expect(popup.location.replace).toHaveBeenCalledExactlyOnceWith(privateUrl);
 		expect(popup.opener).toBeNull();
 		expect(transport.mock.calls).toHaveLength(requests);
@@ -142,27 +169,21 @@ describe("Viewer-owned Google popup completion", () => {
 	it.each(["linked", "unlinked"])(
 		"verifies fresh %s status after cancellation races with success",
 		async (state) => {
-			// Arrange
 			await launch();
 			const fresh = deferred<Response>();
 			transport.mockImplementation(async (url) => {
 				if (String(url).includes("link-status")) return fresh.promise;
 				return response({ version: 1, operation: operation("succeeded"), current: true });
 			});
-			// Act
 			await click("Cancel linking");
-			// Assert: the cancel response alone cannot authorize closing.
 			expect(popup.close).not.toHaveBeenCalled();
-			// Act
 			fresh.resolve(response(state === "linked" ? linked() : status()));
 			await settle();
-			// Assert
 			expect(popup.close).toHaveBeenCalledTimes(state === "linked" ? 1 : 0);
 		},
 	);
 
 	it("retains the isolated popup until its own success and a fresh matching linked status", async () => {
-		// Arrange
 		await launch();
 		expect(popup.opener).toBeNull();
 		expect(popup.location.replace).toHaveBeenCalledWith(privateUrl);
@@ -171,14 +192,10 @@ describe("Viewer-owned Google popup completion", () => {
 			if (String(url).includes("link-status")) return fresh.promise;
 			return response({ version: 1, operation: operation("succeeded"), current: true });
 		});
-		// Act: operation success alone cannot close the popup.
 		await tick();
-		// Assert
 		expect(popup.close).not.toHaveBeenCalled();
-		// Act: only the completed fresh status authorizes closing it.
 		fresh.resolve(response(linked()));
 		await settle();
-		// Assert
 		expect(popup.close).toHaveBeenCalledTimes(1);
 		expect(popup.opener).toBeNull();
 	});
@@ -195,32 +212,24 @@ describe("Viewer-owned Google popup completion", () => {
 		"linked without operation success",
 		"fresh status failure",
 	])("does not close a launched popup after %s", async (fault) => {
-		// Arrange
 		await launch();
 		configureFailure(fault);
-		// Act
 		await tick();
-		// Assert
 		expect(popup.close).not.toHaveBeenCalled();
 		expect(popup.opener).toBeNull();
 	});
 
 	it("retains a click-opened fallback handle and closes it after verified completion", async () => {
-		// Arrange
 		vi.mocked(window.open).mockReturnValueOnce(null);
 		await launch();
 		expect(popup.location.replace).not.toHaveBeenCalled();
-		// Act
 		await click("Open Google sign-in");
-		// Assert: reserve blank, isolate, then navigate the validated URL.
 		expect(window.open).toHaveBeenLastCalledWith("about:blank", "_blank");
 		expect(popup.opener).toBeNull();
 		expect(popup.location.replace).toHaveBeenCalledWith(privateUrl);
-		// Act
 		polled = operation("succeeded");
 		view = linked();
 		await tick();
-		// Assert
 		expect(popup.close).toHaveBeenCalledTimes(1);
 	});
 });
