@@ -35,6 +35,18 @@ it("native D1 evaluates the same read-only guard for unrelated people, key drift
 	await seed(`${seedAttemptSql} UPDATE coordinator_auth_link_attempts SET identity_id='other',state='failed',failure_reason='device_cancelled',failed_at_ms=${NOW},browser_transaction_hash='${"c".repeat(64)}',account_subject='private-oidc-subject';`);
 	expect(await read()).toEqual(eligible);
 	await seed(seedClaimSql);
+	const committed = await snapshot();
+	const genesis = await env.COORDINATOR_DB.prepare(`SELECT c.claim_id, a.link_id, a.state,
+	 a.account_subject, a.authority_kind, b.state AS browser_state, b.nonce, b.pkce_verifier,
+	 c.created_at_ms = a.finalized_at_ms AS matching_birth
+	 FROM coordinator_auth_device_claims c
+	 JOIN coordinator_auth_link_attempts a ON a.coordinator_id=c.coordinator_id AND a.attempt_id=c.attempt_id
+	 JOIN coordinator_auth_browser_transactions b ON b.coordinator_id=a.coordinator_id AND b.browser_transaction_hash=a.browser_transaction_hash
+	 WHERE c.claim_id='claim-a'`).first();
+	expect(genesis).toEqual({ claim_id: "claim-a", link_id: "claim-a", state: "finalized",
+		account_subject: "private-claim-subject", authority_kind: "device_claim",
+		browser_state: "consumed", nonce: null, pkce_verifier: null, matching_birth: 1 });
 	expect(await read()).toEqual(denied);
+	expect(await snapshot()).toEqual(committed);
 	await store.close();
 });

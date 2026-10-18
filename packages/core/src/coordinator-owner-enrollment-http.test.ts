@@ -3,6 +3,10 @@ import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
+import {
+	ownerStartFixture,
+	seedOwnerCallbackAuthority,
+} from "./coordinator-owner-enrollment-historical-test-fixture.js";
 import { createCoordinatorOwnerEnrollmentHttp } from "./coordinator-owner-enrollment-http.js";
 import { ownerEnrollmentFinalMessage } from "./coordinator-owner-enrollment-proof.js";
 import {
@@ -10,10 +14,8 @@ import {
 	config,
 	hash,
 	ORIGIN,
-	ownerStartFixture,
 	ownerStartTransaction,
 	proof,
-	seedOwnerCallbackAuthority,
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import { ownerEnrollmentStartMessage } from "./owner-enrollment-start.js";
 

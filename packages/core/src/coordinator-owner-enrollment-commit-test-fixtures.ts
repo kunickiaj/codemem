@@ -1,8 +1,9 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { HistoricalAccountPins } from "./coordinator-auth-historical-test-fixture.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import type { Fixture } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL,
@@ -13,6 +14,7 @@ import {
 	ownerEnrollmentConfirmationHash,
 	ownerEnrollmentFinalMessage,
 } from "./coordinator-owner-enrollment-proof.js";
+import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import { finalizedOwner, pendingOwner } from "./coordinator-owner-enrollment-test-harness.js";
 
 const EFFECT_TABLES = [
@@ -51,10 +53,20 @@ function nativeBackend(db: Database.Database): AuthLinkBackend {
 		},
 	};
 }
-async function confirmedMetadata(key: ReturnType<typeof commitPendingKey>): Promise<OwnerAttempt> {
+async function confirmedMetadata(
+	key: ReturnType<typeof commitPendingKey>,
+	history: HistoricalAccountPins,
+): Promise<OwnerAttempt> {
 	const row: OwnerAttempt = {
 		...finalizedOwner,
 		purpose: "owner_enroll",
+		account_subject: history.account.subject,
+		identity_id: history.identityId,
+		link_id: history.linkId,
+		link_attempt_id: history.attemptId,
+		// A device-claim denial fixture retains stale attested owner pins; it does not invent an owner proof.
+		link_controller_attestation_id: history.controllerAttestationId ?? "historical-controller",
+		link_auth_config_revision: history.config.revision,
 		public_key: key.publicKey,
 		key_id: (await ed25519KeyIdForRevocation(key.publicKey)) as string,
 		fingerprint: createHash("sha256").update(key.publicKey).digest("hex"),
@@ -72,9 +84,6 @@ async function confirmedMetadata(key: ReturnType<typeof commitPendingKey>): Prom
 }
 type Exec = (sql: string, ...values: AuthLinkStatement["values"]) => Promise<number>;
 async function seedCommitAuthority(exec: Exec) {
-	await exec(
-		"INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind) SELECT coordinator_id,link_id,issuer,account_subject,identity_id,link_attempt_id,link_controller_attestation_id,link_auth_config_revision,created_at_ms,'controller_attestation' FROM coordinator_owner_enrollment_attempts",
-	);
 	for (const group of ["group-a", "group-b"]) {
 		await exec(
 			"INSERT INTO groups (group_id,created_at) VALUES (?,?)",
@@ -119,15 +128,23 @@ async function seedCommitAttempt(exec: Exec, row: OwnerAttempt) {
 	}
 }
 // Test-only composition installs audit DDL; no production schema hook, route, provider or SDK.
-export async function commitWriterFixture(): Promise<CommitWriterFixture> {
-	const { db } = setupStore("SQLite", { authClock: () => NOW });
+export async function commitWriterFixture(
+	prepared: Fixture & { history: HistoricalAccountPins; close(): void },
+): Promise<CommitWriterFixture> {
+	const { db } = prepared;
+	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
 	db.exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
 	const backend = nativeBackend(db);
 	const exec: Exec = (sql, ...values) => backend.run({ sql, values });
-	const rows = (table: string) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+	const rows = (table: string) =>
+		db
+			.prepare(
+				`SELECT * FROM ${table} ORDER BY ${table === "coordinator_auth_device_claims" ? "claim_id" : "rowid"}`,
+			)
+			.all();
 	const key = commitPendingKey();
 	const secret = Buffer.alloc(32, 9).toString("base64url");
-	const row = await confirmedMetadata(key);
+	const row = await confirmedMetadata(key, prepared.history);
 	await seedCommitAttempt(exec, row);
 	await seedCommitAuthority(exec);
 	return {
@@ -138,6 +155,7 @@ export async function commitWriterFixture(): Promise<CommitWriterFixture> {
 		row,
 		key,
 		secret,
+		close: prepared.close,
 		input: (patch: Partial<OwnerAttempt> = {}, completionSecret = secret) => {
 			const captured = { ...row, ...patch };
 			return {
@@ -155,6 +173,7 @@ export async function commitWriterFixture(): Promise<CommitWriterFixture> {
 	};
 }
 export interface CommitWriterFixture {
+	close(): void;
 	db: Database.Database;
 	backend: AuthLinkBackend;
 	exec: Exec;

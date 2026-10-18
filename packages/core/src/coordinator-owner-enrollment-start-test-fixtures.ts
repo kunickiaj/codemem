@@ -14,6 +14,7 @@ import {
 } from "./coordinator-browser-csrf.js";
 import { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from "./coordinator-owner-enrollment-commit.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
+import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 
 export const ORIGIN = "https://app.example.test";
 export const config = {
@@ -110,10 +111,21 @@ export interface OwnerStartFixture {
 	snapshot(): Record<string, unknown>[][];
 	close(): void;
 }
-export function ownerStartFixture(): OwnerStartFixture {
-	const directory = mkdtempSync(join(tmpdir(), "owner-start-test-"));
-	const path = join(directory, "test.sqlite");
-	const { db, store } = setupStore("SQLite", { databasePath: path, authClock: () => NOW });
+export function ownerStartFixture(prepared?: {
+	db: Database.Database;
+	store: Store;
+	close(): void;
+}): OwnerStartFixture {
+	const directory = prepared ? undefined : mkdtempSync(join(tmpdir(), "owner-start-test-"));
+	const source =
+		prepared ??
+		setupStore("SQLite", {
+			databasePath: join(directory as string, "test.sqlite"),
+			authClock: () => NOW,
+		});
+	const { db, store } = source;
+	const path = db.name;
+	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
 	db.exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
 	const second = new Database(path);
 	const key = commitPendingKey();
@@ -145,8 +157,11 @@ export function ownerStartFixture(): OwnerStartFixture {
 			].map(rows),
 		close: () => {
 			second.close();
-			db.close();
-			rmSync(directory, { recursive: true });
+			if (prepared) prepared.close();
+			else {
+				db.close();
+				rmSync(directory as string, { recursive: true });
+			}
 		},
 	};
 }
@@ -184,7 +199,8 @@ export async function browserForm(attemptId: string, startCode: string): Promise
 	};
 }
 
-// Existing account authority only: no enrollment or historical controller device is seeded.
+// Legacy native HTTP seed. Core owner tests prepare complete history before store open
+// through coordinator-owner-enrollment-historical-test-fixture.ts instead.
 export function seedOwnerCallbackAuthority(f: OwnerStartFixture): void {
 	f.db
 		.prepare(`INSERT INTO coordinator_auth_account_links
@@ -201,6 +217,11 @@ export function seedOwnerCallbackAuthority(f: OwnerStartFixture): void {
 			"b".repeat(64),
 			NOW - 1000,
 		);
+	seedOwnerCallbackGroups(f);
+}
+
+/** Independent, pre-existing grants; account births are prepared before store open in Core fixtures. */
+export function seedOwnerCallbackGroups(f: OwnerStartFixture): void {
 	for (const [group, revision, archived, revoked] of [
 		["group-b", 3, false, false],
 		["group-a", 2, false, false],

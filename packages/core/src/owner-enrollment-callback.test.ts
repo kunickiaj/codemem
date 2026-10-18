@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { upgradeAuthLifecycleSchema } from "./coordinator-auth-lifecycle-upgrade-sqlite.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import { verifyBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
@@ -10,6 +12,11 @@ import {
 	commitProofMessage,
 } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
+	type OwnerAccountHistoryOptions,
+	ownerStartFixture,
+	seedOwnerCallbackAuthority,
+} from "./coordinator-owner-enrollment-historical-test-fixture.js";
+import {
 	ATTEMPTS,
 	browserForm,
 	config,
@@ -18,9 +25,7 @@ import {
 	ORIGIN,
 	type OwnerStartFixture,
 	ownerCallbackAuthority,
-	ownerStartFixture,
 	proof,
-	seedOwnerCallbackAuthority,
 	TRANSACTIONS,
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
@@ -45,7 +50,11 @@ afterEach(() => {
 	}
 });
 
-async function claimed() {
+async function claimed(history?: OwnerAccountHistoryOptions) {
+	if (history) {
+		f.close();
+		f = ownerStartFixture(history);
+	}
 	const input = {
 		attemptId: "attempt-a",
 		deviceId: "device-a",
@@ -101,7 +110,7 @@ async function claimed() {
 }
 type Ceremony = Awaited<ReturnType<typeof claimed>>;
 function consumed() {
-	expect(f.rows(TRANSACTIONS)[0]).toMatchObject({
+	expect(f.rows(TRANSACTIONS).find((row) => row.purpose === "owner_enroll")).toMatchObject({
 		state: "consumed",
 		nonce: null,
 		pkce_verifier: null,
@@ -273,15 +282,14 @@ it.each(["missing", "revoked", "wrong-issuer", "wrong-subject", "no-eligible-gra
 	"denies a genuinely verified account with %s existing link",
 	async (fault) => {
 		// Arrange
-		const c = await claimed();
+		let history: OwnerAccountHistoryOptions | undefined;
+		if (fault === "missing") history = { defect: "missing_link" };
+		if (fault === "wrong-issuer") history = { defect: "link_issuer" };
+		if (fault === "wrong-subject") history = { defect: "link_subject" };
+		const c = await claimed(history);
 		if (fault === "no-eligible-grants") f.db.exec(`UPDATE groups SET archived_at='2026-10-01'`);
-		if (fault === "missing") f.db.exec("DELETE FROM coordinator_auth_account_links");
 		if (fault === "revoked")
 			f.db.exec(`UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW}`);
-		if (fault === "wrong-issuer")
-			f.db.exec("UPDATE coordinator_auth_account_links SET issuer='https://other.example.test'");
-		if (fault === "wrong-subject")
-			f.db.exec("UPDATE coordinator_auth_account_links SET subject='another-subject'");
 		const before = ownerCallbackAuthority(f);
 		// Act
 		const result = await c.verifyCallback(c.request());
@@ -294,10 +302,15 @@ it.each(["missing", "revoked", "wrong-issuer", "wrong-subject", "no-eligible-gra
 );
 
 it("denies a device-claim account link despite verified account and active grants", async () => {
-	// Arrange: use a coherent claim row, not an invalid mixed controller/claim fixture.
-	const c = await claimed();
-	f.db.exec(`UPDATE coordinator_auth_account_links SET authority_kind='device_claim',
- controller_attestation_id=NULL, device_claim_id='claim-a'`);
+	// Arrange: valid immutable claim genesis, not a controller row relabeled as a claim.
+	const c = await claimed({ authority: "device_claim" });
+	expect(
+		f.db
+			.prepare(
+				`SELECT ${authDeviceClaimProvenanceSql({ link: "l" })} AS valid FROM coordinator_auth_account_links l`,
+			)
+			.get(),
+	).toEqual({ valid: 1 });
 	const before = ownerCallbackAuthority(f);
 	// Act
 	const result = await c.verifyCallback(c.request());
@@ -360,7 +373,22 @@ it("rejects an outstanding transaction after server configuration revision drift
 	expect(c.provider.fetch).toHaveBeenCalledTimes(fetches);
 });
 
-it.each(["link-revision", "link-attempt", "link-controller", "revocation", "grant-revision"])(
+it.each([
+	`UPDATE coordinator_auth_account_links SET auth_config_revision = '${"c".repeat(64)}'`,
+	"UPDATE coordinator_auth_account_links SET attempt_id = 'changed-attempt'",
+	"UPDATE coordinator_auth_account_links SET controller_attestation_id = 'changed-controller'",
+])("V3 storage rejects the impossible callback birth race: %s", (mutation) => {
+	// Arrange: this is storage-only; never run the V2 owner reader through a V3 readiness gate.
+	upgradeAuthLifecycleSchema(f.db);
+	const before = ownerCallbackAuthority(f);
+	// Act
+	const mutate = () => f.db.exec(mutation);
+	// Assert
+	expect(mutate).toThrow(/auth_account_link_immutable/);
+	expect(ownerCallbackAuthority(f)).toEqual(before);
+});
+
+it.each(["revocation", "grant-revision"])(
 	"rejects %s drift between authority read and write",
 	async (fault) => {
 		// Arrange: mutate from an independent connection at the final conditional write.
@@ -372,14 +400,6 @@ it.each(["link-revision", "link-attempt", "link-controller", "revocation", "gran
 			run: async (statement) => {
 				if (statement.sql.includes("SET state = 'oidc_verified'")) {
 					const changes: Record<string, string> = {
-						"link-revision":
-							"UPDATE coordinator_auth_account_links SET auth_config_revision='" +
-							"c".repeat(64) +
-							"'",
-						"link-attempt":
-							"UPDATE coordinator_auth_account_links SET attempt_id='changed-attempt'",
-						"link-controller":
-							"UPDATE coordinator_auth_account_links SET controller_attestation_id='changed-controller'",
 						revocation: `UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW}`,
 						"grant-revision":
 							"UPDATE coordinator_identity_group_grants SET revision=revision+1 WHERE group_id='group-a'",
@@ -416,21 +436,17 @@ it.each(["missing-transaction", "invalid-code"])(
 		const cookie = session.setCookie.split(";")[0] ?? "";
 		const parsed = await readBrowserCookie(cookie, "session");
 		if (parsed.kind !== "present") throw new Error("missing fixture session cookie");
-		f.db
-			.prepare(`INSERT INTO coordinator_auth_sessions
- (coordinator_id,session_id,credential_hash,browser_transaction_hash,link_id,identity_id,
- issuer,subject,auth_config_revision,created_at_ms,expires_at_ms)
- VALUES (?,?,?,?,'link-a','identity-a',?,'fixture-subject',?,?,?)`)
-			.run(
-				cfg.coordinatorId,
-				"session-a",
-				parsed.cookieHash,
-				"f".repeat(64),
-				cfg.issuer,
-				cfg.revision,
-				NOW,
-				NOW + 28800000,
-			);
+		await consumeSigninProof({ ...f, now: NOW, cfg }, "f".repeat(64), cfg);
+		expect(
+			await f.store.signInWithConsumedBrowserTransaction(
+				{
+					credentialHash: parsed.cookieHash,
+					browserTransactionHash: "f".repeat(64),
+					account: { issuer: cfg.issuer, subject: "fixture-subject" },
+				},
+				cfg,
+			),
+		).toMatchObject({ kind: "issued" });
 		if (fault === "invalid-code") c.url.searchParams.set("code", "wrong-code");
 		const before = ownerCallbackAuthority(f);
 		const binder = fault === "missing-transaction" ? cookie : `${c.cookie}; ${cookie}`;
@@ -739,7 +755,7 @@ it.each(
 it("consumes only once when both SQLite connections first read pending", async () => {
 	// Arrange: hold both transaction SELECT results before either conditional UPDATE can run.
 	const c = await claimed();
-	const original = f.rows(TRANSACTIONS)[0];
+	const original = f.rows(TRANSACTIONS).find((row) => row.purpose === "owner_enroll");
 	let release!: () => void;
 	const ready = new Promise<void>((resolve) => {
 		release = resolve;

@@ -119,17 +119,19 @@ for (const backend of ["SQLite", "D1"] as const) {
 	])(`${backend} rechecks eligibility at INSERT: %s`, async (mutation, { fixture: f }) => {
 		const i = seed(f);
 		let injected = false;
+		let retained: ReturnType<typeof rows> = [];
 		const prepare = f.db.prepare.bind(f.db);
 		const fault = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
 			if (!injected && sql.includes("INSERT INTO coordinator_auth_link_attempts")) {
 				injected = true;
 				f.db.exec(mutation);
+				retained = rows(f);
 			}
 			return prepare(sql);
 		});
 		expect(await f.store.createAuthLinkAttempt(i, f.cfg)).toMatchObject({ kind: "rejected" });
 		expect(injected).toBe(true);
-		expect(rows(f)).toEqual([]);
+		expect(rows(f)).toEqual(retained);
 		fault.mockRestore();
 	});
 	test.for([
@@ -141,8 +143,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 	])(`${backend} repeats the live guard on exact retry: %s`, async (mutation, { fixture: f }) => {
 		const i = seed(f);
 		await f.store.createAuthLinkAttempt(i, f.cfg);
-		const before = rows(f);
 		f.db.exec(mutation);
+		const before = rows(f);
 		expect(await f.store.createAuthLinkAttempt(i, f.cfg)).toEqual({
 			kind: "rejected",
 			error: "attempt_unavailable",

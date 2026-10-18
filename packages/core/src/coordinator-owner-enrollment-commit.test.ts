@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	commitOwnerEnrollment,
@@ -11,8 +12,8 @@ import {
 	commitFixtureEnrollment,
 	commitPendingKey,
 	commitProofMessage,
-	commitWriterFixture,
 } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
+import { commitWriterFixture } from "./coordinator-owner-enrollment-historical-test-fixture.js";
 
 const test = it.extend<{ writer: CommitWriterFixture }>({
 	writer: async ({ task: _task }, use) => {
@@ -23,7 +24,7 @@ const test = it.extend<{ writer: CommitWriterFixture }>({
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
-			f.db.close();
+			f.close();
 		}
 	},
 });
@@ -32,6 +33,20 @@ test("private confirmed writer commits ownership, every pinned group, audit and 
 	writer: f,
 }) => {
 	// Arrange: two eligible pinned groups exercise the real dependent SQL changes() count.
+	expect(
+		f.db
+			.prepare(`SELECT t.state AS attempt_state,b.state AS browser_state,a.action
+ FROM coordinator_auth_account_links l
+ JOIN coordinator_auth_link_attempts t ON t.coordinator_id=l.coordinator_id AND t.attempt_id=l.attempt_id
+  AND t.link_id=l.link_id AND t.identity_id=l.identity_id AND t.account_subject=l.subject
+  AND t.auth_config_revision=l.auth_config_revision AND t.finalized_at_ms=l.created_at_ms
+ JOIN coordinator_auth_browser_transactions b ON b.coordinator_id=t.coordinator_id
+  AND b.browser_transaction_hash=t.browser_transaction_hash AND b.attempt_id=t.attempt_id AND b.purpose='link'
+ JOIN coordinator_auth_link_audit_log a ON a.coordinator_id=l.coordinator_id AND a.link_id=l.link_id
+  AND a.attempt_id=t.attempt_id AND a.authority_kind=l.authority_kind
+ WHERE l.link_id=? AND a.action='link_created'`)
+			.get(f.row.link_id),
+	).toEqual({ attempt_state: "finalized", browser_state: "consumed", action: "link_created" });
 	const input = f.input();
 	// Act
 	const committed = await commitOwnerEnrollment(input);
@@ -140,20 +155,11 @@ test.for(pinChanges)("private writer rejects stale caller pin %j", async (patch,
 });
 
 const authorityChanges = {
-	"revoked link": "UPDATE coordinator_auth_account_links SET revoked_at_ms = 1",
-	"link issuer tuple":
-		"UPDATE coordinator_auth_account_links SET issuer = 'https://other.example.test'",
-	"link subject tuple": "UPDATE coordinator_auth_account_links SET subject = 'other-subject'",
-	"link identity tuple": "UPDATE coordinator_auth_account_links SET identity_id = 'other-identity'",
-	"link attempt provenance": "UPDATE coordinator_auth_account_links SET attempt_id = 'changed'",
-	"link controller provenance":
-		"UPDATE coordinator_auth_account_links SET controller_attestation_id = 'changed'",
-	"link revision provenance": `UPDATE coordinator_auth_account_links SET auth_config_revision = '${"9".repeat(64)}'`,
+	"revoked link": `UPDATE coordinator_auth_account_links SET revoked_at_ms = ${NOW}`,
 	"grant revision": "UPDATE coordinator_identity_group_grants SET revision = 2",
 	"grant revoked":
 		"UPDATE coordinator_identity_group_grants SET status = 'revoked', revoked_at = 'revoked'",
 	"archived group": "UPDATE groups SET archived_at = 'archived'",
-	"missing link": "DELETE FROM coordinator_auth_account_links",
 	"missing grant": "DELETE FROM coordinator_identity_group_grants",
 	"nonconfirmed attempt": "UPDATE coordinator_owner_enrollment_attempts SET state = 'expired'",
 };
@@ -171,18 +177,57 @@ test.for(Object.entries(authorityChanges))(
 	},
 );
 
-test("private SQL winner denies a device-claim link with otherwise current grants", async ({
-	writer: f,
-}) => {
-	// Arrange: retain the confirmed historical pins, but replace the current link authority.
-	await f.exec(`UPDATE coordinator_auth_account_links SET authority_kind='device_claim',
- controller_attestation_id=NULL, device_claim_id='claim-a'`);
-	const before = f.effects();
-	// Act
-	const result = await commitOwnerEnrollment(f.input());
-	// Assert: a valid pending-key proof cannot turn a claim into owner enrollment.
-	expect(result).toBe(false);
-	expect(f.effects()).toEqual(before);
+it.each([
+	"missing_link",
+	"link_issuer",
+	"link_subject",
+	"link_identity",
+	"link_attempt",
+	"link_controller",
+	"link_revision",
+] as const)("private SQL winner denies pre-existing historical %s", async (defect) => {
+	// Arrange: seed the conflicting birth before store open, not by rewriting an active receipt.
+	const f = await commitWriterFixture({ defect });
+	try {
+		const before = [
+			f.effects(),
+			f.rows("coordinator_auth_account_links"),
+			f.rows("coordinator_auth_link_audit_log"),
+		];
+		// Act
+		const result = await commitOwnerEnrollment(f.input());
+		// Assert
+		expect(result).toBe(false);
+		expect([
+			f.effects(),
+			f.rows("coordinator_auth_account_links"),
+			f.rows("coordinator_auth_link_audit_log"),
+		]).toEqual(before);
+	} finally {
+		f.close();
+	}
+});
+
+it("private SQL winner denies a complete device-claim account despite independent active grants", async () => {
+	// Arrange: the claim's genesis is valid; retained attested owner pins cannot promote it.
+	const f = await commitWriterFixture({ authority: "device_claim" });
+	try {
+		expect(
+			f.db
+				.prepare(
+					`SELECT ${authDeviceClaimProvenanceSql({ link: "l" })} AS valid FROM coordinator_auth_account_links l`,
+				)
+				.get(),
+		).toEqual({ valid: 1 });
+		const before = f.effects();
+		// Act
+		const result = await commitOwnerEnrollment(f.input());
+		// Assert
+		expect(result).toBe(false);
+		expect(f.effects()).toEqual(before);
+	} finally {
+		f.close();
+	}
 });
 
 test.for(["device_id", "ed25519_key"] as const)(

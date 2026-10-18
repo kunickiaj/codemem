@@ -1,5 +1,6 @@
 import { expect } from "vitest";
-import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { startBrowserProof } from "./coordinator-auth-browser-proof-test-fixtures.js";
+import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	insertOwnership,
 	OWNERSHIP_TABLE,
@@ -123,13 +124,8 @@ async function transition(f: RevocationFixture, action: Transition) {
 		expect(
 			await f.store.renameDevice(f.input.groupId, f.input.deviceId, "Renamed owner label"),
 		).toBe(true);
-		for (const table of [
-			"coordinator_auth_sessions",
-			"coordinator_auth_session_receipts",
-			"coordinator_auth_link_attempts",
-			"coordinator_auth_link_audit_log",
-		])
-			await f.exec(`DELETE FROM ${table}`);
+		// Session data may disappear; receipts, genesis attempts and audits remain history.
+		await f.exec("DELETE FROM coordinator_auth_sessions");
 	}
 }
 function eligible(target: Target, action: Transition, evidence: Evidence) {
@@ -298,6 +294,7 @@ async function separateAuthority(f: LifecycleFixture) {
 		issuer: "https://accounts.example.test",
 		revision: "a".repeat(64),
 		enabled: true,
+		redirectUri: "https://coordinator.example.test/auth/callback",
 	};
 	const evidence = {
 		...signer,
@@ -321,16 +318,14 @@ async function separateAuthority(f: LifecycleFixture) {
 				attemptId: "attempt-a",
 				runtimeVerifierHash: "b".repeat(64),
 				loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
+				browserStartHash: "f".repeat(64),
 			},
 			cfg,
 		),
 	).toMatchObject({
 		kind: "created",
 	});
-	await f.store.claimAuthLinkAttempt(
-		{ attemptId: "attempt-a", browserTransactionHash: browserHash },
-		cfg,
-	);
+	const material = await consumeAuthorityBrowser(f, cfg);
 	await f.store.recordAuthLinkOidcVerified(
 		{
 			attemptId: "attempt-a",
@@ -347,9 +342,31 @@ async function separateAuthority(f: LifecycleFixture) {
 		},
 		cfg,
 	);
-	await finalizeAuthoritySession(f, cfg);
+	await finalizeAuthoritySession(f, cfg, { binderHash: material.binderHash });
 }
-async function finalizeAuthoritySession(f: LifecycleFixture, cfg: CoordinatorAuthLinkConfig) {
+async function consumeAuthorityBrowser(f: LifecycleFixture, cfg: CoordinatorAuthBrowserConfig) {
+	const material = await startBrowserProof(
+		{ store: f.store, cfg },
+		{
+			attemptId: "attempt-a",
+			browserTransactionHash: browserHash,
+			browserStartHash: "f".repeat(64),
+		},
+		cfg,
+	);
+	expect(await f.store.consumeAuthBrowserTransaction(material, cfg)).toMatchObject({
+		kind: "consumed",
+		purpose: "link",
+		attemptId: "attempt-a",
+		browserTransactionHash: browserHash,
+	});
+	return material;
+}
+async function finalizeAuthoritySession(
+	f: LifecycleFixture,
+	cfg: CoordinatorAuthBrowserConfig,
+	proof: { binderHash: string },
+) {
 	const signer = { ...f.input };
 	expect(
 		await f.store.finalizeAuthLinkAttempt(
@@ -369,11 +386,12 @@ async function finalizeAuthoritySession(f: LifecycleFixture, cfg: CoordinatorAut
 		),
 	).toMatchObject({ kind: "applied" });
 	expect(
-		await f.store.redeemAuthLinkSession(
+		await f.store.redeemAuthLinkSessionWithBrowserTransaction(
 			{
 				attemptId: "attempt-a",
 				browserTransactionHash: browserHash,
 				credentialHash: "e".repeat(64),
+				binderHash: proof.binderHash,
 			},
 			cfg,
 		),
@@ -398,6 +416,10 @@ function registerSeparateAuthorityCleanup(test: Test) {
 				"coordinator_identity_group_grants",
 				"coordinator_auth_controller_attestations",
 				"coordinator_auth_account_links",
+				"coordinator_auth_link_attempts",
+				"coordinator_auth_link_audit_log",
+				"coordinator_auth_session_receipts",
+				"coordinator_auth_browser_transactions",
 				"coordinator_join_requests",
 				"coordinator_bootstrap_grants",
 			];
@@ -410,13 +432,8 @@ function registerSeparateAuthorityCleanup(test: Test) {
 			])
 				expect((await f.rows(table)).length).toBeGreaterThan(0);
 			await transition(f, "history cleanup");
-			for (const table of [
-				"coordinator_auth_sessions",
-				"coordinator_auth_session_receipts",
-				"coordinator_auth_link_attempts",
-				"coordinator_auth_link_audit_log",
-			])
-				expect(await f.rows(table)).toEqual([]);
+			expect(await f.rows("coordinator_auth_sessions")).toEqual([]);
+			expect(await Promise.all(preservedTables.map(f.rows))).toEqual(preserved);
 			await f.reopen?.();
 			const before = await lifecycleSnapshot(f);
 			// Act: matching Identity labels and retained authorities still are not owner proof.

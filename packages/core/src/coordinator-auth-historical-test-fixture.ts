@@ -22,6 +22,7 @@ export type HistoricalAccountDefect =
 export interface HistoricalAccountOptions {
 	authority: "controller_attestation" | "device_claim";
 	issuer?: string;
+	revision?: string;
 	bornAtMs?: number;
 	defect?: HistoricalAccountDefect;
 	session?: {
@@ -62,7 +63,7 @@ function pinsFor(options: HistoricalAccountOptions): HistoricalAccountPins {
 		config: {
 			coordinatorId,
 			issuer: options.issuer ?? "https://accounts.example.test",
-			revision: "a".repeat(64),
+			revision: options.revision ?? "a".repeat(64),
 			enabled: true,
 		},
 		account: {

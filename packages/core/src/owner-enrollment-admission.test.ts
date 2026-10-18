@@ -4,14 +4,16 @@ import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
+import {
+	ownerStartFixture,
+	seedOwnerCallbackAuthority,
+} from "./coordinator-owner-enrollment-historical-test-fixture.js";
 import { createCoordinatorOwnerEnrollmentHttp } from "./coordinator-owner-enrollment-http.js";
 import {
 	ATTEMPTS,
 	config,
 	ORIGIN,
-	ownerStartFixture,
 	proof,
-	seedOwnerCallbackAuthority,
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
 	importOwnerEnrollmentAdmissionKey,

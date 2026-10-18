@@ -1,6 +1,9 @@
 import { expect, vi } from "vitest";
 import {
+	controllerLinkEvidenceSql,
+	deviceClaimEvidenceSql,
 	input,
+	NOW,
 	seedClaimSql,
 	seedEnrollmentSql,
 	seedKeyRevocationSql,
@@ -266,14 +269,13 @@ for (const backend of ["SQLite", "D1"] as const) {
 	);
 	test.for([
 		seedLinkSql,
-		seedLinkSql
-			.replace("'private-subject'", "'trusted-test-google-subject'")
-			.replace("'identity-a'", "'other-identity'"),
-		`${seedLinkSql} UPDATE coordinator_auth_account_links SET revoked_at_ms=1;`,
+		controllerLinkEvidenceSql({
+			subject: "trusted-test-google-subject",
+			identityId: "other-identity",
+		}),
+		`${seedLinkSql} UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW};`,
 		seedClaimSql,
-		seedClaimSql
-			.replace("'identity-a'", "'other-identity'")
-			.replace("'device-a'", "'other-device'"),
+		deviceClaimEvidenceSql({ identityId: "other-identity", deviceId: "other-device" }),
 	])(
 		`${backend} existing account, Identity, device/key proof or tombstone cannot be replaced: %s`,
 		async (conflict, { fixture: f }) => {

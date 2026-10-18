@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CANONICAL_PUBLIC_KEY, EXPECTED_KEY_ID } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 
 export const NOW = 1_791_028_800_000;
@@ -24,13 +25,99 @@ export const seedBindingSql = `INSERT INTO coordinator_device_ownership_bindings
  (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
  VALUES ('device-a','${EXPECTED_KEY_ID}','identity-a','coordinator-a','binding-a','reviewed_legacy_migration','source-a','bound');`;
 
-export const seedClaimSql = `INSERT INTO coordinator_auth_device_claims
- (claim_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,key_id,attempt_id,issuer,auth_config_revision,created_at_ms)
- VALUES ('claim-a','coordinator-a','identity-a','group-a','device-a','${CANONICAL_PUBLIC_KEY}','${"a".repeat(64)}','${EXPECTED_KEY_ID}','completed-attempt','https://accounts.example.test','${"a".repeat(64)}',${NOW});`;
+const proofHash = (value: string) => createHash("sha256").update(value).digest("hex");
+function insertEvidence(table: string, row: Record<string, string | number | null>) {
+	const entries = Object.entries(row);
+	const literal = (value: string | number | null) => {
+		if (value === null) return "NULL";
+		if (typeof value === "number") return String(value);
+		return `'${value.replaceAll("'", "''")}'`;
+	};
+	return `INSERT INTO ${table} (${entries.map(([name]) => name).join(",")}) VALUES (${entries.map(([, value]) => literal(value)).join(",")});`;
+}
 
-export const seedLinkSql = `INSERT INTO coordinator_auth_account_links
- (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind)
- VALUES ('coordinator-a','link-a','https://accounts.example.test','private-subject','identity-a','historical-attempt','historical-controller','${"a".repeat(64)}',${NOW},'controller_attestation');`;
+// Synthetic persisted facts, not enrollment, controller review, or provider verification.
+function genesisEvidence(pins: {
+	identityId: string; deviceId: string; attemptId: string; linkId: string;
+	publicKey: string; fingerprint: string;
+	subject: string; authority: "controller_attestation" | "device_claim";
+}) {
+	const controller = pins.authority === "controller_attestation" ? "historical-controller" : null;
+	const browserHash = proofHash(`device-claim-fixture:${pins.attemptId}`);
+	const common = {
+		coordinator_id: config.coordinatorId, identity_id: pins.identityId, group_id: input.signer.groupId,
+		device_id: pins.deviceId, fingerprint: pins.fingerprint,
+		controller_attestation_id: controller, auth_config_revision: config.revision,
+		authority_kind: pins.authority,
+	};
+	const attempt = insertEvidence("coordinator_auth_link_attempts", {
+		...common, attempt_id: pins.attemptId, public_key: pins.publicKey,
+		controller_review_receipt_id: controller ? "historical-receipt" : null,
+		controller_revision: controller ? 1 : null, issuer: config.issuer,
+		runtime_verifier_hash: proofHash(`${browserHash}:runtime`),
+		loopback_redirect: "http://127.0.0.1:4567/complete", state: "finalized",
+		browser_transaction_hash: browserHash, account_subject: pins.subject,
+		completion_secret_hash: proofHash(`${browserHash}:completion`), link_id: pins.linkId,
+		browser_start_hash: proofHash(`${browserHash}:start`), created_at_ms: NOW - 100,
+		expires_at_ms: NOW + 599900, claimed_at_ms: NOW - 80,
+		oidc_verified_at_ms: NOW - 60, confirmed_at_ms: NOW - 40, finalized_at_ms: NOW,
+	});
+	const browser = insertEvidence("coordinator_auth_browser_transactions", {
+		coordinator_id: config.coordinatorId, browser_transaction_hash: browserHash,
+		purpose: "link", attempt_id: pins.attemptId, state_hash: proofHash(`${browserHash}:state`),
+		binder_hash: proofHash(`${browserHash}:binder`), issuer: config.issuer,
+		auth_config_revision: config.revision, redirect_uri: "https://coordinator.example.test/auth/callback",
+		state: "consumed", nonce: null, pkce_verifier: null, claim_token: proofHash(`${browserHash}:claim`),
+		created_at_ms: NOW - 90, expires_at_ms: NOW + 599910, consumed_at_ms: NOW - 70,
+	});
+	return { common, controller, sql: `${attempt}\n${browser}` };
+}
+
+export function deviceClaimEvidenceSql(changes: { identityId?: string; deviceId?: string } = {}) {
+	const pins = {
+		identityId: "identity-a", deviceId: "device-a", attemptId: "completed-attempt",
+		linkId: "claim-a", subject: "private-claim-subject", authority: "device_claim" as const,
+		publicKey: input.signer.publicKey, fingerprint: input.signer.fingerprint,
+		...changes,
+	};
+	const genesis = genesisEvidence(pins);
+	const claim = insertEvidence("coordinator_auth_device_claims", {
+		claim_id: pins.linkId, coordinator_id: config.coordinatorId, identity_id: pins.identityId,
+		group_id: input.signer.groupId, device_id: pins.deviceId, public_key: input.signer.publicKey,
+		fingerprint: input.signer.fingerprint, key_id: EXPECTED_KEY_ID, attempt_id: pins.attemptId,
+		issuer: config.issuer, auth_config_revision: config.revision, created_at_ms: NOW,
+	});
+	return `${genesis.sql}\n${claim}`;
+}
+
+export function controllerLinkEvidenceSql(changes: {
+	identityId?: string; subject?: string; attemptId?: string;
+	deviceId?: string; publicKey?: string; fingerprint?: string;
+} = {}) {
+	const pins = {
+		identityId: "identity-a", deviceId: "device-a", attemptId: "historical-attempt",
+		linkId: "link-a", subject: "private-subject", authority: "controller_attestation" as const,
+		publicKey: input.signer.publicKey, fingerprint: input.signer.fingerprint,
+		...changes,
+	};
+	const genesis = genesisEvidence(pins);
+	// Activation seam: add association reservation, generation=1 and the browser
+	// sequence floor here only when the installed schema and runtime become V3.
+	const link = insertEvidence("coordinator_auth_account_links", {
+		coordinator_id: config.coordinatorId, link_id: pins.linkId, issuer: config.issuer,
+		subject: pins.subject, identity_id: pins.identityId, attempt_id: pins.attemptId,
+		controller_attestation_id: genesis.controller, auth_config_revision: config.revision,
+		created_at_ms: NOW, revoked_at_ms: null, authority_kind: pins.authority, device_claim_id: null,
+	});
+	const audit = insertEvidence("coordinator_auth_link_audit_log", {
+		...genesis.common, link_id: pins.linkId, attempt_id: pins.attemptId,
+		action: "link_created", device_claim_id: null, created_at_ms: NOW,
+	});
+	return `${genesis.sql}\n${link}\n${audit}`;
+}
+
+export const seedClaimSql = deviceClaimEvidenceSql();
+export const seedLinkSql = controllerLinkEvidenceSql();
 
 export const seedAttemptSql = `INSERT INTO coordinator_auth_link_attempts
  (coordinator_id,attempt_id,identity_id,group_id,device_id,public_key,fingerprint,issuer,auth_config_revision,runtime_verifier_hash,loopback_redirect,state,created_at_ms,expires_at_ms,authority_kind)

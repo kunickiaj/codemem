@@ -21,13 +21,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { runOwnerEnrollment } from "./coordinator-owner-enrollment-client.js";
-import { createCoordinatorOwnerEnrollmentHttp } from "./coordinator-owner-enrollment-http.js";
 import {
-	config,
-	ORIGIN,
 	ownerStartFixture,
 	seedOwnerCallbackAuthority,
-} from "./coordinator-owner-enrollment-start-test-fixtures.js";
+} from "./coordinator-owner-enrollment-historical-test-fixture.js";
+import { createCoordinatorOwnerEnrollmentHttp } from "./coordinator-owner-enrollment-http.js";
+import { config, ORIGIN } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import { connect } from "./db.js";
 import * as observerConfig from "./observer-config.js";
 import { MemoryStore } from "./store.js";

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	aliasKey,
 	config,
+	controllerLinkEvidenceSql,
 	denied,
 	eligible,
 	input,
@@ -81,9 +82,8 @@ const BLOCKED_CASES = [
 	],
 	[
 		"historical committed target link with its original controller absent",
-		`${seedAttemptSql}
- UPDATE coordinator_auth_link_attempts SET identity_id='other',authority_kind='controller_attestation',controller_attestation_id='historical-controller',controller_review_receipt_id='historical-receipt',controller_revision=1,state='session_redeemed',browser_transaction_hash='${"c".repeat(64)}',account_subject='private-subject',completion_secret_hash='${"d".repeat(64)}',link_id='link-a',finalized_at_ms=${NOW};
- ${seedLinkSql.replace("'identity-a'", "'other'").replace("'historical-attempt'", "'attempt-a'")}`,
+		`${controllerLinkEvidenceSql({ identityId: "other", attemptId: "attempt-a" })}
+ UPDATE coordinator_auth_link_attempts SET state='session_redeemed' WHERE attempt_id='attempt-a';`,
 	],
 	[
 		"other recipient binding footprint",
@@ -119,6 +119,112 @@ const BLOCKED_CASES = [
 	],
 ] as const;
 
+function registerGenesisEvidence(fixture: () => Fixture) {
+	it.each([
+		{
+			authority: "device_claim",
+			sql: seedClaimSql,
+			attemptId: "completed-attempt",
+			linkId: "claim-a",
+			subject: "private-claim-subject",
+		},
+		{
+			authority: "controller_attestation",
+			sql: seedLinkSql,
+			attemptId: "historical-attempt",
+			linkId: "link-a",
+			subject: "private-subject",
+		},
+	])(
+		"retains coherent $authority genesis without manufacturing grants or permitting replacement",
+		async (birth) => {
+			// Arrange: synthetic persisted history, not new enrollment or provider authority.
+			const f = fixture();
+			const grants = () =>
+				[
+					"groups",
+					"enrolled_devices",
+					"coordinator_identity_group_grants",
+					"coordinator_auth_controller_attestations",
+				].map((table) => f.db.prepare(`SELECT * FROM ${table}`).all());
+			const before = grants();
+			f.db.exec(birth.sql);
+			const history = () =>
+				[
+					"coordinator_auth_link_attempts",
+					"coordinator_auth_browser_transactions",
+					"coordinator_auth_device_claims",
+					"coordinator_auth_account_links",
+					"coordinator_auth_link_audit_log",
+				].map((table) => f.db.prepare(`SELECT * FROM ${table}`).all());
+			const retained = history();
+			// Act: read actual joined evidence, then attempt to insert the same birth again.
+			const evidence = f.db
+				.prepare(`SELECT a.attempt_id, a.link_id, a.state, a.authority_kind,
+		 a.account_subject, a.identity_id, a.device_id, a.public_key, a.fingerprint,
+		 b.state AS browser_state, b.nonce, b.pkce_verifier,
+		 a.created_at_ms <= a.claimed_at_ms AND a.claimed_at_ms <= b.consumed_at_ms
+		 AND b.consumed_at_ms <= a.oidc_verified_at_ms AND a.oidc_verified_at_ms <= a.confirmed_at_ms
+		 AND a.confirmed_at_ms <= a.finalized_at_ms AND a.finalized_at_ms < a.expires_at_ms AS ordered
+		 FROM coordinator_auth_link_attempts a JOIN coordinator_auth_browser_transactions b
+		 ON b.coordinator_id=a.coordinator_id AND b.browser_transaction_hash=a.browser_transaction_hash`)
+				.get();
+			const replace = () => f.db.exec(birth.sql);
+			// Assert: exact proof pins survive, and fixture history grants no new trust.
+			expect(evidence).toEqual({
+				attempt_id: birth.attemptId,
+				link_id: birth.linkId,
+				state: "finalized",
+				authority_kind: birth.authority,
+				account_subject: birth.subject,
+				identity_id: input.identityId,
+				device_id: input.signer.deviceId,
+				public_key: input.signer.publicKey,
+				fingerprint: input.signer.fingerprint,
+				browser_state: "consumed",
+				nonce: null,
+				pkce_verifier: null,
+				ordered: 1,
+			});
+			expect(replace).toThrow(/UNIQUE constraint failed/);
+			expect(history()).toEqual(retained);
+			expect(grants()).toEqual(before);
+		},
+	);
+}
+
+function registerUnrelatedHistoryRead(fixture: () => Fixture) {
+	it("writes nothing and returns no other account metadata when accepting pinned local Identities without ownership footprints", async () => {
+		// Arrange: coherent history belongs to a different device and key.
+		const f = fixture();
+		const read = (changes = {}) =>
+			f.store.readAuthDeviceClaimReadiness({ ...input, ...changes }, config);
+		f.db.exec(
+			controllerLinkEvidenceSql({
+				identityId: "unrelated-identity",
+				deviceId: "unrelated-device",
+				publicKey: otherKey,
+				fingerprint: "b".repeat(64),
+			}),
+		);
+		const tables = f.db
+			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+			.all() as { name: string }[];
+		const snapshot = () =>
+			tables.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
+		const before = snapshot();
+		// Act
+		const localClaim = await read({ identityId: "local:another-device" });
+		const currentClaim = await read();
+		const ownLocalClaim = await read({ identityId: "local:device-a" });
+		// Assert
+		expect(currentClaim).toEqual(eligible);
+		expect(localClaim).toEqual({ ...eligible, identityId: "local:another-device" });
+		expect(ownLocalClaim).toMatchObject({ kind: "eligible", identityId: "local:device-a" });
+		expect(snapshot()).toEqual(before);
+	});
+}
+
 describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) => {
 	let f: Fixture;
 	beforeEach(() => {
@@ -131,6 +237,8 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 	});
 	const read = (changes = {}) =>
 		f.store.readAuthDeviceClaimReadiness({ ...input, ...changes }, config);
+	registerGenesisEvidence(() => f);
+	registerUnrelatedHistoryRead(() => f);
 	it("lets an unassigned legacy device claim its current Identity despite unrelated Team people and labels", async () => {
 		f.db.exec(seedUnrelatedCompletionSql);
 		f.db.exec(
@@ -211,23 +319,6 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 			expect(freshResult).toEqual(freshExpected);
 		},
 	);
-	it("writes nothing and returns no other account metadata when accepting pinned local Identities without ownership footprints", async () => {
-		f.db.exec(seedLinkSql.replace("'identity-a'", "'unrelated-identity'"));
-		const tables = f.db
-			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-			.all() as { name: string }[];
-		const snapshot = () =>
-			tables.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
-		const before = snapshot();
-		const localClaim = await read({ identityId: "local:another-device" });
-		expect(await read()).toEqual(eligible);
-		expect(localClaim).toEqual({ ...eligible, identityId: "local:another-device" });
-		expect(await read({ identityId: "local:device-a" })).toMatchObject({
-			kind: "eligible",
-			identityId: "local:device-a",
-		});
-		expect(snapshot()).toEqual(before);
-	});
 	it("rejects a pinned local Identity when authoritative enrollment names another Identity", async () => {
 		f.db.exec("UPDATE enrolled_devices SET identity_id='other' WHERE device_id='device-a'");
 		const result = await read({ identityId: "local:another-device" });

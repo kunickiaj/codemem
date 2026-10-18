@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { upgradeAuthLifecycleSchema } from "./coordinator-auth-lifecycle-upgrade-sqlite.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
-import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
+import {
+	ownerStartFixture,
+	seedOwnerCallbackAuthority,
+} from "./coordinator-owner-enrollment-historical-test-fixture.js";
 import {
 	type OwnerAttempt,
 	ownerEnrollmentFinalMessage,
@@ -18,9 +23,7 @@ import {
 	ORIGIN,
 	type OwnerStartFixture,
 	ownerCallbackAuthority,
-	ownerStartFixture,
 	proof,
-	seedOwnerCallbackAuthority,
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
 	createCoordinatorOwnerEnrollment,
@@ -277,13 +280,27 @@ it.each([
 
 const authorityDrift = {
 	link: `UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW}`,
-	account: "UPDATE coordinator_auth_account_links SET subject='other-subject'",
 	grant:
 		"UPDATE coordinator_identity_group_grants SET status='revoked',revoked_at='2026-10-01' WHERE group_id='group-a'",
 	revision:
 		"UPDATE coordinator_identity_group_grants SET revision=revision+1 WHERE group_id='group-a'",
 	group: "UPDATE groups SET archived_at='2026-10-01' WHERE group_id='group-a'",
 };
+it.each(["confirm", "finalize"] as const)(
+	"V3 storage rejects account-birth replacement before owner %s",
+	async (stage) => {
+		// Arrange: keep the real prepared ceremony; after upgrade this case exercises only storage.
+		await prepared(stage);
+		upgradeAuthLifecycleSchema(f.db);
+		const before = f.snapshot();
+		// Act
+		const rewrite = () =>
+			f.db.exec("UPDATE coordinator_auth_account_links SET subject='other-subject'");
+		// Assert
+		expect(rewrite).toThrow(/auth_account_link_immutable/);
+		expect(f.snapshot()).toEqual(before);
+	},
+);
 function revokeKey() {
 	f.db
 		.prepare(`INSERT INTO coordinator_device_revocations
@@ -528,19 +545,17 @@ it("a live account session cannot replace the original transaction browser proof
 	const cookie = session.setCookie.split(";")[0] ?? "";
 	const parsed = await readBrowserCookie(cookie, "session");
 	if (parsed.kind !== "present") throw new Error("session fixture failed");
-	f.db
-		.prepare(`INSERT INTO coordinator_auth_sessions
-	(coordinator_id,session_id,credential_hash,browser_transaction_hash,link_id,identity_id,issuer,subject,auth_config_revision,created_at_ms,expires_at_ms)
-	VALUES (?,'session-a',?,?,'link-a','identity-a',?,'fixture-subject',?,?,?)`)
-		.run(
-			cfg.coordinatorId,
-			parsed.cookieHash,
-			"f".repeat(64),
-			cfg.issuer,
-			cfg.revision,
-			NOW,
-			NOW + 28800000,
-		);
+	await consumeSigninProof({ ...f, now: NOW, cfg }, "f".repeat(64), cfg);
+	expect(
+		await f.store.signInWithConsumedBrowserTransaction(
+			{
+				credentialHash: parsed.cookieHash,
+				browserTransactionHash: "f".repeat(64),
+				account: { issuer: cfg.issuer, subject: "fixture-subject" },
+			},
+			cfg,
+		),
+	).toMatchObject({ kind: "issued" });
 	const before = f.snapshot();
 	// Act
 	const result = await c.confirm(c.request({ cookie }), "browser-a", c.view.confirmationHash);
