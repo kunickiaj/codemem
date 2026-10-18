@@ -280,6 +280,8 @@ it.each([
 
 const authorityDrift = {
 	link: `UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW}`,
+	// Keep the V2 runtime recheck until atomic V3 activation makes birth replacement impossible.
+	account: "UPDATE coordinator_auth_account_links SET subject='other-subject'",
 	grant:
 		"UPDATE coordinator_identity_group_grants SET status='revoked',revoked_at='2026-10-01' WHERE group_id='group-a'",
 	revision:

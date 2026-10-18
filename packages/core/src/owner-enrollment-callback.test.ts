@@ -388,8 +388,9 @@ it.each([
 	expect(ownerCallbackAuthority(f)).toEqual(before);
 });
 
-it.each(["revocation", "grant-revision"])(
-	"rejects %s drift between authority read and write",
+// Retire these mutable-birth V2 races only when production atomically activates V3 guards.
+it.each(["link-revision", "link-attempt", "link-controller", "revocation", "grant-revision"])(
+	"V2 runtime rejects %s drift between authority read and write",
 	async (fault) => {
 		// Arrange: mutate from an independent connection at the final conditional write.
 		const c = await claimed();
@@ -400,6 +401,11 @@ it.each(["revocation", "grant-revision"])(
 			run: async (statement) => {
 				if (statement.sql.includes("SET state = 'oidc_verified'")) {
 					const changes: Record<string, string> = {
+						"link-revision": `UPDATE coordinator_auth_account_links SET auth_config_revision='${"c".repeat(64)}'`,
+						"link-attempt":
+							"UPDATE coordinator_auth_account_links SET attempt_id='changed-attempt'",
+						"link-controller":
+							"UPDATE coordinator_auth_account_links SET controller_attestation_id='changed-controller'",
 						revocation: `UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW}`,
 						"grant-revision":
 							"UPDATE coordinator_identity_group_grants SET revision=revision+1 WHERE group_id='group-a'",
