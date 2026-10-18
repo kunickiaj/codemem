@@ -10,12 +10,13 @@ import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import defaultWorker, { createConfiguredCloudflareCoordinatorWorker } from "../src/index.js";
 import {
 	config,
-	exec,
 	NOW,
 	ORIGIN,
 	pendingKey,
 	proof,
+	resetCeremony,
 	rows,
+	seedNativeOwnerAuthority,
 	snapshot,
 } from "./owner-ceremony-test-fixtures.js";
 
@@ -104,29 +105,7 @@ function form(worker: Worker, path: string, body: Record<string, string>, binder
 }
 
 async function clean() {
-	// Immutable ownership receipts need table recreation using the official migration only.
-	await exec("DROP TABLE IF EXISTS coordinator_device_ownership_bindings");
-	await exec("DROP TABLE IF EXISTS coordinator_owner_enrollment_attempts");
-	for (const name of [
-		"0028_add_device_ownership_bindings.sql",
-		"0030_add_owner_enrollment_attempts.sql",
-	]) {
-		const migration = env.TEST_MIGRATIONS.find((migration) => migration.name === name);
-		if (!migration) throw new Error("Missing ownership migration");
-		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
-	}
-	for (const table of [
-		"coordinator_owner_enrollment_audit_log",
-		"coordinator_auth_browser_transactions",
-		"coordinator_auth_sessions",
-		"coordinator_auth_account_profiles",
-		"coordinator_auth_account_links",
-		"coordinator_identity_group_grants",
-		"coordinator_auth_controller_attestations",
-		"enrolled_devices",
-		"groups",
-	])
-		await exec(`DELETE FROM ${table}`);
+	await resetCeremony();
 }
 beforeEach(async () => {
 	await clean();
@@ -254,14 +233,14 @@ it.each(["absent", "inactive"])("completes the normal owner flow with %s transac
 	await store.createGroup(review.groupId);
 	await store.enrollDevice(review.groupId, review);
 	await store.createAuthControllerAttestation(review);
-	await exec(
-		`INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind) VALUES (?,'configured-link',?,'fixture-subject','identity-a','historical-attempt',?,?,?,'controller_attestation')`,
-		config.coordinatorId,
-		config.issuer,
-		review.attestationId,
-		config.revision,
-		NOW,
-	);
+	await seedNativeOwnerAuthority({
+		coordinatorId: config.coordinatorId, issuer: config.issuer, revision: config.revision,
+		linkId: "configured-link", subject: "fixture-subject", identityId: review.identityId,
+		attemptId: "historical-attempt", controllerAttestationId: review.attestationId,
+		controllerReviewReceiptId: review.reviewReceiptId, redirectUri: config.redirectUri,
+		groupId: review.groupId, deviceId: review.deviceId, publicKey: review.publicKey,
+		fingerprint: review.fingerprint, createdAtMs: NOW,
+	});
 	expect(await rows("coordinator_identity_group_grants")).toEqual([]);
 	const granted = await json(
 		createConfiguredCloudflareCoordinatorWorker(),

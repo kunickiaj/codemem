@@ -105,7 +105,9 @@ export function setIdentity(f: Fixture, identity: string | null) {
 
 export async function authorize(f: LinkFixture) {
 	await enroll(f.store);
-	expect(await f.store.createAuthControllerAttestation(review())).toMatchObject({
+	expect(
+		await f.store.createAuthControllerAttestation(review({ coordinatorId: f.cfg.coordinatorId })),
+	).toMatchObject({
 		kind: "created",
 	});
 }
@@ -115,6 +117,7 @@ export async function advance(
 	state: string,
 	input = attempt(),
 	hash = browserHash,
+	options: { subject?: string } = {},
 ) {
 	const creation = { ...input };
 	if (state !== "pending" && !Object.hasOwn(input, "browserStartHash")) {
@@ -142,7 +145,7 @@ export async function advance(
 		{
 			attemptId: input.attemptId,
 			browserTransactionHash: hash,
-			account: { issuer: f.cfg.issuer, subject: "opaque-subject-a" },
+			account: { issuer: f.cfg.issuer, subject: options.subject ?? "opaque-subject-a" },
 		},
 		f.cfg,
 	);
@@ -156,7 +159,10 @@ export async function advance(
 		f.cfg,
 	);
 	if (state === "confirmed") return;
-	await f.store.finalizeAuthLinkAttempt(finalize({ attemptId: input.attemptId }), f.cfg);
+	await f.store.finalizeAuthLinkAttempt(
+		finalize({ attemptId: input.attemptId, coordinatorId: f.cfg.coordinatorId }),
+		f.cfg,
+	);
 }
 
 export function expectRejected(result: unknown, error: string) {

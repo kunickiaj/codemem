@@ -21,6 +21,8 @@ export type HistoricalAccountDefect =
 	| "link_revision";
 export interface HistoricalAccountOptions {
 	authority: "controller_attestation" | "device_claim";
+	issuer?: string;
+	bornAtMs?: number;
 	defect?: HistoricalAccountDefect;
 	session?: {
 		credentialHash: string;
@@ -55,16 +57,16 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 function pinsFor(options: HistoricalAccountOptions): HistoricalAccountPins {
 	const coordinatorId = "coordinator-a";
 	const attemptId = "historical-attempt";
-	const bornAtMs = 1_791_028_800_000;
+	const bornAtMs = options.bornAtMs ?? 1_791_028_800_000;
 	const pins: HistoricalAccountPins = {
 		config: {
 			coordinatorId,
-			issuer: "https://accounts.example.test",
+			issuer: options.issuer ?? "https://accounts.example.test",
 			revision: "a".repeat(64),
 			enabled: true,
 		},
 		account: {
-			issuer: "https://accounts.example.test",
+			issuer: options.issuer ?? "https://accounts.example.test",
 			subject: "fixture-subject",
 		},
 		identityId: "identity-a",

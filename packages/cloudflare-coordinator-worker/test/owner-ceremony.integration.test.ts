@@ -109,6 +109,7 @@ test("native D1 private ceremony pins SDK identity and commits only after browse
 }) => {
 	// Arrange: only existing account links and grants, never seeded owner transitions.
 	const authority = await snapshot({ authorityOnly: true });
+	const retainedBrowser = await rows("coordinator_auth_browser_transactions");
 	// Act
 	const c = await verified(f);
 	// Assert: callback burns OIDC material but creates no session or ownership authority.
@@ -122,7 +123,8 @@ test("native D1 private ceremony pins SDK identity and commits only after browse
 	});
 	expect(await attempt()).toMatchObject({ state: "oidc_verified", completion_secret_hash: null });
 	expect(await rows("coordinator_auth_browser_transactions")).toEqual([
-		expect.objectContaining({ state: "consumed", nonce: null, pkce_verifier: null }),
+		...retainedBrowser,
+		expect.objectContaining({ purpose: "owner_enroll", attempt_id: f.start.attemptId, state: "consumed", nonce: null, pkce_verifier: null }),
 	]);
 	expect(await snapshot({ authorityOnly: true })).toEqual(authority);
 	// Act
@@ -292,7 +294,9 @@ test("native D1 rejects callback-only finalization and one-use confirmation repl
 });
 
 const drift = {
-	link: "UPDATE coordinator_auth_account_links SET revoked_at_ms = 1",
+	link: `UPDATE coordinator_auth_account_links SET revoked_at_ms = ${NOW} WHERE coordinator_id = 'coordinator-a' AND link_id = 'link-a'`,
+	// Activation-only: replace this V2 mutation with a separate V3 immutable-storage
+	// rejection case. A blocked UPDATE must never stand in for an account change.
 	account: "UPDATE coordinator_auth_account_links SET subject = 'other-subject'",
 	grant:
 		"UPDATE coordinator_identity_group_grants SET revision = revision + 1 WHERE group_id = 'group-a'",
@@ -386,7 +390,7 @@ test.for(["retained", "removed", "disabled", "revoked", "wrong-secret", "wrong-s
 		if (mode === "removed") await exec("DELETE FROM enrolled_devices");
 		if (mode === "disabled") await exec("UPDATE enrolled_devices SET enabled = 0");
 		if (mode === "revoked")
-			await exec("UPDATE coordinator_auth_account_links SET revoked_at_ms = 1");
+			await exec("UPDATE coordinator_auth_account_links SET revoked_at_ms = ? WHERE coordinator_id = ? AND link_id = ?", NOW, config.coordinatorId, "link-a");
 		f.setNow(NOW + 600000);
 		const storage = { ...backend, run: vi.fn(backend.run), batch: vi.fn(backend.batch) };
 		const api = await f.compose(storage);
@@ -434,6 +438,7 @@ test("native D1 burns a callback with an invalid provider signature and denies r
 	ceremony: f,
 }) => {
 	// Arrange: the SDK must reject a token signed by an untrusted provider key.
+	const retainedBrowser = await rows("coordinator_auth_browser_transactions");
 	const c = await claimed(f);
 	f.provider.settings.signature = "wrong-key";
 	const authority = await snapshot({ authorityOnly: true });
@@ -447,7 +452,8 @@ test("native D1 burns a callback with an invalid provider signature and denies r
 		completion_secret_hash: null,
 	});
 	expect(await rows("coordinator_auth_browser_transactions")).toEqual([
-		expect.objectContaining({ state: "consumed", nonce: null, pkce_verifier: null }),
+		...retainedBrowser,
+		expect.objectContaining({ purpose: "owner_enroll", attempt_id: f.start.attemptId, state: "consumed", nonce: null, pkce_verifier: null }),
 	]);
 	expect(await snapshot({ authorityOnly: true })).toEqual(authority);
 	const burned = await snapshot();

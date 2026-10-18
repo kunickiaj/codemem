@@ -1,8 +1,10 @@
-import { describe, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CoordinatorAuthAccountProfileInput } from "./coordinator-auth-account-profile-contract.js";
+import { setupHistoricalStore } from "./coordinator-auth-historical-store-test-fixture.js";
 import {
 	browserProofConfig,
 	type LinkFixture,
+	NOW,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
 import {
@@ -267,13 +269,77 @@ function changeGuard(f: LinkFixture, change: string) {
 	if (change === "session-revoked")
 		f.db.prepare("UPDATE coordinator_auth_sessions SET revoked_at_ms = ?").run(f.now);
 	if (change === "link-revoked") revokeLinkRow(f);
-	if (change === "link-missing") f.db.exec("DELETE FROM coordinator_auth_account_links");
-	if (change === "link-identity")
-		f.db.exec("UPDATE coordinator_auth_account_links SET identity_id = 'other'");
-	if (change === "link-subject")
-		f.db.exec("UPDATE coordinator_auth_account_links SET subject = 'other'");
-	if (change === "link-issuer")
-		f.db.exec("UPDATE coordinator_auth_account_links SET issuer = 'https://other.example.test'");
+}
+
+function registerHistoricalGuards(backend: Backend) {
+	it("a coherent historical session inserts a new profile at the same session timestamp", async () => {
+		// Arrange: same clock, credential and empty profile table as the denial cases below.
+		const h = setupHistoricalStore(backend, {
+			history: {
+				authority: "controller_attestation",
+				bornAtMs: NOW - 10,
+				session: { credentialHash: otherCredentialHash },
+			},
+			authClock: () => NOW,
+		});
+		const f = { ...h, cfg: h.history.config, now: NOW };
+		try {
+			expect(profiles(f)).toEqual([]);
+			const before = authority(f);
+			// Act
+			const result = await record(f, { displayName: "Candidate" }, otherCredentialHash);
+			// Assert: advisory success alone cannot conceal a no-op.
+			expect(result).toEqual({ kind: "recorded" });
+			expect(profiles(f)).toHaveLength(1);
+			expect(profiles(f)).toMatchObject([
+				{
+					coordinator_id: f.cfg.coordinatorId,
+					link_id: h.history.linkId,
+					display_name: "Candidate",
+					email: null,
+					email_verified: null,
+					picture_url: null,
+					source_session_id: h.history.session?.sessionId,
+					source_signed_in_at_ms: NOW,
+				},
+			]);
+			expect(authority(f)).toEqual(before);
+		} finally {
+			h.close();
+		}
+	});
+	it.each(["missing_link", "link_identity", "link_subject", "link_issuer"] as const)(
+		"historical %s denies account reads and profile writes without changing evidence",
+		async (defect) => {
+			// Arrange: seed the inconsistent birth before opening the current store.
+			const h = setupHistoricalStore(backend, {
+				history: {
+					authority: "controller_attestation",
+					defect,
+					bornAtMs: NOW - 10,
+					session: { credentialHash: otherCredentialHash },
+				},
+				authClock: () => NOW,
+			});
+			const f = { ...h, cfg: h.history.config, now: NOW };
+			try {
+				expect(profiles(f)).toEqual([]);
+				const before = { profile: profiles(f), authority: authority(f) };
+				// Act
+				const result = await record(f, { displayName: "Candidate" }, otherCredentialHash);
+				const account = await f.store.readAuthSessionAccount(otherCredentialHash, f.cfg);
+				const session = await f.store.readAuthSession(otherCredentialHash, f.cfg);
+				// Assert
+				expect(result.kind).not.toBe("recorded");
+				expect(account).toBeNull();
+				expect(session).toBeNull();
+				expect(profiles(f)).toEqual([]);
+				expect({ profile: profiles(f), authority: authority(f) }).toEqual(before);
+			} finally {
+				h.close();
+			}
+		},
+	);
 }
 
 function registerGuards(test: SessionTest) {
@@ -287,10 +353,6 @@ function registerGuards(test: SessionTest) {
 		"future-born",
 		"session-revoked",
 		"link-revoked",
-		"link-missing",
-		"link-identity",
-		"link-subject",
-		"link-issuer",
 	] as const)(
 		"account read matches session denial and write cannot bypass %s",
 		async (change, { fixture: f }) => {
@@ -776,6 +838,7 @@ function registerBackend(backend: Backend) {
 	registerBasics(test);
 	registerOrdering(test);
 	registerGuards(test);
+	registerHistoricalGuards(backend);
 	registerSanitization(test);
 	registerInput(test);
 	registerNamespace(test);

@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES } from "./coordinator-auth-historical-migration-test-fixture.js";
+import {
+	historicalCallerMigrationNames,
+	setupHistoricalStore,
+} from "./coordinator-auth-historical-store-test-fixture.js";
 import {
 	type HistoricalAccountDefect,
 	prepareHistoricalAccountDatabase,
@@ -50,6 +55,44 @@ function accountAuthState(db: Database.Database) {
 const credentialHash = "7".repeat(64);
 const profile = { displayName: "Historical Ω", email: "fixture@example.test", emailVerified: true };
 const session = { credentialHash, profile };
+const availableMigrations = readdirSync(
+	new URL("../../cloudflare-coordinator-worker/migrations/", import.meta.url),
+).filter((name) => name.endsWith(".sql"));
+
+it("classifies every repository migration without replaying auth or excluded owner storage as caller tables", () => {
+	// Arrange
+	const excludedOwner = [
+		"0030_add_owner_enrollment_attempts.sql",
+		"0031_add_owner_enrollment_audit_log.sql",
+	];
+	// Act
+	const caller = historicalCallerMigrationNames(availableMigrations);
+	// Assert
+	expect(Object.isFrozen(caller)).toBe(true);
+	expect(new Set([...caller, ...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES, ...excludedOwner])).toEqual(
+		new Set(availableMigrations),
+	);
+	for (const name of [...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES, ...excludedOwner])
+		expect(caller).not.toContain(name);
+});
+
+it.each([
+	{ reason: "future auth", names: [...availableMigrations, "0034_add_auth_lifecycle.sql"] },
+	{ reason: "future caller", names: [...availableMigrations, "9999_new_caller.sql"] },
+	{
+		reason: "missing known",
+		names: availableMigrations.filter((name) => name !== "0001_init.sql"),
+	},
+	{ reason: "duplicate known", names: [...availableMigrations, "0001_init.sql"] },
+])("requires deliberate migration classification review for $reason inputs", ({ names }) => {
+	// Arrange
+	const before = [...names];
+	// Act: classification is pure and cannot mutate a historical database.
+	const classify = () => historicalCallerMigrationNames(names);
+	// Assert
+	expect(classify).toThrow(/historical_auth_fixture_migration_inventory_requires_review/);
+	expect(names).toEqual(before);
+});
 
 describe("explicit historical account bundles", () => {
 	it.each(["controller_attestation", "device_claim"] as const)(
@@ -163,6 +206,42 @@ describe("explicit historical account bundles", () => {
 			expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
 	});
 });
+
+it.each(["SQLite", "D1"] as const)(
+	"opens %s historical readers with caller tables and explicit issuer/time pins",
+	async (backend) => {
+		// Arrange: these overrides serve the account-page/status readers' Google config and clock.
+		const now = 1_791_028_800_000;
+		const f = setupHistoricalStore(backend, {
+			history: {
+				authority: "controller_attestation",
+				issuer: "https://accounts.google.com",
+				bornAtMs: now - 10,
+				session,
+			},
+			authClock: () => now,
+		});
+		try {
+			const before = rawAuthSnapshot(f.db);
+			// Act
+			await f.store.createGroup("caller-group");
+			const result = await f.store.readAuthSessionAccount(credentialHash, f.history.config);
+			const wrongIssuer = await f.store.readAuthSession(credentialHash, {
+				...f.history.config,
+				issuer: "https://accounts.example.test",
+			});
+			// Assert
+			expect(result?.session.account.issuer).toBe("https://accounts.google.com");
+			expect(result?.profile).toEqual(profile);
+			expect(f.history.session?.createdAtMs).toBe(now);
+			expect(wrongIssuer).toBeNull();
+			expect(f.db.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get()).toEqual({ ready: 10 });
+			expect(rawAuthSnapshot(f.db)).toEqual(before);
+		} finally {
+			f.close();
+		}
+	},
+);
 
 describe("deliberately inconsistent historical facts", () => {
 	it.each([

@@ -2,7 +2,6 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
-import { NOW } from "../../core/src/coordinator-auth-link-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import { UNRELATED_PUBLIC_KEY } from "../../core/src/coordinator-enrollment-revocation-test-harness.js";
 import {
@@ -19,6 +18,7 @@ import {
 	finalizedOwner,
 	pendingOwner,
 } from "../../core/src/coordinator-owner-enrollment-test-harness.js";
+import { NOW, resetCeremony, seedNativeOwnerAuthority } from "./owner-ceremony-test-fixtures.js";
 
 const tables = [
 	"coordinator_owner_enrollment_attempts",
@@ -47,30 +47,8 @@ async function finalRow() {
 }
 
 async function resetFixture() {
-	// Native pool storage is shared between cases; immutable receipts require table recreation.
 	await exec("DROP TRIGGER IF EXISTS commit_test_skip");
-	for (const table of [
-		"coordinator_owner_enrollment_attempts",
-		"coordinator_device_ownership_bindings",
-		"coordinator_owner_enrollment_audit_log",
-	])
-		await exec(`DROP TABLE IF EXISTS ${table}`);
-	for (const table of [
-		"enrolled_devices",
-		"coordinator_auth_account_links",
-		"coordinator_identity_group_grants",
-		"coordinator_device_revocations",
-		"groups",
-	])
-		await exec(`DELETE FROM ${table}`);
-	for (const name of [
-		"0028_add_device_ownership_bindings.sql",
-		"0030_add_owner_enrollment_attempts.sql",
-	]) {
-		const migration = env.TEST_MIGRATIONS.find((m) => m.name === name);
-		if (!migration) throw new Error(`Missing native migration fixture: ${name}`);
-		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
-	}
+	await resetCeremony();
 }
 
 async function writerFixture() {
@@ -131,9 +109,18 @@ async function writerFixture() {
 			...fields.map((k) => row[k]),
 		);
 	}
-	await exec(
-		"INSERT INTO coordinator_auth_account_links (coordinator_id,link_id,issuer,subject,identity_id,attempt_id,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind) SELECT coordinator_id,link_id,issuer,account_subject,identity_id,link_attempt_id,link_controller_attestation_id,link_auth_config_revision,created_at_ms,'controller_attestation' FROM coordinator_owner_enrollment_attempts",
-	);
+	if (!row.link_id || !row.identity_id || !row.account_subject || !row.link_attempt_id ||
+		!row.link_controller_attestation_id || !row.link_auth_config_revision)
+		throw new Error("Missing native owner authority pins");
+	await seedNativeOwnerAuthority({
+		coordinatorId: row.coordinator_id, issuer: row.issuer, revision: row.link_auth_config_revision,
+		linkId: row.link_id, subject: row.account_subject, identityId: row.identity_id,
+		attemptId: row.link_attempt_id, controllerAttestationId: row.link_controller_attestation_id,
+		controllerReviewReceiptId: "historical-receipt", redirectUri: "https://coordinator.example.test/auth/callback",
+		groupId: "historical-group", deviceId: "historical-controller-device",
+		publicKey: "fixture-historical-controller-key", fingerprint: createHash("sha256").update("fixture-historical-controller-key").digest("hex"),
+		createdAtMs: row.created_at_ms,
+	});
 	for (const group of ["group-a", "group-b"]) {
 		await exec(
 			"INSERT INTO groups (group_id,created_at) VALUES (?,?)",
@@ -185,11 +172,28 @@ test("native D1 commits all pinned groups, binding, audit and receipt atomically
 }) => {
 	// Arrange
 	const input = f.input;
+	const genesis = await rows("coordinator_auth_link_attempts");
+	const browsers = await rows("coordinator_auth_browser_transactions");
+	const births = await rows("coordinator_auth_link_audit_log");
 	// Act
 	const committed = await commitOwnerEnrollment(input);
 	const receipt = await finalRow();
 	// Assert: actual D1 changes() counts drive the dependent writes.
 	expect(committed).toBe(true);
+	expect(genesis).toEqual([expect.objectContaining({
+		attempt_id: f.row.link_attempt_id, state: "finalized", link_id: f.row.link_id,
+		account_subject: f.row.account_subject, controller_attestation_id: f.row.link_controller_attestation_id,
+		finalized_at_ms: f.row.created_at_ms,
+	})]);
+	expect(browsers).toEqual([expect.objectContaining({
+		attempt_id: f.row.link_attempt_id, purpose: "link", state: "consumed", nonce: null, pkce_verifier: null,
+		browser_transaction_hash: genesis[0]?.browser_transaction_hash,
+	})]);
+	expect(births).toEqual([expect.objectContaining({
+		attempt_id: f.row.link_attempt_id, link_id: f.row.link_id, action: "link_created",
+		identity_id: f.row.identity_id, authority_kind: "controller_attestation", created_at_ms: f.row.created_at_ms,
+	})]);
+	expect(await rows("coordinator_auth_link_audit_log")).toEqual(births);
 	expect(receipt).toMatchObject({
 		state: "finalized",
 		loopback_redirect: null,
@@ -279,7 +283,7 @@ test.for([
 ])("native D1 denies %s without effects", async (fault, { writer: f }) => {
 	// Arrange
 	if (fault === "link-revoked")
-		await exec("UPDATE coordinator_auth_account_links SET revoked_at_ms = 1");
+		await exec("UPDATE coordinator_auth_account_links SET revoked_at_ms = ? WHERE coordinator_id = ? AND link_id = ?", NOW, f.row.coordinator_id, f.row.link_id);
 	if (fault === "grant-revoked")
 		await exec(
 			"UPDATE coordinator_identity_group_grants SET status = 'revoked', revoked_at = 'revoked'",

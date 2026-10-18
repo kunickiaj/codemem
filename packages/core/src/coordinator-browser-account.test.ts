@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderCurrentAccountPage } from "./coordinator-auth-browser-view.js";
+import { setupHistoricalStore } from "./coordinator-auth-historical-store-test-fixture.js";
 import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked, SESSION_TTL } from "./coordinator-auth-session-test-fixtures.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -31,6 +32,7 @@ const scope = () => ({
 	store: { coordinatorId: "coordinator-a", revision: config().revision },
 });
 const databases: ReturnType<typeof setupStore>["db"][] = [];
+const historicalCleanups: (() => void)[] = [];
 beforeEach(() => {
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 });
@@ -39,13 +41,27 @@ afterEach(() => {
 		expect(globalThis.fetch).not.toHaveBeenCalled();
 	} finally {
 		vi.restoreAllMocks();
-		for (const db of databases.splice(0)) db.close();
+		for (const db of databases.splice(0)) if (db.open) db.close();
+		for (const close of historicalCleanups.splice(0)) close();
 	}
 });
 
-async function harness(backend: Backend) {
+async function harness(backend: Backend, historical?: { credentialHash: string }) {
 	const clock = { now: NOW };
-	const f = setupStore(backend, { authClock: () => clock.now });
+	const prepared = historical
+		? setupHistoricalStore(backend, {
+				history: {
+					authority: "controller_attestation",
+					issuer: GOOGLE,
+					bornAtMs: NOW - 10,
+					defect: "link_issuer",
+					session: historical,
+				},
+				authClock: () => clock.now,
+			})
+		: undefined;
+	const f = prepared ?? setupStore(backend, { authClock: () => clock.now });
+	if (prepared) historicalCleanups.push(prepared.close);
 	databases.push(f.db);
 	const key = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
 	const store = {
@@ -57,7 +73,7 @@ async function harness(backend: Backend) {
 	const input = { config: config(), csrfKey: key, store, limiter };
 	const result = await createCoordinatorBrowserAccount(input);
 	if (!result.ok) throw new Error(`account_fixture_failed:${JSON.stringify(result)}`);
-	await linked({ ...f, now: NOW, cfg: config() });
+	if (!historical) await linked({ ...f, now: NOW, cfg: config() });
 	return {
 		...f,
 		persistence: f.store,
@@ -328,8 +344,14 @@ describe.each(["SQLite", "D1"] as const)("%s fresh LIVE account guards", (backen
 		"GET honors current LIVE denial %s without clearing cookies",
 		async (state) => {
 			// Arrange
-			const f = await harness(backend);
-			const s = await session(f);
+			const historicalCookie = state === "issuer" ? await issueBrowserCookie("session") : undefined;
+			const f = await harness(
+				backend,
+				historicalCookie ? { credentialHash: historicalCookie.cookieHash } : undefined,
+			);
+			const s = historicalCookie
+				? { ...historicalCookie, cookie: historicalCookie.setCookie.split(";")[0] ?? "" }
+				: await session(f);
 			if (state === "expired") f.clock.now += SESSION_TTL;
 			if (state === "session-revoked")
 				f.db.prepare("UPDATE coordinator_auth_sessions SET revoked_at_ms=?").run(NOW);
@@ -339,10 +361,6 @@ describe.each(["SQLite", "D1"] as const)("%s fresh LIVE account guards", (backen
 				f.db
 					.prepare("UPDATE coordinator_auth_sessions SET auth_config_revision=?")
 					.run("b".repeat(64));
-			if (state === "issuer")
-				f.db
-					.prepare("UPDATE coordinator_auth_account_links SET issuer=?")
-					.run("https://other.example.test");
 			const before = snapshot(f);
 			// Act
 			const reply = await f.handlers.account(get(s.cookie));

@@ -1,7 +1,11 @@
 import { describe, expect } from "vitest";
 import {
+	advance,
+	attempt,
+	authorize,
 	browserProofConfig,
 	expectRejected,
+	browserHash as linkBrowserHash,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
 import {
@@ -87,13 +91,12 @@ function registerSuccess(test: SessionTest) {
 		fixture: f,
 	}) => {
 		// Arrange
-		await linked(f);
 		const coordinatorId = "coord' OR 1=1 --";
 		const subject = "sub' UNION SELECT secret --";
-		f.db
-			.prepare("UPDATE coordinator_auth_account_links SET coordinator_id = ?, subject = ?")
-			.run(coordinatorId, subject);
 		const cfg = { ...f.cfg, coordinatorId };
+		const scoped = { ...f, cfg };
+		await authorize(scoped);
+		await advance(scoped, "finalized", attempt(), linkBrowserHash, { subject });
 		await consumeSigninProof(f, signInInput(f).browserTransactionHash, {
 			...cfg,
 			redirectUri: "https://coordinator.example.test/auth/callback",

@@ -1,4 +1,5 @@
-import { describe, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import { setupHistoricalStore } from "./coordinator-auth-historical-store-test-fixture.js";
 import {
 	advance,
 	attempt,
@@ -6,6 +7,7 @@ import {
 	expectRejected,
 	finalize,
 	type LinkFixture,
+	NOW,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
 import {
@@ -34,17 +36,6 @@ function changeReadAuthority(f: LinkFixture, change: string) {
 			f.db.prepare("UPDATE coordinator_auth_sessions SET revoked_at_ms = ?").run(f.now);
 		},
 		"link-revoked": () => revokeLinkRow(f),
-		"link-identity": () => {
-			f.db
-				.prepare("UPDATE coordinator_auth_account_links SET identity_id = ?")
-				.run("other-identity");
-		},
-		"link-subject": () => {
-			f.db.prepare("UPDATE coordinator_auth_account_links SET subject = ?").run("other-subject");
-		},
-		"link-missing": () => {
-			f.db.exec("DELETE FROM coordinator_auth_account_links");
-		},
 	};
 	actions[change]?.();
 }
@@ -77,9 +68,6 @@ function registerRead(test: SessionTest) {
 		"expired",
 		"session-revoked",
 		"link-revoked",
-		"link-identity",
-		"link-subject",
-		"link-missing",
 	] as const)("read uniformly denies %s without mutation", async (change, { fixture: f }) => {
 		// Arrange
 		await linked(f);
@@ -294,68 +282,104 @@ function registerRevoke(test: SessionTest) {
 	});
 }
 
-function registerAuditGap(test: SessionTest) {
-	test("missing creation audit leaves revocation effective but reports incomplete persistence on every retry", async ({
-		fixture: f,
-	}) => {
-		// Arrange: corrupt only this fixture's creation audit, never restore active access.
-		await linked(f);
-		const issued = await f.store.signInWithConsumedBrowserTransaction(
-			signInInput(f),
-			browserProofConfig(f),
-		);
-		expect(issued.kind).toBe("issued");
-		expect(await f.store.readAuthSession(credentialHash, f.cfg)).not.toBeNull();
-		const id = linkId(f);
-		const scope = { coordinatorId: f.cfg.coordinatorId };
-		f.db
-			.prepare(
-				"DELETE FROM coordinator_auth_link_audit_log WHERE coordinator_id = ? AND link_id = ? AND action = 'link_created'",
-			)
-			.run(scope.coordinatorId, id);
-		const auditRows = () =>
-			f.db
-				.prepare(
-					"SELECT * FROM coordinator_auth_link_audit_log WHERE coordinator_id = ? AND link_id = ?",
-				)
-				.all(scope.coordinatorId, id);
-		const beforeAudit = auditRows();
-		const revokedAt = f.now;
-		await consumeSigninProof(f, "4".repeat(64));
-		// Act: the thrown result cannot imply that the committed revocation was rolled back.
-		const first = await f.store
-			.revokeAuthAccountLink({ linkId: id }, scope)
-			.catch((error: unknown) => error);
-		const afterFirst = f.db
-			.prepare(
-				"SELECT revoked_at_ms FROM coordinator_auth_account_links WHERE coordinator_id = ? AND link_id = ?",
-			)
-			.get(scope.coordinatorId, id);
-		const session = await f.store.readAuthSession(credentialHash, f.cfg);
-		const signIn = await f.store.signInWithConsumedBrowserTransaction(
-			{ ...signInInput(f), browserTransactionHash: "4".repeat(64), credentialHash: "5".repeat(64) },
-			browserProofConfig(f),
-		);
-		f.now += 1_000;
-		const retry = await f.store
-			.revokeAuthAccountLink({ linkId: id }, scope)
-			.catch((error: unknown) => error);
-		// Assert
-		expect(first).toEqual(new Error("auth_session_persistence_incomplete"));
-		expect(retry).toEqual(new Error("auth_session_persistence_incomplete"));
-		expect(afterFirst).toEqual({ revoked_at_ms: revokedAt });
-		expect(
-			f.db
+function registerHistoricalReads(backend: Backend) {
+	it.each(["missing_link", "link_identity", "link_subject"] as const)(
+		"read denies historical %s without mutating evidence",
+		async (defect) => {
+			// Arrange
+			const h = setupHistoricalStore(backend, {
+				history: {
+					authority: "controller_attestation",
+					defect,
+					bornAtMs: NOW - 10,
+					session: { credentialHash },
+				},
+				authClock: () => NOW,
+			});
+			try {
+				const before = sessionRows({ ...h, now: NOW, cfg: h.history.config });
+				// Act
+				const result = await h.store.readAuthSession(credentialHash, h.history.config);
+				// Assert
+				expect(result).toBeNull();
+				expect(sessionRows({ ...h, now: NOW, cfg: h.history.config })).toEqual(before);
+			} finally {
+				h.close();
+			}
+		},
+	);
+}
+
+function registerAuditGap(backend: Backend) {
+	it("missing creation audit leaves revocation effective but reports incomplete persistence on every retry", async () => {
+		// Arrange: the missing audit is historical input, not a deletion after guards install.
+		const clock = { now: NOW };
+		const h = setupHistoricalStore(backend, {
+			history: {
+				authority: "controller_attestation",
+				defect: "missing_creation_audit",
+				bornAtMs: NOW - 10,
+				session: { credentialHash },
+			},
+			authClock: () => clock.now,
+		});
+		const f = { ...h, now: NOW, cfg: h.history.config };
+		try {
+			expect(await f.store.readAuthSession(credentialHash, f.cfg)).not.toBeNull();
+			const id = linkId(f);
+			const scope = { coordinatorId: f.cfg.coordinatorId };
+			const auditRows = () =>
+				f.db
+					.prepare(
+						"SELECT * FROM coordinator_auth_link_audit_log WHERE coordinator_id = ? AND link_id = ?",
+					)
+					.all(scope.coordinatorId, id);
+			const beforeAudit = auditRows();
+			const revokedAt = f.now;
+			await consumeSigninProof(f, "4".repeat(64));
+			// Act: the thrown result cannot imply that the committed revocation was rolled back.
+			const first = await f.store
+				.revokeAuthAccountLink({ linkId: id }, scope)
+				.catch((error: unknown) => error);
+			const afterFirst = f.db
 				.prepare(
 					"SELECT revoked_at_ms FROM coordinator_auth_account_links WHERE coordinator_id = ? AND link_id = ?",
 				)
-				.get(scope.coordinatorId, id),
-		).toEqual(afterFirst);
-		expect(session).toBeNull();
-		expect(await f.store.readAuthSession(credentialHash, f.cfg)).toBeNull();
-		expectRejected(signIn, "account_not_linked");
-		expect(beforeAudit).toEqual([]);
-		expect(auditRows()).toEqual(beforeAudit);
+				.get(scope.coordinatorId, id);
+			const session = await f.store.readAuthSession(credentialHash, f.cfg);
+			const signIn = await f.store.signInWithConsumedBrowserTransaction(
+				{
+					...signInInput(f),
+					account: h.history.account,
+					browserTransactionHash: "4".repeat(64),
+					credentialHash: "5".repeat(64),
+				},
+				browserProofConfig(f),
+			);
+			f.now += 1_000;
+			clock.now = f.now;
+			const retry = await f.store
+				.revokeAuthAccountLink({ linkId: id }, scope)
+				.catch((error: unknown) => error);
+			// Assert
+			expect(first).toEqual(new Error("auth_session_persistence_incomplete"));
+			expect(retry).toEqual(new Error("auth_session_persistence_incomplete"));
+			expect(afterFirst).toEqual({ revoked_at_ms: revokedAt });
+			expect(
+				f.db
+					.prepare(
+						"SELECT revoked_at_ms FROM coordinator_auth_account_links WHERE coordinator_id = ? AND link_id = ?",
+					)
+					.get(scope.coordinatorId, id),
+			).toEqual(afterFirst);
+			expect(session).toBeNull();
+			expect(await f.store.readAuthSession(credentialHash, f.cfg)).toBeNull();
+			expectRejected(signIn, "account_not_linked");
+			expect(beforeAudit).toEqual([]);
+			expect(auditRows()).toEqual(beforeAudit);
+		} finally {
+			h.close();
+		}
 	});
 }
 
@@ -364,7 +388,8 @@ function registerBackend(backend: Backend) {
 	registerRead(test);
 	registerLogout(test);
 	registerRevoke(test);
-	registerAuditGap(test);
+	registerHistoricalReads(backend);
+	registerAuditGap(backend);
 }
 describe.each(["SQLite", "D1"] as const)(
 	"%s auth-session lifecycle (D1 is SQLite-backed)",

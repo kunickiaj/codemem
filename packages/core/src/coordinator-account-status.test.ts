@@ -2,11 +2,13 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type CreateCoordinatorAppOptions, createCoordinatorApp } from "./coordinator-api.js";
 import { materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
+import { setupHistoricalStore } from "./coordinator-auth-historical-store-test-fixture.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
 	advance,
 	attempt,
 	completionHash,
+	consumeSigninProof,
 	finalize,
 	NOW,
 } from "./coordinator-auth-link-test-fixtures.js";
@@ -17,6 +19,7 @@ import {
 } from "./coordinator-browser-auth-app.js";
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
+import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -35,6 +38,7 @@ const config = {
 	revision: "a".repeat(64),
 };
 const databases: ReturnType<typeof setupStore>["db"][] = [];
+const historicalCleanups: (() => void)[] = [];
 let nextNonce = 0;
 beforeEach(() => {
 	nextNonce = 0;
@@ -47,6 +51,7 @@ afterEach(() => {
 	} finally {
 		vi.restoreAllMocks();
 		for (const db of databases.splice(0)) if (db.open) db.close();
+		for (const close of historicalCleanups.splice(0)) close();
 	}
 });
 function identity(deviceId = "device-a") {
@@ -76,8 +81,37 @@ function headers(key: Identity, path = PATH, timestamp = String(NOW / 1000)) {
 		"X-Opencode-Signature": `${SIGNATURE_VERSION}:${signature.toString("base64")}`,
 	};
 }
-async function setup(backend: Backend = "SQLite", origin = ORIGIN, key = identity()) {
-	const f = setupStore(backend, { authClock: () => NOW });
+async function setup(
+	backend: Backend = "SQLite",
+	origin = ORIGIN,
+	key = identity(),
+	preparation: { history?: "issuer-conflict" } = {},
+) {
+	const prepared = preparation.history
+		? setupHistoricalStore(backend, {
+				history: {
+					authority: "controller_attestation",
+					issuer: config.issuer,
+					bornAtMs: NOW - 10,
+					defect: "link_issuer",
+					session: {
+						credentialHash: "7".repeat(64),
+						profile: {
+							displayName: "Synthetic Person",
+							email: "synthetic@example.test",
+							emailVerified: true,
+						},
+					},
+				},
+				authClock: () => NOW,
+			})
+		: undefined;
+	const f = prepared ?? setupStore(backend, { authClock: () => NOW });
+	if (prepared) {
+		historicalCleanups.push(prepared.close);
+		// Status eligibility inspects owner attempts; that caller-owned table is not account history.
+		f.db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
+	}
 	databases.push(f.db);
 	vi.spyOn(f.store, "close").mockResolvedValue(undefined);
 	await f.store.createGroup("group-a");
@@ -137,6 +171,11 @@ async function get(
 	expect(f.oidc.requests).toHaveLength(providerCalls);
 	expect(response.headers.get("cache-control")).toBe("no-store");
 	expect(response.headers.getSetCookie()).toEqual([]);
+	const body = await response.clone().text();
+	for (const { session_id } of f.db
+		.prepare("SELECT session_id FROM coordinator_auth_sessions")
+		.all() as { session_id: string }[])
+		expect(body).not.toContain(session_id);
 	return response;
 }
 async function authorize(f: Fixture) {
@@ -154,23 +193,34 @@ async function seedLink(f: Fixture) {
 			)
 		).kind,
 	).toBe("applied");
-	const row = f.db.prepare("SELECT link_id FROM coordinator_auth_account_links").get() as {
-		link_id: string;
-	};
-	f.db
-		.prepare(`INSERT INTO coordinator_auth_account_profiles
-		(coordinator_id,link_id,display_name,email,email_verified,picture_url,source_session_id,source_signed_in_at_ms)
-		VALUES (?,?,?,?,?,?,?,?)`)
-		.run(
-			config.coordinatorId,
-			row.link_id,
-			"Synthetic Person",
-			"synthetic@example.test",
-			1,
-			"https://images.example.test/private-picture",
-			"private-session",
-			NOW,
-		);
+	await publishProfile(f);
+}
+async function publishProfile(f: Fixture) {
+	const browserConfig = { ...config, redirectUri: `${f.origin}/auth/callback` };
+	await consumeSigninProof({ ...f, now: NOW, cfg: config }, "f".repeat(64), browserConfig);
+	const issued = await f.store.signInWithConsumedBrowserTransaction(
+		{
+			browserTransactionHash: "f".repeat(64),
+			credentialHash: "e".repeat(64),
+			account: { issuer: config.issuer, subject: "opaque-subject-a" },
+		},
+		browserConfig,
+	);
+	expect(issued.kind).toBe("issued");
+	expect(
+		await f.store.recordAuthAccountProfile(
+			{
+				credentialHash: "e".repeat(64),
+				profile: {
+					displayName: "Synthetic Person",
+					email: "synthetic@example.test",
+					emailVerified: true,
+					pictureUrl: "https://images.example.test/private-picture",
+				},
+			},
+			config,
+		),
+	).toEqual({ kind: "recorded" });
 }
 function dto(
 	f: Fixture,
@@ -215,16 +265,14 @@ it.each(["linked", "unlinked", "revoked", "no-profile", "conflict", "unverified-
 	"returns current %s status without mutating stored authority",
 	async (state) => {
 		// Arrange
-		const f = await setup();
-		if (state === "unlinked") await authorize(f);
+		const f = await setup("SQLite", ORIGIN, identity(), {
+			history: state === "conflict" ? "issuer-conflict" : undefined,
+		});
+		if (state === "unlinked" || state === "conflict") await authorize(f);
 		else await seedLink(f);
 		if (state === "revoked")
 			f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
 		if (state === "no-profile") f.db.prepare("DELETE FROM coordinator_auth_account_profiles").run();
-		if (state === "conflict")
-			f.db
-				.prepare("UPDATE coordinator_auth_account_links SET issuer = 'https://other.example.test'")
-				.run();
 		if (state === "unverified-email")
 			f.db.prepare("UPDATE coordinator_auth_account_profiles SET email_verified = 0").run();
 		const nonces = f.db.prepare("SELECT * FROM request_nonces").all();
@@ -320,12 +368,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 					)
 				).kind,
 			).toBe("applied");
-			f.db
-				.prepare(`INSERT INTO coordinator_auth_account_profiles
-			(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
-			SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'private-session',?
-			FROM coordinator_auth_account_links`)
-				.run(NOW);
+			await publishProfile(f);
 			if (variant === "revoked")
 				f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms=?").run(NOW);
 			if (variant === "disagrees")
@@ -381,18 +424,14 @@ for (const backend of ["SQLite", "D1"] as const) {
 	it.each(["linked", "unlinked", "revoked", "conflict", "unverified-email", "review_required"])(
 		`${backend} store projects %s without changing any stored fields`,
 		async (state) => {
-			// Arrange: D1 uses the fresh Worker schema via setupStore, not SQLite's initializer.
-			const f = await setup(backend);
-			if (state === "unlinked") await authorize(f);
+			// Arrange: conflict uses explicit history; ordinary D1 cases use the fresh Worker snapshot.
+			const f = await setup(backend, ORIGIN, identity(), {
+				history: state === "conflict" ? "issuer-conflict" : undefined,
+			});
+			if (state === "unlinked" || state === "conflict") await authorize(f);
 			else await seedLink(f);
 			if (state === "revoked")
 				f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
-			if (state === "conflict")
-				f.db
-					.prepare(
-						"UPDATE coordinator_auth_account_links SET issuer = 'https://other.example.test'",
-					)
-					.run();
 			if (state === "unverified-email")
 				f.db.prepare("UPDATE coordinator_auth_account_profiles SET email_verified = 0").run();
 			if (state === "review_required")
