@@ -3,7 +3,7 @@ import { act } from "preact/test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AccountView } from "../lib/api/account";
 import { MyAccount } from "./my-account";
-import { response, settle, status } from "./my-account-test-utils";
+import { operation, response, settle, status } from "./my-account-test-utils";
 
 const pictureUrl = "https://lh3.googleusercontent.com/a/photo";
 const account = { displayName: "Example Test Person", email: "person@example.test", pictureUrl };
@@ -57,6 +57,9 @@ it("renders verified profile text and a lazy anonymous no-referrer photo", async
 	await show();
 	// Assert
 	expect(mount.querySelector(".my-account-profile")?.textContent).toContain(account.displayName);
+	expect(mount.textContent).toContain(
+		"This Google account is linked to the local Codemem Identity.",
+	);
 	expect(mount.textContent).toContain(`${account.email} · Verified email`);
 	const image = mount.querySelector("img");
 	for (const [key, value] of Object.entries({
@@ -71,35 +74,55 @@ it("renders verified profile text and a lazy anonymous no-referrer photo", async
 	expect(image?.hasAttribute("onerror")).toBe(false);
 });
 
-it.each([account, null])("hides Link for linked status with profile %j", async (profile) => {
-	if (view.remote.kind === "status") view.remote.account = profile;
-	await show();
-	expect(mount.textContent).not.toContain("Link Google account");
-	const checkStatus = [...mount.querySelectorAll("button")].find(
-		(button) => button.textContent === "Check status",
-	);
-	expect(checkStatus?.disabled).toBe(false);
-});
+it.each([null, "starting", "outcome_unknown"] as const)(
+	"explains a linked account blocked by another context (%s) without leaking its operation",
+	async (state) => {
+		view.blockedReason = "operation_active";
+		view.managementActions = { refresh: true, disconnect: true };
+		if (state)
+			view.operation = {
+				...operation(state),
+				contextId: "private-other-context",
+				groupId: "private-other-group",
+				operationId: "private-other-operation",
+			};
+		await show();
+		expect(mount.textContent).toContain("Another account operation is in progress in this Viewer.");
+		expect(mount.querySelector(".my-account-profile")?.textContent).toContain(account.displayName);
+		expect(mount.querySelector("details")).not.toBeNull();
+		expect(mount.textContent).not.toContain("private-other");
+		const actions = [...mount.querySelectorAll("button")].filter((button) =>
+			["Refresh profile", "Unlink Google account"].includes(button.textContent ?? ""),
+		);
+		expect(actions).toHaveLength(2);
+		expect(actions.every((button) => button.disabled)).toBe(true);
+	},
+);
 
-it("keeps technical identifiers in a collapsed native disclosure that opens without requests", async () => {
-	if (!view.local) throw new Error("Missing local identity fixture");
-	view.local = { ...view.local, identityLabel: undefined, deviceLabel: undefined };
-	await show();
-	const details = mount.querySelector("details.my-account-technical-details");
-	if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing technical details");
-	const summary = details.querySelector("summary");
-	if (!summary) throw new Error("Missing technical summary");
-	expect(details.open).toBe(false);
-	expect(details.hasAttribute("open")).toBe(false);
-	expect(summary.textContent).toBe("Technical details");
-	expect(summary.hasAttribute("role")).toBe(false);
-	const requests = vi.mocked(fetch).mock.calls.length;
-	await act(async () => summary.click());
-	expect(details.open).toBe(true);
-	for (const value of ["identity-one", "device-one", "https://coordinator.example"])
-		expect(details.querySelector("p")?.textContent).toContain(value);
-	expect(vi.mocked(fetch)).toHaveBeenCalledTimes(requests);
-});
+it.each([
+	["refresh", "failed"],
+	["refresh", "cancelled"],
+	["disconnect", "failed"],
+	["disconnect", "cancelled"],
+] as const)(
+	"shows the %s %s outcome while linked and keeps retry actions enabled",
+	async (intent, state) => {
+		view.operation = { ...operation(state), intent };
+		view.managementActions = { refresh: true, disconnect: true };
+		await show();
+		const subject = intent === "refresh" ? "Refresh" : "Unlinking";
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			state === "failed"
+				? `${subject} did not finish. Check status before trying again.`
+				: "Cancellation was reported. Check status to confirm the account state.",
+		);
+		const actions = [...mount.querySelectorAll("button")].filter((button) =>
+			["Refresh profile", "Unlink Google account"].includes(button.textContent ?? ""),
+		);
+		expect(actions).toHaveLength(2);
+		expect(actions.every((button) => !button.disabled)).toBe(true);
+	},
+);
 
 it.each([
 	"http://lh3.googleusercontent.com/a/photo",

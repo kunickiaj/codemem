@@ -1,4 +1,9 @@
-import type { CoordinatorAccountLinkStatusRead, linkCoordinatorAccount } from "@codemem/core";
+import type {
+	CoordinatorAccountLinkStatusRead,
+	changeCoordinatorAccount,
+	linkCoordinatorAccount,
+	readCoordinatorAccountChangeCapabilities,
+} from "@codemem/core";
 import { CoordinatorAccountLinkError } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountContextResult } from "../account/context.js";
@@ -79,7 +84,17 @@ async function fixture() {
 		options.signal?.addEventListener("abort", () => done.reject(new Error("synthetic stopped")));
 		return done.promise;
 	});
-	const registry = createAccountLinkRegistry({ readContext, link });
+	const change = vi.fn<typeof changeCoordinatorAccount>(async (options) => ({
+		intent: options.intent,
+		state: "completed",
+		coordinatorId: "coordinator-a",
+		identityId: context.identityId,
+		attemptId: "private-change",
+	}));
+	const readRemoteCapabilities = vi.fn<typeof readCoordinatorAccountChangeCapabilities>(
+		async () => ({ kind: "unsupported" }),
+	);
+	const registry = createAccountLinkRegistry({ readContext, link, change });
 	cleanups.push(() => registry.close());
 	const storeFactory = vi.fn(() => {
 		throw new Error("HTTP account routes must not open a store");
@@ -91,6 +106,7 @@ async function fixture() {
 			getListenerAddress: () => address,
 			readContext,
 			readRemoteStatus,
+			readRemoteCapabilities,
 			registry,
 		},
 	});
@@ -133,6 +149,8 @@ async function fixture() {
 		headers,
 		readContext,
 		readRemoteStatus,
+		readRemoteCapabilities,
+		change,
 		registry,
 		link,
 		done,
@@ -149,6 +167,138 @@ function privateResponse(response: Response) {
 	);
 }
 
+describe("account management HTTP contract", () => {
+	it.each(["wrong intent", "unknown outcome"])(
+		"does not report success or automatically retry after %s",
+		async (mode) => {
+			const f = await fixture();
+			f.readRemoteStatus.mockResolvedValue(remote("linked"));
+			f.readRemoteCapabilities.mockResolvedValue({
+				kind: "capabilities",
+				coordinatorId: "coordinator-a",
+				actions: { refresh: true, disconnect: true },
+			});
+			if (mode === "unknown outcome")
+				f.change.mockRejectedValue(new CoordinatorAccountLinkError("cancellation_unconfirmed"));
+			else
+				f.change.mockResolvedValue({
+					intent: "disconnect",
+					state: "completed",
+					identityId: context.identityId,
+					coordinatorId: "coordinator-a",
+					attemptId: "private-change",
+				});
+			const body = JSON.stringify({
+				groupId: context.groupId,
+				contextId: context.contextId,
+				coordinatorId: "coordinator-a",
+				authority: "device_claim",
+				intent: "refresh",
+			});
+			const { operation } = await (await f.request(PATH, "POST", body)).json();
+			const state = mode === "unknown outcome" ? "outcome_unknown" : "failed";
+			await vi.waitFor(() => expect(f.registry.get(operation.operationId)?.state).toBe(state));
+			if (mode === "unknown outcome") {
+				expect((await f.request(PATH, "POST", body)).status).toBe(409);
+				expect(f.change).toHaveBeenCalledTimes(1);
+			}
+		},
+	);
+});
+describe("account management capability checks", () => {
+	it.each(["refresh", "disconnect"] as const)(
+		"starts %s from revalidated capabilities and can start again after retained success",
+		async (intent) => {
+			const f = await fixture();
+			f.readRemoteStatus.mockResolvedValue(remote("linked"));
+			f.readRemoteCapabilities.mockResolvedValue({
+				kind: "capabilities",
+				coordinatorId: "coordinator-a",
+				actions: { refresh: true, disconnect: true },
+			});
+			const body = JSON.stringify({
+				groupId: context.groupId,
+				contextId: context.contextId,
+				coordinatorId: "coordinator-a",
+				authority: "controller_attestation",
+				intent,
+			});
+			for (let index = 0; index < 2; index++) {
+				const response = await f.request(PATH, "POST", body);
+				expect(response.status).toBe(202);
+				const { operation } = await response.json();
+				await vi.waitFor(() =>
+					expect(f.registry.get(operation.operationId)?.state).toBe("succeeded"),
+				);
+				expect(f.registry.get(operation.operationId)?.intent).toBe(intent);
+			}
+			expect(f.change).toHaveBeenCalledTimes(2);
+			expect(f.change.mock.calls[0][0]).toMatchObject({
+				intent,
+				expectedCoordinatorId: "coordinator-a",
+				expectedIdentityId: context.identityId,
+				signal: expect.any(AbortSignal),
+				assertCurrentContext: expect.any(Function),
+			});
+			expect(f.change.mock.calls[0][0]).not.toHaveProperty("expectedAuthority");
+			expect(f.link).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["denied", "unsupported", "coordinator changed", "context changed", "identity mismatch"])(
+		"does not execute stale UI capabilities: %s",
+		async (mode) => {
+			const f = await fixture();
+			f.readRemoteStatus.mockResolvedValue(
+				remote("linked", mode === "identity mismatch" ? { identityId: "other" } : {}),
+			);
+			f.readRemoteCapabilities.mockImplementation(async () => {
+				if (mode === "context changed")
+					f.readContext.mockReturnValue({ ...ready, context: { ...context, identityId: "other" } });
+				if (mode === "unsupported") return { kind: "unsupported" };
+				return {
+					kind: "capabilities",
+					coordinatorId: mode === "coordinator changed" ? "other" : "coordinator-a",
+					actions: { refresh: mode !== "denied", disconnect: mode !== "denied" },
+				};
+			});
+			const response = await f.request(
+				PATH,
+				"POST",
+				JSON.stringify({
+					groupId: context.groupId,
+					contextId: context.contextId,
+					coordinatorId: "coordinator-a",
+					authority: "device_claim",
+					intent: "disconnect",
+				}),
+			);
+			expect(response.status).toBe(409);
+			expect(f.change).not.toHaveBeenCalled();
+			expect(f.link).not.toHaveBeenCalled();
+		},
+	);
+	it.each([null, "unlink", "", false, 1])(
+		"rejects invalid intent %j rather than connecting",
+		async (intent) => {
+			const f = await fixture();
+			const response = await f.request(
+				PATH,
+				"POST",
+				JSON.stringify({
+					groupId: context.groupId,
+					contextId: context.contextId,
+					coordinatorId: "coordinator-a",
+					authority: "device_claim",
+					intent,
+				}),
+			);
+			expect(response.status).toBe(400);
+			expect(f.readRemoteStatus).not.toHaveBeenCalled();
+			expect(f.link).not.toHaveBeenCalled();
+			expect(f.change).not.toHaveBeenCalled();
+		},
+	);
+});
 describe("account operation HTTP contract", () => {
 	it("starts with the trusted profile and delivers the private URL only through the POST endpoint", async () => {
 		const f = await fixture(); // Arrange

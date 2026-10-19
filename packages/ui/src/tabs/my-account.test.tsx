@@ -142,9 +142,7 @@ describe("My Account optional device review instructions", () => {
 		expect(liveStatus?.textContent).not.toMatch(
 			/codemem coordinator|database|config|keys directory/,
 		);
-		const details = mount.querySelector<HTMLDetailsElement>(
-			"details.recipient-policy-management-details",
-		);
+		const details = mount.querySelector("details.recipient-policy-management-details");
 		if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing native review details");
 		expect(details.open).toBe(false);
 		expect(details.hasAttribute("open")).toBe(false);
@@ -161,7 +159,7 @@ describe("My Account optional device review instructions", () => {
 		expect(details.previousElementSibling?.textContent).toContain("Codemem Identity:");
 		expect(details.nextElementSibling?.contains(button("Check status"))).toBe(true);
 		const outsideInstructions = mount.cloneNode(true) as HTMLElement;
-		outsideInstructions.querySelector("details.recipient-policy-management-details")?.remove();
+		outsideInstructions.querySelector("details")?.remove();
 		expect(outsideInstructions.textContent).not.toMatch(
 			/review-device-owner|database|config|keys directory|Confirmation defaults/,
 		);
@@ -289,7 +287,7 @@ describe("My Account read-only status", () => {
 		// Act
 		await show();
 		// Assert
-		expect(mount.textContent).toContain("Another account link is running in this Viewer");
+		expect(mount.textContent).toContain("Another account operation is in progress in this Viewer");
 		expect(button("Link Google account").disabled).toBe(true);
 		expect(buttons().some((node) => node.textContent === "Cancel linking")).toBe(false);
 		expect(mount.innerHTML).not.toContain("op-one");
@@ -329,7 +327,6 @@ describe("My Account read-only status", () => {
 				.map((node) => node.textContent),
 		).toEqual(["Check status"]);
 		expect(mount.querySelector('[role="status"][aria-live="polite"]')).not.toBeNull();
-		expect(buttons().some((node) => node.textContent === "Link Google account")).toBe(false);
 		expect(mount.querySelector("details.recipient-policy-management-details")).toBeNull();
 	});
 	it.each([
@@ -361,9 +358,9 @@ describe("My Account read-only status", () => {
 		// Act
 		await show();
 		// Assert
-		if (state === "linked_mismatch") {
+		if (state === "linked_mismatch")
 			expect(buttons().some((node) => node.textContent === "Link Google account")).toBe(false);
-		} else expect(button("Link Google account").disabled).toBe(true);
+		else expect(button("Link Google account").disabled).toBe(true);
 		expect(mount.textContent).not.toContain("No Google account is linked");
 		expect(mount.textContent).not.toContain("Unverified secret");
 		expect(mount.textContent).not.toContain("unverified@example.test");
@@ -477,6 +474,86 @@ describe("My Account retained outcomes and current guidance", () => {
 		).toBe(false);
 		expect(calls("browser-url")).toHaveLength(0);
 	});
+});
+
+describe.each([
+	{ intent: undefined, activity: "linking", subject: "Linking", attempt: "link" },
+	{ intent: "connect", activity: "linking", subject: "Linking", attempt: "link" },
+	{ intent: "refresh", activity: "refresh", subject: "Refresh", attempt: "refresh" },
+	{ intent: "disconnect", activity: "unlinking", subject: "Unlinking", attempt: "unlink" },
+] as const)("My Account $intent operation copy", ({ intent, activity, subject, attempt }) => {
+	it.each(["starting", "awaiting_browser", "failed", "cancelled", "outcome_unknown"] as const)(
+		"shows accurate %s copy and cancellation labels",
+		async (state) => {
+			view = status({ operation: { ...operation(state), intent }, canLink: false });
+			// Keep the private browser handoff out of this status-copy assertion.
+			if (view.operation) view.operation.browserUrlAvailable = false;
+			await show();
+			const copy = {
+				starting: {
+					link: "Preparing Google sign-in…",
+					refresh: "Preparing Google sign-in to refresh your profile…",
+					unlink: "Preparing Google sign-in to unlink your account…",
+				}[attempt],
+				awaiting_browser:
+					intent && intent !== "connect"
+						? `Waiting for Google sign-in to ${attempt} your account. Keep this Viewer open on the same computer.`
+						: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+				failed: `${subject} did not finish. Check status before trying again.`,
+				cancelled: "Cancellation was reported. Check status to confirm the account state.",
+				outcome_unknown: `We couldn’t confirm whether ${activity} finished. Check status.`,
+			}[state];
+			expect(mount.querySelector('[role="status"]')?.textContent).toBe(copy);
+			if (state === "starting" || state === "awaiting_browser")
+				expect(button(`Cancel ${activity}`).disabled).toBe(false);
+		},
+	);
+	it("names the action when browser delivery and cancellation fail, then polling is lost", async () => {
+		view = status({ operation: { ...operation("awaiting_browser"), intent }, canLink: false });
+		transport.mockImplementation(async (url) => {
+			if (String(url).endsWith("browser-url")) throw new Error("private-delivery-error");
+			return response(view);
+		});
+		await show();
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			`Google sign-in could not be opened. Cancel ${activity}, or wait for status to update.`,
+		);
+		transport.mockRejectedValueOnce(new Error("private-cancel-error"));
+		await click(`Cancel ${activity}`);
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			`Cancellation could not be confirmed. ${subject} may still finish; you can try cancellation again.`,
+		);
+		transport.mockRejectedValueOnce(new Error("private-poll-error"));
+		await tick();
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			`We couldn’t confirm whether ${activity} finished. Check status.`,
+		);
+		expect(button(`Cancel previous ${attempt}`).disabled).toBe(false);
+		expect(mount.textContent).toContain(`An earlier ${attempt} may still finish`);
+	});
+	it("names a stopped action without promising rollback", async () => {
+		view = status({ operation: { ...operation("failed"), intent, failure: "link_stopped" } });
+		await show();
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			`${subject} stopped. Check status before trying again.`,
+		);
+	});
+	it.each(["starting", "outcome_unknown"] as const)(
+		"reports a %s cancellation reply without claiming rollback",
+		async (state) => {
+			view = status({ operation: { ...operation("starting"), intent }, canLink: false });
+			await show();
+			const result = { ...operation(state), intent };
+			transport.mockResolvedValueOnce(response({ version: 1, operation: result }));
+			if (state === "outcome_unknown") view = status({ operation: result, canLink: false });
+			await click(`Cancel ${activity}`);
+			expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+				state === "outcome_unknown"
+					? `We couldn’t confirm whether ${activity} finished. Check status.`
+					: "Cancellation is pending. Check status to confirm.",
+			);
+		},
+	);
 });
 
 describe("My Account linking lifecycle", () => {

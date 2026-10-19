@@ -1,5 +1,7 @@
 import {
+	type CoordinatorAccountChangeCapabilitiesRead,
 	type CoordinatorAccountLinkStatusRead,
+	readCoordinatorAccountChangeCapabilities,
 	readCoordinatorAccountLinkStatus,
 } from "@codemem/core";
 import type {
@@ -18,6 +20,7 @@ export interface AccountStatusOptions {
 	registry?: AccountLinkRegistry;
 	readContext?: AccountContextReader;
 	readRemoteStatus?: typeof readCoordinatorAccountLinkStatus;
+	readRemoteCapabilities?: typeof readCoordinatorAccountChangeCapabilities;
 }
 type UnavailableCode = Extract<CoordinatorAccountLinkStatusRead, { kind: "unavailable" }>["code"];
 export interface AccountLinkViewV1 {
@@ -45,6 +48,7 @@ export interface AccountLinkViewV1 {
 				account: { email?: string; displayName?: string; pictureUrl?: string } | null;
 		  };
 	canLink: boolean;
+	managementActions?: { refresh: boolean; disconnect: boolean };
 	blockedReason:
 		| null
 		| "setup_incomplete"
@@ -191,5 +195,63 @@ export async function readAccountStatus(
 			options.registry,
 		);
 	}
-	return attachOperation(applyRemote(accountLocalView(fresh), remote), options.registry);
+	const currentView = applyRemote(accountLocalView(fresh), remote);
+	await attachManagementActions(options, initial.context, currentView, signal);
+	return attachOperation(currentView, options.registry);
+}
+
+async function attachManagementActions(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	context: AccountContext,
+	view: AccountLinkViewV1,
+	signal: AbortSignal,
+): Promise<void> {
+	if (
+		view.remote.kind !== "status" ||
+		view.remote.state !== "linked" ||
+		!view.remote.identityMatches
+	)
+		return;
+	// Injecting status alone must not unexpectedly make a real signed request in tests.
+	const read =
+		options.readRemoteCapabilities ??
+		(options.readRemoteStatus ? null : readCoordinatorAccountChangeCapabilities);
+	if (!read) return;
+	let capabilities: CoordinatorAccountChangeCapabilitiesRead | null = null;
+	try {
+		const { dbPath, keysDir, groupId, coordinatorUrl, identityId } = context;
+		capabilities = await read({
+			dbPath,
+			keysDir,
+			groupId,
+			coordinatorUrl,
+			identityId,
+			signal,
+		});
+	} catch {
+		// Capability failure alone is optional; local context must still be checked.
+	}
+	let fresh: AccountContextResult;
+	try {
+		fresh = options.readContext(context.groupId);
+	} catch {
+		fresh = { error: "account_context_unavailable" };
+	}
+	if (
+		signal.aborted ||
+		"error" in fresh ||
+		fresh.setup !== "ready" ||
+		!fresh.context ||
+		!sameAuthority(context, fresh.context)
+	) {
+		view.remote = { kind: "unavailable", code: "context_changed" };
+		view.blockedReason = "status_unavailable";
+		return;
+	}
+	if (
+		capabilities?.kind !== "capabilities" ||
+		capabilities.coordinatorId !== view.remote.coordinatorId
+	)
+		return;
+	view.managementActions = { ...capabilities.actions };
 }

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
+	type AccountIntent,
 	type AccountOperation,
 	AccountRequestError,
 	type AccountView,
@@ -13,6 +14,18 @@ import {
 
 const active = (op: AccountOperation) => op.state === "starting" || op.state === "awaiting_browser";
 
+export function accountOperationCopy(operation?: AccountOperation | null) {
+	return {
+		connect: { activity: "linking", subject: "Linking", attempt: "link" },
+		refresh: { activity: "refresh", subject: "Refresh", attempt: "refresh" },
+		disconnect: { activity: "unlinking", subject: "Unlinking", attempt: "unlink" },
+	}[operation?.intent ?? "connect"];
+}
+
+export function unknownAccountOutcome(operation: AccountOperation): string {
+	return `We couldn’t confirm whether ${accountOperationCopy(operation).activity} finished. Check status.`;
+}
+
 function errorText(error: unknown): string {
 	if (error instanceof AccountRequestError) {
 		if (error.status === 404) return "Account linking is not available in this Viewer.";
@@ -21,7 +34,7 @@ function errorText(error: unknown): string {
 		if (error.code === "account_context_changed")
 			return "The local account context changed. Check status before trying again.";
 		if (error.code === "account_link_not_allowed")
-			return "Linking is not available for this Identity. Check status.";
+			return "This account action is not available for this Identity. Check status.";
 		if (error.status === 503)
 			return "Account status is unavailable right now. Check status again later.";
 	}
@@ -31,11 +44,28 @@ function errorText(error: unknown): string {
 function canBeginLink(
 	view: AccountView | null,
 	busy: boolean,
+	intent: AccountIntent,
 ): view is AccountView & { contextId: string; selectedGroupId: string } {
-	return Boolean(view?.canLink && view.contextId && view.selectedGroupId && !busy);
+	if (
+		!view ||
+		busy ||
+		view.operation?.state === "outcome_unknown" ||
+		view.blockedReason === "operation_active"
+	)
+		return false;
+	const allowed = intent === "connect" ? view.canLink : view.managementActions?.[intent] === true;
+	return Boolean(allowed && view.contextId && view.selectedGroupId);
 }
-function sameOperationContext(operation: AccountOperation, view: AccountView): boolean {
-	return operation.contextId === view.contextId && operation.groupId === view.selectedGroupId;
+function sameOperationContext(
+	operation: AccountOperation,
+	view: AccountView,
+	intent?: AccountIntent,
+): boolean {
+	return (
+		operation.contextId === view.contextId &&
+		operation.groupId === view.selectedGroupId &&
+		(intent === undefined || (operation.intent ?? "connect") === intent)
+	);
 }
 function isInProgress(error: unknown): boolean {
 	return error instanceof AccountRequestError && error.code === "account_link_in_progress";
@@ -57,6 +87,7 @@ function useFlowState() {
 			operationId: string;
 			contextId: string;
 			groupId: string;
+			intent: AccountIntent;
 			succeeded: boolean;
 		} | null,
 		delivered: null as string | null,
@@ -117,15 +148,16 @@ function operationMissing(error: unknown): boolean {
 }
 
 function previousOutcomeNotice(operation: AccountOperation): string | undefined {
+	const { attempt } = accountOperationCopy(operation);
 	switch (operation.state) {
 		case "succeeded":
-			return "The earlier link finished for its original Identity. Check status there to confirm.";
+			return `The earlier ${attempt} finished for its original Identity. Check status there to confirm.`;
 		case "cancelled":
-			return "The earlier link was cancelled.";
+			return `Cancellation of the earlier ${attempt} was reported. Check status for its original Identity to confirm the account state.`;
 		case "failed":
-			return "The earlier link failed for its original Identity.";
+			return `The earlier ${attempt} failed for its original Identity.`;
 		case "outcome_unknown":
-			return "We couldn’t confirm how the earlier link ended. Check status for its original Identity.";
+			return `We couldn’t confirm how the earlier ${attempt} ended. Check status for its original Identity.`;
 		default:
 			return undefined;
 	}
@@ -157,20 +189,13 @@ async function checkExpiredPendingOperation(
 	}
 }
 
-function showStatus(
-	flow: Flow,
-	result: AccountView,
-	options: { notice?: string; previousNotice?: string; excludeOperationId?: string },
-): void {
-	rememberAuthWindowSuccess(flow, result.operation);
-	const verifiedLinked =
-		result.remote.kind === "status" &&
-		result.remote.state === "linked" &&
-		result.remote.identityMatches;
+function closeCompletedAuthWindow(flow: Flow, result: AccountView): void {
 	const authWindow = flow.refs.current.authWindow;
 	if (
-		verifiedLinked &&
+		result.remote.kind === "status" &&
+		result.remote.identityMatches &&
 		authWindow &&
+		result.remote.state === (authWindow.intent === "disconnect" ? "unlinked" : "linked") &&
 		authWindow.contextId === result.contextId &&
 		authWindow.groupId === result.selectedGroupId &&
 		authWindow.succeeded
@@ -182,6 +207,19 @@ function showStatus(
 			// Isolated browser windows may need to be closed manually.
 		}
 	}
+}
+
+function showStatus(
+	flow: Flow,
+	result: AccountView,
+	options: { notice?: string; previousNotice?: string; excludeOperationId?: string },
+): void {
+	rememberAuthWindowSuccess(flow, result.operation);
+	closeCompletedAuthWindow(flow, result);
+	const verifiedLinked =
+		result.remote.kind === "status" &&
+		result.remote.state === "linked" &&
+		result.remote.identityMatches;
 	flow.setView(result);
 	if (
 		result.operation &&
@@ -194,7 +232,10 @@ function showStatus(
 		);
 	}
 	flow.setOperation(
-		!verifiedLinked &&
+		(!verifiedLinked ||
+			(result.operation?.intent !== undefined && result.operation.intent !== "connect") ||
+			result.operation?.state === "outcome_unknown" ||
+			activeOperation(result.operation)) &&
 			result.operation &&
 			sameOperationContext(result.operation, result) &&
 			result.operation.operationId !== options.excludeOperationId
@@ -304,7 +345,9 @@ async function adoptConflict(
 			return true;
 		}
 		flow.setOperation(candidate);
-		flow.setMessage("Linking is already in progress for this Identity.");
+		flow.setMessage(
+			`${accountOperationCopy(candidate).subject} is already in progress for this Identity.`,
+		);
 		return true;
 	} catch {
 		if (epoch === flow.refs.current.generation) {
@@ -336,12 +379,18 @@ async function startFailure(
 	});
 }
 
-async function link(flow: Flow): Promise<void> {
+function activeOperation(operation: AccountOperation | null): boolean {
+	return operation !== null && active(operation);
+}
+
+async function link(flow: Flow, intent: AccountIntent = "connect"): Promise<void> {
 	const { view, busy } = flow;
-	if (flow.refs.current.starting || flow.pendingOperation || !canBeginLink(view, busy)) return;
+	if (flow.refs.current.starting || flow.pendingOperation || !canBeginLink(view, busy, intent))
+		return;
 	if (
 		view.remote.kind !== "status" ||
-		view.remote.state !== "unlinked" ||
+		view.remote.state !== (intent === "connect" ? "unlinked" : "linked") ||
+		!view.remote.identityMatches ||
 		(view.remote.authority !== "controller_attestation" && view.remote.authority !== "device_claim")
 	)
 		return;
@@ -358,21 +407,23 @@ async function link(flow: Flow): Promise<void> {
 		const result = await startAccountLink(
 			view.selectedGroupId,
 			view.contextId,
-			{ authority: view.remote.authority, coordinatorId: view.remote.coordinatorId },
+			{ authority: view.remote.authority, coordinatorId: view.remote.coordinatorId, intent },
 			flow.refs.current.controller?.signal,
 		);
 		if (epoch !== flow.refs.current.generation) {
 			opened?.close();
 			return;
 		}
-		if (!sameOperationContext(result.operation, view)) {
+		if (!sameOperationContext(result.operation, view, intent)) {
 			opened?.close();
 			void refresh(flow);
 			return;
 		}
 		flow.setOperation(result.operation);
 		flow.setMessage(
-			"Waiting for Google sign-in. This links your account to this Identity; it does not grant sharing access.",
+			intent === "connect"
+				? "Waiting for Google sign-in. This links your account to this Identity; it does not grant sharing access."
+				: `Waiting for Google sign-in to ${accountOperationCopy(result.operation).attempt} your account. Keep this Viewer open on the same computer.`,
 		);
 	} catch (error) {
 		opened?.close();
@@ -395,10 +446,10 @@ function deliverBrowserUrl(
 	void getAccountBrowserUrl(operation.operationId, signal)
 		.then(({ url }) => {
 			if (signal.aborted || epoch !== flow.refs.current.generation) return;
-			if (!validAccountBrowserUrl(url, view.coordinator?.origin ?? "")) {
+			if (!validAccountBrowserUrl(url, view.coordinator?.origin ?? "", operation.intent)) {
 				closeReservedPopup(flow);
 				flow.setMessage(
-					"Google sign-in could not be opened. Cancel linking, or wait for status to update.",
+					`Google sign-in could not be opened. Cancel ${accountOperationCopy(operation).activity}, or wait for status to update.`,
 				);
 				return;
 			}
@@ -411,6 +462,7 @@ function deliverBrowserUrl(
 					operationId: operation.operationId,
 					contextId: operation.contextId,
 					groupId: operation.groupId,
+					intent: operation.intent ?? "connect",
 					succeeded: false,
 				};
 				return;
@@ -423,7 +475,7 @@ function deliverBrowserUrl(
 			if (signal.aborted || epoch !== flow.refs.current.generation) return;
 			closeReservedPopup(flow);
 			flow.setMessage(
-				"Google sign-in could not be opened. Cancel linking, or wait for status to update.",
+				`Google sign-in could not be opened. Cancel ${accountOperationCopy(operation).activity}, or wait for status to update.`,
 			);
 		});
 }
@@ -448,7 +500,11 @@ function useBrowserDelivery(flow: Flow): void {
 
 function openFallback(flow: Flow): void {
 	const url = flow.refs.current.privateUrl;
-	if (!url || !flow.view?.coordinator || !validAccountBrowserUrl(url, flow.view.coordinator.origin))
+	if (
+		!url ||
+		!flow.view?.coordinator ||
+		!validAccountBrowserUrl(url, flow.view.coordinator.origin, flow.operation?.intent)
+	)
 		return;
 	// Keep a close handle without exposing the Viewer through window.opener.
 	const target = window.open("about:blank", "_blank");
@@ -463,6 +519,7 @@ function openFallback(flow: Flow): void {
 			operationId: flow.operation.operationId,
 			contextId: flow.operation.contextId,
 			groupId: flow.operation.groupId,
+			intent: flow.operation.intent ?? "connect",
 			succeeded: false,
 		};
 }
@@ -486,7 +543,7 @@ async function poll(
 		flow.setView(null);
 		flow.setOperation(null);
 		flow.setPendingOperation(operationMissing(error) ? null : { ...operation });
-		flow.setMessage("We couldn’t confirm whether linking finished. Check status.");
+		flow.setMessage(unknownAccountOutcome(operation));
 	}
 }
 
@@ -497,6 +554,7 @@ function rememberAuthWindowSuccess(flow: Flow, operation?: AccountOperation | nu
 		target?.operationId === operation.operationId &&
 		target.contextId === operation.contextId &&
 		target.groupId === operation.groupId &&
+		target.intent === (operation.intent ?? "connect") &&
 		operation.state === "succeeded"
 	)
 		target.succeeded = true;
@@ -530,9 +588,7 @@ function showPolledOperation(
 	void refresh(flow, {
 		terminalOperationId: result.operation.operationId,
 		notice:
-			result.operation.state === "outcome_unknown"
-				? "We couldn’t confirm whether linking finished. Check status."
-				: "",
+			result.operation.state === "outcome_unknown" ? unknownAccountOutcome(result.operation) : "",
 	});
 }
 
@@ -571,10 +627,7 @@ function showCancellation(flow: Flow, result: AccountOperation): void {
 	if (!active(result))
 		void refresh(flow, {
 			terminalOperationId: result.operationId,
-			notice:
-				result.state === "outcome_unknown"
-					? "We couldn’t confirm whether linking finished. Check status."
-					: "",
+			notice: result.state === "outcome_unknown" ? unknownAccountOutcome(result) : "",
 		});
 }
 
@@ -632,7 +685,7 @@ function showCancellationFailure(
 	if (options.previous) flow.setPendingOperation({ ...operation });
 	else flow.setOperation({ ...operation });
 	flow.setMessage(
-		"Cancellation could not be confirmed. Linking may still finish; you can try cancellation again.",
+		`Cancellation could not be confirmed. ${accountOperationCopy(operation).subject} may still finish; you can try cancellation again.`,
 	);
 }
 
@@ -655,6 +708,7 @@ export function useMyAccount() {
 		refresh: (options?: { groupId?: string; notice?: string }) =>
 			refresh(flow, { ...options, checkExpiredPending: true }),
 		link: () => link(flow),
+		change: (intent: "refresh" | "disconnect") => link(flow, intent),
 		openFallback: () => openFallback(flow),
 		cancel: () => cancel(flow, { operation: flow.operation, previous: false }),
 		cancelPrevious: () => cancel(flow, { operation: flow.pendingOperation, previous: true }),

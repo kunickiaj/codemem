@@ -162,6 +162,130 @@ describe("Viewer-owned previous-context Google popup completion", () => {
 	);
 });
 
+describe("Viewer-owned account change popup completion", () => {
+	it.each(["refresh", "disconnect"] as const)(
+		"finishes %s with fresh matching status despite an isolated closed handle, then allows the next action",
+		async (intent) => {
+			view = linked({
+				managementActions: { refresh: true, disconnect: true },
+			});
+			if (view.remote.kind === "status") view.remote.account = null;
+			let attempt = 0;
+			let expectedIntent: "connect" | "refresh" | "disconnect" = intent;
+			const changeUrl =
+				"https://coordinator.example/auth/account/change/start?request=private-change";
+			const urls = { connect: privateUrl, refresh: changeUrl, disconnect: changeUrl };
+			transport.mockImplementation(async (url, options) => {
+				if (url === "/api/account/session") return response({ csrfToken: "fixture-token" });
+				if (String(url).includes("link-status")) return response(view);
+				if (String(url).endsWith("browser-url"))
+					return response({
+						version: 1,
+						url: urls[expectedIntent],
+					});
+				if (options?.method === "POST") {
+					expect(JSON.parse(String(options.body))).toEqual({
+						groupId: "group-one",
+						contextId: "context-one",
+						coordinatorId: "coordinator-one",
+						authority: "device_claim",
+						intent: expectedIntent,
+					});
+					polled = {
+						...operation("awaiting_browser"),
+						operationId: `op-${++attempt}`,
+						intent: expectedIntent,
+					};
+				}
+				return response({ version: 1, operation: polled, current: true });
+			});
+			const confirm = vi.spyOn(window, "confirm");
+			await act(async () => render(<MyAccount />, mount));
+			await settle();
+			expect(mount.textContent).not.toContain("Link Google account");
+			expect(mount.querySelector<HTMLDetailsElement>(".my-account-technical-details")?.open).toBe(
+				false,
+			);
+			await click(intent === "refresh" ? "Refresh profile" : "Unlink Google account");
+			expect(popup.location.replace).toHaveBeenCalledWith(changeUrl);
+			popup.closed = true; // COOP can sever the handle while the physical window stays open.
+			await tick();
+			expect(popup.close).not.toHaveBeenCalled();
+			polled = { ...polled, state: "succeeded", finishedAt: "2026-01-01T00:00:01Z" };
+			view =
+				intent === "disconnect"
+					? status({ operation: polled })
+					: linked({ operation: polled, managementActions: { refresh: true, disconnect: true } });
+			await tick();
+			expect(popup.close).toHaveBeenCalledTimes(1);
+			expect(mount.textContent).toContain(
+				intent === "disconnect" ? "No Google account is linked" : "ada@example.test",
+			);
+			expectedIntent = intent === "disconnect" ? "connect" : "refresh";
+			popup.closed = false;
+			await click(intent === "disconnect" ? "Link Google account" : "Refresh profile");
+			expect(attempt).toBe(2);
+			expect(popup.location.replace).toHaveBeenLastCalledWith(urls[expectedIntent]);
+			expect(confirm).not.toHaveBeenCalled();
+			polled = { ...polled, state: "succeeded", finishedAt: "2026-01-01T00:00:02Z" };
+			view = linked({ operation: polled, managementActions: { refresh: true, disconnect: true } });
+			if (view.remote.kind === "status") view.remote.account = { email: "next@example.test" };
+			await tick();
+			expect(mount.textContent).toContain("next@example.test");
+			expect(popup.close).toHaveBeenCalledTimes(2);
+		},
+	);
+});
+describe("Viewer account change availability and completion checks", () => {
+	it.each([undefined, { refresh: false, disconnect: false }])(
+		"hides management actions without allowed capabilities %j",
+		async (managementActions) => {
+			view = linked({ managementActions });
+			await act(async () => render(<MyAccount />, mount));
+			await settle();
+			expect(mount.textContent).toContain("ada@example.test");
+			expect([...mount.querySelectorAll("button")].map((node) => node.textContent)).toEqual([
+				"Check status",
+			]);
+		},
+	);
+
+	it("keeps unknown management outcomes blocked even when the account still appears linked", async () => {
+		view = linked({
+			managementActions: { refresh: true, disconnect: true },
+			operation: { ...operation("outcome_unknown"), intent: "disconnect" },
+		});
+		await act(async () => render(<MyAccount />, mount));
+		await settle();
+		await click("Refresh profile");
+		await click("Unlink Google account");
+		expect(transport.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
+		expect(window.open).not.toHaveBeenCalled();
+	});
+
+	it("does not close a disconnect popup from unlinked status without matching intent completion", async () => {
+		view = linked({ managementActions: { refresh: true, disconnect: true } });
+		transport.mockImplementation(async (url, options) => {
+			if (url === "/api/account/session") return response({ csrfToken: "fixture-token" });
+			if (String(url).includes("link-status")) return response(view);
+			if (String(url).endsWith("browser-url"))
+				return response({
+					version: 1,
+					url: "https://coordinator.example/auth/account/change/start?request=private-change",
+				});
+			if (options?.method === "POST")
+				polled = { ...operation("awaiting_browser"), intent: "disconnect" };
+			return response({ version: 1, operation: polled, current: true });
+		});
+		await act(async () => render(<MyAccount />, mount));
+		await settle();
+		await click("Unlink Google account");
+		polled = { ...polled, state: "succeeded", intent: "refresh" };
+		view = status();
+		await tick();
+		expect(popup.close).not.toHaveBeenCalled();
+	});
+});
 describe("Viewer-owned Google popup completion", () => {
 	it("retries a blocked fallback without starting or delivering another link", async () => {
 		vi.mocked(window.open).mockReturnValueOnce(null).mockReturnValueOnce(null);

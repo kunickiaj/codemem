@@ -76,6 +76,35 @@ afterEach(async () => {
 });
 
 describe("account link runtime-wide ownership", () => {
+	it.each(["cancellation_unconfirmed", "receiver_close_failed"] as const)(
+		"local deadline cannot release %s ownership or erase uncertainty",
+		async (code) => {
+			vi.useFakeTimers();
+			vi.setSystemTime("2026-10-19T00:00:00Z");
+			const first = fixture();
+			const second = fixture({ ...context, contextId: "context-b", groupId: "group-b" });
+			const id = first.start();
+			await settle();
+			first.pending.reject(new CoordinatorAccountLinkError(code));
+			await settle();
+			const snapshot = first.registry.get(id);
+			expect(snapshot?.state).toBe("outcome_unknown");
+			vi.setSystemTime(Date.parse(snapshot?.deadlineAt ?? "") + 24 * 60 * 60_000);
+			expect(first.registry.get(id)).toEqual(snapshot);
+			expect(first.registry.hasActive()).toBe(true);
+			expect(
+				second.registry.start({
+					context: { ...context, contextId: "context-b", groupId: "group-b" },
+					expectedCoordinatorId: "coordinator-a",
+					expectedAuthority: "device_claim",
+				}),
+			).toEqual({ error: "account_link_in_progress" });
+			expect(second.link).not.toHaveBeenCalled();
+			await first.registry.close();
+			expect(first.registry.get(id)?.state).toBe("outcome_unknown");
+			expect(second.registry.hasActive()).toBe(false);
+		},
+	);
 	it.each(["same", "different"])(
 		"serializes factories across groups with %s profiles without sharing authority",
 		async (profile) => {
@@ -136,6 +165,8 @@ describe("account link runtime-wide ownership", () => {
 			expect(first.registry.browserUrl(secondId)).toBeNull();
 		},
 	);
+});
+describe("account link cancellation ownership", () => {
 	it.each([
 		"link_stopped",
 		"request_failed",
@@ -163,6 +194,16 @@ describe("account link runtime-wide ownership", () => {
 			});
 			first.pending.reject(new CoordinatorAccountLinkError(code));
 			await settle();
+			if (code === "cancellation_unconfirmed" || code === "receiver_close_failed") {
+				expect(
+					second.registry.start({
+						context,
+						expectedCoordinatorId: "coordinator-a",
+						expectedAuthority: "device_claim",
+					}),
+				).toEqual({ error: "account_link_in_progress" });
+				await first.registry.close();
+			}
 			const secondId = second.start();
 			await settle();
 			second.link.mock.calls[0][0].onBrowserStart(privateUrl);
@@ -415,6 +456,7 @@ describe("account link private capability snapshots", () => {
 		const operation = f.registry.get(id);
 		// Assert: only browserUrl may return the capability, never a public snapshot.
 		expect(operation).toEqual({
+			intent: "connect",
 			operationId: id,
 			groupId: context.groupId,
 			contextId: context.contextId,
@@ -544,7 +586,7 @@ describe("account link context and cancellation", () => {
 			f.pending.reject(new CoordinatorAccountLinkError(code));
 			await settle();
 			expect(f.registry.get(id)).toMatchObject({ state, failure, browserUrlAvailable: false });
-			expect(f.registry.hasActive()).toBe(false);
+			expect(f.registry.hasActive()).toBe(state === "outcome_unknown");
 		},
 	);
 });

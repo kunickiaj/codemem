@@ -345,13 +345,19 @@ The card starts Google sign-in only when you choose **Link Google account**. Do 
 
 The Viewer and browser must run on the same computer. Account linking requires the Viewer to bind to `localhost`, `127.0.0.1`, or `::1`; wildcard bindings do not expose the account API. An SSH tunnel can show Viewer status on another computer, but its loopback callback reaches that other computer, so linking is unsupported there. Do not copy private sign-in links or use an SSH workaround.
 
-The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. For a self-hosted coordinator, its operator separately approves and performs the record-preserving auth-schema apply and deployment before linking is available; this client flow does not perform that upgrade. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
+The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. A self-hosted operator performs any required coordinator upgrade and deployment separately; this client flow does not change coordinator schema. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
 
 For an active enrolled device with a current Identity that matches coordinator eligibility, choose **Link Google account**, complete Google sign-in, and return to the Viewer. This normal flow needs no administrator credential, review command, enrollment, claim checkbox, or new Identity.
 
 Linking applies only to the current Identity. It does not change device keys, enrollment, grants, or history, and it cannot authorize another device. If the coordinator cannot link the eligible context, ask its operator; do not reset a profile, create an Identity, or use an administrator credential in the Viewer.
 
-Account linking is optional. It does not grant Team or Project access, move an Identity, merge accounts, reassign devices, transfer history, or change existing device keys or enrollments. At one coordinator, one Google account links to one existing Identity, and each Identity links to one account. You cannot replace, unlink, merge, or transfer a link from this card. Choose an account that follows your work policy.
+Account linking is optional. It does not grant Team or Project access, move an Identity, merge accounts, reassign devices, transfer history, or change existing device keys or enrollments. At one coordinator, one Google account links to one existing Identity, and each Identity links to one account. Choose an account that follows your work policy.
+
+When the coordinator advertises account-management capability, a linked account can show **Refresh profile** and **Unlink Google account**. **Check status** only reads the signed coordinator result; it does not refresh a profile. Refresh requires fresh Google proof and has no extra confirmation.
+
+Unlink requires fresh Google proof and then one hosted confirmation; it preserves the Identity, device keys, access, and retained history while ending the current link and its old sessions. To link again—whether to the same or another Google account—choose the normal **Link Google account** flow after unlinking. There is no switch flow or automatic unlink.
+
+If these controls are absent, management is not currently available for this device and coordinator. Check status before retrying; do not use an external Google workaround or an operator credential.
 
 If the coordinator reports an Identity mismatch, conflict, revoked link, or required review, ask the coordinator operator to resolve it; the card does not merge or repair identities.
 

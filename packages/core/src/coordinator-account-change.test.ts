@@ -64,6 +64,19 @@ async function fixture(authority: "device_claim" | "controller_attestation" = "d
 	return { ...base, ...f, rows, snapshot, hooks };
 }
 
+test("a finalize admitted before expiry can commit after a local observer deadline passes", async ({
+	f,
+}) => {
+	await f.prepare(1, "refresh");
+	const expires = Number(f.rows(changeTable)[0]?.expires_at_ms);
+	f.hooks.beforeBatch = () => {
+		f.clock.now = expires + 600000;
+	};
+	expect(await f.operations.finalize(f.proof(), config)).toMatchObject({ intent: "refresh" });
+	expect(f.clock.now).toBeGreaterThan(expires);
+	expect(f.rows(changeTable)[0]?.state).toBe("completed");
+});
+
 test("device-claim disconnect commits exact archive, revokes sessions, purges display and retains only an immutable receipt", async ({
 	f,
 }) => {

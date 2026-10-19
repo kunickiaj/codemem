@@ -89,18 +89,23 @@ Revoked links, mismatched Identities, and changed local contexts expose no profi
 The Viewer shows the available name, verified email, and “Linked to Google”, with
 Identity, device, and coordinator information below the account summary. Missing
 metadata stays missing: existing links need no relink, and the Viewer does not
-backfill account data. Missing, blocked, or failed photos fall back to initials
+automatically backfill account data. Missing, blocked, or failed photos fall back to initials
 or a generic Google marker.
 
-### Planned account lifecycle
+### Account actions
 
-The current Viewer contract supports initial linking only. It has no unlink,
-reconnect, refresh, or switch action. The proposed
-[account-management lifecycle](coordinator-account-management.md) defines a future
-single-card UI and the explicit `connect`, `disconnect`, and `refresh` operations.
-That proposal is not shipped: current status fields, routes, and revoked-link
-behavior remain unchanged until a separately approved V3 migration and full-stack
-release.
+The single My Account card supports `connect`, `refresh` (**Refresh profile**),
+and `disconnect` (**Unlink Google account**). Optional server-derived
+`managementActions: {refresh: boolean, disconnect: boolean}` enables management
+only after fresh linked status matches the local Identity and the coordinator's
+signed capabilities permit it. Missing or unsupported capabilities do not imply
+permission; coordinators without management support retain normal V2 linking and
+profile display. Existing V2 status fields and Viewer V1 envelopes remain unchanged.
+
+**Check status** only reads account evidence; it is not **Refresh profile**, which
+requires fresh Google proof to update display metadata. Unlink also requires fresh
+Google proof and one explicit hosted confirmation. Refresh adds no extra
+confirmation. There is no wizard, automatic unlink, or Viewer confirmation dialog.
 
 Avatar requests go directly to Google, which can see the browser's network address.
 Images load lazily with `no-referrer` and anonymous CORS (no cross-origin
@@ -146,8 +151,9 @@ the profile context and passes expected
 Identity/coordinator pins and a current-context check to the core linking runtime.
 The registry rejects changed authority fields even if a caller reuses a context ID.
 
-Public operation snapshots contain only IDs, state, fixed failure codes, times and
-browser-link availability. The private URL stays in memory and is never included
+Public operation snapshots contain only IDs, optional `intent`, state, fixed failure codes, times and
+browser-link availability. Missing intent means `connect` for older snapshots;
+new operations report their intent. The private URL stays in memory, is never persisted, and is never included
 in snapshots. Delivery requires the current context, an awaiting-browser operation
 and a validated coordinator origin/path; it is limited to five deliveries.
 The origin follows core policy: HTTPS, or HTTP on literal `127.0.0.1`/`[::1]` for
@@ -158,7 +164,15 @@ while the core runtime finishes cancellation, rather than reporting success earl
 `cancellation_unconfirmed` and `receiver_close_failed` mean `outcome_unknown`, not
 confirmed cancellation. Shutdown aborts active work and waits at most five seconds;
 unfinished work remains unknown, and late callbacks cannot change a terminal
-record. Finished records expire after fifteen minutes, with at most eight retained.
+record. Known finished records expire after fifteen minutes, with at most eight
+retained. An `outcome_unknown` record remains visible and blocks new operations
+across groups until this registry is closed and its underlying Core work settles.
+Its `deadlineAt` is a local runtime deadline, not a coordinator expiry receipt;
+passing it cannot prove that an in-flight or previously committed request had no
+effects. The registry does not automatically retry or convert uncertainty into
+confirmed cancellation. Checking account status is read-only and does not release
+this ownership; closing the Viewer is an existing recovery boundary, not proof of
+the remote outcome.
 
 Instances share only an opaque busy-owner token, including across duplicate module
 loads. Operation records, contexts and browser URLs remain instance-private;
@@ -175,24 +189,29 @@ read within ten seconds; disconnects stop body reads. Operation routes accept no
 
 | Route | Body and result |
 | --- | --- |
-| `POST /api/account/link-operations` | `{groupId, contextId, coordinatorId, authority}`; fresh matching unlinked status and a final context check precede start. Returns `202 {version:1, operation}`. |
+| `POST /api/account/link-operations` | Required `{groupId, contextId, coordinatorId, authority}` plus optional `intent` (`connect`, `refresh`, or `disconnect`, default `connect`); no other keys. Fresh eligible status and a final context check precede start. Returns `202 {version:1, operation}`. |
 | `GET /api/account/link-operations/:id` | Returns `{version:1, operation, current}` without private URLs. |
 | `POST /api/account/link-operations/:id/browser-url` | `{}`; returns `{version:1, url}` only for the current awaiting-browser context. This is the only HTTP response containing the private URL. |
 | `POST /api/account/link-operations/:id/cancel` | `{}`; aborts idempotently, returning `202` while pending or `200` once terminal. Cancellation can clean up an old context. |
 
-An active operation blocks another start even in a different group. Status embeds
+All three intents share the same busy registry: an active operation blocks another start even in a different group. Status embeds
 only a matching-context operation; terminal records do not replace fresh account
-status. Start rejects unsupported coordinators and `review_required`, `linked`,
-`revoked` or `conflict` states. Unavailable coordinator status returns `503` rather than assuming the
+status. Connect requires fresh matching unlinked status and `canLink`;
+refresh/disconnect require fresh matching linked status and the corresponding
+server-derived `managementActions` permission. Review-required, revoked, conflicting,
+or mismatched status cannot start an action. Unavailable coordinator status returns `503` rather than assuming the
 Identity is unlinked. Context changes return `409` without starting another job.
 
 Errors use fixed codes and never include callback exceptions or private URLs.
 
 The viewer supplies the displayed `coordinatorId` and `authority` when the user
-clicks **Link Google account**; there is no separate claim checkbox or dialog.
-Start re-reads status and verifies both against the complete current context. The
-Identity is pinned by `contextId`; the registry passes its expected authority,
-coordinator, and context Identity to the core runtime. Public operation snapshots
+clicks an account action; there is no separate claim checkbox or Viewer dialog.
+`authority` must be `controller_attestation` or `device_claim` for every intent.
+Start re-reads status, checks the coordinator and complete current context, and
+checks the supplied authority against status for connect. Management authorization
+comes from fresh status and capabilities, not a browser-supplied permission.
+The Identity is pinned by `contextId`; the registry passes the expected coordinator
+and context Identity to the runtime (and expected authority for connect). Public operation snapshots
 do not record authority. A status read or poll never starts an operation. Config
 and environment Identity selection are both supported; the existing context pins
 stop the operation if either changes.
@@ -210,16 +229,16 @@ credential. The separate sync listener still exposes no account routes.
 
 ## Browser handoffs and completion
 
-The Viewer opens an isolated window from **Link Google account**; the coordinator automatically submits its same-origin start form.
+The Viewer opens an isolated window from each account action; the coordinator automatically submits its same-origin start form.
 The start cookie, CSRF token and private device-issued start proof remain required, with **Continue with Google** as a script-free fallback.
 Only after the transaction commits does the validated provider URL open automatically, with a manual fallback.
 
-Google sign-in and explicit account confirmation do not replace signed device proof.
-After confirmation commits, the browser navigates to the saved literal-loopback receiver without a referrer, with a manual fallback.
+Google sign-in and any required hosted confirmation do not replace signed device proof.
+After the account action commits, the browser navigates to the saved literal-loopback receiver without a referrer, with a manual fallback.
 The receipt reports checking, not success; website-session redemption is optional and never switches an existing session automatically.
 
 The Viewer retains the window handle without exposing `window.opener`.
-Only its own successful operation plus fresh linked status for the matching original context, group and Identity permits closing.
+Only its own successful operation plus fresh status for the matching original context, group and Identity permits closing: linked for connect/refresh, unlinked for disconnect.
 Success is remembered across context switches; failed, uncertain or mismatched responses cannot close the window.
 
 Provider isolation can sever the handle, so the receipt also polls its held listener with a random per-receiver token and same-origin fetch checks.

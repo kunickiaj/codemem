@@ -4,16 +4,15 @@ import {
 	type AccountView,
 	validAccountPictureUrl,
 } from "../lib/api/account";
-import { useMyAccount } from "./my-account-flow";
+import { accountOperationCopy, unknownAccountOutcome, useMyAccount } from "./my-account-flow";
 
 const SCHEMA_UPGRADE_MESSAGE =
-	"The coordinator needs a database schema upgrade before Google linking can work. Ask the person who runs it to back up and upgrade the coordinator. Normal device sync is still available.";
+	"The coordinator needs a database schema upgrade before Google account changes can work. Ask the person who runs it to back up and upgrade the coordinator. Normal device sync is still available.";
 
 const FAILURE_MESSAGES: Partial<Record<NonNullable<AccountOperation["failure"]>, string>> = {
 	schema_upgrade_required: SCHEMA_UPGRADE_MESSAGE,
-	link_stopped: "Linking stopped. Check status before trying again.",
 	link_conflict:
-		"Account linking conflicts with an existing or revoked link. Ask the coordinator operator; this action cannot replace links or move Identities.",
+		"The account change conflicts with an existing or revoked link. Ask the coordinator operator; this action cannot replace links or move Identities.",
 };
 
 const UNAVAILABLE_MESSAGES = new Map<string, string>([
@@ -71,25 +70,34 @@ function remoteSummary(view: AccountView): string {
 		return "The coordinator Identity does not match this local Identity. Linking is unavailable.";
 	if (view.remote.state === "revoked")
 		return "This Identity’s account link was revoked. Linking here cannot restore or replace it.";
+	if (view.blockedReason === "operation_active")
+		return "Another account operation is in progress in this Viewer. Check its status before starting another.";
 	if (view.remote.state === "linked")
 		return "This Google account is linked to the local Codemem Identity. Linking does not change sharing access.";
-	if (view.blockedReason === "operation_active")
-		return "Another account link is running in this Viewer. Check status after it finishes.";
 	return "No Google account is linked to this Identity. Linking will not move the Identity or grant sharing access.";
 }
 
 function accountSummary(view: AccountView | null, operation: AccountOperation | null): string {
+	const copy = accountOperationCopy(operation);
 	if (!view)
 		return "Google-linking status could not be loaded. Check that the Viewer is running, then check status again.";
-	if (operation?.state === "starting") return "Preparing Google sign-in…";
+	if (operation?.state === "starting")
+		return {
+			connect: "Preparing Google sign-in…",
+			refresh: "Preparing Google sign-in to refresh your profile…",
+			disconnect: "Preparing Google sign-in to unlink your account…",
+		}[operation.intent ?? "connect"];
 	if (operation?.state === "awaiting_browser")
-		return "Waiting for Google sign-in. Keep this Viewer open on the same computer.";
-	if (operation?.state === "outcome_unknown")
-		return "We couldn’t confirm whether linking finished. Check status.";
+		return operation.intent && operation.intent !== "connect"
+			? `Waiting for Google sign-in to ${copy.attempt} your account. Keep this Viewer open on the same computer.`
+			: "Waiting for Google sign-in. Keep this Viewer open on the same computer.";
+	if (operation?.state === "outcome_unknown") return unknownAccountOutcome(operation);
+	if (operation?.state === "failed" && operation.failure === "link_stopped")
+		return `${copy.subject} stopped. Check status before trying again.`;
 	if (operation?.state === "failed")
 		return (
 			FAILURE_MESSAGES[operation.failure ?? "request_failed"] ??
-			"Linking did not finish. Check status before trying again."
+			`${copy.subject} did not finish. Check status before trying again.`
 		);
 	if (operation?.state === "cancelled")
 		return "Cancellation was reported. Check status to confirm the account state.";
@@ -191,22 +199,62 @@ function DeviceLinkRecovery({ view }: { view: AccountView | null }) {
 	);
 }
 
+function ManagementActions({
+	flow,
+	blocked,
+}: {
+	flow: ReturnType<typeof useMyAccount>;
+	blocked: boolean;
+}) {
+	const actions = flow.view?.managementActions;
+	return (
+		<>
+			{actions?.refresh ? (
+				<button
+					className="settings-button"
+					type="button"
+					disabled={blocked}
+					onClick={() => void flow.change("refresh")}
+				>
+					Refresh profile
+				</button>
+			) : null}
+			{actions?.disconnect ? (
+				<button
+					className="settings-button"
+					type="button"
+					disabled={blocked}
+					onClick={() => void flow.change("disconnect")}
+				>
+					Unlink Google account
+				</button>
+			) : null}
+		</>
+	);
+}
+
 function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	const { view, operation, pendingOperation, busy, fallback } = flow;
 	const running = operation?.state === "starting" || operation?.state === "awaiting_browser";
 	const linked = view?.remote.kind === "status" && view.remote.state === "linked";
+	const blocked =
+		busy ||
+		Boolean(pendingOperation) ||
+		operation?.state === "outcome_unknown" ||
+		view?.blockedReason === "operation_active";
 	return (
 		<div className="peer-actions">
 			{view && !running && !linked ? (
 				<button
 					className="settings-save"
 					type="button"
-					disabled={busy || !view.canLink || Boolean(pendingOperation)}
+					disabled={blocked || !view.canLink}
 					onClick={() => void flow.link()}
 				>
 					Link Google account
 				</button>
 			) : null}
+			{linked && !running ? <ManagementActions flow={flow} blocked={blocked} /> : null}
 			{fallback && running ? (
 				<button className="settings-save" type="button" onClick={flow.openFallback}>
 					Open Google sign-in
@@ -219,7 +267,7 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 					disabled={busy}
 					onClick={() => void flow.cancel()}
 				>
-					Cancel linking
+					Cancel {accountOperationCopy(operation).activity}
 				</button>
 			) : null}
 			{pendingOperation && !running ? (
@@ -229,7 +277,7 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 					disabled={busy}
 					onClick={() => void flow.cancelPrevious()}
 				>
-					Cancel previous link
+					Cancel previous {accountOperationCopy(pendingOperation).attempt}
 				</button>
 			) : null}
 			<button
@@ -290,9 +338,10 @@ export function MyAccount() {
 			{guidance ? <p className="small">{guidance}</p> : null}
 			{flow.pendingOperation ? (
 				<p className="small">
-					An earlier link may still finish for its original Identity. Its current account context is
-					unverified and may differ from the Identity shown here. Cancel previous link requests
-					cancellation of that earlier attempt. Check status to confirm.
+					An earlier {accountOperationCopy(flow.pendingOperation).attempt} may still finish for its
+					original Identity. Its current account context is unverified and may differ from the
+					Identity shown here. Cancel previous {accountOperationCopy(flow.pendingOperation).attempt}{" "}
+					requests cancellation of that earlier attempt. Check status to confirm.
 				</p>
 			) : null}
 			{view?.local ? (

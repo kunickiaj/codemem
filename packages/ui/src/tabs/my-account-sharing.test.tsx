@@ -292,7 +292,7 @@ describe("My Account data and lifetime inside Sharing", () => {
 		expect(account.startAccountLink).toHaveBeenCalledExactlyOnceWith(
 			"group-one",
 			"context-one",
-			{ authority: "device_claim", coordinatorId: "coordinator-one" },
+			{ authority: "device_claim", coordinatorId: "coordinator-one", intent: "connect" },
 			expect.any(AbortSignal),
 		);
 		expect(account.getAccountBrowserUrl).toHaveBeenCalledTimes(1);

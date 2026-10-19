@@ -32,7 +32,7 @@ type AccountOptions = NonNullable<AppOptions["accountLink"]>;
 type Context = ReturnType<NonNullable<AccountOptions["readContext"]>>;
 
 afterEach(() => vi.restoreAllMocks());
-async function fixture() {
+async function fixture(capabilities?: NonNullable<AccountOptions["readRemoteCapabilities"]>) {
 	const readContext = vi.fn((): Context => structuredClone(ready));
 	const readRemoteStatus = vi.fn(
 		async (): Promise<CoordinatorAccountLinkStatusRead> => ({ kind: "unsupported" }),
@@ -46,6 +46,7 @@ async function fixture() {
 			getListenerAddress: () => ({ host: "127.0.0.1", port: 7441 }),
 			readContext,
 			readRemoteStatus,
+			readRemoteCapabilities: capabilities,
 		},
 	});
 	const session = await app.request(`${ORIGIN}/api/account/session`, {
@@ -103,6 +104,101 @@ function privateResponse(response: Response) {
 	);
 }
 
+describe("account management capabilities", () => {
+	it.each(
+		(["same", "mismatch", "error", "throws"] as const).flatMap((context) =>
+			(["resolved", "throws"] as const).map((capability) => ({ context, capability })),
+		),
+	)(
+		"rechecks $context context after $capability capability lookup",
+		async ({ context, capability }) => {
+			const read = vi.fn<NonNullable<AccountOptions["readRemoteCapabilities"]>>();
+			const f = await fixture(read);
+			f.readRemoteStatus.mockResolvedValue(status("linked"));
+			read.mockImplementation(async () => {
+				if (context === "mismatch") f.readContext.mockReturnValue(changedContext("local"));
+				if (context === "error")
+					f.readContext.mockReturnValue({ error: "account_context_unavailable" });
+				if (context === "throws")
+					f.readContext.mockImplementation(() => {
+						throw new Error("private-context-failure");
+					});
+				if (capability === "throws") throw new Error("private-capability-failure");
+				return {
+					kind: "capabilities",
+					coordinatorId: "coordinator-a",
+					actions: { refresh: true, disconnect: true },
+				};
+			});
+			const response = await f.request();
+			const body = await response.json();
+			expect(response.status).toBe(200);
+			expect(f.readContext).toHaveBeenCalledTimes(3);
+			if (context === "same") {
+				expect(body.remote.account.email).toBe("fixture@example.test");
+				if (capability === "throws") expect(body).not.toHaveProperty("managementActions");
+			} else {
+				expect(body.remote).toEqual({ kind: "unavailable", code: "context_changed" });
+				expect(body).not.toHaveProperty("managementActions");
+				expect(JSON.stringify(body)).not.toContain("fixture@example.test");
+				expect(JSON.stringify(body)).not.toContain(pictureUrl);
+			}
+			expect(JSON.stringify(body)).not.toContain("private-");
+		},
+	);
+	it.each([
+		"allowed",
+		"denied",
+		"unsupported",
+		"unavailable",
+		"coordinator changed",
+		"context changed",
+	])("exposes management actions only from matching current capabilities: %s", async (mode) => {
+		const read = vi.fn<NonNullable<AccountOptions["readRemoteCapabilities"]>>();
+		const f = await fixture(read);
+		f.readRemoteStatus.mockResolvedValue(status("linked"));
+		read.mockImplementation(async () => {
+			if (mode === "context changed") f.readContext.mockReturnValue(changedContext("local"));
+			if (mode === "unsupported") return { kind: "unsupported" };
+			if (mode === "unavailable") return { kind: "unavailable", code: "coordinator_unreachable" };
+			return {
+				kind: "capabilities",
+				coordinatorId: mode === "coordinator changed" ? "other" : "coordinator-a",
+				actions: { refresh: mode !== "denied", disconnect: mode !== "denied" },
+			};
+		});
+		const body = await (await f.request()).json();
+		expect(read).toHaveBeenCalledTimes(1);
+		if (mode === "allowed" || mode === "denied")
+			expect(body.managementActions).toEqual({
+				refresh: mode === "allowed",
+				disconnect: mode === "allowed",
+			});
+		else expect(body).not.toHaveProperty("managementActions");
+		if (mode === "context changed")
+			expect(body.remote).toEqual({ kind: "unavailable", code: "context_changed" });
+		else
+			expect(body.remote.account).toEqual({
+				email: "fixture@example.test",
+				displayName: "Fixture name",
+				pictureUrl,
+			});
+	});
+	it.each(["unlinked", "revoked", "conflict", "review_required", "mismatch"])(
+		"never reads capabilities for %s",
+		async (state) => {
+			const read = vi.fn<NonNullable<AccountOptions["readRemoteCapabilities"]>>();
+			const f = await fixture(read);
+			f.readRemoteStatus.mockResolvedValue(
+				state === "mismatch"
+					? status("linked", "other")
+					: status(state as "unlinked" | "revoked" | "conflict" | "review_required"),
+			);
+			expect(await (await f.request()).json()).not.toHaveProperty("managementActions");
+			expect(read).not.toHaveBeenCalled();
+		},
+	);
+});
 describe("account status route", () => {
 	it.each(["device_claim", "controller_attestation"] as const)(
 		"preserves %s eligibility",

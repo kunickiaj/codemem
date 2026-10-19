@@ -64,6 +64,29 @@ afterEach(() => {
 });
 
 describe("My Account conflict transport recovery", () => {
+	it.each([
+		["refresh", "failed"],
+		["refresh", "cancelled"],
+		["disconnect", "failed"],
+		["disconnect", "cancelled"],
+		["connect", "failed"],
+		["connect", "cancelled"],
+	] as const)(
+		"retains terminal %s/%s only for current management context despite linked status",
+		async (intent, state) => {
+			const candidate = { ...operation(state), intent };
+			view = status({ operation: candidate, canLink: false });
+			if (view.remote.kind !== "status") throw new Error("missing remote status");
+			view.remote.state = "linked";
+			await probe();
+			expect(flow.operation).toEqual(intent === "connect" ? null : candidate);
+			view = { ...view, contextId: "different-context" };
+			await act(async () => {
+				await flow.refresh();
+			});
+			expect(flow.operation).toBeNull();
+		},
+	);
 	it("recovers an active conflict from status after a transient operation GET failure", async () => {
 		await probe();
 		view = status({ operation: operation("awaiting_browser"), canLink: false });
@@ -361,7 +384,7 @@ describe("My Account cancellation and terminal privacy", () => {
 
 describe("My Account verified status precedence", () => {
 	it.each(["outcome_unknown", "failed", "cancelled"] as const)(
-		"resolves retained %s when fresh status verifies this Identity's linked account",
+		"handles retained %s without retrying when fresh status verifies the linked account",
 		async (state) => {
 			// Arrange: registry TTL may retain a terminal record after verified completion.
 			view = status({
@@ -379,9 +402,9 @@ describe("My Account verified status precedence", () => {
 			});
 			// Act
 			await probe();
-			// Assert: only authoritative matching status resolves uncertainty, not a popup/cookie.
+			// A linked status cannot prove a refresh/disconnect's uncertain outcome.
 			expect(flow.view?.remote).toEqual(view.remote);
-			expect(flow.operation).toBeNull();
+			expect(flow.operation).toEqual(state === "outcome_unknown" ? view.operation : null);
 			expect(flow.message).toBe("");
 			expect(transport.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(
 				0,
@@ -562,7 +585,11 @@ describe("My Account previous-context outcomes", () => {
 			"succeeded",
 			"The earlier link finished for its original Identity. Check status there to confirm.",
 		],
-		["previous-cancel", "cancelled", "The earlier link was cancelled."],
+		[
+			"previous-cancel",
+			"cancelled",
+			"Cancellation of the earlier link was reported. Check status for its original Identity to confirm the account state.",
+		],
 		["previous-cancel", "failed", "The earlier link failed for its original Identity."],
 		[
 			"previous-cancel",

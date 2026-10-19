@@ -1,4 +1,6 @@
+export type AccountIntent = "connect" | "refresh" | "disconnect";
 export type AccountOperation = {
+	intent?: AccountIntent;
 	operationId: string;
 	groupId: string;
 	contextId: string;
@@ -59,6 +61,7 @@ export type AccountView = {
 				account: null | { email?: string; displayName?: string; pictureUrl?: string };
 		  };
 	canLink: boolean;
+	managementActions?: { refresh: boolean; disconnect: boolean };
 	blockedReason:
 		| null
 		| "setup_incomplete"
@@ -192,7 +195,11 @@ export function getAccountStatus(groupId?: string, signal?: AbortSignal): Promis
 export function startAccountLink(
 	groupId: string,
 	contextId: string,
-	checked: { authority: "controller_attestation" | "device_claim"; coordinatorId: string },
+	checked: {
+		authority: "controller_attestation" | "device_claim";
+		coordinatorId: string;
+		intent?: AccountIntent;
+	},
 	signal?: AbortSignal,
 ): Promise<{ version: 1; operation: AccountOperation }> {
 	return request("/api/account/link-operations", {
@@ -226,7 +233,11 @@ export function cancelAccountLink(
 	});
 }
 
-export function validAccountBrowserUrl(value: string, origin: string): boolean {
+export function validAccountBrowserUrl(
+	value: string,
+	origin: string,
+	intent: AccountIntent = "connect",
+): boolean {
 	try {
 		const url = new URL(value);
 		const secure = url.protocol === "https:";
@@ -235,7 +246,7 @@ export function validAccountBrowserUrl(value: string, origin: string): boolean {
 		return (
 			(secure || localHttp) &&
 			url.origin === origin &&
-			url.pathname === "/auth/link/start" &&
+			url.pathname === (intent === "connect" ? "/auth/link/start" : "/auth/account/change/start") &&
 			!url.username &&
 			!url.password &&
 			!url.hash

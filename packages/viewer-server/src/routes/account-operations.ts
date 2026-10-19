@@ -34,7 +34,11 @@ function noBody(request: Request): boolean {
 	);
 }
 /** Cap both bytes and elapsed time; cancellation must not wait on an uncooperative stream. */
-async function readBody(request: Request, keys: string[]): Promise<Record<string, unknown> | null> {
+async function readBody(
+	request: Request,
+	keys: string[],
+	optional: string[] = [],
+): Promise<Record<string, unknown> | null> {
 	if (
 		!/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(
 			request.headers.get("Content-Type") ?? "",
@@ -66,7 +70,11 @@ async function readBody(request: Request, keys: string[]): Promise<Record<string
 		);
 		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 		const actual = Object.keys(value);
-		if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) return null;
+		if (
+			keys.some((key) => !actual.includes(key)) ||
+			actual.some((key) => !keys.includes(key) && !optional.includes(key))
+		)
+			return null;
 		return value as Record<string, unknown>;
 	} catch {
 		return null;
@@ -88,6 +96,7 @@ function isCurrent(options: Options, operation: AccountLinkOperationV1): boolean
 }
 function validStartBody(body: Record<string, unknown> | null): body is {
 	groupId: string;
+	intent?: "connect" | "refresh" | "disconnect";
 	contextId: string;
 	coordinatorId: string;
 	authority: "controller_attestation" | "device_claim";
@@ -97,11 +106,19 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 		validString(body.groupId) &&
 		validString(body.contextId) &&
 		validString(body.coordinatorId) &&
+		(body.intent === undefined ||
+			body.intent === "connect" ||
+			body.intent === "refresh" ||
+			body.intent === "disconnect") &&
 		(body.authority === "controller_attestation" || body.authority === "device_claim")
 	);
 }
 async function startOperation(c: Context, options: Options): Promise<Response> {
-	const body = await readBody(c.req.raw, ["groupId", "contextId", "authority", "coordinatorId"]);
+	const body = await readBody(
+		c.req.raw,
+		["groupId", "contextId", "authority", "coordinatorId"],
+		["intent"],
+	);
 	if (!validStartBody(body)) return c.json({ error: "account_invalid_request" }, 400);
 	const initial = options.readContext(body.groupId);
 	if ("error" in initial && initial.error === "account_group_not_configured")
@@ -135,7 +152,7 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 		return c.json({ error: "account_link_not_allowed", blockedReason: "operation_active" }, 409);
 	if (view.remote.kind === "unavailable")
 		return c.json({ error: "account_status_unavailable" }, 503);
-	if (!view.canLink || view.remote.kind !== "status" || view.remote.state !== "unlinked")
+	if (!actionAllowed(view, body.intent) || view.remote.kind !== "status")
 		return c.json({ error: "account_link_not_allowed", blockedReason: view.blockedReason }, 409);
 	return beginCurrentOperation(
 		c,
@@ -147,10 +164,17 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 		expectedLifecycleToken,
 	);
 }
+function actionAllowed(view: AccountLinkViewV1, intent = "connect"): boolean {
+	if (intent === "connect") return view.canLink;
+	if (intent === "refresh" || intent === "disconnect")
+		return view.managementActions?.[intent] === true;
+	return false;
+}
 function beginCurrentOperation(
 	c: Context,
 	options: Options,
 	body: {
+		intent?: "connect" | "refresh" | "disconnect";
 		groupId: string;
 		contextId: string;
 		coordinatorId: string;
@@ -164,7 +188,7 @@ function beginCurrentOperation(
 	if (c.req.raw.signal.aborted) return c.json({ error: "account_invalid_request" }, 400);
 	if (
 		view.remote.kind !== "status" ||
-		view.remote.authority !== body.authority ||
+		((body.intent ?? "connect") === "connect" && view.remote.authority !== body.authority) ||
 		view.remote.coordinatorId !== body.coordinatorId
 	)
 		return c.json({ error: "account_context_changed" }, 409);
@@ -180,6 +204,7 @@ function beginCurrentOperation(
 	)
 		return c.json({ error: "account_context_changed" }, 409);
 	const result = options.registry.start({
+		intent: body.intent ?? "connect",
 		context: checkedContext,
 		expectedCoordinatorId,
 		expectedAuthority: body.authority,
