@@ -17,6 +17,10 @@ import type {
 	CoordinatorBrowserAuthClientKey,
 } from "./coordinator-browser-auth-app.js";
 import {
+	type CoordinatorDeviceAccountChangeOptions,
+	registerCoordinatorDeviceAccountChangeRoutes,
+} from "./coordinator-device-account-change.js";
+import {
 	type CoordinatorDeviceAuthLinkOptions,
 	type CoordinatorDeviceAuthLinkStore,
 	registerCoordinatorAccountLinkStatusRoute,
@@ -100,6 +104,7 @@ export interface CreateCoordinatorAppOptions {
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 	authLink?: CoordinatorDeviceAuthLinkOptions;
 	browserAuth?: CoordinatorAppBrowserAuthOptions;
+	accountChanges?: CoordinatorDeviceAccountChangeOptions;
 }
 export type CoordinatorAppBrowserAuthOptions =
 	| {
@@ -129,6 +134,21 @@ function authenticationUnavailableResponse(): Response {
 	});
 }
 
+function accountChangeOptions(
+	opts: CreateCoordinatorAppOptions,
+): CoordinatorDeviceAccountChangeOptions | undefined {
+	const ready = opts.browserAuth?.kind === "ready" ? opts.browserAuth : undefined;
+	const configured = ready?.auth.storeConfig ?? opts.authLink?.config;
+	if (
+		opts.accountChanges &&
+		configured &&
+		["coordinatorId", "issuer", "revision", "redirectUri", "enabled"].some(
+			(key) => Reflect.get(configured, key) !== Reflect.get(opts.accountChanges?.config ?? {}, key),
+		)
+	)
+		throw new Error("coordinator_auth_configuration_conflict");
+	return opts.accountChanges;
+}
 function registerOptionalCoordinatorAuth(
 	app: Hono,
 	opts: CreateCoordinatorAppOptions,
@@ -138,6 +158,7 @@ function registerOptionalCoordinatorAuth(
 	>,
 ): void {
 	if (opts.authLink && opts.browserAuth) throw new Error("coordinator_auth_configuration_conflict");
+	const accountChanges = accountChangeOptions(opts);
 	const unavailable =
 		opts.browserAuth?.kind === "unavailable" &&
 		opts.browserAuth.error === AUTH_SCHEMA_UPGRADE_REQUIRED
@@ -151,6 +172,8 @@ function registerOptionalCoordinatorAuth(
 			"/auth/*",
 			"/v1/auth/link-attempts",
 			"/v1/auth/link-attempts/*",
+			"/v1/auth/account-changes",
+			"/v1/auth/account-changes/*",
 			"/v1/auth/owner-config",
 			"/v1/auth/owner-attempts",
 			"/v1/auth/owner-attempts/*",
@@ -160,6 +183,8 @@ function registerOptionalCoordinatorAuth(
 		}
 		return;
 	}
+	if (accountChanges)
+		registerCoordinatorDeviceAccountChangeRoutes(app, { ...deps, ...accountChanges });
 	const ready = opts.browserAuth;
 	const authLink =
 		ready?.kind === "ready"
