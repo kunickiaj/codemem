@@ -71,6 +71,36 @@ it("renders verified profile text and a lazy anonymous no-referrer photo", async
 	expect(image?.hasAttribute("onerror")).toBe(false);
 });
 
+it.each([account, null])("hides Link for linked status with profile %j", async (profile) => {
+	if (view.remote.kind === "status") view.remote.account = profile;
+	await show();
+	expect(mount.textContent).not.toContain("Link Google account");
+	const checkStatus = [...mount.querySelectorAll("button")].find(
+		(button) => button.textContent === "Check status",
+	);
+	expect(checkStatus?.disabled).toBe(false);
+});
+
+it("keeps technical identifiers in a collapsed native disclosure that opens without requests", async () => {
+	if (!view.local) throw new Error("Missing local identity fixture");
+	view.local = { ...view.local, identityLabel: undefined, deviceLabel: undefined };
+	await show();
+	const details = mount.querySelector("details.my-account-technical-details");
+	if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing technical details");
+	const summary = details.querySelector("summary");
+	if (!summary) throw new Error("Missing technical summary");
+	expect(details.open).toBe(false);
+	expect(details.hasAttribute("open")).toBe(false);
+	expect(summary.textContent).toBe("Technical details");
+	expect(summary.hasAttribute("role")).toBe(false);
+	const requests = vi.mocked(fetch).mock.calls.length;
+	await act(async () => summary.click());
+	expect(details.open).toBe(true);
+	for (const value of ["identity-one", "device-one", "https://coordinator.example"])
+		expect(details.querySelector("p")?.textContent).toContain(value);
+	expect(vi.mocked(fetch)).toHaveBeenCalledTimes(requests);
+});
+
 it.each([
 	"http://lh3.googleusercontent.com/a/photo",
 	"data:image/png;base64,AA==",

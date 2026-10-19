@@ -142,7 +142,9 @@ describe("My Account optional device review instructions", () => {
 		expect(liveStatus?.textContent).not.toMatch(
 			/codemem coordinator|database|config|keys directory/,
 		);
-		const details = mount.querySelector("details.recipient-policy-management-details");
+		const details = mount.querySelector<HTMLDetailsElement>(
+			"details.recipient-policy-management-details",
+		);
 		if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing native review details");
 		expect(details.open).toBe(false);
 		expect(details.hasAttribute("open")).toBe(false);
@@ -159,7 +161,7 @@ describe("My Account optional device review instructions", () => {
 		expect(details.previousElementSibling?.textContent).toContain("Codemem Identity:");
 		expect(details.nextElementSibling?.contains(button("Check status"))).toBe(true);
 		const outsideInstructions = mount.cloneNode(true) as HTMLElement;
-		outsideInstructions.querySelector("details")?.remove();
+		outsideInstructions.querySelector("details.recipient-policy-management-details")?.remove();
 		expect(outsideInstructions.textContent).not.toMatch(
 			/review-device-owner|database|config|keys directory|Confirmation defaults/,
 		);
@@ -181,7 +183,9 @@ describe("My Account optional device review instructions", () => {
 			},
 		});
 		await show();
-		const details = mount.querySelector("details");
+		const details = mount.querySelector<HTMLDetailsElement>(
+			"details.recipient-policy-management-details",
+		);
 		const summary = details?.querySelector("summary");
 		if (!details || !summary) throw new Error("Missing native review disclosure");
 		const initialRequests = transport.mock.calls.length;
@@ -291,7 +295,7 @@ describe("My Account read-only status", () => {
 		expect(mount.innerHTML).not.toContain("op-one");
 		expect(mount.innerHTML).not.toContain("private-fixture");
 		expect(calls("browser-url")).toHaveLength(0);
-		expect(mount.querySelector("details")).toBeNull();
+		expect(mount.querySelector("details.recipient-policy-management-details")).toBeNull();
 	});
 	it("shows verified account, local device and coordinator without account administration", async () => {
 		// Arrange
@@ -325,7 +329,8 @@ describe("My Account read-only status", () => {
 				.map((node) => node.textContent),
 		).toEqual(["Check status"]);
 		expect(mount.querySelector('[role="status"][aria-live="polite"]')).not.toBeNull();
-		expect(mount.querySelector("details")).toBeNull();
+		expect(buttons().some((node) => node.textContent === "Link Google account")).toBe(false);
+		expect(mount.querySelector("details.recipient-policy-management-details")).toBeNull();
 	});
 	it.each([
 		"review_required",
@@ -356,14 +361,16 @@ describe("My Account read-only status", () => {
 		// Act
 		await show();
 		// Assert
-		expect(button("Link Google account").disabled).toBe(true);
+		if (state === "linked_mismatch") {
+			expect(buttons().some((node) => node.textContent === "Link Google account")).toBe(false);
+		} else expect(button("Link Google account").disabled).toBe(true);
 		expect(mount.textContent).not.toContain("No Google account is linked");
 		expect(mount.textContent).not.toContain("Unverified secret");
 		expect(mount.textContent).not.toContain("unverified@example.test");
 		if (state === "review_required") {
 			expect(mount.textContent).toMatch(/profile/i);
 			expect(mount.textContent).not.toMatch(/review-device-owner|enroll-owner/);
-		} else expect(mount.querySelector("details")).toBeNull();
+		} else expect(mount.querySelector("details.recipient-policy-management-details")).toBeNull();
 		if (state === "conflict") expect(mount.textContent).toContain("conflicting account link");
 	});
 	it("requires explicit group selection rather than choosing the first group", async () => {
@@ -411,7 +418,9 @@ describe("My Account retained outcomes and current guidance", () => {
 			// Assert
 			expect(mount.querySelector('[role="status"]')?.textContent).toBe(outcome);
 			expect(mount.textContent).toMatch(/profile/i);
-			const details = mount.querySelector("details");
+			const details = mount.querySelector<HTMLDetailsElement>(
+				"details.recipient-policy-management-details",
+			);
 			expect(details?.open).toBe(false);
 			expect(details?.textContent).toMatch(/operator|person who runs/i);
 			expect(mount.textContent).not.toMatch(/review-device-owner|one-time owner review/);

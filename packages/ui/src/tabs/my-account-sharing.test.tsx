@@ -206,7 +206,9 @@ describe("My Account inside Sharing", () => {
 				expect(card().querySelector('[role="status"]')?.textContent).toBe(
 					"This profile can’t link Google yet. Check the selected profile and group. If they’re correct, ask the person who runs the coordinator to check this device.",
 				);
-				const details = required(card().querySelector("details"));
+				const details = required(
+					card().querySelector<HTMLDetailsElement>("details.recipient-policy-management-details"),
+				);
 				expect(details.open).toBe(false);
 				expect(details.querySelector("summary")?.textContent).toBe("What to check before linking");
 				const steps = [...details.querySelectorAll("ol > li")].map((step) => step.textContent);
@@ -218,7 +220,7 @@ describe("My Account inside Sharing", () => {
 				);
 				expect(button("Link Google account").disabled).toBe(true);
 				expect(button("Check status").disabled).toBe(false);
-			} else expect(card().querySelector("details")).toBeNull();
+			} else expect(card().querySelector("details.recipient-policy-management-details")).toBeNull();
 			assertNoAccountWrites();
 		},
 	);
@@ -250,7 +252,7 @@ describe("My Account data and lifetime inside Sharing", () => {
 			expect(card().textContent?.includes("Example Person")).toBe(identityMatches);
 			for (const text of ["Local identity", "Laptop", "https://coordinator.example"])
 				expect(card().textContent).toContain(text);
-			expect(button("Link Google account").disabled).toBe(true);
+			expect(card().textContent).not.toContain("Link Google account");
 			expect(card().querySelector("input, select, textarea")).toBeNull();
 			expect(card().textContent).not.toMatch(/rename|unlink|administrator/i);
 			assertNoAccountWrites();

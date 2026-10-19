@@ -194,9 +194,10 @@ function DeviceLinkRecovery({ view }: { view: AccountView | null }) {
 function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	const { view, operation, pendingOperation, busy, fallback } = flow;
 	const running = operation?.state === "starting" || operation?.state === "awaiting_browser";
+	const linked = view?.remote.kind === "status" && view.remote.state === "linked";
 	return (
 		<div className="peer-actions">
-			{view && !running ? (
+			{view && !running && !linked ? (
 				<button
 					className="settings-save"
 					type="button"
@@ -295,11 +296,14 @@ export function MyAccount() {
 				</p>
 			) : null}
 			{view?.local ? (
-				<p className="small my-account-technical-details">
-					Codemem Identity: {view.local.identityLabel || view.local.identityId}
-					{" · "}Device: {view.local.deviceLabel || view.local.deviceId}
-					{view.coordinator ? <> · Coordinator: {view.coordinator.origin}</> : null}
-				</p>
+				<details className="my-account-technical-details">
+					<summary>Technical details</summary>
+					<p className="small">
+						Codemem Identity: {view.local.identityLabel || view.local.identityId}
+						{" · "}Device: {view.local.deviceLabel || view.local.deviceId}
+						{view.coordinator ? <> · Coordinator: {view.coordinator.origin}</> : null}
+					</p>
+				</details>
 			) : null}
 			<DeviceLinkRecovery view={view} />
 			<AccountActions flow={flow} />

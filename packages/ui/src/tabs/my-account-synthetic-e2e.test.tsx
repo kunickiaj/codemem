@@ -368,7 +368,7 @@ describe("My Account synthetic end-to-end over protected loopback HTTP", () => {
 		expect(f.popup.location.replace).toHaveBeenCalledWith(PRIVATE);
 		expect(f.popup.close).toHaveBeenCalledTimes(1);
 		expect(mount.textContent).toContain("fake@example.test");
-		expect(button("Link Google account").disabled).toBe(true);
+		expect(mount.textContent).not.toContain("Link Google account");
 		expect(mount.textContent).not.toContain("Open Google sign-in");
 		f.noLeaks();
 	});
@@ -397,7 +397,9 @@ describe("My Account synthetic end-to-end terminal states and context lifetime",
 				}[state],
 			);
 			if (state === "review_required") {
-				const details = mount.querySelector("details");
+				const details = mount.querySelector<HTMLDetailsElement>(
+					"details.recipient-policy-management-details",
+				);
 				expect(details?.open).toBe(false);
 				expect(details?.querySelector("summary")?.textContent).toBe("What to check before linking");
 				expect(details?.textContent).toMatch(
