@@ -76,6 +76,7 @@ export interface CoordinatorAuthSessionStore {
 		scope: CoordinatorAuthSessionScope,
 		options?: CoordinatorAuthSessionPurgeOptions,
 	): Promise<CoordinatorAuthSessionPurgeResult>;
+	/** @deprecated Always rejects; use redeemAuthLinkSessionWithBrowserTransaction with the original binder. */
 	redeemAuthLinkSession(
 		input: CoordinatorAuthLinkSessionRedeemInput,
 		config: CoordinatorAuthLinkConfig,
@@ -89,6 +90,7 @@ export interface CoordinatorAuthSessionStore {
 		input: CoordinatorAuthBoundLinkSessionRedeemInput,
 		config: CoordinatorAuthBrowserConfig,
 	): Promise<CoordinatorAuthLinkSessionPreserveResult>;
+	/** @deprecated Always rejects; use signInWithConsumedBrowserTransaction after verifying provider/browser proof. */
 	signInWithAuthAccount(
 		input: CoordinatorAuthAccountSignInInput,
 		config: CoordinatorAuthLinkConfig,

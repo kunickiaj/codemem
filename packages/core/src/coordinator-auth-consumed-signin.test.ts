@@ -1,4 +1,5 @@
 import { describe, expect, vi } from "vitest";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	browserConfig,
@@ -7,6 +8,7 @@ import {
 	TABLE,
 	transactionRows,
 } from "./coordinator-auth-browser-transaction-test-fixtures.js";
+import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import {
 	browserProofConfig,
 	consumeSigninProof,
@@ -16,6 +18,7 @@ import {
 } from "./coordinator-auth-link-test-fixtures.js";
 import { AUTH_SCHEMA_READINESS_SQL } from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import type { CoordinatorAuthAccountSignInInput } from "./coordinator-auth-session-contract.js";
 import {
 	backendTest,
@@ -24,7 +27,6 @@ import {
 	grants,
 	linked,
 	linkId,
-	redeemInput,
 	SESSION_TTL,
 	type SessionTest,
 	sessionRows,
@@ -91,6 +93,18 @@ async function fill(f: LinkFixture, count = 10, cfg = f.cfg) {
 		);
 		expect(result.kind).toBe("issued");
 	}
+}
+
+async function knownSchemaReads(f: LinkFixture) {
+	const queries = new Set([AUTH_SCHEMA_READINESS_SQL]);
+	// Capture only the schema reader's exact SQL before starting any issuance.
+	await readConnectionSchemaState({
+		async first<T>({ sql, values }: AuthLinkStatement) {
+			queries.add(sql);
+			return (f.db.prepare(sql).get(...values) as T | undefined) ?? null;
+		},
+	});
+	return queries;
 }
 
 function blockedPeer(f: LinkFixture) {
@@ -389,6 +403,7 @@ function registerBudget(test: SessionTest) {
 			const inputs = [];
 			for (let i = 1; i <= 14; i++) inputs.push(await ready(f, i));
 			const before = grants(f);
+			const schemaReads = await knownSchemaReads(f);
 			const peers = inputs.map(() => blockedPeer(f));
 			const commitOrder = inputs.map((_, i) => i);
 			if (order === "reverse") commitOrder.reverse();
@@ -398,9 +413,9 @@ function registerBudget(test: SessionTest) {
 			);
 			await Promise.all(peers.map((peer) => peer.entered));
 			// Assert: no pre-read may make an admission decision against the empty budget.
-			expect(
-				peers.map((peer) => peer.reads.filter((sql) => sql !== AUTH_SCHEMA_READINESS_SQL)),
-			).toEqual(inputs.map(() => []));
+			expect(peers.map((peer) => peer.reads.filter((sql) => !schemaReads.has(sql)))).toEqual(
+				inputs.map(() => []),
+			);
 			expect(sessionRows(f)).toEqual([[], []]);
 			// Act: each held batch sees commits made while its own batch was blocked.
 			const results = [];
@@ -428,7 +443,13 @@ function registerBudget(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		expectIssued(
+			await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+				redeemInput(),
+				browserProofConfig(f),
+			),
+			f,
+		);
 		await fill(f, 9);
 		const input = await ready(f);
 		const before = { sessions: sessionRows(f), grants: grants(f) };
@@ -529,6 +550,7 @@ function registerAtomicity(test: SessionTest) {
 			const input = await ready(f);
 			f.db.function("changes", () => 0);
 			const inputs = [input, { ...input, credentialHash: hash(800) }];
+			const schemaReads = await knownSchemaReads(f);
 			const peers = inputs.map(() => blockedPeer(f));
 			const commitOrder = order === "forward" ? [0, 1] : [1, 0];
 			// Act: both operations reach independently held batches before either commits.
@@ -537,9 +559,10 @@ function registerAtomicity(test: SessionTest) {
 			);
 			await Promise.all(peers.map((peer) => peer.entered));
 			// Assert: receipt ownership cannot come from a stale pre-read.
-			expect(
-				peers.map((peer) => peer.reads.filter((sql) => sql !== AUTH_SCHEMA_READINESS_SQL)),
-			).toEqual([[], []]);
+			expect(peers.map((peer) => peer.reads.filter((sql) => !schemaReads.has(sql)))).toEqual([
+				[],
+				[],
+			]);
 			expect(sessionRows(f)).toEqual([[], []]);
 			// Act: synchronous transactions still serialize on this single connection.
 			const results = [];

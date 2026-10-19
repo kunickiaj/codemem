@@ -10,6 +10,7 @@ import {
 	NOW,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	backendTest,
 	consumeSigninProof,
@@ -18,7 +19,6 @@ import {
 	linked,
 	linkId,
 	otherCredentialHash,
-	redeemInput,
 	revokeLinkRow,
 	SESSION_TTL,
 	type SessionTest,
@@ -96,7 +96,7 @@ function registerLogout(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		await f.store.redeemAuthLinkSessionWithBrowserTransaction(redeemInput(), browserProofConfig(f));
 		await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), credentialHash: otherCredentialHash },
 			browserProofConfig(f),
@@ -159,7 +159,7 @@ function registerRevoke(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		await f.store.redeemAuthLinkSessionWithBrowserTransaction(redeemInput(), browserProofConfig(f));
 		await f.store.signInWithConsumedBrowserTransaction(
 			{ ...signInInput(f), credentialHash: otherCredentialHash },
 			browserProofConfig(f),

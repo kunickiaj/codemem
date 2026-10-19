@@ -1,16 +1,17 @@
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
+import { transactionRows } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import {
 	browserProofConfig,
 	expectRejected,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	backendTest,
 	credentialHash,
 	expectIssued,
 	linked,
 	linkId,
-	redeemInput,
 	SESSION_TTL,
 	type SessionTest,
 	sessionRows,
@@ -44,6 +45,40 @@ function hostile(field: string, valid: Record<string, unknown>, kind: string) {
 	return { ...valid, [field]: "short" };
 }
 function registerIssueInputs(test: SessionTest) {
+	test("retired APIs reject without inspecting hostile payload or config getters", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		await linked(f);
+		const getter = vi.fn(() => {
+			throw new Error("fixture-getter-must-not-run");
+		});
+		const payload = Object.defineProperties(
+			{},
+			Object.fromEntries(
+				[
+					"attemptId",
+					"browserTransactionHash",
+					"binderHash",
+					"credentialHash",
+					"account",
+					"coordinatorId",
+					"issuer",
+					"revision",
+					"enabled",
+				].map((key) => [key, { get: getter }]),
+			),
+		);
+		const before = [snapshot(f), sessionRows(f), transactionRows(f)];
+		// Act
+		const redeem = await f.store.redeemAuthLinkSession(payload as never, payload as never);
+		const signin = await f.store.signInWithAuthAccount(payload as never, payload as never);
+		// Assert
+		expectRejected(redeem, "attempt_unavailable");
+		expectRejected(signin, "transaction_unavailable");
+		expect(getter).not.toHaveBeenCalled();
+		expect([snapshot(f), sessionRows(f), transactionRows(f)]).toEqual(before);
+	});
 	test.for(malformed)(
 		"rejects malformed redemption and sign-in %j without writes",
 		async (input, { fixture: f }) => {
@@ -51,7 +86,10 @@ function registerIssueInputs(test: SessionTest) {
 			await linked(f, { signinProof: false });
 			const before = snapshot(f);
 			// Act
-			const redeem = await f.store.redeemAuthLinkSession(input as never, f.cfg);
+			const redeem = await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+				input as never,
+				browserProofConfig(f),
+			);
 			const signIn = await f.store.signInWithConsumedBrowserTransaction(
 				input as never,
 				browserProofConfig(f),
@@ -71,12 +109,12 @@ function registerIssueInputs(test: SessionTest) {
 			const before = snapshot(f);
 			// Act
 			const results = [];
-			for (const field of ["attemptId", "browserTransactionHash", "credentialHash"])
+			for (const field of ["attemptId", "browserTransactionHash", "credentialHash", "binderHash"])
 				results.push({
 					field,
-					result: await f.store.redeemAuthLinkSession(
+					result: await f.store.redeemAuthLinkSessionWithBrowserTransaction(
 						hostile(field, redeemInput(), kind) as never,
-						f.cfg,
+						browserProofConfig(f),
 					),
 				});
 			for (const field of ["browserTransactionHash", "credentialHash", "account"])

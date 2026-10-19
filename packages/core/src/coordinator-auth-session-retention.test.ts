@@ -20,10 +20,10 @@ import {
 	type Test,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	grants,
 	linked,
-	redeemInput,
 	SESSION_TTL,
 	sessionRows,
 	signInInput,
@@ -307,7 +307,7 @@ function registerOrigins(test: Test) {
 		// Arrange
 		await linked(f);
 		const protectedBefore = grants(f);
-		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		await f.store.redeemAuthLinkSessionWithBrowserTransaction(redeemInput(), browserProofConfig(f));
 		const historical = { ...signInInput(f), credentialHash: hash(301) };
 		expect(
 			(await f.store.signInWithConsumedBrowserTransaction(historical, browserProofConfig(f))).kind,
@@ -376,7 +376,7 @@ function registerOrigins(test: Test) {
 	}) => {
 		// Arrange
 		await linked(f);
-		await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		await f.store.redeemAuthLinkSessionWithBrowserTransaction(redeemInput(), browserProofConfig(f));
 		const before = sessionRows(f);
 		// Act
 		const active = await Promise.all(methods.map((method) => purge(f, method)));

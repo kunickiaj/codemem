@@ -195,8 +195,6 @@ const REDEEM_RECEIPT_SELECT_SQL = `INSERT INTO coordinator_auth_session_receipts
  WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
  AND t.state = 'finalized' AND t.issuer = ? AND t.auth_config_revision = ? AND l.revoked_at_ms IS NULL
  AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms`;
-const REDEEM_RECEIPT_SQL = `${REDEEM_RECEIPT_SELECT_SQL}
- ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const BOUND_LINK_BROWSER_GUARD_SQL = `b.coordinator_id = t.coordinator_id
  AND b.browser_transaction_hash = t.browser_transaction_hash AND b.attempt_id = t.attempt_id
  AND b.binder_hash = ? AND b.purpose = 'link' AND b.state = 'consumed'
@@ -219,11 +217,6 @@ const PRESERVE_LINK_COMPLETION_SQL = `UPDATE coordinator_auth_link_attempts AS t
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${BOUND_LINK_BROWSER_GUARD_SQL})
  AND EXISTS (SELECT 1 FROM coordinator_auth_sessions s
  JOIN coordinator_auth_account_links l ON ${LINK_MATCH} WHERE ${AUTH_SESSION_LIVE_GUARD_SQL})`;
-const SIGNIN_RECEIPT_SQL = `INSERT INTO coordinator_auth_session_receipts (${RECEIPT_COLUMNS})
- SELECT l.coordinator_id, ?, 'signin', NULL, l.link_id, ?, ?, ? FROM coordinator_auth_account_links l
- WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL AND ${ACCOUNT_PROVENANCE}
- AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts t WHERE t.coordinator_id = l.coordinator_id AND t.browser_transaction_hash = ?)
- ON CONFLICT(coordinator_id, browser_transaction_hash) DO NOTHING`;
 const CONSUMED_BROWSER_GUARD_SQL = `b.coordinator_id = ? AND b.browser_transaction_hash = ?
  AND b.purpose = 'signin' AND b.attempt_id IS NULL AND b.state = 'consumed'
  AND b.nonce IS NULL AND b.pkce_verifier IS NULL AND b.claim_token IS NOT NULL
@@ -356,41 +349,11 @@ export class AuthSessionOperations
 		}
 	}
 	async redeemAuthLinkSession(
-		input: CoordinatorAuthLinkSessionRedeemInput,
-		config: CoordinatorAuthLinkConfig,
+		_input: CoordinatorAuthLinkSessionRedeemInput,
+		_config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthSessionIssueResult> {
-		const c = captureConfig(config);
-		const i = captureIssue(input, ["attemptId"]);
-		if (!c || !i || !isAuthControllerId(i.attemptId)) return rejected("invalid_input");
-		if (!c.enabled) return rejected("auth_config_changed");
-		const now = sessionNow(this.clock);
-		const sessionId = globalThis.crypto.randomUUID();
-		await this.batch([
-			{
-				sql: REDEEM_RECEIPT_SQL,
-				values: [
-					sessionId,
-					c.revision,
-					now,
-					c.coordinatorId,
-					i.attemptId,
-					i.browserTransactionHash,
-					c.issuer,
-					c.revision,
-					now,
-					now,
-					now,
-				],
-			},
-			this.sessionInsert(i, c, sessionId),
-			{
-				sql: REDEEM_CONSUME_SQL,
-				values: [c.coordinatorId, i.attemptId, i.browserTransactionHash, sessionId],
-			},
-		]);
-		const result = await this.issueReceipt(i, c, now, sessionId);
-		if (result) return result;
-		return this.diagnoseRedeem(i.attemptId, i.browserTransactionHash, c, now);
+		// Retired: this entry has no browser binder and cannot prove redemption.
+		return rejected("attempt_unavailable");
 	}
 	/** Complete once while preserving the existing session and its own active account link. */
 	async preserveAuthLinkSessionCompletion(
@@ -496,42 +459,11 @@ export class AuthSessionOperations
 		return this.diagnoseRedeem(i.attemptId, i.browserTransactionHash, c, now);
 	}
 	async signInWithAuthAccount(
-		input: CoordinatorAuthAccountSignInInput,
-		config: CoordinatorAuthLinkConfig,
+		_input: CoordinatorAuthAccountSignInInput,
+		_config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthSessionIssueResult> {
-		const c = captureConfig(config);
-		const i = captureIssue(input, ["account"]);
-		if (!c || !i) return rejected("invalid_input");
-		const account = parseCoordinatorAccountReference(capture(i.account, ["issuer", "subject"]), {
-			issuer: c.issuer,
-		});
-		if (!account.ok) return rejected("invalid_input");
-		if (!c.enabled) return rejected("auth_config_changed");
-		const now = sessionNow(this.clock);
-		const sessionId = globalThis.crypto.randomUUID();
-		await this.batch([
-			{
-				sql: SIGNIN_RECEIPT_SQL,
-				values: [
-					i.browserTransactionHash,
-					sessionId,
-					c.revision,
-					now,
-					c.coordinatorId,
-					account.account.issuer,
-					account.account.subject,
-					i.browserTransactionHash,
-				],
-			},
-			this.sessionInsert(i, c, sessionId),
-		]);
-		const result = await this.issueReceipt(i, c, now, sessionId);
-		if (result) return result;
-		const used = await this.first({
-			sql: "SELECT 1 FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND browser_transaction_hash = ?",
-			values: [c.coordinatorId, i.browserTransactionHash],
-		});
-		return rejected(used ? "browser_transaction_used" : "account_not_linked");
+		// Retired: trusted account JSON alone cannot bypass consumed-browser proof.
+		return rejected("transaction_unavailable");
 	}
 	/** Admission only; the caller has already verified JWT, cookie binding and CSRF. */
 	async signInWithConsumedBrowserTransaction(

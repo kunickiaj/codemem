@@ -19,13 +19,13 @@ import {
 	TABLES,
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	credentialHash,
 	expectIssued,
 	freshBrowserHash,
 	grants,
 	linked,
-	redeemInput,
 	sessionRows,
 	signInInput,
 } from "./coordinator-auth-session-test-fixtures.js";
@@ -232,7 +232,10 @@ function registerSessions(test: Test) {
 			 WHERE r.coordinator_id = NEW.coordinator_id AND r.browser_transaction_hash = NEW.browser_transaction_hash)
 			BEGIN SELECT RAISE(ABORT, 'fixture_missing_receipt'); END`);
 		// Act
-		const result = await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		const result = await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+			redeemInput(),
+			browserProofConfig(f),
+		);
 		// Assert
 		expectIssued(result, f);
 		expect(sessionRows(f).map((values) => values.length)).toEqual([1, 1]);
@@ -251,7 +254,10 @@ function registerSessions(test: Test) {
 		const before = transactionRows(f);
 		const input = { ...redeemInput(), browserTransactionHash: "0".repeat(64) };
 		// Act
-		const result = await f.store.redeemAuthLinkSession(input, f.cfg);
+		const result = await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+			input,
+			browserProofConfig(f),
+		);
 		// Assert
 		expectRejected(result, "attempt_unavailable");
 		expect(input.browserTransactionHash).toBe("0".repeat(64));

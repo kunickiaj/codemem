@@ -7,6 +7,7 @@ import {
 	NOW,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	backendTest,
 	consumeSigninProof,
@@ -15,7 +16,6 @@ import {
 	linked,
 	linkId,
 	otherCredentialHash,
-	redeemInput,
 	revokeLinkRow,
 	SESSION_TTL,
 	type SessionTest,
@@ -247,7 +247,10 @@ function registerOrdering(test: SessionTest) {
 	}) => {
 		// Arrange
 		await linked(f);
-		const issued = await f.store.redeemAuthLinkSession(redeemInput(), f.cfg);
+		const issued = await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+			redeemInput(),
+			browserProofConfig(f),
+		);
 		if (issued.kind !== "issued") throw new Error("fixture_session_not_issued");
 		const before = authority(f);
 		// Act

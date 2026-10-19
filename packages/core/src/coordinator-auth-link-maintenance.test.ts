@@ -39,12 +39,12 @@ import {
 	TTL,
 	transition,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	credentialHash,
 	freshBrowserHash,
 	grants,
 	linked,
-	redeemInput,
 	sessionRows,
 	signInInput,
 } from "./coordinator-auth-session-test-fixtures.js";
@@ -450,7 +450,14 @@ function registerBoundaries(test: Test) {
 			// Arrange
 			await linked(f);
 			if (state === "session_redeemed")
-				expect((await f.store.redeemAuthLinkSession(redeemInput(), f.cfg)).kind).toBe("issued");
+				expect(
+					(
+						await f.store.redeemAuthLinkSessionWithBrowserTransaction(
+							redeemInput(),
+							browserProofConfig(f),
+						)
+					).kind,
+				).toBe("issued");
 			f.now += TTL;
 			const before = allData(f);
 			// Act

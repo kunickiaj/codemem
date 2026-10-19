@@ -1,4 +1,4 @@
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
 import {
 	browserConfig,
 	hash,
@@ -6,6 +6,7 @@ import {
 	TABLE,
 	transactionRows,
 } from "./coordinator-auth-browser-transaction-test-fixtures.js";
+import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import {
 	attempt,
 	authorize,
@@ -339,7 +340,7 @@ function registerReplay(test: SessionTest) {
 		expect(authority(f)).toEqual(before);
 	});
 	test.for(["legacy-first", "guarded-first"] as const)(
-		"%s redemption burns the same proof for both APIs",
+		"%s retired redemption is inert and bound redemption burns the proof once",
 		async (order, { fixture: f }) => {
 			// Arrange
 			const input = await ready(f);
@@ -355,12 +356,19 @@ function registerReplay(test: SessionTest) {
 			const guarded = () =>
 				f.store.redeemAuthLinkSessionWithBrowserTransaction(input, browserConfig);
 			// Act
-			const first = await (order === "legacy-first" ? legacy() : guarded());
+			const beforeLegacy = authority(f);
+			if (order === "legacy-first") {
+				expectRejected(await legacy(), "attempt_unavailable");
+				expect(authority(f)).toEqual(beforeLegacy);
+			}
+			const first = await guarded();
 			const before = authority(f);
-			const second = await (order === "legacy-first" ? guarded() : legacy());
+			const second = await guarded();
+			const retired = await legacy();
 			// Assert
 			expectIssued(first, f);
 			expectRejected(second, "browser_transaction_used");
+			expectRejected(retired, "attempt_unavailable");
 			expect(authority(f)).toEqual(before);
 		},
 	);
@@ -417,13 +425,16 @@ function registerAtomicity(test: SessionTest) {
 		// Arrange: reject before committing; post-commit read failures are not rollback guarantees.
 		const input = await ready(f);
 		const before = authority(f);
+		const batch = vi.fn(async () => {
+			throw new Error("fixture-private-detail");
+		});
 		const operations = new AuthSessionOperations(
 			{
-				first: async () => null,
-				run: async () => 0,
-				batch: async () => {
-					throw new Error("fixture-private-detail");
+				async first<T>({ sql, values }: AuthLinkStatement) {
+					return (f.db.prepare(sql).get(...values) as T | undefined) ?? null;
 				},
+				run: async () => 0,
+				batch,
 			},
 			() => f.now,
 		);
@@ -431,6 +442,7 @@ function registerAtomicity(test: SessionTest) {
 		const result = operations.redeemAuthLinkSessionWithBrowserTransaction(input, browserConfig);
 		// Assert
 		await expect(result).rejects.toThrow(/^auth_session_persistence_error$/);
+		expect(batch).toHaveBeenCalledOnce();
 		expect(authority(f)).toEqual(before);
 	});
 }

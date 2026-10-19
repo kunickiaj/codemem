@@ -4,6 +4,7 @@ import {
 	expectRejected,
 	snapshot,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { redeemInput } from "./coordinator-auth-session-bound-test-fixtures.js";
 import {
 	backendTest,
 	consumeSigninProof,
@@ -11,7 +12,6 @@ import {
 	expectIssued,
 	linked,
 	otherCredentialHash,
-	redeemInput,
 	type SessionTest,
 	sessionRows,
 	signInInput,
@@ -37,7 +37,10 @@ function registerPersistence(test: SessionTest) {
 				// Act
 				const result =
 					operation === "redeem"
-						? f.store.redeemAuthLinkSession(redeemInput(), f.cfg)
+						? f.store.redeemAuthLinkSessionWithBrowserTransaction(
+								redeemInput(),
+								browserProofConfig(f),
+							)
 						: f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f));
 				// Assert
 				await expect(result).rejects.toThrow(/^auth_session_persistence_error$/);
@@ -49,9 +52,9 @@ function registerPersistence(test: SessionTest) {
 			// Act: a lost response cannot turn into credential recovery.
 			const retry =
 				operation === "redeem"
-					? await f.store.redeemAuthLinkSession(
+					? await f.store.redeemAuthLinkSessionWithBrowserTransaction(
 							{ ...redeemInput(), credentialHash: otherCredentialHash },
-							f.cfg,
+							browserProofConfig(f),
 						)
 					: await f.store.signInWithConsumedBrowserTransaction(
 							{ ...signInInput(f), credentialHash: otherCredentialHash },

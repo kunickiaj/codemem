@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 const NOW = 1790899200000;
@@ -42,16 +43,17 @@ async function fixture() {
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),
+		browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const account = { issuer: cfg.issuer, subject: crypto.randomUUID() };
 	await store.createGroup(review.groupId, "Fixture group");
 	await store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await store.createAuthLinkAttempt(start, cfg)).toMatchObject({ kind: "created" });
-	expect(await store.claimAuthLinkAttempt(browser, cfg)).toMatchObject({ kind: "applied" });
+	await consumeLinkProof({ store, cfg }, start, browser);
 	expect(await store.recordAuthLinkOidcVerified({ ...browser, account }, cfg)).toMatchObject({
 		kind: "applied",
 	});
@@ -226,7 +228,7 @@ it("retains historical records forever but rejects reuse of a purged signin proo
 		.run();
 	expect(await authority(f)).toEqual(linkedAuthority);
 	expect(
-		await f.store.redeemAuthLinkSession({ ...f.browser, credentialHash: hash() }, f.cfg),
+		await redeemBound(f, { ...f.browser, credentialHash: hash() }, f.cfg),
 	).toMatchObject({ kind: "issued" });
 	const historical = await guarded(f);
 	await env.COORDINATOR_DB.prepare(

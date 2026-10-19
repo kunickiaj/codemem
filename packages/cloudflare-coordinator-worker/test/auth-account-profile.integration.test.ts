@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
+import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -64,16 +65,17 @@ async function fixture() {
 		attemptId: randomUUID(),
 		signer,
 		runtimeVerifierHash: hash(),
+		browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const account = { issuer: cfg.issuer, subject: "fixture-subject" };
 	await store.createGroup(review.groupId, "Fixture group");
 	await store.enrollDevice(review.groupId, { ...signer, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await store.createAuthLinkAttempt(start, cfg)).toMatchObject({ kind: "created" });
-	expect(await store.claimAuthLinkAttempt(browser, cfg)).toMatchObject({ kind: "applied" });
+	await consumeLinkProof({ store, cfg }, start, browser);
 	expect(await store.recordAuthLinkOidcVerified({ ...browser, account }, cfg)).toMatchObject({
 		kind: "applied",
 	});
@@ -134,7 +136,7 @@ it("persists only display snapshots and refuses delayed or equal-time clobbering
 	const f = await fixture();
 	const firstLinkHash = hash();
 	expect(
-		await f.store.redeemAuthLinkSession({ ...f.browser, credentialHash: firstLinkHash }, f.cfg),
+		await redeemBound(f, { ...f.browser, credentialHash: firstLinkHash }, f.cfg),
 	).toMatchObject({ kind: "issued" });
 	const old = await signIn(f);
 	const before = await authority(f);

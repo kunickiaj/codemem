@@ -1,6 +1,6 @@
-# Coordinator auth session storage candidate
+# Coordinator auth session storage
 
-**Status:** Reviewed storage contract; browser routes remain disabled.
+**Status:** Current storage contract. Browser routing and verification are supplied by separate handlers.
 
 ## Purpose and boundary
 
@@ -43,15 +43,15 @@ no bearer credential, Google token, profile claim, or default actor selection.
 
 ## Store interface
 
-Source candidate: `packages/core/src/coordinator-auth-session.ts`.
+Source: `packages/core/src/coordinator-auth-session.ts`.
 
 | Method | Required behavior |
 | --- | --- |
-| `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | Unchanged trusted compatibility helper. It checks the attempt's transaction hash, not the browser cookie; public browser handlers must use the cookie-bound method below. |
+| `redeemAuthLinkSession({ attemptId, browserTransactionHash, credentialHash }, cfg)` | Retired compatibility entry point. Always returns `{kind: "rejected", error: "attempt_unavailable"}` without issuing a session. Use the cookie-bound method below. |
 | `redeemAuthLinkSessionWithBrowserTransaction({ attemptId, browserTransactionHash, binderHash, credentialHash }, browserCfg)` | Requires the original browser cookie hash and matching consumed link transaction inside the atomic redemption write; returns a fresh session record only for the winning finalized attempt. |
 | `preserveAuthLinkSessionCompletion({ attemptId, browserTransactionHash, binderHash, credentialHash }, browserCfg)` | Here `credentialHash` identifies the existing live session. Atomically marks the finalized attempt `session_redeemed` while keeping that session unchanged; creates no receipt or new session. |
-| `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Unchanged trusted internal compatibility helper. It is not the future public-handler path and does not apply the admission limit. |
-| `signInWithConsumedBrowserTransaction({ browserTransactionHash, account: { issuer, subject }, credentialHash }, browserCfg)` | Future public handlers **must** use this post-OIDC seam after independently verifying OIDC/JWS, original browser binding, CSRF, and Origin. It requires a consumed current-config sign-in transaction and applies the per-link admission limit; see the [admission contract](coordinator-auth-session-admission.md). |
+| `signInWithAuthAccount({ browserTransactionHash, account: { issuer, subject }, credentialHash }, cfg)` | Retired compatibility entry point. Always returns `{kind: "rejected", error: "transaction_unavailable"}` without issuing a session. Use the consumed-browser method below. |
+| `signInWithConsumedBrowserTransaction({ browserTransactionHash, account: { issuer, subject }, credentialHash }, browserCfg)` | Public browser handlers use this post-OIDC seam after independently verifying OIDC/JWS, original browser binding, CSRF, and Origin. It requires a consumed current-config sign-in transaction and applies the per-link admission limit; see the [admission contract](coordinator-auth-session-admission.md). |
 | `readAuthSession(hash, cfg)` | Returns the DTO only while the session, link, and configuration remain live. |
 | `signOutAuthSession(hash, { coordinatorId })` | Idempotently revokes only the targeted session. |
 | `revokeAuthAccountLink({ linkId }, { coordinatorId })` | Future configured-admin-only operation; its caller must already be authenticated. |
@@ -65,6 +65,26 @@ issuer/subject may use the new configuration.
 The consumed-transaction seam accepts hashes and internal session metadata only;
 it does not accept or return raw credentials or provider tokens. Its result is
 not an HTTP response or a substitute for live session lookup.
+
+### Migrating callers of the retired methods
+
+The deprecated methods remain in `CoordinatorAuthSessionStore` and concrete stores
+so callers receive explicit denials, not missing-method errors. They no longer
+mint sessions, including on V2 databases without the optional account-management
+extension; retrying them or changing database readiness cannot enable them.
+
+For link completion, call `redeemAuthLinkSessionWithBrowserTransaction` with the
+original server-derived `binderHash` and consumed link transaction. For normal
+sign-in, complete the original bound OIDC ceremony and call
+`signInWithConsumedBrowserTransaction` with its consumed transaction hash and
+verified account. Both replacements require `CoordinatorAuthBrowserConfig`, which
+adds the configured `redirectUri` to the existing coordinator/issuer/revision/enabled
+fields. Do not fabricate bindings or use caller-supplied account claims to adapt an
+old call. Start a fresh browser ceremony when its original proof is unavailable.
+
+Already-issued sessions still use `readAuthSession` and remain subject to expiry,
+revocation, configuration, and active-link checks. This API retirement does not
+revoke them or require automatic schema migration.
 
 ## Lifetime and invalidation
 
@@ -117,7 +137,7 @@ have a consume winner, and be unexpired and not future-born. A separate lookup
 followed by the compatibility redeem is not equivalent to this check.
 
 Initial-link receipts remain permanent (`purge_eligible = 0`); this method does
-not widen normal-sign-in cleanup or change the existing compatibility API.
+not widen normal-sign-in cleanup. The unbound compatibility API is retired.
 
 Keeping a live browser session must also consume completion authority. The
 preservation write checks the finalized attempt, original browser binding,

@@ -2,6 +2,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
+import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
@@ -58,10 +59,10 @@ async function createFixture() {
 	};
 	const start = {
 		authority: { kind: "controller_attestation" as const },
-		attemptId: randomUUID(), signer, runtimeVerifierHash: hash(),
+		attemptId: randomUUID(), signer, runtimeVerifierHash: hash(), browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const account = { issuer: cfg.issuer, subject: randomUUID() };
 	const finalize = {
@@ -80,7 +81,7 @@ async function createFixture() {
 
 async function confirmLink(f: Fixture) {
 	expect(await f.store.createAuthLinkAttempt(f.start, f.cfg)).toMatchObject({ kind: "created" });
-	expect(await f.store.claimAuthLinkAttempt(f.browser, f.cfg)).toMatchObject({ kind: "applied" });
+	await consumeLinkProof(f, f.start, f.browser);
 	expect(await f.store.recordAuthLinkOidcVerified({ ...f.browser, account: f.account }, f.cfg))
 		.toMatchObject({ kind: "applied" });
 	expect(await f.store.confirmAuthLinkAttempt(f.confirm, f.cfg)).toMatchObject({ kind: "applied" });
@@ -137,7 +138,7 @@ it("redeems only the original browser once and keeps finalize replay public", as
 	const unknownInput = { ...signIn(f), account: { ...f.account, subject: randomUUID() } };
 	await consumeSigninProof(f, unknownInput.browserTransactionHash);
 	// Act: a wrong browser and an unknown account must not consume anything.
-	const wrongBrowser = await f.store.redeemAuthLinkSession({
+	const wrongBrowser = await redeemBound(f, {
 		...first, browserTransactionHash: hash(),
 	}, f.cfg);
 	const unknown = await f.store.signInWithConsumedBrowserTransaction(unknownInput, browserProofConfig(f));
@@ -145,10 +146,10 @@ it("redeems only the original browser once and keeps finalize replay public", as
 		...signIn(f), browserTransactionHash: f.browser.browserTransactionHash,
 	}, browserProofConfig(f));
 	const results = await Promise.all([
-		f.store.redeemAuthLinkSession(first, f.cfg),
-		f.store.redeemAuthLinkSession(second, f.cfg),
+		redeemBound(f, first, f.cfg),
+		redeemBound(f, second, f.cfg),
 	]);
-	const replay = await f.store.redeemAuthLinkSession(redeem(f), f.cfg);
+	const replay = await redeemBound(f, redeem(f), f.cfg);
 	const publicReplay = await f.store.finalizeAuthLinkAttempt(f.finalize, f.cfg);
 	// Assert: one durable receipt/session; replay never returns the old credential.
 	expect(wrongBrowser).toEqual({ kind: "rejected", error: "attempt_unavailable" });
@@ -182,7 +183,7 @@ it("expires absolutely and rotates sessions without reenrolling a known account"
 	const f = await createFixture();
 	await linkAccount(f);
 	const input = redeem(f);
-	const issued = await expectIssued(await f.store.redeemAuthLinkSession(input, f.cfg), f);
+	const issued = await expectIssued(await redeemBound(f, input, f.cfg), f);
 	const before = await grants(f);
 	// Act: reads never extend the eight-hour expiry; current revision is independent of genesis.
 	f.time.now = issued.expiresAtMs - 1;
@@ -225,14 +226,14 @@ it("enforces both redemption deadlines and the maximum safe session clock", asyn
 		// Act: exactly at either deadline is rejected; at the safe clock maximum succeeds.
 		if (scenario === "redeem-window") f.time.now += REDEEM_WINDOW;
 		if (scenario === "original-deadline") f.time.now += 30000;
-		const denied = await f.store.redeemAuthLinkSession(redeem(f), f.cfg);
+		const denied = await redeemBound(f, redeem(f), f.cfg);
 		// Assert: deadline rejection writes nothing and an immediately earlier retry succeeds.
 		if (scenario !== "maximum-clock") {
 			expect(denied).toEqual({ kind: "rejected", error: "redeem_window_expired" });
 			await expectSessionCounts(f, 0);
 			expect((await rows(f, attempts))[0]?.state).toBe("finalized");
 			f.time.now -= 1;
-			await expectIssued(await f.store.redeemAuthLinkSession(redeem(f), f.cfg), f);
+			await expectIssued(await redeemBound(f, redeem(f), f.cfg), f);
 		} else {
 			const session = await expectIssued(denied, f, finalizedAt);
 			expect(session.expiresAtMs).toBe(Number.MAX_SAFE_INTEGER);
@@ -251,7 +252,7 @@ it("logs out only one session and admin revocation preserves link tombstones", a
 	const first = redeem(f);
 	const second = signIn(f);
 	await consumeSigninProof(f, second.browserTransactionHash);
-	const issued = await expectIssued(await f.store.redeemAuthLinkSession(first, f.cfg), f);
+	const issued = await expectIssued(await redeemBound(f, first, f.cfg), f);
 	const other = await expectIssued(await f.store.signInWithConsumedBrowserTransaction(second, browserProofConfig(f)), f);
 	const before = await grants(f);
 	const scope = { coordinatorId: f.cfg.coordinatorId };
@@ -298,11 +299,11 @@ it("logs out only one session and admin revocation preserves link tombstones", a
 });
 
 async function expectTombstoneConflict(f: Fixture) {
-	const start = { ...f.start, attemptId: randomUUID(), runtimeVerifierHash: hash() };
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const start = { ...f.start, attemptId: randomUUID(), runtimeVerifierHash: hash(), browserStartHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	expect(await f.store.createAuthLinkAttempt(start, f.cfg)).toMatchObject({ kind: "created" });
-	expect(await f.store.claimAuthLinkAttempt(browser, f.cfg)).toMatchObject({ kind: "applied" });
+	await consumeLinkProof(f, start, browser);
 	expect(await f.store.recordAuthLinkOidcVerified({ ...browser, account: f.account }, f.cfg))
 		.toMatchObject({ kind: "applied" });
 	expect(await f.store.confirmAuthLinkAttempt(confirm, f.cfg)).toMatchObject({ kind: "applied" });
@@ -341,7 +342,7 @@ it("rolls back receipt, session and attempt on real D1 statement failures", asyn
 		const trigger = await installFault(f, target);
 		try {
 			// Act
-			await expect(f.store.redeemAuthLinkSession(input, f.cfg))
+			await expect(redeemBound(f, input, f.cfg))
 				.rejects.toThrow(/^auth_session_persistence_error$/);
 			// Assert: the complete original finalized row and every proof commitment survive.
 			expect(await rows(f, attempts)).toEqual(before);
@@ -351,7 +352,7 @@ it("rolls back receipt, session and attempt on real D1 statement failures", asyn
 			await env.COORDINATOR_DB.prepare(`DROP TRIGGER IF EXISTS ${trigger}`).run();
 		}
 		// Act / Assert: removing only our trigger allows an unchanged successful retry.
-		await expectIssued(await f.store.redeemAuthLinkSession(input, f.cfg), f);
+		await expectIssued(await redeemBound(f, input, f.cfg), f);
 		await expectSessionCounts(f, 1);
 		expect((await rows(f, attempts))[0]?.state).toBe("session_redeemed");
 		expect(await grants(f)).toEqual(beforeGrants);
