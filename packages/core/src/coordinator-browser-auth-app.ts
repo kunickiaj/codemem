@@ -1,4 +1,9 @@
 import type { Context, Hono } from "hono";
+import type { AccountChangeOperations } from "./coordinator-account-change.js";
+import {
+	ACCOUNT_CHANGE_BROWSER_PATHS,
+	createCoordinatorAccountChangeBrowser,
+} from "./coordinator-account-change-browser.js";
 import type {
 	CoordinatorAuthBrowserConfig,
 	CoordinatorAuthBrowserTransactionPurposeStore,
@@ -91,6 +96,7 @@ type EnabledPayload = Readonly<{
 	ownerEnrollment?: CoordinatorBrowserOwnerEnrollmentFactory;
 }>;
 const enabledPayloads = new WeakMap<object, EnabledPayload>();
+const disabledMaintenancePins = new WeakMap<object, string>();
 export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"] &
 	CoordinatorBrowserAuthCallbackInput["store"] &
 	CoordinatorBrowserLinkInput["store"] &
@@ -101,6 +107,7 @@ export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"
 export type CoordinatorBrowserAuthClientKey = (context: Context) => string | null;
 export interface CoordinatorBrowserAuth {
 	readonly storeConfig: Readonly<CoordinatorAuthBrowserConfig>;
+	readonly resolveAccountChanges?: typeof resolveAccountChanges;
 	register(app: Hono, clientKey: CoordinatorBrowserAuthClientKey): void;
 }
 export type CoordinatorBrowserAuthResult =
@@ -125,6 +132,8 @@ const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
 	"/auth/logout": ["POST"],
 	"/auth/owner/start": ["GET", "POST"],
 	"/auth/owner/confirm": ["POST"],
+	"/auth/account/change/start": ["GET", "POST"],
+	"/auth/account/change/confirm": ["POST"],
 };
 const OWNER_PATHS = [
 	"/auth/owner/start",
@@ -167,8 +176,15 @@ export function captureCoordinatorBrowserAuthOptions(
 	input: CoordinatorBrowserAuthOptions,
 ): CoordinatorBrowserAuthSnapshot {
 	try {
-		const settings = captureCoordinatorBrowserAuthConfig(ownData(input, "config"));
-		if (settings.kind === "disabled") return Object.freeze({ kind: "disabled" });
+		const configInput = ownData(input, "config");
+		const settings = captureCoordinatorBrowserAuthConfig(configInput);
+		if (settings.kind === "disabled") {
+			const snapshot = Object.freeze({ kind: "disabled" as const });
+			const coordinatorId =
+				configInput === undefined ? undefined : ownData(configInput, "coordinatorId");
+			if (isAuthControllerId(coordinatorId)) disabledMaintenancePins.set(snapshot, coordinatorId);
+			return snapshot;
+		}
 		if (settings.kind === "invalid") return invalid(settings.field);
 		const callbackPath = new URL(settings.store.redirectUri).pathname;
 		if (
@@ -221,7 +237,7 @@ export function coordinatorBrowserAuthDeviceRoutes(
 ): CoordinatorBrowserAuth | undefined {
 	const payload = enabledPayloads.get(snapshot);
 	if (!payload) return undefined;
-	return { storeConfig: payload.settings.store, register: () => {} };
+	return { storeConfig: payload.settings.store, resolveAccountChanges, register: () => {} };
 }
 
 /** null skips setup; a Response rejects before I/O; true admits the actual mounted route. */
@@ -304,6 +320,7 @@ function admitFormSetup(
 	if (url.pathname === "/auth/logout") action = "session_logout";
 	if (url.pathname === "/auth/sign-in") action = "signin_start";
 	if (url.pathname === "/auth/link/start") action = "link_start";
+	if (url.pathname === ACCOUNT_CHANGE_BROWSER_PATHS.start) action = "link_start";
 	const failure = admitBrowserFormSetup({
 		request,
 		scope: payload.settings,
@@ -386,8 +403,8 @@ export async function createCoordinatorBrowserAuth(
 	try {
 		const payload = enabledPayloads.get(snapshot);
 		if (!payload) return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
-		const storeError = await browserAuthStoreError(store);
-		if (storeError) return Object.freeze({ ok: false, error: storeError });
+		const checked = await browserAuthStoreState(store);
+		if ("error" in checked) return Object.freeze({ ok: false, error: checked.error });
 		const purposeStore = payload.ownerEnrollment ? capturePurposeStore(store) : undefined;
 		const input = Object.freeze({
 			config: payload.config,
@@ -409,11 +426,13 @@ export async function createCoordinatorBrowserAuth(
 		const signin = await createCoordinatorBrowserSigninStart(input);
 		const start = await createCoordinatorBrowserLinkStart(input);
 		const owner = await createOwnerAdapter(payload, limiter);
+		const change = await createChangeAdapter(payload, store, limiter, checked.operations);
 		const callback = await createCoordinatorBrowserAuthCallback({
 			...input,
 			completeLink: link.handlers.completeLink,
 			ownerCallback: owner?.handleCallback,
 			purposeStore,
+			accountChangeCallback: change.callback,
 		});
 		const account = await createCoordinatorBrowserAccount(input);
 		if (!signin.ok || !start.ok || !callback.ok || !account.ok)
@@ -436,37 +455,98 @@ export async function createCoordinatorBrowserAuth(
 			{ path: "/auth/account", get: account.handlers.account },
 			{ path: "/auth/logout", post: account.handlers.logout },
 			...ownerRoutes(owner),
+			...change.routes,
 		]);
-		return browserAuthReady(payload.settings.store, routes);
+		return browserAuthReady(payload.settings.store, routes, { accountChanges: change.enabled });
 	} catch (error) {
 		return browserAuthSetupFailure(error);
 	}
 }
 
+async function createChangeAdapter(
+	payload: EnabledPayload,
+	store: CoordinatorBrowserAuthStore,
+	limiter: InMemoryRequestRateLimiter,
+	operations: AccountChangeOperations | null,
+): Promise<{
+	enabled: boolean;
+	routes: Route[];
+	callback?: CoordinatorBrowserAuthCallbackInput["accountChangeCallback"];
+}> {
+	if (!operations) return { enabled: false, routes: [] };
+	const change = await createCoordinatorAccountChangeBrowser({
+		config: payload.config,
+		csrfKey: payload.csrfKey,
+		oidcOptions: payload.oidcOptions,
+		limiter,
+		operations,
+		readers: {
+			readStart: operations.readStart.bind(operations),
+			readManagementActivity: operations.readManagementActivity.bind(operations),
+			readBrowserBinding: operations.readBrowserBinding.bind(operations),
+		},
+		existing: {
+			...capturePurposeStore(store),
+			readAuthBrowserTransactionActivity: store.readAuthBrowserTransactionActivity.bind(store),
+		},
+	});
+	if (!change.ok) throw new Error();
+	return {
+		enabled: true,
+		routes: [
+			{
+				path: ACCOUNT_CHANGE_BROWSER_PATHS.start,
+				get: async (request) => ({ response: await change.handlers.startPage(request) }),
+				post: async (request, key) => ({ response: await change.handlers.start(request, key) }),
+			},
+			{
+				path: ACCOUNT_CHANGE_BROWSER_PATHS.confirm,
+				post: async (request, key) => ({ response: await change.handlers.confirm(request, key) }),
+			},
+		],
+		callback: async (request, key, binderHash) => {
+			const activity = await operations.readManagementActivity(
+				{ binderHash },
+				payload.settings.store,
+			);
+			if ((await change.handlers.matchesCallback(request)) || activity.kind !== "inactive")
+				return change.handlers.callback(request, key);
+			return null;
+		},
+	};
+}
+
 function browserAuthReady(
 	storeConfig: CoordinatorAuthBrowserConfig,
 	routes: readonly Route[],
+	options: { accountChanges: boolean },
 ): CoordinatorBrowserAuthResult {
 	return Object.freeze({
 		ok: true,
 		auth: Object.freeze({
 			storeConfig,
+			resolveAccountChanges: options.accountChanges ? resolveAccountChanges : undefined,
 			register: (app: Hono, clientKey: CoordinatorBrowserAuthClientKey) =>
 				registerRoutes(app, routes, clientKey),
 		}),
 	});
 }
 
-async function browserAuthStoreError(
+async function browserAuthStoreState(
 	store: CoordinatorBrowserAuthStore,
-): Promise<typeof AUTH_SCHEMA_UPGRADE_REQUIRED | "browser_auth_store_unavailable" | null> {
+): Promise<
+	| { operations: AccountChangeOperations | null }
+	| { error: typeof AUTH_SCHEMA_UPGRADE_REQUIRED | "browser_auth_store_unavailable" }
+> {
 	try {
+		const read = storeMethod(store, "readAccountChangeCapability");
+		if (read) return { operations: (await read()) as AccountChangeOperations | null };
 		await assertConfiguredAuthSchema(store);
-		return null;
+		return { operations: await resolveAccountChanges(store) };
 	} catch (error) {
 		if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
-			return AUTH_SCHEMA_UPGRADE_REQUIRED;
-		return "browser_auth_store_unavailable";
+			return { error: AUTH_SCHEMA_UPGRADE_REQUIRED };
+		return { error: "browser_auth_store_unavailable" };
 	}
 }
 
@@ -509,6 +589,36 @@ async function createOwnerAdapter(
 	});
 }
 
+function storeMethod(receiver: unknown, name: string): ((...args: never[]) => unknown) | undefined {
+	if (!receiver || typeof receiver !== "object") throw new Error();
+	let cursor: object | null = receiver;
+	const seen = new Set<object>();
+	while (cursor) {
+		if (seen.has(cursor)) throw new Error();
+		seen.add(cursor);
+		const descriptor = Object.getOwnPropertyDescriptor(cursor, name);
+		if (descriptor) {
+			if (!Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function")
+				throw new Error();
+			const method = descriptor.value;
+			return (...args) => Reflect.apply(method, receiver, args);
+		}
+		cursor = Object.getPrototypeOf(cursor);
+	}
+	return undefined;
+}
+async function resolveAccountChanges(store: unknown): Promise<AccountChangeOperations | null> {
+	const checked = storeMethod(store, "readAccountChangeCapability");
+	if (checked) return (await checked()) as AccountChangeOperations | null;
+	const read = storeMethod(store, "readAccountConnectionSchemaState");
+	const get = storeMethod(store, "getAccountChanges");
+	if (!read && !get) return null;
+	if (!read || !get) throw new Error();
+	const state = await read();
+	if (state === "v2") return null;
+	if (state !== "ready") throw new CoordinatorAuthSchemaUpgradeRequiredError();
+	return (await get()) as AccountChangeOperations;
+}
 function capturePurposeStore(
 	store: CoordinatorBrowserAuthStore,
 ): CoordinatorAuthBrowserTransactionPurposeStore {
@@ -556,7 +666,8 @@ export type CoordinatorBrowserAuthMaintenanceStep =
 	| "browser_expiry"
 	| "signin_transactions"
 	| "signin_sessions"
-	| "signin_receipts";
+	| "signin_receipts"
+	| "account_changes";
 export type CoordinatorBrowserAuthMaintenanceResult =
 	| Readonly<{ kind: "disabled" }>
 	| Readonly<{
@@ -571,7 +682,7 @@ export async function maintainCoordinatorBrowserAuth(
 	store: CoordinatorBrowserAuthMaintenanceStore,
 	options: { maxBatches?: number } = {},
 ): Promise<CoordinatorBrowserAuthMaintenanceResult> {
-	if (snapshot.kind === "disabled") return Object.freeze({ kind: "disabled" });
+	if (snapshot.kind === "disabled") return maintainDisabledAccountChanges(snapshot, store);
 	let step: CoordinatorBrowserAuthMaintenanceStep | "options" = "options";
 	try {
 		const payload = enabledPayloads.get(snapshot);
@@ -585,6 +696,7 @@ export async function maintainCoordinatorBrowserAuth(
 		)
 			throw new Error();
 		const config = payload.settings.store;
+		const changes = await resolveAccountChanges(store);
 		const scope = Object.freeze({ coordinatorId: config.coordinatorId });
 		const stages = [
 			{ step: "link_attempts", run: () => store.maintainAuthLinkAttempts(config, { limit: 32 }) },
@@ -608,6 +720,17 @@ export async function maintainCoordinatorBrowserAuth(
 				step: "signin_receipts",
 				run: () => store.purgeAuthGuardedSigninReceipts(scope, { limit: 256 }),
 			},
+			...(changes
+				? [
+						{
+							step: "account_changes" as const,
+							run: async () => {
+								const processedCount = await changes.maintainExpired(config.coordinatorId, 32);
+								return { kind: "maintained", processedCount, more: processedCount === 32 };
+							},
+						},
+					]
+				: []),
 		] as const;
 		let processedCount = 0;
 		let more = false;
@@ -621,6 +744,23 @@ export async function maintainCoordinatorBrowserAuth(
 		return Object.freeze({ kind: "maintained", processedCount, more });
 	} catch {
 		return Object.freeze({ kind: "failed", error: "maintenance_failed", step });
+	}
+}
+
+/** Disabled auth needs only a captured coordinator pin, never issuer or secret material. */
+async function maintainDisabledAccountChanges(
+	snapshot: CoordinatorBrowserAuthSnapshot,
+	store: CoordinatorBrowserAuthMaintenanceStore,
+): Promise<CoordinatorBrowserAuthMaintenanceResult> {
+	const coordinatorId = disabledMaintenancePins.get(snapshot);
+	if (!coordinatorId) return Object.freeze({ kind: "disabled" });
+	try {
+		const changes = await resolveAccountChanges(store);
+		if (!changes) return Object.freeze({ kind: "disabled" });
+		const processedCount = await changes.maintainExpired(coordinatorId, 32);
+		return Object.freeze({ kind: "maintained", processedCount, more: processedCount === 32 });
+	} catch {
+		return Object.freeze({ kind: "failed", error: "maintenance_failed", step: "account_changes" });
 	}
 }
 async function runMaintenanceStage(

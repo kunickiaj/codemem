@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
 import {
 	AUTH_SCHEMA_UPGRADE_REQUIRED,
+	assertConfiguredAuthSchema,
 	authSchemaUpgradeResponse,
 } from "./coordinator-auth-schema.js";
 import type {
@@ -147,7 +148,14 @@ function accountChangeOptions(
 		)
 	)
 		throw new Error("coordinator_auth_configuration_conflict");
-	return opts.accountChanges;
+	if (opts.accountChanges) return opts.accountChanges;
+	if (!ready?.auth.resolveAccountChanges) return undefined;
+	return {
+		config: ready.auth.storeConfig,
+		storeFactory: ready.storeFactory,
+		assertReady: assertConfiguredAuthSchema,
+		operationsFactory: ready.auth.resolveAccountChanges,
+	};
 }
 function registerOptionalCoordinatorAuth(
 	app: Hono,

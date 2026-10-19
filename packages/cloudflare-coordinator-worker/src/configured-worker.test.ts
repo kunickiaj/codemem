@@ -12,7 +12,14 @@ import type {
 import * as coordinator from "@codemem/core/internal/cloudflare-coordinator";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { AccountChangeOperations } from "../../core/src/coordinator-account-change.js";
 import { AUTH_SCHEMA_READINESS_SQL } from "../../core/src/coordinator-auth-schema.js";
+import { sqliteD1 } from "../../core/src/coordinator-auth-store-test-fixtures.js";
+import {
+	config as changeConfig,
+	changeFixture,
+	changeTable,
+} from "../test/account-change-fixture.js";
 import defaultWorker, {
 	type CloudflareCoordinatorEnv,
 	createCloudflareCoordinatorWorker,
@@ -30,6 +37,122 @@ const CONFIG = {
 	redirectUri: `${ORIGIN}/auth/callback`,
 	revision: "a".repeat(64),
 };
+
+async function runScheduled(
+	worker: ReturnType<typeof createConfiguredCloudflareCoordinatorWorker>,
+	env: CloudflareCoordinatorEnv,
+) {
+	const pending: Promise<unknown>[] = [];
+	worker.scheduled({} as ScheduledController, env, {
+		waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+	} as ExecutionContext);
+	for (let index = 0; index < pending.length; index++) await pending[index];
+}
+
+it.each([
+	["browser_pending", false],
+	["confirmed", true],
+] as const)(
+	"scrubs only expired %s private attempts on scheduled disabled auth (previously configured: %s)",
+	async (state, previouslyConfigured) => {
+		const env = environment();
+		const db = databases.at(-1)?.db;
+		if (!db || !env.COORDINATOR_DB) throw new Error("Fixture DB missing");
+		env.COORDINATOR_DB = sqliteD1(db);
+		const store = new D1CoordinatorStore(env.COORDINATOR_DB);
+		const f = await changeFixture(store, coordinator.createD1AuthLinkBackend(env.COORDINATOR_DB));
+		await f.prepare(3, "refresh");
+		expect(await f.operations.finalize(f.proof(3), changeConfig)).not.toBeNull();
+		if (state === "browser_pending") {
+			expect(await f.operations.create(f.request(1), changeConfig)).toBe(true);
+			expect(await f.operations.claimBrowser(f.materials(1), changeConfig)).toBe(true);
+		} else {
+			await f.prepare(1);
+		}
+		const completed = db
+			.prepare(`SELECT * FROM ${changeTable} WHERE attempt_id = 'change-3'`)
+			.get();
+		const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as {
+			name: string;
+		}[];
+		const snapshot = () =>
+			names
+				.filter(({ name }) => name !== changeTable)
+				.map(({ name }) => db.prepare(`SELECT * FROM "${name}"`).all());
+		const before = snapshot();
+		const worker = createConfiguredCloudflareCoordinatorWorker();
+		if (previouslyConfigured)
+			expect((await worker.fetch(request("/unknown-path"), env)).status).toBe(404);
+		const expiry = f.clock.now + 600001;
+		vi.mocked(Date.now).mockReturnValue(expiry);
+		env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({
+			enabled: false,
+			coordinatorId: changeConfig.coordinatorId,
+		});
+		delete env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET;
+		delete env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY;
+		const maintain = vi.spyOn(AccountChangeOperations.prototype, "maintainExpired");
+		await runScheduled(worker, env);
+		expect(maintain).toHaveBeenCalledExactlyOnceWith(changeConfig.coordinatorId, 32);
+		expect(
+			db
+				.prepare(
+					`SELECT state,nonce,pkce_verifier,display_name,email,picture_url FROM ${changeTable} WHERE attempt_id = 'change-1'`,
+				)
+				.all(),
+		).toEqual([
+			{
+				state: "expired",
+				nonce: null,
+				pkce_verifier: null,
+				display_name: null,
+				email: null,
+				picture_url: null,
+			},
+		]);
+		expect(db.prepare(`SELECT * FROM ${changeTable} WHERE attempt_id = 'change-3'`).get()).toEqual(
+			completed,
+		);
+		expect(snapshot()).toEqual(before);
+		expect((await worker.fetch(request("/auth/sign-in"), env)).status).toBe(
+			previouslyConfigured ? 503 : 404,
+		);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
+it.each([
+	undefined,
+	"{",
+	JSON.stringify({ enabled: false }),
+	JSON.stringify({ enabled: false, coordinatorId: " invalid id" }),
+])("skips disabled cleanup with no trusted coordinator pin: %s", async (raw) => {
+	const env = environment();
+	env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = raw;
+	if (!env.COORDINATOR_DB) throw new Error("Fixture DB missing");
+	const prepare = vi.spyOn(env.COORDINATOR_DB, "prepare");
+	await runScheduled(createConfiguredCloudflareCoordinatorWorker(), env);
+	expect(prepare).not.toHaveBeenCalled();
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
+
+it("scheduled disabled cleanup checks V2 capability without querying absent extension tables", async () => {
+	const env = environment();
+	env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({
+		enabled: false,
+		coordinatorId: CONFIG.coordinatorId,
+	});
+	if (!env.COORDINATOR_DB) throw new Error("Fixture DB missing");
+	const prepare = vi.spyOn(env.COORDINATOR_DB, "prepare");
+	await runScheduled(createConfiguredCloudflareCoordinatorWorker(), env);
+	expect(prepare).toHaveBeenCalled();
+	expect(
+		prepare.mock.calls.some(([sql]) =>
+			/(?:UPDATE|FROM) coordinator_account_change_attempts/i.test(sql),
+		),
+	).toBe(false);
+	expect(globalThis.fetch).not.toHaveBeenCalled();
+});
 
 // Local SQLite implements the D1 boundary; provider discovery never leaves this process.
 function databaseFixture() {
@@ -199,7 +322,7 @@ it("does not open auth storage or discover Google for unmounted routes or method
 	const binding = env.COORDINATOR_DB;
 	if (!binding) throw new Error("Fixture binding missing");
 	const prepare = vi.spyOn(binding, "prepare");
-	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady");
+	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "readAccountChangeCapability");
 	const worker = createConfiguredCloudflareCoordinatorWorker();
 	for (let i = 0; i < 3; i++) {
 		for (const path of [
@@ -220,7 +343,7 @@ it("does not open auth storage or discover Google for unmounted routes or method
 
 it("spends one browser token on cold setup and rejects quota exhaustion before readiness", async () => {
 	const env = environment();
-	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady");
+	const readiness = vi.spyOn(D1CoordinatorStore.prototype, "readAccountChangeCapability");
 	const worker = createConfiguredCloudflareCoordinatorWorker();
 	for (let i = 0; i < 20; i++) {
 		const response = await worker.fetch(signinPost({}, ""), env);
@@ -235,7 +358,7 @@ it("spends one browser token on cold setup and rejects quota exhaustion before r
 it("limits uncached readiness retries before SQL without discovery", async () => {
 	const env = environment();
 	const readiness = vi
-		.spyOn(D1CoordinatorStore.prototype, "assertAuthSchemaReady")
+		.spyOn(D1CoordinatorStore.prototype, "readAccountChangeCapability")
 		.mockRejectedValue(new Error("private-transient-D1-cause"));
 	const worker = createConfiguredCloudflareCoordinatorWorker();
 	for (let i = 0; i < 20; i++)

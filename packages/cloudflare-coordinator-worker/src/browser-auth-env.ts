@@ -7,7 +7,7 @@ export interface CloudflareBrowserAuthEnv {
 }
 
 export type CloudflareBrowserAuthSettings =
-	| { kind: "disabled" }
+	| { kind: "disabled"; coordinatorId?: unknown }
 	| { kind: "invalid" }
 	| {
 			kind: "enabled";
@@ -26,6 +26,11 @@ const CONFIG_FIELDS = new Set([
 	"revision",
 ]);
 
+function disabledSettings(fields: Record<string, unknown>): CloudflareBrowserAuthSettings {
+	if (fields.coordinatorId === undefined) return { kind: "disabled" };
+	return { kind: "disabled", coordinatorId: fields.coordinatorId };
+}
+
 /** Secrets are separate bindings and never appear in configuration JSON. */
 export function captureCloudflareBrowserAuthEnv(
 	env: CloudflareBrowserAuthEnv,
@@ -37,7 +42,7 @@ export function captureCloudflareBrowserAuthEnv(
 		const parsed: unknown = JSON.parse(raw);
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "invalid" };
 		const fields = parsed as Record<string, unknown>;
-		if (fields.enabled === false) return { kind: "disabled" };
+		if (fields.enabled === false) return disabledSettings(fields);
 		if (Object.keys(fields).some((name) => !CONFIG_FIELDS.has(name))) return { kind: "invalid" };
 		if (
 			fields.ownerEnrollmentEnabled !== undefined &&

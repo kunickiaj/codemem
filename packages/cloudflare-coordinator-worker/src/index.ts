@@ -193,7 +193,21 @@ export function createCloudflareCoordinatorWorker(
 ) {
 	if (!opts.browserAuth) return createLegacyCloudflareCoordinatorWorker(opts);
 	const snapshot = captureCoordinatorBrowserAuthOptions(opts.browserAuth);
-	if (snapshot.kind === "disabled") return createLegacyCloudflareCoordinatorWorker(opts);
+	if (snapshot.kind === "disabled") {
+		return {
+			...createLegacyCloudflareCoordinatorWorker(opts),
+			scheduled(
+				_controller: ScheduledController,
+				env: CloudflareCoordinatorEnv,
+				ctx: ExecutionContext,
+			): void {
+				if (!env.COORDINATOR_DB) return;
+				ctx.waitUntil(
+					maintainCoordinatorBrowserAuth(snapshot, new D1CoordinatorStore(env.COORDINATOR_DB)),
+				);
+			},
+		};
+	}
 	return createBrowserAuthWorker(opts, snapshot);
 }
 
@@ -252,7 +266,6 @@ async function createWorkerFromSettings(
 
 /** Capture configured authentication once; only settled setup crosses requests. */
 export function createConfiguredCloudflareCoordinatorWorker() {
-	const legacy = createLegacyCloudflareCoordinatorWorker();
 	let captured: readonly unknown[] | undefined;
 	let completed: ReturnType<typeof createCloudflareCoordinatorWorker> | undefined;
 	const ownerLimiter = createInMemoryRequestRateLimiter();
@@ -267,7 +280,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		// Removing or disabling config after capture is drift, not an initial legacy rollout.
 		if (captured && !sameBindings(captured, bindings)) return null;
 		const settings = captureCloudflareBrowserAuthEnv(env);
-		if (settings.kind === "disabled") return legacy;
+		if (settings.kind === "disabled") return disabledWorker(settings);
 		if (settings.kind === "invalid") return null;
 		if (completed) return completed;
 		const db = env.COORDINATOR_DB;
@@ -296,16 +309,36 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 			env: CloudflareCoordinatorEnv,
 			ctx: ExecutionContext,
 		): void {
+			const settings = captureCloudflareBrowserAuthEnv(env);
+			if (settings.kind === "disabled") {
+				runWorkerScheduled(disabledWorker(settings), controller, env, ctx);
+				return;
+			}
 			ctx.waitUntil(
 				configured(env)
-					.then((worker) => {
-						if (worker && "scheduled" in worker && typeof worker.scheduled === "function")
-							worker.scheduled(controller, env, ctx);
-					})
+					.then((worker) => runWorkerScheduled(worker, controller, env, ctx))
 					.catch(() => undefined),
 			);
 		},
 	};
+}
+
+function runWorkerScheduled(
+	worker: ReturnType<typeof createCloudflareCoordinatorWorker> | null,
+	controller: ScheduledController,
+	env: CloudflareCoordinatorEnv,
+	ctx: ExecutionContext,
+): void {
+	if (worker && "scheduled" in worker && typeof worker.scheduled === "function")
+		worker.scheduled(controller, env, ctx);
+}
+
+function disabledWorker(
+	settings: Extract<ReturnType<typeof captureCloudflareBrowserAuthEnv>, { kind: "disabled" }>,
+) {
+	return createCloudflareCoordinatorWorker({
+		browserAuth: { config: { enabled: false, coordinatorId: settings.coordinatorId } },
+	});
 }
 
 export default createConfiguredCloudflareCoordinatorWorker();
