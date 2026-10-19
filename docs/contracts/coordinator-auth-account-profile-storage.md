@@ -69,6 +69,12 @@ later deletes a source session, a profile may retain its dangling source-session
 ID. It remains display-only; reads still require a current live session and
 configuration, and retention does not erase profiles or change authority.
 
+The optional account-management migration preserves existing verified display
+snapshots at reserved order one, including snapshots whose source receipt was
+already removed by retention. These legacy snapshots remain display-only; they do
+not recreate a receipt, admit an expired session, or give old pending browser
+transactions an order. Newer ordered snapshots still require their matching receipt.
+
 ## Revocation and privacy cleanup
 
 `clearRevokedAuthAccountProfile({ linkId }, { coordinatorId })` deletes display metadata only when that exact link is already revoked. Existing revoke behavior is unchanged: a missing profile table or failed purge cannot keep an account active.

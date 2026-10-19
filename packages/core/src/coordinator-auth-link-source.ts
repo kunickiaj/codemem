@@ -23,6 +23,32 @@ interface SourceRow extends AuthLinkAttemptAuthorityRow {
 	completion_secret_hash: string | null;
 }
 
+/** Private predicate preparation, never a browser status or authorization result. */
+export async function captureAuthLinkBrowserSource(
+	backend: Pick<AuthLinkBackend, "first">,
+	i: { binderHash: string; stateHash?: string; attemptId?: string },
+	c: CoordinatorAuthLinkConfig & { redirectUri: string },
+	now: number,
+): Promise<AuthLinkStatement> {
+	const row = await backend.first<{ attempt_id: string | null }>({
+		sql: `SELECT attempt_id FROM coordinator_auth_browser_transactions b WHERE b.coordinator_id = ? AND b.issuer = ? AND b.auth_config_revision = ? AND b.redirect_uri = ? AND b.binder_hash = ?
+ AND (? IS NULL OR b.state_hash = ?) AND (? IS NULL OR b.attempt_id = ?) AND b.purpose = 'link'`,
+		values: [
+			c.coordinatorId,
+			c.issuer,
+			c.revision,
+			c.redirectUri,
+			i.binderHash,
+			i.stateHash ?? null,
+			i.stateHash ?? null,
+			i.attemptId ?? null,
+			i.attemptId ?? null,
+		],
+	});
+	if (!row?.attempt_id) return { sql: "0 = 1", values: [] };
+	return captureAuthLinkSource(backend, row.attempt_id, c, now, "a");
+}
+
 /** Fresh capture for one operation; the winning statement must include its SQL. */
 export async function captureAuthLinkSource(
 	backend: Pick<AuthLinkBackend, "first">,

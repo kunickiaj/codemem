@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
 import {
+	changeFixture,
+	config,
+	hash,
+	NOW,
+} from "../../cloudflare-coordinator-worker/test/account-change-fixture.js";
+import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
 	ACCOUNT_CONNECTION_SCHEMA_CHECKS,
 	applyAccountConnectionSchema,
@@ -7,6 +13,7 @@ import {
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import { AUTH_GUARDED_SIGNIN_RECEIPT_PURGE_AGE_MS } from "./coordinator-auth-session.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 
 const raw = (f: ReturnType<typeof setupStore>): AuthLinkBackend => ({
@@ -20,6 +27,86 @@ const raw = (f: ReturnType<typeof setupStore>): AuthLinkBackend => ({
 			)
 			.immediate(),
 });
+
+async function signinForProfile(f: ReturnType<typeof setupStore>, n: number) {
+	const bc = { ...config, redirectUri: "https://coordinator.example.test/auth/callback" };
+	const input = {
+		purpose: "signin" as const,
+		stateHash: hash(n),
+		binderHash: hash(n + 1),
+		nonce: "n".repeat(43),
+		pkceVerifier: "p".repeat(43),
+	};
+	expect((await f.store.startAuthBrowserTransaction(input, bc)).kind).toBe("started");
+	const consumed = await f.store.consumeAuthBrowserTransaction(input, bc);
+	if (consumed.kind !== "consumed") throw new Error("signin fixture unavailable");
+	const credentialHash = hash(n + 2);
+	expect(
+		(
+			await f.store.signInWithConsumedBrowserTransaction(
+				{
+					browserTransactionHash: consumed.browserTransactionHash,
+					credentialHash,
+					account: { issuer: config.issuer, subject: "account-A" },
+				},
+				bc,
+			)
+		).kind,
+	).toBe("issued");
+	return credentialHash;
+}
+it.each([{ displayName: "Retained profile" }, {}])(
+	"keeps legacy profile %j after actual receipt retention and migration",
+	async (profile) => {
+		let now = NOW;
+		const f = setupStore("SQLite", { authClock: () => now });
+		let live = "";
+		try {
+			await changeFixture(f.store, raw(f), "device_claim", async () => {
+				const credentialHash = await signinForProfile(f, 9200);
+				expect(await f.store.recordAuthAccountProfile({ credentialHash, profile }, config)).toEqual(
+					{ kind: "recorded" },
+				);
+				now += AUTH_GUARDED_SIGNIN_RECEIPT_PURGE_AGE_MS + 1;
+				await f.store.maintainAuthBrowserTransactions(config);
+				expect(await f.store.purgeAuthSigninBrowserTransactions(config)).toMatchObject({
+					kind: "purged",
+					processedCount: 1,
+				});
+				expect(await f.store.purgeAuthGuardedSigninSessions(config)).toMatchObject({
+					kind: "purged",
+					processedCount: 1,
+				});
+				expect(await f.store.purgeAuthGuardedSigninReceipts(config)).toMatchObject({
+					kind: "purged",
+					processedCount: 1,
+				});
+				expect(await f.store.readAuthSession(credentialHash, config)).toBeNull();
+				live = await signinForProfile(f, 9210);
+				expect((await f.store.readAuthSessionAccount(live, config))?.profile).toEqual(profile);
+			});
+			expect((await f.store.readAuthSessionAccount(live, config))?.profile).toEqual(profile);
+			f.db.prepare("UPDATE coordinator_auth_account_profiles SET source_order=2").run();
+			expect((await f.store.readAuthSessionAccount(live, config))?.profile).toEqual({
+				displayName: "Birth",
+			});
+			f.db.prepare("UPDATE coordinator_auth_account_profiles SET source_order=1").run();
+			const fresh = await signinForProfile(f, 9220);
+			expect((await f.store.readAuthSessionAccount(fresh, config))?.profile).toEqual(profile);
+			expect(
+				await f.store.recordAuthAccountProfile(
+					{ credentialHash: fresh, profile: { displayName: "New verified profile" } },
+					config,
+				),
+			).toEqual({ kind: "recorded" });
+			expect((await f.store.readAuthSessionAccount(fresh, config))?.profile).toEqual({
+				displayName: "New verified profile",
+			});
+		} finally {
+			await f.store.close();
+		}
+	},
+);
 
 it("records the frozen V2 column inventory used by extension preflight", async () => {
 	const f = setupStore("SQLite");

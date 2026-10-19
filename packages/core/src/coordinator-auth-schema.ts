@@ -1,26 +1,27 @@
-import { AUTH_DEVICE_CLAIM_DEFINITION_CHECKS } from "./coordinator-auth-device-claim-schema.js";
+import {
+	AUTH_SCHEMA_UPGRADE_MESSAGE,
+	AUTH_SCHEMA_UPGRADE_REQUIRED,
+	AUTH_V2_SCHEMA_READINESS_SQL,
+	CoordinatorAuthSchemaUpgradeRequiredError,
+	readConnectionSchemaState,
+} from "./coordinator-account-connection-schema.js";
+
+export {
+	AUTH_SCHEMA_UPGRADE_MESSAGE,
+	AUTH_SCHEMA_UPGRADE_REQUIRED,
+	CoordinatorAuthSchemaUpgradeRequiredError,
+} from "./coordinator-account-connection-schema.js";
+
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
-
-export const AUTH_SCHEMA_UPGRADE_REQUIRED = "coordinator_auth_schema_upgrade_required";
-export const AUTH_SCHEMA_UPGRADE_MESSAGE =
-	"Coordinator authentication needs a schema upgrade. Pause auth writers and back up the coordinator database. For the legacy authority upgrade, run codemem coordinator upgrade-auth-schema --db-path <coordinator.sqlite>. D1 operators must review and apply outstanding auth migrations before deploying the upgraded Worker. A coordinator already using device-claim auth needs only outstanding additive migrations, including 0033; do not replay its authority-table cutover. Device-signed sync remains available.";
-
-export class CoordinatorAuthSchemaUpgradeRequiredError extends Error {
-	constructor() {
-		super(AUTH_SCHEMA_UPGRADE_MESSAGE);
-		this.name = AUTH_SCHEMA_UPGRADE_REQUIRED;
-	}
-}
+import {
+	captureAuthLinkBrowserSource,
+	captureAuthLinkSource,
+} from "./coordinator-auth-link-source.js";
 
 // Inspect five authority columns, four proof definitions and the display staging table.
 // No writes or I/O cache; unknown proof variants fail closed.
 export const AUTH_SCHEMA_READY_COUNT = 10;
-export const AUTH_SCHEMA_READINESS_SQL = `SELECT
- (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_attempts') WHERE lower(name) = 'authority_kind')
- + (SELECT count(*) FROM pragma_table_info('coordinator_auth_account_links') WHERE lower(name) IN ('authority_kind','device_claim_id'))
-	+ (SELECT count(*) FROM pragma_table_info('coordinator_auth_link_audit_log') WHERE lower(name) IN ('authority_kind','device_claim_id'))
-	+ (SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_link_profiles')
- + ${AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(({ matches }) => `(${matches})`).join(" + ")} AS ready`;
+export const AUTH_SCHEMA_READINESS_SQL = AUTH_V2_SCHEMA_READINESS_SQL;
 
 export interface CoordinatorAuthSchemaStore {
 	assertAuthSchemaReady(): Promise<void>;
@@ -28,27 +29,32 @@ export interface CoordinatorAuthSchemaStore {
 
 export async function assertCoordinatorAuthSchema(
 	backend: Pick<AuthLinkBackend, "first">,
+	options: { connections?: boolean } = {},
 ): Promise<void> {
-	const row = await backend.first<{ ready: number }>({
-		sql: AUTH_SCHEMA_READINESS_SQL,
-		values: [],
-	});
-	if (row?.ready !== AUTH_SCHEMA_READY_COUNT) throw new CoordinatorAuthSchemaUpgradeRequiredError();
+	const state = await readConnectionSchemaState(backend);
+	if (state === "upgrade_required" || (options.connections && state !== "ready"))
+		throw new CoordinatorAuthSchemaUpgradeRequiredError();
 }
 
 /** Protect every optional-auth SQL entry, including trusted callers outside HTTP. */
-export function withCoordinatorAuthSchema(backend: AuthLinkBackend): AuthLinkBackend {
+export function withCoordinatorAuthSchema(
+	backend: AuthLinkBackend,
+	options: { connections?: boolean } = {},
+): AuthLinkBackend {
 	return {
+		prepareAuthLinkSource: (...args) => captureAuthLinkSource(backend, ...args),
+		prepareAuthLinkBrowserSource: (...args) => captureAuthLinkBrowserSource(backend, ...args),
+		readAuthSchemaState: () => readConnectionSchemaState(backend),
 		first: async <T>(statement: AuthLinkStatement) => {
-			await assertCoordinatorAuthSchema(backend);
+			await assertCoordinatorAuthSchema(backend, options);
 			return backend.first<T>(statement);
 		},
 		run: async (statement) => {
-			await assertCoordinatorAuthSchema(backend);
+			await assertCoordinatorAuthSchema(backend, options);
 			return backend.run(statement);
 		},
 		batch: async (statements) => {
-			await assertCoordinatorAuthSchema(backend);
+			await assertCoordinatorAuthSchema(backend, options);
 			return backend.batch(statements);
 		},
 	};

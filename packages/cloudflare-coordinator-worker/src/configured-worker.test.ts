@@ -176,7 +176,7 @@ it("retries a transient readiness failure on the next request to the same Worker
 	const prepare = binding.prepare.bind(binding);
 	let readinessQueries = 0;
 	vi.spyOn(binding, "prepare").mockImplementation((sql) => {
-		if (sql === AUTH_SCHEMA_READINESS_SQL && ++readinessQueries === 1)
+		if (sql.includes(AUTH_SCHEMA_READINESS_SQL) && ++readinessQueries === 1)
 			throw new Error("private-transient-D1-cause");
 		return prepare(sql);
 	});

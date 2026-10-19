@@ -60,6 +60,7 @@ function snapshot(f: LinkFixture) {
 	return [transactionRows(f), f.db.prepare(`SELECT * FROM ${FLOOR}`).all(), protectedData(f)];
 }
 function trace(f: LinkFixture, beforeRun?: (statement: AuthLinkStatement) => void) {
+	const batchTransactions: boolean[] = [];
 	const first = vi.fn<AuthLinkBackend["first"]>(async ({ sql, values }) => {
 		return f.db.prepare(sql).get(...values) ?? null;
 	});
@@ -69,10 +70,12 @@ function trace(f: LinkFixture, beforeRun?: (statement: AuthLinkStatement) => voi
 	});
 	const batch = vi.fn<AuthLinkBackend["batch"]>(async (statements) => {
 		f.db.transaction(() => {
+			batchTransactions.push(f.db.inTransaction);
 			for (const { sql, values } of statements) f.db.prepare(sql).run(...values);
 		})();
 	});
 	return {
+		batchTransactions,
 		first,
 		run,
 		batch,
@@ -694,12 +697,23 @@ function registerSql(test: Test) {
 		);
 		// Assert
 		expectRejected(result, "transaction_conflict");
-		const sql = traced.run.mock.calls[0][0].sql;
+		expect(traced.run).not.toHaveBeenCalled();
+		expect(traced.batch).toHaveBeenCalledOnce();
+		expect(traced.batchTransactions).toEqual([true]);
+		const inserts = traced.batch.mock.calls[0][0].filter(({ sql }) =>
+			sql.startsWith(`INSERT INTO ${TABLE}`),
+		);
+		expect(inserts).toHaveLength(1);
+		const sql = inserts[0].sql;
 		expect(sql).toMatch(/^INSERT INTO/iu);
 		expect(sql).toContain(FLOOR);
 		expect(sql).toMatch(/NOT EXISTS/iu);
-		expect(traced.first.mock.invocationCallOrder[0]).toBeGreaterThan(
-			traced.run.mock.invocationCallOrder[0],
+		const diagnosis = traced.first.mock.calls.findIndex(([statement]) =>
+			statement.sql.startsWith(`SELECT 1 FROM ${TABLE} WHERE coordinator_id = ? AND (state_hash`),
+		);
+		expect(diagnosis).toBeGreaterThanOrEqual(0);
+		expect(traced.first.mock.invocationCallOrder[diagnosis]).toBeGreaterThan(
+			traced.batch.mock.invocationCallOrder[0],
 		);
 	});
 }

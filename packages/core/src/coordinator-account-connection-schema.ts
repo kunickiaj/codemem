@@ -164,6 +164,11 @@ export const ACCOUNT_CONNECTION_MIGRATION_STATEMENTS = [
 	"UPDATE coordinator_auth_account_connection_orders SET last_order=last_order+1",
 	"UPDATE coordinator_auth_link_profiles SET source_order=0",
 	"UPDATE coordinator_auth_account_profiles SET source_order=1",
+	`UPDATE coordinator_auth_session_receipts AS r SET source_order=1
+ WHERE r.source='signin' AND r.attempt_id IS NULL AND EXISTS (
+ SELECT 1 FROM coordinator_auth_account_profiles p WHERE p.coordinator_id=r.coordinator_id
+ AND p.link_id=r.link_id AND p.source_session_id=r.session_id
+ AND p.source_signed_in_at_ms=r.created_at_ms AND p.source_order=1)`,
 	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${readySql})`,
 ] as const;
 export async function applyAccountConnectionSchema(backend: AuthLinkBackend): Promise<void> {

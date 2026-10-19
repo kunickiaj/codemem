@@ -1,4 +1,5 @@
 import type { ConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { initialConnectionFloor } from "./coordinator-account-connection-session.js";
 import { captureAuthAccountProfile } from "./coordinator-auth-account-profile.js";
 import { parseCoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
@@ -62,6 +63,19 @@ export interface AuthLinkStatement {
 	values: (string | number | null)[];
 }
 export interface AuthLinkBackend {
+	/** Internal predicate preparation only; consumers must use checked SQL for output/writes. */
+	prepareAuthLinkSource?: (
+		attemptId: string,
+		config: CoordinatorAuthLinkConfig,
+		now: number,
+		alias?: "a" | "coordinator_auth_link_attempts",
+		options?: { currentDevice?: boolean },
+	) => Promise<AuthLinkStatement>;
+	prepareAuthLinkBrowserSource?: (
+		input: { binderHash: string; stateHash?: string; attemptId?: string },
+		config: CoordinatorAuthLinkConfig & { redirectUri: string },
+		now: number,
+	) => Promise<AuthLinkStatement>;
 	/** Internal full-schema lookup on the wrapper's captured raw backend; never cached. */
 	readAuthSchemaState?: () => Promise<ConnectionSchemaState>;
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
@@ -1024,6 +1038,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			await this.backend.batch([
 				...finalizeStatements(i, c, now, linkId, authority),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
+				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),
 			]);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("link_conflict");
@@ -1049,6 +1064,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			await this.backend.batch([
 				...deviceFinalizeStatements(i, c, now, linkId, keyId, source),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
+				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),
 			]);
 		} catch (error) {
 			if (

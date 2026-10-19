@@ -75,7 +75,9 @@ export async function initialConnectionFloor(
 /** Source aliases are fixed internal SQL, not request input. Refresh payloads
  * become readable only after their own immutable completed management receipt. */
 export function connectionProfileColumns(signin: "p" | "m"): string {
-	const validSignin = `EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = ${signin}.coordinator_id AND r.link_id = ${signin}.link_id AND r.session_id = ${signin}.source_session_id AND r.source = 'signin' AND r.attempt_id IS NULL AND r.created_at_ms = ${signin}.source_signed_in_at_ms AND (${signin}.source_order IS NULL OR r.source_order = ${signin}.source_order))`;
+	// Order one is the migration's already-verified legacy display snapshot.
+	// Its expired receipt may have been legitimately purged before installation.
+	const validSignin = `(${signin}.source_order = 1 OR EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = ${signin}.coordinator_id AND r.link_id = ${signin}.link_id AND r.session_id = ${signin}.source_session_id AND r.source = 'signin' AND r.attempt_id IS NULL AND r.created_at_ms = ${signin}.source_signed_in_at_ms AND (${signin}.source_order IS NULL OR r.source_order = ${signin}.source_order)))`;
 	const validBirth = `(b.source_change_attempt_id IS NULL OR EXISTS (SELECT 1 FROM coordinator_account_change_attempts x WHERE x.coordinator_id = b.coordinator_id AND x.attempt_id = b.source_change_attempt_id AND x.state = 'completed' AND x.intent = 'refresh' AND x.target_link_id = l.link_id AND x.identity_id = l.identity_id AND x.issuer = l.issuer AND x.target_subject = l.subject AND x.browser_order = b.source_order))`;
 	const preferSignin = `${validSignin} AND (NOT ${validBirth} OR coalesce(${signin}.source_order,1) > coalesce(b.source_order,0))`;
 	return ["display_name", "email", "email_verified", "picture_url"]
