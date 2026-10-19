@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
 	enrollFixtureSigningKey,
 	refreshManagedScopeFixture,
@@ -29,6 +29,15 @@ import {
 } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
+
+// Freeze both Date constructors and Date.now before the fixture writes timestamps.
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(now));
+});
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 const { fixture, remember, rememberScoped, row, binding, captureOp, enroll, factRows, ledger } =
 	useLocalCaptureFixture();
@@ -297,7 +306,7 @@ it.each([
 		const foreign = foreignControl();
 		const diagnosis = diagnoseStalePeerReceivedRows(fixture.store.db, options());
 		const result = reconcileStalePeerReceivedRows(fixture.store.db, options());
-		vi.spyOn(Date, "now").mockReturnValue(new Date("2026-10-20T00:00:00Z").getTime());
+		vi.setSystemTime(Date.now() + 2 * 24 * 60 * 60 * 1000);
 		const retention = pruneReplicationOps(fixture.store.db, { maxAgeDays: 1 });
 		// Assert: peer replacement retains original facts, never inheriting current-revision proof.
 		expect(applied).toMatchObject({ ok: true, applied: replace ? 1 : 0 });
