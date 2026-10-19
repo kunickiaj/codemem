@@ -48,7 +48,10 @@ import {
 	emitJsonError,
 	resolveDbOpt,
 } from "../shared-options.js";
-import { buildCoordinatorAuthSchemaCommand } from "./coordinator-auth-schema.js";
+import {
+	buildCoordinatorAccountSchemaCommand,
+	buildCoordinatorAuthSchemaCommand,
+} from "./coordinator-auth-schema.js";
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
@@ -119,6 +122,7 @@ function createCoordinatorCommandRoot(): Command {
 	cmd.addCommand(buildCoordinatorEnrollOwnerCommand());
 	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
 	cmd.addCommand(buildCoordinatorAuthSchemaCommand());
+	cmd.addCommand(buildCoordinatorAccountSchemaCommand());
 	return cmd;
 }
 

@@ -202,7 +202,30 @@ must join promoted rows to the matching live account link, and never return priv
 snapshots take precedence, including an intentionally empty snapshot. Names, email and pictures are display hints,
 not identity or permission evidence. No coordinator browser session is required to persist a successful link profile.
 
-From `examples/cloudflare-coordinator/`:
+### Optional account-management extension
+
+The current V2 extension adds profile refresh and explicit unlink/reconnect support without changing normal V2 linking. It is not the legacy authority cutover and it is not the deferred V3 generation migration. For an existing intact V2 database, pause auth writers, drain pending attempts, back up the database, obtain approval, and use the local CLI only for a local SQLite coordinator:
+
+```fish
+codemem coordinator upgrade-account-schema --db-path PATH
+```
+
+The command does not pause writers, create a backup, or apply itself by default. Its D1 export opens no database:
+
+```fish
+codemem coordinator upgrade-account-schema --export-sql --json
+```
+
+It returns `{ "statements": [...], "applied": false }`. Plain output warns that the whole statement array must run in **one atomic D1 binding batch**; do not add `BEGIN`/`COMMIT`, split it into chunks, or treat Wrangler `execute` or migrations as a safe apply path here. Remote query and batch limits are not verified by this export.
+
+On any error, stop and inspect the database rather than resetting tables, copying data, synthesizing proof, or restoring unrelated traffic. The extension retains original link rows, IDs, proofs, and history; it does not backfill old browser orders.
+
+Existing sessions remain valid until unlink or administrator revocation, but old pre-upgrade transactions without an order cannot create a new session. After the upgrade, do not run an older coordinator binary against the database.
+
+### Deploy after separate approval
+
+Only after any required schema apply is complete and deployment is approved, run
+from `examples/cloudflare-coordinator/`:
 
 ```fish
 wrangler deploy

@@ -80,6 +80,7 @@ describe("coordinator command parity", () => {
 			"enroll-owner",
 			"review-device-owner",
 			"upgrade-auth-schema",
+			"upgrade-account-schema",
 			"group-create",
 			"list-groups",
 			"enroll-device",

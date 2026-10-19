@@ -34,6 +34,7 @@ export {
 	MAPPABLE_CODEX_HOOK_EVENTS,
 	mapCodexHookPayload,
 } from "./codex-hooks.js";
+export { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "./coordinator-account-connection-schema.js";
 export type {
 	CoordinatorAccountLinkReceiver,
 	CoordinatorAccountLinkReceiverOptions,
@@ -124,7 +125,10 @@ export {
 	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
 	AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS,
 } from "./coordinator-auth-link-authority-upgrade.js";
-export { upgradeCoordinatorAuthSchemaFile } from "./coordinator-auth-schema-operator.js";
+export {
+	upgradeCoordinatorAccountSchemaFile,
+	upgradeCoordinatorAuthSchemaFile,
+} from "./coordinator-auth-schema-operator.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
 export type {
 	CoordinatorEnrollmentReconcileIssue,

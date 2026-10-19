@@ -1,6 +1,6 @@
 # User Guide
 
-## Coordinator authentication upgrades
+## Coordinator authentication and account-management upgrades
 
 An older coordinator can keep serving ordinary device-signed sync while optional
 auth reports `coordinator_auth_schema_upgrade_required`. The operator must pause
@@ -9,6 +9,20 @@ auth writers and back up the coordinator database before running
 For D1, `codemem coordinator upgrade-auth-schema --export-sql` only prints the
 reviewed SQL; apply it separately using the [controlled cutover](contracts/coordinator-auth-protocol.md#operator-cutover).
 Never replay historical migrations on a deployment without a migration ledger.
+
+Normal V2 linking needs no further upgrade. **Refresh profile**, **Unlink Google
+account**, and later same- or different-account linking need the optional extension
+on an intact V2 coordinator. Pause auth writers, drain pending attempts, back up the
+database, and obtain separate approval before running either:
+
+```fish
+codemem coordinator upgrade-account-schema --db-path coordinator.sqlite
+codemem coordinator upgrade-account-schema --export-sql --json
+```
+
+The local command changes only the selected existing database; the export applies
+nothing. Run the exported statements in one atomic D1 binding batch only after the
+separate approval; follow the [deployment guide](cloudflare-coordinator-deployment.md#optional-account-management-extension) for that apply and deployment.
 
 ## Explore the viewer
 

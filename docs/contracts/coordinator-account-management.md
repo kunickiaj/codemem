@@ -1,12 +1,88 @@
 # Coordinator account-management lifecycle contract
 
-**Status:** Proposed V3 contract. No routes, schema migration, UI, provider configuration, or deployment is authorized or implemented by this document.
+**Status:** The current V2 extension is described first. The later **Historical V3 proposal** section is inactive reference material, not the current implementation plan or authorization to resume the closed V3 rollout.
 
-## Purpose and current boundary
+## Current V2 account-management extension
+
+The current optional V2 extension supports verified profile display, **Refresh
+profile**, and explicit **Unlink Google account**, followed by normal linking to the
+same or a different Google account. It installs only through the explicit
+`upgrade-account-schema` operation for an existing intact V2 coordinator; normal V2
+linking does not require it. Fresh coordinators also remain V2 until the extension
+is explicitly installed.
+
+The extension moves an unlinked connection into retained history and creates a fresh,
+opaque link ID for a later normal Link. It retains the original row ID, proof, and
+authorship history; retaining that history is not a promise to keep the link active.
+Identity, device keys, access, existing history, and permanent administrator
+revocation remain unchanged. Old sessions and proofs cannot authenticate a replacement
+connection. Unlink and Refresh require the currently authorized device and fresh Google
+proof; neither accepts old proof. A normal Link is the only reconnect flow—there is no
+switch wizard or automatic unlink.
+
+The Viewer shows **Refresh profile** and **Unlink Google account** only when the
+coordinator reports those capabilities. **Check status** reads status; it does not
+refresh profile data. Refresh has no extra confirmation. Unlink has one hosted
+confirmation after Google proof; the Viewer has no pre-confirmation.
+
+That confirmation explains that Unlink ends browser sessions for the connection
+and removes its display profile. Identity, device keys, history, membership, and
+access grants remain unchanged. The Viewer **Cancel** action cancels its pending
+operation through the initiating device. Closing the hosted tab before confirming
+Unlink leaves the account linked, but does not cancel the pending attempt; it remains
+until device cancellation or expiry. The hosted page does not currently offer a
+separate Cancel action.
+
+If a confirmation storage reply is lost after commit, the same request can recover
+only by matching its exact completion-secret hash, browser pins, current authority,
+and unexpired confirmed state. A later browser retry cannot reconstruct or rotate
+a lost secret, and delivery failure after the response leaves the server remains
+uncertain.
+
+When the Worker's existing scheduled handler runs with browser auth disabled,
+it can still scrub expired private account-change material in batches of at most
+32 attempts per invocation. Keep the original `coordinatorId` alongside
+`enabled: false` in its browser-auth configuration for this cleanup; issuer,
+client secret, and browser CSRF key are not needed. Without a valid coordinator
+ID, cleanup skips rather than guessing a scope. It preserves completed receipts,
+account history, and device access, and does not mount browser-auth routes or
+contact Google. This does not configure a schedule or change deployment settings.
+
+For an existing local V2 SQLite database, operators must pause auth writers, drain
+pending attempts, back up the database, then obtain approval before running:
+
+```fish
+codemem coordinator upgrade-account-schema --db-path PATH
+```
+
+The command never applies automatically and creates no backup or pause. It fails
+closed when storage is only partly upgraded. Do not use the legacy
+`upgrade-auth-schema` command for account management: that command is the authority
+cutover, not this extension. The upgrade adds an old-binary fence; after it succeeds,
+do not run an older coordinator binary against that database. Stop and inspect errors
+instead of resetting, copying tables, synthesizing proof, or attempting an automatic
+restore.
+
+The upgrade keeps the latest existing sign-in profile visible, including an empty
+snapshot. It assigns baseline order one to the existing receipt only when its
+coordinator, link, session, and timestamp exactly match that profile. Original
+proof bytes and row IDs remain intact, and old pending browser transactions keep
+NULL orders so they cannot mint new sessions after upgrade.
+
+Administrator revocation records the observed server time and still applies when
+the clock moves backward. Revoked authority never depends on timestamp ordering.
+
+## Historical V3 proposal
+
+The sections below are retained history for the discarded generation-based design.
+They do not define the current V2 extension, authorize a migration, deployment, or
+live account action.
+
+## Purpose and boundary in the historical proposal
 
 This contract specifies a future, user-initiated lifecycle for an account link: disconnect it, refresh its display profile, then optionally link a different provider account. It preserves the Identity, keys, history, access, and existing device-signed access model. Email, name, and picture never prove ownership.
 
-The current one-link, revoked-tombstone contract remains normative until a full V3 implementation and explicit lifecycle migration are approved. This proposal does not alter current revocation behavior. An admin revocation is permanent; user disconnect cannot clear, replace, or bypass it.
+This proposal retained the one-link, revoked-tombstone contract until a full V3 implementation and explicit lifecycle migration were approved. It did not alter revocation behavior. An admin revocation is permanent; user disconnect cannot clear, replace, or bypass it.
 
 There is no **Switch account** operation. A person explicitly disconnects account A and, if eligible, starts a separate Link flow for account B. Leaving between those actions leaves the account truthfully disconnected. The UI must not suggest external provider sign-out as a substitute.
 
@@ -279,6 +355,10 @@ It also covers wrong-A proof, missing or revoked proof, canonical-key aliases, r
 | Old optional link-session redemption or owner commit resumes | It denies when its pinned source generation ended. |
 
 Browser tests must verify that disconnect has exactly one hosted destructive confirmation after provider proof, refresh has no extra confirmation, and connect retains its existing single hosted confirmation. They must also verify that GET and redirects leave a newer browser transaction cookie intact, while only the matching successful credential POST can replace it.
+
+Callback handlers prepare the complete response before committing verified or confirmed state. The winning write rechecks current authority; a failed preparation leaves no committed completion secret. Network delivery can still fail after commit. Disconnect confirmation likewise renders its completion page before committing, so a rendering failure can be retried with the same confirmation form.
+
+Run the isolated synthetic-provider Chromium suite after `pnpm run build` with `pnpm --filter @codemem/ui test:account-browser`. Install its pinned browser first with `pnpm --filter @codemem/ui exec playwright install chromium` if needed. Normal CI runs this suite in the separate Account Browser Acceptance job. It uses no live Google account or cloud coordinator, and writes generated results under the ignored `.tmp/` directory.
 
 ## Exclusions
 
