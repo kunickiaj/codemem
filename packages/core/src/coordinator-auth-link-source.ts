@@ -1,3 +1,5 @@
+import { CONNECTION_RELINK_ELIGIBLE_SQL } from "./coordinator-account-connection-link.js";
+import { hasConnectionSessionSchema } from "./coordinator-account-connection-session.js";
 import {
 	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
@@ -7,10 +9,14 @@ import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link
 import type { AuthLinkAttemptAuthorityRow } from "./coordinator-auth-link-authority.js";
 import { readAuthLinkAttemptAuthority } from "./coordinator-auth-link-authority.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
-import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
+import {
+	authDeviceClaimProvenanceSql,
+	CONNECTION_BIRTHS_SQL,
+} from "./coordinator-auth-link-provenance.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 
 interface SourceRow extends AuthLinkAttemptAuthorityRow {
+	prior_link_id?: string | null;
 	identity_id: string;
 	group_id: string;
 	device_id: string;
@@ -22,7 +28,6 @@ interface SourceRow extends AuthLinkAttemptAuthorityRow {
 	state: string;
 	completion_secret_hash: string | null;
 }
-
 /** Private predicate preparation, never a browser status or authorization result. */
 export async function captureAuthLinkBrowserSource(
 	backend: Pick<AuthLinkBackend, "first">,
@@ -67,6 +72,7 @@ export async function captureAuthLinkSource(
 	if (authority.kind === "controller_attestation")
 		return { sql: `${alias}.authority_kind = 'controller_attestation'`, values: [] };
 	if (["finalized", "session_redeemed"].includes(row.state)) {
+		const connections = await hasConnectionSessionSchema(backend);
 		const keyId = await ed25519KeyIdForRevocation(row.public_key);
 		if (!keyId || row.browser_start_hash === null || row.completion_secret_hash === null)
 			return { sql: "0 = 1", values: [] };
@@ -75,7 +81,7 @@ export async function captureAuthLinkSource(
  AND ${alias}.controller_attestation_id IS NULL AND ${alias}.controller_review_receipt_id IS NULL AND ${alias}.controller_revision IS NULL
  AND ${alias}.state IN ('finalized','session_redeemed') AND ${alias}.browser_start_hash = ?
  AND ${alias}.runtime_verifier_hash = ? AND ${alias}.completion_secret_hash = ? AND ${alias}.loopback_redirect = ?
- AND ${authDeviceClaimReceiptSql(alias)}${options.currentDevice ? ` AND ${currentDeviceSql(alias)}` : ""})`,
+ AND ${authDeviceClaimReceiptSql(alias, connections)}${options.currentDevice ? ` AND ${currentDeviceSql(alias)}` : ""})`,
 			values: [
 				row.browser_start_hash,
 				row.runtime_verifier_hash,
@@ -102,6 +108,15 @@ export async function captureAuthLinkSource(
 		now,
 	);
 	if (!captured || row.browser_start_hash === null) return { sql: "0 = 1", values: [] };
+	if (row.prior_link_id)
+		return {
+			sql: `((${alias}.authority_kind = 'device_claim' AND ${alias}.controller_attestation_id IS NULL AND ${alias}.controller_review_receipt_id IS NULL AND ${alias}.controller_revision IS NULL) AND (${alias}.link_id IS NULL AND ${alias}.prior_link_id = ?)
+ AND EXISTS (${AUTH_DEVICE_CLAIM_INPUT_SQL}, connection_eligible AS MATERIALIZED (SELECT p.* FROM claim_input p WHERE ${CONNECTION_RELINK_ELIGIBLE_SQL})
+ SELECT 1 FROM connection_eligible p WHERE (p.coordinator_id=${alias}.coordinator_id AND p.attempt_id=${alias}.attempt_id AND p.identity_id=${alias}.identity_id)
+ AND (p.group_id=${alias}.group_id AND p.device_id=${alias}.device_id AND p.public_key=${alias}.public_key AND p.fingerprint=${alias}.fingerprint) AND (p.issuer=${alias}.issuer AND p.revision=${alias}.auth_config_revision)
+ AND EXISTS (SELECT 1 FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id=p.coordinator_id AND h.identity_id=p.identity_id AND h.link_id=${alias}.prior_link_id AND h.successor_link_id IS NULL)))`,
+			values: [row.prior_link_id, ...captured.values],
+		};
 	// Separate the full predicate from the correlated browser match to stay below
 	// native D1's expression-depth limit, without moving authority outside SQL.
 	return {
@@ -138,8 +153,12 @@ function currentDeviceSql(t: string): string {
 /** Historical committed provenance, not first-binding eligibility or operator authority.
  * The caller binds the canonical key ID derived from the attempt's exact public key.
  */
-function authDeviceClaimReceiptSql(t: string): string {
-	return `EXISTS (SELECT 1 FROM coordinator_auth_account_links cl
+function authDeviceClaimReceiptSql(t: string, connections: boolean): string {
+	// Separate the indexed receipt match from its unchanged provenance expression
+	// so the browser's enclosing predicate stays below native D1 depth 100.
+	return `EXISTS (WITH receipt_birth AS MATERIALIZED (
+ SELECT cl.* FROM ${connections ? `(${CONNECTION_BIRTHS_SQL})` : "coordinator_auth_account_links"} cl
  WHERE cl.coordinator_id = ${t}.coordinator_id AND cl.link_id = ${t}.link_id AND cl.attempt_id = ${t}.attempt_id
- AND cl.revoked_at_ms IS NULL AND ${authDeviceClaimProvenanceSql({ link: "cl", canonicalKeyId: "?" })})`;
+ AND cl.revoked_at_ms IS NULL)
+ SELECT 1 FROM receipt_birth cl WHERE ${authDeviceClaimProvenanceSql({ link: "cl", canonicalKeyId: "?", connections })})`;
 }
