@@ -290,6 +290,32 @@ test("a stale prior cannot reconnect after a later disconnect; the newly capture
 	});
 });
 
+test("revoking historical A blocks active B session, profile, management and reconnect admission", async ({
+	f,
+}) => {
+	const id = String(f.rows("coordinator_auth_account_links")[0]?.link_id);
+	await f.disconnect(1);
+	const b = await f.confirmed(1, "account-B");
+	await f.links.finalizeAuthLinkAttempt(b.proof, config);
+	await f.sessions.redeemAuthLinkSessionWithBrowserTransaction(
+		{ ...b.pins, binderHash: b.binderHash, credentialHash: hash(4000) },
+		f.bc,
+	);
+	expect(await f.sessions.readAuthSession(hash(4000), config)).not.toBeNull();
+	expect(await f.sessions.revokeAuthAccountLink({ linkId: id }, config)).toEqual({
+		kind: "revoked",
+	});
+	expect(await f.sessions.readAuthSession(hash(4000), config)).toBeNull();
+	expect(await f.profiles.readAuthSessionAccount(hash(4000), config)).toBeNull();
+	expect(await f.operations.create(f.request(2), config)).toBe(false);
+	expect(await f.links.createAuthLinkAttempt(f.linkRequest(2), config)).toMatchObject({
+		kind: "rejected",
+	});
+	expect(
+		await f.status.readAccountLinkStatus(input.signer, config, { identityId: input.identityId }),
+	).toMatchObject({ state: "revoked", account: null });
+});
+
 test("wrong original key/device cannot reconnect and a late publication fault rolls back claim, head and current row", async ({
 	f,
 }) => {

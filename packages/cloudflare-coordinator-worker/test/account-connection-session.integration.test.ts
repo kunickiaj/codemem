@@ -34,6 +34,7 @@ it('native D1 shares browser/refresh orders and reads completed profile provenan
 	await f.prepare(3,'disconnect');
 	const outcome = await f.operations.finalize(f.proof(3),config);
 	if (!outcome) throw new Error('disconnect failed');
+	expect(await f.sessions.revokeAuthAccountLink({linkId:outcome.targetLinkId},config)).toEqual({kind:'revoked'});
 	expect(await f.sessions.readAuthSession(newest.credentialHash,rotated)).toBeNull();
 	// Real fresh attested Identity, not a synthetic continuation of the ended claim.
 	const signer = {groupId:input.signer.groupId,deviceId:'unrelated-device',publicKey:otherKey,fingerprint:'b'.repeat(64)};

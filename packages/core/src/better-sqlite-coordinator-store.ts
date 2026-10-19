@@ -16,6 +16,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 import Database from "better-sqlite3";
+import { AccountChangeOperations } from "./coordinator-account-change.js";
+import {
+	CONNECTION_SCHEMA_PRESENCE_SQL,
+	type ConnectionSchemaState,
+	readConnectionSchemaState,
+} from "./coordinator-account-connection-schema.js";
 import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
 import {
 	AUTH_ACCOUNT_PROFILE_SCHEMA_SQL,
@@ -82,6 +88,7 @@ import {
 	AUTH_SCHEMA_READINESS_SQL,
 	AUTH_SCHEMA_READY_COUNT,
 	assertCoordinatorAuthSchema,
+	CoordinatorAuthSchemaUpgradeRequiredError,
 	withCoordinatorAuthSchema,
 } from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
@@ -530,9 +537,8 @@ function initializeAuthLinkSchema(db: DatabaseType): void {
 	}).immediate();
 }
 
-function initializeSchema(db: DatabaseType): void {
-	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
-	initializeDeviceLedgerSchemas(db);
+function initializeOptionalAuthSchema(db: DatabaseType): void {
+	if ((db.prepare(CONNECTION_SCHEMA_PRESENCE_SQL).get() as { present: number }).present) return;
 	db.exec(AUTH_CONTROLLER_SCHEMA_SQL);
 	initializeAuthLinkSchema(db);
 	upgradeAuthSessionRetentionSchema(db);
@@ -540,6 +546,11 @@ function initializeSchema(db: DatabaseType): void {
 	db.exec(AUTH_ACCOUNT_PROFILE_SCHEMA_SQL);
 	db.exec(AUTH_LINK_PROFILE_SCHEMA_SQL);
 	initializeAuthBrowserSchema(db);
+}
+function initializeSchema(db: DatabaseType): void {
+	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
+	initializeDeviceLedgerSchemas(db);
+	initializeOptionalAuthSchema(db);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
 			group_id TEXT PRIMARY KEY,
@@ -833,6 +844,9 @@ function enrollmentRevocationKeyId(publicKey: string): string | null {
 }
 
 export class BetterSqliteCoordinatorStore implements CoordinatorStore {
+	private readonly schemaBackend: Pick<AuthLinkBackend, "first">;
+	private readonly accountChangeBackend: AuthLinkBackend;
+	private readonly accountChangesCapability: AccountChangeOperations;
 	readonly path: string;
 	readonly db: DatabaseType;
 	private readonly authLinks: AuthLinkOperations;
@@ -882,7 +896,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			},
 		};
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
+		this.schemaBackend = rawAuthBackend;
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
+		this.accountChangeBackend = withCoordinatorAuthSchema(rawAuthBackend, { connections: true });
+		this.accountChangesCapability = new AccountChangeOperations(
+			this.accountChangeBackend,
+			options.authClock,
+		);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
@@ -891,6 +911,26 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			authBackend,
 			options.authClock,
 		);
+	}
+	/** Explicit capability: legacy V2 remains usable without enabling management. */
+	async getAccountChanges(): Promise<AccountChangeOperations> {
+		await this.accountChangeBackend.first({ sql: "SELECT 1", values: [] });
+		return this.accountChangesCapability;
+	}
+	readAccountConnectionSchemaState(): Promise<ConnectionSchemaState> {
+		return readConnectionSchemaState(this.schemaBackend);
+	}
+	/** One fresh startup lookup; returned operations still check every SQL entry. */
+	async readAccountChangeCapability(): Promise<AccountChangeOperations | null> {
+		const state = await this.readAccountConnectionSchemaState();
+		if (state === "upgrade_required") throw new CoordinatorAuthSchemaUpgradeRequiredError();
+		return state === "ready" ? this.accountChangesCapability : null;
+	}
+	async readAuthBrowserTransactionPurpose(
+		input: CoordinatorAuthBrowserTransactionConsumeInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.readAuthBrowserTransactionPurpose(input, config);
 	}
 
 	async readAuthBrowserTransactionActivity(

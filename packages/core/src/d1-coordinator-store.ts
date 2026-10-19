@@ -1,3 +1,8 @@
+import { AccountChangeOperations } from "./coordinator-account-change.js";
+import {
+	type ConnectionSchemaState,
+	readConnectionSchemaState,
+} from "./coordinator-account-connection-schema.js";
 import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
 import {
 	AuthAccountProfileOperations,
@@ -54,6 +59,7 @@ import type {
 } from "./coordinator-auth-link-contract.js";
 import {
 	assertCoordinatorAuthSchema,
+	CoordinatorAuthSchemaUpgradeRequiredError,
 	withCoordinatorAuthSchema,
 } from "./coordinator-auth-schema.js";
 import { AuthSessionOperations } from "./coordinator-auth-session.js";
@@ -492,22 +498,28 @@ function batchResultChanges(result: unknown): number {
 }
 
 /** Narrow SQL capability; multi-statement writes require D1's atomic batch. */
-export function createD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
-	return withCoordinatorAuthSchema({
-		first: <T>(statement: AuthLinkStatement) =>
-			db
-				.prepare(statement.sql)
-				.bind(...statement.values)
-				.first<T>(),
-		run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
-		batch: async (statements) => {
-			if (!db.batch) throw new Error("auth_link_atomic_batch_required");
-			const results = await db.batch(
-				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
-			);
-			return results.map(batchResultChanges);
+export function createD1AuthLinkBackend(
+	db: D1DatabaseLike,
+	options: { connections?: boolean } = {},
+): AuthLinkBackend {
+	return withCoordinatorAuthSchema(
+		{
+			first: <T>(statement: AuthLinkStatement) =>
+				db
+					.prepare(statement.sql)
+					.bind(...statement.values)
+					.first<T>(),
+			run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
+			batch: async (statements) => {
+				if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+				const results = await db.batch(
+					statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+				);
+				return results.map(batchResultChanges);
+			},
 		},
-	});
+		options,
+	);
 }
 
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
@@ -1005,6 +1017,8 @@ async function runProjectInviteBatch(
 }
 
 export class D1CoordinatorStore implements CoordinatorStore {
+	private readonly accountChangeBackend: AuthLinkBackend;
+	private readonly accountChangesCapability: AccountChangeOperations;
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
 	async assertAuthSchemaReady(): Promise<void> {
@@ -1041,6 +1055,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		const authBackend = createD1AuthLinkBackend(db);
+		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
+		this.accountChangesCapability = new AccountChangeOperations(
+			this.accountChangeBackend,
+			options.authClock,
+		);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend, options.authClock);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
@@ -1050,7 +1069,26 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 	}
+	async getAccountChanges(): Promise<AccountChangeOperations> {
+		await this.accountChangeBackend.first({ sql: "SELECT 1", values: [] });
+		return this.accountChangesCapability;
+	}
+	readAccountConnectionSchemaState(): Promise<ConnectionSchemaState> {
+		return readConnectionSchemaState({
+			first: <T>({ sql, values }: AuthLinkStatement) =>
+				this.db
+					.prepare(sql)
+					.bind(...values)
+					.first<T>(),
+		});
+	}
 
+	/** One fresh startup lookup; returned operations still check every SQL entry. */
+	async readAccountChangeCapability(): Promise<AccountChangeOperations | null> {
+		const state = await this.readAccountConnectionSchemaState();
+		if (state === "upgrade_required") throw new CoordinatorAuthSchemaUpgradeRequiredError();
+		return state === "ready" ? this.accountChangesCapability : null;
+	}
 	async readAuthBrowserTransactionActivity(
 		input: { binderHash: string },
 		config: CoordinatorAuthBrowserConfig,

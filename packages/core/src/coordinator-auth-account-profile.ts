@@ -15,6 +15,7 @@ import { isCoordinatorAccountIssuer } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { authAccountLinkProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import {
 	AUTH_SESSION_LINK_MATCH_SQL,
@@ -25,6 +26,18 @@ import {
 import type { CoordinatorOidcProfile } from "./coordinator-oidc.js";
 
 export * from "./coordinator-auth-account-profile-contract.js";
+
+function revokedProfileTargetsSql(options: { connections: boolean }): string {
+	const current =
+		"SELECT l.link_id FROM coordinator_auth_account_links l WHERE l.coordinator_id=? AND l.revoked_at_ms IS NOT NULL";
+	if (!options.connections) return `${current} AND l.link_id=?`;
+	return `WITH requested AS MATERIALIZED (
+ SELECT l.coordinator_id,l.identity_id FROM coordinator_auth_account_connection_history l
+ WHERE l.coordinator_id=? AND l.link_id=? AND l.revoked_at_ms IS NOT NULL
+ AND ${authAccountLinkProvenanceSql("l", { connections: true })})
+ ${current} AND ${authAccountLinkProvenanceSql("l", { connections: true })}
+ AND (l.link_id=? OR EXISTS (SELECT 1 FROM requested h WHERE h.coordinator_id=l.coordinator_id AND h.identity_id=l.identity_id))`;
+}
 
 function hasPlainPrototype(value: object): boolean {
 	const prototype = Object.getPrototypeOf(value);
@@ -309,20 +322,17 @@ export class AuthAccountProfileOperations implements CoordinatorAuthAccountProfi
 		const s = capture(scope, { fields: ["coordinatorId"], required: true });
 		if (!i || !s || !isAuthControllerId(i.linkId) || !isAuthControllerId(s.coordinatorId))
 			return { kind: "rejected", error: "invalid_input" };
-		const deletedCount = await this.run({
-			sql: `DELETE FROM coordinator_auth_account_profiles WHERE coordinator_id = ? AND link_id = ?
- AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
- WHERE l.coordinator_id = coordinator_auth_account_profiles.coordinator_id
- AND l.link_id = coordinator_auth_account_profiles.link_id AND l.revoked_at_ms IS NOT NULL)`,
-			values: [s.coordinatorId, i.linkId],
-		});
-		const linkProfilesDeleted = await this.run({
-			sql: `DELETE FROM coordinator_auth_link_profiles WHERE coordinator_id = ? AND link_id = ?
- AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
- WHERE l.coordinator_id = coordinator_auth_link_profiles.coordinator_id
- AND l.link_id = coordinator_auth_link_profiles.link_id AND l.revoked_at_ms IS NOT NULL)`,
-			values: [s.coordinatorId, i.linkId],
-		});
-		return { kind: "cleared", deletedCount: deletedCount + linkProfilesDeleted };
+		const connections = await this.connectionSchema();
+		const targets = revokedProfileTargetsSql({ connections });
+		const pins = [s.coordinatorId, i.linkId];
+		const values = connections ? [s.coordinatorId, ...pins, ...pins] : [s.coordinatorId, ...pins];
+		let deletedCount = 0;
+		for (const table of ["coordinator_auth_account_profiles", "coordinator_auth_link_profiles"]) {
+			deletedCount += await this.run({
+				sql: `DELETE FROM ${table} WHERE coordinator_id=? AND link_id IN (${targets})`,
+				values,
+			});
+		}
+		return { kind: "cleared", deletedCount };
 	}
 }

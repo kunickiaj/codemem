@@ -77,7 +77,13 @@ transactions an order. Newer ordered snapshots still require their matching rece
 
 ## Revocation and privacy cleanup
 
-`clearRevokedAuthAccountProfile({ linkId }, { coordinatorId })` deletes display metadata only when that exact link is already revoked. Existing revoke behavior is unchanged: a missing profile table or failed purge cannot keep an account active.
+`clearRevokedAuthAccountProfile({ linkId }, { coordinatorId })` deletes account and
+link display metadata for a revoked current link. With the account-management
+extension, an archived revoked link can also identify the revoked current successor
+of the same Identity and coordinator. Both historical and current provenance must
+validate; an unknown or unrevoked historical ID cannot authorize successor cleanup.
+Cleanup preserves connection history, proofs, and audits. Existing revoke behavior
+is unchanged: a missing profile table or failed purge cannot keep an account active.
 
 Future authenticated-admin handlers must revoke first, then clear metadata. A cleanup failure needs retry handling and must not roll back revocation. Until those handlers exist, data can remain stored but live reads deny it. This change does no live user-database cleanup; deletion is guarded source code with isolated tests only.
 

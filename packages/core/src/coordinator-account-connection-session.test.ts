@@ -335,6 +335,25 @@ test("denied signin admission preserves its typed limit result and never consume
 	]);
 });
 
+test("historical IDs remain administratively revocable after disconnect; fresh admission cannot use the removed link", async ({
+	f,
+}) => {
+	const id = f.rows("coordinator_auth_account_links")[0]?.link_id;
+	await f.prepare();
+	await f.operations.finalize(f.proof(), config);
+	expect(await f.sessions.revokeAuthAccountLink({ linkId: String(id) }, config)).toEqual({
+		kind: "revoked",
+	});
+	expect(f.rows("coordinator_auth_account_connection_history")).toMatchObject([
+		{ revoked_at_ms: f.clock.now },
+	]);
+	expect(await f.sessions.readAuthSession(hash(906), config)).toBeNull();
+	const proof = await f.consumed(1);
+	expect(await f.sessions.signInWithConsumedBrowserTransaction(proof, f.bc)).toMatchObject({
+		kind: "rejected",
+	});
+});
+
 it.each(["new coordinator", "attempt-only migration"] as const)(
 	"%s allocates its missing counter atomically at the first browser start",
 	async (mode) => {

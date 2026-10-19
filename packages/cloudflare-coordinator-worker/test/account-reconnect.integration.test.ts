@@ -6,7 +6,7 @@ import type { AuthLinkBackend } from '../../core/src/coordinator-auth-link.js';
 import { reconnectFixture } from './account-reconnect-fixture.js';
 import { config,input,hash,NOW } from './account-change-fixture.js';
 
-it('native D1 reconnects A-B-A with one original claim, one CAS winner and rollback',async () => {
+it('native D1 reconnects A-B-A with one original claim, one CAS winner, rollback and historical revocation',async () => {
 	const db = (env as unknown as {COORDINATOR_DB:D1Database}).COORDINATOR_DB;
 	const backend: AuthLinkBackend = {first: ({sql,values}) => db.prepare(sql).bind(...values).first(),run:async ({sql,values}) => (await db.prepare(sql).bind(...values).run()).meta.changes,batch:async (statements) => (await db.batch(statements.map(({sql,values}) => db.prepare(sql).bind(...values)))).map((r) => r.meta.changes)};
 	const f = await reconnectFixture(new D1CoordinatorStore(db,{authClock:() => NOW}),backend);
@@ -42,6 +42,9 @@ it('native D1 reconnects A-B-A with one original claim, one CAS winner and rollb
 	expect(await f.sessions.preserveAuthLinkSessionCompletion({...last.pins,binderHash:last.binderHash,credentialHash:signedIn.credentialHash},f.bc)).toEqual({kind:'preserved'});
 	expect(await rows('coordinator_auth_sessions')).toEqual(sessionsBefore);
 	expect(await f.profiles.readAuthSessionAccount(signedIn.credentialHash,config)).toMatchObject({profile:{displayName:'account-A'}});
+	expect(await f.sessions.revokeAuthAccountLink({linkId:String(genesis?.link_id)},config)).toEqual({kind:'revoked'});
+	expect(await f.sessions.readAuthSession(signedIn.credentialHash,config)).toBeNull();
+	expect(await f.status.readAccountLinkStatus(input.signer,config,{identityId:input.identityId})).toMatchObject({state:'revoked',account:null});
 	expect(await rows('coordinator_auth_device_claims')).toEqual(claims);
 	expect(await rows('coordinator_device_ownership_bindings')).toEqual(ownership);
 	expect(await rows('coordinator_identity_group_grants')).toEqual(grants);

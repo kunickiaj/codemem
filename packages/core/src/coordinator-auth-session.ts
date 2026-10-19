@@ -3,6 +3,10 @@ import {
 	CONNECTION_NOT_REVOKED_SQL,
 	CONNECTION_SIGNIN_ORDER_SQL,
 } from "./coordinator-account-connection-storage.js";
+import {
+	historicalRevocationReadSql,
+	historicalRevocationStatements,
+} from "./coordinator-account-historical-revoke.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	isCoordinatorAccountIssuer,
@@ -699,6 +703,21 @@ export class AuthSessionOperations
 		if (!s || !i || !isAuthControllerId(i.linkId))
 			return { kind: "rejected", error: "invalid_input" };
 		const now = sessionNow(this.clock);
+		if (await this.connectionSchema()) {
+			const historical = await this.first({
+				sql: `SELECT 1 FROM coordinator_auth_account_connection_history l WHERE l.coordinator_id = ? AND l.link_id = ? AND ${authAccountLinkProvenanceSql("l", { connections: true })}`,
+				values: [s.coordinatorId, i.linkId],
+			});
+			if (historical) {
+				await this.batch(historicalRevocationStatements(s.coordinatorId, i.linkId, now));
+				const receipt = await this.first({
+					sql: historicalRevocationReadSql(),
+					values: [s.coordinatorId, i.linkId],
+				});
+				if (!receipt) throw new Error("auth_session_persistence_incomplete");
+				return { kind: "revoked" };
+			}
+		}
 		const connections = await this.connectionSchema();
 		await this.batch(revokeStatements(i.linkId, s.coordinatorId, now, { connections }));
 		const link = await this.first<{ revoked_at_ms: number | null }>({

@@ -73,7 +73,7 @@ function idToken(state: FixtureState, nonce: string): string {
 	const input = `${encode({ alg: settings.alg, kid: "fixture-key" })}.${encode(payload)}`;
 	if (settings.alg === "none") return `${input}.`;
 	const key = settings.signature === "wrong-key" ? wrongKeys.privateKey : keys.privateKey;
-	const signature = sign("RSA-SHA256", Buffer.from(input), key).toString("base64url");
+	const signature = Buffer.from(sign("RSA-SHA256", Buffer.from(input), key)).toString("base64url");
 	return `${input}.${settings.signature === "modified" ? "A".repeat(signature.length) : signature}`;
 }
 
