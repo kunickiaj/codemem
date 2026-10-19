@@ -31,9 +31,11 @@ export function sqliteD1(
 	>();
 	return {
 		prepare(query) {
-			const statement = db.prepare(query);
 			let values: unknown[] = [];
 			const run = () => {
+				// D1 prepares at execution: earlier statements in the same atomic
+				// batch may create tables required by later statements.
+				const statement = db.prepare(query);
 				if (statement.reader) {
 					hooks.beforeRead?.(query, values);
 					return { results: statement.all(...values), meta: { changes: 0 } };
@@ -49,14 +51,17 @@ export function sqliteD1(
 				async first<T>() {
 					hooks.beforeFirst?.();
 					hooks.beforeRead?.(query, values);
-					return (statement.get(...values) as T | undefined) ?? null;
+					return (db.prepare(query).get(...values) as T | undefined) ?? null;
 				},
 				async all<T>() {
 					hooks.beforeRead?.(query, values);
-					return { results: statement.all(...values) as T[] };
+					return { results: db.prepare(query).all(...values) as T[] };
 				},
 				async raw<T>() {
-					return statement.raw(true).all(...values) as T[];
+					return db
+						.prepare(query)
+						.raw(true)
+						.all(...values) as T[];
 				},
 				async run() {
 					return run();

@@ -1,3 +1,4 @@
+import type { ConnectionSchemaState } from "./coordinator-account-connection-schema.js";
 import { captureAuthAccountProfile } from "./coordinator-auth-account-profile.js";
 import { parseCoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import { isAuthControllerId, isAuthControllerUniqueError } from "./coordinator-auth-controller.js";
@@ -61,6 +62,8 @@ export interface AuthLinkStatement {
 	values: (string | number | null)[];
 }
 export interface AuthLinkBackend {
+	/** Internal full-schema lookup on the wrapper's captured raw backend; never cached. */
+	readAuthSchemaState?: () => Promise<ConnectionSchemaState>;
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
 	run(statement: AuthLinkStatement): Promise<number>;
 	/** Atomic execution; production backends return each statement's native change count. */

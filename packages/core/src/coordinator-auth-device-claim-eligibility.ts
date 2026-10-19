@@ -37,6 +37,7 @@ const CURRENT_KEYS = `SELECT public_key FROM enrolled_devices
  UNION SELECT public_key FROM coordinator_auth_link_attempts
  UNION SELECT bound_public_key AS public_key FROM coordinator_invites`;
 const KEY_SNAPSHOT_SQL = `SELECT (${AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL}) AS assignment_snapshot,
+ (SELECT count(*) FROM pragma_table_info('coordinator_auth_browser_transactions') WHERE name = 'start_order') AS connection_session,
  (SELECT json_group_array(public_key) FROM (
  SELECT public_key FROM (${CURRENT_KEYS}) WHERE typeof(public_key) = 'text' ORDER BY public_key)) AS keys`;
 
@@ -192,13 +193,27 @@ function captureInput(input: CoordinatorDeviceClaimReadinessInput) {
 	}
 }
 
+interface CapturedClaimEligibility {
+	identityId: string;
+	values: AuthLinkStatement["values"];
+	connectionSession: boolean;
+}
+interface ClaimKeySnapshot {
+	keys: string;
+	assignment_snapshot: string | null;
+	connection_session: number;
+}
+function hasKeyBlob(key: string, blob: Uint8Array): boolean {
+	const parsed = parseSshEd25519PublicKeyForRevocation(key);
+	return parsed.kind === "ed25519" && parsed.blob.every((byte, index) => byte === blob[index]);
+}
 /** Capture only server-derived key metadata; a later writer must include the SQL guard. */
 export async function captureDeviceClaimEligibility(
 	backend: Pick<AuthLinkBackend, "first">,
 	input: CoordinatorDeviceClaimReadinessInput,
 	config: CoordinatorAuthLinkConfig,
 	now: number,
-): Promise<{ identityId: string; values: AuthLinkStatement["values"] } | null> {
+): Promise<CapturedClaimEligibility | null> {
 	const c = captureAuthLinkConfig(config);
 	const i = captureInput(input);
 	if (!c?.enabled || !i) return null;
@@ -206,7 +221,7 @@ export async function captureDeviceClaimEligibility(
 	if (target.kind !== "ed25519") return null;
 	const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
 	if (!keyId) return null;
-	const row = await backend.first<{ keys: string; assignment_snapshot: string | null }>({
+	const row = await backend.first<ClaimKeySnapshot>({
 		sql: KEY_SNAPSHOT_SQL,
 		values: [
 			COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
@@ -217,12 +232,7 @@ export async function captureDeviceClaimEligibility(
 	const keys: unknown = JSON.parse(row?.keys ?? "null");
 	if (!Array.isArray(keys) || !keys.every((key): key is string => typeof key === "string"))
 		throw new Error("auth_device_claim_unavailable");
-	const aliases = keys.filter((key) => {
-		const parsed = parseSshEd25519PublicKeyForRevocation(key);
-		return (
-			parsed.kind === "ed25519" && parsed.blob.every((byte, index) => byte === target.blob[index])
-		);
-	});
+	const aliases = keys.filter((key) => hasKeyBlob(key, target.blob));
 	const distinctKeys = keys.filter(
 		(key) =>
 			!aliases.includes(key) && parseSshEd25519PublicKeyForRevocation(key).kind === "ed25519",
@@ -235,6 +245,7 @@ export async function captureDeviceClaimEligibility(
 	});
 	return {
 		identityId: i.identityId,
+		connectionSession: row?.connection_session === 1,
 		values: [
 			c.coordinatorId,
 			i.identityId,
