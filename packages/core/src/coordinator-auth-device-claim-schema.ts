@@ -91,29 +91,48 @@ const proofDefinitions = COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS.map((st
 // Frozen DDL only, not a SQL parser. Protect known literals before removing layout;
 // unknown literals retain their quotes and cannot match a protected literal token.
 const proofLiterals = [...new Set(proofDefinitions.join("\n").match(/'(?:[^']|'')*'/gu))];
-function canonicalProofSql(expression: string): string {
+function canonicalProofSql(
+	expression: string,
+	literals: readonly string[] = proofLiterals,
+): string {
 	let sql = expression;
-	for (const [index, literal] of proofLiterals.entries())
+	for (const [index, literal] of literals.entries())
 		sql = `replace(${sql}, ${quoteSql(literal)}, 'literal_${index}')`;
 	return `rtrim(replace(replace(replace(replace(replace(${sql}, 'IF NOT EXISTS', ''), ' ', ''), char(10), ''), char(13), ''), char(9), ''), char(59))`;
 }
 
 /** Same effective-definition checks for SQLite, D1 readiness and explicit cutover. */
-export const AUTH_DEVICE_CLAIM_DEFINITION_CHECKS = proofDefinitions.map((definition) => {
-	const header = /^CREATE (TABLE|TRIGGER) IF NOT EXISTS (\w+)/u.exec(definition);
+export function authSchemaDefinitionCheck(
+	definition: string,
+	options: { auxiliaryObjects?: number; literals?: readonly string[] } = {},
+) {
+	definition = definition.replace(/^(?:\s|--[^\n]*\n)*/u, "").replace(/;\s*$/u, "");
+	// Headers of this repository's frozen declarations only, not a DDL parser.
+	const header = /^CREATE (TABLE|TRIGGER|(?:UNIQUE )?INDEX)(?: IF NOT EXISTS)? (\w+)/u.exec(
+		definition,
+	);
 	if (!header?.[1] || !header[2]) throw new Error("auth_device_claim_definition_invalid");
 	// Encode the known ASCII DDL so trigger-body semicolons cannot split cutover statements.
 	const hex = [...definition]
 		.map((character) => character.charCodeAt(0).toString(16).padStart(2, "0"))
 		.join("");
 	let auxiliaryCheck = "";
-	if (header[1] === "TABLE")
-		auxiliaryCheck = ` AND (SELECT count(*) FROM sqlite_master WHERE tbl_name = ${quoteSql(header[2])} COLLATE NOCASE AND type IN ('index','trigger') AND sql IS NOT NULL) = 3`;
+	if (options.auxiliaryObjects !== undefined)
+		auxiliaryCheck = ` AND (SELECT count(*) FROM sqlite_master WHERE tbl_name = ${quoteSql(header[2])} COLLATE NOCASE AND type IN ('index','trigger') AND sql IS NOT NULL) = ${options.auxiliaryObjects}`;
+	const literals = options.literals ?? [...new Set(definition.match(/'(?:[^']|'')*'/gu))];
 	return {
 		name: header[2],
-		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase())} AND name = ${quoteSql(header[2])} COLLATE NOCASE AND ${canonicalProofSql("sql")} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`)}${auxiliaryCheck})`,
+		matches: `EXISTS (SELECT 1 FROM sqlite_master WHERE type = ${quoteSql(header[1].toLowerCase().replace("unique ", ""))} AND name = ${quoteSql(header[2])} COLLATE NOCASE AND ${canonicalProofSql("sql", literals)} = ${canonicalProofSql(`CAST(X'${hex}' AS TEXT)`, literals)}${auxiliaryCheck})`,
 	};
-});
+}
+export const authDeviceClaimDefinitionChecks = (auxiliaryObjects = 3) =>
+	proofDefinitions.map((definition, index) =>
+		authSchemaDefinitionCheck(definition, {
+			auxiliaryObjects: index === 0 ? auxiliaryObjects : undefined,
+			literals: proofLiterals,
+		}),
+	);
+export const AUTH_DEVICE_CLAIM_DEFINITION_CHECKS = authDeviceClaimDefinitionChecks();
 
 /**
  * Database columns for an already committed proof, not an authorization input.
