@@ -15,7 +15,6 @@ import {
 	BROWSER_COOKIE_NAMES,
 	type BrowserCookieSecret,
 	browserCookieValue,
-	clearBrowserCookie,
 	readBrowserCookie,
 } from "./coordinator-browser-credential.js";
 import {
@@ -149,12 +148,11 @@ async function failAttempt(
 	browserTransactionHash: string,
 	reason: "cancelled" | "provider_failure",
 ): Promise<CoordinatorBrowserLinkResponse> {
-	// Build the clearing response before persistence; rendering failure leaves a retry possible.
+	// Build the response before persistence; rendering failure leaves a retry possible.
 	const page = await renderAuthBrowserNotice(
 		reason === "cancelled" ? "link_cancelled" : "auth_unavailable",
 	);
 	const response = pageResponse(page, reason === "cancelled" ? 200 : 403);
-	response.headers.append("Set-Cookie", clearBrowserCookie("transaction"));
 	const written = await context.store.failAuthLinkAttempt(
 		{
 			attemptId,

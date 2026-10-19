@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorBrowserAuthCallback } from "../../core/src/coordinator-browser-auth-callback.js";
 import {
-	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
 } from "../../core/src/coordinator-browser-credential.js";
@@ -328,7 +327,7 @@ it("native D1 cancellation and provider failure clear only the proven transactio
 		}
 		// Assert
 		expect(response.status).toBe(action === "cancel" ? 200 : 403);
-		expect(response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+		expect(response.headers.getSetCookie()).toEqual([]);
 		expect((await rows(f))[0]).toMatchObject({
 			state: "failed",
 			failure_reason: action === "cancel" ? "browser_cancelled" : "provider_failure",

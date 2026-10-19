@@ -7,7 +7,6 @@ import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures
 import { createCoordinatorBrowserAuthCallback } from "./coordinator-browser-auth-callback.js";
 import {
 	BROWSER_COOKIE_NAMES,
-	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
 } from "./coordinator-browser-credential.js";
@@ -133,6 +132,46 @@ async function ceremony(f: Harness) {
 	};
 }
 type Ceremony = Awaited<ReturnType<typeof ceremony>>;
+it("failed consumed sign-in allows a fresh START with the retained cookie; its delayed reply cannot erase the replacement", async () => {
+	const f = await harness(),
+		old = await ceremony(f);
+	old.url.searchParams.set("code", "unknown-code");
+	const delayed = await f.callback(request(old));
+	expect(delayed.response.status).toBe(403);
+	consumed(f, old);
+	expect(rows(f, "coordinator_auth_session_receipts")).toEqual([]);
+	expect(
+		await f.persistence.readAuthBrowserTransactionActivity(
+			{ binderHash: String(old.original.binder_hash) },
+			f.cfg,
+		),
+	).toEqual({ kind: "inactive" });
+	const page = await f.start.signInPage(
+		new Request(`${ORIGIN}/auth/sign-in`, { headers: { cookie: old.cookie } }),
+	);
+	const fresh = page.response.headers.getSetCookie()[0]?.split(";")[0];
+	const csrf = /name="csrf" value="([A-Za-z0-9_-]+)"/.exec(await page.response.text())?.[1];
+	if (!fresh || !csrf) throw new Error("missing fresh START credential");
+	const replacement = await f.start.signInStart(
+		new Request(`${ORIGIN}/auth/sign-in`, {
+			method: "POST",
+			headers: {
+				cookie: `${fresh}; ${old.cookie}`,
+				origin: ORIGIN,
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			body: `csrf=${csrf}`,
+		}),
+		"trusted-client",
+	);
+	expect(replacement.outcome).toBe("signin_started");
+	// START promotion sets TXN and retires only its separate START credential.
+	expect(replacement.response.headers.getSetCookie()).toHaveLength(2);
+	expect(replacement.response.headers.getSetCookie()[0]).not.toContain(old.cookie);
+	// Applying an old terminal response after START cannot write the shared cookie.
+	expect(delayed.response.headers.getSetCookie()).toEqual([]);
+	expect(rows(f).filter((row) => row.state === "pending")).toHaveLength(1);
+});
 function request(c: Ceremony, cookie = c.cookie) {
 	return new Request(c.url, { headers: { cookie } });
 }
@@ -205,11 +244,10 @@ describe.each(["SQLite", "D1"] as const)(
 			// Assert
 			expect(reply.response.status).toBe(303);
 			expect(reply.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
-			expect(cookies).toHaveLength(2);
+			expect(cookies).toHaveLength(1);
 			expect(cookies[0]).toMatch(
 				/^__Host-codemem-session=[A-Za-z0-9_-]{43}; Max-Age=28800; Path=\/; Secure; HttpOnly; SameSite=Lax$/,
 			);
-			expect(cookies[1]).toBe(clearBrowserCookie("transaction"));
 			if (session.kind !== "present") throw new Error("Expected fresh session credential");
 			const raw = cookies[0]?.split(";")[0]?.split("=")[1] ?? "";
 			expect(session.cookieHash).toBe(
@@ -431,7 +469,7 @@ describe("actual SDK rejects token and authorization protocol attacks after cons
 		const reply = await f.callback(request(c));
 		// Assert
 		expect(reply.response.status).toBe(403);
-		expect(reply.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+		expect(reply.response.headers.getSetCookie()).toEqual([]);
 		consumed(f, c);
 		assertProviderProof(observations, c);
 		if (
@@ -500,7 +538,7 @@ describe("guarded admission and existing session preservation", () => {
 			// Assert
 			expect(reply.response.status).toBe(403);
 			expect(await reply.response.clone().text()).toBe(await generic.response.text());
-			expect(reply.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(reply.response.headers.getSetCookie()).toEqual([]);
 			expect(rows(f, "coordinator_auth_sessions")).toEqual(before);
 			expect(f.store.recordAuthAccountProfile).not.toHaveBeenCalled();
 			consumed(f, c);
@@ -538,7 +576,7 @@ describe("guarded admission and existing session preservation", () => {
 			// Assert: no account switch, rotation, false sign-in receipt, or profile write.
 			expect(reply.response.status).toBe(303);
 			expect(reply.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
-			expect(reply.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(reply.response.headers.getSetCookie()).toEqual([]);
 			expect(f.store.readAuthSession).toHaveBeenCalledWith(old.cookieHash, publicConfig());
 			expect(rows(f, "coordinator_auth_sessions")).toEqual(before);
 			expect(rows(f, "coordinator_auth_session_receipts")).toEqual(receipts);
@@ -568,7 +606,7 @@ describe("guarded admission and existing session preservation", () => {
 			// Assert
 			expect(reply.response.status).toBe(303);
 			expect(reply.outcome).toBe("signed_in_profile_not_recorded");
-			expect(reply.response.headers.getSetCookie()).toHaveLength(2);
+			expect(reply.response.headers.getSetCookie()).toHaveLength(1);
 			expect(rows(f, "coordinator_auth_sessions")).toHaveLength(1);
 			await privateSafe(reply.response, c, reply.outcome);
 		},
@@ -616,7 +654,7 @@ describe("callback concurrency and immutable request snapshots", () => {
 		]);
 		for (const reply of replies)
 			expect(reply.response.headers.getSetCookie()).toHaveLength(
-				reply.response.status === 303 ? 2 : 0,
+				reply.response.status === 303 ? 1 : 0,
 			);
 		expect(rows(f, "coordinator_auth_sessions")).toHaveLength(1);
 		expect(f.oidc.fetch.mock.calls.filter(([url]) => url.endsWith("/token"))).toHaveLength(1);

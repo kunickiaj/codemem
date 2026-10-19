@@ -203,7 +203,6 @@ async function signin(f: Fixture, client = "ceremony-client") {
 				`^${BROWSER_COOKIE_NAMES.session}=[A-Za-z0-9_-]{43}; Max-Age=28800; Path=/; Secure; HttpOnly; SameSite=Lax$`,
 			),
 		),
-		clearBrowserCookie("transaction"),
 	]);
 	const cookie = cookies[0].split(";")[0];
 	const credential = await readBrowserCookie(cookie, "session");

@@ -11,11 +11,7 @@ import {
 } from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { createCoordinatorBrowserAuthCallback } from "./coordinator-browser-auth-callback.js";
-import {
-	clearBrowserCookie,
-	issueBrowserCookie,
-	readBrowserCookie,
-} from "./coordinator-browser-credential.js";
+import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import {
 	importBrowserCsrfKey,
 	issueBrowserCsrfToken,
@@ -459,9 +455,7 @@ it.each(["tampered-destination", "confirm-before-write", "confirm-after-write"])
 			// Assert: no grant was delivered, and cancellation fails the real committed attempt.
 			expect(cancelled.outcome).toBe("link_cancelled");
 			expect(cancelled.response.status).toBe(200);
-			expect(cancelled.response.headers.getSetCookie()).toEqual([
-				clearBrowserCookie("transaction"),
-			]);
+			expect(cancelled.response.headers.getSetCookie()).toEqual([]);
 			expect(rows(f)[0]).toMatchObject({ state: "failed", failure_reason: "browser_cancelled" });
 			expect(rows(f, TABLE)[0]).toMatchObject({ nonce: null, pkce_verifier: null });
 			expect(authority(f)).toEqual(before);
@@ -470,7 +464,7 @@ it.each(["tampered-destination", "confirm-before-write", "confirm-after-write"])
 );
 
 it.each(["cancel", "provider-failure"])(
-	"%s fails only the bound attempt and clears only TXN",
+	"%s fails only the bound attempt without replacing the shared cookie",
 	async (action) => {
 		// Arrange
 		const f = await setup();
@@ -494,7 +488,7 @@ it.each(["cancel", "provider-failure"])(
 		}
 		// Assert
 		expect(response.status).toBe(action === "cancel" ? 200 : 403);
-		expect(response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+		expect(response.headers.getSetCookie()).toEqual([]);
 		expect(rows(f)[0]).toMatchObject({
 			state: "failed",
 			failure_reason: action === "cancel" ? "browser_cancelled" : "provider_failure",
@@ -515,6 +509,17 @@ it.each(["cancel", "provider-failure"])(
 			const retry = await f.handlers.cancel(post(f, "cancel"), "trusted-client");
 			await safe(retry.response, 403);
 		}
+	},
+);
+it.each(["SQLite", "D1"] as const)(
+	"%s pending ordinary LINK still prevents replacement",
+	async (backend) => {
+		const f = await setup(backend),
+			cookie = await readBrowserCookie(f.header, "transaction");
+		if (cookie.kind !== "present") throw new Error("missing link cookie");
+		expect(
+			await f.store.readAuthBrowserTransactionActivity({ binderHash: cookie.cookieHash }, f.config),
+		).toEqual({ kind: "active" });
 	},
 );
 

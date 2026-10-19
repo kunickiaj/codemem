@@ -20,7 +20,6 @@ const TX = "coordinator_auth_browser_transactions";
 const SESSION = "coordinator_auth_sessions";
 const RECEIPT = "coordinator_auth_session_receipts";
 const PROFILE = "coordinator_auth_account_profiles";
-const CLEAR = `${BROWSER_COOKIE_NAMES.transaction}=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Lax`;
 const protectedTables = [
 	"account_links",
 	"link_attempts",
@@ -270,13 +269,12 @@ it("runs the real Google sign-in ceremony, persists coherent session/profile, an
 	expect(result.response.status).toBe(303);
 	expect(result.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
 	const cookies = result.response.headers.getSetCookie();
-	expect(cookies).toHaveLength(2);
+	expect(cookies).toHaveLength(1);
 	expect(cookies[0]).toMatch(
 		new RegExp(
 			`^${BROWSER_COOKIE_NAMES.session}=[A-Za-z0-9_-]{43}; Max-Age=28800; Path=/; Secure; HttpOnly; SameSite=Lax$`,
 		),
 	);
-	expect(cookies[1]).toBe(CLEAR);
 	const credential = await readBrowserCookie(cookies[0].split(";")[0], "session");
 	if (credential.kind !== "present") throw new Error("Missing session credential");
 	const stored = (await rows(f, SESSION))[0];
@@ -328,7 +326,7 @@ it("admits one of eight callbacks across two actual D1 store objects", async () 
 	expect(results.filter(({ response }) => response.status === 403)).toHaveLength(7);
 	for (const result of results) {
 		expect(result.response.headers.getSetCookie()).toHaveLength(
-			result.response.status === 303 ? 2 : 0,
+			result.response.status === 303 ? 1 : 0,
 		);
 		await redacted(result, c.row, c.callback.searchParams.get("code"));
 	}
@@ -403,9 +401,9 @@ it.each(["signature", "unlinked", "consume", "admission", "profile"] as const)(
 			mode
 		];
 		expect(result.response.status).toBe(status);
-		let cookies: unknown[] = [CLEAR];
+		let cookies: unknown[] = [];
 		if (mode === "consume") cookies = [];
-		if (success) cookies = [expect.stringContaining(BROWSER_COOKIE_NAMES.session), CLEAR];
+		if (success) cookies = [expect.stringContaining(BROWSER_COOKIE_NAMES.session)];
 		expect(result.response.headers.getSetCookie()).toEqual(cookies);
 		expect((await rows(f))[0]).toMatchObject(
 			mode === "consume"

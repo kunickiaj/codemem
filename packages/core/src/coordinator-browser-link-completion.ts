@@ -11,11 +11,7 @@ import {
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import type { CoordinatorAuthSessionStore } from "./coordinator-auth-session-contract.js";
-import {
-	clearBrowserCookie,
-	issueBrowserCookie,
-	readBrowserCookie,
-} from "./coordinator-browser-credential.js";
+import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import {
 	type BrowserCsrfKey,
 	type BrowserCsrfScope,
@@ -213,7 +209,6 @@ function accountRedirect(context: Context, setCookie?: string): Response {
 		"Referrer-Policy": "no-referrer",
 	});
 	if (setCookie) headers.append("Set-Cookie", setCookie);
-	headers.append("Set-Cookie", clearBrowserCookie("transaction"));
 	return new Response(null, { status: 303, headers });
 }
 async function finishSession(

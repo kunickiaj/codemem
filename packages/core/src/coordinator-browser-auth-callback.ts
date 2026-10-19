@@ -14,7 +14,6 @@ import {
 import {
 	type BrowserCookieReadResult,
 	type BrowserCookieSecret,
-	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
 } from "./coordinator-browser-credential.js";
@@ -45,6 +44,11 @@ export interface CoordinatorBrowserAuthCallbackInput {
 	oidcOptions?: CoordinatorOidcOptions;
 	ownerCallback?: (request: Request, trustedClientKey: string) => Promise<Response>;
 	purposeStore?: CoordinatorAuthBrowserTransactionPurposeStore;
+	accountChangeCallback?: (
+		request: Request,
+		trustedClientKey: string,
+		binderHash: string,
+	) => Promise<Response | null>;
 }
 export type CoordinatorBrowserAuthCallbackOutcome =
 	| "signed_in"
@@ -52,6 +56,7 @@ export type CoordinatorBrowserAuthCallbackOutcome =
 	| "session_live"
 	| "link_dispatched"
 	| "owner_dispatched"
+	| "account_change_dispatched"
 	| "method_not_allowed"
 	| "not_found"
 	| "callback_invalid"
@@ -175,6 +180,7 @@ type Context = Readonly<{
 	store: CallbackStore;
 	completeLink: CoordinatorBrowserAuthCallbackInput["completeLink"];
 	ownerCallback?: CoordinatorBrowserAuthCallbackInput["ownerCallback"];
+	accountChangeCallback?: CoordinatorBrowserAuthCallbackInput["accountChangeCallback"];
 	readPurpose?: CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"];
 }>;
 
@@ -184,19 +190,15 @@ function result(
 ): CoordinatorBrowserAuthCallbackResponse {
 	return Object.freeze({ response, outcome });
 }
-function clearTransaction(headers: Headers): void {
-	headers.append("Set-Cookie", clearBrowserCookie("transaction"));
-}
 async function notice(
 	status: number,
 	outcome: CoordinatorBrowserAuthCallbackOutcome,
-	options: { clearTransaction?: boolean; allow?: string } = {},
+	options: { allow?: string } = {},
 ): Promise<CoordinatorBrowserAuthCallbackResponse> {
 	try {
 		const page = await renderAuthBrowserNotice("auth_unavailable");
 		const headers = new Headers(page.headers);
 		if (options.allow) headers.set("Allow", options.allow);
-		if (options.clearTransaction) clearTransaction(headers);
 		return result(new Response(page.body, { status, headers }), outcome);
 	} catch {
 		const headers = new Headers({
@@ -206,7 +208,6 @@ async function notice(
 			"X-Content-Type-Options": "nosniff",
 		});
 		if (options.allow) headers.set("Allow", options.allow);
-		if (options.clearTransaction) clearTransaction(headers);
 		return result(
 			new Response(
 				"Sign-in or linking unavailable. Return to the flow you started and try again.",
@@ -223,7 +224,6 @@ function accountResponse(context: Context, sessionCookie?: string): Response {
 		"Referrer-Policy": "no-referrer",
 	});
 	if (sessionCookie) headers.append("Set-Cookie", sessionCookie);
-	clearTransaction(headers);
 	return new Response(null, { status: 303, headers });
 }
 function callbackState(
@@ -326,7 +326,7 @@ async function signIn(
 	consumed: Consumed,
 	verification: Readonly<Verification>,
 ): Promise<CoordinatorBrowserAuthCallbackResponse> {
-	if (!verification.ok) return notice(403, "verification_failed", { clearTransaction: true });
+	if (!verification.ok) return notice(403, "verification_failed");
 	const existing = await readBrowserCookie(snapshot.cookie, "session");
 	if (existing.kind === "invalid") throw new Error();
 	if (
@@ -345,8 +345,7 @@ async function signIn(
 		},
 		context.storeConfig,
 	);
-	if (persisted.kind !== "issued")
-		return notice(403, "signin_rejected", { clearTransaction: true });
+	if (persisted.kind !== "issued") return notice(403, "signin_rejected");
 	return recordProfile(context, issued.cookieHash, verification, response);
 }
 async function dispatchOwnerCallback(
@@ -369,7 +368,6 @@ async function callback(
 	request: Request,
 	trustedClientKey: string,
 ): Promise<CoordinatorBrowserAuthCallbackResponse> {
-	let clearSigninTransaction = false;
 	try {
 		const snapshot = snapshotRequest(request);
 		if (snapshot.method !== "GET") return await notice(405, "method_not_allowed", { allow: "GET" });
@@ -380,6 +378,12 @@ async function callback(
 		if (cookie.kind === "invalid") return await notice(400, "cookie_invalid");
 		if (cookie.kind === "absent") return await notice(403, "cookie_missing");
 		const stateHash = await hashState(parsed.state);
+		const change = await context.accountChangeCallback?.(
+			request,
+			trustedClientKey ?? "",
+			cookie.cookieHash,
+		);
+		if (change) return result(change, "account_change_dispatched");
 		const owner = await dispatchOwnerCallback(
 			context,
 			request,
@@ -394,15 +398,14 @@ async function callback(
 			context.storeConfig,
 		);
 		if (consumed.kind !== "consumed") return await notice(403, "transaction_unavailable");
-		clearSigninTransaction = consumed.purpose === "signin";
 		const verification = await verify(context, snapshot, parsed.state, consumed);
 		if (consumed.purpose === "link")
 			return await dispatchLink(context, consumed, cookie, verification);
 		if (consumed.purpose !== "signin") throw new Error();
 		return await signIn(context, snapshot, consumed, verification);
 	} catch {
-		// A consume throw is ambiguous: never claim rollback or clear an unknown purpose.
-		return notice(503, "internal_error", { clearTransaction: clearSigninTransaction });
+		// Terminal replies may arrive after a newer start has replaced the shared cookie.
+		return notice(503, "internal_error");
 	}
 }
 
@@ -424,6 +427,9 @@ export async function createCoordinatorBrowserAuthCallback(
 		if (typeof completeLink !== "function") throw new Error();
 		const store = captureStore(ownData(input, "store"));
 		const ownerCallback = ownData(input, "ownerCallback");
+		const accountChangeCallback = ownData(input, "accountChangeCallback");
+		if (accountChangeCallback !== undefined && typeof accountChangeCallback !== "function")
+			throw new Error();
 		let readPurpose: Context["readPurpose"];
 		if (ownerCallback !== undefined) {
 			if (typeof ownerCallback !== "function") throw new Error();
@@ -445,6 +451,8 @@ export async function createCoordinatorBrowserAuthCallback(
 			store,
 			completeLink: completeLink as CoordinatorBrowserAuthCallbackInput["completeLink"],
 			ownerCallback: ownerCallback as CoordinatorBrowserAuthCallbackInput["ownerCallback"],
+			accountChangeCallback:
+				accountChangeCallback as CoordinatorBrowserAuthCallbackInput["accountChangeCallback"],
 			readPurpose,
 		});
 		return Object.freeze({

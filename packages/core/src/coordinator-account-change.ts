@@ -392,6 +392,21 @@ export class AccountChangeOperations {
 		]);
 		return won ? { attemptId: a.attempt_id, nonce: a.nonce, pkceVerifier: a.pkce_verifier } : null;
 	}
+	private async callbackAuthority(c: CoordinatorAuthLinkConfig, attemptId: string, now: number) {
+		const a = await this.row(c, attemptId);
+		if (!a) return null;
+		return this.authority(
+			c,
+			{
+				groupId: a.group_id,
+				deviceId: a.device_id,
+				publicKey: a.public_key,
+				fingerprint: a.fingerprint,
+			},
+			a,
+			now,
+		);
+	}
 	/** Trusted adapter output, not HTTP account JSON. No autoConfirm caller flag. */
 	async recordVerifiedCallback(value: unknown, config: unknown): Promise<boolean> {
 		const c = captureAuthLinkConfig(config),
@@ -416,13 +431,16 @@ export class AccountChangeOperations {
 		)
 			return false;
 		const now = authLinkNow(this.clock);
+		const authority = await this.callbackAuthority(c, i.attemptId, now);
+		if (!authority) return false;
 		return this.atomic([
 			sql(
-				`UPDATE ${table} AS a SET state = CASE intent WHEN 'refresh' THEN 'confirmed' ELSE 'verified' END,verified_at_ms = ?,
+				`${authority.sql} UPDATE ${table} AS a SET state = CASE intent WHEN 'refresh' THEN 'confirmed' ELSE 'verified' END,verified_at_ms = ?,
  confirmed_at_ms = CASE intent WHEN 'refresh' THEN ? END,completion_secret_hash = CASE intent WHEN 'refresh' THEN ? END,
  display_name = ?,email = ?,email_verified = ?,picture_url = ? WHERE ${configured} AND a.attempt_id = ? AND a.state_hash = ? AND a.binder_hash = ? AND a.target_subject = ? AND a.state = 'consumed' AND a.expires_at_ms > ?
- AND EXISTS (SELECT 1 FROM ${current} l WHERE l.coordinator_id = a.coordinator_id AND l.link_id = a.target_link_id AND l.identity_id = a.identity_id AND l.subject = a.target_subject AND l.issuer = a.issuer AND ${CONNECTION_NOT_REVOKED_SQL})`,
+ AND EXISTS (SELECT 1 FROM change_authority l WHERE l.coordinator_id = a.coordinator_id AND l.link_id = a.target_link_id AND l.identity_id = a.identity_id AND l.subject = a.target_subject AND l.issuer = a.issuer AND l.enrollment_identity_id IS a.enrollment_identity_id)`,
 				[
+					...authority.values,
 					now,
 					now,
 					i.completionSecretHash as string,
@@ -565,6 +583,20 @@ export class AccountChangeOperations {
 				[...configValues(c), i.stateHash, i.binderHash, authLinkNow(this.clock)],
 			),
 		));
+	}
+	/** Prepare delivery for an exact consumed proof; the winning write rechecks authority. */
+	async readCallbackView(value: unknown, config: unknown) {
+		const c = captureAuthLinkConfig(config),
+			i = browserPin(value);
+		if (!c?.enabled || !i) return null;
+		const a = await this.first<ChangeRow>(
+			sql(
+				`SELECT * FROM ${table} a WHERE ${configured} AND ${browserMatch} AND a.state = 'consumed' AND a.expires_at_ms > ?`,
+				[...configValues(c), i.attemptId, i.stateHash, i.binderHash, authLinkNow(this.clock)],
+			),
+		);
+		if (!a || !parseCoordinatorAuthLoopback(a.loopback_redirect).ok) return null;
+		return { attemptId: a.attempt_id, intent: a.intent, loopbackRedirect: a.loopback_redirect };
 	}
 	/** Cookie-authenticated, CSRF-protected hosted confirmation only, not status JSON. */
 	async readBrowserView(value: unknown, config: unknown) {

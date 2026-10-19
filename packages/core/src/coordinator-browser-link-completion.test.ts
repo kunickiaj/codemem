@@ -13,7 +13,6 @@ import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-tes
 import { createCoordinatorBrowserAuthCallback } from "./coordinator-browser-auth-callback.js";
 import {
 	BROWSER_COOKIE_NAMES,
-	clearBrowserCookie,
 	issueBrowserCookie,
 	readBrowserCookie,
 } from "./coordinator-browser-credential.js";
@@ -340,12 +339,8 @@ describe.each(["SQLite", "D1"] as const)("%s browser completion", (backend) => {
 		expect(completed.response.status).toBe(303);
 		expect(completed.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
 		const cookies = completed.response.headers.getSetCookie();
-		expect(cookies).toHaveLength(2);
-		expect(cookies).toContain(clearBrowserCookie("transaction"));
-		const session = await readBrowserCookie(
-			cookies.find((value) => value !== clearBrowserCookie("transaction"))?.split(";")[0] ?? "",
-			"session",
-		);
+		expect(cookies).toHaveLength(1);
+		const session = await readBrowserCookie(cookies[0]?.split(";")[0] ?? "", "session");
 		if (session.kind !== "present") throw new Error("Issued SESSION missing");
 		expect(rows(f, "coordinator_auth_sessions")[0]).toMatchObject({
 			credential_hash: session.cookieHash,
@@ -389,10 +384,8 @@ describe.each(["SQLite", "D1"] as const)("%s returning browser SESSION", (backen
 		expect(result.response.status).toBe(303);
 		expect(result.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
 		const cookies = result.response.headers.getSetCookie();
-		expect(cookies).toHaveLength(2);
-		expect(cookies).toContain(clearBrowserCookie("transaction"));
-		const freshHeader =
-			cookies.find((cookie) => cookie !== clearBrowserCookie("transaction"))?.split(";")[0] ?? "";
+		expect(cookies).toHaveLength(1);
+		const freshHeader = cookies[0]?.split(";")[0] ?? "";
 		expect(freshHeader).not.toBe(staleHeader);
 		const fresh = await readBrowserCookie(freshHeader, "session");
 		if (fresh.kind !== "present") throw new Error("New SESSION missing");
@@ -683,7 +676,7 @@ describe.each(["SQLite", "D1"] as const)("%s live SESSION completion consumption
 			// Assert
 			expect(result.response.status).toBe(303);
 			expect(result.response.headers.get("location")).toBe(`${ORIGIN}/auth/account`);
-			expect(result.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(result.response.headers.getSetCookie()).toEqual([]);
 			expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
 			expect(f.operations.preserveAuthLinkSessionCompletion).toHaveBeenCalledExactlyOnceWith(
 				{ ...redemption, credentialHash: issued.cookieHash },
@@ -780,7 +773,7 @@ describe.each(["SQLite", "D1"] as const)("%s preserve completion guards", (backe
 describe.each(["SQLite", "D1"] as const)(
 	"%s preservation delivery and competing completions",
 	(backend) => {
-		it("waits for the real preservation write before delivering the prebuilt TXN clear", async () => {
+		it("waits for the real preservation write without replacing the shared cookie", async () => {
 			// Arrange: pause only the preservation call, after the independent live read.
 			const { f, cookie } = await liveCompletion(backend);
 			const before = authority(f);
@@ -807,7 +800,7 @@ describe.each(["SQLite", "D1"] as const)(
 			const result = await pending;
 			// Assert
 			expect(result.response.status).toBe(303);
-			expect(result.response.headers.getSetCookie()).toEqual([clearBrowserCookie("transaction")]);
+			expect(result.response.headers.getSetCookie()).toEqual([]);
 			expect(rows(f)[0].state).toBe("session_redeemed");
 			expect(authority(f)).toEqual(before);
 		});
@@ -858,7 +851,7 @@ describe.each(["SQLite", "D1"] as const)(
 				expect(authority(f).slice(0, 2)).toEqual(before.slice(0, 2));
 				expect(authority(f).slice(4)).toEqual(before.slice(4));
 				expect(rows(f)[0].state).toBe("session_redeemed");
-				expect(winner.response.headers.getSetCookie()).toHaveLength(1 + added);
+				expect(winner.response.headers.getSetCookie()).toHaveLength(added);
 				if (!added) expect(authority(f)).toEqual(before);
 			},
 		);
@@ -954,7 +947,7 @@ it("double submits through two store wrappers issue one SESSION and never clobbe
 	).toEqual([]);
 	expect(
 		results.find((result) => result.response.status === 303)?.response.headers.getSetCookie(),
-	).toHaveLength(2);
+	).toHaveLength(1);
 	expect(rows(f, "coordinator_auth_sessions")).toHaveLength(1);
 	expect(rows(f, "coordinator_auth_session_receipts")).toHaveLength(1);
 });
