@@ -14,7 +14,10 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readAccountLinkDevice } from "./coordinator-account-link-signer.js";
 import type { CoordinatorAccountLinkStatus } from "./coordinator-account-link-status.js";
-import { readCoordinatorAccountLinkStatus as read } from "./coordinator-account-link-status-client.js";
+import {
+	readCoordinatorAccountLinkStatus as read,
+	readCoordinatorAccountChangeCapabilities as readCapabilities,
+} from "./coordinator-account-link-status-client.js";
 import * as localEvidence from "./coordinator-device-local.js";
 import { verifySignature } from "./sync-auth.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -147,6 +150,78 @@ function logicalSnapshot(connection: Database.Database) {
 		metadata: connection.prepare("SELECT * FROM metadata").all(),
 	};
 }
+const capabilities = () => ({
+	coordinator_id: "coordinator-a",
+	identity_id: "identity-a",
+	actions: { refresh: true, disconnect: false },
+});
+it("reads capabilities with the existing signer, exact public query and no local writes", async () => {
+	const before = snapshot();
+	transport.mockImplementation(async (input, init) => {
+		const url = new URL(String(input));
+		expect(url.origin).toBe(origin);
+		expect(url.pathname).toBe("/v1/auth/account-changes");
+		expect([...url.searchParams.entries()]).toEqual([
+			["group_id", "group-a"],
+			["identity_id", "identity-a"],
+		]);
+		const headers = new Headers(init?.headers);
+		expect(
+			await verifySignature({
+				method: "GET",
+				pathWithQuery: url.pathname + url.search,
+				bodyBytes: Buffer.alloc(0),
+				timestamp: headers.get("X-Opencode-Timestamp") ?? "",
+				nonce: headers.get("X-Opencode-Nonce") ?? "",
+				signature: headers.get("X-Opencode-Signature") ?? "",
+				publicKey,
+				deviceId: "device-a",
+			}),
+		).toBe(true);
+		return Response.json(capabilities());
+	});
+	expect(await readCapabilities(options)).toEqual({
+		kind: "capabilities",
+		coordinatorId: "coordinator-a",
+		actions: { refresh: true, disconnect: false },
+	});
+	expect(snapshot()).toEqual(before);
+});
+it.each([
+	{ ...capabilities(), identity_id: "other" },
+	{ ...capabilities(), coordinator_id: "" },
+	{ ...capabilities(), profile: {} },
+	{ ...capabilities(), actions: { refresh: "true", disconnect: true } },
+	{ ...capabilities(), actions: { refresh: true } },
+	{ ...capabilities(), actions: { refresh: true, disconnect: true, role: "owner" } },
+])("strictly rejects malformed capabilities %j", async (body) => {
+	transport.mockResolvedValue(Response.json(body));
+	expect(await readCapabilities(options)).toEqual({
+		kind: "unavailable",
+		code: "invalid_response",
+	});
+});
+it.each([
+	[404, { kind: "unsupported" }],
+	[403, { kind: "unavailable", code: "coordinator_rejected" }],
+	[503, { kind: "unavailable", code: "coordinator_unavailable" }],
+	[429, { kind: "unavailable", code: "rate_limited" }],
+])("maps capability HTTP %s without granting actions", async (status, result) => {
+	transport.mockResolvedValue(new Response(null, { status: Number(status) }));
+	expect(await readCapabilities(options)).toEqual(result);
+});
+it("caps capability response size and preserves the shared deadline", async () => {
+	transport.mockResolvedValue(new Response(" ".repeat(16385)));
+	expect(await readCapabilities(options)).toEqual({
+		kind: "unavailable",
+		code: "invalid_response",
+	});
+	vi.useFakeTimers();
+	transport.mockImplementation(() => new Promise(() => {}));
+	const pending = readCapabilities(options);
+	await vi.advanceTimersByTimeAsync(10001);
+	expect(await pending).toEqual({ kind: "unavailable", code: "coordinator_unreachable" });
+});
 
 it.each([
 	["review_required", null, null],

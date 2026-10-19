@@ -36,7 +36,15 @@ export type CoordinatorAccountLinkStatusRead =
 				| "device_unavailable";
 	  };
 type UnavailableCode = Extract<CoordinatorAccountLinkStatusRead, { kind: "unavailable" }>["code"];
-function unavailable(code: UnavailableCode): CoordinatorAccountLinkStatusRead {
+type ReadFailure = Exclude<CoordinatorAccountLinkStatusRead, { kind: "status" }>;
+export type CoordinatorAccountChangeCapabilitiesRead =
+	| ReadFailure
+	| {
+			kind: "capabilities";
+			coordinatorId: string;
+			actions: { refresh: boolean; disconnect: boolean };
+	  };
+function unavailable(code: UnavailableCode): Extract<ReadFailure, { kind: "unavailable" }> {
 	return { kind: "unavailable", code };
 }
 function record(value: unknown): value is Record<string, unknown> {
@@ -179,7 +187,7 @@ async function boundedJson(response: Response, signal: AbortSignal): Promise<unk
 		reader.releaseLock();
 	}
 }
-function responseFailure(response: Response): CoordinatorAccountLinkStatusRead | null {
+function responseFailure(response: Response): ReadFailure | null {
 	const status = response.status;
 	if (
 		status === 503 &&
@@ -198,15 +206,19 @@ function responseFailure(response: Response): CoordinatorAccountLinkStatusRead |
 async function readStatus(
 	options: ReadCoordinatorAccountLinkStatusOptions,
 	signal: AbortSignal,
-): Promise<CoordinatorAccountLinkStatusRead> {
+	mode: "status" | "capabilities",
+): Promise<CoordinatorAccountLinkStatusRead | CoordinatorAccountChangeCapabilitiesRead> {
 	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorUrl);
 	const groupId = options.groupId;
 	if (!origin || !isAuthControllerId(groupId) || !isAuthControllerId(options.identityId))
 		return unavailable("invalid_response");
 	if (signal.aborted) return unavailable("coordinator_unreachable");
-	const url = new URL("/v1/auth/account-link-status", origin);
+	const url = new URL(
+		mode === "status" ? "/v1/auth/account-link-status" : "/v1/auth/account-changes",
+		origin,
+	);
 	url.searchParams.set("group_id", groupId);
-	url.searchParams.set("coordinator_origin", origin);
+	if (mode === "status") url.searchParams.set("coordinator_origin", origin);
 	url.searchParams.set("identity_id", options.identityId);
 	let device: CoordinatorDeviceLocalEvidence;
 	let headers: ReturnType<typeof signAccountLinkRequest>;
@@ -246,6 +258,7 @@ async function readStatus(
 	try {
 		const body = await boundedJson(response, signal);
 		if (signal.aborted) return unavailable("coordinator_unreachable");
+		if (mode === "capabilities") return decodeCapabilities(body, options.identityId);
 		return {
 			kind: "status",
 			status: decodeStatus(body, groupId, device, options.identityId),
@@ -256,16 +269,57 @@ async function readStatus(
 }
 
 /** Read remote status only. Failures never imply that an account is unlinked. */
-export async function readCoordinatorAccountLinkStatus(
+export function readCoordinatorAccountLinkStatus(
 	options: ReadCoordinatorAccountLinkStatusOptions,
 ): Promise<CoordinatorAccountLinkStatusRead> {
+	return readRemoteAccount(options, "status");
+}
+/** Separate signed policy read; linked account metadata alone never grants actions. */
+export function readCoordinatorAccountChangeCapabilities(
+	options: ReadCoordinatorAccountLinkStatusOptions,
+): Promise<CoordinatorAccountChangeCapabilitiesRead> {
+	return readRemoteAccount(options, "capabilities");
+}
+function decodeCapabilities(
+	value: unknown,
+	identityId: string,
+): CoordinatorAccountChangeCapabilitiesRead {
+	if (
+		!record(value) ||
+		Object.keys(value).length !== 3 ||
+		!isAuthControllerId(value.coordinator_id) ||
+		value.identity_id !== identityId ||
+		!record(value.actions) ||
+		Object.keys(value.actions).length !== 2 ||
+		typeof value.actions.refresh !== "boolean" ||
+		typeof value.actions.disconnect !== "boolean"
+	)
+		throw new Error("Invalid capabilities.");
+	return {
+		kind: "capabilities",
+		coordinatorId: value.coordinator_id,
+		actions: { refresh: value.actions.refresh, disconnect: value.actions.disconnect },
+	};
+}
+function readRemoteAccount(
+	options: ReadCoordinatorAccountLinkStatusOptions,
+	mode: "status",
+): Promise<CoordinatorAccountLinkStatusRead>;
+function readRemoteAccount(
+	options: ReadCoordinatorAccountLinkStatusOptions,
+	mode: "capabilities",
+): Promise<CoordinatorAccountChangeCapabilitiesRead>;
+async function readRemoteAccount(
+	options: ReadCoordinatorAccountLinkStatusOptions,
+	mode: "status" | "capabilities",
+): Promise<CoordinatorAccountLinkStatusRead | CoordinatorAccountChangeCapabilitiesRead> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 10_000);
 	try {
 		const signal = options.signal
 			? AbortSignal.any([controller.signal, options.signal])
 			: controller.signal;
-		return await readStatus(options, signal);
+		return await readStatus(options, signal, mode);
 	} catch {
 		return unavailable("coordinator_unreachable");
 	} finally {

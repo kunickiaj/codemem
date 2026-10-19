@@ -443,6 +443,11 @@ test.for([false, true])(
 		}).catch((cause: unknown) => cause);
 		// Assert
 		expect(error).toBeInstanceOf(Error);
+		expect(error).toMatchObject({
+			message: cancelFails
+				? "Could not confirm cancellation; request will expire. Linking may already have finished if the final reply was lost."
+				: "Account linking stopped or expired. Try again.",
+		});
 		expect(String(error)).not.toMatch(/private-(transport|abort)-secret/);
 		expect(cancelled?.headers.get("x-opencode-signature")).toMatch(/^v2:/);
 		expect(await cancelled?.clone().json()).toEqual({ group_id: "group-a" });
@@ -615,7 +620,10 @@ test.for([
 		(cause: unknown) => cause,
 	);
 	// Assert
-	expect(error).toMatchObject({ code: "request_failed" });
+	expect(error).toMatchObject({
+		code: "request_failed",
+		message: "Account linking could not finish. Try again.",
+	});
 	expect(onBrowserStart).not.toHaveBeenCalled();
 	expect(String(error)).not.toContain("private-proof");
 });

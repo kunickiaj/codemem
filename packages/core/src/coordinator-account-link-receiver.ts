@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { createAccountLinkReceipt } from "./coordinator-account-link-receipt.js";
+import {
+	type AccountReceiptOutcome,
+	createAccountLinkReceipt,
+} from "./coordinator-account-link-receipt.js";
 import { COORDINATOR_AUTH_STYLE } from "./coordinator-auth-browser-style.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { decodeCoordinatorAuthProof32 } from "./coordinator-auth-proof.js";
@@ -8,7 +11,7 @@ import { decodeCoordinatorAuthProof32 } from "./coordinator-auth-proof.js";
 export interface CoordinatorAccountLinkReceiver {
 	destination: string;
 	completion: Promise<string>;
-	close(options?: { linked?: boolean }): Promise<void>;
+	close(options?: AccountReceiptOutcome): Promise<void>;
 }
 export interface CoordinatorOwnerEnrollmentCompletion {
 	completionSecret: string;
@@ -20,6 +23,7 @@ export interface CoordinatorOwnerEnrollmentReceiver {
 	close(): Promise<void>;
 }
 export interface CoordinatorAccountLinkReceiverOptions {
+	intent?: "link" | "refresh" | "disconnect";
 	attemptId: string;
 	host?: "127.0.0.1" | "::1";
 	port?: number;
@@ -195,6 +199,7 @@ function receiverLifecycle<T>(server: Server, signal?: AbortSignal) {
 function validOptions(options: CoordinatorAccountLinkReceiverOptions): boolean {
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
 	return (
+		(options.intent === undefined || ["link", "refresh", "disconnect"].includes(options.intent)) &&
 		isAuthControllerId(attemptId) &&
 		(host === "127.0.0.1" || host === "::1") &&
 		Number.isInteger(port) &&
@@ -212,13 +217,13 @@ async function createReceiver(
 ): Promise<{
 	destination: string;
 	completion: Promise<string | CoordinatorOwnerEnrollmentCompletion>;
-	close(options?: { linked?: boolean }): Promise<void>;
+	close(options?: AccountReceiptOutcome): Promise<void>;
 }> {
 	if (!validOptions(options)) throw new Error("Invalid account-link receiver options.");
 	if (mode === "owner_enroll" && options.coordinatorOrigin !== undefined)
 		throw new Error("Invalid owner-enrollment receiver options.");
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
-	const receipt = mode === "account_link" ? createAccountLinkReceipt() : null;
+	const receipt = mode === "account_link" ? createAccountLinkReceipt(options.intent) : null;
 	const page =
 		mode === "owner_enroll"
 			? "Your computer received the confirmation. Return to the app to finish adding the device."
@@ -260,7 +265,7 @@ async function createReceiver(
 		return {
 			destination: `http://${authority}${PATH}`,
 			completion: lifecycle.completion,
-			close(options?: { linked?: boolean }) {
+			close(options?: AccountReceiptOutcome) {
 				if (!closing)
 					closing = (async () => {
 						await receipt?.finish(options);
