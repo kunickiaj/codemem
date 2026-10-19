@@ -97,6 +97,28 @@ const specializedScenarios = [
 	{ name: "Sharing Domains", script: "e2e:sharing-domains" },
 ];
 
+it("runs synthetic account acceptance separately with pinned package Chromium and built assets", () => {
+	const job = getJob(ciWorkflow, "account-browser");
+	const ui = JSON.parse(
+		readFileSync(new URL("../packages/ui/package.json", import.meta.url), "utf8"),
+	);
+	assert.equal(
+		ui.scripts["test:account-browser"],
+		"pnpm run typecheck:account-browser && playwright test --config playwright.account.config.ts",
+	);
+	assert.equal(ui.scripts["typecheck:account-browser"], "tsc -p tsconfig.account.json --noEmit");
+	const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+	assert.match(root.scripts.tsc, /pnpm --filter @codemem\/ui typecheck:account-browser/u);
+	assert.match(job, /pnpm install --frozen-lockfile/u);
+	assert.match(job, /pnpm --filter @codemem\/ui exec playwright install --with-deps chromium/u);
+	assert.ok(
+		job.indexOf("run: pnpm run build") <
+			job.indexOf("run: pnpm --filter @codemem/ui test:account-browser"),
+	);
+	assert.match(job, /run: pnpm --filter @codemem\/ui test:account-browser/u);
+	assert.doesNotMatch(job, /^\s*(?:if|continue-on-error|permissions|secrets):/m);
+});
+
 describe("normal CI workflow source contract", () => {
 	it("does not rebuild workspace dependencies from the Worker build", () => {
 		assert.match(workerPackage.scripts.build, /pnpm run check:bundle:prepared/u);

@@ -76,6 +76,13 @@ const radixTestDependencies = [
 	"@radix-ui/react-use-layout-effect",
 ];
 
+const unitTestExcludes = [
+	...configDefaults.exclude,
+	"visual/**",
+	"account-e2e/**",
+	"scripts/visual-policy.test.mjs",
+];
+
 export default defineConfig(({ command, mode }) => {
 	const isDevServer = command === "serve";
 	const viewerPort = Number(process.env.CODEMEM_DEV_VIEWER_PORT || "38899");
@@ -134,7 +141,7 @@ export default defineConfig(({ command, mode }) => {
 					]),
 		],
 		test: {
-			exclude: [...configDefaults.exclude, "visual/**", "scripts/visual-policy.test.mjs"],
+			exclude: unitTestExcludes,
 			css: {
 				include: [/\/static\/(?:controls|themes|tokens)\.css(?:\?inline)?$/],
 			},

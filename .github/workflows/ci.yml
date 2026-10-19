@@ -70,6 +70,28 @@ jobs:
       - name: Test
         run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test
 
+  account-browser:
+    name: Account Browser Acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm --filter @codemem/ui exec playwright install --with-deps chromium
+      - name: Build
+        run: pnpm run build
+      - name: Run synthetic account browser acceptance
+        run: pnpm --filter @codemem/ui test:account-browser
+
   worker-test:
     name: Cloudflare Worker Test
     runs-on: ubuntu-latest
