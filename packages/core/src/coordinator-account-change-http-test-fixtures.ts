@@ -227,6 +227,8 @@ export async function fixture(
 			.map(({ name }) => [name, base.db.prepare(`SELECT * FROM "${name}"`).all()]);
 	return {
 		...base,
+		backend,
+		operations,
 		...http,
 		key,
 		snapshot,

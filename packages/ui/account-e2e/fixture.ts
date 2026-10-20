@@ -394,6 +394,8 @@ export async function fixture(browser: BrowserContext) {
 		cleanup.push(acknowledgement.release);
 		const finalized = gate();
 		const finalRequests: Request[] = [];
+		const unlinkRequests: Request[] = [];
+		const providerHops: string[] = [];
 		let hold = false;
 		const transport: typeof fetch = async (input, init) => {
 			const request = new Request(input, init);
@@ -407,6 +409,7 @@ export async function fixture(browser: BrowserContext) {
 				allowed.add(new URL(body.loopback_redirect).origin);
 			}
 			const response = await app.fetch(request.clone());
+			if(url.pathname === "/v1/auth/account-unlinks") unlinkRequests.push(request);
 			if (url.pathname.endsWith("/finalize")) {
 				finalRequests.push(request);
 				if (!response.ok) throw new Error(`Signed finalization failed: ${response.status}`);
@@ -498,6 +501,7 @@ export async function fixture(browser: BrowserContext) {
 			if (route.request().method() === "POST" && url.origin === origin)
 				browserPosts.push(url.pathname);
 			if (url.origin === oidc.issuer && url.pathname === "/authorize") {
+				providerHops.push(url.href);
 				const callback = oidc.authorize(url);
 				await route.fulfill({
 					status: 200,
@@ -536,6 +540,9 @@ export async function fixture(browser: BrowserContext) {
 			rows,
 			preserved,
 			finalRequests,
+			unlinkRequests,
+			providerHops,
+			signed,
 			browserPosts,
 			blocked,
 			claims: oidc.claims,

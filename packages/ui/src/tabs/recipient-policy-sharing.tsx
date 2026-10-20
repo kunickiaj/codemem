@@ -727,7 +727,7 @@ function IdentitiesView({
 							</div>
 							<RecipientActions
 								disabled={disableMutations}
-								displayName={identity.displayName}
+								displayName={verifiedLabel || identity.displayName}
 								recipient={{ recipientKind: "identity", identityId: identity.identityId }}
 							/>
 						</div>

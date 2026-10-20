@@ -14,6 +14,7 @@ beforeEach(() => {
 	mount = document.createElement("div");
 	document.body.append(mount);
 	view = status({
+		unlinkTarget: "current-link",
 		canLink: false,
 		remote: {
 			kind: "status",
@@ -72,6 +73,56 @@ it("renders verified profile text and a lazy anonymous no-referrer photo", async
 		expect(image?.getAttribute(key)).toBe(value);
 	}
 	expect(image?.hasAttribute("onerror")).toBe(false);
+});
+
+it("hides unlink without the new signed target capability while retaining refresh", async () => {
+	view.managementActions = { refresh: true, disconnect: true };
+	delete view.unlinkTarget;
+	await show();
+	expect(mount.textContent).toContain("Refresh profile");
+	expect(mount.textContent).not.toContain("Unlink Google account");
+});
+it("confirms once locally, cancels without requests, and sends the captured target without a popup", async () => {
+	view.managementActions = { refresh: true, disconnect: true };
+	const posts: Record<string, unknown>[] = [];
+	const open = vi.spyOn(window, "open").mockReturnValue(null);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url, init) => {
+			if (url === "/api/account/session") return response({ csrfToken: "fixture-token" });
+			if (String(url).startsWith("/api/account/link-status")) return response(view);
+			posts.push(JSON.parse(String(init?.body)));
+			return response({
+				version: 1,
+				operation: { ...operation("starting"), intent: "disconnect" },
+			});
+		}),
+	);
+	await show();
+	const trigger = [...mount.querySelectorAll("button")].find(
+		(button) => button.textContent === "Unlink Google account",
+	);
+	await act(async () => trigger?.click());
+	expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+		"Unlink Google account?",
+	);
+	expect(posts).toEqual([]);
+	await act(async () =>
+		[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+			.find((button) => button.textContent === "Cancel")
+			?.click(),
+	);
+	expect(posts).toEqual([]);
+	await act(async () => trigger?.click());
+	await act(async () =>
+		[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')]
+			.find((button) => button.textContent === "Unlink account")
+			?.click(),
+	);
+	await settle();
+	expect(posts).toMatchObject([{ intent: "disconnect", expectedLinkId: "current-link" }]);
+	expect(open).not.toHaveBeenCalled();
+	open.mockRestore();
 });
 
 it.each([null, "starting", "outcome_unknown"] as const)(
@@ -188,4 +239,21 @@ it("falls back after image failure and treats profile markup as text", async () 
 	expect(mount.querySelector("img")).toBeNull();
 	expect(mount.querySelector(".my-account-profile strong")?.textContent).toBe(displayName);
 	expect(mount.querySelector("[onerror]")).toBeNull();
+});
+
+it("tells the parent to drop the account view in the same call that clears it", async () => {
+	// Arrange
+	const onViewChange = vi.fn();
+	await act(async () => render(<MyAccount onViewChange={onViewChange} />, mount));
+	await settle();
+	expect(onViewChange).toHaveBeenLastCalledWith(view);
+	const check = [...mount.querySelectorAll("button")].find(
+		(node) => node.textContent === "Check status",
+	);
+	if (!check) throw new Error("Missing Check status button");
+	// Act: click without flushing effects, as a delayed passive effect would.
+	check.click();
+	// Assert
+	expect(onViewChange).toHaveBeenLastCalledWith(null);
+	await settle();
 });

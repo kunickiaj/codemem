@@ -10,6 +10,7 @@ import {
 	CONNECTION_BIRTH_COLUMNS,
 	CONNECTION_NOT_REVOKED_SQL,
 } from "./coordinator-account-connection-storage.js";
+import { ACCOUNT_UNLINK_TABLE } from "./coordinator-account-unlink-schema.js";
 import { captureAuthAccountProfile } from "./coordinator-auth-account-profile.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
@@ -133,6 +134,32 @@ const outcome = (a: ChangeRow): AccountChangeOutcome => ({
 	targetLinkId: a.target_link_id,
 	completedAtMs: a.completed_at_ms,
 });
+function unlinkInput(value: unknown) {
+	const i = capture(value, [
+		"attemptId",
+		"signer",
+		"expectedIdentityId",
+		"expectedLinkId",
+		"requestHash",
+	]);
+	const signer = captureAuthLinkSigner(i?.signer);
+	if (
+		!i ||
+		!signer ||
+		!isAuthControllerId(i.attemptId) ||
+		!isAuthControllerId(i.expectedIdentityId) ||
+		!isAuthControllerId(i.expectedLinkId) ||
+		!isHash(i.requestHash)
+	)
+		return null;
+	return {
+		attemptId: i.attemptId,
+		signer,
+		expectedIdentityId: i.expectedIdentityId,
+		expectedLinkId: i.expectedLinkId,
+		requestHash: i.requestHash,
+	};
+}
 
 // LINK and CHANGE share admission budgets; terminal receipts still count toward
 // hourly/retention creation limits, but not toward concurrent live attempts.
@@ -260,7 +287,7 @@ export class AccountChangeOperations {
 	async readCapabilities(
 		value: unknown,
 		config: unknown,
-	): Promise<{ refresh: boolean; disconnect: boolean }> {
+	): Promise<{ refresh: boolean; disconnect: boolean; unlinkTarget?: string }> {
 		const c = captureAuthLinkConfig(config);
 		const i = capture(value, ["signer", "expectedIdentityId"]);
 		const signer = captureAuthLinkSigner(i?.signer);
@@ -276,7 +303,65 @@ export class AccountChangeOperations {
 		const allowed = !!(await this.first(
 			sql(`${authority.sql} SELECT 1 FROM change_authority`, authority.values),
 		));
-		return { refresh: allowed, disconnect: allowed };
+		return {
+			refresh: allowed,
+			disconnect: allowed,
+			...(allowed ? { unlinkTarget: target.target_link_id } : {}),
+		};
+	}
+	/** Device-signed unlink only. The winning INSERT rechecks live authority and the exact target. */
+	async unlink(value: unknown, config: unknown): Promise<AccountChangeOutcome | null> {
+		const c = captureAuthLinkConfig(config);
+		const i = unlinkInput(value);
+		if (!c?.enabled || !i) return null;
+		const { signer } = i;
+		const pins = [
+			c.coordinatorId,
+			i.attemptId,
+			i.expectedLinkId,
+			i.expectedIdentityId,
+			c.issuer,
+			...signerValues(signer),
+			c.revision,
+			i.requestHash,
+		];
+		const retry = () =>
+			this.first<{ targetLinkId: string; completedAtMs: number }>(
+				sql(
+					`SELECT target_link_id AS targetLinkId,completed_at_ms AS completedAtMs FROM ${ACCOUNT_UNLINK_TABLE} WHERE coordinator_id=? AND attempt_id=? AND target_link_id=? AND identity_id=? AND issuer=? AND group_id=? AND device_id=? AND public_key=? AND fingerprint=? AND auth_config_revision=? AND request_hash=? AND state='completed'`,
+					pins,
+				),
+			);
+		const prior = await retry();
+		if (prior) return { intent: "disconnect", ...prior };
+		const key = await ed25519KeyIdForRevocation(signer.publicKey);
+		if (!key) return null;
+		const target = await this.deriveTarget(c, { signer }, key);
+		if (
+			!target ||
+			target.identity_id !== i.expectedIdentityId ||
+			target.target_link_id !== i.expectedLinkId
+		)
+			return null;
+		const now = authLinkNow(this.clock);
+		const authority = await this.authority(c, signer, target, now);
+		if (!authority) return null;
+		await this.atomic([
+			sql(
+				`${authority.sql} INSERT INTO ${ACCOUNT_UNLINK_TABLE} (coordinator_id,attempt_id,target_link_id,identity_id,issuer,target_subject,group_id,device_id,public_key,fingerprint,enrollment_identity_id,auth_config_revision,request_hash,state,created_at_ms)
+ SELECT coordinator_id,?,link_id,identity_id,issuer,subject,?,?,?,?,enrollment_identity_id,?,?,'committing',? FROM change_authority`,
+				[...authority.values, i.attemptId, ...signerValues(signer), c.revision, i.requestHash, now],
+			),
+			assertOne,
+			...disconnectEffects(c.coordinatorId, i.attemptId, now, { connections: true, device: true }),
+			sql(
+				`UPDATE ${ACCOUNT_UNLINK_TABLE} SET state='completed',completed_at_ms=? WHERE coordinator_id=? AND attempt_id=? AND state='committing'`,
+				[now, c.coordinatorId, i.attemptId],
+			),
+			assertOne,
+		]);
+		const completed = await retry();
+		return completed ? { intent: "disconnect", ...completed } : null;
 	}
 	async create(value: unknown, config: unknown): Promise<boolean> {
 		const c = captureAuthLinkConfig(config),
@@ -760,8 +845,10 @@ function disconnectEffects(
 	coordinator: string,
 	attempt: string,
 	now: number,
-	options: { connections: boolean },
+	options: { connections: boolean; device?: boolean },
 ): AuthLinkStatement[] {
+	const table = options.device ? ACCOUNT_UNLINK_TABLE : "coordinator_account_change_attempts";
+	const intent = options.device ? "" : " AND a.intent = 'disconnect'";
 	const columns = options.connections
 		? [...CONNECTION_BIRTH_COLUMNS, "signin_floor"]
 		: CONNECTION_BIRTH_COLUMNS;
@@ -769,7 +856,7 @@ function disconnectEffects(
 	return [
 		sql(
 			`INSERT INTO ${history} (${columns.join(",")},original_rowid,ended_at_ms,end_attempt_id)
- SELECT ${columns.map((c) => `l.${c}`).join(",")},l.rowid,?,a.attempt_id FROM ${current} l JOIN ${table} a ON a.coordinator_id = l.coordinator_id AND a.target_link_id = l.link_id WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.state = 'committing' AND a.intent = 'disconnect'`,
+ SELECT ${columns.map((c) => `l.${c}`).join(",")},l.rowid,?,a.attempt_id FROM ${current} l JOIN ${table} a ON a.coordinator_id = l.coordinator_id AND a.target_link_id = l.link_id WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.state = 'committing'${intent}`,
 			[now, coordinator, attempt],
 		),
 		assertOne,

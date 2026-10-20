@@ -7,6 +7,8 @@ existing local coordinator file; `--export-sql` exports D1 SQL without applying 
 Optional **Refresh profile**, **Unlink Google account**, and reconnect support instead
 require an intact V2 coordinator and the separate
 [`upgrade-account-schema` rollout](docs/cloudflare-coordinator-deployment.md#optional-account-management-extension).
+Unlink confirms once in the Viewer and uses the existing authorized device without
+Google sign-in. Link, relink and profile refresh still require Google verification.
 
 [![CI](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml/badge.svg)](https://github.com/kunickiaj/codemem/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/codemem)](https://www.npmjs.com/package/codemem) [![npm downloads per month](https://img.shields.io/npm/dm/codemem?label=npm%20downloads%2Fmonth)](https://www.npmjs.com/package/codemem) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)

@@ -49,6 +49,7 @@ export interface AccountLinkViewV1 {
 		  };
 	canLink: boolean;
 	managementActions?: { refresh: boolean; disconnect: boolean };
+	unlinkTarget?: string;
 	blockedReason:
 		| null
 		| "setup_incomplete"
@@ -253,5 +254,9 @@ async function attachManagementActions(
 		capabilities.coordinatorId !== view.remote.coordinatorId
 	)
 		return;
-	view.managementActions = { ...capabilities.actions };
+	view.managementActions = {
+		...capabilities.actions,
+		disconnect: capabilities.actions.disconnect && !!capabilities.unlinkTarget,
+	};
+	if (view.managementActions.disconnect) view.unlinkTarget = capabilities.unlinkTarget;
 }

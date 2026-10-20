@@ -62,6 +62,7 @@ export type AccountView = {
 		  };
 	canLink: boolean;
 	managementActions?: { refresh: boolean; disconnect: boolean };
+	unlinkTarget?: string;
 	blockedReason:
 		| null
 		| "setup_incomplete"
@@ -199,6 +200,7 @@ export function startAccountLink(
 		authority: "controller_attestation" | "device_claim";
 		coordinatorId: string;
 		intent?: AccountIntent;
+		expectedLinkId?: string;
 	},
 	signal?: AbortSignal,
 ): Promise<{ version: 1; operation: AccountOperation }> {

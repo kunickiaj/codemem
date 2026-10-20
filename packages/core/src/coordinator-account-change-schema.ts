@@ -1,5 +1,10 @@
 /** Management-attempt schema installed by the explicit account-schema migration. */
 const table = "coordinator_account_change_attempts";
+export const BROWSER_ACCOUNT_ARCHIVE_GUARD = `CREATE TRIGGER account_change_archive_receipt BEFORE INSERT ON coordinator_auth_account_connection_history
+WHEN NOT EXISTS (SELECT 1 FROM ${table} a WHERE a.coordinator_id = NEW.coordinator_id
+ AND a.attempt_id = NEW.end_attempt_id AND a.state = 'committing' AND a.intent = 'disconnect'
+ AND a.target_link_id = NEW.link_id AND a.identity_id = NEW.identity_id AND a.issuer = NEW.issuer AND a.target_subject = NEW.subject)
+BEGIN SELECT RAISE(ABORT,'account_change_archive_receipt_invalid'); END`;
 export const ACCOUNT_CHANGE_SCHEMA_STATEMENTS = [
 	`CREATE TABLE ${table} (
  coordinator_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
@@ -50,11 +55,7 @@ WHEN OLD.state IN ('completed','cancelled','failed','expired') OR NOT (
 BEGIN SELECT RAISE(ABORT,'account_change_transition_invalid'); END`,
 	`CREATE TRIGGER account_change_receipt_delete BEFORE DELETE ON ${table} WHEN OLD.state = 'completed'
 BEGIN SELECT RAISE(ABORT,'account_change_receipt_immutable'); END`,
-	`CREATE TRIGGER account_change_archive_receipt BEFORE INSERT ON coordinator_auth_account_connection_history
-WHEN NOT EXISTS (SELECT 1 FROM ${table} a WHERE a.coordinator_id = NEW.coordinator_id
- AND a.attempt_id = NEW.end_attempt_id AND a.state = 'committing' AND a.intent = 'disconnect'
- AND a.target_link_id = NEW.link_id AND a.identity_id = NEW.identity_id AND a.issuer = NEW.issuer AND a.target_subject = NEW.subject)
-BEGIN SELECT RAISE(ABORT,'account_change_archive_receipt_invalid'); END`,
+	BROWSER_ACCOUNT_ARCHIVE_GUARD,
 	// EXPLAIN in the focused tests checks that the repeated revocation barrier
 	// changes from a coordinator-prefix scan to an Identity-specific covering lookup.
 	`CREATE INDEX account_connection_history_identity_revoked ON coordinator_auth_account_connection_history(coordinator_id,identity_id,revoked_at_ms)`,

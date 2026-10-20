@@ -333,6 +333,10 @@ describe("My Account data and lifetime inside Sharing", () => {
 			expect(identityCard.querySelector("h3")?.textContent).toBe(
 				identityMatches ? "Example Person" : "Local identity",
 			);
+			const visibleName = identityMatches ? "Example Person" : "Local identity";
+			expect(
+				identityCard.querySelector(`button[aria-label="Manage projects for ${visibleName}"]`),
+			).not.toBeNull();
 			expect(identityCard.textContent).toContain(
 				identityMatches ? "Verified Google account" : "Local identity",
 			);

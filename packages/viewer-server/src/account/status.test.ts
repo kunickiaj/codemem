@@ -153,6 +153,7 @@ describe("account management capabilities", () => {
 		"unavailable",
 		"coordinator changed",
 		"context changed",
+		"legacy coordinator",
 	])("exposes management actions only from matching current capabilities: %s", async (mode) => {
 		const read = vi.fn<NonNullable<AccountOptions["readRemoteCapabilities"]>>();
 		const f = await fixture(read);
@@ -165,13 +166,14 @@ describe("account management capabilities", () => {
 				kind: "capabilities",
 				coordinatorId: mode === "coordinator changed" ? "other" : "coordinator-a",
 				actions: { refresh: mode !== "denied", disconnect: mode !== "denied" },
+				...(mode === "legacy coordinator" ? {} : { unlinkTarget: "current-link" }),
 			};
 		});
 		const body = await (await f.request()).json();
 		expect(read).toHaveBeenCalledTimes(1);
-		if (mode === "allowed" || mode === "denied")
+		if (mode === "allowed" || mode === "denied" || mode === "legacy coordinator")
 			expect(body.managementActions).toEqual({
-				refresh: mode === "allowed",
+				refresh: mode !== "denied",
 				disconnect: mode === "allowed",
 			});
 		else expect(body).not.toHaveProperty("managementActions");

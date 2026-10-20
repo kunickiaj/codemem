@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
 	type AccountIntent,
 	type AccountOperation,
@@ -45,7 +45,10 @@ function canBeginLink(
 	view: AccountView | null,
 	busy: boolean,
 	intent: AccountIntent,
+	confirmedView?: AccountView,
 ): view is AccountView & { contextId: string; selectedGroupId: string } {
+	if (intent === "disconnect" && (!confirmedView || confirmedView !== view || !view?.unlinkTarget))
+		return false;
 	if (
 		!view ||
 		busy ||
@@ -71,9 +74,17 @@ function isInProgress(error: unknown): boolean {
 	return error instanceof AccountRequestError && error.code === "account_link_in_progress";
 }
 
-function useFlowState() {
+function useFlowState(onViewChange?: (view: AccountView | null) => void) {
 	const [group, setGroup] = useState<string | undefined>(undefined);
-	const [view, setView] = useState<AccountView | null>(null);
+	const [view, setViewState] = useState<AccountView | null>(null);
+	// Notify in the same call that changes the view so a parent never shows
+	// account data after this card has cleared it (a passive effect would lag).
+	const onViewChangeRef = useRef(onViewChange);
+	onViewChangeRef.current = onViewChange;
+	const setView = useCallback((next: AccountView | null) => {
+		setViewState(next);
+		onViewChangeRef.current?.(next);
+	}, []);
 	const [operation, setOperation] = useState<AccountOperation | null>(null);
 	const [pendingOperation, setPendingOperation] = useState<AccountOperation | null>(null);
 	const [message, setMessage] = useState("Checking account status…");
@@ -371,6 +382,10 @@ async function startFailure(
 	if (epoch !== flow.refs.current.generation) return;
 	void refresh(flow, {
 		groupId: currentView.selectedGroupId ?? undefined,
+		previousNotice:
+			error instanceof AccountRequestError && error.code === "account_context_changed"
+				? errorText(error)
+				: undefined,
 		excludeOperationId:
 			isInProgress(error) && error instanceof AccountRequestError ? error.operationId : undefined,
 		notice: isInProgress(error)
@@ -383,9 +398,30 @@ function activeOperation(operation: AccountOperation | null): boolean {
 	return operation !== null && active(operation);
 }
 
-async function link(flow: Flow, intent: AccountIntent = "connect"): Promise<void> {
+function reservePopup(intent: AccountIntent): Window | null {
+	if (intent === "disconnect") return null;
+	const opened = window.open("about:blank", "_blank");
+	if (opened) opened.opener = null;
+	return opened;
+}
+const WAITING_MESSAGES = {
+	disconnect: "Unlinking Google account…",
+	connect:
+		"Waiting for Google sign-in. This links your account to this Identity; it does not grant sharing access.",
+	refresh:
+		"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
+};
+async function link(
+	flow: Flow,
+	intent: AccountIntent = "connect",
+	confirmedView?: AccountView,
+): Promise<void> {
 	const { view, busy } = flow;
-	if (flow.refs.current.starting || flow.pendingOperation || !canBeginLink(view, busy, intent))
+	if (
+		flow.refs.current.starting ||
+		flow.pendingOperation ||
+		!canBeginLink(view, busy, intent, confirmedView)
+	)
 		return;
 	if (
 		view.remote.kind !== "status" ||
@@ -398,16 +434,22 @@ async function link(flow: Flow, intent: AccountIntent = "connect"): Promise<void
 	const epoch = flow.refs.current.generation;
 	let opened: Window | null = null;
 	flow.setBusy(true);
-	flow.setMessage("Starting Google sign-in…");
+	flow.setMessage(
+		intent === "disconnect" ? "Unlinking Google account…" : "Starting Google sign-in…",
+	);
 	try {
 		// Reserve the popup in the click gesture; never navigate the Viewer itself.
-		opened = window.open("about:blank", "_blank");
-		if (opened) opened.opener = null;
+		opened = reservePopup(intent);
 		flow.refs.current.popup = opened;
 		const result = await startAccountLink(
 			view.selectedGroupId,
 			view.contextId,
-			{ authority: view.remote.authority, coordinatorId: view.remote.coordinatorId, intent },
+			{
+				authority: view.remote.authority,
+				coordinatorId: view.remote.coordinatorId,
+				intent,
+				...(intent === "disconnect" ? { expectedLinkId: view.unlinkTarget } : {}),
+			},
 			flow.refs.current.controller?.signal,
 		);
 		if (epoch !== flow.refs.current.generation) {
@@ -420,11 +462,7 @@ async function link(flow: Flow, intent: AccountIntent = "connect"): Promise<void
 			return;
 		}
 		flow.setOperation(result.operation);
-		flow.setMessage(
-			intent === "connect"
-				? "Waiting for Google sign-in. This links your account to this Identity; it does not grant sharing access."
-				: `Waiting for Google sign-in to ${accountOperationCopy(result.operation).attempt} your account. Keep this Viewer open on the same computer.`,
-		);
+		flow.setMessage(WAITING_MESSAGES[intent]);
 	} catch (error) {
 		opened?.close();
 		await startFailure(flow, error, epoch, view);
@@ -484,6 +522,7 @@ function useBrowserDelivery(flow: Flow): void {
 	const { operation, view } = flow;
 	useLayoutEffect(() => {
 		if (
+			operation?.intent === "disconnect" ||
 			operation?.state !== "awaiting_browser" ||
 			!operation.browserUrlAvailable ||
 			!view?.coordinator ||
@@ -689,8 +728,8 @@ function showCancellationFailure(
 	);
 }
 
-export function useMyAccount() {
-	const flow = useFlowState();
+export function useMyAccount(onViewChange?: (view: AccountView | null) => void) {
+	const flow = useFlowState(onViewChange);
 	useStatusEffect(flow);
 	useBrowserDelivery(flow);
 	useOperationPolling(flow);
@@ -708,7 +747,8 @@ export function useMyAccount() {
 		refresh: (options?: { groupId?: string; notice?: string }) =>
 			refresh(flow, { ...options, checkExpiredPending: true }),
 		link: () => link(flow),
-		change: (intent: "refresh" | "disconnect") => link(flow, intent),
+		change: (intent: "refresh" | "disconnect", confirmedView?: AccountView) =>
+			link(flow, intent, confirmedView),
 		openFallback: () => openFallback(flow),
 		cancel: () => cancel(flow, { operation: flow.operation, previous: false }),
 		cancelPrevious: () => cancel(flow, { operation: flow.pendingOperation, previous: true }),
