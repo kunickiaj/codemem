@@ -746,6 +746,20 @@ codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-di
 
 If an ambiguous failure occurs after a final request is retained, retry that exact request unchanged. If a start succeeded but no final request was saved, keep the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the prior state. Google confirmation and a two-device workflow have not been verified live.
 
+#### Explicit account admission
+
+Operator admission remains the default. On a coordinator that serves authenticated `/auth/owner/admit`, resume the same prepared review with account admission instead:
+
+```fish
+codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com"
+```
+
+`--account-admission` is resume-only and cannot be combined with `--capability`. It needs no operator capability and skips the client's initial operator start POST. The client first binds the retained literal-loopback receiver and saves the start-attempt marker, then displays a fixed HTTPS link with no query or secrets. Open that link manually while signed in to the intended account, upload the unchanged private `capability-request.json` from the displayed path, and compare its device and fingerprint against the local output. Do not paste the file contents into chat or URLs. Keep this command running and capture stopped until `Verified coordinator Identity` appears; browser confirmation alone is incomplete.
+
+The server must already have an active, review-backed account link (`controller_attestation`) and eligible existing Identity group grants. Ordinary `device_claim` sessions remain unsupported until a one-time reviewed authority upgrade is available. This mode creates neither grants nor device-claim authority. The flag does not deploy or enable the server page, and no live Google or two-device acceptance is claimed here.
+
+Preparation and `--json` behavior are unchanged; all resume operations remain interactive. Retained-final retries reuse the exact signed request without a current capability or browser. Retained-receipt retries can adopt config offline. Local review, capture pauses, cancellation, private-file checks, and refusal of conflicting keys or locks still apply. If the browser was opened but no final request was retained, keep the old state unchanged and prepare a new attempt in a new state directory only after conflicts are reviewed.
+
 ### Keychain (optional)
 
 - `CODEMEM_SYNC_KEY_STORE=keychain` stores the private key in Secret Service (Linux) or Keychain (macOS).

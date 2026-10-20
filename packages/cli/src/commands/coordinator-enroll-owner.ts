@@ -31,6 +31,7 @@ type Options = {
 	prepare?: boolean;
 	resume?: boolean;
 	capability?: string;
+	accountAdmission?: boolean;
 	reviewDigest?: string;
 };
 const CAPTURE_WARNING =
@@ -41,6 +42,25 @@ function showPrivateBrowserLink(privateUrl: string): void {
 		{ output: process.stderr },
 	);
 	p.log.message(privateUrl, { output: process.stderr });
+}
+function showAccountAdmissionLink(
+	url: string,
+	request?: { requestFile: string; deviceId: string; fingerprint: string },
+): void {
+	if (!request) throw new OwnerProfileEnrollmentError("review_required");
+	p.log.warn(
+		"Open this account admission page while signed in to the intended account. Upload the private capability-request.json file below unchanged, compare the local fingerprint, and review the device. Keep this command running and capture stopped; browser confirmation alone does not finish enrollment. No Team or Project access is added.",
+		{ output: process.stderr },
+	);
+	p.log.message(
+		`${url}\nPrivate request file: ${request.requestFile}\nDevice: ${request.deviceId}\nLocal fingerprint: ${request.fingerprint}`,
+		{ output: process.stderr },
+	);
+}
+function admissionOptions(options: Options) {
+	if (options.accountAdmission)
+		return { admissionMode: "account" as const, onBrowserStart: showAccountAdmissionLink };
+	return { admissionMode: "operator" as const, onBrowserStart: showPrivateBrowserLink };
 }
 function reportUsageError(options: Options, message: string): false {
 	if (options.json) emitJsonError("usage_error", message, 2);
@@ -53,12 +73,13 @@ function reportUsageError(options: Options, message: string): false {
 function usage(options: Options): boolean {
 	if (
 		options.prepare === options.resume ||
-		(options.prepare && (options.capability || options.reviewDigest)) ||
+		(options.prepare && (options.capability || options.reviewDigest || options.accountAdmission)) ||
+		(options.accountAdmission && options.capability !== undefined) ||
 		(options.resume && !options.reviewDigest) ||
 		(options.resume && (options.json || !process.stderr.isTTY))
 	) {
 		const message =
-			"Use --prepare first, then review its device, current Identity, capture counts and digest. Resume interactively with --resume --review-digest; add --capability only to start the browser ceremony.";
+			"Use --prepare first, then review its device, current Identity, capture counts and digest. Resume interactively with --resume --review-digest; use either --capability for operator admission or --account-admission for signed-in account admission, never both.";
 		return reportUsageError(options, message);
 	}
 	if (options.capability !== undefined && !/^[A-Za-z0-9._-]{1,512}$/.test(options.capability)) {
@@ -224,10 +245,10 @@ async function enroll(groupId: string, options: Options): Promise<void> {
 			groupId,
 			stateDir: options.stateDir ?? join(dirname(profile.dbPath), "owner-enrollment"),
 			mode: options.prepare ? "prepare" : "resume",
+			...admissionOptions(options),
 			capability: options.capability,
 			reviewedDigest: options.reviewDigest,
 			signal: controller.signal,
-			onBrowserStart: showPrivateBrowserLink,
 		});
 		showResult(result, options);
 	} catch (error) {
@@ -260,7 +281,7 @@ function showResult(
 			{ output: process.stderr },
 		);
 		p.log.message(
-			`Give the private request file to your coordinator operator: ${result.requestFile}`,
+			`Private request file for operator admission or upload during --resume --account-admission: ${result.requestFile}`,
 			{ output: process.stderr },
 		);
 		p.log.warn(
@@ -285,6 +306,7 @@ export function buildCoordinatorEnrollOwnerCommand(): Command {
 		.option("--prepare", "save a reviewed request for operator admission")
 		.option("--resume", "resume the saved request or config-only adoption")
 		.option("--capability <token>", "admin-issued capability for this exact start")
+		.option("--account-admission", "use signed-in account admission with --resume only")
 		.option("-v, --review-digest <digest>", "explicitly approve the prepared profile review");
 	addDbOption(command);
 	addConfigOption(command);

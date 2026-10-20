@@ -120,7 +120,7 @@ Every standard flag has both a short form and a long form, defined consistently:
 ### Short flag conventions
 
 - Every new flag should define both a short form and a long form.
-- Long-only flags are allowed when a short alias would conflict with an established meaning. Owner enrollment keeps `--keys-dir`, `--prepare`, `--resume`, and `--capability` long-only; `-k`, `-p`, `-r`, and `-a` retain their existing meanings elsewhere.
+- Long-only flags are allowed when a short alias would conflict with an established meaning. Owner enrollment keeps `--keys-dir`, `--prepare`, `--resume`, `--capability`, and `--account-admission` long-only; `-k`, `-p`, `-r`, and `-a` retain their existing meanings elsewhere.
 - Short forms are single letters: `-j`, `-d`, `-c`, `-n`, `-l`, etc.
 - Do not reuse the same short letter for different meanings across commands.
 - Standard short forms defined in this doc take precedence over per-command inventions.

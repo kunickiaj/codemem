@@ -59,9 +59,14 @@ export type OwnerProfileClientOptions = OwnerProfilePaths & {
 	fetch?: typeof globalThis.fetch;
 	signal?: AbortSignal;
 	mode: "prepare" | "resume";
+	/** Account admission is explicit; omitted selectors retain operator admission. */
+	admissionMode?: "operator" | "account";
 	capability?: string;
 	reviewedDigest?: string;
-	onBrowserStart?: (privateUrl: string) => Promise<void> | void;
+	onBrowserStart?: (
+		privateUrl: string,
+		accountRequest?: { requestFile: string; deviceId: string; fingerprint: string },
+	) => Promise<void> | void;
 };
 export type OwnerProfileClientResult =
 	| { kind: "prepared"; review: OwnerProfileReview; reviewDigest: string; requestFile: string }
@@ -75,9 +80,9 @@ const ERROR_MESSAGES: Record<OwnerProfileEnrollmentErrorCode, string> = {
 	unsupported_platform:
 		"Existing-profile owner enrollment is not available on Windows until private-file ACL verification is implemented. Keep this profile unchanged; do not copy signing keys to work around this limitation.",
 	review_required:
-		"Owner enrollment incomplete. Keep the profile and saved files unchanged; check the reviewed digest and admission capability. Identity, key, access or lock conflicts require operator review. Do not remove unknown, live or legacy config locks.",
+		"Owner enrollment incomplete. Keep the profile and saved files unchanged; check the reviewed digest and selected admission mode (including the capability for operator admission). Identity, key, access or lock conflicts require operator review. Do not remove unknown, live or legacy config locks.",
 	fresh_prepare_required:
-		"Owner enrollment incomplete. A start may have been consumed, but no final request was saved, so this attempt cannot be reused. Keep the original directory unchanged. Ask the operator to review any Identity, key or access conflict; ownership transfer and key replacement are not supported. Once cleared, stop capture writers, run --prepare with a NEW --state-dir and obtain a capability for the new request.",
+		"Owner enrollment incomplete. A start may have been consumed, but no final request was saved, so this attempt cannot be reused. Keep the original directory unchanged. Ask the operator to review any Identity, key or access conflict; ownership transfer and key replacement are not supported. Once cleared, stop capture writers, run --prepare with a NEW --state-dir and admit the new request through the selected account or operator mode.",
 	retained_request_incomplete:
 		"Owner enrollment incomplete. A final request or receipt is retained. Keep all saved files unchanged; retry --resume with the reviewed digest for exact finalization or config-only adoption. Do not prepare a replacement request. Identity, capture, access or config lock conflicts require operator review. Do not remove unknown, live or legacy config locks.",
 };
@@ -419,8 +424,12 @@ async function complete(
 	privateKey: Buffer,
 	assertRuntime: () => void,
 ): Promise<Final> {
-	if (!options.capability || !options.onBrowserStart) return ownerProfileConflict();
-	if (!/^[A-Za-z0-9._-]{1,512}$/.test(options.capability)) return ownerProfileConflict();
+	if (!options.onBrowserStart) return ownerProfileConflict();
+	if (
+		options.admissionMode !== "account" &&
+		(!options.capability || !/^[A-Za-z0-9._-]{1,512}$/.test(options.capability))
+	)
+		return ownerProfileConflict();
 	const redirect = new URL(prepared.start.loopbackRedirect);
 	const receiver = await createCoordinatorOwnerEnrollmentReceiver({
 		attemptId: prepared.start.attemptId,
@@ -431,30 +440,11 @@ async function complete(
 	try {
 		if (receiver.destination !== prepared.start.loopbackRedirect) return ownerProfileConflict();
 		assertRuntime();
-		// Publish before sending: an uncertain start must never be replayed without final material.
+		// Publish before sending or opening: browser admission can consume the signed start too.
 		retainOwnerState(join(options.stateDir, "start-attempted.json"), {
 			attemptId: prepared.start.attemptId,
 		});
-		const response = ownerObject(
-			await request(
-				options,
-				"/v1/auth/owner-attempts",
-				JSON.stringify(prepared.start),
-				options.capability,
-			),
-		);
-		if (
-			response.kind !== "started" ||
-			response.attemptId !== prepared.start.attemptId ||
-			!Number.isSafeInteger(response.expiresAtMs) ||
-			Number(response.expiresAtMs) <= 0
-		)
-			return ownerProfileConflict();
-		const query = new URLSearchParams({
-			attempt_id: prepared.start.attemptId,
-			start_code: prepared.start.browserStartCode,
-		});
-		await options.onBrowserStart(`${prepared.pins.origin}/auth/owner/start?${query}`);
+		await deliverBrowserStart(options, prepared);
 		const completion = await receiver.completion;
 		assertRuntime();
 		const final = {
@@ -474,6 +464,44 @@ async function complete(
 	} finally {
 		await receiver.close();
 	}
+}
+async function deliverBrowserStart(
+	options: OwnerProfileClientOptions,
+	prepared: Prepared,
+): Promise<void> {
+	if (!options.onBrowserStart) return ownerProfileConflict();
+	if (options.admissionMode === "account") {
+		// Verify the private upload still contains exactly the reviewed signed request.
+		const requestFile = join(prepared.paths.stateDir, "capability-request.json");
+		if (JSON.stringify(readOwnerState(requestFile)) !== JSON.stringify({ start: prepared.start }))
+			return ownerProfileConflict();
+		await options.onBrowserStart(`${prepared.pins.origin}/auth/owner/admit`, {
+			requestFile,
+			deviceId: prepared.start.deviceId,
+			fingerprint: await ownerEnrollmentHash(prepared.start.publicKey),
+		});
+		return;
+	}
+	const response = ownerObject(
+		await request(
+			options,
+			"/v1/auth/owner-attempts",
+			JSON.stringify(prepared.start),
+			options.capability,
+		),
+	);
+	if (
+		response.kind !== "started" ||
+		response.attemptId !== prepared.start.attemptId ||
+		!Number.isSafeInteger(response.expiresAtMs) ||
+		Number(response.expiresAtMs) <= 0
+	)
+		return ownerProfileConflict();
+	const query = new URLSearchParams({
+		attempt_id: prepared.start.attemptId,
+		start_code: prepared.start.browserStartCode,
+	});
+	await options.onBrowserStart(`${prepared.pins.origin}/auth/owner/start?${query}`);
 }
 function receipt(value: unknown, groupId: string): OwnerEnrollmentReceipt {
 	const r = ownerObject(value);
@@ -665,6 +693,7 @@ export async function enrollOwnerProfile(
 ): Promise<OwnerProfileClientResult> {
 	if (process.platform === "win32") throw new OwnerProfileEnrollmentError("unsupported_platform");
 	try {
+		assertAdmissionMode(options);
 		// A caller's cancellation signal must not disable the ceremony's ten-minute limit.
 		const timeout = AbortSignal.timeout(600000);
 		options = {
@@ -693,6 +722,12 @@ export async function enrollOwnerProfile(
 	} catch {
 		throw enrollmentFailure(options);
 	}
+}
+function assertAdmissionMode(options: OwnerProfileClientOptions): void {
+	const selector: unknown = options.admissionMode;
+	if (selector !== undefined && selector !== "operator" && selector !== "account")
+		ownerProfileConflict();
+	if (selector === "account" && options.capability !== undefined) ownerProfileConflict();
 }
 function enrollmentFailure(options: OwnerProfileClientOptions): OwnerProfileEnrollmentError {
 	try {

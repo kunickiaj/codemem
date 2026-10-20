@@ -602,6 +602,16 @@ codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-di
 
 After an ambiguous failure with a retained final request, retry that exact request unchanged. If a start succeeded but no final request was saved, retain the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the earlier state. Google confirmation and a two-device workflow have not been verified live.
 
+Account admission is a separate, explicit opt-in on coordinators that serve the authenticated `/auth/owner/admit` page. After the same preparation and local review, use this instead of `--capability`:
+
+```text
+codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com"
+```
+
+Open the displayed fixed HTTPS link manually while signed in to the intended account, upload the unchanged private `capability-request.json`, and compare the displayed local fingerprint. Keep the command running and capture stopped until `Verified coordinator Identity` appears. The client sends no initial operator start request and needs no operator capability; never combine the two admission modes. Preparation still supports `--json`; resume requires an interactive terminal.
+
+This mode requires an active, review-backed account link (`controller_attestation`) and existing eligible Identity group grants. An ordinary `device_claim` login is not sufficient until a one-time reviewed authority upgrade is available. Account admission creates no new grants or device-claim authority, and this client flag alone does not enable the server page. A retained final request needs no current capability or browser; a retained receipt supports offline config-only adoption. All local review, key, capture and lock checks still apply.
+
 ### Device pairing and compatibility
 
 For a same-person device or compatibility workflow, open **Devices**, choose **Pair a device**, and copy the displayed command. Run it on the device you want to connect, copy that device's payload, then paste and review the payload back in **Devices**.
