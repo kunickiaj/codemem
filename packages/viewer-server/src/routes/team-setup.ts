@@ -241,10 +241,12 @@ function summaryWithoutAdminAccess(
 	const rows = store.db
 		.prepare(
 			`SELECT DISTINCT coordinator_id, group_id FROM legacy_team_setup_drafts
-			 ORDER BY coordinator_id, group_id LIMIT ?`,
+			 ORDER BY coordinator_id, group_id`,
 		)
-		.all(MAX_CONFIGURED_GROUPS) as Array<{ coordinator_id: string; group_id: string }>;
-	return rows.flatMap((row) => {
+		.all() as Array<{ coordinator_id: string; group_id: string }>;
+	// Bound the result only after dropping finished work, so old completed
+	// migrations can never crowd out an unfinished one.
+	const pending = rows.flatMap((row) => {
 		const candidateRef = legacyTeamCandidateId(row.coordinator_id, row.group_id);
 		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 		if (!draft || draft.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
@@ -260,6 +262,7 @@ function summaryWithoutAdminAccess(
 			},
 		];
 	});
+	return pending.slice(0, MAX_CONFIGURED_GROUPS);
 }
 
 function isCoordinatorRosterTooLargeError(error: unknown): boolean {
