@@ -3,6 +3,7 @@ import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { oidcFixture } from "./coordinator-oidc-test-fixtures.js";
+import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
 	ownerStartFixture,
 	seedOwnerCallbackAuthority,
@@ -491,21 +492,37 @@ it.each([
 	await deniedWithoutEffects(c, () => c.post(body));
 });
 
-it("rejects invalid pending-key proof before composition or writes", async () => {
-	// Arrange
-	const c = await fixture();
-	const body = c.upload(
-		await c.page(),
-		JSON.stringify({ start: { ...c.start, signature: "invalid" } }),
-	);
-	const before = f.snapshot();
-	// Act
-	const response = await c.post(body);
-	// Assert
-	expect(response.status).toBe(400);
-	expect(f.snapshot()).toEqual(before);
-	expect(c.composition).not.toHaveBeenCalled();
-});
+it.each(["malformed", "invalid-ed25519", "other-key"] as const)(
+	"rejects invalid pending-key proof before composition or writes (%s)",
+	async (mode) => {
+		// Arrange: keep the real pending public key and signed tuple; vary only the proof.
+		const c = await fixture();
+		let signature = "invalid";
+		if (mode === "invalid-ed25519") signature = Buffer.alloc(64, 0xff).toString("base64url");
+		if (mode === "other-key")
+			signature = commitPendingKey().sign(
+				ownerEnrollmentStartMessage(c.start, { ...config, origin: ORIGIN }),
+			);
+		const body = c.upload(await c.page(), JSON.stringify({ start: { ...c.start, signature } }));
+		const before = f.snapshot();
+		const run = vi.spyOn(f.backend, "run");
+		const batch = vi.spyOn(f.backend, "batch");
+		// Act
+		const response = await c.post(body);
+		// Assert: canonical 64-byte proofs must fail cryptographic verification, not just parsing.
+		if (mode !== "malformed") {
+			expect(Buffer.from(signature, "base64url")).toHaveLength(64);
+			expect(Buffer.from(signature, "base64url").toString("base64url")).toBe(signature);
+			expect(signature).not.toBe(c.start.signature);
+		}
+		expect(response.status).toBe(400);
+		expect(run).not.toHaveBeenCalled();
+		expect(batch).not.toHaveBeenCalled();
+		expect(f.snapshot()).toEqual(before);
+		expect(c.composition).not.toHaveBeenCalled();
+		expect(c.provider.fetch).not.toHaveBeenCalled();
+	},
+);
 
 it.each([
 	"oversize-stream",
