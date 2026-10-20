@@ -65,6 +65,7 @@ it("classifies every repository migration without replaying auth or excluded own
 		"0030_add_owner_enrollment_attempts.sql",
 		"0031_add_owner_enrollment_audit_log.sql",
 		"0034_add_owner_admission_pin.sql",
+		"0035_add_owner_enrollment_qualifications.sql",
 	];
 	// Act
 	const caller = historicalCallerMigrationNames(availableMigrations);

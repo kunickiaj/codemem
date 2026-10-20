@@ -42,6 +42,7 @@ const excludedOwnerMigrationNames = [
 	"0030_add_owner_enrollment_attempts.sql",
 	"0031_add_owner_enrollment_audit_log.sql",
 	"0034_add_owner_admission_pin.sql",
+	"0035_add_owner_enrollment_qualifications.sql",
 ];
 
 /** Closed fixture inputs only: unknown, missing or duplicate migrations require review. */
