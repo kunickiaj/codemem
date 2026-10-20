@@ -297,17 +297,18 @@ export class OwnerEnrollmentQualificationOps {
 			const c = this.config;
 			const now = authLinkNow(this.clock);
 			if (!c?.enabled || !(await this.schemaReady())) return unavailable();
-			const values = [c.coordinatorId, i.qualificationId, i.linkId, now];
+			const values = [c.coordinatorId, i.qualificationId, i.linkId];
 			const statement: AuthLinkStatement = {
-				sql: `UPDATE coordinator_owner_enrollment_qualifications SET revoked_at_ms=?
- WHERE coordinator_id=? AND qualification_id=? AND link_id=? AND created_at_ms<=? AND revoked_at_ms IS NULL`,
+				// Clock rollback must not delay revocation or rewrite an earlier receipt.
+				sql: `UPDATE coordinator_owner_enrollment_qualifications SET revoked_at_ms=MAX(?,created_at_ms)
+ WHERE coordinator_id=? AND qualification_id=? AND link_id=? AND revoked_at_ms IS NULL`,
 				values: [now, ...values],
 			};
 			writeAttempted = true;
 			await this.backend.run(statement);
 			const row = await this.backend.first<{ qualification_id: string }>({
 				sql: `SELECT qualification_id FROM coordinator_owner_enrollment_qualifications
- WHERE coordinator_id=? AND qualification_id=? AND link_id=? AND created_at_ms<=? AND revoked_at_ms IS NOT NULL`,
+ WHERE coordinator_id=? AND qualification_id=? AND link_id=? AND revoked_at_ms IS NOT NULL`,
 				values,
 			});
 			return row ? { kind: "revoked", qualificationId: row.qualification_id } : unavailable();

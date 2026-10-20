@@ -431,6 +431,9 @@ coordinator/link unique index. The table uses `WITHOUT ROWID`, removing hidden
 rowid writes and any reliance on an undefined preassignment rowid value. Inserts
 require null revocation. Only explicit UPDATE can advance revocation from null
 to a valid timestamp at or after creation, or repeat the same timestamp.
+If the clock moves backward, revocation uses the later of the current time and
+the stored creation time. Exact retries preserve the first revocation timestamp
+without requiring the clock to catch up.
 No cascading foreign key ties retained evidence to an old
 device's enrollment or history.
 

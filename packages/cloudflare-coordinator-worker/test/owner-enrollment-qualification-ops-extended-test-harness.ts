@@ -25,6 +25,7 @@ export function registerExtendedQualificationOpsTests(test: Test) {
 	registerDigestChanges(test);
 	registerIssueFaults(test, ["before_commit"]);
 	registerRevokeFaults(test);
+	registerRevokeClockRollback(test);
 	registerReadFaults(test);
 	registerMalformedInputs(test);
 	registerAccessors(test);
@@ -55,6 +56,75 @@ function registerDigestChanges(test: Test) {
 			expect(await f.rows()).toEqual([]);
 		},
 	);
+}
+function registerRevokeClockRollback(test: Test) {
+	test("clock rollback before first revoke clamps to creation and exact retry preserves it", async ({
+		fixture: f,
+	}) => {
+		// Arrange: issue at the valid fixture clock, then lose the old enrollment.
+		const created = await f.issue();
+		const pair = { qualificationId: created.qualificationId, linkId: "claim-a" };
+		const before = (await f.rows())[0];
+		const createdAt = Number(before?.created_at_ms);
+		await f.exec("DELETE FROM enrolled_devices");
+		const protectedBefore = await f.snapshot();
+		// Act
+		f.clock(createdAt - 1);
+		const revoked = await f.ops.revoke(pair);
+		const committed = await f.rows();
+		f.clock(createdAt - 2);
+		const retry = await f.ops.revoke(pair);
+		// Assert: neither initial revocation nor retry requires a live device or later clock.
+		expect(revoked).toEqual({ kind: "revoked", qualificationId: created.qualificationId });
+		expect(committed).toEqual([{ ...before, revoked_at_ms: createdAt }]);
+		expect(retry).toEqual(revoked);
+		expect(await f.rows()).toEqual(committed);
+		expect(await f.snapshot()).toEqual(protectedBefore);
+	});
+	test("clock rollback after normal revoke returns the original ID and timestamp", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const created = await f.issue();
+		const pair = { qualificationId: created.qualificationId, linkId: "claim-a" };
+		const before = (await f.rows())[0];
+		const createdAt = Number(before?.created_at_ms);
+		// Act
+		f.clock(createdAt + 300);
+		const revoked = await f.ops.revoke(pair);
+		const committed = await f.rows();
+		f.clock(createdAt - 1);
+		const retry = await f.ops.revoke(pair);
+		// Assert
+		expect(revoked).toEqual({ kind: "revoked", qualificationId: created.qualificationId });
+		expect(committed).toEqual([{ ...before, revoked_at_ms: createdAt + 300 }]);
+		expect(retry).toEqual(revoked);
+		expect(await f.rows()).toEqual(committed);
+	});
+	test("clock rollback still denies wrong qualification, link and coordinator without writes", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const created = await f.issue();
+		const pair = { qualificationId: created.qualificationId, linkId: "claim-a" };
+		const before = await f.rows();
+		const now = Number(before[0]?.created_at_ms) - 1;
+		f.clock(now);
+		const other = new OwnerEnrollmentQualificationOps(
+			f.backend,
+			{ ...config, coordinatorId: "other" },
+			() => now,
+		);
+		// Act
+		const wrongQualification = await f.ops.revoke({ ...pair, qualificationId: "missing" });
+		const wrongLink = await f.ops.revoke({ ...pair, linkId: "other" });
+		const wrongCoordinator = await other.revoke(pair);
+		// Assert
+		expect(wrongQualification).toEqual(rejected);
+		expect(wrongLink).toEqual(rejected);
+		expect(wrongCoordinator).toEqual(rejected);
+		expect(await f.rows()).toEqual(before);
+	});
 }
 function registerRevokeFaults(test: Test) {
 	test.for(["before_commit", "after_commit"] as const)(
