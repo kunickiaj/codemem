@@ -369,7 +369,7 @@ Account linking is optional. It does not grant Team or Project access, move an I
 
 When the coordinator advertises account-management capability, a linked account can show **Refresh profile** and **Unlink Google account**. **Check status** only reads the signed coordinator result; it does not refresh a profile. Refresh requires fresh Google proof and has no extra confirmation.
 
-Unlink requires fresh Google proof and then one hosted confirmation; it preserves the Identity, device keys, access, and retained history while ending the current link and its old sessions. To link again—whether to the same or another Google account—choose the normal **Link Google account** flow after unlinking. There is no switch flow or automatic unlink.
+Unlink asks once in the Viewer and uses this device’s existing authorization; it does not open Google sign-in or another tab. Cancel leaves the account unchanged. Confirming ends the current link, its browser sessions and display profile, while preserving your Identity, device keys, history, memberships and access grants. To link again—whether to the same or another Google account—choose **Link Google account** and complete Google verification. There is no switch flow or automatic unlink.
 
 If these controls are absent, management is not currently available for this device and coordinator. Check status before retrying; do not use an external Google workaround or an operator credential.
 

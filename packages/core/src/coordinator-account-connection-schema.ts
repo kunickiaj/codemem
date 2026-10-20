@@ -1,5 +1,12 @@
-import { ACCOUNT_CHANGE_SCHEMA_STATEMENTS } from "./coordinator-account-change-schema.js";
+import {
+	ACCOUNT_CHANGE_SCHEMA_STATEMENTS,
+	BROWSER_ACCOUNT_ARCHIVE_GUARD,
+} from "./coordinator-account-change-schema.js";
 import { ACCOUNT_CONNECTION_STORAGE_STATEMENTS } from "./coordinator-account-connection-storage.js";
+import {
+	ACCOUNT_UNLINK_SCHEMA_STATEMENTS,
+	accountArchiveReceiptGuard,
+} from "./coordinator-account-unlink-schema.js";
 import {
 	authDeviceClaimDefinitionChecks,
 	authSchemaDefinitionCheck,
@@ -120,17 +127,31 @@ const knownCoordinators = `SELECT coordinator_id FROM coordinator_auth_account_l
 const rowsValid = `NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links WHERE typeof(signin_floor)<>'integer' OR signin_floor<0 OR signin_floor>9007199254740991)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions WHERE start_order IS NOT NULL AND (typeof(start_order)<>'integer' OR start_order<1 OR start_order>9007199254740991))
  AND NOT EXISTS (SELECT 1 FROM (SELECT coordinator_id FROM coordinator_auth_account_links UNION SELECT coordinator_id FROM coordinator_auth_browser_transactions UNION SELECT coordinator_id FROM coordinator_auth_sessions) c LEFT JOIN coordinator_auth_account_connection_orders o ON o.coordinator_id=c.coordinator_id WHERE o.last_order IS NULL OR o.last_order<1)`;
+const priorObjectCheck = `NOT EXISTS (SELECT 1 FROM sqlite_master WHERE ${reservedObjects} AND name NOT IN (${definitions.map((d) => quote(d.name)).join(",")}))`;
 const checks = [
 	...definitions.map((d) => d.matches),
 	...inventory,
 	columnCounts(true),
 	`(${v2Readiness(4)})=10`,
-	`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE ${reservedObjects} AND name NOT IN (${definitions.map((d) => quote(d.name)).join(",")}))`,
+	priorObjectCheck,
 	rowsValid,
 ];
 // VALUES avoids D1's compound-SELECT term limit without omitting any check.
-const readySql = `SELECT min(column1) AS ready FROM (VALUES ${checks.map((s) => `(CASE WHEN ${s} THEN 1 ELSE 0 END)`).join(",")})`;
-export const ACCOUNT_CONNECTION_SCHEMA_CHECKS = checks;
+const readiness = (checks: string[]) =>
+	`SELECT min(column1) AS ready FROM (VALUES ${checks.map((s) => `(CASE WHEN ${s} THEN 1 ELSE 0 END)`).join(",")})`;
+const legacyReadySql = readiness(checks);
+const unlinkGuard = accountArchiveReceiptGuard(BROWSER_ACCOUNT_ARCHIVE_GUARD);
+const newDefinitions = [...ACCOUNT_UNLINK_SCHEMA_STATEMENTS, unlinkGuard].map((s) =>
+	authSchemaDefinitionCheck(s, s.startsWith("CREATE TABLE") ? { auxiliaryObjects: 4 } : undefined),
+);
+const oldGuardCheck = authSchemaDefinitionCheck(BROWSER_ACCOUNT_ARCHIVE_GUARD).matches;
+const currentChecks = checks.filter((s) => s !== oldGuardCheck && s !== priorObjectCheck);
+currentChecks.push(
+	...newDefinitions.map((d) => d.matches),
+	`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE ${reservedObjects} AND name NOT IN (${[...definitions, ...newDefinitions].map((d) => quote(d.name)).join(",")}))`,
+);
+const readySql = readiness(currentChecks);
+export const ACCOUNT_CONNECTION_SCHEMA_CHECKS = currentChecks;
 export type ConnectionSchemaState = "v2" | "ready" | "upgrade_required";
 export async function readConnectionSchemaState(
 	backend: Pick<AuthLinkBackend, "first">,
@@ -157,7 +178,7 @@ export async function readConnectionSchemaState(
 
 /** Explicit operator operation only: never called by store initialization. One
  * atomic batch preserves existing rowids, credentials and proof bytes. */
-export const ACCOUNT_CONNECTION_MIGRATION_STATEMENTS = [
+export const PRIOR_ACCOUNT_CONNECTION_MIGRATION_STATEMENTS = [
 	`INSERT INTO coordinator_auth_device_claims (claim_id) SELECT NULL WHERE NOT (((${AUTH_V2_SCHEMA_READINESS_SQL})=10) AND NOT (${CONNECTION_SCHEMA_PRESENCE_SQL}) AND (${columnCounts(false)}))`,
 	...extensions,
 	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT coordinator_id,0 FROM (${knownCoordinators})`,
@@ -169,15 +190,42 @@ export const ACCOUNT_CONNECTION_MIGRATION_STATEMENTS = [
  SELECT 1 FROM coordinator_auth_account_profiles p WHERE p.coordinator_id=r.coordinator_id
  AND p.link_id=r.link_id AND p.source_session_id=r.session_id
  AND p.source_signed_in_at_ms=r.created_at_ms AND p.source_order=1)`,
+	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${legacyReadySql})`,
+] as const;
+export const ACCOUNT_CONNECTION_MIGRATION_STATEMENTS = [
+	...PRIOR_ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.slice(0, -1),
+	...ACCOUNT_UNLINK_SCHEMA_STATEMENTS,
+	"DROP TRIGGER account_change_archive_receipt",
+	unlinkGuard,
+	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${readySql})`,
+] as const;
+/** Only the exact prior account extension can take this atomic, no-rebuild delta. */
+export const ACCOUNT_UNLINK_MIGRATION_STATEMENTS = [
+	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${legacyReadySql})`,
+	...ACCOUNT_UNLINK_SCHEMA_STATEMENTS,
+	"DROP TRIGGER account_change_archive_receipt",
+	unlinkGuard,
 	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${readySql})`,
 ] as const;
 export async function applyAccountConnectionSchema(backend: AuthLinkBackend): Promise<void> {
 	const state = await readConnectionSchemaState(backend);
 	if (state === "ready") throw new Error("account_connection_schema_already_installed");
-	if (state !== "v2") throw new CoordinatorAuthSchemaUpgradeRequiredError();
+	const legacy = state === "upgrade_required" && (await hasPriorAccountSchema(backend));
+	if (state !== "v2" && !legacy) throw new CoordinatorAuthSchemaUpgradeRequiredError();
 	await backend.batch(
-		ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql): AuthLinkStatement => ({ sql, values: [] })),
+		(legacy ? ACCOUNT_UNLINK_MIGRATION_STATEMENTS : ACCOUNT_CONNECTION_MIGRATION_STATEMENTS).map(
+			(sql): AuthLinkStatement => ({ sql, values: [] }),
+		),
 	);
 	if ((await readConnectionSchemaState(backend)) !== "ready")
 		throw new CoordinatorAuthSchemaUpgradeRequiredError();
+}
+async function hasPriorAccountSchema(backend: AuthLinkBackend): Promise<boolean> {
+	try {
+		return (
+			(await backend.first<{ ready: number }>({ sql: legacyReadySql, values: [] }))?.ready === 1
+		);
+	} catch {
+		return false;
+	}
 }

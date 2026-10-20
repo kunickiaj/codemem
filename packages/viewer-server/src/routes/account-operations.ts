@@ -98,6 +98,7 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 	groupId: string;
 	intent?: "connect" | "refresh" | "disconnect";
 	contextId: string;
+	expectedLinkId?: string;
 	coordinatorId: string;
 	authority: "controller_attestation" | "device_claim";
 } {
@@ -106,6 +107,7 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 		validString(body.groupId) &&
 		validString(body.contextId) &&
 		validString(body.coordinatorId) &&
+		(body.intent !== "disconnect" || validString(body.expectedLinkId)) &&
 		(body.intent === undefined ||
 			body.intent === "connect" ||
 			body.intent === "refresh" ||
@@ -113,11 +115,17 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 		(body.authority === "controller_attestation" || body.authority === "device_claim")
 	);
 }
+function unlinkTargetChanged(
+	body: { intent?: string; expectedLinkId?: string },
+	view: AccountLinkViewV1,
+): boolean {
+	return body.intent === "disconnect" && body.expectedLinkId !== view.unlinkTarget;
+}
 async function startOperation(c: Context, options: Options): Promise<Response> {
 	const body = await readBody(
 		c.req.raw,
 		["groupId", "contextId", "authority", "coordinatorId"],
-		["intent"],
+		["intent", "expectedLinkId"],
 	);
 	if (!validStartBody(body)) return c.json({ error: "account_invalid_request" }, 400);
 	const initial = options.readContext(body.groupId);
@@ -154,6 +162,7 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 		return c.json({ error: "account_status_unavailable" }, 503);
 	if (!actionAllowed(view, body.intent) || view.remote.kind !== "status")
 		return c.json({ error: "account_link_not_allowed", blockedReason: view.blockedReason }, 409);
+	if (unlinkTargetChanged(body, view)) return c.json({ error: "account_context_changed" }, 409);
 	return beginCurrentOperation(
 		c,
 		options,
@@ -177,6 +186,7 @@ function beginCurrentOperation(
 		intent?: "connect" | "refresh" | "disconnect";
 		groupId: string;
 		contextId: string;
+		expectedLinkId?: string;
 		coordinatorId: string;
 		authority: "controller_attestation" | "device_claim";
 	},
@@ -209,6 +219,7 @@ function beginCurrentOperation(
 		expectedCoordinatorId,
 		expectedAuthority: body.authority,
 		expectedLifecycleToken,
+		expectedLinkId: body.expectedLinkId,
 	});
 	if ("error" in result)
 		return c.json(result, result.error === "account_shutting_down" ? 503 : 409);

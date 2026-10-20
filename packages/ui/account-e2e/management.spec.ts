@@ -92,7 +92,7 @@ for (const empty of [false, true]) {
 	});
 }
 
-test("disconnect confirms once, normal public link connects B, old A proof/session cannot revive", async ({
+for (const subject of ["account-A","account-B"]) test(`device unlink confirms once; normal public link connects ${subject}; old proof/session cannot revive`, async ({
 	page,
 	context,
 }) => {
@@ -102,16 +102,14 @@ test("disconnect confirms once, normal public link connects B, old A proof/sessi
 		const before = f.preserved();
 		expect(await f.oldSession()).not.toBeNull();
 		await page.goto(f.viewerOrigin);
-		// Act: exactly one hosted unlink confirmation, no Viewer confirmation.
-		const unlink = await openProvider(page, context, "Unlink Google account");
-		await unlink.getByRole("link", { name: "Complete synthetic sign-in" }).click();
-		await expect(
-			unlink.getByRole("button", { name: "Disconnect Google account", exact: true }),
-		).toHaveCount(1);
+		// Act: one local dialog; no popup, provider visit or loopback receiver.
+		await page.getByRole("button",{name:"Unlink Google account",exact:true}).click();
+		const dialog=page.getByRole("dialog",{name:"Unlink Google account?"});
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByRole("button",{name:"Unlink account",exact:true})).toHaveCount(1);
 		expect(f.finalRequests).toHaveLength(0);
-		const closed = unlink.waitForEvent("close");
-		await unlink.getByRole("button", { name: "Disconnect Google account", exact: true }).click();
-		await closed;
+		expect(f.unlinkRequests).toHaveLength(0);
+		await dialog.getByRole("button", { name: "Unlink account", exact: true }).click();
 		await expect(
 			page.getByRole("button", { name: "Link Google account", exact: true }),
 		).toBeEnabled();
@@ -120,8 +118,12 @@ test("disconnect confirms once, normal public link connects B, old A proof/sessi
 			status: { state: "unlinked", account: null },
 		});
 		expect(await f.oldSession()).toBeNull();
+		expect(context.pages()).toHaveLength(1);
+		expect(f.providerHops).toEqual([]);
+		expect(f.browserPosts).toEqual([]);
+		expect(f.unlinkRequests).toHaveLength(1);
 		await assertBirthCannotRevive(f);
-		f.claims.sub = "account-B";
+		f.claims.sub = subject;
 		f.claims.name = "Account B";
 		f.claims.email = "b@example.test";
 		delete f.claims.picture;
@@ -138,10 +140,15 @@ test("disconnect confirms once, normal public link connects B, old A proof/sessi
 			status: { state: "linked", account: { displayName: "Account B", email: "b@example.test" } },
 		});
 		expect(await f.oldSession()).toBeNull();
+		const unlinkBody=await f.unlinkRequests[0]?.clone().json();
+		const newLinks=f.rows("coordinator_auth_account_links");
+		expect((await f.signed("/v1/auth/account-unlinks",unlinkBody)).status).toBe(200);
+		expect((await f.signed("/v1/auth/account-unlinks",{...unlinkBody,attempt_id:"stale-confirmation"})).status).toBe(403);
+		expect(f.rows("coordinator_auth_account_links")).toEqual(newLinks);
 		await assertBirthCannotRevive(f);
 		expect(f.preserved()).toEqual(before);
 		expect(f.browserPosts.filter((path) => path === "/auth/account/change/confirm")).toHaveLength(
-			1,
+			0,
 		);
 		expect(f.blocked.filter((origin) => origin !== "https://lh3.googleusercontent.com")).toEqual(
 			[],
@@ -223,13 +230,13 @@ test("blocked popup fallback opens a tab; cancellation preserves account and key
 		const before = f.preserved();
 		await page.goto(f.viewerOrigin);
 		// Act: fallback keeps Viewer location and uses the public browser start.
-		await page.getByRole("button", { name: "Unlink Google account", exact: true }).click();
+		await page.getByRole("button", { name: "Refresh profile", exact: true }).click();
 		await expect(
 			page.getByRole("button", { name: "Open Google sign-in", exact: true }),
 		).toBeVisible();
 		expect(context.pages()).toHaveLength(1);
 		await openProvider(page, context, "Open Google sign-in");
-		await page.getByRole("button", { name: "Cancel unlinking", exact: true }).click();
+		await page.getByRole("button", { name: "Cancel refresh", exact: true }).click();
 		// Assert: cancellation cannot publish unlink success or mutate retained data.
 		await expect(page.getByText("Original profile", { exact: true })).toBeVisible();
 		await expect
@@ -243,33 +250,34 @@ test("blocked popup fallback opens a tab; cancellation preserves account and key
 	}
 });
 
-test("context change after hosted verification cannot finalize disconnect", async ({
+test("local unlink cancellation and stale confirmation have no account effects or provider hops", async ({
 	page,
 	context,
 }) => {
-	// Arrange: actual hosted disconnect awaits its one confirmation.
+		// Arrange: the Viewer captures the signed target before opening its dialog.
 	const f = await fixture(context);
 	try {
 		const before = f.preserved();
 		await page.goto(f.viewerOrigin);
-		const popup = await openProvider(page, context, "Unlink Google account");
-		await popup.getByRole("link", { name: "Complete synthetic sign-in" }).click();
-		await expect(
-			popup.getByRole("button", { name: "Disconnect Google account", exact: true }),
-		).toBeVisible();
+		const trigger=page.getByRole("button",{name:"Unlink Google account",exact:true});
+		await trigger.click();
+		await page.getByRole("dialog").getByRole("button",{name:"Cancel",exact:true}).click();
+		await expect(trigger).toBeFocused();
+		expect(f.unlinkRequests).toHaveLength(0);
+		await trigger.click();
 		// Act: local context changes before the signed finalization boundary.
 		f.stale();
-		await popup.getByRole("button", { name: "Disconnect Google account", exact: true }).click();
+		await page.getByRole("dialog").getByRole("button", { name: "Unlink account", exact: true }).click();
 		// Assert: no success receipt, no account mutation, no data/key loss.
-		await expect
-			.poll(() => f.rows("coordinator_account_change_attempts"))
-			.toEqual(expect.arrayContaining([expect.objectContaining({ state: "cancelled" })]));
+		await expect(page.getByText("The local account context changed. Check status before trying again.")).toBeVisible();
 		expect(f.finalRequests).toHaveLength(0);
 		expect(await f.status()).toMatchObject({
 			kind: "status",
 			status: { state: "linked", account: { displayName: "Original profile" } },
 		});
-		expect(popup.isClosed()).toBe(false);
+		expect(f.unlinkRequests).toHaveLength(0);
+		expect(f.providerHops).toEqual([]);
+		expect(context.pages()).toHaveLength(1);
 		expect(f.preserved()).toEqual(before);
 	} finally {
 		await f.close();

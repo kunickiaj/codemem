@@ -1,4 +1,5 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
+import { RadixDialog, RadixDialogTitle } from "../components/primitives/radix-dialog";
 import {
 	type AccountOperation,
 	type AccountView,
@@ -85,12 +86,15 @@ function accountSummary(view: AccountView | null, operation: AccountOperation | 
 		return {
 			connect: "Preparing Google sign-in…",
 			refresh: "Preparing Google sign-in to refresh your profile…",
-			disconnect: "Preparing Google sign-in to unlink your account…",
+			disconnect: "Unlinking Google account…",
 		}[operation.intent ?? "connect"];
 	if (operation?.state === "awaiting_browser")
-		return operation.intent && operation.intent !== "connect"
-			? `Waiting for Google sign-in to ${copy.attempt} your account. Keep this Viewer open on the same computer.`
-			: "Waiting for Google sign-in. Keep this Viewer open on the same computer.";
+		return {
+			connect: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+			refresh:
+				"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
+			disconnect: "Unlinking Google account…",
+		}[operation.intent ?? "connect"];
 	if (operation?.state === "outcome_unknown") return unknownAccountOutcome(operation);
 	if (operation?.state === "failed" && operation.failure === "link_stopped")
 		return `${copy.subject} stopped. Check status before trying again.`;
@@ -207,8 +211,55 @@ function ManagementActions({
 	blocked: boolean;
 }) {
 	const actions = flow.view?.managementActions;
+	const [confirmation, setConfirmation] = useState<AccountView | null>(null);
+	const trigger = useRef<HTMLButtonElement>(null);
+	const close = () => setConfirmation(null);
 	return (
 		<>
+			<RadixDialog
+				open={confirmation !== null}
+				onOpenChange={(open) => {
+					if (!open) close();
+				}}
+				contentId="account-unlink-confirm"
+				overlayId="account-unlink-overlay"
+				contentClassName="modal"
+				overlayClassName="modal-backdrop"
+				onCloseAutoFocus={(event) => {
+					event.preventDefault();
+					if (trigger.current?.isConnected) trigger.current.focus();
+				}}
+				ariaLabelledby="account-unlink-title"
+				ariaDescribedby="account-unlink-description"
+			>
+				<div className="modal-card">
+					<div className="modal-header">
+						<RadixDialogTitle id="account-unlink-title">Unlink Google account?</RadixDialogTitle>
+					</div>
+					<div className="modal-body">
+						<p id="account-unlink-description">
+							This removes this account’s browser connections and profile. Your Identity, keys,
+							history and sharing access stay unchanged. Google sign-in is not needed.
+						</p>
+					</div>
+					<div className="modal-footer">
+						<button type="button" className="settings-button" onClick={close}>
+							Cancel
+						</button>
+						<button
+							type="button"
+							className="settings-save"
+							onClick={() => {
+								const captured = confirmation;
+								close();
+								if (captured) void flow.change("disconnect", captured);
+							}}
+						>
+							Unlink account
+						</button>
+					</div>
+				</div>
+			</RadixDialog>
 			{actions?.refresh ? (
 				<button
 					className="settings-button"
@@ -219,12 +270,13 @@ function ManagementActions({
 					Refresh profile
 				</button>
 			) : null}
-			{actions?.disconnect ? (
+			{actions?.disconnect && flow.view?.unlinkTarget ? (
 				<button
+					ref={trigger}
 					className="settings-button"
 					type="button"
 					disabled={blocked}
-					onClick={() => void flow.change("disconnect")}
+					onClick={() => setConfirmation(flow.view)}
 				>
 					Unlink Google account
 				</button>

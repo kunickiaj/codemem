@@ -13,7 +13,7 @@ import type { registerCoordinatorDeviceAuthLinkRoutes } from "./coordinator-devi
 type LinkDeps = Parameters<typeof registerCoordinatorDeviceAuthLinkRoutes>[1];
 type ChangeOperations = Pick<
 	AccountChangeOperations,
-	"create" | "readStatus" | "finalize" | "cancel" | "readCapabilities"
+	"create" | "readStatus" | "finalize" | "cancel" | "readCapabilities" | "unlink"
 >;
 export interface CoordinatorDeviceAccountChangeOptions {
 	config: LinkDeps["config"];
@@ -25,9 +25,10 @@ export interface CoordinatorDeviceAccountChangeOptions {
 	) => ChangeOperations | null | Promise<ChangeOperations | null>;
 }
 type Deps = Omit<LinkDeps, "config" | "storeFactory"> & CoordinatorDeviceAccountChangeOptions;
-type Action = "create" | "status" | "finalize" | "cancel" | "capabilities";
+type Action = "create" | "status" | "finalize" | "cancel" | "capabilities" | "unlink";
 const pins = ["group_id", "identity_id", "runtime_verifier_hash"] as const;
 const fields = {
+	unlink: ["group_id", "identity_id", "attempt_id", "target_link_id"],
 	capabilities: ["group_id", "identity_id"],
 	create: [...pins, "intent", "attempt_id", "browser_start_hash", "loopback_redirect"],
 	status: pins,
@@ -91,6 +92,7 @@ function validInput(data: Input, action: Action, attemptId: string, deps: Deps):
 	if (action === "capabilities")
 		return isAuthControllerId(data.group_id) && isAuthControllerId(data.identity_id);
 	if (!validPins(data, attemptId)) return false;
+	if (action === "unlink") return isAuthControllerId(data.target_link_id);
 	if (action === "finalize") {
 		return (
 			data.purpose === AUTH_ACCOUNT_CHANGE_PURPOSE &&
@@ -147,15 +149,65 @@ async function applyAction(
 	operations: ChangeOperations,
 	deps: Deps,
 ): Promise<Response> {
-	if (action === "capabilities")
+	if (action === "unlink") return applyUnlink(c, data, attemptId, signer, operations, deps);
+	if (action === "capabilities") {
+		const { unlinkTarget, ...actions } = await operations.readCapabilities(
+			{ signer, expectedIdentityId: data.identity_id },
+			deps.config,
+		);
 		return c.json({
 			coordinator_id: deps.config.coordinatorId,
 			identity_id: data.identity_id,
-			actions: await operations.readCapabilities(
-				{ signer, expectedIdentityId: data.identity_id },
-				deps.config,
-			),
+			actions,
+			...(unlinkTarget ? { unlink_target: unlinkTarget } : {}),
 		});
+	}
+	return applyBrowserAction(c, action, data, attemptId, signer, operations, deps);
+}
+async function applyUnlink(
+	c: Context,
+	data: Input,
+	attemptId: string,
+	signer: CoordinatorAuthLinkSigner,
+	operations: ChangeOperations,
+	deps: Deps,
+): Promise<Response> {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(JSON.stringify(fields.unlink.map((key) => data[key]))),
+	);
+	const requestHash = Array.from(new Uint8Array(digest), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	).join("");
+	const result = await operations.unlink(
+		{
+			attemptId,
+			signer,
+			expectedIdentityId: data.identity_id,
+			expectedLinkId: data.target_link_id,
+			requestHash,
+		},
+		deps.config,
+	);
+	return result
+		? c.json({
+				state: "completed",
+				attemptId,
+				identityId: data.identity_id,
+				coordinatorId: deps.config.coordinatorId,
+				targetLinkId: result.targetLinkId,
+			})
+		: denied(c);
+}
+async function applyBrowserAction(
+	c: Context,
+	action: Action,
+	data: Input,
+	attemptId: string,
+	signer: CoordinatorAuthLinkSigner,
+	operations: ChangeOperations,
+	deps: Deps,
+): Promise<Response> {
 	const input = {
 		attemptId,
 		signer,
@@ -207,8 +259,9 @@ async function handle(c: Context, action: Action, deps: Deps): Promise<Response>
 		try {
 			const input = await readInput(c, action, deps);
 			if (input instanceof Response) return input;
-			const attemptId =
-				action === "create" ? input.data.attempt_id : (c.req.param("attemptId") ?? "");
+			const attemptId = ["create", "unlink"].includes(action)
+				? input.data.attempt_id
+				: (c.req.param("attemptId") ?? "");
 			if (!validInput(input.data, action, attemptId, deps)) return invalid(c);
 			store = deps.storeFactory();
 			const auth = await deps.authorizeRequest(store, {
@@ -267,6 +320,7 @@ export function registerCoordinatorDeviceAccountChangeRoutes(app: Hono, deps: De
 		config: Object.freeze({ coordinatorId, issuer, revision, enabled, redirectUri }),
 	};
 	app.post("/v1/auth/account-changes", (c) => handle(c, "create", captured));
+	app.post("/v1/auth/account-unlinks", (c) => handle(c, "unlink", captured));
 	app.get("/v1/auth/account-changes", (c) => handle(c, "capabilities", captured));
 	app.get("/v1/auth/account-changes/:attemptId", (c) => handle(c, "status", captured));
 	app.post("/v1/auth/account-changes/:attemptId/finalize", (c) => handle(c, "finalize", captured));

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync as Database } from "node:sqlite";
 import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
+	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
 	BetterSqliteCoordinatorStore,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -75,6 +76,21 @@ it("exports intact statement boundaries and no transaction wrapper without openi
 	expect(existsSync(path)).toBe(false);
 	expect(out.stderr).not.toHaveBeenCalled();
 	expect(out.errors).not.toHaveBeenCalled();
+});
+it("exports only the explicit device-unlink delta without opening a database", async () => {
+	const out = await run(["--export-sql", "--device-unlink", "--json"]);
+	expect(JSON.parse(String(out.stdout.mock.calls[0]?.[0]))).toEqual({
+		statements: ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
+		applied: false,
+	});
+	expect(ACCOUNT_UNLINK_MIGRATION_STATEMENTS).toHaveLength(9);
+	expect(ACCOUNT_UNLINK_MIGRATION_STATEMENTS.some((sql) => sql.includes("DROP TABLE"))).toBe(false);
+	expect(out.errors).not.toHaveBeenCalled();
+});
+it("rejects the delta export selector without --export-sql", async () => {
+	const out = await run(["--device-unlink", "--json"]);
+	expect(process.exitCode).toBe(2);
+	expect(out.stdout).not.toHaveBeenCalled();
 });
 
 it("prints an atomic-batch warning and complete semicolon SQL for plaintext export", async () => {

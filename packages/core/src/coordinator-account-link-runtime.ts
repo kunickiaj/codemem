@@ -48,6 +48,8 @@ export interface LinkCoordinatorAccountResult {
 export interface ChangeCoordinatorAccountOptions
 	extends Omit<LinkCoordinatorAccountOptions, "expectedAuthority"> {
 	intent: "refresh" | "disconnect";
+	/** Exact signed target captured before local confirmation. */
+	expectedLinkId?: string;
 }
 export interface ChangeCoordinatorAccountResult {
 	intent: "refresh" | "disconnect";
@@ -173,7 +175,11 @@ interface Runtime {
 	stoppedState?: "failed" | "expired" | "cancelled";
 	finalizeRejected?: boolean;
 }
-function signedHeaders(runtime: Runtime, method: string, url: string, bodyBytes: Buffer) {
+type Transport = Pick<
+	Runtime,
+	"origin" | "options" | "device" | "signal" | "intent" | "created" | "finalizeRejected"
+>;
+function signedHeaders(runtime: Transport, method: string, url: string, bodyBytes: Buffer) {
 	const { options, device } = runtime;
 	try {
 		return signAccountLinkRequest({
@@ -222,6 +228,12 @@ const CHANGE_CREATE_FAILURE_CODES: FailureCodes = {
 	403: { account_change_unavailable: "request_failed" },
 	404: { not_found: "request_failed" },
 };
+const UNLINK_FAILURE_CODES: FailureCodes = {
+	400: { account_change_invalid_input: "review_required" },
+	401: { account_change_unavailable: "review_required" },
+	403: { account_change_unavailable: "review_required" },
+	404: { not_found: "review_required" },
+};
 const FINALIZE_FAILURE_CODES: FailureCodes = {
 	403: { auth_link_review_required: "review_required" },
 	409: { auth_link_conflict: "link_conflict" },
@@ -256,7 +268,7 @@ async function readFailureCode(
 	}
 }
 async function rejectResponse(
-	runtime: Runtime,
+	runtime: Transport,
 	response: Response,
 	failureCodes?: FailureCodes,
 ): Promise<never> {
@@ -270,7 +282,7 @@ async function rejectResponse(
 	throw failure("request_failed");
 }
 async function request(
-	runtime: Runtime,
+	runtime: Transport,
 	options: {
 		method: "GET" | "POST";
 		path: string;
@@ -351,7 +363,7 @@ function readStatus(data: Record<string, unknown>, runtime: Runtime): RuntimeSta
 		throw failure("invalid_response");
 	return { state: status.state, expiresAtMs: status.expiresAtMs };
 }
-function collectionPath(runtime: Runtime): string {
+function collectionPath(runtime: Pick<Runtime, "intent">): string {
 	return runtime.intent === "link" ? "/v1/auth/link-attempts" : "/v1/auth/account-changes";
 }
 function attemptPath(runtime: Runtime): string {
@@ -635,6 +647,8 @@ export async function changeCoordinatorAccount(
 	if (options.intent !== "refresh" && options.intent !== "disconnect")
 		throw failure("invalid_options");
 	try {
+		if (options.intent === "disconnect" && options.expectedLinkId)
+			return await unlinkCoordinatorAccount(options);
 		const result = await runAccountOperation(options, options.intent);
 		if (result.state !== "completed") throw failure("invalid_response");
 		return result;
@@ -644,6 +658,89 @@ export async function changeCoordinatorAccount(
 		safeError.message = CHANGE_MESSAGES[safeError.code];
 		throw safeError;
 	}
+}
+function unlinkResult(
+	reply: Record<string, unknown>,
+	options: ChangeCoordinatorAccountOptions,
+	attemptId: string,
+): ChangeCoordinatorAccountResult {
+	if (
+		Object.keys(reply).length !== 5 ||
+		reply.state !== "completed" ||
+		reply.attemptId !== attemptId ||
+		reply.targetLinkId !== options.expectedLinkId ||
+		reply.identityId !== options.expectedIdentityId ||
+		reply.coordinatorId !== options.expectedCoordinatorId ||
+		!isAuthControllerId(options.expectedCoordinatorId)
+	)
+		throw failure("invalid_response");
+	return {
+		intent: "disconnect",
+		state: "completed",
+		attemptId,
+		identityId: options.expectedIdentityId,
+		coordinatorId: options.expectedCoordinatorId,
+	};
+}
+function unlinkWasRejected(error: unknown, requestNumber: number): boolean {
+	return (
+		requestNumber === 1 &&
+		error instanceof CoordinatorAccountLinkError &&
+		[
+			"schema_upgrade_required",
+			"review_required",
+			"context_changed",
+			"device_unavailable",
+			"link_stopped",
+		].includes(error.code)
+	);
+}
+async function unlinkCoordinatorAccount(
+	options: ChangeCoordinatorAccountOptions,
+): Promise<ChangeCoordinatorAccountResult> {
+	const origin = normalizeCoordinatorAccountLinkOrigin(options.coordinatorUrl);
+	if (
+		!origin ||
+		!isAuthControllerId(options.expectedLinkId) ||
+		!isAuthControllerId(options.expectedIdentityId) ||
+		!isAuthControllerId(options.groupId) ||
+		!isAuthControllerId(options.expectedCoordinatorId)
+	)
+		throw failure("invalid_options");
+	const signal = options.signal ?? new AbortController().signal;
+	await assertCurrentContext(options, signal);
+	const transport: Transport = {
+		origin,
+		options,
+		signal,
+		device: readDeviceWithKey(options),
+		intent: "disconnect",
+		created: false,
+	};
+	const attemptId = randomUUID();
+	const body = {
+		group_id: options.groupId,
+		identity_id: options.expectedIdentityId,
+		attempt_id: attemptId,
+		target_link_id: options.expectedLinkId,
+	};
+	for (let requestNumber = 1; requestNumber <= 2; requestNumber++) {
+		try {
+			await assertCurrentContext(options, signal);
+			const reply = await request(transport, {
+				method: "POST",
+				path: "/v1/auth/account-unlinks",
+				body,
+				failureCodes: requestNumber === 1 ? UNLINK_FAILURE_CODES : undefined,
+			});
+			return unlinkResult(reply, options, attemptId);
+		} catch (error) {
+			// Only an exact first-request rejection proves no mutation; later failures remain unknown.
+			if (unlinkWasRejected(error, requestNumber)) throw error;
+			if (signal.aborted || requestNumber === 2) throw failure("cancellation_unconfirmed");
+		}
+	}
+	throw failure("cancellation_unconfirmed");
 }
 async function runAccountOperation(
 	options: AccountOptions,

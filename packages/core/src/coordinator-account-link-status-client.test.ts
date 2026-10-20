@@ -187,9 +187,20 @@ it("reads capabilities with the existing signer, exact public query and no local
 	});
 	expect(snapshot()).toEqual(before);
 });
+it("maps the coordinator unlink_target wire field to the internal unlinkTarget", async () => {
+	transport.mockResolvedValue(Response.json({ ...capabilities(), unlink_target: "current-link" }));
+	expect(await readCapabilities(options)).toEqual({
+		kind: "capabilities",
+		coordinatorId: "coordinator-a",
+		actions: { refresh: true, disconnect: false },
+		unlinkTarget: "current-link",
+	});
+});
 it.each([
 	{ ...capabilities(), identity_id: "other" },
 	{ ...capabilities(), coordinator_id: "" },
+	{ ...capabilities(), unlink_target: "" },
+	{ ...capabilities(), unlinkTarget: "legacy-camel-case" },
 	{ ...capabilities(), profile: {} },
 	{ ...capabilities(), actions: { refresh: "true", disconnect: true } },
 	{ ...capabilities(), actions: { refresh: true } },

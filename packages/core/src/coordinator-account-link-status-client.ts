@@ -43,6 +43,7 @@ export type CoordinatorAccountChangeCapabilitiesRead =
 			kind: "capabilities";
 			coordinatorId: string;
 			actions: { refresh: boolean; disconnect: boolean };
+			unlinkTarget?: string;
 	  };
 function unavailable(code: UnavailableCode): Extract<ReadFailure, { kind: "unavailable" }> {
 	return { kind: "unavailable", code };
@@ -286,7 +287,10 @@ function decodeCapabilities(
 ): CoordinatorAccountChangeCapabilitiesRead {
 	if (
 		!record(value) ||
-		Object.keys(value).length !== 3 ||
+		Object.keys(value).some(
+			(key) => !["coordinator_id", "identity_id", "actions", "unlink_target"].includes(key),
+		) ||
+		(value.unlink_target !== undefined && !isAuthControllerId(value.unlink_target)) ||
 		!isAuthControllerId(value.coordinator_id) ||
 		value.identity_id !== identityId ||
 		!record(value.actions) ||
@@ -299,6 +303,7 @@ function decodeCapabilities(
 		kind: "capabilities",
 		coordinatorId: value.coordinator_id,
 		actions: { refresh: value.actions.refresh, disconnect: value.actions.disconnect },
+		...(typeof value.unlink_target === "string" ? { unlinkTarget: value.unlink_target } : {}),
 	};
 }
 function readRemoteAccount(
