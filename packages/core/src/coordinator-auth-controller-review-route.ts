@@ -273,6 +273,7 @@ async function applyReview(
 	return c.json(
 		{
 			state: created.kind,
+			attestation_id: row.attestation_id,
 			coordinator_id: row.coordinator_id,
 			group_id: row.group_id,
 			device_id: row.device_id,

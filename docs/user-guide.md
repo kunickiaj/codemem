@@ -677,6 +677,16 @@ The preview reads the existing local device database and current Identity, then 
 
 Without `--json`, the interactive prompt defaults to **No**. Only an operator confirmation writes a coordinator controller review; it does not write an actor, grant, or Identity/device ownership record. Noninteractive and JSON calls remain preview-only.
 
+To confirm the review, run the same command in a terminal without `--json`:
+
+```fish
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com"
+```
+
+After confirmation, the command displays the coordinator's stored **Controller attestation reference** (`controller-v1:` followed by 64 lowercase hexadecimal characters). Keep that noncredential reference with the reviewed coordinator and group for a separate, explicit operator-issued transport group grant. It is not an admin credential, invitation, review receipt ID, or proof of Team/Project access. A successful retry returns the same stored reference; previews do not return one.
+
+This command does not issue a transport group grant. The configured Cloudflare coordinator exposes that separate operator action at `POST /v1/admin/identity-group-grants`, using the returned reference as `attestation_id` and the existing administrator credential. There is currently no maintained CLI command for that action. Do not put credentials in shared commands, edit the database, or derive a reference yourself to bypass missing operator setup. This handoff alone does not complete first-owner bootstrap.
+
 Ambiguous ownership stops the review. If ownership records disappear or change during the prompt, the command stops and requires a fresh preview; it never migrates legacy records automatically.
 
 The interactive link command resolves the current configuration or environment Identity and readiness automatically. Use it on the device being linked, then choose the intended Google account in its browser:

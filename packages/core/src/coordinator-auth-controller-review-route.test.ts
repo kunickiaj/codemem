@@ -180,7 +180,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				expect(response.status).toBe(404);
 			},
 		);
-		test.for(["coordinator_id", "public_key", "evidence_digest"])(
+		test.for(["coordinator_id", "public_key", "evidence_digest", "attestation_id"])(
 			"rejects caller-owned extra %s",
 			async (field, { f }) => {
 				// Arrange
@@ -297,17 +297,26 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const body = { ...input, confirm_evidence_digest: preview.evidence_digest };
 			// Act
 			const created = await request(app, body);
+			const stored = f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").get();
 			const afterCreated = snapshot(f);
 			const replay = await request(app, body);
 			// Assert
 			expect(created.status).toBe(201);
-			expect(await created.json()).toMatchObject({
+			const committed = await created.json();
+			expect(committed).toEqual({
 				state: "created",
+				attestation_id: stored?.attestation_id,
 				identity_id: input.identity_id,
 				coordinator_id: cfg.coordinatorId,
+				group_id: input.group_id,
+				device_id: input.device_id,
+				fingerprint: input.fingerprint,
+				created_at: stored?.created_at,
 			});
+			expect(committed.attestation_id).toMatch(/^controller-v1:[a-f0-9]{64}$/);
+			expect(committed.attestation_id).not.toBe(stored?.review_receipt_id);
 			expect(replay.status).toBe(200);
-			expect(await replay.json()).toMatchObject({ state: "existing" });
+			expect(await replay.json()).toEqual({ ...committed, state: "existing" });
 			expect(snapshot(f)).toEqual(afterCreated);
 			expect(
 				snapshot(f, [
@@ -315,6 +324,53 @@ for (const backend of ["SQLite", "D1"] as const) {
 					"coordinator_auth_link_audit_log",
 				]),
 			).toEqual(before);
+		});
+	});
+	describe(`${backend} committed reference handoff`, () => {
+		test.for(["created", "existing"] as const)(
+			"returns the store's exact reference for %s rather than reconstructing it",
+			async (kind, { f }) => {
+				// Arrange: use the store fixture to supply a distinct stored reference.
+				const app = appFor(f);
+				const preview = await (await request(app)).json();
+				const create = f.store.createAuthControllerAttestation.bind(f.store);
+				const attestation_id = `controller-v1:${"e".repeat(64)}`;
+				vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (value) => {
+					const result = await create(value);
+					if (result.kind === "rejected") throw new Error("fixture review rejected");
+					expect(result.attestation.attestation_id).not.toBe(attestation_id);
+					return { ...result, kind, attestation: { ...result.attestation, attestation_id } };
+				});
+				// Act
+				const response = await request(app, {
+					...input,
+					confirm_evidence_digest: preview.evidence_digest,
+				});
+				// Assert
+				expect(response.status).toBe(kind === "created" ? 201 : 200);
+				expect(await response.json()).toMatchObject({ state: kind, attestation_id });
+			},
+		);
+		test("preview after an existing review still hides the committed reference", async ({ f }) => {
+			// Arrange
+			const app = appFor(f);
+			const initial = await (await request(app)).json();
+			const committed = await (
+				await request(app, {
+					...input,
+					confirm_evidence_digest: initial.evidence_digest,
+				})
+			).json();
+			const before = snapshot(f);
+			// Act
+			const response = await request(app);
+			const preview = await response.json();
+			// Assert
+			expect(response.status).toBe(200);
+			expect(preview).toMatchObject({ state: "ready" });
+			expect(preview).not.toHaveProperty("attestation_id");
+			expect(JSON.stringify(preview)).not.toContain(committed.attestation_id);
+			expect(snapshot(f)).toEqual(before);
 		});
 		test("changed exact public key invalidates digest; fresh preview can commit", async ({ f }) => {
 			// Arrange

@@ -66,6 +66,7 @@ const config = {
 };
 const reviewedOwner = {
 	state: "created",
+	attestation_id: `controller-v1:${"d".repeat(64)}`,
 	coordinator_id: preview.coordinator_id,
 	group_id: "group-a",
 	device_id: "device-a",
@@ -85,13 +86,8 @@ function run(extra: string[] = [], groupId = "group-a") {
 function approveGroup(groupId: string) {
 	mocks.confirm.mockResolvedValue(true);
 	mocks.coordinatorAuthControllerReviewAction.mockResolvedValueOnce(preview).mockResolvedValueOnce({
-		state: "created",
-		coordinator_id: preview.coordinator_id,
+		...reviewedOwner,
 		group_id: groupId,
-		device_id: "device-a",
-		identity_id: "actor-a",
-		fingerprint: local.device.fingerprint,
-		created_at: "2026-10-05T00:00:00Z",
 	});
 }
 beforeEach(() => {
@@ -228,6 +224,88 @@ it.each([
 		).toBe(groupId);
 	}
 });
+
+it.each(["created", "existing"])(
+	"%s confirmation displays the exact returned controller reference with separate-grant guidance",
+	async (state) => {
+		// Arrange: the reference is returned by the coordinator, not derived from local IDs.
+		mocks.confirm.mockResolvedValue(true);
+		const attestation_id = `controller-v1:${"0123456789abcdef".repeat(4)}`;
+		mocks.coordinatorAuthControllerReviewAction
+			.mockResolvedValueOnce(preview)
+			.mockResolvedValueOnce({ ...reviewedOwner, state, attestation_id });
+		// Act
+		await run();
+		// Assert
+		expect(process.exitCode).toBeUndefined();
+		expect(mocks.log.success).toHaveBeenCalledOnce();
+		expect(mocks.log.info).toHaveBeenCalledWith(
+			`Controller attestation reference: ${attestation_id}\nKeep this noncredential reference for a separate, explicit operator-issued transport group grant. This review does not issue that grant or grant Team/Project access.`,
+			{ output: process.stderr },
+		);
+		expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledTimes(2);
+		expect(process.stdout.write).not.toHaveBeenCalled();
+	},
+);
+
+it.each([
+	undefined,
+	null,
+	42,
+	"",
+	`review-v1:${"a".repeat(64)}`,
+	`controller-v1:${"A".repeat(64)}`,
+	`controller-v1:${"g".repeat(64)}`,
+	`controller-v1:${"a".repeat(63)}`,
+	`controller-v1:${"a".repeat(65)}`,
+	`controller-v1:${"a".repeat(64)}\n`,
+	` controller-v1:${"a".repeat(64)}`,
+])(
+	"invalid committed reference %j cannot report success or linking guidance",
+	async (attestation_id) => {
+		// Arrange
+		mocks.confirm.mockResolvedValue(true);
+		mocks.coordinatorAuthControllerReviewAction
+			.mockResolvedValueOnce(preview)
+			.mockResolvedValueOnce({ ...reviewedOwner, attestation_id });
+		// Act
+		await run();
+		// Assert
+		expect(process.exitCode).toBe(1);
+		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(mocks.log.error).toHaveBeenCalledWith(
+			expect.stringContaining("Device owner review could not finish"),
+			{ output: process.stderr },
+		);
+		expect(JSON.stringify(mocks.log.info.mock.calls)).not.toMatch(
+			/Controller attestation reference:|link-account|controller-v1:|review-v1:/,
+		);
+	},
+);
+
+it.each(["JSON", "noninteractive", "declined"])(
+	"%s preview never displays a committed reference even if the remote preview includes one",
+	async (mode) => {
+		// Arrange: extra remote fields must not turn a preview into a committed handoff.
+		mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
+			...preview,
+			attestation_id: reviewedOwner.attestation_id,
+		});
+		if (mode === "noninteractive")
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+		// Act
+		await run(mode === "JSON" ? ["--json"] : []);
+		// Assert
+		const output =
+			JSON.stringify(Object.values(mocks.log).map((log) => log.mock.calls)) +
+			JSON.stringify(vi.mocked(process.stdout.write).mock.calls);
+		expect(output).not.toMatch(/Controller attestation reference:|controller-v1:|attestation_id/);
+		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledExactlyOnceWith(
+			expect.not.objectContaining({ confirmEvidenceDigest: expect.anything() }),
+		);
+	},
+);
 
 it.each(["config", "environment"])(
 	"%s timeout budget reaches both preview and confirmation",

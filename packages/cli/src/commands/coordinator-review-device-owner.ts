@@ -147,9 +147,12 @@ function validInviteRef(
 	);
 }
 function parsePreview(
-	reply: Record<string, unknown>,
+	payload: unknown,
 	request: CoordinatorAuthControllerReviewActionOptions,
 ): CoordinatorControllerReviewPreview {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload))
+		throw new Error("invalid_preview");
+	const reply = payload as Record<string, unknown>;
 	const enrollment = reply.enrollment as CoordinatorControllerReviewPreview["enrollment"];
 	const invites = reply.reviewed_invites as CoordinatorControllerReviewPreview["reviewed_invites"];
 	if (
@@ -253,6 +256,9 @@ async function confirmReview(
 	});
 	if (
 		(result.state !== "created" && result.state !== "existing") ||
+		typeof result.attestation_id !== "string" ||
+		result.attestation_id.length !== 78 ||
+		!/^controller-v1:[a-f0-9]{64}$/.test(result.attestation_id) ||
 		result.coordinator_id !== preview.coordinator_id ||
 		result.group_id !== group ||
 		result.device_id !== request.deviceId ||
@@ -264,6 +270,10 @@ async function confirmReview(
 	p.log.success("Device owner reviewed. Memories and access are unchanged.", {
 		output: process.stderr,
 	});
+	p.log.info(
+		`Controller attestation reference: ${result.attestation_id}\nKeep this noncredential reference for a separate, explicit operator-issued transport group grant. This review does not issue that grant or grant Team/Project access.`,
+		{ output: process.stderr },
+	);
 	if (showTargetedLinkFollowUp(options)) return;
 	showLinkFollowUp(group);
 }

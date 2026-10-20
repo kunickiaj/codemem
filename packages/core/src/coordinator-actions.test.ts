@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
+	coordinatorAuthControllerReviewAction,
 	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
 	coordinatorCreateInviteAction,
@@ -143,6 +144,69 @@ function reviewedOnboardingDigestForRecipientInvite(opts: {
 	return previewRecipientPolicyOnboardingFromReviewedIntent(opts.reviewedIntent, request)
 		.reviewedOnboardingDigest;
 }
+
+describe("controller review response transport", () => {
+	const options = {
+		remoteUrl: "https://coordinator.example.test",
+		adminSecret: "fixture-admin-secret",
+		groupId: "group-a",
+		deviceId: "device-a",
+		identityId: "identity-a",
+		fingerprint: "a".repeat(64),
+		confirmEvidenceDigest: "b".repeat(64),
+	};
+	afterEach(() => vi.unstubAllGlobals());
+
+	it.each(["created", "existing"])("passes through the exact %s commit response", async (state) => {
+		// Arrange: no provider or coordinator is contacted.
+		const committed = {
+			state,
+			attestation_id: `controller-v1:${"d".repeat(64)}`,
+			coordinator_id: "server-coordinator",
+			group_id: options.groupId,
+			device_id: options.deviceId,
+			identity_id: options.identityId,
+			fingerprint: options.fingerprint,
+			created_at: "2026-10-05T00:00:00Z",
+		};
+		const fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify(committed), {
+				status: state === "created" ? 201 : 200,
+			}),
+		);
+		vi.stubGlobal("fetch", fetch);
+		// Act
+		const result = await coordinatorAuthControllerReviewAction(options);
+		// Assert: the typed client must not invent, rename, or replace the stored reference.
+		expect(result).toEqual(committed);
+		expect(fetch).toHaveBeenCalledExactlyOnceWith(
+			"https://coordinator.example.test/v1/admin/auth-controller-reviews",
+			expect.objectContaining({
+				method: "POST",
+				body: new TextEncoder().encode(
+					JSON.stringify({
+						group_id: options.groupId,
+						device_id: options.deviceId,
+						identity_id: options.identityId,
+						fingerprint: options.fingerprint,
+						confirm_evidence_digest: options.confirmEvidenceDigest,
+					}),
+				),
+			}),
+		);
+	});
+
+	it("does not synthesize a committed reference when the response omits it", async () => {
+		// Arrange: transport typing leaves field validation to the CLI boundary.
+		const payload = { state: "existing", coordinator_id: "server-coordinator" };
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
+		// Act
+		const result = await coordinatorAuthControllerReviewAction(options);
+		// Assert
+		expect(result).toEqual(payload);
+		expect(result).not.toHaveProperty("attestation_id");
+	});
+});
 
 describe("coordinator local admin actions", () => {
 	let tmpDir: string;
