@@ -161,7 +161,8 @@ export class OwnerEnrollmentQualificationOps {
 		// Capture trusted configuration before the first asynchronous operation.
 		this.config = captureAuthLinkConfig(config);
 	}
-	private async schemaReady(): Promise<boolean> {
+	/** Read-only deployment check; operations repeat it before resolving authority. */
+	async schemaReady(): Promise<boolean> {
 		if ((await readConnectionSchemaState(this.backend)) !== "ready") return false;
 		return (
 			(

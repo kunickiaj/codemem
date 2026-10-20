@@ -89,6 +89,17 @@ async function authorize(c: Context, deps: OwnerQualificationRouteDeps): Promise
 	return null;
 }
 
+async function rejectedResponse(c: Context, ops: OwnerEnrollmentQualificationOps, error: string) {
+	if (error === "unavailable") {
+		try {
+			if (!(await ops.schemaReady())) return c.json({ error: "qualification_unavailable" }, 503);
+		} catch {
+			return c.json({ error: "qualification_unavailable" }, 503);
+		}
+	}
+	return c.json({ error }, 409);
+}
+
 async function previewResponse(
 	c: Context,
 	ops: OwnerEnrollmentQualificationOps,
@@ -96,7 +107,7 @@ async function previewResponse(
 	coordinatorId: string,
 ) {
 	const result = await ops.preview({ attestationId });
-	if (result.kind === "rejected") return c.json({ error: result.error }, 409);
+	if (result.kind === "rejected") return rejectedResponse(c, ops, result.error);
 	return c.json({
 		state: "ready",
 		coordinator_id: coordinatorId,
@@ -122,7 +133,7 @@ async function issueResponse(
 		const result = await ops.issue(input);
 		if (result.kind === "outcome_unknown")
 			return c.json({ error: "qualification_outcome_unknown" }, 503);
-		if (result.kind === "rejected") return c.json({ error: result.error }, 409);
+		if (result.kind === "rejected") return await rejectedResponse(c, ops, result.error);
 		return c.json(
 			{
 				state: result.kind,
@@ -136,6 +147,17 @@ async function issueResponse(
 	} catch {
 		return c.json({ error: "qualification_outcome_unknown" }, 503);
 	}
+}
+
+async function qualificationSchemasReady(
+	backend: AuthLinkBackend,
+	ops: OwnerEnrollmentQualificationOps,
+): Promise<boolean> {
+	const ready = await backend.first<{ ready: number }>({
+		sql: `SELECT (${ATTEMPT_READY}) AS ready`,
+		values: [],
+	});
+	return ready?.ready === 1 && (await ops.schemaReady());
 }
 
 /** Inactive seam: no production app registers this handler yet. */
@@ -157,11 +179,8 @@ export function createOwnerQualificationHandler(
 			if (!raw) return c.json({ error: "body_too_large" }, 413);
 			const input = parseInput(captured.parseJsonObject(raw));
 			if (!input) return c.json({ error: "qualification_invalid_input" }, 400);
-			const ready = await captured.backend.first<{ ready: number }>({
-				sql: `SELECT (${ATTEMPT_READY}) AS ready`,
-				values: [],
-			});
-			if (ready?.ready !== 1) return c.json({ error: "qualification_unavailable" }, 503);
+			if (!(await qualificationSchemasReady(captured.backend, ops)))
+				return c.json({ error: "qualification_unavailable" }, 503);
 			if (input.expectedDigest === undefined)
 				return await previewResponse(c, ops, input.attestationId, config.coordinatorId);
 			return await issueResponse(

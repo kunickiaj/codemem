@@ -121,6 +121,7 @@ export function registerOwnerQualificationRouteTests(test: Test, migrations: Mig
 	registerLimits(test);
 	registerStaleConfirmation(test);
 	registerSchemaTests(test, migrations);
+	registerSchemaStatusTests(test);
 	registerRaceTests(test);
 	registerFaultTests(test);
 }
@@ -393,6 +394,8 @@ function registerSchemaTests(test: Test, migrations: Migration[]) {
 			// Arrange
 			const digest = (await preview(app(f))).evidence_digest;
 			await mutateSchema(f, migrations, mutation);
+			if (["missing-0035", "rowid-0035", "partial-connection"].includes(mutation))
+				await assertAttemptReady(f);
 			const schema = await f.query(
 				"SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name",
 			);
@@ -400,12 +403,15 @@ function registerSchemaTests(test: Test, migrations: Migration[]) {
 			// Act
 			const response = await a.request(confirm(digest));
 			// Assert
-			expect([409, 503]).toContain(response.status);
+			expect(response.status).toBe(503);
+			expect(await response.clone().json()).toEqual({ error: "qualification_unavailable" });
+			await assertSchemaUnavailable(await a.request());
 			safe(response, await response.json());
 			expect(
 				await f.query("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"),
 			).toEqual(schema);
 			if (mutation !== "missing-0035") expect(await f.rows()).toEqual([]);
+			expect(f.calls.some((s) => s.sql.startsWith(`INSERT INTO ${table}`))).toBe(false);
 		},
 	);
 }
@@ -430,6 +436,139 @@ async function mutateSchema(f: Fixture, migrations: Migration[], mutation: strin
 		await f.exec(`ALTER TABLE ${attemptTable} ADD COLUMN future_pin TEXT`);
 	if (mutation === "partial-connection")
 		await f.exec("DROP TABLE coordinator_auth_account_connection_history");
+}
+
+async function assertAttemptReady(f: Fixture) {
+	const checks = ownerQualificationAttemptDefinitionChecks
+		.map((check) => `(${check.matches})`)
+		.join(" AND ");
+	expect(await f.query(`SELECT (${checks}) AS ready`)).toEqual([{ ready: 1 }]);
+}
+async function invalidateOpsSchema(f: Fixture, mutation: string) {
+	if (mutation === "qualification-trigger")
+		await f.exec("DROP TRIGGER owner_enrollment_qualification_insert_active");
+	if (mutation === "connection-column")
+		await f.exec(
+			"ALTER TABLE coordinator_auth_account_connection_history RENAME COLUMN signin_floor TO wrong_signin_floor",
+		);
+}
+async function assertSchemaUnavailable(response: Response) {
+	expect(response.status).toBe(503);
+	const value = await response.json();
+	expect(value).toEqual({ error: "qualification_unavailable" });
+	safe(response, value);
+}
+function registerSchemaStatusTests(test: Test) {
+	registerPartialOpsSchema(test);
+	registerOpsSchemaRaces(test);
+	registerHealthyEvidenceDenials(test);
+}
+function registerPartialOpsSchema(test: Test) {
+	test.for(["qualification-trigger", "connection-column"])(
+		"reports partial Ops schema %s as unavailable for preview and confirmation with canonical 0036",
+		async (mutation, { fixture: f }) => {
+			// Arrange
+			const a = app(f);
+			const digest = (await preview(a)).evidence_digest;
+			await invalidateOpsSchema(f, mutation);
+			await assertAttemptReady(f);
+			f.calls.length = 0;
+			// Act
+			const responses = [await a.request(), await a.request(confirm(digest))];
+			// Assert
+			for (const response of responses) await assertSchemaUnavailable(response);
+			expect(await f.rows()).toEqual([]);
+			expect(f.calls.some((s) => s.sql.startsWith(`INSERT INTO ${table}`))).toBe(false);
+		},
+	);
+}
+function registerOpsSchemaRaces(test: Test) {
+	test.for(["qualification-trigger", "connection-column"])(
+		"rechecks schema status when %s becomes invalid after the successful preflight",
+		async (mutation, { fixture: f }) => {
+			// Arrange
+			const digest = (await preview(app(f))).evidence_digest;
+			await assertAttemptReady(f);
+			for (const data of [body, confirm(digest)]) {
+				const definitions = await f.query(
+					"SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name",
+				);
+				let qualificationChecks = 0;
+				let readsAfterInvalidation = 0;
+				f.calls.length = 0;
+				const backend: AuthLinkBackend = {
+					...f.backend,
+					first: async <T>(s: Parameters<AuthLinkBackend["first"]>[0]) => {
+						if (qualificationChecks > 0) readsAfterInvalidation++;
+						const result = await f.backend.first<T>(s);
+						if (
+							s.sql.startsWith("SELECT (") &&
+							s.sql.includes("owner_enrollment_qualification_insert_active")
+						) {
+							qualificationChecks++;
+							if (qualificationChecks === 1) await invalidateOpsSchema(f, mutation);
+						}
+						return result;
+					},
+				};
+				// Act
+				const response = await app(f, { backend }).request(data);
+				// Assert
+				await assertSchemaUnavailable(response);
+				expect(qualificationChecks).toBeGreaterThanOrEqual(1);
+				expect(readsAfterInvalidation).toBeGreaterThanOrEqual(2);
+				expect(await f.rows()).toEqual([]);
+				expect(f.calls.some((s) => s.sql.startsWith(`INSERT INTO ${table}`))).toBe(false);
+				// Restore only the fixture mutation before checking the other request mode.
+				if (mutation === "connection-column")
+					await f.exec(
+						"ALTER TABLE coordinator_auth_account_connection_history RENAME COLUMN wrong_signin_floor TO signin_floor",
+					);
+				else {
+					const trigger = definitions.find(
+						(row) => row.name === "owner_enrollment_qualification_insert_active",
+					);
+					await f.exec(String(trigger?.sql));
+				}
+			}
+		},
+	);
+}
+function registerHealthyEvidenceDenials(test: Test) {
+	test.for(["missing-review", "revoked-review", "missing-link", "revoked-link"])(
+		"keeps healthy-schema %s evidence denial distinct from schema unavailability",
+		async (mutation, { fixture: f }) => {
+			// Arrange
+			const a = app(f);
+			const digest = (await preview(a)).evidence_digest;
+			let reference = body;
+			if (mutation === "missing-review")
+				reference = { attestation_id: `controller-v1:${"d".repeat(64)}` };
+			if (mutation === "revoked-review")
+				await f.exec(
+					`UPDATE coordinator_auth_controller_attestations SET revoked_at='revoked' WHERE attestation_id='${reviewId}'`,
+				);
+			if (mutation === "missing-link") await f.end();
+			if (mutation === "revoked-link")
+				await f.exec(`UPDATE coordinator_auth_account_links SET revoked_at_ms=${NOW + 1}`);
+			await assertAttemptReady(f);
+			f.calls.length = 0;
+			// Act
+			const responses = [
+				await a.request(reference),
+				await a.request({ ...reference, confirm_evidence_digest: digest }),
+			];
+			// Assert
+			for (const response of responses) {
+				expect(response.status).toBe(409);
+				const value = await response.json();
+				expect(value).toEqual({ error: "unavailable" });
+				safe(response, value);
+			}
+			expect(await f.rows()).toEqual([]);
+			expect(f.calls.some((s) => s.sql.startsWith(`INSERT INTO ${table}`))).toBe(false);
+		},
+	);
 }
 
 function registerRaceTests(test: Test) {
