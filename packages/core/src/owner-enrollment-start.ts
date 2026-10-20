@@ -320,15 +320,11 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 					options: OwnerEnrollmentOwnerBoundStartOptions,
 				) => boundary(() => start(context, value, clientKey, { kind: "owner", options })),
 				claimBrowser: (request: Request, clientKey: string) =>
-					ownerBoundary(context, () => claimBrowser(context, request, clientKey)),
-				verifyCallback: (request: Request) =>
-					ownerBoundary(context, () => verifyCallback(context, request)),
+					boundary(() => claimBrowser(context, request, clientKey)),
+				verifyCallback: (request: Request) => boundary(() => verifyCallback(context, request)),
 				confirm: (request: Request, clientKey: string, confirmationCommitment: string) =>
-					ownerBoundary(context, () =>
-						confirm(context, request, clientKey, confirmationCommitment),
-					),
-				finalize: (value: OwnerEnrollmentFinalize) =>
-					ownerBoundary(context, () => finalize(context, value)),
+					boundary(() => confirm(context, request, clientKey, confirmationCommitment)),
+				finalize: (value: OwnerEnrollmentFinalize) => boundary(() => finalize(context, value)),
 			}),
 		};
 	} catch {
@@ -336,21 +332,7 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 	}
 }
 
-/** Opt-in readiness only: never migrate or weaken the owner path on legacy storage. */
-function ownerBoundary(context: Context, action: () => Promise<OwnerEnrollmentStartResult>) {
-	return boundary(async () => {
-		if (!(await ownerAdmissionSchemaReady(context.backend))) return unavailable;
-		return action();
-	});
-}
-
-async function ownerAdmissionSchemaReady(backend: AuthLinkBackend): Promise<boolean> {
-	const result = await backend.first<{ ready: number }>({
-		sql: `SELECT (${OWNER_ADMISSION_SCHEMA_READY_SQL}) AS ready`,
-		values: [],
-	});
-	return result?.ready === 1;
-}
+// Keep optional readiness fresh in the existing reads/writes, without another wrapped D1 query.
 const OWNER_ADMISSION_SCHEMA_READY_SQL = `EXISTS (SELECT 1 FROM pragma_table_info('coordinator_owner_enrollment_attempts')
  WHERE name = 'admission_owner_hash') AND (SELECT count(*) FROM sqlite_master
  WHERE type = 'trigger' AND tbl_name = 'coordinator_owner_enrollment_attempts'
@@ -454,6 +436,7 @@ function ownerAttemptSql(state: "browser_claimed" | "oidc_verified"): string {
  AND a.device_id = ? AND a.public_key = ? AND a.key_id = ? AND a.fingerprint = ?
  AND a.browser_start_hash = ? AND a.loopback_redirect = ? AND a.created_at_ms = ? AND a.expires_at_ms = ?
  AND a.admission_owner_hash IS ?
+ AND ${OWNER_ADMISSION_SCHEMA_READY_SQL}
  AND a.created_at_ms <= ? AND a.expires_at_ms > ?`;
 }
 function callbackAttemptValues(
@@ -708,7 +691,8 @@ async function readConfirmableAttempt(
 ): Promise<OwnerAttempt | null> {
 	const row = await context.backend.first<OwnerAttempt>({
 		sql: `SELECT * FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ?
- AND attempt_id = ? AND purpose = 'owner_enroll' AND state = 'oidc_verified' AND browser_binder_hash = ?`,
+ AND attempt_id = ? AND purpose = 'owner_enroll' AND state = 'oidc_verified' AND browser_binder_hash = ?
+ AND ${OWNER_ADMISSION_SCHEMA_READY_SQL}`,
 		values: [context.c.coordinatorId, attemptId, binderHash],
 	});
 	const time = context.now();
@@ -1060,7 +1044,8 @@ function startStatement(
 }
 async function readAttempt(context: Context, attemptId: string): Promise<OwnerAttempt | null> {
 	return context.backend.first<OwnerAttempt>({
-		sql: "SELECT * FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND attempt_id = ?",
+		sql: `SELECT * FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = ? AND attempt_id = ?
+ AND ${OWNER_ADMISSION_SCHEMA_READY_SQL}`,
 		values: [context.c.coordinatorId, attemptId],
 	});
 }
@@ -1163,6 +1148,7 @@ const PENDING_SQL = `coordinator_id = ? AND attempt_id = ? AND purpose = 'owner_
  AND origin = ? AND issuer = ? AND auth_config_revision = ? AND browser_start_hash = ?
  AND created_at_ms = ? AND expires_at_ms = ? AND created_at_ms <= ? AND expires_at_ms > ?
  AND admission_owner_hash IS ?
+ AND ${OWNER_ADMISSION_SCHEMA_READY_SQL}
  AND browser_transaction_hash IS NULL AND browser_binder_hash IS NULL`;
 function pendingValues(
 	context: Context,

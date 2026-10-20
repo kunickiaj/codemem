@@ -126,12 +126,16 @@ CREATE TRIGGER IF NOT EXISTS owner_enrollment_admission_update
 BEFORE UPDATE ON coordinator_owner_enrollment_attempts
 WHEN OLD.admission_owner_hash IS NOT NEW.admission_owner_hash
 BEGIN SELECT RAISE(ABORT, 'owner_enrollment_admission_immutable'); END;
+-- Probe each unique key separately; a coordinator-only OR plan scans every prior attempt.
 CREATE TRIGGER IF NOT EXISTS owner_enrollment_admission_insert
 BEFORE INSERT ON coordinator_owner_enrollment_attempts
 WHEN EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a
- WHERE (a.rowid = NEW.rowid OR (a.coordinator_id = NEW.coordinator_id
- AND (a.attempt_id = NEW.attempt_id OR a.browser_start_hash = NEW.browser_start_hash
- OR a.browser_transaction_hash = NEW.browser_transaction_hash OR a.completion_secret_hash = NEW.completion_secret_hash)))
+ WHERE a.rowid IN (
+ SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE rowid = NEW.rowid
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND attempt_id = NEW.attempt_id
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND browser_start_hash = NEW.browser_start_hash
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND browser_transaction_hash = NEW.browser_transaction_hash
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND completion_secret_hash = NEW.completion_secret_hash)
  AND a.admission_owner_hash IS NOT NEW.admission_owner_hash)
 BEGIN SELECT RAISE(ABORT, 'owner_enrollment_admission_immutable'); END;
 -- Retained receipts cannot be changed, deleted, or erased through REPLACE.
