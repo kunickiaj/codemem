@@ -2,8 +2,9 @@
 
 **Scope:** Internal revocation storage and signed-request admission. No public
 revocation action, automatic backfill, owner enrollment, or live migration is
-enabled. Enrollment-writer guards and discovery/bootstrap closure are required
-before a management route can expose this capability.
+enabled. Existing public writers and effective authorization reads check revocation
+as inventoried below. The operator handler remains unmounted pending durable handler
+tests and trusted runtime-context composition and mount review.
 
 ## Subjects and scope
 
@@ -52,7 +53,7 @@ such devices can be revoked; it must not silently report success.
 
 Queries are not permission checks and do not discover all aliases or historical
 keys automatically. Future management and discovery code must use the relevant
-key as well as the device ID and implement the separately tracked closure rules.
+key as well as the device ID; inspection alone cannot authorize access.
 
 ## Atomic signed-request admission
 
@@ -105,9 +106,9 @@ their behavior. With no revocation subjects, ordinary enrollment remains unchang
 Removing an enrollment does not remove retained revocation subjects.
 
 The shared synchronous SQLite enrollment primitive also protects callers already
-inside a transaction. This is not proof that every invitation/join path is guarded:
-their D1 batch consumption and retry predicates still need the next writer slice,
-as do bootstrap/controller/link/group-grant authority writes.
+inside a transaction. Invitation/join batch consumption, retries, and
+bootstrap/controller/link/group-grant authority writes have their own checks,
+described below; they do not rely solely on this shared primitive.
 
 ## Recipient invitation guards
 
@@ -639,6 +640,62 @@ nor permission to transmit the memory to another device.
 
 ## Activation limits
 
+### Inactive operator handler
+
+`coordinator-device-revocation-handler.ts` adds an internal factory, not a mounted
+HTTP route. Its trusted actions are `preview` and `commit`; intended future POST
+paths are `/v1/admin/devices/revoke-preview` and `/v1/admin/devices/revoke`.
+No CLI, startup, Worker configuration, or public export activates it. The existing
+writer/read coverage is inventoried below. Durable handler tests cover SQLite and
+native D1. Trusted runtime-context composition and transport/mount review remain
+pending; this handler is not an exposed management API.
+
+The factory captures a selected store, server-trusted coordinator ID, and optional
+configured coordinator-wide admin secret. Missing/invalid context fails closed;
+request origins, group metadata, and nullable coordinator IDs cannot supply it.
+Admin authentication precedes body parsing and enrollment lookup. There is no
+OIDC owner, group admin, actor hint, or alternate authority fallback.
+
+Preview accepts exactly `group_id` and `device_id`; commit additionally requires
+`expected_digest`. IDs retain the controller identifier rules (no trimming,
+maximum 256 characters, no control/format/surrogate characters). Bodies are limited
+to 4096 bytes. Callers cannot nominate keys, fingerprints, Identities, or actors.
+The direct current enrollment supplies the exact group/device/public-key/fingerprint
+tuple, including disabled devices. Only complete SSH Ed25519 wire keys with the
+correct inner type, 32-byte key, and no trailing bytes qualify; opaque targets deny
+instead of receiving weaker device-only revocation.
+
+The SHA-256 preview digest binds an action/version domain, trusted coordinator
+context, exact four-field tuple, and canonical key ID. It is not a secret, access
+token, revision, or enrollment-incarnation identifier. Commit reads again, compares
+the digest, then passes that captured tuple to the atomic primitive. The primitive's
+exact tuple predicate rejects later key drift. Delete/recreate with identical four
+fields is indistinguishable; this handler promises no stronger compare-and-swap.
+Preview performs no repair, grant creation, schema writes, or tombstone writes.
+
+Commit success returns `{ state: "revoked", version: 1, coordinator_id, group_id,
+device_id, key_id, scope, revocations }`. `revocations` contains exactly two retained
+per-subject references, in device-ID then canonical-key order, each with only
+`subject_kind`, `subject_value`, `revocation_id`, and `created_at`. IDs and timestamps
+must be nonempty strings without NUL characters; retained timestamp text is
+preserved without reparsing or normalizing it. Missing, duplicate, or malformed
+expected references cannot produce success; unrelated returned records are not
+exposed.
+
+Earlier overlapping revocations may retain different IDs and timestamps; each
+reference preserves its own first record, not a new caller action ID. The handler
+does not rewrite retained actor or evidence metadata and infers no audit actor.
+Exceptions or incomplete receipts return fixed `device_revocation_incomplete`;
+the outcome may be unknown, and this response promises neither rollback nor
+compensation. Responses omit raw keys, credentials, actor/evidence metadata, and
+backend diagnostics. Returned revocation references are not credentials.
+
+The effect spans the whole selected database: that device ID with any key, and
+that canonical key with any device ID, across all groups. Another device continues
+only when both its subjects differ. This adds no propagation, push notification,
+offline enforcement, or manual/direct-peer trust policy. Existing account links,
+sessions, Identity grants, memberships, and stored data are not rewritten.
+
 Existing group disable/removal does not create global subjects automatically.
 Account links, browser sessions, Identity-group grants, memberships, and stored
 memories are not rewritten. Revoking a signing key does not sign out Google or
@@ -653,8 +710,45 @@ Writer guards must preserve owner-bound ID/key uniqueness before the owner path
 can activate. Ambiguous legacy targets go to the coordinator operator, not an
 unverified owner or a new universal ownership framework.
 
-This slice does not yet prevent every enrollment writer from re-enrolling a
-subject or filter every discovery/bootstrap read. Those guards must land before
-public revocation management. Direct-peer cached permissions and required-auth
-enforcement remain separate; coordinator admission is not a claim of immediate
-offline or direct-sync revocation.
+### Existing revocation checks and their limits
+
+Existing public effective writers, signed nonce admission, bootstrap and scope
+authorization, and peer-candidate discovery check revocation. The existing tests
+cover these paths in the core/SQLite and native D1 runtimes:
+
+| Path | Core/SQLite tests | Native D1 tests |
+| --- | --- | --- |
+| Device subjects and nonce admission | [Device revocation](../../packages/core/src/coordinator-device-revocation-store.test.ts) | [Device revocation](../../packages/cloudflare-coordinator-worker/test/device-revocation.integration.test.ts) |
+| Enrollment and re-enable | [Enrollment](../../packages/core/src/coordinator-enrollment-revocation.test.ts) | [Enrollment](../../packages/cloudflare-coordinator-worker/test/enrollment-revocation.integration.test.ts) |
+| Recipient invitations | [Recipient](../../packages/core/src/coordinator-recipient-revocation.test.ts) | [Recipient](../../packages/cloudflare-coordinator-worker/test/recipient-revocation.integration.test.ts) |
+| Project invitations | [Project](../../packages/core/src/coordinator-project-revocation.test.ts) | [Project](../../packages/cloudflare-coordinator-worker/test/project-revocation.integration.test.ts) |
+| Join approval | [Join](../../packages/core/src/coordinator-join-revocation.test.ts) | [Join](../../packages/cloudflare-coordinator-worker/test/join-revocation.integration.test.ts) |
+| Controller and account-link authority | [Controller](../../packages/core/src/coordinator-controller-revocation.test.ts), [link](../../packages/core/src/coordinator-auth-link-revocation.test.ts) | [Controller](../../packages/cloudflare-coordinator-worker/test/controller-revocation.integration.test.ts), [link](../../packages/cloudflare-coordinator-worker/test/auth-link-revocation.integration.test.ts) |
+| Identity-group grant issuance | [Grant](../../packages/core/src/coordinator-identity-grant-revocation.test.ts) | [Grant](../../packages/cloudflare-coordinator-worker/test/identity-grant-revocation.integration.test.ts) |
+| Bootstrap issuance and authorization | [Issuance](../../packages/core/src/coordinator-bootstrap-revocation.test.ts), [authorization](../../packages/core/src/coordinator-bootstrap-authorization.test.ts) | [Issuance](../../packages/cloudflare-coordinator-worker/test/bootstrap-revocation.integration.test.ts), [authorization](../../packages/cloudflare-coordinator-worker/test/bootstrap-authorization.integration.test.ts) |
+| Peer-candidate discovery | [Peers](../../packages/core/src/coordinator-peer-discovery-revocation.test.ts) | [Peers](../../packages/cloudflare-coordinator-worker/test/peer-discovery-revocation.integration.test.ts) |
+| Effective scope authorization | [Scope](../../packages/core/src/coordinator-scope-authorization.test.ts), [API](../../packages/core/src/coordinator-scope-authorization-api.test.ts) | [Scope](../../packages/cloudflare-coordinator-worker/test/scope-authorization.integration.test.ts), [API](../../packages/cloudflare-coordinator-worker/test/scope-authorization-api.integration.test.ts) |
+
+Raw scope/membership metadata and historical receipts may retain revoked subjects;
+they are inspection/history, not current eligibility. Effective authorization
+denies those subjects without deleting their history. Internal opaque-key
+compatibility likewise is not authentication proof; the inactive operator handler
+requires strict SSH Ed25519 evidence and both global subjects.
+
+Signed requests validate cryptography before atomic nonce admission checks the
+current exact enrollment key and revocation subjects. Work admitted before a later
+revocation may finish. `/v1/peers` filters candidates in its final read but does not
+repeat requester admission there; it retains that admission boundary rather than
+promising a new requester check at response time.
+
+Legacy unsigned `/v1/join` can return `already_enrolled` from row existence alone.
+That status is not current eligibility, a key match, or authorization, and cannot
+restore access. These inspection and admission boundaries require no new store
+operation or changed semantics.
+
+A managed peer learns omissions after a successful current authorization refresh.
+This is not push delivery, immediate revocation of cached direct-peer access, a new
+offline expiry, or a change to independent manual trust. Whole-database device-ID
+and canonical-key revocation lets another device continue only when both its
+subjects differ. Public management remains inactive until its separate handler
+and runtime-composition gates pass.
