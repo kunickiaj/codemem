@@ -1074,6 +1074,22 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!row || !configMatches(row, c) || !requesterMatches(row, r)) return null;
 		return status(row, now);
 	}
+	private async acknowledgeFailedAttempt(
+		row: Attempt,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		kind: "applied" | "existing",
+	): Promise<CoordinatorAuthLinkResult> {
+		const cleanup = await this.execute(
+			{
+				sql: "DELETE FROM coordinator_auth_link_profiles WHERE coordinator_id = ? AND attempt_id = ? AND link_id IS NULL",
+				values: [c.coordinatorId, row.attempt_id],
+			},
+			"attempt_conflict",
+		);
+		if (typeof cleanup !== "number") return cleanup;
+		return { kind, status: status(row, now) };
+	}
 	async failAuthLinkAttempt(
 		input: CoordinatorAuthLinkFailInput,
 		config: CoordinatorAuthLinkConfig,
@@ -1117,23 +1133,15 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			row.created_at_ms <= now &&
 			now < row.expires_at_ms
 		)
-			return { kind: "existing", status: status(row, now) };
+			return this.acknowledgeFailedAttempt(row, c, now, "existing");
 		if (
 			row &&
 			configMatches(row, c) &&
 			requesterMatches(row, r) &&
 			row.state === "failed" &&
 			row.failure_reason === reason
-		) {
-			await this.execute(
-				{
-					sql: "DELETE FROM coordinator_auth_link_profiles WHERE coordinator_id = ? AND attempt_id = ? AND link_id IS NULL",
-					values: [c.coordinatorId, i.attemptId],
-				},
-				"attempt_conflict",
-			);
-			return { kind: result ? "applied" : "existing", status: status(row, now) };
-		}
+		)
+			return this.acknowledgeFailedAttempt(row, c, now, result ? "applied" : "existing");
 		return diagnose(row, c, now);
 	}
 	async finalizeAuthLinkAttempt(

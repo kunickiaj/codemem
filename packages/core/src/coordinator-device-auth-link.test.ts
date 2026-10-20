@@ -172,6 +172,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		key: Identity,
 		app: ReturnType<typeof createCoordinatorApp>,
 		stage = "confirmed",
+		profile?: { displayName: string },
 	) {
 		await authorize(f, key);
 		expect((await request(app, key)).status).toBe(201);
@@ -194,7 +195,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		expect(
 			(
 				await f.store.recordAuthLinkOidcVerified(
-					{ ...browser, account: { issuer: config.issuer, subject: "subject-private" } },
+					{ ...browser, account: { issuer: config.issuer, subject: "subject-private" }, profile },
 					config,
 				)
 			).kind,
@@ -812,6 +813,62 @@ for (const backend of ["SQLite", "D1"] as const) {
 			),
 		).toMatchObject({ kind: "applied", status: { state: "failed" } });
 	}
+	describe(`${backend} signed browser-cancel staged profile recovery`, () => {
+		test.for([0, 1])(
+			"signed cleanup recovers a browser profile-delete fault with %s failed cleanup retries",
+			async (retryFaults, { f, key, app }) => {
+				// Arrange: verified OIDC metadata is private staging, not account authority.
+				await seed(f, key, app, "confirmed", { displayName: "Private staged person" });
+				const profileTable = "coordinator_auth_link_profiles";
+				const staged = rows(f, profileTable);
+				expect(staged).toMatchObject([
+					{ attempt_id: "attempt-a", link_id: null, display_name: "Private staged person" },
+				]);
+				f.db.exec(
+					"CREATE TRIGGER injected_profile_delete BEFORE DELETE ON coordinator_auth_link_profiles BEGIN SELECT RAISE(ABORT,'injected profile delete failure'); END",
+				);
+				await expect(cancelInBrowser(f)).rejects.toThrow("auth_link_persistence_error");
+				const before = snapshot(f, [profileTable, "coordinator_auth_browser_transactions"]);
+				const originalRetire = f.store.retireAuthBrowserTransactions.bind(f.store);
+				const retire = vi.spyOn(f.store, "retireAuthBrowserTransactions");
+				// Act: a fresh signed nonce retries cleanup after the state write already won.
+				if (retryFaults) {
+					const refused = await request(app, key, `${ROOT}/attempt-a/cancel`, {
+						group_id: "group-a",
+					});
+					expect(refused.status).toBe(503);
+					expect(await refused.json()).toEqual({ error: "auth_link_unavailable" });
+					expect(retire).not.toHaveBeenCalled();
+					expect(rows(f, profileTable)).toEqual(staged);
+				}
+				f.db.exec("DROP TRIGGER injected_profile_delete");
+				retire.mockImplementation(async (...args) => {
+					expect(rows(f, profileTable)).toEqual([]);
+					return originalRetire(...args);
+				});
+				const response = await request(app, key, `${ROOT}/attempt-a/cancel`, {
+					group_id: "group-a",
+				});
+				// Assert: no 200 or browser retirement before profile deletion succeeds.
+				expect(response.status).toBe(200);
+				expect(await response.json()).toEqual({
+					status: { attemptId: "attempt-a", state: "failed", expiresAtMs: NOW + 600000 },
+				});
+				expect(retire).toHaveBeenCalledTimes(1);
+				expect(rows(f, profileTable)).toEqual([]);
+				expect(snapshot(f, [profileTable, "coordinator_auth_browser_transactions"])).toEqual(
+					before,
+				);
+				expect(rows(f, TABLES[0])[0]).toMatchObject({
+					state: "failed",
+					failure_reason: "browser_cancelled",
+					created_at_ms: NOW,
+					failed_at_ms: NOW,
+					link_id: null,
+				});
+			},
+		);
+	});
 	describe(`${backend} signed browser-cancel cleanup`, () => {
 		test("signed own cleanup acknowledges browser cancellation repeatedly without creating authority", async ({
 			f,

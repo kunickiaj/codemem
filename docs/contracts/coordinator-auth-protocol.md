@@ -254,8 +254,12 @@ browser authentication is ready.
 
 If the same attempt already failed with `browser_cancelled`, its original signed
 device may confirm that cancellation before the attempt deadline. The endpoint
-returns `200` with the existing `failed` status after temporary-material cleanup;
-it does not rewrite the reason, finalize a link, or grant account authority. The
+returns `200` with the existing `failed` status after temporary-material cleanup.
+This includes retrying deletion of that attempt's unpromoted OIDC profile if
+browser cancellation committed before profile cleanup failed. Promoted profiles
+remain unchanged. A cleanup failure does not acknowledge cancellation or roll
+back the already committed failed state.
+It does not rewrite the reason, finalize a link, or grant account authority. The
 runtime reports `link_stopped`, not successful linking. Other failure reasons,
 completed or expired attempts, and mismatched device proofs do not gain this
 acknowledgement.
