@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
+import { expect } from "vitest";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
 import { issueBrowserCookie } from "../../core/src/coordinator-browser-credential.js";
 import {
@@ -95,12 +96,31 @@ export async function resetCeremony() {
 		"0028_add_device_ownership_bindings.sql",
 		"0030_add_owner_enrollment_attempts.sql",
 		"0034_add_owner_admission_pin.sql",
+		"0036_add_owner_attempt_qualification_pin.sql",
 	]) {
 		const migration = env.TEST_MIGRATIONS.find((m) => m.name === name);
 		if (!migration) throw new Error(`Missing native migration fixture: ${name}`);
 		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
 	}
 	await exec(COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL);
+	await assertCurrentOwnerAttemptSchema();
+}
+
+async function assertCurrentOwnerAttemptSchema() {
+	// Every ceremony flow must run against 0036, never a silently downgraded reset table.
+	const columns = await env.COORDINATOR_DB.prepare(
+		"SELECT name FROM pragma_table_info('coordinator_owner_enrollment_attempts') WHERE name = 'owner_qualification_id'",
+	).all();
+	expect(columns.results).toEqual([{ name: "owner_qualification_id" }]);
+	const triggers = await env.COORDINATOR_DB.prepare(
+		`SELECT name FROM sqlite_master WHERE type = 'trigger'
+		AND tbl_name = 'coordinator_owner_enrollment_attempts'
+		AND name IN ('owner_enrollment_authority_insert', 'owner_enrollment_authority_update') ORDER BY name`,
+	).all();
+	expect(triggers.results).toEqual([
+		{ name: "owner_enrollment_authority_insert" },
+		{ name: "owner_enrollment_authority_update" },
+	]);
 }
 
 /** Dispose only between test cases, with no active fixture or pending operation.

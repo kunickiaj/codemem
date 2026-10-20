@@ -1,4 +1,10 @@
+import { env } from "cloudflare:workers";
 import { expect, it, vi } from "vitest";
+import { normalizeOwnerDefinitions } from "../../core/src/coordinator-owner-attempt-migration-test-harness.js";
+import {
+	OWNER_TABLE,
+	ownerDefinitions,
+} from "../../core/src/coordinator-owner-enrollment-test-harness.js";
 import { issueBrowserCookie } from "../../core/src/coordinator-browser-credential.js";
 import { AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR } from "../../core/src/coordinator-auth-link-contract.js";
 import { ownerEnrollmentStartMessage } from "../../core/src/owner-enrollment-start.js";
@@ -26,6 +32,38 @@ import {
 const unavailable = { kind: "rejected", error: "owner_enrollment_unavailable" };
 const unknown = { kind: "rejected", error: "owner_enrollment_unknown" };
 const groups = ["group-a", "group-b"];
+it("resetCeremony restores the complete current owner schema after a predecessor-only reset", async () => {
+	// Arrange: setup installed every official migration; recreate the old faulty reset explicitly.
+	const definitions = async () =>
+		normalizeOwnerDefinitions(
+			(await env.COORDINATOR_DB.prepare(ownerDefinitions).all<Record<string, unknown>>()).results,
+		);
+	const expected = await definitions();
+	await exec(`DROP TABLE ${OWNER_TABLE}`);
+	for (const name of [
+		"0030_add_owner_enrollment_attempts.sql",
+		"0034_add_owner_admission_pin.sql",
+	]) {
+		const migration = env.TEST_MIGRATIONS.find((m) => m.name === name);
+		if (!migration) throw new Error(`Missing predecessor migration fixture: ${name}`);
+		await env.COORDINATOR_DB.batch(
+			migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)),
+		);
+	}
+	expect(
+		await env.COORDINATOR_DB.prepare(
+			`SELECT name FROM pragma_table_info('${OWNER_TABLE}') WHERE name = 'owner_qualification_id'`,
+		).all(),
+	).toMatchObject({ results: [] });
+	expect(await definitions()).not.toEqual(expected);
+	// Act
+	await resetCeremony();
+	// Assert: compare all table constraints, indexes and triggers, not just the added column.
+	expect(await definitions()).toEqual(expected);
+	const once = await definitions();
+	await resetCeremony();
+	expect(await definitions()).toEqual(once);
+});
 const test = it.extend<{ ceremony: Ceremony }>({
 	ceremony: async ({ task: _task }, use) => {
 		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
