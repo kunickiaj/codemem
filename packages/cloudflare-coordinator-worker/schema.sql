@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_attempts (
  audit_event_id TEXT CHECK (audit_event_id IS NULL OR (typeof(audit_event_id) = 'text' AND length(trim(audit_event_id)) BETWEEN 1 AND 256 AND instr(audit_event_id, char(0)) = 0)),
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR (typeof(final_outcome_json) = 'text' AND json_valid(final_outcome_json) AND json_type(final_outcome_json) = 'object')),
  admission_owner_hash TEXT CHECK (admission_owner_hash IS NULL OR (typeof(admission_owner_hash) = 'text' AND length(admission_owner_hash) = 64 AND admission_owner_hash NOT GLOB '*[^0-9a-f]*' AND instr(admission_owner_hash, char(0)) = 0)),
+ owner_qualification_id TEXT CHECK (owner_qualification_id IS NULL OR (typeof(owner_qualification_id) = 'text' AND length(owner_qualification_id) BETWEEN 1 AND 256 AND owner_qualification_id = trim(owner_qualification_id) AND length(trim(owner_qualification_id, char(9)||char(10)||char(13)||' ')) > 0 AND instr(owner_qualification_id, char(0)) = 0)),
  PRIMARY KEY (coordinator_id, attempt_id),
  UNIQUE (coordinator_id, browser_start_hash),
  UNIQUE (coordinator_id, browser_transaction_hash),
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_attempts (
  CHECK (state NOT IN ('pending','browser_claimed') OR account_subject IS NULL),
  CHECK (state NOT IN ('pending','browser_claimed','oidc_verified') OR (confirmation_hash IS NULL AND completion_secret_hash IS NULL)),
  CHECK (state NOT IN ('browser_claimed','oidc_verified','confirmed','finalized') OR browser_transaction_hash IS NOT NULL),
- CHECK ((account_subject IS NULL AND identity_id IS NULL AND link_id IS NULL AND link_attempt_id IS NULL AND link_controller_attestation_id IS NULL AND link_auth_config_revision IS NULL AND grant_revisions_json IS NULL) OR (account_subject IS NOT NULL AND identity_id IS NOT NULL AND link_id IS NOT NULL AND link_attempt_id IS NOT NULL AND link_controller_attestation_id IS NOT NULL AND link_auth_config_revision IS NOT NULL AND grant_revisions_json IS NOT NULL)),
+ CHECK ((account_subject IS NULL AND identity_id IS NULL AND link_id IS NULL AND link_attempt_id IS NULL AND link_controller_attestation_id IS NULL AND owner_qualification_id IS NULL AND link_auth_config_revision IS NULL AND grant_revisions_json IS NULL) OR (account_subject IS NOT NULL AND identity_id IS NOT NULL AND link_id IS NOT NULL AND link_attempt_id IS NOT NULL AND ((link_controller_attestation_id IS NOT NULL AND owner_qualification_id IS NULL) OR (link_controller_attestation_id IS NULL AND owner_qualification_id IS NOT NULL)) AND link_auth_config_revision IS NOT NULL AND grant_revisions_json IS NOT NULL)),
  CHECK (state NOT IN ('oidc_verified','confirmed','finalized') OR account_subject IS NOT NULL),
  CHECK (state NOT IN ('confirmed','finalized') OR (confirmation_hash IS NOT NULL AND completion_secret_hash IS NOT NULL)),
  CHECK ((state = 'finalized' AND finalized_at_ms IS NOT NULL AND binding_id IS NOT NULL AND audit_event_id IS NOT NULL AND final_outcome_json IS NOT NULL AND final_key_proof_hash IS NOT NULL AND loopback_redirect IS NULL) OR (state <> 'finalized' AND finalized_at_ms IS NULL AND binding_id IS NULL AND audit_event_id IS NULL AND final_outcome_json IS NULL AND final_key_proof_hash IS NULL))
@@ -134,6 +135,28 @@ WHEN EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a
  UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND completion_secret_hash = NEW.completion_secret_hash)
  AND a.admission_owner_hash IS NOT NEW.admission_owner_hash)
 BEGIN SELECT RAISE(ABORT, 'owner_enrollment_admission_immutable'); END;
+-- The authority branch, including its NULL pin, is fixed at first owner resolution.
+CREATE TRIGGER IF NOT EXISTS owner_enrollment_authority_update
+BEFORE UPDATE ON coordinator_owner_enrollment_attempts
+WHEN (OLD.account_subject IS NOT NULL AND (
+ OLD.owner_qualification_id IS NOT NEW.owner_qualification_id
+ OR OLD.link_controller_attestation_id IS NOT NEW.link_controller_attestation_id))
+ OR (OLD.owner_qualification_id IS NOT NEW.owner_qualification_id AND NOT (
+  OLD.account_subject IS NULL AND NEW.account_subject IS NOT NULL
+  AND OLD.state = 'browser_claimed' AND NEW.state = 'oidc_verified'))
+BEGIN SELECT RAISE(ABORT, 'owner_enrollment_pins_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS owner_enrollment_authority_insert
+BEFORE INSERT ON coordinator_owner_enrollment_attempts
+WHEN EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a
+ WHERE a.rowid IN (
+ SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE rowid = NEW.rowid
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND attempt_id = NEW.attempt_id
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND browser_start_hash = NEW.browser_start_hash
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND browser_transaction_hash = NEW.browser_transaction_hash
+ UNION ALL SELECT rowid FROM coordinator_owner_enrollment_attempts WHERE coordinator_id = NEW.coordinator_id AND completion_secret_hash = NEW.completion_secret_hash)
+ AND (a.owner_qualification_id IS NOT NEW.owner_qualification_id
+  OR a.link_controller_attestation_id IS NOT NEW.link_controller_attestation_id))
+BEGIN SELECT RAISE(ABORT, 'owner_enrollment_pins_immutable'); END;
 -- Retained receipts cannot be changed, deleted, or erased through REPLACE.
 CREATE TRIGGER IF NOT EXISTS owner_enrollment_finalized_update
 BEFORE UPDATE ON coordinator_owner_enrollment_attempts WHEN OLD.state = 'finalized'

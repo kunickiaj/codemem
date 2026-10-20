@@ -10,6 +10,7 @@ import {
 } from "./coordinator-auth-browser-migration-test-harness.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { normalizeOwnerDefinitions } from "./coordinator-owner-attempt-migration-test-harness.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
 	finalizedOwner,
@@ -76,8 +77,15 @@ it("official source migration creates the same owner table, indexes and immutabl
 		db.transaction(() => {
 			for (const sql of admission.queries) db.exec(sql);
 		})();
-		expect(normalizeDefinitions(await sqliteFixture(db).query(ownerDefinitions))).toEqual(
-			normalizeDefinitions(await sqliteFixture(fresh.db).query(ownerDefinitions)),
+		const qualification = migrations.find(
+			(m) => m.name === "0036_add_owner_attempt_qualification_pin.sql",
+		);
+		if (!qualification) throw new Error("Missing owner qualification pin migration");
+		db.transaction(() => {
+			for (const sql of qualification.queries) db.exec(sql);
+		})();
+		expect(normalizeOwnerDefinitions(await sqliteFixture(db).query(ownerDefinitions))).toEqual(
+			normalizeOwnerDefinitions(await sqliteFixture(fresh.db).query(ownerDefinitions)),
 		);
 	} finally {
 		db.close();

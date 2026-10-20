@@ -13,11 +13,13 @@ const migration = env.TEST_MIGRATIONS.find((m) => m.name === "0030_add_owner_enr
 if (!migration) throw new Error("Missing owner schema migration fixture");
 const admissionMigration = env.TEST_MIGRATIONS.find((m) => m.name === "0034_add_owner_admission_pin.sql");
 if (!admissionMigration) throw new Error("Missing owner admission migration fixture");
+const qualificationMigration = env.TEST_MIGRATIONS.find((m) => m.name === "0036_add_owner_attempt_qualification_pin.sql");
+if (!qualificationMigration) throw new Error("Missing owner qualification pin migration fixture");
 const test = ownerHarness(async (use) => {
 	// Compare the officially migrated definitions with owner-only fixture recreation.
 	const expectedOwner = normalizeDefinitions(await fixture.query(ownerDefinitions));
 	await fixture.exec(`DROP TABLE ${OWNER_TABLE}`);
-	await env.COORDINATOR_DB.batch([...migration.queries, ...admissionMigration.queries].map((sql) => env.COORDINATOR_DB.prepare(sql)));
+	await env.COORDINATOR_DB.batch([...migration.queries, ...admissionMigration.queries, ...qualificationMigration.queries].map((sql) => env.COORDINATOR_DB.prepare(sql)));
 	expect(normalizeDefinitions(await fixture.query(ownerDefinitions))).toEqual(expectedOwner);
 	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 	try {
