@@ -48,6 +48,8 @@ export type CoordinatorOwnerEnrollmentHttpOptions = HttpOptionsBase &
 	);
 export interface CoordinatorOwnerEnrollmentHttp {
 	readonly pin: BrowserCsrfScope["store"] & { origin: string; issuer: string };
+	/** Trusted browser issuer uses the same production ceremony as the HTTP routes. */
+	readonly startOwnerBound: Enrollment["startOwnerBound"];
 	/** Owner-only paths, never the shared OIDC callback. */
 	matchesPath(path: string): boolean;
 	handle(request: Request, trustedClientKey: string): Promise<Response>;
@@ -454,6 +456,7 @@ function httpAdapter(
 	const { production } = options;
 	return {
 		pin,
+		startOwnerBound: (...args) => context.api.startOwnerBound(...args),
 		matchesPath: (path) =>
 			matchesCoordinatorOwnerEnrollmentHttpPath(path, production ? "production" : "private"),
 		handle: (request: Request, trustedClientKey: string) =>

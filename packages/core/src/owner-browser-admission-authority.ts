@@ -26,17 +26,24 @@ export async function ownerAdmissionSchemaReady(backend: AuthLinkBackend): Promi
  * Alias a supplies the pending device so exclusions are identical to callback/commit.
  * Controller enrollment is historical evidence: its old device need not remain active.
  */
-async function authoritySql(backend: AuthLinkBackend): Promise<string> {
+async function authoritySql(backend: AuthLinkBackend) {
 	const connections = await hasConnectionSessionSchema(backend);
-	return `FROM (SELECT ? AS coordinator_id,? AS device_id,? AS fingerprint) a
- JOIN coordinator_auth_sessions s ON s.coordinator_id = a.coordinator_id JOIN coordinator_auth_account_links l
- ON ${authSessionLinkMatchSql({ connections })} WHERE ${AUTH_SESSION_LIVE_GUARD_SQL}
- ${connections ? `AND ${CONNECTION_NOT_REVOKED_SQL}` : ""}
- AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL
+	return {
+		// Isolate the full session provenance from grant/exact-owner/INSERT predicates.
+		// Native D1 counts nested provenance toward its expression-depth limit of 100.
+		with: `WITH owner_admission_sessions AS MATERIALIZED (
+ SELECT s.coordinator_id,s.identity_id,s.link_id,s.issuer,s.subject,l.authority_kind,l.controller_attestation_id
+ FROM coordinator_auth_sessions s JOIN coordinator_auth_account_links l
+ ON ${authSessionLinkMatchSql({ connections })} WHERE (${AUTH_SESSION_LIVE_GUARD_SQL})
+ ${connections ? `AND (${CONNECTION_NOT_REVOKED_SQL})` : ""})`,
+		from: `FROM (SELECT ? AS coordinator_id,? AS device_id,? AS fingerprint) a
+ JOIN owner_admission_sessions s ON s.coordinator_id = a.coordinator_id
+ WHERE s.authority_kind = 'controller_attestation' AND s.controller_attestation_id IS NOT NULL
  AND EXISTS (SELECT 1 FROM coordinator_identity_group_grants r JOIN groups g ON g.group_id = r.group_id
  WHERE r.coordinator_id = s.coordinator_id AND r.identity_id = s.identity_id
  AND r.status = 'active' AND r.revoked_at IS NULL AND g.archived_at IS NULL
- AND NOT ${ownerExcludedLegacyDecisionSql("r.group_id")})`;
+ AND NOT ${ownerExcludedLegacyDecisionSql("r.group_id")})`,
+	};
 }
 function sessionValues(config: CoordinatorAuthBrowserConfig, hash: string, time: number) {
 	return [config.coordinatorId, hash, config.issuer, config.revision, time, time];
@@ -51,18 +58,19 @@ export async function readOwnerAdmissionAuthority(input: {
 	fingerprint: string;
 }): Promise<OwnerEnrollmentResolvedOwner | null> {
 	const { backend, config, sessionCookieHash, time, deviceId, fingerprint } = input;
+	const authority = await authoritySql(backend);
 	const row = await backend.first<{
 		identity_id: string;
 		link_id: string;
 		issuer: string;
 		subject: string;
 	}>({
-		sql: `SELECT s.identity_id,s.link_id,s.issuer,s.subject ${await authoritySql(backend)}`,
+		sql: `${authority.with} SELECT s.identity_id,s.link_id,s.issuer,s.subject ${authority.from}`,
 		values: [
+			...sessionValues(config, sessionCookieHash, time),
 			config.coordinatorId,
 			deviceId,
 			fingerprint,
-			...sessionValues(config, sessionCookieHash, time),
 		],
 	});
 	return row
@@ -76,7 +84,7 @@ export async function readOwnerAdmissionAuthority(input: {
 		: null;
 }
 
-/** Appended to the winning INSERT; revocation/config/grant races cannot create a new attempt. */
+/** Materialized by the winning INSERT; revocation/config/grant races cannot create a new attempt. */
 export async function ownerAdmissionSessionGuard(input: {
 	backend: AuthLinkBackend;
 	config: CoordinatorAuthBrowserConfig;
@@ -87,14 +95,15 @@ export async function ownerAdmissionSessionGuard(input: {
 	time: number;
 }): Promise<AuthLinkStatement> {
 	const { backend, config, sessionCookieHash, owner, deviceId, fingerprint, time } = input;
+	const authority = await authoritySql(backend);
 	return {
-		sql: `EXISTS (SELECT 1 ${await authoritySql(backend)}
- AND s.link_id = ? AND s.identity_id = ? AND s.issuer = ? AND s.subject = ?)`,
+		sql: `${authority.with} SELECT 1 ${authority.from}
+ AND s.link_id = ? AND s.identity_id = ? AND s.issuer = ? AND s.subject = ?`,
 		values: [
+			...sessionValues(config, sessionCookieHash, time),
 			config.coordinatorId,
 			deviceId,
 			fingerprint,
-			...sessionValues(config, sessionCookieHash, time),
 			owner.linkId,
 			owner.identityId,
 			owner.issuer,

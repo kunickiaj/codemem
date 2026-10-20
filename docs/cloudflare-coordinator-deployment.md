@@ -207,18 +207,21 @@ pause writers, back up the database, review its exact schema/migration records, 
 before starting upgraded readers/writers. Do not replay it against an already upgraded or fresh database.
 
 The internal `startOwnerBound` method verifies v2 admission against server-resolved account/link facts before
-inserting a non-NULL pin. It is not mounted as an HTTP endpoint. Public starts and operator issuance remain v1-only.
+inserting a non-NULL pin. Only the trusted browser admission handler calls it; it is not a public JSON endpoint.
+Public starts and operator issuance remain v1-only.
 Fresh OIDC must independently resolve the same issuer, subject, Identity and exact active controller-attestation
 link; confirmation and atomic finalization repeat the pin and live-link checks. No new identity
 source, device-claim owner support, deployment, or live provider workflow is included.
 
-### Owner browser admission handler source (not mounted)
+### Owner browser admission Worker source (not activated live)
 
 The internal `createOwnerBrowserAdmissionHandler(options)` factory returns an async
 `(request, trustedClientKey) => Response | null` handler. It matches only `/auth/owner/admit`, returns
 NULL for other paths, and returns 404 when its explicit owner opt-in is off. It captures current browser
-configuration and rejects an OIDC callback collision. The Worker does **not** mount this handler yet;
-existing operator routes and client behavior are unchanged.
+configuration and rejects an OIDC callback collision. The configured Worker mounts this fixed path before
+browser-app setup or OIDC discovery, only when authentication and `ownerEnrollmentEnabled` are both enabled.
+Default and explicitly disabled configurations return 404; invalid or missing required settings fail closed.
+The path is reserved against OIDC callback configuration. Existing operator routes and client behavior are unchanged.
 
 The handler requires an existing management session from `/auth/sign-in`, an active exact
 controller-attestation link, and an eligible trusted group grant. It uses the existing management-session
@@ -231,7 +234,9 @@ GET renders a session-CSRF multipart form. POST accepts exactly `csrf` (string) 
 the existing private `capability-request.json` format `{ "start": { ...six signed string fields... } }`.
 The dedicated reader limits the entire multipart body to 16 KiB before calling `formData()`; ordinary browser
 forms retain their 4 KiB limit. Invalid UTF-8, duplicate JSON/form fields and extra fields fail closed.
-Client and Identity rate limits use the existing per-isolate limiter, not a fleet-wide quota.
+Client and Identity rate limits share the configured Worker's existing per-isolate limiter with the owner HTTP
+and browser composition, not a fleet-wide quota. The real D1 backend and `AuthSessionOperations.readAuthSession`
+read the current captured config; GET admission may read D1 but never starts provider discovery.
 
 The initial button explicitly authorizes a request after local review. A signature proves key possession,
 not that the key belongs to this computer. The form warns against uploading someone else's file; the next
@@ -240,13 +245,18 @@ Session-scoped CSRF protects this explicit action; the existing attempt-ID tombs
 one-use. No separate pending-upload job or digest credential is created. V2 capability issuance and consumption
 stay server-side; only a newly started result renders the existing start-cookie/CSRF form, never an old attempt.
 
-Follow-up must mount and reserve this path before browser-app/OIDC setup, wire the lazy `getEnrollment`
-dependency to the same owner composition/backend, and add the maintained client's explicit account-admission
-mode. That client must bind its receiver and retain its attempt marker before opening the fixed path, omit
+The lazy `getEnrollment` dependency reuses the exact owner HTTP composition/backend, CSRF key, admission key,
+provider options and limiter. Only validated session/link/grant/upload admission initializes it; denied requests
+cannot initialize a provider, start an attempt, or reset shared quotas. No migration runs automatically.
+This source change does not approve or perform migration 0034, live Google validation, configuration changes,
+secret access, or deployment.
+
+Follow-up must add the maintained client's explicit account-admission mode. That client must bind its receiver
+and retain its attempt marker before opening the fixed path, omit
 operator capability/initial start POST, and preserve final/receipt retries. SQLite handler tests cover
 the upload flow and session, link and grant revocation during the winning start insert. Native D1
-handler/race tests and complete mounted client acceptance remain follow-up work; existing native
-ceremony tests alone do not verify this handler.
+tests cover the configured Worker handler, connection-aware sessions, upload limits and winning-insert
+authority races. Complete mounted client and browser acceptance remains follow-up work.
 
 ### Linked-account display metadata rollout
 

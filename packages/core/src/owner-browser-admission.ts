@@ -2,6 +2,7 @@ import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-t
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { authLinkNow } from "./coordinator-auth-link.js";
+import type { CoordinatorAuthSessionStore } from "./coordinator-auth-session-contract.js";
 import { captureCoordinatorBrowserAuthConfig } from "./coordinator-browser-auth-config.js";
 import {
 	type BrowserCookieReadResult,
@@ -42,6 +43,7 @@ export interface OwnerBrowserAdmissionOptions {
 	enabled: boolean;
 	config: unknown;
 	backend: AuthLinkBackend;
+	readSession: CoordinatorAuthSessionStore["readAuthSession"];
 	csrfKey: BrowserCsrfKey;
 	admissionKey: OwnerEnrollmentAdmissionKey;
 	limiter: InMemoryRequestRateLimiter;
@@ -102,7 +104,7 @@ function transportValid(request: Request, origin: string): boolean {
 	);
 }
 
-/** Unmounted first slice: caller must reserve this path and dispatch BEFORE browser/OIDC setup.
+/** Caller must reserve this path and dispatch BEFORE browser/OIDC setup.
  * No capability is returned to the browser. Session authority admits only a new exact start;
  * it never replaces the later fresh owner-purpose OIDC proof or pending-key finalization.
  */
@@ -176,6 +178,8 @@ async function handle(
 	if (!(await ownerAdmissionSchemaReady(backend))) return denied();
 	const cookie = await readBrowserCookie(request.headers.get("cookie"), "session");
 	if (cookie.kind !== "present") return denied(403);
+	const session = await options.readSession(cookie.cookieHash, settings.store);
+	if (!session) return denied(403);
 	const now = () => authLinkNow(options.clock ?? Date.now);
 	const base = { backend, config: settings.store, sessionCookieHash: cookie.cookieHash };
 	// GET has no pending key yet. This checks trusted grants and orphan exclusions;
@@ -186,7 +190,14 @@ async function handle(
 		deviceId: "",
 		fingerprint: "",
 	});
-	if (!owner) return denied(403);
+	if (
+		!owner ||
+		owner.identityId !== session.identityId ||
+		owner.linkId !== session.linkId ||
+		owner.issuer !== session.account.issuer ||
+		owner.subject !== session.account.subject
+	)
+		return denied(403);
 	if (
 		!options.limiter.check(
 			JSON.stringify(["owner-admit-identity", owner.coordinatorId, owner.identityId]),

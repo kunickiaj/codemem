@@ -9,19 +9,19 @@ import {
 	captureCoordinatorBrowserAuthOptions,
 	coordinatorBrowserAuthDeviceRoutes,
 	createCoordinatorBrowserAuth,
-	createCoordinatorOwnerEnrollmentHttp,
-	createD1AuthLinkBackend,
 	createD1CoordinatorApp,
 	createInMemoryRequestRateLimiter,
 	D1CoordinatorStore,
 	importBrowserCsrfKey,
 	importOwnerEnrollmentAdmissionKey,
 	maintainCoordinatorBrowserAuth,
+	OWNER_BROWSER_ADMISSION_PATH,
 } from "@codemem/core/internal/cloudflare-coordinator";
 import {
 	type CloudflareBrowserAuthEnv,
 	captureCloudflareBrowserAuthEnv,
 } from "./browser-auth-env.js";
+import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
@@ -91,8 +91,10 @@ async function authenticationUnavailable(
 	}
 }
 
-function createBrowserAuthSetup(snapshot: CoordinatorBrowserAuthSnapshot) {
-	const limiter = createInMemoryRequestRateLimiter();
+function createBrowserAuthSetup(
+	snapshot: CoordinatorBrowserAuthSnapshot,
+	limiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+) {
 	let browserStore: D1CoordinatorStore | undefined;
 	let completed: CoordinatorBrowserAuthResult | undefined;
 	return async (
@@ -127,8 +129,9 @@ function createBrowserAuthSetup(snapshot: CoordinatorBrowserAuthSnapshot) {
 function createBrowserAuthWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions,
 	snapshot: CoordinatorBrowserAuthSnapshot,
+	limiter = createInMemoryRequestRateLimiter(),
 ) {
-	const setup = createBrowserAuthSetup(snapshot);
+	const setup = createBrowserAuthSetup(snapshot, limiter);
 	const deviceLimiter = createInMemoryRequestRateLimiter();
 	let pinnedDb: D1DatabaseLike | undefined;
 	function pinBinding(env: CloudflareCoordinatorEnv): D1DatabaseLike | undefined {
@@ -224,22 +227,23 @@ async function createWorkerFromSettings(
 	const admissionKey = settings.ownerEnrollmentEnabled
 		? await importOwnerEnrollmentAdmissionKey(settings.csrfKeyBytes)
 		: undefined;
+	const owner = admissionKey
+		? createOwnerBrowser({
+				config: settings.config,
+				db,
+				csrfKey,
+				admissionKey,
+				limiter: ownerLimiter,
+			})
+		: undefined;
 	const browserAuth: CoordinatorBrowserAuthOptions = {
 		config: settings.config,
 		csrfKey,
-		ownerEnrollment: admissionKey
-			? async (input) =>
-					createCoordinatorOwnerEnrollmentHttp({
-						...input,
-						mode: "production",
-						backend: createD1AuthLinkBackend(db),
-						admissionKey,
-					})
-			: undefined,
+		ownerEnrollment: owner?.ownerEnrollment,
 	};
-	if (captureCoordinatorBrowserAuthOptions(browserAuth).kind !== "enabled")
-		throw new Error("browser_auth_config_invalid");
-	const underlying = createCloudflareCoordinatorWorker({ browserAuth });
+	const snapshot = captureCoordinatorBrowserAuthOptions(browserAuth);
+	if (snapshot.kind !== "enabled") throw new Error("browser_auth_config_invalid");
+	const underlying = createBrowserAuthWorker({}, snapshot, ownerLimiter);
 	const pin = {
 		coordinatorId: String(settings.config.coordinatorId),
 		origin: new URL(String(settings.config.redirectUri)).origin,
@@ -249,6 +253,13 @@ async function createWorkerFromSettings(
 	return {
 		...underlying,
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			if (owner) {
+				const handled = await owner.admit(
+					request,
+					request.headers.get("CF-Connecting-IP")?.trim() ?? "",
+				);
+				if (handled) return handled;
+			}
 			if (admissionKey) {
 				const handled = await handleOwnerEntrypoint(request, {
 					key: admissionKey,
@@ -292,18 +303,8 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		return completed;
 	}
 	return {
-		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
-			let dispatched = false;
-			try {
-				const worker = await configured(env);
-				if (!worker) return await authenticationUnavailable(request, env, {}, { deviceLimiter });
-				dispatched = true;
-				return await worker.fetch(request, env);
-			} catch {
-				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
-				return authenticationUnavailable(request, env, {}, { deviceLimiter });
-			}
-		},
+		fetch: (request: Request, env: CloudflareCoordinatorEnv) =>
+			fetchConfiguredWorker(request, env, configured, deviceLimiter),
 		scheduled(
 			controller: ScheduledController,
 			env: CloudflareCoordinatorEnv,
@@ -321,6 +322,45 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 			);
 		},
 	};
+}
+
+async function fetchConfiguredWorker(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	configured: (
+		env: CloudflareCoordinatorEnv,
+	) => Promise<ReturnType<typeof createCloudflareCoordinatorWorker> | null>,
+	deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+): Promise<Response> {
+	let dispatched = false;
+	const admissionRequest = new URL(request.url).pathname === OWNER_BROWSER_ADMISSION_PATH;
+	try {
+		if (admissionRequest && ownerAdmissionDisabled(env)) return ownerAdmissionUnavailable(404);
+		const worker = await configured(env);
+		if (!worker && admissionRequest) return ownerAdmissionUnavailable(503);
+		if (!worker) return await authenticationUnavailable(request, env, {}, { deviceLimiter });
+		dispatched = true;
+		return await worker.fetch(request, env);
+	} catch {
+		if (admissionRequest) return ownerAdmissionUnavailable(503);
+		if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
+		return authenticationUnavailable(request, env, {}, { deviceLimiter });
+	}
+}
+
+function ownerAdmissionDisabled(env: CloudflareCoordinatorEnv): boolean {
+	const settings = captureCloudflareBrowserAuthEnv(env);
+	return (
+		settings.kind === "disabled" ||
+		(settings.kind === "enabled" && !settings.ownerEnrollmentEnabled)
+	);
+}
+
+function ownerAdmissionUnavailable(status: number): Response {
+	return new Response("Owner admission unavailable.", {
+		status,
+		headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+	});
 }
 
 function runWorkerScheduled(

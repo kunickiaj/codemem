@@ -58,6 +58,7 @@ import {
 	checkCoordinatorOwnerEnrollmentTransport,
 	coordinatorOwnerEnrollmentHttpMethods,
 } from "./coordinator-owner-enrollment-http.js";
+import { OWNER_BROWSER_ADMISSION_PATH } from "./owner-browser-admission.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 export interface CoordinatorBrowserAuthOptions {
@@ -189,6 +190,7 @@ export function captureCoordinatorBrowserAuthOptions(
 		const callbackPath = new URL(settings.store.redirectUri).pathname;
 		if (
 			!/^\/auth\/[A-Za-z0-9._~/-]+$/.test(callbackPath) ||
+			callbackPath === OWNER_BROWSER_ADMISSION_PATH ||
 			Object.hasOwn(FIXED_PATHS, callbackPath)
 		)
 			return invalid("redirectUri");

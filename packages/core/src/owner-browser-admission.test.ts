@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
 import { oidcFixture } from "./coordinator-oidc-test-fixtures.js";
@@ -83,6 +84,7 @@ async function fixture(overrides: Partial<OwnerBrowserAdmissionOptions> = {}) {
 		if (!result.ok) throw new Error("Fixture composition failed");
 		return { ...result.enrollment, startOwnerBound: vi.fn(result.enrollment.startOwnerBound) };
 	});
+	const sessions = new AuthSessionOperations(f.backend, () => NOW);
 	const options: OwnerBrowserAdmissionOptions = {
 		enabled: true,
 		config,
@@ -90,6 +92,7 @@ async function fixture(overrides: Partial<OwnerBrowserAdmissionOptions> = {}) {
 		csrfKey,
 		admissionKey,
 		limiter: { check: vi.fn(() => ({ allowed: true, retryAfterS: 0 })) },
+		readSession: sessions.readAuthSession.bind(sessions),
 		clock: () => NOW,
 		getEnrollment: composition,
 		...overrides,

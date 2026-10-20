@@ -12,6 +12,7 @@ export type {
 	CreateCoordinatorAppOptions,
 } from "../coordinator-api.js";
 export { authSchemaUpgradeResponse } from "../coordinator-auth-schema.js";
+export { AuthSessionOperations } from "../coordinator-auth-session.js";
 export type {
 	CoordinatorBrowserAuth,
 	CoordinatorBrowserAuthClientKey,

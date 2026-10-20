@@ -45,7 +45,9 @@ export const backend: AuthLinkBackend = {
 export const exec = (sql: string, ...values: AuthLinkStatement["values"]) =>
 	backend.run({ sql, values });
 export const rows = async (table: string) => {
-	const orderBy = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+	let orderBy = "rowid";
+	if (table === "coordinator_auth_device_claims") orderBy = "claim_id";
+	if (table === "coordinator_auth_account_connection_orders") orderBy = "coordinator_id";
 	return (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all()).results;
 };
 export async function attempt() {

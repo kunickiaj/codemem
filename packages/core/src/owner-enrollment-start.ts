@@ -940,8 +940,11 @@ async function start(
 			fingerprint,
 			time,
 		});
-		statement.sql += ` AND ${guard.sql}`;
-		statement.values.push(...guard.values);
+		// Keep connection provenance out of the INSERT's expression tree (D1 depth 100).
+		// Materialization is inside this same winning statement, not an earlier read.
+		statement.sql = `WITH owner_admission_authority AS MATERIALIZED (${guard.sql})
+ ${statement.sql} AND EXISTS (SELECT 1 FROM owner_admission_authority)`;
+		statement.values.unshift(...guard.values);
 	}
 	const wrote = await context.backend.run(statement);
 	if (wrote !== 1) return unavailable;
