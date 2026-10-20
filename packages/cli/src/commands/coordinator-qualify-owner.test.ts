@@ -375,7 +375,7 @@ it.each([
 	},
 );
 
-it.each(["preview_changed", "qualification_conflict", "unavailable"])(
+it.each(["preview_changed", "qualification_conflict", "unavailable", "invalid_input"])(
 	"server denial %s never retries",
 	async (code) => {
 		// Arrange
@@ -389,6 +389,7 @@ it.each(["preview_changed", "qualification_conflict", "unavailable"])(
 		expect(fetch).toHaveBeenCalledTimes(2);
 		expect(output()).toContain("Qualification denied");
 		expect(output()).toContain("no automatic retry");
+		expect(output()).not.toMatch(/outcome is unknown|may have committed/);
 		expect(output()).not.toContain("private-server-body");
 		expect(mocks.log.success).not.toHaveBeenCalled();
 		expect(process.exitCode).toBe(1);
@@ -419,6 +420,7 @@ it.each([
 	[503, "qualification_conflict"],
 	[500, "unavailable"],
 	[503, "unavailable"],
+	[503, "invalid_input"],
 ])("HTTP %s with denial-shaped code %s remains an unknown commit outcome", async (status, code) => {
 	// Arrange: use the real public action so HTTP status survives transport parsing.
 	mocks.confirm.mockResolvedValue(true);

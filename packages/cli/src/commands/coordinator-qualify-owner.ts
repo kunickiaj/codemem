@@ -74,6 +74,12 @@ function parsePreview(reply: Record<string, unknown>, attestationId: string) {
 	};
 }
 type Preview = ReturnType<typeof parsePreview>;
+const QUALIFICATION_DENIAL_CODES = [
+	"invalid_input",
+	"preview_changed",
+	"qualification_conflict",
+	"unavailable",
+];
 function failure(options: Options, error: string, message: string, exitCode = 1) {
 	if (options.json) return emitJsonError(error, message, exitCode);
 	p.log.error(message, { output: process.stderr });
@@ -168,12 +174,12 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 		if (
 			error instanceof RemoteCoordinatorRequestError &&
 			error.status === 409 &&
-			["preview_changed", "qualification_conflict", "unavailable"].includes(error.code)
+			QUALIFICATION_DENIAL_CODES.includes(error.code)
 		)
 			return failure(
 				options,
 				"qualification_rejected",
-				"Qualification denied: evidence changed, was revoked, conflicts, or is unavailable. Preview again; no automatic retry.",
+				"Qualification denied: evidence is invalid, changed, was revoked, conflicts, or is unavailable. Preview again; no automatic retry.",
 			);
 		let message =
 			"Qualification server unavailable or preview invalid. The API is inactive until runtime review and explicit schema readiness checks permit mounting it. Check the saved coordinator and operator credential.";
