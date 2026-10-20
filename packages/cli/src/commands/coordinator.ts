@@ -55,6 +55,7 @@ import {
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
+import { buildCoordinatorQualifyOwnerCommand } from "./coordinator-qualify-owner.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
 
 function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: string }): string {
@@ -122,6 +123,7 @@ function createCoordinatorCommandRoot(): Command {
 	cmd.addCommand(buildCoordinatorLinkAccountCommand());
 	cmd.addCommand(buildCoordinatorEnrollOwnerCommand());
 	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
+	cmd.addCommand(buildCoordinatorQualifyOwnerCommand());
 	cmd.addCommand(buildCoordinatorGrantIdentityGroupCommand());
 	cmd.addCommand(buildCoordinatorAuthSchemaCommand());
 	cmd.addCommand(buildCoordinatorAccountSchemaCommand());

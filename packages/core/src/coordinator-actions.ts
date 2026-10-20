@@ -391,6 +391,76 @@ export async function coordinatorAuthControllerReviewAction(
 	return payload;
 }
 
+function parseQualificationActionResponse(
+	payload: Record<string, unknown> | null,
+	expectedStates: readonly string[],
+): Record<string, unknown> {
+	if (!payload || Object.hasOwn(payload, "error"))
+		throw new Error("qualification_response_invalid");
+	if (typeof payload.state !== "string" || !expectedStates.includes(payload.state))
+		throw new Error("qualification_response_invalid");
+	return payload;
+}
+
+/** Network preview unless an explicitly reviewed digest is supplied. Never retries. */
+export async function coordinatorQualifyOwnerAction(opts: {
+	remoteUrl: string;
+	adminSecret: string;
+	attestationId: string;
+	confirmEvidenceDigest?: string;
+	timeoutS?: number;
+}): Promise<Record<string, unknown>> {
+	const origin = normalizeCoordinatorAccountLinkOrigin(opts.remoteUrl);
+	if (!origin || !isCoordinatorControllerAttestationReference(opts.attestationId))
+		throw new Error("qualification_invalid_input");
+	if (
+		opts.confirmEvidenceDigest !== undefined &&
+		!/^[a-f0-9]{64}$/u.test(opts.confirmEvidenceDigest)
+	)
+		throw new Error("qualification_invalid_input");
+	if (!opts.adminSecret) throw new Error("qualification_admin_required");
+	const body: Record<string, unknown> = { attestation_id: opts.attestationId };
+	if (opts.confirmEvidenceDigest !== undefined)
+		body.confirm_evidence_digest = opts.confirmEvidenceDigest;
+	try {
+		const result = await remoteRequest(
+			"POST",
+			`${origin}/v1/admin/owner-qualifications`,
+			opts.adminSecret,
+			body,
+			null,
+			opts.timeoutS ?? 3,
+			16384,
+		);
+		return parseQualificationActionResponse(
+			result,
+			opts.confirmEvidenceDigest === undefined ? ["ready"] : ["created", "existing"],
+		);
+	} catch (error) {
+		const fallback =
+			opts.confirmEvidenceDigest === undefined
+				? "qualification_unavailable"
+				: "qualification_outcome_unknown";
+		if (!(error instanceof RemoteCoordinatorRequestError)) throw new Error(fallback);
+		const code = [
+			"invalid_input",
+			"unavailable",
+			"preview_changed",
+			"qualification_conflict",
+			"qualification_invalid_input",
+			"qualification_unavailable",
+			"qualification_outcome_unknown",
+			"unauthorized",
+			"rate_limited",
+			"body_too_large",
+		].includes(error.code)
+			? error.code
+			: fallback;
+		// Fixed diagnostics only: no remote body, credential, transport message or cause.
+		throw new RemoteCoordinatorRequestError(error.status, code);
+	}
+}
+
 function inviteUrlWarnings(rawUrl: string | null | undefined): string[] {
 	const value = String(rawUrl ?? "").trim();
 	if (!value) return [];

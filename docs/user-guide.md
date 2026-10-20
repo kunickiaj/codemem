@@ -676,6 +676,27 @@ Part A reviews and links the already-enrolled profile. Part B enrolls a separate
 
 #### Optional coordinator account linking
 
+##### Reviewed account qualification (inactive API)
+
+`codemem coordinator qualify-owner <attestation-id>` previews a separate permission:
+“Allow this linked account to enroll new devices under this Identity.” Its server
+API is **inactive** pending runtime review, so it currently reports server
+unavailability. It does not activate qualification or install schemas.
+
+The command uses the saved coordinator URL and existing private admin credential
+(`--config` can select the saved configuration). It accepts only the exact
+`controller-v1:` reference from a real operator device-owner review, not an
+Identity, email, link or key nomination. Independently verify that review.
+
+When a reviewed runtime mounts the API, the command first requests a network
+preview. `--json` and noninteractive runs stop after this read-only preview;
+interactive confirmation defaults to **No** and submits the exact server digest.
+Changed or revoked evidence denies confirmation without automatic retry; an unknown
+write outcome does not mean rollback. A transport-group grant remains a separate
+operator decision. Qualification does not create a Team, change Project access,
+or rewrite the original device claim. Bare, unqualified device claims remain
+denied for account-mode device enrollment.
+
 ##### A. Review, grant, and link the existing enrolled profile
 
 Run these commands on the existing device. The review reads its actual current Identity and device binding; it has no Identity argument and cannot nominate another user. It does not adopt old keys or create a new Identity.
