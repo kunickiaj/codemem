@@ -53,6 +53,10 @@ import {
 	verifyPendingKeySignatureAndHashes,
 } from "./coordinator-owner-enrollment-proof.js";
 import {
+	OWNER_ADMISSION_SCHEMA_READY_SQL,
+	ownerAdmissionSessionGuard,
+} from "./owner-browser-admission-authority.js";
+import {
 	isOwnerEnrollmentAdmissionKey,
 	type OwnerEnrollmentAdmissionKey,
 	type OwnerEnrollmentResolvedOwner,
@@ -75,6 +79,8 @@ export interface OwnerEnrollmentStart {
 export interface OwnerEnrollmentOwnerBoundStartOptions {
 	admissionToken: string;
 	resolvedOwner: OwnerEnrollmentResolvedOwner;
+	/** Trusted browser composition only; never accepted from signed-start JSON. */
+	sessionCookieHash?: string;
 }
 interface OwnerEnrollmentFinalize {
 	attemptId: string;
@@ -331,12 +337,6 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 		return { ok: false as const };
 	}
 }
-
-// Keep optional readiness fresh in the existing reads/writes, without another wrapped D1 query.
-const OWNER_ADMISSION_SCHEMA_READY_SQL = `EXISTS (SELECT 1 FROM pragma_table_info('coordinator_owner_enrollment_attempts')
- WHERE name = 'admission_owner_hash') AND (SELECT count(*) FROM sqlite_master
- WHERE type = 'trigger' AND tbl_name = 'coordinator_owner_enrollment_attempts'
- AND name IN ('owner_enrollment_admission_insert','owner_enrollment_admission_update')) = 2`;
 
 async function composeOidcClient(
 	mode: unknown,
@@ -923,9 +923,27 @@ async function start(
 		return unavailable;
 	const fingerprint = await ownerEnrollmentHash(i.publicKey);
 	const time = context.now();
-	const wrote = await context.backend.run(
-		startStatement(context, i, { keyId, fingerprint, browserStartHash, time, admissionOwnerHash }),
-	);
+	const statement = startStatement(context, i, {
+		keyId,
+		fingerprint,
+		browserStartHash,
+		time,
+		admissionOwnerHash,
+	});
+	if (captured.owner && captured.sessionCookieHash !== undefined) {
+		const guard = await ownerAdmissionSessionGuard({
+			backend: context.backend,
+			config: context.c,
+			sessionCookieHash: captured.sessionCookieHash,
+			owner: captured.owner,
+			deviceId: i.deviceId,
+			fingerprint,
+			time,
+		});
+		statement.sql += ` AND ${guard.sql}`;
+		statement.values.push(...guard.values);
+	}
+	const wrote = await context.backend.run(statement);
 	if (wrote !== 1) return unavailable;
 	return { kind: "started", attemptId: i.attemptId, expiresAtMs: time + 600000 };
 }
@@ -937,10 +955,24 @@ function captureStartInputs(value: OwnerEnrollmentStart, admission: Parameters<t
 			i,
 			token: own(admission.options, "admissionToken"),
 			owner: captureResolvedOwner(own(admission.options, "resolvedOwner")),
+			sessionCookieHash: captureSessionCookieHash(admission.options),
 		};
 	} catch {
 		return null;
 	}
+}
+function captureSessionCookieHash(
+	options: OwnerEnrollmentOwnerBoundStartOptions,
+): string | undefined {
+	const descriptor = Object.getOwnPropertyDescriptor(options, "sessionCookieHash");
+	if (!descriptor) return undefined;
+	if (
+		!Object.hasOwn(descriptor, "value") ||
+		typeof descriptor.value !== "string" ||
+		!/^[a-f0-9]{64}$/.test(descriptor.value)
+	)
+		throw new Error();
+	return descriptor.value;
 }
 async function verifyStartAdmission(
 	context: Context,

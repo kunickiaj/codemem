@@ -209,8 +209,44 @@ before starting upgraded readers/writers. Do not replay it against an already up
 The internal `startOwnerBound` method verifies v2 admission against server-resolved account/link facts before
 inserting a non-NULL pin. It is not mounted as an HTTP endpoint. Public starts and operator issuance remain v1-only.
 Fresh OIDC must independently resolve the same issuer, subject, Identity and exact active controller-attestation
-link; confirmation and atomic finalization repeat the pin and live-link checks. No session issuer, new identity
+link; confirmation and atomic finalization repeat the pin and live-link checks. No new identity
 source, device-claim owner support, deployment, or live provider workflow is included.
+
+### Owner browser admission handler source (not mounted)
+
+The internal `createOwnerBrowserAdmissionHandler(options)` factory returns an async
+`(request, trustedClientKey) => Response | null` handler. It matches only `/auth/owner/admit`, returns
+NULL for other paths, and returns 404 when its explicit owner opt-in is off. It captures current browser
+configuration and rejects an OIDC callback collision. The Worker does **not** mount this handler yet;
+existing operator routes and client behavior are unchanged.
+
+The handler requires an existing management session from `/auth/sign-in`, an active exact
+controller-attestation link, and an eligible trusted group grant. It uses the existing management-session
+provenance and connection-revocation predicates, without requiring the old controller device to remain enrolled.
+POST repeats the grant exclusion predicate for the uploaded device and canonical key. The trusted internal
+`sessionCookieHash` start option repeats this authority check in the winning attempt INSERT, including exact
+link, Identity, issuer, subject, current config and session expiry. Public start JSON cannot supply that option.
+
+GET renders a session-CSRF multipart form. POST accepts exactly `csrf` (string) and `request` (File), with
+the existing private `capability-request.json` format `{ "start": { ...six signed string fields... } }`.
+The dedicated reader limits the entire multipart body to 16 KiB before calling `formData()`; ordinary browser
+forms retain their 4 KiB limit. Invalid UTF-8, duplicate JSON/form fields and extra fields fail closed.
+Client and Identity rate limits use the existing per-isolate limiter, not a fleet-wide quota.
+
+The initial button explicitly authorizes a request after local review. A signature proves key possession,
+not that the key belongs to this computer. The form warns against uploading someone else's file; the next
+page displays the exact device ID and canonical-key fingerprint before fresh OIDC and existing confirmation.
+Session-scoped CSRF protects this explicit action; the existing attempt-ID tombstone makes the signed start
+one-use. No separate pending-upload job or digest credential is created. V2 capability issuance and consumption
+stay server-side; only a newly started result renders the existing start-cookie/CSRF form, never an old attempt.
+
+Follow-up must mount and reserve this path before browser-app/OIDC setup, wire the lazy `getEnrollment`
+dependency to the same owner composition/backend, and add the maintained client's explicit account-admission
+mode. That client must bind its receiver and retain its attempt marker before opening the fixed path, omit
+operator capability/initial start POST, and preserve final/receipt retries. SQLite handler tests cover
+the upload flow and session, link and grant revocation during the winning start insert. Native D1
+handler/race tests and complete mounted client acceptance remain follow-up work; existing native
+ceremony tests alone do not verify this handler.
 
 ### Linked-account display metadata rollout
 

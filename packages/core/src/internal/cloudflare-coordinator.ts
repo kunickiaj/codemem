@@ -68,6 +68,11 @@ export type { CreateD1CoordinatorAppOptions } from "../d1-coordinator-runtime.js
 export { createD1CoordinatorApp } from "../d1-coordinator-runtime.js";
 export type { D1DatabaseLike, D1PreparedStatementLike } from "../d1-coordinator-store.js";
 export { createD1AuthLinkBackend, D1CoordinatorStore } from "../d1-coordinator-store.js";
+export type { OwnerBrowserAdmissionOptions } from "../owner-browser-admission.js";
+export {
+	createOwnerBrowserAdmissionHandler,
+	OWNER_BROWSER_ADMISSION_PATH,
+} from "../owner-browser-admission.js";
 export type {
 	OwnerEnrollmentAdmissionKey,
 	OwnerEnrollmentAdmissionPin,

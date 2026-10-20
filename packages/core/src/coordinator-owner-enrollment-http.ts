@@ -119,7 +119,6 @@ function redirect(location: string, cookies: string[]): Response {
 	return respond(null, 303, headers);
 }
 async function startPage(request: Request, context: HttpContext): Promise<Response> {
-	const { scope, key } = context;
 	const url = new URL(request.url);
 	const attemptId = url.searchParams.get("attempt_id");
 	const startCode = url.searchParams.get("start_code");
@@ -133,6 +132,18 @@ async function startPage(request: Request, context: HttpContext): Promise<Respon
 		!parseBrowserFormBody(new TextEncoder().encode(fields.toString()), "link_start").ok
 	)
 		return reject();
+	return renderOwnerEnrollmentStartForm(request, context, {
+		attemptId: attemptId ?? "",
+		startCode: startCode ?? "",
+	});
+}
+/** Only call with a newly started attempt; never use this to redeliver an old start. */
+export async function renderOwnerEnrollmentStartForm(
+	request: Request,
+	context: Pick<HttpContext, "scope" | "key" | "transactionActivity">,
+	start: { attemptId: string; startCode: string; deviceId?: string; fingerprint?: string },
+): Promise<Response> {
+	const { scope, key } = context;
 	const transaction = await context.transactionActivity(request.headers.get("cookie"));
 	const current = await readBrowserCookie(request.headers.get("cookie"), "start");
 	if (transaction === "active" || transaction === "invalid" || current.kind === "invalid")
@@ -141,8 +152,12 @@ async function startPage(request: Request, context: HttpContext): Promise<Respon
 	const secret = current.kind === "present" ? current.secret : issued?.secret;
 	if (!secret) return reject();
 	const csrf = await issueBrowserCsrfToken(key, secret, "start", scope);
+	const display =
+		start.deviceId && start.fingerprint
+			? `<p>Compare these details with your local device review before choosing an account.</p><dl><dt>Device ID</dt><dd>${escapeHtml(start.deviceId)}</dd><dt>Key fingerprint</dt><dd>${escapeHtml(start.fingerprint)}</dd></dl>`
+			: "";
 	return page(
-		`<h1>Enroll owner device</h1>${form(START_PATH, { csrf, attempt_id: attemptId ?? "", start_code: startCode ?? "" }, "Choose account")}`,
+		`<h1>Enroll owner device</h1>${display}${form(START_PATH, { csrf, attempt_id: start.attemptId, start_code: start.startCode }, "Choose account")}`,
 		issued ? [issued.setCookie] : [],
 	);
 }
