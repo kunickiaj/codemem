@@ -226,14 +226,40 @@ function isPassthroughSnapshotLoadError(error: unknown): boolean {
 }
 
 /**
- * Without coordinator admin access there is nothing to migrate from this Viewer.
- * Members still see their Teams from local records, and Devices reports
- * incomplete coordinator setup. Only the summary uses this; Team detail and
- * finish stay fail-closed.
+ * Without coordinator admin access this Viewer cannot discover groups to
+ * migrate, so the summary suppresses discovery. Members still see their Teams
+ * from local records, and Devices reports incomplete coordinator setup. Saved,
+ * unfinished migrations stay visible so they can be resumed once access
+ * returns. Only the summary uses this; Team detail and finish stay fail-closed.
  */
-function summaryWithoutAdminAccess(error: unknown): LegacyTeamConfiguredGroupSnapshot[] {
-	if (error instanceof CoordinatorAdminConfigurationMissingError) return [];
-	throw error;
+function summaryWithoutAdminAccess(
+	error: unknown,
+	getStore: () => MemoryStore,
+): LegacyTeamConfiguredGroupSnapshot[] {
+	if (!(error instanceof CoordinatorAdminConfigurationMissingError)) throw error;
+	const store = getStore();
+	const rows = store.db
+		.prepare(
+			`SELECT DISTINCT coordinator_id, group_id FROM legacy_team_setup_drafts
+			 ORDER BY coordinator_id, group_id LIMIT ?`,
+		)
+		.all(MAX_CONFIGURED_GROUPS) as Array<{ coordinator_id: string; group_id: string }>;
+	return rows.flatMap((row) => {
+		const candidateRef = legacyTeamCandidateId(row.coordinator_id, row.group_id);
+		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+		if (!draft || draft.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
+			return [];
+		}
+		// Only the saved draft is read for these groups; no roster data is needed.
+		return [
+			{
+				coordinatorId: row.coordinator_id,
+				groupId: row.group_id,
+				displayName: draft.displayName,
+				devices: [],
+			},
+		];
+	});
 }
 
 function isCoordinatorRosterTooLargeError(error: unknown): boolean {
@@ -1573,7 +1599,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 	}
 	const loadedSummarySnapshots = createCachedSnapshotLoader(
-		() => loadedSnapshots().catch(summaryWithoutAdminAccess),
+		() => loadedSnapshots().catch((error) => summaryWithoutAdminAccess(error, options.getStore)),
 		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
 	);
 	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());

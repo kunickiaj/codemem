@@ -1961,3 +1961,67 @@ describe("Team setup summary and coordinator admin access", () => {
 		}
 	});
 });
+
+describe("Team setup summary after admin access is removed", () => {
+	it("keeps a saved unfinished migration visible after admin access is removed", async () => {
+		const { store, close } = createRouteStore();
+		const base = readCoordinatorSyncConfig({});
+		const publicKey = "saved-draft-public-key";
+		let adminSecret = FINISH_ADMIN_SECRET;
+		let invalidateSummary = () => {};
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			registerSummaryInvalidator: (invalidate) => {
+				invalidateSummary = invalidate;
+			},
+			snapshotLoaderDependencies: {
+				readConfig: () => ({
+					...base,
+					syncCoordinatorUrl: FINISH_COORDINATOR_ID,
+					syncCoordinatorGroups: [FINISH_GROUP_ID],
+					syncCoordinatorAdminSecret: adminSecret,
+				}),
+				listGroups: vi.fn(async () => [
+					{ group_id: FINISH_GROUP_ID, display_name: "Migration Team", archived_at: null },
+				]) as never,
+				listDevices: vi.fn(async () => [
+					{
+						group_id: FINISH_GROUP_ID,
+						device_id: "device-a",
+						public_key: publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						identity_id: null,
+						display_name: "Laptop",
+						enabled: 1,
+						created_at: "2026-09-06T00:00:00.000Z",
+					},
+				]) as never,
+			},
+			completionDependencies: {
+				create: async ({ manifest }) => ({ status: "created", manifest }),
+				list: async () => [],
+			},
+		});
+		try {
+			const before = (await (await app.request("/api/sync/team-setup/v1")).json()) as {
+				candidates: Array<{ candidateRef: string; displayName: string }>;
+			};
+			expect(before.candidates.map((candidate) => candidate.displayName)).toEqual([
+				"Migration Team",
+			]);
+			expect(getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF)).not.toBeNull();
+
+			adminSecret = "";
+			invalidateSummary();
+			const response = await app.request("/api/sync/team-setup/v1");
+
+			expect(response.status).toBe(200);
+			const after = (await response.json()) as typeof before;
+			expect(after.candidates.map((candidate) => candidate.candidateRef)).toEqual([
+				FINISH_CANDIDATE_REF,
+			]);
+		} finally {
+			close();
+		}
+	});
+});
