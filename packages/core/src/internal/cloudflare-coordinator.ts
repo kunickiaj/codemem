@@ -71,12 +71,18 @@ export { createD1AuthLinkBackend, D1CoordinatorStore } from "../d1-coordinator-s
 export type {
 	OwnerEnrollmentAdmissionKey,
 	OwnerEnrollmentAdmissionPin,
+	OwnerEnrollmentAdmissionV2Options,
+	OwnerEnrollmentAdmissionV2VerificationOptions,
+	OwnerEnrollmentResolvedOwner,
 } from "../owner-enrollment-admission.js";
 export {
 	importOwnerEnrollmentAdmissionKey,
 	isOwnerEnrollmentAdmissionKey,
 	issueOwnerEnrollmentAdmission,
+	issueOwnerEnrollmentAdmissionV2,
+	ownerEnrollmentOwnerCommitment,
 	verifyOwnerEnrollmentAdmission,
+	verifyOwnerEnrollmentAdmissionV2,
 } from "../owner-enrollment-admission.js";
 export type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 export { createInMemoryRequestRateLimiter } from "../request-rate-limit.js";

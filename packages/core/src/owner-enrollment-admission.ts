@@ -1,3 +1,4 @@
+import { parseCoordinatorAccountReference } from "./coordinator-auth-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import {
@@ -163,6 +164,192 @@ export async function verifyOwnerEnrollmentAdmission(
 			cryptoKey,
 			mac,
 			message(startTuple(pin, start), start.signature, issued, expires),
+		);
+	} catch {
+		return false;
+	}
+}
+
+/** Server-resolved account/link only. This structural type confers no authorization. */
+export interface OwnerEnrollmentResolvedOwner {
+	readonly coordinatorId: string;
+	readonly issuer: string;
+	readonly subject: string;
+	readonly identityId: string;
+	readonly linkId: string;
+}
+
+export interface OwnerEnrollmentAdmissionV2Options {
+	readonly resolvedOwner: OwnerEnrollmentResolvedOwner;
+	readonly nowMs: number;
+	readonly ttlMs: number;
+}
+
+export interface OwnerEnrollmentAdmissionV2VerificationOptions {
+	readonly resolvedOwner: OwnerEnrollmentResolvedOwner;
+	readonly nowMs: number;
+}
+
+function ownerTuple(owner: OwnerEnrollmentResolvedOwner): string {
+	const { coordinatorId, issuer, subject, identityId, linkId } = owner;
+	if (
+		!isAuthControllerId(coordinatorId) ||
+		!text(issuer, 4096) ||
+		!parseCoordinatorAccountReference({ issuer, subject }, { issuer }).ok ||
+		!isAuthControllerId(identityId) ||
+		!isAuthControllerId(linkId)
+	)
+		throw new Error("owner_admission_invalid_owner");
+	return JSON.stringify([
+		"codemem-owner-enrollment-owner-commitment-v1",
+		coordinatorId,
+		issuer,
+		subject,
+		identityId,
+		linkId,
+	]);
+}
+
+async function hashOwnerTuple(tuple: string): Promise<string> {
+	const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(tuple));
+	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Unmounted primitive: hashes canonical JSON [domain, coordinator, issuer, subject, Identity, link].
+ * Returns lowercase SHA-256 hex, not authority or anonymization of guessable account data.
+ */
+export async function ownerEnrollmentOwnerCommitment(
+	owner: OwnerEnrollmentResolvedOwner,
+): Promise<string> {
+	return hashOwnerTuple(ownerTuple(owner));
+}
+
+function admissionV2Input(
+	pin: OwnerEnrollmentAdmissionPin,
+	start: OwnerEnrollmentStart,
+	owner: OwnerEnrollmentResolvedOwner,
+) {
+	// Copy every caller-owned field before crypto can yield. No later reads from inputs.
+	const pinned = {
+		coordinatorId: pin.coordinatorId,
+		origin: pin.origin,
+		issuer: pin.issuer,
+		revision: pin.revision,
+	};
+	const pending = {
+		attemptId: start.attemptId,
+		deviceId: start.deviceId,
+		publicKey: start.publicKey,
+		loopbackRedirect: start.loopbackRedirect,
+		browserStartCode: start.browserStartCode,
+		signature: start.signature,
+	};
+	const resolved = {
+		coordinatorId: owner.coordinatorId,
+		issuer: owner.issuer,
+		subject: owner.subject,
+		identityId: owner.identityId,
+		linkId: owner.linkId,
+	};
+	const ownerMessage = ownerTuple(resolved);
+	if (
+		resolved.coordinatorId !== pinned.coordinatorId ||
+		resolved.issuer !== pinned.issuer ||
+		!text(pinned.origin, 4096) ||
+		!text(pending.browserStartCode, 43)
+	)
+		throw new Error("owner_admission_invalid_start");
+	return {
+		tuple: startTuple(pinned, pending),
+		publicKey: pending.publicKey,
+		signature: pending.signature,
+		ownerMessage,
+	};
+}
+
+function messageV2(
+	tuple: string,
+	signature: string,
+	issued: number,
+	expires: number,
+	ownerCommitment: string,
+): Uint8Array<ArrayBuffer> {
+	return new TextEncoder().encode(
+		JSON.stringify([
+			"codemem-owner-enrollment-admission-v2",
+			issued,
+			expires,
+			tuple,
+			signature,
+			ownerCommitment,
+		]),
+	);
+}
+
+/**
+ * Unmounted server-only issuer, NOT a self-service endpoint. Before calling, authenticate the
+ * session and resolve its active account link, Identity and grants server-side. Never accept
+ * resolvedOwner from request JSON. A type or commitment alone does not authorize issuance.
+ * Uses the existing private admission key; v1 operator issuance/verification stays unchanged.
+ */
+export async function issueOwnerEnrollmentAdmissionV2(
+	key: OwnerEnrollmentAdmissionKey,
+	pin: OwnerEnrollmentAdmissionPin,
+	start: OwnerEnrollmentStart,
+	options: OwnerEnrollmentAdmissionV2Options,
+): Promise<string> {
+	const cryptoKey = keys.get(key);
+	const input = admissionV2Input(pin, start, options.resolvedOwner);
+	const issued = options.nowMs;
+	const ttl = options.ttlMs;
+	const expires = issued + ttl;
+	if (!cryptoKey || !Number.isSafeInteger(ttl) || !validTimes(issued, expires, issued))
+		throw new Error("owner_admission_invalid_start");
+	if (!(await verifyOwnerEnrollmentSignature(input.publicKey, input.tuple, input.signature)))
+		throw new Error("owner_admission_invalid_start");
+	const commitment = await hashOwnerTuple(input.ownerMessage);
+	const mac = await globalThis.crypto.subtle.sign(
+		"HMAC",
+		cryptoKey,
+		messageV2(input.tuple, input.signature, issued, expires, commitment),
+	);
+	return `v2.${issued}.${expires}.${commitment}.${encodeCoordinatorAuthProof32(new Uint8Array(mac))}`;
+}
+
+/**
+ * Unmounted v2-only verifier; no v1 fallback. The hash companion is authenticated, not raw owner data.
+ * Callers must separately retain an immutable attempt owner pin, compare it at callback/finalize,
+ * and recheck live session/link/grant authority. This primitive creates no attempt or replay state.
+ */
+export async function verifyOwnerEnrollmentAdmissionV2(
+	key: OwnerEnrollmentAdmissionKey,
+	token: unknown,
+	pin: OwnerEnrollmentAdmissionPin,
+	start: OwnerEnrollmentStart,
+	options: OwnerEnrollmentAdmissionV2VerificationOptions,
+): Promise<boolean> {
+	try {
+		const cryptoKey = keys.get(key);
+		if (!cryptoKey || typeof token !== "string" || token.length > 146) return false;
+		const parts =
+			/^v2\.(0|[1-9][0-9]{0,15})\.(0|[1-9][0-9]{0,15})\.([a-f0-9]{64})\.([A-Za-z0-9_-]{43})$/.exec(
+				token,
+			);
+		if (!parts) return false;
+		const issued = Number(parts[1]);
+		const expires = Number(parts[2]);
+		const commitment = parts[3];
+		const mac = decodeCoordinatorAuthProof32(parts[4]);
+		const now = options.nowMs;
+		if (!mac || !commitment || !validTimes(issued, expires, now)) return false;
+		const input = admissionV2Input(pin, start, options.resolvedOwner);
+		if ((await hashOwnerTuple(input.ownerMessage)) !== commitment) return false;
+		return await globalThis.crypto.subtle.verify(
+			"HMAC",
+			cryptoKey,
+			mac,
+			messageV2(input.tuple, input.signature, issued, expires, commitment),
 		);
 	} catch {
 		return false;
