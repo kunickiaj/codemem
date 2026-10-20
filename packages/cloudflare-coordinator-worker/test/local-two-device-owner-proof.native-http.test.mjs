@@ -1,4 +1,4 @@
-// Fake-only acceptance: no production owner routes, provider network, or user state.
+// Synthetic acceptance: production handlers, fake provider, disposable local state.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -28,6 +28,10 @@ async function helpers(directory) {
 		stdin: {
 			contents: `
 export { linkCoordinatorAccount } from './coordinator-account-link-runtime.ts';
+export { createConfiguredCloudflareCoordinatorWorker } from '../../cloudflare-coordinator-worker/src/index.ts';
+export { buildCoordinatorReviewDeviceOwnerCommand } from '../../cli/src/commands/coordinator-review-device-owner.ts';
+export { buildCoordinatorGrantIdentityGroupCommand } from '../../cli/src/commands/coordinator-grant-identity-group.ts';
+export { promptControl } from '@clack/prompts';
 export { readCoordinatorAccountLinkStatus } from './coordinator-account-link-status-client.ts';
 export { createCoordinatorApp } from './coordinator-api.ts';
 export { captureCoordinatorBrowserAuthOptions, createCoordinatorBrowserAuth } from './coordinator-browser-auth-app.ts';
@@ -61,6 +65,19 @@ export { loadReplicationOpsSince, filterReplicationOpsForSyncWithStatus, applyRe
 		plugins: [{
 			name: "fixture-only-dependencies",
 			setup(builder) {
+				// Only terminal interaction is replaced. CLI config/local evidence, backend
+				// actions, response validation and Commander parsing remain production code.
+				builder.onResolve({ filter: /^@clack\/prompts$/ }, () => ({ path: "prompts", namespace: "terminal" }));
+				builder.onLoad({ filter: /.*/, namespace: "terminal" }, () => ({
+					contents: `export const promptControl = { answer: false, prompts: [], messages: [] };
+export const confirm = async options => { promptControl.prompts.push(options); return promptControl.answer; };
+export const isCancel = value => typeof value === 'symbol';
+export const log = Object.fromEntries(['error', 'warn', 'message', 'success', 'info'].map(level => [level, message => promptControl.messages.push({level, message})]));`,
+					loader: "js",
+				}));
+				builder.onResolve({ filter: /^@codemem\/core\/internal\/cloudflare-coordinator$/ }, () => ({
+					path: join(coreDir, "src/internal/cloudflare-coordinator.ts"),
+				}));
 				builder.onResolve({ filter: /^vitest$/ }, () => ({ path: "vitest", namespace: "fixture" }));
 				builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
 					contents: "export const vi = { fn: f => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); };",
@@ -134,6 +151,7 @@ async function coordinator(h, now) {
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	const prepare = s => db.prepare(s.sql).bind(...s.values);
 	return {
+		db,
 		dispose: () => mf.dispose(),
 		store: new h.D1CoordinatorStore(db, { authClock: () => now }),
 		backend: {
@@ -147,14 +165,19 @@ async function coordinator(h, now) {
 
 // Small native HTTP adapter for A's maintained signed/browser app. No new routes.
 async function linkDispatcher(t, app) {
+	const requests = [];
 	const server = createServer(async (incoming, response) => {
 		try {
 			const chunks = [];
 			for await (const chunk of incoming) chunks.push(chunk);
+			const wire = { path: incoming.url, method: incoming.method, body: Buffer.concat(chunks).toString() };
+			requests.push(wire);
 			const result = await app.fetch(new Request(new URL(incoming.url, origin), {
 				method: incoming.method, headers: incoming.headers,
 				body: incoming.method === "GET" ? undefined : Buffer.concat(chunks),
 			}));
+			wire.status = result.status;
+			if (incoming.url.startsWith("/v1/admin/")) wire.response = await result.clone().text();
 			const headers = Object.fromEntries(result.headers);
 			headers["set-cookie"] = result.headers.getSetCookie();
 			response.writeHead(result.status, headers);
@@ -167,7 +190,7 @@ async function linkDispatcher(t, app) {
 		return new Promise(resolve => server.close(resolve));
 	});
 	const base = `http://127.0.0.1:${server.address().port}`;
-	return async (url, init = {}) => {
+	const request = async (url, init = {}) => {
 		const target = new URL(url);
 		assert.equal(target.origin, origin);
 		const result = await ownerHttpRequest(`${base}${target.pathname}${target.search}`, init);
@@ -177,6 +200,7 @@ async function linkDispatcher(t, app) {
 		}
 		return new Response(result.body || null, { status: result.status, headers });
 	};
+	return Object.assign(request, { nativeOrigin: base, requests });
 }
 
 function cookie(response) {
@@ -195,10 +219,13 @@ async function fields(response, action) {
 
 async function linkA(f) {
 	const { h, remote, a, config, provider, now, t } = f;
-	const review = h.review({ identityId: a.store.actorId, publicKey: a.key.publicKey, fingerprint: h.fingerprintPublicKey(a.key.publicKey) });
-	await remote.store.createGroup(review.groupId, "Fake transport group");
-	await remote.store.enrollDevice(review.groupId, { ...review, identityId: null });
-	if (!f.deviceOwned) assert.equal((await remote.store.createAuthControllerAttestation(review)).kind, "created");
+	const review = h.review({ identityId: a.store.actorId, publicKey: a.key.publicKey, fingerprint: h.fingerprintPublicKey(a.key.publicKey),
+		...(f.cliReview ? { attestationId: f.cliReview.attestation_id } : {}) });
+	if (!f.cliReview) {
+		await remote.store.createGroup(review.groupId, "Fake transport group");
+		await remote.store.enrollDevice(review.groupId, { ...review, identityId: null });
+		if (!f.deviceOwned) assert.equal((await remote.store.createAuthControllerAttestation(review)).kind, "created");
+	}
 	if (f.deviceOwned) {
 		const session = a.store.startSession({ project: "existing-device-history" });
 		a.store.remember(session, "discovery", "Existing memory", "Keep the current Identity and history.", 0.8);
@@ -216,7 +243,7 @@ async function linkA(f) {
 		requestVerifier: input => h.verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) }),
 		browserAuth: { kind: "ready", auth: auth.auth, storeFactory: () => remote.store, clientKey: () => "fake-browser-a" },
 	});
-	const request = await linkDispatcher(t, app);
+	const request = f.coordinatorRequest ?? await linkDispatcher(t, app);
 	const readiness = await h.readCoordinatorAccountLinkStatus({
 		dbPath: a.dbPath, keysDir: a.keysDir, coordinatorUrl: origin, groupId: review.groupId,
 		identityId: a.store.actorId, fetch: request,
@@ -244,7 +271,7 @@ async function linkA(f) {
 	assert.equal(links[0].subject, "fixture-subject");
 	assert.equal(links[0].controller_attestation_id, f.deviceOwned ? null : review.attestationId);
 	assert.equal((await remote.rows("coordinator_auth_link_audit_log")).length, 1);
-	if (f.deviceOwned) return result;
+	if (f.deviceOwned || f.cliReview) return result;
 	assert.equal((await remote.store.issueIdentityGroupGrantFromControllerAttestation({
 		coordinatorId: review.coordinatorId, attestationId: review.attestationId,
 	})).kind, "created");
@@ -276,7 +303,7 @@ async function linkBrowser(request, provider, url) {
 	return { transactionCookie };
 }
 
-async function fixture(t, { deviceOwned = false } = {}) {
+async function fixture(t, { deviceOwned = false, bootstrapCli = false } = {}) {
 	// Explicit reverse acquisition order: close servers/stores before removing files.
 	const cleanup = [];
 	t.after(async () => {
@@ -290,7 +317,10 @@ async function fixture(t, { deviceOwned = false } = {}) {
 	const now = Date.now();
 	t.mock.method(Date, "now", () => now);
 	let syncOrigin;
+	let fakeProvider;
 	t.mock.method(globalThis, "fetch", async (input, init) => {
+		if (fakeProvider && new URL(input instanceof Request ? input.url : String(input)).origin === "https://accounts.google.com")
+			return fakeProvider(input, init);
 		if (!syncOrigin) throw new Error("External network forbidden");
 		const request = new Request(input, init);
 		assert.equal(new URL(request.url).origin, syncOrigin, "External network forbidden");
@@ -302,9 +332,11 @@ async function fixture(t, { deviceOwned = false } = {}) {
 	});
 	await mkdir(artifacts, { recursive: true });
 	const directory = await mkdtemp(join(artifacts, "two-device-owner-"));
-	const environment = Object.fromEntries(["CODEMEM_CONFIG", "CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_KEYS_DIR"].map(name => [name, process.env[name]]));
+	const isolatedNames = ["CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_KEYS_DIR",
+		"CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET", "CODEMEM_SYNC_COORDINATOR_URL", "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S"];
+	const environment = Object.fromEntries(["CODEMEM_CONFIG", ...isolatedNames].map(name => [name, process.env[name]]));
 	process.env.CODEMEM_CONFIG = join(directory, "config.json");
-	for (const name of ["CODEMEM_ACTOR_ID", "CODEMEM_DEVICE_ID", "CODEMEM_KEYS_DIR"]) delete process.env[name];
+	for (const name of isolatedNames) delete process.env[name];
 	t.after(() => {
 		for (const [name, value] of Object.entries(environment)) {
 			if (value === undefined) delete process.env[name];
@@ -329,8 +361,9 @@ async function fixture(t, { deviceOwned = false } = {}) {
 	a = await device(h, directory, "device-a");
 	remote = await coordinator(h, now);
 	const f = { t, h, a, remote, config, provider, now, directory, deviceOwned,
-		allowSyncOrigin: url => { syncOrigin = url; } };
-	f.link = await linkA(f);
+		allowSyncOrigin: url => { syncOrigin = url; },
+		allowProvider: request => { fakeProvider = request; } };
+	if (!bootstrapCli) f.link = await linkA(f);
 	return f;
 }
 
@@ -423,8 +456,8 @@ async function syncServer(f) {
 	return { url, requests };
 }
 
-async function maintainedOwnerB(f, { expectAdmissionDenied = false } = {}) {
-	const profileDir = join(f.directory, "owner-profile-b");
+async function maintainedOwnerB(f, { expectAdmissionDenied = false, profileName = "owner-profile-b" } = {}) {
+	const profileDir = join(f.directory, profileName);
 	const http = await f.h.createCoordinatorOwnerEnrollmentHttp({ config: f.config, backend: f.remote.backend,
 		oidcOptions: { fetch: f.provider.fetch }, clock: () => f.now });
 	const request = await linkDispatcher(f.t, { fetch: r => http.handle(r, "owner-socket") });
@@ -487,6 +520,197 @@ async function deviceOwnedSnapshot(f) {
 			"coordinator_device_ownership_bindings", "coordinator_owner_enrollment_audit_log", "coordinator_scope_memberships"].map(f.remote.rows)),
 	};
 }
+
+async function bootstrapCliFixture(t) {
+	const f = await fixture(t, { bootstrapCli: true });
+	const { a, h, remote } = f;
+	// Prerequisite, not remote enrollment CLI coverage: Worker discovery deployment
+	// currently requires a manual D1 operator. Built-in enroll commands are SQLite-only.
+	await remote.store.createGroup("group-a", "Synthetic transport group");
+	await remote.store.enrollDevice("group-a", { deviceId: a.deviceId, publicKey: a.key.publicKey,
+		fingerprint: h.fingerprintPublicKey(a.key.publicKey), identityId: null });
+	const session = a.store.startSession({ project: "existing-a-history" });
+	a.store.remember(session, "discovery", "Existing A memory", "Keep its actual author.", 0.8);
+	const worker = h.createConfiguredCloudflareCoordinatorWorker();
+	const { clientSecret, ...publicConfig } = f.config;
+	const env = {
+		COORDINATOR_DB: remote.db,
+		CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "synthetic-bootstrap-secret",
+		CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG: JSON.stringify({ ...publicConfig, ownerEnrollmentEnabled: true }),
+		CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET: clientSecret,
+		CODEMEM_COORDINATOR_BROWSER_CSRF_KEY: "b".repeat(64),
+	};
+	f.coordinatorRequest = await linkDispatcher(f.t, {
+		fetch: request => {
+			request.headers.set("CF-Connecting-IP", "127.0.0.1");
+			return worker.fetch(request, env);
+		},
+	});
+	f.allowSyncOrigin(f.coordinatorRequest.nativeOrigin);
+	f.allowProvider(f.provider.fetch);
+	f.configPath = join(f.directory, "config.json");
+	await writeFile(f.configPath, JSON.stringify({
+		actor_id: a.store.actorId,
+		sync_coordinator_url: f.coordinatorRequest.nativeOrigin,
+		sync_coordinator_admin_secret: env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET,
+	}));
+	for (const stream of [process.stdin, process.stderr]) {
+		const descriptor = Object.getOwnPropertyDescriptor(stream, "isTTY");
+		Object.defineProperty(stream, "isTTY", { configurable: true, value: true });
+		t.after(() => {
+			if (descriptor) Object.defineProperty(stream, "isTTY", descriptor);
+			else Reflect.deleteProperty(stream, "isTTY");
+		});
+	}
+	const previousExitCode = process.exitCode;
+	process.exitCode = undefined;
+	t.after(() => { process.exitCode = previousExitCode; });
+	f.review = extra => h.buildCoordinatorReviewDeviceOwnerCommand().parseAsync([
+		"group-a", "--db-path", a.dbPath, "--config", f.configPath, ...extra,
+	], { from: "user" });
+	f.grant = (reference, extra = []) => h.buildCoordinatorGrantIdentityGroupCommand().parseAsync([
+		reference, "--config", f.configPath, ...extra,
+	], { from: "user" });
+	return f;
+}
+
+test("CLI default-No and JSON previews never review an owner or issue a transport grant", async t => {
+	// Arrange: actual A profile and explicit discovery seed, no review or grant.
+	const f = await bootstrapCliFixture(t);
+	const before = await deviceOwnedSnapshot(f);
+	const output = [];
+	t.mock.method(process.stdout, "write", value => { output.push(value); return true; });
+	const reference = `controller-v1:${"c".repeat(64)}`;
+	// Act: default No is represented by the terminal adapter's unmodified false answer.
+	await f.review([]);
+	await f.grant(reference);
+	await f.review(["--json"]);
+	await f.grant(reference, ["--json"]);
+	// Assert: previews reach the Worker but neither commit nor grant transport runs.
+	assert.equal(process.exitCode, undefined, JSON.stringify({ messages: f.h.promptControl.messages, requests: f.coordinatorRequest.requests }));
+	assert.equal(f.h.promptControl.prompts.length, 2);
+	assert.ok(f.h.promptControl.prompts.every(prompt => prompt.initialValue === false));
+	assert.equal(f.coordinatorRequest.requests.length, 2);
+	for (const request of f.coordinatorRequest.requests) {
+		assert.equal(request.path, "/v1/admin/auth-controller-reviews");
+		assert.equal(request.status, 200);
+		assert.equal(JSON.parse(request.body).confirm_evidence_digest, undefined);
+	}
+	const [reviewPreview, grantPreview] = output.map(value => JSON.parse(value));
+	assert.equal(reviewPreview.local.identity.identityId, f.a.store.actorId);
+	assert.equal(reviewPreview.local.identity.source, "config");
+	assert.equal(reviewPreview.unchanged, true);
+	assert.equal(grantPreview.unchanged, true);
+	assert.equal(grantPreview.eligibility_checked, false);
+	assert.deepEqual(await deviceOwnedSnapshot(f), before);
+});
+
+test("CLI confirmed local-owner review hands its exact stored reference to explicit transport grant", async t => {
+	// Arrange: A's real local Identity/key/history; no injected review Identity or authority.
+	const f = await bootstrapCliFixture(t);
+	const before = await deviceOwnedSnapshot(f);
+	const configBefore = await readFile(f.configPath, "utf8");
+	f.h.promptControl.answer = true;
+	// Act: parse and execute the actual review command, with explicit prompt confirmation.
+	await f.review([]);
+	assert.equal(process.exitCode, undefined, JSON.stringify({ messages: f.h.promptControl.messages, requests: f.coordinatorRequest.requests }));
+	const reviews = await f.remote.rows("coordinator_auth_controller_attestations");
+	assert.equal(reviews.length, 1);
+	const [stored] = reviews;
+	const messages = f.h.promptControl.messages.map(entry => entry.message).join("\n");
+	const reference = messages.match(/Controller attestation reference: (controller-v1:[a-f0-9]{64})/)?.[1];
+	assert.ok(reference, messages);
+	assert.equal(reference, stored.attestation_id);
+	assert.equal(stored.identity_id, f.a.store.actorId);
+	assert.equal(stored.device_id, f.a.deviceId);
+	assert.equal(stored.public_key, f.a.key.publicKey);
+	assert.deepEqual(await f.remote.rows("coordinator_identity_group_grants"), []);
+	const reviewWires = f.coordinatorRequest.requests.map(request => JSON.parse(request.body));
+	assert.equal(reviewWires.length, 2);
+	assert.deepEqual(reviewWires[0], { group_id: "group-a", device_id: f.a.deviceId,
+		identity_id: f.a.store.actorId, fingerprint: f.h.fingerprintPublicKey(f.a.key.publicKey) });
+	assert.match(reviewWires[1].confirm_evidence_digest, /^[a-f0-9]{64}$/);
+	assert.equal(reviewWires[1].confirm_evidence_digest,
+		JSON.parse(f.coordinatorRequest.requests[0].response).evidence_digest);
+	assert.deepEqual({ ...reviewWires[1], confirm_evidence_digest: undefined },
+		{ ...reviewWires[0], confirm_evidence_digest: undefined });
+	await f.grant(reference);
+	// Assert: one exact-reference grant; server derives Identity/group, not CLI arguments.
+	assert.equal(process.exitCode, undefined, JSON.stringify({ messages: f.h.promptControl.messages, requests: f.coordinatorRequest.requests }));
+	const requests = f.coordinatorRequest.requests;
+	assert.deepEqual(requests.map(request => [request.path, request.status]), [
+		["/v1/admin/auth-controller-reviews", 200],
+		["/v1/admin/auth-controller-reviews", 201],
+		["/v1/admin/identity-group-grants", 200],
+	]);
+	assert.deepEqual(JSON.parse(requests[2].body), { attestation_id: reference });
+	const grants = await f.remote.rows("coordinator_identity_group_grants");
+	assert.equal(grants.length, 1);
+	const [grant] = grants;
+	assert.equal(grant.source_kind, "controller_attestation");
+	assert.equal(grant.source_receipt_id, stored.review_receipt_id);
+	assert.equal(grant.coordinator_id, stored.coordinator_id);
+	assert.equal(grant.status, "active");
+	assert.equal(grant.identity_id, f.a.store.actorId);
+	assert.equal(grant.group_id, "group-a");
+	assert.equal(f.h.promptControl.prompts.length, 2);
+	assert.ok(f.h.promptControl.prompts.every(prompt => prompt.initialValue === false));
+	const after = await deviceOwnedSnapshot(f);
+	assert.deepEqual(after.local, before.local);
+	assert.deepEqual(after.keys, before.keys);
+	assert.deepEqual(after.remote[0], before.remote[0]);
+	assert.deepEqual(after.remote.slice(3), before.remote.slice(3));
+	assert.equal(await readFile(f.configPath, "utf8"), configBefore);
+	for (const table of ["policy_team_memberships", "project_recipients", "scope_memberships"])
+		assert.equal(f.a.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+	// Underlying maintained runtime coverage, not link-account/enroll-owner CLI coverage.
+	f.cliReview = stored;
+	f.link = await linkA(f);
+	const authority = await f.remote.rows("coordinator_identity_group_grants");
+	// Arrange/Act: a different Google subject cannot use A's Identity or reviewed grant.
+	const linkedA = await deviceOwnedSnapshot(f);
+	f.provider.claims.sub = "unknown-google-subject";
+	await assert.rejects(maintainedOwnerB(f, { expectAdmissionDenied: true,
+		profileName: "unknown-account-profile" }), /Owner pilot incomplete/);
+	// Assert: no B adoption, enrollment, ownership, or changes to A's Identity/history.
+	assert.equal(f.ownerCallbackStatus, 400);
+	assert.equal(f.ownerCallbackBody, "Owner enrollment unavailable.");
+	assert.equal(f.b, undefined);
+	assert.deepEqual(await deviceOwnedSnapshot(f), linkedA);
+	delete f.provider.claims.sub;
+	const receipt = await maintainedOwnerB(f);
+	assert.equal(receipt.identityId, f.a.store.actorId);
+	assert.equal(f.b.store.actorId, f.a.store.actorId);
+	assert.notEqual(f.b.key.publicKey, f.a.key.publicKey);
+	assert.deepEqual(await f.remote.rows("coordinator_identity_group_grants"), authority);
+	assert.deepEqual(await f.remote.rows("coordinator_scope_memberships"), []);
+	for (const table of ["policy_team_memberships", "project_recipients", "scope_memberships"])
+		assert.equal(f.b.store.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+	assert.deepEqual((await deviceOwnedSnapshot(f)).local, before.local);
+	assert.equal(await readFile(f.configPath, "utf8"), configBefore);
+	assert.ok(!f.h.promptControl.messages.some(({ message }) =>
+		message.includes("synthetic-bootstrap-secret") || message.includes(f.a.key.publicKey)));
+});
+
+test("CLI explicit grant confirmation rejects a reference without a stored review", async t => {
+	// Arrange: a syntactically valid reference is not authority for this coordinator.
+	const f = await bootstrapCliFixture(t);
+	const before = await deviceOwnedSnapshot(f);
+	const reference = `controller-v1:${"c".repeat(64)}`;
+	f.h.promptControl.answer = true;
+	// Act: use the actual CLI and real HTTP, not a mocked backend denial.
+	await f.grant(reference);
+	// Assert: server rejects the reference; no review, grant, access or profile mutation.
+	assert.equal(process.exitCode, 1);
+	assert.equal(f.h.promptControl.prompts.length, 1);
+	assert.equal(f.h.promptControl.prompts[0].initialValue, false);
+	assert.equal(f.coordinatorRequest.requests.length, 1);
+	const [request] = f.coordinatorRequest.requests;
+	assert.equal(request.path, "/v1/admin/identity-group-grants");
+	assert.equal(request.status, 409);
+	assert.deepEqual(JSON.parse(request.body), { attestation_id: reference });
+	assert.deepEqual(await deviceOwnedSnapshot(f), before);
+});
 
 test("fake-only device-owned Google link keeps the current Identity without owner admission", { timeout: 60000 }, async t => {
 	// Arrange: active, legacy-unassigned A, existing local history, no review or admin credential.
