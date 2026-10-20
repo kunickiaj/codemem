@@ -1878,7 +1878,7 @@ describe("Team metadata route", () => {
 	);
 });
 
-describe("Team setup without coordinator admin access", () => {
+describe("Team setup summary and coordinator admin access", () => {
 	it("keeps coordinator list failures transient-classified without a config reason", async () => {
 		const { store, close } = createRouteStore();
 		const base = readCoordinatorSyncConfig({});
