@@ -55,8 +55,12 @@ import {
 import {
 	isOwnerEnrollmentAdmissionKey,
 	type OwnerEnrollmentAdmissionKey,
+	type OwnerEnrollmentResolvedOwner,
+	ownerEnrollmentOwnerCommitment,
 	verifyOwnerEnrollmentAdmission,
+	verifyOwnerEnrollmentAdmissionV2,
 } from "./owner-enrollment-admission.js";
+import { matchesAdmissionOwner, validAdmissionOwnerHash } from "./owner-enrollment-owner-pin.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 export interface OwnerEnrollmentStart {
@@ -66,6 +70,11 @@ export interface OwnerEnrollmentStart {
 	loopbackRedirect: string;
 	browserStartCode: string;
 	signature: string;
+}
+/** Trusted internal composition only. Never deserialize resolvedOwner from public request JSON. */
+export interface OwnerEnrollmentOwnerBoundStartOptions {
+	admissionToken: string;
+	resolvedOwner: OwnerEnrollmentResolvedOwner;
 }
 interface OwnerEnrollmentFinalize {
 	attemptId: string;
@@ -166,6 +175,15 @@ function captureStart(value: unknown): OwnerEnrollmentStart {
 		loopbackRedirect: text(own(value, "loopbackRedirect"), 4096),
 		browserStartCode: text(own(value, "browserStartCode"), 43),
 		signature: text(own(value, "signature"), 86),
+	});
+}
+function captureResolvedOwner(value: unknown): OwnerEnrollmentResolvedOwner {
+	return Object.freeze({
+		coordinatorId: id(own(value, "coordinatorId")),
+		issuer: text(own(value, "issuer"), 4096),
+		subject: text(own(value, "subject"), 255),
+		identityId: id(own(value, "identityId")),
+		linkId: id(own(value, "linkId")),
 	});
 }
 export async function ownerEnrollmentHash(value: string): Promise<string> {
@@ -292,19 +310,51 @@ export async function createCoordinatorOwnerEnrollment(input: OwnerEnrollmentCom
 			enrollment: Object.freeze({
 				// clientKey must come from the trusted transport, never the signed request body.
 				start: (value: OwnerEnrollmentStart, clientKey: string, admissionToken?: string) =>
-					boundary(() => start(context, value, clientKey, admissionToken)),
+					boundary(() =>
+						start(context, value, clientKey, { kind: "operator", token: admissionToken }),
+					),
+				// Unmounted until a separately reviewed authenticated browser issuer exists.
+				startOwnerBound: (
+					value: OwnerEnrollmentStart,
+					clientKey: string,
+					options: OwnerEnrollmentOwnerBoundStartOptions,
+				) => boundary(() => start(context, value, clientKey, { kind: "owner", options })),
 				claimBrowser: (request: Request, clientKey: string) =>
-					boundary(() => claimBrowser(context, request, clientKey)),
-				verifyCallback: (request: Request) => boundary(() => verifyCallback(context, request)),
+					ownerBoundary(context, () => claimBrowser(context, request, clientKey)),
+				verifyCallback: (request: Request) =>
+					ownerBoundary(context, () => verifyCallback(context, request)),
 				confirm: (request: Request, clientKey: string, confirmationCommitment: string) =>
-					boundary(() => confirm(context, request, clientKey, confirmationCommitment)),
-				finalize: (value: OwnerEnrollmentFinalize) => boundary(() => finalize(context, value)),
+					ownerBoundary(context, () =>
+						confirm(context, request, clientKey, confirmationCommitment),
+					),
+				finalize: (value: OwnerEnrollmentFinalize) =>
+					ownerBoundary(context, () => finalize(context, value)),
 			}),
 		};
 	} catch {
 		return { ok: false as const };
 	}
 }
+
+/** Opt-in readiness only: never migrate or weaken the owner path on legacy storage. */
+function ownerBoundary(context: Context, action: () => Promise<OwnerEnrollmentStartResult>) {
+	return boundary(async () => {
+		if (!(await ownerAdmissionSchemaReady(context.backend))) return unavailable;
+		return action();
+	});
+}
+
+async function ownerAdmissionSchemaReady(backend: AuthLinkBackend): Promise<boolean> {
+	const result = await backend.first<{ ready: number }>({
+		sql: `SELECT (${OWNER_ADMISSION_SCHEMA_READY_SQL}) AS ready`,
+		values: [],
+	});
+	return result?.ready === 1;
+}
+const OWNER_ADMISSION_SCHEMA_READY_SQL = `EXISTS (SELECT 1 FROM pragma_table_info('coordinator_owner_enrollment_attempts')
+ WHERE name = 'admission_owner_hash') AND (SELECT count(*) FROM sqlite_master
+ WHERE type = 'trigger' AND tbl_name = 'coordinator_owner_enrollment_attempts'
+ AND name IN ('owner_enrollment_admission_insert','owner_enrollment_admission_update')) = 2`;
 
 async function composeOidcClient(
 	mode: unknown,
@@ -403,6 +453,7 @@ function ownerAttemptSql(state: "browser_claimed" | "oidc_verified"): string {
  AND a.browser_transaction_hash = ? AND a.browser_binder_hash = ?
  AND a.device_id = ? AND a.public_key = ? AND a.key_id = ? AND a.fingerprint = ?
  AND a.browser_start_hash = ? AND a.loopback_redirect = ? AND a.created_at_ms = ? AND a.expires_at_ms = ?
+ AND a.admission_owner_hash IS ?
  AND a.created_at_ms <= ? AND a.expires_at_ms > ?`;
 }
 function callbackAttemptValues(
@@ -426,6 +477,7 @@ function callbackAttemptValues(
 		a.loopback_redirect,
 		a.created_at_ms,
 		a.expires_at_ms,
+		a.admission_owner_hash,
 		time,
 		time,
 	];
@@ -528,6 +580,16 @@ async function persistVerified(
 		values: [context.c.coordinatorId, account.issuer, account.subject],
 	});
 	if (!link || !isAuthControllerId(link.controller_attestation_id)) return null;
+	if (
+		!(await matchesAdmissionOwner({
+			...consumed.row,
+			issuer: account.issuer,
+			account_subject: account.subject,
+			identity_id: link.identity_id,
+			link_id: link.link_id,
+		}))
+	)
+		return null;
 	const grants = await context.backend.first<{ rows: string }>({
 		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows FROM coordinator_owner_enrollment_attempts a
  WHERE ${ownerAttemptSql("browser_claimed")}`,
@@ -543,6 +605,7 @@ async function persistVerified(
 	// A missing or changed post-write read is unknown, not evidence the write failed.
 	if (
 		row?.state !== "oidc_verified" ||
+		row.admission_owner_hash !== consumed.row.admission_owner_hash ||
 		row.link_id !== link.link_id ||
 		row.account_subject !== account.subject ||
 		row.grant_revisions_json !== grants.rows ||
@@ -600,6 +663,7 @@ function verifiedStatement(
 }
 async function confirmationView(row: OwnerAttempt): Promise<OwnerEnrollmentConfirmation> {
 	if (!row.account_subject || !row.identity_id || !row.link_id) throw new Error();
+	if (!(await matchesAdmissionOwner(row))) throw new Error();
 	const grants = readGrantPins(row.grant_revisions_json);
 	if (!grants) throw new Error();
 	// Display commitment; confirm() persists it with the completion-secret hash.
@@ -755,6 +819,7 @@ function matchesFinalScope(context: Context, row: OwnerAttempt | null): row is O
 		row.coordinator_id === context.c.coordinatorId &&
 		row.origin === context.pin.origin &&
 		row.issuer === context.c.issuer &&
+		validAdmissionOwnerHash(row.admission_owner_hash) &&
 		// A committed receipt is historical evidence; only a new commit needs the live revision.
 		(row.state === "finalized" || row.auth_config_revision === context.c.revision) &&
 		!!row.confirmation_hash
@@ -838,33 +903,29 @@ async function start(
 	context: Context,
 	value: OwnerEnrollmentStart,
 	clientKey: string,
-	admissionToken?: string,
+	admissionInput:
+		| { kind: "operator"; token?: string }
+		| { kind: "owner"; options: OwnerEnrollmentOwnerBoundStartOptions },
 ): Promise<OwnerEnrollmentStartResult> {
+	// Capture both the signed start and server-resolved owner before any async work.
+	const captured = captureStartInputs(value, admissionInput);
 	if (!isAuthControllerId(clientKey) || clientKey.length > 128) return unavailable;
 	const admission = context.limiter.check(
 		JSON.stringify(["owner-enrollment-start", context.c.coordinatorId, clientKey]),
 		OWNER_START_CLIENT_LIMIT,
 	);
 	if (own(admission, "allowed") !== true) return unavailable;
-	let i: OwnerEnrollmentStart;
+	if (!captured) return unavailable;
+	const { i } = captured;
 	let browserStartHash: string;
 	try {
-		i = captureStart(value);
 		browserStartHash = await proofHash(i.browserStartCode);
 	} catch {
 		return unavailable;
 	}
-	if (
-		context.admissionKey &&
-		!(await verifyOwnerEnrollmentAdmission(
-			context.admissionKey,
-			admissionToken,
-			context.pin,
-			i,
-			context.now(),
-		))
-	)
-		return unavailable;
+	const verifiedAdmission = await verifyStartAdmission(context, captured);
+	if (!verifiedAdmission) return unavailable;
+	const { admissionOwnerHash } = verifiedAdmission;
 	if (!parseCoordinatorAuthLoopback(i.loopbackRedirect).ok) return unavailable;
 	const keyId = await ed25519KeyId(i.publicKey);
 	if (
@@ -879,15 +940,63 @@ async function start(
 	const fingerprint = await ownerEnrollmentHash(i.publicKey);
 	const time = context.now();
 	const wrote = await context.backend.run(
-		startStatement(context, i, { keyId, fingerprint, browserStartHash, time }),
+		startStatement(context, i, { keyId, fingerprint, browserStartHash, time, admissionOwnerHash }),
 	);
 	if (wrote !== 1) return unavailable;
 	return { kind: "started", attemptId: i.attemptId, expiresAtMs: time + 600000 };
 }
+function captureStartInputs(value: OwnerEnrollmentStart, admission: Parameters<typeof start>[3]) {
+	try {
+		const i = captureStart(value);
+		if (admission.kind === "operator") return { i, token: admission.token, owner: null };
+		return {
+			i,
+			token: own(admission.options, "admissionToken"),
+			owner: captureResolvedOwner(own(admission.options, "resolvedOwner")),
+		};
+	} catch {
+		return null;
+	}
+}
+async function verifyStartAdmission(
+	context: Context,
+	captured: NonNullable<ReturnType<typeof captureStartInputs>>,
+) {
+	const { i, token, owner } = captured;
+	if (owner) {
+		if (
+			!context.admissionKey ||
+			!(await verifyOwnerEnrollmentAdmissionV2(context.admissionKey, token, context.pin, i, {
+				resolvedOwner: owner,
+				nowMs: context.now(),
+			}))
+		)
+			return null;
+		return { admissionOwnerHash: await ownerEnrollmentOwnerCommitment(owner) };
+	}
+	if (
+		context.admissionKey &&
+		!(await verifyOwnerEnrollmentAdmission(
+			context.admissionKey,
+			token,
+			context.pin,
+			i,
+			context.now(),
+		))
+	)
+		return null;
+	return { admissionOwnerHash: null };
+}
 function startStatement(
 	context: Context,
 	i: OwnerEnrollmentStart,
-	p: { keyId: string; fingerprint: string; browserStartHash: string; time: number },
+	p: {
+		keyId: string;
+		fingerprint: string;
+		browserStartHash: string;
+		time: number;
+		admissionOwnerHash: string | null;
+	},
 ): AuthLinkStatement {
 	const { c, pin } = context;
 	// Signed starts have no issued-at: retain every attempt ID as a replay tombstone.
@@ -895,9 +1004,9 @@ function startStatement(
 	return {
 		sql: `INSERT INTO coordinator_owner_enrollment_attempts
  (coordinator_id,attempt_id,purpose,origin,device_id,public_key,key_id,fingerprint,issuer,auth_config_revision,
- loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms)
- SELECT ?,?,'owner_enroll',?,?,?,?,?,?,?,?,?,'pending',?,?
-  WHERE ${NO_COLLISION_SQL}
+ loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms,admission_owner_hash)
+ SELECT ?,?,'owner_enroll',?,?,?,?,?,?,?,?,?,'pending',?,?,?
+  WHERE ${OWNER_ADMISSION_SCHEMA_READY_SQL} AND ${NO_COLLISION_SQL}
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND attempt_id = ?)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions WHERE coordinator_id = ?
  AND attempt_id = ? AND purpose <> 'signin')
@@ -922,6 +1031,7 @@ function startStatement(
 			p.browserStartHash,
 			p.time,
 			p.time + 600000,
+			p.admissionOwnerHash,
 			i.deviceId,
 			p.keyId,
 			i.deviceId,
@@ -962,6 +1072,7 @@ function live(context: Context, row: OwnerAttempt | null, time: number): row is 
 		row.origin === context.pin.origin &&
 		row.issuer === context.c.issuer &&
 		row.auth_config_revision === context.c.revision &&
+		validAdmissionOwnerHash(row.admission_owner_hash) &&
 		validAttemptTime(row) &&
 		row.created_at_ms <= time &&
 		row.expires_at_ms > time
@@ -1051,6 +1162,7 @@ function claimStatements(
 const PENDING_SQL = `coordinator_id = ? AND attempt_id = ? AND purpose = 'owner_enroll' AND state = 'pending'
  AND origin = ? AND issuer = ? AND auth_config_revision = ? AND browser_start_hash = ?
  AND created_at_ms = ? AND expires_at_ms = ? AND created_at_ms <= ? AND expires_at_ms > ?
+ AND admission_owner_hash IS ?
  AND browser_transaction_hash IS NULL AND browser_binder_hash IS NULL`;
 function pendingValues(
 	context: Context,
@@ -1068,6 +1180,7 @@ function pendingValues(
 		row.expires_at_ms,
 		p.time,
 		p.time,
+		row.admission_owner_hash,
 	];
 }
 function insertBrowser(

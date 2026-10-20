@@ -16,6 +16,7 @@ export interface OwnerAttempt {
 	fingerprint: string;
 	issuer: string;
 	auth_config_revision: string;
+	admission_owner_hash: string | null;
 	loopback_redirect: string | null;
 	browser_start_hash: string;
 	browser_transaction_hash: string | null;
@@ -125,6 +126,8 @@ export async function ownerEnrollmentConfirmationHash(a: OwnerAttempt): Promise<
 	const message = JSON.stringify([
 		"owner_enroll",
 		...fields.map((field) => a[field as keyof OwnerAttempt]),
+		// Keep existing operator confirmation/proof commitments byte-for-byte unchanged.
+		...(a.admission_owner_hash === null ? [] : [a.admission_owner_hash]),
 	]);
 	const digest = await globalThis.crypto.subtle.digest(
 		"SHA-256",

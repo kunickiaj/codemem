@@ -12,6 +12,7 @@ import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-h
 export const OWNER_TABLE = "coordinator_owner_enrollment_attempts";
 export const ownerDefinitions = `SELECT type,name,sql FROM sqlite_master WHERE tbl_name = '${OWNER_TABLE}' AND sql IS NOT NULL ORDER BY type,name`;
 export const pendingOwner = {
+	admission_owner_hash: null,
 	coordinator_id: "coordinator-a",
 	attempt_id: "owner-attempt-a",
 	purpose: "owner_enroll",

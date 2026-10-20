@@ -504,7 +504,14 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 	db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
 	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
-	db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
+	// Optional owner storage never forces an upgrade of a legacy/direct coordinator.
+	// Do not install new-column triggers on an existing pre-0034 table either.
+	const ownerTable = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_owner_enrollment_attempts'",
+		)
+		.get();
+	if (!ownerTable) db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
 }
 
 function initializeAuthBrowserSchema(db: DatabaseType): void {

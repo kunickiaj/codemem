@@ -10,6 +10,7 @@ import {
 	validOwnerEnrollmentReceiptMetadata,
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
+import { matchesAdmissionOwner } from "./owner-enrollment-owner-pin.js";
 
 export {
 	type OwnerAttempt,
@@ -120,7 +121,7 @@ export async function commitOwnerEnrollment(input: {
 		completionSecret,
 		signature,
 	);
-	if (!proof) return false;
+	if (!proof || !(await matchesAdmissionOwner(a))) return false;
 	const { grants } = proof;
 	const snapshot = await collisionSnapshot(backend, a);
 	if (snapshot === null) return false;
@@ -154,6 +155,7 @@ const WINNING_UPDATE_SQL = `UPDATE coordinator_owner_enrollment_attempts AS a SE
  WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.purpose = 'owner_enroll'
  AND a.state = 'confirmed' AND a.created_at_ms <= ? AND a.expires_at_ms > ?
  AND a.auth_config_revision = ? AND a.origin = ? AND a.issuer = ?
+ AND a.admission_owner_hash IS ?
  AND a.device_id = ? AND a.public_key = ? AND a.key_id = ? AND a.fingerprint = ?
  AND a.browser_start_hash = ? AND a.browser_transaction_hash = ? AND a.browser_binder_hash = ?
  AND a.account_subject = ? AND a.identity_id = ? AND a.link_id = ?
@@ -167,6 +169,7 @@ function winningPins(a: OwnerAttempt): AuthLinkStatement["values"] {
 	return [
 		a.origin,
 		a.issuer,
+		a.admission_owner_hash,
 		a.device_id,
 		a.public_key,
 		a.key_id,
@@ -267,6 +270,7 @@ const RECEIPT_SQL = `SELECT 1 FROM coordinator_device_ownership_bindings b
   AND a.final_outcome_json = ? AND a.finalized_at_ms = ? AND a.audit_event_id = ?
   AND a.grant_revisions_json = ? AND a.public_key = ? AND a.fingerprint = ?
   AND a.purpose = ? AND a.origin = ? AND a.issuer = ? AND a.auth_config_revision = ?
+  AND a.admission_owner_hash IS ?
   AND a.account_subject = ? AND a.link_id = ? AND a.link_attempt_id IS ?
   AND a.link_controller_attestation_id IS ? AND a.link_auth_config_revision IS ?
   AND a.browser_start_hash = ? AND a.browser_transaction_hash IS ? AND a.browser_binder_hash IS ?
@@ -298,6 +302,7 @@ function receiptValues(row: OwnerAttempt): AuthLinkStatement["values"] {
 		row.origin,
 		row.issuer,
 		row.auth_config_revision,
+		row.admission_owner_hash,
 		row.account_subject,
 		row.link_id,
 		row.link_attempt_id,
@@ -334,7 +339,7 @@ export async function readOwnerEnrollmentReceipt(
 	row: OwnerAttempt,
 ): Promise<boolean> {
 	const a = Object.freeze({ ...row });
-	if (!validOwnerEnrollmentReceiptMetadata(a)) return false;
+	if (!validOwnerEnrollmentReceiptMetadata(a) || !(await matchesAdmissionOwner(a))) return false;
 	if ((await ownerEnrollmentConfirmationHash(a)) !== a.confirmation_hash) return false;
 	const found = await backend.first({ sql: RECEIPT_SQL, values: receiptValues(a) });
 	return found !== null;

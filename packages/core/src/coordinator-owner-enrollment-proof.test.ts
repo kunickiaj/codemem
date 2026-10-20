@@ -25,6 +25,7 @@ async function proofFixture() {
 		.copy(wire, 19);
 	const publicKey = `ssh-ed25519 ${wire.toString("base64")}`;
 	const row: OwnerAttempt = {
+		admission_owner_hash: null,
 		coordinator_id: "coordinator-a",
 		attempt_id: "attempt-a",
 		purpose: "owner_enroll",

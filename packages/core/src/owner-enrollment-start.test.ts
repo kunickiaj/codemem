@@ -182,6 +182,7 @@ it("claims once with SDK state/PKCE and preserves the original cookie binder in 
 		"confirm",
 		"finalize",
 		"start",
+		"startOwnerBound",
 		"verifyCallback",
 	]);
 });

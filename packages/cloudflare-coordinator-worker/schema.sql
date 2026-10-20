@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS coordinator_owner_enrollment_attempts (
  binding_id TEXT CHECK (binding_id IS NULL OR (typeof(binding_id) = 'text' AND length(trim(binding_id)) BETWEEN 1 AND 256 AND instr(binding_id, char(0)) = 0)),
  audit_event_id TEXT CHECK (audit_event_id IS NULL OR (typeof(audit_event_id) = 'text' AND length(trim(audit_event_id)) BETWEEN 1 AND 256 AND instr(audit_event_id, char(0)) = 0)),
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR (typeof(final_outcome_json) = 'text' AND json_valid(final_outcome_json) AND json_type(final_outcome_json) = 'object')),
+ admission_owner_hash TEXT CHECK (admission_owner_hash IS NULL OR (typeof(admission_owner_hash) = 'text' AND length(admission_owner_hash) = 64 AND admission_owner_hash NOT GLOB '*[^0-9a-f]*' AND instr(admission_owner_hash, char(0)) = 0)),
  PRIMARY KEY (coordinator_id, attempt_id),
  UNIQUE (coordinator_id, browser_start_hash),
  UNIQUE (coordinator_id, browser_transaction_hash),
@@ -116,6 +117,19 @@ WHEN EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a WHERE a.state
   OR a.browser_start_hash = NEW.browser_start_hash OR a.browser_transaction_hash = NEW.browser_transaction_hash
   OR a.completion_secret_hash = NEW.completion_secret_hash))))
 BEGIN SELECT RAISE(ABORT, 'owner_enrollment_pins_immutable'); END;
+-- Admission is a birth fact, including NULL for preexisting/operator attempts.
+CREATE TRIGGER IF NOT EXISTS owner_enrollment_admission_update
+BEFORE UPDATE ON coordinator_owner_enrollment_attempts
+WHEN OLD.admission_owner_hash IS NOT NEW.admission_owner_hash
+BEGIN SELECT RAISE(ABORT, 'owner_enrollment_admission_immutable'); END;
+CREATE TRIGGER IF NOT EXISTS owner_enrollment_admission_insert
+BEFORE INSERT ON coordinator_owner_enrollment_attempts
+WHEN EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a
+ WHERE (a.rowid = NEW.rowid OR (a.coordinator_id = NEW.coordinator_id
+ AND (a.attempt_id = NEW.attempt_id OR a.browser_start_hash = NEW.browser_start_hash
+ OR a.browser_transaction_hash = NEW.browser_transaction_hash OR a.completion_secret_hash = NEW.completion_secret_hash)))
+ AND a.admission_owner_hash IS NOT NEW.admission_owner_hash)
+BEGIN SELECT RAISE(ABORT, 'owner_enrollment_admission_immutable'); END;
 -- Retained receipts cannot be changed, deleted, or erased through REPLACE.
 CREATE TRIGGER IF NOT EXISTS owner_enrollment_finalized_update
 BEFORE UPDATE ON coordinator_owner_enrollment_attempts WHEN OLD.state = 'finalized'

@@ -71,6 +71,11 @@ it("official source migration creates the same owner table, indexes and immutabl
 		db.transaction(() => {
 			for (const sql of migration.queries) db.exec(sql);
 		})();
+		const admission = migrations.find((m) => m.name === "0034_add_owner_admission_pin.sql");
+		if (!admission) throw new Error("Missing owner admission fixture migration");
+		db.transaction(() => {
+			for (const sql of admission.queries) db.exec(sql);
+		})();
 		expect(normalizeDefinitions(await sqliteFixture(db).query(ownerDefinitions))).toEqual(
 			normalizeDefinitions(await sqliteFixture(fresh.db).query(ownerDefinitions)),
 		);

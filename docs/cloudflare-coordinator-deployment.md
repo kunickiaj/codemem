@@ -192,6 +192,26 @@ migrations; do not replay from `0001` or reset the database to make the migratio
 
 ## 6. Deploy the Worker
 
+### Owner admission pin source (not activated)
+
+Migration `0034_add_owner_admission_pin.sql` adds the nullable immutable `admission_owner_hash` birth fact and
+UPDATE/REPLACE protections. Fresh SQLite and Worker DDL include the same column and triggers. Existing attempts
+retain NULL, meaning the existing v1 operator flow; do not backfill pins or edit migrations 0029/0030.
+Existing databases require explicit upgrade before using owner enrollment: owner runtime operations refuse a table
+without the pin column or both immutable-pin triggers, before production provider discovery. Production composition
+stays lazy. Normal SQLite startup and legacy signed/direct coordinator operations remain available without this
+optional upgrade; startup leaves
+an existing owner-attempt table unchanged.
+There is no automatic ALTER, owner conversion, or migration command in this slice. After separate approval,
+pause writers, back up the database, review its exact schema/migration records, and apply the source SQL explicitly
+before starting upgraded readers/writers. Do not replay it against an already upgraded or fresh database.
+
+The internal `startOwnerBound` method verifies v2 admission against server-resolved account/link facts before
+inserting a non-NULL pin. It is not mounted as an HTTP endpoint. Public starts and operator issuance remain v1-only.
+Fresh OIDC must independently resolve the same issuer, subject, Identity and exact active controller-attestation
+link; confirmation and atomic finalization repeat the pin and live-link checks. No session issuer, new identity
+source, device-claim owner support, deployment, or live provider workflow is included.
+
 ### Linked-account display metadata rollout
 
 Migration `0033_add_auth_link_profiles.sql` adds an empty display-only table. Review and apply it before deploying

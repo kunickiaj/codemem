@@ -91,6 +91,7 @@ export async function resetCeremony() {
 	for (const name of [
 		"0028_add_device_ownership_bindings.sql",
 		"0030_add_owner_enrollment_attempts.sql",
+		"0034_add_owner_admission_pin.sql",
 	]) {
 		const migration = env.TEST_MIGRATIONS.find((m) => m.name === name);
 		if (!migration) throw new Error(`Missing native migration fixture: ${name}`);
