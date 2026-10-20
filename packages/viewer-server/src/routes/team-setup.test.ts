@@ -1879,6 +1879,31 @@ describe("Team metadata route", () => {
 });
 
 describe("Team setup summary and coordinator admin access", () => {
+	it("still reports a missing coordinator URL as unavailable", async () => {
+		const { store, close } = createRouteStore();
+		const base = readCoordinatorSyncConfig({});
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			snapshotLoaderDependencies: {
+				readConfig: () => ({
+					...base,
+					syncCoordinatorUrl: "",
+					syncCoordinatorGroups: ["configured"],
+					syncCoordinatorAdminSecret: "configured-admin-secret",
+				}),
+				listGroups: vi.fn(async () => []),
+				listDevices: vi.fn(async () => []),
+			},
+		});
+		try {
+			const response = await app.request("/api/sync/team-setup/v1");
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+		} finally {
+			close();
+		}
+	});
+
 	it("keeps coordinator list failures transient-classified without a config reason", async () => {
 		const { store, close } = createRouteStore();
 		const base = readCoordinatorSyncConfig({});

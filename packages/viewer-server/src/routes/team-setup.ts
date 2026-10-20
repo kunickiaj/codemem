@@ -464,7 +464,9 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	const hasUrl = Boolean(config.syncCoordinatorUrl);
 	const hasSecret = Boolean(config.syncCoordinatorAdminSecret);
 	if (!hasUrl && !hasSecret && config.syncCoordinatorGroups.length === 0) return [];
-	if (!hasUrl || !hasSecret) throw new CoordinatorAdminConfigurationMissingError();
+	// A configured coordinator without an admin secret is an ordinary member.
+	if (hasUrl && !hasSecret) throw new CoordinatorAdminConfigurationMissingError();
+	if (!hasUrl) throw safeCoordinatorError();
 
 	try {
 		const configuredCoordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
