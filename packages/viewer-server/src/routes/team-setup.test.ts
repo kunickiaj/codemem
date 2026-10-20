@@ -2015,14 +2015,15 @@ describe("Team setup summary after admin access is removed", () => {
 				`INSERT INTO legacy_team_setup_drafts(
 				 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
 				 roster_fingerprint, projection_fingerprint, created_at, updated_at, completed_at)
-				 VALUES (?, ?, 'a-coordinator', ?, 'completed', 'Old', 'r', 'p', ?, ?, ?)`,
+				 VALUES (?, ?, ?, ?, 'completed', 'Old', 'r', 'p', ?, ?, ?)`,
 			);
 			for (let index = 0; index < 30; index += 1) {
-				const groupId = `old-group-${String(index).padStart(2, "0")}`;
+				const groupId = `a-old-group-${String(index).padStart(2, "0")}`;
 				const at = "2026-01-01T00:00:00.000Z";
 				insertCompleted.run(
 					`old-attempt-${index}`,
-					legacyTeamCandidateId("a-coordinator", groupId),
+					legacyTeamCandidateId(FINISH_COORDINATOR_ID, groupId),
+					FINISH_COORDINATOR_ID,
 					groupId,
 					at,
 					at,

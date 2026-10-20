@@ -235,19 +235,33 @@ function isPassthroughSnapshotLoadError(error: unknown): boolean {
 function summaryWithoutAdminAccess(
 	error: unknown,
 	getStore: () => MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
 ): LegacyTeamConfiguredGroupSnapshot[] {
 	if (!(error instanceof CoordinatorAdminConfigurationMissingError)) throw error;
 	const store = getStore();
+	const config = readConfig();
+	const eligibleCandidateRefs = new Set(
+		legacyTeamCandidateGroupDescriptors(
+			store,
+			config.syncCoordinatorUrl,
+			config.syncCoordinatorGroups,
+		).map(({ coordinatorId, groupId }) => legacyTeamCandidateId(coordinatorId, groupId)),
+	);
+	if (eligibleCandidateRefs.size === 0) return [];
+	const eligibleRefs = [...eligibleCandidateRefs];
+	const placeholders = eligibleRefs.map(() => "?").join(", ");
 	const rows = store.db
 		.prepare(
 			`SELECT DISTINCT coordinator_id, group_id FROM legacy_team_setup_drafts
+			 WHERE candidate_id IN (${placeholders})
 			 ORDER BY coordinator_id, group_id`,
 		)
-		.all() as Array<{ coordinator_id: string; group_id: string }>;
+		.all(...eligibleRefs) as Array<{ coordinator_id: string; group_id: string }>;
 	// Bound the result only after dropping finished work, so old completed
 	// migrations can never crowd out an unfinished one.
 	const pending = rows.flatMap((row) => {
 		const candidateRef = legacyTeamCandidateId(row.coordinator_id, row.group_id);
+		if (!eligibleCandidateRefs.has(candidateRef)) return [];
 		const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
 		if (!draft || draft.state === "completed" || hasCompletedLegacyTeamSetup(store, candidateRef)) {
 			return [];
@@ -263,6 +277,28 @@ function summaryWithoutAdminAccess(
 		];
 	});
 	return pending.slice(0, MAX_CONFIGURED_GROUPS);
+}
+
+function loadSummarySnapshots(
+	load: () => Promise<LegacyTeamConfiguredGroupSnapshot[]>,
+	getStore: () => MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig,
+): () => Promise<LegacyTeamConfiguredGroupSnapshot[]> {
+	return () => load().catch((error) => summaryWithoutAdminAccess(error, getStore, readConfig));
+}
+
+function createLoadedSummarySnapshotCache(
+	load: () => Promise<LegacyTeamConfiguredGroupSnapshot[]>,
+	options: TeamSetupRoutesOptions,
+): ReturnType<typeof createCachedSnapshotLoader> {
+	const readConfig =
+		options.readCoordinatorConfig ??
+		options.snapshotLoaderDependencies?.readConfig ??
+		readCoordinatorSyncConfig;
+	return createCachedSnapshotLoader(
+		loadSummarySnapshots(load, options.getStore, readConfig),
+		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
+	);
 }
 
 function isCoordinatorRosterTooLargeError(error: unknown): boolean {
@@ -1601,10 +1637,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			throw safeCoordinatorError();
 		}
 	}
-	const loadedSummarySnapshots = createCachedSnapshotLoader(
-		() => loadedSnapshots().catch((error) => summaryWithoutAdminAccess(error, options.getStore)),
-		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
-	);
+	const loadedSummarySnapshots = createLoadedSummarySnapshotCache(loadedSnapshots, options);
 	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
 	const completionDependencies =
 		options.completionDependencies === undefined
