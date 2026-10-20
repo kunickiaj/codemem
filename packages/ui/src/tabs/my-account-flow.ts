@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import {
 	type AccountIntent,
 	type AccountOperation,
@@ -74,9 +74,17 @@ function isInProgress(error: unknown): boolean {
 	return error instanceof AccountRequestError && error.code === "account_link_in_progress";
 }
 
-function useFlowState() {
+function useFlowState(onViewChange?: (view: AccountView | null) => void) {
 	const [group, setGroup] = useState<string | undefined>(undefined);
-	const [view, setView] = useState<AccountView | null>(null);
+	const [view, setViewState] = useState<AccountView | null>(null);
+	// Notify in the same call that changes the view so a parent never shows
+	// account data after this card has cleared it (a passive effect would lag).
+	const onViewChangeRef = useRef(onViewChange);
+	onViewChangeRef.current = onViewChange;
+	const setView = useCallback((next: AccountView | null) => {
+		setViewState(next);
+		onViewChangeRef.current?.(next);
+	}, []);
 	const [operation, setOperation] = useState<AccountOperation | null>(null);
 	const [pendingOperation, setPendingOperation] = useState<AccountOperation | null>(null);
 	const [message, setMessage] = useState("Checking account status…");
@@ -720,8 +728,8 @@ function showCancellationFailure(
 	);
 }
 
-export function useMyAccount() {
-	const flow = useFlowState();
+export function useMyAccount(onViewChange?: (view: AccountView | null) => void) {
+	const flow = useFlowState(onViewChange);
 	useStatusEffect(flow);
 	useBrowserDelivery(flow);
 	useOperationPolling(flow);

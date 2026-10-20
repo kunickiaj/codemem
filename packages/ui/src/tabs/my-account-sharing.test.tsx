@@ -226,6 +226,63 @@ describe("My Account inside Sharing", () => {
 	);
 });
 
+describe("Verified Google labels in Sharing", () => {
+	it.each([
+		[
+			"missing profile metadata",
+			status({
+				remote: {
+					kind: "status",
+					coordinatorId: "coordinator-one",
+					identityId: "identity-one",
+					identityMatches: true,
+					authority: "device_claim",
+					state: "linked",
+					account: null,
+				},
+			}),
+		],
+		[
+			"revoked link",
+			status({
+				remote: {
+					kind: "status",
+					coordinatorId: "coordinator-one",
+					identityId: "identity-one",
+					identityMatches: true,
+					authority: "device_claim",
+					state: "revoked",
+					account: { displayName: "Former Person" },
+				},
+			}),
+		],
+		[
+			"another Identity",
+			status({
+				remote: {
+					kind: "status",
+					coordinatorId: "coordinator-one",
+					identityId: "identity-two",
+					identityMatches: true,
+					authority: "device_claim",
+					state: "linked",
+					account: { displayName: "Other Person" },
+				},
+			}),
+		],
+	] as const)("does not use an unverified Google label for %s", async (_reason, view) => {
+		vi.mocked(account.getAccountStatus).mockResolvedValue(view);
+		await show();
+		const identityCard = required(
+			mount.querySelector<HTMLElement>(".recipient-policy-sharing-identity-card"),
+		);
+		expect(identityCard.querySelector("h3")?.textContent).toBe("Local identity");
+		expect(identityCard.textContent).toContain("Local identity");
+		expect(identityCard.textContent).not.toContain("Verified Google account");
+		expect(identityCard.textContent).not.toContain("Codemem Identity ID:");
+	});
+});
+
 describe("My Account data and lifetime inside Sharing", () => {
 	it.each([true, false])(
 		"shows Google account data only for a matched Identity (%s)",
@@ -246,10 +303,49 @@ describe("My Account data and lifetime inside Sharing", () => {
 				}),
 			);
 			// Act
-			await show();
+			await show(
+				{},
+				{
+					...graph,
+					teamMemberships: [
+						{
+							version: 1,
+							teamId: "team-one",
+							identityId: "identity-one",
+							role: "member",
+							status: "active",
+						},
+					],
+				},
+			);
 			// Assert
 			expect(card().textContent?.includes("fake@example.test")).toBe(identityMatches);
 			expect(card().textContent?.includes("Example Person")).toBe(identityMatches);
+			const identityCard = required(
+				mount.querySelector<HTMLElement>(".recipient-policy-sharing-identity-card"),
+			);
+			const teamCard = required(
+				mount.querySelector<HTMLElement>(".recipient-policy-sharing-team-card"),
+			);
+			expect(teamCard.textContent).toContain(
+				identityMatches ? "Member · Example Person" : "Member · Local identity",
+			);
+			expect(identityCard.querySelector("h3")?.textContent).toBe(
+				identityMatches ? "Example Person" : "Local identity",
+			);
+			const visibleName = identityMatches ? "Example Person" : "Local identity";
+			expect(
+				identityCard.querySelector(`button[aria-label="Manage projects for ${visibleName}"]`),
+			).not.toBeNull();
+			expect(identityCard.textContent).toContain(
+				identityMatches ? "Verified Google account" : "Local identity",
+			);
+			if (identityMatches) {
+				const technicalDetails = required(identityCard.querySelector("details"));
+				expect(technicalDetails.open).toBe(false);
+				expect(technicalDetails.querySelector("summary")?.textContent).toBe("Technical details");
+				expect(technicalDetails.textContent).toContain("Codemem Identity ID: identity-one");
+			} else expect(identityCard.textContent).not.toContain("Verified Google account");
 			for (const text of ["Local identity", "Laptop", "https://coordinator.example"])
 				expect(card().textContent).toContain(text);
 			expect(card().textContent).not.toContain("Link Google account");

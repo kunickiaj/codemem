@@ -240,3 +240,20 @@ it("falls back after image failure and treats profile markup as text", async () 
 	expect(mount.querySelector(".my-account-profile strong")?.textContent).toBe(displayName);
 	expect(mount.querySelector("[onerror]")).toBeNull();
 });
+
+it("tells the parent to drop the account view in the same call that clears it", async () => {
+	// Arrange
+	const onViewChange = vi.fn();
+	await act(async () => render(<MyAccount onViewChange={onViewChange} />, mount));
+	await settle();
+	expect(onViewChange).toHaveBeenLastCalledWith(view);
+	const check = [...mount.querySelectorAll("button")].find(
+		(node) => node.textContent === "Check status",
+	);
+	if (!check) throw new Error("Missing Check status button");
+	// Act: click without flushing effects, as a delayed passive effect would.
+	check.click();
+	// Assert
+	expect(onViewChange).toHaveBeenLastCalledWith(null);
+	await settle();
+});

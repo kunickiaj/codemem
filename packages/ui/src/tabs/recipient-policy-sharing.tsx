@@ -1,8 +1,9 @@
 import { type ComponentChildren, h, render } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { Chip } from "../components/primitives/chip";
 import { TextInput } from "../components/primitives/text-input";
+import type { AccountView } from "../lib/api/account";
 import type {
 	DeviceIdentityInventoryV1,
 	LegacyTeamSetupPendingCandidateSummaryV1,
@@ -249,12 +250,14 @@ function SharingTabPanel({
 }
 
 function SharingTabPanelContent({
+	accountView,
 	active,
 	intent,
 	options,
 	projects,
 	tabId,
 }: {
+	accountView: AccountView | null;
 	active: boolean;
 	intent: RecipientPolicyIntentGraphV1;
 	options: RecipientPolicySharingOptions;
@@ -288,6 +291,7 @@ function SharingTabPanelContent({
 		case "teams":
 			return (
 				<TeamsView
+					accountView={accountView}
 					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
@@ -299,6 +303,7 @@ function SharingTabPanelContent({
 		case "identities":
 			return (
 				<IdentitiesView
+					accountView={accountView}
 					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
@@ -420,7 +425,23 @@ function RecipientActions({
 	);
 }
 
+function teamMemberNames(
+	memberIds: string[],
+	activeIdentitiesById: Map<string, RecipientPolicyIntentGraphV1["identities"][number]>,
+	accountView: AccountView | null,
+): string[] {
+	return memberIds.map((identityId) => {
+		const identity = activeIdentitiesById.get(identityId);
+		return (
+			verifiedGoogleLabel(accountView, identityId) ||
+			identity?.displayName.trim() ||
+			"Unknown member"
+		);
+	});
+}
+
 function TeamsView({
+	accountView,
 	devices,
 	disableMutations,
 	intent,
@@ -428,6 +449,7 @@ function TeamsView({
 	projects,
 	renameTeam,
 }: {
+	accountView: AccountView | null;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
@@ -467,10 +489,7 @@ function TeamsView({
 							.map((membership) => membership.identityId),
 					),
 				];
-				const memberNames = memberIds.map(
-					(identityId) =>
-						activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member",
-				);
+				const memberNames = teamMemberNames(memberIds, activeIdentitiesById, accountView);
 				const activeDeviceCount = devices.filter((device) =>
 					memberIds.includes(device.identityId),
 				).length;
@@ -601,12 +620,65 @@ function sharingDevices(
 	return result;
 }
 
+function verifiedGoogleLabel(view: AccountView | null, identityId: string): string | null {
+	if (view?.local?.identityId !== identityId) return null;
+	const remote = view.remote;
+	if (
+		remote.kind !== "status" ||
+		remote.state !== "linked" ||
+		!remote.identityMatches ||
+		remote.identityId !== identityId
+	)
+		return null;
+	return remote.account?.displayName || remote.account?.email || null;
+}
+
+function identityTeamNames(
+	identityId: string,
+	intent: RecipientPolicyIntentGraphV1,
+	activeTeamsById: Map<string, RecipientPolicyIntentGraphV1["teams"][number]>,
+): string[] {
+	const teamIds = [
+		...new Set(
+			intent.teamMemberships
+				.filter(
+					(membership) =>
+						membership.status === "active" &&
+						membership.identityId === identityId &&
+						activeTeamsById.has(membership.teamId),
+				)
+				.map((membership) => membership.teamId),
+		),
+	];
+	return teamIds.map((teamId) => activeTeamsById.get(teamId)?.displayName ?? "");
+}
+
+function identityDirectProjectNames(
+	identityId: string,
+	intent: RecipientPolicyIntentGraphV1,
+	projectsById: Map<string, RecipientPolicyManagementProject>,
+): string[] {
+	return activeProjectNames(
+		intent.projectRecipients
+			.filter(
+				(edge) =>
+					edge.status === "active" &&
+					edge.recipientKind === "identity" &&
+					edge.identityId === identityId,
+			)
+			.map((edge) => edge.canonicalProjectIdentity),
+		projectsById,
+	);
+}
+
 function IdentitiesView({
+	accountView,
 	devices,
 	disableMutations,
 	intent,
 	projects,
 }: {
+	accountView: AccountView | null;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
@@ -632,30 +704,13 @@ function IdentitiesView({
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			{activeIdentities.map((identity, index) => {
 				const activeDevices = devices.filter((device) => device.identityId === identity.identityId);
-				const teamIds = [
-					...new Set(
-						intent.teamMemberships
-							.filter(
-								(membership) =>
-									membership.status === "active" &&
-									membership.identityId === identity.identityId &&
-									activeTeamsById.has(membership.teamId),
-							)
-							.map((membership) => membership.teamId),
-					),
-				];
-				const teamNames = teamIds.map((teamId) => activeTeamsById.get(teamId)?.displayName ?? "");
-				const directProjectNames = activeProjectNames(
-					intent.projectRecipients
-						.filter(
-							(edge) =>
-								edge.status === "active" &&
-								edge.recipientKind === "identity" &&
-								edge.identityId === identity.identityId,
-						)
-						.map((edge) => edge.canonicalProjectIdentity),
+				const teamNames = identityTeamNames(identity.identityId, intent, activeTeamsById);
+				const directProjectNames = identityDirectProjectNames(
+					identity.identityId,
+					intent,
 					projectsById,
 				);
+				const verifiedLabel = verifiedGoogleLabel(accountView, identity.identityId);
 				const titleId = `recipient-policy-sharing-identity-title-${index}`;
 				return (
 					<article
@@ -665,17 +720,23 @@ function IdentitiesView({
 					>
 						<div className="recipient-policy-sharing-card-header">
 							<div className="peer-title recipient-policy-sharing-card-title">
-								<h3 id={titleId}>{identity.displayName}</h3>
-								<Chip tone="actor-badge local" variant="badge">
-									Local identity
+								<h3 id={titleId}>{verifiedLabel || identity.displayName}</h3>
+								<Chip tone={verifiedLabel ? "actor-badge" : "actor-badge local"} variant="badge">
+									{verifiedLabel ? "Verified Google account" : "Local identity"}
 								</Chip>
 							</div>
 							<RecipientActions
 								disabled={disableMutations}
-								displayName={identity.displayName}
+								displayName={verifiedLabel || identity.displayName}
 								recipient={{ recipientKind: "identity", identityId: identity.identityId }}
 							/>
 						</div>
+						{verifiedLabel ? (
+							<details className="recipient-policy-management-details">
+								<summary>Technical details</summary>
+								<p className="small">Codemem Identity ID: {identity.identityId}</p>
+							</details>
+						) : null}
 						<div className="recipient-policy-sharing-identity-rows">
 							<div>
 								<strong>Devices · {activeDevices.length}</strong>
@@ -958,13 +1019,15 @@ function RecipientPolicySharing(props: {
 	projects: RecipientPolicyManagementProject[];
 }) {
 	const { intent, options, projects } = props;
+	const [accountView, setAccountView] = useState<AccountView | null>(null);
+	const onAccountViewChange = useCallback((view: AccountView | null) => setAccountView(view), []);
 	const { activeTab, selectTab, tabRefs, tabCounts, handleTabKeyDown } = useSharingTabs(props);
 	return (
 		<section className="recipient-policy-sharing recipient-policy-sharing-responsive-surface">
 			<header className="recipient-policy-sharing-header">
 				<h2>Sharing</h2>
 			</header>
-			<MyAccount />
+			<MyAccount onViewChange={onAccountViewChange} />
 			<TeamSetupStatus options={options} />
 			<DeviceSetupStatus options={options} />
 			<ReconciliationStatus options={options} />
@@ -1009,6 +1072,7 @@ function RecipientPolicySharing(props: {
 			{SHARING_TABS.map((tab) => (
 				<SharingTabPanel hidden={activeTab !== tab.id} key={tab.id} tabId={tab.id}>
 					<SharingTabPanelContent
+						accountView={accountView}
 						active={activeTab === tab.id}
 						intent={intent}
 						options={options}

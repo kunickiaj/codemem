@@ -343,7 +343,7 @@ For the short Project-first walkthrough, see [Share Projects and add devices](sh
 
 ### Link a Google account
 
-The **My Account** card at the top of **Sharing** is separate from recipient, Identity, and access views. It shows the current Codemem Identity, device, and coordinator, plus Google account metadata only after the coordinator verifies that the link belongs to the same Identity.
+The **My Account** card at the top of **Sharing** is separate from sharing controls. When the coordinator confirms that the Google account is linked to the current Codemem Identity, the verified Google name and email identify that same Identity in **Sharing → Identities** and in Team member lists. The local Identity ID remains under **Technical details**. This changes only how the Identity is presented; it does not rename or replace the stored Identity or change its devices, Teams, or Project access.
 
 Identity, device, and coordinator information is collapsed under **Technical details**; **Link Google account** is hidden when the coordinator reports a linked account, while **Check status** remains available.
 

@@ -344,9 +344,9 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	);
 }
 
-/** Independent card; the Sharing mount is added in the integration slice. */
-export function MyAccount() {
-	const flow = useMyAccount();
+/** Shows account status independently of Sharing's recipient controls. */
+export function MyAccount({ onViewChange }: { onViewChange?: (view: AccountView | null) => void }) {
+	const flow = useMyAccount(onViewChange);
 	const { view, operation, message } = flow;
 	const selectedGroup = flow.group ?? view?.selectedGroupId ?? "";
 	const guidance = currentBlockGuidance(view, operation);
