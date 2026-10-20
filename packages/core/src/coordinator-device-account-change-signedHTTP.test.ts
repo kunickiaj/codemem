@@ -443,6 +443,7 @@ for (const authority of ["device_claim", "controller_attestation"] as const) {
 		expect(await response.json()).toEqual({
 			coordinator_id: config.coordinatorId,
 			identity_id: "identity-a",
+			unlink_target: expect.any(String),
 			actions: { refresh: true, disconnect: true },
 		});
 		expect(f.snapshot()).toEqual(before);

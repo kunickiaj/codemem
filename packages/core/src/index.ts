@@ -34,7 +34,10 @@ export {
 	MAPPABLE_CODEX_HOOK_EVENTS,
 	mapCodexHookPayload,
 } from "./codex-hooks.js";
-export { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "./coordinator-account-connection-schema.js";
+export {
+	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
+	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
+} from "./coordinator-account-connection-schema.js";
 export type {
 	CoordinatorAccountLinkReceiver,
 	CoordinatorAccountLinkReceiverOptions,

@@ -46,6 +46,7 @@ export interface AccountLinkRegistry {
 		expectedCoordinatorId: string;
 		expectedAuthority: CoordinatorAuthLinkAuthorityKind;
 		expectedLifecycleToken?: symbol;
+		expectedLinkId?: string;
 	}): AccountLinkStartResult;
 	lifecycleToken(): symbol;
 	get(operationId: string): AccountLinkOperationV1 | null;
@@ -69,6 +70,7 @@ interface Job {
 	deliveries: number;
 	cancelled: boolean;
 	abortFailure: "invalid_response" | "context_changed" | null;
+	expectedLinkId?: string;
 	done: Promise<void>;
 }
 const DEADLINE_MS = 10 * 60_000;
@@ -259,6 +261,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 				const result = await (this.#options.change ?? changeCoordinatorAccount)({
 					...options,
 					intent,
+					expectedLinkId: job.expectedLinkId,
 				});
 				if (
 					result.state !== "completed" ||
@@ -290,6 +293,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		expectedCoordinatorId,
 		expectedAuthority,
 		expectedLifecycleToken,
+		expectedLinkId,
 	}: Parameters<AccountLinkRegistry["start"]>[0]): AccountLinkStartResult {
 		if (this.#shuttingDown) return { error: "account_shutting_down" };
 		const pending = this.#inProgress();
@@ -300,6 +304,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		const started = this.#now();
 		const job: Job = {
 			context: { ...context, fileIdentity: { ...context.fileIdentity } },
+			expectedLinkId,
 			controller: new AbortController(),
 			url: null,
 			deliveries: 0,

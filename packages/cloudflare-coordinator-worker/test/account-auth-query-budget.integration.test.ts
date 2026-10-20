@@ -172,6 +172,35 @@ it("counts executed native D1 statements for configured auth with owner enrollme
   await f.db.prepare(trigger.sql).run(); // Restore the shared native schema for the next fixture.
 });
 
+it("device-only unlink verifies real Ed25519, rolls back faults and stays below the native request budget",async()=>{
+ const f=await fixture();
+ const target=await f.db.prepare("SELECT link_id FROM coordinator_auth_account_links").first<{link_id:string}>();
+ if(!target) throw new Error("missing current target");
+ const body={group_id:input.signer.groupId,identity_id:input.identityId,attempt_id:"device-unlink",target_link_id:target.link_id};
+ const rows=async(table:string)=>(await f.db.prepare(`SELECT * FROM ${table}`).all()).results;
+ const names=["coordinator_auth_account_links","coordinator_auth_account_connection_history","coordinator_auth_account_connection_unlinks","coordinator_auth_sessions","coordinator_auth_link_profiles","coordinator_auth_account_profiles","enrolled_devices","coordinator_identity_group_grants"];
+ const before=await Promise.all(names.map(rows));
+ await f.db.prepare("CREATE TRIGGER fail_unlink_profile BEFORE DELETE ON coordinator_auth_link_profiles BEGIN SELECT RAISE(ABORT,'injected'); END").run();
+ expect((await f.signed("/v1/auth/account-unlinks",body)).status).toBe(403);
+ expect(await Promise.all(names.map(rows))).toEqual(before);
+ await f.db.prepare("DROP TRIGGER fail_unlink_profile").run();
+ f.counter.statements=0;
+ const response=await f.signed("/v1/auth/account-unlinks",body);
+ expect(response.status,await response.clone().text()).toBe(200);
+ expect(f.counter.statements).toBeLessThan(50);
+ const receipt=await response.json();
+ const completed=await Promise.all(names.map(rows));
+ f.counter.statements=0;
+ expect(await (await f.signed("/v1/auth/account-unlinks",body)).json()).toEqual(receipt);
+ expect(f.counter.statements).toBeLessThan(50);
+ expect(await Promise.all(names.map(rows))).toEqual(completed);
+ expect(await rows("coordinator_auth_account_links")).toEqual([]);
+ expect(await rows("coordinator_auth_account_connection_history")).toMatchObject([{end_attempt_id:"device-unlink"}]);
+ await expect(f.db.prepare("UPDATE coordinator_auth_account_connection_unlinks SET rowid=rowid+1").run()).rejects.toThrow();
+ await expect(f.db.prepare("INSERT OR REPLACE INTO coordinator_auth_account_connection_unlinks SELECT * FROM coordinator_auth_account_connection_unlinks").run()).rejects.toThrow();
+ expect(await rows("coordinator_auth_account_connection_unlinks")).toEqual(completed[2]);
+});
+
 it("native mounted callbacks reject cross-table collisions in both insertion orders without consuming PKCE",async()=>{
  for(const regularFirst of [true,false]) {
   const f=await fixture();

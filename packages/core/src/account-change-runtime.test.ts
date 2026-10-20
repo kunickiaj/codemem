@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, expect, it, vi } from "vitest";
+import * as accountReceiver from "./coordinator-account-link-receiver.js";
 import {
 	type ChangeCoordinatorAccountOptions,
 	CoordinatorAccountLinkError,
@@ -97,6 +98,16 @@ function fixture(intent: "refresh" | "disconnect" = "refresh") {
 			}),
 		).toBe(true);
 		calls.push(req.clone());
+		if (url.pathname === "/v1/auth/account-unlinks") {
+			const body = await req.json();
+			return Response.json({
+				state: "completed",
+				coordinatorId: "coordinator-a",
+				identityId: body.identity_id,
+				targetLinkId: body.target_link_id,
+				attemptId: body.attempt_id,
+			});
+		}
 		if (url.pathname === "/v1/auth/account-changes") {
 			Object.assign(create, await req.json());
 			status.attemptId = create.attempt_id ?? "";
@@ -172,6 +183,71 @@ const test = it.extend<{ f: ReturnType<typeof fixture> }>({
 			f.close();
 		}
 	},
+});
+
+async function rewriteUnlinkReply(
+	response: Response,
+	mode: string,
+	count: number,
+): Promise<Response> {
+	if (mode === "wrong pins")
+		return Response.json({ ...(await response.json()), identityId: "wrong-identity" });
+	if (mode === "rejected" || (mode === "retry rejected" && count === 2))
+		return Response.json({ error: "account_change_unavailable" }, { status: 403 });
+	return response;
+}
+test.for([
+	"success",
+	"lost reply",
+	"malformed",
+	"server error",
+	"both lost",
+	"rejected",
+	"abort",
+	"wrong pins",
+	"retry rejected",
+])("device unlink %s uses no browser and retries only the exact operation", async (mode, { f }) => {
+	f.options.intent = "disconnect";
+	f.options.expectedLinkId = "current-link";
+	const before = f.snapshot();
+	const forward = f.fetch.getMockImplementation();
+	if (!forward) throw new Error("missing fixture fetch");
+	const controller = new AbortController();
+	const receiver = vi.spyOn(accountReceiver, "createCoordinatorAccountLinkReceiver");
+	let count = 0;
+	f.fetch.mockImplementation(async (url, init) => {
+		const response = await rewriteUnlinkReply(await forward(url, init), mode, ++count);
+		if (mode === "abort") {
+			controller.abort();
+			throw new Error("private lost reply");
+		}
+		if (mode === "both lost" || (["lost reply", "retry rejected"].includes(mode) && count === 1))
+			throw new Error("private lost reply");
+		if (mode === "malformed" && count === 1) return new Response('{"state":');
+		if (mode === "server error" && count === 1) return new Response(null, { status: 500 });
+		return response;
+	});
+	const result = await changeCoordinatorAccount({
+		...f.options,
+		signal: controller.signal,
+	}).catch((error: unknown) => error);
+	if (["both lost", "abort", "wrong pins", "retry rejected"].includes(mode))
+		expect(result).toMatchObject({ code: "cancellation_unconfirmed" });
+	else if (mode === "rejected") expect(result).toMatchObject({ code: "review_required" });
+	else expect(result).toMatchObject({ intent: "disconnect", state: "completed" });
+	expect(f.onBrowserStart).not.toHaveBeenCalled();
+	expect(receiver).not.toHaveBeenCalled();
+	expect(f.calls.every((req) => new URL(req.url).pathname === "/v1/auth/account-unlinks")).toBe(
+		true,
+	);
+	expect(f.calls).toHaveLength(["success", "rejected", "abort"].includes(mode) ? 1 : 2);
+	if (f.calls.length === 2) {
+		expect(await f.calls[0]?.text()).toBe(await f.calls[1]?.text());
+		expect(f.calls[0]?.headers.get("x-opencode-nonce")).not.toBe(
+			f.calls[1]?.headers.get("x-opencode-nonce"),
+		);
+	}
+	expect(f.snapshot()).toEqual(before);
 });
 
 test.for(

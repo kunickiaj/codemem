@@ -218,6 +218,20 @@ codemem coordinator upgrade-account-schema --export-sql --json
 
 It returns `{ "statements": [...], "applied": false }`. Plain output warns that the whole statement array must run in **one atomic D1 binding batch**; do not add `BEGIN`/`COMMIT`, split it into chunks, or treat Wrangler `execute` or migrations as a safe apply path here. Remote query and batch limits are not verified by this export.
 
+The default export installs the extension on V2 without account management (45 statements).
+For the intact prior 38-statement extension, export the nine-statement device-only
+unlink delta instead with `codemem coordinator upgrade-account-schema --export-sql --device-unlink --json`.
+The delta adds one receipt table and its guards and replaces the archive guard;
+it does not rebuild tables or change existing rows. The local SQLite command detects
+either supported starting schema. Both exports reject partial or unknown schemas
+inside the atomic batch. Backup, live SQL application and deployment remain separate
+operator actions requiring approval; exporting does not perform them.
+
+Apply the atomic delta and deploy the new Worker in the same paused-writer window,
+then resume writers: old binaries reject the new schema, and new binaries reject
+the prior 38-statement schema. Do not roll back to an old binary after applying the
+delta or creating new unlink receipts.
+
 On any error, stop and inspect the database rather than resetting tables, copying data, synthesizing proof, or restoring unrelated traffic. The extension retains original link rows, IDs, proofs, and history; it does not backfill old browser orders.
 
 Existing sessions remain valid until unlink or administrator revocation, but old pre-upgrade transactions without an order cannot create a new session. After the upgrade, do not run an older coordinator binary against the database.

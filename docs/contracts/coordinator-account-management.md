@@ -16,28 +16,38 @@ opaque link ID for a later normal Link. It retains the original row ID, proof, a
 authorship history; retaining that history is not a promise to keep the link active.
 Identity, device keys, access, existing history, and permanent administrator
 revocation remain unchanged. Old sessions and proofs cannot authenticate a replacement
-connection. Unlink and Refresh require the currently authorized device and fresh Google
-proof; neither accepts old proof. A normal Link is the only reconnect flow—there is no
+connection. Unlink requires the currently authorized device and one local Viewer
+confirmation, not Google proof. Link, relink and Refresh still require fresh Google
+verification. A normal Link is the only reconnect flow—there is no
 switch wizard or automatic unlink.
 
 The Viewer shows **Refresh profile** and **Unlink Google account** only when the
 coordinator reports those capabilities. **Check status** reads status; it does not
-refresh profile data. Refresh has no extra confirmation. Unlink has one hosted
-confirmation after Google proof; the Viewer has no pre-confirmation.
+refresh profile data. Refresh has no extra confirmation. Unlink has one accessible
+Viewer confirmation and opens no Google chooser, sign-in window or loopback listener.
 
 That confirmation explains that Unlink ends browser sessions for the connection
 and removes its display profile. Identity, device keys, history, membership, and
-access grants remain unchanged. The Viewer **Cancel** action cancels its pending
-operation through the initiating device. Closing the hosted tab before confirming
-Unlink leaves the account linked, but does not cancel the pending attempt; it remains
-until device cancellation or expiry. The hosted page does not currently offer a
-separate Cancel action.
+access grants remain unchanged. Cancelling the local confirmation sends no mutation.
+The signed coordinator capability supplies an opaque `unlink_target` before confirmation; both
+the Viewer server and coordinator reject a changed target rather than unlinking its
+replacement. Without this capability the Viewer hides Unlink; it never falls back
+to Google verification. Older browser-proof disconnect routes remain compatible.
 
-If a confirmation storage reply is lost after commit, the same request can recover
-only by matching its exact completion-secret hash, browser pins, current authority,
-and unexpired confirmed state. A later browser retry cannot reconstruct or rotate
-a lost secret, and delivery failure after the response leaves the server remains
-uncertain.
+`POST /v1/auth/account-unlinks` accepts exactly `{group_id, identity_id, attempt_id,
+target_link_id}` through the existing Ed25519 request verifier and rate limiter.
+Identity and target are comparison pins, not authority. The winning transaction
+rechecks current device/group/key/Identity eligibility and permanent revocation,
+archives the exact current link, invalidates its sessions and profiles, and completes
+an immutable `coordinator_auth_account_connection_unlinks` receipt. It creates no
+browser-attempt row and claims no provider verification.
+
+The receipt binds the signer, configuration, target and canonical request hash,
+excluding the transport nonce/signature. One exact retry with a fresh signed nonce
+can recover a lost response even after relinking, without repeating effects. Replay
+of a nonce is rejected. Changed requests cannot reuse a receipt. After two ambiguous
+responses the Viewer retains an unknown outcome and blocks another account action;
+status reads and deadlines do not authorize a retry or imply cancellation.
 
 When the Worker's existing scheduled handler runs with browser auth disabled,
 it can still scrub expired private account-change material in batches of at most
@@ -62,6 +72,14 @@ cutover, not this extension. The upgrade adds an old-binary fence; after it succ
 do not run an older coordinator binary against that database. Stop and inspect errors
 instead of resetting, copying tables, synthesizing proof, or attempting an automatic
 restore.
+
+An intact prior 38-statement account extension takes a nine-statement atomic delta:
+one receipt table, four receipt guards, replacement of the archive guard, and exact
+pre/postflight checks. No existing table is rebuilt or copied. Fresh V2 installation
+uses 45 statements. For D1, export the prior-extension delta with
+`codemem coordinator upgrade-account-schema --export-sql --device-unlink --json`;
+the default export is for V2 without the extension. Applying SQL and deploying still
+require separate operator approval. Partial or unknown schemas are rejected.
 
 The upgrade keeps the latest existing sign-in profile visible, including an empty
 snapshot. It assigns baseline order one to the existing receipt only when its

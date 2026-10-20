@@ -493,12 +493,14 @@ describe.each([
 				starting: {
 					link: "Preparing Google sign-in…",
 					refresh: "Preparing Google sign-in to refresh your profile…",
-					unlink: "Preparing Google sign-in to unlink your account…",
+					unlink: "Unlinking Google account…",
 				}[attempt],
-				awaiting_browser:
-					intent && intent !== "connect"
-						? `Waiting for Google sign-in to ${attempt} your account. Keep this Viewer open on the same computer.`
-						: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+				awaiting_browser: {
+					link: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+					refresh:
+						"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
+					unlink: "Unlinking Google account…",
+				}[attempt],
 				failed: `${subject} did not finish. Check status before trying again.`,
 				cancelled: "Cancellation was reported. Check status to confirm the account state.",
 				outcome_unknown: `We couldn’t confirm whether ${activity} finished. Check status.`,
@@ -516,7 +518,9 @@ describe.each([
 		});
 		await show();
 		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
-			`Google sign-in could not be opened. Cancel ${activity}, or wait for status to update.`,
+			intent === "disconnect"
+				? "Unlinking Google account…"
+				: `Google sign-in could not be opened. Cancel ${activity}, or wait for status to update.`,
 		);
 		transport.mockRejectedValueOnce(new Error("private-cancel-error"));
 		await click(`Cancel ${activity}`);

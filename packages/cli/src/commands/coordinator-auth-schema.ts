@@ -1,6 +1,7 @@
 import * as p from "@clack/prompts";
 import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
+	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
 	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
 	upgradeCoordinatorAccountSchemaFile,
 	upgradeCoordinatorAuthSchemaFile,
@@ -14,6 +15,7 @@ interface Options {
 	db?: string;
 	json?: boolean;
 	exportSql?: boolean;
+	deviceUnlink?: boolean;
 }
 function failure(
 	options: Options,
@@ -82,11 +84,22 @@ function hasDatabaseSelection(options: Options): boolean {
 	return options.dbPath !== undefined || options.db !== undefined;
 }
 function exportAccountSchema(options: Options): void {
-	const statements = ACCOUNT_CONNECTION_MIGRATION_STATEMENTS;
+	const statements = options.deviceUnlink
+		? ACCOUNT_UNLINK_MIGRATION_STATEMENTS
+		: ACCOUNT_CONNECTION_MIGRATION_STATEMENTS;
 	const text = `-- ${accountPrerequisites}\n-- Execute in ONE atomic D1 batch; do not split into autocommitted requests. Nothing has been applied.\n${statements.map((s) => `${s.trim().replace(/;$/u, "")};`).join("\n")}\n`;
 	process.stdout.write(options.json ? `${JSON.stringify({ statements, applied: false })}\n` : text);
 }
 async function upgradeAccount(options: Options): Promise<void> {
+	if (options.deviceUnlink && !options.exportSql) {
+		failure(
+			options,
+			"Use --device-unlink only with --export-sql; local upgrades detect the installed schema.",
+			2,
+			"account_schema_upgrade_failed",
+		);
+		return;
+	}
 	const path = resolveDbOpt(options);
 	const selected = hasDatabaseSelection(options);
 	if ((options.exportSql && selected) || (!options.exportSql && !path)) {
@@ -129,6 +142,10 @@ export function buildCoordinatorAccountSchemaCommand(): Command {
 		.configureHelp(helpStyle)
 		.description(
 			"Explicitly install optional coordinator account management on an existing V2 database",
+		)
+		.option(
+			"--device-unlink",
+			"export only the delta for the prior account-management schema (requires --export-sql)",
 		)
 		.option(
 			"-e, --export-sql",

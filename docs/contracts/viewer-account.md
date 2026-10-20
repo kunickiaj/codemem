@@ -100,12 +100,15 @@ and `disconnect` (**Unlink Google account**). Optional server-derived
 only after fresh linked status matches the local Identity and the coordinator's
 signed capabilities permit it. Missing or unsupported capabilities do not imply
 permission; coordinators without management support retain normal V2 linking and
-profile display. Existing V2 status fields and Viewer V1 envelopes remain unchanged.
+profile display. Optional Viewer `unlinkTarget` maps from the signed coordinator
+capability's `unlink_target`, not the
+unchanged nine-field V2 status DTO. Unlink is hidden without this new target capability.
 
 **Check status** only reads account evidence; it is not **Refresh profile**, which
-requires fresh Google proof to update display metadata. Unlink also requires fresh
-Google proof and one explicit hosted confirmation. Refresh adds no extra
-confirmation. There is no wizard, automatic unlink, or Viewer confirmation dialog.
+requires fresh Google proof to update display metadata. Unlink instead shows one
+accessible local confirmation, then uses the existing authorized device's signed
+request. It opens no popup or loopback receiver and does not contact Google. Refresh
+adds no extra confirmation; Link and relink keep their Google-verified flow.
 
 Avatar requests go directly to Google, which can see the browser's network address.
 Images load lazily with `no-referrer` and anonymous CORS (no cross-origin
@@ -189,7 +192,7 @@ read within ten seconds; disconnects stop body reads. Operation routes accept no
 
 | Route | Body and result |
 | --- | --- |
-| `POST /api/account/link-operations` | Required `{groupId, contextId, coordinatorId, authority}` plus optional `intent` (`connect`, `refresh`, or `disconnect`, default `connect`); no other keys. Fresh eligible status and a final context check precede start. Returns `202 {version:1, operation}`. |
+| `POST /api/account/link-operations` | Required `{groupId, contextId, coordinatorId, authority}` plus optional `intent` (`connect`, `refresh`, or `disconnect`, default `connect`) and `expectedLinkId` (required for disconnect); no other keys. Fresh eligible status and a final context check precede start. Returns `202 {version:1, operation}`. |
 | `GET /api/account/link-operations/:id` | Returns `{version:1, operation, current}` without private URLs. |
 | `POST /api/account/link-operations/:id/browser-url` | `{}`; returns `{version:1, url}` only for the current awaiting-browser context. This is the only HTTP response containing the private URL. |
 | `POST /api/account/link-operations/:id/cancel` | `{}`; aborts idempotently, returning `202` while pending or `200` once terminal. Cancellation can clean up an old context. |
@@ -205,7 +208,9 @@ Identity is unlinked. Context changes return `409` without starting another job.
 Errors use fixed codes and never include callback exceptions or private URLs.
 
 The viewer supplies the displayed `coordinatorId` and `authority` when the user
-clicks an account action; there is no separate claim checkbox or Viewer dialog.
+clicks an account action; there is no separate claim checkbox. Disconnect captures
+`unlinkTarget` before its local confirmation and sends it as `expectedLinkId`.
+Cancelling sends no mutation; stale context or target returns `409` without a job.
 `authority` must be `controller_attestation` or `device_claim` for every intent.
 Start re-reads status, checks the coordinator and complete current context, and
 checks the supplied authority against status for connect. Management authorization
@@ -229,7 +234,7 @@ credential. The separate sync listener still exposes no account routes.
 
 ## Browser handoffs and completion
 
-The Viewer opens an isolated window from each account action; the coordinator automatically submits its same-origin start form.
+Connect and Refresh open an isolated window; device-only Unlink does not. For browser flows, the coordinator automatically submits its same-origin start form.
 The start cookie, CSRF token and private device-issued start proof remain required, with **Continue with Google** as a script-free fallback.
 Only after the transaction commits does the validated provider URL open automatically, with a manual fallback.
 
