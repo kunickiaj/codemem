@@ -23,14 +23,17 @@ import { initTestSchema, insertTestSession } from "./test-utils.js";
 
 let signing: { corrupt: boolean };
 let databaseOpens: Array<{ readonly?: boolean }>;
+let assertOffline: (() => void) | undefined;
 
 // Each test file owns hoisted mocks; the isolated fixture only receives their per-file state.
 export function registerOwnerProfileClientMockState(state: {
 	signing: { corrupt: boolean };
 	databaseOpens: Array<{ readonly?: boolean }>;
+	assertOffline?: () => void;
 }): void {
 	signing = state.signing;
 	databaseOpens = state.databaseOpens;
+	assertOffline = state.assertOffline;
 }
 
 const pin = {
@@ -196,7 +199,8 @@ function seedProfile(): void {
 	);
 }
 afterEach(() => {
-	expect(globalThis.fetch).not.toHaveBeenCalled();
+	if (assertOffline) assertOffline();
+	else expect(globalThis.fetch).not.toHaveBeenCalled();
 	db.close();
 	rmSync(directory, { recursive: true, force: true });
 	vi.restoreAllMocks();
