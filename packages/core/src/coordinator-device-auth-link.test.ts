@@ -799,6 +799,141 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(snapshot(f)).toEqual(before);
 		});
 	});
+	async function cancelInBrowser(f: Fixture) {
+		const row = rows(f, TABLES[0])[0] as { browser_transaction_hash: string };
+		expect(
+			await f.store.failAuthLinkAttempt(
+				{
+					attemptId: "attempt-a",
+					requester: { kind: "browser", browserTransactionHash: row.browser_transaction_hash },
+					reason: "cancelled",
+				},
+				config,
+			),
+		).toMatchObject({ kind: "applied", status: { state: "failed" } });
+	}
+	describe(`${backend} signed browser-cancel cleanup`, () => {
+		test("signed own cleanup acknowledges browser cancellation repeatedly without creating authority", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			await seed(f, key, app);
+			await cancelInBrowser(f);
+			const before = snapshot(f, ["coordinator_auth_browser_transactions"]);
+			// Act
+			const first = await request(app, key, `${ROOT}/attempt-a/cancel`, { group_id: "group-a" });
+			const retry = await request(app, key, `${ROOT}/attempt-a/cancel`, { group_id: "group-a" });
+			// Assert: failed status is not link success, and no reason or birth field changes.
+			for (const response of [first, retry]) {
+				expect(response.status).toBe(200);
+				expect(response.headers.get("cache-control")).toBe("no-store");
+				expect(await response.json()).toEqual({
+					status: { attemptId: "attempt-a", state: "failed", expiresAtMs: NOW + 600000 },
+				});
+			}
+			expect(snapshot(f, ["coordinator_auth_browser_transactions"])).toEqual(before);
+			expect(rows(f, TABLES[0])[0]).toMatchObject({
+				state: "failed",
+				failure_reason: "browser_cancelled",
+				created_at_ms: NOW,
+				failed_at_ms: NOW,
+				link_id: null,
+			});
+		});
+		test.for(["foreign-device", "foreign-key", "extra-proof", "extra-nonce"])(
+			"browser-cancel cleanup denies %s without exposing status or running cleanup",
+			async (variant, { f, key, app }) => {
+				// Arrange
+				await seed(f, key, app);
+				await cancelInBrowser(f);
+				let requester = key;
+				if (variant === "foreign-device") {
+					requester = identity("foreign-device");
+					await f.store.enrollDevice("group-a", requester);
+				}
+				if (variant === "foreign-key") requester = identity(key.deviceId);
+				const body: Record<string, unknown> = { group_id: "group-a" };
+				if (variant === "extra-proof") body.runtime_verifier = runtimeProof;
+				if (variant === "extra-nonce") body.nonce = "untrusted";
+				const before = snapshot(f);
+				const retire = vi.spyOn(f.store, "retireAuthBrowserTransactions");
+				// Act
+				const response = await request(app, requester, `${ROOT}/attempt-a/cancel`, body);
+				const payload = await response.json();
+				// Assert
+				let expectedStatus = 400;
+				if (variant === "foreign-device") expectedStatus = 403;
+				if (variant === "foreign-key") expectedStatus = 401;
+				expect(response.status).toBe(expectedStatus);
+				expect(payload).not.toHaveProperty("status");
+				expectPrivate(JSON.stringify(payload));
+				expect(retire).not.toHaveBeenCalled();
+				expect(snapshot(f)).toEqual(before);
+			},
+		);
+	});
+	describe(`${backend} signed browser-cancel replay and verification race`, () => {
+		test("browser-cancel cleanup rejects a replayed signed nonce before cleanup", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			await seed(f, key, app);
+			await cancelInBrowser(f);
+			const path = `${ROOT}/attempt-a/cancel`;
+			const body = JSON.stringify({ group_id: "group-a" });
+			const options = { method: "POST", headers: headers(key, "POST", path, body), body };
+			const retire = vi.spyOn(f.store, "retireAuthBrowserTransactions");
+			// Act
+			const first = await app.request(path, options);
+			const replay = await app.request(path, options);
+			// Assert
+			expect(first.status).toBe(200);
+			expect(replay.status).toBe(401);
+			expect(await replay.json()).not.toHaveProperty("status");
+			expect(retire).toHaveBeenCalledTimes(1);
+		});
+		test("browser-cancel cleanup rereads row changes committed during asynchronous signature verification", async ({
+			f,
+			key,
+			app,
+		}) => {
+			// Arrange
+			await seed(f, key, app);
+			await cancelInBrowser(f);
+			const verifier = vi.fn(async (input: Parameters<typeof verifySignature>[0]) => {
+				const valid = verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) });
+				await Promise.resolve();
+				f.db
+					.prepare(
+						"UPDATE coordinator_auth_link_attempts SET failure_reason = 'provider_failure' WHERE attempt_id = 'attempt-a'",
+					)
+					.run();
+				return valid;
+			});
+			const racedApp = makeApp(f, { requestVerifier: verifier });
+			const retire = vi.spyOn(f.store, "retireAuthBrowserTransactions");
+			const before = snapshot(f, [TABLES[0]]);
+			// Act
+			const response = await request(racedApp, key, `${ROOT}/attempt-a/cancel`, {
+				group_id: "group-a",
+			});
+			// Assert
+			expect(verifier).toHaveResolvedWith(true);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "auth_link_unavailable" });
+			expect(retire).not.toHaveBeenCalled();
+			expect(rows(f, TABLES[0])[0]).toMatchObject({
+				state: "failed",
+				failure_reason: "provider_failure",
+				link_id: null,
+			});
+			expect(snapshot(f, [TABLES[0]])).toEqual(before);
+		});
+	});
 	describe(`${backend} signed link cancellation`, () => {
 		test("cancel erases only this attempt's pending browser credentials", async ({
 			f,

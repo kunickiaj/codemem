@@ -560,12 +560,21 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 	await browserWork;
 	if (browserError) throw browserError;
 	if (cancel) {
-		// Browser cancellation records browser_cancelled; signed cleanup requires
-		// device_cancelled, so the runtime cannot confirm that already-terminal state.
-		expect(cleanupReply).toEqual({ status: 403, body: { error: "auth_link_unavailable" } });
+		const attempts = await rows("coordinator_auth_link_attempts");
+		expect(attempts).toHaveLength(1);
+		expect(cleanupReply).toEqual({
+			status: 200,
+			body: {
+				status: {
+					attemptId: attempts[0]?.attempt_id,
+					state: "failed",
+					expiresAtMs: attempts[0]?.expires_at_ms,
+				},
+			},
+		});
 		expect(outcome).toMatchObject({
 			status: "rejected",
-			reason: { code: "cancellation_unconfirmed" },
+			reason: { code: "link_stopped" },
 		});
 	} else {
 		expect(outcome).toMatchObject({
@@ -756,7 +765,7 @@ it.each([false, true])(
 	},
 );
 
-it("browser cancellation of A creates no authority while runtime reports cancellation unconfirmed", async () => {
+it("browser cancellation of A creates no authority and runtime confirms the stopped link", async () => {
 	// Arrange
 	const a = await reviewedA();
 	const before = await authority();

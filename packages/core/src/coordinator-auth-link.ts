@@ -1104,6 +1104,20 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (typeof result !== "number") return result;
 		const row = await this.read(i.attemptId, c, { authority: "either" });
 		if (row && !requesterMatches(row, r)) return rejected("attempt_unavailable");
+		// A signed own-attempt cancel can acknowledge browser cancellation without
+		// rewriting its reason or creating any account authority.
+		if (
+			row &&
+			configMatches(row, c) &&
+			r.kind === "device" &&
+			i.reason === "cancelled" &&
+			row.state === "failed" &&
+			row.failure_reason === "browser_cancelled" &&
+			row.link_id === null &&
+			row.created_at_ms <= now &&
+			now < row.expires_at_ms
+		)
+			return { kind: "existing", status: status(row, now) };
 		if (
 			row &&
 			configMatches(row, c) &&

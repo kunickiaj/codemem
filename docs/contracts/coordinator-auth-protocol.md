@@ -252,6 +252,14 @@ browser authentication is ready.
 | `POST /v1/auth/link-attempts/:attemptId/finalize` | Exact purpose, coordinator/attempt/group/Identity/device/fingerprint fields and canonical raw `runtime_verifier`/`completion` proofs. The path and body attempt must match; the server hashes decoded 32-byte proofs. Client-nominated proof hashes are rejected. |
 | `POST /v1/auth/link-attempts/:attemptId/cancel` | Signed `group_id` only; fails the requester's bound attempt and retires its temporary provider material before reporting success. |
 
+If the same attempt already failed with `browser_cancelled`, its original signed
+device may confirm that cancellation before the attempt deadline. The endpoint
+returns `200` with the existing `failed` status after temporary-material cleanup;
+it does not rewrite the reason, finalize a link, or grant account authority. The
+runtime reports `link_stopped`, not successful linking. Other failure reasons,
+completed or expired attempts, and mismatched device proofs do not gain this
+acknowledgement.
+
 Bodies are limited to 4 KiB and exact fields. Authentication uses the existing
 stored enrollment key, signature, timestamp and nonce, with a separate
 per-device quota using the existing limits; SQL
