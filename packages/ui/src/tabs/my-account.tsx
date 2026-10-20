@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import {
 	type AccountOperation,
 	type AccountView,
@@ -292,10 +292,11 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	);
 }
 
-/** Independent card; the Sharing mount is added in the integration slice. */
-export function MyAccount() {
+/** Shows account status independently of Sharing's recipient controls. */
+export function MyAccount({ onViewChange }: { onViewChange?: (view: AccountView | null) => void }) {
 	const flow = useMyAccount();
 	const { view, operation, message } = flow;
+	useEffect(() => onViewChange?.(view ?? null), [onViewChange, view]);
 	const selectedGroup = flow.group ?? view?.selectedGroupId ?? "";
 	const guidance = currentBlockGuidance(view, operation);
 	const groupLocked =
