@@ -1877,3 +1877,62 @@ describe("Team metadata route", () => {
 		},
 	);
 });
+
+describe("Team setup without coordinator admin access", () => {
+	it("keeps coordinator list failures transient-classified without a config reason", async () => {
+		const { store, close } = createRouteStore();
+		const base = readCoordinatorSyncConfig({});
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			snapshotLoaderDependencies: {
+				readConfig: () => ({
+					...base,
+					syncCoordinatorUrl: "http://localhost:8787",
+					syncCoordinatorGroups: ["configured"],
+					syncCoordinatorAdminSecret: "configured-admin-secret",
+				}),
+				listGroups: async () => {
+					throw new Error("coordinator rejected request");
+				},
+				listDevices: vi.fn(async () => []),
+			},
+		});
+		try {
+			const response = await app.request("/api/sync/team-setup/v1");
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+		} finally {
+			close();
+		}
+	});
+
+	it("reports nothing to migrate when coordinator admin access is absent, but keeps detail fail-closed", async () => {
+		const { store, close } = createRouteStore();
+		const base = readCoordinatorSyncConfig({});
+		const listGroups = vi.fn(async () => []);
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			snapshotLoaderDependencies: {
+				readConfig: () => ({
+					...base,
+					syncCoordinatorUrl: "http://localhost:8787",
+					syncCoordinatorGroups: ["configured"],
+					syncCoordinatorAdminSecret: "",
+				}),
+				listGroups,
+				listDevices: vi.fn(async () => []),
+			},
+		});
+		try {
+			const summary = await app.request("/api/sync/team-setup/v1");
+			expect(summary.status).toBe(200);
+			expect(await summary.json()).toEqual({ version: 1, candidates: [] });
+			const detail = await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`);
+			expect(detail.status).toBe(503);
+			expect(await detail.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			expect(listGroups).not.toHaveBeenCalled();
+		} finally {
+			close();
+		}
+	});
+});

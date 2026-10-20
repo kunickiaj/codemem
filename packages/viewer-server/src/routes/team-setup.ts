@@ -211,6 +211,31 @@ function safeCoordinatorError(): Error {
 	return new Error("team_setup_roster_unavailable");
 }
 
+class CoordinatorAdminConfigurationMissingError extends Error {
+	constructor() {
+		super("team_setup_roster_unavailable");
+		this.name = "CoordinatorAdminConfigurationMissingError";
+	}
+}
+
+function isPassthroughSnapshotLoadError(error: unknown): boolean {
+	return (
+		error instanceof CoordinatorAdminConfigurationMissingError ||
+		(error instanceof Error && error.message === "legacy_team_setup_roster_too_large")
+	);
+}
+
+/**
+ * Without coordinator admin access there is nothing to migrate from this Viewer.
+ * Members still see their Teams from local records, and Devices reports
+ * incomplete coordinator setup. Only the summary uses this; Team detail and
+ * finish stay fail-closed.
+ */
+function summaryWithoutAdminAccess(error: unknown): LegacyTeamConfiguredGroupSnapshot[] {
+	if (error instanceof CoordinatorAdminConfigurationMissingError) return [];
+	throw error;
+}
+
 function isCoordinatorRosterTooLargeError(error: unknown): boolean {
 	return error instanceof Error && error.message === "coordinator_response_too_large";
 }
@@ -439,7 +464,7 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 	const hasUrl = Boolean(config.syncCoordinatorUrl);
 	const hasSecret = Boolean(config.syncCoordinatorAdminSecret);
 	if (!hasUrl && !hasSecret && config.syncCoordinatorGroups.length === 0) return [];
-	if (!hasUrl || !hasSecret) throw safeCoordinatorError();
+	if (!hasUrl || !hasSecret) throw new CoordinatorAdminConfigurationMissingError();
 
 	try {
 		const configuredCoordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
@@ -555,9 +580,7 @@ async function loadConfiguredLegacyTeamGroupSnapshotsWith(
 		}
 		return validSnapshots;
 	} catch (error) {
-		if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
-			throw error;
-		}
+		if (isPassthroughSnapshotLoadError(error)) throw error;
 		throw safeCoordinatorError();
 	}
 }
@@ -1541,14 +1564,14 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				candidateRef || deadlineMs != null ? { candidateRef, deadlineMs } : undefined,
 			);
 		} catch (error) {
-			if (error instanceof Error && error.message === "legacy_team_setup_roster_too_large") {
+			if (isPassthroughSnapshotLoadError(error)) {
 				throw error;
 			}
 			throw safeCoordinatorError();
 		}
 	}
 	const loadedSummarySnapshots = createCachedSnapshotLoader(
-		() => loadedSnapshots(),
+		() => loadedSnapshots().catch(summaryWithoutAdminAccess),
 		SUMMARY_SNAPSHOT_CACHE_TTL_MS,
 	);
 	options.registerSummaryInvalidator?.(() => loadedSummarySnapshots.invalidate());
