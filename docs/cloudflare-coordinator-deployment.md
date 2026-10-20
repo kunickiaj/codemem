@@ -91,10 +91,8 @@ This secret is required for admin routes such as invite creation and join-reques
 
 ## 4. Optional Google owner authentication
 
-This is an optional normal Worker route, not a separate pilot. The implementation is available in the current source
-checkout and has passed its compile and test checks, but it is unreleased. Do not
-use it for a live deployment or device onboarding until the live workflow is approved; operator-managed enrollment
-remains the current path.
+This optional Worker route supports owner admission from an existing reviewed profile. The source remains unreleased;
+no live deployment or device onboarding is authorized. Operator deployment, D1 setup, and approval remain separate work.
 
 When this route is available, its non-secret configuration will be loaded from
 `CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG` as JSON:
@@ -142,7 +140,7 @@ Use the stored `controller-v1:` reference returned by confirmed `review-device-o
 configured in the existing operator configuration. The wrapper keeps the admin credential out of arguments and
 output, refuses redirects, and defaults confirmation to **No**. `--json` and noninteractive calls send no request.
 It grants transport enrollment eligibility only, not Team/Project access; it does not run Google or alter a local
-profile. See the [operator grant workflow](user-guide.md#optional-coordinator-account-linking).
+profile. See the [first-owner bootstrap recipe](user-guide.md#first-owner-bootstrap-before-teams).
 
 Use the maintained CLI in three steps:
 
@@ -171,6 +169,12 @@ not transfer legacy ownership automatically.
 
 Eligibility for an existing profile remains unknown until it is checked on the real device. Google confirmation and the
 normal device finish line have not been verified in a live workflow.
+
+Before account admission, the operator must create the first Worker group and enrolled device in D1, then use the
+[first-owner bootstrap recipe](user-guide.md#first-owner-bootstrap-before-teams). It covers the separate local review,
+the returned `controller-v1:` reference, the explicit transport grant, account linking, and `enroll-owner` preparation
+and resume. `--account-admission` requires a verified management session, an active reviewed account link, and an
+eligible existing group grant; it does not create them.
 
 ## 5. Apply the D1 migrations
 
@@ -251,12 +255,10 @@ cannot initialize a provider, start an attempt, or reset shared quotas. No migra
 This source change does not approve or perform migration 0034, live Google validation, configuration changes,
 secret access, or deployment.
 
-Follow-up must add the maintained client's explicit account-admission mode. That client must bind its receiver
-and retain its attempt marker before opening the fixed path, omit
-operator capability/initial start POST, and preserve final/receipt retries. SQLite handler tests cover
-the upload flow and session, link and grant revocation during the winning start insert. Native D1
-tests cover the configured Worker handler, connection-aware sessions, upload limits and winning-insert
-authority races. Complete mounted client and browser acceptance remains follow-up work.
+The maintained client has explicit `--account-admission`: it binds its receiver and retains its start marker before
+displaying the fixed admission path, omits the operator capability and initial start POST, and retains final/receipt
+retries. It does not make ordinary `device_claim` authority available. End-to-end CLI acceptance against a live Worker
+has not yet been validated.
 
 ### Linked-account display metadata rollout
 

@@ -663,14 +663,27 @@ When selected history may already have replicated, all participating owner devic
 - See [docs/anchor-peer-deployment.md](anchor-peer-deployment.md) if you want an always-on peer as a sync backstop for personal or team Sharing domains.
 - Do **not** expose the viewer itself just because the coordinator or sync protocol needs cross-network reachability; those are separate surfaces.
 
-### Optional coordinator account linking
+### First-owner bootstrap before Teams
 
-This is a separate operator workflow for legacy ownership or enrollment. It is not a client onboarding step: an eligible current Identity links Google without an administrator command or credential. The commands do not configure Google or deploy a coordinator; deployment upgrades remain operator work. Local memory and direct sync do not require Google.
+Link an existing device's account, then enroll a second device with its own key under the same Identity. This operator-assisted bootstrap works before any Team exists. It creates no Team or Project access and does not change memory sharing.
+
+Choose the coordinator deployment before starting:
+
+- `group-create` and `enroll-device` write only the built-in coordinator's **local SQLite** database selected by `--db-path`. They do not create groups or devices in a remote Worker.
+- A Cloudflare Worker needs its first group and enrolled device created in its D1 database by its operator. Follow the [Worker first-device prerequisite](cloudflare-coordinator-deployment.md#7-enroll-the-first-device); there is no maintained remote CLI command or zero-seed Worker flow.
+
+Part A reviews and links the already-enrolled profile. Part B enrolls a separate profile with a fresh key. Ordinary `device_claim` supports Google account linking for an active eligible device, but that link cannot enroll another profile until a reviewed authority upgrade is available.
+
+#### Optional coordinator account linking
+
+##### A. Review, grant, and link the existing enrolled profile
+
+Run these commands on the existing device. The review reads its actual current Identity and device binding; it has no Identity argument and cannot nominate another user. It does not adopt old keys or create a new Identity.
 
 For a separate operator review, preview the existing device owner. The group name is the coordinator administrative group, not a Team permission or an access grant:
 
 ```fish
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>' --json
 ```
 
 The preview reads the existing local device database and current Identity, then asks the coordinator to preview the review. It does not run database maintenance, change configuration or credentials, rotate keys, adopt an Identity, move memories, or change ownership or grants. It uses the configured coordinator-admin credential; do not put that credential in the command or output.
@@ -680,7 +693,7 @@ Without `--json`, the interactive prompt defaults to **No**. Only an operator co
 To confirm the review, run the same command in a terminal without `--json`:
 
 ```fish
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com"
+codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
 ```
 
 After confirmation, the command displays the coordinator's stored **Controller attestation reference** (`controller-v1:` followed by 64 lowercase hexadecimal characters). Keep that noncredential reference with the reviewed coordinator and group for a separate, explicit operator-issued transport group grant. It is not an admin credential, invitation, review receipt ID, or proof of Team/Project access. A successful retry returns the same stored reference; previews do not return one.
@@ -688,7 +701,7 @@ After confirmation, the command displays the coordinator's stored **Controller a
 The review command does not issue a transport group grant. To preview that separate operator action, use the stored reference with the maintained command (replace the example reference with the one returned by your review):
 
 ```fish
-codemem coordinator grant-identity-group 'controller-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' --json
+codemem coordinator grant-identity-group 'controller-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' --config '<operator-config>' --json
 ```
 
 Run the same command in a terminal without `--json` to confirm; the prompt defaults to **No**. JSON and noninteractive invocations only show a local request preview, make no network request, and do not check server eligibility. There is no `--yes` shortcut. Cancellation sends no request.
@@ -701,10 +714,10 @@ This is an explicit **transport enrollment grant**, not Team/Project access. It 
 
 Ambiguous ownership stops the review. If ownership records disappear or change during the prompt, the command stops and requires a fresh preview; it never migrates legacy records automatically.
 
-The interactive link command resolves the current configuration or environment Identity and readiness automatically. Use it on the device being linked, then choose the intended Google account in its browser:
+After the grant succeeds, use the maintained link command on that same device. It resolves the current configuration or environment Identity and readiness automatically; it does not accept an Identity to nominate. Choose the intended Google account in its browser:
 
 ```fish
-codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
+codemem coordinator link-account team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
 ```
 
 Add `--config` or `--db-path` only to select the intended existing configuration or database. Keep `CODEMEM_KEYS_DIR` unchanged when selecting existing device keys. The command also honors `CODEMEM_SYNC_COORDINATOR_URL`.
@@ -722,43 +735,47 @@ otherwise ask the operator. These commands cannot replace or remove account link
 
 See [Coordinator-backed discovery](coordinator-discovery.md#optional-account-linking) for the link-session limits and privacy rules.
 
-### Optional coordinator owner enrollment
+#### Optional coordinator owner enrollment
 
-The maintained `codemem coordinator enroll-owner` flow is for an operator-enabled coordinator owner enrollment. It does not configure Google or deploy a coordinator; follow [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md) for operator setup.
+##### B. Enroll a separate fresh-key profile
+
+Part B is not the Part A profile: do not run `enroll-owner` against Part A's already-enrolled key, and do not copy that key. Prepare a separate profile with its own new key, configuration, database, and state directory. Use the same Google account linked in Part A. `codemem coordinator enroll-owner` does not manually adopt an Identity or an old key, create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. It does not configure Google or deploy a coordinator; follow [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md) for operator setup.
 
 This enrollment flow currently requires POSIX private-file checks. Windows enrollment stops before changing the profile because Windows ACL verification is not implemented; do not copy signing keys to work around this limitation.
 
 Before preparing, stop this profile's capture plugin, viewer, and sync daemon. Keep them stopped until the command reports `Verified coordinator Identity`:
 
 ```fish
-codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com"
+codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
 The review reports the current Identity, device, key, and memory-author counts. Existing keys, history, and authorship remain unchanged. It does not create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. Bootstrap state is populated only after immutable creation proof. Conflicts, legacy enrollment, and already-enrolled keys stop the review; ask the coordinator operator to resolve them.
 
-Preparation writes a private `capability-request.json` containing the browser-start code. Submit the unchanged file through the operator's private process and never paste it into chat. After admission, resume with the review digest and capability, reusing the same coordinator, configuration, database, and key selections:
+Preparation writes a private `capability-request.json`. Reuse the same coordinator, configuration, database, key, and state-directory selections on resume. If multiple databases share a directory, give each profile a distinct `--state-dir`; the default state directory is shared by colocated databases.
 
-If multiple databases share a directory, give each profile a distinct `--state-dir` and reuse it for every prepare/resume command. The default state directory is shared by colocated databases. All resume operations currently require an interactive terminal, including retained-final and config-only retries; `--json` is supported for preparation, not resume.
+Operator admission submits that unchanged file through the operator's private process. Never paste the file contents or a capability into chat or a URL. All resume operations require an interactive terminal, including retained-final and config-only retries; `--json` is supported for preparation, not resume.
 
 ```fish
-codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
+codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
-If an ambiguous failure occurs after a final request is retained, retry that exact request unchanged. If a start succeeded but no final request was saved, keep the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the prior state. Google confirmation and a two-device workflow have not been verified live.
+If an ambiguous failure occurs after a final request is retained, retry that exact request unchanged. If a start succeeded but no final request was saved, keep the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the prior state.
 
 #### Explicit account admission
 
-Operator admission remains the default. On a coordinator that serves authenticated `/auth/owner/admit`, resume the same prepared review with account admission instead:
+Operator admission remains the default. Account admission requires a Worker that serves authenticated `/auth/owner/admit`, an active review-backed account link, an eligible existing Identity group grant, and a verified management session from `/auth/sign-in`. Resume the same prepared review with account admission instead:
 
 ```fish
-codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com"
+codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
-`--account-admission` is resume-only and cannot be combined with `--capability`. It needs no operator capability and skips the client's initial operator start POST. The client first binds the retained literal-loopback receiver and saves the start-attempt marker, then displays a fixed HTTPS link with no query or secrets. Open that link manually while signed in to the intended account, upload the unchanged private `capability-request.json` from the displayed path, and compare its device and fingerprint against the local output. Do not paste the file contents into chat or URLs. Keep this command running and capture stopped until `Verified coordinator Identity` appears; browser confirmation alone is incomplete.
+`--account-admission` is resume-only and cannot be combined with `--capability`. It skips the initial operator start request. The client first binds its retained literal-loopback receiver and saves the start marker, then displays a fixed HTTPS link with no private handoff or secrets in its query. Open the link while signed in to the management account, upload the unchanged private `capability-request.json` from the displayed path, and compare its device and fingerprint with the local output. The fixed admission URL does not carry private handoff material; the OIDC callback follows its configured protocol. Keep the command running and capture stopped until `Verified coordinator Identity` appears; browser confirmation alone is incomplete.
 
-The server must already have an active, review-backed account link (`controller_attestation`) and eligible existing Identity group grants. Ordinary `device_claim` sessions remain unsupported until a one-time reviewed authority upgrade is available. This mode creates neither grants nor device-claim authority. The flag does not deploy or enable the server page, and no live Google or two-device acceptance is claimed here.
+If the management account is unknown, denied, expired, or no longer linked, stop. Do not substitute another account, create an Identity, change keys, or try to turn an ordinary `device_claim` into authority. This mode creates neither grants nor device-claim authority, and the flag does not deploy or enable the server page.
 
-Preparation and `--json` behavior are unchanged; all resume operations remain interactive. Retained-final retries reuse the exact signed request without a current capability or browser. Retained-receipt retries can adopt config offline. Local review, capture pauses, cancellation, private-file checks, and refusal of conflicting keys or locks still apply. If the browser was opened but no final request was retained, keep the old state unchanged and prepare a new attempt in a new state directory only after conflicts are reviewed.
+Preparation and `--json` behavior are unchanged; all resume operations remain interactive. Retained-final retries reuse the exact signed request without a current capability or browser. A retained receipt can reopen for configuration adoption while offline; retain its files unchanged. Local review, capture pauses, cancellation, private-file checks, and refusal of conflicting keys or locks still apply. If the browser was opened but no final request was retained, keep the old state unchanged and prepare a new attempt in a new state directory only after conflicts are reviewed.
+
+This source workflow has not yet been validated end-to-end against a live coordinator. It makes no claim about a 24-hour admission or session policy.
 
 ### Keychain (optional)
 

@@ -117,7 +117,7 @@ follow-up.
 
 ## Optional account linking
 
-On an active enrolled device whose current Identity matches coordinator eligibility, users link Google by starting the link flow and completing Google sign-in. This needs no administrator credential, review command, or device-claim control. It links only that current Identity; it does not change keys, enrollment, grants, history, or another device's access.
+On an active enrolled device whose current Identity matches coordinator eligibility, users can link Google through the normal `device_claim` path without an administrator credential or review command. It links only that current Identity; it does not change keys, enrollment, grants, history, or another device's access. That path cannot enroll a separate owner profile until a future qualified authority upgrade exists. For the reviewed bootstrap alternative, follow the [first-owner bootstrap recipe](user-guide.md#first-owner-bootstrap-before-teams).
 
 The review below is a separate administrator workflow for legacy ownership or enrollment. It uses the configured coordinator-admin credential; it grants no new access and does not enable Google, relay, or account-link routes.
 
