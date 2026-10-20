@@ -66,7 +66,10 @@ const baseOptions = convertV4MiniflareOptions({
 async function snapshot(db) {
   const {results} = await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all();
   return Promise.all(results.map(async ({name}) => {
-    const orderBy = name === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+    const orderBy = {
+      coordinator_auth_device_claims: "claim_id",
+      coordinator_owner_enrollment_qualifications: "qualification_id",
+    }[name] ?? "rowid";
     return [name, (await db.prepare(`SELECT * FROM ${name} ORDER BY ${orderBy}`).all()).results];
   }));
 }

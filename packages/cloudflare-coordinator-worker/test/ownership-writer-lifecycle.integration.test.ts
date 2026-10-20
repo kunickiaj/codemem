@@ -20,7 +20,10 @@ describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", ()
       exec: async (sql, ...values) => { await env.COORDINATOR_DB.prepare(sql).bind(...values).run(); },
       rows: async table => {
         if (!f.tables.includes(table)) throw new Error("Unknown lifecycle fixture table");
-        const orderBy = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+        const orderBy = ({
+          coordinator_auth_device_claims: "claim_id",
+          coordinator_owner_enrollment_qualifications: "qualification_id",
+        } as Record<string, string>)[table] ?? "rowid";
         return (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all()).results;
       },
     };

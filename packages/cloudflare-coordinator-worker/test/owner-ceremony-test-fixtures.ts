@@ -48,6 +48,7 @@ export const rows = async (table: string) => {
 	let orderBy = "rowid";
 	if (table === "coordinator_auth_device_claims") orderBy = "claim_id";
 	if (table === "coordinator_auth_account_connection_orders") orderBy = "coordinator_id";
+	if (table === "coordinator_owner_enrollment_qualifications") orderBy = "qualification_id";
 	return (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all()).results;
 };
 export async function attempt() {
