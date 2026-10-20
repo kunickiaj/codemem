@@ -909,7 +909,7 @@ Bare device claims must never pass as operator approval:
 
 The source-only `coordinator_owner_enrollment_qualifications` table and migration
 `0035_add_owner_enrollment_qualifications.sql` reserve a narrow future exception
-for owner enrollment only. They grant nothing today: there is no qualification
+for owner enrollment only. They grant nothing today: there is no mounted qualification
 issuer, consumer, public API, or store-open installation. Current owner handlers
 still deny device-claim links, and all other privileged consumers above remain
 attestation-only.
@@ -924,6 +924,35 @@ plus the exact link's creation attempt, configuration revision and creation time
 The qualification stores no subject or email: the exact link ID and claim facts
 identify the account provenance for later server-side resolution. It must not
 rewrite the original link's authority kind or claim.
+
+The internal `OwnerEnrollmentQualificationOps` capability exposes `preview({attestationId})`,
+`issue({attestationId, expectedDigest})`, and `revoke({qualificationId, linkId})`.
+Its trusted constructor captures coordinator, issuer, configuration revision and enabled
+state; it accepts an internal backend and clock, not request-supplied authority.
+Preview returns nonsecret references and a domain-separated digest binding the exact
+case-sensitive account subject without returning or copying that subject into the ledger.
+Issuance repeats the source checks in one conditional INSERT after asynchronous key
+classification and hashing. Exact retries return only the stored ID; revoked records
+cannot be reissued. Revocation changes only the ledger timestamp and is idempotent.
+These operations currently require the complete connection-history schema and exact
+qualification DDL; V2-only, partial, unknown and future lifecycle layouts fail closed.
+The connection-history liveness mode checks the exact current link and retained
+revocation barrier; existing lifecycle-mode callers are unchanged. This capability
+creates no grant or controller attestation and has no public entry point.
+
+Preview, issuance and exact retry require the current enrollment Identity to match
+the review's nullable enrollment snapshot exactly (`IS`, including null). A change
+from null to the same reviewed Identity still requires a fresh review; compatibility
+with the Identity alone is insufficient. Both null and matching non-null snapshots
+remain eligible when the other checks pass.
+
+`issue` and `revoke` can also return `{kind: "outcome_unknown"}`. Once the backend
+write has been called, a thrown write response or subsequent read failure cannot
+prove that nothing committed. Callers must not present this result as rejection or
+rollback. An exact issue retry can recover the stored ID while the source remains
+valid; revocation can be retried with the same fixed references and never clears an
+existing revocation. Invalid inputs and failures before the write call retain the
+existing rejected results. Unknown outcomes return no candidate ID or raw error.
 
 Each qualification ID is globally unique; each coordinator/link pair can have
 only one qualification, including after revocation. Every birth fact is immutable,

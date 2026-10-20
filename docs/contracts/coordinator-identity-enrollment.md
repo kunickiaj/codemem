@@ -405,7 +405,7 @@ separate approval gates.
 
 `coordinator_owner_enrollment_qualifications` is an inert, source-only ledger for
 a reviewed future owner-enrollment exception. A bare device-claim link remains
-ineligible today; qualification types and DDL grant no authority. No issuer,
+ineligible today; qualification types and DDL grant no authority. No mounted issuer,
 consumer, CLI, store-startup installation or owner-attempt rebuild is included.
 Migration `0035_add_owner_enrollment_qualifications.sql` creates only an empty
 table and its constraints, with the same SQL available as complete Core
@@ -413,6 +413,8 @@ statements for fresh SQLite and native Worker/D1 schema construction.
 
 Future issuance must server-resolve the exact committed device-claim link and
 genuine operator-reviewed attestation, retaining their immutable birth facts.
+An unmounted internal preview/issue/revoke capability now implements those source
+checks; its API and schema restrictions are described in the authentication protocol.
 The row pins the exact link and claim IDs, Identity, source group/device, exact
 public key, fingerprint and canonical key ID; the real attestation ID, revision
 and original creation text; review receipt, evidence digest and nullable
