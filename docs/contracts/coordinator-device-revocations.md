@@ -3,8 +3,8 @@
 **Scope:** Internal revocation storage and signed-request admission. No public
 revocation action, automatic backfill, owner enrollment, or live migration is
 enabled. Existing public writers and effective authorization reads check revocation
-as inventoried below. The operator handler remains unmounted pending durable handler
-tests and trusted runtime-context composition and mount review.
+as inventoried below. Durable handler tests cover SQLite and native D1. The operator
+handler remains unmounted pending trusted runtime-context composition and mount review.
 
 ## Subjects and scope
 
