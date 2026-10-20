@@ -73,3 +73,36 @@ Tests must cover issuance and exact retries, current-evidence rejection,
 grant-specific revision checks, retained tombstones, and persistence after removal
 of the old device. SQLite, D1-compatible fixtures, and native Worker D1 must agree.
 These tests do not certify the future enrollment endpoint or live Google flow.
+
+## Inactive owner qualification API
+
+The internal `createOwnerQualificationHandler` seam is **not mounted** by the
+maintained Worker or local coordinator app. No environment switch enables it.
+Production activation requires a separate runtime review that binds the selected
+store backend to trusted enabled/coordinator/issuer/revision configuration and
+verifies the complete explicit 0035 qualification and 0036 attempt schemas.
+The handler reads schema definitions only; it never applies or rebuilds schemas.
+
+Proposed wire: `POST /v1/admin/owner-qualifications`, authenticated by the existing
+`X-Codemem-Coordinator-Admin` credential using native WebCrypto MAC verification.
+The only request fields are `attestation_id` (exact `controller-v1:` reference) and
+optional `confirm_evidence_digest` (64 lowercase hex). Other fields are rejected.
+Every Identity, link, claim, device and review fact resolves server-side.
+
+Without confirmation, only `OwnerEnrollmentQualificationOps.preview` runs. A ready
+response contains `state: "ready"`, `coordinator_id`, `evidence_digest`,
+`attestation_id`, `review_receipt_id`, `link_id`, `claim_id`, `identity_id`,
+`group_id`, `device_id`, and `fingerprint`. These are noncredential references;
+the response excludes account subjects, tokens, public keys and handoff material.
+With confirmation, `issue` receives that exact digest as `expectedDigest`.
+Success returns `state: "created"` (201) or `"existing"` (200), `qualification_id`,
+`attestation_id`, `coordinator_id`, and `evidence_digest`.
+
+Authentication failure returns 401; malformed input 400; oversized body 413;
+unavailable schema/configuration 503; rejected evidence 409 (`invalid_input`,
+`unavailable`, `preview_changed`, or `qualification_conflict`). A possibly committed
+write returns 503 `qualification_outcome_unknown`, never a rollback claim. No
+automatic retry or revoked-row reactivation occurs. Responses are no-store.
+
+This permission and a separately reviewed transport-group grant are both distinct
+from Team/Project access. This source change does not activate the account consumer.
