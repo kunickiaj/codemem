@@ -1,10 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import Sqlite from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as receiver from "../../core/src/coordinator-account-link-receiver.js";
+import { linkCoordinatorAccount } from "../../core/src/coordinator-account-link-runtime.js";
 import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { enrollOwnerProfile } from "../../core/src/coordinator-owner-profile-client.js";
@@ -18,14 +19,17 @@ import {
 import { ownerFileSnapshot } from "../../core/src/coordinator-owner-profile-files.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "../../core/src/d1-coordinator-store.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
+import { generateKeypair, loadPublicKey } from "../../core/src/sync-identity.js";
+import { initTestSchema } from "../../core/src/test-utils.js";
 import { pendingKey, seedOwnerAuthority } from "../test/owner-authority-test-fixture.js";
 import {
 	type CloudflareCoordinatorEnv,
 	createConfiguredCloudflareCoordinatorWorker,
 } from "./index.js";
 
-// Node-only profile I/O cannot run inside workerd. Use the production handler with
-// disposable native D1, and share A's authority fixture with configured-owner.integration.
+// Node-only profile/link I/O runs against the configured production handler and
+// disposable native D1, not a browser or workerd client. Historical operator tests
+// retain their seeded A; the account-mode journey below creates A's link via runtime.
 const require = createRequire(import.meta.url);
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
 const { Miniflare, convertV4MiniflareOptions } = runtimeRequire("miniflare");
@@ -153,6 +157,41 @@ async function admit() {
 	return ((await response.json()) as { capability: string }).capability;
 }
 
+async function seedHistoricalAuthority() {
+	const store = new D1CoordinatorStore(db);
+	const controller = await pendingKey();
+	const review = {
+		coordinatorId: config.coordinatorId,
+		groupId: "group",
+		deviceId: "controller-device",
+		identityId: "identity-a",
+		attestationId: "configured-attestation",
+		reviewReceiptId: "configured-review",
+		publicKey: controller.publicKey,
+		fingerprint: fingerprintPublicKey(controller.publicKey),
+		evidenceDigest: "b".repeat(64),
+	};
+	await store.createGroup(review.groupId);
+	await store.enrollDevice(review.groupId, review);
+	await store.createAuthControllerAttestation(review);
+	await seedOwnerAuthority(db, {
+		...review,
+		issuer: config.issuer,
+		revision: config.revision,
+		linkId: "configured-link",
+		subject: "fixture-subject",
+		attemptId: "historical-attempt",
+		controllerAttestationId: review.attestationId,
+		controllerReviewReceiptId: review.reviewReceiptId,
+		redirectUri: config.redirectUri,
+		createdAtMs: NOW,
+	});
+	expect(
+		(await json("/v1/admin/identity-group-grants", { attestation_id: review.attestationId }, admin))
+			.status,
+	).toBe(200);
+}
+
 beforeEach(async () => {
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	// Only loopback delivery is substituted; the actual Worker supplies its proofs.
@@ -199,38 +238,6 @@ beforeEach(async () => {
 		CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET: PROVIDER.clientSecret,
 		CODEMEM_COORDINATOR_BROWSER_CSRF_KEY: "11".repeat(32),
 	};
-	const store = new D1CoordinatorStore(db);
-	const controller = await pendingKey();
-	const review = {
-		coordinatorId: config.coordinatorId,
-		groupId: "group",
-		deviceId: "controller-device",
-		identityId: "identity-a",
-		attestationId: "configured-attestation",
-		reviewReceiptId: "configured-review",
-		publicKey: controller.publicKey,
-		fingerprint: fingerprintPublicKey(controller.publicKey),
-		evidenceDigest: "b".repeat(64),
-	};
-	await store.createGroup(review.groupId);
-	await store.enrollDevice(review.groupId, review);
-	await store.createAuthControllerAttestation(review);
-	await seedOwnerAuthority(db, {
-		...review,
-		issuer: config.issuer,
-		revision: config.revision,
-		linkId: "configured-link",
-		subject: "fixture-subject",
-		attemptId: "historical-attempt",
-		controllerAttestationId: review.attestationId,
-		controllerReviewReceiptId: review.reviewReceiptId,
-		redirectUri: config.redirectUri,
-		createdAtMs: NOW,
-	});
-	expect(
-		(await json("/v1/admin/identity-group-grants", { attestation_id: review.attestationId }, admin))
-			.status,
-	).toBe(200);
 	fakeProvider = provider();
 	vi.mocked(globalThis.fetch).mockImplementation((input, options) => {
 		if (typeof input !== "string") throw new Error("Unexpected provider transport");
@@ -268,6 +275,7 @@ it.each([false, true])(
 	"adopts the configured Worker receipt and reopens B (lost final reply: %s)",
 	async (lostReply) => {
 		// Arrange: a real existing profile has no Identity assignment, and A is seeded.
+		await seedHistoricalAuthority();
 		const before = facts();
 		const keys = ["device.key", "device.key.pub"].map((name) =>
 			readFileSync(join(fixture.options.keysDir, name)),
@@ -371,6 +379,7 @@ it.each(["missing", "wrong", "expired"] as const)(
 	"keeps B unchanged on %s production admission",
 	async (kind) => {
 		// Arrange: retain exactly the client's reviewed start and profile.
+		await seedHistoricalAuthority();
 		const before = facts();
 		const configBefore = ownerFileSnapshot(fixture.options.configPath);
 		const keyBefore = ownerFileSnapshot(join(fixture.options.keysDir, "device.key"));
@@ -412,5 +421,401 @@ it.each(["missing", "wrong", "expired"] as const)(
 			});
 			expect(calls).toEqual([]);
 		}
+	},
+);
+
+function providerAuthorization(html: string) {
+	const href = html.match(/href="(https:\/\/accounts\.google\.com\/authorize[^"]+)"/)?.[1];
+	if (!href) throw new Error("Synthetic provider authorization link missing");
+	return href.replaceAll("&amp;", "&");
+}
+function loopbackLink(html: string) {
+	const href = html.match(/href="(http:\/\/127\.0\.0\.1:[^"]+)"/)?.[1];
+	if (!href) throw new Error("Account link loopback missing");
+	return new URL(href.replaceAll("&amp;", "&"));
+}
+
+// A is an existing enrolled device. Only its initial local key/device and discovery
+// enrollment are fixtures; review, linking, sessions and grants use production APIs.
+async function reviewedA() {
+	const directory = join(dirname(fixture.options.dbPath), "a");
+	const keysDir = join(directory, "keys");
+	mkdirSync(keysDir, { recursive: true });
+	generateKeypair(join(keysDir, "device.key"), join(keysDir, "device.key.pub"));
+	const publicKey = loadPublicKey(keysDir) ?? "";
+	const fingerprint = fingerprintPublicKey(publicKey);
+	const dbPath = join(directory, "memory.sqlite");
+	const local = new Sqlite(dbPath);
+	try {
+		initTestSchema(local);
+		local
+			.prepare(
+				"INSERT INTO sync_device(device_id,public_key,fingerprint,created_at) VALUES (?,?,?,?)",
+			)
+			.run("device-a", publicKey, fingerprint, new Date(NOW).toISOString());
+	} finally {
+		local.close();
+	}
+	const store = new D1CoordinatorStore(db);
+	await store.createGroup("group");
+	await store.enrollDevice("group", { deviceId: "device-a", publicKey, fingerprint });
+	const review = {
+		group_id: "group",
+		device_id: "device-a",
+		identity_id: "identity-a",
+		fingerprint,
+	};
+	const preview = await json("/v1/admin/auth-controller-reviews", review, admin);
+	expect(preview.status, await preview.clone().text()).toBe(200);
+	const evidence = (await preview.json()) as { evidence_digest: string };
+	const denied = await json(
+		"/v1/admin/auth-controller-reviews",
+		{
+			...review,
+			confirm_evidence_digest: "0".repeat(64),
+		},
+		admin,
+	);
+	expect(denied.status).toBe(409);
+	expect(await rows("coordinator_auth_controller_attestations")).toEqual([]);
+	const committed = await json(
+		"/v1/admin/auth-controller-reviews",
+		{
+			...review,
+			confirm_evidence_digest: evidence.evidence_digest,
+		},
+		admin,
+	);
+	expect(committed.status, await committed.clone().text()).toBe(201);
+	const attestation = (await committed.json()) as { attestation_id: string };
+	expect(await rows("coordinator_auth_account_links")).toEqual([]);
+	expect(await rows("coordinator_identity_group_grants")).toEqual([]);
+	return { dbPath, keysDir, publicKey, fingerprint, attestationId: attestation.attestation_id };
+}
+
+async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel?: boolean } = {}) {
+	const cancel = options.cancel === true;
+	let deliverLink!: (proof: string) => void;
+	let rejectLink!: (error: unknown) => void;
+	const completion = new Promise<string>((resolve, reject) => {
+		deliverLink = resolve;
+		rejectLink = reject;
+	});
+	vi.spyOn(receiver, "createCoordinatorAccountLinkReceiver").mockResolvedValue({
+		destination: "http://127.0.0.1:43128/codemem/auth/complete",
+		completion,
+		close: vi.fn().mockResolvedValue(undefined),
+	});
+	let browserWork: Promise<void> | undefined;
+	let browserError: unknown;
+	let cleanupReply: { status: number; body: unknown } | undefined;
+	const driveBrowser = async (url: string) => {
+		const page = await request(url);
+		const started = await form("/auth/link/start", await fields(page), cookie(page));
+		expect(started.status, await started.clone().text()).toBe(200);
+		const binder = cookie(started);
+		const callback = await request(
+			fakeProvider.authorize(providerAuthorization(await started.text())),
+			{
+				headers: { cookie: binder },
+			},
+		);
+		const body = await fields(callback);
+		// A valid provider callback is insufficient without this browser's CSRF proof.
+		const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
+		expect(bad.status).toBe(403);
+		expect(await rows("coordinator_auth_account_links")).toEqual([]);
+		const confirmed = await form(cancel ? "/auth/link/cancel" : "/auth/link/confirm", body, binder);
+		expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+		if (cancel) return;
+		const destination = loopbackLink(await confirmed.text());
+		expect(`${destination.origin}${destination.pathname}`).toBe(
+			"http://127.0.0.1:43128/codemem/auth/complete",
+		);
+		// Clearly mocked receiver: forward only the real server-issued completion proof.
+		deliverLink(destination.searchParams.get("completion") ?? "");
+	};
+	const result = linkCoordinatorAccount({
+		dbPath: a.dbPath,
+		keysDir: a.keysDir,
+		coordinatorUrl: ORIGIN,
+		groupId: "group",
+		expectedIdentityId: "identity-a",
+		expectedAuthority: "controller_attestation",
+		expectedCoordinatorId: config.coordinatorId,
+		fetch: async (input, init) => {
+			const response = await request(String(input), init);
+			if (String(input).endsWith("/cancel"))
+				cleanupReply = { status: response.status, body: await response.clone().json() };
+			return response;
+		},
+		onBrowserStart: (url) => {
+			browserWork = driveBrowser(url).catch((error) => {
+				browserError = error;
+				rejectLink(error);
+			});
+		},
+	});
+	const [outcome] = await Promise.allSettled([result]);
+	await browserWork;
+	if (browserError) throw browserError;
+	if (cancel) {
+		// Browser cancellation records browser_cancelled; signed cleanup requires
+		// device_cancelled, so the runtime cannot confirm that already-terminal state.
+		expect(cleanupReply).toEqual({ status: 403, body: { error: "auth_link_unavailable" } });
+		expect(outcome).toMatchObject({
+			status: "rejected",
+			reason: { code: "cancellation_unconfirmed" },
+		});
+	} else {
+		expect(outcome).toMatchObject({
+			status: "fulfilled",
+			value: { identityId: "identity-a", state: "finalized" },
+		});
+	}
+}
+
+async function signIn() {
+	const page = await request("/auth/sign-in");
+	const started = await form("/auth/sign-in", await fields(page), cookie(page));
+	expect(started.status, await started.clone().text()).toBe(200);
+	const response = await request(
+		fakeProvider.authorize(providerAuthorization(await started.text())),
+		{
+			headers: { cookie: cookie(started) },
+		},
+	);
+	expect(response.status, await response.clone().text()).toBe(303);
+	const session = cookie(response);
+	expect(session).toContain("__Host-codemem");
+	return session;
+}
+
+async function uploadB(
+	url: string,
+	session: string,
+	options: { requestFile: string },
+	csrfOverride?: string,
+) {
+	expect(url).toBe(`${ORIGIN}/auth/owner/admit`);
+	const page = await request(url, { headers: { cookie: session } });
+	const body = new FormData();
+	body.append("csrf", csrfOverride ?? (await fields(page)).csrf ?? "");
+	body.append(
+		"request",
+		new File([readFileSync(options.requestFile)], "capability-request.json", {
+			type: "application/json",
+		}),
+	);
+	return request(url, { method: "POST", headers: { origin: ORIGIN, cookie: session }, body });
+}
+
+async function finishB(admitted: Response, session: string) {
+	expect(admitted.status, await admitted.clone().text()).toBe(200);
+	const started = await form(
+		"/auth/owner/start",
+		await fields(admitted),
+		`${session}; ${cookie(admitted)}`,
+	);
+	expect(started.status, await started.clone().text()).toBe(303);
+	const binder = cookie(started);
+	const callback = await request(fakeProvider.authorize(started.headers.get("location") ?? ""), {
+		headers: { cookie: binder },
+	});
+	const confirmed = await form("/auth/owner/confirm", await fields(callback), binder);
+	expect(confirmed.status, await confirmed.clone().text()).toBe(303);
+	const destination = new URL(confirmed.headers.get("location") ?? "");
+	expect(`${destination.origin}${destination.pathname}`).toBe(
+		read("prepared.json").start.loopbackRedirect,
+	);
+	expect(destination.searchParams.get("attempt_id")).toBe(read("prepared.json").start.attemptId);
+	deliver({
+		completionSecret: destination.searchParams.get("completion") ?? "",
+		confirmationHash: destination.searchParams.get("confirmation") ?? "",
+	});
+}
+
+it.each([false, true])(
+	"links reviewed A then account-enrolls B without changing keys or grants (lost reply: %s)",
+	async (lostReply) => {
+		// Arrange: neither an account link nor B's Identity exists before the maintained runtime runs.
+		const a = await reviewedA();
+		const aKey = readFileSync(join(a.keysDir, "device.key"));
+		await linkA(a);
+		const links = await rows("coordinator_auth_account_links");
+		expect(links).toMatchObject([
+			{
+				identity_id: "identity-a",
+				authority_kind: "controller_attestation",
+				revoked_at_ms: null,
+				controller_attestation_id: a.attestationId,
+			},
+		]);
+		expect(await rows("coordinator_identity_group_grants")).toEqual([]);
+		expect(await rows("coordinator_scope_memberships")).toEqual([]);
+		const grant = await json(
+			"/v1/admin/identity-group-grants",
+			{ attestation_id: a.attestationId },
+			admin,
+		);
+		expect(grant.status, await grant.clone().text()).toBe(200);
+		const originalAuthority = await authority();
+		const session = await signIn();
+		const before = facts();
+		const configBefore = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
+		const keys = ["device.key", "device.key.pub"].map((name) =>
+			readFileSync(join(fixture.options.keysDir, name)),
+		);
+		const device = fixture.db.prepare("SELECT * FROM sync_device").all();
+		fixture.options.admissionMode = "account";
+		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+		await prepared();
+		fixture.options.capability = undefined;
+		const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+		fixture.options.onBrowserStart = vi.fn(async (url, details) => {
+			if (!details) throw new Error("Account admission upload details missing");
+			await finishB(await uploadB(url, session, details), session);
+		});
+		dropFinalReply = lostReply;
+		// Act: the fixed browser URL uploads the client's exact signed request, not an admin capability.
+		if (lostReply) {
+			await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
+				code: "retained_request_incomplete",
+			});
+			expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+			expect(await rows("coordinator_device_ownership_bindings")).toHaveLength(1);
+			dropFinalReply = false;
+			fixture.options.onBrowserStart = undefined;
+		}
+		const result = await enrollOwnerProfile(fixture.options);
+		// Assert: adoption comes solely from the configured Worker's receipt, preserving both device keys.
+		const receipt = read("receipt.json").receipt;
+		expect(result).toEqual({ ...receipt, kind: "adopted" });
+		expect(receipt).toMatchObject({
+			identityId: "identity-a",
+			groups: ["group"],
+			kind: lostReply ? "prior_commit" : "finalized",
+		});
+		expect(await authority()).toEqual(originalAuthority);
+		expect(await rows("coordinator_auth_account_links")).toEqual(links);
+		expect(await rows("coordinator_scope_memberships")).toEqual([]);
+		expect(await rows("coordinator_owner_enrollment_audit_log")).toHaveLength(1);
+		expect(await rows("coordinator_device_ownership_bindings")).toMatchObject([
+			{ identity_id: "identity-a", device_id: "device", binding_id: receipt.bindingId },
+		]);
+		expect(
+			(await rows("enrolled_devices")).find((row) => row.device_id === "device"),
+		).toMatchObject({
+			identity_id: "identity-a",
+			public_key: fixture.publicKey,
+			group_id: "group",
+		});
+		const attempts = await rows("coordinator_owner_enrollment_attempts");
+		expect(attempts).toMatchObject([
+			{ admission_owner_hash: expect.stringMatching(/^[a-f0-9]{64}$/), identity_id: "identity-a" },
+		]);
+		expect(calls.some(({ path }) => path === ATTEMPTS)).toBe(false);
+		const finals = calls.filter(({ path }) => path.endsWith("/finalize"));
+		expect(finals).toHaveLength(lostReply ? 2 : 1);
+		for (const final of finals)
+			expect(final).toMatchObject({
+				body: read("final.json").body,
+				authorization: null,
+				status: 200,
+			});
+		expect(facts()).toEqual(before);
+		expect(JSON.parse(readFileSync(fixture.options.configPath, "utf8"))).toEqual({
+			...configBefore,
+			actor_id: receipt.identityId,
+			sync_coordinator_url: ORIGIN,
+			sync_coordinator_group: "group",
+		});
+		expect(fixture.db.prepare("SELECT * FROM sync_device").all()).toEqual(device);
+		expect(
+			["device.key", "device.key.pub"].map((name) =>
+				readFileSync(join(fixture.options.keysDir, name)),
+			),
+		).toEqual(keys);
+		expect(readFileSync(join(a.keysDir, "device.key"))).toEqual(aKey);
+		expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(saved);
+		const reopened = new Sqlite(fixture.options.dbPath, { readonly: true, fileMustExist: true });
+		try {
+			expect(reopened.prepare("SELECT identity_id,device_id FROM identity_devices").all()).toEqual([
+				{ identity_id: "identity-a", device_id: "device" },
+			]);
+		} finally {
+			reopened.close();
+		}
+		const offline = vi.fn().mockRejectedValue(new Error("No coordinator on receipt-backed reopen"));
+		expect(
+			await enrollOwnerProfile({ ...fixture.options, fetch: offline, onBrowserStart: undefined }),
+		).toEqual(result);
+		expect(offline).not.toHaveBeenCalled();
+		expect(fakeProvider.requests.filter(({ url }) => url.endsWith("/token"))).toHaveLength(3);
+		expect(fakeProvider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
+	},
+);
+
+it("browser cancellation of A creates no authority while runtime reports cancellation unconfirmed", async () => {
+	// Arrange
+	const a = await reviewedA();
+	const before = await authority();
+	// Act
+	await linkA(a, { cancel: true });
+	// Assert
+	expect(await authority()).toEqual(before);
+	expect(await rows("coordinator_auth_sessions")).toEqual([]);
+	expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
+	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([
+		{ state: "failed", failure_reason: "browser_cancelled" },
+	]);
+});
+
+it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
+	"rejects B's %s account admission before creating an attempt or changing the profile",
+	async (failure) => {
+		// Arrange
+		const a = await reviewedA();
+		await linkA(a);
+		if (failure !== "missing trusted grant")
+			expect(
+				(await json("/v1/admin/identity-group-grants", { attestation_id: a.attestationId }, admin))
+					.status,
+			).toBe(200);
+		const session = await signIn();
+		const before = facts();
+		const originalAuthority = await authority();
+		fixture.options.admissionMode = "account";
+		await prepared();
+		fixture.options.capability = undefined;
+		const configBefore = ownerFileSnapshot(fixture.options.configPath);
+		const deviceBefore = fixture.db.prepare("SELECT * FROM sync_device").all();
+		const keyBefore = ownerFileSnapshot(join(fixture.options.keysDir, "device.key"));
+		let denied: Response | undefined;
+		fixture.options.onBrowserStart = async (url, details) => {
+			if (!details) throw new Error("Account upload details missing");
+			denied =
+				failure === "wrong CSRF"
+					? await uploadB(url, session, details, "wrong")
+					: await request(url, {
+							headers: { cookie: failure === "missing session" ? "" : session },
+						});
+			throw new Error("Synthetic browser stopped after rejected upload");
+		};
+		// Act
+		await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
+			code: "fresh_prepare_required",
+		});
+		// Assert
+		expect(denied?.status).toBe(failure === "wrong CSRF" ? 400 : 403);
+		expect(await rows("coordinator_owner_enrollment_attempts")).toEqual([]);
+		expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
+		expect(await authority()).toEqual(originalAuthority);
+		expect(facts()).toEqual(before);
+		expect(ownerFileSnapshot(fixture.options.configPath)).toEqual(configBefore);
+		expect(fixture.db.prepare("SELECT * FROM sync_device").all()).toEqual(deviceBefore);
+		expect(ownerFileSnapshot(join(fixture.options.keysDir, "device.key"))).toEqual(keyBefore);
+		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+		expect(existsSync(join(fixture.options.stateDir, "receipt.json"))).toBe(false);
 	},
 );
