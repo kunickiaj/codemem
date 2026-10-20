@@ -186,6 +186,7 @@ async function fixture(
 	return {
 		...base,
 		...f,
+		backend,
 		oidc,
 		csrfKey,
 		options,
@@ -517,6 +518,81 @@ it.each(["refresh", "disconnect"] as const)(
 		const response = await f.handlers.callback(f.request(), "trusted-client");
 		expect(response.status).toBe(403);
 		expect(f.row()).toMatchObject({ state: "failed", completion_secret_hash: null });
+	},
+);
+
+it("delivers the same prepared secret when disconnect confirmation commits before transport failure", async () => {
+	const f = await fixture("disconnect");
+	const page = await f.handlers.callback(f.request(), "trusted-client");
+	const form = fields(await page.text());
+	const batch = f.backend.batch;
+	vi.spyOn(f.backend, "batch").mockImplementationOnce(async (statements) => {
+		await batch(statements);
+		throw new Error("private postcommit transport failure");
+	});
+	const response = await f.handlers.confirm(post(confirmUrl, f.header, form), "trusted-client");
+	expect(response.status).toBe(200);
+	const bytes = decodeCoordinatorAuthProof32(
+		new URL(link(await response.text())).searchParams.get("completion"),
+	);
+	if (!bytes) throw new Error("missing delivered proof");
+	expect(f.row()).toMatchObject({
+		state: "confirmed",
+		completion_secret_hash: await hashCoordinatorAuthProofBytes32(bytes),
+	});
+	const proof = {
+		...f.materials,
+		completionSecretHash: await hashCoordinatorAuthProofBytes32(bytes),
+	};
+	const before = f.row();
+	for (const field of ["stateHash", "binderHash", "completionSecretHash"])
+		expect(
+			await f.operations.confirmDisconnect({ ...proof, [field]: "0".repeat(64) }, config),
+		).toBe(false);
+	expect(await f.operations.confirmDisconnect(proof, config)).toBe(true);
+	expect(f.row()).toEqual(before);
+	expect(
+		(await f.handlers.confirm(post(confirmUrl, f.header, form), "trusted-client")).status,
+	).toBe(403);
+	f.clock.now = Number(before.expires_at_ms) + 1;
+	expect(await f.operations.confirmDisconnect(proof, config)).toBe(false);
+});
+
+it.each(["before commit", "ignored transition", "authority lost", "expired", "readback failed"])(
+	"withholds disconnect proof after %s",
+	async (fault) => {
+		const f = await fixture("disconnect");
+		const page = await f.handlers.callback(f.request(), "trusted-client");
+		const form = fields(await page.text());
+		const batch = f.backend.batch;
+		vi.spyOn(f.backend, "batch").mockImplementationOnce(async (statements) => {
+			if (fault === "before commit") throw new Error("private write failure");
+			if (fault === "ignored transition") {
+				f.db.exec(
+					`CREATE TRIGGER fixture_ignore_confirm BEFORE UPDATE ON ${changeTable} WHEN NEW.state='confirmed' BEGIN SELECT RAISE(IGNORE); END`,
+				);
+				try {
+					return await batch(statements);
+				} finally {
+					f.db.exec("DROP TRIGGER fixture_ignore_confirm");
+				}
+			}
+			await batch(statements);
+			if (fault === "authority lost") f.db.exec("UPDATE enrolled_devices SET enabled=0");
+			if (fault === "expired") f.clock.now = Number(f.row().expires_at_ms) + 1;
+			if (fault === "readback failed")
+				vi.spyOn(f.backend, "first").mockRejectedValueOnce(new Error("private read failure"));
+			throw new Error("private postcommit failure");
+		});
+		const response = await f.handlers.confirm(post(confirmUrl, f.header, form), "trusted-client");
+		expect(response.status).toBe(fault === "readback failed" ? 503 : 403);
+		expect(await response.text()).not.toContain("completion=");
+		if (fault === "before commit" || fault === "ignored transition") {
+			expect(f.row().state).toBe("verified");
+			expect(
+				(await f.handlers.confirm(post(confirmUrl, f.header, form), "trusted-client")).status,
+			).toBe(200);
+		} else expect(f.row().state).toBe("confirmed");
 	},
 );
 

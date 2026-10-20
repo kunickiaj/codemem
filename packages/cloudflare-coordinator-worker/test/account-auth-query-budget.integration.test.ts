@@ -134,7 +134,16 @@ it("counts executed native D1 statements for configured auth with owner enrollme
  }
  if(!management) continue;
  let html=await response.text();
- if(action==="disconnect") { const confirmed=await f.post("/auth/account/change/confirm",`${transaction}; ${liveSessionHeader}`,fields(html)); expect(confirmed.status).toBe(200); html=await confirmed.text(); }
+  if(action==="disconnect") {
+   const batch=f.db.batch?.bind(f.db); if(!batch)throw new Error('missing native batch');
+   const lost=vi.spyOn(f.db,'batch').mockImplementationOnce(async statements=>{await batch(statements);throw new Error('private postcommit transport failure');});
+   f.counter.statements=0;
+   const confirmed=await f.request('/auth/account/change/confirm',{method:'POST',body:fields(html),headers:{origin:new URL(f.cfg.redirectUri).origin,cookie:`${transaction}; ${liveSessionHeader}`,'content-type':'application/x-www-form-urlencoded'}},createConfiguredCloudflareCoordinatorWorker());
+   expect(confirmed.status).toBe(200);
+   expect(lost).toHaveBeenCalledOnce();
+   expect(f.counter.statements).toBeLessThan(50);
+   lost.mockRestore(); html=await confirmed.text();
+  }
  const completion=new URL(link(html)).searchParams.get("completion");
  if(!completion) throw new Error("missing verified completion");
  f.counter.statements=0;

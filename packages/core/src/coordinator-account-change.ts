@@ -462,21 +462,16 @@ export class AccountChangeOperations {
 	/** The browser handler validates the fresh binder and CSRF before this call. */
 	async confirmDisconnect(value: unknown, config: unknown): Promise<boolean> {
 		const c = captureAuthLinkConfig(config),
-			i = capture(value, ["attemptId", "stateHash", "binderHash", "completionSecretHash"]);
-		if (
-			!c?.enabled ||
-			!i ||
-			!isAuthControllerId(i.attemptId) ||
-			![i.stateHash, i.binderHash, i.completionSecretHash].every(isHash)
-		)
-			return false;
+			i = browserPin(value),
+			proof = capture(value, ["completionSecretHash"]);
+		if (!c?.enabled || !i || !proof || !isHash(proof.completionSecretHash)) return false;
 		const now = authLinkNow(this.clock);
-		return this.atomic([
+		const won = await this.atomic([
 			sql(
 				`UPDATE ${table} AS a SET state = 'confirmed',confirmed_at_ms = ?,completion_secret_hash = ? WHERE ${configured} AND a.attempt_id = ? AND a.state_hash = ? AND a.binder_hash = ? AND a.intent = 'disconnect' AND a.state = 'verified' AND a.expires_at_ms > ?`,
 				[
 					now,
-					i.completionSecretHash as string,
+					proof.completionSecretHash,
 					...configValues(c),
 					i.attemptId,
 					i.stateHash as string,
@@ -486,6 +481,35 @@ export class AccountChangeOperations {
 			),
 			assertOne,
 		]);
+		if (won) return true;
+		return this.readConfirmedDisconnect(i, proof.completionSecretHash, c);
+	}
+	private async readConfirmedDisconnect(
+		pins: NonNullable<ReturnType<typeof browserPin>>,
+		completionSecretHash: string,
+		c: CoordinatorAuthLinkConfig,
+	): Promise<boolean> {
+		const now = authLinkNow(this.clock);
+		const authority = await this.callbackAuthority(c, pins.attemptId, now);
+		if (!authority) return false;
+		// This request still owns the raw secret; never recover from status alone.
+		return !!(await this.first(
+			sql(
+				`${authority.sql} SELECT 1 FROM ${table} a WHERE ${configured} AND ${browserMatch}
+ AND a.intent='disconnect' AND a.state='confirmed' AND a.completion_secret_hash=? AND a.expires_at_ms>?
+ AND EXISTS (SELECT 1 FROM change_authority l WHERE l.coordinator_id=a.coordinator_id AND l.link_id=a.target_link_id
+ AND l.identity_id=a.identity_id AND l.subject=a.target_subject AND l.issuer=a.issuer AND l.enrollment_identity_id IS a.enrollment_identity_id)`,
+				[
+					...authority.values,
+					...configValues(c),
+					pins.attemptId,
+					pins.stateHash,
+					pins.binderHash,
+					completionSecretHash,
+					now,
+				],
+			),
+		));
 	}
 	async finalize(value: unknown, config: unknown): Promise<AccountChangeOutcome | null> {
 		const c = captureAuthLinkConfig(config),
