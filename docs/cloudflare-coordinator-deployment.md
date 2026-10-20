@@ -137,6 +137,13 @@ not allow arbitrary anonymous writes. The admin endpoints are server/admin calls
 They use the `X-Codemem-Coordinator-Admin` header, must not include a browser `Origin` header, and never create
 automatic grants.
 
+For the grant endpoint, the maintained operator wrapper is `codemem coordinator grant-identity-group <attestation-id>`.
+Use the stored `controller-v1:` reference returned by confirmed `review-device-owner`, with the same coordinator
+configured in the existing operator configuration. The wrapper keeps the admin credential out of arguments and
+output, refuses redirects, and defaults confirmation to **No**. `--json` and noninteractive calls send no request.
+It grants transport enrollment eligibility only, not Team/Project access; it does not run Google or alter a local
+profile. See the [operator grant workflow](user-guide.md#optional-coordinator-account-linking).
+
 Use the maintained CLI in three steps:
 
 1. **Pause capture, then review and prepare.** Stop this profile's capture plugin, viewer, and sync daemon until the

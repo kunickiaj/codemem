@@ -685,7 +685,19 @@ codemem coordinator review-device-owner team-alpha --coordinator "https://coord.
 
 After confirmation, the command displays the coordinator's stored **Controller attestation reference** (`controller-v1:` followed by 64 lowercase hexadecimal characters). Keep that noncredential reference with the reviewed coordinator and group for a separate, explicit operator-issued transport group grant. It is not an admin credential, invitation, review receipt ID, or proof of Team/Project access. A successful retry returns the same stored reference; previews do not return one.
 
-This command does not issue a transport group grant. The configured Cloudflare coordinator exposes that separate operator action at `POST /v1/admin/identity-group-grants`, using the returned reference as `attestation_id` and the existing administrator credential. There is currently no maintained CLI command for that action. Do not put credentials in shared commands, edit the database, or derive a reference yourself to bypass missing operator setup. This handoff alone does not complete first-owner bootstrap.
+The review command does not issue a transport group grant. To preview that separate operator action, use the stored reference with the maintained command (replace the example reference with the one returned by your review):
+
+```fish
+codemem coordinator grant-identity-group 'controller-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' --json
+```
+
+Run the same command in a terminal without `--json` to confirm; the prompt defaults to **No**. JSON and noninteractive invocations only show a local request preview, make no network request, and do not check server eligibility. There is no `--yes` shortcut. Cancellation sends no request.
+
+The command reads the existing coordinator URL and admin credential from the selected configuration and shared runtime overrides. Use `--config` to select the existing operator configuration; there is no URL, credential, Identity, or group argument. The URL must be an HTTPS origin without embedded credentials, path, query, or fragment (literal loopback HTTP is allowed for local testing). Only the validated origin is displayed, never the admin credential. `--db-path` and its legacy `--db` alias are accepted for consistency but do not open a database.
+
+After confirmation, the command sends exactly `{ "attestation_id": "..." }` to `POST /v1/admin/identity-group-grants`, using the existing admin header and refusing redirects. The coordinator derives the Identity and transport group from the actual stored review and rechecks current authority. Success requires a validated active controller-attestation grant with a coordinator ID, Identity ID, group ID, receipt reference, revision, and timestamp. Both newly created and already-existing grants are reported.
+
+This is an explicit **transport enrollment grant**, not Team/Project access. It does not run Google sign-in, alter the local profile, move memories, enroll a device, or complete first-owner bootstrap by itself. Do not put credentials in commands, edit the database, or derive a reference yourself to bypass missing operator setup. If current review authority is unavailable, ask the operator to check enrollment, revocation, and group status. Network or invalid-response failures may leave the outcome unknown; check coordinator state before retrying.
 
 Ambiguous ownership stops the review. If ownership records disappear or change during the prompt, the command stops and requires a fresh preview; it never migrates legacy records automatically.
 

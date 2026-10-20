@@ -79,6 +79,7 @@ describe("coordinator command parity", () => {
 			"link-account",
 			"enroll-owner",
 			"review-device-owner",
+			"grant-identity-group",
 			"upgrade-auth-schema",
 			"upgrade-account-schema",
 			"group-create",

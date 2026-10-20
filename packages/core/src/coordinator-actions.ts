@@ -3,6 +3,12 @@ import {
 	BetterSqliteCoordinatorStore,
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./better-sqlite-coordinator-store.js";
+import { normalizeCoordinatorAccountLinkOrigin } from "./coordinator-account-link-receiver.js";
+import {
+	type CoordinatorIdentityGroupGrantActionResult,
+	isCoordinatorControllerAttestationReference,
+	parseCoordinatorIdentityGroupGrantResponse,
+} from "./coordinator-identity-group-grant-client.js";
 import {
 	decodeInvitePayload,
 	encodeInvitePayload,
@@ -303,6 +309,50 @@ async function remoteRequest(
 	}
 	if (payload?.error === "response_too_large") throw new Error("coordinator_response_too_large");
 	return payload;
+}
+
+export interface CoordinatorGrantIdentityGroupActionOptions {
+	remoteUrl: string;
+	adminSecret: string;
+	attestationId: string;
+	timeoutS?: number;
+}
+
+/** Explicit admin transport grant; the server derives Identity/group from the stored review. */
+export async function coordinatorGrantIdentityGroupAction(
+	opts: CoordinatorGrantIdentityGroupActionOptions,
+): Promise<CoordinatorIdentityGroupGrantActionResult> {
+	const origin = normalizeCoordinatorAccountLinkOrigin(opts.remoteUrl);
+	if (!origin || !isCoordinatorControllerAttestationReference(opts.attestationId))
+		throw new Error("invalid_grant_input");
+	if (!opts.adminSecret) throw new Error("identity_group_grant_admin_required");
+	try {
+		const payload = await remoteRequest(
+			"POST",
+			`${origin}/v1/admin/identity-group-grants`,
+			opts.adminSecret,
+			{ attestation_id: opts.attestationId },
+			null,
+			opts.timeoutS ?? 3,
+			16384,
+		);
+		return parseCoordinatorIdentityGroupGrantResponse(payload);
+	} catch (error) {
+		// Never carry arbitrary remote messages or fetch causes into CLI diagnostics.
+		if (error instanceof RemoteCoordinatorRequestError) {
+			const code = [
+				"invalid_grant_input",
+				"grant_authority_unavailable",
+				"enrollment_unavailable",
+				"unauthorized",
+				"rate_limited",
+			].includes(error.code)
+				? error.code
+				: "identity_group_grant_unavailable";
+			throw new RemoteCoordinatorRequestError(error.status, code);
+		}
+		throw new Error("identity_group_grant_unavailable");
+	}
 }
 
 export interface CoordinatorAuthControllerReviewActionOptions {

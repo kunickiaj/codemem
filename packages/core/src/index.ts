@@ -74,6 +74,7 @@ export {
 export type {
 	CoordinatorAuthControllerReviewActionOptions,
 	CoordinatorConsumedTeamInvite,
+	CoordinatorGrantIdentityGroupActionOptions,
 	CoordinatorReviewedRecipientInviteEvidence,
 } from "./coordinator-actions.js";
 export {
@@ -88,6 +89,7 @@ export {
 	coordinatorEnableDeviceAction,
 	coordinatorEnrollDeviceAction,
 	coordinatorGetLegacyTeamCompletionAction,
+	coordinatorGrantIdentityGroupAction,
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
@@ -164,6 +166,8 @@ export type {
 	CoordinatorIdentityGroupGrantStore,
 } from "./coordinator-identity-group-grant.js";
 export { compareIdentityGroupGrantRevisions } from "./coordinator-identity-group-grant.js";
+export type { CoordinatorIdentityGroupGrantActionResult } from "./coordinator-identity-group-grant-client.js";
+export { isCoordinatorControllerAttestationReference } from "./coordinator-identity-group-grant-client.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,
