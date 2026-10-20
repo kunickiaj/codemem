@@ -79,10 +79,19 @@ function failure(options: Options, error: string, message: string, exitCode = 1)
 	p.log.error(message, { output: process.stderr });
 	process.exitCode = exitCode;
 }
+function sameConfiguration(options: Options, request: ReturnType<typeof setup>): boolean {
+	try {
+		const current = setup(options);
+		return current.remoteUrl === request.remoteUrl && current.adminSecret === request.adminSecret;
+	} catch {
+		return false;
+	}
+}
 async function confirmQualification(
 	options: Options,
 	request: ReturnType<typeof setup> & { attestationId: string },
 	preview: Preview,
+	stage: { onDispatch: () => void },
 ) {
 	const approved = await p.confirm({
 		message: "Allow this linked account to enroll new devices under this Identity?",
@@ -93,13 +102,13 @@ async function confirmQualification(
 		p.log.info("Nothing changed.", { output: process.stderr });
 		return;
 	}
-	const current = setup(options);
-	if (current.remoteUrl !== request.remoteUrl || current.adminSecret !== request.adminSecret)
+	if (!sameConfiguration(options, request))
 		return failure(
 			options,
 			"qualification_configuration_changed",
 			"Operator configuration changed. Preview again before confirming.",
 		);
+	stage.onDispatch();
 	const result = await coordinatorQualifyOwnerAction({
 		...request,
 		confirmEvidenceDigest: preview.evidence_digest,
@@ -118,7 +127,7 @@ async function confirmQualification(
 	);
 }
 async function qualifyOwner(attestationId: string, options: Options): Promise<void> {
-	let confirming = false;
+	let writeAttempted = false;
 	try {
 		if (!isAttestation(attestationId))
 			return failure(
@@ -150,11 +159,15 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 			);
 			return;
 		}
-		confirming = true;
-		await confirmQualification(options, request, preview);
+		await confirmQualification(options, request, preview, {
+			onDispatch: () => {
+				writeAttempted = true;
+			},
+		});
 	} catch (error) {
 		if (
 			error instanceof RemoteCoordinatorRequestError &&
+			error.status === 409 &&
 			["preview_changed", "qualification_conflict", "unavailable"].includes(error.code)
 		)
 			return failure(
@@ -164,12 +177,12 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 			);
 		let message =
 			"Qualification server unavailable or preview invalid. The API is inactive until runtime review and explicit schema readiness checks permit mounting it. Check the saved coordinator and operator credential.";
-		if (confirming)
+		if (writeAttempted)
 			message =
 				"Qualification outcome is unknown. It may have committed; do not assume rollback or retry automatically. Ask the coordinator operator to inspect the outcome.";
 		failure(
 			options,
-			confirming ? "qualification_outcome_unknown" : "qualification_unavailable",
+			writeAttempted ? "qualification_outcome_unknown" : "qualification_unavailable",
 			message,
 		);
 	}

@@ -215,8 +215,73 @@ it.each([
 	expect(bodies()).toEqual([{ attestation_id: reference }]);
 	expect(mocks.log.success).not.toHaveBeenCalled();
 	expect(output()).not.toContain("changed-secret");
+	expect(output()).toContain("Operator configuration changed");
+	expect(output()).not.toMatch(/outcome is unknown|may have committed/);
 	expect(process.exitCode).toBe(1);
 });
+
+it.each(["missing-url", "missing-secret", "invalid-url", "removed-path", "read-throws"])(
+	"config %s while confirmation is pending is a pre-dispatch configuration failure",
+	async (mode) => {
+		// Arrange: mutate the selected config only once the prompt is awaiting its answer.
+		mocks.confirm.mockImplementation(async () => {
+			if (mode === "removed-path") {
+				// The production config reader returns {} when the selected path no longer exists.
+				mocks.readCodememConfigFileAtPath.mockReturnValue({});
+			} else if (mode === "read-throws") {
+				mocks.readCodememConfigFileAtPath.mockImplementation(() => {
+					throw new Error("private-config-content");
+				});
+			} else {
+				const current = { ...config };
+				if (mode === "missing-url") current.sync_coordinator_url = "";
+				if (mode === "missing-secret") current.sync_coordinator_admin_secret = "";
+				if (mode === "invalid-url")
+					current.sync_coordinator_url = "https://user:private-password@example.test/path";
+				mocks.readCodememConfigFileAtPath.mockReturnValue(current);
+			}
+			await Promise.resolve();
+			return true;
+		});
+		// Act
+		await run(["--config", "fixture.json"]);
+		// Assert
+		expect(bodies()).toEqual([{ attestation_id: reference }]);
+		expect(mocks.readCodememConfigFileAtPath.mock.calls).toEqual([
+			["fixture.json"],
+			["fixture.json"],
+		]);
+		expect(output()).toContain("Operator configuration changed");
+		expect(output()).not.toMatch(
+			/outcome is unknown|may have committed|private-config-content|private-password/,
+		);
+		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
+	},
+);
+
+it.each([false, Symbol("cancel")])(
+	"answer %s remains cancelled even when config disappears at the prompt",
+	async (answer) => {
+		// Arrange
+		mocks.confirm.mockImplementation(async () => {
+			mocks.readCodememConfigFile.mockImplementation(() => {
+				throw new Error("private-config-content");
+			});
+			return answer;
+		});
+		// Act
+		await run();
+		// Assert
+		expect(bodies()).toEqual([{ attestation_id: reference }]);
+		expect(mocks.readCodememConfigFile).toHaveBeenCalledTimes(1);
+		expect(output()).toContain("Nothing changed.");
+		expect(output()).not.toMatch(/outcome is unknown|may have committed|private-config-content/);
+		expect(mocks.log.error).not.toHaveBeenCalled();
+		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(process.exitCode).toBeUndefined();
+	},
+);
 
 it.each([
 	{ sync_coordinator_url: "" },
@@ -346,6 +411,34 @@ it.each(["qualification_outcome_unknown", "private-server-error"])(
 		expect(process.exitCode).toBe(1);
 	},
 );
+
+it.each([
+	[500, "preview_changed"],
+	[503, "preview_changed"],
+	[500, "qualification_conflict"],
+	[503, "qualification_conflict"],
+	[500, "unavailable"],
+	[503, "unavailable"],
+])("HTTP %s with denial-shaped code %s remains an unknown commit outcome", async (status, code) => {
+	// Arrange: use the real public action so HTTP status survives transport parsing.
+	mocks.confirm.mockResolvedValue(true);
+	vi.mocked(fetch).mockResolvedValueOnce(
+		reply({ error: code, detail: config.sync_coordinator_admin_secret }, status as number),
+	);
+	// Act
+	await run();
+	// Assert
+	expect(bodies()).toEqual([
+		{ attestation_id: reference },
+		{ attestation_id: reference, confirm_evidence_digest: preview.evidence_digest },
+	]);
+	expect(output()).toContain("outcome is unknown");
+	expect(output()).toContain("may have committed");
+	expect(output()).toContain("do not assume rollback or retry automatically");
+	expect(output()).not.toContain("Qualification denied");
+	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(1);
+});
 
 it.each([401, 403, 404, 429, 500, 302])(
 	"preview HTTP %s fails closed with fixed inactive guidance",
