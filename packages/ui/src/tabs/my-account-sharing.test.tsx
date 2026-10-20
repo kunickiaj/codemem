@@ -303,12 +303,32 @@ describe("My Account data and lifetime inside Sharing", () => {
 				}),
 			);
 			// Act
-			await show();
+			await show(
+				{},
+				{
+					...graph,
+					teamMemberships: [
+						{
+							version: 1,
+							teamId: "team-one",
+							identityId: "identity-one",
+							role: "member",
+							status: "active",
+						},
+					],
+				},
+			);
 			// Assert
 			expect(card().textContent?.includes("fake@example.test")).toBe(identityMatches);
 			expect(card().textContent?.includes("Example Person")).toBe(identityMatches);
 			const identityCard = required(
 				mount.querySelector<HTMLElement>(".recipient-policy-sharing-identity-card"),
+			);
+			const teamCard = required(
+				mount.querySelector<HTMLElement>(".recipient-policy-sharing-team-card"),
+			);
+			expect(teamCard.textContent).toContain(
+				identityMatches ? "Member · Example Person" : "Member · Local identity",
 			);
 			expect(identityCard.querySelector("h3")?.textContent).toBe(
 				identityMatches ? "Example Person" : "Local identity",

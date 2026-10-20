@@ -89,8 +89,9 @@ Revoked links, mismatched Identities, and changed local contexts expose no profi
 The My Account card shows the available name, verified email, and “Linked to Google”,
 with Identity, device, and coordinator information below the account summary. In
 **Sharing → Identities**, the verified Google name or email labels only the matching
-running Identity after the coordinator confirms the link. The local Identity ID remains
-under **Technical details**; this display does not rename or replace the stored Identity.
+running Identity after the coordinator confirms the link. Team member previews use the
+same verified label for that matching Identity. The local Identity ID remains under
+**Technical details**; this display does not rename or replace the stored Identity.
 Missing metadata stays missing: existing links need no relink, and the Viewer does not
 automatically backfill account data. Missing, blocked, or failed photos fall back to initials
 or a generic Google marker.

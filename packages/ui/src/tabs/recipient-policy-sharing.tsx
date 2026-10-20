@@ -291,6 +291,7 @@ function SharingTabPanelContent({
 		case "teams":
 			return (
 				<TeamsView
+					accountView={accountView}
 					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
@@ -424,7 +425,23 @@ function RecipientActions({
 	);
 }
 
+function teamMemberNames(
+	memberIds: string[],
+	activeIdentitiesById: Map<string, RecipientPolicyIntentGraphV1["identities"][number]>,
+	accountView: AccountView | null,
+): string[] {
+	return memberIds.map((identityId) => {
+		const identity = activeIdentitiesById.get(identityId);
+		return (
+			verifiedGoogleLabel(accountView, identityId) ||
+			identity?.displayName.trim() ||
+			"Unknown member"
+		);
+	});
+}
+
 function TeamsView({
+	accountView,
 	devices,
 	disableMutations,
 	intent,
@@ -432,6 +449,7 @@ function TeamsView({
 	projects,
 	renameTeam,
 }: {
+	accountView: AccountView | null;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
@@ -471,10 +489,7 @@ function TeamsView({
 							.map((membership) => membership.identityId),
 					),
 				];
-				const memberNames = memberIds.map(
-					(identityId) =>
-						activeIdentitiesById.get(identityId)?.displayName.trim() || "Unknown member",
-				);
+				const memberNames = teamMemberNames(memberIds, activeIdentitiesById, accountView);
 				const activeDeviceCount = devices.filter((device) =>
 					memberIds.includes(device.identityId),
 				).length;
