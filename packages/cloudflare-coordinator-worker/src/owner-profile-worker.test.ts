@@ -794,12 +794,12 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 		let denied: Response | undefined;
 		fixture.options.onBrowserStart = async (url, details) => {
 			if (!details) throw new Error("Account upload details missing");
-			denied =
-				failure === "wrong CSRF"
-					? await uploadB(url, session, details, "wrong")
-					: await request(url, {
-							headers: { cookie: failure === "missing session" ? "" : session },
-						});
+			if (failure === "wrong CSRF") {
+				denied = await uploadB(url, session, details, "wrong");
+			} else {
+				const cookie = failure === "missing session" ? "" : session;
+				denied = await request(url, { headers: { cookie } });
+			}
 			throw new Error("Synthetic browser stopped after rejected upload");
 		};
 		// Act
