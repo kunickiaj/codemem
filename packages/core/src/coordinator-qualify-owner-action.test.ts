@@ -12,7 +12,26 @@ const options = {
 };
 const digest = "b".repeat(64);
 const fetchMock = vi.fn<typeof fetch>();
-const ready = { state: "ready", evidence_digest: digest };
+const ready = {
+	state: "ready",
+	attestation_id: reference,
+	evidence_digest: digest,
+	fingerprint: "c".repeat(64),
+	coordinator_id: "coordinator-a",
+	review_receipt_id: "receipt-a",
+	link_id: "link-a",
+	claim_id: "claim-a",
+	identity_id: "identity-a",
+	group_id: "group-a",
+	device_id: "device-a",
+};
+const committed = {
+	state: "created",
+	qualification_id: "qualification-a",
+	coordinator_id: "coordinator-a",
+	attestation_id: reference,
+	evidence_digest: digest,
+};
 function json(body: unknown, status = 200, statusText?: string) {
 	return new Response(JSON.stringify(body), { status, statusText });
 }
@@ -92,7 +111,7 @@ it.each(["created", "existing"])(
 	"explicit confirmation %s sends the exact digest only once",
 	async (state) => {
 		// Arrange
-		const response = { state, qualification_id: "qualification-a", evidence_digest: digest };
+		const response = { ...committed, state };
 		fetchMock.mockResolvedValue(json(response, state === "created" ? 201 : 200));
 		// Act
 		const result = await coordinatorQualifyOwnerAction({
@@ -139,6 +158,145 @@ it.each([
 	expect(error).not.toHaveProperty("cause");
 	expect(fetchMock).toHaveBeenCalledOnce();
 });
+
+const requiredFields = [
+	...Object.keys(ready).map((key) => ({ phase: "preview", key })),
+	...Object.keys(committed).map((key) => ({ phase: "confirm", key })),
+];
+it.each(requiredFields)(
+	"rejects missing $phase field $key from HTTP 200",
+	async ({ phase, key }) => {
+		// Arrange
+		const response: Record<string, unknown> = { ...(phase === "preview" ? ready : committed) };
+		delete response[key];
+		response.private_detail = options.adminSecret;
+		fetchMock.mockResolvedValue(json(response));
+		// Act
+		const error = await coordinatorQualifyOwnerAction({
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		}).catch((value: unknown) => value);
+		// Assert
+		expectSafeFailure(
+			error,
+			phase === "confirm" ? "qualification_outcome_unknown" : "qualification_unavailable",
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	},
+);
+
+it.each([
+	{ phase: "preview", change: { state: "created" } },
+	{ phase: "preview", change: { attestation_id: `controller-v1:${"d".repeat(64)}` } },
+	{ phase: "preview", change: { evidence_digest: "B".repeat(64) } },
+	{ phase: "preview", change: { evidence_digest: `${digest}\n` } },
+	{ phase: "preview", change: { fingerprint: "short" } },
+	{ phase: "preview", change: { fingerprint: 123 } },
+	{ phase: "preview", change: { coordinator_id: "" } },
+	{ phase: "preview", change: { review_receipt_id: " receipt " } },
+	{ phase: "preview", change: { link_id: "link\ncontrol" } },
+	{ phase: "preview", change: { claim_id: "claim\u200bhidden" } },
+	{ phase: "preview", change: { identity_id: null } },
+	{ phase: "preview", change: { group_id: "x".repeat(257) } },
+	{ phase: "preview", change: { device_id: 123 } },
+	{ phase: "confirm", change: { state: "ready" } },
+	{ phase: "confirm", change: { state: "unknown" } },
+	{ phase: "confirm", change: { qualification_id: "" } },
+	{ phase: "confirm", change: { qualification_id: "id\u0000bad" } },
+	{ phase: "confirm", change: { qualification_id: 123 } },
+	{ phase: "confirm", change: { coordinator_id: "x".repeat(257) } },
+	{ phase: "confirm", change: { coordinator_id: " coordinator " } },
+	{ phase: "confirm", change: { attestation_id: `controller-v1:${"d".repeat(64)}` } },
+	{ phase: "confirm", change: { evidence_digest: "d".repeat(64) } },
+	{ phase: "confirm", change: { evidence_digest: "B".repeat(64) } },
+])(
+	"rejects malformed $phase fields $change without exposing response content",
+	async ({ phase, change }) => {
+		// Arrange
+		fetchMock.mockResolvedValue(
+			json({
+				...(phase === "preview" ? ready : committed),
+				...change,
+				private_detail: options.adminSecret,
+			}),
+		);
+		// Act
+		const error = await coordinatorQualifyOwnerAction({
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		}).catch((value: unknown) => value);
+		// Assert
+		expectSafeFailure(
+			error,
+			phase === "confirm" ? "qualification_outcome_unknown" : "qualification_unavailable",
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	},
+);
+
+it.each(["preview", "confirm"])(
+	"%s rejects error envelopes, not success with private error data",
+	async (phase) => {
+		// Arrange
+		fetchMock.mockResolvedValue(
+			json({ ...(phase === "preview" ? ready : committed), error: options.adminSecret }),
+		);
+		// Act
+		const error = await coordinatorQualifyOwnerAction({
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		}).catch((value: unknown) => value);
+		// Assert
+		expectSafeFailure(
+			error,
+			phase === "confirm" ? "qualification_outcome_unknown" : "qualification_unavailable",
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	},
+);
+
+it.each(["preview", "confirm"])(
+	"%s requires fields on the parsed JSON object, not inherited input",
+	async (phase) => {
+		// Arrange: JSON serialization omits inherited fields; the wire object has no own required fields.
+		fetchMock.mockResolvedValue(json(Object.create(phase === "preview" ? ready : committed)));
+		// Act
+		const error = await coordinatorQualifyOwnerAction({
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		}).catch((value: unknown) => value);
+		// Assert
+		expectSafeFailure(
+			error,
+			phase === "confirm" ? "qualification_outcome_unknown" : "qualification_unavailable",
+		);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	},
+);
+
+it.each(["preview", "confirm"])(
+	"%s returns only validated wire fields, dropping private extras",
+	async (phase) => {
+		// Arrange
+		const expected = phase === "preview" ? ready : committed;
+		fetchMock.mockResolvedValue(
+			json({
+				...expected,
+				private_detail: options.adminSecret,
+				extra: { cookie: options.adminSecret },
+			}),
+		);
+		// Act
+		const result = await coordinatorQualifyOwnerAction({
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		});
+		// Assert
+		expect(result).toEqual(expected);
+		expect(JSON.stringify(result)).not.toContain(options.adminSecret);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	},
+);
 
 it.each(["preview", "confirm"])("%s redacts remote error-code credential echo", async (phase) => {
 	// Arrange
@@ -233,3 +391,50 @@ it.each([
 	await expect(request).rejects.toThrow();
 	expect(fetchMock).not.toHaveBeenCalled();
 });
+
+it.each([
+	{ phase: "preview", valid: true },
+	{ phase: "preview", valid: false },
+	{ phase: "confirm", valid: true },
+	{ phase: "confirm", valid: false },
+])(
+	"$phase response remains bound to dispatched options after caller mutation (valid=$valid)",
+	async ({ phase, valid }) => {
+		// Arrange: mutate caller-owned options while fetch awaits its reply, without timers.
+		const input: Parameters<typeof coordinatorQualifyOwnerAction>[0] = {
+			...options,
+			...(phase === "confirm" ? { confirmEvidenceDigest: digest } : {}),
+		};
+		const originalResponse = phase === "preview" ? ready : committed;
+		fetchMock.mockImplementation(async () => {
+			await Promise.resolve();
+			input.attestationId = `controller-v1:${"d".repeat(64)}`;
+			input.confirmEvidenceDigest = "e".repeat(64);
+			if (valid) return json(originalResponse);
+			return json({
+				...originalResponse,
+				attestation_id: input.attestationId,
+				evidence_digest: input.confirmEvidenceDigest,
+				private_detail: options.adminSecret,
+			});
+		});
+		// Act
+		const result = await coordinatorQualifyOwnerAction(input).catch((value: unknown) => value);
+		// Assert
+		if (valid) expect(result).toEqual(originalResponse);
+		else
+			expectSafeFailure(
+				result,
+				phase === "confirm" ? "qualification_outcome_unknown" : "qualification_unavailable",
+			);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls[0]?.[1]?.body).toEqual(
+			new TextEncoder().encode(
+				JSON.stringify({
+					attestation_id: reference,
+					...(phase === "confirm" ? { confirm_evidence_digest: digest } : {}),
+				}),
+			),
+		);
+	},
+);

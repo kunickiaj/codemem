@@ -4,6 +4,8 @@ import {
 	DEFAULT_COORDINATOR_DB_PATH,
 } from "./better-sqlite-coordinator-store.js";
 import { normalizeCoordinatorAccountLinkOrigin } from "./coordinator-account-link-receiver.js";
+import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { capture, isHash } from "./coordinator-auth-link-input.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
 	isCoordinatorControllerAttestationReference,
@@ -393,13 +395,49 @@ export async function coordinatorAuthControllerReviewAction(
 
 function parseQualificationActionResponse(
 	payload: Record<string, unknown> | null,
-	expectedStates: readonly string[],
+	request: { attestationId: string; confirmEvidenceDigest?: string },
 ): Record<string, unknown> {
-	if (!payload || Object.hasOwn(payload, "error"))
+	const common = ["state", "attestation_id", "coordinator_id", "evidence_digest"];
+	const fields =
+		request.confirmEvidenceDigest === undefined
+			? [
+					...common,
+					"fingerprint",
+					"review_receipt_id",
+					"link_id",
+					"claim_id",
+					"identity_id",
+					"group_id",
+					"device_id",
+				]
+			: [...common, "qualification_id"];
+	const response = capture(payload, fields);
+	if (!response || !payload || Object.hasOwn(payload, "error"))
 		throw new Error("qualification_response_invalid");
-	if (typeof payload.state !== "string" || !expectedStates.includes(payload.state))
+	if (
+		response.attestation_id !== request.attestationId ||
+		!isAuthControllerId(response.coordinator_id) ||
+		!isHash(response.evidence_digest)
+	)
 		throw new Error("qualification_response_invalid");
-	return payload;
+	if (request.confirmEvidenceDigest === undefined) {
+		if (
+			response.state !== "ready" ||
+			!isHash(response.fingerprint) ||
+			!["review_receipt_id", "link_id", "claim_id", "identity_id", "group_id", "device_id"].every(
+				(field) => isAuthControllerId(response[field]),
+			)
+		)
+			throw new Error("qualification_response_invalid");
+		return response;
+	}
+	if (
+		(response.state !== "created" && response.state !== "existing") ||
+		!isAuthControllerId(response.qualification_id) ||
+		response.evidence_digest !== request.confirmEvidenceDigest
+	)
+		throw new Error("qualification_response_invalid");
+	return response;
 }
 
 /** Network preview unless an explicitly reviewed digest is supplied. Never retries. */
@@ -432,13 +470,13 @@ export async function coordinatorQualifyOwnerAction(opts: {
 			opts.timeoutS ?? 3,
 			16384,
 		);
-		return parseQualificationActionResponse(
-			result,
-			opts.confirmEvidenceDigest === undefined ? ["ready"] : ["created", "existing"],
-		);
+		return parseQualificationActionResponse(result, {
+			attestationId: body.attestation_id as string,
+			confirmEvidenceDigest: body.confirm_evidence_digest as string | undefined,
+		});
 	} catch (error) {
 		const fallback =
-			opts.confirmEvidenceDigest === undefined
+			body.confirm_evidence_digest === undefined
 				? "qualification_unavailable"
 				: "qualification_outcome_unknown";
 		if (!(error instanceof RemoteCoordinatorRequestError)) throw new Error(fallback);
