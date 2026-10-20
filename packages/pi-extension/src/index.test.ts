@@ -298,6 +298,13 @@ describe("session_before_compact distinct flushes", () => {
 	afterEach(resetPiExtensionTest);
 
 	it("two session_before_compact firings both send distinct CLI flushes", async () => {
+		// Arrange: keep session startup offline so only the mocked CLI handles ingest.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		);
 		const compactPayloads: Array<Record<string, unknown>> = [];
 		__setTestExecImpl(async (args, opts) => {
 			if (args[0] === "pi-hook-ingest" && opts?.stdin) {
