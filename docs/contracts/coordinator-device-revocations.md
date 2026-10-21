@@ -662,8 +662,8 @@ uses the configuration's coordinator identity, not any browser role or session.
 Account qualification additionally requires owner enrollment to be enabled; global
 operator revocation does not depend on that separate flag.
 Legacy/unconfigured Worker factories and default `coordinator serve` do not infer
-an ID; these routes remain unavailable there. No maintained revocation CLI or
-owner self-service journey is activated by this cut.
+an ID; these routes remain unavailable there. The maintained operator CLI uses
+these configured routes; no owner self-service journey is activated.
 
 Every request consumes the existing unauthenticated rate-limit budget before body
 reads; authenticated requests also consume the admin budget. Native WebCrypto admin
@@ -747,6 +747,34 @@ Writer guards must preserve owner-bound ID/key uniqueness before the owner path
 can activate. Ambiguous legacy targets go to the coordinator operator, not an
 unverified owner or a new universal ownership framework.
 
+### Operator CLI client
+
+`codemem coordinator revoke-device <group> <device>` is an operator-only HTTP
+client for this contract, not route activation. Configured operator-context runtimes
+mount the endpoints as described above; legacy/unconfigured Workers and default
+`coordinator serve` leave them unavailable. It adds no owner or
+group-authority fallback and makes no source-profile, database or schema writes.
+
+Preview POSTs `{ group_id, device_id }` to `/v1/admin/devices/revoke-preview`.
+JSON and noninteractive use stop after this network read. Terminal confirmation
+defaults to No, has no `--yes`, rereads saved operator configuration, and POSTs
+`{ group_id, device_id, expected_digest }` to `/v1/admin/devices/revoke` once.
+Missing/malformed/changed saved configuration prevents dispatch. Credentials come
+only from saved operator configuration, never secret arguments or environment
+overrides. Strict HTTPS-origin/literal-loopback-HTTP validation precedes credential
+transmission; admin requests reject redirects and do not retry.
+
+The Core action captures request fields, phase and optional expected coordinator/
+key context before awaiting transport. Only HTTP 200 with a complete phase-specific
+version-1 response and exact scope/target can succeed. Preview requires `ready` and
+a 64-lowercase-hex digest/key ID. Commit requires `revoked`, the reviewed coordinator
+and key when expected context is supplied, and exactly two ordered subject references.
+The client returns only validated public fields and preserves retained timestamp
+text without date parsing. HTTP 409 `revocation_preview_stale` and
+`revocation_target_unavailable` are definitive denials only at that status. Other
+post-dispatch failures, including malformed commit success, have unknown outcomes;
+they never imply rollback, compensation or permission to retry automatically.
+
 ### Existing revocation checks and their limits
 
 Existing public effective writers, signed nonce admission, bootstrap and scope
@@ -769,7 +797,7 @@ cover these paths in the core/SQLite and native D1 runtimes:
 Raw scope/membership metadata and historical receipts may retain revoked subjects;
 they are inspection/history, not current eligibility. Effective authorization
 denies those subjects without deleting their history. Internal opaque-key
-compatibility likewise is not authentication proof; the inactive operator handler
+compatibility likewise is not authentication proof; the operator handler
 requires strict SSH Ed25519 evidence and both global subjects.
 
 Signed requests validate cryptography before atomic nonce admission checks the
@@ -787,5 +815,5 @@ A managed peer learns omissions after a successful current authorization refresh
 This is not push delivery, immediate revocation of cached direct-peer access, a new
 offline expiry, or a change to independent manual trust. Whole-database device-ID
 and canonical-key revocation lets another device continue only when both its
-subjects differ. Public management remains inactive until its separate handler
-and runtime-composition gates pass.
+subjects differ. Operator management requires the explicit trusted runtime context
+described above; it does not enable an owner self-service path.

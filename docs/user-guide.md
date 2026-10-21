@@ -497,8 +497,9 @@ with any key and its canonical signing key with any device ID across the selecte
 database; it does not rewrite account links, browser sessions, grants, stored data,
 or manual peer trust. The coordinator-wide admin secret and a trusted configured
 coordinator/database pair are required, not a browser owner or Team role. Default
-`coordinator serve` does not activate this capability, and a maintained revocation
-CLI is not available yet. See the [activation contract](contracts/coordinator-device-revocations.md#optional-configured-operator-http-routes)
+`coordinator serve` does not activate this capability. The maintained
+[`coordinator revoke-device` CLI](#operator-device-revocation) uses saved operator
+configuration to preview and explicitly confirm revocation. See the [activation contract](contracts/coordinator-device-revocations.md#optional-configured-operator-http-routes)
 for runtime composition and request limits.
 
 ## Advanced operator and compatibility guidance
@@ -510,6 +511,52 @@ for runtime composition and request limits.
 Use this section for same-person devices, existing integrations, diagnostics, or self-hosted coordination. These controls preserve internal compatibility and recovery capability; they are not required for the normal Projects → Sharing → Devices → Health workflow.
 
 Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes. Saved Sync views and coordinator administration remain available through **Advanced**.
+
+### Operator device revocation
+
+Use `codemem coordinator revoke-device <group> <device>` only as a coordinator-wide
+operator. Group/Team authority, an actor hint, or a planted enrollment is not
+permission to revoke globally. The group selects current enrollment evidence,
+including disabled enrollment; it does not limit the effect to that group.
+
+Save `sync_coordinator_url` and `sync_coordinator_admin_secret` in your private
+operator configuration and select it with `--config`. This command reads saved
+values only, not environment credential overrides, and accepts no credential
+argument. Use an HTTPS origin without credentials, path, query or fragment;
+HTTP is allowed only for literal `127.0.0.1` or `[::1]` origins.
+
+```fish
+codemem coordinator revoke-device '<evidence-group>' '<device-id>' --config '<operator-config>' --json
+codemem coordinator revoke-device '<evidence-group>' '<device-id>' --config '<operator-config>'
+```
+
+The first call sends a read-only network preview and prints validated public
+references. Noninteractive calls also preview only. A terminal call displays the
+coordinator ID, evidence group, global device ID and canonical key ID, then asks
+for confirmation with **No** selected. There is no `--yes`. Confirmation rereads
+operator configuration and sends the exact preview digest once; changed, missing
+or malformed configuration prevents the commit request. Requests never redirect
+or retry automatically.
+
+Confirmation revokes the device ID with **any key**, and the canonical key under
+**any device ID**, throughout the selected coordinator database and all groups.
+Another device continues only when **both** its device ID and canonical key differ.
+Success displays both retained subject references and their original timestamp
+text; overlapping revocations can retain different IDs and dates.
+
+This does not promise immediate offline enforcement, revoke independent manual or
+direct-peer trust, erase remote copies, or rewrite account links, sessions, grants,
+memberships or stored memories. Managed peers learn omissions after a successful
+current authorization refresh.
+
+Configured operator-context runtimes mount these endpoints with a server-trusted
+coordinator ID and configured coordinator-wide admin credential. Legacy/unconfigured
+Workers and default `coordinator serve` leave them unavailable; running this CLI
+does not activate server routes. A stale/unavailable-target HTTP 409 rejects the
+request and requires a new preview. After dispatch, malformed responses, missing
+receipts, transport failures and unexpected statuses mean **outcome unknown**:
+the write may have committed. Ask the operator to inspect both retained subjects;
+do not assume rollback or retry automatically.
 
 ### Sync runtime
 

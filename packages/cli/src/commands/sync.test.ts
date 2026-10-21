@@ -81,6 +81,7 @@ describe("coordinator command parity", () => {
 			"review-device-owner",
 			"qualify-owner",
 			"grant-identity-group",
+			"revoke-device",
 			"upgrade-auth-schema",
 			"upgrade-account-schema",
 			"group-create",

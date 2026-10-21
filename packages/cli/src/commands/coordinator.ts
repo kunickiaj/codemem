@@ -57,6 +57,7 @@ import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-i
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
 import { buildCoordinatorQualifyOwnerCommand } from "./coordinator-qualify-owner.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
+import { buildCoordinatorRevokeDeviceCommand } from "./coordinator-revoke-device.js";
 
 function readCoordinatorPublicKey(opts: { publicKey?: string; publicKeyFile?: string }): string {
 	const inline = String(opts.publicKey ?? "").trim();
@@ -125,6 +126,7 @@ function createCoordinatorCommandRoot(): Command {
 	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
 	cmd.addCommand(buildCoordinatorQualifyOwnerCommand());
 	cmd.addCommand(buildCoordinatorGrantIdentityGroupCommand());
+	cmd.addCommand(buildCoordinatorRevokeDeviceCommand());
 	cmd.addCommand(buildCoordinatorAuthSchemaCommand());
 	cmd.addCommand(buildCoordinatorAccountSchemaCommand());
 	return cmd;
