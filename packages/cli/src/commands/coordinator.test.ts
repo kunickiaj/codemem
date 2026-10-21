@@ -113,22 +113,25 @@ describe("coordinator import-invite", () => {
 		expect(process.exitCode).toBe(1);
 	});
 
-	it("directs reviewed recipient invitations to the Viewer", async () => {
+	it("explains how to review and explicitly confirm recipient invitations", async () => {
+		// Arrange
 		mocks.coordinatorImportInviteAction.mockRejectedValueOnce(
 			new Error("reviewed_onboarding_digest_required"),
 		);
 
+		// Act
 		await buildCoordinatorCommand().parseAsync(["import-invite", "invite-value", "--json"], {
 			from: "user",
 		});
 
+		// Assert
 		const output = vi.mocked(console.log).mock.calls.at(-1)?.[0];
 		expect(console.log).toHaveBeenCalledTimes(1);
-		expect(JSON.parse(String(output))).toEqual({
+		expect(JSON.parse(String(output))).toMatchObject({
 			error: "import_invite_failed",
-			message:
-				"Accept Team/add-device recipient invitations through the Viewer: run `codemem serve`, review the access details, and confirm the invitation there.",
+			message: expect.stringContaining("--review"),
 		});
+		expect(JSON.parse(String(output)).message).toContain("--reviewed-onboarding-digest");
 		expect(process.exitCode).toBe(1);
 	});
 });

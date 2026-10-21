@@ -30,6 +30,7 @@ import {
 	coordinatorListScopesAction,
 	coordinatorRemoveDeviceAction,
 	coordinatorRenameDeviceAction,
+	coordinatorReviewInviteAction,
 	coordinatorReviewJoinRequestAction,
 	coordinatorRevokeBootstrapGrantAction,
 	coordinatorRevokeScopeMembershipAction,
@@ -81,8 +82,8 @@ function parseOptionalInteger(value: string | undefined, name: string): number |
 
 function formatImportInviteError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
-	const recipientInviteViewerGuidance =
-		"Accept Team/add-device recipient invitations through the Viewer: run `codemem serve`, review the access details, and confirm the invitation there.";
+	const recipientInviteReviewGuidance =
+		"Review this invitation with `codemem coordinator import-invite <invite> --review`, then accept with --reviewed-onboarding-digest <digest> using the same profile and names. You can also review and accept through the Viewer with `codemem serve`.";
 	switch (message) {
 		case "invite_already_bound":
 			return "This invite was already used. Ask the sender for a new one.";
@@ -107,10 +108,66 @@ function formatImportInviteError(error: unknown): string {
 		case "recipient_invite_intent_mismatch":
 		case "recipient_invite_review_unavailable":
 		case "reviewed_onboarding_digest_required":
-			return recipientInviteViewerGuidance;
+		case "reviewed_onboarding_stale":
+			return recipientInviteReviewGuidance;
+		case "invite_review_profile_required":
+			return "Invite review needs an initialized device and matching keys. Run `codemem sync pair --payload-only` with the intended --db-path, --config, and CODEMEM_KEYS_DIR first, then review that profile with --keys-dir.";
+		case "recipient_invite_review_required":
+			return "Only Team/add-device recipient invitations need --review. Import this legacy invitation without --review.";
+		case "invite_inspection_transport_failed":
+			return "Could not inspect the invitation at its coordinator. Check network access and use the original coordinator URL; redirects are not accepted.";
+		case "invite_coordinator_conflict":
+			return "This profile already uses another coordinator. Use the intended device profile and review again.";
 		default:
 			return message;
 	}
+}
+
+interface ImportInviteOptions {
+	db?: string;
+	dbPath?: string;
+	keysDir?: string;
+	config?: string;
+	recipientName?: string;
+	deviceName?: string;
+	review?: boolean;
+	reviewedOnboardingDigest?: string;
+	json?: boolean;
+}
+
+function inviteImportProfile(invite: string, opts: ImportInviteOptions) {
+	return {
+		inviteValue: invite,
+		dbPath: resolveDbOpt(opts) ?? null,
+		keysDir: opts.keysDir ?? null,
+		configPath: opts.config ?? null,
+		recipientDisplayName: opts.recipientName?.trim() || null,
+		deviceDisplayName: opts.deviceName?.trim() || null,
+	};
+}
+
+function rejectConflictingInviteReviewOptions(opts: {
+	review?: boolean;
+	reviewedOnboardingDigest?: string;
+	json?: boolean;
+}): boolean {
+	if (!opts.review || opts.reviewedOnboardingDigest === undefined) return false;
+	const message = "Use --review or --reviewed-onboarding-digest, not both.";
+	if (opts.json) emitJsonError("usage_error", message);
+	else p.log.error(message);
+	process.exitCode = 2;
+	return true;
+}
+
+function printInviteReview(
+	review: Awaited<ReturnType<typeof coordinatorReviewInviteAction>>,
+	opts: { json?: boolean },
+): void {
+	console.log(JSON.stringify(review, null, 2));
+	if (opts.json) return;
+	p.outro(
+		"Review only: no invitation accepted or local profile changed. To accept, rerun with --reviewed-onboarding-digest <digest> and the same profile and names.",
+	);
 }
 
 /**
@@ -1172,52 +1229,44 @@ export function buildCoordinatorCommand(): Command {
 		.argument("<invite>", "invite value or link")
 		.option("-R, --recipient-name <name>", "recipient Identity display name")
 		.option("-N, --device-name <name>", "device display name")
+		.option("--review", "Review recipient access without accepting")
+		.option("--reviewed-onboarding-digest <digest>", "Accept the reviewed recipient access")
 		.option("--keys-dir <path>", "keys directory");
 	addDbOption(importInviteCmd);
 	addConfigOption(importInviteCmd);
 	addJsonOption(importInviteCmd);
-	importInviteCmd.action(
-		async (
-			invite: string,
-			opts: {
-				db?: string;
-				dbPath?: string;
-				keysDir?: string;
-				config?: string;
-				recipientName?: string;
-				deviceName?: string;
-				json?: boolean;
-			},
-		) => {
-			try {
-				const result = await coordinatorImportInviteAction({
-					inviteValue: invite,
-					dbPath: resolveDbOpt(opts) ?? null,
-					keysDir: opts.keysDir ?? null,
-					configPath: opts.config ?? null,
-					recipientDisplayName: opts.recipientName?.trim() || null,
-					deviceDisplayName: opts.deviceName?.trim() || null,
-				});
-				if (opts.json) {
-					console.log(JSON.stringify(result, null, 2));
-					return;
-				}
-				p.intro("codemem coordinator import-invite");
-				p.log.success(`Invite imported for ${result.group_id}`);
-				p.log.message(`- coordinator: ${result.coordinator_url}`);
-				p.log.message(`- status: ${result.status}`);
-				p.outro("Coordinator config updated");
-			} catch (err) {
-				const message = formatImportInviteError(err);
-				if (opts.json) {
-					emitJsonError("import_invite_failed", message);
-					return;
-				}
-				p.log.error(message);
-				process.exitCode = 1;
+	importInviteCmd.action(async (invite: string, opts: ImportInviteOptions) => {
+		try {
+			if (rejectConflictingInviteReviewOptions(opts)) return;
+			const profile = inviteImportProfile(invite, opts);
+			if (opts.review) {
+				const review = await coordinatorReviewInviteAction(profile);
+				printInviteReview(review, opts);
+				return;
 			}
-		},
-	);
+			const result = await coordinatorImportInviteAction({
+				...profile,
+				reviewedOnboardingDigest: opts.reviewedOnboardingDigest?.trim() || null,
+			});
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
+				return;
+			}
+			p.intro("codemem coordinator import-invite");
+			p.log.success(`Invite imported for ${result.group_id}`);
+			p.log.message(`- coordinator: ${result.coordinator_url}`);
+			p.log.message(`- status: ${result.status}`);
+			p.outro("Coordinator config updated");
+		} catch (err) {
+			const message = formatImportInviteError(err);
+			if (opts.json) {
+				emitJsonError("import_invite_failed", message);
+				return;
+			}
+			p.log.error(message);
+			process.exitCode = 1;
+		}
+	});
 	cmd.addCommand(importInviteCmd);
 
 	// ---- list-join-requests ----

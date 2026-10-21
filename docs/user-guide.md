@@ -1048,3 +1048,44 @@ The wire error is intentionally generic. Check the peer serving the bootstrap sn
 - Feed cards you own include a visibility control so shared/private intent can be changed without editing raw metadata.
 - `Redact sensitive details` lives above Recent sync attempts so it is easier to find before you inspect peer addresses and attempt history.
 - Recent sync attempts intentionally show only the latest few rows in the viewer; use CLI diagnostics for deeper history if needed.
+
+## Review and accept recipient invitations
+
+For Team/add-device invitations, review the access details before accepting. Use
+an existing initialized device profile with its matching keys; review never creates
+or repairs a database or keys, changes config, or consumes the invitation.
+
+For a new profile without signing keys, first run `codemem sync pair --payload-only`
+with the intended `--db-path`, `--config`, and `CODEMEM_KEYS_DIR`. This initializes
+the local device and prints its public pairing metadata; it does not accept a peer
+or start sync. Do not accept or send that pairing payload for this invitation flow.
+
+```fish
+codemem coordinator import-invite '<invite>' --review --json
+```
+
+The review shows the coordinator, group, invitation kind, target Identity, device
+ID and key fingerprint, Team membership, included/excluded Projects, and whether
+future memories or Team Projects are shared. It returns
+`reviewed_onboarding_digest` without the invitation token or signing key.
+
+After checking those details, accept explicitly:
+
+```fish
+codemem coordinator import-invite '<invite>' --reviewed-onboarding-digest '<digest>' --json
+```
+
+Pass the same `--db-path`, `--config`, `--keys-dir`, `--recipient-name`, and
+`--device-name` overrides to both commands when using a separate profile. The
+existing digest binds the reviewed access to the target Identity, invitation,
+device ID, key fingerprint, and device name; recipient display-name semantics are
+unchanged. Changed access or device bindings require a fresh review and explicit
+acceptance. There is no automatic acceptance or `--yes` bypass; omitting the digest
+on a recipient import changes nothing. Do not combine `--review` and
+`--reviewed-onboarding-digest`.
+
+The Viewer remains another way to review and accept. Legacy coordinator invitations
+still use `import-invite` without a review digest. Invitation inspection and joining
+reject HTTP redirects: use the original coordinator endpoint instead of forwarding
+an invitation token to another endpoint. Treat the invitation itself as a secret;
+CLI arguments may remain in shell history.

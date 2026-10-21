@@ -103,6 +103,8 @@ codemem coordinator revoke-bootstrap-grant <grant-id> --db-path ~/.codemem/coord
 codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --coordinator-host 0.0.0.0 --coordinator-port 7347
 codemem coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator import-invite <invite>
+codemem coordinator import-invite '<recipient-invite>' --review --json
+codemem coordinator import-invite '<recipient-invite>' --reviewed-onboarding-digest '<digest>' --json
 codemem coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator deny-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
@@ -110,6 +112,13 @@ codemem coordinator deny-join-request <request-id> --db-path ~/.codemem/coordina
 
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the current TypeScript sync
 auth/signature verification code directly.
+
+Recipient Team/add-device invites require explicit review and digest acceptance;
+the bare import above is for legacy invitations. Review needs an initialized
+device and matching keys and does not change local state or consume the invite.
+Use the same profile and name overrides for review and acceptance. Invitation
+requests reject redirects to keep the token at its original endpoint. See
+[recipient invitation review](user-guide.md#review-and-accept-recipient-invitations).
 
 These group/device management commands operate on the built-in local coordinator store only in the current TS CLI.
 Remote coordinator admin for invites and join-request review exists separately; remote device-admin parity remains a
