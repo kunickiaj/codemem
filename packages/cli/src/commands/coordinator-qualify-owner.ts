@@ -182,7 +182,7 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 				"Qualification denied: evidence is invalid, changed, was revoked, conflicts, or is unavailable. Preview again; no automatic retry.",
 			);
 		let message =
-			"Qualification server unavailable or preview invalid. The API is inactive until runtime review and explicit schema readiness checks permit mounting it. Check the saved coordinator and operator credential.";
+			"Qualification server unavailable or preview invalid. Ask the coordinator operator to check the configured Worker's browser authentication and owner-enrollment settings, required migrations 0035 and 0036, and the saved trusted HTTPS coordinator origin and admin credential.";
 		if (writeAttempted)
 			message =
 				"Qualification outcome is unknown. It may have committed; do not assume rollback or retry automatically. Ask the coordinator operator to inspect the outcome.";
@@ -196,7 +196,7 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 export function buildCoordinatorQualifyOwnerCommand(): Command {
 	const command = new Command("qualify-owner")
 		.configureHelp(helpStyle)
-		.description("Preview linked-account device enrollment permission (server may be inactive)")
+		.description("Preview and confirm linked-account device enrollment permission")
 		.argument("<attestation-id>", "controller-v1 reference from a real operator review");
 	addConfigOption(command);
 	addJsonOption(command);

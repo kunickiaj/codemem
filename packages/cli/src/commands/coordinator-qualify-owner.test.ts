@@ -103,6 +103,47 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+it("describes qualification help without claiming the configured Worker API is inactive", () => {
+	// Arrange
+	const command = buildCoordinatorQualifyOwnerCommand();
+	// Act
+	const help = command.helpInformation();
+	// Assert
+	expect(help).toContain("Preview and confirm linked-account device enrollment permission");
+	expect(help).toContain("controller-v1 reference from a real operator review");
+	expect(help).not.toMatch(/inactive|pending runtime review/i);
+	expect(help).not.toContain(config.sync_coordinator_admin_secret);
+	expect(fetch).not.toHaveBeenCalled();
+	expect(mocks.readCodememConfigFile).not.toHaveBeenCalled();
+});
+
+it("guides a genuine unavailable preview toward operator setup without exposing credentials", async () => {
+	// Arrange: run the real CLI/action/client against the runtime's actual 503 error code.
+	vi.mocked(fetch)
+		.mockReset()
+		.mockResolvedValue(
+			reply(
+				{ error: "qualification_unavailable", detail: config.sync_coordinator_admin_secret },
+				503,
+			),
+		);
+	// Act
+	await run(["--json"]);
+	// Assert
+	expect(bodies()).toEqual([{ attestation_id: reference }]);
+	expect(output()).toContain("qualification_unavailable");
+	expect(output()).toContain("coordinator operator");
+	expect(output()).toContain("configured Worker");
+	expect(output()).toMatch(/browser authentication.*owner-enrollment/);
+	expect(output()).toMatch(/required migrations 0035 and 0036/);
+	expect(output()).toMatch(/trusted HTTPS coordinator origin and admin credential/);
+	expect(output()).not.toMatch(/inactive|pending runtime review|outcome is unknown/i);
+	expect(output()).not.toContain(config.sync_coordinator_admin_secret);
+	expect(mocks.confirm).not.toHaveBeenCalled();
+	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(process.exitCode).toBe(1);
+});
+
 it.each(["created", "existing"])(
 	"explicit Yes confirms the exact preview digest: %s",
 	async (state) => {
@@ -299,7 +340,7 @@ it.each([
 	expect(mocks.confirm).not.toHaveBeenCalled();
 	expect(output()).not.toContain("private-password");
 	expect(output()).toContain("qualification_unavailable");
-	expect(output()).toContain("inactive");
+	expect(output()).not.toMatch(/inactive|pending runtime review/i);
 	expect(process.exitCode).toBe(1);
 });
 
@@ -443,7 +484,7 @@ it.each([
 });
 
 it.each([401, 403, 404, 429, 500, 302])(
-	"preview HTTP %s fails closed with fixed inactive guidance",
+	"preview HTTP %s fails closed with fixed operator setup guidance",
 	async (status) => {
 		// Arrange
 		vi.mocked(fetch)
@@ -457,7 +498,7 @@ it.each([401, 403, 404, 429, 500, 302])(
 		expect(mocks.confirm).not.toHaveBeenCalled();
 		expect(output()).not.toContain("private-remote-error");
 		expect(output()).toContain("qualification_unavailable");
-		expect(output()).toContain("inactive");
+		expect(output()).not.toMatch(/inactive|pending runtime review/i);
 		expect(process.exitCode).toBe(1);
 	},
 );
