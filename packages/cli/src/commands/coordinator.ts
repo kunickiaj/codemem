@@ -83,7 +83,7 @@ function parseOptionalInteger(value: string | undefined, name: string): number |
 function formatImportInviteError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	const recipientInviteReviewGuidance =
-		"Review this invitation with `codemem coordinator import-invite <invite> --review`, then accept with --reviewed-onboarding-digest <digest> using the same profile and names. You can also review and accept through the Viewer with `codemem serve`.";
+		"Review this invitation with `codemem coordinator import-invite <invite> --review`, then accept with --reviewed-onboarding-digest <digest> using the same profile and device name. You can also review and accept through the Viewer with `codemem serve`.";
 	switch (message) {
 		case "invite_already_bound":
 			return "This invite was already used. Ask the sender for a new one.";
@@ -146,6 +146,18 @@ function inviteImportProfile(invite: string, opts: ImportInviteOptions) {
 	};
 }
 
+async function acceptInviteWithProfileCheck(
+	profile: ReturnType<typeof inviteImportProfile>,
+	reviewedOnboardingDigest: string | undefined,
+) {
+	const digest = reviewedOnboardingDigest?.trim() || null;
+	if (digest) {
+		const review = await coordinatorReviewInviteAction(profile);
+		if (review.reviewed_onboarding_digest !== digest) throw new Error("reviewed_onboarding_stale");
+	}
+	return coordinatorImportInviteAction({ ...profile, reviewedOnboardingDigest: digest });
+}
+
 function rejectConflictingInviteReviewOptions(opts: {
 	review?: boolean;
 	reviewedOnboardingDigest?: string;
@@ -166,7 +178,7 @@ function printInviteReview(
 	console.log(JSON.stringify(review, null, 2));
 	if (opts.json) return;
 	p.outro(
-		"Review only: no invitation accepted or local profile changed. To accept, rerun with --reviewed-onboarding-digest <digest> and the same profile and names.",
+		"Review only: no invitation accepted or local profile changed. To accept, rerun with --reviewed-onboarding-digest <digest> and the same profile and device name. A Team recipient display name is cosmetic and may be changed before acceptance.",
 	);
 }
 
@@ -1244,10 +1256,7 @@ export function buildCoordinatorCommand(): Command {
 				printInviteReview(review, opts);
 				return;
 			}
-			const result = await coordinatorImportInviteAction({
-				...profile,
-				reviewedOnboardingDigest: opts.reviewedOnboardingDigest?.trim() || null,
-			});
+			const result = await acceptInviteWithProfileCheck(profile, opts.reviewedOnboardingDigest);
 			if (opts.json) {
 				console.log(JSON.stringify(result, null, 2));
 				return;

@@ -1075,11 +1075,14 @@ After checking those details, accept explicitly:
 codemem coordinator import-invite '<invite>' --reviewed-onboarding-digest '<digest>' --json
 ```
 
-Pass the same `--db-path`, `--config`, `--keys-dir`, `--recipient-name`, and
-`--device-name` overrides to both commands when using a separate profile. The
+Pass the same `--db-path`, `--config`, `--keys-dir`, and `--device-name` overrides
+to both commands when using a separate profile. Acceptance checks that the reviewed
+profile and keys still exist before the import can initialize anything. The
 existing digest binds the reviewed access to the target Identity, invitation,
-device ID, key fingerprint, and device name; recipient display-name semantics are
-unchanged. Changed access or device bindings require a fresh review and explicit
+device ID, key fingerprint, and device name. A Team recipient display name is
+cosmetic and may be changed with `--recipient-name` before acceptance; it is not
+part of this digest and does not change the assigned Identity or access.
+Changed access or device bindings require a fresh review and explicit
 acceptance. There is no automatic acceptance or `--yes` bypass; omitting the digest
 on a recipient import changes nothing. Do not combine `--review` and
 `--reviewed-onboarding-digest`.

@@ -116,7 +116,7 @@ auth/signature verification code directly.
 Recipient Team/add-device invites require explicit review and digest acceptance;
 the bare import above is for legacy invitations. Review needs an initialized
 device and matching keys and does not change local state or consume the invite.
-Use the same profile and name overrides for review and acceptance. Invitation
+Use the same profile and device-name override for review and acceptance. Invitation
 requests reject redirects to keep the token at its original endpoint. See
 [recipient invitation review](user-guide.md#review-and-accept-recipient-invitations).
 

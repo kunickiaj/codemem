@@ -31,7 +31,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 Team/add-device recipient invitations support a read-only CLI review:
 `codemem coordinator import-invite '<invite>' --review --json`. Inspect the access
 details, then accept with `--reviewed-onboarding-digest '<digest>'` using the same
-device profile and names. Review requires an initialized device and matching keys;
+device profile and device name. Review requires an initialized device and matching keys;
 it does not accept the invitation or change local state. See the
 [recipient invitation guide](docs/user-guide.md#review-and-accept-recipient-invitations).
 

@@ -405,6 +405,66 @@ it.each(["wrong", "changed device name"])(
 	},
 );
 
+it.each(["--db-path", "--keys-dir"])(
+	"rejects acceptance with a missing %s before creating or repairing local files",
+	async (flag) => {
+		// Arrange: review a valid profile, then accidentally point acceptance at a missing path.
+		initialize();
+		writeCodememConfigFile({ actor_display_name: "Configured Person" }, configPath);
+		const review = await coordinatorReviewInviteAction(options());
+		const before = snapshot(directory);
+		const args = commandArgs([
+			"--reviewed-onboarding-digest",
+			review.reviewed_onboarding_digest,
+			"--json",
+		]);
+		const missingPath = join(directory, flag === "--db-path" ? "typo.sqlite" : "typo-keys");
+		args[args.indexOf(flag) + 1] = missingPath;
+		// Act: keep the explicit reviewed digest; do not accept a newly computed digest.
+		await buildCoordinatorCommand().parseAsync(args, { from: "user" });
+		// Assert: failure must precede database/key creation, repair, config writes, or join.
+		expect(process.exitCode).toBe(1);
+		expect(requests.some((url) => url.endsWith("/v1/join"))).toBe(false);
+		expect(snapshot(directory)).toEqual(before);
+		expect(existsSync(missingPath)).toBe(false);
+		assertSafe();
+	},
+);
+
+it("accepts a Team digest when only the cosmetic recipient name changes", async () => {
+	// Arrange: the device and access bindings remain the ones reviewed by the recipient.
+	initialize();
+	await useTeamInvite();
+	const review = await coordinatorReviewInviteAction({
+		...options(),
+		recipientDisplayName: "Original Person",
+	});
+	// Act: recipient display names are not part of the existing protocol's digest binding.
+	await buildCoordinatorCommand().parseAsync(
+		commandArgs([
+			"--reviewed-onboarding-digest",
+			review.reviewed_onboarding_digest,
+			"--recipient-name",
+			"Renamed Person",
+			"--json",
+		]),
+		{ from: "user" },
+	);
+	// Assert: cosmetic renaming must not invalidate unchanged device/access approval.
+	expect(process.exitCode).toBeUndefined();
+	expect(requests.filter((url) => url.endsWith("/v1/join"))).toHaveLength(1);
+	expect(bodies.at(-1)).toMatchObject({
+		identity_id: "identity-assigned",
+		recipient_display_name: "Renamed Person",
+		device_display_name: "Recipient laptop",
+	});
+	expect(readCodememConfigFileAtPath(configPath)).toMatchObject({
+		actor_id: "identity-assigned",
+		actor_display_name: "Renamed Person",
+	});
+	assertSafe();
+});
+
 it("rejects missing confirmation without creating a profile or sending a token", async () => {
 	// Arrange
 	const before = snapshot(directory);
