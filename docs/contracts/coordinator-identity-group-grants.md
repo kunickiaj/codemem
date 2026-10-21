@@ -74,20 +74,34 @@ grant-specific revision checks, retained tombstones, and persistence after remov
 of the old device. SQLite, D1-compatible fixtures, and native Worker D1 must agree.
 These tests do not certify the future enrollment endpoint or live Google flow.
 
-## Inactive owner qualification API
+## Owner qualification API
 
-The internal `createOwnerQualificationHandler` seam is **not mounted** by the
-maintained Worker or local coordinator app. No environment switch enables it.
-Production activation requires a separate runtime review that binds the selected
-store backend to trusted enabled/coordinator/issuer/revision configuration and
-verifies the complete explicit 0035 qualification and 0036 attempt schemas.
-The handler reads schema definitions only; it never applies or rebuilds schemas.
+The configured Worker mounts the internal `createOwnerQualificationHandler` with
+the selected D1 backend and trusted enabled/coordinator/issuer/revision snapshot.
+Browser authentication and owner enrollment must both be enabled in valid Worker
+settings. The binding/configuration pin is shared with browser runtime setup;
+drift refuses issuance. The route does not initialize a browser, OIDC provider or
+session fallback. Complete current connection-history, 0035 qualification and
+0036 attempt definitions are required; missing, partial or future layouts return
+503. It reads definitions only and never applies or rebuilds schemas. Default or
+unconfigured Workers return 503 to valid admins; local serving has no such mount.
+This source change does not configure, migrate or deploy any live service.
 
-Proposed wire: `POST /v1/admin/owner-qualifications`, authenticated by the existing
+Wire: `POST /v1/admin/owner-qualifications`, authenticated by the existing
 `X-Codemem-Coordinator-Admin` credential using native WebCrypto MAC verification.
 The only request fields are `attestation_id` (exact `controller-v1:` reference) and
 optional `confirm_evidence_digest` (64 lowercase hex). Other fields are rejected.
 Every Identity, link, claim, device and review fact resolves server-side.
+
+Authentication runs before body reads, transport validation or store queries,
+including unavailable configuration. Credentials are captured before the first
+await. Separate per-isolate pre-body budgets allow 20 admin and 60 anonymous
+requests per minute (not fleet-wide quotas); exhaustion returns 429. The route
+requires its configured HTTPS origin and JSON, rejects query strings, browser
+Origin headers and content encoding, caps declared and actual bytes at 4096,
+and checks exact declared length. Body reads stop after five seconds or request
+abort; cancellation never delays refusal. Invalid or interrupted bodies cannot
+reach evidence lookup or issuance.
 
 Without confirmation, only `OwnerEnrollmentQualificationOps.preview` runs. A ready
 response contains `state: "ready"`, `coordinator_id`, `evidence_digest`,
@@ -108,4 +122,7 @@ The CLI `coordinator qualify-owner <attestation-id>` uses saved operator config,
 performs a network preview, validates references and digest before prompting,
 and defaults confirmation to No. JSON/noninteractive calls never submit the digest.
 This permission and a separately reviewed transport-group grant are both distinct
-from Team/Project access. This source change does not activate the account consumer.
+from Team/Project access. The owner consumer accepts issued, nonrevoked qualified
+links only with complete schemas and an independently eligible group grant; bare
+claims and other privileged consumers remain denied. This source stack does not
+configure or deploy a live service or verify the live two-device journey.

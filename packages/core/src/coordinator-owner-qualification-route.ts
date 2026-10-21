@@ -13,9 +13,9 @@ export interface OwnerQualificationRouteDeps
 		CoordinatorControllerReviewDeps,
 		"adminSecret" | "readRequestBytes" | "parseJsonObject" | "rateLimitedResponse"
 	> {
-	config: CoordinatorAuthLinkConfig;
+	config: CoordinatorAuthLinkConfig | null;
 	/** Must be the backend of the selected runtime store, never a separate database. */
-	backend: AuthLinkBackend;
+	backend: AuthLinkBackend | null;
 }
 
 // These are frozen repository DDL statements, not caller-supplied SQL. Check the
@@ -160,13 +160,14 @@ async function qualificationSchemasReady(
 	return ready?.ready === 1 && (await ops.schemaReady());
 }
 
-/** Inactive seam: no production app registers this handler yet. */
+/** Explicit operator operation using only the selected runtime backend. */
 export function createOwnerQualificationHandler(
 	deps: OwnerQualificationRouteDeps,
 ): (c: Context) => Promise<Response> {
 	const config = captureAuthLinkConfig(deps.config);
 	const captured = { ...deps };
-	const ops = config ? new OwnerEnrollmentQualificationOps(captured.backend, config) : null;
+	const backend = captured.backend;
+	const ops = config && backend ? new OwnerEnrollmentQualificationOps(backend, config) : null;
 	return async (c) => {
 		c.header("Cache-Control", "no-store");
 		c.header("Referrer-Policy", "no-referrer");
@@ -174,12 +175,13 @@ export function createOwnerQualificationHandler(
 		try {
 			const denied = await authorize(c, captured);
 			if (denied) return denied;
-			if (!config?.enabled || !ops) return c.json({ error: "qualification_unavailable" }, 503);
+			if (!config?.enabled || !ops || !backend)
+				return c.json({ error: "qualification_unavailable" }, 503);
 			const raw = await captured.readRequestBytes(c, 4096);
 			if (!raw) return c.json({ error: "body_too_large" }, 413);
 			const input = parseInput(captured.parseJsonObject(raw));
 			if (!input) return c.json({ error: "qualification_invalid_input" }, 400);
-			if (!(await qualificationSchemasReady(captured.backend, ops)))
+			if (!(await qualificationSchemasReady(backend, ops)))
 				return c.json({ error: "qualification_unavailable" }, 503);
 			if (input.expectedDigest === undefined)
 				return await previewResponse(c, ops, input.attestationId, config.coordinatorId);

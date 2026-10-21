@@ -65,6 +65,10 @@ export {
 	createCoordinatorOwnerEnrollmentHttp,
 	matchesCoordinatorOwnerEnrollmentHttpPath,
 } from "../coordinator-owner-enrollment-http.js";
+export {
+	createOwnerQualificationHttp,
+	OWNER_QUALIFICATION_PATH,
+} from "../coordinator-owner-qualification-http.js";
 export type { OwnerQualificationRouteDeps } from "../coordinator-owner-qualification-route.js";
 export { createOwnerQualificationHandler } from "../coordinator-owner-qualification-route.js";
 export type { CreateD1CoordinatorAppOptions } from "../d1-coordinator-runtime.js";

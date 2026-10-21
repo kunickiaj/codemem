@@ -676,26 +676,34 @@ Part A reviews and links the already-enrolled profile. Part B enrolls a separate
 
 #### Optional coordinator account linking
 
-##### Reviewed account qualification (inactive API)
+##### Reviewed account qualification
 
 `codemem coordinator qualify-owner <attestation-id>` previews a separate permission:
 “Allow this linked account to enroll new devices under this Identity.” Its server
-API is **inactive** pending runtime review, so it currently reports server
-unavailability. It does not activate qualification or install schemas.
+API is mounted only on the configured Worker with browser authentication and
+owner enrollment enabled, the selected D1 binding, and complete current schemas
+(including explicit migrations 0035 and 0036). Default/unconfigured Workers and
+local coordinator serving cannot issue qualifications. The command never installs
+schemas, configures Google, or deploys the Worker.
 
 The command uses the saved coordinator URL and existing private admin credential
 (`--config` can select the saved configuration). It accepts only the exact
 `controller-v1:` reference from a real operator device-owner review, not an
 Identity, email, link or key nomination. Independently verify that review.
 
-When a reviewed runtime mounts the API, the command first requests a network
-preview. `--json` and noninteractive runs stop after this read-only preview;
+The command first requests a network preview. `--json` and noninteractive runs stop after this read-only preview;
 interactive confirmation defaults to **No** and submits the exact server digest.
 Changed or revoked evidence denies confirmation without automatic retry; an unknown
 write outcome does not mean rollback. A transport-group grant remains a separate
 operator decision. Qualification does not create a Team, change Project access,
 or rewrite the original device claim. Bare, unqualified device claims remain
 denied for account-mode device enrollment.
+
+The owner consumer accepts issued, nonrevoked qualified links with complete
+schemas and an independently eligible transport-group grant. Bare claims remain
+denied, and other privileged consumers do not gain this exception. This source
+stack does not configure or deploy a live service or verify the live two-device
+journey.
 
 ##### A. Review, grant, and link the existing enrolled profile
 

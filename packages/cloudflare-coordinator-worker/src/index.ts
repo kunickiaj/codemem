@@ -9,13 +9,16 @@ import {
 	captureCoordinatorBrowserAuthOptions,
 	coordinatorBrowserAuthDeviceRoutes,
 	createCoordinatorBrowserAuth,
+	createD1AuthLinkBackend,
 	createD1CoordinatorApp,
 	createInMemoryRequestRateLimiter,
+	createOwnerQualificationHttp,
 	D1CoordinatorStore,
 	importBrowserCsrfKey,
 	importOwnerEnrollmentAdmissionKey,
 	maintainCoordinatorBrowserAuth,
 	OWNER_BROWSER_ADMISSION_PATH,
+	OWNER_QUALIFICATION_PATH,
 } from "@codemem/core/internal/cloudflare-coordinator";
 import {
 	type CloudflareBrowserAuthEnv,
@@ -54,8 +57,17 @@ function coordinatorAdminSecret(
 function createLegacyCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
 ) {
+	const qualificationLimiter = createInMemoryRequestRateLimiter();
 	return {
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
+				return createOwnerQualificationHttp({
+					config: null,
+					backend: null,
+					origin: null,
+					adminSecret: coordinatorAdminSecret(env, opts),
+					limiter: qualificationLimiter,
+				}).fetch(request);
 			if (!env.COORDINATOR_DB) {
 				return jsonResponse({ error: "missing_d1_binding" }, 500);
 			}
@@ -144,6 +156,14 @@ function createBrowserAuthWorker(
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
 			let dispatched = false;
 			try {
+				if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
+					return createOwnerQualificationHttp({
+						config: null,
+						backend: null,
+						origin: null,
+						adminSecret: coordinatorAdminSecret(env, opts),
+						limiter: deviceLimiter,
+					}).fetch(request);
 				if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
 				const db = pinBinding(env);
 				if (!db) return authenticationUnavailable(request, env, opts, { deviceLimiter });
@@ -218,6 +238,15 @@ function sameBindings(first: readonly unknown[], second: readonly unknown[]): bo
 	return first.length === second.length && first.every((value, index) => value === second[index]);
 }
 
+function configuredBindings(env: CloudflareCoordinatorEnv): readonly unknown[] {
+	return [
+		env.COORDINATOR_DB,
+		env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG,
+		env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET,
+		env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY,
+	];
+}
+
 async function createWorkerFromSettings(
 	settings: Extract<ReturnType<typeof captureCloudflareBrowserAuthEnv>, { kind: "enabled" }>,
 	db: D1DatabaseLike,
@@ -275,21 +304,58 @@ async function createWorkerFromSettings(
 	};
 }
 
+type ConfiguredBindingPin = { bindings?: readonly unknown[] };
+
+function fetchOwnerQualification(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	pin: ConfiguredBindingPin,
+	qualificationLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+) {
+	// Capture credentials, validated settings and the shared binding pin before any await.
+	const adminSecret = coordinatorAdminSecret(env, {});
+	const bindings = configuredBindings(env);
+	const settings = captureCloudflareBrowserAuthEnv(env);
+	const db = env.COORDINATOR_DB;
+	const available =
+		db &&
+		settings.kind === "enabled" &&
+		settings.ownerEnrollmentEnabled &&
+		(!pin.bindings || sameBindings(pin.bindings, bindings));
+	if (!available || settings.kind !== "enabled")
+		return createOwnerQualificationHttp({
+			config: null,
+			backend: null,
+			origin: null,
+			adminSecret,
+			limiter: qualificationLimiter,
+		}).fetch(request);
+	pin.bindings ??= bindings;
+	return createOwnerQualificationHttp({
+		config: {
+			enabled: true,
+			coordinatorId: String(settings.config.coordinatorId),
+			issuer: String(settings.config.issuer),
+			revision: String(settings.config.revision),
+		},
+		backend: createD1AuthLinkBackend(db),
+		origin: new URL(String(settings.config.redirectUri)).origin,
+		adminSecret,
+		limiter: qualificationLimiter,
+	}).fetch(request);
+}
+
 /** Capture configured authentication once; only settled setup crosses requests. */
 export function createConfiguredCloudflareCoordinatorWorker() {
-	let captured: readonly unknown[] | undefined;
+	const pin: ConfiguredBindingPin = {};
 	let completed: ReturnType<typeof createCloudflareCoordinatorWorker> | undefined;
 	const ownerLimiter = createInMemoryRequestRateLimiter();
 	const deviceLimiter = createInMemoryRequestRateLimiter();
+	const qualificationLimiter = createInMemoryRequestRateLimiter();
 	async function configured(env: CloudflareCoordinatorEnv) {
-		const bindings = [
-			env.COORDINATOR_DB,
-			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG,
-			env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET,
-			env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY,
-		];
+		const bindings = configuredBindings(env);
 		// Removing or disabling config after capture is drift, not an initial legacy rollout.
-		if (captured && !sameBindings(captured, bindings)) return null;
+		if (pin.bindings && !sameBindings(pin.bindings, bindings)) return null;
 		const settings = captureCloudflareBrowserAuthEnv(env);
 		if (settings.kind === "disabled") return disabledWorker(settings);
 		if (settings.kind === "invalid") return null;
@@ -297,14 +363,17 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		const db = env.COORDINATOR_DB;
 		if (!db) return null;
 		const worker = await createWorkerFromSettings(settings, db, ownerLimiter);
-		if (captured && !sameBindings(captured, bindings)) return null;
-		captured ??= bindings;
+		if (pin.bindings && !sameBindings(pin.bindings, bindings)) return null;
+		pin.bindings ??= bindings;
 		completed ??= worker;
 		return completed;
 	}
 	return {
-		fetch: (request: Request, env: CloudflareCoordinatorEnv) =>
-			fetchConfiguredWorker(request, env, configured, deviceLimiter),
+		fetch: (request: Request, env: CloudflareCoordinatorEnv) => {
+			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
+				return fetchOwnerQualification(request, env, pin, qualificationLimiter);
+			return fetchConfiguredWorker(request, env, configured, deviceLimiter);
+		},
 		scheduled(
 			controller: ScheduledController,
 			env: CloudflareCoordinatorEnv,

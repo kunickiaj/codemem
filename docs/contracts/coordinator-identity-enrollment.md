@@ -407,9 +407,13 @@ separate approval gates.
 evidence. A bare device-claim link remains ineligible: the existing owner consumer
 requires an issued, nonrevoked qualification, canonical ledger storage, the complete
 connection-history schema and explicit migration 0036 owner-attempt authority pins.
-The reviewed configured-admin handler and `codemem coordinator qualify-owner`
-CLI exist in source; the handler remains unregistered in production. Neither
-installs storage or automatically rebuilds owner attempts. The
+The configured Worker mounts an authenticated
+[preview/issue route](coordinator-identity-group-grants.md#owner-qualification-api)
+for `codemem coordinator qualify-owner` only with valid browser authentication
+and owner enrollment enabled. Default Workers and local serving cannot issue
+qualifications. Neither the route nor CLI installs storage or automatically
+rebuilds owner attempts. This source stack includes qualified owner consumption,
+not a live deployment or a verified live two-device journey. The
 [first-owner A/B recipe](../user-guide.md#first-owner-bootstrap-before-teams)
 keeps operator review, qualification and the independent transport grant separate.
 Migration `0035_add_owner_enrollment_qualifications.sql` creates only an empty

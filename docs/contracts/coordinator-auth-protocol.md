@@ -920,15 +920,17 @@ Bare device claims must never pass as operator approval:
 
 #### Explicitly qualified owner-enrollment exception
 
-The source-only `coordinator_owner_enrollment_qualifications` table and migration
+The `coordinator_owner_enrollment_qualifications` table and migration
 `0035_add_owner_enrollment_qualifications.sql` support a narrow owner-enrollment
 exception only after explicit schema installation and genuine reviewed issuance.
 The existing owner consumer accepts qualified links only with the canonical ledger,
 complete connection-history schema, and migration 0036 owner-attempt column and
-authority guards. The reviewed configured-admin handler and
-`codemem coordinator qualify-owner` CLI exist in source, but the handler remains
-unregistered in production. Neither performs automatic migration or store-open
-installation. Bare device claims and all other privileged consumers remain denied
+authority guards. The configured Worker mounts the authenticated
+[preview/issue route](coordinator-identity-group-grants.md#owner-qualification-api)
+used by `codemem coordinator qualify-owner` only with valid browser authentication
+and owner enrollment enabled. Neither performs automatic migration or store-open
+installation. Default Workers and local serving cannot issue qualifications.
+Bare device claims and all other privileged consumers remain denied
 by default. See the [first-owner A/B recipe](../user-guide.md#first-owner-bootstrap-before-teams)
 for the separate review, qualification and transport-grant steps.
 
@@ -957,8 +959,10 @@ qualification DDL; V2-only, partial, unknown and future lifecycle layouts fail c
 The connection-history liveness mode checks the exact current link and retained
 revocation barrier; existing lifecycle-mode callers are unchanged. This capability
 creates no grant or controller attestation. Its `schemaReady()` method supports
-the separate authenticated handler's explicit unavailable/503 response; it does
-not install storage or make a production route available.
+the authenticated handler's explicit unavailable/503 response; it does not install
+storage or enable issuance without the configured Worker gate. This source stack
+includes qualified owner consumption, not a live deployment or a verified live
+two-device journey.
 
 Preview, issuance and exact retry require the current enrollment Identity to match
 the review's nullable enrollment snapshot exactly (`IS`, including null). A change
