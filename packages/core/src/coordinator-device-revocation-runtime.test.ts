@@ -195,6 +195,79 @@ function instrumented(options: Partial<Parameters<typeof createCoordinatorApp>[0
 	});
 	return { mounted, open, read, close, selected };
 }
+async function validRevocationBody(path: string, target = input) {
+	if (path === preview) return JSON.stringify(target);
+	const evidence = (await (
+		await app().fetch(request(preview, { body: JSON.stringify(target) }))
+	).json()) as { expected_digest: string };
+	return JSON.stringify({ ...target, expected_digest: evidence.expected_digest });
+}
+it.each(
+	[preview, commit].flatMap((path) =>
+		["zero", "short", "long"].map((length) => ({ path, length })),
+	),
+)("rejects $length Content-Length on $path before opening a store", async ({ path, length }) => {
+	// Arrange: commit carries a genuine preview digest, so framing is its only fault.
+	const body = await validRevocationBody(path);
+	const bytes = new TextEncoder().encode(body).byteLength;
+	const declarations = { zero: 0, short: bytes - 1, long: bytes + 1 };
+	const f = instrumented();
+	try {
+		// Act
+		const response = await f.mounted.fetch(
+			request(path, {
+				body,
+				headers: { "Content-Length": String(declarations[length as keyof typeof declarations]) },
+			}),
+		);
+		// Assert
+		expect(response.status).toBe(400);
+		expect(f.open).not.toHaveBeenCalled();
+		expect(f.read).not.toHaveBeenCalled();
+		expect(
+			await store.listDeviceRevocations({
+				deviceId: input.device_id,
+				publicKey: CANONICAL_PUBLIC_KEY,
+			}),
+		).toEqual([]);
+	} finally {
+		if (f.selected.db.open) await f.selected.close();
+	}
+});
+it.each([preview, commit])("measures UTF-8 bytes, not string length, on %s", async (path) => {
+	// Arrange
+	const target = { group_id: input.group_id, device_id: "device-é" };
+	await store.enrollDevice(target.group_id, {
+		deviceId: target.device_id,
+		publicKey: CANONICAL_PUBLIC_KEY,
+		fingerprint: "a".repeat(64),
+	});
+	const body = await validRevocationBody(path, target);
+	const bytes = new TextEncoder().encode(body).byteLength;
+	const mounted = app();
+	// Act: a character count is refused, then the identical JSON with a byte count succeeds.
+	const wrong = await mounted.fetch(
+		request(path, { body, headers: { "Content-Length": String(body.length) } }),
+	);
+	const before = await store.listDeviceRevocations({
+		deviceId: target.device_id,
+		publicKey: CANONICAL_PUBLIC_KEY,
+	});
+	const correct = await mounted.fetch(
+		request(path, { body, headers: { "Content-Length": String(bytes) } }),
+	);
+	// Assert
+	expect(bytes).toBeGreaterThan(body.length);
+	expect(wrong.status).toBe(400);
+	expect(before).toEqual([]);
+	expect(correct.status).toBe(200);
+	expect(
+		await store.listDeviceRevocations({
+			deviceId: target.device_id,
+			publicKey: CANONICAL_PUBLIC_KEY,
+		}),
+	).toHaveLength(path === commit ? 2 : 0);
+});
 it.each([undefined, { coordinatorId: "" }, { coordinatorId: "bad\nID" }])(
 	"fails closed for unavailable trusted context %j",
 	async (deviceRevocation) => {

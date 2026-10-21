@@ -61,7 +61,12 @@ async function authenticate(provided: string | null, configured: string | null):
 	const signature = await globalThis.crypto.subtle.sign("HMAC", key, expected);
 	return globalThis.crypto.subtle.verify("HMAC", key, signature, actual);
 }
+function matchesDeclaredBodyLength(declared: string | null, size: number): boolean {
+	if (declared === null) return true;
+	return /^[0-9]{1,10}$/.test(declared) && Number(declared) === size;
+}
 async function readBody(request: Request): Promise<Uint8Array | null> {
+	const declaredLength = request.headers.get("Content-Length");
 	if (!request.body) return new Uint8Array();
 	const reader = request.body.getReader();
 	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
@@ -82,6 +87,8 @@ async function readBody(request: Request): Promise<Uint8Array | null> {
 			const { done, value } = chunk;
 			if (done) {
 				signal.throwIfAborted();
+				// Empty input follows the existing invalid-input 400 path before store access.
+				if (!matchesDeclaredBodyLength(declaredLength, size)) return new Uint8Array();
 				return bytes.subarray(0, size);
 			}
 			if (value.byteLength > MAX_BODY_BYTES - size) return null;

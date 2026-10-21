@@ -313,3 +313,95 @@ it("resolves rotated SDK admin credentials per request while retaining an in-fli
 	expect(options.requestVerifier).not.toHaveBeenCalled();
 	expect(await store.listDeviceRevocations({ deviceId: input.device_id })).toEqual([]);
 });
+
+async function nativeRevocationBody(
+	worker: ReturnType<typeof createConfiguredCloudflareCoordinatorWorker>,
+	selected: CloudflareCoordinatorEnv,
+	path: string,
+	target = input,
+) {
+	if (path === preview) return JSON.stringify(target);
+	const evidence = (await (
+		await worker.fetch(request(preview, { body: JSON.stringify(target) }), selected)
+	).json()) as { expected_digest: string };
+	return JSON.stringify({ ...target, expected_digest: evidence.expected_digest });
+}
+it.each(
+	[preview, commit].flatMap((path) =>
+		["zero", "short", "long"].map((length) => ({ path, length })),
+	),
+)(
+	"refuses native D1 $length Content-Length on $path before store access",
+	async ({ path, length }) => {
+		// Arrange: use the native enrolled tuple and a real digest for commit requests.
+		const store = await seed();
+		const worker = createConfiguredCloudflareCoordinatorWorker();
+		const selected = bindings();
+		const body = await nativeRevocationBody(worker, selected, path);
+		const bytes = new TextEncoder().encode(body).byteLength;
+		const declarations = { zero: 0, short: bytes - 1, long: bytes + 1 };
+		const prepare = vi.spyOn(env.COORDINATOR_DB, "prepare");
+		const read = vi.spyOn(D1CoordinatorStore.prototype, "getEnrollment");
+		const close = vi.spyOn(D1CoordinatorStore.prototype, "close");
+		// Act
+		const response = await worker.fetch(
+			request(path, {
+				body,
+				headers: { "Content-Length": String(declarations[length as keyof typeof declarations]) },
+			}),
+			selected,
+		);
+		// Assert
+		expect(response.status).toBe(400);
+		expect(prepare).not.toHaveBeenCalled();
+		expect(read).not.toHaveBeenCalled();
+		expect(close).not.toHaveBeenCalled();
+		expect(
+			await store.listDeviceRevocations({
+				deviceId: input.device_id,
+				publicKey: CANONICAL_PUBLIC_KEY,
+			}),
+		).toEqual([]);
+	},
+);
+it.each([preview, commit])(
+	"uses native D1 UTF-8 byte framing, not string length, on %s",
+	async (path) => {
+		// Arrange
+		const store = await seed();
+		const target = { group_id: input.group_id, device_id: "runtime-é" };
+		await store.enrollDevice(target.group_id, {
+			deviceId: target.device_id,
+			publicKey: CANONICAL_PUBLIC_KEY,
+			fingerprint: "a".repeat(64),
+		});
+		const worker = createConfiguredCloudflareCoordinatorWorker();
+		const selected = bindings();
+		const body = await nativeRevocationBody(worker, selected, path, target);
+		const bytes = new TextEncoder().encode(body).byteLength;
+		// Act
+		const wrong = await worker.fetch(
+			request(path, { body, headers: { "Content-Length": String(body.length) } }),
+			selected,
+		);
+		const before = await store.listDeviceRevocations({
+			deviceId: target.device_id,
+			publicKey: CANONICAL_PUBLIC_KEY,
+		});
+		const correct = await worker.fetch(
+			request(path, { body, headers: { "Content-Length": String(bytes) } }),
+			selected,
+		);
+		// Assert
+		expect(bytes).toBeGreaterThan(body.length);
+		expect(wrong.status).toBe(400);
+		expect(before).toEqual([]);
+		expect(correct.status).toBe(200);
+		expect(
+			await store.listDeviceRevocations({
+				deviceId: target.device_id,
+				publicKey: CANONICAL_PUBLIC_KEY,
+			}),
+		).toHaveLength(path === commit ? 2 : 0);
+	},
+);
