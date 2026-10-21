@@ -493,7 +493,42 @@ async function reviewedA() {
 	return { dbPath, keysDir, publicKey, fingerprint, attestationId: attestation.attestation_id };
 }
 
-async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel?: boolean } = {}) {
+type LinkBrowserOptions = { cancel?: boolean; browserFailure?: "after-csrf-rejection" };
+
+async function driveAccountLinkBrowser(
+	url: string,
+	options: LinkBrowserOptions & { deliverLink: (proof: string) => void },
+) {
+	const cancel = options.cancel === true;
+	const page = await request(url);
+	const started = await form("/auth/link/start", await fields(page), cookie(page));
+	expect(started.status, await started.clone().text()).toBe(200);
+	const binder = cookie(started);
+	const callback = await request(
+		fakeProvider.authorize(providerAuthorization(await started.text())),
+		{
+			headers: { cookie: binder },
+		},
+	);
+	const body = await fields(callback);
+	// A valid provider callback is insufficient without this browser's CSRF proof.
+	const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
+	expect(bad.status).toBe(403);
+	expect(await rows("coordinator_auth_account_links")).toEqual([]);
+	if (options.browserFailure === "after-csrf-rejection")
+		throw new Error("Synthetic browser stopped after CSRF rejection");
+	const confirmed = await form(cancel ? "/auth/link/cancel" : "/auth/link/confirm", body, binder);
+	expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+	if (cancel) return;
+	const destination = loopbackLink(await confirmed.text());
+	expect(`${destination.origin}${destination.pathname}`).toBe(
+		"http://127.0.0.1:43128/codemem/auth/complete",
+	);
+	// Clearly mocked receiver: forward only the real server-issued completion proof.
+	options.deliverLink(destination.searchParams.get("completion") ?? "");
+}
+
+async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: LinkBrowserOptions = {}) {
 	const cancel = options.cancel === true;
 	let deliverLink!: (proof: string) => void;
 	let rejectLink!: (error: unknown) => void;
@@ -508,33 +543,9 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 	});
 	let browserWork: Promise<void> | undefined;
 	let browserError: unknown;
+	let statusPath: string | undefined;
+	const progress: string[] = [];
 	let cleanupReply: { status: number; body: unknown } | undefined;
-	const driveBrowser = async (url: string) => {
-		const page = await request(url);
-		const started = await form("/auth/link/start", await fields(page), cookie(page));
-		expect(started.status, await started.clone().text()).toBe(200);
-		const binder = cookie(started);
-		const callback = await request(
-			fakeProvider.authorize(providerAuthorization(await started.text())),
-			{
-				headers: { cookie: binder },
-			},
-		);
-		const body = await fields(callback);
-		// A valid provider callback is insufficient without this browser's CSRF proof.
-		const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
-		expect(bad.status).toBe(403);
-		expect(await rows("coordinator_auth_account_links")).toEqual([]);
-		const confirmed = await form(cancel ? "/auth/link/cancel" : "/auth/link/confirm", body, binder);
-		expect(confirmed.status, await confirmed.clone().text()).toBe(200);
-		if (cancel) return;
-		const destination = loopbackLink(await confirmed.text());
-		expect(`${destination.origin}${destination.pathname}`).toBe(
-			"http://127.0.0.1:43128/codemem/auth/complete",
-		);
-		// Clearly mocked receiver: forward only the real server-issued completion proof.
-		deliverLink(destination.searchParams.get("completion") ?? "");
-	};
 	const result = linkCoordinatorAccount({
 		dbPath: a.dbPath,
 		keysDir: a.keysDir,
@@ -544,20 +555,31 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 		expectedAuthority: "controller_attestation",
 		expectedCoordinatorId: config.coordinatorId,
 		fetch: async (input, init) => {
+			const url = new URL(String(input));
+			if ((init?.method ?? "GET") === "GET" && url.pathname === statusPath && browserWork) {
+				// The browser uses direct Worker requests, so it cannot wait on this runtime-only gate.
+				await browserWork;
+				progress.push("status");
+			}
 			const response = await request(String(input), init);
 			if (String(input).endsWith("/cancel"))
 				cleanupReply = { status: response.status, body: await response.clone().json() };
 			return response;
 		},
 		onBrowserStart: (url) => {
-			browserWork = driveBrowser(url).catch((error) => {
-				browserError = error;
-				rejectLink(error);
-			});
+			const attemptId = new URL(url).searchParams.get("attempt_id") ?? "";
+			statusPath = `/v1/auth/link-attempts/${encodeURIComponent(attemptId)}`;
+			browserWork = driveAccountLinkBrowser(url, { ...options, deliverLink })
+				.catch((error) => {
+					browserError = error;
+					rejectLink(error);
+				})
+				.finally(() => progress.push("browser-settled"));
 		},
 	});
 	const [outcome] = await Promise.allSettled([result]);
 	await browserWork;
+	expect(progress).toEqual(["browser-settled", "status"]);
 	if (browserError) throw browserError;
 	if (cancel) {
 		const attempts = await rows("coordinator_auth_link_attempts");
@@ -837,6 +859,21 @@ it("browser cancellation of A creates no authority and runtime confirms the stop
 	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([
 		{ state: "failed", failure_reason: "browser_cancelled" },
 	]);
+});
+
+it("a rejected A browser flow cancels the runtime without waiting on its own status transport", async () => {
+	// Arrange
+	const a = await reviewedA();
+	const before = await authority();
+	// Act
+	await expect(linkA(a, { browserFailure: "after-csrf-rejection" })).rejects.toThrow(
+		"Synthetic browser stopped after CSRF rejection",
+	);
+	// Assert
+	expect(await authority()).toEqual(before);
+	expect(await rows("coordinator_auth_sessions")).toEqual([]);
+	expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
+	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([{ state: "failed" }]);
 });
 
 it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
