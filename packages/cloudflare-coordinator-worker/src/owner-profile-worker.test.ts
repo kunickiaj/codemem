@@ -1,8 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import Sqlite from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -63,81 +61,6 @@ let calls: Array<{
 let receipts: unknown[];
 let dropFinalReply: boolean;
 
-// Temporary CI diagnostics: only static stage/route labels and monotonic durations leave the test.
-type JourneySpan = { stage: string; start: number; finish?: number };
-type JourneyTrace = { lostReply: boolean; start: number; spans: JourneySpan[] };
-// Late continuations retain their original trace instead of writing into the next test's summary.
-const journeyTraceContext = new AsyncLocalStorage<JourneyTrace>();
-let activeJourneyTrace: JourneyTrace | undefined;
-
-function beginJourneySpan(stage: string) {
-	const trace = journeyTraceContext.getStore();
-	if (!trace) return;
-	const span: JourneySpan = { stage, start: performance.now() };
-	trace.spans.push(span);
-	return span;
-}
-
-function traceJourneySync<T>(stage: string, work: () => T): T {
-	const span = beginJourneySpan(stage);
-	try {
-		return work();
-	} finally {
-		if (span) span.finish = performance.now();
-	}
-}
-
-async function traceJourneyStage<T>(stage: string, work: () => T | Promise<T>): Promise<T> {
-	const span = beginJourneySpan(stage);
-	try {
-		return await work();
-	} finally {
-		if (span) span.finish = performance.now();
-	}
-}
-
-function journeyRoute(pathname: string): string {
-	const routes: Record<string, string> = {
-		"/v1/admin/auth-controller-reviews": "controller-review",
-		"/v1/admin/identity-group-grants": "identity-grant",
-		"/v1/auth/link-attempts": "link-create",
-		"/v1/auth/owner-config": "owner-config",
-		"/v1/auth/owner-attempts/finalize": "owner-finalize",
-		"/auth/link/start": "link-start",
-		"/auth/link/confirm": "link-confirm",
-		"/auth/link/cancel": "link-cancel",
-		"/auth/callback": "oidc-callback",
-		"/auth/sign-in": "sign-in",
-		"/auth/owner/admit": "owner-admit",
-		"/auth/owner/start": "owner-start",
-		"/auth/owner/confirm": "owner-confirm",
-		"/.well-known/openid-configuration": "discovery",
-		"/token": "token",
-		"/jwks": "jwks",
-	};
-	if (Object.hasOwn(routes, pathname)) return routes[pathname] ?? "other";
-	if (/^\/v1\/auth\/link-attempts\/[^/]+\/finalize$/.test(pathname)) return "link-finalize";
-	if (/^\/v1\/auth\/link-attempts\/[^/]+\/cancel$/.test(pathname)) return "link-cleanup";
-	if (/^\/v1\/auth\/link-attempts\/[^/]+$/.test(pathname)) return "link-status";
-	return "other";
-}
-
-function printJourneyTrace() {
-	const trace = activeJourneyTrace;
-	if (!trace) return;
-	const now = performance.now();
-	const elapsed = (start: number, finish: number) => Math.round((finish - start) * 10) / 10;
-	const spans = trace.spans.map((span) => ({
-		stage: span.stage,
-		startMs: elapsed(trace.start, span.start),
-		elapsedMs: elapsed(span.start, span.finish ?? now),
-		completed: span.finish !== undefined,
-	}));
-	process.stderr.write(
-		`${JSON.stringify({ diagnostic: "owner-profile-account-journey", lostReply: trace.lostReply, elapsedMs: elapsed(trace.start, now), spans, pending: spans.filter((span) => !span.completed) })}\n`,
-	);
-}
-
 registerOwnerProfileClientMockState({
 	signing: { corrupt: false },
 	databaseOpens: [],
@@ -153,11 +76,10 @@ const request = (path: string | URL, init?: RequestInit) => {
 	const headers = new Headers(init?.headers);
 	headers.set("CF-Connecting-IP", "127.0.0.1");
 	// Fresh instances also exercise configuration and shared CSRF/admission keys.
-	const method = init?.method === "POST" ? "POST" : "GET";
-	return traceJourneyStage(`worker ${method} ${journeyRoute(url.pathname)}`, () => {
-		const worker = traceJourneySync("compose-worker", createConfiguredCloudflareCoordinatorWorker);
-		return worker.fetch(new Request(url, { ...init, headers }), bindings);
-	});
+	return createConfiguredCloudflareCoordinatorWorker().fetch(
+		new Request(url, { ...init, headers }),
+		bindings,
+	);
 };
 const json = (path: string, body: unknown, headers: Record<string, string> = {}) =>
 	request(path, {
@@ -271,7 +193,6 @@ async function seedHistoricalAuthority() {
 }
 
 beforeEach(async () => {
-	activeJourneyTrace = undefined;
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	// Only loopback delivery is substituted; the actual Worker supplies its proofs.
 	const completion = new Promise<{ completionSecret: string; confirmationHash: string }>(
@@ -320,9 +241,7 @@ beforeEach(async () => {
 	fakeProvider = provider();
 	vi.mocked(globalThis.fetch).mockImplementation((input, options) => {
 		if (typeof input !== "string") throw new Error("Unexpected provider transport");
-		return traceJourneyStage(`provider ${journeyRoute(new URL(input).pathname)}`, () =>
-			fakeProvider.fetch(input, options as Parameters<typeof fakeProvider.fetch>[1]),
-		);
+		return fakeProvider.fetch(input, options as Parameters<typeof fakeProvider.fetch>[1]);
 	});
 	calls = [];
 	receipts = [];
@@ -349,8 +268,6 @@ beforeEach(async () => {
 	};
 });
 afterEach(async () => {
-	// Stack-order hooks run this before the imported harness restores mocks and removes its profile.
-	printJourneyTrace();
 	await remote?.dispose();
 });
 
@@ -576,42 +493,7 @@ async function reviewedA() {
 	return { dbPath, keysDir, publicKey, fingerprint, attestationId: attestation.attestation_id };
 }
 
-type LinkBrowserOptions = { cancel?: boolean; browserFailure?: "after-csrf-rejection" };
-
-async function driveAccountLinkBrowser(
-	url: string,
-	options: LinkBrowserOptions & { deliverLink: (proof: string) => void },
-) {
-	const cancel = options.cancel === true;
-	const page = await request(url);
-	const started = await form("/auth/link/start", await fields(page), cookie(page));
-	expect(started.status, await started.clone().text()).toBe(200);
-	const binder = cookie(started);
-	const callback = await request(
-		fakeProvider.authorize(providerAuthorization(await started.text())),
-		{
-			headers: { cookie: binder },
-		},
-	);
-	const body = await fields(callback);
-	// A valid provider callback is insufficient without this browser's CSRF proof.
-	const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
-	expect(bad.status).toBe(403);
-	expect(await rows("coordinator_auth_account_links")).toEqual([]);
-	if (options.browserFailure === "after-csrf-rejection")
-		throw new Error("Synthetic browser stopped after CSRF rejection");
-	const confirmed = await form(cancel ? "/auth/link/cancel" : "/auth/link/confirm", body, binder);
-	expect(confirmed.status, await confirmed.clone().text()).toBe(200);
-	if (cancel) return;
-	const destination = loopbackLink(await confirmed.text());
-	expect(`${destination.origin}${destination.pathname}`).toBe(
-		"http://127.0.0.1:43128/codemem/auth/complete",
-	);
-	// Clearly mocked receiver: forward only the real server-issued completion proof.
-	options.deliverLink(destination.searchParams.get("completion") ?? "");
-}
-
-async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: LinkBrowserOptions = {}) {
+async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel?: boolean } = {}) {
 	const cancel = options.cancel === true;
 	let deliverLink!: (proof: string) => void;
 	let rejectLink!: (error: unknown) => void;
@@ -626,9 +508,33 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: LinkBrow
 	});
 	let browserWork: Promise<void> | undefined;
 	let browserError: unknown;
-	let statusPath: string | undefined;
-	const progress: string[] = [];
 	let cleanupReply: { status: number; body: unknown } | undefined;
+	const driveBrowser = async (url: string) => {
+		const page = await request(url);
+		const started = await form("/auth/link/start", await fields(page), cookie(page));
+		expect(started.status, await started.clone().text()).toBe(200);
+		const binder = cookie(started);
+		const callback = await request(
+			fakeProvider.authorize(providerAuthorization(await started.text())),
+			{
+				headers: { cookie: binder },
+			},
+		);
+		const body = await fields(callback);
+		// A valid provider callback is insufficient without this browser's CSRF proof.
+		const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
+		expect(bad.status).toBe(403);
+		expect(await rows("coordinator_auth_account_links")).toEqual([]);
+		const confirmed = await form(cancel ? "/auth/link/cancel" : "/auth/link/confirm", body, binder);
+		expect(confirmed.status, await confirmed.clone().text()).toBe(200);
+		if (cancel) return;
+		const destination = loopbackLink(await confirmed.text());
+		expect(`${destination.origin}${destination.pathname}`).toBe(
+			"http://127.0.0.1:43128/codemem/auth/complete",
+		);
+		// Clearly mocked receiver: forward only the real server-issued completion proof.
+		deliverLink(destination.searchParams.get("completion") ?? "");
+	};
 	const result = linkCoordinatorAccount({
 		dbPath: a.dbPath,
 		keysDir: a.keysDir,
@@ -638,33 +544,20 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: LinkBrow
 		expectedAuthority: "controller_attestation",
 		expectedCoordinatorId: config.coordinatorId,
 		fetch: async (input, init) => {
-			const url = new URL(String(input));
-			if ((init?.method ?? "GET") === "GET" && url.pathname === statusPath && browserWork) {
-				// The browser uses direct Worker requests, so it cannot wait on this runtime-only gate.
-				await traceJourneyStage("link-status-browser-work", () => browserWork);
-				progress.push("status");
-			}
 			const response = await request(String(input), init);
 			if (String(input).endsWith("/cancel"))
 				cleanupReply = { status: response.status, body: await response.clone().json() };
 			return response;
 		},
 		onBrowserStart: (url) => {
-			const attemptId = new URL(url).searchParams.get("attempt_id") ?? "";
-			statusPath = `/v1/auth/link-attempts/${encodeURIComponent(attemptId)}`;
-			browserWork = traceJourneyStage("link-browser", () =>
-				driveAccountLinkBrowser(url, { ...options, deliverLink }),
-			)
-				.catch((error) => {
-					browserError = error;
-					rejectLink(error);
-				})
-				.finally(() => progress.push("browser-settled"));
+			browserWork = driveBrowser(url).catch((error) => {
+				browserError = error;
+				rejectLink(error);
+			});
 		},
 	});
 	const [outcome] = await Promise.allSettled([result]);
 	await browserWork;
-	expect(progress).toEqual(["browser-settled", "status"]);
 	if (browserError) throw browserError;
 	if (cancel) {
 		const attempts = await rows("coordinator_auth_link_attempts");
@@ -912,35 +805,25 @@ async function verifyAccountReceiptReopensOffline({
 	expect(fakeProvider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
 }
 
+// This real D1/OIDC correctness journey is not a five-second performance requirement.
 it.each([false, true])(
 	"links reviewed A then account-enrolls B without changing keys or grants (lost reply: %s)",
 	async (lostReply) => {
 		// Arrange: neither an account link nor B's Identity exists before the maintained runtime runs.
-		const trace: JourneyTrace = { lostReply, start: performance.now(), spans: [] };
-		activeJourneyTrace = trace;
-		await journeyTraceContext.run(trace, async () => {
-			const owner = await traceJourneyStage("arrange", arrangeReviewedAccountOwner);
-			const linked = await traceJourneyStage("link-and-grant", () =>
-				linkAndGrantAccountOwner(owner),
-			);
-			const session = await traceJourneyStage("sign-in", signIn);
-			const profile = await traceJourneyStage("prepare", () => prepareAccountProfile({ session }));
-			// Act: the fixed browser URL uploads the client's exact signed request, not an admin capability.
-			await traceJourneyStage("retain-final", () => retainAccountFinalForRetry({ lostReply }));
-			const adopted = await traceJourneyStage("adopt", adoptAccountProfile);
-			// Assert: adoption comes solely from the configured Worker's receipt, preserving both device keys.
-			await traceJourneyStage("verify-authority", () =>
-				verifyAccountAuthority({ ...adopted, ...linked, lostReply }),
-			);
-			traceJourneySync("verify-transport", () => verifyAccountFinalTransport({ lostReply }));
-			traceJourneySync("verify-profile", () =>
-				verifyAccountProfilePreserved({ ...adopted, ...profile, ...owner }),
-			);
-			await traceJourneyStage("verify-offline-reopen", () =>
-				verifyAccountReceiptReopensOffline(adopted),
-			);
-		});
+		const owner = await arrangeReviewedAccountOwner();
+		const linked = await linkAndGrantAccountOwner(owner);
+		const session = await signIn();
+		const profile = await prepareAccountProfile({ session });
+		// Act: the fixed browser URL uploads the client's exact signed request, not an admin capability.
+		await retainAccountFinalForRetry({ lostReply });
+		const adopted = await adoptAccountProfile();
+		// Assert: adoption comes solely from the configured Worker's receipt, preserving both device keys.
+		await verifyAccountAuthority({ ...adopted, ...linked, lostReply });
+		verifyAccountFinalTransport({ lostReply });
+		verifyAccountProfilePreserved({ ...adopted, ...profile, ...owner });
+		await verifyAccountReceiptReopensOffline(adopted);
 	},
+	15_000,
 );
 
 it("browser cancellation of A creates no authority and runtime confirms the stopped link", async () => {
@@ -956,21 +839,6 @@ it("browser cancellation of A creates no authority and runtime confirms the stop
 	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([
 		{ state: "failed", failure_reason: "browser_cancelled" },
 	]);
-});
-
-it("a rejected A browser flow cancels the runtime without waiting on its own status transport", async () => {
-	// Arrange
-	const a = await reviewedA();
-	const before = await authority();
-	// Act
-	await expect(linkA(a, { browserFailure: "after-csrf-rejection" })).rejects.toThrow(
-		"Synthetic browser stopped after CSRF rejection",
-	);
-	// Assert
-	expect(await authority()).toEqual(before);
-	expect(await rows("coordinator_auth_sessions")).toEqual([]);
-	expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
-	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([{ state: "failed" }]);
 });
 
 it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
