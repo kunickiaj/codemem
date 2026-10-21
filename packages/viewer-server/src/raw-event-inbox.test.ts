@@ -136,25 +136,39 @@ describe("FileRawEventInbox", () => {
 	});
 
 	it("enforces the entry limit across concurrent appends", async () => {
+		// Arrange: retain the accepted entry even if the background drain starts first.
+		let releaseProcessing: (() => void) | undefined;
+		const processingBlocked = new Promise<void>((resolve) => {
+			releaseProcessing = resolve;
+		});
+		const processEntry = vi.fn(async () => await processingBlocked);
 		const inbox = new FileRawEventInbox({
 			directory: testDirectory(),
 			maxEntries: 1,
-			processEntry: vi.fn().mockResolvedValue(undefined),
+			processEntry,
 		});
 
-		const results = await Promise.allSettled([
-			inbox.enqueue({ event_id: "event-capacity-a" }),
-			inbox.enqueue({ event_id: "event-capacity-b" }),
-		]);
+		try {
+			// Act: race both appends and let processing start without completing.
+			const results = await Promise.allSettled([
+				inbox.enqueue({ event_id: "event-capacity-a" }),
+				inbox.enqueue({ event_id: "event-capacity-b" }),
+			]);
+			await vi.waitFor(() => expect(processEntry).toHaveBeenCalledOnce());
 
-		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-		const rejected = results.find((result) => result.status === "rejected");
-		expect(rejected).toMatchObject({
-			status: "rejected",
-			reason: { code: RAW_EVENT_INBOX_FULL_CODE },
-		});
-		expect((await inbox.status()).pending).toBe(1);
-		await inbox.stop();
+			// Assert: one append succeeds, the excess append fails, and the held entry remains.
+			expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+			expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+			const rejected = results.find((result) => result.status === "rejected");
+			expect(rejected).toMatchObject({
+				status: "rejected",
+				reason: { code: RAW_EVENT_INBOX_FULL_CODE },
+			});
+			expect(await inbox.status()).toMatchObject({ pending: 1, draining: true });
+		} finally {
+			releaseProcessing?.();
+			await inbox.stop();
+		}
 	});
 });
 
