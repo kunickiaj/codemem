@@ -136,6 +136,14 @@ export {
 	upgradeCoordinatorAuthSchemaFile,
 } from "./coordinator-auth-schema-operator.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
+export {
+	COORDINATOR_DEVICE_REVOCATION_SCOPE,
+	type CoordinatorDeviceRevocationCommit,
+	type CoordinatorDeviceRevocationPreview,
+	type CoordinatorDeviceRevocationReference,
+	type CoordinatorRevokeDeviceActionOptions,
+	coordinatorRevokeDeviceAction,
+} from "./coordinator-device-revocation-client.js";
 export type {
 	CoordinatorEnrollmentReconcileIssue,
 	CoordinatorEnrollmentReconcileResult,
