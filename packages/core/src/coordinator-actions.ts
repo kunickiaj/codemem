@@ -13,6 +13,7 @@ import {
 import {
 	decodeInviteForImport,
 	inspectRecipientInvite,
+	inviteImportTransportError,
 	isRecipientInvite,
 	previewValidatedRecipientInvite,
 	recipientInviteOnboardingRequest,
@@ -592,24 +593,6 @@ async function localScopeForGroup(
 		(await store.listScopes({ groupId, includeInactive: true })).find(
 			(scope) => scope.scope_id === scopeId,
 		) ?? null
-	);
-}
-
-function inviteImportTransportError(error: unknown): Error {
-	const name = typeof error === "object" && error && "name" in error ? String(error.name) : "";
-	const message = error instanceof Error ? error.message : String(error ?? "");
-	if (name === "TimeoutError" || /timed? out/i.test(message)) {
-		return new Error(
-			"Invite import timed out contacting the coordinator. Check network access and try again.",
-		);
-	}
-	if (name === "TypeError" || /fetch failed|network/i.test(message)) {
-		return new Error(
-			"Invite import could not reach the coordinator. Check network access and use the original coordinator URL; redirects are not accepted.",
-		);
-	}
-	return new Error(
-		"Invite import transport failed. Check coordinator access and retry using the original URL; redirects are not accepted.",
 	);
 }
 

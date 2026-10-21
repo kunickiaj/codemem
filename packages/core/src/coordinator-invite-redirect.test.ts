@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import {
 	coordinatorCreateInviteAction,
 	coordinatorImportInviteAction,
 } from "./coordinator-actions.js";
+import { decodeInvitePayload, encodeInvitePayload } from "./coordinator-invites.js";
 import { connect } from "./db.js";
 import { coordinatorReviewInviteAction } from "./index.js";
 import { initDatabase } from "./maintenance.js";
@@ -51,6 +52,7 @@ beforeEach(() => {
 		vi.stubEnv(name, value);
 });
 afterEach(async () => {
+	vi.unstubAllGlobals();
 	await Promise.all(servers.map(close));
 	vi.unstubAllEnvs();
 	rmSync(directory, { recursive: true, force: true });
@@ -233,4 +235,102 @@ it("keeps ordinary peer redirects following by default", async () => {
 	// Assert
 	expect(result).toEqual([200, { ok: true }]);
 	expect(f.sinks).toEqual(["/sink"]);
+});
+
+it.each(
+	["review", "import"].flatMap((action) =>
+		[
+			{
+				name: "TimeoutError",
+				message:
+					"Invite import timed out contacting the coordinator. Check network access and try again.",
+			},
+			{
+				name: "TypeError",
+				message:
+					"Invite import could not reach the coordinator. Check network access and use the original coordinator URL; redirects are not accepted.",
+			},
+		].map((failure) => ({ action, ...failure })),
+	),
+)("$action sanitizes inspection $name without joining or changing config", async (testCase) => {
+	// Arrange: SDK import must pass digest validation before exercising failed inspection.
+	const f = await fixture();
+	const config = '{"custom_setting":"preserve"}\n';
+	writeFileSync(f.options.configPath, config);
+	const review = await coordinatorReviewInviteAction(f.options);
+	f.received.length = 0;
+	const secret = "synthetic-private-token";
+	const transportError = new Error(`https://private.invalid/${secret}`, {
+		cause: new Error(`private cause ${secret}`),
+	});
+	transportError.name = testCase.name;
+	const fetch = vi.fn().mockRejectedValue(transportError);
+	vi.stubGlobal("fetch", fetch);
+	// Act
+	const action =
+		testCase.action === "review" ? coordinatorReviewInviteAction : coordinatorImportInviteAction;
+	const failure = await action({
+		...f.options,
+		reviewedOnboardingDigest: review.reviewed_onboarding_digest,
+	}).catch((error: unknown) => error);
+	// Assert: report an actionable category, never the original URL, token, or cause.
+	expect(failure).toBeInstanceOf(Error);
+	expect(failure).toMatchObject({ message: testCase.message });
+	expect((failure as Error).cause).toBeUndefined();
+	expect(String(failure)).not.toContain(secret);
+	expect(String(failure)).not.toContain("private.invalid");
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(fetch.mock.calls[0]?.[0]).toBe(`${f.url}/v1/invites/inspect`);
+	expect(f.received).toEqual([]);
+	expect(readFileSync(f.options.configPath, "utf8")).toBe(config);
+});
+
+it.each([
+	{ label: "no trailing slash", suffix: "", trailing: "" },
+	{ label: "long trailing run", suffix: "", trailing: "/".repeat(10_000) },
+	{ label: "long interior run ending in x", suffix: `${"/".repeat(10_000)}x`, trailing: "///" },
+])("review removes only trailing slashes: $label", async ({ suffix, trailing }) => {
+	// Arrange: reuse valid inspection data but mock transport for arbitrary URL path shapes.
+	const f = await fixture();
+	const payload = decodeInvitePayload(f.options.inviteValue);
+	const [, inspection] = await requestJson("POST", `${f.url}/v1/invites/inspect`, {
+		body: { token: payload.token },
+	});
+	const normalized = `${f.url}${suffix}`;
+	writeFileSync(
+		f.options.configPath,
+		JSON.stringify({ sync_coordinator_url: `${normalized}////` }),
+	);
+	const fetch = vi.fn().mockResolvedValue(Response.json(inspection));
+	vi.stubGlobal("fetch", fetch);
+	// Act
+	const review = await coordinatorReviewInviteAction({
+		...f.options,
+		inviteValue: encodeInvitePayload({ ...payload, coordinator_url: `${normalized}${trailing}` }),
+	});
+	// Assert: matching config is accepted and interior slashes survive the request unchanged.
+	expect(review.status).toBe("review");
+	expect(fetch).toHaveBeenCalledTimes(1);
+	expect(fetch.mock.calls[0]?.[0]).toBe(`${normalized}/v1/invites/inspect`);
+});
+
+it("review rejects coordinator differences before inspection despite matching slash runs", async () => {
+	// Arrange
+	const f = await fixture();
+	const payload = decodeInvitePayload(f.options.inviteValue);
+	const interior = "/".repeat(10_000);
+	writeFileSync(
+		f.options.configPath,
+		JSON.stringify({ sync_coordinator_url: `${f.url}${interior}x///` }),
+	);
+	const fetch = vi.fn();
+	vi.stubGlobal("fetch", fetch);
+	// Act
+	const result = coordinatorReviewInviteAction({
+		...f.options,
+		inviteValue: encodeInvitePayload({ ...payload, coordinator_url: `${f.url}${interior}y///` }),
+	});
+	// Assert
+	await expect(result).rejects.toThrow("invite_coordinator_conflict");
+	expect(fetch).not.toHaveBeenCalled();
 });

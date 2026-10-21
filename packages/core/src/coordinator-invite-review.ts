@@ -209,6 +209,30 @@ export async function previewValidatedRecipientInvite(opts: {
 	};
 }
 
+function stripInviteTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value[end - 1] === "/") end--;
+	return value.slice(0, end);
+}
+
+export function inviteImportTransportError(error: unknown): Error {
+	const name = typeof error === "object" && error && "name" in error ? String(error.name) : "";
+	const message = error instanceof Error ? error.message : String(error ?? "");
+	if (name === "TimeoutError" || /timed? out/i.test(message)) {
+		return new Error(
+			"Invite import timed out contacting the coordinator. Check network access and try again.",
+		);
+	}
+	if (name === "TypeError" || /fetch failed|network/i.test(message)) {
+		return new Error(
+			"Invite import could not reach the coordinator. Check network access and use the original coordinator URL; redirects are not accepted.",
+		);
+	}
+	return new Error(
+		"Invite import transport failed. Check coordinator access and retry using the original URL; redirects are not accepted.",
+	);
+}
+
 export async function inspectRecipientInvite(
 	coordinatorUrl: string,
 	token: string,
@@ -218,11 +242,11 @@ export async function inspectRecipientInvite(
 	try {
 		[status, inspection] = await requestJson(
 			"POST",
-			`${coordinatorUrl.replace(/\/+$/u, "")}/v1/invites/inspect`,
+			`${stripInviteTrailingSlashes(coordinatorUrl)}/v1/invites/inspect`,
 			{ body: { token }, timeoutS: 10, redirect: "error" },
 		);
-	} catch {
-		throw new Error("invite_inspection_transport_failed");
+	} catch (error) {
+		throw inviteImportTransportError(error);
 	}
 	if (status >= 200 && status < 300) return inspection;
 	const detail = inspection?.error;
@@ -299,10 +323,10 @@ export async function coordinatorReviewInviteAction(
 	const config = opts.configPath
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
-	const existingCoordinator = String(config.sync_coordinator_url ?? "")
-		.trim()
-		.replace(/\/+$/u, "");
-	if (existingCoordinator && existingCoordinator !== coordinatorUrl.replace(/\/+$/u, ""))
+	const existingCoordinator = stripInviteTrailingSlashes(
+		String(config.sync_coordinator_url ?? "").trim(),
+	);
+	if (existingCoordinator && existingCoordinator !== stripInviteTrailingSlashes(coordinatorUrl))
 		throw new Error("invite_coordinator_conflict");
 	const { device, profile } = readReviewProfile(opts, payload, config);
 	const response = await inspectRecipientInvite(coordinatorUrl, String(payload.token));
