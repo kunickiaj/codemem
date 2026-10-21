@@ -25,6 +25,7 @@ const REQUIRED_REPO_MARKERS = [
 	"plugins/claude/.claude-plugin/plugin.json",
 	".claude-plugin/marketplace.json",
 	"plugins/codex/.codex-plugin/plugin.json",
+	"plugins/codex/.mcp.json",
 ];
 
 function validateSemver(version) {
@@ -137,6 +138,65 @@ function setPackageVersion(root, relativePath, version, writes, changed) {
 	changed.push(relativePath);
 }
 
+function parseMcpPackageSpec(spec, context) {
+	const match = spec?.match(/^(codemem|@codemem\/embeddings)(?:@(.+))?$/);
+	if (!match || (match[2] !== undefined && !SEMVER_RE.test(match[2]))) {
+		throw new Error(`${context} invalid --package spec: ${spec}`);
+	}
+	return { name: match[1] === "codemem" ? "cli" : "embeddings", version: match[2] ?? "" };
+}
+
+function readMcpPackagePins(launcher, context) {
+	expectObject(launcher, context);
+	if (launcher.command !== "npx") {
+		throw new Error(`${context} command must be npx`);
+	}
+	const args = expectArray(launcher.args, `${context} args`);
+	if (args.some((arg) => typeof arg !== "string" || !arg.trim())) {
+		throw new Error(`${context} args must contain nonempty strings`);
+	}
+	const pins = {};
+	let executableIndex = -1;
+	for (let index = 0; index < args.length; index += 1) {
+		if (["-y", "--yes", "--offline"].includes(args[index])) continue;
+		if (args[index] === "-p" || args[index].startsWith("--package=")) {
+			throw new Error(`${context} package specs must use separate --package arguments`);
+		}
+		if (args[index] !== "--package") {
+			executableIndex = index;
+			break;
+		}
+		const specIndex = index + 1;
+		const { name, version } = parseMcpPackageSpec(args[specIndex], context);
+		if (pins[name]) throw new Error(`${context} duplicate ${name} --package spec`);
+		pins[name] = { index: specIndex, version };
+		index = specIndex;
+	}
+	if (!pins.cli || !pins.embeddings) {
+		throw new Error(`${context} requires codemem and @codemem/embeddings --package specs`);
+	}
+	if (
+		args[executableIndex] !== "codemem" ||
+		args[executableIndex + 1] !== "mcp"
+	) {
+		throw new Error(`${context} must run codemem mcp after --package specs`);
+	}
+	if (args.slice(executableIndex + 2).some(
+		(arg) => arg === "--package" || arg === "-p" || arg.startsWith("--package="),
+	)) {
+		throw new Error(`${context} --package specs must precede the executable`);
+	}
+	return pins;
+}
+
+function setMcpPackagePins(launcher, version, context) {
+	const pins = readMcpPackagePins(launcher, context);
+	const changed = pins.cli.version !== version || pins.embeddings.version !== version;
+	launcher.args[pins.cli.index] = `codemem@${version}`;
+	launcher.args[pins.embeddings.index] = `@codemem/embeddings@${version}`;
+	return changed;
+}
+
 export function readVersions(root) {
 	const repoRoot = ensureManagedRepoRoot(root);
 	const claudePlugin = loadJson(
@@ -151,6 +211,15 @@ export function readVersions(root) {
 		resolveManagedPath(repoRoot, "plugins/codex/.codex-plugin/plugin.json"),
 		"plugins/codex/.codex-plugin/plugin.json",
 	);
+	const claudeMcpPins = readMcpPackagePins(
+		claudePlugin.mcpServers?.codemem,
+		"plugins/claude/.claude-plugin/plugin.json MCP launcher",
+	);
+	const codexMcp = loadJson(
+		resolveManagedPath(repoRoot, "plugins/codex/.mcp.json"),
+		"plugins/codex/.mcp.json",
+	);
+	const codexMcpPins = readMcpPackagePins(codexMcp.codemem, "plugins/codex/.mcp.json MCP launcher");
 	const metadata = expectObject(
 		marketplace.metadata,
 		".claude-plugin/marketplace.json metadata",
@@ -198,6 +267,10 @@ export function readVersions(root) {
 		marketplace_metadata: String(metadata.version ?? ""),
 		marketplace_plugin: String(codememPlugin.version ?? ""),
 		codex_plugin_manifest: String(codexPlugin.version ?? ""),
+		claude_mcp_cli: claudeMcpPins.cli.version,
+		claude_mcp_embeddings: claudeMcpPins.embeddings.version,
+		codex_mcp_cli: codexMcpPins.cli.version,
+		codex_mcp_embeddings: codexMcpPins.embeddings.version,
 	};
 }
 
@@ -276,7 +349,12 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 	const claudePluginPath = resolveManagedPath(repoRoot, "plugins/claude/.claude-plugin/plugin.json");
 	const claudePluginText = readText(claudePluginPath);
 	const claudePlugin = loadJson(claudePluginPath, "plugins/claude/.claude-plugin/plugin.json");
-	if (claudePlugin.version !== version) {
+	const claudeMcpChanged = setMcpPackagePins(
+		claudePlugin.mcpServers?.codemem,
+		version,
+		"plugins/claude/.claude-plugin/plugin.json MCP launcher",
+	);
+	if (claudePlugin.version !== version || claudeMcpChanged) {
 		claudePlugin.version = version;
 		writes.set(claudePluginPath, dumpJson(claudePlugin, detectJsonIndent(claudePluginText)));
 		changed.push("plugins/claude/.claude-plugin/plugin.json");
@@ -318,6 +396,14 @@ export function setVersion(root, version, { dryRun = false } = {}) {
 		codexPlugin.version = version;
 		writes.set(codexPluginPath, dumpJson(codexPlugin, detectJsonIndent(codexPluginText)));
 		changed.push("plugins/codex/.codex-plugin/plugin.json");
+	}
+
+	const codexMcpPath = resolveManagedPath(repoRoot, "plugins/codex/.mcp.json");
+	const codexMcpText = readText(codexMcpPath);
+	const codexMcp = loadJson(codexMcpPath, "plugins/codex/.mcp.json");
+	if (setMcpPackagePins(codexMcp.codemem, version, "plugins/codex/.mcp.json MCP launcher")) {
+		writes.set(codexMcpPath, dumpJson(codexMcp, detectJsonIndent(codexMcpText)));
+		changed.push("plugins/codex/.mcp.json");
 	}
 
 	if (!dryRun) {

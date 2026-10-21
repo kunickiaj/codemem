@@ -1,7 +1,15 @@
 {
   "codemem": {
     "command": "npx",
-    "args": ["-y", "--package", "codemem", "--package", "@codemem/embeddings", "codemem", "mcp"],
+    "args": [
+      "-y",
+      "--package",
+      "codemem@0.47.0-beta.1",
+      "--package",
+      "@codemem/embeddings@0.47.0-beta.1",
+      "codemem",
+      "mcp"
+    ],
     "startup_timeout_sec": 30,
     "tool_timeout_sec": 60
   }

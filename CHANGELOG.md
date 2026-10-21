@@ -20,6 +20,7 @@
 
 - Added the missing CLI handoff for recipient invitation review and acceptance: use `coordinator import-invite --review`, then pass the returned digest with `--reviewed-onboarding-digest`.
 - Rejected invitation inspection and join redirects so invitation tokens are not forwarded to another endpoint.
+- Pinned the bundled Claude and Codex MCP launchers to the plugin's exact release, so prerelease plugins do not start the previous stable backend.
 
 **Upgrade notes and limitations:**
 

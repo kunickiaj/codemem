@@ -34,8 +34,18 @@ Version bumps are prepared on a release branch and touch these files:
 - `packages/cli/.opencode/plugins/codemem.js` (`PINNED_BACKEND_VERSION`)
 - `packages/opencode-plugin/.opencode/lib/runtime.js` (`PINNED_BACKEND_VERSION`)
 - `.claude-plugin/marketplace.json` (marketplace metadata version and codemem plugin entry version)
-- `plugins/claude/.claude-plugin/plugin.json` (Claude plugin metadata version)
+- `plugins/claude/.claude-plugin/plugin.json` (Claude plugin metadata version and exact MCP `--package` pins for `codemem` and `@codemem/embeddings`)
 - `plugins/codex/.codex-plugin/plugin.json` (Codex plugin metadata version; also pins the `npx -y codemem@<version>` fallback used by Codex hook scripts)
+- `plugins/codex/.mcp.json` (exact MCP `--package` pins for `codemem` and `@codemem/embeddings`)
+
+Both checked-in MCP launchers use the shared release version for both packages, including
+prereleases. Plugin metadata alone does not select an npm version: unversioned package specs
+resolve the registry's `latest` tag, which may still point to the previous stable release.
+The release helper checks these four pins and repairs unversioned specs even when the
+manifest already has the target version. It changes only the package specs in launcher
+arguments; the plain `codemem mcp` executable, timeouts, and unrelated arguments stay intact.
+Malformed launchers fail validation before any managed files are written. These pins apply
+only to the shipped Claude and Codex launchers, not user CLI setup or global configuration.
 
 Use the release version helper to verify or apply the bump:
 
