@@ -491,6 +491,16 @@ An offline device is a passive waiting state, not a failure or revocation. It ke
 
 Disabling a device enrollment for one coordinator group revokes future delivery only for Projects in that group. The global identity device remains active, stays in **Devices**, and can retain access granted through other groups. Use **Advanced → Coordinator Administration** only to review or re-enable that technical group enrollment. Re-enabling clears the disabled state; the next owner reconciliation pass then restores only the Projects currently authorized through the Identity's direct shares and Team policies for that group. Delivery resumes without a broader re-invite, and unrelated Projects remain absent. A separate global identity-device revocation removes the device from the active list; it is not restored through the group enrollment action. Neither revocation nor disabling can delete memories already copied to a recipient device.
 
+Configured coordinator runtimes can expose operator-only global device revocation
+through a JSON HTTP preview and digest-confirmed commit. This blocks the device ID
+with any key and its canonical signing key with any device ID across the selected
+database; it does not rewrite account links, browser sessions, grants, stored data,
+or manual peer trust. The coordinator-wide admin secret and a trusted configured
+coordinator/database pair are required, not a browser owner or Team role. Default
+`coordinator serve` does not activate this capability, and a maintained revocation
+CLI is not available yet. See the [activation contract](contracts/coordinator-device-revocations.md#optional-configured-operator-http-routes)
+for runtime composition and request limits.
+
 ## Advanced operator and compatibility guidance
 
 **Sharing is the primary supported Team experience.** Use **Sharing → Teams** for Team membership, Team names, Identity relationships, and inherited Project access. Use **Projects** to choose exact Project recipients.

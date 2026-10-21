@@ -7,11 +7,13 @@ import {
 	type CoordinatorRuntimeDeps,
 	createCoordinatorApp,
 } from "./coordinator-api.js";
+import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import { verifySignature } from "./sync-auth.js";
 
 export interface CreateBetterSqliteCoordinatorAppOptions {
 	dbPath?: string;
 	runtime?: CoordinatorRuntimeDeps;
+	deviceRevocation?: CoordinatorDeviceRevocationContext;
 }
 
 export function createBetterSqliteCoordinatorApp(
@@ -27,9 +29,10 @@ export function createBetterSqliteCoordinatorApp(
 			...input,
 			bodyBytes: Buffer.from(input.bodyBytes),
 		});
+	const dbPath = opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH;
 	return createCoordinatorApp({
-		storeFactory: () =>
-			new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH),
+		storeFactory: (options) => new BetterSqliteCoordinatorStore(dbPath, options),
+		deviceRevocation: opts.deviceRevocation,
 		runtime,
 		requestVerifier,
 	});

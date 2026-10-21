@@ -1,10 +1,10 @@
 # Coordinator device-revocation admission
 
-**Scope:** Internal revocation storage and signed-request admission. No public
-revocation action, automatic backfill, owner enrollment, or live migration is
-enabled. Existing public writers and effective authorization reads check revocation
-as inventoried below. Durable handler tests cover SQLite and native D1. The operator
-handler remains unmounted pending trusted runtime-context composition and mount review.
+**Scope:** Revocation storage, signed-request admission, and optional configured
+operator HTTP preview/commit. No automatic backfill, owner enrollment, or live
+migration is enabled. Existing public writers and effective authorization reads
+check revocation as inventoried below. Durable handler tests cover SQLite and
+native D1; mounted runtime tests cover trusted context, transport, and store lifetime.
 
 ## Subjects and scope
 
@@ -640,15 +640,52 @@ nor permission to transmit the memory to another device.
 
 ## Activation limits
 
-### Inactive operator handler
+### Optional configured operator HTTP routes
 
-`coordinator-device-revocation-handler.ts` adds an internal factory, not a mounted
-HTTP route. Its trusted actions are `preview` and `commit`; intended future POST
-paths are `/v1/admin/devices/revoke-preview` and `/v1/admin/devices/revoke`.
-No CLI, startup, Worker configuration, or public export activates it. The existing
-writer/read coverage is inventoried below. Durable handler tests cover SQLite and
-native D1. Trusted runtime-context composition and transport/mount review remain
-pending; this handler is not an exposed management API.
+The coordinator runtime mounts POST `/v1/admin/devices/revoke-preview` and
+`/v1/admin/devices/revoke`, delegating to the existing handler's `preview` and
+`commit` actions. Activation requires an explicit server composition option
+`deviceRevocation: { coordinatorId }` in `createCoordinatorApp`,
+`createBetterSqliteCoordinatorApp`, or `createD1CoordinatorApp`. The selected ID
+must satisfy controller identifier validation and match every supplied auth-link,
+browser-auth, or account-change coordinator ID. The runtime pairs it with its own
+captured concrete database factory; a caller cannot select another store in HTTP.
+Factories must return a per-request owned store, not an externally owned shared one.
+
+The configured Worker supplies the ID only from already validated, enabled trusted
+configuration, paired with the captured `COORDINATOR_DB` binding. It checks the
+same configuration/binding pin as configured authentication and operator account
+qualification and refuses drift whichever operator route runs first. Admin
+credentials are captured per request, not stored in that shared binding pin.
+Operator requests bypass browser setup, owner admission, and maintenance. This
+uses the configuration's coordinator identity, not any browser role or session.
+Account qualification additionally requires owner enrollment to be enabled; global
+operator revocation does not depend on that separate flag.
+Legacy/unconfigured Worker factories and default `coordinator serve` do not infer
+an ID; these routes remain unavailable there. No maintained revocation CLI or
+owner self-service journey is activated by this cut.
+
+Every request consumes the existing unauthenticated rate-limit budget before body
+reads; authenticated requests also consume the admin budget. Native WebCrypto admin
+verification remains the only authority: missing/wrong admin credentials return
+401 (or 429 when rate limited), while valid admin with missing, conflicting, or
+invalid trusted context returns 503. No general admin string-comparison fallback
+is used. Context and factory are pinned at composition; credentials are captured
+at request start before the first await.
+
+After authentication and context checks, transport admission requires POST and
+`application/json` (optionally `charset=utf-8`), rejects query strings, encoded
+content and ambiguous/malformed length framing, and caps declared and streamed
+bodies at 4096 bytes. Unsupported methods return 405, media types 415, invalid
+framing 400, and oversized bodies 413. Stream reads race request abort and a
+10-second deadline through native AbortSignal seams. Cancellation never waits on
+an uncooperative producer; read failures return a fixed 503 without opening a store.
+The handler's exact field/key/digest checks still apply after transport admission.
+
+Stores open lazily only after authentication and input validation and close in
+`finally`, including handler failures. SQLite opens only an existing database for
+these routes, without schema initialization or repair; D1 construction issues no
+schema writes. Shared browser/runtime objects are not acquired or closed.
 
 The factory captures a selected store, server-trusted coordinator ID, and optional
 configured coordinator-wide admin secret. Missing/invalid context fails closed;

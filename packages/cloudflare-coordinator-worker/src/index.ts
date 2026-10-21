@@ -8,6 +8,7 @@ import {
 	type CreateD1CoordinatorAppOptions,
 	captureCoordinatorBrowserAuthOptions,
 	coordinatorBrowserAuthDeviceRoutes,
+	createCoordinatorApp,
 	createCoordinatorBrowserAuth,
 	createD1AuthLinkBackend,
 	createD1CoordinatorApp,
@@ -58,6 +59,7 @@ function createLegacyCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
 ) {
 	const qualificationLimiter = createInMemoryRequestRateLimiter();
+	const deviceLimiter = createInMemoryRequestRateLimiter();
 	return {
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
 			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
@@ -68,6 +70,8 @@ function createLegacyCloudflareCoordinatorWorker(
 					adminSecret: coordinatorAdminSecret(env, opts),
 					limiter: qualificationLimiter,
 				}).fetch(request);
+			const operator = configuredRevocation(request, env, deviceLimiter, null, opts);
+			if (operator) return operator;
 			if (!env.COORDINATOR_DB) {
 				return jsonResponse({ error: "missing_d1_binding" }, 500);
 			}
@@ -154,6 +158,8 @@ function createBrowserAuthWorker(
 	}
 	return {
 		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+			const operator = configuredRevocation(request, env, deviceLimiter, null, opts);
+			if (operator) return operator;
 			let dispatched = false;
 			try {
 				if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
@@ -345,6 +351,41 @@ function fetchOwnerQualification(
 	}).fetch(request);
 }
 
+function configuredRevocation(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+	pin: ConfiguredBindingPin | null,
+	options: CreateCloudflareCoordinatorWorkerOptions = {},
+): Response | Promise<Response> | null {
+	const path = new URL(request.url).pathname;
+	if (path !== "/v1/admin/devices/revoke-preview" && path !== "/v1/admin/devices/revoke")
+		return null;
+	// Operator transport never runs browser setup, maintenance, or owner admission.
+	// Capture the concrete DB, credential, and validated config before any await.
+	const db = env.COORDINATOR_DB;
+	const secret = coordinatorAdminSecret(env, options);
+	const bindings = configuredBindings(env);
+	const settings = captureCloudflareBrowserAuthEnv(env);
+	const ready =
+		pin &&
+		settings.kind === "enabled" &&
+		db &&
+		(!pin.bindings || sameBindings(pin.bindings, bindings));
+	if (ready) pin.bindings ??= bindings;
+	const app = createCoordinatorApp({
+		storeFactory: () => {
+			if (!db) throw new Error("revocation_unavailable");
+			return new D1CoordinatorStore(db);
+		},
+		runtime: { adminSecret: () => secret, now: () => new Date().toISOString() },
+		requestVerifier: verifyCloudflareCoordinatorRequest,
+		requestRateLimit: { limiter: deviceLimiter },
+		deviceRevocation: ready ? { coordinatorId: String(settings.config.coordinatorId) } : undefined,
+	});
+	return app.fetch(request);
+}
+
 /** Capture configured authentication once; only settled setup crosses requests. */
 export function createConfiguredCloudflareCoordinatorWorker() {
 	const pin: ConfiguredBindingPin = {};
@@ -372,7 +413,10 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		fetch: (request: Request, env: CloudflareCoordinatorEnv) => {
 			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
 				return fetchOwnerQualification(request, env, pin, qualificationLimiter);
-			return fetchConfiguredWorker(request, env, configured, deviceLimiter);
+			return (
+				configuredRevocation(request, env, deviceLimiter, pin) ??
+				fetchConfiguredWorker(request, env, configured, deviceLimiter)
+			);
 		},
 		scheduled(
 			controller: ScheduledController,

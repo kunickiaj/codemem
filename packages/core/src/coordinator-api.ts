@@ -27,6 +27,10 @@ import {
 	registerCoordinatorAccountLinkStatusRoute,
 	registerCoordinatorDeviceAuthLinkRoutes,
 } from "./coordinator-device-auth-link.js";
+import {
+	type CoordinatorDeviceRevocationContext,
+	registerCoordinatorDeviceRevocationRoutes,
+} from "./coordinator-device-revocation-route.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
@@ -99,13 +103,14 @@ export interface CoordinatorRuntimeDeps {
 }
 
 export interface CreateCoordinatorAppOptions {
-	storeFactory: () => CoordinatorStore;
+	storeFactory: (options?: { existingOnly: true }) => CoordinatorStore;
 	runtime: CoordinatorRuntimeDeps;
 	requestVerifier: CoordinatorRequestVerifier;
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 	authLink?: CoordinatorDeviceAuthLinkOptions;
 	browserAuth?: CoordinatorAppBrowserAuthOptions;
 	accountChanges?: CoordinatorDeviceAccountChangeOptions;
+	deviceRevocation?: CoordinatorDeviceRevocationContext;
 }
 export type CoordinatorAppBrowserAuthOptions =
 	| {
@@ -225,6 +230,29 @@ export interface CoordinatorVerifyRequestInput {
 	signature: string;
 	publicKey: string;
 	deviceId: string;
+}
+
+function registerCoordinatorRuntimeRoutes(
+	app: Hono,
+	opts: CreateCoordinatorAppOptions,
+	deps: Parameters<typeof registerOptionalCoordinatorAuth>[2],
+): void {
+	const createStore = opts.storeFactory;
+	registerCoordinatorDeviceRevocationRoutes(app, {
+		context: opts.deviceRevocation,
+		configuredCoordinatorIds: [
+			opts.authLink?.config,
+			opts.browserAuth?.kind === "ready" ? opts.browserAuth.auth.storeConfig : undefined,
+			opts.accountChanges?.config,
+		]
+			.filter((config) => config !== undefined)
+			.map((config) => config?.coordinatorId),
+		storeFactory: () => createStore({ existingOnly: true }),
+		adminSecret: opts.runtime.adminSecret.bind(opts.runtime),
+		rateLimitedResponse: (c, key, authenticated) =>
+			deps.rateLimitedResponse(c, key, { authenticated }),
+	});
+	registerOptionalCoordinatorAuth(app, opts, deps);
 }
 
 export type CoordinatorRequestVerifier = (
@@ -596,7 +624,7 @@ export function createCoordinatorApp(
 		}
 	}
 
-	registerOptionalCoordinatorAuth(app, opts, {
+	registerCoordinatorRuntimeRoutes(app, opts, {
 		authorizeRequest: (store, request) =>
 			authorizeRequest(store, runtime, requestVerifier, request),
 		authErrorStatus,

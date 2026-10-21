@@ -832,8 +832,17 @@ function initializeSchema(db: DatabaseType): void {
 	);
 }
 
-export function connectCoordinator(path?: string): DatabaseType {
+export function connectCoordinator(
+	path?: string,
+	options: { existingOnly?: boolean } = {},
+): DatabaseType {
 	const dbPath = path ?? DEFAULT_COORDINATOR_DB_PATH;
+	if (options.existingOnly) {
+		const db = new Database(dbPath, { fileMustExist: true });
+		db.pragma("foreign_keys = ON");
+		db.pragma("busy_timeout = 5000");
+		return db;
+	}
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const db = new Database(dbPath);
 	db.pragma("foreign_keys = ON");
@@ -864,9 +873,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
 
-	constructor(path?: string, options: CoordinatorAuthLinkOptions = {}) {
+	constructor(
+		path?: string,
+		options: CoordinatorAuthLinkOptions & { existingOnly?: boolean } = {},
+	) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
-		this.db = connectCoordinator(this.path);
+		this.db = connectCoordinator(this.path, options);
 		this.deviceRevocations = new DeviceRevocationOperations(
 			{
 				all: async (statement) => ({

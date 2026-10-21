@@ -8,18 +8,24 @@ import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import type { CoordinatorStore } from "./coordinator-store-contract.js";
 
 export type CoordinatorDeviceRevocationAction = "preview" | "commit";
+function isAction(action: unknown): action is CoordinatorDeviceRevocationAction {
+	return action === "preview" || action === "commit";
+}
 export interface CoordinatorDeviceRevocationHandlerOptions {
 	store: Pick<CoordinatorStore, "getEnrollment" | "createDeviceRevocation">;
 	/** Server composition only: never derive this from a request or enrollment. */
 	trustedCoordinatorId: string | null;
 	adminSecret?: string | null;
+	/** Transport admission only, called after native admin authentication and context checks. */
+	beforeBody?: (request: Request) => Response | null;
 }
 interface RevocationInput {
 	group_id: string;
 	device_id: string;
 	expected_digest?: string;
 }
-const MAX_BODY_BYTES = 4096;
+export const COORDINATOR_DEVICE_REVOCATION_MAX_BODY_BYTES = 4096;
+const MAX_BODY_BYTES = COORDINATOR_DEVICE_REVOCATION_MAX_BODY_BYTES;
 const SCOPE = "whole_database_device_id_any_key_and_canonical_key_any_device_all_groups";
 function response(body: unknown, status = 200): Response {
 	return Response.json(body, {
@@ -58,29 +64,36 @@ async function authenticate(provided: string | null, configured: string | null):
 async function readBody(request: Request): Promise<Uint8Array | null> {
 	if (!request.body) return new Uint8Array();
 	const reader = request.body.getReader();
-	const chunks: Uint8Array[] = [];
+	const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
+	const bytes = new Uint8Array(MAX_BODY_BYTES);
 	let size = 0;
+	let onAbort = () => {};
 	try {
+		// Resolve interruption so an abort before the first read cannot orphan a rejection.
+		const aborted = new Promise<null>((resolve) => {
+			onAbort = () => resolve(null);
+			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) onAbort();
+		});
 		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			size += value.byteLength;
-			if (size > MAX_BODY_BYTES) {
-				await reader.cancel();
-				return null;
+			signal.throwIfAborted();
+			const chunk = await Promise.race([reader.read(), aborted]);
+			if (chunk === null) throw new Error("revocation_body_stopped");
+			const { done, value } = chunk;
+			if (done) {
+				signal.throwIfAborted();
+				return bytes.subarray(0, size);
 			}
-			chunks.push(value);
+			if (value.byteLength > MAX_BODY_BYTES - size) return null;
+			bytes.set(value, size);
+			size += value.byteLength;
 		}
 	} finally {
+		signal.removeEventListener("abort", onAbort);
+		// Stream teardown must not extend a deadline or delay an oversized-body refusal.
+		void reader.cancel().catch(() => {});
 		reader.releaseLock();
 	}
-	const bytes = new Uint8Array(size);
-	let offset = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-	return bytes;
 }
 function parseInput(
 	raw: Uint8Array,
@@ -232,8 +245,8 @@ async function applyAction(
 }
 
 /**
- * Inactive internal capability. No route registration or store ownership here.
- * Mounting requires a separate closure audit and trusted-context composition review.
+ * Internal capability. Transport registration and per-request store ownership live
+ * in the runtime route adapter; direct callers retain ownership of their store.
  */
 export function createCoordinatorDeviceRevocationHandler(
 	options: CoordinatorDeviceRevocationHandlerOptions,
@@ -242,6 +255,7 @@ export function createCoordinatorDeviceRevocationHandler(
 		store: options.store,
 		trustedCoordinatorId: options.trustedCoordinatorId,
 		adminSecret: options.adminSecret ?? null,
+		beforeBody: options.beforeBody,
 	});
 	return async (action: CoordinatorDeviceRevocationAction, request: Request): Promise<Response> => {
 		const { store, trustedCoordinatorId, adminSecret } = fixed;
@@ -250,8 +264,9 @@ export function createCoordinatorDeviceRevocationHandler(
 				return failure("unauthorized", 401);
 			if (!isAuthControllerId(trustedCoordinatorId) || !store)
 				return failure("revocation_unavailable", 503);
-			if (action !== "preview" && action !== "commit")
-				return failure("revocation_invalid_input", 400);
+			if (!isAction(action)) return failure("revocation_invalid_input", 400);
+			const admission = fixed.beforeBody?.(request);
+			if (admission) return admission;
 			const raw = await readBody(request);
 			if (!raw) return failure("body_too_large", 413);
 			const input = parseInput(raw, action);
