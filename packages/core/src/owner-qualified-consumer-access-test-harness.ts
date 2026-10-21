@@ -13,7 +13,7 @@ const COUNT = 240;
 const links = "coordinator_auth_account_links";
 const attempts = "coordinator_owner_enrollment_attempts";
 const identityColumns = new Set(
-	"device_id identity_id attempt_id link_id claim_id device_claim_id attestation_id controller_attestation_id review_receipt_id enrollment_identity_id session_id subject account_subject qualification_id source_receipt_id".split(
+	"device_id identity_id attempt_id link_attempt_id link_id claim_id device_claim_id attestation_id controller_attestation_id review_receipt_id enrollment_identity_id session_id subject account_subject qualification_id source_receipt_id".split(
 		" ",
 	),
 );
@@ -71,13 +71,19 @@ async function populate(f: QualifiedFixture) {
 		await append(f, table, rows);
 	}
 	await populateRetainedAttempts(f);
-	// Actual stored proof validates every cloned link, not a mock eligibility oracle.
+	// Validate historical SQL records, not 240 separately executed OAuth ceremonies.
 	expect(
 		await f.backend.first({
 			sql: `SELECT count(*) AS total,sum(${authDeviceClaimProvenanceSql({ link: "l", connections: true })}) AS valid FROM ${links} l`,
 			values: [],
 		}),
 	).toEqual({ total: COUNT + 1, valid: COUNT + 1 });
+	expect(
+		await f.backend.first({
+			sql: `SELECT count(*) AS consistent FROM coordinator_owner_enrollment_qualifications q JOIN ${links} l ON l.coordinator_id=q.coordinator_id AND l.link_id=q.link_id WHERE q.link_attempt_id=l.attempt_id`,
+			values: [],
+		}),
+	).toEqual({ consistent: COUNT + 1 });
 	expect(await f.rows(attempts)).toHaveLength(COUNT);
 }
 function cloneValue({
@@ -188,29 +194,14 @@ function registerWrongScope(test: ReturnType<typeof qualifiedTest>) {
 			const sessions = await f.rows("coordinator_auth_sessions");
 			const session = sessions.find((s) => s.link_id === f.link.link_id);
 			const other = sessions.find((s) => s.link_id !== f.link.link_id);
-			const config = {
-				enabled: true,
-				coordinatorId: String(f.link.coordinator_id),
-				issuer: String(f.link.issuer),
-				revision: String(f.link.auth_config_revision),
-				redirectUri: "https://app.example.test/auth/callback",
-			};
-			const owner = {
-				coordinatorId: config.coordinatorId,
-				issuer: config.issuer,
-				subject: String(f.link.subject),
-				identityId: String(f.link.identity_id),
-				linkId: String(f.link.link_id),
-			};
-			const input = {
-				backend: f.backend,
-				config,
-				sessionCookieHash: String(session?.credential_hash),
-				owner,
-				deviceId: f.start.deviceId,
-				fingerprint: f.fingerprint,
-				time: NOW,
-			};
+			if (!session || !other)
+				throw new Error("Expected original and unrelated historical sessions");
+			const otherInput = admissionInputForSession(f, other);
+			expect(
+				await f.backend.first(await ownerAdmissionSessionGuard(otherInput)),
+				"unrelated historical owner must qualify before scope mutation",
+			).not.toBeNull();
+			const input = admissionInputForSession(f, session);
 			expect(await f.backend.first(await ownerAdmissionSessionGuard(input))).not.toBeNull();
 			if (fault === "session") input.sessionCookieHash = String(other?.credential_hash);
 			if (fault === "coordinator") input.config.coordinatorId = "wrong-coordinator";
@@ -226,9 +217,37 @@ function registerWrongScope(test: ReturnType<typeof qualifiedTest>) {
 			const result = await f.backend.first(await ownerAdmissionSessionGuard(input));
 			// Assert: narrowing the query must not turn its exact tuple into an OR fallback.
 			expect(result).toBeNull();
+			expect(
+				await f.backend.first(await ownerAdmissionSessionGuard(otherInput)),
+				"unrelated historical owner must still qualify after scope mutation",
+			).not.toBeNull();
 			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
 		},
 	);
+}
+function admissionInputForSession(f: QualifiedFixture, session: Record<string, unknown>) {
+	const config = {
+		enabled: true,
+		coordinatorId: String(session.coordinator_id),
+		issuer: String(session.issuer),
+		revision: String(session.auth_config_revision),
+		redirectUri: "https://app.example.test/auth/callback",
+	};
+	return {
+		backend: f.backend,
+		config,
+		sessionCookieHash: String(session.credential_hash),
+		owner: {
+			coordinatorId: config.coordinatorId,
+			issuer: config.issuer,
+			subject: String(session.subject),
+			identityId: String(session.identity_id),
+			linkId: String(session.link_id),
+		},
+		deviceId: f.start.deviceId,
+		fingerprint: f.fingerprint,
+		time: NOW,
+	};
 }
 function registerWrongAttempt(test: ReturnType<typeof qualifiedTest>) {
 	test("an unrelated retained attempt cannot borrow the confirmed attempt proof", async ({
