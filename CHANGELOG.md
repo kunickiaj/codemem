@@ -2,9 +2,31 @@
 
 ## [Unreleased]
 
+## [0.47.0-beta.1] - 2026-10-21
+
 ### Changed
 
 - Consolidated release history in this changelog and removed standalone release-note documents. GitHub release announcements remain separate.
+- Managed-peer refresh now rejects a revoked device ID or signing key. If a refresh fails or the coordinator is offline, the peer keeps its last applied policy.
+
+### Added
+
+- Added reviewed Team and add-device onboarding that shows the Projects a recipient device will inherit before acceptance. Adding a device keeps the existing Identity and signing keys; it does not create extra Project grants.
+- Added optional Google account linking in the Viewer for an eligible enrolled Identity. Linking an account does not add Team membership, Project access, or a new coordinator grant.
+- Added account-backed owner enrollment for a fresh profile when the coordinator has a configured identity provider, operator bootstrap or qualification, and trusted Identity-group grants. A normal account sign-in is not enough to enroll an owner or grant Project access.
+- Added operator-only coordinator-wide device revocation by device ID and canonical signing key. A refreshed managed peer denies a device that reuses either value; revocation stops future delivery but cannot delete memories already copied to that device.
+
+### Fixed
+
+- Added the missing CLI handoff for recipient invitation review and acceptance: use `coordinator import-invite --review`, then pass the returned digest with `--reviewed-onboarding-digest`.
+- Rejected invitation inspection and join redirects so invitation tokens are not forwarded to another endpoint.
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading packages. Use a separate fresh profile for an owner's new device; do not replace the existing device's keys or profile.
+- Google account linking requires a browser and the Viewer on the same host. It does not provide an SSH callback workaround.
+- Live headless checks covered operator-reviewed add-device enrollment, local Viewer API capture, non-interactive process restart, and signed coordinator requests. Automatic cross-device sync, OS-reboot persistence, and agent-hook capture were not verified in that live test.
+- Relay is not included. Exceptional account recovery is not included.
 
 ## [0.46.2] - 2026-10-01
 
@@ -68,7 +90,8 @@
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.46.2...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.1...HEAD
+[0.47.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.1
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/kunickiaj/codemem/compare/v0.45.0...v0.46.0
