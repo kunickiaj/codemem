@@ -489,6 +489,36 @@ PACKED_CODEX_CONTEXT`;
 	}
 }
 
+async function runCodexSpoolHook(wrapperPath, payload, { isolatedRoot, env, status }) {
+	const transportPath = join(isolatedRoot, `spool-transport-${status}.mjs`);
+	const requestsPath = join(isolatedRoot, `spool-requests-${status}.jsonl`);
+	writeFileSync(requestsPath, "", "utf8");
+	// Keep the actual child hook, filesystem, normalizer, and fallback commands.
+	// Only mock fetch: spool invariants must not depend on socket/ACK scheduling.
+	// smokeAdapterWrapper separately exercises the real loopback HTTP transport.
+	writeFileSync(transportPath, `
+import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
+globalThis.fetch = async (url, options) => {
+	assert.equal(url, "http://127.0.0.1:38888/api/raw-events");
+	assert.equal(options.method, "POST");
+	assert.equal(options.redirect, "manual");
+	options.signal.throwIfAborted();
+	appendFileSync(${JSON.stringify(requestsPath)}, options.body + "\\n", "utf8");
+	return { ok: ${status === 200}, status: ${status},
+		json: async () => ({ inserted: 1, skipped: 0, received: 1 }) };
+};
+`, "utf8");
+	const result = await runAsync(
+		process.execPath,
+		["--import", transportPath, wrapperPath],
+		{ cwd: isolatedRoot, env, stdio: ["pipe", "pipe", "pipe"] },
+		JSON.stringify(payload),
+	);
+	const deliveredBodies = readFileSync(requestsPath, "utf8").split("\n").filter(Boolean);
+	return { ...result, deliveredBodies };
+}
+
 export async function smokeCodexSpoolIsolation(isolatedRoot) {
 	const scriptsDirectory = join(isolatedRoot, "plugins", "codex", "scripts");
 	const wrapperPath = join(scriptsDirectory, "ingest-hook.mjs");
@@ -531,37 +561,16 @@ export async function smokeCodexSpoolIsolation(isolatedRoot) {
 		CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR: normalizedSpool,
 		CODEMEM_CODEX_HOOK_SPOOL_DIR: legacySpool,
 		CODEMEM_VIEWER_HOST: "127.0.0.1",
+		CODEMEM_VIEWER_PORT: "38888",
 	};
-	const failingServer = createServer((request, response) => {
-		request.resume();
-		request.on("end", () => {
-			response.writeHead(503);
-			response.end();
-		});
+	const failedDelivery = await runCodexSpoolHook(wrapperPath, nativePayload, {
+		isolatedRoot,
+		env: baseEnv,
+		status: 503,
 	});
-	await new Promise((resolvePromise, reject) => {
-		failingServer.once("error", reject);
-		failingServer.listen(0, "127.0.0.1", resolvePromise);
-	});
-	const failingAddress = failingServer.address();
-	assert(failingAddress && typeof failingAddress === "object", "codex failure smoke server did not bind");
-	let failedDelivery;
-	try {
-		failedDelivery = await runAsync(
-			process.execPath,
-			[wrapperPath],
-			{
-				cwd: isolatedRoot,
-				env: { ...baseEnv, CODEMEM_VIEWER_PORT: String(failingAddress.port) },
-				stdio: ["pipe", "pipe", "pipe"],
-			},
-			JSON.stringify(nativePayload),
-		);
-	} finally {
-		await new Promise((resolvePromise) => failingServer.close(resolvePromise));
-	}
 	assert(failedDelivery.status === 0, `codex spool fallback failed: ${failedDelivery.stderr}`);
 	assert(failedDelivery.stdout === '{"continue":true}\n', "codex spool fallback did not safely continue");
+	assert(failedDelivery.deliveredBodies.length === 1, "codex failure must attempt exactly one current delivery");
 	const normalizedFiles = readdirSync(normalizedSpool).filter((name) => name.endsWith(".json"));
 	assert(normalizedFiles.length === 1, "codex fallback did not write exactly one normalized envelope");
 	assert(
@@ -580,7 +589,6 @@ export async function smokeCodexSpoolIsolation(isolatedRoot) {
 	const seededPath = join(normalizedSpool, "raw-event-z-seeded.json");
 	writeFileSync(seededPath, seededBody, "utf8");
 
-	const deliveredBodies = [];
 	const assertTargetedDelivery = (body, envelope, label) => {
 		const delivered = JSON.parse(body);
 		assertDisposableTarget(delivered, home, label);
@@ -592,51 +600,25 @@ export async function smokeCodexSpoolIsolation(isolatedRoot) {
 		);
 		assert(JSON.stringify(deliveredEnvelope) === JSON.stringify(envelope), `${label} envelope changed`);
 	};
-	const server = createServer((request, response) => {
-		let body = "";
-		request.setEncoding("utf8");
-		request.on("data", (chunk) => {
-			body += chunk;
-		});
-		request.on("end", () => {
-			deliveredBodies.push(body);
-			response.writeHead(200, { "Content-Type": "application/json" });
-			response.end('{"inserted":1,"skipped":0,"received":1}');
-		});
+	const currentPayload = { ...nativePayload, session_id: "packed-codex-current" };
+	const currentEnvelope = normalizer.buildRawEventEnvelopeFromCodexHook(
+		currentPayload,
+		normalizer.TRUSTED_HOOK_MAPPER_OPTIONS,
+	);
+	assert(currentEnvelope, "codex generated normalizer skipped current drain payload");
+	const drained = await runCodexSpoolHook(wrapperPath, currentPayload, {
+		isolatedRoot,
+		env: baseEnv,
+		status: 200,
 	});
-	await new Promise((resolvePromise, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", resolvePromise);
-	});
-	try {
-		const address = server.address();
-		assert(address && typeof address === "object", "codex spool smoke server did not bind");
-		const currentPayload = { ...nativePayload, session_id: "packed-codex-current" };
-		const currentEnvelope = normalizer.buildRawEventEnvelopeFromCodexHook(
-			currentPayload,
-			normalizer.TRUSTED_HOOK_MAPPER_OPTIONS,
-		);
-		assert(currentEnvelope, "codex generated normalizer skipped current drain payload");
-		const drained = await runAsync(
-			process.execPath,
-			[wrapperPath],
-			{
-				cwd: isolatedRoot,
-				env: { ...baseEnv, CODEMEM_VIEWER_PORT: String(address.port) },
-				stdio: ["pipe", "pipe", "pipe"],
-			},
-			JSON.stringify(currentPayload),
-		);
-		assert(drained.status === 0, `codex bounded spool drain failed: ${drained.stderr}`);
-		assert(deliveredBodies.length === 2, "codex wrapper must drain at most one queued envelope per invocation");
-		assertTargetedDelivery(deliveredBodies[0], currentEnvelope, "codex current delivery");
-		assertTargetedDelivery(deliveredBodies[1], expected, "codex queued delivery");
-		assert(readdirSync(normalizedSpool).filter((name) => name.endsWith(".json")).length === 1, "codex drain was not bounded to one queued envelope");
-		assert(readFileSync(seededPath, "utf8") === seededBody, "codex bounded drain removed the second queued envelope");
-		assert(readFileSync(legacyPath, "utf8") === legacyBody, "codex drain modified the legacy native spool");
-	} finally {
-		await new Promise((resolvePromise) => server.close(resolvePromise));
-	}
+	const { deliveredBodies } = drained;
+	assert(drained.status === 0, `codex bounded spool drain failed: ${drained.stderr}`);
+	assert(deliveredBodies.length === 2, "codex wrapper must deliver the current event and exactly one queued envelope");
+	assertTargetedDelivery(deliveredBodies[0], currentEnvelope, "codex current delivery");
+	assertTargetedDelivery(deliveredBodies[1], expected, "codex queued delivery");
+	assert(readdirSync(normalizedSpool).filter((name) => name.endsWith(".json")).length === 1, "codex drain was not bounded to one queued envelope");
+	assert(readFileSync(seededPath, "utf8") === seededBody, "codex bounded drain removed the second queued envelope");
+	assert(readFileSync(legacyPath, "utf8") === legacyBody, "codex drain modified the legacy native spool");
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

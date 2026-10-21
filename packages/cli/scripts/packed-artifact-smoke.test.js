@@ -13,11 +13,59 @@ import { pathToFileURL } from "node:url";
 import { afterEach, expect, test, vi } from "vitest";
 import { smokeAdapterWrapper, smokeCodexSpoolIsolation } from "./packed-artifact-smoke.mjs";
 
+const httpControl = vi.hoisted(() => ({ withholdSuccess: false, withheld: 0, closed: 0 }));
+vi.mock("node:http", async (importOriginal) => {
+	const http = await importOriginal();
+	return {
+		...http,
+		createServer(listener) {
+			return http.createServer((request, response) => {
+				const end = response.end;
+				response.end = function (...args) {
+					if (!httpControl.withholdSuccess || response.statusCode !== 200) {
+						return end.apply(this, args);
+					}
+					httpControl.withheld += 1;
+					response.once("close", () => {
+						httpControl.closed += 1;
+					});
+					return this;
+				};
+				listener(request, response);
+			});
+		},
+	};
+});
+
 const roots = [];
 afterEach(() => {
 	vi.unstubAllEnvs();
+	httpControl.withholdSuccess = false;
+	httpControl.withheld = 0;
+	httpControl.closed = 0;
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+function isolatedAdapters() {
+	const root = mkdtempSync(join(tmpdir(), "codemem-packed-isolation-test-"));
+	roots.push(root);
+	const isolatedRoot = join(root, "child");
+	for (const adapter of ["claude", "codex"]) {
+		const directory = join(isolatedRoot, "plugins", adapter, "scripts");
+		mkdirSync(directory, { recursive: true });
+		cpSync(
+			resolve(
+				import.meta.dirname,
+				"../../..",
+				"plugins",
+				adapter,
+				"scripts/codemem-normalizer.mjs",
+			),
+			join(directory, "codemem-normalizer.mjs"),
+		);
+	}
+	return { root, isolatedRoot };
+}
 
 test.each([
 	["claude", true],
@@ -27,23 +75,7 @@ test.each([
 	"%s packed children ignore inherited home, profile, and queues (explicit spool: %s)",
 	async (source, explicitSpool) => {
 		// Arrange: all inherited paths are synthetic, including the default HOME queue.
-		const root = mkdtempSync(join(tmpdir(), "codemem-packed-isolation-test-"));
-		roots.push(root);
-		const isolatedRoot = join(root, "child");
-		for (const adapter of ["claude", "codex"]) {
-			const directory = join(isolatedRoot, "plugins", adapter, "scripts");
-			mkdirSync(directory, { recursive: true });
-			cpSync(
-				resolve(
-					import.meta.dirname,
-					"../../..",
-					"plugins",
-					adapter,
-					"scripts/codemem-normalizer.mjs",
-				),
-				join(directory, "codemem-normalizer.mjs"),
-			);
-		}
+		const { root, isolatedRoot } = isolatedAdapters();
 		const normalizer = await import(
 			pathToFileURL(join(isolatedRoot, "plugins/codex/scripts/codemem-normalizer.mjs")).href
 		);
@@ -103,3 +135,25 @@ test.each([
 		expect(existsSync(join(root, "outside.sqlite"))).toBe(false);
 	},
 );
+
+test("spool contract does not depend on real HTTP acknowledgment scheduling", async () => {
+	// Arrange: the mock server never acknowledges success, rather than sleeping near a deadline.
+	const { isolatedRoot } = isolatedAdapters();
+	await smokeAdapterWrapper("codex", isolatedRoot);
+	httpControl.withholdSuccess = true;
+
+	// Act: the spool fixture must control transport results, not race a 50 ms socket deadline.
+	let failure;
+	try {
+		await smokeCodexSpoolIsolation(isolatedRoot);
+	} catch (error) {
+		failure = error;
+	}
+
+	// Assert: spool/drain checks work without any real HTTP success acknowledgment.
+	expect({ withheld: httpControl.withheld, closed: httpControl.closed, failure }).toEqual({
+		withheld: 0,
+		closed: 0,
+		failure: undefined,
+	});
+});
