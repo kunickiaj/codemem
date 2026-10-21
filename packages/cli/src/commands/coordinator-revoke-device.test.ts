@@ -77,6 +77,12 @@ function output() {
 		vi.mocked(console.log).mock.calls,
 	]);
 }
+function stdout() {
+	return [
+		...vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)),
+		...vi.mocked(console.log).mock.calls.map((args) => `${args.join(" ")}\n`),
+	].join("");
+}
 function bodies() {
 	return vi
 		.mocked(fetch)
@@ -128,6 +134,7 @@ it.each([false, Symbol("cancel")])(
 		expect(bodies()).toEqual([{ group_id: "group-a", device_id: "device-a" }]);
 		expect(output()).toContain("No revocation requested.");
 		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(stdout()).toBe("");
 		expect(process.exitCode).toBeUndefined();
 	},
 );
@@ -151,14 +158,20 @@ it.each(["json", "stdin", "stderr"])("performs only network preview for %s", asy
 			network_request: true,
 			unchanged: true,
 		});
-	else expect(output()).toContain("Network preview only");
+	else {
+		expect(output()).toContain("Network preview only");
+		expect(stdout()).toBe("");
+	}
 });
 it("confirms exact reviewed subjects once and displays both retained references without date normalization", async () => {
 	// Arrange
 	mocks.confirm.mockResolvedValueOnce(true);
 	vi.mocked(fetch).mockResolvedValueOnce(reply(committed));
 	// Act
-	await run(["--config", "fixture-config.json"]);
+	await buildCoordinatorCommand().parseAsync(
+		["revoke-device", "group-a", "device-a", "--config", "fixture-config.json"],
+		{ from: "user" },
+	);
 	// Assert
 	expect(mocks.readCodememConfigFileAtPath).toHaveBeenNthCalledWith(1, "fixture-config.json");
 	expect(mocks.readCodememConfigFileAtPath).toHaveBeenNthCalledWith(2, "fixture-config.json");
@@ -172,43 +185,40 @@ it("confirms exact reviewed subjects once and displays both retained references 
 		`${config.sync_coordinator_url}/v1/admin/devices/revoke`,
 	]);
 	expect(mocks.log.success).toHaveBeenCalledOnce();
-	for (const row of committed.revocations) {
-		expect(output()).toContain(row.revocation_id);
-		expect(output()).toContain(row.created_at);
+	expect(JSON.parse(stdout())).toEqual(committed);
+	expect(stdout().trim().split("\n")).toHaveLength(1);
+	for (const logger of Object.values(mocks.log)) {
+		for (const [, options] of logger.mock.calls)
+			expect(options).toMatchObject({ output: process.stderr });
 	}
-	expect(output()).toContain(key);
+	expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ output: process.stderr }));
 	expect(process.exitCode).toBeUndefined();
 });
-it("quotes retained receipt data with visible escapes instead of terminal controls", async () => {
-	// Arrange: inspect raw logger arguments, not JSON-stringified mocks that would hide controls.
+it("prints a complete JSON receipt on stdout with reversible visible control escapes", async () => {
+	// Arrange: inspect raw stdout and logger arguments, not JSON-stringified mocks.
 	const text = "ledger\n\u001b\u0085\u202e\u2028\u2029\ud800";
-	const quoted = '"ledger\\n\\u001b\\u{85}\\u{202e}\\u{2028}\\u{2029}\\ud800"';
+	const receipt = {
+		...committed,
+		revocations: committed.revocations.map((row) => ({
+			...row,
+			revocation_id: `${row.subject_kind}:${text}`,
+			created_at: `${text}:${row.subject_kind}`,
+		})),
+	};
 	mocks.confirm.mockResolvedValueOnce(true);
-	vi.mocked(fetch).mockResolvedValueOnce(
-		reply({
-			...committed,
-			revocations: committed.revocations.map((row) => ({
-				...row,
-				revocation_id: text,
-				created_at: text,
-			})),
-		}),
-	);
+	vi.mocked(fetch).mockResolvedValueOnce(reply(receipt));
 	// Act
 	await run();
 	// Assert
 	const logs = Object.values(mocks.log).flatMap((logger) =>
 		logger.mock.calls.map(([message]) => String(message)),
 	);
-	const receipts = logs.filter((message) => message.includes("retained reference:"));
-	expect(receipts).toEqual(
-		committed.revocations.map(
-			(row) =>
-				`${row.subject_kind}: ${row.subject_value}; retained reference: ${quoted}; created: ${quoted}`,
-		),
-	);
-	for (const receipt of receipts) expect(receipt).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u);
-	for (const log of logs) {
+	expect(JSON.parse(stdout())).toEqual(receipt);
+	expect(stdout().trim().split("\n")).toHaveLength(1);
+	expect(stdout().trimEnd()).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u);
+	for (const log of logs.filter((message) => message.includes("retained reference:")))
+		expect(log).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/u);
+	for (const log of [...logs, stdout()]) {
 		for (const character of ["\u001b", "\u0085", "\u202e", "\u2028", "\u2029", "\ud800"])
 			expect(log).not.toContain(character);
 	}
@@ -276,6 +286,7 @@ it.each([
 	expect(output()).toContain("Operator configuration changed or is unavailable");
 	expect(output()).toContain("No revocation requested");
 	expect(mocks.log.success).not.toHaveBeenCalled();
+	expect(stdout()).toBe("");
 	expect(process.exitCode).toBe(1);
 });
 it("blocks commit when rereading config throws", async () => {
@@ -290,6 +301,7 @@ it("blocks commit when rereading config throws", async () => {
 	expect(fetch).toHaveBeenCalledOnce();
 	expect(output()).toContain("Operator configuration changed");
 	expect(output()).not.toContain("private config detail");
+	expect(stdout()).toBe("");
 });
 it("does not use environment credentials to repair missing saved configuration", async () => {
 	// Arrange
@@ -343,6 +355,7 @@ it.each(["revocation_preview_stale", "revocation_target_unavailable"])(
 		expect(output()).toContain("Revocation rejected");
 		expect(output()).not.toContain("outcome is unknown");
 		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(stdout()).toBe("");
 		expect(process.exitCode).toBe(1);
 	},
 );
@@ -361,6 +374,7 @@ it.each([400, 401, 403, 500, 302])(
 		expect(output()).toContain("Revocation outcome is unknown");
 		expect(output()).not.toContain("private-body");
 		expect(output()).not.toContain("Revocation rejected");
+		expect(stdout()).toBe("");
 	},
 );
 it.each(
@@ -386,6 +400,7 @@ it.each(
 		);
 		expect(output()).not.toContain("No revocation requested");
 		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(stdout()).toBe("");
 		expect(process.exitCode).toBe(1);
 	},
 );
@@ -405,6 +420,7 @@ it.each([false, true])(
 		);
 		expect(output()).not.toContain("private transport cause");
 		expect(mocks.log.success).not.toHaveBeenCalled();
+		expect(stdout()).toBe("");
 	},
 );
 it("does not mark the write phase when actual action rejects a malformed credential before dispatch", async () => {
@@ -417,6 +433,7 @@ it("does not mark the write phase when actual action rejects a malformed credent
 	expect(fetch).not.toHaveBeenCalled();
 	expect(output()).toContain("No revocation requested");
 	expect(output()).not.toContain("outcome is unknown");
+	expect(stdout()).toBe("");
 });
 it("registers independent equivalent top-level and sync-alias commands", () => {
 	// Arrange

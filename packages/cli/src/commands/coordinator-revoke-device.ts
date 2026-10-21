@@ -1,5 +1,6 @@
 import * as p from "@clack/prompts";
 import {
+	type CoordinatorDeviceRevocationCommit,
 	type CoordinatorDeviceRevocationPreview,
 	coordinatorRevokeDeviceAction,
 	normalizeCoordinatorAccountLinkOrigin,
@@ -75,6 +76,16 @@ function receiptLabel(value: string): string {
 	);
 }
 
+function receiptJson(result: CoordinatorDeviceRevocationCommit): string {
+	// Use JSON-compatible UTF-16 escapes so parsing restores the exact retained text.
+	return JSON.stringify(result).replace(/[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu, (character) =>
+		character
+			.split("")
+			.map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+			.join(""),
+	);
+}
+
 async function confirmRevocation(
 	options: Options,
 	request: ReturnType<typeof setup> & { groupId: string; deviceId: string },
@@ -103,6 +114,7 @@ async function confirmRevocation(
 		onDispatch,
 	});
 	if (result.state !== "revoked") throw new Error("revocation_response_invalid");
+	process.stdout.write(`${receiptJson(result)}\n`);
 	p.log.success(`Coordinator ${result.coordinator_id}: both whole-database subjects revoked.`, {
 		output: process.stderr,
 	});

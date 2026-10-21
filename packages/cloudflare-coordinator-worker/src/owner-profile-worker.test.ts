@@ -644,124 +644,183 @@ async function finishB(admitted: Response, session: string) {
 	});
 }
 
+async function arrangeReviewedAccountOwner() {
+	const a = await reviewedA();
+	const aKey = readFileSync(join(a.keysDir, "device.key"));
+	return { a, aKey };
+}
+
+async function linkAndGrantAccountOwner({
+	a,
+}: Awaited<ReturnType<typeof arrangeReviewedAccountOwner>>) {
+	await linkA(a);
+	const links = await rows("coordinator_auth_account_links");
+	expect(links).toMatchObject([
+		{
+			identity_id: "identity-a",
+			authority_kind: "controller_attestation",
+			revoked_at_ms: null,
+			controller_attestation_id: a.attestationId,
+		},
+	]);
+	expect(await rows("coordinator_identity_group_grants")).toEqual([]);
+	expect(await rows("coordinator_scope_memberships")).toEqual([]);
+	const grant = await json(
+		"/v1/admin/identity-group-grants",
+		{ attestation_id: a.attestationId },
+		admin,
+	);
+	expect(grant.status, await grant.clone().text()).toBe(200);
+	const originalAuthority = await authority();
+	return { links, originalAuthority };
+}
+
+async function prepareAccountProfile({ session }: { session: string }) {
+	const before = facts();
+	const configBefore = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
+	const keys = ["device.key", "device.key.pub"].map((name) =>
+		readFileSync(join(fixture.options.keysDir, name)),
+	);
+	const device = fixture.db.prepare("SELECT * FROM sync_device").all();
+	fixture.options.admissionMode = "account";
+	expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+	await prepared();
+	fixture.options.capability = undefined;
+	const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+	fixture.options.onBrowserStart = vi.fn(async (url, details) => {
+		if (!details) throw new Error("Account admission upload details missing");
+		await finishB(await uploadB(url, session, details), session);
+	});
+	return { before, configBefore, keys, device, saved };
+}
+
+async function retainAccountFinalForRetry({ lostReply }: { lostReply: boolean }) {
+	dropFinalReply = lostReply;
+	if (!lostReply) return;
+	await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
+		code: "retained_request_incomplete",
+	});
+	expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+	expect(await rows("coordinator_device_ownership_bindings")).toHaveLength(1);
+	dropFinalReply = false;
+	fixture.options.onBrowserStart = undefined;
+}
+
+async function adoptAccountProfile() {
+	const result = await enrollOwnerProfile(fixture.options);
+	const receipt = read("receipt.json").receipt;
+	return { result, receipt };
+}
+
+async function verifyAccountAuthority({
+	result,
+	receipt,
+	lostReply,
+	links,
+	originalAuthority,
+}: Awaited<ReturnType<typeof adoptAccountProfile>> &
+	Awaited<ReturnType<typeof linkAndGrantAccountOwner>> & { lostReply: boolean }) {
+	expect(result).toEqual({ ...receipt, kind: "adopted" });
+	expect(receipt).toMatchObject({
+		identityId: "identity-a",
+		groups: ["group"],
+		kind: lostReply ? "prior_commit" : "finalized",
+	});
+	expect(await authority()).toEqual(originalAuthority);
+	expect(await rows("coordinator_auth_account_links")).toEqual(links);
+	expect(await rows("coordinator_scope_memberships")).toEqual([]);
+	expect(await rows("coordinator_owner_enrollment_audit_log")).toHaveLength(1);
+	expect(await rows("coordinator_device_ownership_bindings")).toMatchObject([
+		{ identity_id: "identity-a", device_id: "device", binding_id: receipt.bindingId },
+	]);
+	expect((await rows("enrolled_devices")).find((row) => row.device_id === "device")).toMatchObject({
+		identity_id: "identity-a",
+		public_key: fixture.publicKey,
+		group_id: "group",
+	});
+	const attempts = await rows("coordinator_owner_enrollment_attempts");
+	expect(attempts).toMatchObject([
+		{ admission_owner_hash: expect.stringMatching(/^[a-f0-9]{64}$/), identity_id: "identity-a" },
+	]);
+}
+
+function verifyAccountFinalTransport({ lostReply }: { lostReply: boolean }) {
+	expect(calls.some(({ path }) => path === ATTEMPTS)).toBe(false);
+	const finals = calls.filter(({ path }) => path.endsWith("/finalize"));
+	expect(finals).toHaveLength(lostReply ? 2 : 1);
+	for (const final of finals)
+		expect(final).toMatchObject({
+			body: read("final.json").body,
+			authorization: null,
+			status: 200,
+		});
+}
+
+function verifyAccountProfilePreserved({
+	receipt,
+	before,
+	configBefore,
+	keys,
+	device,
+	saved,
+	a,
+	aKey,
+}: Pick<Awaited<ReturnType<typeof adoptAccountProfile>>, "receipt"> &
+	Awaited<ReturnType<typeof prepareAccountProfile>> &
+	Awaited<ReturnType<typeof arrangeReviewedAccountOwner>>) {
+	expect(facts()).toEqual(before);
+	expect(JSON.parse(readFileSync(fixture.options.configPath, "utf8"))).toEqual({
+		...configBefore,
+		actor_id: receipt.identityId,
+		sync_coordinator_url: ORIGIN,
+		sync_coordinator_group: "group",
+	});
+	expect(fixture.db.prepare("SELECT * FROM sync_device").all()).toEqual(device);
+	expect(
+		["device.key", "device.key.pub"].map((name) =>
+			readFileSync(join(fixture.options.keysDir, name)),
+		),
+	).toEqual(keys);
+	expect(readFileSync(join(a.keysDir, "device.key"))).toEqual(aKey);
+	expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(saved);
+}
+
+async function verifyAccountReceiptReopensOffline({
+	result,
+}: Pick<Awaited<ReturnType<typeof adoptAccountProfile>>, "result">) {
+	const reopened = new Sqlite(fixture.options.dbPath, { readonly: true, fileMustExist: true });
+	try {
+		expect(reopened.prepare("SELECT identity_id,device_id FROM identity_devices").all()).toEqual([
+			{ identity_id: "identity-a", device_id: "device" },
+		]);
+	} finally {
+		reopened.close();
+	}
+	const offline = vi.fn().mockRejectedValue(new Error("No coordinator on receipt-backed reopen"));
+	expect(
+		await enrollOwnerProfile({ ...fixture.options, fetch: offline, onBrowserStart: undefined }),
+	).toEqual(result);
+	expect(offline).not.toHaveBeenCalled();
+	expect(fakeProvider.requests.filter(({ url }) => url.endsWith("/token"))).toHaveLength(3);
+	expect(fakeProvider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
+}
+
 it.each([false, true])(
 	"links reviewed A then account-enrolls B without changing keys or grants (lost reply: %s)",
 	async (lostReply) => {
 		// Arrange: neither an account link nor B's Identity exists before the maintained runtime runs.
-		const a = await reviewedA();
-		const aKey = readFileSync(join(a.keysDir, "device.key"));
-		await linkA(a);
-		const links = await rows("coordinator_auth_account_links");
-		expect(links).toMatchObject([
-			{
-				identity_id: "identity-a",
-				authority_kind: "controller_attestation",
-				revoked_at_ms: null,
-				controller_attestation_id: a.attestationId,
-			},
-		]);
-		expect(await rows("coordinator_identity_group_grants")).toEqual([]);
-		expect(await rows("coordinator_scope_memberships")).toEqual([]);
-		const grant = await json(
-			"/v1/admin/identity-group-grants",
-			{ attestation_id: a.attestationId },
-			admin,
-		);
-		expect(grant.status, await grant.clone().text()).toBe(200);
-		const originalAuthority = await authority();
+		const owner = await arrangeReviewedAccountOwner();
+		const linked = await linkAndGrantAccountOwner(owner);
 		const session = await signIn();
-		const before = facts();
-		const configBefore = JSON.parse(readFileSync(fixture.options.configPath, "utf8"));
-		const keys = ["device.key", "device.key.pub"].map((name) =>
-			readFileSync(join(fixture.options.keysDir, name)),
-		);
-		const device = fixture.db.prepare("SELECT * FROM sync_device").all();
-		fixture.options.admissionMode = "account";
-		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
-		await prepared();
-		fixture.options.capability = undefined;
-		const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
-		fixture.options.onBrowserStart = vi.fn(async (url, details) => {
-			if (!details) throw new Error("Account admission upload details missing");
-			await finishB(await uploadB(url, session, details), session);
-		});
-		dropFinalReply = lostReply;
+		const profile = await prepareAccountProfile({ session });
 		// Act: the fixed browser URL uploads the client's exact signed request, not an admin capability.
-		if (lostReply) {
-			await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
-				code: "retained_request_incomplete",
-			});
-			expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
-			expect(await rows("coordinator_device_ownership_bindings")).toHaveLength(1);
-			dropFinalReply = false;
-			fixture.options.onBrowserStart = undefined;
-		}
-		const result = await enrollOwnerProfile(fixture.options);
+		await retainAccountFinalForRetry({ lostReply });
+		const adopted = await adoptAccountProfile();
 		// Assert: adoption comes solely from the configured Worker's receipt, preserving both device keys.
-		const receipt = read("receipt.json").receipt;
-		expect(result).toEqual({ ...receipt, kind: "adopted" });
-		expect(receipt).toMatchObject({
-			identityId: "identity-a",
-			groups: ["group"],
-			kind: lostReply ? "prior_commit" : "finalized",
-		});
-		expect(await authority()).toEqual(originalAuthority);
-		expect(await rows("coordinator_auth_account_links")).toEqual(links);
-		expect(await rows("coordinator_scope_memberships")).toEqual([]);
-		expect(await rows("coordinator_owner_enrollment_audit_log")).toHaveLength(1);
-		expect(await rows("coordinator_device_ownership_bindings")).toMatchObject([
-			{ identity_id: "identity-a", device_id: "device", binding_id: receipt.bindingId },
-		]);
-		expect(
-			(await rows("enrolled_devices")).find((row) => row.device_id === "device"),
-		).toMatchObject({
-			identity_id: "identity-a",
-			public_key: fixture.publicKey,
-			group_id: "group",
-		});
-		const attempts = await rows("coordinator_owner_enrollment_attempts");
-		expect(attempts).toMatchObject([
-			{ admission_owner_hash: expect.stringMatching(/^[a-f0-9]{64}$/), identity_id: "identity-a" },
-		]);
-		expect(calls.some(({ path }) => path === ATTEMPTS)).toBe(false);
-		const finals = calls.filter(({ path }) => path.endsWith("/finalize"));
-		expect(finals).toHaveLength(lostReply ? 2 : 1);
-		for (const final of finals)
-			expect(final).toMatchObject({
-				body: read("final.json").body,
-				authorization: null,
-				status: 200,
-			});
-		expect(facts()).toEqual(before);
-		expect(JSON.parse(readFileSync(fixture.options.configPath, "utf8"))).toEqual({
-			...configBefore,
-			actor_id: receipt.identityId,
-			sync_coordinator_url: ORIGIN,
-			sync_coordinator_group: "group",
-		});
-		expect(fixture.db.prepare("SELECT * FROM sync_device").all()).toEqual(device);
-		expect(
-			["device.key", "device.key.pub"].map((name) =>
-				readFileSync(join(fixture.options.keysDir, name)),
-			),
-		).toEqual(keys);
-		expect(readFileSync(join(a.keysDir, "device.key"))).toEqual(aKey);
-		expect(ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"))).toEqual(saved);
-		const reopened = new Sqlite(fixture.options.dbPath, { readonly: true, fileMustExist: true });
-		try {
-			expect(reopened.prepare("SELECT identity_id,device_id FROM identity_devices").all()).toEqual([
-				{ identity_id: "identity-a", device_id: "device" },
-			]);
-		} finally {
-			reopened.close();
-		}
-		const offline = vi.fn().mockRejectedValue(new Error("No coordinator on receipt-backed reopen"));
-		expect(
-			await enrollOwnerProfile({ ...fixture.options, fetch: offline, onBrowserStart: undefined }),
-		).toEqual(result);
-		expect(offline).not.toHaveBeenCalled();
-		expect(fakeProvider.requests.filter(({ url }) => url.endsWith("/token"))).toHaveLength(3);
-		expect(fakeProvider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
+		await verifyAccountAuthority({ ...adopted, ...linked, lostReply });
+		verifyAccountFinalTransport({ lostReply });
+		verifyAccountProfilePreserved({ ...adopted, ...profile, ...owner });
+		await verifyAccountReceiptReopensOffline(adopted);
 	},
 );
 

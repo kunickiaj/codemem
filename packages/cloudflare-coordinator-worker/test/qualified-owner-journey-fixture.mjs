@@ -22,6 +22,16 @@ export const origin = "https://app.example.test";
 export const groupId = "journey-discovery";
 export const teamId = "journey-team";
 
+export function recordFixtureHttpFailure({ response, error, errors }) {
+	errors.push(error);
+	if (response.headersSent) {
+		response.destroy();
+		return;
+	}
+	response.writeHead(500, { "Content-Type": "text/plain; charset=utf-8", "X-Content-Type-Options": "nosniff" });
+	response.end("Fixture request failed.");
+}
+
 async function helpers(directory) {
 	const result = await build({
 		stdin: { resolveDir: join(coreDir, "src"), sourcefile: "qualified-owner-fixture.ts", contents: `
@@ -100,11 +110,13 @@ export function cookie(response) {
 
 export async function journeyFixture(t) {
 	const cleanup = [];
+	const serverErrors = [];
 	t.after(async () => {
 		const errors = [];
 		for (const close of cleanup.reverse()) {
 			try { await close(); } catch (error) { errors.push(error); }
 		}
+		errors.push(...serverErrors);
 		if (errors.length) throw new AggregateError(errors, "Journey cleanup failed");
 	});
 	const artifacts = fileURLToPath(new URL("../../../.tmp", import.meta.url));
@@ -173,7 +185,7 @@ export async function journeyFixture(t) {
 			requests.push({ path: incoming.url, status: result.status });
 			response.writeHead(result.status, { ...Object.fromEntries(result.headers), "set-cookie": result.headers.getSetCookie() });
 			response.end(Buffer.from(await result.arrayBuffer()));
-		} catch (error) { response.writeHead(500); response.end(String(error)); }
+		} catch (error) { recordFixtureHttpFailure({ response, error, errors: serverErrors }); }
 	});
 	await new Promise((resolve, reject) => {
 		server.once("error", reject);
@@ -222,7 +234,7 @@ export async function journeyFixture(t) {
 	await writeFile(join(keysDir, "device.key"), keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
 	await writeFile(join(keysDir, "device.key.pub"), publicKey);
 	return { h, directory, configPath, keysDir, dbPath: join(directory, "a.sqlite"), publicKey, adminSecret,
-		now, provider, request, admin, requests, db, remote,
+		now, provider, request, admin, requests, db, remote, serverErrors,
 		rows: async table => (await db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()).results,
 		openStore: () => {
 			const store = new h.MemoryStore(join(directory, "a.sqlite"), { keysDir });
@@ -287,7 +299,7 @@ export async function journeyFixture(t) {
 					wires.push({ path: incoming.url, status: result.status, headers: incoming.headers, body: body.toString() });
 					response.writeHead(result.status, Object.fromEntries(result.headers));
 					response.end(Buffer.from(await result.arrayBuffer()));
-				} catch (error) { response.writeHead(500); response.end(String(error)); }
+				} catch (error) { recordFixtureHttpFailure({ response, error, errors: serverErrors }); }
 				finally {
 					if (previous === undefined) delete process.env.CODEMEM_KEYS_DIR;
 					else process.env.CODEMEM_KEYS_DIR = previous;

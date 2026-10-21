@@ -541,8 +541,13 @@ or retry automatically.
 Confirmation revokes the device ID with **any key**, and the canonical key under
 **any device ID**, throughout the selected coordinator database and all groups.
 Another device continues only when **both** its device ID and canonical key differ.
-Success displays both retained subject references and their original timestamp
-text; overlapping revocations can retain different IDs and dates.
+Confirmed success writes one JSON line to stdout containing the validated committed
+result: state, version, coordinator, scope, group/device/key IDs, and both retained
+subject references (`subject_kind`, `subject_value`, `revocation_id`, `created_at`).
+Prompts, warnings and progress remain on stderr. Retained text uses terminal-safe
+JSON escapes; parsing restores the original values without timestamp normalization.
+Overlapping revocations can retain different IDs and dates. Cancellation, rejection
+and unknown outcomes emit no committed receipt.
 
 This does not promise immediate offline enforcement, revoke independent manual or
 direct-peer trust, erase remote copies, or rewrite account links, sessions, grants,
