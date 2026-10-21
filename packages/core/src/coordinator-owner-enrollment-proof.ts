@@ -40,6 +40,11 @@ export interface OwnerAttempt {
 	final_outcome_json: string | null;
 }
 
+/** The optional column exists only after explicit schema installation. */
+export interface OwnerAuthorityAttempt extends OwnerAttempt {
+	owner_qualification_id?: string | null;
+}
+
 export interface GrantPin {
 	groupId: string;
 	revision: number;
@@ -118,7 +123,7 @@ export function ownerEnrollmentFinalMessage(a: OwnerFinalPins, completionSecret:
 	]);
 }
 /** Commitment shown to the original browser, including the exact linked account and grants. */
-export async function ownerEnrollmentConfirmationHash(a: OwnerAttempt): Promise<string> {
+export async function ownerEnrollmentConfirmationHash(a: OwnerAuthorityAttempt): Promise<string> {
 	const fields = `coordinator_id attempt_id origin device_id public_key key_id fingerprint
  issuer account_subject identity_id link_id link_attempt_id link_controller_attestation_id
  link_auth_config_revision auth_config_revision browser_start_hash browser_transaction_hash
@@ -128,6 +133,9 @@ export async function ownerEnrollmentConfirmationHash(a: OwnerAttempt): Promise<
 		...fields.map((field) => a[field as keyof OwnerAttempt]),
 		// Keep existing operator confirmation/proof commitments byte-for-byte unchanged.
 		...(a.admission_owner_hash === null ? [] : [a.admission_owner_hash]),
+		...(a.owner_qualification_id == null
+			? []
+			: ["codemem.owner-enrollment.qualification.v1", a.owner_qualification_id]),
 	]);
 	const digest = await globalThis.crypto.subtle.digest(
 		"SHA-256",

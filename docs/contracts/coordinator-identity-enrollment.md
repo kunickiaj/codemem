@@ -71,8 +71,8 @@ The local backend retains its private key and local proofs. The coordinator stor
 | Path | Identity result | Account/link rule | Device result |
 | --- | --- | --- | --- |
 | Attestation-backed existing-Identity first link | Existing Identity | Existing controller/admin review unchanged | Existing enrolled signer only; no new enrollment |
-| Device-owned first link (planned) | Current local Identity, if no authoritative record contradicts it | Device claim committed with the link; not operator review | Existing enrolled signer only; matching or unassigned enrollment remains unchanged |
-| Fresh device for active linked account | Existing linked Identity | Server resolves exact active `issuer` + `sub` with an attestation-backed link | Bind the pinned pending key after owner confirmation and signed completion |
+| Device-owned first link | Current local Identity, if no authoritative record contradicts it | Device claim committed with the link; not operator review | Existing enrolled signer only; matching or unassigned enrollment remains unchanged |
+| Fresh device for active linked account | Existing linked Identity | Server resolves exact active `issuer` + `sub` with an attestation-backed or explicitly qualified link | Bind the pinned pending key after owner confirmation and signed completion |
 | Existing authenticated Identity accepts another Team invite | Same existing Identity | Verify its current active attestation-backed link (`authority_kind = 'controller_attestation'`); do not create another link | Preserve device bindings; add only invited Team membership |
 | New-person authenticated Team invite | New assigned Identity | Explicit verified-account binding in a separately reviewed admission ceremony | Bind invitation's pending device |
 | Operator first owner | New first Identity | Operator- or invitation-trusted bootstrap, separately reviewed | Enroll in discovery group before a Team exists |
@@ -92,7 +92,7 @@ quotas and native D1 commit details still gate the endpoint.
 1. The runtime checks local adoption eligibility, binds a literal loopback listener, and signs the pending request with the key being registered. The server verifies that signature without treating the key as enrolled, then derives the fingerprints from that exact signed public key before persisting an attempt. Compute the legacy `fingerprintPublicKey(publicKey)` for exact-text evidence and the canonical Ed25519 key ID from the verified key bytes for revocation and collision checks. The new request need not carry either fingerprint; if a compatibility wire format includes a legacy fingerprint, reject any supplied mismatch. Neither value is caller-selected authority. Coordinator/origin, purpose, exact key, derived fingerprints, device ID, attempt ID and callback address are fixed at start. No client-selected Identity or group grants are accepted.
 2. The server creates one ten-minute, single-use request and persists its coordinator/origin, purpose, exact pending public key, server-derived legacy fingerprint and canonical key ID, device ID, attempt ID, browser-start commitment, deadline, and validated loopback destination as immutable fields. Validate that destination at creation with the existing literal-loopback rules: `http://127.0.0.1:<port>/codemem/auth/complete` or `http://[::1]:<port>/codemem/auth/complete`, with a valid explicit port and no hostname, user information, query or fragment. Once OIDC resolves an Identity, pin the active account-link row and trusted Identity-group grant revision set. This path consumes no invitation.
 3. The original browser claims the request through a CSRF/Origin-protected POST presenting the raw one-time browser-start value. The server hashes the decoded value and matches the stored commitment before atomically recording the browser-cookie binding and starting OIDC; an attempt ID or caller-supplied hash alone cannot claim it. Reject an incorrect, missing, expired or already-claimed start value without changing the binding or starting OIDC. Use the documented `prompt=select_account` to make the selected account visible; this is not forced password entry. An existing Google session is accepted. State, nonce, PKCE and normal ID-token validation remain required; an existing Codemem session must not skip this purpose-bound transaction.
-4. The server resolves only the verified exact `issuer` + `sub` to an active link whose authority kind is `controller_attestation`. Unknown, revoked, conflicting, replacement, or device-claim links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
+4. The server resolves only the verified exact `issuer` + `sub` to an active attestation-backed or explicitly qualified device-claim link. Unknown, revoked, conflicting, replacement, or bare device-claim links deny the attempt; they do not reserve or preclaim an Identity indefinitely.
 5. The CSRF/Origin-protected confirmation names the account, resolved Identity, device label and short server-derived canonical key fingerprint. The local viewer or CLI independently derives and shows the same canonical fingerprint. Warn: continue only if this computer started enrollment; never paste a callback URL or completion code. Deliver the one-use completion secret only to the validated destination persisted at creation; confirmation and later requests cannot supply or replace that destination. Only server-generated handoff parameters may be appended to the saved URI.
 6. Finalization is signed by the exact pending key and carries that completion secret, the purpose, coordinator ID and immutable request bindings. The server commits only after current-state checks pass. The original-cookie browser receives safe status after finalization; registration mints no new browser session.
 
@@ -255,11 +255,11 @@ device, or signer to remain active, enrolled, reachable, or unrevoked.
 Revoking an old signing device does not erase an account link, its sessions, or issued
 grants.
 
-Only links whose authority kind is `controller_attestation` qualify. A
-device-claim link (planned) never starts, pins, or commits owner enrollment, even
-if grants for its Identity exist later. The existing rule that an owner attempt
-stores all link pins or none rejects such a link as a second barrier, because
-its controller attestation reference is null.
+Attestation-backed links qualify without changing their historical pins. A
+device-claim link requires the explicit reviewed qualification described below;
+independent grants alone are insufficient. Resolved attempts retain the original
+controller reference XOR the qualification ID, with exact nullable equality in
+confirmation, finalization and receipts. Unresolved attempts retain neither.
 
 Build that record only from the trusted provider-verification result followed by
 the server lookup of the active exact account link. A public
@@ -401,20 +401,25 @@ composition can create an owner attempt; it does not mount an owner route.
 Applying the live migration, deploying, and testing real Google sign-in remain
 separate approval gates.
 
-#### Reviewed qualification storage (inactive)
+#### Explicitly qualified owner links
 
-`coordinator_owner_enrollment_qualifications` is an inert, source-only ledger for
-a reviewed future owner-enrollment exception. A bare device-claim link remains
-ineligible today; qualification types and DDL grant no authority. No mounted issuer,
-consumer, CLI, store-startup installation or owner-attempt rebuild is included.
+`coordinator_owner_enrollment_qualifications` retains reviewed owner-enrollment
+evidence. A bare device-claim link remains ineligible: the existing owner consumer
+requires an issued, nonrevoked qualification, canonical ledger storage, the complete
+connection-history schema and explicit migration 0036 owner-attempt authority pins.
+The reviewed configured-admin handler and `codemem coordinator qualify-owner`
+CLI exist in source; the handler remains unregistered in production. Neither
+installs storage or automatically rebuilds owner attempts. The
+[first-owner A/B recipe](../user-guide.md#first-owner-bootstrap-before-teams)
+keeps operator review, qualification and the independent transport grant separate.
 Migration `0035_add_owner_enrollment_qualifications.sql` creates only an empty
 table and its constraints, with the same SQL available as complete Core
 statements for fresh SQLite and native Worker/D1 schema construction.
 
-Future issuance must server-resolve the exact committed device-claim link and
+Issuance must server-resolve the exact committed device-claim link and
 genuine operator-reviewed attestation, retaining their immutable birth facts.
-An unmounted internal preview/issue/revoke capability now implements those source
-checks; its API and schema restrictions are described in the authentication protocol.
+The internal preview/issue/revoke capability implements those source checks;
+its API and schema restrictions are described in the authentication protocol.
 The row pins the exact link and claim IDs, Identity, source group/device, exact
 public key, fingerprint and canonical key ID; the real attestation ID, revision
 and original creation text; review receipt, evidence digest and nullable
@@ -437,13 +442,19 @@ without requiring the clock to catch up.
 No cascading foreign key ties retained evidence to an old
 device's enrollment or history.
 
-The future exception is owner-enrollment-only; privileged invitation and grant
-consumers still deny device-claim links. Activation must wait for a separately
-reviewed owner-attempt migration enforcing attestation pins XOR qualification
-pins, the server-resolved issuance and owner start/callback/commit pipeline, and
-explicit operator approval to migrate and activate. Neither issuance nor later
-consumption may silently reinterpret the original claim as an attestation, and
-later consumption must not require the old source device to remain active.
+The exception is owner-enrollment-only; privileged invitation and grant consumers
+still deny device-claim links. Migration 0036 enforces original controller pins XOR
+qualification pins. OIDC resolves and pins the exact qualification; confirmation
+and the atomic final write repeat live generation, account revocation, retained
+claim/review birth, and independent eligible group-grant checks. Receipt reads
+compare the exact nullable qualification pin but remain historical, not current
+permission. Qualified confirmations alone add the qualification hash domain;
+existing controller/operator hashes and receipt payloads are unchanged.
+Neither issuance nor consumption rewrites the original link as an attestation,
+and later consumption does not require the old source device or controller to
+remain active. Real management-session admission, fresh OIDC, pending-key proof,
+CSRF/Origin checks, owner commitment and literal loopback delivery remain required.
+Explicit approval to apply migrations or deploy is still separate from this source.
 
 #### Private signed start and browser claim for local testing
 

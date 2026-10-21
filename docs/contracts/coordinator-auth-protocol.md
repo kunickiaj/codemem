@@ -191,7 +191,8 @@ Owner-enrollment start pages and claim POSTs use the same activity check without
 deleting cookies. Only absent or inactive transactions permit the existing owner
 flow to continue; active, malformed, changed-config, or unavailable reads deny it.
 This supplies no ownership evidence: admission, CSRF, pending-key/start proofs,
-fresh provider verification, and attestation-backed owner/grant checks stay required.
+fresh provider verification, qualified-or-attested owner checks, and independent
+trusted grant checks stay required.
 
 Runtime polling requires the attempt device's signed request; browser polling
 requires its original transaction cookie. A public attempt ID is not authorization.
@@ -902,10 +903,10 @@ claim. If the outcome is unknown, read status before offering another attempt.
 
 Bare device claims must never pass as operator approval:
 
-- Owner-enrollment start, callback, and commit accept only account links with
-  `authority_kind = 'controller_attestation'`. The owner attempt's existing
-  check that all link pins are non-null rejects a device-claim link as a
-  second barrier.
+- Owner enrollment accepts attestation-backed links, or the exact explicitly
+  qualified device-claim link described below. Independent grants alone never
+  qualify a claim. Resolved attempts pin the original controller reference XOR
+  the server-resolved qualification ID; they never rewrite link authority.
 - Identity-group grants come only from active attestations or consumed
   `team_member` invites. A device-claim link is never accepted as the
   account-ownership proof for either path.
@@ -917,16 +918,21 @@ Bare device claims must never pass as operator approval:
   admin-authenticated. Link revocation works on both kinds and keeps tombstones.
 - Status and audit output never present a device claim as a review.
 
-#### Reviewed future owner-enrollment exception (inactive)
+#### Explicitly qualified owner-enrollment exception
 
 The source-only `coordinator_owner_enrollment_qualifications` table and migration
-`0035_add_owner_enrollment_qualifications.sql` reserve a narrow future exception
-for owner enrollment only. They grant nothing today: there is no mounted qualification
-issuer, consumer, public API, or store-open installation. Current owner handlers
-still deny device-claim links, and all other privileged consumers above remain
-attestation-only.
+`0035_add_owner_enrollment_qualifications.sql` support a narrow owner-enrollment
+exception only after explicit schema installation and genuine reviewed issuance.
+The existing owner consumer accepts qualified links only with the canonical ledger,
+complete connection-history schema, and migration 0036 owner-attempt column and
+authority guards. The reviewed configured-admin handler and
+`codemem coordinator qualify-owner` CLI exist in source, but the handler remains
+unregistered in production. Neither performs automatic migration or store-open
+installation. Bare device claims and all other privileged consumers remain denied
+by default. See the [first-owner A/B recipe](../user-guide.md#first-owner-bootstrap-before-teams)
+for the separate review, qualification and transport-grant steps.
 
-A future issuer must resolve the exact committed link and immutable device claim
+Issuance must resolve the exact committed link and immutable device claim
 on the server, then resolve a genuine operator-reviewed controller attestation
 for that Identity and source device/key. Request labels, row types, enrollment
 labels and SQL checks are not evidence. Issuance must snapshot the real
@@ -950,7 +956,9 @@ These operations currently require the complete connection-history schema and ex
 qualification DDL; V2-only, partial, unknown and future lifecycle layouts fail closed.
 The connection-history liveness mode checks the exact current link and retained
 revocation barrier; existing lifecycle-mode callers are unchanged. This capability
-creates no grant or controller attestation and has no public entry point.
+creates no grant or controller attestation. Its `schemaReady()` method supports
+the separate authenticated handler's explicit unavailable/503 response; it does
+not install storage or make a production route available.
 
 Preview, issuance and exact retry require the current enrollment Identity to match
 the review's nullable enrollment snapshot exactly (`IS`, including null). A change
@@ -974,17 +982,26 @@ coordinator/link unique index, even with recursive triggers disabled. The table
 uses `WITHOUT ROWID`: there is no hidden rowid to collide with or preassignment
 value for a trigger to inspect. Inserts require null revocation; only explicit
 UPDATE may set revocation to an integer timestamp at least the qualification
-creation time. Repeating that timestamp is allowed, but clearing or changing it
-is not. Logical references have no cascading
+creation time. If the clock moves backward, revocation uses the later of now and
+the stored creation time. Exact retries retain the first revocation timestamp.
+Repeating that timestamp is allowed, but clearing or changing it is not.
+Logical references have no cascading
 foreign keys, so removal or revocation of an old device cannot erase history.
 
-Activation requires a separately reviewed owner-attempt migration that enforces
+Migration `0036_add_owner_attempt_qualification_pin.sql` enforces
 exactly one proof branch: the existing attestation-backed link pins XOR the new
-qualification pins. It also requires the server-resolved issuance and owner
-start/callback/commit pipeline, followed by explicit operator migration and
-activation approval. This slice neither rebuilds owner attempts nor activates
-that pipeline. Qualification evidence must not become a requirement to keep the
-old source device or controller active after issuance.
+qualification pins. The consumer resolves the qualification on the server at OIDC,
+pins its exact nullable ID through confirmation, commit and retained receipt, and
+checks the live link generation, account revocation barrier and full retained claim
+and review birth tuple at each new authority decision. Qualification revocation,
+unlink/relink or changed grants deny a new commit. Revoking the historical controller
+or old device after issuance does not invalidate that retained birth evidence.
+Qualified confirmations add a separate hash domain and qualification ID; existing
+operator/controller confirmation hashes and receipt payloads remain unchanged.
+The owner-bound start token still commits to exact issuer/subject/Identity/link:
+one immutable qualification per link and callback revalidation prevent replacement
+or revoked qualifications from inheriting that admission. Schema application and
+deployment still require explicit approval; this source change performs neither.
 
 ### Request changes
 

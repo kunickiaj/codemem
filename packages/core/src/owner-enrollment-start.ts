@@ -45,7 +45,7 @@ import {
 	readOwnerEnrollmentReceipt,
 } from "./coordinator-owner-enrollment-commit.js";
 import {
-	type OwnerAttempt,
+	type OwnerAuthorityAttempt as OwnerAttempt,
 	ownerEnrollmentConfirmationHash,
 	readGrantPins,
 	validAttemptTime,
@@ -64,6 +64,10 @@ import {
 	verifyOwnerEnrollmentAdmission,
 	verifyOwnerEnrollmentAdmissionV2,
 } from "./owner-enrollment-admission.js";
+import {
+	controllerOwnerLinkAuthority,
+	readOwnerLinkAuthority,
+} from "./owner-enrollment-link-authority.js";
 import { matchesAdmissionOwner, validAdmissionOwnerHash } from "./owner-enrollment-owner-pin.js";
 import type { InMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
@@ -543,9 +547,12 @@ interface OwnerAccountLink {
 	link_id: string;
 	identity_id: string;
 	attempt_id: string;
-	controller_attestation_id: string;
+	controller_attestation_id: string | null;
+	owner_qualification_id: string | null;
 	auth_config_revision: string;
 	created_at_ms: number;
+	authority_kind: string;
+	device_claim_id: string | null;
 }
 // Filter each Team before pinning; the winning update repeats this exact snapshot.
 const CALLBACK_GRANTS_SQL = `SELECT json_group_array(json_object('groupId',groupId,'revision',revision)) FROM
@@ -558,11 +565,14 @@ async function persistVerified(
 	consumed: ConsumedOwnerBrowser,
 	account: { issuer: string; subject: string },
 ): Promise<OwnerAttempt | null> {
-	const link = await context.backend.first<OwnerAccountLink>({
-		sql: `SELECT * FROM coordinator_auth_account_links WHERE coordinator_id = ? AND issuer = ? AND subject = ? AND revoked_at_ms IS NULL AND authority_kind = 'controller_attestation'`,
+	const candidate = await context.backend.first<OwnerAccountLink>({
+		sql: `SELECT l.*,NULL AS owner_qualification_id FROM coordinator_auth_account_links l WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL`,
 		values: [context.c.coordinatorId, account.issuer, account.subject],
 	});
-	if (!link || !isAuthControllerId(link.controller_attestation_id)) return null;
+	if (!candidate) return null;
+	const resolved = await callbackLinkAuthority(context, consumed.row, candidate);
+	if (!resolved) return null;
+	const { link, authority } = resolved;
 	if (
 		!(await matchesAdmissionOwner({
 			...consumed.row,
@@ -581,7 +591,7 @@ async function persistVerified(
 	if (!grants || !readGrantPins(grants.rows)) return null;
 	const time = context.now();
 	const wrote = await context.backend.run(
-		verifiedStatement(context, consumed, account, link, grants.rows, time),
+		verifiedStatement(context, consumed, account, link, grants.rows, time, authority),
 	);
 	if (wrote !== 1) return null;
 	const row = await readAttempt(context, consumed.row.attempt_id);
@@ -590,6 +600,8 @@ async function persistVerified(
 		row?.state !== "oidc_verified" ||
 		row.admission_owner_hash !== consumed.row.admission_owner_hash ||
 		row.link_id !== link.link_id ||
+		(row.owner_qualification_id ?? null) !== link.owner_qualification_id ||
+		row.link_controller_attestation_id !== link.controller_attestation_id ||
 		row.account_subject !== account.subject ||
 		row.grant_revisions_json !== grants.rows ||
 		row.browser_transaction_hash !== consumed.txn.browser_transaction_hash ||
@@ -598,6 +610,37 @@ async function persistVerified(
 		throw new Error();
 	return row;
 }
+async function callbackLinkAuthority(
+	context: Context,
+	attempt: OwnerAttempt,
+	link: OwnerAccountLink,
+) {
+	const scope = {
+		sql: "l.coordinator_id=? AND l.link_id=?",
+		values: [context.c.coordinatorId, link.link_id],
+	};
+	if (
+		link.authority_kind === "controller_attestation" &&
+		isAuthControllerId(link.controller_attestation_id) &&
+		link.device_claim_id === null
+	)
+		return { authority: controllerOwnerLinkAuthority(attempt, scope), link };
+	if (
+		link.authority_kind !== "device_claim" ||
+		link.controller_attestation_id !== null ||
+		!isAuthControllerId(link.device_claim_id)
+	)
+		return null;
+	const authority = await readOwnerLinkAuthority(context.backend, context.now(), scope);
+	const qualified = await context.backend.first<{ owner_qualification_id: string | null }>({
+		sql: `${authority.with}SELECT ${authority.qualification} AS owner_qualification_id
+ FROM owner_scope_links l WHERE l.coordinator_id=? AND l.link_id=?
+ AND l.revoked_at_ms IS NULL AND ${authority.link}`,
+		values: [...authority.values, context.c.coordinatorId, link.link_id],
+	});
+	if (!qualified?.owner_qualification_id) return null;
+	return { authority, link: { ...link, owner_qualification_id: qualified.owner_qualification_id } };
+}
 function verifiedStatement(
 	context: Context,
 	consumed: ConsumedOwnerBrowser,
@@ -605,34 +648,49 @@ function verifiedStatement(
 	link: OwnerAccountLink,
 	grants: string,
 	time: number,
+	authority: Awaited<ReturnType<typeof readOwnerLinkAuthority>>,
 ): AuthLinkStatement {
+	// Keep consumed-browser proof and link provenance in separate native D1 depth trees.
 	return {
-		sql: `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'oidc_verified',
- account_subject = ?,identity_id = ?,link_id = ?,link_attempt_id = ?,link_controller_attestation_id = ?,
- link_auth_config_revision = ?,grant_revisions_json = ? WHERE ${ownerAttemptSql("browser_claimed")}
+		sql: `${authority.with ? `${authority.with},` : "WITH"} owner_callback_attempts AS MATERIALIZED (
+ SELECT a.coordinator_id,a.attempt_id FROM coordinator_owner_enrollment_attempts a
+ WHERE ${ownerAttemptSql("browser_claimed")}
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${CALLBACK_TXN_SQL}
- AND b.state = 'consumed' AND b.claim_token = ? AND b.nonce IS NULL AND b.pkce_verifier IS NULL)
- AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
+ AND b.state = 'consumed' AND b.claim_token = ? AND b.nonce IS NULL AND b.pkce_verifier IS NULL)),
+ owner_callback_links AS MATERIALIZED (
+ SELECT l.*,${authority.qualification} AS owner_qualification_id FROM owner_scope_links l
+ WHERE ${authority.link})
+ UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'oidc_verified',
+ account_subject = ?,identity_id = ?,link_id = ?,link_attempt_id = ?,link_controller_attestation_id = ?,
+ ${authority.hasPin ? "owner_qualification_id = ?," : ""}link_auth_config_revision = ?,grant_revisions_json = ?
+ WHERE a.coordinator_id=? AND a.attempt_id=?
+ AND EXISTS (SELECT 1 FROM owner_callback_attempts p WHERE p.coordinator_id=a.coordinator_id AND p.attempt_id=a.attempt_id)
+ AND EXISTS (SELECT 1 FROM owner_callback_links l WHERE l.coordinator_id = a.coordinator_id
  AND l.link_id = ? AND l.issuer = a.issuer AND l.subject = ? AND l.identity_id = ? AND l.attempt_id = ?
- AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id = ? AND l.auth_config_revision = ? AND l.created_at_ms = ? AND l.revoked_at_ms IS NULL)
+ AND l.controller_attestation_id IS ? AND l.owner_qualification_id IS ? AND l.auth_config_revision = ? AND l.created_at_ms = ? AND l.revoked_at_ms IS NULL)
  AND (${CALLBACK_GRANTS_SQL}) = ?
  AND ${NO_COLLISION_SQL}`,
 		values: [
-			account.subject,
-			link.identity_id,
-			link.link_id,
-			link.attempt_id,
-			link.controller_attestation_id,
-			link.auth_config_revision,
-			grants,
+			...authority.values,
 			...callbackAttemptValues(context, consumed.row, time),
 			...callbackTxnValues(context, consumed.txn, time),
 			consumed.claimToken,
+			account.subject,
+			link.identity_id,
+			link.link_id,
+			link.attempt_id,
+			link.controller_attestation_id,
+			...(authority.hasPin ? [link.owner_qualification_id] : []),
+			link.auth_config_revision,
+			grants,
+			consumed.row.coordinator_id,
+			consumed.row.attempt_id,
 			link.link_id,
 			account.subject,
 			link.identity_id,
 			link.attempt_id,
 			link.controller_attestation_id,
+			link.owner_qualification_id,
 			link.auth_config_revision,
 			link.created_at_ms,
 			link.identity_id,
@@ -682,8 +740,16 @@ const CONFIRM_AUTHORITY_SQL = `${OWNER_ACTIVE_LINK_SQL}
  AND b.created_at_ms >= a.created_at_ms AND b.created_at_ms <= ?
  AND b.expires_at_ms = a.expires_at_ms)`;
 function confirmAuthorityValues(context: Context, row: OwnerAttempt, time: number) {
-	return [row.identity_id, context.c.redirectUri, time];
+	return [row.coordinator_id, row.attempt_id, row.identity_id, context.c.redirectUri, time];
 }
+function confirmAuthorityCte(authority: Awaited<ReturnType<typeof readOwnerLinkAuthority>>) {
+	// JOIN/UPDATE FROM consumes this stage without nesting its proof under attempt pins.
+	return `${authority.with ? `${authority.with},` : "WITH"} owner_confirm_authority AS MATERIALIZED (
+ SELECT a.coordinator_id,a.attempt_id FROM coordinator_owner_enrollment_attempts a
+ WHERE a.coordinator_id=? AND a.attempt_id=?
+ AND ${CONFIRM_AUTHORITY_SQL.replace(OWNER_ACTIVE_LINK_SQL, authority.active)}) `;
+}
+const CONFIRM_AUTHORITY_MATCH_SQL = `p.coordinator_id=a.coordinator_id AND p.attempt_id=a.attempt_id`;
 async function readConfirmableAttempt(
 	context: Context,
 	attemptId: string,
@@ -699,13 +765,18 @@ async function readConfirmableAttempt(
 	if (!live(context, row, time) || !row.browser_transaction_hash || !row.loopback_redirect)
 		return null;
 	if (!parseCoordinatorAuthLoopback(row.loopback_redirect).ok) return null;
+	const authority = await readOwnerLinkAuthority(context.backend, time, {
+		sql: "l.coordinator_id=? AND l.link_id=?",
+		values: [row.coordinator_id, row.link_id],
+	});
 	const current = await context.backend.first({
-		sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts a WHERE
-  ${ownerAttemptSql("oidc_verified")}
- AND ${CONFIRM_AUTHORITY_SQL}`,
+		sql: `${confirmAuthorityCte(authority)}SELECT 1 FROM coordinator_owner_enrollment_attempts a
+ JOIN owner_confirm_authority p ON ${CONFIRM_AUTHORITY_MATCH_SQL} WHERE
+  ${ownerAttemptSql("oidc_verified")}`,
 		values: [
-			...callbackAttemptValues(context, row, time),
+			...authority.values,
 			...confirmAuthorityValues(context, row, time),
+			...callbackAttemptValues(context, row, time),
 		],
 	});
 	return current ? row : null;
@@ -736,7 +807,7 @@ async function confirm(
 	const completionHash = await proofHash(completionSecret);
 	const time = context.now();
 	const wrote = await context.backend.run(
-		confirmStatement(context, row, {
+		await confirmStatement(context, row, {
 			confirmationHash: confirmation.confirmationHash,
 			completionHash,
 			time,
@@ -757,20 +828,26 @@ function mintCompletionSecret(): string {
 		.replaceAll("/", "_")
 		.replace(/=+$/, "");
 }
-function confirmStatement(
+async function confirmStatement(
 	context: Context,
 	a: OwnerAttempt,
 	p: { confirmationHash: string; completionHash: string; time: number },
-): AuthLinkStatement {
+): Promise<AuthLinkStatement> {
+	const authority = await readOwnerLinkAuthority(context.backend, p.time, {
+		sql: "l.coordinator_id=? AND l.link_id=?",
+		values: [a.coordinator_id, a.link_id],
+	});
 	return {
-		sql: `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'confirmed',
- confirmation_hash = ?,completion_secret_hash = ? WHERE
+		sql: `${confirmAuthorityCte(authority)}UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'confirmed',
+ confirmation_hash = ?,completion_secret_hash = ? FROM owner_confirm_authority p WHERE
   ${ownerAttemptSql("oidc_verified")}
  AND a.account_subject = ? AND a.identity_id = ? AND a.link_id = ? AND a.link_attempt_id = ?
- AND a.link_controller_attestation_id = ? AND a.link_auth_config_revision = ? AND a.grant_revisions_json = ?
+ AND a.link_controller_attestation_id IS ? ${authority.hasPin ? "AND a.owner_qualification_id IS ?" : ""} AND a.link_auth_config_revision = ? AND a.grant_revisions_json = ?
  AND a.confirmation_hash IS NULL AND a.completion_secret_hash IS NULL
- AND ${CONFIRM_AUTHORITY_SQL} AND ${NO_COLLISION_SQL}`,
+ AND ${CONFIRM_AUTHORITY_MATCH_SQL} AND ${NO_COLLISION_SQL}`,
 		values: [
+			...authority.values,
+			...confirmAuthorityValues(context, a, p.time),
 			p.confirmationHash,
 			p.completionHash,
 			...callbackAttemptValues(context, a, p.time),
@@ -779,9 +856,9 @@ function confirmStatement(
 			a.link_id,
 			a.link_attempt_id,
 			a.link_controller_attestation_id,
+			...(authority.hasPin ? [a.owner_qualification_id ?? null] : []),
 			a.link_auth_config_revision,
 			a.grant_revisions_json,
-			...confirmAuthorityValues(context, a, p.time),
 			a.device_id,
 			a.key_id,
 			a.device_id,

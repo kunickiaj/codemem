@@ -5,11 +5,12 @@ import {
 } from "./coordinator-ed25519-key-id-compat.js";
 import { COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS } from "./coordinator-legacy-team-completion.js";
 import {
-	type OwnerAttempt,
+	type OwnerAuthorityAttempt as OwnerAttempt,
 	ownerEnrollmentConfirmationHash,
 	validOwnerEnrollmentReceiptMetadata,
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
+import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
 import { matchesAdmissionOwner } from "./owner-enrollment-owner-pin.js";
 
 export {
@@ -133,6 +134,11 @@ export async function commitOwnerEnrollment(input: {
 		groups: grants.map((g) => g.groupId),
 	});
 	const winner = [a.coordinator_id, a.attempt_id, bindingId];
+	const authority = await readOwnerLinkAuthority(backend, now, {
+		sql: "l.coordinator_id=? AND l.link_id=?",
+		values: [a.coordinator_id, a.link_id],
+	});
+	if (!authority.hasPin && a.owner_qualification_id != null) return false;
 	const update = winningUpdate(a, {
 		revision,
 		now,
@@ -142,6 +148,22 @@ export async function commitOwnerEnrollment(input: {
 		snapshot,
 		...proof,
 	});
+	// UPDATE FROM keeps the full live-link proof separate from final pins and grants.
+	// Both stages still evaluate inside this one winning statement in the atomic batch.
+	// Scope the retained attempt before materialization, not just in the final UPDATE.
+	update.sql = `${authority.with ? `${authority.with},` : "WITH"} owner_commit_links AS MATERIALIZED (
+ SELECT a.coordinator_id,a.attempt_id FROM coordinator_owner_enrollment_attempts a
+ WHERE a.coordinator_id=? AND a.attempt_id=? AND ${authority.active}) ${update.sql
+		.replace("loopback_redirect = NULL", "loopback_redirect = NULL FROM owner_commit_links p")
+		.replace(
+			OWNER_ACTIVE_LINK_SQL,
+			"p.coordinator_id=a.coordinator_id AND p.attempt_id=a.attempt_id",
+		)}`;
+	update.values.unshift(...authority.values, a.coordinator_id, a.attempt_id);
+	if (authority.hasPin) {
+		update.sql += " AND a.owner_qualification_id IS ?";
+		update.values.push(a.owner_qualification_id ?? null);
+	}
 	await backend.batch([update, ...dependentWrites(winner, now, grants.length)]);
 	const committed = await backend.first({
 		sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE ${WINNER}`,
@@ -159,7 +181,7 @@ const WINNING_UPDATE_SQL = `UPDATE coordinator_owner_enrollment_attempts AS a SE
  AND a.device_id = ? AND a.public_key = ? AND a.key_id = ? AND a.fingerprint = ?
  AND a.browser_start_hash = ? AND a.browser_transaction_hash = ? AND a.browser_binder_hash = ?
  AND a.account_subject = ? AND a.identity_id = ? AND a.link_id = ?
- AND a.link_attempt_id = ? AND a.link_controller_attestation_id = ? AND a.link_auth_config_revision = ?
+ AND a.link_attempt_id = ? AND a.link_controller_attestation_id IS ? AND a.link_auth_config_revision = ?
  AND a.grant_revisions_json = ? AND a.confirmation_hash = ? AND a.completion_secret_hash = ?
  AND a.loopback_redirect = ? AND a.created_at_ms = ? AND a.expires_at_ms = ?
  AND ${OWNER_ACTIVE_LINK_SQL} AND ${LIVE_GRANTS} AND ${NO_REVOCATION}
@@ -341,6 +363,15 @@ export async function readOwnerEnrollmentReceipt(
 	const a = Object.freeze({ ...row });
 	if (!validOwnerEnrollmentReceiptMetadata(a) || !(await matchesAdmissionOwner(a))) return false;
 	if ((await ownerEnrollmentConfirmationHash(a)) !== a.confirmation_hash) return false;
-	const found = await backend.first({ sql: RECEIPT_SQL, values: receiptValues(a) });
+	const authority = await readOwnerLinkAuthority(backend);
+	if (!authority.hasPin && a.owner_qualification_id != null) return false;
+	let sql = RECEIPT_SQL;
+	const values = receiptValues(a);
+	if (authority.hasPin) {
+		sql += ` AND EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts a
+ WHERE a.coordinator_id=b.coordinator_id AND a.attempt_id=b.source_ref AND a.owner_qualification_id IS ?)`;
+		values.push(a.owner_qualification_id ?? null);
+	}
+	const found = await backend.first({ sql, values });
 	return found !== null;
 }
