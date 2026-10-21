@@ -17,11 +17,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildAdapterNormalizers } from "../../../scripts/build-adapter-normalizers.mjs";
 
-const packageRoot = process.cwd();
+const packageRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(packageRoot, "..", "..");
 const packageJson = JSON.parse(readFileSync(resolve(packageRoot, "package.json"), "utf8"));
 const packageVersion = String(packageJson.version);
-const tempDir = mkdtempSync(join(tmpdir(), "codemem-packed-artifact-"));
 
 function fail(message, result) {
 	if (result) {
@@ -103,7 +102,36 @@ function runAsync(command, args, options, input) {
 	});
 }
 
-async function smokeAdapterWrapper(source, isolatedRoot) {
+// Runtime children must not inherit host profiles, queues, credentials, or Node hooks.
+function runtimeEnv(home) {
+	mkdirSync(home, { recursive: true });
+	return {
+		PATH: process.env.PATH,
+		HOME: home,
+		XDG_CONFIG_HOME: join(home, "config"),
+		XDG_DATA_HOME: join(home, "data"),
+		XDG_CACHE_HOME: join(home, "cache"),
+		XDG_STATE_HOME: join(home, "state"),
+		CODEMEM_DB: join(home, ".codemem", "mem.sqlite"),
+		CODEMEM_CONFIG: join(home, "codemem.json"),
+		CODEMEM_RUNTIME_ROOT: join(home, "runtime"),
+		CODEMEM_KEYS_DIR: join(home, "keys"),
+		CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR: join(home, "raw-event-spool"),
+		CODEMEM_CODEX_HOOK_SPOOL_DIR: join(home, "native-hook-spool"),
+	};
+}
+
+function assertDisposableTarget(received, home, label) {
+	assert(received.db_path === join(home, ".codemem", "mem.sqlite"), `${label} used another database`);
+	const target = received.identity_target;
+	assert(target?.home_dir === home, `${label} used another home`);
+	assert(target.config_path === join(home, "codemem.json"), `${label} used another config`);
+	assert(target.runtime_root === join(home, "runtime"), `${label} used another runtime root`);
+	assert(target.device_id === null && target.actor_id_present === false, `${label} inherited identity`);
+}
+
+export async function smokeAdapterWrapper(source, isolatedRoot) {
+	const home = join(isolatedRoot, `${source}-adapter-home`);
 	const relativeRoot = join("plugins", source);
 	const scriptsDirectory = join(isolatedRoot, relativeRoot, "scripts");
 	const sourceScriptsDirectory = resolve(workspaceRoot, relativeRoot, "scripts");
@@ -147,13 +175,15 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 	const expected = buildEnvelope(nativePayload, normalizer.TRUSTED_HOOK_MAPPER_OPTIONS);
 	assert(expected, `${source} generated normalizer skipped packed smoke payload`);
 
-	let receivedBody = "";
+	const receivedBodies = [];
 	const server = createServer((request, response) => {
+		let receivedBody = "";
 		request.setEncoding("utf8");
 		request.on("data", (chunk) => {
 			receivedBody += chunk;
 		});
 		request.on("end", () => {
+			receivedBodies.push(receivedBody);
 			response.writeHead(200, { "Content-Type": "application/json" });
 			response.end('{"inserted":1,"skipped":0,"received":1}');
 		});
@@ -171,7 +201,7 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 			{
 				cwd: isolatedRoot,
 				env: {
-					...process.env,
+					...runtimeEnv(home),
 					PATH: join(isolatedRoot, "no-cli-on-path"),
 					CODEMEM_VIEWER_HOST: "127.0.0.1",
 					CODEMEM_VIEWER_PORT: String(address.port),
@@ -185,14 +215,16 @@ async function smokeAdapterWrapper(source, isolatedRoot) {
 			child.status === 0,
 			`${source} wrapper failed without workspace dependencies: ${child.stderr}`,
 		);
-		const received = JSON.parse(receivedBody);
+		assert(receivedBodies.length === 1, `${source} wrapper posted unexpected queued events`);
+		const received = JSON.parse(receivedBodies[0]);
+		assertDisposableTarget(received, home, source);
 		assert(received.event_id === expected.event_id, `${source} transport changed event_id`);
 		assert(
 			received.payload._adapter.meta.event_id_algo === `${source}/1`,
 			`${source} algorithm discriminator missing`,
 		);
 	} finally {
-		server.close();
+		await new Promise((resolvePromise) => server.close(resolvePromise));
 	}
 }
 
@@ -223,8 +255,8 @@ async function smokeClaudePromptWrapper(isolatedRoot) {
 		device_id: null,
 		actor_id_present: false,
 		actor_id: null,
-		config_path: null,
-		runtime_root: null,
+		config_path: join(home, "codemem.json"),
+		runtime_root: join(home, "runtime"),
 		workspace_id: null,
 		home_dir: home,
 		pack_compression: null,
@@ -292,7 +324,7 @@ async function smokeClaudePromptWrapper(isolatedRoot) {
 			{
 				cwd: isolatedRoot,
 				env: {
-					...process.env,
+					...runtimeEnv(home),
 					PATH: join(isolatedRoot, "no-cli-on-path"),
 					HOME: home,
 					CLAUDE_PLUGIN_ROOT: pluginRoot,
@@ -339,8 +371,8 @@ async function smokeCodexPromptWrapper(isolatedRoot) {
 		device_id: null,
 		actor_id_present: false,
 		actor_id: null,
-		config_path: null,
-		runtime_root: null,
+		config_path: join(home, "codemem.json"),
+		runtime_root: join(home, "runtime"),
 		workspace_id: null,
 		home_dir: home,
 		pack_compression: null,
@@ -409,7 +441,7 @@ async function smokeCodexPromptWrapper(isolatedRoot) {
 			{
 				cwd: isolatedRoot,
 				env: {
-					...process.env,
+					...runtimeEnv(home),
 					PATH: join(isolatedRoot, "no-cli-on-path"),
 					HOME: home,
 					PLUGIN_ROOT: pluginRoot,
@@ -457,7 +489,7 @@ PACKED_CODEX_CONTEXT`;
 	}
 }
 
-async function smokeCodexSpoolIsolation(isolatedRoot) {
+export async function smokeCodexSpoolIsolation(isolatedRoot) {
 	const scriptsDirectory = join(isolatedRoot, "plugins", "codex", "scripts");
 	const wrapperPath = join(scriptsDirectory, "ingest-hook.mjs");
 	const normalizer = await import(pathToFileURL(join(scriptsDirectory, "codemem-normalizer.mjs")).href);
@@ -491,8 +523,9 @@ async function smokeCodexSpoolIsolation(isolatedRoot) {
 		chmodSync(commandPath, 0o755);
 	}
 
+	const home = join(isolatedRoot, "codex-spool-home");
 	const baseEnv = {
-		...process.env,
+		...runtimeEnv(home),
 		PATH: fakeBin,
 		CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS: "50",
 		CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR: normalizedSpool,
@@ -550,6 +583,7 @@ async function smokeCodexSpoolIsolation(isolatedRoot) {
 	const deliveredBodies = [];
 	const assertTargetedDelivery = (body, envelope, label) => {
 		const delivered = JSON.parse(body);
+		assertDisposableTarget(delivered, home, label);
 		const { db_path: dbPath, identity_target: identityTarget, ...deliveredEnvelope } = delivered;
 		assert(typeof dbPath === "string" && dbPath.length > 0, `${label} omitted database target`);
 		assert(
@@ -605,6 +639,9 @@ async function smokeCodexSpoolIsolation(isolatedRoot) {
 	}
 }
 
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+	const tempDir = mkdtempSync(join(tmpdir(), "codemem-packed-artifact-"));
+	const cliEnv = runtimeEnv(join(tempDir, "cli-home"));
 try {
 	const coreTarball = run("pnpm", ["pack", "--pack-destination", tempDir], resolve(workspaceRoot, "packages/core"))
 		.stdout.split(/\r?\n/)
@@ -841,6 +878,7 @@ try {
 			"const runtime = await import('@codemem/embeddings'); if (typeof runtime.createEmbeddingRuntime !== 'function') process.exit(1);",
 		],
 		semanticInstallDir,
+		cliEnv,
 	);
 	// Only evaluate the direct Transformers.js runtime where ORT has a CPU binary;
 	// on darwin/x64 that import cannot load onnxruntime-node.
@@ -857,6 +895,7 @@ try {
 				"const transformers = await import('@huggingface/transformers'); if (typeof transformers.pipeline !== 'function') process.exit(1);",
 			],
 			transformersPackageDir,
+			cliEnv,
 		);
 		const semanticHome = join(tempDir, "semantic-home");
 		mkdirSync(semanticHome, { recursive: true });
@@ -879,7 +918,7 @@ try {
 				assert(matches.some(match => match.id === id), "CLI-only install must retrieve a semantic match");
 			} finally { store.close(); }
 		`], semanticInstallDir, {
-			...process.env,
+			...runtimeEnv(semanticHome),
 			HOME: semanticHome,
 			XDG_CONFIG_HOME: join(semanticHome, "config"),
 			CODEMEM_DB: join(semanticHome, "mem.sqlite"),
@@ -902,14 +941,14 @@ try {
 		"Installed artifact is missing README.md",
 	);
 
-	const helpOutput = run(cliBin, ["--help"]).stdout;
+	const helpOutput = run(cliBin, ["--help"], installDir, cliEnv).stdout;
 	assert(helpOutput.includes("persistent memory for AI coding agents"), "Installed CLI help output is missing expected text");
 
-	const versionOutput = run(cliBin, ["version"]).stdout.trim();
+	const versionOutput = run(cliBin, ["version"], installDir, cliEnv).stdout.trim();
 	assert(versionOutput === packageVersion, `Installed CLI reported ${versionOutput}, expected ${packageVersion}`);
 	const optionalFreeDbPath = join(tempDir, "optional-free.sqlite");
 	run(cliBin, ["stats"], installDir, {
-		...process.env,
+		...cliEnv,
 		CODEMEM_DB: optionalFreeDbPath,
 		CODEMEM_EMBEDDING_DISABLED: "1",
 	});
@@ -937,7 +976,7 @@ try {
 			{
 				cwd: installDir,
 				encoding: "utf8",
-				env: { ...process.env, CODEMEM_EMBEDDING_DISABLED: "1" },
+				env: { ...cliEnv, CODEMEM_EMBEDDING_DISABLED: "1" },
 			},
 		);
 		const output = `${failedStart.stdout ?? ""}\n${failedStart.stderr ?? ""}`;
@@ -986,4 +1025,5 @@ try {
 	await smokeCodexSpoolIsolation(isolatedAdapters);
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
+}
 }
