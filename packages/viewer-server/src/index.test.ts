@@ -19675,7 +19675,7 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
 					error:
-						"Invite import timed out contacting the coordinator at https://coord.example.test. Check that this machine can reach that URL and try again.",
+						"Invite import timed out contacting the coordinator. Check network access and try again.",
 				});
 			} finally {
 				cleanup();
@@ -19724,7 +19724,7 @@ describe("viewer-server", () => {
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
 					error:
-						"Invite import could not reach the coordinator at https://coord.example.test. Check the invite URL and this machine's network access before retrying.",
+						"Invite import could not reach the coordinator. Check network access and use the original coordinator URL; redirects are not accepted.",
 				});
 			} finally {
 				cleanup();

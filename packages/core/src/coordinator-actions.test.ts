@@ -2838,7 +2838,6 @@ describe("coordinator local admin actions", () => {
 
 	it("rejects a configured add-device identity conflict before fetch or onboarding writes", async () => {
 		const actionDbPath = join(tmpDir, "conflicting-add-device.sqlite");
-		const keysDir = join(tmpDir, "conflicting-add-device-keys");
 		const configPath = join(tmpDir, "conflicting-add-device-config.json");
 		const originalConfig = {
 			actor_id: "identity-configured",
@@ -2864,8 +2863,9 @@ describe("coordinator local admin actions", () => {
 			coordinatorImportInviteAction({
 				inviteValue: invite,
 				dbPath: actionDbPath,
-				keysDir,
+				keysDir: join(tmpDir, "conflicting-add-device-keys"),
 				configPath,
+				reviewedOnboardingDigest: "a".repeat(64),
 			}),
 		).rejects.toThrow("invite_identity_conflict");
 		expect(fetchMock).not.toHaveBeenCalled();

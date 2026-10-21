@@ -177,6 +177,11 @@ export type {
 export { compareIdentityGroupGrantRevisions } from "./coordinator-identity-group-grant.js";
 export type { CoordinatorIdentityGroupGrantActionResult } from "./coordinator-identity-group-grant-client.js";
 export { isCoordinatorControllerAttestationReference } from "./coordinator-identity-group-grant-client.js";
+export {
+	type CoordinatorInviteReview,
+	type CoordinatorInviteReviewOptions,
+	coordinatorReviewInviteAction,
+} from "./coordinator-invite-review.js";
 export type { InvitePayload } from "./coordinator-invites.js";
 export {
 	decodeInvitePayload,

@@ -7485,7 +7485,7 @@ export function syncRoutes(
 			const [status, inspected] = await requestJson(
 				"POST",
 				`${buildBaseUrl(payload.coordinator_url)}/v1/invites/inspect`,
-				{ body: { token: payload.token }, timeoutS: 10 },
+				{ body: { token: payload.token }, timeoutS: 10, redirect: "error" },
 			);
 			if (status < 200 || status >= 300) {
 				return c.json(

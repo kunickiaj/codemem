@@ -52,6 +52,7 @@ export interface RequestJsonOptions {
 	bodyBytes?: Uint8Array;
 	timeoutS?: number;
 	maxResponseBytes?: number;
+	redirect?: "error";
 }
 
 function isolateDirectPeerConnection(headers: Record<string, string>): Record<string, string> {
@@ -70,12 +71,15 @@ function isolateDirectPeerConnection(headers: Record<string, string>): Record<st
 	};
 }
 
-function requestRedirectPolicy(headers: Record<string, string>): "error" | "follow" {
+function requestRedirectPolicy(
+	headers: Record<string, string>,
+	redirect?: "error",
+): "error" | "follow" {
 	const carriesAdminCredential = Object.keys(headers).some(
 		(name) => name.toLowerCase() === "x-codemem-coordinator-admin",
 	);
 	if (carriesAdminCredential) return "error";
-	return "follow";
+	return redirect ?? "follow";
 }
 
 function buildRequestHeaders(options: {
@@ -116,7 +120,7 @@ export async function requestJson(
 		method,
 		headers: isolateDirectPeerConnection(requestHeaders),
 		body: requestBody,
-		redirect: requestRedirectPolicy(requestHeaders),
+		redirect: requestRedirectPolicy(requestHeaders, options.redirect),
 		signal: AbortSignal.timeout(Math.round(timeoutS * 1_000)),
 	});
 

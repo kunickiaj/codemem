@@ -1,4 +1,3 @@
-import { hostname } from "node:os";
 import {
 	BetterSqliteCoordinatorStore,
 	DEFAULT_COORDINATOR_DB_PATH,
@@ -12,12 +11,14 @@ import {
 	parseCoordinatorIdentityGroupGrantResponse,
 } from "./coordinator-identity-group-grant-client.js";
 import {
-	decodeInvitePayload,
-	encodeInvitePayload,
-	extractInvitePayload,
-	type InvitePayload,
-	inviteLink,
-} from "./coordinator-invites.js";
+	decodeInviteForImport,
+	inspectRecipientInvite,
+	isRecipientInvite,
+	previewValidatedRecipientInvite,
+	recipientInviteOnboardingRequest,
+	resolveInviteProfile,
+} from "./coordinator-invite-review.js";
+import { encodeInvitePayload, type InvitePayload, inviteLink } from "./coordinator-invites.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -45,15 +46,11 @@ import type {
 	CoordinatorInvite,
 	CoordinatorJoinRequest,
 	CoordinatorJoinRequestReviewResult,
-	CoordinatorRecipientInviteKind,
 	CoordinatorRevokeScopeMembershipInput,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
-import {
-	isCoordinatorAssignedIdentityId,
-	recipientInviteAuthoritativeIdentityId,
-} from "./coordinator-store-contract.js";
+import { isCoordinatorAssignedIdentityId } from "./coordinator-store-contract.js";
 import { connect, type Database, resolveDbPath } from "./db.js";
 import { initDatabase } from "./maintenance.js";
 import {
@@ -71,15 +68,12 @@ import {
 	ProjectSyncEnablementError,
 } from "./project-invite-acceptance.js";
 import {
-	friendlyDeviceName,
 	normalizeHumanPresentationName,
 	normalizeIdentityDisplayName,
 } from "./project-invite-identity.js";
 import {
 	assertAddDeviceIdentityAdoptionAllowed,
 	commitRecipientPolicyOnboardingFromReviewedIntent,
-	previewRecipientPolicyOnboardingFromReviewedIntent,
-	type RecipientPolicyReviewedIntentPreviewRequestV1,
 } from "./recipient-policy-onboarding.js";
 import {
 	parseStoredRecipientReviewedIntent,
@@ -601,21 +595,22 @@ async function localScopeForGroup(
 	);
 }
 
-function inviteImportTransportError(error: unknown, coordinatorUrl: string): Error {
+function inviteImportTransportError(error: unknown): Error {
 	const name = typeof error === "object" && error && "name" in error ? String(error.name) : "";
 	const message = error instanceof Error ? error.message : String(error ?? "");
-	const base = buildBaseUrl(coordinatorUrl);
 	if (name === "TimeoutError" || /timed? out/i.test(message)) {
 		return new Error(
-			`Invite import timed out contacting the coordinator at ${base}. Check that this machine can reach that URL and try again.`,
+			"Invite import timed out contacting the coordinator. Check network access and try again.",
 		);
 	}
 	if (name === "TypeError" || /fetch failed|network/i.test(message)) {
 		return new Error(
-			`Invite import could not reach the coordinator at ${base}. Check the invite URL and this machine's network access before retrying.`,
+			"Invite import could not reach the coordinator. Check network access and use the original coordinator URL; redirects are not accepted.",
 		);
 	}
-	return error instanceof Error ? error : new Error(message);
+	return new Error(
+		"Invite import transport failed. Check coordinator access and retry using the original URL; redirects are not accepted.",
+	);
 }
 
 export async function coordinatorCreateGroupAction(opts: {
@@ -2444,30 +2439,6 @@ function persistProjectInviteTrust(
 	}
 }
 
-function recipientInviteOnboardingRequest(opts: {
-	payload: InvitePayload;
-	identityId: string;
-	deviceId: string;
-	publicKey: string;
-	deviceDisplayName: string;
-}): RecipientPolicyReviewedIntentPreviewRequestV1 {
-	const base = {
-		version: 1 as const,
-		invitationId: String(opts.payload.token),
-		identityId: opts.identityId,
-		deviceId: opts.deviceId,
-		devicePublicKey: opts.publicKey,
-		deviceDisplayName: opts.deviceDisplayName,
-	};
-	return opts.payload.kind === "team_member"
-		? {
-				...base,
-				journey: "team",
-				teamId: String(opts.payload.policy_team_id ?? ""),
-			}
-		: { ...base, journey: "add_device" };
-}
-
 async function validateRecipientInviteReview(opts: {
 	payload: InvitePayload;
 	response: Record<string, unknown> | null;
@@ -2482,72 +2453,14 @@ async function validateRecipientInviteReview(opts: {
 	reviewedIntent: RecipientReviewedIntentV1;
 	persistedRecipientDisplayName: string;
 }> {
-	const responseKind = String(opts.response?.kind ?? "").trim();
-	const responseDigest = String(opts.response?.reviewed_preview_digest ?? "").trim();
-	const payloadIdentityId = recipientInviteAuthoritativeIdentityId({
-		kind: opts.payload.kind as CoordinatorRecipientInviteKind,
-		assigned_identity_id: opts.payload.assigned_identity_id,
-		target_identity_id: opts.payload.target_identity_id,
-	});
-	const responseIdentityId = recipientInviteAuthoritativeIdentityId({
-		kind: opts.payload.kind as CoordinatorRecipientInviteKind,
-		assigned_identity_id: opts.response?.assigned_identity_id,
-		target_identity_id: opts.response?.target_identity_id,
-	});
-	const acceptedIdentityId = String(opts.response?.identity_id ?? "").trim();
-	if (
-		responseKind !== opts.payload.kind ||
-		!payloadIdentityId ||
-		opts.identityId !== payloadIdentityId ||
-		responseIdentityId !== payloadIdentityId ||
-		(opts.requireResponseIdentity && acceptedIdentityId !== payloadIdentityId) ||
-		responseDigest !== String(opts.payload.reviewed_preview_digest ?? "").trim() ||
-		(opts.payload.kind === "team_member" &&
-			String(opts.response?.policy_team_id ?? "").trim() !==
-				String(opts.payload.policy_team_id ?? "").trim())
-	) {
-		throw new Error("recipient_invite_intent_mismatch");
-	}
-	let reviewedIntent: RecipientReviewedIntentV1;
-	try {
-		reviewedIntent = await verifyRecipientReviewedIntent(opts.response?.reviewed_intent, {
-			target:
-				opts.payload.kind === "team_member"
-					? {
-							kind: "team_member",
-							policyTeamId: String(opts.payload.policy_team_id ?? "").trim(),
-						}
-					: {
-							kind: "add_device",
-							targetIdentityId: String(opts.payload.target_identity_id ?? "").trim(),
-						},
-			digest: responseDigest,
-		});
-	} catch (error) {
-		if (error instanceof RecipientReviewedIntentError) {
-			throw new Error("recipient_invite_intent_mismatch");
-		}
-		throw error;
-	}
-	const preview = previewRecipientPolicyOnboardingFromReviewedIntent(
-		reviewedIntent,
-		recipientInviteOnboardingRequest({
-			payload: opts.payload,
-			identityId: opts.identityId,
-			deviceId: opts.deviceId,
-			publicKey: opts.publicKey,
-			deviceDisplayName: opts.deviceDisplayName,
-		}),
-	);
+	const { reviewedIntent, preview, persistedRecipientDisplayName } =
+		await previewValidatedRecipientInvite(opts);
 	if (opts.reviewedOnboardingDigest !== preview.reviewedOnboardingDigest) {
 		throw new Error("reviewed_onboarding_stale");
 	}
 	return {
 		reviewedIntent,
-		persistedRecipientDisplayName:
-			reviewedIntent.journey === "add_device"
-				? reviewedIntent.targetIdentity.displayName
-				: opts.recipientDisplayName,
+		persistedRecipientDisplayName,
 	};
 }
 
@@ -2638,7 +2551,11 @@ export async function coordinatorImportInviteAction(opts: {
 	deviceDisplayName?: string | null;
 	reviewedOnboardingDigest?: string | null;
 }): Promise<Record<string, unknown>> {
-	const payload = decodeInvitePayload(extractInvitePayload(opts.inviteValue));
+	const payload = decodeInviteForImport(opts.inviteValue);
+	const recipientInvite = isRecipientInvite(payload);
+	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
+	if (recipientInvite && !reviewedOnboardingDigest)
+		throw new Error("reviewed_onboarding_digest_required");
 	const resolvedDbPath = resolveDbPath(opts.dbPath ?? undefined);
 	const keysDir = opts.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	const [deviceId, fingerprint] = ensureInviteDeviceIdentity(resolvedDbPath, keysDir);
@@ -2650,71 +2567,26 @@ export async function coordinatorImportInviteAction(opts: {
 		? readCodememConfigFileAtPath(opts.configPath)
 		: readCodememConfigFile();
 	const projectInvite = Boolean(payload.operation_id);
-	const recipientInvite = payload.kind === "team_member" || payload.kind === "add_device";
-	const fallbackDeviceName = friendlyDeviceName({
-		explicitName: String(config.sync_device_name ?? ""),
-		osName: hostname(),
-		fallbackSeed: deviceId,
-	});
-	const explicitRecipientActorId = String(opts.recipientActorId ?? "").trim();
-	const configuredRecipientActorId = String(config.actor_id ?? "").trim();
-	const recipientInviteIdentityId = recipientInvite
-		? recipientInviteAuthoritativeIdentityId({
-				kind: payload.kind as CoordinatorRecipientInviteKind,
-				assigned_identity_id: payload.assigned_identity_id,
-				target_identity_id: payload.target_identity_id,
-			})
-		: "";
-	let recipientActorId =
-		explicitRecipientActorId || configuredRecipientActorId || `local:${deviceId}`;
+	const { recipientActorId, recipientDisplayName, displayName } = resolveInviteProfile(
+		payload,
+		config,
+		deviceId,
+		opts,
+	);
 	if (recipientInvite) {
-		if (
-			!recipientInviteIdentityId ||
-			(explicitRecipientActorId && explicitRecipientActorId !== recipientInviteIdentityId)
-		) {
-			throw new Error("invite_identity_conflict");
-		}
-		if (
-			configuredRecipientActorId &&
-			configuredRecipientActorId !== recipientInviteIdentityId &&
-			configuredRecipientActorId !== `local:${deviceId}`
-		) {
-			throw new Error("invite_identity_conflict");
-		}
 		const identityConn = connect(resolvedDbPath);
 		try {
-			assertAddDeviceIdentityAdoptionAllowed(identityConn, recipientInviteIdentityId, deviceId);
+			assertAddDeviceIdentityAdoptionAllowed(identityConn, recipientActorId, deviceId);
 		} finally {
 			identityConn.close();
 		}
-		recipientActorId = recipientInviteIdentityId;
 	}
-	const reviewedOnboardingDigest = String(opts.reviewedOnboardingDigest ?? "").trim();
 	preflightInviteCaptureActors({
 		dbPath: resolvedDbPath,
 		recipientInvite,
 		recipientActorId,
 		acceptingDeviceId: deviceId,
 	});
-	if (recipientInvite && !reviewedOnboardingDigest) {
-		throw new Error("reviewed_onboarding_digest_required");
-	}
-	const recipientDisplayName =
-		payload.kind === "add_device"
-			? ""
-			: projectInvite || recipientInvite
-				? normalizeIdentityDisplayName(
-						String(opts.recipientDisplayName ?? config.actor_display_name ?? fallbackDeviceName),
-						"recipient_display_name",
-					)
-				: String(config.actor_display_name ?? deviceId).trim() || deviceId;
-	const displayName =
-		projectInvite || recipientInvite
-			? normalizeIdentityDisplayName(
-					String(opts.deviceDisplayName ?? fallbackDeviceName),
-					"device_display_name",
-				)
-			: recipientDisplayName;
 	const existingCoordinator = normalizeCoordinatorUrl(String(config.sync_coordinator_url ?? ""));
 	const incomingCoordinator = normalizeCoordinatorUrl(coordinatorUrl);
 	if (existingCoordinator && existingCoordinator !== incomingCoordinator) {
@@ -2723,34 +2595,7 @@ export async function coordinatorImportInviteAction(opts: {
 		);
 	}
 	if (recipientInvite) {
-		let inspectStatus = 0;
-		let inspection: Record<string, unknown> | null = null;
-		try {
-			[inspectStatus, inspection] = await requestJson(
-				"POST",
-				`${stripTrailingSlashes(coordinatorUrl)}/v1/invites/inspect`,
-				{
-					body: { token: String(payload.token) },
-					timeoutS: INVITE_IMPORT_TIMEOUT_S,
-				},
-			);
-		} catch (error) {
-			throw inviteImportTransportError(error, coordinatorUrl);
-		}
-		if (inspectStatus < 200 || inspectStatus >= 300) {
-			const detail = typeof inspection?.error === "string" ? inspection.error : "unknown";
-			if (
-				[
-					"invite_already_bound",
-					"invite_expired",
-					"invite_invalid",
-					"recipient_invite_review_unavailable",
-				].includes(detail)
-			) {
-				throw new Error(detail);
-			}
-			throw new Error(`Invite inspection failed (${inspectStatus}): ${detail}`);
-		}
+		const inspection = await inspectRecipientInvite(coordinatorUrl, String(payload.token));
 		await validateRecipientInviteReview({
 			payload,
 			response: inspection,
@@ -2793,7 +2638,7 @@ export async function coordinatorImportInviteAction(opts: {
 		[status, response] = await requestJson(
 			"POST",
 			`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
-			{ body: joinBody, timeoutS: INVITE_IMPORT_TIMEOUT_S },
+			{ body: joinBody, timeoutS: INVITE_IMPORT_TIMEOUT_S, redirect: "error" },
 		);
 		if (
 			recipientInvite &&
@@ -2813,11 +2658,12 @@ export async function coordinatorImportInviteAction(opts: {
 				{
 					body: legacyJoinBody,
 					timeoutS: INVITE_IMPORT_TIMEOUT_S,
+					redirect: "error",
 				},
 			);
 		}
 	} catch (error) {
-		throw inviteImportTransportError(error, coordinatorUrl);
+		throw inviteImportTransportError(error);
 	}
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
@@ -2840,7 +2686,7 @@ export async function coordinatorImportInviteAction(opts: {
 		) {
 			throw new Error(detail);
 		}
-		throw new Error(`Invite import failed (${status}): ${detail}`);
+		throw new Error(`Invite import failed (${status}).`);
 	}
 	// A successful consume is trusted coordinator state; malformed authority must fail closed,
 	// not be silently downgraded into an invite without its managed-Project projection.
