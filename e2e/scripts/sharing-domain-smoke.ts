@@ -1,22 +1,29 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
 	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
 	filterReplicationOpsForSyncWithStatus,
+	fingerprintPublicKey,
 	getReplicationCursor,
 	initDatabase,
 	listInboundScopeRejections,
 	loadMemorySnapshotPageForPeer,
+	loadPublicKey,
 	loadReplicationOpsForPeer,
 	loadReplicationOpsSince,
 	MemoryStore,
+	type ReplicationOp,
 	setReplicationCursor,
 	setSyncResetState,
 	toJson,
-	type ReplicationOp,
 } from "../../packages/core/src/index.ts";
-import { getMemoryForMcp, rememberMemoryForMcp } from "../../packages/mcp-server/src/memory-access.ts";
+import { refreshTestScopeRows } from "../../packages/core/src/scope-membership-cache-test-fixtures.ts";
+import { generateKeypair } from "../../packages/core/src/sync-identity.ts";
+import {
+	getMemoryForMcp,
+	rememberMemoryForMcp,
+} from "../../packages/mcp-server/src/memory-access.ts";
 import { buildFilters } from "../../packages/mcp-server/src/project-scope.ts";
 import { createApp } from "../../packages/viewer-server/src/index.ts";
 
@@ -37,6 +44,33 @@ const LEGACY_SCOPE = "legacy-shared-review";
 
 const QUERY_TOKEN = "smokeboundary";
 const NOW = "2026-05-06T18:00:00.000Z";
+const publicKeys: Record<string, string> = {};
+
+function signingPublicKey(deviceId: string): string {
+	const publicKey = publicKeys[deviceId];
+	assert(publicKey, `missing signing key for ${deviceId}`);
+	return publicKey;
+}
+
+function prepareSigningKeys(dbPath: string): void {
+	const keysRoot = mkdtempSync(join(dirname(dbPath), "sharing-domain-keys-"));
+	for (const deviceId of [
+		MIXED_DEVICE,
+		PERSONAL_PEER,
+		WORK_PEER,
+		OSS_PEER,
+		OSS_EXCLUDED_PEER,
+		LEGACY_PEER,
+		MALICIOUS_PEER,
+		GROUP_ONLY_PEER,
+	]) {
+		const keysDir = join(keysRoot, deviceId);
+		generateKeypair(join(keysDir, "device.key"), join(keysDir, "device.key.pub"));
+		const publicKey = loadPublicKey(keysDir);
+		assert(publicKey, `missing signing key for ${deviceId}`);
+		publicKeys[deviceId] = publicKey;
+	}
+}
 
 interface MemoryIds {
 	personal: number;
@@ -110,6 +144,7 @@ async function withStore<T>(
 	dbPath: string,
 	deviceId: string,
 	fn: (store: MemoryStore) => T | Promise<T>,
+	options: { publicKey?: string } = {},
 ): Promise<T> {
 	const previousDevice = process.env.CODEMEM_DEVICE_ID;
 	const previousActor = process.env.CODEMEM_ACTOR_ID;
@@ -117,7 +152,8 @@ async function withStore<T>(
 	process.env.CODEMEM_DEVICE_ID = deviceId;
 	process.env.CODEMEM_ACTOR_ID = MIXED_ACTOR;
 	process.env.CODEMEM_ACTOR_DISPLAY_NAME = "Mixed Adam";
-	const store = new MemoryStore(dbPath);
+	const publicKey = options.publicKey ?? signingPublicKey(deviceId);
+	const store = new MemoryStore(dbPath, { runtimeSigningKey: { deviceId, publicKey } });
 	try {
 		return await fn(store);
 	} finally {
@@ -169,7 +205,13 @@ function grantScope(
 	store: MemoryStore,
 	scopeId: string,
 	deviceIds: string[],
-	options: { role?: string; status?: string; epoch?: number; coordinatorId?: string; groupId?: string } = {},
+	options: {
+		role?: string;
+		status?: string;
+		epoch?: number;
+		coordinatorId?: string;
+		groupId?: string;
+	} = {},
 ): void {
 	for (const deviceId of deviceIds) {
 		store.db
@@ -243,8 +285,8 @@ function upsertPeer(
 		.run(
 			input.deviceId,
 			input.name,
-			`fingerprint-${input.deviceId}`,
-			`public-key-${input.deviceId}`,
+			fingerprintPublicKey(signingPublicKey(input.deviceId)),
+			signingPublicKey(input.deviceId),
 			JSON.stringify([`http://${input.deviceId}.invalid:7337`]),
 			jsonList(input.include ?? null),
 			jsonList(input.exclude ?? null),
@@ -277,14 +319,20 @@ function seedTopology(store: MemoryStore): void {
 		.prepare(
 			"INSERT OR REPLACE INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?)",
 		)
-		.run(MIXED_DEVICE, "public-key-mixed", "fingerprint-mixed", NOW);
+		.run(
+			MIXED_DEVICE,
+			signingPublicKey(MIXED_DEVICE),
+			fingerprintPublicKey(signingPublicKey(MIXED_DEVICE)),
+			NOW,
+		);
 	insertActorRows(store);
 
 	upsertScope(store, {
 		scopeId: PERSONAL_SCOPE,
 		label: "Personal",
 		kind: "personal",
-		authorityType: "user",
+		// Personal membership is explicit/manual, not globally visible local authority.
+		authorityType: "manual",
 	});
 	upsertScope(store, {
 		scopeId: ACME_SCOPE,
@@ -475,7 +523,11 @@ function assertOutboundSync(store: MemoryStore, fixture: SmokeFixture): void {
 			localDeviceId: MIXED_DEVICE,
 		})[0].map((op) => op.entity_id);
 
-	assertSameSet(allowedFor(PERSONAL_PEER), [fixture.importKeys.personal], "personal peer outbound ops");
+	assertSameSet(
+		allowedFor(PERSONAL_PEER),
+		[fixture.importKeys.personal],
+		"personal peer outbound ops",
+	);
 	assertSameSet(allowedFor(WORK_PEER), [fixture.importKeys.work], "work peer outbound ops");
 	assertSameSet(allowedFor(OSS_PEER), [fixture.importKeys.oss], "OSS peer outbound ops");
 	assertSameSet(allowedFor(OSS_EXCLUDED_PEER), [], "OSS peer excluded-project outbound ops");
@@ -497,10 +549,26 @@ function assertOutboundSync(store: MemoryStore, fixture: SmokeFixture): void {
 		"work scope bootstrap snapshot",
 	);
 
-	setReplicationCursor(store.db, WORK_PEER, { lastApplied: "2026-05-06T18:00:01.000Z|work" }, ACME_SCOPE);
-	setReplicationCursor(store.db, OSS_PEER, { lastApplied: "2026-05-06T18:00:02.000Z|oss" }, OSS_SCOPE);
-	assert(getReplicationCursor(store.db, WORK_PEER, ACME_SCOPE)[0]?.includes("work"), "missing work cursor");
-	assert(getReplicationCursor(store.db, WORK_PEER, OSS_SCOPE)[0] == null, "work cursor leaked to OSS scope");
+	setReplicationCursor(
+		store.db,
+		WORK_PEER,
+		{ lastApplied: "2026-05-06T18:00:01.000Z|work" },
+		ACME_SCOPE,
+	);
+	setReplicationCursor(
+		store.db,
+		OSS_PEER,
+		{ lastApplied: "2026-05-06T18:00:02.000Z|oss" },
+		OSS_SCOPE,
+	);
+	assert(
+		getReplicationCursor(store.db, WORK_PEER, ACME_SCOPE)[0]?.includes("work"),
+		"missing work cursor",
+	);
+	assert(
+		getReplicationCursor(store.db, WORK_PEER, OSS_SCOPE)[0] == null,
+		"work cursor leaked to OSS scope",
+	);
 }
 
 function visibleTitles(store: MemoryStore): string[] {
@@ -526,8 +594,17 @@ async function assertStoreSurfaces(
 			expectedTitles,
 			`${deviceId} timeline visibility`,
 		);
-		const pack = store.buildMemoryPack(QUERY_TOKEN, 20, null, buildFilters({ query: QUERY_TOKEN }, null));
-		assertSameSet(pack.items.map((item) => item.title), expectedTitles, `${deviceId} MCP pack visibility`);
+		const pack = store.buildMemoryPack(
+			QUERY_TOKEN,
+			20,
+			null,
+			buildFilters({ query: QUERY_TOKEN }, null),
+		);
+		assertSameSet(
+			pack.items.map((item) => item.title),
+			expectedTitles,
+			`${deviceId} MCP pack visibility`,
+		);
 
 		const mcpVisible = Object.entries(fixture.ids)
 			.filter(([, id]) => getMemoryForMcp(store, id) != null)
@@ -608,7 +685,11 @@ async function assertViewerSyncState(fixture: SmokeFixture, revokedWork = false)
 			[OSS_SCOPE],
 			"OSS peer authorized scopes",
 		);
-		assertSameSet(byPeer.get(LEGACY_PEER)?.authorized_scopes.map((scope) => scope.scope_id) ?? [], [], "legacy authorized scopes");
+		assertSameSet(
+			byPeer.get(LEGACY_PEER)?.authorized_scopes.map((scope) => scope.scope_id) ?? [],
+			[],
+			"legacy authorized scopes",
+		);
 		assertSameSet(
 			byPeer.get(GROUP_ONLY_PEER)?.authorized_scopes.map((scope) => scope.scope_id) ?? [],
 			[],
@@ -627,19 +708,26 @@ async function assertViewerSyncState(fixture: SmokeFixture, revokedWork = false)
 			peers: Array<{ peer_device_id: string; authorized_scopes: Array<{ scope_id: string }> }>;
 		};
 		assert(
-			status.peers.some((peer) => peer.peer_device_id === OSS_PEER && peer.authorized_scopes[0]?.scope_id === OSS_SCOPE),
+			status.peers.some(
+				(peer) =>
+					peer.peer_device_id === OSS_PEER && peer.authorized_scopes[0]?.scope_id === OSS_SCOPE,
+			),
 			"/api/sync/status did not include OSS peer Sharing-domain authorization",
 		);
 	});
 }
 
 function memoryRowCount(store: MemoryStore): number {
-	const row = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as { count: number };
+	const row = store.db.prepare("SELECT COUNT(*) AS count FROM memory_items").get() as {
+		count: number;
+	};
 	return row.count;
 }
 
 function replicationOpCount(store: MemoryStore): number {
-	const row = store.db.prepare("SELECT COUNT(*) AS count FROM replication_ops").get() as { count: number };
+	const row = store.db.prepare("SELECT COUNT(*) AS count FROM replication_ops").get() as {
+		count: number;
+	};
 	return row.count;
 }
 
@@ -730,9 +818,18 @@ function assertHostileRejection(
 		result.rejections[0]?.reason === expectedReason,
 		`${op.op_id}: expected ${expectedReason}, got ${result.rejections[0]?.reason}`,
 	);
-	assert(memoryRowCount(store) === beforeMemoryCount, `${op.op_id}: hostile op changed memory row count`);
-	assert(replicationOpCount(store) === beforeOpCount, `${op.op_id}: hostile op was recorded as applied`);
-	assert(mutationSnapshot(store) === beforeSnapshot, `${op.op_id}: hostile op mutated protected local state`);
+	assert(
+		memoryRowCount(store) === beforeMemoryCount,
+		`${op.op_id}: hostile op changed memory row count`,
+	);
+	assert(
+		replicationOpCount(store) === beforeOpCount,
+		`${op.op_id}: hostile op was recorded as applied`,
+	);
+	assert(
+		mutationSnapshot(store) === beforeSnapshot,
+		`${op.op_id}: hostile op mutated protected local state`,
+	);
 }
 
 async function assertHostilePeerFixtures(fixture: SmokeFixture): Promise<void> {
@@ -747,7 +844,11 @@ async function assertHostilePeerFixtures(fixture: SmokeFixture): Promise<void> {
 			makeHostileOp({
 				opId: "payload-scope-mismatch",
 				scopeId: ACME_SCOPE,
-				payload: { workspace_id: PERSONAL_SCOPE, workspace_kind: "personal", actor_id: MIXED_ACTOR },
+				payload: {
+					workspace_id: PERSONAL_SCOPE,
+					workspace_kind: "personal",
+					actor_id: MIXED_ACTOR,
+				},
 			}),
 			"scope_mismatch",
 		);
@@ -767,7 +868,11 @@ async function assertHostilePeerFixtures(fixture: SmokeFixture): Promise<void> {
 		);
 		assertHostileRejection(
 			store,
-			makeHostileOp({ opId: "max-clock-rev", scopeId: OSS_SCOPE, clockRev: Number.MAX_SAFE_INTEGER }),
+			makeHostileOp({
+				opId: "max-clock-rev",
+				scopeId: OSS_SCOPE,
+				clockRev: Number.MAX_SAFE_INTEGER,
+			}),
 			"sender_not_member",
 		);
 		assertHostileRejection(
@@ -787,7 +892,11 @@ async function assertHostilePeerFixtures(fixture: SmokeFixture): Promise<void> {
 		);
 		assertHostileRejection(
 			store,
-			makeHostileOp({ opId: "unauthorized-reassign-scope", scopeId: OSS_SCOPE, opType: "reassign_scope" }),
+			makeHostileOp({
+				opId: "unauthorized-reassign-scope",
+				scopeId: OSS_SCOPE,
+				opType: "reassign_scope",
+			}),
 			"sender_not_member",
 		);
 		assertHostileRejection(
@@ -829,7 +938,11 @@ async function assertHostilePeerFixtures(fixture: SmokeFixture): Promise<void> {
 			WORK_PEER,
 			{ localDeviceId: MIXED_DEVICE },
 		);
-		assertSameSet(allowedAfterRevoke.map((op) => op.entity_id), [], "work peer ops after revocation");
+		assertSameSet(
+			allowedAfterRevoke.map((op) => op.entity_id),
+			[],
+			"work peer ops after revocation",
+		);
 
 		const reasons = listInboundScopeRejections(store.db, { limit: 50 }).map((row) => row.reason);
 		for (const reason of ["sender_not_member", "scope_mismatch", "stale_epoch"] as const) {
@@ -867,25 +980,55 @@ async function assertMcpWriteGuard(fixture: SmokeFixture): Promise<void> {
 	});
 }
 
+async function assertWrongSigningKeyDenied(fixture: SmokeFixture): Promise<void> {
+	// Arrange: use another device's real key with the local device ID.
+	await withStore(
+		fixture.dbPath,
+		MIXED_DEVICE,
+		(store) => {
+			// Act: the retained coordinator proof must not match this runtime key.
+			const titles = visibleTitles(store);
+			// Assert: manual personal access remains, but both managed scopes deny.
+			assertSameSet(titles, [fixture.titles.personal], "wrong signing key denies managed reads");
+		},
+		{ publicKey: signingPublicKey(WORK_PEER) },
+	);
+}
+
+async function prepareFixture(dbPath: string): Promise<SmokeFixture> {
+	return withStore(dbPath, MIXED_DEVICE, async (store) => {
+		seedTopology(store);
+		const nextFixture = createMixedMemories(store);
+		await store.flushPendingVectorWrites();
+		const scopes = memoryScopes(store, nextFixture.ids);
+		assert(
+			scopes.personal === PERSONAL_SCOPE,
+			`personal memory scope mismatch: ${scopes.personal}`,
+		);
+		assert(scopes.work === ACME_SCOPE, `work memory scope mismatch: ${scopes.work}`);
+		assert(scopes.oss === OSS_SCOPE, `OSS memory scope mismatch: ${scopes.oss}`);
+		assertOutboundSync(store, nextFixture);
+		// Raw coordinator membership rows alone must not grant read access.
+		assertSameSet(
+			visibleTitles(store),
+			[nextFixture.titles.personal],
+			"unproven coordinator memberships",
+		);
+		// Import current enrollment snapshots through the maintained cache refresh path.
+		await refreshTestScopeRows(store.db, publicKeys, { now: new Date(NOW) });
+		return nextFixture;
+	});
+}
+
 async function main(): Promise<void> {
 	process.env.CODEMEM_EMBEDDING_DISABLED = "1";
 	const { dbPath } = parseArgs(process.argv);
 	prepareViewerStatic(dbPath);
 	rmSync(dbPath, { force: true });
 	mkdirSync(dirname(dbPath), { recursive: true });
+	prepareSigningKeys(dbPath);
 	initDatabase(dbPath);
-
-	const fixture = await withStore(dbPath, MIXED_DEVICE, async (store) => {
-		seedTopology(store);
-		const nextFixture = createMixedMemories(store);
-		await store.flushPendingVectorWrites();
-		const scopes = memoryScopes(store, nextFixture.ids);
-		assert(scopes.personal === PERSONAL_SCOPE, `personal memory scope mismatch: ${scopes.personal}`);
-		assert(scopes.work === ACME_SCOPE, `work memory scope mismatch: ${scopes.work}`);
-		assert(scopes.oss === OSS_SCOPE, `OSS memory scope mismatch: ${scopes.oss}`);
-		assertOutboundSync(store, nextFixture);
-		return nextFixture;
-	});
+	const fixture = await prepareFixture(dbPath);
 
 	await assertViewerSyncState(fixture, false);
 	await assertStoreSurfaces(fixture, MIXED_DEVICE, allExpectedTitles(fixture.titles));
@@ -895,8 +1038,10 @@ async function main(): Promise<void> {
 	await assertStoreSurfaces(fixture, LEGACY_PEER, []);
 	await assertStoreSurfaces(fixture, MALICIOUS_PEER, []);
 	await assertStoreSurfaces(fixture, GROUP_ONLY_PEER, []);
+	await assertWrongSigningKeyDenied(fixture);
 	await assertMcpWriteGuard(fixture);
 	await assertHostilePeerFixtures(fixture);
+	await assertStoreSurfaces(fixture, WORK_PEER, []);
 	await assertViewerSyncState(fixture, true);
 
 	console.log(
@@ -924,6 +1069,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-	console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+	console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
 	process.exitCode = 1;
 });
