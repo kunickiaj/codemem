@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-## [0.47.0-beta.1] - 2026-10-21
+## [0.47.0-beta.2] - 2026-10-21
+
+Supersedes the beta.1 candidate, which was tagged but not published to npm.
 
 ### Changed
 
@@ -21,6 +23,8 @@
 - Added the missing CLI handoff for recipient invitation review and acceptance: use `coordinator import-invite --review`, then pass the returned digest with `--reviewed-onboarding-digest`.
 - Rejected invitation inspection and join redirects so invitation tokens are not forwarded to another endpoint.
 - Pinned the bundled Claude and Codex MCP launchers to the plugin's exact release, so prerelease plugins do not start the previous stable backend.
+- Raised the MCP SDK minimum to 1.32.0 to exclude versions affected by CVE-2026-111767 and CVE-2026-111769; the lockfile resolves 1.32.1.
+- Updated the release-only sharing-domain test fixture to supply valid keys and enrollment evidence without changing production access rules or expected visibility.
 
 **Upgrade notes and limitations:**
 
@@ -91,8 +95,8 @@
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.1...HEAD
-[0.47.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.1
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...HEAD
+[0.47.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.2
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/kunickiaj/codemem/compare/v0.45.0...v0.46.0
