@@ -10,6 +10,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { Statement } from "better-sqlite3";
 import type { Database } from "./db.js";
 import { isEmbeddingDisabled, tableExists } from "./db.js";
 import {
@@ -37,6 +38,10 @@ import { projectColumnClause } from "./project.js";
 import { summaryContinuityFilter } from "./summary-memory.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
 import type { MemoryFilters } from "./types.js";
+import {
+	createVectorMetadataSnapshot,
+	withVectorMetadataSnapshot,
+} from "./vector-metadata-snapshot.js";
 
 const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 // Keep resolved-client identity separate from migration progress: direct or
@@ -311,11 +316,15 @@ export function findMemoryIdsWithCompleteActiveVectorCoverage(
 			 WHERE active = 1 AND id IN (${placeholders})`,
 		)
 		.all(...ids) as MemoryTextRow[];
-	const incompleteIds = new Set(
-		memories
-			.filter((memory) => !memoryHasCompleteVectorCoverage(db, memory, model))
-			.map((memory) => memory.id),
-	);
+	if (memories.length === 0) return ids;
+	const incompleteIds = withVectorMetadataSnapshot(db, (metadata) => {
+		const selectHash = prepareSnapshotHashQuery(metadata);
+		return new Set(
+			memories
+				.filter((memory) => !memoryHasSnapshotCoverage(selectHash, memory, model))
+				.map((memory) => memory.id),
+		);
+	});
 	// Missing or inactive memories have no active coverage work and must not
 	// remain queued forever. Their deletion work is tracked separately.
 	return ids.filter((memoryId) => !incompleteIds.has(memoryId));
@@ -335,10 +344,39 @@ function expectedHashSetContains(expectedHashes: string[], existingHashes: Set<s
 	return expectedHashes.every((hash) => existingHashes.has(hash));
 }
 
+type SnapshotQuery = Statement<unknown[]>;
+
+function prepareSnapshotHashQuery(metadata: Database): SnapshotQuery {
+	return metadata.prepare(
+		`SELECT 1 FROM vector_metadata
+		 WHERE memory_id = ? AND model = ? AND content_hash = ? LIMIT 1`,
+	);
+}
+
+function memoryHasSnapshotCoverage(
+	selectHash: SnapshotQuery,
+	memory: MemoryTextRow,
+	model: string,
+): boolean {
+	const expectedHashes = chunkHashes(memoryText(memory.title, memory.body_text));
+	return snapshotHasExpectedHashes(selectHash, memory.id, model, expectedHashes);
+}
+
+function snapshotHasExpectedHashes(
+	selectHash: SnapshotQuery,
+	memoryId: number,
+	model: string,
+	expectedHashes: string[],
+): boolean {
+	return expectedHashes.every((hash) => selectHash.get(memoryId, model, hash) != null);
+}
+
 export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: string): number {
 	const batchSize = 250;
 	let afterId = 0;
 	let incomplete = 0;
+	let metadata: Database | null = null;
+	let selectHash: SnapshotQuery | null = null;
 	// Keep cursor pages on the rowid range; the active/created index requires a sort per page.
 	const selectMemories = db.prepare(
 		`SELECT id, title, body_text FROM memory_items NOT INDEXED
@@ -346,41 +384,23 @@ export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: s
 		   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
 		   AND id > ?
 		 ORDER BY id ASC
-		 LIMIT ?`,
+		 LIMIT ? /* vector-coverage-validation */`,
 	);
-	while (true) {
-		const memories = selectMemories.all(afterId, batchSize) as MemoryTextRow[];
-		if (memories.length === 0) break;
-		const placeholders = memories.map(() => "?").join(", ");
-		const vectorRows = db
-			.prepare(
-				`/* vector-coverage-validation */
-				 SELECT memory_id, content_hash FROM memory_vectors
-				 WHERE model = ? AND memory_id IN (${placeholders})`,
-			)
-			.all(model, ...memories.map((memory) => memory.id)) as Array<{
-			memory_id: number;
-			content_hash: string | null;
-		}>;
-		const hashesByMemory = new Map<number, Set<string>>();
-		for (const row of vectorRows) {
-			if (row.content_hash == null) continue;
-			const hashes = hashesByMemory.get(row.memory_id) ?? new Set<string>();
-			hashes.add(row.content_hash);
-			hashesByMemory.set(row.memory_id, hashes);
+	try {
+		while (true) {
+			const memories = selectMemories.all(afterId, batchSize) as MemoryTextRow[];
+			if (memories.length === 0) break;
+			metadata ??= createVectorMetadataSnapshot(db);
+			selectHash ??= prepareSnapshotHashQuery(metadata);
+			for (const memory of memories) {
+				if (!memoryHasSnapshotCoverage(selectHash, memory, model)) incomplete++;
+			}
+			afterId = memories.at(-1)?.id ?? afterId;
 		}
-		for (const memory of memories) {
-			const expected = chunkHashes(memoryText(memory.title, memory.body_text));
-			// A memory that chunks to nothing (e.g. whitespace-only content that
-			// SQLite's one-arg TRIM does not strip) has no expected hashes and is
-			// vacuously covered, matching memoryHasCompleteVectorCoverage.
-			if (expected.length === 0) continue;
-			const existing = hashesByMemory.get(memory.id);
-			if (!existing || !expectedHashSetContains(expected, existing)) incomplete++;
-		}
-		afterId = memories.at(-1)?.id ?? afterId;
+		return incomplete;
+	} finally {
+		metadata?.close();
 	}
-	return incomplete;
 }
 
 function hasMemoryVectorRowidsShadowTable(db: Database): boolean {
@@ -920,9 +940,12 @@ function countIndexedActiveMemories(db: Database, models: string[]): number {
 		throw error;
 	}
 	try {
-		return rows.filter((row) =>
-			models.some((model) => memoryHasCompleteVectorCoverage(db, row, model)),
-		).length;
+		return withVectorMetadataSnapshot(db, (metadata) => {
+			const selectHash = prepareSnapshotHashQuery(metadata);
+			return rows.filter((row) =>
+				models.some((model) => memoryHasSnapshotCoverage(selectHash, row, model)),
+			).length;
+		});
 	} catch (error) {
 		if (isVecModuleMissingError(error)) return 0;
 		throw error;
@@ -1200,6 +1223,38 @@ function deleteVectorsForMemoryIds(db: Database, memoryIds: number[]): number {
 	return result.changes;
 }
 
+function prepareSnapshotPruneQueries(metadata: Database, deleteRow: SnapshotQuery) {
+	return {
+		selectHash: prepareSnapshotHashQuery(metadata),
+		selectRows: metadata.prepare(
+			"SELECT rowid, model, content_hash FROM vector_metadata WHERE memory_id = ? AND model IN (?, ?)",
+		),
+		deleteRow,
+	};
+}
+
+function pruneSnapshotMemoryRows(
+	{ selectHash, selectRows, deleteRow }: ReturnType<typeof prepareSnapshotPruneQueries>,
+	memory: MemoryTextRow,
+	model: string,
+): number {
+	const expectedHashes = chunkHashes(memoryText(memory.title, memory.body_text));
+	if (!snapshotHasExpectedHashes(selectHash, memory.id, model, expectedHashes)) return 0;
+	const expected = new Set(expectedHashes);
+	const compatibleLegacyModel =
+		model === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL ? LEGACY_DEFAULT_EMBEDDING_MODEL : null;
+	let deleted = 0;
+	for (const row of selectRows.iterate(memory.id, model, compatibleLegacyModel) as Iterable<{
+		rowid: number;
+		model: string;
+		content_hash: string | null;
+	}>) {
+		if (row.model === model && row.content_hash != null && expected.has(row.content_hash)) continue;
+		deleted += deleteRow.run(row.rowid).changes;
+	}
+	return deleted;
+}
+
 /**
  * Prune stale target rows only after the memory's current target hashes are
  * complete. For the revision-aware default identity, also remove that memory's
@@ -1213,48 +1268,32 @@ export function pruneStaleCurrentModelVectors(
 	const ids = uniqueMemoryIds(memoryIds);
 	if (ids.length === 0) return 0;
 	const batchSize = 250;
-	const compatibleLegacyModel =
-		model === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL ? LEGACY_DEFAULT_EMBEDDING_MODEL : null;
-	const selectTargetRows = db.prepare(
-		"SELECT rowid, content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?",
-	);
-	const deleteTargetRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	const deleteLegacyRows = db.prepare(
-		"DELETE FROM memory_vectors WHERE memory_id = ? AND model = ?",
-	);
+	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
 	let deleted = 0;
 
 	for (let offset = 0; offset < ids.length; offset += batchSize) {
 		const batchIds = ids.slice(offset, offset + batchSize);
 		const placeholders = batchIds.map(() => "?").join(", ");
-		const pruneCoveredMemories = db.transaction(() => {
-			const rows = db
-				.prepare(
-					`SELECT id, title, body_text FROM memory_items
+		const pruneCoveredMemories = db.transaction(() =>
+			withVectorMetadataSnapshot(
+				db,
+				(metadata) => {
+					const queries = prepareSnapshotPruneQueries(metadata, deleteRow);
+					const rows = db
+						.prepare(
+							`SELECT id, title, body_text FROM memory_items
 					 WHERE id IN (${placeholders}) ORDER BY id ASC`,
-				)
-				.all(...batchIds) as MemoryTextRow[];
-			let deletedInBatch = 0;
-			for (const row of rows) {
-				const expectedHashes = chunkHashes(memoryText(row.title, row.body_text));
-				const targetRows = selectTargetRows.all(row.id, model) as Array<{
-					rowid: number;
-					content_hash: string | null;
-				}>;
-				if (!expectedHashesExist(expectedHashes, targetRows)) continue;
-				const expectedHashSet = new Set(expectedHashes);
-				for (const targetRow of targetRows) {
-					if (targetRow.content_hash != null && expectedHashSet.has(targetRow.content_hash)) {
-						continue;
+						)
+						.all(...batchIds) as MemoryTextRow[];
+					let deletedInBatch = 0;
+					for (const row of rows) {
+						deletedInBatch += pruneSnapshotMemoryRows(queries, row, model);
 					}
-					deletedInBatch += deleteTargetRow.run(targetRow.rowid).changes;
-				}
-				if (compatibleLegacyModel) {
-					deletedInBatch += deleteLegacyRows.run(row.id, compatibleLegacyModel).changes;
-				}
-			}
-			return deletedInBatch;
-		});
+					return deletedInBatch;
+				},
+				{ memoryIds: batchIds },
+			),
+		);
 		deleted += pruneCoveredMemories.immediate();
 	}
 
@@ -1362,6 +1401,100 @@ export async function storeVectors(
 // backfillVectors — CLI batch backfill
 // ---------------------------------------------------------------------------
 
+function insertCompletedBackfillMemories(
+	db: Database,
+	completed: Set<PendingMemory>,
+	model: string,
+): number {
+	if (completed.size === 0) return 0;
+	const memoryIds = Array.from(completed, (memory) => memory.memoryId);
+	// All memories completed by this inference batch intentionally commit or
+	// roll back together; a write failure must not leave a partially inserted batch.
+	return db
+		.transaction(() =>
+			withVectorMetadataSnapshot(
+				db,
+				(metadata) => {
+					const selectHash = prepareSnapshotHashQuery(metadata);
+					let inserted = 0;
+					for (const memory of completed) {
+						for (const [index, chunk] of memory.chunks.entries()) {
+							if (selectHash.get(memory.memoryId, model, chunk.contentHash)) continue;
+							insertMemoryVector(
+								db,
+								memory.vectors[index] as Float32Array,
+								memory.memoryId,
+								chunk.chunkIndex,
+								chunk.contentHash,
+								model,
+							);
+							inserted++;
+						}
+					}
+					return inserted;
+				},
+				{ memoryIds },
+			),
+		)
+		.immediate();
+}
+
+function snapshotHashesByMemory(
+	selectRows: SnapshotQuery,
+	memoryIds: number[],
+	model: string,
+): Map<number, Set<string>> {
+	const hashesByMemory = new Map<number, Set<string>>();
+	for (const row of selectRows.iterate(model, JSON.stringify(memoryIds)) as Iterable<{
+		memory_id: number;
+		content_hash: string | null;
+	}>) {
+		if (row.content_hash == null) continue;
+		const hashes = hashesByMemory.get(row.memory_id) ?? new Set<string>();
+		hashes.add(row.content_hash);
+		hashesByMemory.set(row.memory_id, hashes);
+	}
+	return hashesByMemory;
+}
+
+function validateBackfillEmbeddings(
+	embeddings: Float32Array[],
+	expectedCount: number,
+	dimensions: number,
+): void {
+	if (embeddings.length !== expectedCount) {
+		throw new TypeError(
+			`Embedding client returned ${embeddings.length} vectors for ${expectedCount} texts`,
+		);
+	}
+	for (const vector of embeddings) {
+		if (vector.length !== dimensions) {
+			throw new TypeError(
+				`Embedding client returned vector dimension ${vector.length}, expected ${dimensions}`,
+			);
+		}
+		for (const value of vector) {
+			if (!Number.isFinite(value)) {
+				throw new TypeError("Embedding client returned a non-finite vector value");
+			}
+		}
+	}
+}
+
+function collectCompletedBackfillMemories(
+	batch: Array<{ memory: PendingMemory; chunk: PendingChunk }>,
+	embeddings: Float32Array[],
+): Set<PendingMemory> {
+	const completed = new Set<PendingMemory>();
+	for (const [index, { memory }] of batch.entries()) {
+		const vector = embeddings[index];
+		if (!vector) throw new TypeError("Embedding client omitted a validated vector");
+		memory.vectors.push(vector);
+		if (memory.vectors.length === memory.chunks.length) completed.add(memory);
+	}
+	return completed;
+}
+
 /**
  * Backfill vectors for memories that don't have them yet.
  * Matches Python's `backfill_vectors()` in store/vectors.py.
@@ -1407,6 +1540,8 @@ export async function backfillVectors(
 	let skipped = 0;
 	const rowLimit = limit != null && limit > 0 ? limit : Infinity;
 	const candidateTable = createBackfillCandidateSnapshot(db, joinClause, where, params, rowLimit);
+	let metadata: Database | null = null;
+	let selectPageHashes: SnapshotQuery | null = null;
 
 	try {
 		const selectPage = db.prepare(
@@ -1426,106 +1561,41 @@ export async function backfillVectors(
 			// This cursor lives only for this invocation. An aborted caller starts a fresh pass.
 			cursorSeq = lastRow.snapshot_seq;
 
-			const placeholders = rows.map(() => "?").join(", ");
-			const existingRows = db
-				.prepare(
-					`SELECT memory_id, content_hash FROM memory_vectors
-					 WHERE model = ? AND memory_id IN (${placeholders})`,
-				)
-				.all(model, ...rows.map((row) => row.id)) as Array<{
-				memory_id: number;
-				content_hash: string | null;
-			}>;
-			const existingHashesByMemory = new Map<number, Set<string>>();
-			for (const existing of existingRows) {
-				if (existing.content_hash == null) continue;
-				const hashes = existingHashesByMemory.get(existing.memory_id) ?? new Set<string>();
-				hashes.add(existing.content_hash);
-				existingHashesByMemory.set(existing.memory_id, hashes);
-			}
+			// Reuse only during uninterrupted synchronous reads. Inference closes
+			// this snapshot before yielding; the next page then reads current state.
+			metadata ??= createVectorMetadataSnapshot(db);
+			selectPageHashes ??= metadata.prepare(
+				`SELECT memory_id, content_hash FROM vector_metadata
+				 WHERE model = ? AND memory_id IN (SELECT value FROM json_each(?))`,
+			);
+			const existingHashesByMemory = snapshotHashesByMemory(
+				selectPageHashes,
+				rows.map((row) => row.id),
+				model,
+			);
 
 			let batch: Array<{ memory: PendingMemory; chunk: PendingChunk }> = [];
 			const flushBatch = async (): Promise<void> => {
 				if (batch.length === 0) return;
 				const currentBatch = batch;
 				batch = [];
+				metadata?.close();
+				metadata = null;
+				selectPageHashes = null;
 				const embeddings = await embedTexts(
 					currentBatch.map(({ chunk }) => chunk.text),
 					client,
 				);
-				if (embeddings.length !== currentBatch.length) {
-					throw new TypeError(
-						`Embedding client returned ${embeddings.length} vectors for ${currentBatch.length} texts`,
-					);
-				}
-				for (const vector of embeddings) {
-					if (vector.length !== client.dimensions) {
-						throw new TypeError(
-							`Embedding client returned vector dimension ${vector.length}, expected ${client.dimensions}`,
-						);
-					}
-					for (const value of vector) {
-						if (!Number.isFinite(value)) {
-							throw new TypeError("Embedding client returned a non-finite vector value");
-						}
-					}
-				}
+				validateBackfillEmbeddings(embeddings, currentBatch.length, client.dimensions);
 				embedded += embeddings.length;
-				const completed = new Set<PendingMemory>();
-				for (const [index, { memory }] of currentBatch.entries()) {
-					const vector = embeddings[index];
-					if (!vector) throw new TypeError("Embedding client omitted a validated vector");
-					memory.vectors.push(vector);
-					if (memory.vectors.length === memory.chunks.length) completed.add(memory);
-				}
+				const completed = collectCompletedBackfillMemories(currentBatch, embeddings);
+				// Page hashes are planning hints only. Recheck the completed batch
+				// after inference inside the immediate write boundary: vec0 has no
+				// uniqueness constraint. Do not add our inserts to that snapshot;
+				// distinct chunk_index rows may legitimately share the same hash.
+				if (!dryRun) inserted += insertCompletedBackfillMemories(db, completed, model);
 				for (const memory of completed) {
-					const entries = memory.chunks.map((chunk, index) => ({
-						...chunk,
-						vector: memory.vectors[index] as Float32Array,
-					}));
-					if (!dryRun) {
-						// The page-wide existing-hash snapshot can go stale between that
-						// query and this insert when a concurrent writer (e.g. a vector
-						// migration worker running alongside `codemem embed`) vectors the
-						// same memory. memory_vectors is a vec0 table with no uniqueness
-						// constraint, so re-read this memory's current hashes inside an
-						// immediate transaction and skip any that now exist, preventing
-						// permanent duplicate rows.
-						const insertVectors = db.transaction(() => {
-							// Only skip hashes a concurrent writer already persisted for this
-							// memory (observed since the page-wide snapshot). Do not dedup
-							// within this batch: distinct chunk_index rows may legitimately
-							// share content, matching the pre-existing insert semantics.
-							const persistedHashes = new Set(
-								(
-									db
-										.prepare(
-											"SELECT content_hash FROM memory_vectors WHERE memory_id = ? AND model = ?",
-										)
-										.all(memory.memoryId, model) as Array<{ content_hash: string | null }>
-								)
-									.map((existing) => existing.content_hash)
-									.filter((hash): hash is string => hash != null),
-							);
-							let insertedInTx = 0;
-							for (const entry of entries) {
-								if (persistedHashes.has(entry.contentHash)) continue;
-								insertMemoryVector(
-									db,
-									entry.vector,
-									memory.memoryId,
-									entry.chunkIndex,
-									entry.contentHash,
-									model,
-								);
-								insertedInTx++;
-							}
-							return insertedInTx;
-						});
-						inserted += insertVectors.immediate();
-					} else {
-						inserted += entries.length;
-					}
+					if (dryRun) inserted += memory.chunks.length;
 					memory.vectors.length = 0;
 					memory.chunks.length = 0;
 				}
@@ -1557,10 +1627,11 @@ export async function backfillVectors(
 					return { checked, embedded, inserted, skipped };
 				}
 			}
-			await flushBatch();
+			if (batch.length > 0) await flushBatch();
 			if (signal?.aborted) return { checked, embedded, inserted, skipped };
 		}
 	} finally {
+		metadata?.close();
 		deleteBackfillCandidateSnapshot(db, candidateTable);
 	}
 

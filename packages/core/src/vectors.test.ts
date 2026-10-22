@@ -397,9 +397,10 @@ describe("vector coverage paging results", () => {
 			const statement = Database.prototype.prepare.call(db, sql);
 			if (sql.includes("vector-coverage-validation")) {
 				const all = statement.all.bind(statement);
-				statement.all = ((model: string, ...ids: number[]) => {
-					pages.push(ids);
-					return all(model, ...ids);
+				statement.all = ((...params: number[]) => {
+					const rows = all(...params) as Array<{ id: number }>;
+					if (rows.length > 0) pages.push(rows.map(({ id }) => id));
+					return rows;
 				}) as typeof statement.all;
 			}
 			return statement;
@@ -553,7 +554,7 @@ describe("vectors", () => {
 		).toBeUndefined();
 	});
 
-	it("pages stably and queries existing hashes once per page", async () => {
+	it("pages stably and scans metadata per planning page and completed inference batch", async () => {
 		const sessionId = insertTestSession(db);
 		const createdAt = "2026-09-02T00:00:00.000Z";
 		let firstExistingId = 0;
@@ -602,10 +603,8 @@ describe("vectors", () => {
 			).toBe(true);
 			expect(pagingPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
 			expect(
-				prepareSpy.mock.calls.filter(([sql]) =>
-					String(sql).includes("SELECT memory_id, content_hash FROM memory_vectors"),
-				),
-			).toHaveLength(2);
+				prepareSpy.mock.calls.filter(([sql]) => String(sql).includes("vector-metadata-snapshot")),
+			).toHaveLength(5);
 			expect(db.prepare("SELECT COUNT(*) AS c FROM memory_vectors").get()).toMatchObject({ c: 51 });
 			expect(
 				db
@@ -727,7 +726,8 @@ describe("vectors", () => {
 		expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(0);
 	});
 
-	it("fetches target hashes per bounded validation page", () => {
+	it("streams target metadata once across multiple validation pages", () => {
+		// Arrange: whitespace-only rows fill the first page; the second needs a hash lookup.
 		const sessionId = insertTestSession(db);
 		const insert = db.prepare(
 			`INSERT INTO memory_items(id, session_id, kind, title, body_text, confidence,
@@ -742,13 +742,16 @@ describe("vectors", () => {
 		const prepareSpy = vi.spyOn(db, "prepare");
 
 		try {
-			expect(countIncompleteActiveMemoryVectorCoverage(db, "test-model")).toBe(1);
-			const hashQueries = prepareSpy.mock.calls
+			// Act: validate both pages against one metadata snapshot.
+			const incomplete = countIncompleteActiveMemoryVectorCoverage(db, "test-model");
+			const metadataQueries = prepareSpy.mock.calls
 				.map(([sql]) => String(sql))
-				.filter((sql) => sql.includes("vector-coverage-validation"));
-			expect(hashQueries).toHaveLength(2);
-			expect(hashQueries.every((sql) => sql.includes("memory_id IN"))).toBe(true);
-			expect(hashQueries.map((sql) => (sql.match(/\?/g) ?? []).length)).toEqual([251, 2]);
+				.filter((sql) => sql.includes("FROM memory_vectors"));
+
+			// Assert: no per-page or per-memory vec0 metadata query remains.
+			expect(incomplete).toBe(1);
+			expect(metadataQueries).toHaveLength(1);
+			expect(metadataQueries[0]).toContain("vector-metadata-snapshot");
 		} finally {
 			prepareSpy.mockRestore();
 		}
