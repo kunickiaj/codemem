@@ -12,6 +12,7 @@ import {
   resolveUpgradeGuidance,
 } from "./compat.js";
 import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
+import { createPromptTransportDiagnostics } from "./prompt-transport-diagnostics.js";
 import {
   classifyRawEventTransportCause,
   createRawEventDelivery,
@@ -938,6 +939,84 @@ const isViewerPolicyOrAuthFailurePayload = (payload) => {
     "unauthorized",
   ].includes(code);
 };
+
+const diagnosticTimeoutReason = (signal, fallback) =>
+  signal?.aborted && signal.reason?.name === "TimeoutError" ? "timeout" : fallback;
+
+const diagnosticStatusClass = (status) =>
+  Number.isInteger(status) ? `${Math.floor(status / 100)}xx` : "none";
+
+const viewerHttpDiagnosticReason = ({ operation, status, body, signal }) => {
+  // A timeout is reported only when our own deadline fired, never from raw
+  // exception text or merely observing that a CLI fallback was selected.
+  if (diagnosticTimeoutReason(signal) === "timeout") return "timeout";
+  if (isViewerDbMismatchPayload(body)) return "database_mismatch";
+  if (isViewerIdentityMismatchPayload(body)) return "identity_mismatch";
+  if (isViewerContractUnsupportedPayload(body)) return "contract_unsupported";
+  if (operation === "prompt-pack-ledger" && isValidLedgerFailureHttpPayload(body)) {
+    return "request_rejected";
+  }
+  if (status === 401 || status === 403) return "authorization_failure";
+  if (isViewerPolicyOrAuthFailurePayload(body)) return "policy_failure";
+  if (isViewerInvalidRequestPayload(body)) {
+    return "request_rejected";
+  }
+  if (status === 404 || status === 405) return "endpoint_unavailable";
+  if (Number.isInteger(status) && status >= 500) return "server_failure";
+  if (Number.isInteger(status)) return "unexpected_status";
+  return "connection_failure";
+};
+
+const viewerProfileFailureKind = (profileBody, dbPath, identityTarget) => {
+  if (!isRecord(profileBody) || profileBody.service !== "codemem-viewer") return "profile_malformed";
+  const range = normalizePromptTransportProtocolRange(
+    profileBody.protocol_version, profileBody.min_supported_protocol_version,
+  );
+  if (!range) return "protocol_malformed";
+  if (!arePromptTransportProtocolRangesCompatible(PROMPT_TRANSPORT_PROTOCOL_RANGE, range)) {
+    return "protocol_range_mismatch";
+  }
+  if (profileBody.db_path !== dbPath) return "database_mismatch";
+  if (canonicalJson(profileBody.identity_target) !== canonicalJson(identityTarget)) {
+    return "runtime_identity_mismatch";
+  }
+  return null;
+};
+
+const classifyViewerProfileFailure = (profileBody, { operation, dbPath, identityTarget }) => {
+  const kind = viewerProfileFailureKind(profileBody, dbPath, identityTarget);
+  if (!kind) return null;
+  const details = {
+    profile_malformed: ["profile malformed", "profile_malformed"],
+    protocol_malformed: ["protocol range malformed", "profile_malformed"],
+    protocol_range_mismatch: ["protocol range unsupported", "protocol_mismatch"],
+    database_mismatch: ["database mismatch", "database_mismatch"],
+    runtime_identity_mismatch: ["runtime identity mismatch", "identity_mismatch"],
+  };
+  const [description, reason] = details[kind];
+  return {
+    classification: viewerFailureClassification(
+      `${operation} viewer ${description}`, classifyPromptTransportFailure({ kind }),
+    ),
+    reason,
+  };
+};
+
+const createPromptTransportResult = ({ operation, runner, diagnostics, viewerOnly, timing }) =>
+  (result, reason, status = null) => {
+    let selectedRunner = "viewer";
+    if (!result.ok) {
+      selectedRunner = result.classification.retryable && !viewerOnly ? runner : "none";
+    }
+    diagnostics.record({
+      operation, reason, stage: timing.stage,
+      elapsed_ms: performance.now() - timing.startedAt,
+      status_class: diagnosticStatusClass(status),
+      runner: selectedRunner,
+      disposition: result.classification?.disposition,
+    });
+    return result;
+  };
 
 const viewerFailureClassification = (cause, disposition, kind = null) => ({
   cause,
@@ -2203,6 +2282,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   const errorLogPath = resolveErrorLogPath(cwd, process.env.HOME);
   const logLine = createLogLine(logPath);
   const errorLogLine = createLogLine(errorLogPath);
+  const promptTransportDiagnostics = createPromptTransportDiagnostics({ logLine: errorLogLine });
   const log = createDebugLogger({
     debug,
     host: { log: hostLog },
@@ -2830,32 +2910,39 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     spoolMaxEntries: rawEventSpoolMaxEntries,
   });
 
-  const postViewerJson = async ({ url, operation, payload, validate }) => {
+  const postViewerJson = async ({ url, operation, payload, validate, viewerOnly = false }) => {
+    const timing = { startedAt: performance.now(), stage: "skipped" };
+    let signal;
+    const finish = createPromptTransportResult({
+      operation, runner, diagnostics: promptTransportDiagnostics, viewerOnly, timing,
+    });
     if (!viewerEnabled) {
-      return {
+      return finish({
         ok: false,
         classification: viewerFailureClassification(
           `${operation} viewer transport disabled`,
           "fallback",
         ),
-      };
+      }, "disabled");
     }
     if (Date.now() < promptPackTransportUnavailableUntil) {
-      return {
+      return finish({
         ok: false,
         classification: viewerFailureClassification(
           `${operation} viewer transport in backoff`,
           "fallback",
         ),
-      };
+      }, "backoff");
     }
 
     let response;
     try {
+      timing.stage = "profile";
+      signal = AbortSignal.timeout(promptPackHttpTimeout);
       const profileResponse = await fetch(promptPackProfileUrl, {
         method: "GET",
         redirect: "manual",
-        signal: AbortSignal.timeout(promptPackHttpTimeout),
+        signal,
       });
       let profileBody;
       try {
@@ -2872,65 +2959,34 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         if (classification.retryable) {
           promptPackTransportUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
         }
-        return { ok: false, classification };
+        return finish({ ok: false, classification }, viewerHttpDiagnosticReason({
+          operation: `${operation} profile`, status: profileResponse.status, body: profileBody, signal,
+        }), profileResponse.status);
       }
-      const viewerProtocolRange = isRecord(profileBody)
-        ? normalizePromptTransportProtocolRange(
-            profileBody.protocol_version,
-            profileBody.min_supported_protocol_version,
-          )
-        : null;
-      let profileFailure = null;
-      if (!isRecord(profileBody) || profileBody.service !== "codemem-viewer") {
-        profileFailure = viewerFailureClassification(
-          `${operation} viewer profile malformed`,
-          classifyPromptTransportFailure({ kind: "profile_malformed" }),
-        );
-      } else if (!viewerProtocolRange) {
-        profileFailure = viewerFailureClassification(
-          `${operation} viewer protocol range malformed`,
-          classifyPromptTransportFailure({ kind: "profile_malformed" }),
-        );
-      } else if (!arePromptTransportProtocolRangesCompatible(
-        PROMPT_TRANSPORT_PROTOCOL_RANGE,
-        viewerProtocolRange,
-      )) {
-        profileFailure = viewerFailureClassification(
-          `${operation} viewer protocol range unsupported`,
-          classifyPromptTransportFailure({ kind: "protocol_range_mismatch" }),
-        );
-      } else if (profileBody.db_path !== promptPackDbPath) {
-        profileFailure = viewerFailureClassification(
-          `${operation} viewer database mismatch`,
-          classifyPromptTransportFailure({ kind: "database_mismatch" }),
-        );
-      } else if (
-        canonicalJson(profileBody.identity_target) !== canonicalJson(promptPackIdentityTarget)
-      ) {
-        profileFailure = viewerFailureClassification(
-          `${operation} viewer runtime identity mismatch`,
-          classifyPromptTransportFailure({ kind: "runtime_identity_mismatch" }),
-        );
-      }
+      const profileFailure = classifyViewerProfileFailure(profileBody, {
+        operation, dbPath: promptPackDbPath, identityTarget: promptPackIdentityTarget,
+      });
       if (profileFailure) {
         promptPackTransportUnavailableUntil = Date.now() + Math.max(1000, rawEventsBackoffMs);
-        return {
+        return finish({
           ok: false,
-          classification: profileFailure,
-        };
+          classification: profileFailure.classification,
+        }, diagnosticTimeoutReason(signal, profileFailure.reason), profileResponse.status);
       }
+      timing.stage = "request";
+      signal = AbortSignal.timeout(promptPackHttpTimeout);
       response = await fetch(url, {
         method: "POST",
         redirect: "manual",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(promptPackHttpTimeout),
+        signal,
       });
     } catch (error) {
       const classification = classifyViewerHttpFailure({ operation, error });
       promptPackTransportUnavailableUntil =
         Date.now() + Math.max(1000, rawEventsBackoffMs);
-      return { ok: false, classification };
+      return finish({ ok: false, classification }, viewerHttpDiagnosticReason({ operation, signal }));
     }
 
     let body;
@@ -2950,18 +3006,20 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         promptPackTransportUnavailableUntil =
           Date.now() + Math.max(1000, rawEventsBackoffMs);
       }
-      return { ok: false, classification };
+      return finish({ ok: false, classification }, viewerHttpDiagnosticReason({
+        operation, status: response.status, body, signal,
+      }), response.status);
     }
 
     if (!validate(body)) {
       const classification = classifyViewerHttpFailure({ operation, malformed: true });
       promptPackTransportUnavailableUntil =
         Date.now() + Math.max(1000, rawEventsBackoffMs);
-      return { ok: false, classification };
+      return finish({ ok: false, classification }, diagnosticTimeoutReason(signal, "malformed_response"), response.status);
     }
 
     promptPackTransportUnavailableUntil = 0;
-    return { ok: true, body };
+    return finish({ ok: true, body }, "success", response.status);
   };
 
   const runPromptPackLedger = async (payload, { viewerOnly = false } = {}) => {
@@ -2973,6 +3031,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     const httpResult = await postViewerJson({
       url: promptPackLedgerUrl,
       operation: "prompt-pack-ledger",
+      viewerOnly,
       payload: viewerPayload,
       validate: isValidLedgerHttpPayload,
     });
@@ -4757,6 +4816,9 @@ export const __testUtils = {
   arePromptTransportProtocolRangesCompatible,
   classifyPromptTransportFailure,
   classifyViewerHttpFailure,
+  viewerHttpDiagnosticReason,
+  classifyViewerProfileFailure,
+  createPromptTransportResult,
   isValidPackHttpPayload,
   isValidLedgerHttpPayload,
   buildPackHttpBody,

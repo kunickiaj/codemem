@@ -31,6 +31,14 @@ Only summary-role memories are continuity-bound: native `session_summary` rows, 
 
 Viewer contract rejection does not cross into a different transport after a compatible handshake. If CLI fallback reaches an older backend that rejects `--internal-ledger`, the plugin suppresses that automatic pack instead of retrying the unsafe generic pack path. Ledger persistence remains best-effort after valid stdin metadata has been read for selection.
 
+### Local transport diagnostics
+
+Pack and ledger HTTP failures emit `inject.transport` JSON in the existing local `~/.codemem/plugin.log`, independently of `CODEMEM_PLUGIN_LOG` and debug settings. Fields describe the operation, fixed reason category, phase (`skipped`, `profile`, or `request`), total HTTP-path elapsed milliseconds (excluding CLI execution), HTTP status class, existing fallback disposition, and selected runner category. Custom runner paths are reported only as `custom`; `none` means no CLI fallback was selected, including viewer-only ledger calls.
+
+Reasons distinguish disabled transport, active backoff, malformed profiles, protocol/database/identity mismatches, unsupported contracts, request/policy/authorization rejection, unavailable endpoints, server failures, unexpected status, malformed success, and connection failure. `timeout` requires the plugin's own timeout signal to have fired; exception text alone is not proof of a local deadline. These observations do not change the existing failure classifier or retry decisions.
+
+Each runtime keeps only fixed operation/reason counters, capped at 1,000,000 each, and a suppressed-entry counter with the same cap. Successful HTTP calls increment counters without writing a log. Failure entries include cumulative counters and failures suppressed since the previous entry, with at most one write every 30 seconds and one write in flight; no timer or pending-log queue is created. Elapsed values are clamped to 0–86,400,000 milliseconds. A later failure reports accumulated counts; suppressed details are not replayed, and counters are not persisted across runtime instances. This diagnostic adds no database storage or remote telemetry and never includes query, prompt, payload, URL, raw error, path, identifier, or token content.
+
 ## Source Evidence
 
 The canonical plugin already exposes the required part identity and replay boundary, but its old normalization rules do not satisfy this contract.
