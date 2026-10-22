@@ -38,6 +38,7 @@ import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js"
 import {
 	canAutoBootstrapSchema,
 	ensureLegacyTeamSetupDraftSchema,
+	ensureMemoryAggregateIndex,
 	ensureRawEventCaptureContextSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
@@ -1071,6 +1072,13 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureAlwaysOnSchemaCompatibility(db);
+	applyAdditiveSchemaCompatibility(db);
+	// Current-marker databases also need this index, but legacy columns must
+	// exist before its first creation. Later opens only check sqlite_master.
+	ensureMemoryAggregateIndex(db);
+}
+
+function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
 	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping

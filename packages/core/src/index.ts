@@ -533,7 +533,11 @@ export {
 	SIMPLE_TIER_ANTHROPIC_DEFAULTS,
 	SIMPLE_TIER_DEFAULTS,
 } from "./extraction-tier-routing.js";
-export { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
+export {
+	buildFilterBranchesWithContext,
+	buildFilterClauses,
+	buildFilterClausesWithContext,
+} from "./filters.js";
 export type {
 	HookTranscriptExtraction,
 	HookTranscriptOutcome,

@@ -29,9 +29,12 @@ export function getSummaryMetadata(metadata: unknown): Record<string, unknown> {
 }
 
 /** SQL equivalent of isSummaryLikeMemory for a trusted memory-items table alias. */
-export function summaryLikeSqlPredicate(alias: "memory_items" | "mi" = "memory_items"): string {
-	const kind = `${alias}.kind`;
-	const metadata = `${alias}.metadata_json`;
+export function summaryLikeSqlPredicate(
+	alias: "memory_items" | "mi" | "" = "memory_items",
+): string {
+	const prefix = alias ? `${alias}.` : "";
+	const kind = `${prefix}kind`;
+	const metadata = `${prefix}metadata_json`;
 	return `(
 		LOWER(TRIM(COALESCE(${kind}, ''))) = 'session_summary'
 		OR CASE WHEN json_valid(COALESCE(${metadata}, '')) = 1 THEN (

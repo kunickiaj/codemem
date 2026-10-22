@@ -204,6 +204,7 @@ function addScopeVisibilityFilter(
 	clauses: string[],
 	params: unknown[],
 	context: OwnershipFilterContext | undefined,
+	resolvedBranches?: FilterResult[],
 ): void {
 	if (!context?.enforceScopeVisibility) return;
 	const deviceId = context.deviceId.trim();
@@ -223,22 +224,48 @@ function addScopeVisibilityFilter(
 	// Mutable origin fields cannot prove managed authorship. Retain this legacy
 	// exception only for explicitly unmanaged scopes, even after membership loss.
 	// A legacy 'local' origin with an import key may be a foreign replica.
-	let authored = `(memory_items.scope_id IN (
+	const unmanagedAuthored = `(memory_items.scope_id IN (
 		SELECT scope_id FROM replication_scopes
 		WHERE authority_type IN ('local', 'manual', 'invite')
 	) AND ((${OWNERSHIP_ORIGIN_DEVICE_SQL} = ? AND ? <> 'local')
 		OR (${OWNERSHIP_ORIGIN_DEVICE_SQL} = 'local'
 			AND COALESCE(TRIM(memory_items.import_key), '') = '')))`;
+	let authored = unmanagedAuthored;
+	const authoredBranches: FilterResult[] = [
+		{ clauses: [unmanagedAuthored], params: [deviceId, deviceId], joinSessions: false },
+	];
 	const sourceIds = localCreationSourcesForFilter(context, visibleScopeIds);
 	if (sourceIds.length && context.scopeVisibilityDb) {
 		// Immutable creation history can also remain readable in managed scopes.
+		const bindingFilter = `msb.evidence = 'local_creation'
+			AND msb.source_device_id IN (${sourceIds.map(() => "?").join(", ")})`;
+		const creationClause = matchingLocalCreationClause(context.scopeVisibilityDb);
 		authored = `(${authored} OR EXISTS (SELECT 1 FROM memory_source_bindings msb
-			WHERE msb.entity_id = memory_items.import_key AND msb.evidence = 'local_creation'
-			AND msb.source_device_id IN (${sourceIds.map(() => "?").join(", ")})
-			AND ${matchingLocalCreationClause(context.scopeVisibilityDb)}))`;
+			WHERE msb.entity_id = memory_items.import_key AND ${bindingFilter}
+			AND ${creationClause}))`;
+		// Drive this exceptional branch from creation bindings/import keys rather
+		// than inspecting provenance JSON for every row in every unreadable scope.
+		authoredBranches.push({
+			clauses: [
+				`memory_items.id IN (SELECT id FROM memory_items
+					WHERE import_key IN (SELECT msb.entity_id FROM memory_source_bindings msb WHERE ${bindingFilter}))`,
+				`${creationClause}`,
+				`NOT COALESCE(${unmanagedAuthored}, 0)`,
+			],
+			params: [...sourceIds, deviceId, deviceId],
+			joinSessions: false,
+		});
 	}
 	if (visibleScopeIds !== undefined) {
-		addResolvedScopeVisibilityFilter(clauses, params, visibleScopeIds, authored, deviceId);
+		addResolvedScopeVisibilityFilter(
+			clauses,
+			params,
+			visibleScopeIds,
+			authored,
+			deviceId,
+			authoredBranches,
+			resolvedBranches,
+		);
 		params.push(...sourceIds);
 		return;
 	}
@@ -282,17 +309,63 @@ function addResolvedScopeVisibilityFilter(
 	visibleScopeIds: readonly string[],
 	authored: string,
 	deviceId: string,
+	authoredBranches: FilterResult[],
+	resolvedBranches?: FilterResult[],
 ): void {
 	let scopeClause = "0 = 1";
+	const scopeParams: unknown[] = [];
 	if (visibleScopeIds.length > MAX_SCOPE_IN_PARAMS) {
 		scopeClause = "memory_items.scope_id IN (SELECT value FROM json_each(?))";
-		params.push(JSON.stringify(visibleScopeIds));
+		scopeParams.push(JSON.stringify(visibleScopeIds));
 	} else if (visibleScopeIds.length > 0) {
 		scopeClause = `memory_items.scope_id IN (${visibleScopeIds.map(() => "?").join(", ")})`;
-		params.push(...visibleScopeIds);
+		scopeParams.push(...visibleScopeIds);
 	}
+	if (resolvedBranches) {
+		// UNION ALL consumers must not count NULL, visible and authored rows twice.
+		// Keep the full authored predicate, including immutable managed creation proof.
+		resolvedBranches.push(
+			{ clauses: ["memory_items.scope_id IS NULL"], params: [], joinSessions: false },
+			{ clauses: [scopeClause], params: scopeParams, joinSessions: false },
+			...authoredBranches.map((branch) => ({
+				clauses: ["memory_items.scope_id IS NOT NULL", `NOT (${scopeClause})`, ...branch.clauses],
+				params: [...scopeParams, ...branch.params],
+				joinSessions: false,
+			})),
+		);
+		return;
+	}
+	params.push(...scopeParams);
 	clauses.push(`(memory_items.scope_id IS NULL OR ${scopeClause} OR ${authored})`);
 	params.push(deviceId, deviceId);
+}
+
+/**
+ * Disjoint equivalents of the central read filter for UNION ALL aggregates.
+ * Unresolved/DB-less contexts retain the exact ordinary filter as one branch.
+ * Resolve on every call: these branches are not an authorization cache.
+ */
+export function buildFilterBranchesWithContext(
+	filters: MemoryFilters | undefined | null,
+	ownership?: OwnershipFilterContext,
+): FilterResult[] {
+	if (ownership?.visibleScopeIds === undefined) {
+		return [buildFilterClausesWithContext(filters, ownership)];
+	}
+	const branches: FilterResult[] = [];
+	const clauses: string[] = [];
+	const params: unknown[] = [];
+	addScopeVisibilityFilter(clauses, params, ownership, branches);
+	const common = buildFilterClausesWithContext(
+		filters,
+		ownership ? { ...ownership, enforceScopeVisibility: false } : undefined,
+	);
+	if (!branches.length) branches.push({ clauses, params, joinSessions: false });
+	return branches.map((branch) => ({
+		clauses: [...branch.clauses, ...common.clauses],
+		params: [...branch.params, ...common.params],
+		joinSessions: common.joinSessions,
+	}));
 }
 
 /**

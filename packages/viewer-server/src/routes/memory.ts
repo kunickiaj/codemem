@@ -4,6 +4,7 @@
 
 import type { MemoryFilters, MemoryStore } from "@codemem/core";
 import {
+	buildFilterBranchesWithContext,
 	buildFilterClausesWithContext,
 	canonicalMemoryKind,
 	fromJson,
@@ -335,20 +336,24 @@ function memorySearchSql(query: string): { clause: string; params: unknown[] } {
 	return { clause: textClause, params: [query] };
 }
 
-function countVisibleObservationRows(store: MemoryStore, filters?: MemoryFilters | null): number {
-	const filterResult = buildViewerMemoryFilters(store, filters);
-	const clauses = [
-		"memory_items.active = 1",
-		`NOT ${summaryLikeSqlPredicate()}`,
-		...filterResult.clauses,
-	];
-	const from = filterResult.joinSessions
-		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
-		: "memory_items";
+function countVisibleMemoryClassifications(store: MemoryStore, filters?: MemoryFilters | null) {
+	const branches = buildFilterBranchesWithContext(filters, store.ownershipFilterContext());
+	const source = branches
+		.map((branch) => {
+			const from = branch.joinSessions
+				? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
+				: "memory_items";
+			return `SELECT ${summaryLikeSqlPredicate()} AS is_summary FROM ${from}
+			WHERE memory_items.active = 1 AND ${branch.clauses.join(" AND ") || "1 = 1"}`;
+		})
+		.join(" UNION ALL ");
 	const row = store.db
-		.prepare(`SELECT COUNT(*) AS total FROM ${from} WHERE ${clauses.join(" AND ")}`)
-		.get(...filterResult.params) as Record<string, unknown> | undefined;
-	return Number(row?.total ?? 0);
+		.prepare(`SELECT COUNT(*) AS memories,
+			COUNT(CASE WHEN NOT is_summary THEN 1 END) AS observations FROM (${source})`)
+		.get(...branches.flatMap((branch) => branch.params)) as
+		| { memories: number; observations: number }
+		| undefined;
+	return { memories: Number(row?.memories ?? 0), observations: Number(row?.observations ?? 0) };
 }
 
 function sessionAllowsArtifactAccess(store: MemoryStore, sessionId: number): boolean {
@@ -597,18 +602,16 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const project = c.req.query("project") || null;
 			let prompts: number;
 			let artifacts: number;
-			let memories: number;
-			let observations: number;
+			const { memories, observations } = countVisibleMemoryClassifications(
+				store,
+				project ? { project } : undefined,
+			);
 			if (project) {
 				prompts = countVisiblePromptRows(store, project);
 				artifacts = countVisibleArtifactRows(store, project);
-				memories = countVisibleMemoryRows(store, { project });
-				observations = countVisibleObservationRows(store, { project });
 			} else {
 				prompts = countVisiblePromptRows(store);
 				artifacts = countVisibleArtifactRows(store);
-				memories = countVisibleMemoryRows(store);
-				observations = countVisibleObservationRows(store);
 			}
 			const total = prompts + artifacts + memories;
 			return c.json({ total, memories, artifacts, prompts, observations });

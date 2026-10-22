@@ -8,7 +8,34 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
+
+/** Additive derived index; the existence check keeps later opens read-only here. */
+export function ensureMemoryAggregateIndex(db: Database): void {
+	if (db.readonly || !tableExists(db, "memory_items")) return;
+	if (
+		db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_memory_items_scope_aggregates'",
+			)
+			.get()
+	)
+		return;
+	// Partial legacy schemas may not have gained these additive columns yet.
+	if (!columnExists(db, "memory_items", "scope_id") || !columnExists(db, "memory_items", "project"))
+		return;
+	// SQLite matches expression indexes syntactically. Use the same safe JSON
+	// classifier as reads, without table qualifiers (not allowed in index DDL).
+	try {
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_items_scope_aggregates
+			ON memory_items(scope_id, active, session_id, TRIM(tags_text) != '',
+				${summaryLikeSqlPredicate("")}, project)`);
+	} catch {
+		// Optional derived index: a locked/partial legacy DB retains ordinary reads
+		// and retries on its next writable open, like the other paging indexes.
+	}
+}
 
 const RETRIEVAL_EXPOSURE_DETACH_UNAVAILABLE_MEMORY_DDL = `
 CREATE TRIGGER IF NOT EXISTS trg_retrieval_exposures_detach_unavailable_memory
@@ -830,6 +857,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
 		ensureMemoryOwnershipSchemas(db);
+		ensureMemoryAggregateIndex(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
 	}).immediate();

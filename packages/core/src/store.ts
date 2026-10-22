@@ -31,7 +31,11 @@ import {
 	toJson,
 	toJsonNullable,
 } from "./db.js";
-import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
+import {
+	buildFilterBranchesWithContext,
+	buildFilterClausesWithContext,
+	type OwnershipFilterContext,
+} from "./filters.js";
 import {
 	recordForeignMemoryRevision,
 	recordLocalCreationSnapshot,
@@ -1736,19 +1740,28 @@ export class MemoryStore {
 	}
 
 	private visibleMemoryStats() {
-		const visibleFilter = buildFilterClausesWithContext(null, this.scopeVisibleFilterContext());
+		const visibleBranches = buildFilterBranchesWithContext(null, this.scopeVisibleFilterContext());
+		// Disjoint branches let ordinary scope reads stay on the covering index;
+		// an OR with provenance exceptions would fetch the wide memory rows.
+		const visibleSource = visibleBranches
+			.map(
+				(branch) => `SELECT
+			memory_items.active, memory_items.session_id,
+			TRIM(memory_items.tags_text) != '' AS has_tags
+			FROM memory_items WHERE ${branch.clauses.join(" AND ") || "1 = 1"}`,
+			)
+			.join(" UNION ALL ");
 		const counts = this.db
 			.prepare(
 				`SELECT
 				 COUNT(*) AS total_memories,
-				 COUNT(CASE WHEN memory_items.active = 1 THEN 1 END) AS active_memories,
-				 COUNT(DISTINCT CASE WHEN memory_items.active = 1 THEN memory_items.session_id END) AS sessions,
-				 COUNT(CASE WHEN memory_items.active = 1 AND TRIM(memory_items.tags_text) != '' THEN 1 END)
+				 COUNT(CASE WHEN active = 1 THEN 1 END) AS active_memories,
+				 COUNT(DISTINCT CASE WHEN active = 1 THEN session_id END) AS sessions,
+				 COUNT(CASE WHEN active = 1 AND has_tags THEN 1 END)
 				  AS tags_filled
-				 FROM memory_items
-				 WHERE ${visibleFilter.clauses.join(" AND ")}`,
+				 FROM (${visibleSource})`,
 			)
-			.get(...visibleFilter.params) as
+			.get(...visibleBranches.flatMap((branch) => branch.params)) as
 			| {
 					total_memories: number;
 					active_memories: number;
@@ -1757,7 +1770,7 @@ export class MemoryStore {
 			  }
 			| undefined;
 		return {
-			visibleFilter,
+			visibleBranches,
 			totalMemories: counts?.total_memories ?? 0,
 			activeMemories: counts?.active_memories ?? 0,
 			sessions: counts?.sessions ?? 0,
@@ -1774,7 +1787,7 @@ export class MemoryStore {
 		// biome-ignore lint/suspicious/noExplicitAny: Drizzle table union type is unwieldy
 		const countRows = (tbl: any) =>
 			this.d.select({ c: sql<number>`COUNT(*)` }).from(tbl).get()?.c ?? 0;
-		const { visibleFilter, totalMemories, activeMemories, sessions, tagsFilled } =
+		const { visibleBranches, totalMemories, activeMemories, sessions, tagsFilled } =
 			this.visibleMemoryStats();
 		const artifacts = countRows(schema.artifacts);
 		const rawEvents = countRows(schema.rawEvents);
@@ -1782,15 +1795,25 @@ export class MemoryStore {
 		let vectorCount = 0;
 		if (!isEmbeddingDisabled() && tableExists(this.db, "memory_vectors")) {
 			try {
-				const clauses = ["memory_items.active = 1", ...visibleFilter.clauses];
+				const visibleIds = visibleBranches
+					.map(
+						(branch) => `SELECT memory_items.id
+					FROM memory_items WHERE memory_items.active = 1
+					AND ${branch.clauses.join(" AND ") || "1 = 1"}`,
+					)
+					.join(" UNION ALL ");
 				const row = this.db
 					.prepare(
-						`SELECT COUNT(*) AS c
+						// Do not let SQLite flatten visibility into a row lookup for every
+						// vector chunk. Preserve vector row (not distinct-memory) counts.
+						`WITH visible_ids AS MATERIALIZED (${visibleIds})
+						 SELECT COUNT(*) AS c
 						 FROM memory_vectors
-						 JOIN memory_items ON memory_items.id = memory_vectors.memory_id
-						 WHERE ${clauses.join(" AND ")}`,
+						 JOIN visible_ids ON visible_ids.id = memory_vectors.memory_id`,
 					)
-					.get(...visibleFilter.params) as { c: number | null } | undefined;
+					.get(...visibleBranches.flatMap((branch) => branch.params)) as
+					| { c: number | null }
+					| undefined;
 				vectorCount = row?.c ?? 0;
 			} catch {
 				vectorCount = 0;

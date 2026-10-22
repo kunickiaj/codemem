@@ -1859,7 +1859,7 @@ describe("ensureAdditiveSchemaCompatibility schema-compat gate", () => {
 		// would skip the shim and leave the column missing, breaking inserts that
 		// reference it. The marker-only gate must still repair it.
 		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
-		db.exec("DROP INDEX IF EXISTS idx_memory_items_project");
+		db.exec("DROP INDEX idx_memory_items_scope_aggregates; DROP INDEX idx_memory_items_project");
 		db.exec("ALTER TABLE memory_items DROP COLUMN project");
 		expect(columnExists(db, "memory_items", "project")).toBe(false);
 
