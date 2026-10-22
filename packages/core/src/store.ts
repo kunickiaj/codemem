@@ -3787,7 +3787,7 @@ export class MemoryStore {
 
 	/** Find memories associated with a file path via the junction table index. */
 	findByFile(filePath: string, options?: RefQueryOptions): RefQueryResult[] {
-		return findByFileFn(this.db, filePath, options);
+		return findByFileFn(this.db, filePath, options, this.ownershipFilterContext());
 	}
 
 	/** Find memories associated with a concept via the junction table index. */

@@ -10,6 +10,7 @@
  */
 
 import type { Database } from "./db.js";
+import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
 import { projectColumnClause } from "./project.js";
 import { normalizeConcept } from "./ref-populate.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
@@ -71,11 +72,16 @@ function appendSummaryEligibility(
  *
  * If `filePath` ends with `/`, it is treated as a directory prefix and matches
  * all files under that directory. Otherwise, it performs an exact match.
+ *
+ * Store-backed callers must supply the current internal ownership context.
+ * Omitting it preserves the unscoped low-level API for trusted database fixtures;
+ * never use that form for runtime file-context retrieval.
  */
 export function findByFile(
 	db: Database,
 	filePath: string,
 	options?: RefQueryOptions,
+	ownership?: OwnershipFilterContext,
 ): RefQueryResult[] {
 	const trimmed = filePath.trim();
 	if (!trimmed) return [];
@@ -126,6 +132,12 @@ export function findByFile(
 		outerParams.push(options.since);
 	}
 	appendSummaryEligibility(outerClauses, outerParams, options?.summarySessionId);
+	const visibility = buildFilterClausesWithContext(null, ownership);
+	// The shared predicates qualify memory_items; this query uses the mi alias.
+	outerClauses.push(
+		...visibility.clauses.map((clause) => clause.replaceAll("memory_items.", "mi.")),
+	);
+	outerParams.push(...visibility.params);
 
 	const params: unknown[] = [...refParams, ...outerParams, limit];
 

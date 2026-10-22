@@ -1491,13 +1491,19 @@ function mergeFileRefCandidates(
 	);
 	if (validPaths.length === 0) return results;
 	const existingIds = new Set(results.map((r) => r.id));
+	const scopeContext = ownershipFilterContext(store);
 	const refCandidateIds = validPaths.flatMap((path) =>
-		findByFile(store.db, path, {
-			limit: effectiveLimit,
-			project: filters?.project,
-			relation: "modified",
-			summarySessionId,
-		}).map((row) => row.id),
+		findByFile(
+			store.db,
+			path,
+			{
+				limit: effectiveLimit,
+				project: filters?.project,
+				relation: "modified",
+				summarySessionId,
+			},
+			scopeContext,
+		).map((row) => row.id),
 	);
 	const newIds = refCandidateIds.filter((id) => !existingIds.has(id));
 	if (newIds.length === 0) return results;

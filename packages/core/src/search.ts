@@ -22,7 +22,7 @@ import { inferMemoryRole } from "./memory-quality.js";
 import { projectMatchesFilter } from "./project.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from "./recap-policy.js";
-import { findByConcept, findByFile } from "./ref-queries.js";
+import { findByConcept, findByFile, type RefQueryOptions } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
 import { canonicalMemoryKind, summaryContinuityFilter } from "./summary-memory.js";
@@ -1065,6 +1065,17 @@ function applyProjectWidening(
 	return [...primary, ...markProjectWideningMetadata(store, foreign)];
 }
 
+function fileHintCandidateIds(
+	store: StoreHandle,
+	query: string,
+	scopeContext: OwnershipFilterContext,
+	options: RefQueryOptions,
+): number[] {
+	return queryPathHints(query).flatMap((path) =>
+		findByFile(store.db, path, options, scopeContext).map((row) => row.id),
+	);
+}
+
 function searchOnce(
 	store: StoreHandle,
 	query: string,
@@ -1084,7 +1095,8 @@ function searchOnce(
 	const params: unknown[] = [expanded];
 	const whereClauses = ["memory_items.active = 1", "memory_fts MATCH ?"];
 
-	const filterResult = buildFilterClausesWithContext(filters, ownershipFilterContext(store));
+	const scopeContext = ownershipFilterContext(store);
+	const filterResult = buildFilterClausesWithContext(filters, scopeContext);
 	whereClauses.push(...filterResult.clauses);
 	params.push(...filterResult.params);
 	const continuityFilter = summaryContinuityFilter(summarySessionId);
@@ -1112,14 +1124,12 @@ function searchOnce(
 	const preserveFilteredKind = typeof filters?.kind === "string" && filters.kind.trim().length > 0;
 	const results = rows.map((row) => rowToMemoryResult(row, preserveFilteredKind)).filter(eligible);
 	const indexedCandidateIds = [
-		...queryPathHints(query).flatMap((path) =>
-			findByFile(store.db, path, {
-				limit: queryLimit,
-				project: filters?.project,
-				relation: "modified",
-				summarySessionId,
-			}).map((row) => row.id),
-		),
+		...fileHintCandidateIds(store, query, scopeContext, {
+			limit: queryLimit,
+			project: filters?.project,
+			relation: "modified",
+			summarySessionId,
+		}),
 		...queryConceptHints(query).flatMap((concept) =>
 			findByConcept(store.db, concept, {
 				limit: queryLimit,

@@ -225,6 +225,8 @@ For Claude hooks, project resolution precedence is:
 
 `PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
 
+File-context retrieval obeys the same ownership and scope visibility rules as normal memory reads, including revocation and managed-scope proof checks. These checks run before result limits, so inaccessible memories neither appear in file context nor displace visible results.
+
 ## Codex integration
 
 Codex is a supported integration. The Codex plugin uses the same shared raw-event pipeline as Claude and OpenCode. It is packaged under `plugins/codex/` with `.codex-plugin/plugin.json`, bundled `.mcp.json`, and hook scripts under `plugins/codex/scripts/`.
