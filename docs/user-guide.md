@@ -28,6 +28,8 @@ separate approval; follow the [deployment guide](cloudflare-coordinator-deployme
 
 The Feed shows captured memories in the same order used when packing context: the full title, narrative, then every fact. Cards open by default; use **Collapse memory** or **Expand memory** to hide or reveal content and supplemental provenance, and use search to narrow the list.
 
+The viewer checks status every five seconds while visible and focused. Health's detailed statistics refresh automatically no more than once every 30 seconds; opening Health, returning focus, or requesting a refresh loads them immediately. While the viewer is visible but unfocused, tab data stops polling and lightweight status checks slow to every 30 seconds. Hiding the tab or opening Settings pauses regular polling.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/docs-feed-dark.png">
   <img alt="Feed showing captured memories" src="images/docs-feed-light.png">

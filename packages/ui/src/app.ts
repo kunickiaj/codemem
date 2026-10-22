@@ -313,6 +313,12 @@ function setRefreshStatus(rs: RefreshState, detail?: string) {
 
 /* ── Polling ─────────────────────────────────────────────── */
 
+const ACTIVE_POLL_MS = 5_000;
+const UNFOCUSED_POLL_MS = 30_000;
+const HEALTH_DETAIL_POLL_MS = 30_000;
+type RefreshOptions = { automatic?: boolean };
+let lastHealthDetailStartedAt: number | null = null;
+
 function stopPolling() {
 	cancelHealthUpdateStatus();
 	refreshSessions.cancel();
@@ -333,14 +339,10 @@ function pausePolling() {
 }
 
 function startPolling() {
-	if (state.refreshTimer) return;
-	// Polling drives health/config updates and disconnect detection in
-	// doRefresh(), so it must run regardless of which tab is active. The
-	// Projects tab's draft-preservation lives inside loadProjectsData()
-	// itself: it short-circuits when a Space select is focused
-	// (isProjectSpaceSelectActive) and persists drafts across re-renders
-	// via the draftClusterDomainSelections / draftDomainSelections maps.
-	state.refreshTimer = setInterval(() => refresh(), 5000);
+	if (state.refreshTimer || !canResumeRefresh() || reconnecting) return;
+	// Keep disconnect detection alive without repeatedly loading an unattended tab.
+	const interval = document.hasFocus() ? ACTIVE_POLL_MS : UNFOCUSED_POLL_MS;
+	state.refreshTimer = setInterval(() => refresh({ automatic: true }), interval);
 }
 
 document.addEventListener("visibilitychange", () => {
@@ -349,8 +351,20 @@ document.addEventListener("visibilitychange", () => {
 		setRefreshStatus("paused", "(tab hidden)");
 	} else if (!isSettingsOpen() && !reconnecting) {
 		startPolling();
-		refresh();
+		refresh({ automatic: !document.hasFocus() });
 	}
+});
+
+window.addEventListener("blur", () => {
+	stopPolling();
+	startPolling();
+});
+
+window.addEventListener("focus", () => {
+	if (!canResumeRefresh() || reconnecting) return;
+	stopPolling();
+	startPolling();
+	refresh();
 });
 
 /* ── Tab routing ─────────────────────────────────────────── */
@@ -813,11 +827,28 @@ async function loadGlobalRefreshData(session: RefreshSession): Promise<void> {
 	]);
 }
 
+async function loadHealthDetailIfDue(
+	session: RefreshSession,
+	options: RefreshOptions,
+): Promise<void> {
+	const now = Date.now();
+	if (
+		options.automatic &&
+		lastHealthDetailStartedAt !== null &&
+		now - lastHealthDetailStartedAt < HEALTH_DETAIL_POLL_MS
+	)
+		return;
+	// Count attempts, including failures, so a failing endpoint cannot retry every tick.
+	lastHealthDetailStartedAt = now;
+	await loadHealthData({ signal: session.signal });
+}
+
 function appendTabRefreshTasks(
 	promises: Promise<unknown>[],
 	refreshTab: TabId,
 	recordBooleanResult: (succeeded: boolean) => void,
 	session: RefreshSession,
+	options: RefreshOptions,
 ): void {
 	if (refreshTab !== "health") markHealthStatusUnchecked();
 	if (refreshTab === "feed") {
@@ -851,7 +882,7 @@ function appendTabRefreshTasks(
 	}
 	if (refreshTab === "health") {
 		promises.push(
-			loadHealthData({ signal: session.signal }),
+			loadHealthDetailIfDue(session, options),
 			loadSyncData({
 				requiredSurface: "health",
 				requireFreshSyncStatus: viewerIncidentAwaitingRefresh,
@@ -875,11 +906,16 @@ function appendTabRefreshTasks(
 	promises.push(pairingVisible ? pairingRefresh.then(recordBooleanResult) : pairingRefresh);
 }
 
-async function refresh() {
+async function refresh(options: RefreshOptions = {}) {
 	if (reconnecting) return;
+	// Timer ticks never queue behind slow reads or replace a pending user refresh.
+	if (options.automatic && (state.refreshInFlight || refreshDebounceTimer)) return;
 	// Debounce rapid calls (tab switch + hash change + visibility)
 	if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
-	refreshDebounceTimer = setTimeout(() => doRefresh(), 80);
+	refreshDebounceTimer = setTimeout(() => {
+		refreshDebounceTimer = null;
+		void doRefresh(options);
+	}, 80);
 }
 
 async function handleRefreshFailure(error: unknown, session: RefreshSession): Promise<void> {
@@ -898,12 +934,14 @@ function finishRefresh(session: RefreshSession): void {
 	void doRefresh();
 }
 
-async function doRefresh(): Promise<void> {
-	if (reconnecting || !canResumeRefresh()) return;
-	if (state.refreshInFlight) {
-		state.refreshQueued = true;
-		return;
-	}
+function queueRefreshIfBusy(options: RefreshOptions): boolean {
+	if (!state.refreshInFlight) return false;
+	if (!options.automatic) state.refreshQueued = true;
+	return true;
+}
+
+async function doRefresh(options: RefreshOptions = {}): Promise<void> {
+	if (reconnecting || !canResumeRefresh() || queueRefreshIfBusy(options)) return;
 	state.refreshInFlight = true;
 	const session = refreshSessions.begin();
 
@@ -913,21 +951,25 @@ async function doRefresh(): Promise<void> {
 		const surface = activeRefreshSurface();
 		const promises: Promise<unknown>[] = [loadGlobalRefreshData(session)];
 		let activeTabRefreshSucceeded = true;
-		appendTabRefreshTasks(
-			promises,
-			refreshTab,
-			(succeeded) => {
-				activeTabRefreshSucceeded = activeTabRefreshSucceeded && succeeded;
-			},
-			session,
-		);
+		const refreshActiveTab = !options.automatic || document.hasFocus();
+		if (refreshActiveTab) {
+			appendTabRefreshTasks(
+				promises,
+				refreshTab,
+				(succeeded) => {
+					activeTabRefreshSucceeded = activeTabRefreshSucceeded && succeeded;
+				},
+				session,
+				options,
+			);
+		}
 		await waitForAbort(Promise.all(promises), session.signal);
 		if (!session.isCurrent()) {
 			if (isReadTimeout(session.signal.reason)) throw session.signal.reason;
 			return;
 		}
 		maybeShowLegacyUpgradeNotice(readLegacyUpgradeReviewSummary(state.lastSyncLegacySharedReview));
-		if (refreshTab === "feed") updateFeedView(true);
+		if (refreshActiveTab && refreshTab === "feed") updateFeedView(true);
 		const nextTab = resolveAccessibleTab(state.activeTab, state.lastCoordinatorAdminStatus);
 		if (nextTab !== state.activeTab) {
 			cancelHealthUpdateStatus();
@@ -936,7 +978,7 @@ async function doRefresh(): Promise<void> {
 		renderTabs(state.activeTab);
 		setRefreshStatus(activeTabRefreshSucceeded ? "idle" : "error");
 		recordViewerRestoredAfterSuccessfulRefresh({
-			refreshSucceeded: activeTabRefreshSucceeded,
+			refreshSucceeded: refreshActiveTab && activeTabRefreshSucceeded,
 			surface,
 		});
 	} catch (error) {

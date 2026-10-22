@@ -4,6 +4,7 @@ import type { ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import html from "../static/index.html?raw";
+import { trackAppListeners } from "./app-test-utils";
 
 // Mock the external Select runtime, not the project-filter or primitive wrapper.
 vi.mock("@radix-ui/react-select", async () => {
@@ -38,6 +39,9 @@ const mocks = vi.hoisted(() => ({
 	loadSyncData: vi.fn(),
 	pingViewerReady: vi.fn(),
 	refreshDiagnostics: vi.fn(),
+	isSettingsOpen: vi.fn(),
+	requestRefresh: null as null | (() => void),
+	resumePolling: null as null | (() => void),
 	stopPolling: null as null | (() => void),
 }));
 
@@ -107,10 +111,12 @@ vi.mock("./tabs/recipient-policy-projects", () => ({
 	toRecipientPolicyManagementProjects: vi.fn(() => []),
 }));
 vi.mock("./tabs/settings", () => ({
-	initSettings: vi.fn((stopPolling: () => void) => {
+	initSettings: vi.fn((stopPolling: () => void, resumePolling: () => void, refresh: () => void) => {
 		mocks.stopPolling = stopPolling;
+		mocks.resumePolling = resumePolling;
+		mocks.requestRefresh = refresh;
 	}),
-	isSettingsOpen: vi.fn(() => false),
+	isSettingsOpen: mocks.isSettingsOpen,
 	loadConfigData: mocks.loadConfigData,
 }));
 vi.mock("./tabs/sync", () => ({
@@ -148,39 +154,40 @@ function rejectOnAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
 }
 
 let visibilityState: DocumentVisibilityState;
-const appDocumentListeners: Array<{
-	type: string;
-	listener: EventListenerOrEventListenerObject;
-	options?: boolean | AddEventListenerOptions;
-}> = [];
+let focused: boolean;
+let removeAppListeners: () => void;
 
-function removeAppDocumentListeners() {
-	for (const { type, listener, options } of appDocumentListeners) {
-		document.removeEventListener(type, listener, options);
-	}
-	appDocumentListeners.length = 0;
+afterEach(() => removeAppListeners?.());
+
+async function elapse(milliseconds: number) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(milliseconds);
+	});
 }
 
-afterEach(removeAppDocumentListeners);
+function changeFocus(nextFocused: boolean) {
+	focused = nextFocused;
+	window.dispatchEvent(new Event(nextFocused ? "focus" : "blur"));
+}
 
-async function setupRefreshAppTest() {
+async function setupRefreshAppTest(
+	options: { tab?: string; focused?: boolean; preserveInitialCalls?: boolean } = {},
+) {
 	vi.useFakeTimers();
+	vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 	vi.clearAllMocks();
 	vi.resetModules();
 	mocks.stopPolling = null;
+	mocks.isSettingsOpen.mockReturnValue(false);
 	visibilityState = "visible";
+	focused = options.focused ?? true;
+	vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
 	vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibilityState);
-	// Re-importing app installs document listeners again; detach each test's
-	// listeners so later visibility changes cannot refresh an old app instance.
-	const addEventListener = document.addEventListener.bind(document);
-	vi.spyOn(document, "addEventListener").mockImplementation((type, listener, options) => {
-		appDocumentListeners.push({ type, listener, options });
-		addEventListener(type, listener, options);
-	});
+	removeAppListeners = trackAppListeners();
 	localStorage.clear();
 	localStorage.setItem("codemem-theme", "light");
 	document.body.innerHTML = bodyMarkup();
-	window.location.hash = "projects";
+	window.location.hash = options.tab ?? "projects";
 	mocks.loadConfigData.mockResolvedValue(undefined);
 	mocks.loadCoordinatorAdminData.mockResolvedValue(true);
 	mocks.loadFeedData.mockResolvedValue(undefined);
@@ -197,6 +204,7 @@ async function setupRefreshAppTest() {
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(100);
 	});
+	if (options.preserveInitialCalls) return;
 	mocks.loadProjectsData.mockClear();
 	mocks.loadHealthData.mockClear();
 	mocks.markHealthStatusUnchecked.mockClear();
@@ -204,7 +212,7 @@ async function setupRefreshAppTest() {
 }
 
 describe("app refresh session wiring", () => {
-	beforeEach(setupRefreshAppTest);
+	beforeEach(() => setupRefreshAppTest());
 	afterEach(() => {
 		vi.clearAllTimers();
 		vi.useRealTimers();
@@ -337,7 +345,7 @@ describe("app refresh session wiring", () => {
 });
 
 describe("app refresh deadlines", () => {
-	beforeEach(setupRefreshAppTest);
+	beforeEach(() => setupRefreshAppTest());
 	afterEach(() => {
 		vi.clearAllTimers();
 		vi.useRealTimers();
@@ -452,9 +460,12 @@ describe("app refresh deadlines", () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
+		mocks.requestRefresh?.();
 		await act(async () => {
-			await vi.advanceTimersByTimeAsync(4_980);
+			await vi.advanceTimersByTimeAsync(100);
 		});
+		const { state } = await import("./lib/state");
+		expect(state.refreshQueued).toBe(true);
 
 		// Act
 		visibilityState = "hidden";
@@ -502,7 +513,7 @@ describe("app refresh deadlines", () => {
 });
 
 describe("app Health polling", () => {
-	beforeEach(setupRefreshAppTest);
+	beforeEach(() => setupRefreshAppTest());
 	afterEach(() => {
 		vi.clearAllTimers();
 		vi.useRealTimers();
@@ -533,6 +544,367 @@ describe("app Health polling", () => {
 		expect(mocks.loadHealthData).toHaveBeenCalledOnce();
 		expect(mocks.markHealthStatusUnchecked).not.toHaveBeenCalled();
 	});
+
+	it.each(["success", "failure"] as const)(
+		"limits automatic Health detail attempts to 30 seconds after %s while status stays at 5 seconds",
+		async (outcome) => {
+			// Objective: failed attempts must not turn the lightweight cadence into detail retries.
+			// Arrange
+			const { state } = await import("./lib/state");
+			state.activeTab = "health";
+			if (outcome === "failure")
+				mocks.loadHealthData.mockRejectedValueOnce(new Error("unavailable"));
+
+			// Act
+			await elapse(5_000);
+
+			// Assert
+			expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+			expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe(
+				outcome === "failure" ? "error" : "idle",
+			);
+
+			// Act
+			await elapse(29_979);
+
+			// Assert
+			expect(mocks.refreshViewerStatus).toHaveBeenCalledTimes(6);
+			expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+
+			// Act
+			await elapse(1);
+
+			// Assert
+			expect(mocks.refreshViewerStatus).toHaveBeenCalledTimes(7);
+			expect(mocks.loadHealthData).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it.each(["tab", "project", "manual"] as const)(
+		"bypasses the Health detail cooldown for an explicit %s refresh",
+		async (trigger) => {
+			// Objective: user actions must fetch fresh details even inside the automatic cooldown.
+			// Arrange
+			document.getElementById("tabBtn-health")?.click();
+			await elapse(100);
+			expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+
+			// Act
+			if (trigger === "tab") document.getElementById("tabBtn-health")?.click();
+			if (trigger === "manual") mocks.requestRefresh?.();
+			if (trigger === "project") {
+				const { requestProjectFilterChange } = await import("./components/project-filter");
+				act(() => {
+					requestProjectFilterChange("Codemem");
+				});
+			}
+			await elapse(100);
+
+			// Assert
+			expect(mocks.loadHealthData).toHaveBeenCalledTimes(2);
+			await elapse(5_000);
+			expect(mocks.loadHealthData).toHaveBeenCalledTimes(2);
+		},
+	);
+});
+
+describe("app focus-aware polling", () => {
+	beforeEach(() => setupRefreshAppTest());
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it.each(["feed", "projects", "health", "sharing", "devices", "advanced"] as const)(
+		"polls only lightweight data every 30 seconds while %s is unfocused, even with pairing open",
+		async (tab) => {
+			// Objective: unattended tabs retain liveness without tab or pairing reads.
+			// Arrange
+			const { state } = await import("./lib/state");
+			state.activeTab = tab;
+			state.advancedSection = "sync";
+			state.syncPairingOpen = true;
+			vi.clearAllMocks();
+
+			// Act
+			changeFocus(false);
+			await elapse(30_079);
+
+			// Assert
+			expect(mocks.refreshViewerStatus).not.toHaveBeenCalled();
+
+			// Act
+			await elapse(1);
+
+			// Assert
+			expect(mocks.refreshViewerStatus).toHaveBeenCalledOnce();
+			expect(mocks.loadConfigData).toHaveBeenCalledOnce();
+			expect(mocks.refreshDiagnostics).toHaveBeenCalledOnce();
+			for (const loader of [
+				mocks.loadFeedData,
+				mocks.loadProjectsData,
+				mocks.loadHealthData,
+				mocks.loadRecipientPolicySharingData,
+				mocks.loadSyncData,
+				mocks.loadCoordinatorAdminData,
+				mocks.loadPairingData,
+			])
+				expect(loader).not.toHaveBeenCalled();
+
+			// Act
+			await elapse(30_000);
+
+			// Assert
+			expect(mocks.refreshViewerStatus).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it.each(["resolve", "reject"] as const)(
+		"aborts on blur, refreshes immediately on focus, and ignores a late %s",
+		async (completion) => {
+			// Objective: aborted work must not own the new focus session or trigger reconnect.
+			// Arrange
+			const staleRefresh = deferred<boolean>();
+			mocks.loadProjectsData.mockReturnValueOnce(staleRefresh.promise);
+			await elapse(5_000);
+			const staleSignal = mocks.loadProjectsData.mock.calls[0]?.[0]?.signal as AbortSignal;
+
+			// Act
+			changeFocus(false);
+			await elapse(0);
+			changeFocus(true);
+			await elapse(80);
+			if (completion === "resolve") staleRefresh.resolve(false);
+			else staleRefresh.reject(new Error("stale failure"));
+			await elapse(0);
+
+			// Assert
+			expect(staleSignal.aborted).toBe(true);
+			expect(mocks.loadProjectsData).toHaveBeenCalledTimes(2);
+			expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("idle");
+			expect(mocks.pingViewerReady).not.toHaveBeenCalled();
+			expect(document.getElementById("viewerReconnectOverlay")?.hidden).toBe(true);
+
+			// Act
+			await elapse(5_000);
+
+			// Assert
+			expect(mocks.loadProjectsData).toHaveBeenCalledTimes(3);
+		},
+	);
+
+	it("refreshes Health and pairing on focus return without waiting for the detail cooldown", async () => {
+		// Arrange: focus return is an explicit refresh, unlike unfocused timer ticks.
+		const { state } = await import("./lib/state");
+		state.syncPairingOpen = true;
+		document.getElementById("tabBtn-health")?.click();
+		await elapse(100);
+		vi.clearAllMocks();
+
+		// Act
+		changeFocus(false);
+		await elapse(100);
+		changeFocus(true);
+		await elapse(80);
+
+		// Assert
+		expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+		expect(mocks.loadSyncData).toHaveBeenCalledOnce();
+		expect(mocks.loadPairingData).toHaveBeenCalledOnce();
+		await elapse(5_000);
+		expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+		expect(mocks.loadPairingData).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("app polling suspension and scheduling", () => {
+	beforeEach(() => setupRefreshAppTest());
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it.each([true, false])("keeps hidden tabs paused when focus is %s", async (nextFocused) => {
+		// Arrange
+		vi.clearAllMocks();
+		visibilityState = "hidden";
+		document.dispatchEvent(new Event("visibilitychange"));
+
+		// Act
+		changeFocus(nextFocused);
+		await elapse(60_000);
+
+		// Assert
+		expect(mocks.refreshViewerStatus).not.toHaveBeenCalled();
+		expect(mocks.loadProjectsData).not.toHaveBeenCalled();
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe("paused");
+	});
+
+	it("returns from hidden to visible-unfocused with lightweight data, then loads details on focus", async () => {
+		// Arrange
+		visibilityState = "hidden";
+		document.dispatchEvent(new Event("visibilitychange"));
+		changeFocus(false);
+		vi.clearAllMocks();
+
+		// Act
+		visibilityState = "visible";
+		document.dispatchEvent(new Event("visibilitychange"));
+		await elapse(80);
+
+		// Assert
+		expect(mocks.refreshViewerStatus).toHaveBeenCalledOnce();
+		expect(mocks.loadProjectsData).not.toHaveBeenCalled();
+
+		// Act
+		changeFocus(true);
+		await elapse(80);
+
+		// Assert
+		expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+	});
+
+	it("does not resume polling on focus or visibility events while Settings is open", async () => {
+		// Arrange
+		mocks.isSettingsOpen.mockReturnValue(true);
+		mocks.stopPolling?.();
+		vi.clearAllMocks();
+
+		// Act
+		changeFocus(false);
+		changeFocus(true);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await elapse(60_000);
+
+		// Assert
+		expect(mocks.refreshViewerStatus).not.toHaveBeenCalled();
+
+		// Act
+		mocks.isSettingsOpen.mockReturnValue(false);
+		mocks.resumePolling?.();
+		mocks.requestRefresh?.();
+		await elapse(80);
+
+		// Assert
+		expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		["projects", "automatic"],
+		["projects", "explicit"],
+		["health", "automatic"],
+		["health", "explicit"],
+	] as const)(
+		"drops busy automatic ticks but preserves a pending %s %s refresh",
+		async (tab, trigger) => {
+			// Objective: slow reads must not cause timer catch-up or discard a user request.
+			// Arrange
+			const { state } = await import("./lib/state");
+			state.activeTab = tab;
+			const loader = tab === "health" ? mocks.loadHealthData : mocks.loadProjectsData;
+			const slowRefresh = deferred<boolean>();
+			loader.mockReturnValueOnce(slowRefresh.promise);
+			await elapse(5_000);
+
+			// Act
+			if (trigger === "explicit") mocks.requestRefresh?.();
+			await elapse(5_000);
+
+			// Assert
+			expect(state.refreshQueued).toBe(trigger === "explicit");
+			expect(loader).toHaveBeenCalledOnce();
+
+			// Act
+			slowRefresh.resolve(true);
+			await elapse(0);
+
+			// Assert
+			const callsAfterCompletion = trigger === "explicit" ? 2 : 1;
+			expect(loader).toHaveBeenCalledTimes(callsAfterCompletion);
+			expect(state.refreshQueued).toBe(false);
+			await elapse(5_000);
+			expect(loader).toHaveBeenCalledTimes(callsAfterCompletion + (tab === "health" ? 0 : 1));
+		},
+	);
+
+	it("does not let an automatic tick replace an explicit refresh awaiting debounce", async () => {
+		// Arrange: the next 5-second tick lands while the manual request is debouncing.
+		const { state } = await import("./lib/state");
+		state.activeTab = "health";
+		await elapse(5_000);
+		await elapse(4_850);
+
+		// Act
+		mocks.requestRefresh?.();
+		await elapse(80);
+
+		// Assert
+		expect(mocks.loadHealthData).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps reconnect in control across focus events and resumes after readiness succeeds", async () => {
+		// Arrange
+		const ready = deferred<boolean>();
+		mocks.refreshViewerStatus.mockRejectedValueOnce(new Error("viewer unavailable"));
+		mocks.pingViewerReady
+			.mockRejectedValueOnce(new Error("viewer unavailable"))
+			.mockReturnValueOnce(ready.promise);
+		await elapse(5_000);
+		expect(document.getElementById("viewerReconnectOverlay")?.hidden).toBe(false);
+		vi.clearAllMocks();
+
+		// Act
+		changeFocus(false);
+		changeFocus(true);
+		document.dispatchEvent(new Event("visibilitychange"));
+		await elapse(5_000);
+
+		// Assert
+		expect(mocks.pingViewerReady).toHaveBeenCalledOnce();
+		expect(mocks.refreshViewerStatus).not.toHaveBeenCalled();
+		expect(mocks.loadProjectsData).not.toHaveBeenCalled();
+
+		// Act
+		ready.resolve(true);
+		await elapse(0);
+
+		// Assert
+		expect(mocks.refreshViewerStatus).toHaveBeenCalledOnce();
+		expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+		expect(document.getElementById("viewerReconnectOverlay")?.hidden).toBe(true);
+	});
+});
+
+describe("initial Health refresh", () => {
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it.each([true, false])(
+		"loads initial details when window focus is %s",
+		async (initialFocused) => {
+			// Arrange
+			const options = { tab: "health", focused: initialFocused, preserveInitialCalls: true };
+
+			// Act
+			await setupRefreshAppTest(options);
+
+			// Assert
+			expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+			await elapse(5_000);
+			expect(mocks.loadHealthData).toHaveBeenCalledOnce();
+		},
+	);
 });
 
 describe("header project inventory refresh", () => {

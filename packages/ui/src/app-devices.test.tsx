@@ -4,6 +4,7 @@ import type { ComponentChild } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import html from "../static/index.html?raw";
+import { trackAppListeners } from "./app-test-utils";
 import { openActionMenu } from "./menu-test-utils";
 
 function workMenu() {
@@ -408,10 +409,14 @@ async function verifyDevicesRestorationIgnoresAuxiliarySyncFailures(): Promise<v
 	);
 }
 
+let removeAppListeners: () => void;
+
 async function setupDevicesAppTest() {
 	vi.useFakeTimers();
 	vi.clearAllMocks();
 	vi.resetModules();
+	vi.spyOn(document, "hasFocus").mockReturnValue(true);
+	removeAppListeners = trackAppListeners();
 	localStorage.clear();
 	localStorage.setItem("codemem-theme", "light");
 	document.body.innerHTML = bodyMarkup();
@@ -517,6 +522,8 @@ async function setupDevicesAppTest() {
 }
 
 function teardownDevicesAppTest() {
+	removeAppListeners();
+	vi.restoreAllMocks();
 	vi.clearAllTimers();
 	vi.useRealTimers();
 	document.body.innerHTML = "";
