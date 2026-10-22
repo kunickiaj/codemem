@@ -123,6 +123,14 @@ function pinnedVersion() {
 	}
 }
 
+function isAcceptedResponse(result) {
+	if (result == null || typeof result !== "object" || Array.isArray(result)) return false;
+	return (
+		(typeof result.accepted === "number" && typeof result.queued === "number") ||
+		(typeof result.inserted === "number" && typeof result.skipped === "number")
+	);
+}
+
 export async function postEnvelope(body, overrides = {}) {
 	const env = overrides.env ?? process.env;
 	const baseUrl = viewerBaseUrl(env);
@@ -158,13 +166,7 @@ export async function postEnvelope(body, overrides = {}) {
 				? "target_mismatch"
 				: false;
 		}
-		const result = await response.json();
-		return (
-			result != null &&
-			typeof result === "object" &&
-			typeof result.inserted === "number" &&
-			typeof result.skipped === "number"
-		);
+		return isAcceptedResponse(await response.json());
 	} catch {
 		return false;
 	}

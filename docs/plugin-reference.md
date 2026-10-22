@@ -167,7 +167,7 @@ The plugin starts MCP with the TS CLI:
 
 - `codemem mcp`
 
-Claude's Node/ESM wrapper normalizes each native hook once, then sends the exact normalized envelope to the local server's canonical `POST /api/raw-events` endpoint. Healthy HTTP ingestion starts no `codemem` or `npx` child. On a retryable failure, the wrapper sends the same serialized envelope to:
+Claude's Node/ESM wrapper normalizes each native hook once, then sends the exact normalized envelope to the local server's canonical `POST /api/raw-events` endpoint. Healthy HTTP ingestion starts no `codemem` or `npx` child: both HTTP `202` replies with numeric `accepted`/`queued` counts and legacy replies with numeric `inserted`/`skipped` counts count as success. Queued acceptance confirms durable enqueue, not completed extraction; it also ends a successful enqueue-only retry after a boundary request fails. Malformed replies or HTTP failures still use the existing fallback path. On a retryable failure, the wrapper sends the same serialized envelope to:
 
 - `codemem enqueue-raw-event`
 - `npx -y codemem@<plugin version> enqueue-raw-event`
