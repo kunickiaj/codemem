@@ -317,6 +317,128 @@ function insertBackfillMemory(
 	return Number(info.lastInsertRowid);
 }
 
+function insertCoverageState(id: number, text: string, state: number): void {
+	const hashes = embeddings.chunkText(text).map(embeddings.hashText);
+	const firstHash = hashes[0];
+	if (!firstHash || hashes.length < 2) throw new Error("Coverage fixture requires multiple chunks");
+	switch (state) {
+		case 1:
+			insertTestVector(id, 0, firstHash);
+			return;
+		case 2:
+			for (const hash of hashes) insertTestVector(id, 0, hash);
+			insertTestVector(id, 0, "obsolete-extra-hash");
+			return;
+		case 3:
+			insertTestVector(id, 0, "stale-hash");
+			return;
+		case 4:
+			for (const hash of hashes) insertTestVector(id, 0, hash, "other-model");
+	}
+}
+
+describe("vector coverage paging plan", () => {
+	useVectorFixture();
+	it.each([0, 250, 500])(
+		"uses a primary-key range without sorting coverage pages after id %i",
+		(afterId) => {
+			// Arrange: inspect the production statement, not a separately maintained SQL copy.
+			const prepareSpy = vi.spyOn(db, "prepare");
+			let pageSql: string | undefined;
+			try {
+				countIncompleteActiveMemoryVectorCoverage(db, "test-model");
+				pageSql = prepareSpy.mock.calls.find(([sql]) =>
+					/SELECT id, title, body_text FROM memory_items\s/.test(sql),
+				)?.[0];
+			} finally {
+				prepareSpy.mockRestore();
+			}
+			if (!pageSql) throw new Error("Coverage page query was not prepared");
+
+			// Act: EXPLAIN uses the same bindings as the first and subsequent pages.
+			const plan = db.prepare(`EXPLAIN QUERY PLAN ${pageSql}`).all(afterId, 250) as Array<{
+				detail: string;
+			}>;
+			const details = plan.map(({ detail }) => detail).join("\n");
+
+			// Assert: allow SQLite wording changes while rejecting the active-index + sort path.
+			expect(details).toMatch(/USING INTEGER PRIMARY KEY.*rowid\s*>/i);
+			expect(details).not.toMatch(/TEMP B-TREE|idx_memory_items_active_created/i);
+		},
+	);
+});
+
+describe("vector coverage paging results", () => {
+	useVectorFixture();
+	it("preserves exact coverage and id-cursor pages across sparse active memories", () => {
+		// Arrange: 501 eligible memories require three pages, with inactive gaps between ids.
+		const sessionId = insertTestSession(db);
+		const now = "2026-09-01T00:00:00.000Z";
+		const body = `${"a".repeat(1000)}\n\n${"b".repeat(1000)}`;
+		const activeIds: number[] = [];
+		const insert = db.prepare(
+			`INSERT INTO memory_items(id, session_id, kind, title, body_text, active, created_at, updated_at)
+			 VALUES (?, ?, 'feature', ?, ?, ?, ?, ?)`,
+		);
+		db.transaction(() => {
+			for (let index = 0; index < 501; index++) {
+				for (let gap = 1; gap <= 7; gap++) {
+					insert.run(index * 8 + gap, sessionId, "Inactive", body, 0, now, now);
+				}
+				const id = (index + 1) * 8;
+				const title = `Coverage ${index}`;
+				insert.run(id, sessionId, title, body, 1, now, now);
+				activeIds.push(id);
+				insertCoverageState(id, `${title}\n${body}`, index % 5);
+			}
+		})();
+		const pages: number[][] = [];
+		const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+			const statement = Database.prototype.prepare.call(db, sql);
+			if (sql.includes("vector-coverage-validation")) {
+				const all = statement.all.bind(statement);
+				statement.all = ((model: string, ...ids: number[]) => {
+					pages.push(ids);
+					return all(model, ...ids);
+				}) as typeof statement.all;
+			}
+			return statement;
+		});
+
+		try {
+			// Act: only current-model hashes covering every chunk count as complete.
+			const incomplete = countIncompleteActiveMemoryVectorCoverage(db, "test-model");
+
+			// Assert: missing, partial, stale, and other-model rows remain incomplete.
+			expect(incomplete).toBe(401);
+			expect(pages.map((page) => page.length)).toEqual([250, 250, 1]);
+			expect(pages.flat()).toEqual(activeIds);
+		} finally {
+			prepareSpy.mockRestore();
+		}
+	});
+
+	it("preserves null and blank text filtering on nullable legacy rows", () => {
+		// Arrange: a temporary table models legacy nullable text without changing the schema.
+		db.exec(`CREATE TEMP TABLE memory_items AS
+			SELECT id, active, title, body_text FROM main.memory_items WHERE 0`);
+		const insert = db.prepare("INSERT INTO memory_items VALUES (?, ?, ?, ?)");
+		insert.run(1, 1, null, null);
+		insert.run(2, 1, "", "   ");
+		insert.run(3, 1, "\t", "\n");
+		insert.run(4, 1, null, "Body only");
+		insert.run(5, 1, "Title only", null);
+		insert.run(6, 0, "Inactive", "No vector");
+		insertTestVector(5, 0, embeddings.hashText("Title only"));
+
+		// Act: nulls coalesce to empty strings; whitespace has no expected chunks.
+		const incomplete = countIncompleteActiveMemoryVectorCoverage(db, "test-model");
+
+		// Assert: the uncovered body-only row is the sole incomplete memory.
+		expect(incomplete).toBe(1);
+	});
+});
+
 describe("vectors", () => {
 	useVectorFixture();
 	it("stores vectors with integer metadata columns via sqlite-vec workaround", async () => {

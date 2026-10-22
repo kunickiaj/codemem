@@ -339,8 +339,9 @@ export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: s
 	const batchSize = 250;
 	let afterId = 0;
 	let incomplete = 0;
+	// Keep cursor pages on the rowid range; the active/created index requires a sort per page.
 	const selectMemories = db.prepare(
-		`SELECT id, title, body_text FROM memory_items
+		`SELECT id, title, body_text FROM memory_items NOT INDEXED
 		 WHERE active = 1
 		   AND TRIM(COALESCE(title, '') || COALESCE(body_text, '')) != ''
 		   AND id > ?
