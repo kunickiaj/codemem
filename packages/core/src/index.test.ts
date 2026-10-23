@@ -12,6 +12,6 @@ describe("core", () => {
 		>().toEqualTypeOf<CoordinatorAccountChangeCapabilitiesRead>();
 	});
 	it("exports a version string", () => {
-		expect(VERSION).toBe("0.47.0-beta.2");
+		expect(VERSION).toBe("0.47.0-beta.3");
 	});
 });

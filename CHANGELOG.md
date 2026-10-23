@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.47.0-beta.3] - 2026-10-22
+
+### Changed
+
+- Materialized authorized semantic-search candidates and reused indexed vector metadata snapshots instead of repeating metadata reads.
+- Paged vector coverage in rowid order and used indexed, visibility-preserving Viewer aggregates.
+- Reduced polling in unfocused Viewer tabs and throttled detailed health refreshes.
+- Deferred Claude file-context work to an HTTP-first pre-read hook, with CLI fallback, and reused verified CLI invocations instead of repeating availability probes.
+
+### Fixed
+
+- Applied file-context visibility rules before result limits and shared Claude file selection and injection tracking across transports.
+- Validated vector rebuild cutovers against exact vector catalogs and corpus epochs, with exact-identity batch cleanup and race-safe completion.
+- Accepted queued Claude ingest acknowledgements and reported transport fallback diagnostics without exposing event contents.
+- Rejected empty file-context transport input before parsing it.
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading packages so the new hooks and backend load together.
+- Ownership reconciliation remains under beta investigation and is not fixed by this release.
+
 ## [0.47.0-beta.2] - 2026-10-21
 
 Supersedes the beta.1 candidate, which was tagged but not published to npm.
@@ -95,7 +116,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...HEAD
+[0.47.0-beta.3]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...v0.47.0-beta.3
 [0.47.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.2
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
