@@ -41,6 +41,17 @@ or make a backup; `--export-sql` opens no database and applies nothing, even whe
 `CODEMEM_DB` is set. Export cannot be combined with a database path, and
 `--owner-resolution` cannot be combined with `--device-unlink`.
 
+For local apply, use a trusted maintenance account that owns the regular database
+file and its containing folder. Group/world-writable files or folders, unsafe parent
+locations and detected path or identity changes are rejected; inspect the file and
+parent ownership/permissions before retrying. The command does not change permissions.
+Keep all writers stopped and protect the database, SQLite companion files and parent
+paths from changes throughout maintenance. Canonical-path and identity rechecks detect
+observed replacements but do not prove which file descriptor SQLite opened or prevent
+a hostile same-account swap-and-restore race, including in WAL mode. ACL and platform
+limits require separate operator inspection; see the
+[local maintenance requirements](cloudflare-coordinator-deployment.md#optional-owner-resolution-receipt-storage).
+
 ## Explore the viewer
 
 The Feed shows captured memories in the same order used when packing context: the full title, narrative, then every fact. Cards open by default; use **Collapse memory** or **Expand memory** to hide or reveal content and supplemental provenance, and use search to narrow the list.

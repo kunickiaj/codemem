@@ -325,7 +325,33 @@ codemem coordinator upgrade-account-schema --owner-resolution --export-sql --jso
 ```
 
 Local installation accepts only an explicitly selected existing regular SQLite file,
-not a symlink, URI or in-memory database. It holds an IMMEDIATE transaction before
+not a symlink, URI or in-memory database. Use a trusted maintenance account that owns
+the file and its containing folder. The file and folder must not be group- or
+world-writable; ancestors must belong to that account or root and must not permit
+other accounts to replace path components. Root-owned sticky temporary directories
+are accepted only above a protected operator-owned subdirectory, not directly above
+the database. Normal system parent aliases, such as macOS's temporary-directory
+alias, are supported. The command checks ownership and permission bits without
+changing them; platforms without the required ownership information are rejected.
+
+The command snapshots the regular file's identity and metadata, resolves its canonical
+path, and rechecks both the original and canonical routes before opening, after opening,
+before the transaction and immediately before receipt DDL after asynchronous readiness
+checks. It also checks that SQLite reports the selected canonical main filename.
+Observed replacements, redirects or permission changes abort with an error asking the
+operator to inspect the selection and retry from a protected folder. An unsafe initial
+location is rejected before opening; post-open failures close the connection.
+
+These checks **do not prove the identity of SQLite's opened file descriptor**. The
+driver exposes a filename, not that descriptor's identity. A hostile process running
+as the same account can still swap and restore files between checks, including WAL
+companions; WAL is not protection against this race. Permission bits also do not
+fully describe ACLs or every platform/filesystem's replacement rules. Stop all other
+writers and ensure no untrusted process can change the file, companions or path during
+maintenance. Inspect ACLs separately where applicable; do not run this command in an
+untrusted location or treat these checks as a security boundary against that account.
+
+It holds an IMMEDIATE transaction before
 checking readiness, installs the shared statements only when receipt storage is
 missing, verifies the exact result before committing, and rolls back on failure.
 An exact installed schema is a no-op; partial, unknown or colliding definitions are
