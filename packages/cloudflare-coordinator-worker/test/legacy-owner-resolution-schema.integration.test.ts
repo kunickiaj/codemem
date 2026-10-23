@@ -8,6 +8,10 @@ import {
 
 const db = env.COORDINATOR_DB;
 const table = "coordinator_legacy_owner_resolutions";
+// ECMAScript WhiteSpace + LineTerminator, including BOM (not Unicode White_Space).
+const trimWhitespace = [
+	..."\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff",
+];
 // Inert synthetic metadata, not authenticated ownership or cryptographic proof.
 function receipt() {
 	return {
@@ -167,7 +171,27 @@ it("native canonical identifiers accept accented and CJK text while retaining nu
 	expect(await rows(first.coordinator_id)).toEqual([first, next]);
 });
 
-it.each(["device_id", "coordinator_id", "owner_identity_id"] as const)(
+it("native storage retains internal trim whitespace and non-trim edge characters exactly", async () => {
+	// NEL, MVS and zero-width space are not part of ECMAScript String.trim.
+	const first = {
+		...receipt(),
+		device_id: `\u0085\u180e\u200bdevice${trimWhitespace.join("")}a\u0085\u180e\u200b`,
+	};
+	expect(first.device_id.trim()).toBe(first.device_id);
+	await insert(first);
+	expect(await rows(first.coordinator_id)).toEqual([first]);
+});
+
+it.each([
+	"coordinator_id",
+	"resolution_id",
+	"device_id",
+	"owner_identity_id",
+	"source_attestation_id",
+	"source_group_id",
+	"source_review_receipt_id",
+	"source_enrollment_identity_id",
+] as const)(
 	"native canonical %s CHECK rejects whitespace aliases without changing retained history",
 	async (column) => {
 		// Arrange: different keys/devices avoid unrelated collision-trigger failures.
@@ -180,15 +204,19 @@ it.each(["device_id", "coordinator_id", "owner_identity_id"] as const)(
 			key_id: "e".repeat(64),
 			owner_identity_id: "synthetic-owner-b",
 		};
-		if (column === "device_id") invalid.device_id = ` ${first.device_id}`;
-		if (column === "coordinator_id") invalid.coordinator_id = `${first.coordinator_id}\n`;
-		if (column === "owner_identity_id") invalid.owner_identity_id = "\tsynthetic-owner-b";
-		// Act
-		const pending = insert(invalid);
-		// Assert: metadata acceptance is not authentication; SQL still requires canonical IDs.
-		await expect(pending).rejects.toThrow(/CHECK constraint failed/u);
+		for (const space of trimWhitespace) {
+			// Device aliases use the retained device, but a different key and owner.
+			const canonical = first[column] ?? "synthetic-enrollment";
+			for (const value of [`${space}${canonical}`, `${canonical}${space}`, space]) {
+				// Act / Assert: isolate CHECK rejection from exact collision probes.
+				expect(value.trim()).not.toBe(value);
+				await expect(insert({ ...invalid, [column]: value })).rejects.toThrow(
+					/CHECK constraint failed/u,
+				);
+				if (column === "coordinator_id") expect(await rows(value)).toEqual([]);
+			}
+		}
 		expect(await rows(first.coordinator_id)).toEqual([first]);
-		if (column === "coordinator_id") expect(await rows(invalid.coordinator_id)).toEqual([]);
 	},
 );
 

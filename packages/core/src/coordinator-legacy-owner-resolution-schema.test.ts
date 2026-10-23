@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 
 const table = "coordinator_legacy_owner_resolutions";
+// ECMAScript WhiteSpace + LineTerminator, including BOM (not Unicode White_Space).
+const trimWhitespace = [
+	..."\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff",
+];
 // Synthetic storage records are not authenticated proofs or authorization fixtures.
 const receipt = {
 	coordinator_id: "coordinator.example",
@@ -204,6 +208,15 @@ describe("immutable resolution receipts", () => {
 		expect(rows(db)).toEqual([receipt]);
 	});
 });
+test("retains internal trim whitespace and edge characters that ECMAScript does not trim", ({
+	db,
+}) => {
+	// NEL, MVS and zero-width space must not be treated as ECMAScript whitespace.
+	const device_id = `\u0085\u180e\u200bdevice${trimWhitespace.join("")}a\u0085\u180e\u200b`;
+	expect(device_id.trim()).toBe(device_id);
+	insert(db, { device_id });
+	expect(rows(db)).toEqual([{ ...receipt, device_id }]);
+});
 describe("resolution field constraints", () => {
 	const canonicalIds = [
 		"coordinator_id",
@@ -226,12 +239,15 @@ describe("resolution field constraints", () => {
 			// Assert
 			expect(rows(db)).toEqual([{ ...receipt, ...patch }]);
 		});
-		for (const [label, value] of [
-			["leading space", " identifier"],
-			["trailing space", "identifier "],
-			["leading tab and trailing newline", "\tidentifier\n"],
-			["leading carriage return and trailing tab", "\ridentifier\t"],
-		] as const) {
+		const canonical = receipt[column] ?? "enrollment-a";
+		for (const [label, value] of trimWhitespace.flatMap(
+			(space) =>
+				[
+					[`leading U+${space.codePointAt(0)?.toString(16)}`, `${space}${canonical}`],
+					[`trailing U+${space.codePointAt(0)?.toString(16)}`, `${canonical}${space}`],
+					[`only U+${space.codePointAt(0)?.toString(16)}`, space],
+				] as const,
+		)) {
 			test(`rejects ${label} in canonical ${column} without changing retained receipts`, ({
 				db,
 			}) => {
@@ -241,11 +257,13 @@ describe("resolution field constraints", () => {
 					resolution_id: "resolution-b",
 					device_id: "device-b",
 					key_id: "e".repeat(64),
+					owner_identity_id: "owner-b",
 					[column]: value,
 				};
 				// Act
 				const attempt = () => insert(db, patch);
 				// Assert
+				expect(value.trim()).not.toBe(value);
 				expect(attempt).toThrow(/CHECK constraint failed/u);
 				expect(rows(db)).toEqual([receipt]);
 			});

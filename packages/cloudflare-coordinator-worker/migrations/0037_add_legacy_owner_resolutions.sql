@@ -1,4 +1,5 @@
 -- Inert historical-label receipts, not credentials or proof of authority.
+-- Canonical IDs use the full ECMAScript String.trim character set, including BOM.
 CREATE TABLE IF NOT EXISTS coordinator_legacy_owner_resolutions (
  coordinator_id TEXT NOT NULL CHECK (typeof(coordinator_id) = 'text' AND length(coordinator_id) BETWEEN 1 AND 256 AND length(trim(coordinator_id, char(9)||char(10)||char(13)||' ')) > 0 AND instr(coordinator_id, char(0)) = 0),
  resolution_id TEXT NOT NULL CHECK (typeof(resolution_id) = 'text' AND length(resolution_id) BETWEEN 1 AND 256 AND length(trim(resolution_id, char(9)||char(10)||char(13)||' ')) > 0 AND instr(resolution_id, char(0)) = 0),
@@ -21,14 +22,14 @@ CREATE TABLE IF NOT EXISTS coordinator_legacy_owner_resolutions (
  reviewed_weak_labels_json TEXT NOT NULL CHECK (typeof(reviewed_weak_labels_json) = 'text' AND length(CAST(reviewed_weak_labels_json AS BLOB)) <= 131072 AND CASE WHEN json_valid(reviewed_weak_labels_json) THEN json_type(reviewed_weak_labels_json) = 'array' ELSE 0 END),
  created_at TEXT NOT NULL CHECK (typeof(created_at) = 'text' AND length(created_at) BETWEEN 1 AND 256 AND length(trim(created_at, char(9)||char(10)||char(13)||' ')) > 0 AND instr(created_at, char(0)) = 0),
  CHECK (
-  coordinator_id = trim(coordinator_id, char(9)||char(10)||char(13)||' ')
-  AND resolution_id = trim(resolution_id, char(9)||char(10)||char(13)||' ')
-  AND device_id = trim(device_id, char(9)||char(10)||char(13)||' ')
-  AND owner_identity_id = trim(owner_identity_id, char(9)||char(10)||char(13)||' ')
-  AND source_attestation_id = trim(source_attestation_id, char(9)||char(10)||char(13)||' ')
-  AND source_group_id = trim(source_group_id, char(9)||char(10)||char(13)||' ')
-  AND source_review_receipt_id = trim(source_review_receipt_id, char(9)||char(10)||char(13)||' ')
-  AND (source_enrollment_identity_id IS NULL OR source_enrollment_identity_id = trim(source_enrollment_identity_id, char(9)||char(10)||char(13)||' '))
+  coordinator_id = trim(coordinator_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND resolution_id = trim(resolution_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND device_id = trim(device_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND owner_identity_id = trim(owner_identity_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND source_attestation_id = trim(source_attestation_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND source_group_id = trim(source_group_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND source_review_receipt_id = trim(source_review_receipt_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279))
+  AND (source_enrollment_identity_id IS NULL OR source_enrollment_identity_id = trim(source_enrollment_identity_id, char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)))
  ),
  PRIMARY KEY (coordinator_id, resolution_id)
 ) WITHOUT ROWID;
