@@ -205,6 +205,69 @@ describe("immutable resolution receipts", () => {
 	});
 });
 describe("resolution field constraints", () => {
+	const canonicalIds = [
+		"coordinator_id",
+		"resolution_id",
+		"device_id",
+		"owner_identity_id",
+		"source_attestation_id",
+		"source_group_id",
+		"source_review_receipt_id",
+		"source_enrollment_identity_id",
+	] as const;
+	for (const column of canonicalIds) {
+		test(`accepts accented and CJK canonical ${column} without rewriting source bytes`, ({
+			db,
+		}) => {
+			// Arrange: canonical identifiers are not restricted to ASCII.
+			const patch = { [column]: "identité-雪", source_public_key: " original synthetic key\n" };
+			// Act
+			insert(db, patch);
+			// Assert
+			expect(rows(db)).toEqual([{ ...receipt, ...patch }]);
+		});
+		for (const [label, value] of [
+			["leading space", " identifier"],
+			["trailing space", "identifier "],
+			["leading tab and trailing newline", "\tidentifier\n"],
+			["leading carriage return and trailing tab", "\ridentifier\t"],
+		] as const) {
+			test(`rejects ${label} in canonical ${column} without changing retained receipts`, ({
+				db,
+			}) => {
+				// Arrange: isolate the CHECK from primary-key and owner-collision triggers.
+				insert(db);
+				const patch = {
+					resolution_id: "resolution-b",
+					device_id: "device-b",
+					key_id: "e".repeat(64),
+					[column]: value,
+				};
+				// Act
+				const attempt = () => insert(db, patch);
+				// Assert
+				expect(attempt).toThrow(/CHECK constraint failed/u);
+				expect(rows(db)).toEqual([receipt]);
+			});
+		}
+	}
+	test("rejects a whitespace device alias with a different key and owner at the CHECK boundary", ({
+		db,
+	}) => {
+		// Arrange: raw-ID collision comparisons must not admit a noncanonical spelling.
+		insert(db);
+		const patch = {
+			resolution_id: "resolution-b",
+			device_id: " device-a",
+			key_id: "e".repeat(64),
+			owner_identity_id: "owner-b",
+		};
+		// Act
+		const attempt = () => insert(db, patch);
+		// Assert
+		expect(attempt).toThrow(/CHECK constraint failed/u);
+		expect(rows(db)).toEqual([receipt]);
+	});
 	for (const [column, value] of [
 		["resolution_version", 2],
 		["source_controller_revision", 2],

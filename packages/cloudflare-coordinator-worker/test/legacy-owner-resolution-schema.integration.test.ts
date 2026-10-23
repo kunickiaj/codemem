@@ -143,6 +143,55 @@ it("native collision checks isolate coordinators and allow unrelated devices/key
 	expect(await rows(otherCoordinator.coordinator_id)).toEqual([otherCoordinator]);
 });
 
+it("native canonical identifiers accept accented and CJK text while retaining nullable and source bytes", async () => {
+	// Arrange: use an isolated namespace because native receipts are immutable.
+	const first = {
+		...receipt(),
+		coordinator_id: `identité-雪-${randomUUID()}`,
+		resolution_id: "résolution-雪-a",
+		device_id: "appareil-雪",
+		owner_identity_id: "propriétaire-雪",
+		source_attestation_id: "attesté-雪",
+		source_group_id: "équipe-雪",
+		source_review_receipt_id: "révision-雪",
+	};
+	const next = {
+		...first,
+		resolution_id: "résolution-雪-b",
+		source_enrollment_identity_id: "inscrit-雪",
+	};
+	// Act
+	await insert(first);
+	await insert(next);
+	// Assert: the null enrollment and original public-key whitespace remain exact.
+	expect(await rows(first.coordinator_id)).toEqual([first, next]);
+});
+
+it.each(["device_id", "coordinator_id", "owner_identity_id"] as const)(
+	"native canonical %s CHECK rejects whitespace aliases without changing retained history",
+	async (column) => {
+		// Arrange: different keys/devices avoid unrelated collision-trigger failures.
+		const first = receipt();
+		await insert(first);
+		const invalid = {
+			...first,
+			resolution_id: `resolution-b-${randomUUID()}`,
+			device_id: randomUUID(),
+			key_id: "e".repeat(64),
+			owner_identity_id: "synthetic-owner-b",
+		};
+		if (column === "device_id") invalid.device_id = ` ${first.device_id}`;
+		if (column === "coordinator_id") invalid.coordinator_id = `${first.coordinator_id}\n`;
+		if (column === "owner_identity_id") invalid.owner_identity_id = "\tsynthetic-owner-b";
+		// Act
+		const pending = insert(invalid);
+		// Assert: metadata acceptance is not authentication; SQL still requires canonical IDs.
+		await expect(pending).rejects.toThrow(/CHECK constraint failed/u);
+		expect(await rows(first.coordinator_id)).toEqual([first]);
+		if (column === "coordinator_id") expect(await rows(invalid.coordinator_id)).toEqual([]);
+	},
+);
+
 it.each(["device", "key"] as const)(
 	"native different-owner %s collision aborts without erasing retained history",
 	async (match) => {
