@@ -72,6 +72,12 @@ function seedVector(
 
 const originalPrepare = Database.prototype.prepare;
 
+function mutateAndRestoreMemoryTitle(db: Database): void {
+	db.exec(
+		"UPDATE memory_items SET title = 'Changed One' WHERE id = 1; UPDATE memory_items SET title = 'One' WHERE id = 1",
+	);
+}
+
 describe("vector migration", () => {
 	let db: Database;
 
@@ -391,9 +397,7 @@ describe("vector migration", () => {
 		prepareSpy.mockImplementation((sql: string) => {
 			if (!injectedWrite && sql.includes("vector-coverage-validation")) {
 				injectedWrite = true;
-				db.exec(
-					"UPDATE memory_items SET title = 'Changed One' WHERE id = 1; UPDATE memory_items SET title = 'One' WHERE id = 1",
-				);
+				mutateAndRestoreMemoryTitle(db);
 			}
 			return Database.prototype.prepare.call(db, sql);
 		});
