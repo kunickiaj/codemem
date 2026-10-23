@@ -25,7 +25,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts && test -f dist/recipient-policy-contract.d.ts && test -f dist/internal/cloudflare-coordinator.d.ts",
+		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts && test -f dist/recipient-policy-contract.d.ts && test -f dist/internal/cloudflare-coordinator.d.ts && test -f dist/semantic-worker-entry.js",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},
