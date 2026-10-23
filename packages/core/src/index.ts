@@ -7,6 +7,11 @@
 
 export const VERSION = "0.47.0-beta.3";
 
+export {
+	type AccountOwnerAssociation,
+	type AccountOwnerProfile,
+	readAccountOwnerAssociation,
+} from "./account-owner-association.js";
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 export * from "./attribution-assessment.js";
