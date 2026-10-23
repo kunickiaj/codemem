@@ -386,11 +386,15 @@ function snapshotHasExpectedHashes(
 	return expectedHashes.every((hash) => selectHash.get(memoryId, model, hash) != null);
 }
 
-export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: string): number {
+export function countIncompleteActiveMemoryVectorCoverage(
+	db: Database,
+	model: string,
+	options: { metadata?: Database } = {},
+): number {
 	const batchSize = 250;
 	let afterId = 0;
 	let incomplete = 0;
-	let metadata: Database | null = null;
+	let metadata: Database | null = options.metadata ?? null;
 	let selectHash: SnapshotQuery | null = null;
 	// Keep cursor pages on the rowid range; the active/created index requires a sort per page.
 	const selectMemories = db.prepare(
@@ -405,6 +409,9 @@ export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: s
 		while (true) {
 			const memories = selectMemories.all(afterId, batchSize) as MemoryTextRow[];
 			if (memories.length === 0) break;
+			if (memories.some((memory) => !Number.isSafeInteger(memory.id))) {
+				throw new RangeError("Vector coverage requires safe integer memory IDs");
+			}
 			metadata ??= createVectorMetadataSnapshot(db);
 			selectHash ??= prepareSnapshotHashQuery(metadata);
 			for (const memory of memories) {
@@ -414,8 +421,147 @@ export function countIncompleteActiveMemoryVectorCoverage(db: Database, model: s
 		}
 		return incomplete;
 	} finally {
-		metadata?.close();
+		if (!options.metadata) metadata?.close();
 	}
+}
+
+/** Recheck a delete batch under its writer transaction, using one metadata scan. */
+export function findMemoryIdsWithCurrentTargetCoverage(
+	db: Database,
+	memoryIds: readonly number[],
+	model: string,
+): Set<number> {
+	// Unlike queue IDs, persisted metadata may reference zero or negative IDs.
+	// Reject inexact IDs rather than checking coverage for a rounded memory ID.
+	const ids = [...new Set(memoryIds.filter(Number.isSafeInteger))];
+	const covered = new Set(ids);
+	if (ids.length === 0) return covered;
+	const memories = db
+		.prepare(
+			`SELECT id, title, body_text FROM memory_items
+		 WHERE active = 1 AND id IN (SELECT value FROM json_each(?))`,
+		)
+		.all(JSON.stringify(ids)) as MemoryTextRow[];
+	// Missing/inactive memories need no target coverage before removing fallback rows.
+	if (memories.length === 0) return covered;
+	return withVectorMetadataSnapshot(
+		db,
+		(metadata) => {
+			const selectHash = prepareSnapshotHashQuery(metadata);
+			for (const memory of memories) {
+				if (!memoryHasSnapshotCoverage(selectHash, memory, model)) covered.delete(memory.id);
+			}
+			return covered;
+		},
+		{ memoryIds: memories.map((memory) => memory.id), model },
+	);
+}
+
+/**
+ * Prune from the same catalog later used for cutover coverage and exact equality.
+ * Only our successful deletes alter it: an external deletion must fail equality.
+ */
+type CatalogVectorRow = {
+	rowid: number;
+	memory_id: number | null;
+	model: string;
+	content_hash: string | null;
+};
+
+function catalogPruneCandidates(db: Database, rows: CatalogVectorRow[]): CatalogVectorRow[] {
+	const expectedByMemory = new Map<number | null, Set<string> | null>();
+	const selectMemory = db.prepare("SELECT title, body_text, active FROM memory_items WHERE id = ?");
+	return rows.filter((row) => {
+		if (!expectedByMemory.has(row.memory_id)) {
+			const memory = selectMemory.get(row.memory_id) as
+				| (MemoryTextRow & { active: number })
+				| undefined;
+			const expected =
+				memory?.active === 1
+					? new Set(chunkHashes(memoryText(memory.title, memory.body_text)))
+					: null;
+			expectedByMemory.set(row.memory_id, expected);
+		}
+		return !expectedByMemory.get(row.memory_id)?.has(row.content_hash ?? "");
+	});
+}
+
+function deleteCatalogPruneCandidates(
+	db: Database,
+	rows: CatalogVectorRow[],
+	model: string,
+	signal?: AbortSignal,
+): number[] {
+	const selectCurrent = db.prepare(
+		"SELECT rowid, memory_id, model, content_hash FROM memory_vectors WHERE rowid = ?",
+	);
+	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	return db
+		.transaction(() => {
+			// Re-read bodies and metadata after acquiring the writer lock. A candidate
+			// may now be a current chunk, or its memory may have lost target coverage.
+			const currentRows = rows.filter((row) => {
+				if (signal?.aborted) return false;
+				const current = selectCurrent.get(row.rowid) as CatalogVectorRow | undefined;
+				return sameCatalogVectorRow(row, current);
+			});
+			if (signal?.aborted) return [];
+			const obsolete = catalogPruneCandidates(db, currentRows);
+			const coverage = findMemoryIdsWithCurrentTargetCoverage(
+				db,
+				obsolete.flatMap((row) => (row.memory_id === null ? [] : [row.memory_id])),
+				model,
+			);
+			const ids: number[] = [];
+			for (const row of obsolete) {
+				if (signal?.aborted) break;
+				const covered = row.memory_id === null || coverage.has(row.memory_id);
+				if (covered && deleteRow.run(row.rowid).changes) ids.push(row.rowid);
+			}
+			return ids;
+		})
+		.immediate();
+}
+
+function sameCatalogVectorRow(
+	saved: CatalogVectorRow,
+	current: CatalogVectorRow | undefined,
+): boolean {
+	return (
+		current !== undefined &&
+		current.memory_id === saved.memory_id &&
+		current.model === saved.model &&
+		current.content_hash === saved.content_hash
+	);
+}
+
+export function pruneObsoleteTargetVectorsFromCatalog(
+	db: Database,
+	model: string,
+	metadata: Database,
+	options: { signal?: AbortSignal } = {},
+): number {
+	const selectPage = metadata.prepare(
+		"SELECT rowid, memory_id, model, content_hash FROM vector_metadata WHERE model = ? AND (? IS NULL OR rowid > ?) ORDER BY rowid LIMIT 250",
+	);
+	const forgetRow = metadata.prepare("DELETE FROM vector_metadata WHERE rowid = ?");
+	let cursor: number | null = null;
+	let deleted = 0;
+	while (!options.signal?.aborted) {
+		const rows = selectPage.all(model, cursor, cursor) as CatalogVectorRow[];
+		if (rows.length === 0) break;
+		const obsolete = catalogPruneCandidates(db, rows);
+		const deletedIds =
+			obsolete.length === 0
+				? []
+				: deleteCatalogPruneCandidates(db, obsolete, model, options.signal);
+		metadata.transaction(() => {
+			for (const rowid of deletedIds) forgetRow.run(rowid);
+		})();
+		deleted += deletedIds.length;
+		cursor = rows.at(-1)?.rowid ?? cursor;
+	}
+	return deleted;
 }
 
 function hasMemoryVectorRowidsShadowTable(db: Database): boolean {
