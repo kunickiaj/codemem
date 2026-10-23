@@ -69,6 +69,7 @@ async function snapshot(db) {
     const orderBy = {
       coordinator_auth_device_claims: "claim_id",
       coordinator_owner_enrollment_qualifications: "qualification_id",
+      coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
     }[name] ?? "rowid";
     return [name, (await db.prepare(`SELECT * FROM ${name} ORDER BY ${orderBy}`).all()).results];
   }));

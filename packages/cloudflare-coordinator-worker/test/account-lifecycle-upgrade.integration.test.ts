@@ -10,9 +10,10 @@ const db = env.COORDINATOR_DB;
 const links = "coordinator_auth_account_links";
 const browser = "coordinator_auth_browser_transactions";
 const claims = "coordinator_auth_device_claims";
-const snapshotKeys: Record<string, string> = {
-	[claims]: "claim_id",
-	coordinator_owner_enrollment_qualifications: "qualification_id",
+const snapshotKeys: Record<string, string[]> = {
+	[claims]: ["claim_id"],
+	coordinator_owner_enrollment_qualifications: ["qualification_id"],
+	coordinator_legacy_owner_resolutions: ["coordinator_id", "resolution_id"],
 };
 const hash = (index: number) => String(index + 1).repeat(64);
 type Definition = { type: string; name: string; tbl_name: string; sql: string | null };
@@ -51,8 +52,8 @@ async function raw(tables: Inventory) {
 		for (let offset = 0; offset < columns.length; offset += 24) {
 			const projection = columns.slice(offset, offset + 24).flatMap((name) => [`typeof(s."${name}") AS "${name}:type"`, `hex(CAST(s."${name}" AS BLOB)) AS "${name}:bytes"`, `CASE WHEN typeof(s."${name}") IN ('integer','real') THEN s."${name}" ELSE NULL END AS "${name}:number"`]);
 			if (rowid) projection.unshift("s.rowid AS source_rowid");
-			const orderBy = snapshotKeys[table] ?? "rowid";
-			chunks.push((await db.prepare(`SELECT ${projection.join(",")} FROM "${table}" s ORDER BY s."${orderBy}"`).all()).results);
+			const orderBy = (snapshotKeys[table] ?? ["rowid"]).map((name) => `s."${name}"`).join(",");
+			chunks.push((await db.prepare(`SELECT ${projection.join(",")} FROM "${table}" s ORDER BY ${orderBy}`).all()).results);
 		}
 		return { table, chunks };
 	}));
