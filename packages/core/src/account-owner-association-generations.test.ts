@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AccountOwnerProfile,
@@ -222,6 +222,77 @@ describe("captured owner profile metadata, not remote authority", () => {
 	});
 });
 
+describe("filesystem-safe generation names and historical lookup", () => {
+	it.each([
+		"a".repeat(98),
+		"a".repeat(139),
+		"a".repeat(203),
+		"a".repeat(255),
+		`${"界".repeat(82)}.database`,
+	])("publishes and retries generations for a %s database basename", (name) => {
+		profile.dbPath = join(directory, name);
+		writeFileSync(profile.dbPath, "synthetic long-name database", { mode: 0o600 });
+		const original = snapshot(profile.dbPath);
+		const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+		expect(readAccountOwnerAssociation(profile, options)).toBeNull();
+		const retained = retainAccountOwnerAssociation(profile, review, options);
+		const before = records().map(snapshot);
+		expect(readAccountOwnerAssociation(profile, options)).toEqual(retained);
+		expect(retainAccountOwnerAssociation(profile, review, options)).toEqual(retained);
+		expect(() =>
+			retainAccountOwnerAssociation(
+				profile,
+				{ ...review, ownerIdentityId: "other-owner" },
+				options,
+			),
+		).toThrow();
+		expect(records().map(snapshot)).toEqual(before);
+		expect(records()).toHaveLength(1);
+		expect(Buffer.byteLength(basename(records()[0])) + 41).toBeLessThanOrEqual(255);
+		expect(snapshot(profile.dbPath)).toEqual(original);
+	});
+
+	it.each(["profile.sqlite", "a".repeat(138)])(
+		"reads and retries a prior %s generation without rewriting it",
+		(name) => {
+			profile.dbPath = join(directory, name);
+			writeFileSync(profile.dbPath, "synthetic database", { mode: 0o600 });
+			const expectedProfilePins = captureAccountOwnerProfilePins(profile);
+			const digest = createHash("sha256").update(JSON.stringify(expectedProfilePins)).digest("hex");
+			const path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			const record = { version: 1, ...expectedProfilePins, ...review };
+			writeFileSync(path, JSON.stringify(record), { mode: 0o600 });
+			const before = snapshot(path);
+			const options = { expectedProfilePins };
+			expect(readAccountOwnerAssociation(profile, options)).toEqual(record);
+			expect(retainAccountOwnerAssociation(profile, review, options)).toEqual(record);
+			expect(() =>
+				retainAccountOwnerAssociation(
+					profile,
+					{ ...review, reviewDigest: "d".repeat(64) },
+					options,
+				),
+			).toThrow();
+			expect(records()).toEqual([path]);
+			expect(snapshot(path)).toEqual(before);
+			expect(linkSync).not.toHaveBeenCalled();
+		},
+	);
+
+	it("retains a matching long-basename legacy fallback without migration", () => {
+		profile.dbPath = join(directory, "a".repeat(203));
+		writeFileSync(profile.dbPath, "synthetic database", { mode: 0o600 });
+		const expectedProfilePins = captureAccountOwnerProfilePins(profile);
+		const record = { version: 1, ...expectedProfilePins, ...review };
+		writeFileSync(legacyPath(), JSON.stringify(record), { mode: 0o600 });
+		const before = snapshot(legacyPath());
+		expect(readAccountOwnerAssociation(profile, { expectedProfilePins })).toEqual(record);
+		expect(retainAccountOwnerAssociation(profile, review, { expectedProfilePins })).toEqual(record);
+		expect(records()).toEqual([legacyPath()]);
+		expect(snapshot(legacyPath())).toEqual(before);
+	});
+});
+
 describe("explicit generations with unchanged legacy callers", () => {
 	it("keeps the legacy filename and strict wrong-profile behavior without options", () => {
 		// Arrange
@@ -339,6 +410,30 @@ describe("explicit generations with unchanged legacy callers", () => {
 });
 
 describe("strict validation of legacy evidence in generation mode", () => {
+	it.each(["malformed", "wrong pins", "conflicting review", "permissions", "symlink"])(
+		"rejects %s prior-generation evidence even when the new generation is valid",
+		(fault) => {
+			const expectedProfilePins = captureAccountOwnerProfilePins(profile);
+			const options = { expectedProfilePins };
+			const retained = retainAccountOwnerAssociation(profile, review, options);
+			const digest = createHash("sha256").update(JSON.stringify(expectedProfilePins)).digest("hex");
+			const path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			let record = { ...retained };
+			if (fault === "wrong pins") record = { ...record, actorId: "wrong-actor" };
+			if (fault === "conflicting review") record = { ...record, ownerIdentityId: "other-owner" };
+			writeFileSync(path, fault === "malformed" ? "{" : JSON.stringify(record), { mode: 0o600 });
+			if (fault === "permissions") chmodSync(path, 0o644);
+			if (fault === "symlink") {
+				renameSync(path, `${path}.original`);
+				symlinkSync(`${path}.original`, path);
+			}
+			const before = records().map(snapshot);
+			expect(() => readAccountOwnerAssociation(profile, options)).toThrow();
+			expect(() => retainAccountOwnerAssociation(profile, review, options)).toThrow();
+			expect(records().map(snapshot)).toEqual(before);
+		},
+	);
+
 	it.each(["malformed", "permissions", "symlink", "foreign uid"])(
 		"rejects %s legacy evidence even when the exact generation is valid",
 		(fault) => {
@@ -592,7 +687,11 @@ describe("generation publication and retry durability", () => {
 			// Act / Assert
 			expect(() => retainAccountOwnerAssociation(profile, review, options)).toThrow();
 			expect(records()).toHaveLength(1);
-			expect(records()[0].startsWith(`${originalPath}.`)).toBe(true);
+			expect(
+				records()[0].startsWith(
+					join(directory, createHash("sha256").update(basename(originalPath)).digest("hex")),
+				),
+			).toBe(true);
 			expect(JSON.parse(readFileSync(records()[0], "utf8"))).toEqual({
 				version: 1,
 				...options.expectedProfilePins,

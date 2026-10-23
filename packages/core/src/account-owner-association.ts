@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { normalizeCoordinatorAccountLinkOrigin } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { parseSshEd25519PublicKey } from "./coordinator-ed25519-key-id.js";
@@ -190,6 +190,7 @@ type GenerationContext = {
 	dbPath: string;
 	pins: AccountOwnerProfilePins;
 	legacyPath: string;
+	previousPath: string;
 	path: string;
 };
 
@@ -203,11 +204,15 @@ function captureGeneration(profile: AccountOwnerProfile, expected: unknown): Gen
 		32,
 	);
 	const base = `${dbPath}.account-owner-${scope}`;
+	const generation = hash(JSON.stringify(pins));
+	// Hash the DB basename so the final name and its .tmp-UUID staging name fit NAME_MAX.
+	const boundedBase = join(dirname(dbPath), `${hash(basename(dbPath))}.account-owner-${scope}`);
 	return {
 		dbPath,
 		pins,
 		legacyPath: `${base}.json`,
-		path: `${base}-${hash(JSON.stringify(pins))}.json`,
+		previousPath: `${base}-${generation}.json`,
+		path: `${boundedBase}-${generation}.json`,
 	};
 }
 
@@ -221,12 +226,18 @@ function assertGenerationCurrent(profile: AccountOwnerProfile, context: Generati
 	throw new Error("account_owner_association_context_changed_outcome_unknown");
 }
 
-function readStoredAssociation(path: string): AccountOwnerAssociation | null {
+function readStoredAssociation(
+	path: string,
+	options: { historicalPath?: boolean } = {},
+): AccountOwnerAssociation | null {
 	try {
 		lstatSync(path);
 	} catch (error) {
-		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
-			return null;
+		if (error && typeof error === "object" && "code" in error) {
+			if (error.code === "ENOENT") return null;
+			// Historical names may be impossible on this filesystem; existing evidence is still checked.
+			if (options.historicalPath && error.code === "ENAMETOOLONG") return null;
+		}
 		return invalidAssociation();
 	}
 	try {
@@ -241,12 +252,16 @@ function readStoredAssociation(path: string): AccountOwnerAssociation | null {
 
 function readGeneration(context: GenerationContext): AccountOwnerAssociation | null {
 	// A valid current record must never hide malformed or unsafe older evidence.
-	const legacy = readStoredAssociation(context.legacyPath);
+	const legacy = readStoredAssociation(context.legacyPath, { historicalPath: true });
+	const previous = readStoredAssociation(context.previousPath, { historicalPath: true });
+	if (previous && !pinsMatch(previous, context.pins)) return invalidAssociation();
 	const exact = readStoredAssociation(context.path);
 	if (exact) {
 		if (!pinsMatch(exact, context.pins)) return invalidAssociation();
+		if (previous && JSON.stringify(previous) !== JSON.stringify(exact)) return invalidAssociation();
 		return exact;
 	}
+	if (previous) return previous;
 	if (legacy && pinsMatch(legacy, context.pins)) return legacy;
 	return null;
 }
