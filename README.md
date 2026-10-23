@@ -441,6 +441,8 @@ Config resolution precedence for runtime commands is:
 
 Environment variables still override file values once a config file has been selected.
 
+Claude `Read` hooks look up file context through the local Viewer after checking the file path and size. Healthy and empty HTTP results start no CLI child; unavailable transport uses a capability-checked CLI or an exact plugin-version-pinned fallback within one deadline. See [Claude integration](docs/plugin-reference.md#claude-marketplace-install) for delivery tracking and timeout details.
+
 Pi prompt recall, file context, and the native tool surface are documented in [Pi extension](docs/plugin-reference.md#pi-extension).
 
 Codemem config mutations use a same-directory lock and atomic replacement. Concurrent Codemem writers fail with a retryable conflict instead of silently losing an update; malformed or unreadable existing config is left unchanged. External editors do not participate in the lock, so Codemem checks that the file has not changed again immediately before replacement. Existing mode, owner, and group metadata is retained on POSIX systems. Atomic replacement also retains ACLs and extended attributes on macOS and on GNU/Linux systems whose `/bin/cp` supports explicit metadata preservation; a metadata-copy failure on those systems aborts the save before rename. Windows, non-GNU Linux, and other platforms retain the existing mode behavior, but Node does not provide a portable API for preserving their extended ACL metadata.

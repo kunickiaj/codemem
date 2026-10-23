@@ -27,7 +27,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/pre-read-hook.sh"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pre-read-hook.mjs",
+            "timeout": 10
           }
         ]
       }

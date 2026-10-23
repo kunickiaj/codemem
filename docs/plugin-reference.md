@@ -200,6 +200,7 @@ By default, `SessionEnd` requests a best-effort boundary flush after enqueue rat
 The packaged template currently registers these hook events in `plugins/claude/hooks/hooks.json`:
 - `SessionStart`
 - `UserPromptSubmit`
+- `PreToolUse` (`Read` only)
 - `PostToolUse`
 - `PostToolUseFailure`
 - `Stop`
@@ -223,7 +224,15 @@ For Claude hooks, project resolution precedence is:
 2. repo/cwd-derived project name (`resolve_project(cwd)`)
 3. payload `project` fallback (only when cwd is unavailable)
 
-`PreToolUse` is intentionally deferred in the default template. Current memory extraction uses `PostToolUse` / `PostToolUseFailure` (`tool_result`) as the shipped Claude tool signal.
+`PreToolUse:Read` runs the dependency-free `scripts/pre-read-hook.mjs`. It checks ignore/disabled settings, a nonempty file path, cwd containment, file existence, and the size gate before context lookup or CLI execution. Files below 1,500 bytes are skipped unless they match the existing config/infra exceptions; `CODEMEM_FILE_CONTEXT_MIN_BYTES` overrides that threshold. Ignored events and missing paths do no retrieval or ledger work. Other skipped reads may record one best-effort HTTP ledger entry within 500 ms, but never start a CLI or open a local database.
+
+Eligible reads check the Viewer profile, database, and runtime identity, then send a target-paired `POST /api/file-context`. The server validates the action/body before acquiring the store and validates the target before querying or writing the ledger. Client project resolution retains the precedence above and uses filesystem git-root markers, not the Viewer's cwd or environment. Healthy and valid-empty responses start no `codemem` or `npx` child. Query failures return continuation with the existing `query_failed` attempt code; valid empty results never fall back. This retrieval adds context only; capture/extraction still uses `PostToolUse` / `PostToolUseFailure` tool results.
+
+Fallback is allowed for unavailable/retryable transport, malformed responses, older endpoints/profiles, or database/runtime target mismatches. A configured non-loopback Viewer host is rejected as policy and never starts local fallback. Policy/authorization failures, redirects, and compatible request rejections do not fall back. Only on fallback, the hook probes `codemem claude-hook-file-context --transport-profile` and requires visibility enforcement and deferred delivery; version strings alone cannot prove a prerelease contains the fix. If needed it probes/runs `npx -y codemem@<exact-plugin-version>` with the same capability requirement, without embeddings. A missing/invalid manifest version disables npx, never selects `latest`. An older pinned package without the capability returns no context rather than using an unsafe retrieval path.
+
+HTTP, capability probes, fallback lookups, and delivery updates share an eight-second budget under a ten-second packaged host timeout. `CODEMEM_FILE_CONTEXT_TIMEOUT_MS` can lower that internal budget, but cannot raise it above eight seconds. Profile/lookup HTTP calls each have a 750 ms cap; HTTP delivery updates have a 250 ms cap. CLI lookups reserve up to 1,500 ms within the same remaining budget for their delivery process, including CLI startup. Child output is limited to 64 KiB combined stdout/stderr, and deadline/output-limit failures terminate the spawned child group. Local filesystem checks run synchronously; these limits do not make a stalled filesystem interruptible.
+
+Selection uses the shared core runner: 40 authorized candidates, at most 15 displayed observations, specificity based on `files_modified`, one observation per originating session, and the existing five-minute freshness tolerance. Each HTTP/installed-CLI/npx lookup has a separate UUID attempt and a transport-qualified request ID linked to one hook invocation. A timed-out HTTP attempt can remain recorded but undelivered while a separate local attempt succeeds; no retry overwrites its timestamps or exposures. The server and transport CLI defer handoff until the hook's stdout write succeeds, then accept an acknowledgment matching the attempt/request/session. Replayed/conflicting attempts cannot claim delivery of a newly rendered artifact. Ledger or acknowledgment failures never change output or start another fallback. Direct non-transport CLI invocation retains its original handoff-before-return behavior.
 
 File-context retrieval obeys the same ownership and scope visibility rules as normal memory reads, including revocation and managed-scope proof checks. These checks run before result limits, so inaccessible memories neither appear in file context nor displace visible results.
 
