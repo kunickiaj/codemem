@@ -459,7 +459,7 @@ function registerValidationTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 function registerSnapshotPerformanceTests(
 	test: ReturnType<typeof it.extend<{ fixture: Fixture }>>,
 ) {
-	test("materializes snapshot JSON once and compares sets without correlated scans", async ({
+	test("materializes each snapshot array once and compares sets without correlated snapshot scans", async ({
 		fixture: { store, db },
 	}) => {
 		// Arrange: explain the insert and both live retry guards against the fixture schema.
@@ -475,17 +475,29 @@ function registerSnapshotPerformanceTests(
 		] as const) {
 			// Act
 			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {
+				id: number;
+				parent: number;
 				detail: string;
 			}[];
 			const details = plan.map((row) => row.detail);
-			// Assert: the actual D1 retry must retain the single materialized JSON scan.
-			expect(details.filter((detail) => /SCAN j VIRTUAL TABLE/.test(detail))).toHaveLength(1);
-			expect(details).toContain("MATERIALIZE snapshot_invites");
+			// Assert: each new snapshot array adds one independent materialized scan,
+			// never a per-live-row rescan of the supplied invite/history/key arrays.
+			for (const name of ["snapshot_invites", "snapshot_history", "snapshot_history_keys"]) {
+				const materialized = plan.filter((row) => row.detail === `MATERIALIZE ${name}`);
+				expect(materialized).toHaveLength(1);
+				const descendants = new Set([materialized[0].id]);
+				const subtree = plan.filter((row) => {
+					if (!descendants.has(row.parent)) return false;
+					descendants.add(row.id);
+					return true;
+				});
+				expect(subtree.filter((row) => /SCAN j VIRTUAL TABLE/.test(row.detail))).toHaveLength(1);
+				expect(subtree.some((row) => /CORRELATED/.test(row.detail))).toBe(false);
+			}
 			expect(
 				details.includes("EXCEPT USING TEMP B-TREE") ||
 					(details.includes("MERGE (EXCEPT)") && details.includes("USE TEMP B-TREE FOR ORDER BY")),
 			).toBe(true);
-			expect(details.some((detail) => /CORRELATED/.test(detail))).toBe(false);
 		}
 	});
 	test("guards all 4096 tuples below the JSON cap, including nullable identity fields", async ({

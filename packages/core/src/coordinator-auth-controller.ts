@@ -1,3 +1,10 @@
+import {
+	CONTROLLER_HISTORY_CTE,
+	CONTROLLER_HISTORY_GUARD,
+	type ControllerHistorySnapshot,
+	captureControllerHistorySnapshot,
+} from "./coordinator-auth-controller-history.js";
+
 /** Persistence of completed, trusted admin reviews, not authentication of request JSON.
  * Future routes must authenticate the configured admin before invoking this capability.
  * Enrollment identity labels alone never create controller authority.
@@ -18,6 +25,8 @@ export interface CoordinatorAuthControllerReviewInput {
 
 export interface CoordinatorAuthControllerVerifiedSnapshot {
 	enrollmentIdentityId: string | null;
+	/** Captured by the trusted history reader when supplied. */
+	legacyHistory?: ControllerHistorySnapshot;
 	invites: {
 		inviteId: string;
 		kind: "team_member" | "add_device";
@@ -166,9 +175,26 @@ export function captureVerifiedSnapshot(
 	if (identity.value !== null && !isAuthControllerId(identity.value)) return null;
 	const invites = captureVerifiedInvites(list.value);
 	if (!invites) return null;
-	const snapshot = { enrollmentIdentityId: identity.value as string | null, invites };
+	const snapshot: CoordinatorAuthControllerVerifiedSnapshot = {
+		enrollmentIdentityId: identity.value as string | null,
+		invites,
+	};
+	const history = captureOptionalField(value, "legacyHistory", captureControllerHistorySnapshot);
+	if (history === null) return null;
+	if (history !== undefined) snapshot.legacyHistory = history;
 	if (new TextEncoder().encode(JSON.stringify(snapshot)).byteLength > 1_000_000) return null;
 	return snapshot;
+}
+
+function captureOptionalField<T>(
+	value: object,
+	field: string,
+	capture: (value: unknown) => T | null,
+): T | null | undefined {
+	const descriptor = Object.getOwnPropertyDescriptor(value, field);
+	if (!descriptor) return field in value ? null : undefined;
+	if (!Object.hasOwn(descriptor, "value")) return null;
+	return capture(descriptor.value);
 }
 
 function captureOptionalSnapshot(
@@ -197,11 +223,25 @@ export function captureAuthControllerReview(
 		}
 		const snapshot = captureOptionalSnapshot(input);
 		if (snapshot === null) return null;
+		if (!historyMatchesReview(snapshot?.legacyHistory, captured)) return null;
 		if (snapshot !== undefined) captured.verifiedSnapshot = snapshot;
 	} catch {
 		return null;
 	}
 	return captured as CoordinatorAuthControllerReviewInput;
+}
+
+function historyMatchesReview(
+	history: ControllerHistorySnapshot | undefined,
+	input: Partial<CoordinatorAuthControllerReviewInput>,
+): boolean {
+	if (!history) return true;
+	return (
+		history.coordinatorId === input.coordinatorId &&
+		history.deviceId === input.deviceId &&
+		history.publicKey === input.publicKey &&
+		history.fingerprint === input.fingerprint
+	);
 }
 
 export function authControllerRetryResult(
@@ -282,7 +322,7 @@ const AUTH_CONTROLLER_SNAPSHOT_CTE = `
 			AND i.bound_fingerprint = ? AND i.revoked_at IS NULL
 			AND i.consumed_at IS NOT NULL AND i.consumed_at != ''
 			AND i.invite_kind IN ('team_member', 'add_device')
-	)`;
+	), ${CONTROLLER_HISTORY_CTE}`;
 const AUTH_CONTROLLER_SNAPSHOT_GUARD = `
 	AND ((SELECT value FROM snapshot) IS NULL OR (
 		e.identity_id IS json_extract((SELECT value FROM snapshot), '$.enrollmentIdentityId')
@@ -293,7 +333,7 @@ const AUTH_CONTROLLER_SNAPSHOT_GUARD = `
 			EXCEPT
 			SELECT * FROM snapshot_invites
 		)
-	))`;
+	)) ${CONTROLLER_HISTORY_GUARD}`;
 
 function authControllerSnapshotValues(
 	input: CoordinatorAuthControllerReviewInput,
