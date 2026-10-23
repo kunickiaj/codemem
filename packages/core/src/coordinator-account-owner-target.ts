@@ -47,12 +47,14 @@ interface TargetRow {
 	created_at_ms: number;
 	review_count: number;
 	attestation_id: string | null;
+	review_revoked_at: string | null;
 }
 const REVIEW_MATCH = `a.coordinator_id=l.coordinator_id AND a.group_id=e.group_id
  AND a.device_id=e.device_id AND a.fingerprint=e.fingerprint`;
 const TARGET_SQL = `SELECT l.link_id,l.auth_config_revision,l.created_at_ms,
  (SELECT count(*) FROM coordinator_auth_controller_attestations a WHERE ${REVIEW_MATCH}) AS review_count,
- (SELECT a.attestation_id FROM coordinator_auth_controller_attestations a WHERE ${REVIEW_MATCH} LIMIT 1) AS attestation_id
+ (SELECT a.attestation_id FROM coordinator_auth_controller_attestations a WHERE ${REVIEW_MATCH} LIMIT 1) AS attestation_id,
+ (SELECT a.revoked_at FROM coordinator_auth_controller_attestations a WHERE ${REVIEW_MATCH} LIMIT 1) AS review_revoked_at
  FROM coordinator_auth_account_links l
  JOIN enrolled_devices e ON e.group_id=? AND e.device_id=?
  JOIN groups g ON g.group_id=e.group_id
@@ -68,6 +70,7 @@ const TARGET_SQL = `SELECT l.link_id,l.auth_config_revision,l.created_at_ms,
 function validTarget(row: TargetRow | null): row is TargetRow {
 	if (!row || !isAuthControllerId(row.link_id) || !isHash(row.auth_config_revision)) return false;
 	if (!Number.isSafeInteger(row.created_at_ms) || row.created_at_ms < 0) return false;
+	if (row.review_revoked_at !== null) return false;
 	if (row.review_count === 0) return row.attestation_id === null;
 	return row.review_count === 1 && isAuthControllerId(row.attestation_id);
 }
@@ -78,7 +81,8 @@ function sameTarget(a: TargetRow, b: TargetRow | null): boolean {
 		a.auth_config_revision === b.auth_config_revision &&
 		a.created_at_ms === b.created_at_ms &&
 		a.review_count === b.review_count &&
-		a.attestation_id === b.attestation_id
+		a.attestation_id === b.attestation_id &&
+		a.review_revoked_at === b.review_revoked_at
 	);
 }
 

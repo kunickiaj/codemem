@@ -345,6 +345,50 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(afterFirstRead).toEqual(before);
 		expect(snapshot(f)).toEqual(changed);
 	});
+	test(`${kind} rejects a review revoked after the active read before its promise resolves`, async ({
+		fixture: f,
+	}) => {
+		// Arrange: retain the real active row while its immutable tombstone changes during await.
+		const backend = backendFor(f, kind);
+		await seed(f, backend);
+		await seedReview(f);
+		const before = snapshot(f);
+		const readRow = () =>
+			f.db
+				.prepare("SELECT * FROM coordinator_auth_controller_attestations WHERE attestation_id=?")
+				.get("laptop-review") as Record<string, unknown>;
+		const priorRow = readRow();
+		const original = f.store.getActiveAuthControllerAttestation.bind(f.store);
+		let changed: ReturnType<typeof snapshot> | undefined;
+		const reader = vi
+			.spyOn(f.store, "getActiveAuthControllerAttestation")
+			.mockImplementation(async (coordinatorId, attestationId) => {
+				const active = await original(coordinatorId, attestationId);
+				expect(active).toMatchObject({ attestation_id: "laptop-review", revoked_at: null });
+				expect(await f.store.revokeAuthControllerAttestation(coordinatorId, attestationId)).toBe(
+					true,
+				);
+				changed = snapshot(f);
+				return active;
+			});
+		// Act
+		const result = await new AccountOwnerTargetOperations(backend, f.store).readAccountOwnerTarget(
+			input,
+			f.cfg,
+		);
+		// Assert: only revocation changed; the stale active row must not produce a ready preview.
+		expect(reader).toHaveBeenCalledExactlyOnceWith(f.cfg.coordinatorId, "laptop-review");
+		const revokedRow = readRow();
+		expect(priorRow.revoked_at).toBeNull();
+		expect(revokedRow.revoked_at).not.toBeNull();
+		expect(revokedRow).toEqual({ ...priorRow, revoked_at: revokedRow.revoked_at });
+		expect(
+			snapshot(f).filter(([table]) => table !== "coordinator_auth_controller_attestations"),
+		).toEqual(before.filter(([table]) => table !== "coordinator_auth_controller_attestations"));
+		expect(changed).toBeDefined();
+		expect(snapshot(f)).toEqual(changed);
+		expect(result).toEqual(unavailable);
+	});
 	for (const subject of ["origin-device", "origin-key", "target-device", "target-key"] as const) {
 		test(`${kind} ${subject} tombstone affects only current requester readiness`, async ({
 			fixture: f,
