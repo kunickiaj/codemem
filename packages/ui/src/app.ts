@@ -21,6 +21,7 @@ import {
 	mountLegacyUpgradeDialog,
 	showLegacyUpgradeDialog,
 } from "./components/legacy-upgrade-dialog";
+import { mountOperationStatusHost } from "./components/operation-status";
 import { mountToastHost } from "./components/primitives/toast";
 import { PROJECT_FILTER_CHANGE, renderProjectFilter } from "./components/project-filter";
 import * as api from "./lib/api";
@@ -996,6 +997,8 @@ renderProjectFilter(state.knownProjects, state.currentProject);
 // Toast host — mount first so early notices (from tab init etc.) land.
 const toastRoot = document.getElementById("toastRoot");
 if (toastRoot) mountToastHost(toastRoot);
+const operationStatusRoot = document.getElementById("operationStatusRoot");
+if (operationStatusRoot) mountOperationStatusHost(operationStatusRoot);
 const diagnosticsDrawerRoot = document.getElementById("diagnosticsDrawerMount");
 if (diagnosticsDrawerRoot) mountDiagnosticsDrawer(diagnosticsDrawerRoot);
 const legacyTeamSetupRoot = document.getElementById("legacyTeamSetupMount");

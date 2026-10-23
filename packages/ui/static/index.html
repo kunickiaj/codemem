@@ -223,6 +223,27 @@
         white-space: nowrap;
       }
 
+      /* ── Manual operation status ───────────────────────────── */
+
+      .operation-status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        margin-top: var(--sp-2);
+        padding: var(--sp-2) var(--sp-3);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        color: var(--text-primary);
+        font-size: var(--font-size-sm);
+        overflow-wrap: anywhere;
+      }
+      .operation-status > [role="status"] { min-width: 0; }
+      .operation-status-detail { color: var(--text-secondary); }
+      .operation-status > button { flex-shrink: 0; }
+      .operation-status[data-tone="warning"] { border-color: var(--status-degraded); }
+
       /* ── Tab bar ───────────────────────────────────────────── */
 
       .tab-bar {
@@ -4789,6 +4810,7 @@
           </button>
         </div>
       </div>
+      <div id="operationStatusRoot"></div>
     </header>
 
     <!-- ── Tab bar ─────────────────────────────────────────── -->

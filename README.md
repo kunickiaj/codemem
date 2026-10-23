@@ -467,6 +467,7 @@ Viewer note:
 
 - The plugin manages one explicit viewer target per runtime. If you run multiple viewers, give each one its own DB/runtime folder instead of sharing `viewer.pid` state next to the same SQLite file.
 - The OpenCode plugin monitors viewer liveness through `GET /api/health`. When an older viewer returns `404`, it makes one compatibility probe to the legacy raw-event status endpoint; raw-event ingest preflight remains separate and is bounded by a 5-second timeout.
+- Manual **Sync now** shows persistent device-sync status in the header while its request is pending, including when you change tabs. Only Sync now is disabled. The result stays until dismissed or replaced by another manual sync; reloading the page clears this client-side status. If the response cannot be confirmed, check device sync status before retrying.
 
 The viewer includes a grouped Settings modal (`Connection`, `Processing`, `Device Sync`) with shell-agnostic labels and an advanced-controls toggle for technical fields.
 - Settings show effective values (configured or default) and only persist changed fields on save.
