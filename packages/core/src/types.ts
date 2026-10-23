@@ -770,6 +770,11 @@ export interface AutomaticContext {
 // Pack rendering options
 // ---------------------------------------------------------------------------
 
+/** Cancellation stops waiting; it cannot cancel embedding work or native SQL. */
+export interface SemanticExecutionOptions {
+	signal?: AbortSignal;
+}
+
 /** Controls how pack text is rendered. Passed separately from retrieval filters. */
 export interface PackRenderOptions {
 	/**
