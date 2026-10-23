@@ -3,8 +3,10 @@ import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
 	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
 	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
+	LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS,
 	upgradeCoordinatorAccountSchemaFile,
 	upgradeCoordinatorAuthSchemaFile,
+	upgradeCoordinatorOwnerResolutionSchemaFile,
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
@@ -16,6 +18,7 @@ interface Options {
 	json?: boolean;
 	exportSql?: boolean;
 	deviceUnlink?: boolean;
+	ownerResolution?: boolean;
 }
 function failure(
 	options: Options,
@@ -84,13 +87,33 @@ function hasDatabaseSelection(options: Options): boolean {
 	return options.dbPath !== undefined || options.db !== undefined;
 }
 function exportAccountSchema(options: Options): void {
-	const statements = options.deviceUnlink
+	let statements: readonly string[] = options.deviceUnlink
 		? ACCOUNT_UNLINK_MIGRATION_STATEMENTS
 		: ACCOUNT_CONNECTION_MIGRATION_STATEMENTS;
-	const text = `-- ${accountPrerequisites}\n-- Execute in ONE atomic D1 batch; do not split into autocommitted requests. Nothing has been applied.\n${statements.map((s) => `${s.trim().replace(/;$/u, "")};`).join("\n")}\n`;
+	let prerequisites = accountPrerequisites;
+	if (options.ownerResolution) {
+		statements = LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS;
+		prerequisites +=
+			" Requires the current account-management schema first; installs inert receipt storage only, not ownership or access.";
+	}
+	const text = `-- ${prerequisites}\n-- Execute in ONE atomic D1 batch; do not split into autocommitted requests. Nothing has been applied.\n${statements.map((s) => `${s.trim().replace(/;$/u, "")};`).join("\n")}\n`;
 	process.stdout.write(options.json ? `${JSON.stringify({ statements, applied: false })}\n` : text);
 }
+function invalidAccountSelection(options: Options, path: string | undefined): boolean {
+	if (options.exportSql) return hasDatabaseSelection(options);
+	if (!path) return true;
+	return Boolean(options.ownerResolution && !hasDatabaseSelection(options));
+}
 async function upgradeAccount(options: Options): Promise<void> {
+	if (options.ownerResolution && options.deviceUnlink) {
+		failure(
+			options,
+			"Use --owner-resolution without --device-unlink.",
+			2,
+			"account_schema_upgrade_failed",
+		);
+		return;
+	}
 	if (options.deviceUnlink && !options.exportSql) {
 		failure(
 			options,
@@ -101,8 +124,7 @@ async function upgradeAccount(options: Options): Promise<void> {
 		return;
 	}
 	const path = resolveDbOpt(options);
-	const selected = hasDatabaseSelection(options);
-	if ((options.exportSql && selected) || (!options.exportSql && !path)) {
+	if (invalidAccountSelection(options, path)) {
 		failure(
 			options,
 			options.exportSql
@@ -120,15 +142,13 @@ async function upgradeAccount(options: Options): Promise<void> {
 		}
 		if (!path) return;
 		if (!options.json) process.stderr.write(`${accountPrerequisites}\n`);
-		await upgradeCoordinatorAccountSchemaFile(path);
+		if (options.ownerResolution) await upgradeCoordinatorOwnerResolutionSchemaFile(path);
+		else await upgradeCoordinatorAccountSchemaFile(path);
 		process.stdout.write(
-			options.json
-				? `${JSON.stringify({ upgraded: true })}\n`
-				: "Coordinator account schema upgraded.\n",
+			options.json ? `${JSON.stringify({ upgraded: true })}\n` : accountUpgradeSuccess(options),
 		);
 	} catch (error) {
-		const detail =
-			error instanceof Error ? error.message : "Coordinator account schema upgrade failed.";
+		const detail = accountUpgradeFailure(options, error);
 		failure(
 			options,
 			`Account schema upgrade stopped. Inspect the selected database before retrying. ${detail}`,
@@ -137,11 +157,25 @@ async function upgradeAccount(options: Options): Promise<void> {
 		);
 	}
 }
+function accountUpgradeSuccess(options: Options): string {
+	if (options.ownerResolution)
+		return "Coordinator owner-resolution receipt storage ready; ownership and access unchanged.\n";
+	return "Coordinator account schema upgraded.\n";
+}
+function accountUpgradeFailure(options: Options, error: unknown): string {
+	if (options.ownerResolution)
+		return "Owner-resolution storage requires the current account schema: first use upgrade-account-schema without --owner-resolution. Partial, unsupported or colliding receipt schemas cannot be repaired by this command. Check file access and writer locks.";
+	return error instanceof Error ? error.message : "Coordinator account schema upgrade failed.";
+}
 export function buildCoordinatorAccountSchemaCommand(): Command {
 	const command = new Command("upgrade-account-schema")
 		.configureHelp(helpStyle)
 		.description(
 			"Explicitly install optional coordinator account management on an existing V2 database",
+		)
+		.option(
+			"-o, --owner-resolution",
+			"install inert owner-resolution receipt storage (requires current account schema)",
 		)
 		.option(
 			"--device-unlink",
@@ -153,7 +187,7 @@ export function buildCoordinatorAccountSchemaCommand(): Command {
 		)
 		.addHelpText(
 			"after",
-			`\n${accountPrerequisites}\nD1 export does not apply SQL or verify remote execution limits.\n`,
+			`\n${accountPrerequisites}\n--owner-resolution installs storage only; it does not resolve an owner or change access. It requires the current account schema and an explicit --db-path, or --export-sql without a database. It cannot be combined with --device-unlink.\nD1 export does not apply SQL or verify remote execution limits.\n`,
 		);
 	addDbOption(command);
 	addJsonOption(command);

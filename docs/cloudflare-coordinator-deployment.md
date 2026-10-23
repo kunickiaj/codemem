@@ -311,6 +311,39 @@ On any error, stop and inspect the database rather than resetting tables, copyin
 
 Existing sessions remain valid until unlink or administrator revocation, but old pre-upgrade transactions without an order cannot create a new session. After the upgrade, do not run an older coordinator binary against the database.
 
+### Optional owner-resolution receipt storage
+
+The explicit `--owner-resolution` mode adds only the reviewed 0037 receipt table,
+indexes and immutability triggers. It requires the **current account-management
+schema** first; for an older supported SQLite coordinator, use the normal
+`upgrade-account-schema` command before this mode. Pause auth writers, drain pending
+attempts, back up the coordinator database and obtain separate approval before applying:
+
+```fish
+codemem coordinator upgrade-account-schema --owner-resolution --db-path 'coordinator.sqlite'
+codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
+```
+
+Local installation accepts only an explicitly selected existing regular SQLite file,
+not a symlink, URI or in-memory database. It holds an IMMEDIATE transaction before
+checking readiness, installs the shared statements only when receipt storage is
+missing, verifies the exact result before committing, and rolls back on failure.
+An exact installed schema is a no-op; partial, unknown or colliding definitions are
+rejected without repair. Existing rows and file permissions remain unchanged. This
+installs empty historical receipt storage, not owner records or authority, and does
+not resolve an owner, change access or ship a recovery UI. Runtime requests and normal
+store startup do not install this schema.
+
+The command does not pause writers, drain attempts or create a backup. D1 export
+returns the shared 0037 statement boundaries as `{ "statements": [...], "applied": false }`;
+it opens no database, ignores environment database defaults, applies nothing and
+does not check remote schema prerequisites or execution limits. Before separately
+approved D1 application, verify the current account schema and that receipt storage
+is missing or exactly matches the reviewed definitions; do not use this SQL to repair
+a partial or unknown installation. Execute the full array in **one atomic D1 binding
+batch**, not split requests, and do not add `BEGIN`/`COMMIT`. `--export-sql` rejects
+`--db-path` and its `--db` alias; `--owner-resolution` rejects `--device-unlink`.
+
 ### Deploy after separate approval
 
 Only after any required schema apply is complete and deployment is approved, run

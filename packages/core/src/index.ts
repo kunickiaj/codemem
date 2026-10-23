@@ -201,6 +201,8 @@ export {
 	extractInvitePayload,
 	inviteLink,
 } from "./coordinator-invites.js";
+export { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "./coordinator-legacy-owner-resolution-schema.js";
+export { upgradeCoordinatorOwnerResolutionSchemaFile } from "./coordinator-legacy-owner-resolution-upgrade.js";
 export type {
 	CoordinatorLegacyTeamCompletionDeviceDecisionV1,
 	CoordinatorLegacyTeamCompletionManifestV1,
