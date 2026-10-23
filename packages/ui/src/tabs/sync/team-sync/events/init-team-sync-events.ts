@@ -372,13 +372,18 @@ function initManualSyncEvents(
 	refreshCallback: () => void,
 ) {
 	let syncPending = false;
+	if (syncNowButton) {
+		syncNowButton.disabled =
+			state.viewerActorId === null || syncNowButton.getAttribute("aria-busy") === "true";
+	}
 	syncNowButton?.addEventListener("click", async () => {
 		if (!syncNowButton || syncPending || syncNowButton.disabled) return;
+		const actorId = state.viewerActorId;
+		if (actorId === null) return;
 		syncPending = true;
 		syncNowButton.disabled = true;
 		syncNowButton.setAttribute("aria-busy", "true");
 		syncNowButton.textContent = "Syncing\u2026";
-		const actorId = state.viewerActorId;
 		const operation = startOperationStatus("Syncing devices…", "You can keep browsing.");
 		const finish = (message: string, tone: "warning" | "success") => {
 			if (operation) operation.finish(message, tone);
@@ -398,11 +403,12 @@ function initManualSyncEvents(
 			finish(manualSyncErrorMessage(error, actorId), "warning");
 		} finally {
 			syncPending = false;
-			syncNowButton.disabled = false;
+			syncNowButton.disabled = state.viewerActorId === null;
 			syncNowButton.removeAttribute("aria-busy");
 			syncNowButton.textContent = "Sync now";
 		}
-		if (confirmed) await refreshAfterSync(refreshCallback);
+		// The app schedules the view refresh and owns its eventual error feedback.
+		if (confirmed) void refreshCallback();
 	});
 }
 
@@ -415,18 +421,6 @@ function manualSyncErrorMessage(error: unknown, actorId: typeof state.viewerActo
 		return "Sync is disabled. Enable device sync in Settings before trying again.";
 	}
 	return "Couldn’t confirm whether sync finished. Check device sync status before retrying.";
-}
-
-async function refreshAfterSync(refreshCallback: () => void) {
-	// A view refresh failure must not overwrite a confirmed sync result.
-	try {
-		await refreshCallback();
-	} catch {
-		showGlobalNotice(
-			"Sync result received, but this view could not refresh. Refresh the view to check device status.",
-			"warning",
-		);
-	}
 }
 
 function isSyncResult(result: unknown): result is api.SyncRunResponse {

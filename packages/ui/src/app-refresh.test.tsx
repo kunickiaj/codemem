@@ -43,6 +43,9 @@ const mocks = vi.hoisted(() => ({
 	requestRefresh: null as null | (() => void),
 	resumePolling: null as null | (() => void),
 	stopPolling: null as null | (() => void),
+	initSyncTab: vi.fn(),
+	loadViewerStatus: vi.fn(),
+	triggerSync: vi.fn(),
 }));
 
 vi.mock("./app-sharing", () => ({
@@ -76,6 +79,8 @@ vi.mock("./lib/api", () => ({
 	loadRecipientPolicyReconciliationStatus: vi.fn(async () => ({ version: 1, items: [] })),
 	loadRuntimeInfo: vi.fn(async () => ({ version: "test" })),
 	loadSyncStatus: vi.fn(async () => ({})),
+	loadViewerStatus: mocks.loadViewerStatus,
+	triggerSync: mocks.triggerSync,
 	pingViewerReady: mocks.pingViewerReady,
 }));
 vi.mock("./tabs/coordinator-admin", () => ({
@@ -120,7 +125,7 @@ vi.mock("./tabs/settings", () => ({
 	loadConfigData: mocks.loadConfigData,
 }));
 vi.mock("./tabs/sync", () => ({
-	initSyncTab: vi.fn(),
+	initSyncTab: mocks.initSyncTab,
 	invalidateSyncPeerScopeCache: vi.fn(),
 	loadPairingData: mocks.loadPairingData,
 	loadSyncData: mocks.loadSyncData,
@@ -171,7 +176,13 @@ function changeFocus(nextFocused: boolean) {
 }
 
 async function setupRefreshAppTest(
-	options: { tab?: string; focused?: boolean; preserveInitialCalls?: boolean } = {},
+	options: {
+		tab?: string;
+		focused?: boolean;
+		preserveInitialCalls?: boolean;
+		manualSync?: boolean;
+		initialStatus?: Promise<{ identity: { actor_id: string } }>;
+	} = {},
 ) {
 	vi.useFakeTimers();
 	vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -200,6 +211,19 @@ async function setupRefreshAppTest(
 	mocks.loadSyncData.mockResolvedValue(true);
 	mocks.pingViewerReady.mockResolvedValue(true);
 	mocks.refreshDiagnostics.mockResolvedValue(undefined);
+	mocks.initSyncTab.mockReset();
+	if (options.manualSync) {
+		const { refreshViewerStatus } = await import("./tabs/health/lifecycle");
+		const { initTeamSyncEvents } = await import(
+			"./tabs/sync/team-sync/events/init-team-sync-events"
+		);
+		mocks.refreshViewerStatus.mockImplementation(refreshViewerStatus);
+		mocks.loadViewerStatus.mockResolvedValue({ identity: { actor_id: "actor-one" } });
+		if (options.initialStatus) mocks.loadViewerStatus.mockReturnValueOnce(options.initialStatus);
+		mocks.initSyncTab.mockImplementation((refresh: () => void) =>
+			initTeamSyncEvents(refresh, async () => {}),
+		);
+	}
 	await import("./app");
 	await act(async () => {
 		await vi.advanceTimersByTimeAsync(100);
@@ -210,6 +234,94 @@ async function setupRefreshAppTest(
 	mocks.markHealthStatusUnchecked.mockClear();
 	mocks.refreshViewerStatus.mockClear();
 }
+
+describe("manual sync app lifecycle", () => {
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it("disables the static startup control before app initialization", () => {
+		// Arrange: the served HTML must be safe before any status request can finish.
+		document.body.innerHTML = bodyMarkup();
+		// Act
+		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
+		// Assert
+		expect(button.disabled).toBe(true);
+	});
+
+	it("rejects forced manual sync while the initial actor request is pending", async () => {
+		// Arrange: keep the real status loader waiting with the production null actor.
+		const status = deferred<{ identity: { actor_id: string } }>();
+		await setupRefreshAppTest({ manualSync: true, initialStatus: status.promise });
+		const { state } = await import("./lib/state");
+		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
+		// Act: dispatchEvent bypasses the browser's disabled-button click suppression.
+		await act(async () => {
+			button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		// Assert
+		expect(state.viewerActorId).toBeNull();
+		expect(mocks.triggerSync).not.toHaveBeenCalled();
+		expect(button.disabled).toBe(true);
+		expect(document.getElementById("operationStatusRoot")?.textContent).toBe("");
+	});
+
+	it("enables manual sync after actual initial status completion without auto-starting", async () => {
+		// Arrange: initialization must enable the control through the real status load path.
+		const status = deferred<{ identity: { actor_id: string } }>();
+		const sync = deferred<{ items: [] }>();
+		await setupRefreshAppTest({ manualSync: true, initialStatus: status.promise });
+		mocks.triggerSync.mockReturnValueOnce(sync.promise);
+		const button = document.getElementById("syncNowButton") as HTMLButtonElement;
+		// Act
+		await act(async () => status.resolve({ identity: { actor_id: "actor-one" } }));
+		// Assert: loading identity alone does not request a sync.
+		expect(button.disabled).toBe(false);
+		expect(mocks.triggerSync).not.toHaveBeenCalled();
+		// Act: only the subsequent user action starts work under the known actor.
+		await act(async () => button.click());
+		await act(async () => sync.resolve({ items: [] }));
+		await elapse(80);
+		// Assert: the post-sync status refresh cannot turn this into an actor-switch warning.
+		expect(mocks.triggerSync).toHaveBeenCalledOnce();
+		expect(mocks.loadViewerStatus).toHaveBeenCalledTimes(2);
+		expect(
+			document.getElementById("operationStatusRoot")?.querySelector('[data-tone="success"]'),
+		).not.toBeNull();
+		expect(document.getElementById("operationStatusRoot")?.textContent).not.toMatch(/confirm/i);
+	});
+
+	it.each(["success", "surface failure", "read failure"] as const)(
+		"preserves the confirmed result after a debounced view refresh: %s",
+		async (outcome) => {
+			// Arrange: use the app's actual refresh callback, not a rejected callback promise.
+			await setupRefreshAppTest({ manualSync: true });
+			mocks.triggerSync.mockResolvedValueOnce({ items: [] });
+			if (outcome === "read failure") {
+				mocks.loadProjectsData.mockRejectedValueOnce(new Error("View unavailable"));
+			} else {
+				mocks.loadProjectsData.mockResolvedValueOnce(outcome === "success");
+			}
+			// Act
+			await act(async () => document.getElementById("syncNowButton")?.click());
+			const host = document.getElementById("operationStatusRoot");
+			const confirmed = host?.textContent;
+			await elapse(80);
+			// Assert: refresh feedback belongs to the existing refresh channel, not the sync result.
+			expect(mocks.loadProjectsData).toHaveBeenCalledOnce();
+			expect(document.getElementById("refreshStatus")?.dataset.refreshState).toBe(
+				outcome === "success" ? "idle" : "error",
+			);
+			expect(host?.querySelector('[data-tone="success"]')).not.toBeNull();
+			expect(host?.textContent).toBe(confirmed);
+			expect(mocks.triggerSync).toHaveBeenCalledOnce();
+		},
+	);
+});
 
 describe("app refresh session wiring", () => {
 	beforeEach(() => setupRefreshAppTest());

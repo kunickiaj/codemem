@@ -272,19 +272,17 @@ describe("manual sync response validation", () => {
 		expect(api.triggerSync).toHaveBeenCalledOnce();
 	});
 
-	it("keeps a confirmed header result when refreshing the view fails", async () => {
+	it("requests a view refresh through the void callback without losing the confirmed result", async () => {
 		// Arrange
-		refresh.mockRejectedValueOnce(new Error("View unavailable"));
+		refresh.mockReturnValueOnce(undefined);
 		await act(async () => syncButton.click());
 		// Act
 		await act(async () => request.resolve({ items: [validItem] }));
 		// Assert
 		expect(host.textContent).toContain("Sync pass finished for 1 device.");
 		expect(host.querySelector('[data-tone="success"]')).not.toBeNull();
-		expect(showGlobalNotice).toHaveBeenCalledExactlyOnceWith(
-			expect.stringMatching(/could not refresh/i),
-			"warning",
-		);
+		expect(refresh).toHaveBeenCalledOnce();
+		expect(showGlobalNotice).not.toHaveBeenCalled();
 		expect(api.triggerSync).toHaveBeenCalledOnce();
 		expect(syncButton.disabled).toBe(false);
 	});
