@@ -44,6 +44,7 @@ import {
 	ensureSchemaBootstrapped,
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
+import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
 
 export {
 	getSchemaVersion,
@@ -1034,6 +1035,7 @@ function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
 }
 
 function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
+	ensureVectorCorpusEpoch(db);
 	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
 		try {
 			db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
