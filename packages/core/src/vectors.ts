@@ -28,7 +28,7 @@ import {
 	tryResolveEmbeddingRevision,
 	tryResolveEmbeddingVectorIdentityLabel,
 } from "./embeddings.js";
-import { buildFilterClausesWithContext, type OwnershipFilterContext } from "./filters.js";
+import { buildFilterBranchesWithContext, type OwnershipFilterContext } from "./filters.js";
 import {
 	completeMaintenanceJob,
 	getMaintenanceJob,
@@ -51,8 +51,6 @@ const LEGACY_DEFAULT_EMBEDDING_MODEL = "Xenova/bge-small-en-v1.5";
 const BACKFILL_MEMORY_PAGE_SIZE = 50;
 const BACKFILL_INFERENCE_BATCH_SIZE = 32;
 const BACKFILL_CANDIDATE_TABLE_PREFIX = "codemem_backfill_vector_candidates";
-
-type VectorModelCount = { model: string; rows: number };
 
 type MemoryTextRow = {
 	id: number;
@@ -137,16 +135,17 @@ function clampSemanticLimit(limit: number): number {
 	return Math.min(Math.max(1, Math.trunc(limit)), 200);
 }
 
-function listVectorModelCounts(db: Database): VectorModelCount[] {
+function listVectorModels(db: Database): Array<string | null> {
 	if (!tableExists(db, "memory_vectors")) {
 		return [];
 	}
 	try {
-		return db
-			.prepare(
-				"SELECT model, COUNT(*) AS rows FROM memory_vectors GROUP BY model ORDER BY rows DESC, model ASC",
-			)
-			.all() as VectorModelCount[];
+		const rows = db.prepare("SELECT DISTINCT model FROM memory_vectors").all() as Array<{
+			model: string | null;
+		}>;
+		// Keep NULL and unknown labels: they must still prevent an unverified
+		// mixed corpus from looking like an exclusively current-model corpus.
+		return rows.map((row) => row.model);
 	} catch {
 		return [];
 	}
@@ -211,18 +210,28 @@ export function resolveSemanticSearchModel(db: Database, currentModel?: string):
 		currentModel = tryResolveConfiguredVectorIdentityLabel(db) ?? undefined;
 		if (currentModel === undefined) return null;
 	}
-	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	return resolveSemanticSearchModelFromCatalog(
+		currentModel,
+		getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB),
+		listVectorModels(db),
+	);
+}
+
+function resolveSemanticSearchModelFromCatalog(
+	currentModel: string,
+	job: ReturnType<typeof getMaintenanceJob>,
+	models: readonly (string | null)[],
+): string | null {
 	const metadata = job?.metadata ?? {};
 	const sourceModel = typeof metadata.source_model === "string" ? metadata.source_model : null;
 	const targetModel = typeof metadata.target_model === "string" ? metadata.target_model : null;
 	const reconciliationTargetCoverageComplete =
 		metadata.reconciliation_target_coverage_complete === true;
-	const rows = listVectorModelCounts(db);
-	if (rows.length === 0) return null;
-	const hasCurrentModel = rows.some((row) => row.model === currentModel);
+	if (models.length === 0) return null;
+	const hasCurrentModel = models.includes(currentModel);
 	const hasCompatibleLegacyModel =
 		currentModel === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL &&
-		rows.some((row) => row.model === LEGACY_DEFAULT_EMBEDDING_MODEL);
+		models.includes(LEGACY_DEFAULT_EMBEDDING_MODEL);
 	if (
 		(job?.status === "running" || job?.status === "pending") &&
 		reconciliationTargetCoverageComplete &&
@@ -240,7 +249,7 @@ export function resolveSemanticSearchModel(db: Database, currentModel?: string):
 			targetModel === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL &&
 			currentModel === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
 		if (!compatibleLegacyRebuild) return null;
-		if (rows.some((row) => row.model === sourceModel)) return sourceModel;
+		if (models.includes(sourceModel)) return sourceModel;
 		if (hasCurrentModel) return currentModel;
 		return null;
 	}
@@ -248,7 +257,7 @@ export function resolveSemanticSearchModel(db: Database, currentModel?: string):
 		return hasCurrentModel ? currentModel : null;
 	}
 	if (hasCompatibleLegacyModel) return LEGACY_DEFAULT_EMBEDDING_MODEL;
-	if (hasCurrentModel && rows.every((row) => row.model === currentModel)) return currentModel;
+	if (hasCurrentModel && models.every((model) => model === currentModel)) return currentModel;
 	return null;
 }
 
@@ -262,19 +271,25 @@ export function resolveSemanticSearchModel(db: Database, currentModel?: string):
 export function resolveSemanticSearchModels(db: Database, resolvedModel?: string): string[] {
 	const currentModel = resolvedModel ?? tryResolveConfiguredVectorIdentityLabel(db);
 	if (currentModel == null) return [];
-	return expandSemanticSearchModels(db, resolveSemanticSearchModel(db, currentModel), currentModel);
+	// Primary selection and compatible expansion share this call's catalog,
+	// never a cross-search snapshot that could survive a model cutover.
+	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+	const models = listVectorModels(db);
+	const primaryModel = resolveSemanticSearchModelFromCatalog(currentModel, job, models);
+	return expandSemanticSearchModels(db, primaryModel, currentModel, models);
 }
 
 function expandSemanticSearchModels(
 	db: Database,
 	primaryModel: string | null,
 	currentModel: string,
+	models?: readonly (string | null)[],
 ): string[] {
 	if (!primaryModel) return [];
 	if (
 		primaryModel === LEGACY_DEFAULT_EMBEDDING_MODEL &&
 		currentModel === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL &&
-		listVectorModelCounts(db).some((row) => row.model === currentModel)
+		(models ?? listVectorModels(db)).includes(currentModel)
 	) {
 		return [primaryModel, currentModel];
 	}
@@ -1683,6 +1698,27 @@ function semanticResult(row: Record<string, unknown>): SemanticSearchResult {
 	};
 }
 
+function buildAuthorizedSemanticMemoryIdsQuery(
+	filters: MemoryFilters | null,
+	context: SemanticSearchScopeContext,
+	summarySessionId: number | null | undefined,
+): { sql: string; params: unknown[] } {
+	const branches = buildFilterBranchesWithContext(filters, scopeVisibleFilterContext(context));
+	const continuity = summaryContinuityFilter(summarySessionId);
+	const queries = branches.map((branch) => {
+		const join = branch.joinSessions
+			? "JOIN sessions ON sessions.id = memory_items.session_id"
+			: "";
+		const clauses = ["memory_items.active = 1", ...branch.clauses, ...continuity.clauses];
+		return `SELECT memory_items.id FROM memory_items ${join}
+			WHERE ${clauses.join(" AND ")}`;
+	});
+	return {
+		sql: queries.join(" UNION ALL "),
+		params: branches.flatMap((branch) => [...branch.params, ...continuity.params]),
+	};
+}
+
 /**
  * Search for memories by vector similarity using exact sqlite-vec distance.
  * Returns an empty array when embeddings are disabled or unavailable.
@@ -1717,32 +1753,24 @@ export async function semanticSearch(
 	if (!firstEmbedding) return [];
 	const queryEmbedding = serializeFloat32(firstEmbedding);
 	const effectiveLimit = clampSemanticLimit(limit);
-	const whereClauses: string[] = ["memory_items.active = 1"];
-	const filterResult = buildFilterClausesWithContext(filters, scopeVisibleFilterContext(context));
-	whereClauses.push(...filterResult.clauses);
-	const continuityFilter = summaryContinuityFilter(summarySessionId);
-	whereClauses.push(...continuityFilter.clauses);
-
-	const where = whereClauses.join(" AND ");
+	const authorizedIds = buildAuthorizedSemanticMemoryIdsQuery(filters, context, summarySessionId);
 	const modelPlaceholders = searchModels.map(() => "?").join(", ");
-	const joinClause = filterResult.joinSessions
-		? "JOIN sessions ON sessions.id = memory_items.session_id"
-		: "";
 
 	// Scope predicates must apply before vector ranking. sqlite-vec's MATCH/k
 	// query ranks inside the virtual table before joined memory_items filters can
 	// reliably constrain the candidate set, so use an exact distance scan over the
 	// already-authorized memory rows instead of widening post-KNN candidates.
+	// Materialize IDs so vec0 metadata probes do not reopen wide memory rows;
+	// materialize the limited ranking before fetching the final result payloads.
 	const sql = `
-		WITH scoped_vectors AS (
+		WITH authorized_ids AS MATERIALIZED (${authorizedIds.sql}),
+		scoped_vectors AS MATERIALIZED (
 			SELECT
 				memory_vectors.memory_id,
 				MIN(vec_distance_l2(memory_vectors.embedding, ?)) AS distance
 			FROM memory_vectors
-			JOIN memory_items ON memory_items.id = memory_vectors.memory_id
-			${joinClause}
+			JOIN authorized_ids ON authorized_ids.id = memory_vectors.memory_id
 			WHERE memory_vectors.model IN (${modelPlaceholders})
-			  AND ${where}
 			GROUP BY memory_vectors.memory_id
 			ORDER BY distance ASC
 			LIMIT ?
@@ -1755,10 +1783,9 @@ export async function semanticSearch(
 
 	const statement = db.prepare(sql);
 	const rows = statement.all(
+		...authorizedIds.params,
 		queryEmbedding,
 		...searchModels,
-		...filterResult.params,
-		...continuityFilter.params,
 		effectiveLimit,
 	) as Array<Record<string, unknown>>;
 
