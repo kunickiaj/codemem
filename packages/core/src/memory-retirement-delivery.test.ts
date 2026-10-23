@@ -27,6 +27,7 @@ import { buildDirectPeerCanonicalRequest } from "./sync-auth.js";
 import { LOCAL_SYNC_FEATURES, supportsSyncFeature } from "./sync-capability.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { initTestSchema } from "./test-utils.js";
+import { ensureVectorIndexReady } from "./vector-index-upgrade.js";
 
 function identity(deviceId: string) {
 	const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -194,6 +195,66 @@ it("acknowledges duplicate retirement copies only after all matching content and
 	expect(
 		sender.prepare("SELECT acknowledged_at FROM memory_retirement_deliveries").pluck().get(),
 	).toBe(now);
+});
+
+it("rolls back authenticated retirement when the v1 vector layout is inconsistent and permits the same packet retry", () => {
+	// Arrange: a genuine signed retirement targets an owned legacy memory with both ref indexes.
+	vi.spyOn(Date, "now").mockReturnValue(Date.parse(now));
+	const id = seedIndexedMemory();
+	ensureVectorIndexReady(receiver, { configuredModel: "fixture" });
+	const embedding = receiver
+		.prepare("SELECT embedding FROM memory_vectors_v1 WHERE memory_id=?")
+		.pluck()
+		.get(BigInt(id)) as Buffer;
+	const modelsDdl = receiver
+		.prepare("SELECT sql FROM sqlite_schema WHERE name='validated_vector_models'")
+		.pluck()
+		.get() as string;
+	const models = receiver.prepare("SELECT * FROM validated_vector_models").all() as {
+		model_null: number;
+		model_key: string;
+		model: string | null;
+		count: number;
+	}[];
+	receiver.exec("DROP TABLE validated_vector_models");
+	const before = receiver.serialize();
+	const signed = packet(batch());
+	const receiveSigned = () =>
+		receiveRetirementBatch(receiver, signed, {
+			localDeviceId: recipient.deviceId,
+			peer: source,
+			peerFeatures: features,
+			now,
+		});
+
+	// Act / Assert: layout failure must abort source deletion, refs, nonce, and retirement receipt writes.
+	expect(receiveSigned).toThrow("vector_layout_inconsistent");
+	expect(receiver.inTransaction).toBe(false);
+	expect(receiver.serialize().equals(before)).toBe(true);
+	expectIndexedMemories([id]);
+	expect(
+		(
+			receiver
+				.prepare("SELECT embedding FROM memory_vectors_v1 WHERE memory_id=?")
+				.pluck()
+				.get(BigInt(id)) as Buffer
+		).equals(embedding),
+	).toBe(true);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_retirement_receipts").pluck().get()).toBe(0);
+	expect(isMemoryScopeRetired(receiver, control.entityId, "old")).toBe(false);
+
+	// Positive control: restore only the removed catalog table and retry the identical authenticated packet.
+	receiver.exec(modelsDdl);
+	const restoreModel =
+		receiver.prepare(`INSERT INTO validated_vector_models(model_null,model_key,model,count)
+	 VALUES (?,?,?,?)`);
+	for (const model of models)
+		restoreModel.run(model.model_null, model.model_key, model.model, model.count);
+	expect(receiveSigned).not.toThrow();
+	expectIndexedMemories([]);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_vectors_v1").pluck().get()).toBe(0);
+	expect(receiver.prepare("SELECT COUNT(*) FROM memory_retirement_receipts").pluck().get()).toBe(1);
+	expect(isMemoryScopeRetired(receiver, control.entityId, "old")).toBe(true);
 });
 
 it("rolls back the whole delivery when the final duplicate deletion fails and permits the same packet retry", async () => {
