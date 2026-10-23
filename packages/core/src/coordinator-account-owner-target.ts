@@ -130,10 +130,10 @@ export class AccountOwnerTargetOperations {
 			if (!validTarget(row)) return { kind: "unavailable" };
 			const review = await this.readReview(row, c.coordinatorId, identityId, s);
 			if (review === undefined) return { kind: "unavailable" };
-			// The normal active-reader may await key derivation. Recheck the target afterward.
-			if (!sameTarget(row, await this.backend.first<TargetRow>(statement)))
-				return { kind: "unavailable" };
 			if ((await readConnectionSchemaState(this.backend)) !== "ready")
+				return { kind: "unavailable" };
+			// Review and schema reads may yield. Make target validation the last awaited data read.
+			if (!sameTarget(row, await this.backend.first<TargetRow>(statement)))
 				return { kind: "unavailable" };
 			return {
 				kind: "ready",

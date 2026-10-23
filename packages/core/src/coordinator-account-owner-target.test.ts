@@ -463,6 +463,67 @@ for (const kind of ["SQLite", "D1"] as const) {
 			expect(snapshot(f)).toEqual(before);
 		});
 	}
+	for (const name of ["revoked controller", "disabled enrollment", "disconnected account"]) {
+		test(`${kind} rejects ${name} changed during final schema read`, async ({ fixture: f }) => {
+			const backend = backendFor(f, kind);
+			await seed(f, backend);
+			await seedReview(f);
+			let schemaReads = 0;
+			let changed: ReturnType<typeof snapshot> | undefined;
+			const interleaved: AuthLinkBackend = {
+				...backend,
+				first: async <T>(statement: AuthLinkStatement) => {
+					const result = await backend.first<T>(statement);
+					if (statement.sql.startsWith("SELECT min(column1) AS ready") && ++schemaReads === 2) {
+						if (name === "revoked controller") {
+							expect(
+								await f.store.revokeAuthControllerAttestation(f.cfg.coordinatorId, "laptop-review"),
+							).toBe(true);
+						} else {
+							await mutations[name]?.(f);
+						}
+						changed = snapshot(f);
+					}
+					return result;
+				},
+			};
+			const result = await new AccountOwnerTargetOperations(
+				interleaved,
+				f.store,
+			).readAccountOwnerTarget(input, f.cfg);
+			expect(schemaReads).toBe(2);
+			expect(changed).toBeDefined();
+			expect(snapshot(f)).toEqual(changed);
+			expect(result).toEqual(unavailable);
+		});
+	}
+	for (const message of ["no such table: connection_missing", "database unavailable"]) {
+		test(`${kind} preserves final schema error handling for ${message}`, async ({ fixture: f }) => {
+			const backend = backendFor(f, kind);
+			await seed(f, backend);
+			let schemaReads = 0;
+			const failing: AuthLinkBackend = {
+				...backend,
+				first: async <T>(statement: AuthLinkStatement) => {
+					if (statement.sql.startsWith("SELECT min(column1) AS ready") && ++schemaReads === 2)
+						throw new Error(message);
+					return backend.first<T>(statement);
+				},
+			};
+			const before = snapshot(f);
+			const result = new AccountOwnerTargetOperations(failing, f.store).readAccountOwnerTarget(
+				input,
+				f.cfg,
+			);
+			if (message.startsWith("no such table")) {
+				await expect(result).resolves.toEqual(unavailable);
+			} else {
+				await expect(result).rejects.toThrow("account_owner_target_unavailable");
+			}
+			expect(schemaReads).toBe(2);
+			expect(snapshot(f)).toEqual(before);
+		});
+	}
 	for (const [name, changes] of Object.entries({
 		group: { signer: { ...signer, groupId: "other-group" } },
 		device: { signer: { ...signer, deviceId: "other-device" } },
