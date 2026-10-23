@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import {
 	controllerLinkEvidenceSql,
@@ -497,6 +501,55 @@ for (const kind of ["SQLite", "D1"] as const) {
 			expect(result).toEqual(unavailable);
 		});
 	}
+	for (const ddl of [
+		"DROP TRIGGER account_change_birth",
+		"DROP TABLE coordinator_account_change_attempts",
+	]) {
+		test(`${kind} rejects concurrent ${ddl} before final target execution`, async ({
+			fixture: f,
+		}) => {
+			await seed(f, backendFor(f, kind));
+			await seedReview(f);
+			const directory = mkdtempSync(join(tmpdir(), "owner-target-schema-"));
+			try {
+				const path = join(directory, "coordinator.sqlite");
+				await f.db.backup(path);
+				const db = new Database(path);
+				const writer = new Database(path);
+				try {
+					const shared = { ...f, db };
+					const backend = backendFor(shared, kind);
+					let targetReads = 0;
+					let changed: ReturnType<typeof snapshot> | undefined;
+					const interleaved: AuthLinkBackend = {
+						...backend,
+						first: async <T>(statement: AuthLinkStatement) => {
+							if (statement.sql.startsWith("SELECT l.link_id") && ++targetReads === 2) {
+								expect(() => writer.exec(ddl)).not.toThrow();
+								changed = snapshot(shared);
+								return backend.first<T>(statement);
+							}
+							return backend.first<T>(statement);
+						},
+					};
+					const result = await new AccountOwnerTargetOperations(
+						interleaved,
+						f.store,
+					).readAccountOwnerTarget(input, f.cfg);
+					expect(targetReads).toBe(2);
+					expect(changed).toBeDefined();
+					expect(snapshot(shared)).toEqual(changed);
+					expect(await readConnectionSchemaState(backend)).toBe("upgrade_required");
+					expect(result).toEqual(unavailable);
+				} finally {
+					writer.close();
+					db.close();
+				}
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
 	for (const message of ["no such table: connection_missing", "database unavailable"]) {
 		test(`${kind} preserves final schema error handling for ${message}`, async ({ fixture: f }) => {
 			const backend = backendFor(f, kind);
@@ -521,6 +574,40 @@ for (const kind of ["SQLite", "D1"] as const) {
 				await expect(result).rejects.toThrow("account_owner_target_unavailable");
 			}
 			expect(schemaReads).toBe(2);
+			expect(snapshot(f)).toEqual(before);
+		});
+	}
+	for (const message of [
+		"no such table: connection_missing",
+		"no such column: connection_missing",
+		"malformed database schema",
+		"database unavailable",
+	]) {
+		test(`${kind} preserves final snapshot error handling for ${message}`, async ({
+			fixture: f,
+		}) => {
+			const backend = backendFor(f, kind);
+			await seed(f, backend);
+			let targetReads = 0;
+			const failing: AuthLinkBackend = {
+				...backend,
+				first: async <T>(statement: AuthLinkStatement) => {
+					if (statement.sql.startsWith("SELECT l.link_id") && ++targetReads === 2)
+						throw new Error(message);
+					return backend.first<T>(statement);
+				},
+			};
+			const before = snapshot(f);
+			const result = new AccountOwnerTargetOperations(failing, f.store).readAccountOwnerTarget(
+				input,
+				f.cfg,
+			);
+			if (message === "database unavailable") {
+				await expect(result).rejects.toThrow("account_owner_target_unavailable");
+			} else {
+				await expect(result).resolves.toEqual(unavailable);
+			}
+			expect(targetReads).toBe(2);
 			expect(snapshot(f)).toEqual(before);
 		});
 	}

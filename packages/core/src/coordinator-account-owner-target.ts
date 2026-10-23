@@ -1,10 +1,14 @@
-import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import {
+	ACCOUNT_CONNECTION_SCHEMA_READINESS_SQL,
+	isIncompleteConnectionSchemaError,
+	readConnectionSchemaState,
+} from "./coordinator-account-connection-schema.js";
 import { CONNECTION_NOT_REVOKED_SQL } from "./coordinator-account-connection-storage.js";
 import {
 	type CoordinatorAuthControllerStore,
 	isAuthControllerId,
 } from "./coordinator-auth-controller.js";
-import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type {
 	CoordinatorAuthLinkConfig,
 	CoordinatorAuthLinkSigner,
@@ -86,6 +90,21 @@ function sameTarget(a: TargetRow, b: TargetRow | null): boolean {
 	);
 }
 
+async function readSchemaReadyTarget(
+	backend: Pick<AuthLinkBackend, "first">,
+	statement: AuthLinkStatement,
+): Promise<TargetRow | null> {
+	try {
+		return await backend.first<TargetRow>({
+			...statement,
+			sql: `${statement.sql} AND (${ACCOUNT_CONNECTION_SCHEMA_READINESS_SQL})=1`,
+		});
+	} catch (error) {
+		if (isIncompleteConnectionSchemaError(error)) return null;
+		throw error;
+	}
+}
+
 /** Trusted store read only. Future callers MUST authenticate the admin first.
  * A ready result is advisory, not approval to adopt a profile or mutate an account.
  * Null enrollment labels are accepted for review, never treated as ownership proof.
@@ -132,8 +151,8 @@ export class AccountOwnerTargetOperations {
 			if (review === undefined) return { kind: "unavailable" };
 			if ((await readConnectionSchemaState(this.backend)) !== "ready")
 				return { kind: "unavailable" };
-			// Review and schema reads may yield. Make target validation the last awaited data read.
-			if (!sameTarget(row, await this.backend.first<TargetRow>(statement)))
+			// Review and schema reads may yield. Recheck both schema and target in one final snapshot.
+			if (!sameTarget(row, await readSchemaReadyTarget(this.backend, statement)))
 				return { kind: "unavailable" };
 			return {
 				kind: "ready",

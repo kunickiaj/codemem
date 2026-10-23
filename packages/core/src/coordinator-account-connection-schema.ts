@@ -151,7 +151,14 @@ currentChecks.push(
 	`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE ${reservedObjects} AND name NOT IN (${[...definitions, ...newDefinitions].map((d) => quote(d.name)).join(",")}))`,
 );
 const readySql = readiness(currentChecks);
+/** Scalar readiness query for reads that must check schema and data in one snapshot. */
+export const ACCOUNT_CONNECTION_SCHEMA_READINESS_SQL = readySql;
 export const ACCOUNT_CONNECTION_SCHEMA_CHECKS = currentChecks;
+export function isIncompleteConnectionSchemaError(error: unknown): boolean {
+	return /no such (?:table|column)|has no column named|malformed (?:database )?schema/i.test(
+		String(error),
+	);
+}
 export type ConnectionSchemaState = "v2" | "ready" | "upgrade_required";
 export async function readConnectionSchemaState(
 	backend: Pick<AuthLinkBackend, "first">,
@@ -166,12 +173,7 @@ export async function readConnectionSchemaState(
 			? "ready"
 			: "upgrade_required";
 	} catch (error) {
-		if (
-			!/no such (?:table|column)|has no column named|malformed (?:database )?schema/i.test(
-				String(error),
-			)
-		)
-			throw error;
+		if (!isIncompleteConnectionSchemaError(error)) throw error;
 		return "upgrade_required";
 	} // Missing tables/columns are an incomplete extension, not V2.
 }
