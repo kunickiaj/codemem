@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { RefQueryResult } from "./ref-queries.js";
-import { tryUpdateRetrievalDelivery } from "./retrieval-ledger.js";
+import {
+	type RetrievalLedgerWriteOutcome,
+	tryUpdateRetrievalDelivery,
+} from "./retrieval-ledger.js";
 import {
 	type RetrievalSurfaceRecordInput,
 	recordRetrievalSurface,
@@ -39,6 +42,10 @@ export interface FileContextRunnerOptions {
 	/** Caller owns the store lifetime; skipped attempts can also acquire it for the ledger. */
 	getStore: () => Pick<MemoryStore, "db" | "findByFile">;
 	sourceSessionId: string | null;
+	requestId?: string;
+	/** Transports acknowledge only after the host output has been written. */
+	deferDelivery?: boolean;
+	onRecorded?: (outcome: RetrievalLedgerWriteOutcome) => void;
 	ledgerEnabled?: () => boolean;
 	findByFile?: (
 		relativePath: string,
@@ -90,22 +97,25 @@ function recordAttempt(context: RunnerContext, input: AttemptInput): void {
 			streamId: context.sourceSessionId,
 			sourceSessionId: context.sourceSessionId,
 			mode: "claude_pre_tool_use_read",
+			...(context.requestId ? { requestId: context.requestId } : {}),
 		};
 		if (context.recordAttempt) {
 			context.recordAttempt(ledgerInput);
 			return;
 		}
 		const store = context.getStore();
-		recordRetrievalSurface(store.db, {
+		const outcome = recordRetrievalSurface(store.db, {
 			...ledgerInput,
 			sessionId: resolveRetrievalSession(store.db, "claude", context.sourceSessionId),
 		});
+		context.onRecorded?.(outcome);
 	} catch {
 		// Resolving or writing the ledger must not affect hook output.
 	}
 }
 
 function updateDelivery(context: RunnerContext, status: "handed_off" | "failed"): void {
+	if (status === "handed_off" && context.deferDelivery) return;
 	if (context.ledgerEnabled?.() === false) return;
 	try {
 		if (context.updateDelivery) {

@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
 	createFileContextRunner,
+	FILE_CONTEXT_TRANSPORT_MAX_BYTES,
+	FILE_CONTEXT_TRANSPORT_PROFILE,
 	type FileContextResult,
 	MemoryStore,
 	type RefQueryResult,
@@ -10,12 +12,13 @@ import {
 	resolveDbPath,
 	resolveHookProject,
 } from "@codemem/core";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
+import { runClaudeFileContextTransport } from "./claude-hook-file-context-transport.js";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 
-type FileContextOpts = DbOpts;
+type FileContextOpts = DbOpts & { transportProfile?: boolean; transport?: boolean };
 
 type FileContextDeps = {
 	queryByFile?: (
@@ -229,12 +232,23 @@ const claudeHookFileContextCmd = new Command("claude-hook-file-context")
 	);
 
 addDbOption(claudeHookFileContextCmd);
+claudeHookFileContextCmd.addOption(new Option("--transport-profile").hideHelp());
+claudeHookFileContextCmd.addOption(new Option("--transport").hideHelp());
 
 export const claudeHookFileContextCommand = claudeHookFileContextCmd.action(
 	async (opts: FileContextOpts) => {
+		if (opts.transportProfile) {
+			process.stdout.write(`${JSON.stringify(FILE_CONTEXT_TRANSPORT_PROFILE)}\n`);
+			return;
+		}
 		let raw = "";
 		for await (const chunk of process.stdin) {
 			raw += String(chunk);
+			if (opts.transport && Buffer.byteLength(raw) > FILE_CONTEXT_TRANSPORT_MAX_BYTES) {
+				emitError({ error: "parse_error", message: "transport payload too large" });
+				process.exitCode = 1;
+				return;
+			}
 		}
 		const trimmed = raw.trim();
 		if (!trimmed) {
@@ -257,9 +271,21 @@ export const claudeHookFileContextCommand = claudeHookFileContextCmd.action(
 			return;
 		}
 
-		const result = await buildClaudeFileContext(payload, opts);
-		emitJson(result);
+		await emitFileContext(payload, opts);
 	},
 );
+
+async function emitFileContext(payload: Record<string, unknown>, opts: FileContextOpts) {
+	try {
+		if (opts.transport) {
+			process.stdout.write(`${JSON.stringify(runClaudeFileContextTransport(payload, opts))}\n`);
+			return;
+		}
+		emitJson(await buildClaudeFileContext(payload, opts));
+	} catch {
+		emitError({ error: "file_context_failed", message: "file context unavailable" });
+		process.exitCode = 1;
+	}
+}
 
 export type { FileContextResult };

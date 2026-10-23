@@ -31,6 +31,7 @@ import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
+import { fileContextRoutes } from "./routes/file-context.js";
 import { healthRoutes } from "./routes/health.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { memoryToolRoutes } from "./routes/memory-tools.js";
@@ -268,6 +269,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", memoryToolRoutes(storeFactory));
 	app.route("/", packTransportRoutes(storeFactory));
+	app.route("/", fileContextRoutes(storeFactory));
 	app.route(
 		"/",
 		observerStatusRoutes({

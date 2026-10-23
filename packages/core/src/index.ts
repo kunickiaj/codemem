@@ -540,6 +540,13 @@ export type {
 	FileContextSkip,
 } from "./file-context.js";
 export { createFileContextRunner } from "./file-context.js";
+export type { FileContextTransportRequest } from "./file-context-transport.js";
+export {
+	dispatchFileContextTransport,
+	FILE_CONTEXT_TRANSPORT_MAX_BYTES,
+	FILE_CONTEXT_TRANSPORT_PROFILE,
+	parseFileContextTransportRequest,
+} from "./file-context-transport.js";
 export {
 	buildFilterBranchesWithContext,
 	buildFilterClauses,
