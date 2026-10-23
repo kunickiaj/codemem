@@ -371,7 +371,185 @@ describe("cleanup rechecks inside the writer transaction", () => {
 	});
 });
 
+describe("cleanup ownership across runner handoffs", () => {
+	it.each(
+		["between-batches", "accepted-cleanup", "committed-cutover"].flatMap((handoff) =>
+			["same-start", "new-start"].flatMap((owner) =>
+				[true, false].map((cleanupPending) => ({ handoff, owner, cleanupPending })),
+			),
+		),
+	)(
+		"does not adopt a replacement at $handoff ($owner, pending=$cleanupPending)",
+		async ({ handoff, owner, cleanupPending }) => {
+			// Arrange: 251 stale rows force the old cleanup runner to yield after its first batch.
+			db.transaction(() => {
+				for (let index = 0; index < 250; index++) vector(db, "old-model");
+			})();
+			if (handoff !== "committed-cutover")
+				completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+					metadata: { ...job()?.metadata, cleanup_pending: true },
+				});
+			const readOwner = () =>
+				writer
+					.prepare("SELECT * FROM maintenance_jobs WHERE kind = ?")
+					.get(VECTOR_MODEL_MIGRATION_JOB);
+			let replacement: unknown;
+			let deletes = 0;
+			let validated = false;
+			const replaceOwner = () => {
+				updateMaintenanceJob(writer, VECTOR_MODEL_MIGRATION_JOB, {
+					message: "Replacement owns all subsequent cleanup",
+					metadata: {
+						...job()?.metadata,
+						cleanup_pending: cleanupPending,
+						removed_stale_rows: 700,
+						stale_scan_exhausted: true,
+						stale_scan_exhausted_max_rowid: 9001,
+						queue_revision: 87,
+						pending_upsert_memory_ids: [],
+						pending_delete_memory_ids: [],
+					},
+				});
+				if (owner === "new-start")
+					writer
+						.prepare("UPDATE maintenance_jobs SET started_at = ? WHERE kind = ?")
+						.run("2099-01-01", VECTOR_MODEL_MIGRATION_JOB);
+				replacement = readOwner();
+			};
+			const prepare = db.prepare.bind(db);
+			vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+				if (sql.includes("vector-cutover-exact-metadata") && db.inTransaction) validated = true;
+				const statement = prepare(sql);
+				if (sql === "DELETE FROM memory_vectors WHERE rowid = ?") {
+					const run = statement.run.bind(statement);
+					statement.run = (...args: unknown[]) => {
+						deletes++;
+						return run(...args);
+					};
+				}
+				return statement;
+			});
+			const transaction = db.transaction.bind(db);
+			vi.spyOn(db, "transaction").mockImplementation((fn) => {
+				const native = transaction(fn);
+				return Object.assign((...args: unknown[]) => native(...args), {
+					default: native.default,
+					deferred: native.deferred,
+					exclusive: native.exclusive,
+					immediate: (...args: unknown[]) => {
+						const before = deletes;
+						validated = false;
+						const result = native.immediate(...args);
+						if (replacement) return result;
+						const batchRecorded =
+							before === 250 && deletes === 250 && job()?.metadata.removed_stale_rows === 250;
+						const firstHandoff = validated && deletes === 0 && job()?.status === "completed";
+						const ready = handoff === "between-batches" ? batchRecorded : firstHandoff;
+						if (ready) replaceOwner();
+						return result;
+					},
+				});
+			});
+			// Act: replace only after the native validation/result transaction has committed.
+			await runVectorMigrationPass(db);
+			// Assert: first-handoff replacements permit no DELETE; inter-batch replacements permit only batch one.
+			expect(replacement).toBeDefined();
+			expect.soft(deletes).toBe(handoff === "between-batches" ? 250 : 0);
+			expect(readOwner()).toEqual(replacement);
+		},
+	);
+});
+
 describe("cleanup ownership after an unlocked fence check", () => {
+	it.each(
+		["before-delete", "after-delete"].flatMap((timing) =>
+			["started_at", "metadata", "message"].flatMap((change) =>
+				[true, false].map((cleanupPending) => ({ timing, change, cleanupPending })),
+			),
+		),
+	)(
+		"preserves the exact cleanup owner replaced $timing ($change, pending=$cleanupPending)",
+		async ({ timing, change, cleanupPending }) => {
+			// Arrange: retain distinctive counters, queue and watermark on a same-target owner.
+			updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+				metadata: {
+					...job()?.metadata,
+					cleanup_pending: true,
+					removed_stale_rows: 73,
+					stale_scan_exhausted: true,
+					stale_scan_exhausted_max_rowid: 999,
+					queue_revision: 23,
+					pending_upsert_memory_ids: [],
+					pending_delete_memory_ids: [],
+				},
+			});
+			completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+			const readOwner = () =>
+				writer
+					.prepare("SELECT * FROM maintenance_jobs WHERE kind = ?")
+					.get(VECTOR_MODEL_MIGRATION_JOB);
+			let replacement: unknown;
+			let deletes = 0;
+			const replaceOwner = () => {
+				if (replacement) return;
+				const metadata = { ...job()?.metadata, cleanup_pending: cleanupPending };
+				if (change === "metadata")
+					Object.assign(metadata, { removed_stale_rows: 91, stale_scan_exhausted_max_rowid: 4321 });
+				updateMaintenanceJob(writer, VECTOR_MODEL_MIGRATION_JOB, {
+					metadata,
+					...(change === "message" ? { message: "Replacement cleanup owner" } : {}),
+				});
+				if (change === "started_at")
+					writer
+						.prepare("UPDATE maintenance_jobs SET started_at = ? WHERE kind = ?")
+						.run("2099-01-01", VECTOR_MODEL_MIGRATION_JOB);
+				replacement = readOwner();
+			};
+			const prepare = db.prepare.bind(db);
+			const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+				const statement = prepare(sql);
+				if (timing === "before-delete" && sql.includes("vector-stale-scan-rowids")) {
+					const all = statement.all.bind(statement);
+					statement.all = (...args: unknown[]) => {
+						const rows = all(...args);
+						if (rows.length) replaceOwner();
+						return rows;
+					};
+				}
+				if (sql === "DELETE FROM memory_vectors WHERE rowid = ?") {
+					const run = statement.run.bind(statement);
+					statement.run = (...args: unknown[]) => {
+						deletes++;
+						return run(...args);
+					};
+				}
+				return statement;
+			});
+			const transaction = db.transaction.bind(db);
+			const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((fn) => {
+				const native = transaction(fn);
+				return Object.assign((...args: unknown[]) => native(...args), {
+					default: native.default,
+					deferred: native.deferred,
+					exclusive: native.exclusive,
+					immediate: (...args: unknown[]) => {
+						const result = native.immediate(...args);
+						if (timing === "after-delete" && deletes > 0) replaceOwner();
+						return result;
+					},
+				});
+			});
+			// Act: the independent WAL writer commits outside the native DELETE transaction.
+			await runVectorMigrationPass(db);
+			prepareSpy.mockRestore();
+			transactionSpy.mockRestore();
+			// Assert: no stale counts, flags, message, watermark or queue may reach the replacement.
+			expect(replacement, `${timing}/${change}/${cleanupPending}`).toBeDefined();
+			expect.soft(deletes).toBe(timing === "after-delete" ? 1 : 0);
+			expect(readOwner(), `${timing}/${change}/${cleanupPending}`).toEqual(replacement);
+		},
+	);
+
 	it("does not complete a newly queued job when a corpus edit defers old cleanup", async () => {
 		// Arrange: the other writer queues work after the old cleanup-job check,
 		// but before the unlocked corpus fence detects the body edit.

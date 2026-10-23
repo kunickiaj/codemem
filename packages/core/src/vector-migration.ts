@@ -644,7 +644,10 @@ function nextMigrationMetadata(
 	};
 }
 
-type StaleDeleteOptions = { requireCleanupJob?: boolean; checkFence?: () => string | null };
+type StaleDeleteOptions = {
+	cleanupOwner?: { job: MigrationJob };
+	checkFence?: () => string | null;
+};
 
 type CurrentStaleRow = { rowid: number; memoryId: number | null };
 
@@ -710,7 +713,7 @@ function deleteCheckedStaleRows(
 ): { deleted: number; retainedFallback: boolean } {
 	return db
 		.transaction(() => {
-			if (options.requireCleanupJob && !isCurrentCleanupJob(db, targetModel))
+			if (options.cleanupOwner && !isCurrentCleanupJob(db, targetModel, options.cleanupOwner))
 				return { deleted: 0, retainedFallback: false };
 			if (options.checkFence?.()) return { deleted: 0, retainedFallback: true };
 			const current = collectCurrentStaleRows(db, rowIds, targetModel, signal);
@@ -815,13 +818,18 @@ function deleteStaleModelVectors(
 	};
 }
 
-function isCurrentCleanupJob(db: SqliteDatabase, targetModel: string): boolean {
+function isCurrentCleanupJob(
+	db: SqliteDatabase,
+	targetModel: string,
+	expectedOwner?: { job: MigrationJob },
+): boolean {
 	const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 	const metadata = (job?.metadata ?? {}) as MigrationMetadata;
 	return (
 		job?.status === "completed" &&
 		metadata.target_model === targetModel &&
-		pendingQueuedSyncCount(metadata) === 0
+		pendingQueuedSyncCount(metadata) === 0 &&
+		(expectedOwner === undefined || JSON.stringify(job) === JSON.stringify(expectedOwner.job))
 	);
 }
 
@@ -901,7 +909,7 @@ function writeValidatedCutover(
 	progress: CutoverProgress,
 	validation: VectorCutoverValidation,
 	shouldStop?: () => boolean,
-): boolean {
+): MigrationJob {
 	const retryReason = validation.retryReason();
 	if (retryReason || shouldStop?.()) {
 		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
@@ -913,13 +921,13 @@ function writeValidatedCutover(
 				cutover_retry_count: Number(progress.metadata.cutover_retry_count ?? 0) + 1,
 			},
 		});
-		return false;
+		return null;
 	}
 	if (validation.uncovered > 0) {
 		writeCutoverFailure(db, progress, validation.uncovered);
-		return false;
+		return null;
 	}
-	completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+	return completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
 		...progress,
 		message: "Finished re-indexing; removing stale vectors",
 		metadata: {
@@ -931,7 +939,6 @@ function writeValidatedCutover(
 			uncovered_target_memories: undefined,
 		},
 	});
-	return true;
 }
 
 function commitMigrationCutover(
@@ -943,7 +950,7 @@ function commitMigrationCutover(
 		validation: VectorCutoverValidation;
 		shouldStop?: () => boolean;
 	},
-): CutoverProgress | null {
+): (CutoverProgress & { cleanupJob: NonNullable<MigrationJob> }) | null {
 	return db
 		.transaction(() => {
 			const latest = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
@@ -973,9 +980,13 @@ function commitMigrationCutover(
 				});
 				return null;
 			}
-			return writeValidatedCutover(db, progress, options.validation, options.shouldStop)
-				? progress
-				: null;
+			const cleanupJob = writeValidatedCutover(
+				db,
+				progress,
+				options.validation,
+				options.shouldStop,
+			);
+			return cleanupJob ? { ...progress, cleanupJob } : null;
 		})
 		.immediate();
 }
@@ -1007,6 +1018,7 @@ async function finalizeMigrationCutover(
 		if (!committed) return;
 		validation.noteOwnWrites();
 		await drainStaleModelVectors(db, targetModel, {
+			expectedJob: committed.cleanupJob,
 			validation,
 			previouslyRemoved: Number(committed.metadata.removed_stale_rows ?? 0),
 			prunedTargetRows: 0,
@@ -1110,44 +1122,46 @@ function recordResumedCleanupResult(
 	db: SqliteDatabase,
 	targetModel: string,
 	options: {
+		expectedJob: MigrationJob;
 		cleanup: { deleted: number; exhausted: boolean; scannedMaxRowId: number | null };
 		validation: VectorCutoverValidation;
 		previouslyRemoved: number;
 		prunedTargetRows: number;
 	},
-): boolean {
-	let cleanupCompleted = false;
-	db.transaction(() => {
-		if (!isCurrentCleanupJob(db, targetModel)) return;
-		const latestJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
-		const latestMetadata = (latestJob?.metadata ?? {}) as MigrationMetadata;
-		const newlyRemoved = options.prunedTargetRows + options.cleanup.deleted;
-		const removed = mergedRemovedRows(latestMetadata, options.previouslyRemoved, newlyRemoved);
-		const retryReason =
-			options.validation.corpusRetryReason() ??
-			(options.cleanup.exhausted ? options.validation.metadataRetryReason() : null);
-		cleanupCompleted = options.cleanup.exhausted && !retryReason;
-		const exhaustedMaxRowId = cleanupCompleted ? options.cleanup.scannedMaxRowId : null;
-		const message = cleanupResultMessage({
-			completed: cleanupCompleted,
-			removed,
-			retryReason,
-			cleanup: options.cleanup,
-		});
-		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
-			status: "completed",
-			message,
-			metadata: {
-				...latestMetadata,
-				removed_stale_rows: removed,
-				cleanup_pending: !cleanupCompleted,
-				stale_scan_exhausted: cleanupCompleted || undefined,
-				stale_scan_exhausted_max_rowid: exhaustedMaxRowId ?? undefined,
-				reconciliation_target_coverage_complete: undefined,
-			},
-		});
-	}).immediate();
-	return cleanupCompleted;
+): { completed: boolean; job: NonNullable<MigrationJob> } | null {
+	return db
+		.transaction(() => {
+			if (!isCurrentCleanupJob(db, targetModel, { job: options.expectedJob })) return null;
+			const latestJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+			const latestMetadata = (latestJob?.metadata ?? {}) as MigrationMetadata;
+			const newlyRemoved = options.prunedTargetRows + options.cleanup.deleted;
+			const removed = mergedRemovedRows(latestMetadata, options.previouslyRemoved, newlyRemoved);
+			const retryReason =
+				options.validation.corpusRetryReason() ??
+				(options.cleanup.exhausted ? options.validation.metadataRetryReason() : null);
+			const cleanupCompleted = options.cleanup.exhausted && !retryReason;
+			const exhaustedMaxRowId = cleanupCompleted ? options.cleanup.scannedMaxRowId : null;
+			const message = cleanupResultMessage({
+				completed: cleanupCompleted,
+				removed,
+				retryReason,
+				cleanup: options.cleanup,
+			});
+			const job = updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, {
+				status: "completed",
+				message,
+				metadata: {
+					...latestMetadata,
+					removed_stale_rows: removed,
+					cleanup_pending: !cleanupCompleted,
+					stale_scan_exhausted: cleanupCompleted || undefined,
+					stale_scan_exhausted_max_rowid: exhaustedMaxRowId ?? undefined,
+					reconciliation_target_coverage_complete: undefined,
+				},
+			});
+			return job ? { completed: cleanupCompleted, job } : null;
+		})
+		.immediate();
 }
 
 async function yieldToCleanupInterrupts(): Promise<void> {
@@ -1166,6 +1180,7 @@ async function drainStaleModelVectors(
 	db: SqliteDatabase,
 	targetModel: string,
 	options: {
+		expectedJob: MigrationJob;
 		validation: VectorCutoverValidation;
 		previouslyRemoved: number;
 		prunedTargetRows: number;
@@ -1174,9 +1189,10 @@ async function drainStaleModelVectors(
 	},
 ): Promise<boolean> {
 	let prunedTargetRows = options.prunedTargetRows;
+	let expectedJob = options.expectedJob;
 	while (true) {
-		const cleanupJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
-		if (!isCurrentCleanupJob(db, targetModel)) return false;
+		const cleanupJob = expectedJob;
+		if (!isCurrentCleanupJob(db, targetModel, { job: cleanupJob })) return false;
 		const reason = options.validation.corpusRetryReason();
 		if (reason) {
 			deferCompletedCleanup(
@@ -1199,18 +1215,21 @@ async function drainStaleModelVectors(
 			return false;
 		}
 		const cleanup = deleteStaleModelVectors(db, targetModel, options.signal, {
-			requireCleanupJob: true,
+			cleanupOwner: { job: cleanupJob },
 			checkFence: options.validation.corpusRetryReason,
 		});
 		options.validation.noteOwnWrites();
-		const cleanupCompleted = recordResumedCleanupResult(db, targetModel, {
+		const recorded = recordResumedCleanupResult(db, targetModel, {
+			expectedJob: cleanupJob,
 			cleanup,
 			validation: options.validation,
 			previouslyRemoved: options.previouslyRemoved,
 			prunedTargetRows,
 		});
 		options.validation.noteOwnWrites();
-		if (cleanupCompleted) return true;
+		if (!recorded) return false;
+		expectedJob = recorded.job;
+		if (recorded.completed) return true;
 		if (cleanupShouldPause(options)) return false;
 		if (cleanup.deleted === 0) return false;
 		prunedTargetRows = 0;
@@ -1310,6 +1329,7 @@ async function finishCompletedCleanupPass(
 		}
 
 		const cleanupCompleted = await drainStaleModelVectors(db, targetModel, {
+			expectedJob: originalJob,
 			validation,
 			previouslyRemoved,
 			prunedTargetRows,
