@@ -38,6 +38,31 @@ export interface AccountOwnerAssociation {
 	reviewDigest: string;
 }
 
+export type AccountOwnerProfilePins = Pick<
+	AccountOwnerAssociation,
+	| "databaseFile"
+	| "deviceId"
+	| "keyId"
+	| "fingerprint"
+	| "actorId"
+	| "coordinatorUrl"
+	| "coordinatorId"
+	| "groupId"
+>;
+
+type AssociationOptions = { expectedProfilePins?: AccountOwnerProfilePins };
+const PIN_FIELDS = [
+	"databaseFile",
+	"deviceId",
+	"keyId",
+	"fingerprint",
+	"actorId",
+	"coordinatorUrl",
+	"coordinatorId",
+	"groupId",
+] as const;
+const REVIEW_FIELDS = ["ownerIdentityId", "attestationId", "reviewDigest"] as const;
+
 function invalidAssociation(): never {
 	throw new Error("account_owner_association_invalid");
 }
@@ -46,7 +71,10 @@ function hash(value: string | Uint8Array): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
-function profilePins(profile: AccountOwnerProfile) {
+/** Local context only, not authority. Does not inspect the running actor or its config. */
+export function captureAccountOwnerProfilePins(
+	profile: AccountOwnerProfile,
+): AccountOwnerProfilePins {
 	const origin = normalizeCoordinatorAccountLinkOrigin(profile.coordinatorUrl);
 	const key = parseSshEd25519PublicKey(profile.publicKey);
 	if (
@@ -56,6 +84,7 @@ function profilePins(profile: AccountOwnerProfile) {
 		!isAuthControllerId(profile.deviceId) ||
 		!isAuthControllerId(profile.groupId) ||
 		!isAuthControllerId(profile.coordinatorId) ||
+		typeof profile.fingerprint !== "string" ||
 		!/^[a-f0-9]{64}$/.test(profile.fingerprint)
 	)
 		return invalidAssociation();
@@ -71,33 +100,63 @@ function profilePins(profile: AccountOwnerProfile) {
 	};
 }
 
-function associationPath(profile: AccountOwnerProfile): string {
-	const origin = normalizeCoordinatorAccountLinkOrigin(profile.coordinatorUrl);
-	if (!origin || !isAuthControllerId(profile.groupId)) return invalidAssociation();
-	const scope = hash(JSON.stringify([origin, profile.coordinatorId, profile.groupId])).slice(0, 32);
-	return `${resolve(profile.dbPath)}.account-owner-${scope}.json`;
+const profilePins = captureAccountOwnerProfilePins;
+
+function ownData(value: unknown, fields: readonly string[]): Record<string, unknown> {
+	if (!value || typeof value !== "object") return invalidAssociation();
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) return invalidAssociation();
+	const descriptors = Object.getOwnPropertyDescriptors(value);
+	if (Reflect.ownKeys(descriptors).length !== fields.length) return invalidAssociation();
+	return Object.fromEntries(
+		fields.map((field) => {
+			const descriptor = descriptors[field];
+			if (!Object.hasOwn(descriptors, field) || !descriptor || !("value" in descriptor))
+				return invalidAssociation();
+			return [field, descriptor.value];
+		}),
+	);
 }
 
-function captureAssociation(
-	value: Record<string, unknown>,
-	profile: AccountOwnerProfile,
-): AccountOwnerAssociation {
-	const pins = profilePins(profile);
-	const fields = [
-		"version",
-		...Object.keys(pins),
-		"ownerIdentityId",
-		"attestationId",
-		"reviewDigest",
-	];
+function captureStoredPins(value: Record<string, unknown>): AccountOwnerProfilePins {
 	if (
-		Object.keys(value).length !== fields.length ||
-		fields.some((field) => !Object.hasOwn(value, field)) ||
+		typeof value.databaseFile !== "string" ||
+		!/^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$/.test(value.databaseFile) ||
+		!isAuthControllerId(value.deviceId) ||
+		!isAuthControllerId(value.actorId) ||
+		!isAuthControllerId(value.coordinatorId) ||
+		!isAuthControllerId(value.groupId) ||
+		typeof value.keyId !== "string" ||
+		!/^[a-f0-9]{64}$/.test(value.keyId) ||
+		typeof value.fingerprint !== "string" ||
+		!/^[a-f0-9]{64}$/.test(value.fingerprint) ||
+		typeof value.coordinatorUrl !== "string" ||
+		normalizeCoordinatorAccountLinkOrigin(value.coordinatorUrl) !== value.coordinatorUrl
+	)
+		return invalidAssociation();
+	return {
+		databaseFile: value.databaseFile,
+		deviceId: value.deviceId,
+		keyId: value.keyId,
+		fingerprint: value.fingerprint,
+		actorId: value.actorId,
+		coordinatorUrl: value.coordinatorUrl,
+		coordinatorId: value.coordinatorId,
+		groupId: value.groupId,
+	};
+}
+
+function pinsMatch(value: AccountOwnerProfilePins, expected: AccountOwnerProfilePins): boolean {
+	return PIN_FIELDS.every((field) => value[field] === expected[field]);
+}
+
+function captureStoredAssociation(input: unknown): AccountOwnerAssociation {
+	const value = ownData(input, ["version", ...PIN_FIELDS, ...REVIEW_FIELDS]);
+	const pins = captureStoredPins(value);
+	if (
 		value.version !== 1 ||
-		Object.entries(pins).some(([field, expected]) => value[field] !== expected) ||
 		!isAuthControllerId(value.ownerIdentityId) ||
-		typeof value.attestationId !== "string" ||
-		!/^controller-v1:[a-f0-9]{64}$/.test(value.attestationId) ||
+		!isAuthControllerId(value.attestationId) ||
 		typeof value.reviewDigest !== "string" ||
 		!/^[a-f0-9]{64}$/.test(value.reviewDigest)
 	)
@@ -111,10 +170,101 @@ function captureAssociation(
 	};
 }
 
-/** Read without initializing the database, changing the actor, or granting access. */
+function associationPath(profile: AccountOwnerProfile): string {
+	const origin = normalizeCoordinatorAccountLinkOrigin(profile.coordinatorUrl);
+	if (!origin || !isAuthControllerId(profile.groupId)) return invalidAssociation();
+	const scope = hash(JSON.stringify([origin, profile.coordinatorId, profile.groupId])).slice(0, 32);
+	return `${resolve(profile.dbPath)}.account-owner-${scope}.json`;
+}
+
+function captureAssociation(
+	value: Record<string, unknown>,
+	profile: AccountOwnerProfile,
+): AccountOwnerAssociation {
+	const record = captureStoredAssociation(value);
+	if (!pinsMatch(record, profilePins(profile))) return invalidAssociation();
+	return record;
+}
+
+type GenerationContext = {
+	dbPath: string;
+	pins: AccountOwnerProfilePins;
+	legacyPath: string;
+	path: string;
+};
+
+function captureGeneration(profile: AccountOwnerProfile, expected: unknown): GenerationContext {
+	const expectedPins = captureStoredPins(ownData(expected, PIN_FIELDS));
+	const dbPath = resolve(profile.dbPath);
+	const pins = profilePins({ ...profile, dbPath });
+	if (!pinsMatch(pins, expectedPins)) return invalidAssociation();
+	const scope = hash(JSON.stringify([pins.coordinatorUrl, pins.coordinatorId, pins.groupId])).slice(
+		0,
+		32,
+	);
+	const base = `${dbPath}.account-owner-${scope}`;
+	return {
+		dbPath,
+		pins,
+		legacyPath: `${base}.json`,
+		path: `${base}-${hash(JSON.stringify(pins))}.json`,
+	};
+}
+
+function assertGenerationCurrent(profile: AccountOwnerProfile, context: GenerationContext): void {
+	try {
+		if (resolve(profile.dbPath) === context.dbPath && pinsMatch(profilePins(profile), context.pins))
+			return;
+	} catch {
+		// A missing or newly unsafe database also invalidates the captured context.
+	}
+	throw new Error("account_owner_association_context_changed_outcome_unknown");
+}
+
+function readStoredAssociation(path: string): AccountOwnerAssociation | null {
+	try {
+		lstatSync(path);
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+			return null;
+		return invalidAssociation();
+	}
+	try {
+		const stat = lstatSync(path);
+		if (typeof process.getuid === "function" && stat.uid !== process.getuid())
+			return invalidAssociation();
+		return captureStoredAssociation(readOwnerState(path));
+	} catch {
+		return invalidAssociation();
+	}
+}
+
+function readGeneration(context: GenerationContext): AccountOwnerAssociation | null {
+	// A valid current record must never hide malformed or unsafe older evidence.
+	const legacy = readStoredAssociation(context.legacyPath);
+	const exact = readStoredAssociation(context.path);
+	if (exact) {
+		if (!pinsMatch(exact, context.pins)) return invalidAssociation();
+		return exact;
+	}
+	if (legacy && pinsMatch(legacy, context.pins)) return legacy;
+	return null;
+}
+
+/**
+ * Read without initializing the database, changing the actor, or granting access.
+ * Expected pins opt trusted local callers into exact generations; omitted pins keep legacy behavior.
+ */
 export function readAccountOwnerAssociation(
 	profile: AccountOwnerProfile,
+	options?: AssociationOptions,
 ): AccountOwnerAssociation | null {
+	if (options?.expectedProfilePins !== undefined) {
+		const context = captureGeneration(profile, options.expectedProfilePins);
+		const record = readGeneration(context);
+		assertGenerationCurrent(profile, context);
+		return record;
+	}
 	const path = associationPath(profile);
 	try {
 		lstatSync(path);
@@ -133,12 +283,25 @@ export function readAccountOwnerAssociation(
 	}
 }
 
-/** Create-only publication after review; an exact retry never replaces prior owner evidence. */
+/**
+ * Create-only publication after review; an exact retry never replaces prior owner evidence.
+ * Generation checks cover this profile object and the DB file, not runtime actor/config state.
+ * A future recovery service must check that state before and after calling this helper.
+ * Pathname replacement and restoration between checks is not detected atomically.
+ */
 export function retainAccountOwnerAssociation(
 	profile: AccountOwnerProfile,
 	input: Pick<AccountOwnerAssociation, "ownerIdentityId" | "attestationId" | "reviewDigest">,
+	options?: AssociationOptions,
 ): AccountOwnerAssociation {
-	const record = captureAssociation({ version: 1, ...profilePins(profile), ...input }, profile);
+	const review = ownData(input, REVIEW_FIELDS);
+	if (options?.expectedProfilePins !== undefined)
+		return retainGeneration(
+			profile,
+			review,
+			captureGeneration(profile, options.expectedProfilePins),
+		);
+	const record = captureAssociation({ version: 1, ...profilePins(profile), ...review }, profile);
 	const existing = readAccountOwnerAssociation(profile);
 	if (existing) {
 		if (JSON.stringify(existing) !== JSON.stringify(record)) return invalidAssociation();
@@ -155,5 +318,34 @@ export function retainAccountOwnerAssociation(
 	const retained = readAccountOwnerAssociation(profile);
 	if (!retained || JSON.stringify(retained) !== JSON.stringify(record)) return invalidAssociation();
 	syncOwnerProfileDirectory(dirname(associationPath(profile)));
+	return retained;
+}
+
+function retainGeneration(
+	profile: AccountOwnerProfile,
+	review: Record<string, unknown>,
+	context: GenerationContext,
+): AccountOwnerAssociation {
+	const record = captureStoredAssociation({ version: 1, ...context.pins, ...review });
+	const existing = readGeneration(context);
+	assertGenerationCurrent(profile, context);
+	if (existing) {
+		if (JSON.stringify(existing) !== JSON.stringify(record)) return invalidAssociation();
+		syncOwnerProfileDirectory(dirname(context.path));
+		assertGenerationCurrent(profile, context);
+		return existing;
+	}
+	try {
+		retainOwnerState(context.path, record);
+	} catch (error) {
+		// Publication may already be visible. Never remove evidence on an ambiguous failure.
+		if (!error || typeof error !== "object" || !("code" in error) || error.code !== "EEXIST")
+			return invalidAssociation();
+	}
+	assertGenerationCurrent(profile, context);
+	const retained = readGeneration(context);
+	if (!retained || JSON.stringify(retained) !== JSON.stringify(record)) return invalidAssociation();
+	syncOwnerProfileDirectory(dirname(context.path));
+	assertGenerationCurrent(profile, context);
 	return retained;
 }

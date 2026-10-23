@@ -163,7 +163,7 @@ describe("proposed account owner context (not remote authority)", () => {
 describe("account owner association validation", () => {
 	it.each([
 		{ ownerIdentityId: "" },
-		{ attestationId: "unsigned-review" },
+		{ attestationId: "unsigned\nreview" },
 		{ reviewDigest: "B".repeat(64) },
 		{ reviewDigest: "short" },
 	])("rejects invalid review input %j before creating state", (change) => {
@@ -189,7 +189,7 @@ describe("account owner association validation", () => {
 		{ coordinatorId: "other-coordinator" },
 		{ groupId: "other-group" },
 		{ ownerIdentityId: "" },
-		{ attestationId: "controller-v1:invalid" },
+		{ attestationId: " controller-v1:invalid" },
 		{ reviewDigest: "invalid" },
 	])("rejects malformed or mismatched retained fields %j", (change) => {
 		// Arrange

@@ -10,6 +10,8 @@ export const VERSION = "0.47.0-beta.3";
 export {
 	type AccountOwnerAssociation,
 	type AccountOwnerProfile,
+	type AccountOwnerProfilePins,
+	captureAccountOwnerProfilePins,
 	readAccountOwnerAssociation,
 } from "./account-owner-association.js";
 export * as Api from "./api-types.js";
