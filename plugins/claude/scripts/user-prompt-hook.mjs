@@ -26,18 +26,18 @@ const MAX_QUERY_CHARS = 500;
 const MAX_QUERY_FILE_BASENAMES = 5;
 const MAX_WORKING_SET_PATHS = 8;
 const MAX_WORKING_SET_PATH_CHARS = 512;
-const PROMPT_TRANSPORT_PROTOCOL_RANGE = Object.freeze({
+export const PROMPT_TRANSPORT_PROTOCOL_RANGE = Object.freeze({
 	minSupportedProtocolVersion: 1,
 	protocolVersion: 1,
 });
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDirectory = dirname(scriptPath);
 
-function isRecord(value) {
+export function isRecord(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isTruthy(value) {
+export function isTruthy(value) {
 	return ["1", "true", "yes", "on"].includes(
 		String(value ?? "")
 			.trim()
@@ -45,7 +45,7 @@ function isTruthy(value) {
 	);
 }
 
-function isEnabled(value) {
+export function isEnabled(value) {
 	return !["0", "false", "off"].includes(
 		String(value ?? "")
 			.trim()
@@ -58,7 +58,7 @@ function parsePositiveInt(value, fallback) {
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function expandHome(value, env = process.env) {
+export function expandHome(value, env = process.env) {
 	if (value === "~") return env.HOME?.trim() || homedir();
 	if (value.startsWith("~/")) return join(env.HOME?.trim() || homedir(), value.slice(2));
 	return value;
@@ -159,7 +159,7 @@ function errorCode(body) {
 		: null;
 }
 
-function classifyHttpFailure({
+export function classifyHttpFailure({
 	status = null,
 	body = null,
 	malformed = false,
@@ -224,13 +224,14 @@ async function responseJson(response) {
 	}
 }
 
-async function readViewerProfile({
+export async function readViewerProfile({
 	fetchImpl,
 	env,
 	expectedDbPath,
 	expectedIdentity,
 	protocolRange,
 	timeoutSignal,
+	readJson = responseJson,
 }) {
 	const baseUrl = viewerBaseUrl(env);
 	if (!baseUrl) {
@@ -246,7 +247,7 @@ async function readViewerProfile({
 	} catch {
 		return { ok: false, disposition: "fallback" };
 	}
-	const body = await responseJson(response);
+	const body = await readJson(response);
 	if (response.status >= 300 && response.status < 400) {
 		return { ok: false, disposition: "fallback" };
 	}
@@ -441,7 +442,7 @@ function inferProjectFromCwd(cwd, env) {
 	}
 }
 
-function resolveProject(payload, env) {
+export function resolveProject(payload, env) {
 	return (
 		normalizeProjectLabel(env.CODEMEM_PROJECT) ??
 		inferProjectFromCwd(payload.cwd, env) ??
@@ -841,10 +842,10 @@ export async function runClaudeUserPromptHook(raw, overrides = {}) {
 	);
 }
 
-function isMainModule(argvPath = process.argv[1]) {
+export function isMainModule(argvPath = process.argv[1], modulePath = scriptPath) {
 	if (!argvPath) return false;
 	try {
-		return realpathSync(resolve(argvPath)) === realpathSync(scriptPath);
+		return realpathSync(resolve(argvPath)) === realpathSync(modulePath);
 	} catch {
 		return false;
 	}

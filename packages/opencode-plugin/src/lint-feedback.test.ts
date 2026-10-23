@@ -391,6 +391,7 @@ describe("lint feedback configured paths", () => {
 			"packages/ui/scripts/visual-*.mjs",
 			"plugins/claude/scripts/ingest-hook.mjs",
 			"plugins/claude/scripts/user-prompt-hook.mjs",
+			"plugins/claude/scripts/pre-read-hook.mjs",
 			"plugins/codex/scripts/ingest-hook.mjs",
 			"plugins/codex/scripts/user-prompt-hook.mjs",
 			"scripts/ci-workflow.test.mjs",

@@ -162,6 +162,7 @@ function isConfiguredLintPath(relativePath: string): boolean {
 	if (/^packages\/ui\/playwright[^/]*\.config\.ts$/.test(relativePath)) return true;
 	if (/^packages\/ui\/visual\/.+\.ts$/.test(relativePath)) return true;
 	if (/^packages\/ui\/scripts\/visual-[^/]*\.mjs$/.test(relativePath)) return true;
+	if (relativePath === "plugins/claude/scripts/pre-read-hook.mjs") return true;
 	if (
 		/^plugins\/(?:claude|codex)\/scripts\/(?:ingest-hook|user-prompt-hook)\.mjs$/.test(relativePath)
 	)
