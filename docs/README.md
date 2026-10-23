@@ -15,6 +15,7 @@
 - [Architecture decisions](adr/): durable decisions and their consequences.
 - [Authenticated Identity and live-relay boundaries](adr/0004-authenticated-identity-and-live-relay-boundaries.md): accepted boundaries and open implementation gates.
 - [Contracts](contracts/): interface contracts, including the adapter event schema and fixtures.
+- [Local account-owner associations](contracts/account-owner-associations.md): exact generation storage, filesystem identity, and historical lookup limits.
 - [UI patterns](design/): reusable interaction and presentation patterns.
 - [Viewer component styling](ui-components.md): shared controls, variants, and gallery visual checks.
 - [Design history](plans/): active designs and explicitly historical decisions, not current setup instructions.

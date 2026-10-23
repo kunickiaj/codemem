@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	existsSync,
 	fstatSync,
 	fsyncSync,
 	linkSync,
 	lstatSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -13,7 +15,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -41,12 +43,17 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>();
+	return { ...actual, homedir: vi.fn(actual.homedir) };
+});
 const review = {
 	ownerIdentityId: "owner-a",
 	attestationId: `controller-v1:${"a".repeat(64)}`,
 	reviewDigest: "b".repeat(64),
 };
 let directory: string;
+let home: string;
 let profile: AccountOwnerProfile;
 
 function legacyPath(p = profile): string {
@@ -57,9 +64,11 @@ function legacyPath(p = profile): string {
 	return `${resolve(p.dbPath)}.account-owner-${scope}.json`;
 }
 function records(): string[] {
-	return readdirSync(directory)
-		.filter((name) => name.includes(".account-owner-") && name.endsWith(".json"))
-		.map((name) => join(directory, name))
+	const state = join(home, ".codemem", "account-owner-associations");
+	return [directory, state]
+		.filter((path) => existsSync(path))
+		.flatMap((path) => readdirSync(path).map((name) => join(path, name)))
+		.filter((path) => path.includes(".account-owner-") && path.endsWith(".json"))
 		.sort();
 }
 function snapshot(path: string) {
@@ -78,6 +87,8 @@ function alternateKey(): string {
 }
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "owner-generations-"));
+	home = mkdtempSync(join(tmpdir(), "owner-generation-home-"));
+	vi.mocked(homedir).mockReturnValue(home);
 	profile = {
 		dbPath: join(directory, "profile.sqlite"),
 		deviceId: "device-c",
@@ -105,6 +116,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	rmSync(directory, { recursive: true, force: true });
+	rmSync(home, { recursive: true, force: true });
 });
 
 describe("captured owner profile metadata, not remote authority", () => {
@@ -252,14 +264,23 @@ describe("filesystem-safe generation names and historical lookup", () => {
 		expect(snapshot(profile.dbPath)).toEqual(original);
 	});
 
-	it.each(["profile.sqlite", "a".repeat(138)])(
-		"reads and retries a prior %s generation without rewriting it",
-		(name) => {
+	it.each([
+		["original", "profile.sqlite"],
+		["original", "a".repeat(138)],
+		["basename hash", "a".repeat(255)],
+	])(
+		"reads a prior %s generation for %s and publishes a stable copy without rewriting it",
+		(layout, name) => {
 			profile.dbPath = join(directory, name);
 			writeFileSync(profile.dbPath, "synthetic database", { mode: 0o600 });
 			const expectedProfilePins = captureAccountOwnerProfilePins(profile);
 			const digest = createHash("sha256").update(JSON.stringify(expectedProfilePins)).digest("hex");
-			const path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			let path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			if (layout === "basename hash")
+				path = path.replace(
+					resolve(profile.dbPath),
+					join(directory, createHash("sha256").update(name).digest("hex")),
+				);
 			const record = { version: 1, ...expectedProfilePins, ...review };
 			writeFileSync(path, JSON.stringify(record), { mode: 0o600 });
 			const before = snapshot(path);
@@ -273,13 +294,17 @@ describe("filesystem-safe generation names and historical lookup", () => {
 					options,
 				),
 			).toThrow();
-			expect(records()).toEqual([path]);
+			expect(records()).toContain(path);
+			expect(records()).toHaveLength(2);
 			expect(snapshot(path)).toEqual(before);
-			expect(linkSync).not.toHaveBeenCalled();
+			expect(linkSync).toHaveBeenCalledTimes(1);
+			const alias = join(directory, "alias.sqlite");
+			actualFs.linkSync(profile.dbPath, alias);
+			expect(readAccountOwnerAssociation({ ...profile, dbPath: alias }, options)).toEqual(record);
 		},
 	);
 
-	it("retains a matching long-basename legacy fallback without migration", () => {
+	it("copies a matching long-basename legacy fallback into stable state without rewriting it", () => {
 		profile.dbPath = join(directory, "a".repeat(203));
 		writeFileSync(profile.dbPath, "synthetic database", { mode: 0o600 });
 		const expectedProfilePins = captureAccountOwnerProfilePins(profile);
@@ -288,8 +313,133 @@ describe("filesystem-safe generation names and historical lookup", () => {
 		const before = snapshot(legacyPath());
 		expect(readAccountOwnerAssociation(profile, { expectedProfilePins })).toEqual(record);
 		expect(retainAccountOwnerAssociation(profile, review, { expectedProfilePins })).toEqual(record);
-		expect(records()).toEqual([legacyPath()]);
+		expect(records()).toContain(legacyPath());
+		expect(records()).toHaveLength(2);
 		expect(snapshot(legacyPath())).toEqual(before);
+	});
+});
+
+describe("generation identity independent of database pathname", () => {
+	it.each(["rename", "same-directory hardlink", "cross-directory hardlink"])(
+		"finds the same immutable review after %s",
+		(change) => {
+			const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+			const retained = retainAccountOwnerAssociation(profile, review, options);
+			const before = records().map(snapshot);
+			const destination = join(directory, "other", "alias.sqlite");
+			mkdirSync(join(directory, "other"));
+			const alias =
+				change === "same-directory hardlink" ? join(directory, "alias.sqlite") : destination;
+			if (change === "rename") renameSync(profile.dbPath, alias);
+			else actualFs.linkSync(profile.dbPath, alias);
+			profile.dbPath = alias;
+			expect(captureAccountOwnerProfilePins(profile)).toEqual(options.expectedProfilePins);
+			expect(readAccountOwnerAssociation(profile, options)).toEqual(retained);
+			expect(retainAccountOwnerAssociation(profile, review, options)).toEqual(retained);
+			expect(() =>
+				retainAccountOwnerAssociation(
+					profile,
+					{ ...review, ownerIdentityId: "other-owner" },
+					options,
+				),
+			).toThrow();
+			expect(records().map(snapshot)).toEqual(before);
+		},
+	);
+
+	it("publishes when a valid DB and legacy sidecar fit but adjacent generation staging exceeds PATH_MAX", () => {
+		// macOS PATH_MAX is 1024; Linux is 4096. Keep every component below NAME_MAX.
+		const pathMax = process.platform === "darwin" ? 1024 : 4096;
+		let deep = directory;
+		const targetBytes = pathMax - 205;
+		while (Buffer.byteLength(deep) < targetBytes) {
+			const remaining = targetBytes - Buffer.byteLength(deep) - 1;
+			if (remaining < 1) break;
+			deep = join(deep, "d".repeat(Math.min(100, remaining)));
+			mkdirSync(deep);
+		}
+		profile.dbPath = join(deep, "db");
+		writeFileSync(profile.dbPath, "synthetic deep database", { mode: 0o600 });
+		// Prove the historical path is accessible, not merely that DB creation succeeded.
+		const old = retainAccountOwnerAssociation(profile, review);
+		profile.actorId = "new-actor";
+		const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+		const before = snapshot(legacyPath());
+		const scope = createHash("sha256")
+			.update(JSON.stringify([profile.coordinatorUrl, profile.coordinatorId, profile.groupId]))
+			.digest("hex")
+			.slice(0, 32);
+		const digest = createHash("sha256")
+			.update(JSON.stringify(options.expectedProfilePins))
+			.digest("hex");
+		const adjacent = join(
+			deep,
+			`${createHash("sha256").update("db").digest("hex")}.account-owner-${scope}-${digest}.json`,
+		);
+		expect(Buffer.byteLength(adjacent)).toBeLessThan(pathMax);
+		expect(() =>
+			actualFs.closeSync(actualFs.openSync(`${adjacent}.tmp-${"0".repeat(36)}`, "wx", 0o600)),
+		).toThrow(expect.objectContaining({ code: "ENAMETOOLONG" }));
+		const retained = retainAccountOwnerAssociation(profile, review, options);
+		expect(retained.ownerIdentityId).toBe(old.ownerIdentityId);
+		expect(readAccountOwnerAssociation(profile, options)).toEqual(retained);
+		expect(snapshot(legacyPath())).toEqual(before);
+	});
+});
+
+describe("private per-user generation directory", () => {
+	it("does not create state directories during capture or read", () => {
+		const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+		expect(readAccountOwnerAssociation(profile, options)).toBeNull();
+		expect(readdirSync(home)).toEqual([]);
+	});
+
+	it.each(["symlink", "permissions", "parent permissions", "foreign uid"])(
+		"rejects %s state directories without rewriting retained evidence",
+		(fault) => {
+			const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+			retainAccountOwnerAssociation(profile, review, options);
+			const state = join(home, ".codemem", "account-owner-associations");
+			const path = records()[0];
+			const before = snapshot(path);
+			if (fault === "permissions") chmodSync(state, 0o755);
+			if (fault === "parent permissions") chmodSync(join(home, ".codemem"), 0o777);
+			if (fault === "symlink") {
+				renameSync(state, `${state}.original`);
+				symlinkSync(`${state}.original`, state);
+			}
+			if (fault === "foreign uid")
+				vi.mocked(lstatSync).mockImplementation(((path, options) => {
+					const stat = actualFs.lstatSync(path, options);
+					if (String(path) === state)
+						Object.defineProperty(stat, "uid", {
+							value: typeof stat.uid === "bigint" ? stat.uid + 1n : stat.uid + 1,
+						});
+					return stat;
+				}) as typeof lstatSync);
+			expect(() => readAccountOwnerAssociation(profile, options)).toThrow();
+			expect(() => retainAccountOwnerAssociation(profile, review, options)).toThrow();
+			expect(snapshot(path)).toEqual(before);
+		},
+	);
+
+	it("resyncs new directory ancestors after a failed mkdir durability check", () => {
+		const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
+		vi.mocked(fsyncSync).mockImplementationOnce(() => {
+			throw new Error("synthetic ancestor fsync failure");
+		});
+		expect(() => retainAccountOwnerAssociation(profile, review, options)).toThrow();
+		expect(records()).toEqual([]);
+		expect(linkSync).not.toHaveBeenCalled();
+		const synced: string[] = [];
+		// Inspect real directory identities rather than replacing fsync with a success stub.
+		vi.mocked(fsyncSync).mockImplementation((fd) => {
+			actualFs.fsyncSync(fd);
+			if (fstatSync(fd).isDirectory()) synced.push(String(fstatSync(fd).ino));
+		});
+		retainAccountOwnerAssociation(profile, review, options);
+		expect(synced).toContain(String(actualFs.lstatSync(home).ino));
+		expect(synced).toContain(String(actualFs.lstatSync(join(home, ".codemem")).ino));
 	});
 });
 
@@ -410,14 +560,26 @@ describe("explicit generations with unchanged legacy callers", () => {
 });
 
 describe("strict validation of legacy evidence in generation mode", () => {
-	it.each(["malformed", "wrong pins", "conflicting review", "permissions", "symlink"])(
-		"rejects %s prior-generation evidence even when the new generation is valid",
-		(fault) => {
+	it.each(
+		["original", "basename hash"].flatMap((layout) =>
+			["malformed", "wrong pins", "conflicting review", "permissions", "symlink"].map((fault) => ({
+				layout,
+				fault,
+			})),
+		),
+	)(
+		"rejects unsafe prior-generation evidence %j even when the new generation is valid",
+		({ layout, fault }) => {
 			const expectedProfilePins = captureAccountOwnerProfilePins(profile);
 			const options = { expectedProfilePins };
 			const retained = retainAccountOwnerAssociation(profile, review, options);
 			const digest = createHash("sha256").update(JSON.stringify(expectedProfilePins)).digest("hex");
-			const path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			let path = legacyPath().replace(/\.json$/, `-${digest}.json`);
+			if (layout === "basename hash")
+				path = path.replace(
+					resolve(profile.dbPath),
+					join(directory, createHash("sha256").update(basename(profile.dbPath)).digest("hex")),
+				);
 			let record = { ...retained };
 			if (fault === "wrong pins") record = { ...record, actorId: "wrong-actor" };
 			if (fault === "conflicting review") record = { ...record, ownerIdentityId: "other-owner" };
@@ -586,7 +748,7 @@ describe("generation publication and retry durability", () => {
 		retainAccountOwnerAssociation(profile, review, options);
 		events.push("returned");
 		// Assert
-		expect(events[0]).toBe("file synced");
+		expect(events).toContain("file synced");
 		expect(events.indexOf("exclusive publication")).toBeGreaterThan(events.indexOf("file synced"));
 		expect(events.at(-2)).toBe("directory synced");
 		expect(events.at(-1)).toBe("returned");
@@ -674,7 +836,6 @@ describe("generation publication and retry durability", () => {
 		(change) => {
 			// Arrange: this is one injected swap, not a hostile replace-and-restore atomicity claim.
 			const options = { expectedProfilePins: captureAccountOwnerProfilePins(profile) };
-			const originalPath = profile.dbPath;
 			const alternatePath = join(directory, "alternate.sqlite");
 			if (change === "selected path")
 				writeFileSync(alternatePath, "synthetic alternate database", { mode: 0o600 });
@@ -687,11 +848,9 @@ describe("generation publication and retry durability", () => {
 			// Act / Assert
 			expect(() => retainAccountOwnerAssociation(profile, review, options)).toThrow();
 			expect(records()).toHaveLength(1);
-			expect(
-				records()[0].startsWith(
-					join(directory, createHash("sha256").update(basename(originalPath)).digest("hex")),
-				),
-			).toBe(true);
+			expect(records()[0].startsWith(join(home, ".codemem", "account-owner-associations"))).toBe(
+				true,
+			);
 			expect(JSON.parse(readFileSync(records()[0], "utf8"))).toEqual({
 				version: 1,
 				...options.expectedProfilePins,

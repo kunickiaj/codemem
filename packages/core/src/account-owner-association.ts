@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import {
+	accountOwnerAssociationDirectory,
+	readAccountOwnerAssociationDirectory,
+	retainAccountOwnerAssociationDirectory,
+} from "./account-owner-association-directory.js";
 import { normalizeCoordinatorAccountLinkOrigin } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { parseSshEd25519PublicKey } from "./coordinator-ed25519-key-id.js";
@@ -190,7 +195,7 @@ type GenerationContext = {
 	dbPath: string;
 	pins: AccountOwnerProfilePins;
 	legacyPath: string;
-	previousPath: string;
+	previousPaths: string[];
 	path: string;
 };
 
@@ -205,14 +210,14 @@ function captureGeneration(profile: AccountOwnerProfile, expected: unknown): Gen
 	);
 	const base = `${dbPath}.account-owner-${scope}`;
 	const generation = hash(JSON.stringify(pins));
-	// Hash the DB basename so the final name and its .tmp-UUID staging name fit NAME_MAX.
-	const boundedBase = join(dirname(dbPath), `${hash(basename(dbPath))}.account-owner-${scope}`);
+	const basenameBase = join(dirname(dbPath), `${hash(basename(dbPath))}.account-owner-${scope}`);
 	return {
 		dbPath,
 		pins,
 		legacyPath: `${base}.json`,
-		previousPath: `${base}-${generation}.json`,
-		path: `${boundedBase}-${generation}.json`,
+		previousPaths: [`${base}-${generation}.json`, `${basenameBase}-${generation}.json`],
+		// All pins, including dev:ino, determine one per-user location regardless of DB aliases.
+		path: join(accountOwnerAssociationDirectory(), `.account-owner-${generation}.json`),
 	};
 }
 
@@ -250,19 +255,25 @@ function readStoredAssociation(
 	}
 }
 
-function readGeneration(context: GenerationContext): AccountOwnerAssociation | null {
+type StoredGeneration = { record: AccountOwnerAssociation; path: string };
+
+function readGeneration(context: GenerationContext): StoredGeneration | null {
 	// A valid current record must never hide malformed or unsafe older evidence.
 	const legacy = readStoredAssociation(context.legacyPath, { historicalPath: true });
-	const previous = readStoredAssociation(context.previousPath, { historicalPath: true });
-	if (previous && !pinsMatch(previous, context.pins)) return invalidAssociation();
-	const exact = readStoredAssociation(context.path);
-	if (exact) {
-		if (!pinsMatch(exact, context.pins)) return invalidAssociation();
-		if (previous && JSON.stringify(previous) !== JSON.stringify(exact)) return invalidAssociation();
-		return exact;
+	let found: StoredGeneration | null = null;
+	const paths = [...context.previousPaths];
+	if (readAccountOwnerAssociationDirectory(dirname(context.path))) paths.push(context.path);
+	for (const path of paths) {
+		const record = readStoredAssociation(path, { historicalPath: path !== context.path });
+		if (!record) continue;
+		if (!pinsMatch(record, context.pins)) return invalidAssociation();
+		if (found && JSON.stringify(found.record) !== JSON.stringify(record))
+			return invalidAssociation();
+		found = { record, path };
 	}
-	if (previous) return previous;
-	if (legacy && pinsMatch(legacy, context.pins)) return legacy;
+	if (found) return found;
+	if (legacy && pinsMatch(legacy, context.pins))
+		return { record: legacy, path: context.legacyPath };
 	return null;
 }
 
@@ -278,7 +289,7 @@ export function readAccountOwnerAssociation(
 		const context = captureGeneration(profile, options.expectedProfilePins);
 		const record = readGeneration(context);
 		assertGenerationCurrent(profile, context);
-		return record;
+		return record?.record ?? null;
 	}
 	const path = associationPath(profile);
 	try {
@@ -344,11 +355,14 @@ function retainGeneration(
 	const record = captureStoredAssociation({ version: 1, ...context.pins, ...review });
 	const existing = readGeneration(context);
 	assertGenerationCurrent(profile, context);
-	if (existing) {
-		if (JSON.stringify(existing) !== JSON.stringify(record)) return invalidAssociation();
+	if (existing && JSON.stringify(existing.record) !== JSON.stringify(record))
+		return invalidAssociation();
+	retainAccountOwnerAssociationDirectory(dirname(context.path));
+	assertGenerationCurrent(profile, context);
+	if (existing?.path === context.path) {
 		syncOwnerProfileDirectory(dirname(context.path));
 		assertGenerationCurrent(profile, context);
-		return existing;
+		return existing.record;
 	}
 	try {
 		retainOwnerState(context.path, record);
@@ -359,8 +373,9 @@ function retainGeneration(
 	}
 	assertGenerationCurrent(profile, context);
 	const retained = readGeneration(context);
-	if (!retained || JSON.stringify(retained) !== JSON.stringify(record)) return invalidAssociation();
+	if (!retained || JSON.stringify(retained.record) !== JSON.stringify(record))
+		return invalidAssociation();
 	syncOwnerProfileDirectory(dirname(context.path));
 	assertGenerationCurrent(profile, context);
-	return retained;
+	return retained.record;
 }
