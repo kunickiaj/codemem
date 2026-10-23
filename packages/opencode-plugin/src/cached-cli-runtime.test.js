@@ -34,6 +34,8 @@ let bin;
 let entry;
 let runtime;
 let originalEnv;
+let warningLogged;
+let resolveWarningLogged;
 const processResult = ({ stdout = "ok", exitCode = 0 } = {}) => {
 	const child = new EventEmitter();
 	child.stdout = new EventEmitter();
@@ -77,13 +79,21 @@ const createRuntime = async () => {
 	const { createCodememRuntime } = await import("../.opencode/lib/runtime.js");
 	runtime = await createCodememRuntime({
 		location: { project: { name: "fixture", root }, directory: root, worktree: root },
-		host: { log: vi.fn(async () => {}), notify: null },
+		host: {
+			log: vi.fn(async (message) => {
+				if (message.level === "warn") resolveWarningLogged(message);
+			}),
+			notify: null,
+		},
 	});
 	return runtime;
 };
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	warningLogged = new Promise((resolve) => {
+		resolveWarningLogged = resolve;
+	});
 	originalEnv = process.env;
 	root = realpathSync(mkdtempSync(join(tmpdir(), "codemem-cached-runtime-")));
 	bin = join(root, "bin");
@@ -149,8 +159,16 @@ test.each(["0.0.1", CROSS_CHANNEL])(
 		await createRuntime();
 		// Act
 		const result = await runtime.tools["mem-stats"].execute();
+		// CLI warnings write their error log before notifying the host. Disposal only
+		// drains deliveries, so join this callback before teardown deletes fixture HOME.
+		const warning = await warningLogged;
 		// Assert
 		expect(result).toContain("CLI runner unavailable");
+		expect(warning).toMatchObject({
+			level: "warn",
+			message: "codemem default CLI runner could not be reused",
+			extra: { reason: "channel_or_version_mismatch" },
+		});
 		expect(mocks.execFile.mock.calls.map(([command]) => command)).toEqual(["node", "npx"]);
 		expect(mocks.spawn).not.toHaveBeenCalled();
 	},
