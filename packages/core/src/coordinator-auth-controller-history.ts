@@ -74,8 +74,15 @@ export const CONTROLLER_HISTORY_CTE = `history_input AS MATERIALIZED (
  AND (EXISTS (
   SELECT 1 FROM json_each(c.parsed, '$.device_decisions') d
   WHERE json_extract(CASE WHEN d.type = 'object' THEN d.value ELSE '{}' END, '$.device_id') = json_extract(h.value, '$.deviceId')
-   OR json_extract(CASE WHEN d.type = 'object' THEN d.value ELSE '{}' END, '$.key_fingerprint')
-      IN (SELECT value FROM json_each(h.value, '$.fingerprints'))
+    OR json_extract(CASE WHEN d.type = 'object' THEN d.value ELSE '{}' END, '$.key_fingerprint')
+       IN (SELECT value FROM json_each(h.value, '$.fingerprints'))
+    OR ((d.type <> 'object'
+      OR json_type(CASE WHEN d.type = 'object' THEN d.value ELSE '{}' END, '$.device_id') IS NOT 'text'
+      OR json_type(CASE WHEN d.type = 'object' THEN d.value ELSE '{}' END, '$.key_fingerprint') IS NOT 'text')
+     AND (instr(CASE WHEN d.type = 'text' THEN json_quote(d.value) ELSE d.value END,
+      json_quote(json_extract(h.value, '$.deviceId'))) > 0
+      OR EXISTS (SELECT 1 FROM json_each(h.value, '$.fingerprints') f
+       WHERE instr(d.value, f.value) > 0)))
  ) OR ((json_valid(c.manifest_json) = 0 OR json_type(c.parsed, '$.device_decisions') IS NOT 'array') AND (
   instr(c.manifest_json, json_quote(json_extract(h.value, '$.deviceId'))) > 0
   OR EXISTS (SELECT 1 FROM json_each(h.value, '$.fingerprints') f
