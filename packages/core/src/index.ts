@@ -533,6 +533,13 @@ export {
 	SIMPLE_TIER_ANTHROPIC_DEFAULTS,
 	SIMPLE_TIER_DEFAULTS,
 } from "./extraction-tier-routing.js";
+export type {
+	FileContextRequest,
+	FileContextResult,
+	FileContextRunnerOptions,
+	FileContextSkip,
+} from "./file-context.js";
+export { createFileContextRunner } from "./file-context.js";
 export {
 	buildFilterBranchesWithContext,
 	buildFilterClauses,
