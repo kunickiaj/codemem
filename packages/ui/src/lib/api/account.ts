@@ -1,3 +1,16 @@
+import type {
+	RecoveryPreview,
+	RecoveryPreviewRequest,
+	RecoveryResult,
+	RecoverySelection,
+} from "../../tabs/account-owner-recovery-types";
+import {
+	type RecoveryProfileEnvelope,
+	validRecoveryEnvelope,
+	validRecoveryPreview,
+	validRecoveryResult,
+} from "./owner-recovery-validation";
+
 export type AccountIntent = "connect" | "refresh" | "disconnect";
 export type AccountOperation = {
 	intent?: AccountIntent;
@@ -79,6 +92,10 @@ export type AccountView = {
 };
 
 const ACCOUNT_ERROR_CODES = new Set([
+	"account_owner_recovery_invalid",
+	"account_owner_recovery_busy",
+	"account_owner_recovery_context_changed",
+	"account_owner_recovery_unavailable",
 	"account_local_viewer_required",
 	"account_request_rejected",
 	"account_csrf_invalid",
@@ -153,9 +170,17 @@ async function session(signal?: AbortSignal): Promise<string> {
 	return csrfToken;
 }
 
+type RecoveryConfirmation = { preview: RecoveryPreview; approvalDigest: string };
+type RecoveryImport = { selection: RecoverySelection; replyText: string };
+type AccountJsonBody =
+	| Record<string, string>
+	| RecoveryPreviewRequest
+	| RecoveryConfirmation
+	| RecoveryImport;
+
 async function request<T>(
 	path: string,
-	options: { method?: "POST"; body?: Record<string, string>; signal?: AbortSignal } = {},
+	options: { method?: "POST"; body?: AccountJsonBody; signal?: AbortSignal } = {},
 ): Promise<T> {
 	const send = (token: string) =>
 		fetch(path, {
@@ -191,6 +216,45 @@ export function getAccountStatus(groupId?: string, signal?: AbortSignal): Promis
 	return request(
 		`/api/account/link-status${groupId ? `?group_id=${encodeURIComponent(groupId)}` : ""}`,
 		{ signal },
+	);
+}
+function checkedRecovery<T>(value: unknown, validate: (value: unknown) => value is T): T {
+	if (!validate(value)) throw new AccountRequestError(0, "invalid_response");
+	return value;
+}
+export async function getOwnerRecoveryProfile(
+	signal?: AbortSignal,
+): Promise<RecoveryProfileEnvelope> {
+	return checkedRecovery(
+		await request("/api/account/owner-recovery", { signal }),
+		validRecoveryEnvelope,
+	);
+}
+export async function previewOwnerRecovery(
+	body: RecoveryPreviewRequest,
+	signal?: AbortSignal,
+): Promise<RecoveryPreview> {
+	return checkedRecovery(
+		await request("/api/account/owner-recovery/preview", { method: "POST", body, signal }),
+		validRecoveryPreview,
+	);
+}
+export async function confirmOwnerRecovery(
+	body: RecoveryConfirmation,
+	signal?: AbortSignal,
+): Promise<RecoveryResult> {
+	return checkedRecovery(
+		await request("/api/account/owner-recovery/confirm", { method: "POST", body, signal }),
+		validRecoveryResult,
+	);
+}
+export async function importOwnerRecoveryReply(
+	body: RecoveryImport,
+	signal?: AbortSignal,
+): Promise<RecoveryResult> {
+	return checkedRecovery(
+		await request("/api/account/owner-recovery/import", { method: "POST", body, signal }),
+		validRecoveryResult,
 	);
 }
 export function startAccountLink(
