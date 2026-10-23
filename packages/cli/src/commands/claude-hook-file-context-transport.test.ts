@@ -256,8 +256,8 @@ describe("real CLI transport entrypoint", () => {
 			expect(result.error).toBeUndefined();
 			expect(readdirSync(directory)).toEqual([]);
 			expect(result.status).toBe(1);
-			expect(result.stdout).toBe("");
-			expect(JSON.parse(result.stderr)).toEqual({
+			expect(result.stderr).toBe("");
+			expect(JSON.parse(result.stdout)).toEqual({
 				error: "parse_error",
 				message: "transport request required",
 			});
