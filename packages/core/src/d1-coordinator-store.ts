@@ -3502,7 +3502,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		const keyMetadata = await legacyOwnerKeyMetadata(
 			await allRows<{ public_key: string }>(
-				this.db.prepare(LEGACY_OWNER_KEYS_SQL).bind(manifestJson),
+				this.db.prepare(LEGACY_OWNER_KEYS_SQL).bind(manifestJson, normalizedGroupId),
 			),
 		);
 		const ownerValues = [manifestJson, normalizedGroupId, keyMetadata];

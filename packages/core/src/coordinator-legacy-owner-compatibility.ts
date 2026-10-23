@@ -23,8 +23,38 @@ export function legacyCompletionWriteResult(
 	};
 }
 
-export const LEGACY_OWNER_KEYS_SQL = `SELECT DISTINCT public_key FROM enrolled_devices
- WHERE EXISTS (SELECT 1 FROM json_each(?, '$.device_decisions')
+const completionJson = `CASE WHEN json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END`;
+
+/** Only requesters and ownership-bearing evidence need canonical-key inference.
+ * Keep discovery and the winning statement on the same sources: an ownerless
+ * enrollment becomes relevant if it acquires an owner or an included completion.
+ * Ledger bindings already carry canonical key IDs and need no text classification.
+ */
+const ownerSourceKeysSql = `legacy_owner_source_keys AS NOT MATERIALIZED (
+ SELECT e.public_key FROM legacy_owner_input p,
+ json_each(p.manifest, '$.device_decisions') d
+ JOIN enrolled_devices e ON e.group_id = p.group_id
+ AND e.device_id = json_extract(d.value, '$.device_id')
+ AND e.fingerprint = json_extract(d.value, '$.key_fingerprint') AND e.enabled = 1
+ WHERE json_extract(d.value, '$.decision') = 'included'
+ UNION
+ SELECT public_key FROM enrolled_devices WHERE identity_id IS NOT NULL
+ UNION
+ SELECT e.public_key FROM coordinator_legacy_team_completions c,
+ json_each(${completionJson}, '$.device_decisions') d, legacy_owner_input p
+ JOIN enrolled_devices e ON e.group_id = c.group_id
+ AND e.device_id = json_extract(d.value, '$.device_id')
+ AND e.fingerprint = json_extract(d.value, '$.key_fingerprint')
+ WHERE json_extract(${completionJson}, '$.coordinator_id') = json_extract(p.manifest, '$.coordinator_id')
+ AND json_extract(d.value, '$.decision') = 'included'
+)`;
+
+/** Bind canonical manifest JSON, then target group. */
+export const LEGACY_OWNER_KEYS_SQL = `WITH legacy_owner_input(manifest, group_id) AS (
+ VALUES (?, ?)
+), ${ownerSourceKeysSql}
+ SELECT public_key FROM legacy_owner_source_keys
+ WHERE EXISTS (SELECT 1 FROM legacy_owner_input p, json_each(p.manifest, '$.device_decisions')
  WHERE json_extract(value, '$.decision') = 'included')
  ORDER BY public_key LIMIT ${MAX_KEYS + 1}`;
 
@@ -60,8 +90,8 @@ export async function legacyOwnerKeyMetadata(
 }
 
 /** Bind canonical manifest JSON, target group, then server-derived key metadata.
- * Every enrollment is re-read at INSERT time. Reject newly introduced text keys
- * rather than letting an unclassified alias evade a canonical-key comparison.
+ * Ownership-bearing enrollments are re-read at INSERT time. Reject newly relevant
+ * text keys rather than letting an unclassified alias evade a canonical-key comparison.
  * Materialize the size-limited key metadata and requested rows so correlated
  * owner checks reuse them instead of repeatedly expanding their JSON inputs.
  * Join requested enrollments directly by group/device; a left-joined enrollment
@@ -69,7 +99,7 @@ export async function legacyOwnerKeyMetadata(
  */
 export const LEGACY_OWNER_INPUT_SQL = `WITH legacy_owner_input(manifest, group_id, keys) AS (
  VALUES (?, ?, ?)
-), legacy_owner_keys AS MATERIALIZED (
+ ), ${ownerSourceKeysSql}, legacy_owner_keys AS MATERIALIZED (
  SELECT json_extract(value, '$.public_key') AS public_key,
  json_extract(value, '$.key_id') AS key_id,
  json_extract(value, '$.fingerprint') AS fingerprint
@@ -93,10 +123,8 @@ export const LEGACY_OWNER_INPUT_SQL = `WITH legacy_owner_input(manifest, group_i
 // Missing/changed enrollment evidence is unavailable, not an inferred owner clash.
 export const LEGACY_OWNER_SOURCE_CURRENT_SQL = `(NOT EXISTS (SELECT 1 FROM legacy_owner_requested)
  OR (NOT EXISTS (
- SELECT public_key FROM enrolled_devices EXCEPT SELECT public_key FROM legacy_owner_keys
+ SELECT public_key FROM legacy_owner_source_keys EXCEPT SELECT public_key FROM legacy_owner_keys
 ) AND NOT EXISTS (SELECT 1 FROM legacy_owner_requested WHERE key_id IS NULL)))`;
-
-const completionJson = `CASE WHEN json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END`;
 
 /** Only included owner assignments compete. Labels, exclusions, and other people
  * never supply ownership. Old fingerprints need a verified current enrollment

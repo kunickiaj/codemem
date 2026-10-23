@@ -128,7 +128,38 @@ describe.each(["SQLite", "D1"] as const)("%s legacy completion ownership", (back
 	registerOwnerSources(test);
 	registerReplay(test);
 	registerSourceValidity(test);
+	registerUnrelatedEnrollments(test);
 });
+
+function registerUnrelatedEnrollments(test: CompletionTest) {
+	for (const size of ["key count", "serialized bytes"] as const) {
+		test(`ignores unrelated ownerless enrollments exceeding metadata ${size}`, async ({
+			fixture: f,
+		}) => {
+			await enroll(f, "g1");
+			await f.store.createGroup("unrelated");
+			const count = size === "key count" ? 25_001 : 1;
+			const comment =
+				size === "serialized bytes"
+					? "x".repeat(COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES)
+					: "unrelated";
+			f.db.transaction(() => {
+				const insert = f.db.prepare(`INSERT INTO enrolled_devices
+					(group_id, device_id, public_key, fingerprint, enabled, created_at)
+					VALUES ('unrelated', ?, ?, ?, 1, ?)`);
+				for (let i = 0; i < count; i++) {
+					const publicKey = `${CANONICAL_PUBLIC_KEY} ${comment}-${i}`;
+					insert.run(`unrelated-${i}`, publicKey, fingerprintPublicKey(publicKey), NOW);
+				}
+			})();
+
+			expect(await f.store.createLegacyTeamCompletion("g1", manifest("g1"))).toEqual({
+				status: "created",
+				manifest: manifest("g1"),
+			});
+		});
+	}
+}
 
 function registerCompletedOwners(test: CompletionTest) {
 	for (const subject of ["exact device", "comment alias", "Buffer alias"] as const) {
@@ -378,11 +409,46 @@ function registerSourceValidity(test: CompletionTest) {
 	});
 }
 
+function ownerInterleavings(f: Fixture, mutation: string) {
+	const alias = `${CANONICAL_PUBLIC_KEY} new-alias`;
+	const aliasManifest = manifest("g2", {
+		deviceId: "device-b",
+		publicKey: alias,
+		owner: "identity-b",
+	});
+	const insertAlias = () =>
+		f.db
+			.prepare(`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+			VALUES ('g2', 'device-b', ?, ?, 1, ?)`)
+			.run(alias, fingerprintPublicKey(alias), NOW);
+	const assignOwner = () =>
+		f.db
+			.prepare("UPDATE enrolled_devices SET identity_id = 'identity-b' WHERE group_id = 'g2'")
+			.run();
+	if (mutation === "new historical alias" || mutation === "new alias owner") insertAlias();
+	return {
+		"competing completion": () => seedHistory(f, "g2", manifest("g2", { owner: "identity-b" })),
+		"new ownerless alias": insertAlias,
+		"new owned alias": () => {
+			insertAlias();
+			assignOwner();
+		},
+		"new historical alias": () => seedHistory(f, "g2", aliasManifest),
+		"new alias owner": assignOwner,
+		"changed fingerprint": () =>
+			f.db.prepare("UPDATE enrolled_devices SET fingerprint = ?").run("0".repeat(64)),
+		unchanged: () => {},
+	};
+}
+
 describe.each(["SQLite", "D1"] as const)(
 	"%s completion winning-statement interleavings",
 	(backend) => {
 		for (const mutation of [
-			"new alias",
+			"new owned alias",
+			"new ownerless alias",
+			"new historical alias",
+			"new alias owner",
 			"changed fingerprint",
 			"competing completion",
 			"unchanged",
@@ -396,22 +462,7 @@ describe.each(["SQLite", "D1"] as const)(
 					const next = manifest("g1");
 					let fired = false;
 					let atGate: unknown;
-					const changes = {
-						"competing completion": () =>
-							seedHistory(f, "g2", manifest("g2", { owner: "identity-b" })),
-						"new alias": () =>
-							f.db
-								.prepare(`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
-						VALUES ('g2', 'device-b', ?, ?, 1, ?)`)
-								.run(
-									`${CANONICAL_PUBLIC_KEY} new-alias`,
-									fingerprintPublicKey(`${CANONICAL_PUBLIC_KEY} new-alias`),
-									NOW,
-								),
-						"changed fingerprint": () =>
-							f.db.prepare("UPDATE enrolled_devices SET fingerprint = ?").run("0".repeat(64)),
-						unchanged: () => {},
-					};
+					const changes = ownerInterleavings(f, mutation);
 					const beforeWrite = (query: string) => {
 						if (
 							fired ||
@@ -434,7 +485,8 @@ describe.each(["SQLite", "D1"] as const)(
 					// Act
 					const pending = racing.createLegacyTeamCompletion("g1", next);
 					// Assert
-					if (mutation === "unchanged") expect((await pending).status).toBe("created");
+					if (mutation === "unchanged" || mutation === "new ownerless alias")
+						expect((await pending).status).toBe("created");
 					else {
 						const error =
 							mutation === "competing completion"

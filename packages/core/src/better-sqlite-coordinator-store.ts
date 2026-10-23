@@ -3112,9 +3112,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			normalized,
 			manifestJson,
 		);
-		const keyMetadata = await legacyOwnerKeyMetadata(
-			this.db.prepare(LEGACY_OWNER_KEYS_SQL).all(manifestJson) as { public_key: string }[],
-		);
+		const keyRows = this.db.prepare(LEGACY_OWNER_KEYS_SQL).all(manifestJson, normalizedGroupId);
+		const keyMetadata = await legacyOwnerKeyMetadata(keyRows as { public_key: string }[]);
 		const ownerValues = [manifestJson, normalizedGroupId, keyMetadata];
 		const { result, stored, denial } = this.db
 			.transaction(() => {
