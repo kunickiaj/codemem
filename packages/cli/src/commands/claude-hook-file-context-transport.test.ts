@@ -222,25 +222,62 @@ describe("CLI transport validates before opening the database", () => {
 });
 
 describe("real CLI transport entrypoint", () => {
-	it("returns the capability profile without reading stdin or creating a database", () => {
-		// Arrange
-		const args = [
-			"--transport-profile",
-			"--db-path",
-			join(directory, "missing-parent", "memory.sqlite"),
-		];
-		// Act
-		const result = child(args, "not valid JSON");
-		// Assert
-		expect(result.error).toBeUndefined();
-		expect(result.status).toBe(0);
-		expect(JSON.parse(result.stdout)).toEqual({
-			file_context_transport: 1,
-			visibility_enforced: true,
-			deferred_delivery: true,
-		});
-		expect(readdirSync(directory)).toEqual([]);
-	});
+	it.each(["", " \t\r\n", "not valid JSON"])(
+		"returns the capability profile without reading stdin %j or creating a database",
+		(input) => {
+			// Arrange
+			const args = [
+				"--transport-profile",
+				"--db-path",
+				join(directory, "missing-parent", "memory.sqlite"),
+			];
+			// Act
+			const result = child(args, input);
+			// Assert
+			expect(result.error).toBeUndefined();
+			expect(result.status).toBe(0);
+			expect(result.stderr).toBe("");
+			expect(JSON.parse(result.stdout)).toEqual({
+				file_context_transport: 1,
+				visibility_enforced: true,
+				deferred_delivery: true,
+			});
+			expect(readdirSync(directory)).toEqual([]);
+		},
+	);
+	it.each(["", " \t\r\n"])(
+		"rejects blank transport input %j before creating a database",
+		(input) => {
+			// Arrange: transport requires a request, even when legacy mode would continue.
+			const args = ["--transport", "--db-path", join(directory, "memory.sqlite")];
+			// Act
+			const result = child(args, input);
+			// Assert
+			expect(result.error).toBeUndefined();
+			expect(readdirSync(directory)).toEqual([]);
+			expect(result.status).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(JSON.parse(result.stderr)).toEqual({
+				error: "parse_error",
+				message: "transport request required",
+			});
+		},
+	);
+	it.each(["", " \t\r\n"])(
+		"preserves legacy continuation for blank input %j without creating a database",
+		(input) => {
+			// Arrange
+			const args = ["--db-path", join(directory, "memory.sqlite")];
+			// Act
+			const result = child(args, input);
+			// Assert
+			expect(result.error).toBeUndefined();
+			expect(result.status).toBe(0);
+			expect(result.stderr).toBe("");
+			expect(JSON.parse(result.stdout)).toEqual({ continue: true });
+			expect(readdirSync(directory)).toEqual([]);
+		},
+	);
 	it.each(["{", "[]", JSON.stringify({ action: "lookup" }), " ".repeat(16_385)])(
 		"rejects malformed/oversized transport input before creating a database",
 		(input) => {
