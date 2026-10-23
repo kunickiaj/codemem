@@ -191,6 +191,24 @@ function normalizedDefinition(sql: string): string {
 const table = "coordinator_legacy_owner_resolutions";
 const definitions = LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS.map(normalizedDefinition);
 
+/** Classify one captured catalog, using the same DDL rules as the live reader. */
+export function classifyLegacyOwnerResolutionSchemaCatalog(
+	value: unknown,
+): LegacyOwnerResolutionSchemaState {
+	if (!Array.isArray(value)) return "unsupported";
+	if (value.length === 0) return "missing";
+	if (
+		value.some(
+			(object) => !object || typeof object.type !== "string" || typeof object.sql !== "string",
+		)
+	)
+		return "unsupported";
+	if (!value.some((object) => object.type === "table")) return "unsupported";
+	if (value.length !== definitions.length) return "unsupported";
+	const actual = value.map((object) => normalizedDefinition(object.sql));
+	return definitions.every((ddl) => actual.includes(ddl)) ? "ready" : "unsupported";
+}
+
 export async function readLegacyOwnerResolutionSchemaState(
 	backend: Pick<AuthLinkBackend, "first">,
 ): Promise<LegacyOwnerResolutionSchemaState> {
@@ -202,12 +220,7 @@ export async function readLegacyOwnerResolutionSchemaState(
 			values: [table],
 		});
 		if (!result) return "unsupported";
-		const objects: { type: string; sql: string }[] = JSON.parse(result.objects);
-		if (objects.length === 0) return "missing";
-		if (!objects.some((o) => o.type === "table")) return "unsupported";
-		if (objects.length !== definitions.length) return "unsupported";
-		const actual = objects.map((o) => normalizedDefinition(o.sql));
-		return definitions.every((ddl) => actual.includes(ddl)) ? "ready" : "unsupported";
+		return classifyLegacyOwnerResolutionSchemaCatalog(JSON.parse(result.objects));
 	} catch {
 		return "unsupported";
 	}

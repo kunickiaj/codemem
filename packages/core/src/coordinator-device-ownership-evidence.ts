@@ -27,6 +27,7 @@ import {
 } from "./coordinator-device-ownership-evidence-queries.js";
 import {
 	captureLegacyOwnerResolutionRecord,
+	classifyLegacyOwnerResolutionSchemaCatalog,
 	type ReviewedWeakLabel,
 	readLegacyOwnerResolutionSchemaState,
 } from "./coordinator-legacy-owner-resolution-metadata.js";
@@ -141,6 +142,22 @@ function requireSameHistory(rows: EvidenceRows, history: ControllerHistorySnapsh
 	}
 }
 
+function requireSupportedCapturedSchema(rows: EvidenceRows): void {
+	const objects = evidenceRows(rows, "schema").map((row) => {
+		if (
+			row.length !== 4 ||
+			typeof row[0] !== "string" ||
+			typeof row[1] !== "string" ||
+			row[2] !== "coordinator_legacy_owner_resolutions" ||
+			typeof row[3] !== "string"
+		)
+			throw new Error("invalid_schema_evidence");
+		return { type: row[0], sql: row[3] };
+	});
+	if (classifyLegacyOwnerResolutionSchemaCatalog(objects) !== "ready")
+		throw new Error("unsupported_schema_evidence");
+}
+
 /** Internal read-only metadata collector. No result of this class grants access. */
 export class CoordinatorDeviceOwnershipEvidence {
 	private readonly snapshots = new WeakMap<object, { encoded: string; digest: string }>();
@@ -166,6 +183,7 @@ export class CoordinatorDeviceOwnershipEvidence {
 			if ((await readLegacyOwnerResolutionSchemaState(this.backend)) !== "ready")
 				return unavailable;
 			const { rows, encoded } = await this.captureRows(subject, history);
+			requireSupportedCapturedSchema(rows);
 			requireSameHistory(rows, history);
 			const classification = await classifyEvidence(
 				rows,
