@@ -265,11 +265,16 @@ describe("pack transport schema validation", () => {
 
 	it("keeps null limits on the default path", async () => {
 		const builder = vi.spyOn(store, "buildMemoryPackAsync");
-		const response = await post("/api/pack", {
-			context: "null limit compatibility",
-			all_projects: true,
-			limit: null,
+		const request = new Request("http://localhost/api/pack", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				context: "null limit compatibility",
+				all_projects: true,
+				limit: null,
+			}),
 		});
+		const response = await app.request(request);
 
 		expect(response.status).toBe(200);
 		expect(builder).toHaveBeenCalledWith(
@@ -279,7 +284,9 @@ describe("pack transport schema validation", () => {
 			{},
 			undefined,
 			undefined,
+			{ signal: request.signal },
 		);
+		expect(builder.mock.calls[0]?.[6]?.signal).toBe(request.signal);
 	});
 
 	it("rejects unknown request fields without weakening nested validation", async () => {

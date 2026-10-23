@@ -1009,70 +1009,98 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		} else {
 			p.log.error(err.message);
 		}
-		process.exit(1);
+		requestShutdown(1);
 	});
 
-	const shutdown = async () => {
+	let shutdownPromise: Promise<void> | undefined;
+	let shutdownExitCode = 0;
+	const shutdown = (exitCode = 0): Promise<void> => {
+		shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+		shutdownPromise ??= finishShutdown();
+		return shutdownPromise;
+	};
+	const finishShutdown = async () => {
 		p.outro("shutting down");
 		syncAbort.abort();
-		await accountLink.registry.close();
-		await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
-
-		// Stop accepting requests and drain both listeners before stopping workers
-		// or closing the shared store they may still need.
-		await new Promise<void>((resolve) => {
-			let remaining = syncServer ? 2 : 1;
-			const done = () => {
-				if (--remaining === 0) resolve();
-			};
-			syncServer?.close(done);
-			server.close(done);
-		}).catch(() => {
-			// Best-effort drain — proceed to cleanup.
-		});
-		await rawEventProcessing.stop();
 
 		try {
-			rmSync(pidPath);
-		} catch {
-			// ignore
-		}
-		await closeStoreAsync();
-		process.exit(0);
-	};
-
-	// Force-exit safety net if graceful shutdown stalls for an unusually long time.
-	const forceShutdown = () => {
-		setTimeout(() => {
-			if (maintenanceWorker?.pid && isProcessRunning(maintenanceWorker.pid)) {
-				try {
-					process.kill(maintenanceWorker.pid, "SIGKILL");
-				} catch {
-					// ignore
-				}
+			try {
+				await accountLink.registry.close();
+				await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
+			} finally {
+				await closeViewerListeners(syncServer ? [syncServer, server] : [server]);
+				await rawEventProcessing.stop();
 			}
+		} catch (error) {
+			shutdownExitCode = 1;
+			logViewerShutdownError(error);
+		} finally {
 			try {
 				rmSync(pidPath);
 			} catch {
 				// ignore
 			}
 			try {
-				rmSync(maintenanceWorkerPidFilePath(dbPath));
+				await closeStoreAsync();
+			} catch (error) {
+				shutdownExitCode = 1;
+				logViewerShutdownError(error);
+			}
+		}
+		process.exit(shutdownExitCode);
+	};
+
+	// Force-exit safety net if graceful shutdown stalls for an unusually long time.
+	const requestShutdown = (exitCode = 0) => {
+		if (!shutdownPromise) forceViewerShutdown(maintenanceWorker, dbPath);
+		void shutdown(exitCode).catch((error: unknown) => {
+			logViewerShutdownError(error);
+		});
+	};
+	process.on("SIGINT", () => requestShutdown());
+	process.on("SIGTERM", () => requestShutdown());
+}
+
+function logViewerShutdownError(error: unknown): void {
+	p.log.error(error instanceof Error ? error.message : String(error));
+}
+
+function closeViewerListeners(
+	listeners: readonly { close(callback: () => void): unknown }[],
+): Promise<void> {
+	return new Promise<void>((resolve) => {
+		let remaining = listeners.length;
+		const done = () => {
+			if (--remaining === 0) resolve();
+		};
+		for (const listener of listeners) listener.close(done);
+	}).catch(() => {
+		// Best-effort drain — proceed to cleanup.
+	});
+}
+
+function forceViewerShutdown(maintenanceWorker: ChildProcess | null, dbPath: string): void {
+	setTimeout(() => {
+		if (maintenanceWorker?.pid && isProcessRunning(maintenanceWorker.pid)) {
+			try {
+				process.kill(maintenanceWorker.pid, "SIGKILL");
 			} catch {
 				// ignore
 			}
-			// Forced exit cannot wait for worker joins; never close SQLite underneath them.
-			process.exit(1);
-		}, 30000).unref();
-	};
-	process.on("SIGINT", () => {
-		forceShutdown();
-		void shutdown();
-	});
-	process.on("SIGTERM", () => {
-		forceShutdown();
-		void shutdown();
-	});
+		}
+		try {
+			rmSync(pidFilePath(dbPath));
+		} catch {
+			// ignore
+		}
+		try {
+			rmSync(maintenanceWorkerPidFilePath(dbPath));
+		} catch {
+			// ignore
+		}
+		// Forced exit cannot wait for worker joins; never close SQLite underneath them.
+		process.exit(1);
+	}, 30000).unref();
 }
 
 export async function runServeInvocation(

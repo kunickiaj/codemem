@@ -16,7 +16,7 @@ import {
 } from "@codemem/core";
 import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
@@ -461,6 +461,36 @@ function queryMemoryPage(
 	return rows.map((row) => serializeMemoryRow(ownedBySelf, row));
 }
 
+async function handleLegacyPackRequest(c: Context, getStore: StoreFactory) {
+	const store = getStore();
+	const context = c.req.query("context") || "";
+	if (!context) {
+		return c.json({ error: "context required" }, 400);
+	}
+	const limit = queryInt(c.req.query("limit"), 10);
+	const tokenBudgetStr = c.req.query("token_budget");
+	let tokenBudget: number | undefined;
+	if (tokenBudgetStr) {
+		tokenBudget = parseStrictInteger(tokenBudgetStr) ?? undefined;
+		if (tokenBudget === undefined) {
+			return c.json({ error: "token_budget must be int" }, 400);
+		}
+	}
+	const project = c.req.query("project") || undefined;
+	const filters: { project?: string } = {};
+	if (project) filters.project = project;
+	const pack = await store.buildMemoryPackAsync(
+		context,
+		limit,
+		tokenBudget ?? null,
+		filters,
+		undefined,
+		undefined,
+		{ signal: c.req.raw.signal },
+	);
+	return c.json(pack);
+}
+
 export function memoryRoutes(getStore: StoreFactory) {
 	const app = new Hono();
 
@@ -619,29 +649,7 @@ export function memoryRoutes(getStore: StoreFactory) {
 	});
 
 	// GET /api/pack
-	app.get("/api/pack", async (c) => {
-		const store = getStore();
-		{
-			const context = c.req.query("context") || "";
-			if (!context) {
-				return c.json({ error: "context required" }, 400);
-			}
-			const limit = queryInt(c.req.query("limit"), 10);
-			const tokenBudgetStr = c.req.query("token_budget");
-			let tokenBudget: number | undefined;
-			if (tokenBudgetStr) {
-				tokenBudget = parseStrictInteger(tokenBudgetStr) ?? undefined;
-				if (tokenBudget === undefined) {
-					return c.json({ error: "token_budget must be int" }, 400);
-				}
-			}
-			const project = c.req.query("project") || undefined;
-			const filters: { project?: string } = {};
-			if (project) filters.project = project;
-			const pack = await store.buildMemoryPackAsync(context, limit, tokenBudget ?? null, filters);
-			return c.json(pack);
-		}
-	});
+	app.get("/api/pack", (c) => handleLegacyPackRequest(c, getStore));
 
 	app.post("/api/pack/trace", async (c) => {
 		const store = getStore();
@@ -694,7 +702,13 @@ export function memoryRoutes(getStore: StoreFactory) {
 		const filters: { project?: string; working_set_paths?: string[] } = {};
 		if (project) filters.project = project;
 		if (workingSetFiles.length > 0) filters.working_set_paths = workingSetFiles;
-		const trace = await store.buildMemoryPackTraceAsync(context, limit, tokenBudget, filters);
+		const trace = await store.buildMemoryPackTraceAsync(
+			context,
+			limit,
+			tokenBudget,
+			filters,
+			...([undefined, undefined, { signal: c.req.raw.signal }] as const),
+		);
 		return c.json(trace);
 	});
 

@@ -1,4 +1,4 @@
-import type { MemoryResult } from "@codemem/core";
+import type { MemoryResult, PackRenderOptions } from "@codemem/core";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
@@ -56,6 +56,21 @@ const packInputSchema = {
 		),
 	...filterSchema,
 };
+
+function packRenderOptions(args: {
+	compact?: boolean;
+	compact_detail_count?: number;
+	compression_mode?: "off" | "compact" | "ids";
+}): PackRenderOptions | undefined {
+	if (!args.compact && args.compact_detail_count == null && args.compression_mode == null) {
+		return undefined;
+	}
+	return {
+		compact: args.compact ?? (args.compact_detail_count != null ? true : undefined),
+		compactDetailCount: args.compact_detail_count,
+		compressionMode: args.compression_mode,
+	};
+}
 
 export function registerSearchTools(server: McpServer, context: ToolRegistrationContext): void {
 	const { defaultProject, store } = context;
@@ -244,21 +259,16 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					invocationIdentity: extra?.signal,
 				},
 				async (filters) => {
-					const renderOptions =
-						args.compact || args.compact_detail_count != null || args.compression_mode != null
-							? {
-									compact: args.compact ?? (args.compact_detail_count != null ? true : undefined),
-									compactDetailCount: args.compact_detail_count,
-									compressionMode: args.compression_mode,
-								}
-							: undefined;
 					const result = await store.buildMemoryPackAsync(
 						args.context,
 						args.limit ?? undefined,
 						null,
 						filters,
-						renderOptions,
+						packRenderOptions(args),
+						undefined,
+						{ signal: extra?.signal },
 					);
+					extra?.signal?.throwIfAborted();
 					// Renderer spans and fingerprints belong to automatic recall, not model context.
 					const { rendered_items: _renderedItems, ...value } = result;
 					return { value, memoryIds: result.item_ids, filters };

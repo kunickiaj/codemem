@@ -1012,6 +1012,111 @@ function postViewerJson(
 	});
 }
 
+async function assertViewerPackBuilderOptions(): Promise<void> {
+	const { app, ensureStore, cleanup } = createTestApp();
+	const previousProject = process.env.CODEMEM_PROJECT;
+	process.env.CODEMEM_PROJECT = "stale-viewer-project";
+	try {
+		const store = ensureStore();
+		const builder = vi.spyOn(store, "buildMemoryPackAsync");
+		const request = new Request("http://localhost/api/pack", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: "http://127.0.0.1:38888" },
+			body: JSON.stringify({
+				context: "focused viewer pack",
+				limit: 4,
+				token_budget: 600,
+				project: "viewer-project",
+				working_set_files: ["./packages/viewer-server/src/index.ts"],
+				compact: true,
+				compact_detail_count: 2,
+			}),
+		});
+		const response = await app.request(request);
+		expect(response.status).toBe(200);
+		expect(builder).toHaveBeenCalledWith(
+			"focused viewer pack",
+			4,
+			600,
+			{ project: "viewer-project", working_set_paths: ["packages/viewer-server/src/index.ts"] },
+			{ compact: true, compactDetailCount: 2 },
+			undefined,
+			{ signal: request.signal },
+		);
+		expect(builder.mock.calls[0]?.[6]?.signal).toBe(request.signal);
+	} finally {
+		if (previousProject == null) delete process.env.CODEMEM_PROJECT;
+		else process.env.CODEMEM_PROJECT = previousProject;
+		cleanup();
+	}
+}
+
+function emptyAsyncPackTrace() {
+	return {
+		version: 1 as const,
+		inputs: {
+			query: "semantic context",
+			project: "test-project",
+			working_set_files: ["packages/ui/src/app.ts"],
+			token_budget: null,
+			limit: 10,
+		},
+		mode: { selected: "task" as const, reasons: ["query matched task hints"] },
+		retrieval: { candidate_count: 0, candidates: [] },
+		assembly: {
+			deduped_ids: [],
+			collapsed_groups: [],
+			trimmed_ids: [],
+			trim_reasons: [],
+			sections: { summary: [], timeline: [], observations: [] },
+		},
+		output: {
+			estimated_tokens: 0,
+			truncated: false,
+			section_counts: { summary: 0, timeline: 0, observations: 0 },
+			pack_text: "",
+		},
+	};
+}
+
+async function assertAsyncPackTraceBuilderPath() {
+	// Arrange
+	const { app, ensureStore, cleanup } = createTestApp();
+	try {
+		const store = ensureStore();
+		const expected = emptyAsyncPackTrace();
+		const asyncSpy = vi.spyOn(store, "buildMemoryPackTraceAsync").mockResolvedValue(expected);
+		const request = new Request("http://localhost/api/pack/trace", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				context: "semantic context",
+				project: "test-project",
+				working_set_files: ["packages/ui/src/app.ts"],
+			}),
+		});
+		// Act
+		const res = await app.request(request);
+		// Assert
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body).toEqual(expected);
+		expect(asyncSpy).toHaveBeenCalledTimes(1);
+		expect(asyncSpy).toHaveBeenCalledWith(
+			"semantic context",
+			10,
+			null,
+			{ project: "test-project", working_set_paths: ["packages/ui/src/app.ts"] },
+			undefined,
+			undefined,
+			{ signal: request.signal },
+		);
+		expect(asyncSpy.mock.calls[0]?.[6]?.signal).toBe(request.signal);
+	} finally {
+		cleanup();
+	}
+}
+
 function rawEventState(store: MemoryStore): { events: unknown[]; sessions: unknown[] } {
 	return {
 		events: store.db
@@ -7173,41 +7278,10 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("passes project, working-set, and render options to the shared builder", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
-			const previousProject = process.env.CODEMEM_PROJECT;
-			process.env.CODEMEM_PROJECT = "stale-viewer-project";
-			try {
-				const store = ensureStore();
-				const builder = vi.spyOn(store, "buildMemoryPackAsync");
-				const response = await postViewerJson(app, "/api/pack", {
-					context: "focused viewer pack",
-					limit: 4,
-					token_budget: 600,
-					project: "viewer-project",
-					working_set_files: ["./packages/viewer-server/src/index.ts"],
-					compact: true,
-					compact_detail_count: 2,
-				});
-
-				expect(response.status).toBe(200);
-				expect(builder).toHaveBeenCalledWith(
-					"focused viewer pack",
-					4,
-					600,
-					{
-						project: "viewer-project",
-						working_set_paths: ["packages/viewer-server/src/index.ts"],
-					},
-					{ compact: true, compactDetailCount: 2 },
-					undefined,
-				);
-			} finally {
-				if (previousProject == null) delete process.env.CODEMEM_PROJECT;
-				else process.env.CODEMEM_PROJECT = previousProject;
-				cleanup();
-			}
-		});
+		it(
+			"passes project, working-set, and render options to the shared builder",
+			assertViewerPackBuilderOptions,
+		);
 
 		it("records attempts and reports changed-artifact conflicts without blocking pack delivery", async () => {
 			const { app, ensureStore, cleanup } = createTestApp();
@@ -7491,74 +7565,7 @@ describe("viewer-server", () => {
 	});
 
 	describe("POST /api/pack/trace", () => {
-		it("uses async pack trace builder path", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
-			try {
-				const store = ensureStore();
-
-				const expected = {
-					version: 1 as const,
-					inputs: {
-						query: "semantic context",
-						project: "test-project",
-						working_set_files: ["packages/ui/src/app.ts"],
-						token_budget: null,
-						limit: 10,
-					},
-					mode: {
-						selected: "task" as const,
-						reasons: ["query matched task hints"],
-					},
-					retrieval: {
-						candidate_count: 0,
-						candidates: [],
-					},
-					assembly: {
-						deduped_ids: [],
-						collapsed_groups: [],
-						trimmed_ids: [],
-						trim_reasons: [],
-						sections: {
-							summary: [],
-							timeline: [],
-							observations: [],
-						},
-					},
-					output: {
-						estimated_tokens: 0,
-						truncated: false,
-						section_counts: {
-							summary: 0,
-							timeline: 0,
-							observations: 0,
-						},
-						pack_text: "",
-					},
-				};
-
-				const asyncSpy = vi.spyOn(store, "buildMemoryPackTraceAsync").mockResolvedValue(expected);
-
-				const res = await app.request("/api/pack/trace", {
-					method: "POST",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({
-						context: "semantic context",
-						project: "test-project",
-						working_set_files: ["packages/ui/src/app.ts"],
-					}),
-				});
-				expect(res.status).toBe(200);
-				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toEqual(expected);
-				expect(asyncSpy).toHaveBeenCalledTimes(1);
-				expect(asyncSpy).toHaveBeenCalledWith("semantic context", 10, null, {
-					project: "test-project",
-					working_set_paths: ["packages/ui/src/app.ts"],
-				});
-			} finally {
-				cleanup();
-			}
-		});
+		it("uses async pack trace builder path", assertAsyncPackTraceBuilderPath);
 
 		it("rejects invalid trace payloads", async () => {
 			const { app, cleanup } = createTestApp();

@@ -26,7 +26,8 @@ const mocks = vi.hoisted(() => {
 		createApp: vi.fn<(options: AppOptions) => { fetch: () => void }>(),
 		createSyncApp: vi.fn<(options: AppOptions) => { fetch: () => void }>(),
 		getStore: vi.fn(),
-		closeStore: vi.fn(),
+		closeStore: vi.fn<() => Promise<void>>(),
+		logError: vi.fn(),
 		initDatabase: vi.fn(),
 		readAtPath: vi.fn(),
 		readConfig: vi.fn(),
@@ -60,7 +61,7 @@ vi.mock("node:child_process", () => ({ spawn: mocks.spawn, spawnSync: mocks.spaw
 vi.mock("@clack/prompts", () => ({
 	intro: vi.fn(),
 	outro: vi.fn(),
-	log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), step: vi.fn(), success: vi.fn() },
+	log: { warn: vi.fn(), error: mocks.logError, info: vi.fn(), step: vi.fn(), success: vi.fn() },
 }));
 vi.mock("@codemem/core", async (original) => ({
 	...(await original<typeof import("@codemem/core")>()),
@@ -84,6 +85,7 @@ vi.mock("@codemem/core", async (original) => ({
 }));
 vi.mock("@codemem/server", () => ({
 	getStore: mocks.getStore,
+	closeStore: mocks.closeStore,
 	closeStoreAsync: mocks.closeStore,
 	createApp: mocks.createApp,
 	createSyncApp: mocks.createSyncApp,
@@ -99,10 +101,12 @@ vi.mock("@hono/node-server", () => ({ serve: mocks.serve }));
 
 function deferred() {
 	let resolve!: () => void;
-	const promise = new Promise<void>((yes) => {
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<void>((yes, no) => {
 		resolve = yes;
+		reject = no;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
 const HOME = "/fixture/account-lifecycle-home";
 const DB = join(HOME, "running.sqlite");
@@ -139,7 +143,7 @@ beforeEach(() => {
 		if (process.env.CODEMEM_DB !== DB) throw new Error("Unexpected default database access");
 		return mocks.store;
 	});
-	mocks.closeStore.mockImplementation(() => {
+	mocks.closeStore.mockImplementation(async () => {
 		mocks.calls.push("store");
 	});
 	mocks.initDatabase.mockImplementation((path) => {
@@ -308,6 +312,56 @@ describe("foreground account profile and listener wiring", () => {
 });
 
 describe("foreground account shutdown wiring", () => {
+	it("reports store-drain rejection and exits with failure after awaiting the close promise", async () => {
+		// Arrange: rejection happens only after shutdown reaches the final owned store drain.
+		const closing = deferred();
+		const closeEntered = deferred();
+		const failure = new Error("fixture async store close failed");
+		mocks.closeStore.mockImplementation(() => {
+			mocks.calls.push("store");
+			closeEntered.resolve();
+			return closing.promise;
+		});
+		await startForegroundViewer(invocation());
+		const requestShutdown = signals.get("SIGTERM");
+		if (!requestShutdown) throw new Error("Missing actual shutdown callback");
+
+		// Act: no actual signal or process exit is used, and the force-exit timer never advances.
+		requestShutdown();
+		await closeEntered.promise;
+		const exitsWhileClosing = [...exits];
+		closing.reject(failure);
+		await vi.advanceTimersByTimeAsync(0);
+
+		// Assert: a failed graceful drain must not skip process exit or become success.
+		expect(exitsWhileClosing).toEqual([]);
+		expect(mocks.calls).toEqual(["registry", "listener:0", "store"]);
+		expect(mocks.closeStore).toHaveBeenCalledOnce();
+		expect(mocks.logError).toHaveBeenCalledExactlyOnceWith(failure.message);
+		expect(exits).toEqual([1]);
+	});
+	it("waits for asynchronous store drain before reporting process exit", async () => {
+		// Arrange: the shared close spy represents the server's asynchronous close API.
+		const closing = deferred();
+		mocks.closeStore.mockImplementation(() => {
+			mocks.calls.push("store");
+			return closing.promise;
+		});
+		await startForegroundViewer(invocation());
+
+		// Act: drain promise reactions without advancing the forced-exit safety timer.
+		const finished = shutdown();
+		await vi.advanceTimersByTimeAsync(0);
+		const exitsBeforeStoreDrained = [...exits];
+		closing.resolve();
+		await finished;
+
+		// Assert: release the fixture promise even on RED, then verify the owner awaited it.
+		expect(exitsBeforeStoreDrained).toEqual([]);
+		expect(mocks.closeStore).toHaveBeenCalledOnce();
+		expect(mocks.calls.at(-1)).toBe("store");
+		expect(exits).toEqual([0]);
+	});
 	it.each(["SIGTERM", "SIGINT"])(
 		"waits for registry cleanup before draining either listener on %s",
 		async (signal) => {

@@ -465,20 +465,7 @@ export async function startCodememMcpHttpServer(
 	});
 
 	const close = () => {
-		closePromise ??= (async () => {
-			await Promise.allSettled([...activeRequests].map(({ mcpServer }) => mcpServer.close()));
-			await new Promise<void>((resolve, reject) => {
-				server.close((err) => {
-					if (!err || (err as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") {
-						resolve();
-						return;
-					}
-					reject(err);
-				});
-				server.closeAllConnections();
-			});
-			await store.closeAsync();
-		})();
+		closePromise ??= closeMcpHttpServer(server, activeRequests, store);
 		return closePromise;
 	};
 
@@ -488,6 +475,29 @@ export async function startCodememMcpHttpServer(
 		url: `http://${formatHostForUrl(host)}:${getBoundPort(server)}/mcp`,
 		close,
 	};
+}
+
+async function closeMcpHttpServer(
+	server: Server,
+	activeRequests: Set<ActiveRequest>,
+	store: MemoryStore,
+): Promise<void> {
+	const connectionsClosed = new Promise<void>((resolve, reject) => {
+		server.close((err) => {
+			if (!err || (err as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") {
+				resolve();
+				return;
+			}
+			reject(err);
+		});
+		server.closeAllConnections();
+	});
+	const [connectionOutcome] = await Promise.allSettled([
+		connectionsClosed,
+		...[...activeRequests].map(({ mcpServer }) => mcpServer.close()),
+	]);
+	await store.closeAsync();
+	if (connectionOutcome?.status === "rejected") throw connectionOutcome.reason;
 }
 
 function isAllowedMcpHttpRequest(

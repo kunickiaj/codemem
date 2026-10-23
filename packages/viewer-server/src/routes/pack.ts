@@ -301,7 +301,7 @@ function packRenderOptions(value: PackRequestPayload): PackRenderOptions | undef
 	};
 }
 
-function packRequestArgs(request: ValidatedPackRequest) {
+function packRequestArgs(request: ValidatedPackRequest, signal: AbortSignal) {
 	return [
 		request.context,
 		request.limit,
@@ -309,6 +309,7 @@ function packRequestArgs(request: ValidatedPackRequest) {
 		request.filters,
 		request.renderOptions,
 		request.automaticContext,
+		{ signal },
 	] as const;
 }
 
@@ -557,11 +558,11 @@ export function packTransportRoutes(getStore: StoreFactory) {
 			const store = getStore();
 			const target = validateViewerTarget(store, parsed, { requireCurrentIdentity: true });
 			if (!target.ok) return c.json(target.body, target.status);
-			if (!request.attempt) {
-				const pack = await store.buildMemoryPackAsync(...packRequestArgs(request));
-				return c.json(pack);
-			}
-			const artifacts = await store.buildMemoryPackWithTraceAsync(...packRequestArgs(request));
+			if (!request.attempt) return await handleUntracedPackRequest(c, store, request);
+			const artifacts = await store.buildMemoryPackWithTraceAsync(
+				...packRequestArgs(request, c.req.raw.signal),
+			);
+			c.req.raw.signal.throwIfAborted();
 			let ledgerArtifactFingerprint: string | undefined;
 			try {
 				ledgerArtifactFingerprint = promptPackArtifactFingerprint(
@@ -605,4 +606,14 @@ export function packTransportRoutes(getStore: StoreFactory) {
 	app.post("/api/prompt-pack-ledger", (c) => handleLedgerRequest(c, getStore));
 
 	return app;
+}
+
+async function handleUntracedPackRequest(
+	c: Context,
+	store: MemoryStore,
+	request: ValidatedPackRequest,
+) {
+	const pack = await store.buildMemoryPackAsync(...packRequestArgs(request, c.req.raw.signal));
+	c.req.raw.signal.throwIfAborted();
+	return c.json(pack);
 }

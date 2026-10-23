@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const buildMemoryPackAsync = vi.fn();
 const buildMemoryPackWithTraceAsync = vi.fn(async (...args: unknown[]) => {
@@ -37,6 +37,7 @@ const buildMemoryPackWithTraceAsync = vi.fn(async (...args: unknown[]) => {
 });
 const buildMemoryPackTraceAsync = vi.fn();
 const closeStore = vi.fn();
+const closeStoreAsync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 type MockLedgerOutcome =
 	| { ok: true; value: { inserted: boolean } }
 	| {
@@ -66,29 +67,33 @@ vi.mock("@codemem/core", async (importOriginal) => {
 			buildMemoryPackAsync = buildMemoryPackAsync;
 			buildMemoryPackWithTraceAsync = buildMemoryPackWithTraceAsync;
 			buildMemoryPackTraceAsync = buildMemoryPackTraceAsync;
-			close() {
-				throw new Error("semantic_store_close_async_required");
-			}
-			closeAsync = closeStore;
+			close = closeStore;
+			closeAsync = closeStoreAsync;
 		},
 		promptPackArtifactFingerprint: () => "a".repeat(64),
 		recordPromptPackArtifacts,
 		resolveDbPath: (value?: string) => value,
+		resolveProject: (_cwd: string, override?: string | null) =>
+			override?.trim() || "default-project",
 	};
 });
 
 import { packCommand, parseInternalLedgerPayload, renderPackTrace } from "./pack.js";
 
+beforeEach(() => vi.stubEnv("CODEMEM_PROJECT", ""));
 afterEach(() => {
 	buildMemoryPackAsync.mockReset();
 	buildMemoryPackWithTraceAsync.mockClear();
 	buildMemoryPackTraceAsync.mockReset();
 	closeStore.mockReset();
+	closeStoreAsync.mockReset().mockResolvedValue(undefined);
 	recordPromptPackArtifacts.mockReset();
 	recordPromptPackArtifacts.mockReturnValue({ ok: true, value: { inserted: true } });
 	storePaths.length = 0;
 	process.exitCode = 0;
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
+	vi.useRealTimers();
 });
 
 async function parsePackCommand(args: string[]): Promise<void> {
@@ -96,6 +101,14 @@ async function parsePackCommand(args: string[]): Promise<void> {
 	root.enablePositionalOptions();
 	root.addCommand(packCommand);
 	await root.parseAsync(["pack", ...args], { from: "user" });
+}
+
+function deferred() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
 }
 
 async function parseTraceCommand(args: string[]): Promise<void> {
@@ -109,7 +122,7 @@ describe("pack command cleanup", () => {
 		"awaits semantic cleanup after pack execution (failure=%s)",
 		async (failure) => {
 			const cleanup = Promise.withResolvers<void>();
-			closeStore.mockReturnValue(cleanup.promise);
+			closeStoreAsync.mockReturnValue(cleanup.promise);
 			if (failure) {
 				buildMemoryPackAsync.mockRejectedValue(new Error("pack failed"));
 			} else {
@@ -120,7 +133,7 @@ describe("pack command cleanup", () => {
 			const execution = parsePackCommand(["semantic query", "--json"]).then(() => {
 				finished = true;
 			});
-			await vi.waitFor(() => expect(closeStore).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(closeStoreAsync).toHaveBeenCalledOnce());
 			expect(finished).toBe(false);
 			cleanup.resolve();
 			await execution;
@@ -364,6 +377,62 @@ describe("pack command", () => {
 		expect(parsed).not.toHaveProperty("delivery_status");
 	});
 });
+
+describe("pack asynchronous store shutdown", () => {
+	it.each(["success", "failure"] as const)(
+		"awaits store shutdown after pack %s",
+		async (outcome) => {
+			// Arrange: CLI error formatting must not let the command finish before store shutdown.
+			vi.useFakeTimers();
+			if (outcome === "failure")
+				buildMemoryPackAsync.mockRejectedValueOnce(new Error("fixture pack failure"));
+			else
+				buildMemoryPackAsync.mockResolvedValueOnce({
+					items: [],
+					metrics: { total_items: 0, pack_tokens: 0 },
+					pack_text: "DRAIN PACK",
+				});
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+			const closeEntered = deferred();
+			const closeRelease = deferred();
+			closeStoreAsync.mockImplementation(() => {
+				closeEntered.resolve();
+				return closeRelease.promise;
+			});
+			const finished = vi.fn();
+
+			// Act: release the deferred resource before asserting so failures leave no pending work.
+			const command = parsePackCommand(["fixture drain query", "--json"])
+				.then(
+					() => ({ error: null }),
+					(error: unknown) => ({ error }),
+				)
+				.then((result) => {
+					finished();
+					return result;
+				});
+			await closeEntered.promise;
+			await vi.advanceTimersByTimeAsync(0);
+			const completedBeforeClose = finished.mock.calls.length;
+			closeRelease.resolve();
+			const result = await command;
+
+			// Assert
+			expect(completedBeforeClose).toBe(0);
+			expect(result).toEqual({ error: null });
+			expect(closeStoreAsync).toHaveBeenCalledTimes(1);
+			expect(closeStore).not.toHaveBeenCalled();
+			expect(finished).toHaveBeenCalledTimes(1);
+			expect(process.exitCode).toBe(outcome === "failure" ? 1 : 0);
+			const expectedOutput =
+				outcome === "failure"
+					? { error: "pack_failed", message: "fixture pack failure" }
+					: { pack_text: "DRAIN PACK" };
+			expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject(expectedOutput);
+		},
+	);
+});
+
 describe("automatic ledger continuity", () => {
 	it("emits pack JSON but marks automatic continuity unmapped when ledger stdin is malformed", async () => {
 		buildMemoryPackAsync.mockResolvedValue({

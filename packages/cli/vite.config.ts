@@ -41,6 +41,11 @@ export default defineConfig({
 	},
 	test: {
 		name: "cli",
-		exclude: ["src/index.smoke.test.ts", ".opencode/**", "node_modules/**"],
+		exclude: [
+			"src/index.smoke.test.ts",
+			"scripts/semantic-worker-installed.test.mjs",
+			".opencode/**",
+			"node_modules/**",
+		],
 	},
 });
