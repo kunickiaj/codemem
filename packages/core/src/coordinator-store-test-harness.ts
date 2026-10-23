@@ -42,6 +42,9 @@ function addDeviceReviewedIntent(identityId: string) {
 	};
 }
 
+const LEGACY_COMPLETION_KEY =
+	"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
+
 function legacyTeamCompletion(
 	coordinatorId = "coord-a",
 	groupId = "g1",
@@ -66,7 +69,7 @@ function legacyTeamCompletion(
 		device_decisions: [
 			{
 				device_id: "device-a",
-				key_fingerprint: "1".repeat(64),
+				key_fingerprint: fingerprintPublicKey(LEGACY_COMPLETION_KEY),
 				enabled: true,
 				identity_id: "identity-a",
 				decision: "included",
@@ -81,12 +84,12 @@ function legacyTeamCompletion(
 async function enrollLegacyTeamDevice(
 	store: CoordinatorStore,
 	groupId: string,
-	fingerprint = "1".repeat(64),
+	fingerprint = fingerprintPublicKey(LEGACY_COMPLETION_KEY),
 ): Promise<void> {
 	await store.enrollDevice(groupId, {
 		deviceId: "device-a",
 		fingerprint,
-		publicKey: "device-a-public-key",
+		publicKey: LEGACY_COMPLETION_KEY,
 	});
 }
 

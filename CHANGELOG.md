@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- New Team setup records reject conflicting Identity assignments for the same device or signing key; existing records/replays and exclusions unchanged.
+
 ## [0.47.0-beta.3] - 2026-10-22
 
 ### Changed

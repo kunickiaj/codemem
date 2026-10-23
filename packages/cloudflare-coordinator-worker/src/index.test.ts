@@ -1,3 +1,4 @@
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import {
 	connectCoordinator,
 	deterministicPolicyTeamId,
 	ensureDeviceIdentity,
+	fingerprintPublicKey,
 	initTestSchema,
 	legacyTeamCandidateId,
 	loadPublicKey,
@@ -22,6 +24,38 @@ import {
 import { createCloudflareCoordinatorWorker } from "./index.js";
 
 type SqliteDatabase = ReturnType<typeof connectCoordinator>;
+const LEGACY_COMPLETION_KEY =
+	"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
+
+function legacyCompletionPublicKey(index: number): string {
+	// Each distinct owner needs a distinct, deterministic synthetic Ed25519 key.
+	const seed = Buffer.alloc(32);
+	seed.writeUInt32BE(index);
+	const privateKey = createPrivateKey({
+		key: Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]),
+		format: "der",
+		type: "pkcs8",
+	});
+	const publicKey = createPublicKey(privateKey).export({ format: "der", type: "spki" });
+	const wire = Buffer.concat([
+		Buffer.from("0000000b7373682d6564323535313900000020", "hex"),
+		publicKey.subarray(-32),
+	]);
+	return `ssh-ed25519 ${wire.toString("base64")}`;
+}
+
+function legacyCompletionMemberships(boundedId: (prefix: string, index: number) => string) {
+	const memberships = Array.from({ length: 500 }, (_, index) => ({
+		identity_id: boundedId("identity", index),
+		role: "member",
+	}));
+	const keyedMemberships = memberships.map((membership, index) => ({
+		membership,
+		publicKey: legacyCompletionPublicKey(index),
+	}));
+	return { memberships, keyedMemberships };
+}
+
 type SqliteStatement = {
 	reader: boolean;
 	get: (...values: unknown[]) => unknown;
@@ -868,7 +902,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 			device_decisions: [
 				{
 					device_id: "device-a",
-					key_fingerprint: "1".repeat(64),
+					key_fingerprint: fingerprintPublicKey(LEGACY_COMPLETION_KEY),
 					enabled: true,
 					identity_id: "identity-a",
 					decision: "included",
@@ -881,8 +915,8 @@ describe("createCloudflareCoordinatorWorker", () => {
 		const store = new D1CoordinatorStore(d1db);
 		await store.enrollDevice("g1", {
 			deviceId: "device-a",
-			fingerprint: "1".repeat(64),
-			publicKey: "device-a-public-key",
+			fingerprint: fingerprintPublicKey(LEGACY_COMPLETION_KEY),
+			publicKey: LEGACY_COMPLETION_KEY,
 		});
 		await store.close();
 		const request = () =>
@@ -924,10 +958,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 		const coordinatorId = "coord-large";
 		const candidateRef = legacyTeamCandidateId(coordinatorId, "large-group");
 		const teamId = deterministicPolicyTeamId(candidateRef);
-		const memberships = Array.from({ length: 500 }, (_, index) => ({
-			identity_id: boundedId("identity", index),
-			role: "member",
-		}));
+		const { memberships, keyedMemberships } = legacyCompletionMemberships(boundedId);
 		const projectMappings = Array.from({ length: 500 }, (_, index) => {
 			const projectRef = recipientPolicyDigest("legacy-team-project-ref-v1", [
 				candidateRef,
@@ -971,9 +1002,9 @@ describe("createCloudflareCoordinatorWorker", () => {
 				device_eligibility_mode: "reviewed_allowlist",
 			},
 			memberships,
-			device_decisions: memberships.map((membership, index) => ({
+			device_decisions: keyedMemberships.map(({ membership, publicKey }, index) => ({
 				device_id: boundedId("device", index),
-				key_fingerprint: index.toString(16).padStart(64, "0"),
+				key_fingerprint: fingerprintPublicKey(publicKey),
 				enabled: true,
 				identity_id: membership.identity_id,
 				decision: "included",
@@ -988,10 +1019,10 @@ describe("createCloudflareCoordinatorWorker", () => {
 		const enrollDevice = db.prepare(`INSERT INTO enrolled_devices(
 			group_id, device_id, public_key, fingerprint, enabled, created_at
 		) VALUES ('large-group', ?, ?, ?, 1, ?)`);
-		for (const decision of manifest.device_decisions) {
+		for (const [index, decision] of manifest.device_decisions.entries()) {
 			enrollDevice.run(
 				decision.device_id,
-				`${decision.device_id}-public-key`,
+				keyedMemberships[index]?.publicKey,
 				decision.key_fingerprint,
 				manifest.completed_at,
 			);

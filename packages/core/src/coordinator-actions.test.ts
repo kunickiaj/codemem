@@ -78,6 +78,9 @@ function addDeviceReviewedIntent(identityId: string): AddDeviceReviewedIntent {
 	};
 }
 
+const LEGACY_COMPLETION_KEY =
+	"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB";
+
 function legacyCompletionManifest(): CoordinatorLegacyTeamCompletionManifestV1 {
 	const candidateRef = legacyTeamCandidateId("coord-a", "group-a");
 	return {
@@ -99,7 +102,7 @@ function legacyCompletionManifest(): CoordinatorLegacyTeamCompletionManifestV1 {
 		device_decisions: [
 			{
 				device_id: "device-a",
-				key_fingerprint: "1".repeat(64),
+				key_fingerprint: fingerprintPublicKey(LEGACY_COMPLETION_KEY),
 				enabled: true,
 				identity_id: "identity-a",
 				decision: "included",
@@ -256,7 +259,7 @@ describe("coordinator local admin actions", () => {
 			groupId: "group-a",
 			deviceId: decision.device_id,
 			fingerprint: decision.key_fingerprint,
-			publicKey: "device-a-public-key",
+			publicKey: LEGACY_COMPLETION_KEY,
 			dbPath,
 		});
 

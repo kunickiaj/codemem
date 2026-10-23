@@ -128,6 +128,15 @@ import {
 	legacyDeviceWriteChanges,
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
+import {
+	LEGACY_OWNER_COMPATIBLE_SQL,
+	LEGACY_OWNER_DENIAL_SQL,
+	LEGACY_OWNER_INPUT_SQL,
+	LEGACY_OWNER_KEYS_SQL,
+	LEGACY_OWNER_SOURCE_CURRENT_SQL,
+	legacyCompletionWriteResult,
+	legacyOwnerKeyMetadata,
+} from "./coordinator-legacy-owner-compatibility.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -3476,39 +3485,23 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(normalizedGroupId, normalized.candidate_ref),
 		);
 		if (existing) {
-			if (existing.manifest_json !== manifestJson) {
-				throw new CoordinatorLegacyTeamCompletionConflictError();
-			}
-			return {
-				status: "existing",
-				manifest: normalizeCoordinatorLegacyTeamCompletionManifest(
-					JSON.parse(existing.manifest_json),
-				),
-			};
+			return legacyCompletionWriteResult(existing.manifest_json, manifestJson, "existing");
 		}
-		const scopeBindings = await allRows<CoordinatorLegacyTeamCompletionScopeBinding>(
-			this.db
-				.prepare(`SELECT DISTINCT
-					requested.scope_id,
-					scope.authority_type,
-					scope.coordinator_id,
-					scope.group_id,
-					scope.status
-				 FROM (
-					SELECT json_extract(value, '$.scope_id') AS scope_id
-					FROM json_each(?, '$.project_mappings')
-				 ) AS requested
-				 LEFT JOIN coordinator_scopes AS scope ON scope.scope_id = requested.scope_id`)
-				.bind(manifestJson),
-		);
-		const coordinatorId = requireCoordinatorLegacyTeamCompletionScopeBindings(
-			normalized,
+		const coordinatorId = await this.requireLegacyTeamCompletionSources(
 			normalizedGroupId,
-			scopeBindings,
+			normalized,
+			manifestJson,
 		);
+		const keyMetadata = await legacyOwnerKeyMetadata(
+			await allRows<{ public_key: string }>(
+				this.db.prepare(LEGACY_OWNER_KEYS_SQL).bind(manifestJson),
+			),
+		);
+		const ownerValues = [manifestJson, normalizedGroupId, keyMetadata];
 		const changes = await runChanges(
 			this.db
-				.prepare(`INSERT OR IGNORE INTO coordinator_legacy_team_completions(
+				.prepare(`${LEGACY_OWNER_INPUT_SQL}
+				INSERT OR IGNORE INTO coordinator_legacy_team_completions(
 					group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
 					) SELECT ?, ?, ?, ?, ?, ?
 					  FROM groups
@@ -3544,8 +3537,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					            AND enrolled.fingerprint = json_extract(requested.value, '$.key_fingerprint')
 					            AND enrolled.enabled = 1
 					        )
-					    )`)
+					    ) AND ${LEGACY_OWNER_SOURCE_CURRENT_SQL}
+					      AND (${LEGACY_OWNER_COMPATIBLE_SQL})`)
 				.bind(
+					...ownerValues,
 					normalizedGroupId,
 					normalized.candidate_ref,
 					normalized.version,
@@ -3569,38 +3564,40 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(normalizedGroupId, normalized.candidate_ref),
 		);
 		if (!stored) {
-			const currentGroup = await this.getGroup(normalizedGroupId);
-			if (!currentGroup) throw new Error("group_not_found");
-			if (currentGroup.archived_at) throw new Error("group_archived");
-			const currentScopeBindings = await allRows<CoordinatorLegacyTeamCompletionScopeBinding>(
-				this.db
-					.prepare(`SELECT DISTINCT
-						requested.scope_id,
-						scope.authority_type,
-						scope.coordinator_id,
-						scope.group_id,
-						scope.status
-					 FROM (
-						SELECT json_extract(value, '$.scope_id') AS scope_id
-						FROM json_each(?, '$.project_mappings')
-					 ) AS requested
-					 LEFT JOIN coordinator_scopes AS scope ON scope.scope_id = requested.scope_id`)
-					.bind(manifestJson),
+			await this.requireLegacyTeamCompletionSources(normalizedGroupId, normalized, manifestJson);
+			const denial = await firstRow<{ denial: string }>(
+				this.db.prepare(LEGACY_OWNER_DENIAL_SQL).bind(...ownerValues),
 			);
-			requireCoordinatorLegacyTeamCompletionScopeBindings(
-				normalized,
-				normalizedGroupId,
-				currentScopeBindings,
-			);
+			if (denial?.denial === "completion_conflict") {
+				throw new CoordinatorLegacyTeamCompletionConflictError();
+			}
 			throw new Error("completion_manifest_unavailable");
 		}
-		if (stored.manifest_json !== manifestJson) {
-			throw new CoordinatorLegacyTeamCompletionConflictError();
-		}
-		return {
-			status: changes === 1 ? "created" : "existing",
-			manifest: normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(stored.manifest_json)),
-		};
+		return legacyCompletionWriteResult(
+			stored.manifest_json,
+			manifestJson,
+			changes === 1 ? "created" : "existing",
+		);
+	}
+
+	private async requireLegacyTeamCompletionSources(
+		groupId: string,
+		manifest: CoordinatorLegacyTeamCompletionManifestV1,
+		manifestJson: string,
+	): Promise<string | null> {
+		const group = await this.getGroup(groupId);
+		if (!group) throw new Error("group_not_found");
+		if (group.archived_at) throw new Error("group_archived");
+		const bindings = await allRows<CoordinatorLegacyTeamCompletionScopeBinding>(
+			this.db
+				.prepare(`SELECT DISTINCT requested.scope_id, scope.authority_type,
+					scope.coordinator_id, scope.group_id, scope.status
+				 FROM (SELECT json_extract(value, '$.scope_id') AS scope_id
+					FROM json_each(?, '$.project_mappings')) AS requested
+				 LEFT JOIN coordinator_scopes AS scope ON scope.scope_id = requested.scope_id`)
+				.bind(manifestJson),
+		);
+		return requireCoordinatorLegacyTeamCompletionScopeBindings(manifest, groupId, bindings);
 	}
 
 	async getLegacyTeamCompletion(
