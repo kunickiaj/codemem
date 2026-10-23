@@ -64,6 +64,10 @@ import {
 	isAuthControllerId,
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
+import {
+	type ControllerHistoryInput,
+	captureControllerHistory,
+} from "./coordinator-auth-controller-history.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import {
 	type AuthLinkBackend,
@@ -3306,6 +3310,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			group_id: row.group_id,
 			manifest: normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(row.manifest_json)),
 		}));
+	}
+
+	async captureAuthControllerLegacyHistory(input: ControllerHistoryInput) {
+		return captureControllerHistory(
+			input,
+			async <T>(sql: string, values: string[]) => this.db.prepare(sql).all(...values) as T[],
+		);
 	}
 
 	async upsertPresence(opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {

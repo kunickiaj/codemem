@@ -42,6 +42,10 @@ import {
 	isAuthControllerUniqueError,
 } from "./coordinator-auth-controller.js";
 import {
+	type ControllerHistoryInput,
+	captureControllerHistory,
+} from "./coordinator-auth-controller-history.js";
+import {
 	type AuthLinkBackend,
 	AuthLinkOperations,
 	type AuthLinkStatement,
@@ -3702,6 +3706,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			group_id: row.group_id,
 			manifest: normalizeCoordinatorLegacyTeamCompletionManifest(JSON.parse(row.manifest_json)),
 		}));
+	}
+
+	async captureAuthControllerLegacyHistory(input: ControllerHistoryInput) {
+		return captureControllerHistory(input, <T>(sql: string, values: string[]) =>
+			allRows<T>(this.db.prepare(sql).bind(...values)),
+		);
 	}
 
 	async upsertPresence(_opts: CoordinatorUpsertPresenceInput): Promise<CoordinatorPresenceRecord> {
