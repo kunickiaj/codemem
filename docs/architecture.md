@@ -146,7 +146,21 @@ requests while allowing cached commit-pinned models to load.
 Synchronous FTS-only paths do not perform network resolution and remain pending
 until runtime-resolved identity metadata is available.
 
-Cleanup records only the maximum rowid actually scanned. IDs outside JavaScript's
+Cutover hashes memory bodies outside the writer transaction against one saved
+target metadata catalog. Ordinary `memory_items` triggers track changes to ID,
+title, body, and active state; no-op rewrites and unrelated fields do not change
+that epoch. The final immediate transaction checks the epoch, schema, current
+job and queue, and exact rowid/memory/model/hash equality with the saved catalog.
+This also catches vector-only writers from older versions without triggers on
+the virtual table or its shadow tables. Blob-only and chunk-index-only changes
+do not affect hash coverage and do not invalidate that proof.
+
+The metadata comparison checks a two-second budget between rows and retries
+instead of completing if it exceeds that budget. A single native SQLite step
+or filesystem stall cannot be interrupted by this JavaScript deadline. Missing
+epoch schema retains the conservative `data_version`/`total_changes()` fence.
+Cleanup keeps the saved catalog until its final check, closes it on every exit,
+and records only the maximum rowid actually scanned. IDs outside JavaScript's
 exact integer range fail closed rather than comparing rounded metadata.
 The migration runner reports these unsupported identities as a failed job and
 returns to its idle polling interval instead of repeating full validation on

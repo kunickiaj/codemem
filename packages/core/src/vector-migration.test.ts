@@ -70,6 +70,8 @@ function seedVector(
 	`);
 }
 
+const originalPrepare = Database.prototype.prepare;
+
 describe("vector migration", () => {
 	let db: Database;
 
@@ -380,7 +382,7 @@ describe("vector migration", () => {
 		).toEqual([{ model: "test-model", c: 2 }]);
 	});
 
-	it("retries cutover when the corpus changes during unlocked validation", async () => {
+	it("retries cutover when the corpus changes and returns to its original text during validation", async () => {
 		const sessionId = insertTestSession(db);
 		seedMemory(db, 1, sessionId, "One", "Body one");
 		seedVector(db, 1, "old-model");
@@ -389,9 +391,9 @@ describe("vector migration", () => {
 		prepareSpy.mockImplementation((sql: string) => {
 			if (!injectedWrite && sql.includes("vector-coverage-validation")) {
 				injectedWrite = true;
-				Database.prototype.prepare
-					.call(db, "UPDATE memory_items SET updated_at = updated_at WHERE id = 1")
-					.run();
+				db.exec(
+					"UPDATE memory_items SET title = 'Changed One' WHERE id = 1; UPDATE memory_items SET title = 'One' WHERE id = 1",
+				);
 			}
 			return Database.prototype.prepare.call(db, sql);
 		});
@@ -1683,10 +1685,10 @@ describe("vector migration", () => {
 		});
 		completeMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
 		const controller = new AbortController();
-		const prepareSpy = vi.spyOn(db, "prepare");
-		prepareSpy.mockImplementation((sql: string) => {
-			const statement = Database.prototype.prepare.call(db, sql);
-			if (sql.includes("vector-target-prune-rowids")) {
+		const prepareSpy = vi.spyOn(Database.prototype, "prepare");
+		prepareSpy.mockImplementation(function (this: Database, sql: string) {
+			const statement = originalPrepare.call(this, sql);
+			if (sql.includes("FROM vector_metadata WHERE model = ? AND")) {
 				const all = statement.all.bind(statement);
 				statement.all = ((...params: unknown[]) => {
 					const rows = all(...params);
@@ -1705,6 +1707,7 @@ describe("vector migration", () => {
 			prepareSpy.mockRestore();
 		}
 
+		expect(controller.signal.aborted).toBe(true);
 		expect(embedSpy).not.toHaveBeenCalled();
 		expect(
 			db
