@@ -1644,7 +1644,7 @@ describe("vector migration", () => {
 			});
 			expect(
 				fileDb.prepare("SELECT COUNT(*) AS c FROM memory_vectors WHERE model = 'old-model'").get(),
-			).toMatchObject({ c: 0 });
+			).toMatchObject({ c: 1 });
 
 			await runVectorMigrationPass(fileDb, { batchSize: 10 });
 
@@ -1652,9 +1652,9 @@ describe("vector migration", () => {
 				status: "completed",
 				metadata: { cleanup_pending: false },
 			});
-			expect(
-				fileDb.prepare("SELECT content_hash FROM memory_vectors WHERE model = 'test-model'").all(),
-			).toEqual([{ content_hash: embeddings.hashText("One\nRedacted body") }]);
+			expect(fileDb.prepare("SELECT model, content_hash FROM memory_vectors").all()).toEqual([
+				{ model: "test-model", content_hash: embeddings.hashText("One\nRedacted body") },
+			]);
 		} finally {
 			writerDb?.close();
 			fileDb?.close();

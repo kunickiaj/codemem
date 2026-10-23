@@ -130,8 +130,10 @@ bare-model label per vector row, plus SQLite storage overhead. Runtime package
 version is diagnostic metadata and does not change vector compatibility by
 itself.
 
-The v4 rollout builds a revision-aware corpus in the background and deletes the
-legacy corpus only during the completed-coverage cutover transaction. Semantic
+The v4 rollout builds a revision-aware corpus in the background and removes the
+legacy corpus in batches after checking complete target coverage. Each delete
+transaction rechecks the row's model and its memory's current target coverage,
+preserving fallback rows when coverage has been lost. Semantic
 search may keep using the measured-compatible legacy default corpus during that
 one migration; every other source/target change falls back to FTS5 until
 cutover. Custom model repositories require an explicit
@@ -143,6 +145,12 @@ local-model configurations must provide that canonical identity directly.
 requests while allowing cached commit-pinned models to load.
 Synchronous FTS-only paths do not perform network resolution and remain pending
 until runtime-resolved identity metadata is available.
+
+Cleanup records only the maximum rowid actually scanned. IDs outside JavaScript's
+exact integer range fail closed rather than comparing rounded metadata.
+The migration runner reports these unsupported identities as a failed job and
+returns to its idle polling interval instead of repeating full validation on
+every active tick. No rows from the rejected cleanup batch are deleted.
 
 Semantic search embeds the query text, then runs a nearest-neighbor lookup against `memory_vectors`. Distance is converted to a similarity score: `1.0 / (1.0 + distance)`.
 

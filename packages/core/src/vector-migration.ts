@@ -19,6 +19,7 @@ import {
 	backfillVectors,
 	countIncompleteActiveMemoryVectorCoverage,
 	findMemoryIdsWithCompleteActiveVectorCoverage,
+	findMemoryIdsWithCurrentTargetCoverage,
 	pruneObsoleteTargetModelVectors,
 	pruneObsoleteTargetModelVectorsWithCoverage,
 	pruneStaleCurrentModelVectors,
@@ -423,26 +424,47 @@ type SourceModelScanResult = {
 	scannedMaxRowId: number | null;
 };
 
+function exactVectorRowId(value: bigint): number | null {
+	if (value < BigInt(Number.MIN_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER))
+		return null;
+	return Number(value);
+}
+
+function exactVectorRowIdPage(rows: { rowid: bigint }[]): { rowid: number }[] | null {
+	const exactRows: { rowid: number }[] = [];
+	for (const row of rows) {
+		const rowid = exactVectorRowId(row.rowid);
+		if (rowid === null) return null;
+		exactRows.push({ rowid });
+	}
+	return exactRows;
+}
+
 function scanForSourceModelVectorsAfter(
 	db: SqliteDatabase,
 	targetModel: string,
 	afterRowId: number,
 ): SourceModelScanResult {
+	if (!Number.isSafeInteger(afterRowId)) return { found: true, scannedMaxRowId: null };
 	if (!hasMemoryVectorRowidsShadowTable(db)) {
 		const found = Boolean(
 			db.prepare("SELECT 1 FROM memory_vectors WHERE model != ? LIMIT 1").pluck().get(targetModel),
 		);
 		return { found, scannedMaxRowId: null };
 	}
-	const selectRowIds = db.prepare(
-		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */",
-	);
+	const selectRowIds = db
+		.prepare(
+			"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */",
+		)
+		.safeIntegers();
 	const selectMetadata = db.prepare(
 		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
 	);
 	let cursor = afterRowId;
 	while (true) {
-		const rows = selectRowIds.all(cursor, 250) as Array<{ rowid: number }>;
+		const rows = exactVectorRowIdPage(selectRowIds.all(cursor, 250) as { rowid: bigint }[]);
+		// An unsupported ID is unexamined work, not evidence of scan exhaustion.
+		if (rows === null) return { found: true, scannedMaxRowId: null };
 		if (rows.length === 0) return { found: false, scannedMaxRowId: cursor };
 		for (const row of rows) {
 			const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
@@ -473,10 +495,12 @@ function hasMemoryVectorRowidsShadowTable(db: SqliteDatabase): boolean {
 
 function readMaxMemoryVectorRowId(db: SqliteDatabase): number | null {
 	if (!hasMemoryVectorRowidsShadowTable(db)) return null;
-	const row = db.prepare("SELECT MAX(rowid) AS max_rowid FROM memory_vectors_rowids").get() as
-		| { max_rowid: number | null }
-		| undefined;
-	return Number(row?.max_rowid ?? 0);
+	const row = db
+		.prepare("SELECT MAX(rowid) AS max_rowid FROM memory_vectors_rowids")
+		.safeIntegers()
+		.get() as { max_rowid: bigint | null } | undefined;
+	if (row?.max_rowid == null) return 0;
+	return exactVectorRowId(row.max_rowid);
 }
 
 function checkCompletedStaleScan(
@@ -504,6 +528,7 @@ function checkCompletedStaleScan(
 	const currentMaxRowId = readMaxMemoryVectorRowId(db);
 	if (
 		typeof exhaustedMaxRowId === "number" &&
+		Number.isSafeInteger(exhaustedMaxRowId) &&
 		currentMaxRowId != null &&
 		currentMaxRowId <= exhaustedMaxRowId
 	) {
@@ -511,6 +536,7 @@ function checkCompletedStaleScan(
 	}
 	if (
 		typeof exhaustedMaxRowId === "number" &&
+		Number.isSafeInteger(exhaustedMaxRowId) &&
 		currentMaxRowId != null &&
 		!hasSourceModelVectorsAfter(db, targetModel, exhaustedMaxRowId)
 	) {
@@ -616,48 +642,142 @@ function nextMigrationMetadata(
 	};
 }
 
-function deleteStaleModelVectors(
+type CurrentStaleRow = { rowid: number; memoryId: number | null };
+
+function collectCurrentStaleRows(
 	db: SqliteDatabase,
+	rowIds: number[],
 	targetModel: string,
 	signal?: AbortSignal,
-): { deleted: number; exhausted: boolean; scannedMaxRowId: number | null } {
-	const batchSize = 250;
-	let deleted = 0;
-	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
-	if (!hasMemoryVectorRowidsShadowTable(db)) {
-		const rows = db
-			.prepare("SELECT rowid FROM memory_vectors WHERE model != ? ORDER BY rowid ASC LIMIT ?")
-			.all(targetModel, batchSize) as Array<{ rowid: number }>;
-		if (rows.length === 0) return { deleted, exhausted: true, scannedMaxRowId: null };
-		if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
-		db.transaction(() => {
-			for (const row of rows) deleted += deleteStmt.run(row.rowid).changes;
-		})();
-		return { deleted, exhausted: rows.length < batchSize, scannedMaxRowId: null };
+): { rows: CurrentStaleRow[]; retainedFallback: boolean } {
+	const selectCurrent = db
+		.prepare("SELECT memory_id, model FROM memory_vectors WHERE rowid = ?")
+		.safeIntegers();
+	const rows: CurrentStaleRow[] = [];
+	if (rowIds.some((rowid) => !Number.isSafeInteger(rowid))) {
+		throw new RangeError("Vector metadata IDs exceed the exact numeric range");
 	}
+	for (const rowid of rowIds) {
+		if (signal?.aborted) break;
+		const current = selectCurrent.get(rowid) as
+			| { memory_id: bigint | null; model: string }
+			| undefined;
+		if (!current || current.model === targetModel) continue;
+		const memoryId = current.memory_id === null ? null : Number(current.memory_id);
+		if (memoryId !== null && !Number.isSafeInteger(memoryId)) {
+			throw new RangeError("Vector metadata IDs exceed the exact numeric range");
+		}
+		rows.push({ rowid, memoryId });
+	}
+	return { rows, retainedFallback: false };
+}
 
-	const selectRowIds = db.prepare(
-		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-stale-scan-rowids */",
+function deleteCoveredStaleRows(
+	db: SqliteDatabase,
+	targetModel: string,
+	rows: CurrentStaleRow[],
+	signal?: AbortSignal,
+): { deleted: number; retainedFallback: boolean } {
+	const coverage = findMemoryIdsWithCurrentTargetCoverage(
+		db,
+		rows.flatMap((row) => (row.memoryId === null ? [] : [row.memoryId])),
+		targetModel,
 	);
+	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	let deleted = 0;
+	let retainedFallback = false;
+	for (const row of rows) {
+		if (signal?.aborted) break;
+		if (row.memoryId !== null && !coverage.has(row.memoryId)) {
+			retainedFallback = true;
+			continue;
+		}
+		deleted += deleteRow.run(row.rowid).changes;
+	}
+	return { deleted, retainedFallback };
+}
+
+function deleteCheckedStaleRows(
+	db: SqliteDatabase,
+	targetModel: string,
+	rowIds: number[],
+	signal?: AbortSignal,
+): { deleted: number; retainedFallback: boolean } {
+	return db
+		.transaction(() => {
+			const current = collectCurrentStaleRows(db, rowIds, targetModel, signal);
+			if (signal?.aborted) return { deleted: 0, retainedFallback: current.retainedFallback };
+			const result = deleteCoveredStaleRows(db, targetModel, current.rows, signal);
+			return {
+				deleted: result.deleted,
+				retainedFallback: current.retainedFallback || result.retainedFallback,
+			};
+		})
+		.immediate();
+}
+
+function appendStaleRowIds(
+	db: SqliteDatabase,
+	rows: { rowid: number }[],
+	targetModel: string,
+	staleRowIds: number[],
+): number {
 	const selectMetadata = db.prepare(
 		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
 	);
+	let cursor = 0;
+	for (const row of rows) {
+		const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
+		if (metadata && metadata.model !== targetModel) staleRowIds.push(row.rowid);
+		cursor = row.rowid;
+		if (staleRowIds.length === 250) break;
+	}
+	return cursor;
+}
+
+function scanStaleModelVectorRows(
+	db: SqliteDatabase,
+	targetModel: string,
+	signal?: AbortSignal,
+): {
+	rowIds: number[];
+	exhausted: boolean;
+	scannedMaxRowId: number | null;
+} {
+	const batchSize = 250;
+	if (!hasMemoryVectorRowidsShadowTable(db)) {
+		const rawRows = db
+			.prepare("SELECT rowid FROM memory_vectors WHERE model != ? ORDER BY rowid ASC LIMIT ?")
+			.safeIntegers()
+			.all(targetModel, batchSize) as { rowid: bigint }[];
+		const rows = exactVectorRowIdPage(rawRows);
+		if (rows === null) throw new RangeError("Vector metadata IDs exceed the exact numeric range");
+		return {
+			rowIds: rows.map((row) => row.rowid),
+			exhausted: rows.length < batchSize,
+			scannedMaxRowId: null,
+		};
+	}
+
+	const selectRowIds = db
+		.prepare(
+			"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-stale-scan-rowids */",
+		)
+		.safeIntegers();
 	const staleRowIds: number[] = [];
 	let afterRowId = 0;
 	let exhausted = false;
 	while (staleRowIds.length < batchSize && !signal?.aborted) {
-		const rows = selectRowIds.all(afterRowId, batchSize) as Array<{ rowid: number }>;
+		const rows = exactVectorRowIdPage(
+			selectRowIds.all(afterRowId, batchSize) as { rowid: bigint }[],
+		);
+		// Fail through the runner instead of repeatedly rescanning an unsafe page.
+		if (rows === null) throw new RangeError("Vector metadata IDs exceed the exact numeric range");
 		if (rows.length === 0) {
 			exhausted = true;
 			break;
 		}
-		for (const row of rows) {
-			const metadata = selectMetadata.get(row.rowid) as { model: string } | undefined;
-			if (metadata && metadata.model !== targetModel) staleRowIds.push(row.rowid);
-			afterRowId = row.rowid;
-			if (staleRowIds.length === batchSize) break;
-		}
+		afterRowId = appendStaleRowIds(db, rows, targetModel, staleRowIds);
 		const lastRowId = rows.at(-1)?.rowid;
 		if (rows.length < batchSize && afterRowId === lastRowId) exhausted = true;
 	}
@@ -665,14 +785,25 @@ function deleteStaleModelVectors(
 	// above it by a concurrent writer were never inspected and must be re-checked
 	// on the next pass, so it must not be read from MAX(rowid) after the fact.
 	const scannedMaxRowId = exhausted ? afterRowId : null;
-	if (signal?.aborted) return { deleted, exhausted: false, scannedMaxRowId: null };
-	if (staleRowIds.length === 0) return { deleted, exhausted, scannedMaxRowId };
+	return { rowIds: staleRowIds, exhausted, scannedMaxRowId };
+}
+
+function deleteStaleModelVectors(
+	db: SqliteDatabase,
+	targetModel: string,
+	signal?: AbortSignal,
+): { deleted: number; exhausted: boolean; scannedMaxRowId: number | null } {
+	if (signal?.aborted) return { deleted: 0, exhausted: false, scannedMaxRowId: null };
+	const scan = scanStaleModelVectorRows(db, targetModel, signal);
+	if (signal?.aborted) return { deleted: 0, exhausted: false, scannedMaxRowId: null };
 	// Stop after one bounded batch so the event loop can deliver shutdown before
 	// the next migration pass. Deleted rows are the durable cleanup cursor.
-	db.transaction(() => {
-		for (const rowid of staleRowIds) deleted += deleteStmt.run(rowid).changes;
-	})();
-	return { deleted, exhausted, scannedMaxRowId };
+	const result = deleteCheckedStaleRows(db, targetModel, scan.rowIds, signal);
+	return {
+		deleted: result.deleted,
+		exhausted: scan.exhausted && !result.retainedFallback && !signal?.aborted,
+		scannedMaxRowId: scan.scannedMaxRowId,
+	};
 }
 
 function cleanupStaleModels(
@@ -912,7 +1043,7 @@ function restartMigrationForIncompleteCoverage(
 function recordResumedCleanupResult(
 	db: SqliteDatabase,
 	options: {
-		cleanup: { deleted: number; exhausted: boolean };
+		cleanup: { deleted: number; exhausted: boolean; scannedMaxRowId: number | null };
 		validationSnapshot: DatabaseMutationSnapshot;
 		previouslyRemoved: number;
 		prunedTargetRows: number;
@@ -929,7 +1060,7 @@ function recordResumedCleanupResult(
 			: 0;
 		const removed = mergedRemovedRows(latestMetadata, options.previouslyRemoved, newlyRemoved);
 		cleanupCompleted = options.cleanup.exhausted && cleanupWasIsolated;
-		const exhaustedMaxRowId = cleanupCompleted ? readMaxMemoryVectorRowId(db) : null;
+		const exhaustedMaxRowId = cleanupCompleted ? options.cleanup.scannedMaxRowId : null;
 		let message = "Finished re-indexing; removing stale vectors";
 		if (!cleanupWasIsolated) message = "Memory changes arrived during cleanup; retrying";
 		if (cleanupCompleted) {
