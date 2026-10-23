@@ -396,6 +396,8 @@ describe("OpenCode transform-time injection", () => {
 			...originalEnv,
 			HOME: mkdtempSync(join(tmpdir(), "codemem-opencode-transform-home-")),
 			CODEMEM_VIEWER: "0",
+			// This suite mocks the legacy command process, not default CLI discovery.
+			CODEMEM_RUNNER: "npx",
 			CODEMEM_PLUGIN_DEBUG: "1",
 			CODEMEM_PLUGIN_LOG: "0",
 			CODEMEM_INJECT_CONTEXT: "1",

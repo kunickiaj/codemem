@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, posix, resolve, win32 } from "node:path";
+import { createCachedCliRunner } from "./cached-cli-runner.js";
 import {
   isVersionAtLeast,
   parseBackendUpdatePolicy,
@@ -2250,6 +2251,27 @@ const buildRunnerArgs = ({ runner, runnerFrom, runnerFromExplicit }) => {
   return runnerFromExplicit ? [runnerFrom] : [];
 };
 
+const resolveRuntimeRunner = ({ cwd, log }) => {
+  const runner = detectRunner({ cwd, envRunner: process.env.CODEMEM_RUNNER });
+  const runnerFromExplicit = Boolean(String(process.env.CODEMEM_RUNNER_FROM || "").trim());
+  const runnerFrom = process.env.CODEMEM_RUNNER_FROM || cwd;
+  const runnerArgs = buildRunnerArgs({ runner, runnerFrom, runnerFromExplicit });
+  const cliRunner = createCachedCliRunner({
+    runner, runnerArgs, pin: PINNED_BACKEND_VERSION, cwd,
+    explicit: Object.hasOwn(process.env, "CODEMEM_RUNNER") || Object.hasOwn(process.env, "CODEMEM_RUNNER_FROM"),
+    isCompatibleVersion: isSameChannelVersionAtLeast,
+    warn: (reason) => log("warn", "codemem default CLI runner could not be reused", { reason }),
+  });
+  return { runner, runnerArgs, runnerFrom, runnerFromExplicit, cliRunner };
+};
+
+const createViewerCliArgs = ({ viewerHost, viewerPort, viewerDbPath, viewerConfigPath }) => (action) => {
+  const args = ["serve", action, "--host", viewerHost, "--port", viewerPort];
+  if (String(viewerDbPath || "").trim()) args.push("--db-path", viewerDbPath);
+  if (String(viewerConfigPath || "").trim()) args.push("--config", viewerConfigPath);
+  return args;
+};
+
 export const createCodememRuntime = async ({ location, host, hostGeneration = null }) => {
   const { project, directory, worktree } = location;
   const hostLog = typeof host?.log === "function" ? host.log : async () => {};
@@ -2305,13 +2327,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     return null;
   }
 
-  const runner = detectRunner({
-    cwd,
-    envRunner: process.env.CODEMEM_RUNNER,
-  });
-  const runnerFromExplicit = Boolean(String(process.env.CODEMEM_RUNNER_FROM || "").trim());
-  const runnerFrom = process.env.CODEMEM_RUNNER_FROM || cwd;
-  const runnerArgs = buildRunnerArgs({ runner, runnerFrom, runnerFromExplicit });
+  const { runner, runnerArgs, runnerFrom, runnerFromExplicit, cliRunner } = resolveRuntimeRunner({ cwd, log });
   const viewerEnabled = envNotDisabled(process.env.CODEMEM_VIEWER || "1");
   const viewerAutoStart = envNotDisabled(
     process.env.CODEMEM_VIEWER_AUTO || "1"
@@ -2441,16 +2457,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     return `${Date.now()}-${Math.random()}`;
   };
 
-  const buildViewerCliArgs = (action) => {
-    const args = ["serve", action, "--host", viewerHost, "--port", viewerPort];
-    if (String(viewerDbPath || "").trim()) {
-      args.push("--db-path", viewerDbPath);
-    }
-    if (String(viewerConfigPath || "").trim()) {
-      args.push("--config", viewerConfigPath);
-    }
-    return args;
-  };
+  const buildViewerCliArgs = createViewerCliArgs({ viewerHost, viewerPort, viewerDbPath, viewerConfigPath });
 
   // Session context tracking for comprehensive memories
   const createSessionContext = () => ({
@@ -2782,9 +2789,10 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       return;
     }
     const viewerArgs = buildViewerCliArgs("start");
-    const cmd = [runner, ...runnerArgs, ...viewerArgs];
-    logLine(`auto-starting viewer: ${cmd.join(" ")}`).catch(() => {});
     try {
+      const cmd = await cliRunner.command(viewerArgs);
+      if (!cmd || !runtimeActive) { viewerStartInFlight = false; return; }
+      logLine("auto-starting viewer").catch(() => {});
       const child = nodeSpawn(cmd[0], cmd.slice(1), {
         cwd,
         env: process.env,
@@ -2880,8 +2888,20 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     });
   };
 
-  const runCli = async (args, options = {}) =>
-    runCommand([runner, ...runnerArgs, ...args], options);
+  const runCli = (args, options = {}) => {
+    const command = cliRunner.command(args);
+    if (Array.isArray(command)) return runCommand(command, options);
+    return command.then((cmd) => {
+      if (!cmd) return { exitCode: 1, stdout: "", stderr: "CLI runner unavailable" };
+      return runCommand(cmd, options);
+    });
+  };
+
+  const installCliUpdate = async (command) => {
+    const result = await runCommand(command, { env: resolveAutoUpdateEnvironment(), timeoutMs: 480_000 });
+    if (result?.exitCode === 0) cliRunner.invalidate();
+    return result;
+  };
 
   rawEventDelivery = createRawEventDelivery({
     backoffMs: rawEventsBackoffMs,
@@ -3211,10 +3231,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         return;
       }
       await logLine(`compat.auto_update_start cmd=${autoPlan.commandText}`);
-      const updateResult = await runCommand(autoPlan.command, {
-        env: resolveAutoUpdateEnvironment(),
-        timeoutMs: 480_000,
-      });
+      const updateResult = await installCliUpdate(autoPlan.command);
       if (updateResult?.exitCode === 0) {
         await logLine(
           `compat.auto_update_result exit=${updateResult?.exitCode ?? "unknown"} stderr=${redactLog(
@@ -3293,10 +3310,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       });
       if (autoPlan.allowed) {
         await logLine(`release.auto_update_start cmd=${autoPlan.commandText}`);
-        const installation = await runCommand(autoPlan.command, {
-          env: resolveAutoUpdateEnvironment(),
-          timeoutMs: 480_000,
-        });
+        const installation = await installCliUpdate(autoPlan.command);
         if (installation?.exitCode === 0) {
           const verification = await runCli(["version"]);
           const installedVersion = (verification?.stdout || "").trim();
