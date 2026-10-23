@@ -15,6 +15,7 @@ import {
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
+import { readVectorCorpusFence } from "./vector-corpus-epoch.js";
 import {
 	prepareVectorCutoverValidation,
 	type VectorCutoverValidation,
@@ -523,7 +524,6 @@ function checkCompletedStaleScan(
 			stale_scan_exhausted: true,
 			stale_scan_exhausted_max_rowid: scan.scannedMaxRowId,
 		};
-		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: persisted });
 		return { canReturn: true, metadata: persisted };
 	}
 	const exhaustedMaxRowId = metadata.stale_scan_exhausted_max_rowid;
@@ -543,7 +543,6 @@ function checkCompletedStaleScan(
 		!hasSourceModelVectorsAfter(db, targetModel, exhaustedMaxRowId)
 	) {
 		const refreshed = { ...metadata, stale_scan_exhausted_max_rowid: currentMaxRowId };
-		updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: refreshed });
 		return { canReturn: true, metadata: refreshed };
 	}
 	const invalidated = {
@@ -551,7 +550,6 @@ function checkCompletedStaleScan(
 		stale_scan_exhausted: undefined,
 		stale_scan_exhausted_max_rowid: undefined,
 	};
-	updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: invalidated });
 	return { canReturn: false, metadata: invalidated };
 }
 
@@ -1281,16 +1279,31 @@ function acceptCompletedCleanupValidation(
 		.immediate();
 }
 
+function readCompletedScanFence(db: SqliteDatabase): string {
+	return JSON.stringify({
+		...readVectorCorpusFence(db),
+		dataVersion: Number(db.pragma("data_version", { simple: true })),
+		totalChanges: Number(db.prepare("SELECT total_changes()").pluck().get()),
+	});
+}
+
 function prepareCompletedCleanupOwner(
 	db: SqliteDatabase,
 	targetModel: string,
 	expectedJob: MigrationJob,
 ) {
+	if (!isCurrentCleanupJob(db, targetModel, { job: expectedJob })) return null;
+	const metadata = (expectedJob?.metadata ?? {}) as MigrationMetadata;
+	const before = readCompletedScanFence(db);
+	// Compatibility scans may walk the entire index; do not reserve the writer here.
+	const staleScan = checkCompletedStaleScan(db, targetModel, metadata);
 	return db
 		.transaction(() => {
 			if (!isCurrentCleanupJob(db, targetModel, { job: expectedJob })) return null;
-			const metadata = (expectedJob?.metadata ?? {}) as MigrationMetadata;
-			const staleScan = checkCompletedStaleScan(db, targetModel, metadata);
+			if (readCompletedScanFence(db) !== before) return null;
+			if (staleScan.metadata !== metadata) {
+				updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { metadata: staleScan.metadata });
+			}
 			if (staleScan.canReturn) return null;
 			// Keep the checked owner, including any watermark invalidation, across validation.
 			return {
