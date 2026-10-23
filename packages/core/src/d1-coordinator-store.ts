@@ -4,6 +4,7 @@ import {
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
 import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
+import { AccountOwnerTargetOperations } from "./coordinator-account-owner-target.js";
 import {
 	AuthAccountProfileOperations,
 	type CoordinatorAuthAccountProfileInput,
@@ -1040,6 +1041,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		});
 	}
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
+	private readonly accountOwnerTarget: AccountOwnerTargetOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1071,6 +1073,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		this.authLinks = new AuthLinkOperations(authBackend, options.authClock);
 		this.accountLinkStatus = new AccountLinkStatusOperations(authBackend, options.authClock);
+		this.accountOwnerTarget = new AccountOwnerTargetOperations(authBackend, this);
 		this.authSessions = new AuthSessionOperations(authBackend, options.authClock);
 		this.authAccountProfiles = new AuthAccountProfileOperations(authBackend, options.authClock);
 		this.authBrowserTransactions = new CoordinatorAuthBrowserTransactions(
@@ -1228,6 +1231,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 	readAccountLinkStatus(...args: Parameters<AccountLinkStatusOperations["readAccountLinkStatus"]>) {
 		return this.accountLinkStatus.readAccountLinkStatus(...args);
+	}
+	readAccountOwnerTarget(
+		...args: Parameters<AccountOwnerTargetOperations["readAccountOwnerTarget"]>
+	) {
+		return this.accountOwnerTarget.readAccountOwnerTarget(...args);
 	}
 	readAuthDeviceClaimReadiness(
 		...args: Parameters<AccountLinkStatusOperations["readAuthDeviceClaimReadiness"]>

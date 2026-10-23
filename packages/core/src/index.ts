@@ -77,6 +77,11 @@ export {
 	readCoordinatorAccountLinkStatus,
 } from "./coordinator-account-link-status-client.js";
 export type {
+	CoordinatorAccountOwnerTarget,
+	CoordinatorAccountOwnerTargetInput,
+	CoordinatorAccountOwnerTargetStore,
+} from "./coordinator-account-owner-target.js";
+export type {
 	CoordinatorAuthControllerReviewActionOptions,
 	CoordinatorConsumedTeamInvite,
 	CoordinatorGrantIdentityGroupActionOptions,
