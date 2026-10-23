@@ -135,6 +135,16 @@ not allow arbitrary anonymous writes. The admin endpoints are server/admin calls
 They use the `X-Codemem-Coordinator-Admin` header, must not include a browser `Origin` header, and never create
 automatic grants.
 
+Controller review previews at `POST /v1/admin/auth-controller-reviews` include
+`legacy_history`: the complete retained Team history relevant to the selected
+device and its verified key aliases. Review it before confirming; the
+`evidence_digest` includes that history, and newly relevant records or key bindings
+invalidate the approval.
+
+Malformed relevant history returns `needs_review` with `legacy_history_invalid`
+instead of permitting confirmation. Historical labels do not themselves grant
+account authority or Team access.
+
 For the grant endpoint, the maintained operator wrapper is `codemem coordinator grant-identity-group <attestation-id>`.
 Use the stored `controller-v1:` reference returned by confirmed `review-device-owner`, with the same coordinator
 configured in the existing operator configuration. The wrapper keeps the admin credential out of arguments and

@@ -4,6 +4,7 @@ import {
 	type CoordinatorRequestRateLimitOptions,
 	createCoordinatorApp,
 } from "./coordinator-api.js";
+import type { CoordinatorAuthControllerAttestation } from "./coordinator-auth-controller.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { CoordinatorAuthSchemaUpgradeRequiredError } from "./coordinator-auth-schema.js";
 import {
@@ -140,6 +141,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				},
 				reviewed_invites: [],
 				reviewed_invite_count: 0,
+				legacy_history: [],
 			});
 			expect(text).not.toMatch(
 				/fixture-admin-secret|private-cookie|public_key|subject|email|token/,
@@ -148,6 +150,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(response.headers.get("cache-control")).toBe("no-store");
 			expect(snapshot(f)).toEqual(before);
 		});
+	});
+	describe(`${backend} operator review request validation`, () => {
 		test.for([null, "wrong-secret"])(
 			"actor label cannot authorize with credential %s",
 			async (credential, { f }) => {
@@ -297,7 +301,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const body = { ...input, confirm_evidence_digest: preview.evidence_digest };
 			// Act
 			const created = await request(app, body);
-			const stored = f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").get();
+			const stored = f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").get() as
+				| CoordinatorAuthControllerAttestation
+				| undefined;
 			const afterCreated = snapshot(f);
 			const replay = await request(app, body);
 			// Assert
@@ -527,6 +533,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const app = appFor(f);
 				const initial = await (await request(app)).json();
 				const [invite] = await f.store.listInvites(input.group_id);
+				if (!invite) throw new Error("fixture invite missing");
 				vi.spyOn(f.store, "listInvites").mockResolvedValue(
 					Array.from({ length: mode === "invalid-id" ? 1 : 4097 }, (_, index) => ({
 						...invite,

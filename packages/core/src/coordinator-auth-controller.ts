@@ -1,6 +1,7 @@
 import {
 	CONTROLLER_HISTORY_CTE,
 	CONTROLLER_HISTORY_GUARD,
+	type ControllerHistoryInput,
 	type ControllerHistorySnapshot,
 	captureControllerHistorySnapshot,
 } from "./coordinator-auth-controller-history.js";
@@ -66,6 +67,9 @@ export type CoordinatorAuthControllerCreateResult =
 	  };
 
 export interface CoordinatorAuthControllerStore {
+	captureAuthControllerLegacyHistory(
+		input: ControllerHistoryInput,
+	): Promise<ControllerHistorySnapshot>;
 	createAuthControllerAttestation(
 		input: CoordinatorAuthControllerReviewInput,
 	): Promise<CoordinatorAuthControllerCreateResult>;

@@ -7,6 +7,11 @@ import {
 	isAuthControllerId,
 } from "./coordinator-auth-controller.js";
 import {
+	type ControllerHistoryEvidence,
+	controllerHistoryDigestEvidence,
+	parseControllerHistoryRecord,
+} from "./coordinator-auth-controller-history.js";
+import {
 	assertConfiguredAuthSchema,
 	authSchemaUpgradeResponse,
 	CoordinatorAuthSchemaUpgradeRequiredError,
@@ -18,7 +23,10 @@ import type {
 } from "./coordinator-store-contract.js";
 
 export type CoordinatorControllerReviewStore = CoordinatorStore &
-	Pick<CoordinatorAuthControllerStore, "createAuthControllerAttestation">;
+	Pick<
+		CoordinatorAuthControllerStore,
+		"createAuthControllerAttestation" | "captureAuthControllerLegacyHistory"
+	>;
 export interface CoordinatorControllerReviewDeps {
 	config: CoordinatorAuthBrowserConfig;
 	storeFactory: () => CoordinatorControllerReviewStore;
@@ -44,7 +52,8 @@ export type CoordinatorControllerReviewReason =
 	| "key_mismatch"
 	| "enrollment_identity_mismatch"
 	| "invite_identity_mismatch"
-	| "invite_evidence_invalid";
+	| "invite_evidence_invalid"
+	| "legacy_history_invalid";
 export interface CoordinatorControllerReviewPreview {
 	state: "ready" | "needs_review";
 	reasons: CoordinatorControllerReviewReason[];
@@ -58,6 +67,8 @@ export interface CoordinatorControllerReviewPreview {
 	} | null;
 	reviewed_invites: { invite_id: string; kind: "team_member" | "add_device" }[];
 	reviewed_invite_count: number;
+	/** Historical sharing assignments, not a change of account owner or Team access. */
+	legacy_history?: ControllerHistoryEvidence[];
 }
 const PATH = "/v1/admin/auth-controller-reviews";
 const FIELDS = ["group_id", "device_id", "identity_id", "fingerprint"] as const;
@@ -173,14 +184,22 @@ async function preview(
 		reasons.push("invite_evidence_invalid");
 	const invites = bound.filter((invite) => isHash(invite.reviewed_preview_digest));
 	const verifiedSnapshot = verifiedInviteSnapshot(enrollment, invites);
+	const legacyHistory = await addHistorySnapshot({
+		store,
+		enrollment,
+		coordinatorId,
+		verifiedSnapshot,
+		reasons,
+	});
 	addSnapshotReasons(verifiedSnapshot, reasons);
 	const result: CoordinatorControllerReviewPreview = {
 		state: reasons.length ? "needs_review" : "ready",
 		reasons,
 		coordinator_id: coordinatorId,
+		legacy_history: legacyHistory,
 		enrollment: null,
 		reviewed_invite_count: invites.length,
-		// Ten references fit the action's 16 KiB limit even with 256-character Unicode IDs.
+		// Invite references remain short; retained manifests are presented in full separately.
 		reviewed_invites: invites.slice(0, 10).map((invite) => ({
 			invite_id: invite.invite_id,
 			kind: invite.invite_kind as "team_member" | "add_device",
@@ -195,24 +214,43 @@ async function preview(
 		};
 	if (result.state === "ready" && enrollment)
 		result.evidence_digest = await hash([
-			"codemem-controller-review-v1",
+			"codemem-controller-review-v2",
 			coordinatorId,
 			input.group_id,
 			enrollment.device_id,
 			enrollment.public_key,
 			enrollment.fingerprint,
 			input.identity_id,
-			enrollment.identity_id,
-			invites.map((invite) => [
-				invite.invite_id,
-				invite.invite_kind,
-				invite.recipient_actor_id,
-				invite.assigned_identity_id,
-				invite.target_identity_id,
-				invite.reviewed_preview_digest,
-			]),
+			{
+				...verifiedSnapshot,
+				legacyHistory: controllerHistoryDigestEvidence(verifiedSnapshot.legacyHistory),
+			},
 		]);
 	return { result, enrollment, verifiedSnapshot };
+}
+async function addHistorySnapshot(options: {
+	store: CoordinatorControllerReviewStore;
+	enrollment: CoordinatorEnrollment | null;
+	coordinatorId: string;
+	verifiedSnapshot: CoordinatorAuthControllerVerifiedSnapshot;
+	reasons: CoordinatorControllerReviewReason[];
+}): Promise<ControllerHistoryEvidence[]> {
+	const { store, enrollment, coordinatorId, verifiedSnapshot, reasons } = options;
+	if (!enrollment) return [];
+	try {
+		verifiedSnapshot.legacyHistory = await store.captureAuthControllerLegacyHistory({
+			coordinatorId,
+			deviceId: enrollment.device_id,
+			publicKey: enrollment.public_key,
+			fingerprint: enrollment.fingerprint,
+		});
+		return verifiedSnapshot.legacyHistory.records.map((row) =>
+			parseControllerHistoryRecord(row, coordinatorId),
+		);
+	} catch {
+		reasons.push("legacy_history_invalid");
+		return [];
+	}
 }
 function addSnapshotReasons(
 	snapshot: CoordinatorAuthControllerVerifiedSnapshot,

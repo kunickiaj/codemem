@@ -26,7 +26,10 @@ import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-stor
 
 export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
 	Partial<CoordinatorAccountLinkStatusStore> &
-	Pick<CoordinatorAuthControllerStore, "createAuthControllerAttestation"> &
+	Pick<
+		CoordinatorAuthControllerStore,
+		"createAuthControllerAttestation" | "captureAuthControllerLegacyHistory"
+	> &
 	Pick<
 		CoordinatorAuthLinkStore,
 		| "createAuthLinkAttempt"
