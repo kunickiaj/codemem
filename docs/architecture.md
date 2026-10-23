@@ -485,6 +485,21 @@ The system **fails closed**: unverifiable grants are rejected. A grant that cann
 
 Rate limiting is applied at the unauthenticated bucket level **before** grant verification. This prevents unauthenticated callers from using grant verification as an oracle or amplification vector against the coordinator.
 
+## Viewer Health reads
+
+Global classified usage totals use a partial covering index over public usage
+events, token counters, session IDs, and the JSON token-source expression. This
+avoids fetching and repeatedly decoding event metadata on each Health load.
+The aggregate SQL and project-filtered reads keep their existing semantics;
+this access path adds no result or authorization cache.
+
+Bootstrap and additive compatibility install the derived index on writable
+databases, including databases already marked current. Later opens only check
+its presence. Read-only, locked, or partial legacy schemas keep the ordinary
+query path and can retry installation on a later writable open. The index uses
+built-in JSON functions so older clients can maintain it. Its one-time build,
+storage, and per-event write costs trade against repeated dashboard scans.
+
 ## Design tradeoffs
 
 codemem is built for **episodic memory** — remembering what happened across coding sessions: what was tried, changed, decided, and learned. It's good at:

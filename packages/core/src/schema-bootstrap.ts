@@ -10,6 +10,7 @@ import {
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
+import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
 
 /** Additive derived index; the existence check keeps later opens read-only here. */
@@ -859,6 +860,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureOutcomeEvidenceColumns(db);
 		ensureMemoryOwnershipSchemas(db);
 		ensureMemoryAggregateIndex(db);
+		ensureUsageEventsAggregateIndex(db);
 		ensureVectorCorpusEpoch(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);

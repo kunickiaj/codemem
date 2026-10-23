@@ -44,6 +44,7 @@ import {
 	ensureSchemaBootstrapped,
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
+import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
 
 export {
@@ -1078,6 +1079,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
+	ensureUsageEventsAggregateIndex(db);
 }
 
 function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
