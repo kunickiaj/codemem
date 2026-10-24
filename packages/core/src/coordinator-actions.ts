@@ -40,6 +40,10 @@ import {
 	CoordinatorMembershipError,
 	normalizeMembershipEffectId,
 } from "./coordinator-membership-effects.js";
+import {
+	scopedResolutionReview,
+	validateResolutionOptions,
+} from "./coordinator-owner-resolution-review-client.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
@@ -354,6 +358,11 @@ export async function coordinatorGrantIdentityGroupAction(
 }
 
 export interface CoordinatorAuthControllerReviewActionOptions {
+	purpose?: "existing_account_owner";
+	resolutionScope?: "historical_included_owner_labels_only";
+	confirmOwnerResolutionDigest?: string;
+	/** Trusted synchronous lifecycle check; never sent to the coordinator. */
+	assertBeforeOwnerResolutionConfirm?: () => void;
 	remoteUrl: string;
 	adminSecret: string;
 	groupId: string;
@@ -368,14 +377,32 @@ export interface CoordinatorAuthControllerReviewActionOptions {
 export async function coordinatorAuthControllerReviewAction(
 	opts: CoordinatorAuthControllerReviewActionOptions,
 ): Promise<Record<string, unknown>> {
+	validateResolutionOptions(opts);
 	const body: Record<string, unknown> = {
 		group_id: opts.groupId,
 		device_id: opts.deviceId,
 		identity_id: opts.identityId,
 		fingerprint: opts.fingerprint,
 	};
+	if (opts.resolutionScope !== undefined)
+		return scopedResolutionReview(opts, body, (request) =>
+			remoteRequest(
+				"POST",
+				`${buildBaseUrl(opts.remoteUrl)}/v1/admin/auth-controller-reviews`,
+				opts.adminSecret,
+				request,
+				null,
+				opts.timeoutS ?? 3,
+				2_000_000,
+			),
+		);
 	if (opts.confirmEvidenceDigest !== undefined)
 		body.confirm_evidence_digest = opts.confirmEvidenceDigest;
+	if (opts.purpose !== undefined) {
+		if (opts.purpose !== "existing_account_owner")
+			throw new Error("controller_review_purpose_invalid");
+		body.purpose = opts.purpose;
+	}
 	const payload = await remoteRequest(
 		"POST",
 		`${buildBaseUrl(opts.remoteUrl)}/v1/admin/auth-controller-reviews`,
@@ -386,6 +413,8 @@ export async function coordinatorAuthControllerReviewAction(
 		CONTROLLER_REVIEW_MAX_RESPONSE_BYTES,
 	);
 	if (!payload) throw new Error("controller_review_response_invalid");
+	if (opts.purpose !== undefined && payload.purpose !== opts.purpose)
+		throw new Error("controller_review_purpose_unsupported");
 	return payload;
 }
 
