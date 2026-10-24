@@ -918,6 +918,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		const rawAuthBackend: AuthLinkBackend = {
+			all: async <T>(statement: AuthLinkStatement) =>
+				this.db.prepare(statement.sql).all(...statement.values) as T[],
 			first: async <T>(statement: AuthLinkStatement) =>
 				(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
 			run: async (statement) =>

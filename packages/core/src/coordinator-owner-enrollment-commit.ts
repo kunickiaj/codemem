@@ -10,6 +10,10 @@ import {
 	validOwnerEnrollmentReceiptMetadata,
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
+import {
+	prepareNegativeOwnerConsistency,
+	withNegativeOwnerWrite,
+} from "./coordinator-owner-negative-consistency.js";
 import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
 import { matchesAdmissionOwner } from "./owner-enrollment-owner-pin.js";
 
@@ -101,18 +105,20 @@ function assertWrite(winner: string[], expected: number): AuthLinkStatement {
 	};
 }
 
-/** Internal atomic finalization, not a package export or standalone ownership writer.
- * The later ceremony caller must supply trusted current config and a stored confirmed attempt.
- * SQL failures propagate: a failed post-commit read must not claim nothing changed.
- */
-export async function commitOwnerEnrollment(input: {
+interface OwnerEnrollmentCommitInput {
 	backend: AuthLinkBackend;
 	row: OwnerAttempt;
 	revision: string;
 	now: number;
 	completionSecret: string;
 	signature: string;
-}): Promise<boolean> {
+}
+
+/** Internal atomic finalization, not a package export or standalone ownership writer.
+ * The later ceremony caller must supply trusted current config and a stored confirmed attempt.
+ * SQL failures propagate: a failed post-commit read must not claim nothing changed.
+ */
+export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): Promise<boolean> {
 	const { backend, revision, now, completionSecret, signature } = input;
 	const a = Object.freeze({ ...input.row });
 	const proof = await verifyOwnerEnrollmentCompletion(
@@ -126,6 +132,8 @@ export async function commitOwnerEnrollment(input: {
 	const { grants } = proof;
 	const snapshot = await collisionSnapshot(backend, a);
 	if (snapshot === null) return false;
+	const consistency = await prepareEnrollmentNegativeConsistency(backend, a);
+	if (!consistency) return false;
 	const bindingId = globalThis.crypto.randomUUID();
 	const eventId = globalThis.crypto.randomUUID();
 	const outcome = JSON.stringify({
@@ -164,12 +172,50 @@ export async function commitOwnerEnrollment(input: {
 		update.sql += " AND a.owner_qualification_id IS ?";
 		update.values.push(a.owner_qualification_id ?? null);
 	}
-	await backend.batch([update, ...dependentWrites(winner, now, grants.length)]);
+	await backend.batch([
+		withEnrollmentNegativeOwner(update, consistency),
+		...dependentWrites(winner, now, grants.length, consistency),
+	]);
+	return readCommittedOwnerEnrollment(backend, winner);
+}
+
+/** Join the already materialized negative result rather than adding its SELECT
+ * tree beneath the UPDATE's long chain of ordinary pins (native D1 depth 100).
+ * These markers belong only to this module's trusted winning UPDATE template.
+ */
+function withEnrollmentNegativeOwner(
+	update: AuthLinkStatement,
+	consistency: AuthLinkStatement,
+): AuthLinkStatement {
+	const checked = withNegativeOwnerWrite(update, consistency);
+	const source = "FROM owner_commit_links p";
+	const guard = "AND (SELECT matches FROM negative_owner_consistency)";
+	if (!checked.sql.includes(source) || !checked.sql.includes(guard))
+		throw new Error("owner_enrollment_statement_invalid");
+	return {
+		sql: checked.sql
+			.replace(source, `${source} CROSS JOIN negative_owner_consistency negative`)
+			.replace(guard, "AND negative.matches"),
+		values: checked.values,
+	};
+}
+
+async function readCommittedOwnerEnrollment(backend: AuthLinkBackend, winner: string[]) {
 	const committed = await backend.first({
 		sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE ${WINNER}`,
 		values: winner,
 	});
 	return committed !== null;
+}
+
+function prepareEnrollmentNegativeConsistency(backend: AuthLinkBackend, a: OwnerAttempt) {
+	return prepareNegativeOwnerConsistency(backend, {
+		coordinatorId: a.coordinator_id,
+		ownerIdentityId: a.identity_id ?? "",
+		deviceId: a.device_id,
+		publicKey: a.public_key,
+		fingerprint: a.fingerprint,
+	});
 }
 const WINNING_UPDATE_SQL = `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'finalized',
  finalized_at_ms = ?, binding_id = ?, audit_event_id = ?, final_outcome_json = ?,
@@ -247,7 +293,12 @@ function winningUpdate(
 		],
 	};
 }
-function dependentWrites(winner: string[], now: number, grantCount: number): AuthLinkStatement[] {
+function dependentWrites(
+	winner: string[],
+	now: number,
+	grantCount: number,
+	consistency: AuthLinkStatement,
+): AuthLinkStatement[] {
 	const binding: AuthLinkStatement = {
 		sql: `INSERT INTO coordinator_device_ownership_bindings
    (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
@@ -274,7 +325,7 @@ function dependentWrites(winner: string[], now: number, grantCount: number): Aut
 		values: winner,
 	};
 	return [
-		binding,
+		withNegativeOwnerWrite(binding, consistency),
 		assertWrite(winner, 1),
 		enrollment,
 		assertWrite(winner, grantCount),

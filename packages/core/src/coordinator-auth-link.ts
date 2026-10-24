@@ -67,6 +67,10 @@ import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	prepareNegativeOwnerConsistency,
+	withNegativeOwnerWrite,
+} from "./coordinator-owner-negative-consistency.js";
 
 export * from "./coordinator-auth-link-contract.js";
 export interface AuthLinkStatement {
@@ -90,6 +94,7 @@ export interface AuthLinkBackend {
 	/** Internal full-schema lookup on the wrapper's captured raw backend; never cached. */
 	readAuthSchemaState?: () => Promise<ConnectionSchemaState>;
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
+	all?<T>(statement: AuthLinkStatement): Promise<T[]>;
 	run(statement: AuthLinkStatement): Promise<number>;
 	/** Atomic execution; production backends return each statement's native change count. */
 	batch(statements: AuthLinkStatement[]): Promise<unknown>;
@@ -1195,9 +1200,21 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
 		if (!keyId) return rejected("attempt_unavailable");
 		const connections = await this.connectionSchema();
+		const consistency = await prepareNegativeOwnerConsistency(this.backend, {
+			coordinatorId: c.coordinatorId,
+			ownerIdentityId: i.identityId,
+			deviceId: i.signer.deviceId,
+			publicKey: i.signer.publicKey,
+			fingerprint: i.signer.fingerprint,
+			enrollment: { groupId: i.signer.groupId },
+		});
+		if (!consistency) return rejected("attempt_unavailable");
 		try {
 			await this.backend.batch([
-				...deviceFinalizeStatements(i, c, now, linkId, keyId, source, connections),
+				...deviceFinalizeStatements(i, c, now, linkId, keyId, source, connections).map(
+					(statement, index) =>
+						index < 2 ? withNegativeOwnerWrite(statement, consistency) : statement,
+				),
 				...(connections ? connectionSuccessorStatements(c.coordinatorId, i.attemptId, linkId) : []),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
 				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),

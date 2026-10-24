@@ -49,6 +49,11 @@ export function withCoordinatorAuthSchema(
 			await assertCoordinatorAuthSchema(backend, options);
 			return backend.first<T>(statement);
 		},
+		all: async <T>(statement: AuthLinkStatement) => {
+			await assertCoordinatorAuthSchema(backend, options);
+			if (!backend.all) throw new Error("ownership_evidence_reader_unavailable");
+			return backend.all<T>(statement);
+		},
 		run: async (statement) => {
 			await assertCoordinatorAuthSchema(backend, options);
 			return backend.run(statement);

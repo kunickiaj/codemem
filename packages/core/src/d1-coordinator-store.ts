@@ -530,6 +530,15 @@ export function createD1AuthLinkBackend(
 					.prepare(statement.sql)
 					.bind(...statement.values)
 					.first<T>(),
+			all: async <T>(statement: AuthLinkStatement) => {
+				const result = await db
+					.prepare(statement.sql)
+					.bind(...statement.values)
+					.all<T>();
+				if (!Array.isArray(result.results))
+					throw new Error("ownership_evidence_reader_unavailable");
+				return result.results;
+			},
 			run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
 			batch: async (statements) => {
 				if (!db.batch) throw new Error("auth_link_atomic_batch_required");
