@@ -8,6 +8,7 @@ import {
 	writePeerConfig,
 } from "../lib/coordinator.js";
 import type { ScenarioContext } from "../lib/scenario-context.js";
+import { redactViewerLog } from "../lib/viewer-logs.js";
 import { waitFor } from "../lib/wait.js";
 
 const POLICY_SELECTED_PROJECT = "https://example.invalid/acme/policy-selected.git";
@@ -146,13 +147,14 @@ function fixture(ctx: ScenarioContext, service: string, action: string, artifact
 	return parseJson<FixtureSummary>(result.stdout, artifact);
 }
 
-const OWNER_SERVER_LOG_PATH = "/tmp/codemem-e2e-owner-serve.log";
-
 function captureOwnerSnapshotFailureLog(ctx: ScenarioContext, artifact: string): void {
+	const logPath = ctx.compose.getDetachedLogPath("peer-a");
+	if (!logPath) return;
 	const script = `import { readFileSync } from 'node:fs';
+		const redact = ${redactViewerLog.toString()};
 		let text = '';
-		try { text = readFileSync(${JSON.stringify(OWNER_SERVER_LOG_PATH)}, 'utf8'); } catch {}
-		console.log(text.split('\\n').filter(line => line.startsWith('[sync] recipient policy coordinator snapshot failed:')).slice(-50).join('\\n'));`;
+		try { text = readFileSync(${JSON.stringify(logPath)}, 'utf8'); } catch {}
+		console.log(redact(text.split('\\n').filter(line => line.startsWith('[sync] recipient policy coordinator snapshot failed:')).slice(-50).join('\\n')));`;
 	try {
 		ctx.compose.exec("peer-a", ["node", "--input-type=module", "-e", script], artifact, 30_000);
 	} catch {
@@ -164,7 +166,6 @@ function startServer(
 	ctx: ScenarioContext,
 	service: string,
 	artifact: string,
-	options: { captureLogs?: boolean } = {},
 ): void {
 	const staticResult = ctx.compose.exec(
 		service,
@@ -192,10 +193,7 @@ function startServer(
 		"--port",
 		"38888",
 	];
-	const loggedCommand = options.captureLogs
-		? ["sh", "-c", `${command.join(" ")} > ${OWNER_SERVER_LOG_PATH} 2>&1`]
-		: command;
-	const result = ctx.compose.execDetached(service, loggedCommand, artifact);
+	const result = ctx.compose.execDetachedLogged(service, command, artifact);
 	assertStatus(result.status, 0, `${service} viewer/sync server failed to start`);
 }
 
@@ -203,11 +201,10 @@ function restartServer(
 	ctx: ScenarioContext,
 	service: string,
 	artifact: string,
-	options: { captureLogs?: boolean } = {},
 ): void {
 	const restarted = ctx.compose.restart(service, `${artifact}-container`);
 	assertStatus(restarted.status, 0, `${service} container failed to restart`);
-	startServer(ctx, service, `${artifact}-start`, options);
+	startServer(ctx, service, `${artifact}-start`);
 }
 
 function readConfig(
@@ -936,7 +933,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ ...ownerConfig, sync_interval_s: 2 },
 		"39-enable-owner-reconciliation",
 	);
-	restartServer(ctx, "peer-a", "39-restart-owner-for-reconciliation", { captureLogs: true });
+	restartServer(ctx, "peer-a", "39-restart-owner-for-reconciliation");
 	await waitForServer(ctx, "peer-a", "39-owner-ready-for-reconciliation");
 	await waitFor(
 		async () => {

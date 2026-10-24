@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { type CommandRecord, writeCommandArtifact } from "./artifacts.js";
+import { quoteShellArgument, viewerLogReadScript } from "./viewer-logs.js";
 
 const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const RESOURCE_INSPECTION_TIMEOUT_MS = 30_000;
@@ -82,6 +83,8 @@ export class ComposeManager {
 	private readonly composeFiles: readonly string[];
 	private readonly profiles: readonly string[];
 	private readonly commandTimings: ComposeCommandTiming[] = [];
+	private readonly detachedLogs: Array<{ service: string; artifactName: string; path: string }> =
+		[];
 
 	constructor(
 		private readonly options: ComposeManagerOptions,
@@ -158,12 +161,15 @@ export class ComposeManager {
 	}
 
 	down(artifactName: string, allowFailure = false): RunCommandResult {
-		return this.run("docker", this.composeArgs(["down", "-v", "--remove-orphans"]), {
+		this.captureDetachedLogs("99");
+		const result = this.run("docker", this.composeArgs(["down", "-v", "--remove-orphans"]), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 			timeoutMs: 180_000,
 			allowFailure,
 		});
+		if (result.status === 0) this.detachedLogs.length = 0;
+		return result;
 	}
 
 	exec(
@@ -192,6 +198,40 @@ export class ComposeManager {
 			artifactName,
 			timeoutMs,
 		});
+	}
+
+	execDetachedLogged(
+		service: string,
+		commandArgs: string[],
+		artifactName: string,
+	): RunCommandResult {
+		const label = `${service}-${artifactName}`.replace(/[^a-zA-Z0-9._-]/g, "-");
+		const path = `/tmp/codemem-e2e-${label}-viewer.log`;
+		// Register before launch: detached exec can succeed even when the viewer immediately exits.
+		this.detachedLogs.push({ service, artifactName, path });
+		const command = `${commandArgs.map(quoteShellArgument).join(" ")} > ${quoteShellArgument(path)} 2>&1`;
+		return this.execDetached(service, ["sh", "-c", command], artifactName);
+	}
+
+	getDetachedLogPath(service: string): string | undefined {
+		return this.detachedLogs.findLast((log) => log.service === service)?.path;
+	}
+
+	captureDetachedLogs(artifactPrefix: string, options: { service?: string } = {}): void {
+		for (const log of this.detachedLogs) {
+			if (options.service && log.service !== options.service) continue;
+			try {
+				this.exec(
+					log.service,
+					["node", "--input-type=module", "-e", viewerLogReadScript(log.path)],
+					`${artifactPrefix}-${log.service}-${log.artifactName}-viewer-log`,
+					RESOURCE_INSPECTION_TIMEOUT_MS,
+					true,
+				);
+			} catch {
+				// Diagnostics must not replace the scenario failure or prevent the remaining captures.
+			}
+		}
 	}
 
 	ps(artifactName: string): RunCommandResult {
@@ -234,6 +274,7 @@ export class ComposeManager {
 	}
 
 	stop(service: string, artifactName: string): RunCommandResult {
+		this.captureDetachedLogs(`before-${artifactName}`, { service });
 		return this.serviceOperation(
 			["stop", "--timeout", SERVICE_STOP_GRACE_SECONDS, service],
 			artifactName,
@@ -245,6 +286,7 @@ export class ComposeManager {
 	}
 
 	restart(service: string, artifactName: string): RunCommandResult {
+		this.captureDetachedLogs(`before-${artifactName}`, { service });
 		return this.serviceOperation(
 			["restart", "--timeout", SERVICE_STOP_GRACE_SECONDS, service],
 			artifactName,
