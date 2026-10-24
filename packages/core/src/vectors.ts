@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import type { Statement } from "better-sqlite3";
 import type { Database } from "./db.js";
-import { isEmbeddingDisabled, tableExists } from "./db.js";
+import { isEmbeddingDisabled } from "./db.js";
 import {
 	assertEmbeddingClientIdentity,
 	chunkText,
@@ -42,10 +42,12 @@ import {
 } from "./semantic-query.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
 import type { MemoryFilters } from "./types.js";
+import { resolveVectorLayout, vectorStoreExists } from "./vector-layout.js";
 import {
 	createVectorMetadataSnapshot,
 	withVectorMetadataSnapshot,
 } from "./vector-metadata-snapshot.js";
+import { ensureVectorWriteModel, prepareVectorWrites } from "./vector-writes.js";
 
 const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 // Keep resolved-client identity separate from migration progress: direct or
@@ -121,7 +123,7 @@ function clampSemanticLimit(limit: number): number {
 }
 
 function listVectorModels(db: Database): Array<string | null> {
-	if (!tableExists(db, "memory_vectors")) {
+	if (!vectorStoreExists(db)) {
 		return [];
 	}
 	try {
@@ -137,7 +139,7 @@ function listVectorModels(db: Database): Array<string | null> {
 }
 
 function hasVectorRows(db: Database): boolean {
-	if (!tableExists(db, "memory_vectors")) return false;
+	if (!vectorStoreExists(db)) return false;
 	try {
 		return db.prepare("SELECT 1 FROM memory_vectors LIMIT 1").get() != null;
 	} catch {
@@ -436,7 +438,7 @@ function deleteCatalogPruneCandidates(
 	const selectCurrent = db.prepare(
 		"SELECT rowid, memory_id, model, content_hash FROM memory_vectors WHERE rowid = ?",
 	);
-	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	const write = prepareVectorWrites(db);
 	return db
 		.transaction(() => {
 			// Re-read bodies and metadata after acquiring the writer lock. A candidate
@@ -457,9 +459,9 @@ function deleteCatalogPruneCandidates(
 			for (const row of obsolete) {
 				if (signal?.aborted) break;
 				const covered = row.memory_id === null || coverage.has(row.memory_id);
-				if (covered && deleteRow.run(row.rowid).changes) ids.push(row.rowid);
+				if (covered) ids.push(row.rowid);
 			}
-			return ids;
+			return write({ deleteRowIds: ids, signal }).deletedRowIds;
 		})
 		.immediate();
 }
@@ -506,8 +508,16 @@ export function pruneObsoleteTargetVectorsFromCatalog(
 }
 
 function hasMemoryVectorRowidsShadowTable(db: Database): boolean {
+	const layout = resolveVectorLayout(db);
+	if (layout.kind === "absent") return false;
 	const tables = db.prepare("PRAGMA table_list").all() as Array<{ name: string }>;
-	return tables.some((table) => table.name === "memory_vectors_rowids");
+	return tables.some((table) => table.name === layout.rowidsName);
+}
+
+function vectorRowidsTable(db: Database): "memory_vectors_rowids" | "memory_vectors_v1_rowids" {
+	const layout = resolveVectorLayout(db);
+	if (layout.kind === "absent") throw new Error("vector_table_required");
+	return layout.rowidsName;
 }
 
 type TargetVectorRow = {
@@ -529,7 +539,7 @@ function collectTargetVectorRows(
 	signal?: AbortSignal,
 ): boolean {
 	const selectRowIds = db.prepare(
-		"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-target-prune-rowids */",
+		`SELECT rowid FROM ${vectorRowidsTable(db)} WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-target-prune-rowids */`,
 	);
 	const selectMetadata = db.prepare(
 		"SELECT memory_id, content_hash, model FROM memory_vectors WHERE rowid = ?",
@@ -593,10 +603,8 @@ function visitTargetVectorRowsForMemories(
 }
 
 function deleteVectorRows(db: Database, rowIds: number[]): number {
-	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	return db
-		.transaction(() => rowIds.reduce((count, rowid) => count + deleteStmt.run(rowid).changes, 0))
-		.immediate();
+	const write = prepareVectorWrites(db);
+	return db.transaction(() => write({ deleteRowIds: rowIds }).deleted).immediate();
 }
 
 function createTargetVectorCoverageStates(
@@ -808,7 +816,7 @@ function pruneTargetVectorRowsWithLegacyScan(
 		 ORDER BY mv.rowid ASC
 		 LIMIT ?`,
 	);
-	const deleteStmt = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	const write = prepareVectorWrites(db);
 	while (!options.signal?.aborted) {
 		const rows = selectBatch.all(model, afterRowId, batchSize) as Array<
 			TargetVectorRow & { title: string | null; body_text: string | null; active: number | null }
@@ -840,11 +848,7 @@ function pruneTargetVectorRowsWithLegacyScan(
 				obsoleteRowIds.push(row.rowid);
 			}
 		}
-		deleted += db
-			.transaction(() =>
-				obsoleteRowIds.reduce((count, rowid) => count + deleteStmt.run(rowid).changes, 0),
-			)
-			.immediate();
+		deleted += db.transaction(() => write({ deleteRowIds: obsoleteRowIds }).deleted).immediate();
 		afterRowId = rows.at(-1)?.rowid ?? afterRowId;
 	}
 	return deleted;
@@ -881,44 +885,6 @@ export function pruneObsoleteTargetModelVectorsWithCoverage(
 		};
 	}
 	return pruneTargetVectorRowsFromShadowTable(db, model, options);
-}
-
-function toSqlStringLiteral(value: string): string {
-	return `'${value.replaceAll("'", "''")}'`;
-}
-
-function toVecF32Literal(vector: Float32Array): string {
-	return `vec_f32(${toSqlStringLiteral(JSON.stringify(Array.from(vector)))})`;
-}
-
-function toSqlIntegerLiteral(value: number): string {
-	if (!Number.isFinite(value)) {
-		throw new TypeError(`Expected finite integer, received ${String(value)}`);
-	}
-	if (!Number.isInteger(value)) {
-		throw new TypeError(`Expected integer, received ${String(value)}`);
-	}
-	return String(value);
-}
-
-function insertMemoryVector(
-	db: Database,
-	vector: Float32Array,
-	memoryId: number,
-	chunkIndex: number,
-	contentHash: string,
-	model: string,
-): void {
-	db.exec(`
-		INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
-		VALUES (
-			${toVecF32Literal(vector)},
-			${toSqlIntegerLiteral(memoryId)},
-			${toSqlIntegerLiteral(chunkIndex)},
-			${toSqlStringLiteral(contentHash)},
-			${toSqlStringLiteral(model)}
-		)
-	`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,7 +991,7 @@ function isVecModuleMissingError(error: unknown): boolean {
 }
 
 function countIndexedActiveMemories(db: Database, models: string[]): number {
-	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
+	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return 0;
 	let rows: MemoryTextRow[];
 	try {
 		rows = db
@@ -1055,7 +1021,7 @@ function countIndexedActiveMemories(db: Database, models: string[]): number {
 }
 
 function countIndexedActiveMemoriesFast(db: Database, models: string[]): number {
-	if (isEmbeddingDisabled() || !tableExists(db, "memory_vectors")) return 0;
+	if (isEmbeddingDisabled() || !vectorStoreExists(db)) return 0;
 	try {
 		const placeholders = models.map(() => "?").join(", ");
 		const row = db
@@ -1317,44 +1283,39 @@ function uniqueMemoryIds(memoryIds: number[]): number[] {
 }
 
 function deleteVectorsForMemoryIds(db: Database, memoryIds: number[]): number {
-	if (!tableExists(db, "memory_vectors") || memoryIds.length === 0) return 0;
-	const placeholders = memoryIds.map(() => "?").join(", ");
-	const result = db
-		.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`)
-		.run(...memoryIds);
-	return result.changes;
+	if (!vectorStoreExists(db) || memoryIds.length === 0) return 0;
+	const write = prepareVectorWrites(db);
+	return db.transaction(() => write({ deleteMemoryIds: memoryIds }).deleted).immediate();
 }
 
-function prepareSnapshotPruneQueries(metadata: Database, deleteRow: SnapshotQuery) {
+function prepareSnapshotPruneQueries(metadata: Database, rowIds: number[]) {
 	return {
 		selectHash: prepareSnapshotHashQuery(metadata),
 		selectRows: metadata.prepare(
 			"SELECT rowid, model, content_hash FROM vector_metadata WHERE memory_id = ? AND model IN (?, ?)",
 		),
-		deleteRow,
+		rowIds,
 	};
 }
 
 function pruneSnapshotMemoryRows(
-	{ selectHash, selectRows, deleteRow }: ReturnType<typeof prepareSnapshotPruneQueries>,
+	{ selectHash, selectRows, rowIds }: ReturnType<typeof prepareSnapshotPruneQueries>,
 	memory: MemoryTextRow,
 	model: string,
-): number {
+): void {
 	const expectedHashes = chunkHashes(memoryText(memory.title, memory.body_text));
-	if (!snapshotHasExpectedHashes(selectHash, memory.id, model, expectedHashes)) return 0;
+	if (!snapshotHasExpectedHashes(selectHash, memory.id, model, expectedHashes)) return;
 	const expected = new Set(expectedHashes);
 	const compatibleLegacyModel =
 		model === DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL ? LEGACY_DEFAULT_EMBEDDING_MODEL : null;
-	let deleted = 0;
 	for (const row of selectRows.iterate(memory.id, model, compatibleLegacyModel) as Iterable<{
 		rowid: number;
 		model: string;
 		content_hash: string | null;
 	}>) {
 		if (row.model === model && row.content_hash != null && expected.has(row.content_hash)) continue;
-		deleted += deleteRow.run(row.rowid).changes;
+		rowIds.push(row.rowid);
 	}
-	return deleted;
 }
 
 /**
@@ -1370,7 +1331,7 @@ export function pruneStaleCurrentModelVectors(
 	const ids = uniqueMemoryIds(memoryIds);
 	if (ids.length === 0) return 0;
 	const batchSize = 250;
-	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
+	const write = prepareVectorWrites(db);
 	let deleted = 0;
 
 	for (let offset = 0; offset < ids.length; offset += batchSize) {
@@ -1380,18 +1341,18 @@ export function pruneStaleCurrentModelVectors(
 			withVectorMetadataSnapshot(
 				db,
 				(metadata) => {
-					const queries = prepareSnapshotPruneQueries(metadata, deleteRow);
+					const rowIds: number[] = [];
+					const queries = prepareSnapshotPruneQueries(metadata, rowIds);
 					const rows = db
 						.prepare(
 							`SELECT id, title, body_text FROM memory_items
 					 WHERE id IN (${placeholders}) ORDER BY id ASC`,
 						)
 						.all(...batchIds) as MemoryTextRow[];
-					let deletedInBatch = 0;
 					for (const row of rows) {
-						deletedInBatch += pruneSnapshotMemoryRows(queries, row, model);
+						pruneSnapshotMemoryRows(queries, row, model);
 					}
-					return deletedInBatch;
+					return write({ deleteRowIds: rowIds }).deleted;
 				},
 				{ memoryIds: batchIds },
 			),
@@ -1415,7 +1376,7 @@ export async function bestEffortMaintainVectorsForSyncFallback(
 	const deleteMemoryIds = uniqueMemoryIds(work.deleteMemoryIds);
 	const upsertMemoryIds = uniqueMemoryIds(work.upsertMemoryIds);
 
-	if (!tableExists(db, "memory_vectors")) {
+	if (!vectorStoreExists(db)) {
 		return result;
 	}
 
@@ -1465,34 +1426,51 @@ export async function storeVectors(
 	memoryId: number,
 	title: string,
 	bodyText: string,
+	options: { signal?: AbortSignal } = {},
 ): Promise<void> {
+	if (options.signal?.aborted) return;
 	const client = await getEmbeddingClient();
+	if (options.signal?.aborted) return;
 	if (!client) return;
 	assertEmbeddingClientIdentity(client);
+	if (!Number.isFinite(memoryId))
+		throw new TypeError(`Expected finite integer, received ${String(memoryId)}`);
+	if (!Number.isInteger(memoryId))
+		throw new TypeError(`Expected integer, received ${String(memoryId)}`);
 
 	const text = `${title}\n${bodyText}`.trim();
 	const chunks = chunkText(text);
 	if (chunks.length === 0) return;
 
 	const embeddings = await embedTexts(chunks, client);
-	if (embeddings.length === 0) return;
+	// Inference cannot be canceled here; a closed owner must never commit its late result.
+	if (options.signal?.aborted) return;
+	if (embeddings.length !== chunks.length) throw new TypeError("vector_count_mismatch");
 
 	const model = resolveEmbeddingClientVectorIdentityLabel(client);
 	const persistVectors = db.transaction(
 		(entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
-			for (const entry of entries) {
-				insertMemoryVector(db, entry.vector, memoryId, entry.chunkIndex, entry.contentHash, model);
-			}
+			if (options.signal?.aborted) return;
+			// Inference yields; a retirement may have deleted the source meanwhile.
+			if (!db.prepare("SELECT 1 FROM memory_items WHERE id=?").get(memoryId)) return;
+			ensureVectorWriteModel(db, model);
+			prepareVectorWrites(db)({
+				insert: {
+					model,
+					rows: entries.map((entry) => ({ ...entry, memoryId })),
+					expectedCount: chunks.length,
+				},
+			});
 			persistVectorIdentity(db, client, model);
 		},
 	);
 	const entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }> = [];
 
-	for (let i = 0; i < chunks.length && i < embeddings.length; i++) {
+	for (let i = 0; i < chunks.length; i++) {
 		const vector = embeddings[i];
 		const chunk = chunks[i];
-		if (!vector || vector.length === 0) continue;
-		if (!chunk) continue;
+		if (!vector || vector.length === 0) throw new TypeError("invalid_vector_shape");
+		if (!chunk) throw new TypeError("invalid_vector_chunk");
 		entries.push({ vector, chunkIndex: i, contentHash: hashText(chunk) });
 	}
 	if (entries.length === 0) return;
@@ -1517,28 +1495,46 @@ function insertCompletedBackfillMemories(
 			withVectorMetadataSnapshot(
 				db,
 				(metadata) => {
-					const selectHash = prepareSnapshotHashQuery(metadata);
-					let inserted = 0;
-					for (const memory of completed) {
-						for (const [index, chunk] of memory.chunks.entries()) {
-							if (selectHash.get(memory.memoryId, model, chunk.contentHash)) continue;
-							insertMemoryVector(
-								db,
-								memory.vectors[index] as Float32Array,
-								memory.memoryId,
-								chunk.chunkIndex,
-								chunk.contentHash,
-								model,
-							);
-							inserted++;
-						}
-					}
-					return inserted;
+					const entries = collectCompletedBackfillRows(db, metadata, completed, model);
+					if (!entries.length) return 0;
+					ensureVectorWriteModel(db, model);
+					return prepareVectorWrites(db)({
+						insert: { model, rows: entries, expectedCount: entries.length },
+					}).inserted;
 				},
 				{ memoryIds },
 			),
 		)
 		.immediate();
+}
+
+function collectCompletedBackfillRows(
+	db: Database,
+	metadata: Database,
+	completed: Set<PendingMemory>,
+	model: string,
+) {
+	const selectHash = prepareSnapshotHashQuery(metadata);
+	const sourceExists = db.prepare("SELECT 1 FROM memory_items WHERE id=?");
+	const entries: Array<{
+		memoryId: number;
+		vector: Float32Array;
+		chunkIndex: number;
+		contentHash: string;
+	}> = [];
+	for (const memory of completed) {
+		if (!sourceExists.get(memory.memoryId)) continue;
+		for (const [index, chunk] of memory.chunks.entries()) {
+			if (selectHash.get(memory.memoryId, model, chunk.contentHash)) continue;
+			entries.push({
+				vector: memory.vectors[index] as Float32Array,
+				memoryId: memory.memoryId,
+				chunkIndex: chunk.chunkIndex,
+				contentHash: chunk.contentHash,
+			});
+		}
+	}
+	return entries;
 }
 
 function snapshotHashesByMemory(
@@ -1812,7 +1808,7 @@ export async function semanticSearch(
 	);
 }
 
-/** Internal exact ranking stage shared with the opt-in read-only worker experiment. */
+/** Internal exact ranking stage shared with the read-only semantic worker. */
 export function rankSemanticEmbedding(
 	db: Database,
 	queryEmbedding: Buffer,

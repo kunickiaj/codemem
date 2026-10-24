@@ -8,6 +8,8 @@ import { clearMemoryRefs } from "./ref-populate.js";
 import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
 import { recordNonce, verifyDirectPeerSignature } from "./sync-auth.js";
 import { supportsSyncFeature } from "./sync-capability.js";
+import { resolveVectorLayout } from "./vector-layout.js";
+import { prepareVectorWrites } from "./vector-writes.js";
 
 export const MEMORY_RETIREMENT_FEATURE = "memory_scope_retirement_v1";
 /** Reserved signed paths, not mounted HTTP routes. */
@@ -161,11 +163,11 @@ function cleanupRetiredMemory(db: Database, control: RetirementControl): void {
 		db,
 		rows.map((row) => row.id),
 	);
+	if (resolveVectorLayout(db).kind !== "absent") {
+		prepareVectorWrites(db)({ deleteMemoryIds: rows.map((row) => row.id) });
+	}
 	for (const row of rows) {
 		clearMemoryRefs(db, row.id);
-		if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'memory_vectors'").get()) {
-			db.prepare("DELETE FROM memory_vectors WHERE memory_id = ?").run(row.id);
-		}
 		db.prepare("DELETE FROM memory_items WHERE id = ?").run(row.id);
 	}
 }

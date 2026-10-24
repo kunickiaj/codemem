@@ -1,4 +1,5 @@
 import { columnExists, type Database, tableExists } from "./db.js";
+import { vectorStoreExists } from "./vector-layout.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 
 export type OperationalMaintenanceState = "idle" | "running" | "failed" | "unknown";
@@ -135,7 +136,7 @@ function collectSemanticIndex(
 	db: Database,
 	embeddingDisabled: boolean,
 ): OperationalStatusSnapshot["semantic_index"] {
-	const vectorTablePresent = tableExists(db, "memory_vectors");
+	const vectorTablePresent = vectorStoreExists(db);
 	// Disabled embeddings also stop the catch-up runner, so a queued job would
 	// otherwise read as pending forever.
 	if (embeddingDisabled) {
