@@ -26,7 +26,7 @@ The extractor recognizes HTML tags and stylesheet attributes regardless of case,
 
 ### Visual regression checks
 
-Use the visual commands after changing shared controls or their gallery fixtures. Docker is required: `visual:test`, `visual:control`, and `visual:update` run a read-only copy of the tracked public sources in the root `packageManager`-pinned pnpm environment (`pnpm@12.2.1`) inside `mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27` for Linux amd64.
+Use the visual commands after changing shared controls or their gallery fixtures. Docker is required: `visual:test`, `visual:control`, and `visual:update` run a read-only copy of the tracked public sources using the pnpm version pinned in the root `packageManager` field inside `mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27` for Linux amd64.
 
 ```text
 pnpm --filter @codemem/ui visual:test

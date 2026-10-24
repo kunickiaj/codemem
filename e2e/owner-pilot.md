@@ -4,7 +4,7 @@ This unpublished, opt-in pilot checks an owner-enrollment handoff between two
 fresh, disposable profiles. It is **not live verified**. The existing app server,
 Worker, and public CLI entrypoints are unchanged.
 
-Run it only from an unpublished source checkout on Node 24 with pnpm 12.2.1.
+Run it only from an unpublished source checkout on Node 24 with the pnpm version pinned in the root `packageManager` field.
 Use two owned devices (A and B), each with a new disposable codemem profile. Do not
 point commands at a normal database, config, or key directory. Use the device's
 own external browser; do not import browser profiles, cookies, or credentials.
