@@ -1,5 +1,5 @@
 import type { ComposeTimingSummary } from "../lib/compose.js";
-import { createScenarioContext } from "../lib/scenario-context.js";
+import { createScenarioContext, handleScenarioFailure } from "../lib/scenario-context.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
@@ -123,6 +123,7 @@ async function main(): Promise<void> {
 	}
 	try {
 		await scenario(ctx);
+		ctx.compose.captureDetachedLogs("99");
 		if (json) {
 			console.log(
 				JSON.stringify({
@@ -137,11 +138,7 @@ async function main(): Promise<void> {
 			printTimings(ctx.compose.getTimingSummary());
 		}
 	} catch (error) {
-		ctx.captureFailure(error);
-		ctx.compose.logs("99-compose-logs-on-failure", true);
-		if (!ctx.keepStackOnFailure) {
-			ctx.compose.down("98-compose-down-on-failure", true);
-		}
+		handleScenarioFailure(ctx, error);
 		if (json) {
 			console.error(
 				JSON.stringify({

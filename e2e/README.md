@@ -135,6 +135,25 @@ this setting; these cases test recovery from container restarts. Discovery check
 wait for the pinned recipient's sync address instead of relying on time spent
 stopping a container to make cached discovery data fresh.
 
+Each Project Sharing viewer launch writes stdout and stderr to a distinct `/tmp/`
+file inside its synthetic peer container. The runner saves these streams in
+`99-<peer>-<launch>-viewer-log.json` artifacts (`stdout` field) before failure
+teardown, even when detached startup returned success but the viewer exited.
+It also snapshots logs before stopping/restarting a peer and after a successful
+scenario. Logs from successive restarts have separate names. A missing log or
+unreachable container produces a diagnostic command failure without replacing
+the original scenario failure; earlier snapshots remain available.
+
+These diagnostics stay in the ignored E2E artifact directory and the existing
+CI failure-artifact upload. They read no environment, credentials, or user
+profiles. Known credential forms (Bearer values, secret/token/password/API-key
+fields, private-key blocks, the synthetic admin secret) and home paths are
+redacted before log text leaves the container. This is a synthetic-only harness,
+not a general-purpose secret scrubber; do not run it against real profiles or
+publish its artifacts without inspection. Logging does not change readiness
+deadlines or sharing assertions and does not identify a startup failure's cause
+unless the captured output supplies that evidence.
+
 ## Run the Team setup scenario
 
 ```fish

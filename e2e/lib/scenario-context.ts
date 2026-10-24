@@ -11,6 +11,16 @@ export interface ScenarioContext {
 	captureFailure(error: unknown): void;
 }
 
+export function handleScenarioFailure(ctx: ScenarioContext, error: unknown): void {
+	ctx.captureFailure(error);
+	ctx.compose.logs("99-compose-logs-on-failure", true);
+	if (ctx.keepStackOnFailure) {
+		ctx.compose.captureDetachedLogs("99");
+		return;
+	}
+	ctx.compose.down("98-compose-down-on-failure", true);
+}
+
 function projectNameForScenario(name: string): string {
 	return `codemem-e2e-${name.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase()}`;
 }
