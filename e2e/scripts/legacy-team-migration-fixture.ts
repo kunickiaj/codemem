@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	deriveRecipientPolicyEffectiveDevicesFromDatabase,
 	fingerprintPublicKey,
@@ -15,36 +17,36 @@ const BETA_PROJECT = "https://example.invalid/e2e/beta.git";
 const WEB_PROJECT = "https://example.invalid/e2e/web.git";
 const OFF_ROSTER_DEVICE_ID = "legacy-off-roster-device";
 
-const ROSTER = {
+export const ROSTER = {
 	shared: {
 		deviceId: "legacy-shared-device",
 		displayName: "Shared Device",
-		publicKey: "legacy-team-e2e-shared-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMAkxw9LGG5J54wI3hDfCCcmncKMp+L+yRK/zrq5tF1c",
 	},
 	optional: {
 		deviceId: "legacy-optional-device",
 		displayName: "Optional Device",
-		publicKey: "legacy-team-e2e-optional-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKCEAGHd3Gqd2Vf1ddKGBpdOmyCtKkqbYjA1an+c82l1",
 	},
 	beta: {
 		deviceId: "legacy-beta-device",
 		displayName: "Beta Device",
-		publicKey: "legacy-team-e2e-beta-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtwvIG3GXZUz0YT4HJItgJDpXhKqOKMTWpdRWBiIpMo",
 	},
 	betaTwo: {
 		deviceId: "legacy-beta-two-device",
 		displayName: "Beta Two Device",
-		publicKey: "legacy-team-e2e-beta-two-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMoEHabCu1U1sh/ZV0EJ5lN4+3oor6Q7nuKm4a4xZREY",
 	},
 	betaThree: {
 		deviceId: "legacy-beta-three-device",
 		displayName: "Beta Three Device",
-		publicKey: "legacy-team-e2e-beta-three-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAh6B2Omp509nXC7+ll3GovXEMZBJJwejf+nK7kRAKQJ",
 	},
 	betaFour: {
 		deviceId: "legacy-beta-four-device",
 		displayName: "Beta Four Device",
-		publicKey: "legacy-team-e2e-beta-four-public-key",
+		publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM+w7d5sarn4tPlwr8gv2ZAXCasxvUgr5gq5XUra/e1d",
 	},
 } as const;
 
@@ -119,11 +121,19 @@ function seedProject(
 	if (gitRemote) {
 		store.db.prepare("UPDATE sessions SET git_remote = ? WHERE id = ?").run(gitRemote, sessionId);
 	}
-	const memoryId = store.remember(sessionId, "discovery", `${project} fixture`, "Synthetic migration fixture", 0.9, [], {
-		visibility: "shared",
-		created_at: NOW,
-		updated_at: NOW,
-	});
+	const memoryId = store.remember(
+		sessionId,
+		"discovery",
+		`${project} fixture`,
+		"Synthetic migration fixture",
+		0.9,
+		[],
+		{
+			visibility: "shared",
+			created_at: NOW,
+			updated_at: NOW,
+		},
+	);
 	if (scopeId) {
 		store.db
 			.prepare("UPDATE memory_items SET workspace_id = NULL, scope_id = ? WHERE id = ?")
@@ -148,7 +158,13 @@ function seed(store: MemoryStore): void {
 	insertScope(store, "scope-legacy-beta", "Legacy Beta", GROUP_BETA);
 	insertProjectMapping(store, ALPHA_PROJECT, "scope-legacy-alpha");
 	insertProjectMapping(store, BETA_PROJECT, "scope-legacy-beta");
-	seedProject(store, "legacy-alpha", "/workspace/legacy-alpha", ALPHA_PROJECT, "scope-legacy-alpha");
+	seedProject(
+		store,
+		"legacy-alpha",
+		"/workspace/legacy-alpha",
+		ALPHA_PROJECT,
+		"scope-legacy-alpha",
+	);
 	seedProject(store, "legacy-web", null, null, "scope-legacy-alpha");
 	seedProject(store, "legacy-beta", "/workspace/legacy-beta", BETA_PROJECT, "scope-legacy-beta");
 	seedProject(store, "web-canonical", "/workspace/web-canonical", WEB_PROJECT, null);
@@ -200,7 +216,7 @@ function conflictBetaAssignment(store: MemoryStore): void {
 		.run(ROSTER.beta.deviceId, NOW, NOW);
 }
 
-function rosterSummary() {
+export function rosterSummary() {
 	return Object.fromEntries(
 		Object.entries(ROSTER).map(([name, device]) => [
 			name,
@@ -289,7 +305,10 @@ async function main(): Promise<void> {
 	}
 }
 
-void main().catch((error) => {
-	console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-	process.exitCode = 1;
-});
+const entrypoint = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (entrypoint === import.meta.url) {
+	void main().catch((error) => {
+		console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
+		process.exitCode = 1;
+	});
+}

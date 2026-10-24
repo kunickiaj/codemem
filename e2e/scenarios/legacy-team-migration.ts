@@ -814,7 +814,7 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	);
 	assert(
 		alphaFinish.status === 200 && alphaFinish.body.status === "completed",
-		"Alpha finish failed",
+		`Alpha finish failed (HTTP ${alphaFinish.status}): ${JSON.stringify(alphaFinish.body)}`,
 	);
 	const afterAlpha = fixture(ctx, "summary", "25-after-alpha-summary");
 	assert(afterAlpha.policies.teams.length === 1, "Alpha finish was not atomic");
