@@ -3,7 +3,11 @@ import type { Database } from "../db.js";
 import { resolveSameActorPeerIds } from "../same-actor-peers.js";
 import type { AutomaticContext } from "../types.js";
 import type { RankInput, RankOutput } from "./semantic-worker-protocol.js";
-import { rankValidatedIndex, readCatalog } from "./validated-vector-index.js";
+import {
+	isSearchableVectorCatalog,
+	rankValidatedIndex,
+	readCatalog,
+} from "./validated-vector-index.js";
 
 export function contentIdentity(row: Record<string, unknown>): string {
 	return createHash("sha256").update(JSON.stringify(row)).digest("hex");
@@ -28,7 +32,8 @@ export function summarySessionId(
 export function rankWorkerInput(db: Database, input: RankInput): RankOutput | null {
 	return db.transaction(() => {
 		const catalog = readCatalog(db);
-		if (catalog?.status !== "ready" || catalog.generationId !== input.generationId) return null;
+		if (!isSearchableVectorCatalog(db, catalog) || catalog.generationId !== input.generationId)
+			return null;
 		const claimedDeviceIds = resolveSameActorPeerIds(db, input.proof.actorId);
 		const ranked = rankValidatedIndex(db, {
 			query: { model: input.embeddingIdentity, vectors: [input.embedding] },

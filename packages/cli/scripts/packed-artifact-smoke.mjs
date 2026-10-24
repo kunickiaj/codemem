@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildAdapterNormalizers } from "../../../scripts/build-adapter-normalizers.mjs";
 
@@ -83,6 +83,28 @@ function collectFiles(directory, predicate) {
 		}
 	}
 	return matches;
+}
+
+export function hasExternalEmbeddingsImport(
+	entrypoint,
+	{ readSource = (path) => readFileSync(path, "utf8") } = {},
+) {
+	const pending = [resolve(entrypoint)];
+	const visited = new Set();
+	while (pending.length > 0) {
+		const path = pending.pop();
+		if (visited.has(path)) continue;
+		visited.add(path);
+		const source = readSource(path);
+		if (/\bimport\s*\(\s*["']@codemem\/embeddings["']\s*\)/u.test(source)) return true;
+		// Follow literal imports/re-exports emitted by the bundler, not unrelated dist files.
+		for (const match of source.matchAll(
+			/\b(?:from\s*|import\s*(?:\(\s*)?)["'](\.{1,2}\/[^"']+\.m?js)["']/gu,
+		)) {
+			pending.push(resolve(dirname(path), match[1]));
+		}
+	}
+	return false;
 }
 
 function runAsync(command, args, options, input) {
@@ -556,6 +578,7 @@ export async function smokeCodexSpoolIsolation(isolatedRoot) {
 	const home = join(isolatedRoot, "codex-spool-home");
 	const baseEnv = {
 		...runtimeEnv(home),
+		CODEMEM_PROJECT: expected.project ?? "",
 		PATH: fakeBin,
 		CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS: "50",
 		CODEMEM_CODEX_RAW_EVENT_SPOOL_DIR: normalizedSpool,
@@ -749,13 +772,11 @@ try {
 			npm_config_install_strategy: "hoisted",
 		},
 	);
-	const semanticCoreBundle = readFileSync(
-		join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
-		"utf8",
-	);
 	assert(
-		/import\(["']@codemem\/embeddings["']\)/u.test(semanticCoreBundle),
-		"Packed core bundle does not preserve its external @codemem/embeddings import",
+		hasExternalEmbeddingsImport(
+			join(semanticInstallDir, "node_modules", "@codemem", "core", "dist", "index.js"),
+		),
+		"Packed core entrypoint and reachable modules do not preserve their external @codemem/embeddings import",
 	);
 	const installScriptsListing = spawnSync("npm", ["install-scripts", "ls", "--json"], {
 		cwd: semanticInstallDir,

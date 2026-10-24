@@ -30,8 +30,10 @@ import {
 import { contentIdentity, summarySessionId } from "./semantic-worker-ranking.js";
 import {
 	type CandidateVersion,
+	isSearchableVectorCatalog,
 	readCandidateVersions,
 	readCatalog,
+	readSearchableModelLabels,
 	type VectorCatalog,
 } from "./validated-vector-index.js";
 
@@ -132,7 +134,7 @@ function assertDatabaseIdentity(
 
 function readyCatalog(db: Database): VectorCatalog | null {
 	const catalog = readCatalog(db);
-	if (catalog?.status !== "ready" || catalog.writerVersion !== 1) return null;
+	if (!isSearchableVectorCatalog(db, catalog)) return null;
 	return catalog.models.some((entry) => entry.count > 0) ? catalog : null;
 }
 
@@ -146,13 +148,9 @@ export function hasReadySemanticCatalog(db: Database): boolean {
 	return currentCatalog(db) !== null;
 }
 
-function catalogModels(catalog: VectorCatalog | null, identity: string): string[] {
+function catalogModels(db: Database, catalog: VectorCatalog | null, identity: string): string[] {
 	if (!catalog) return [];
-	return resolveCatalogModels(
-		identity,
-		catalog.models.map((entry) => entry.model),
-		catalog.migration,
-	);
+	return resolveCatalogModels(identity, readSearchableModelLabels(db, catalog), catalog.migration);
 }
 
 function matchingCatalog(db: Database, state: SearchState): VectorCatalog | null {
@@ -277,11 +275,19 @@ async function prepareEmbedding(
 	if (!client) return null;
 	state.client = client;
 	state.embeddingIdentity = resolveEmbeddingClientVectorIdentityLabel(client);
-	state.models = catalogModels(matchingCatalog(options.store.db, state), state.embeddingIdentity);
+	state.models = catalogModels(
+		options.store.db,
+		matchingCatalog(options.store.db, state),
+		state.embeddingIdentity,
+	);
 	if (!state.models.length) return null;
 	const embedding = (await embedTexts([query], client))[0];
 	if (!embedding || !currentEmbedding(state)) return null;
-	const current = catalogModels(matchingCatalog(options.store.db, state), state.embeddingIdentity);
+	const current = catalogModels(
+		options.store.db,
+		matchingCatalog(options.store.db, state),
+		state.embeddingIdentity,
+	);
 	if (JSON.stringify(current) !== JSON.stringify(state.models)) return null;
 	return embedding;
 }
@@ -307,7 +313,7 @@ function revalidateOutput(
 		const catalog = readyCatalog(store.db);
 		if (catalog?.generationId !== state.generationId || output.generationId !== state.generationId)
 			return [];
-		const models = catalogModels(catalog, state.embeddingIdentity);
+		const models = catalogModels(store.db, catalog, state.embeddingIdentity);
 		if (
 			JSON.stringify(models) !== JSON.stringify(output.models) ||
 			JSON.stringify(models) !== JSON.stringify(state.models)
