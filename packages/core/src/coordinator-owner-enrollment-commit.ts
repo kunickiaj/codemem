@@ -217,6 +217,7 @@ function prepareEnrollmentNegativeConsistency(backend: AuthLinkBackend, a: Owner
 		fingerprint: a.fingerprint,
 	});
 }
+
 const WINNING_UPDATE_SQL = `UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'finalized',
  finalized_at_ms = ?, binding_id = ?, audit_event_id = ?, final_outcome_json = ?,
  final_key_proof_hash = ?, loopback_redirect = NULL

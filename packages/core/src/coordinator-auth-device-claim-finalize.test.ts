@@ -231,7 +231,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const statement = prepare(sql);
 				if (
 					!executionHook &&
-					sql.startsWith("UPDATE coordinator_auth_link_attempts SET state = 'finalized'")
+					/\bUPDATE\s+coordinator_auth_link_attempts\s+SET\s+state\s*=\s*'finalized'\s*,\s*link_id\s*=/.test(
+						sql,
+					)
 				) {
 					const run = statement.run.bind(statement);
 					// D1 prepares ahead of its transaction: inject when the winning UPDATE runs.
