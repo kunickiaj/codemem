@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { auditCorpus, rankExact, writeFixtureBatch } from "./semantic-ranking.js";
 import { createFixture, MODEL, vector } from "./semantic-ranking.test-helper.js";
+import {
+	auditCorpus,
+	rankExact,
+	writeFixtureBatch,
+} from "./semantic-ranking-reference.test-helper.js";
 
 let directory: string;
 let fixture: ReturnType<typeof createFixture>;

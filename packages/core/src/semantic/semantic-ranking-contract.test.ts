@@ -5,13 +5,17 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL } from "../embeddings.js";
 import { getMaintenanceJob } from "../maintenance-jobs.js";
-import { auditCorpus, type RankingRequest, rankExact } from "./semantic-ranking.js";
 import {
 	createFixture,
 	MODEL,
 	type RankingFixture,
 	vector,
 } from "./semantic-ranking.test-helper.js";
+import {
+	auditCorpus,
+	type RankingRequest,
+	rankExact,
+} from "./semantic-ranking-reference.test-helper.js";
 
 let directory: string;
 let fixture: RankingFixture;
@@ -163,7 +167,7 @@ it.each([0, -1, 201, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
 		// Act
 		const rank = () => rankExact(fixture.db, prepared);
 		// Assert
-		expect(rank).toThrow("prototype_limit_must_be_1_to_200");
+		expect(rank).toThrow("semantic_limit_must_be_1_to_200");
 	},
 );
 

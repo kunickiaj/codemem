@@ -1,4 +1,4 @@
-/** Isolated prototype: no runtime wiring, corpus repair, or package entrypoint export. */
+/** Exact semantic ranking inside a caller-owned, validated read snapshot. */
 import { type Database, tableExists } from "../db.js";
 import { DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL } from "../embeddings.js";
 import type { MaintenanceJobSnapshot, MaintenanceJobStatus } from "../maintenance-jobs.js";
@@ -8,36 +8,26 @@ import {
 	semanticResult,
 } from "../semantic-query.js";
 import type { MemoryFilters } from "../types.js";
+import { resolveVectorLayout } from "../vector-layout.js";
 import type { SemanticSearchResult, SemanticSearchScopeContext } from "../vectors.js";
 
-declare const corpusTokenBrand: unique symbol;
-export interface CorpusToken {
-	readonly [corpusTokenBrand]: true;
-}
 export interface PreparedQuery {
 	model: string;
 	vectors: readonly Float32Array[];
 }
-export interface FixtureVector {
+export interface VectorRowInput {
 	memoryId: number;
 	chunkIndex: number;
 	contentHash: string;
 	vector: Float32Array;
 }
 type Rejection = "shape" | "nonfinite" | "norm" | "model";
-export interface CorpusAudit {
-	token: CorpusToken;
-	scanned: number;
-	accepted: number;
-	rejected: readonly { rowid: number; reason: Rejection }[];
-}
 export interface RankingRequest {
 	query: PreparedQuery;
 	limit: number;
 	filters: MemoryFilters | null;
 	context: SemanticSearchScopeContext;
 	summarySessionId?: number | null;
-	token: CorpusToken;
 }
 interface Probe {
 	model: string;
@@ -52,32 +42,20 @@ export interface RankingResult {
 	probes: readonly Probe[];
 	fallbackCount: number;
 }
-interface Version {
-	data: number;
-	changes: number;
-	schema: number;
-}
-interface Trust {
-	db: Database;
-	version: Version;
-	acceptedIds: string | null;
-	models: Array<string | null>;
-	knownModels: ReadonlySet<string>;
-}
 interface CandidateScope {
 	sql: string;
 	params: unknown[];
 	acceptedSql: string;
 	acceptedParams: string[];
 	rowidSource: "memory_vectors" | "validated_vector_rows";
+	vectorTable: "memory_vectors" | "memory_vectors_v1";
 }
 interface Neighbor {
 	id: number;
 	distance: number;
 }
-const trusts = new WeakMap<CorpusToken, Trust>();
 
-function requireModel(model: string): void {
+export function requireModel(model: string): void {
 	if (typeof model !== "string" || !model.trim()) throw new TypeError("vector_model_required");
 }
 
@@ -111,128 +89,6 @@ export function inspectBytes(bytes: Buffer): Rejection | null {
 	return vectorRejection(vector);
 }
 
-function readVersion(db: Database): Version {
-	const { changes } = db.prepare("SELECT total_changes() AS changes").get() as { changes: number };
-	return {
-		data: Number(db.pragma("data_version", { simple: true })),
-		changes,
-		schema: Number(db.pragma("schema_version", { simple: true })),
-	};
-}
-
-function assertVersion(db: Database, version: Version): void {
-	const current = readVersion(db);
-	if (
-		current.data !== version.data ||
-		current.changes !== version.changes ||
-		current.schema !== version.schema
-	) {
-		throw new Error("stale_corpus_token_reaudit_required");
-	}
-}
-
-function readSnapshot<T>(db: Database, read: () => T): T {
-	if (db.inTransaction) throw new Error("prototype_requires_own_snapshot");
-	return db.transaction(() => {
-		// Pin the main database snapshot BEFORE reading data_version, not vice versa.
-		db.prepare("SELECT rootpage FROM main.sqlite_schema LIMIT 1").get();
-		return read();
-	})();
-}
-
-/**
- * Read-only audit; tokens are in-process and connection-bound, never durable epochs.
- * Even unrelated usage writes invalidate trust and require another full audit.
- * This conservative lifecycle is not a production corpus-validity solution.
- */
-export function auditCorpus(
-	db: Database,
-	options: { knownModels: readonly string[] },
-): CorpusAudit {
-	const knownModels = new Set(options.knownModels);
-	for (const model of knownModels) requireModel(model);
-	return readSnapshot(db, () => {
-		const version = readVersion(db);
-		const rejected: CorpusAudit["rejected"][number][] = [];
-		const acceptedIds: number[] = [];
-		const models = new Set<string | null>();
-		const rows = db.prepare("SELECT rowid, embedding, model FROM memory_vectors ORDER BY rowid");
-		for (const entry of rows.iterate()) {
-			const row = entry as { rowid: number; embedding: Buffer; model: string | null };
-			models.add(row.model);
-			const reason =
-				typeof row.model === "string" && knownModels.has(row.model)
-					? inspectBytes(row.embedding)
-					: "model";
-			if (reason) {
-				rejected.push({ rowid: row.rowid, reason });
-				continue;
-			}
-			acceptedIds.push(row.rowid);
-		}
-		assertVersion(db, version);
-		const token = Object.freeze({}) as CorpusToken;
-		trusts.set(token, {
-			db,
-			version,
-			// A clean, unchanged corpus needs no per-row acceptance mask. Any write
-			// invalidates the token before this shortcut can be used again.
-			acceptedIds: rejected.length === 0 ? null : JSON.stringify(acceptedIds),
-			models: [...models],
-			knownModels,
-		});
-		return {
-			token,
-			scanned: acceptedIds.length + rejected.length,
-			accepted: acceptedIds.length,
-			rejected,
-		};
-	});
-}
-
-/** Fixture-only writer: validate the entire supplied batch before starting writes. */
-export function writeFixtureBatch(
-	db: Database,
-	batch: {
-		expectedModel: string;
-		model: string;
-		expectedCount: number;
-		rows: readonly FixtureVector[];
-	},
-): void {
-	requireModel(batch.model);
-	if (batch.model !== batch.expectedModel) throw new TypeError("vector_model_mismatch");
-	if (!Number.isSafeInteger(batch.expectedCount) || batch.expectedCount !== batch.rows.length) {
-		throw new TypeError("vector_count_mismatch");
-	}
-	const prepared = batch.rows.map((row) => {
-		if (
-			!Number.isSafeInteger(row.memoryId) ||
-			row.memoryId <= 0 ||
-			!Number.isSafeInteger(row.chunkIndex) ||
-			row.chunkIndex < 0 ||
-			typeof row.contentHash !== "string" ||
-			!row.contentHash
-		) {
-			throw new TypeError("invalid_vector_metadata");
-		}
-		return { ...row, bytes: vectorBytes(row.vector) };
-	});
-	db.transaction(() => {
-		const insert = db.prepare(`INSERT INTO memory_vectors
-			(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, ?, ?, ?)`);
-		for (const row of prepared) {
-			insert.run(
-				row.bytes,
-				BigInt(row.memoryId),
-				BigInt(row.chunkIndex),
-				row.contentHash,
-				batch.model,
-			);
-		}
-	})();
-}
-
 function readModelMetadata(json: string | null): Record<string, unknown> | null {
 	try {
 		const value: unknown = JSON.parse(json ?? "null");
@@ -258,14 +114,6 @@ export function readModelJob(
 	return { status: row.status, metadata: readModelMetadata(row.metadata_json) };
 }
 
-function resolveModels(
-	db: Database,
-	currentModel: string,
-	catalog: Array<string | null>,
-): string[] {
-	return resolveCatalogModels(currentModel, catalog, readModelJob(db));
-}
-
 export function resolveCatalogModels(
 	currentModel: string,
 	catalog: Array<string | null>,
@@ -285,7 +133,7 @@ export function resolveCatalogModels(
 
 function candidateScope(
 	db: Database,
-	request: Omit<RankingRequest, "token">,
+	request: RankingRequest,
 	options: { acceptedIds: string | null; indexedRows?: boolean },
 ): CandidateScope {
 	const authorized = buildAuthorizedSemanticMemoryIdsQuery(
@@ -294,14 +142,25 @@ function candidateScope(
 		request.summarySessionId,
 	);
 	const rowidSource = options.indexedRows ? "validated_vector_rows" : "memory_vectors";
+	const layout = resolveVectorLayout(db);
+	if (layout.kind === "absent") throw new Error("vector_table_required");
+	const vectorTable = layout.physicalName;
+	const validitySql = options.indexedRows ? "AND audit_state='valid'" : "";
 	if (options.acceptedIds === null) {
-		return { ...authorized, acceptedSql: "", acceptedParams: [], rowidSource };
+		return {
+			...authorized,
+			acceptedSql: validitySql,
+			acceptedParams: [],
+			rowidSource,
+			vectorTable,
+		};
 	}
 	return {
 		...authorized,
-		acceptedSql: "AND rowid IN (SELECT value FROM json_each(?))",
+		acceptedSql: `${validitySql} AND rowid IN (SELECT value FROM json_each(?))`,
 		acceptedParams: [options.acceptedIds],
 		rowidSource,
+		vectorTable,
 	};
 }
 
@@ -313,7 +172,7 @@ function nativeProbe(
 	// Both constraints belong to vec0's MATCH query, not a joined postfilter.
 	const rows = db
 		.prepare(`WITH authorized_ids AS MATERIALIZED (${scope.sql})
-		SELECT memory_id AS id, distance FROM memory_vectors
+		SELECT memory_id AS id, distance FROM ${scope.vectorTable}
 		WHERE embedding MATCH ? AND k = ? AND model = ?
 		AND rowid IN (
 			SELECT rowid FROM ${scope.rowidSource}
@@ -363,7 +222,7 @@ function scalarRank(
 	return db
 		.prepare(`WITH authorized_ids AS MATERIALIZED (${scope.sql})
 		SELECT memory_id AS id, MIN(vec_distance_l2(embedding, ?)) AS distance
-		FROM memory_vectors WHERE rowid IN (
+		FROM ${scope.vectorTable} WHERE rowid IN (
 			SELECT rowid FROM ${scope.rowidSource}
 			WHERE memory_id IN (SELECT id FROM authorized_ids)
 			AND model IN (SELECT value FROM json_each(?)) ${scope.acceptedSql}
@@ -392,18 +251,10 @@ function loadPayloads(db: Database, ranked: Neighbor[]): SemanticSearchResult[] 
 	return results;
 }
 
-function rankSnapshot(db: Database, request: RankingRequest, trust: Trust): RankingResult {
-	assertVersion(db, trust.version);
-	const models = resolveModels(db, request.query.model, trust.models);
-	const result = rankPrevalidatedSnapshot(db, request, { models, acceptedIds: trust.acceptedIds });
-	assertVersion(db, trust.version);
-	return result;
-}
-
 /** Internal engine; caller supplies validation evidence and owns the read snapshot. */
 export function rankPrevalidatedSnapshot(
 	db: Database,
-	request: Omit<RankingRequest, "token">,
+	request: RankingRequest,
 	options: { models: string[]; acceptedIds: string | null; indexedRows?: boolean },
 ): RankingResult {
 	if (!db.inTransaction) throw new Error("ranking_snapshot_required");
@@ -440,19 +291,9 @@ export function rankPrevalidatedSnapshot(
 	};
 }
 
-/** Caller prepares inference first; all policy, model, ranking and payload reads share this snapshot. */
-export function rankExact(db: Database, request: RankingRequest): RankingResult {
-	const trust = trusts.get(request.token);
-	if (!trust || trust.db !== db) throw new TypeError("invalid_corpus_token");
-	validateRankingRequest(request);
-	if (!trust.knownModels.has(request.query.model)) throw new TypeError("unknown_query_model");
-	vectorBytes(request.query.vectors[0] as Float32Array);
-	return readSnapshot(db, () => rankSnapshot(db, request, trust));
-}
-
-function validateRankingRequest(request: Omit<RankingRequest, "token">): void {
+export function validateRankingRequest(request: RankingRequest): void {
 	if (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 200) {
-		throw new RangeError("prototype_limit_must_be_1_to_200");
+		throw new RangeError("semantic_limit_must_be_1_to_200");
 	}
 	requireModel(request.query.model);
 	if (request.query.vectors.length !== 1) throw new TypeError("query_vector_count_mismatch");
