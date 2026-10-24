@@ -174,6 +174,11 @@ beforeEach(() => {
 		return listener;
 	});
 	vi.mocked(existsSync).mockReturnValue(false);
+	vi.mocked(readFileSync)
+		.mockReset()
+		.mockImplementation(() => {
+			throw new Error("Unexpected file read");
+		});
 	const on = process.on.bind(process);
 	vi.spyOn(process, "on").mockImplementation((event, listener) => {
 		if (event === "SIGINT" || event === "SIGTERM") signals.set(event, listener as () => void);
@@ -307,6 +312,92 @@ describe("foreground account profile and listener wiring", () => {
 				"utf-8",
 			);
 			await shutdown();
+		},
+	);
+});
+
+describe("foreground viewer PID ownership cleanup", () => {
+	it("preserves an existing foreign viewer PID record after a bind failure", async () => {
+		// Arrange: this startup never reaches the callback that writes its own PID.
+		const pidPath = join(HOME, "viewer.pid");
+		vi.mocked(existsSync).mockImplementation((path) => String(path) === pidPath);
+		vi.mocked(readFileSync).mockReturnValue(
+			JSON.stringify({ pid: process.pid + 1, host: "127.0.0.1", port: 7441 }),
+		);
+		await startForegroundViewer(invocation());
+		const errorHandler = listeners[0]?.on.mock.calls.find(([event]) => event === "error")?.[1];
+		if (!errorHandler) throw new Error("Missing actual listener error callback");
+
+		// Act: deliver the listener failure without binding a real socket.
+		errorHandler(Object.assign(new Error("Address in use"), { code: "EADDRINUSE" }));
+		await exited.promise;
+
+		// Assert: failed startup cannot remove the running viewer's ownership record.
+		expect(writeFileSync).not.toHaveBeenCalled();
+		expect(rmSync).not.toHaveBeenCalledWith(pidPath);
+		expect(exits).toEqual([1]);
+	});
+	it.each(["own", "replaced"] as const)(
+		"removes only its own viewer PID record during graceful shutdown (%s record)",
+		async (owner) => {
+			// Arrange: listen successfully, then optionally replace the ownership record.
+			const pidPath = join(HOME, "viewer.pid");
+			await startForegroundViewer(invocation());
+			listening();
+			const writtenRecord = String(vi.mocked(writeFileSync).mock.calls[0]?.[1]);
+			const record = JSON.parse(writtenRecord);
+			vi.mocked(existsSync).mockImplementation((path) => String(path) === pidPath);
+			vi.mocked(readFileSync).mockReturnValue(
+				JSON.stringify({ ...record, pid: owner === "own" ? process.pid : process.pid + 1 }),
+			);
+
+			// Act
+			await shutdown();
+
+			// Assert: cleanup checks current ownership, not whether startup once wrote the file.
+			expect(record.pid).toBe(process.pid);
+			if (owner === "own") expect(rmSync).toHaveBeenCalledWith(pidPath);
+			else expect(rmSync).not.toHaveBeenCalledWith(pidPath);
+			expect(exits).toEqual([0]);
+		},
+	);
+	it.each(["own", "replaced"] as const)(
+		"removes only its own viewer PID record at the forced shutdown deadline (%s record)",
+		async (owner) => {
+			// Arrange: stall registry cleanup so only the 30-second safety timer can exit.
+			const closing = deferred();
+			mocks.registryClose.mockReturnValue(closing.promise);
+			const pidPath = join(HOME, "viewer.pid");
+			await startForegroundViewer(invocation());
+			listening();
+			vi.mocked(existsSync).mockImplementation((path) => String(path) === pidPath);
+			vi.mocked(readFileSync).mockReturnValue(
+				JSON.stringify({ pid: process.pid, host: "127.0.0.1", port: 7441 }),
+			);
+			const requestShutdown = signals.get("SIGTERM");
+			if (!requestShutdown) throw new Error("Missing actual shutdown callback");
+
+			// Act: another viewer may replace the file while graceful cleanup is stalled.
+			requestShutdown();
+			vi.mocked(readFileSync).mockReturnValue(
+				JSON.stringify({
+					pid: owner === "own" ? process.pid : process.pid + 1,
+					host: "127.0.0.1",
+					port: 7441,
+				}),
+			);
+			await vi.advanceTimersByTimeAsync(29_999);
+			const exitsBeforeDeadline = [...exits];
+			await vi.advanceTimersByTimeAsync(1);
+			const forcedExits = [...exits];
+			const forcedRemovals = [...vi.mocked(rmSync).mock.calls];
+			closing.resolve();
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Assert: force-exit preserves replacement ownership and still cleans its own file.
+			expect(exitsBeforeDeadline).toEqual([]);
+			expect(forcedExits).toEqual([1]);
+			expect(forcedRemovals.some(([path]) => path === pidPath)).toBe(owner === "own");
 		},
 	);
 });

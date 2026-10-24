@@ -201,6 +201,16 @@ function readViewerPidRecord(dbPath: string): ViewerPidRecord | null {
 	if (parsed.state === "legacy") return { pid: parsed.pid, host: "127.0.0.1", port: 38888 };
 	return null;
 }
+
+function removeOwnedViewerPidFile(dbPath: string): void {
+	try {
+		if (readViewerPidRecord(dbPath)?.pid !== process.pid) return;
+		rmSync(pidFilePath(dbPath));
+	} catch {
+		// Best-effort cleanup; a failed startup may not own a PID record.
+	}
+}
+
 function normalizeViewerHost(host: string): string {
 	const normalized = host.trim().toLowerCase();
 	if (
@@ -1035,11 +1045,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 			shutdownExitCode = 1;
 			logViewerShutdownError(error);
 		} finally {
-			try {
-				rmSync(pidPath);
-			} catch {
-				// ignore
-			}
+			removeOwnedViewerPidFile(dbPath);
 			try {
 				await closeStoreAsync();
 			} catch (error) {
@@ -1088,11 +1094,7 @@ function forceViewerShutdown(maintenanceWorker: ChildProcess | null, dbPath: str
 				// ignore
 			}
 		}
-		try {
-			rmSync(pidFilePath(dbPath));
-		} catch {
-			// ignore
-		}
+		removeOwnedViewerPidFile(dbPath);
 		try {
 			rmSync(maintenanceWorkerPidFilePath(dbPath));
 		} catch {
