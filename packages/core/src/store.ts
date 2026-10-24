@@ -11,6 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import { and, desc, eq, gt, inArray, isNotNull, lt, lte, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { normalizeCaptureContext } from "./capture-context.js";
@@ -374,6 +375,12 @@ function sessionMetadata(
 	return result;
 }
 
+/** Pin file connections at open time so later worker opens do not depend on cwd. */
+function connectionPath(dbPath: string): string {
+	if (dbPath === ":memory:") return dbPath;
+	return resolve(dbPath);
+}
+
 interface NormalizedRawEventBatchItem {
 	captureContext: unknown;
 	eventId: string;
@@ -450,7 +457,7 @@ export class MemoryStore {
 			runtimeSigningKey: options.runtimeSigningKey ? { ...options.runtimeSigningKey } : undefined,
 		};
 		this.dbPath = resolveDbPath(dbPath);
-		this.db = connect(this.dbPath);
+		this.db = connect(connectionPath(this.dbPath));
 		try {
 			loadSqliteVec(this.db);
 			assertSchemaReady(this.db);

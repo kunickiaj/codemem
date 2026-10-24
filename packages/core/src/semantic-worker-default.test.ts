@@ -358,6 +358,41 @@ describe("default inline producer close compatibility", () => {
 	);
 });
 
+describe("relative file semantic retrieval", () => {
+	it.each(["memory.sqlite", "./memory.sqlite"])(
+		"keeps %s worker retrieval tied to the file opened before cwd changes",
+		async (path) => {
+			const cwd = process.cwd();
+			try {
+				process.chdir(directory);
+				vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "0");
+				const current = new MemoryStore(path, {
+					keysDir: join(directory, "keys"),
+					runtimeSigningKey: { deviceId: "semantic-default", publicKey: CANONICAL_PUBLIC_KEY },
+				});
+				store = current;
+				vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+				const id = await seed(current);
+				process.chdir(cwd);
+				expect(current.search(query, 10, filters)).toEqual([]);
+				const messages = vi.spyOn(Worker.prototype, "postMessage");
+				const response = await current.buildMemoryPackAsync(query, 10, null, filters);
+				expect(response.item_ids).toEqual([id]);
+				expect(response.metrics.sources.semantic).toBe(1);
+				expect(response.metrics.fallback_used).toBe(false);
+				const worker = messages.mock.contexts[0] as Worker | undefined;
+				expect(worker).toBeInstanceOf(Worker);
+				await current.closeAsync();
+				expect(worker?.threadId).toBe(-1);
+				expect(current.db.open).toBe(false);
+				expect(globalThis.fetch).not.toHaveBeenCalled();
+			} finally {
+				process.chdir(cwd);
+			}
+		},
+	);
+});
+
 describe("default semantic retrieval through the public core entrypoint", () => {
 	it.each(["file", "memory"] as const)(
 		"ordinary %s vector writes feed all three async pack variants without duplicate usage",

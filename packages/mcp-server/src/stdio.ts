@@ -12,40 +12,70 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createCodememMcpServer } from "./server.js";
 import { ensureViewer } from "./stdio-viewer.js";
 
+function createStdioShutdown(close: () => Promise<void>) {
+	let shutdownPromise: Promise<void> | undefined;
+	let shutdownExitCode = 0;
+	return (exitCode: number): Promise<void> => {
+		shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+		if (shutdownPromise) return shutdownPromise;
+		// Parent embedding work cannot be interrupted; forced exit must not close SQLite under it.
+		const deadline = setTimeout(() => process.exit(1), 30_000);
+		deadline.unref();
+		shutdownPromise = Promise.resolve().then(async () => {
+			try {
+				await close();
+			} catch {
+				shutdownExitCode = 1;
+			} finally {
+				clearTimeout(deadline);
+			}
+			process.exit(shutdownExitCode);
+		});
+		return shutdownPromise;
+	};
+}
+
 async function main() {
 	const dbPath = resolveDbPath();
 	const store = new MemoryStore(dbPath);
+	let server: ReturnType<typeof createCodememMcpServer> | undefined;
+	let closePromise: Promise<void> | undefined;
+	let closing = false;
+	const close = () => {
+		if (closePromise) return closePromise;
+		closing = true;
+		closePromise = (async () => {
+			try {
+				// Stop dispatch and cancel active MCP request signals before draining the store.
+				await server?.close();
+			} finally {
+				await store.closeAsync();
+			}
+		})();
+		return closePromise;
+	};
+	const shutdown = createStdioShutdown(close);
 
 	try {
 		// Auto-start viewer in background (belt and suspenders with any hook-based start)
 		ensureViewer().catch(() => {});
 
-		const server = createCodememMcpServer(store);
+		server = createCodememMcpServer(store);
 		const transport = new StdioServerTransport();
-
-		const shutdown = async () => {
-			try {
-				await store.closeAsync();
-			} catch {
-				// Best effort — process is exiting
-			}
-			process.exit(0);
+		server.server.onclose = () => {
+			if (!closing) void shutdown(0);
 		};
 
-		process.on("SIGINT", shutdown);
-		process.on("SIGTERM", shutdown);
+		process.on("SIGINT", () => void shutdown(0));
+		process.on("SIGTERM", () => void shutdown(0));
+		process.stdin.once("end", () => void shutdown(0));
+		process.stdin.once("error", () => void shutdown(1));
 
 		await server.connect(transport);
 	} catch (err) {
-		// Close the store before bubbling so a startup failure does not leave
-		// the SQLite journal behind. Signal handlers are not yet attached if we
-		// crash before `server.connect` resolves.
-		try {
-			await store.closeAsync();
-		} catch {
-			// best effort
-		}
-		throw err;
+		// Preserve the startup error and exit code after transport and store cleanup.
+		console.error("codemem MCP server failed to start:", err);
+		await shutdown(1);
 	}
 }
 
