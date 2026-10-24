@@ -477,7 +477,7 @@ export async function startCodememMcpHttpServer(
 				});
 				server.closeAllConnections();
 			});
-			store.close();
+			await store.closeAsync();
 		})();
 		return closePromise;
 	};

@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { queryRetrievalAttempts } from "@codemem/core";
+import { MemoryStore, queryRetrievalAttempts } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAuditEvent } from "./audit.js";
 import {
@@ -71,6 +71,39 @@ beforeEach(() => {
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()));
 	vi.unstubAllEnvs();
+});
+
+describe("MCP HTTP cleanup", () => {
+	it("awaits async store cleanup when closing the HTTP owner", async () => {
+		const cleanup = Promise.withResolvers<void>();
+		const original = MemoryStore.prototype.closeAsync;
+		const close = vi.spyOn(MemoryStore.prototype, "close").mockImplementation(() => {
+			throw new Error("semantic_store_close_async_required");
+		});
+		const closeAsync = vi
+			.spyOn(MemoryStore.prototype, "closeAsync")
+			.mockImplementation(async function () {
+				await cleanup.promise;
+				await original.call(this);
+			});
+		try {
+			const server = await startCodememMcpHttpServer({ dbPath: tempDbPath(), port: 0 });
+			servers.push(server);
+			let finished = false;
+			const closing = server.close().then(() => {
+				finished = true;
+			});
+			await vi.waitFor(() => expect(closeAsync).toHaveBeenCalledOnce());
+			expect(finished).toBe(false);
+			cleanup.resolve();
+			await closing;
+			expect(close).not.toHaveBeenCalled();
+		} finally {
+			cleanup.resolve();
+			close.mockRestore();
+			closeAsync.mockRestore();
+		}
+	});
 });
 
 describe("MCP HTTP transport", () => {

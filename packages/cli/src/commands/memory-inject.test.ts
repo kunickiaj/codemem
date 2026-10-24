@@ -14,7 +14,10 @@ vi.mock("@codemem/core", async (importOriginal) => {
 				storePaths.push(dbPath);
 			}
 			buildMemoryPackAsync = buildMemoryPackAsync;
-			close = closeStore;
+			close() {
+				throw new Error("semantic_store_close_async_required");
+			}
+			closeAsync = closeStore;
 		},
 		resolveDbPath: (value?: string) => value,
 		resolveProject: (_cwd: string, override?: string | null) =>

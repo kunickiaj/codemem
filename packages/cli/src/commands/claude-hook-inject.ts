@@ -140,7 +140,7 @@ async function buildLocalPack(
 			: 0;
 		return { packText, items, packTokens };
 	} finally {
-		store.close();
+		await store.closeAsync();
 	}
 }
 

@@ -328,7 +328,7 @@ function createInjectMemoryCommand(): Command {
 				const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
 				console.log(pack.pack_text ?? "");
 			} finally {
-				store.close();
+				await store.closeAsync();
 			}
 		},
 	);

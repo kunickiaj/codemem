@@ -84,7 +84,7 @@ vi.mock("@codemem/core", async (original) => ({
 }));
 vi.mock("@codemem/server", () => ({
 	getStore: mocks.getStore,
-	closeStore: mocks.closeStore,
+	closeStoreAsync: mocks.closeStore,
 	createApp: mocks.createApp,
 	createSyncApp: mocks.createSyncApp,
 	createAccountContextReader: mocks.createContext,

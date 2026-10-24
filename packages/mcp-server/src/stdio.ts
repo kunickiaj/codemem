@@ -23,9 +23,9 @@ async function main() {
 		const server = createCodememMcpServer(store);
 		const transport = new StdioServerTransport();
 
-		const shutdown = () => {
+		const shutdown = async () => {
 			try {
-				store.close();
+				await store.closeAsync();
 			} catch {
 				// Best effort — process is exiting
 			}
@@ -41,7 +41,7 @@ async function main() {
 		// the SQLite journal behind. Signal handlers are not yet attached if we
 		// crash before `server.connect` resolves.
 		try {
-			store.close();
+			await store.closeAsync();
 		} catch {
 			// best effort
 		}

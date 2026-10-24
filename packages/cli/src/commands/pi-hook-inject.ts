@@ -142,7 +142,7 @@ async function buildLocalPack(
 				: 0,
 		};
 	} finally {
-		store.close();
+		await store.closeAsync();
 	}
 }
 

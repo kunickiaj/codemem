@@ -66,7 +66,10 @@ vi.mock("@codemem/core", async (importOriginal) => {
 			buildMemoryPackAsync = buildMemoryPackAsync;
 			buildMemoryPackWithTraceAsync = buildMemoryPackWithTraceAsync;
 			buildMemoryPackTraceAsync = buildMemoryPackTraceAsync;
-			close = closeStore;
+			close() {
+				throw new Error("semantic_store_close_async_required");
+			}
+			closeAsync = closeStore;
 		},
 		promptPackArtifactFingerprint: () => "a".repeat(64),
 		recordPromptPackArtifacts,
@@ -100,6 +103,31 @@ async function parseTraceCommand(args: string[]): Promise<void> {
 	if (!trace) throw new Error("trace command missing");
 	await trace.parseAsync(args, { from: "user" });
 }
+
+describe("pack command cleanup", () => {
+	it.each([false, true])(
+		"awaits semantic cleanup after pack execution (failure=%s)",
+		async (failure) => {
+			const cleanup = Promise.withResolvers<void>();
+			closeStore.mockReturnValue(cleanup.promise);
+			if (failure) {
+				buildMemoryPackAsync.mockRejectedValue(new Error("pack failed"));
+			} else {
+				buildMemoryPackAsync.mockResolvedValue({ items: [], metrics: {}, pack_text: "" });
+			}
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			let finished = false;
+			const execution = parsePackCommand(["semantic query", "--json"]).then(() => {
+				finished = true;
+			});
+			await vi.waitFor(() => expect(closeStore).toHaveBeenCalledOnce());
+			expect(finished).toBe(false);
+			cleanup.resolve();
+			await execution;
+			expect(process.exitCode ?? 0).toBe(failure ? 1 : 0);
+		},
+	);
+});
 
 describe("pack command", () => {
 	it("accepts only bounded allowlisted internal ledger metadata", () => {

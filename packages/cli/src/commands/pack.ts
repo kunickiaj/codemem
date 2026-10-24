@@ -318,7 +318,7 @@ async function withStore(
 		p.log.error(message);
 		process.exitCode = usageError ? 2 : 1;
 	} finally {
-		store?.close();
+		await store?.closeAsync();
 	}
 }
 

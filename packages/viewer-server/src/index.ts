@@ -117,6 +117,7 @@ export { VERSION };
 
 /** Shared store instance — SQLite WAL mode handles concurrent reads safely. */
 let sharedStore: MemoryStore | null = null;
+let sharedStoreClosePromise: Promise<void> | null = null;
 
 /** Get (or create) the shared store instance. Exported so the sweeper can share it. */
 export function getStore(): MemoryStore {
@@ -126,10 +127,22 @@ export function getStore(): MemoryStore {
 	return sharedStore;
 }
 
-/** Close the shared store (called on shutdown). */
+/** Close a synchronous-only shared store. Async pack owners use closeStoreAsync(). */
 export function closeStore(): void {
 	sharedStore?.close();
 	sharedStore = null;
+}
+
+/** Drain semantic work before closing SQLite and releasing the shared store. */
+export function closeStoreAsync(): Promise<void> {
+	if (sharedStoreClosePromise) return sharedStoreClosePromise;
+	if (!sharedStore) return Promise.resolve();
+	const store = sharedStore;
+	sharedStoreClosePromise = store.closeAsync().then(() => {
+		if (sharedStore === store) sharedStore = null;
+		sharedStoreClosePromise = null;
+	});
+	return sharedStoreClosePromise;
 }
 
 /**

@@ -855,7 +855,7 @@ function announceViewerStartup(options: {
 }
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
-	const { createApp, createSyncApp, closeStore, createViewerRawEventInbox, getStore } =
+	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
 		serverModule;
 	const createRawEventInbox = createViewerRawEventInbox;
 	const coordinatorMaintenanceDependencies =
@@ -890,7 +890,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 			p.log.warn(`sqlite-vec diagnostic: ${line}`);
 		}
 		process.env.CODEMEM_EMBEDDING_DISABLED = "1";
-		closeStore();
+		await closeStoreAsync();
 		store = getStore();
 		p.log.warn("Embeddings disabled for this viewer process; raw-event ingestion remains active.");
 	}
@@ -1037,7 +1037,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		} catch {
 			// ignore
 		}
-		closeStore();
+		await closeStoreAsync();
 		process.exit(0);
 	};
 
@@ -1061,7 +1061,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 			} catch {
 				// ignore
 			}
-			closeStore();
+			// Forced exit cannot wait for worker joins; never close SQLite underneath them.
 			process.exit(1);
 		}, 30000).unref();
 	};
