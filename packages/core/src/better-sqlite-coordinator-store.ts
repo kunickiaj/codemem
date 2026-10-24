@@ -48,19 +48,23 @@ import {
 	AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
+	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	AUTH_CONTROLLER_SCHEMA_SQL,
 	authControllerAuthorityValues,
 	authControllerConflictValues,
 	authControllerInsertValues,
+	authControllerRetryActiveValues,
 	authControllerRetryEligibleValues,
 	authControllerRetryResult,
 	authControllerReviewSql,
+	authControllerSubjectOwnerConflictValues,
 	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
 	type CoordinatorAuthControllerReviewInput,
+	type CoordinatorAuthControllerSubjectOwnerInput,
 	captureAuthControllerReview,
 	isAuthControllerId,
 	isAuthControllerUniqueError,
@@ -69,6 +73,7 @@ import {
 	type ControllerHistoryInput,
 	captureControllerHistory,
 } from "./coordinator-auth-controller-history.js";
+import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import {
 	type AuthLinkBackend,
@@ -202,6 +207,7 @@ import {
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
+import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	type NegativeOwnerConsistency,
 	prepareNegativeOwnerConsistency,
@@ -1113,6 +1119,37 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.accountOwnerTarget.readAccountOwnerTarget(...args);
 	}
+	private ownerResolutionReviews(): OwnerResolutionReviewOperations {
+		return new OwnerResolutionReviewOperations({
+			...this.schemaBackend,
+			all: async <T>({ sql, values }: AuthLinkStatement) =>
+				this.db.prepare(sql).all(...values) as T[],
+			run: async ({ sql, values }) => this.db.prepare(sql).run(...values).changes,
+			batch: async (statements) =>
+				this.db
+					.transaction(() =>
+						statements.map(({ sql, values }) => {
+							const statement = this.db.prepare(sql);
+							if (statement.reader) {
+								statement.all(...values);
+								return 0;
+							}
+							return statement.run(...values).changes;
+						}),
+					)
+					.immediate(),
+		});
+	}
+	previewOwnerResolutionReview(
+		...args: Parameters<OwnerResolutionReviewOperations["previewOwnerResolutionReview"]>
+	) {
+		return this.ownerResolutionReviews().previewOwnerResolutionReview(...args);
+	}
+	confirmOwnerResolutionReview(
+		...args: Parameters<OwnerResolutionReviewOperations["confirmOwnerResolutionReview"]>
+	) {
+		return this.ownerResolutionReviews().confirmOwnerResolutionReview(...args);
+	}
 	readAuthDeviceClaimReadiness(
 		...args: Parameters<AccountLinkStatusOperations["readAuthDeviceClaimReadiness"]>
 	) {
@@ -1449,6 +1486,36 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorAuthControllerAttestation | null> {
 		if (!isAuthControllerId(coordinatorId) || !isAuthControllerId(attestationId)) return null;
 		return this.getActiveAuthControllerAttestationSync(coordinatorId, attestationId);
+	}
+
+	async readAuthControllerAttestationForSnapshot(
+		input: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerAttestation | null> {
+		const review = captureAuthControllerReview(input);
+		if (!review?.verifiedSnapshot?.accountOwnerTarget) return null;
+		const source = this.db
+			.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL)
+			.get(review.groupId, review.deviceId) as CoordinatorEnrollment | undefined;
+		if (!source) return null;
+		const authority = authControllerAuthorityValues(
+			source,
+			enrollmentRevocationKeyId(source.public_key),
+		);
+		return (
+			(this.db
+				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, review))
+				.get(...authControllerRetryActiveValues(review, authority)) as
+				| CoordinatorAuthControllerAttestation
+				| undefined) ?? null
+		);
+	}
+
+	async hasAuthControllerSubjectOwnerConflict(
+		input: CoordinatorAuthControllerSubjectOwnerInput,
+	): Promise<boolean> {
+		return !!this.db
+			.prepare(AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL)
+			.get(...authControllerSubjectOwnerConflictValues(input));
 	}
 
 	async revokeAuthControllerAttestation(

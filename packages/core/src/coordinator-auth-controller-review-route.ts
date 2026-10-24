@@ -1,6 +1,8 @@
 import type { Context } from "hono";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
+	type CoordinatorAuthControllerAttestation,
+	type CoordinatorAuthControllerReviewInput,
 	type CoordinatorAuthControllerStore,
 	type CoordinatorAuthControllerVerifiedSnapshot,
 	captureVerifiedSnapshot,
@@ -12,10 +14,21 @@ import {
 	parseControllerHistoryRecord,
 } from "./coordinator-auth-controller-history.js";
 import {
+	type CoordinatorControllerOwnerAdvisory,
+	type ExistingOwnerReviewCapabilities,
+	historicalOwnerHints,
+	prepareExistingOwnerReview,
+} from "./coordinator-auth-controller-owner-review.js";
+import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import {
 	assertConfiguredAuthSchema,
 	authSchemaUpgradeResponse,
 	CoordinatorAuthSchemaUpgradeRequiredError,
 } from "./coordinator-auth-schema.js";
+import {
+	type CoordinatorOwnerResolutionReviewStore,
+	OwnerResolutionReviewError,
+} from "./coordinator-owner-resolution-review.js";
 import type {
 	CoordinatorEnrollment,
 	CoordinatorInvite,
@@ -23,6 +36,9 @@ import type {
 } from "./coordinator-store-contract.js";
 
 export type CoordinatorControllerReviewStore = CoordinatorStore &
+	Partial<CoordinatorOwnerResolutionReviewStore> &
+	ExistingOwnerReviewCapabilities &
+	Partial<Pick<CoordinatorAuthControllerStore, "readAuthControllerAttestationForSnapshot">> &
 	Pick<
 		CoordinatorAuthControllerStore,
 		"createAuthControllerAttestation" | "captureAuthControllerLegacyHistory"
@@ -40,6 +56,9 @@ export interface CoordinatorControllerReviewDeps {
 	) => Response | null;
 }
 interface ReviewInput {
+	purpose?: "existing_account_owner";
+	resolution_scope?: "historical_included_owner_labels_only";
+	confirm_owner_resolution_digest?: string;
 	group_id: string;
 	device_id: string;
 	identity_id: string;
@@ -53,8 +72,13 @@ export type CoordinatorControllerReviewReason =
 	| "enrollment_identity_mismatch"
 	| "invite_identity_mismatch"
 	| "invite_evidence_invalid"
-	| "legacy_history_invalid";
+	| "legacy_history_invalid"
+	| "account_owner_target_unavailable"
+	| "account_owner_conflict";
 export interface CoordinatorControllerReviewPreview {
+	purpose?: "existing_account_owner";
+	account_owner_target?: CoordinatorControllerOwnerAdvisory;
+	historical_owner_hints?: string[];
 	state: "ready" | "needs_review";
 	reasons: CoordinatorControllerReviewReason[];
 	coordinator_id: string;
@@ -70,24 +94,22 @@ export interface CoordinatorControllerReviewPreview {
 	/** Historical sharing assignments, not a change of account owner or Team access. */
 	legacy_history: ControllerHistoryEvidence[];
 }
+export interface CoordinatorControllerRecoveryReceipt {
+	disposition: "created" | "reused";
+	review_receipt_id: string;
+	/** Original immutable remote review digest, not the fresh confirmation digest. */
+	evidence_digest: string;
+}
 const PATH = "/v1/admin/auth-controller-reviews";
 const FIELDS = ["group_id", "device_id", "identity_id", "fingerprint"] as const;
-const ALLOWED_FIELDS: readonly string[] = [...FIELDS, "confirm_evidence_digest"];
+const ALLOWED_FIELDS: readonly string[] = [...FIELDS, "confirm_evidence_digest", "purpose"];
 function isHash(value: unknown): value is string {
 	return typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 }
 function captureInput(data: Record<string, unknown> | null): ReviewInput | null {
-	if (!data || Array.isArray(data)) return null;
-	const keys = Reflect.ownKeys(data);
-	if (keys.some((key) => typeof key !== "string" || !ALLOWED_FIELDS.includes(key))) return null;
-	const copy: Record<string, string> = {};
-	for (const key of keys) {
-		if (typeof key !== "string") return null;
-		const field = Object.getOwnPropertyDescriptor(data, key);
-		if (!field || !Object.hasOwn(field, "value") || typeof field.value !== "string") return null;
-		copy[key] = field.value;
-	}
-	if (!FIELDS.every((key) => Object.hasOwn(copy, key))) return null;
+	if (data && Object.hasOwn(data, "resolution_scope")) return captureResolutionInput(data);
+	const copy = captureInputFields(data);
+	if (!copy || !FIELDS.every((key) => Object.hasOwn(copy, key))) return null;
 	const { group_id, device_id, identity_id, fingerprint } = copy;
 	if (
 		!isAuthControllerId(group_id) ||
@@ -98,15 +120,42 @@ function captureInput(data: Record<string, unknown> | null): ReviewInput | null 
 		return null;
 	if (Object.hasOwn(copy, "confirm_evidence_digest") && !isHash(copy.confirm_evidence_digest))
 		return null;
-	const input: ReviewInput = {
-		group_id,
-		device_id,
-		identity_id,
-		fingerprint,
-	};
+	if (Object.hasOwn(copy, "purpose") && copy.purpose !== "existing_account_owner") return null;
+	const input: ReviewInput = { group_id, device_id, identity_id, fingerprint };
 	if (Object.hasOwn(copy, "confirm_evidence_digest"))
 		input.confirm_evidence_digest = copy.confirm_evidence_digest;
+	if (copy.purpose === "existing_account_owner") input.purpose = copy.purpose;
 	return input;
+}
+function captureResolutionInput(data: Record<string, unknown>): ReviewInput | null {
+	const allowed = [...FIELDS, "purpose", "resolution_scope", "confirm_owner_resolution_digest"];
+	if (Object.keys(data).some((key) => !allowed.includes(key))) return null;
+	if (
+		data.purpose !== "existing_account_owner" ||
+		data.resolution_scope !== "historical_included_owner_labels_only"
+	)
+		return null;
+	const { resolution_scope, confirm_owner_resolution_digest, ...ordinary } = data;
+	const input = captureInput(ordinary);
+	if (!input) return null;
+	if (Object.hasOwn(data, "confirm_owner_resolution_digest")) {
+		if (!isHash(confirm_owner_resolution_digest)) return null;
+		input.confirm_owner_resolution_digest = confirm_owner_resolution_digest;
+	}
+	return { ...input, resolution_scope };
+}
+function captureInputFields(data: Record<string, unknown> | null): Record<string, string> | null {
+	if (!data || Array.isArray(data)) return null;
+	const keys = Reflect.ownKeys(data);
+	if (keys.some((key) => typeof key !== "string" || !ALLOWED_FIELDS.includes(key))) return null;
+	const copy: Record<string, string> = {};
+	for (const key of keys) {
+		if (typeof key !== "string") return null;
+		const field = Object.getOwnPropertyDescriptor(data, key);
+		if (!field || !Object.hasOwn(field, "value") || typeof field.value !== "string") return null;
+		copy[key] = field.value;
+	}
+	return copy;
 }
 async function digestBytes(value: string): Promise<ArrayBuffer> {
 	return globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -170,6 +219,7 @@ async function preview(
 	store: CoordinatorControllerReviewStore,
 	input: ReviewInput,
 	coordinatorId: string,
+	config: CoordinatorAuthLinkConfig,
 ) {
 	const groupResult = await store.getGroup(input.group_id);
 	const group = groupResult ? { ...groupResult } : null;
@@ -191,27 +241,25 @@ async function preview(
 		verifiedSnapshot,
 		reasons,
 	});
-	addSnapshotReasons(verifiedSnapshot, reasons);
-	const result: CoordinatorControllerReviewPreview = {
-		state: reasons.length ? "needs_review" : "ready",
+	const ownerTarget = await addOwnerSnapshot({
+		store,
+		input,
+		enrollment,
+		config,
+		snapshot: verifiedSnapshot,
 		reasons,
-		coordinator_id: coordinatorId,
-		legacy_history: legacyHistory,
-		enrollment: null,
-		reviewed_invite_count: invites.length,
-		// Invite references remain short; retained manifests are presented in full separately.
-		reviewed_invites: invites.slice(0, 10).map((invite) => ({
-			invite_id: invite.invite_id,
-			kind: invite.invite_kind as "team_member" | "add_device",
-		})),
-	};
-	if (enrollment && !reasons.includes("enrollment_identity_mismatch"))
-		result.enrollment = {
-			device_id: enrollment.device_id,
-			display_name: enrollment.display_name?.slice(0, 256) ?? null,
-			fingerprint: enrollment.fingerprint,
-			identity_label: enrollment.identity_id === null ? "none" : "matches",
-		};
+	});
+	addSnapshotReasons(verifiedSnapshot, reasons);
+	const result = previewResult({
+		input,
+		coordinatorId,
+		enrollment,
+		invites,
+		reasons,
+		legacyHistory,
+		verifiedSnapshot,
+		ownerTarget,
+	});
 	if (result.state === "ready" && enrollment)
 		result.evidence_digest = await hash([
 			"codemem-controller-review-v2",
@@ -227,6 +275,71 @@ async function preview(
 			},
 		]);
 	return { result, enrollment, verifiedSnapshot };
+}
+
+async function addOwnerSnapshot(options: {
+	store: CoordinatorControllerReviewStore;
+	input: ReviewInput;
+	enrollment: CoordinatorEnrollment | null;
+	config: CoordinatorAuthLinkConfig;
+	snapshot: CoordinatorAuthControllerVerifiedSnapshot;
+	reasons: CoordinatorControllerReviewReason[];
+}): Promise<CoordinatorControllerOwnerAdvisory | undefined> {
+	if (!options.input.purpose) return undefined;
+	const owner = await prepareExistingOwnerReview({
+		...options,
+		identityId: options.input.identity_id,
+	});
+	if (owner.reason) options.reasons.push(owner.reason);
+	return owner.target;
+}
+
+function previewResult(options: {
+	input: ReviewInput;
+	coordinatorId: string;
+	enrollment: CoordinatorEnrollment | null;
+	invites: CoordinatorInvite[];
+	reasons: CoordinatorControllerReviewReason[];
+	legacyHistory: ControllerHistoryEvidence[];
+	verifiedSnapshot: CoordinatorAuthControllerVerifiedSnapshot;
+	ownerTarget: CoordinatorControllerOwnerAdvisory | undefined;
+}): CoordinatorControllerReviewPreview {
+	const {
+		input,
+		coordinatorId,
+		enrollment,
+		invites,
+		reasons,
+		legacyHistory,
+		verifiedSnapshot,
+		ownerTarget,
+	} = options;
+	const result: CoordinatorControllerReviewPreview = {
+		state: reasons.length ? "needs_review" : "ready",
+		reasons,
+		coordinator_id: coordinatorId,
+		legacy_history: legacyHistory,
+		enrollment: null,
+		reviewed_invite_count: invites.length,
+		// Invite references remain short; retained manifests are presented in full separately.
+		reviewed_invites: invites.slice(0, 10).map((invite) => ({
+			invite_id: invite.invite_id,
+			kind: invite.invite_kind as "team_member" | "add_device",
+		})),
+	};
+	if (input.purpose) {
+		result.purpose = input.purpose;
+		result.account_owner_target = ownerTarget;
+		result.historical_owner_hints = historicalOwnerHints(legacyHistory, verifiedSnapshot);
+	}
+	if (enrollment && !reasons.includes("enrollment_identity_mismatch"))
+		result.enrollment = {
+			device_id: enrollment.device_id,
+			display_name: enrollment.display_name?.slice(0, 256) ?? null,
+			fingerprint: enrollment.fingerprint,
+			identity_label: enrollment.identity_id === null ? "none" : "matches",
+		};
+	return result;
 }
 async function addHistorySnapshot(options: {
 	store: CoordinatorControllerReviewStore;
@@ -279,8 +392,14 @@ async function applyReview(
 	store: CoordinatorControllerReviewStore,
 	input: ReviewInput,
 	coordinatorId: string,
+	config: CoordinatorAuthLinkConfig,
 ): Promise<Response> {
-	const { result, enrollment, verifiedSnapshot } = await preview(store, input, coordinatorId);
+	const { result, enrollment, verifiedSnapshot } = await preview(
+		store,
+		input,
+		coordinatorId,
+		config,
+	);
 	if (input.confirm_evidence_digest === undefined) return c.json(result);
 	if (result.state !== "ready" || !enrollment || !result.evidence_digest)
 		return c.json({ error: "needs_review", ...result }, 409);
@@ -288,7 +407,7 @@ async function applyReview(
 		return c.json({ error: "review_stale" }, 409);
 	const attestationId = `controller-v1:${await hash([coordinatorId, input.group_id, input.device_id, input.fingerprint])}`;
 	const reviewReceiptId = `review-v1:${await hash([attestationId, input.identity_id, result.evidence_digest])}`;
-	const created = await store.createAuthControllerAttestation({
+	const review = {
 		attestationId,
 		coordinatorId,
 		identityId: input.identity_id,
@@ -299,7 +418,12 @@ async function applyReview(
 		reviewReceiptId,
 		evidenceDigest: result.evidence_digest,
 		verifiedSnapshot,
-	});
+	};
+	const activeReview = result.account_owner_target?.active_review;
+	if (input.purpose && activeReview) {
+		return restoreReview(c, store, review, activeReview);
+	}
+	const created = await store.createAuthControllerAttestation(review);
 	if (created.kind === "rejected") {
 		if (created.error === "enrollment_mismatch" || created.error === "review_stale")
 			return c.json({ error: "review_stale" }, 409);
@@ -307,19 +431,57 @@ async function applyReview(
 			return c.json({ error: "already_reviewed_or_needs_review" }, 409);
 		return c.json({ error: "review_unavailable" }, 403);
 	}
-	const row = created.attestation;
+	return appliedReviewResponse(c, created.attestation, created.kind, input.purpose);
+}
+
+async function restoreReview(
+	c: Context,
+	store: CoordinatorControllerReviewStore,
+	review: CoordinatorAuthControllerReviewInput,
+	active: NonNullable<CoordinatorControllerOwnerAdvisory["active_review"]>,
+): Promise<Response> {
+	const row = await store.readAuthControllerAttestationForSnapshot?.({
+		...review,
+		attestationId: active.attestation_id,
+	});
+	if (
+		!row ||
+		row.identity_id !== review.identityId ||
+		row.review_receipt_id !== active.review_receipt_id ||
+		row.evidence_digest !== active.evidence_digest
+	)
+		return c.json({ error: "review_stale" }, 409);
+	return appliedReviewResponse(c, row, "existing", "existing_account_owner");
+}
+
+function appliedReviewResponse(
+	c: Context,
+	row: CoordinatorAuthControllerAttestation,
+	state: "created" | "existing",
+	purpose: ReviewInput["purpose"],
+): Response {
+	const result = {
+		state,
+		attestation_id: row.attestation_id,
+		coordinator_id: row.coordinator_id,
+		group_id: row.group_id,
+		device_id: row.device_id,
+		fingerprint: row.fingerprint,
+		identity_id: row.identity_id,
+		created_at: row.created_at,
+	};
+	if (!purpose) return c.json(result, state === "created" ? 201 : 200);
 	return c.json(
 		{
-			state: created.kind,
-			attestation_id: row.attestation_id,
-			coordinator_id: row.coordinator_id,
-			group_id: row.group_id,
-			device_id: row.device_id,
-			fingerprint: row.fingerprint,
-			identity_id: row.identity_id,
-			created_at: row.created_at,
+			...result,
+			purpose,
+			recovery_receipt: {
+				disposition: state === "created" ? "created" : "reused",
+				review_receipt_id: row.review_receipt_id,
+				evidence_digest: row.evidence_digest,
+			},
 		},
-		created.kind === "created" ? 201 : 200,
+		state === "created" ? 201 : 200,
 	);
 }
 async function handleReview(c: Context, deps: CoordinatorControllerReviewDeps): Promise<Response> {
@@ -347,14 +509,70 @@ async function handleReview(c: Context, deps: CoordinatorControllerReviewDeps): 
 			if (!input) return c.json({ error: "review_invalid_input" }, 400);
 			store = deps.storeFactory();
 			await assertConfiguredAuthSchema(store);
-			return await applyReview(c, store, input, deps.config.coordinatorId);
+			if (input.resolution_scope) return await applyResolutionReview(c, store, input, deps.config);
+			return await applyReview(c, store, input, deps.config.coordinatorId, deps.config);
 		} finally {
 			await store?.close();
 		}
 	} catch (error) {
+		if (error instanceof OwnerResolutionReviewError) {
+			if (error.code === "review_stale") return c.json({ error: error.code }, 409);
+			return c.json({ error: error.code, action: "Preview status before confirming again" }, 503);
+		}
 		if (error instanceof CoordinatorAuthSchemaUpgradeRequiredError)
 			return authSchemaUpgradeResponse();
 		return c.json({ error: "review_unavailable" }, 503);
+	}
+}
+async function applyResolutionReview(
+	c: Context,
+	store: CoordinatorControllerReviewStore,
+	input: ReviewInput,
+	config: CoordinatorAuthLinkConfig,
+): Promise<Response> {
+	if (
+		typeof store.previewOwnerResolutionReview !== "function" ||
+		typeof store.confirmOwnerResolutionReview !== "function"
+	)
+		return c.json(
+			{ error: "owner_resolution_review_unsupported", action: "Upgrade the coordinator" },
+			503,
+		);
+	const selection = {
+		groupId: input.group_id,
+		deviceId: input.device_id,
+		identityId: input.identity_id,
+		fingerprint: input.fingerprint,
+	};
+	if (input.confirm_owner_resolution_digest === undefined)
+		return c.json(await store.previewOwnerResolutionReview(selection, config));
+	const result = await confirmResolutionReview(
+		{ confirmOwnerResolutionReview: store.confirmOwnerResolutionReview.bind(store) },
+		{
+			...selection,
+			confirmOwnerResolutionDigest: input.confirm_owner_resolution_digest,
+		},
+		config,
+	);
+	const created =
+		result.recovery_receipt?.disposition === "created" ||
+		result.owner_resolution?.disposition === "created";
+	return c.json(result, created ? 201 : 200);
+}
+async function confirmResolutionReview(
+	store: Pick<CoordinatorOwnerResolutionReviewStore, "confirmOwnerResolutionReview">,
+	selection: Parameters<CoordinatorOwnerResolutionReviewStore["confirmOwnerResolutionReview"]>[0],
+	config: CoordinatorAuthLinkConfig,
+) {
+	try {
+		return await store.confirmOwnerResolutionReview(selection, config);
+	} catch (error) {
+		if (
+			error instanceof OwnerResolutionReviewError ||
+			error instanceof CoordinatorAuthSchemaUpgradeRequiredError
+		)
+			throw error;
+		throw new OwnerResolutionReviewError("owner_resolution_outcome_unknown");
 	}
 }
 /** Existing configured admin authority only; local evidence is not an authentication proof. */

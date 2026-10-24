@@ -73,6 +73,13 @@ export type CoordinatorAuthControllerCreateResult =
 	  };
 
 export interface CoordinatorAuthControllerStore {
+	hasAuthControllerSubjectOwnerConflict(
+		input: CoordinatorAuthControllerSubjectOwnerInput,
+	): Promise<boolean>;
+	/** Read-only restore: checks fresh evidence without comparing or rewriting the stored digest. */
+	readAuthControllerAttestationForSnapshot(
+		input: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerAttestation | null>;
 	captureAuthControllerLegacyHistory(
 		input: ControllerHistoryInput,
 	): Promise<ControllerHistorySnapshot>;
@@ -84,6 +91,39 @@ export interface CoordinatorAuthControllerStore {
 		attestationId: string,
 	): Promise<CoordinatorAuthControllerAttestation | null>;
 	revokeAuthControllerAttestation(coordinatorId: string, attestationId: string): Promise<boolean>;
+}
+
+export interface CoordinatorAuthControllerSubjectOwnerInput {
+	identityId: string;
+	/** Captured by the trusted history reader, never accepted from browser JSON. */
+	history: ControllerHistorySnapshot;
+}
+
+export function authControllerSubjectOwnerConflictValues(
+	input: CoordinatorAuthControllerSubjectOwnerInput,
+): string[] {
+	try {
+		const identity = Object.getOwnPropertyDescriptor(input, "identityId");
+		const history = Object.getOwnPropertyDescriptor(input, "history");
+		if (
+			!identity ||
+			!Object.hasOwn(identity, "value") ||
+			!isAuthControllerId(identity.value) ||
+			!history ||
+			!Object.hasOwn(history, "value")
+		)
+			throw new Error("account_owner_subject_invalid");
+		const captured = captureControllerHistorySnapshot(history.value);
+		if (
+			!captured ||
+			!isAuthControllerId(captured.coordinatorId) ||
+			!isAuthControllerId(captured.deviceId)
+		)
+			throw new Error("account_owner_subject_invalid");
+		return [JSON.stringify(captured), identity.value];
+	} catch {
+		throw new Error("account_owner_subject_invalid");
+	}
 }
 
 const REVIEW_FIELDS = {

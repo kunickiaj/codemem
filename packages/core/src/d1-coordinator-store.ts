@@ -36,10 +36,12 @@ import {
 	authControllerRetryEligibleValues,
 	authControllerRetryResult,
 	authControllerReviewSql,
+	authControllerSubjectOwnerConflictValues,
 	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerCreateResult,
 	type CoordinatorAuthControllerReviewInput,
+	type CoordinatorAuthControllerSubjectOwnerInput,
 	captureAuthControllerReview,
 	isAuthControllerId,
 	isAuthControllerUniqueError,
@@ -48,6 +50,7 @@ import {
 	type ControllerHistoryInput,
 	captureControllerHistory,
 } from "./coordinator-auth-controller-history.js";
+import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
 import {
 	type AuthLinkBackend,
 	AuthLinkOperations,
@@ -174,6 +177,7 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	type NegativeOwnerConsistency,
 	prepareNegativeOwnerConsistency,
@@ -1316,6 +1320,29 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	) {
 		return this.accountOwnerTarget.readAccountOwnerTarget(...args);
 	}
+	private ownerResolutionReviews(): OwnerResolutionReviewOperations {
+		return new OwnerResolutionReviewOperations({
+			...createD1AuthLinkBackend(this.db),
+			all: async <T>({ sql, values }: AuthLinkStatement) => {
+				const result = await this.db
+					.prepare(sql)
+					.bind(...values)
+					.all<T>();
+				if (!result.results) throw new Error("owner_resolution_rows_unavailable");
+				return result.results;
+			},
+		});
+	}
+	previewOwnerResolutionReview(
+		...args: Parameters<OwnerResolutionReviewOperations["previewOwnerResolutionReview"]>
+	) {
+		return this.ownerResolutionReviews().previewOwnerResolutionReview(...args);
+	}
+	confirmOwnerResolutionReview(
+		...args: Parameters<OwnerResolutionReviewOperations["confirmOwnerResolutionReview"]>
+	) {
+		return this.ownerResolutionReviews().confirmOwnerResolutionReview(...args);
+	}
 	readAuthDeviceClaimReadiness(
 		...args: Parameters<AccountLinkStatusOperations["readAuthDeviceClaimReadiness"]>
 	) {
@@ -1574,6 +1601,36 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return firstRow<CoordinatorAuthControllerAttestation>(
 			this.db.prepare(AUTH_CONTROLLER_ACTIVE_SQL).bind(coordinatorId, attestationId, ...authority),
 		);
+	}
+
+	async readAuthControllerAttestationForSnapshot(
+		input: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerAttestation | null> {
+		const review = captureAuthControllerReview(input);
+		if (!review?.verifiedSnapshot?.accountOwnerTarget) return null;
+		const source = await firstRow<CoordinatorEnrollment>(
+			this.db.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL).bind(review.groupId, review.deviceId),
+		);
+		if (!source) return null;
+		const authority = authControllerAuthorityValues(
+			source,
+			await ed25519KeyIdForRevocation(source.public_key),
+		);
+		return firstRow<CoordinatorAuthControllerAttestation>(
+			this.db
+				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, review))
+				.bind(...authControllerRetryActiveValues(review, authority)),
+		);
+	}
+
+	async hasAuthControllerSubjectOwnerConflict(
+		input: CoordinatorAuthControllerSubjectOwnerInput,
+	): Promise<boolean> {
+		return !!(await firstRow<{ conflict: number }>(
+			this.db
+				.prepare(AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL)
+				.bind(...authControllerSubjectOwnerConflictValues(input)),
+		));
 	}
 
 	async revokeAuthControllerAttestation(
