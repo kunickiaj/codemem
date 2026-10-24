@@ -133,7 +133,10 @@ export type {
 } from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
 export { parseControllerHistoryEvidence } from "./coordinator-auth-controller-history.js";
+export type { CoordinatorAuthControllerOwnerSnapshot } from "./coordinator-auth-controller-owner.js";
+export type { CoordinatorControllerOwnerAdvisory } from "./coordinator-auth-controller-owner-review.js";
 export type {
+	CoordinatorControllerRecoveryReceipt,
 	CoordinatorControllerReviewDeps,
 	CoordinatorControllerReviewPreview,
 	CoordinatorControllerReviewReason,
@@ -241,6 +244,19 @@ export type {
 	CoordinatorOwnerReviewLocalOptions,
 } from "./coordinator-owner-review-local.js";
 export { readCoordinatorOwnerReviewLocalEvidence } from "./coordinator-owner-review-local.js";
+export type {
+	ResolvedAccountOwnerReceiptReference,
+	ResolvedAccountOwnerStatus,
+} from "./coordinator-resolved-account-owner-status.js";
+export type {
+	CoordinatorResolvedAccountOwnerStatusRead,
+	ReadCoordinatorResolvedAccountOwnerReceiptStatusOptions,
+	ReadCoordinatorResolvedAccountOwnerStatusOptions,
+} from "./coordinator-resolved-account-owner-status-client.js";
+export {
+	readCoordinatorResolvedAccountOwnerReceiptStatus,
+	readCoordinatorResolvedAccountOwnerStatus,
+} from "./coordinator-resolved-account-owner-status-client.js";
 export {
 	coordinatorEnabled,
 	coordinatorStatusSnapshot,
