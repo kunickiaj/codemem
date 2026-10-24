@@ -201,6 +201,10 @@ import {
 } from "./coordinator-membership-effects.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
+	prepareNegativeOwnerConsistency,
+	withNegativeOwnerConsistency,
+} from "./coordinator-owner-negative-consistency.js";
+import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
 	capturePeerEnrollments,
@@ -1285,6 +1289,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorAuthControllerCreateResult> {
 		const review = captureAuthControllerReview(input);
 		if (!review) return { kind: "rejected", error: "invalid_review_input" };
+		const conflict = this.db
+			.prepare(AUTH_CONTROLLER_CONFLICT_SQL)
+			.get(...authControllerConflictValues(review)) as
+			| CoordinatorAuthControllerAttestation
+			| undefined;
+		const hasConflict = conflict !== undefined;
+		const consistency = hasConflict ? null : await this.prepareAuthControllerConsistency(review);
+		if (!hasConflict && !consistency) return authControllerUnavailableResult(review);
 		return this.db
 			.transaction((): CoordinatorAuthControllerCreateResult => {
 				const source = this.db
@@ -1295,15 +1307,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					source,
 					enrollmentRevocationKeyId(source.public_key),
 				);
+				if (hasConflict) return this.resolveAuthControllerRetrySync(review, authority);
 				try {
-					const inserted = this.db
-						.prepare(authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review))
-						.run(...authControllerInsertValues(review, nowISO(), authority));
-					if (inserted.changes === 0)
-						return {
-							kind: "rejected",
-							error: review.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
-						};
+					const statement = withNegativeOwnerConsistency(
+						{
+							sql: authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review),
+							values: authControllerInsertValues(review, nowISO(), authority),
+						},
+						consistency ?? { sql: "SELECT 0 AS matches", values: [] },
+					);
+					const inserted = this.db.prepare(statement.sql).run(...statement.values);
+					if (inserted.changes === 0) return authControllerUnavailableResult(review);
 				} catch (error) {
 					if (!isAuthControllerUniqueError(error)) throw error;
 					return this.resolveAuthControllerRetrySync(review, authority);
@@ -1317,6 +1331,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				return { kind: "created", attestation };
 			})
 			.immediate();
+	}
+
+	private prepareAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
+		return prepareNegativeOwnerConsistency(
+			{
+				first: async <T>({ sql, values }: AuthLinkStatement) =>
+					(this.db.prepare(sql).get(...values) as T | undefined) ?? null,
+				all: async <T>({ sql, values }: AuthLinkStatement) =>
+					this.db.prepare(sql).all(...values) as T[],
+			},
+			{
+				...review,
+				ownerIdentityId: review.identityId,
+				enrollment: { groupId: review.groupId },
+				verifiedHistory: review.verifiedSnapshot?.legacyHistory,
+			},
+		);
 	}
 
 	private resolveAuthControllerRetrySync(

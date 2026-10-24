@@ -27,11 +27,13 @@ import {
 	AUTH_CONTROLLER_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
 	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
+	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	authControllerAuthorityValues,
 	authControllerConflictValues,
 	authControllerInsertValues,
 	authControllerRetryActiveValues,
+	authControllerRetryEligibleValues,
 	authControllerRetryResult,
 	authControllerReviewSql,
 	authControllerUnavailableResult,
@@ -170,6 +172,10 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import {
+	prepareNegativeOwnerConsistency,
+	withNegativeOwnerConsistency,
+} from "./coordinator-owner-negative-consistency.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
@@ -1391,12 +1397,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			source,
 			await ed25519KeyIdForRevocation(source.public_key),
 		);
+		const conflict = await firstRow<CoordinatorAuthControllerAttestation>(
+			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(review)),
+		);
+		if (conflict) return this.resolveAuthControllerRetry(review, authority);
+		const consistency = await this.prepareAuthControllerConsistency(review);
+		if (!consistency) return authControllerUnavailableResult(review);
 		try {
-			const inserted = await runChanges(
-				this.db
-					.prepare(authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review))
-					.bind(...authControllerInsertValues(review, nowISO(), authority)),
+			const statement = withNegativeOwnerConsistency(
+				{
+					sql: authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review),
+					values: authControllerInsertValues(review, nowISO(), authority),
+				},
+				consistency,
 			);
+			const inserted = await runChanges(this.db.prepare(statement.sql).bind(...statement.values));
 			if (inserted === 0)
 				return {
 					kind: "rejected",
@@ -1415,10 +1430,42 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return { kind: "created", attestation };
 	}
 
+	private prepareAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
+		return prepareNegativeOwnerConsistency(
+			{
+				first: <T>({ sql, values }: AuthLinkStatement) =>
+					this.db
+						.prepare(sql)
+						.bind(...values)
+						.first<T>(),
+				all: async <T>({ sql, values }: AuthLinkStatement) => {
+					const result = await this.db
+						.prepare(sql)
+						.bind(...values)
+						.all<T>();
+					if (!Array.isArray(result.results)) throw new Error("ownership_evidence_unavailable");
+					return result.results;
+				},
+			},
+			{
+				...review,
+				ownerIdentityId: review.identityId,
+				enrollment: { groupId: review.groupId },
+				verifiedHistory: review.verifiedSnapshot?.legacyHistory,
+			},
+		);
+	}
+
 	private async resolveAuthControllerRetry(
 		input: CoordinatorAuthControllerReviewInput,
 		authority: (string | null)[],
 	): Promise<CoordinatorAuthControllerCreateResult> {
+		const eligible = await firstRow<{ eligible: number }>(
+			this.db
+				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, input))
+				.bind(...authControllerRetryEligibleValues(input, authority)),
+		);
+		if (!eligible) return authControllerUnavailableResult(input);
 		const row = await firstRow<CoordinatorAuthControllerAttestation>(
 			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(input)),
 		);
