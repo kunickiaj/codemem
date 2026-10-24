@@ -342,10 +342,67 @@ codemem stats --json --attribution
 - It contains no raw transcript, per-memory ROI, or composite productivity score. It makes no causal claim absent a preregistered randomized contrast.
 
 ## Semantic recall
-- Embeddings are stored via sqlite-vec + fastembed.
-- Embeddings are written automatically for new memories.
-- Backfill existing memories with: `codemem embed --dry-run` then `codemem embed`.
-- If sqlite-vec fails to load, semantic recall is skipped and keyword search remains.
+
+Codemem combines FTS5 keyword retrieval with sqlite-vec semantic retrieval.
+Embeddings are written for new memories, and semantic ranking for a file-backed
+database runs in one local worker. `memory_search` and `memory_pack` keep their
+existing result formats; packs can combine keyword and semantic evidence.
+
+### Upgrade an existing database
+
+The first opening of an existing file-backed database with embeddings enabled
+upgrades the vector layout automatically, before it serves requests. The upgrade
+copies vectors in one transaction and preserves existing memories and vector
+identities. It may take time and requires temporary disk space roughly comparable
+to the vector tables.
+
+1. Stop or close every other Codemem writer using that database.
+2. Start the updated Codemem runtime and open the database normally.
+3. Wait for the initial open to finish before sending requests.
+
+If the database is busy, Codemem fails without changing the older layout. Close
+the other writers and reopen it. A failed upgrade rolls back, so the legacy
+layout remains usable. Do not remove vector tables or try to downgrade the
+database manually.
+
+After the upgrade, update every process that writes the database before using
+semantic retrieval. Older runtimes can still use keyword access only when
+embeddings are disabled; they cannot use semantic features with the upgraded
+layout. There is no automatic downgrade.
+
+### Use keyword-only retrieval
+
+Set `CODEMEM_EMBEDDING_DISABLED=1` before starting Codemem to skip the upgrade
+and semantic retrieval. Keyword search continues to work. This is useful when
+you need to keep an older runtime on the database temporarily.
+
+Semantic results use only validated vectors. A model change or rebuild can
+temporarily return keyword-only results while Codemem finishes validation.
+After that audit, valid rows remain searchable even when other stored vectors
+need repair.
+
+Cleanup removes vectors with invalid numeric values or unusable metadata,
+without changing source memories. Rows from undeclared models remain available
+for a later model transition. Use `codemem embed --dry-run`, then `codemem embed`,
+to backfill missing vectors.
+
+For applications that create a `MemoryStore`, close an asynchronous semantic
+store before closing its database:
+
+```ts
+const store = new MemoryStore("./codemem.sqlite");
+
+try {
+  // Use the store.
+} finally {
+  await store.closeAsync();
+}
+```
+
+`closeAsync()` waits for queued semantic work and background vector work before
+SQLite closes. `close()` remains synchronous when no semantic or audit work needs
+draining; it cancels unfinished best-effort vector writes. Use `closeAsync()` to
+flush those writes. A store that owns a semantic worker requires `closeAsync()`.
 
 ## Distill recurring lessons
 

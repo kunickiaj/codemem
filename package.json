@@ -23,6 +23,7 @@
     "test": "pnpm exec vitest run",
     "test:watch": "pnpm exec vitest",
     "test:ci-workflow": "node --test scripts/ci-workflow.test.mjs",
+    "test:semantic-installed": "node --test packages/cli/scripts/semantic-worker-installed.test.mjs",
     "test:release": "node --test scripts/release-version.test.mjs scripts/release-tag-preflight.test.mjs scripts/release-workflow.test.mjs scripts/release-latest-guard.test.mjs",
     "test:adapter-normalizers": "node --test scripts/build-adapter-normalizers.test.mjs",
     "test:release-version": "node --test scripts/release-version.test.mjs",

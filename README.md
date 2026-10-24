@@ -651,7 +651,28 @@ For cross-network setups where peer addresses change frequently or mDNS does not
 
 ## Semantic recall
 
-Embeddings are stored in sqlite-vec and written automatically when memories are created. Use `codemem embed` to backfill existing memories. A custom `CODEMEM_EMBEDDING_MODEL` requires `CODEMEM_EMBEDDING_REVISION`; mutable branches and tags resolve to their canonical commit before vectors are labeled. Set `CODEMEM_EMBEDDING_OFFLINE=1` with an explicit 40-character commit to load only cached model files without a Hub request. Changing the model or revision triggers a background rebuild and uses keyword search until incompatible migrations finish. If sqlite-vec cannot load, keyword search still works.
+Embeddings are stored in sqlite-vec and written automatically when memories are
+created. File-backed stores run semantic ranking in one local worker, so the
+calling process can continue serving other work while ranking is in progress.
+Keyword retrieval remains available when semantic evidence is unavailable.
+
+Opening an existing file-backed database with embeddings enabled upgrades its
+vector layout automatically before requests begin. Close other codemem writers,
+then reopen the database. The one-time copy can take time and needs temporary
+disk space roughly comparable to the vector tables. Upgrade failure leaves the
+older layout intact; if the database is busy, close the other writers and try
+again. After upgrade, update every writer before using the database: older
+runtimes cannot use semantic features with the new layout, and downgrade is not
+automatic.
+
+Set `CODEMEM_EMBEDDING_DISABLED=1` to keep keyword-only access. This skips the
+upgrade and semantic retrieval. A custom `CODEMEM_EMBEDDING_MODEL` requires
+`CODEMEM_EMBEDDING_REVISION`; mutable branches and tags resolve to their
+canonical commit before vectors are labeled. Set `CODEMEM_EMBEDDING_OFFLINE=1`
+with an explicit 40-character commit to load only cached model files without a
+Hub request. Changing the model or revision rebuilds vectors in the background;
+semantic retrieval can fall back to keyword results while vectors are repaired.
+Use keyword-only mode if sqlite-vec cannot load.
 
 ## Alternative install methods
 

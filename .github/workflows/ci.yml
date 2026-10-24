@@ -68,7 +68,7 @@ jobs:
         run: pnpm run build
 
       - name: Test
-        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test
+        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test
 
   account-browser:
     name: Account Browser Acceptance

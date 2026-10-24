@@ -144,7 +144,7 @@ describe("normal CI workflow source contract", () => {
 
 		assert.match(
 			testJob,
-			/^ {8}run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test$/m,
+			/^ {8}run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test$/m,
 		);
 	});
 

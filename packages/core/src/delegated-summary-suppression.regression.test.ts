@@ -43,13 +43,19 @@ interface TestMetadata {
 }
 
 beforeEach(() => {
+	// Summary classification does not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	directory = mkdtempSync(join(tmpdir(), "codemem-delegated-summary-"));
 	store = new MemoryStore(join(directory, "test.sqlite"));
 });
 
 afterEach(() => {
-	store.close();
-	rmSync(directory, { recursive: true, force: true });
+	try {
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });
 
 function delegatedContext(): DelegatedBriefContext {
