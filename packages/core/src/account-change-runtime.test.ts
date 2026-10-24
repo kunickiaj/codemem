@@ -3,8 +3,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay, setImmediate } from "node:timers/promises";
 import Database from "better-sqlite3";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as accountReceiver from "./coordinator-account-link-receiver.js";
 import {
 	type ChangeCoordinatorAccountOptions,
@@ -21,6 +22,14 @@ vi.mock("node:child_process", () => ({
 		throw new Error("external key stores forbidden");
 	}),
 }));
+vi.mock("node:timers/promises", async (importOriginal) => {
+	const timers = await importOriginal<typeof import("node:timers/promises")>();
+	return { ...timers, setTimeout: vi.fn(timers.setTimeout) };
+});
+// Yield to real loopback I/O without waiting a second per status/retry. Socket timers stay real.
+beforeEach(() => {
+	vi.mocked(delay).mockImplementation((_ms, value, options) => setImmediate(value, options));
+});
 afterEach(() => vi.restoreAllMocks());
 const origin = "https://coordinator.example.test";
 const hash = (raw: string) =>
@@ -404,6 +413,10 @@ test.for(["refresh", "disconnect"] as const)(
 	async (intent, { f }) => {
 		f.options.intent = intent;
 		f.status.intent = intent;
+		// Keep representative real polling plus the explicit held receipt ACK integration.
+		const timers =
+			await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+		vi.mocked(delay).mockImplementation(timers.setTimeout);
 		const before = f.snapshot();
 		const running = changeCoordinatorAccount(f.options);
 		// Wait for the actual proof-bearing POST before requesting the trusted receipt ACK.

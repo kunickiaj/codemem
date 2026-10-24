@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
-import { connect, tableExists } from "./db.js";
+import { tableExists } from "./db.js";
 import { buildFilterClauses, buildFilterClausesWithContext } from "./filters.js";
 import { refreshScopeMembershipCache } from "./scope-membership-cache.js";
 import {
@@ -16,7 +16,7 @@ import { setSyncDaemonPhase } from "./sync-daemon.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { loadReplicationOpsSince } from "./sync-replication.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { insertTestSession } from "./test-utils.js";
 import * as vectors from "./vectors.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -58,13 +58,6 @@ async function refreshStoreScope(
 	).toMatchObject({ status: "refreshed" });
 }
 
-// ---------------------------------------------------------------------------
-// Helper: create a MemoryStore backed by a temp DB with test schema.
-// We can't use the MemoryStore constructor directly because it calls
-// assertSchemaReady which requires the schema to already exist. Instead,
-// we pre-initialize the schema, then construct the store.
-// ---------------------------------------------------------------------------
-
 describe("MemoryStore", () => {
 	let tmpDir: string;
 	let dbPath: string;
@@ -88,11 +81,6 @@ describe("MemoryStore", () => {
 		delete process.env.CODEMEM_MEMORY_CROSS_SESSION_DEDUP_WINDOW_MS;
 		delete process.env.CODEMEM_DEBUG;
 		dbPath = join(tmpDir, "test.sqlite");
-		// Pre-create the schema so MemoryStore constructor's assertSchemaReady passes
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
-		// Now open via MemoryStore
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 

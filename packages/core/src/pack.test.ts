@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import incidentFixture from "../../../scripts/eval/fixtures/automatic-recall-pre-policy.json";
-import { connect } from "./db.js";
 import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import {
 	buildMemoryPack,
@@ -13,7 +12,7 @@ import {
 } from "./pack.js";
 import { timeline } from "./search.js";
 import { MemoryStore } from "./store.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -118,9 +117,6 @@ function usePackFixture() {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 		grantedScopeIds = [];
 		sessionId = insertTestSession(store.db);
@@ -1943,9 +1939,6 @@ describe("buildMemoryPack artifact_class trace + relevance ordering", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-artifact-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath);
 		sessionId = insertTestSession(store.db);
 	});
@@ -2037,9 +2030,6 @@ describe("buildMemoryPack structured content", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-structured-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath);
 		sessionId = insertTestSession(store.db);
 	});
@@ -2230,9 +2220,6 @@ describe("buildMemoryPack compact mode", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-compact-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath);
 		sessionId = insertTestSession(store.db);
 	});
@@ -2564,9 +2551,6 @@ describe("buildMemoryPack cluster compression", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-cluster-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath);
 		sessionId = insertTestSession(store.db);
 	});
@@ -2848,9 +2832,6 @@ describe("buildMemoryPack file-ref candidates in task and recall modes", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-pack-fileref-"));
 		const dbPath = join(tmpDir, "test.db");
-		const db = connect(dbPath);
-		initTestSchema(db);
-		db.close();
 		store = new MemoryStore(dbPath);
 		sessionId = insertTestSession(store.db);
 	});

@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	drainSpool,
 	hasSpooledEntries,
@@ -23,6 +23,38 @@ import {
 	spoolPayload,
 	withClaudeHookIngestLock,
 } from "./claude-hook-ingest-spool.js";
+
+async function expectBusyLockAfterRetries(lockDir: string): Promise<void> {
+	// Arrange: keep real lock ownership checks, but skip wall-clock retry waits.
+	mkdirSync(lockDir);
+	writeFileSync(join(lockDir, "pid"), String(process.pid), "utf8");
+	writeFileSync(join(lockDir, "ts"), String(Math.floor(Date.now() / 1000)), "utf8");
+	writeFileSync(join(lockDir, "owner"), "external-owner", "utf8");
+	const callback = vi.fn(async () => undefined);
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		// Act: observe rejection before advancing to avoid unhandled rejections.
+		let settled = false;
+		const result = withClaudeHookIngestLock(callback).finally(() => {
+			settled = true;
+		});
+		const rejection = expect(result).rejects.toBeInstanceOf(LockBusyError);
+		await vi.advanceTimersByTimeAsync(4_999);
+
+		// Assert: all 100 retry delays must elapse before giving up.
+		expect(settled).toBe(false);
+		expect(callback).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		await rejection;
+		expect(callback).not.toHaveBeenCalled();
+		expect(existsSync(lockDir)).toBe(true);
+		expect(readFileSync(join(lockDir, "owner"), "utf8")).toBe("external-owner");
+		expect(vi.getTimerCount()).toBe(0);
+	} finally {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+	}
+}
 
 describe("claude-hook-ingest-spool", () => {
 	let baseDir: string;
@@ -145,24 +177,8 @@ describe("claude-hook-ingest-spool", () => {
 		});
 
 		it("throws LockBusyError when the lock cannot be acquired", async () => {
-			// Hold the lock with a PID that genuinely exists (this process)
-			// and a fresh ts so the staleness check returns false. The
-			// acquisition loop will burn 100*50ms = 5s before giving up,
-			// so the test timeout has to comfortably exceed that.
-			mkdirSync(lockDir);
-			writeFileSync(join(lockDir, "pid"), String(process.pid), "utf8");
-			writeFileSync(join(lockDir, "ts"), String(Math.floor(Date.now() / 1000)), "utf8");
-			writeFileSync(join(lockDir, "owner"), "external-owner", "utf8");
-
-			await expect(
-				withClaudeHookIngestLock(async () => {
-					throw new Error("should not run");
-				}),
-			).rejects.toBeInstanceOf(LockBusyError);
-
-			// Lock dir is left intact because we didn't own it.
-			expect(existsSync(lockDir)).toBe(true);
-		}, 15_000);
+			await expectBusyLockAfterRetries(lockDir);
+		});
 	});
 
 	describe("spoolPayload + drainSpool roundtrip", () => {

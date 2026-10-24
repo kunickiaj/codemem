@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay, setImmediate } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as receiverRuntime from "./coordinator-account-link-receiver.js";
@@ -24,16 +25,20 @@ vi.mock("node:child_process", () => ({
 		throw new Error("external key stores forbidden");
 	}),
 }));
+vi.mock("node:timers/promises", async (importOriginal) => {
+	const timers = await importOriginal<typeof import("node:timers/promises")>();
+	return { ...timers, setTimeout: vi.fn(timers.setTimeout) };
+});
 
 const origin = "https://coordinator.example.test";
 const config = { ...cfg, redirectUri: `${origin}/auth/callback` };
 const hash = (raw: string) =>
 	createHash("sha256").update(Buffer.from(raw, "base64url")).digest("hex");
-function localGet(destination: string) {
+function localGet(destination: string, headers: Record<string, string> = {}) {
 	if (!/^http:\/\/(127\.0\.0\.1|\[::1\]):\d+\//.test(destination))
 		throw new Error("nonlocal test request");
 	return new Promise<{ status: number; body: string }>((resolve, reject) => {
-		const req = httpRequest(destination, { method: "GET" }, (response) => {
+		const req = httpRequest(destination, { method: "GET", headers }, (response) => {
 			let body = "";
 			response.on("data", (chunk) => {
 				body += chunk.toString();
@@ -46,6 +51,8 @@ function localGet(destination: string) {
 	});
 }
 beforeEach(() => {
+	// Only replace the polling scheduler; receiver, HTTP and deadline timers remain real.
+	vi.mocked(delay).mockImplementation((_ms, value, options) => setImmediate(value, options));
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("external network forbidden"));
 });
@@ -67,6 +74,31 @@ const test = it.extend<{ f: Awaited<ReturnType<typeof fixture>> }>({
 	},
 });
 async function fixture() {
+	const receipt = Promise.withResolvers<{ url: string; token: string }>();
+	const timing = { waitForMissingAck: false };
+	const createReceiver = receiverRuntime.createCoordinatorAccountLinkReceiver;
+	vi.spyOn(receiverRuntime, "createCoordinatorAccountLinkReceiver").mockImplementation(
+		async (options) => {
+			const receiver = await createReceiver(options);
+			return {
+				...receiver,
+				async close(outcome) {
+					const closing = receiver.close(outcome);
+					if (outcome && "linked" in outcome && outcome.linked && !timing.waitForMissingAck) {
+						const { url, token } = await receipt.promise;
+						expect(
+							await localGet(url, {
+								"X-Codemem-Receipt": token,
+								"Sec-Fetch-Site": "same-origin",
+								"Sec-Fetch-Mode": "cors",
+							}),
+						).toEqual({ status: 200, body: JSON.stringify({ linked: true }) });
+					}
+					await closing;
+				},
+			};
+		},
+	);
 	const dir = mkdtempSync(join(tmpdir(), "codemem-link-test-"));
 	const dbPath = join(dir, "local.sqlite");
 	const keysDir = join(dir, "keys");
@@ -136,7 +168,18 @@ async function fixture() {
 		expectedIdentityId: "identity-a",
 		expectedAuthority: "controller_attestation" as "controller_attestation" | "device_claim",
 	};
-	return { dir, local, remote, remoteClock, calls, options, fingerprint, publicKey };
+	return {
+		dir,
+		local,
+		remote,
+		remoteClock,
+		calls,
+		options,
+		fingerprint,
+		publicKey,
+		receipt,
+		timing,
+	};
 }
 function localSnapshot(f: Awaited<ReturnType<typeof fixture>>) {
 	const tables = f.local
@@ -200,6 +243,10 @@ async function browser(
 	const response = await localGet(
 		`${row.loopback_redirect}?attempt_id=${row.attempt_id}&completion=${completion}`,
 	);
+	f.receipt.resolve({
+		url: new URL("/codemem/auth/result", row.loopback_redirect).href,
+		token: response.body.match(/data-receipt="([^"]+)"/)?.[1] ?? "",
+	});
 	expect(response.status).toBe(200);
 	expect(response.body).not.toMatch(/<a\b|http-equiv=["']refresh/i);
 	expect(response.body).toContain("Finishing account link");
@@ -212,6 +259,13 @@ test.for(["controller_attestation", "device_claim"] as const)(
 	"real signatures and %s authority finalize without local mutations",
 	async (authority, { f }) => {
 		// Arrange
+		if (authority === "controller_attestation") {
+			// Retain real polling and the real 1500 ms missing-browser-ACK fallback.
+			f.timing.waitForMissingAck = true;
+			const timers =
+				await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises");
+			vi.mocked(delay).mockImplementation(timers.setTimeout);
+		}
 		f.options.expectedAuthority = authority;
 		if (authority === "device_claim")
 			f.remote.db.prepare("DELETE FROM coordinator_auth_controller_attestations").run();
@@ -924,7 +978,10 @@ test.for(
 		const before = localSnapshot(f);
 		const forwarding = f.options.fetch.getMockImplementation();
 		if (!forwarding) throw new Error("fixture fetch missing");
-		const createReceiver = receiverRuntime.createCoordinatorAccountLinkReceiver;
+		const createReceiver = vi
+			.mocked(receiverRuntime.createCoordinatorAccountLinkReceiver)
+			.getMockImplementation();
+		if (!createReceiver) throw new Error("fixture receiver missing");
 		let receiver: Awaited<ReturnType<typeof createReceiver>> | undefined;
 		vi.spyOn(receiverRuntime, "createCoordinatorAccountLinkReceiver").mockImplementation(
 			async (options) => {
@@ -1012,7 +1069,10 @@ test.for([false, true])(
 		// Arrange: track the composed runtime signal, not just the caller's signal.
 		const controller = new AbortController();
 		const before = localSnapshot(f);
-		const createReceiver = receiverRuntime.createCoordinatorAccountLinkReceiver;
+		const createReceiver = vi
+			.mocked(receiverRuntime.createCoordinatorAccountLinkReceiver)
+			.getMockImplementation();
+		if (!createReceiver) throw new Error("fixture receiver missing");
 		let receiver: Awaited<ReturnType<typeof createReceiver>> | undefined;
 		let runtimeSignal: AbortSignal | undefined;
 		vi.spyOn(receiverRuntime, "createCoordinatorAccountLinkReceiver").mockImplementation(

@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connect } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { refreshManagedScopeFixture } from "./managed-scope-test-fixtures.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
@@ -16,7 +15,7 @@ import {
 } from "./search.js";
 import { MemoryStore } from "./store.js";
 import * as syncIdentity from "./sync-identity.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { insertTestSession } from "./test-utils.js";
 import type { MemoryResult } from "./types.js";
 
 // Identity fixtures use real file keys, never an inherited host keychain setting.
@@ -752,9 +751,6 @@ describe("MemoryStore.search", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-search-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
@@ -1078,9 +1074,6 @@ describe("scope visibility filter (resolved visible set)", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-scope-vis-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
@@ -1292,9 +1285,6 @@ describe("MemoryStore.search cross-project widening", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-search-test-widen-"));
 		dbPath = join(tmpDir, "test.sqlite");
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
@@ -1522,9 +1512,6 @@ describe("MemoryStore.timeline", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-timeline-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
@@ -1771,9 +1758,6 @@ describe("MemoryStore.explain", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "codemem-explain-test-"));
 		dbPath = join(tmpDir, "test.sqlite");
-		const setupDb = connect(dbPath);
-		initTestSchema(setupDb);
-		setupDb.close();
 		store = new MemoryStore(dbPath, { keysDir: join(tmpDir, "keys") });
 	});
 
