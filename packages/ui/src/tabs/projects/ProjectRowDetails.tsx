@@ -93,8 +93,8 @@ function ProjectDetailsOverview({ model, view }: Pick<ProjectRowDetailsProps, "m
 			<div className="project-inventory-domain">{projectDomainLabel(project, view)}</div>
 			<div className="project-inventory-meta">
 				{peerReceived ? "source-owned project" : resolutionLabel(project.resolution_reason)} ·{" "}
-				Identity source: {identitySourceLabel(project.identity_source)} · Latest recorded session:{" "}
-				{project.latest_session_at ? latestLabel(project.latest_session_at) : "Unknown"}
+				Project match source: {identitySourceLabel(project.identity_source)} · Latest recorded
+				session: {project.latest_session_at ? latestLabel(project.latest_session_at) : "Unknown"}
 			</div>
 			<div className="settings-note">
 				Projects can appear from recorded sessions or saved mappings even with no active memories. A

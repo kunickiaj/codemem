@@ -693,7 +693,7 @@ function projectsRecipientPolicySafetyTests(): void {
 		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
 	});
 
-	it("explains required recipient input without submitting an incomplete decision", async () => {
+	it("directs recipient changes to Update sharing rather than a review response", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
 
@@ -701,13 +701,10 @@ function projectsRecipientPolicySafetyTests(): void {
 		const select = document.querySelector<HTMLSelectElement>(".recipient-policy-review-select");
 		const submit = buttonNamed("Apply");
 		if (!select || !submit) throw new Error("review decision controls missing");
-		select.value = "choose_recipients";
-		select.dispatchEvent(new Event("change", { bubbles: true }));
-		buttonNamed("Review this suggestion")?.click();
-
-		expect(submit.disabled).toBe(true);
-		expect(document.body.textContent).toContain("Choose recipients first (Update sharing, below)");
-		submit.click();
+		expect([...select.options].map((option) => option.value)).not.toContain("choose_recipients");
+		expect(document.body.textContent).toContain("use Update sharing in the project list below");
+		expect(document.body.textContent).toContain("For Identity or device setup, open Devices.");
+		expect(submit.disabled).toBe(false);
 		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
 	});
 
@@ -867,7 +864,7 @@ describe("Projects inventory provenance", () => {
 			]),
 		);
 		expect(fields.get("Project")).toBe("probe1");
-		expect(fields.get("Identity source")).toBe("cwd");
+		expect(fields.get("Project match source")).toBe("cwd");
 		expect(fields.get("Recorded workspace path")).toBe("/workspace/probe1");
 		expect(fields.get("Recorded sessions")).toBe("0");
 		expect(fields.get("Active memories")).toBe("0");

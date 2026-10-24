@@ -83,6 +83,7 @@ function optionFor(
 
 function optionLabel(group: ReviewGroup): string {
 	const first = group.items[0];
+	if (isDecisionBlocked(group, first.recommendedDecision)) return "Choose a review response";
 	const option = optionFor(first, first.recommendedDecision);
 	return option ? reviewOptionLabel(option) : first.recommendedDecision.replaceAll("_", " ");
 }
@@ -95,12 +96,6 @@ function reviewOptionLabel(option: RecipientPolicyReviewOptionV1): string {
 			return "Record local preference (access unchanged)";
 		case "reject_suggestion":
 			return "Dismiss suggestion (setup unchanged)";
-		case "choose_recipients":
-			return "Use Update sharing below (separate action)";
-		case "attach_device_to_identity":
-		case "create_identity":
-		case "remove_stale_device":
-			return `${option.label} via Devices (separate action)`;
 		default:
 			return option.label;
 	}
@@ -408,13 +403,20 @@ function DecisionControls(props: DecisionControlsProps) {
 				onChange={(event) =>
 					props.onDecisionChange(event.currentTarget.value as RecipientPolicyReviewDecisionV1)
 				}
-				value={props.decision}
+				value={props.blocked ? "" : props.decision}
 			>
-				{props.group.items[0].options.map((option) => (
-					<option key={option.decision} value={option.decision}>
-						{reviewOptionLabel(option)}
+				{props.blocked ? (
+					<option disabled value="">
+						Choose a review response
 					</option>
-				))}
+				) : null}
+				{props.group.items[0].options
+					.filter((option) => !isDecisionBlocked(props.group, option.decision))
+					.map((option) => (
+						<option key={option.decision} value={option.decision}>
+							{reviewOptionLabel(option)}
+						</option>
+					))}
 			</NativeSelect>
 			<div className="recipient-policy-review-actions">
 				<button
@@ -530,7 +532,8 @@ function DecisionRow({
 			<div className="settings-note recipient-policy-review-details">
 				Apply records the selected review decision only. It does not grant or revoke access, assign
 				an Identity, or change project mappings. Doing nothing preserves your current setup. To
-				change recipients, use Update sharing in the project list below.
+				change recipients, use Update sharing in the project list below. For Identity or device
+				setup, open Devices.
 			</div>
 			<DecisionDetails
 				detailsId={detailsId}

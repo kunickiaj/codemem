@@ -290,6 +290,56 @@ describe("recipient policy review pending guards", () => {
 	});
 });
 
+describe("recipient policy review responses", () => {
+	afterEach(() => {
+		vi.clearAllMocks();
+		document.body.innerHTML = "";
+	});
+
+	it("excludes input-required actions and leaves their recommended choice unselected", () => {
+		document.body.innerHTML = '<div id="mount"></div>';
+		const item = reviewItem();
+		const base = item.options[0];
+		item.options.push(
+			...(
+				[
+					"choose_recipients",
+					"attach_device_to_identity",
+					"create_identity",
+					"remove_stale_device",
+				] as const
+			).map((decision) => ({
+				...base,
+				decision,
+				label: decision,
+				preview: { ...base.preview, requiresDecisionInput: true },
+			})),
+		);
+		item.recommendedDecision = "choose_recipients";
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("review mount missing");
+		renderRecipientPolicyReview(mount, review({ reviewItems: [item] }));
+		const select = mount.querySelector<HTMLSelectElement>("select");
+		const apply = mount.querySelector<HTMLButtonElement>('[data-review-control="apply"]');
+		if (!select || !apply) throw new Error("review controls missing");
+		expect([...select.options].map((option) => option.value)).toEqual(["", "keep_current_setup"]);
+		expect(select.selectedOptions[0]?.textContent).toBe("Choose a review response");
+		expect(apply.disabled).toBe(true);
+		expect(mount.textContent).toContain("use Update sharing in the project list below");
+		expect(mount.textContent).toContain("For Identity or device setup, open Devices.");
+		apply.click();
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		expect(api.resolveRecipientPolicyReviewBulk).not.toHaveBeenCalled();
+		act(() => {
+			select.value = "keep_current_setup";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(select.value).toBe("keep_current_setup");
+		expect(apply.disabled).toBe(false);
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+	});
+});
+
 describe("recipient policy review bulk actions", () => {
 	beforeEach(() => {
 		document.body.innerHTML = '<div id="mount"></div>';

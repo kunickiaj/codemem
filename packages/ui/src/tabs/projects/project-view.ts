@@ -153,7 +153,7 @@ export function detailFields(
 		["Workspace identity", project.workspace_identity],
 		["Repository identity", project.repository_identity],
 		["Project", project.project],
-		["Identity source", identitySourceLabel(project.identity_source)],
+		["Project match source", identitySourceLabel(project.identity_source)],
 		["Recorded workspace path", project.cwd],
 		["Git remote", project.git_remote],
 		["Git branch", project.git_branch],
