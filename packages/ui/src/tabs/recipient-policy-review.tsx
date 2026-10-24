@@ -83,10 +83,27 @@ function optionFor(
 
 function optionLabel(group: ReviewGroup): string {
 	const first = group.items[0];
-	return (
-		optionFor(first, first.recommendedDecision)?.label ??
-		first.recommendedDecision.replaceAll("_", " ")
-	);
+	const option = optionFor(first, first.recommendedDecision);
+	return option ? reviewOptionLabel(option) : first.recommendedDecision.replaceAll("_", " ");
+}
+
+function reviewOptionLabel(option: RecipientPolicyReviewOptionV1): string {
+	switch (option.decision) {
+		case "apply_recommendation":
+			return "Acknowledge local Identity suggestion";
+		case "keep_project_local":
+			return "Record local preference (access unchanged)";
+		case "reject_suggestion":
+			return "Dismiss suggestion (setup unchanged)";
+		case "choose_recipients":
+			return "Use Update sharing below (separate action)";
+		case "attach_device_to_identity":
+		case "create_identity":
+		case "remove_stale_device":
+			return `${option.label} via Devices (separate action)`;
+		default:
+			return option.label;
+	}
 }
 
 function uniqueValues(values: Array<{ id: string; label: string }>): string[] {
@@ -235,7 +252,7 @@ function Preview({ options }: { options: RecipientPolicyReviewOptionV1[] }) {
 	return (
 		<div className="recipient-policy-preview">
 			<strong>
-				Affected: {countLabel(projects.length, "Project")} ·{" "}
+				Review context: {countLabel(projects.length, "Project")} ·{" "}
 				{countLabel(memoryCount, "memory", "memories")} · {countLabel(devices.length, "device")}
 			</strong>
 			<div className="recipient-policy-preview-list">
@@ -353,6 +370,9 @@ function DecisionSummary({
 				) : null}
 			</div>
 			<div className="small recipient-policy-review-meta">
+				{first.conditionCode === "suggest_local_identity"
+					? "Optional review · No action needed · "
+					: null}
 				{reviewGroupMeta(group)}
 				{stale ? (
 					<Chip variant="badge" tone="badge-offline">
@@ -381,7 +401,7 @@ function DecisionControls(props: DecisionControlsProps) {
 	return (
 		<>
 			<NativeSelect
-				aria-label={`Decision for ${props.group.displayName}`}
+				aria-label={`Review decision for ${props.group.displayName}`}
 				className="recipient-policy-review-select"
 				data-review-control="decision"
 				disabled={props.pending}
@@ -392,7 +412,7 @@ function DecisionControls(props: DecisionControlsProps) {
 			>
 				{props.group.items[0].options.map((option) => (
 					<option key={option.decision} value={option.decision}>
-						{option.label}
+						{reviewOptionLabel(option)}
 					</option>
 				))}
 			</NativeSelect>
@@ -414,7 +434,7 @@ function DecisionControls(props: DecisionControlsProps) {
 					onClick={props.onDetailsToggle}
 					type="button"
 				>
-					Details
+					Review this suggestion
 				</button>
 			</div>
 		</>
@@ -507,6 +527,11 @@ function DecisionRow({
 				onDetailsToggle={() => setDetailsOpen((open) => !open)}
 				pending={pending}
 			/>
+			<div className="settings-note recipient-policy-review-details">
+				Apply records the selected review decision only. It does not grant or revoke access, assign
+				an Identity, or change project mappings. Doing nothing preserves your current setup. To
+				change recipients, use Update sharing in the project list below.
+			</div>
 			<DecisionDetails
 				detailsId={detailsId}
 				group={group}
@@ -541,17 +566,17 @@ function BulkControls(props: BulkControlsProps) {
 		<div className="recipient-policy-review-bulk">
 			<label className="recipient-policy-review-select-all">
 				<input
-					aria-label="Select all actionable sharing decisions"
+					aria-label="Select all ready review decisions"
 					checked={props.allSelected}
 					disabled={props.applying || props.actionableCount === 0}
 					onChange={(event) => props.onSelectAll(event.currentTarget.checked)}
 					ref={selectAllRef}
 					type="checkbox"
 				/>
-				<span>Select all actionable</span>
+				<span>Select all ready decisions</span>
 			</label>
 			<span className="small recipient-policy-review-selection-count">
-				{props.selectedCount} selected · {props.actionableCount} actionable
+				{props.selectedCount} selected · {props.actionableCount} ready to record
 			</span>
 			<div className="recipient-policy-review-bulk-actions">
 				<button
@@ -785,10 +810,10 @@ export function SharingDecisions({
 		<section className="card recipient-policy-review" aria-labelledby="recipientPolicyReviewTitle">
 			<div className="recipient-policy-review-header">
 				<h2 id="recipientPolicyReviewTitle">
-					Sharing decisions <span className="recipient-policy-review-count">{groups.length}</span>
+					Sharing review <span className="recipient-policy-review-count">{groups.length}</span>
 				</h2>
 				<Chip variant="badge" tone="badge-offline">
-					Unapplied
+					Not recorded
 				</Chip>
 			</div>
 			<div className="section-meta recipient-policy-review-status" role="status" aria-live="polite">
@@ -862,7 +887,7 @@ export function renderRecipientPolicyReviewLoadError(mount: HTMLElement, error: 
 	mount.hidden = false;
 	render(
 		<section className="card recipient-policy-review">
-			<h2>Sharing decisions</h2>
+			<h2>Sharing review</h2>
 			<p className="settings-note project-attention-note" role="status">
 				{errorMessage(error, "Unable to load sharing decisions. Try again.")}
 			</p>

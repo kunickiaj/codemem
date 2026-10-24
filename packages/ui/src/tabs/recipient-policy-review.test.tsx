@@ -117,6 +117,71 @@ function blockedItem(): RecipientPolicyBlockedItemV1 {
 	};
 }
 
+describe("recipient policy optional review", () => {
+	beforeEach(() => {
+		document.body.innerHTML = '<div id="mount"></div>';
+		vi.mocked(api.resolveRecipientPolicyReview).mockResolvedValue({
+			errorCode: null,
+			idempotent: false,
+			reviewItemId: "review-fixture",
+			sourceFingerprint: "fingerprint-fixture",
+			status: "applied",
+		});
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+		document.body.innerHTML = "";
+	});
+
+	it("makes local suggestions optional and records only an explicitly applied choice", async () => {
+		const item = reviewItem();
+		const base = item.options[0];
+		item.options.push(
+			{ ...base, decision: "apply_recommendation", label: "Use the local Identity" },
+			{ ...base, decision: "keep_project_local", label: "Keep Project local" },
+			{
+				...base,
+				decision: "choose_recipients",
+				label: "Choose recipients",
+				preview: { ...base.preview, requiresDecisionInput: true },
+			},
+		);
+		item.recommendedDecision = "apply_recommendation";
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("review mount missing");
+		renderRecipientPolicyReview(mount, review({ reviewItems: [item] }));
+
+		expect(mount.textContent).toContain("Optional review · No action needed");
+		expect(mount.textContent).toContain("Doing nothing preserves your current setup.");
+		expect(mount.textContent).toContain("It does not grant or revoke access");
+		expect(mount.textContent).toContain("ready to record");
+		expect(mount.textContent).not.toContain("actionable");
+		expect(mount.textContent).not.toContain("Use the local Identity");
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		expect(api.resolveRecipientPolicyReviewBulk).not.toHaveBeenCalled();
+		const select = mount.querySelector<HTMLSelectElement>("select");
+		if (!select) throw new Error("decision select missing");
+		expect([...select.options].map((option) => option.textContent)).toContain(
+			"Record local preference (access unchanged)",
+		);
+		act(() => {
+			select.value = "keep_project_local";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		await act(async () => {
+			mount.querySelector<HTMLButtonElement>('[data-review-control="apply"]')?.click();
+			await Promise.resolve();
+		});
+		expect(api.resolveRecipientPolicyReview).toHaveBeenCalledExactlyOnceWith({
+			decision: "keep_project_local",
+			reviewItemId: item.reviewItemId,
+			sourceFingerprint: item.sourceFingerprint,
+		});
+	});
+});
+
 describe("recipient policy review pending guards", () => {
 	beforeEach(() => {
 		document.body.innerHTML = '<div id="mount"></div>';

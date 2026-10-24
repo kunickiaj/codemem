@@ -472,16 +472,16 @@ function projectsRecipientPolicyReviewSurfaceTests(): void {
 		await loadProjectsData();
 
 		const surface = document.querySelector(".recipient-policy-review");
-		expect(surface?.textContent).toContain("Sharing decisions 1");
-		expect(surface?.textContent).toContain("Unapplied");
+		expect(surface?.textContent).toContain("Sharing review 1");
+		expect(surface?.textContent).toContain("Not recorded");
 		expect(surface?.textContent).toContain("Blocked repairs 1");
 		expect(surface?.textContent).not.toContain("Preserved legacy continuity");
 		expect(surface?.textContent).not.toContain("preserved legacy findings");
 		const reviewCopy = surface?.querySelector(".recipient-policy-review-decisions")?.textContent;
 		expect(reviewCopy).toContain("Suggested: Keep current setup unchanged");
-		expect(surface?.querySelector<HTMLDivElement>(".recipient-policy-review-details")?.hidden).toBe(
-			true,
-		);
+		expect(
+			surface?.querySelector<HTMLDivElement>("[id^='recipient-policy-details-']")?.hidden,
+		).toBe(true);
 		expect(reviewCopy).not.toContain("Action is required");
 		expect(surface?.textContent).toContain("Owner: Project owner");
 		expect(surface?.querySelectorAll("button")).toHaveLength(6);
@@ -502,7 +502,7 @@ function projectsRecipientPolicyReviewSurfaceTests(): void {
 		await loadProjectsData();
 
 		const surface = document.querySelector(".recipient-policy-review");
-		expect(surface?.querySelector("h2")?.textContent).toBe("Sharing decisions");
+		expect(surface?.querySelector("h2")?.textContent).toBe("Sharing review");
 		expect(surface?.querySelector('[role="status"]')?.textContent).toContain("Review unavailable");
 	});
 }
@@ -562,15 +562,17 @@ function projectsRecipientPolicyGroupedResolutionTests(): void {
 
 		expect(document.querySelectorAll(".recipient-policy-review-item")).toHaveLength(1);
 		expect(document.body.textContent).toContain("2 worktrees");
-		expect(document.querySelector<HTMLDivElement>(".recipient-policy-review-details")?.hidden).toBe(
-			true,
-		);
+		expect(
+			document.querySelector<HTMLDivElement>("[id^='recipient-policy-details-']")?.hidden,
+		).toBe(true);
 		const decisions = document.querySelector(".recipient-policy-review-decisions");
 		if (!decisions) throw new Error("review decisions missing");
-		buttonNamed("Details", decisions)?.click();
+		buttonNamed("Review this suggestion", decisions)?.click();
 		expect(document.body.textContent).toContain("/worktrees/first");
 		expect(document.body.textContent).toContain("/worktrees/second");
-		expect(document.body.textContent).toContain("Affected: 2 Projects · 15 memories · 2 devices");
+		expect(document.body.textContent).toContain(
+			"Review context: 2 Projects · 15 memories · 2 devices",
+		);
 		buttonNamed("Apply")?.click();
 		await flushAsyncWork();
 
@@ -674,6 +676,23 @@ function projectsRecipientPolicyBulkTests(): void {
 describe("Projects recipient policy bulk resolution", projectsRecipientPolicyBulkTests);
 
 function projectsRecipientPolicySafetyTests(): void {
+	it("keeps review decisions separate from explicit recipient editing", async () => {
+		const selected = project();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([selected]));
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		await loadProjectsData();
+
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		buttonNamed("Review this suggestion")?.click();
+		await flushAsyncWork();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+		buttonNamed("Update sharing")?.click();
+		expect(recipientPolicyManagement.openRecipientPolicyManagement).toHaveBeenCalled();
+		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
+	});
+
 	it("explains required recipient input without submitting an incomplete decision", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
 		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
@@ -684,7 +703,7 @@ function projectsRecipientPolicySafetyTests(): void {
 		if (!select || !submit) throw new Error("review decision controls missing");
 		select.value = "choose_recipients";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
-		buttonNamed("Details")?.click();
+		buttonNamed("Review this suggestion")?.click();
 
 		expect(submit.disabled).toBe(true);
 		expect(document.body.textContent).toContain("Choose recipients first (Update sharing, below)");
@@ -799,7 +818,9 @@ function projectsRecipientPolicyResultEdgeCaseTests(): void {
 
 		await loadProjectsData();
 
-		expect(document.body.textContent).toContain("Affected: 1 Project · 12 memories · 2 devices");
+		expect(document.body.textContent).toContain(
+			"Review context: 1 Project · 12 memories · 2 devices",
+		);
 		expect(document.body.textContent).not.toContain("24 memories");
 	});
 }
@@ -822,6 +843,40 @@ function repositoryWorktreeDetails() {
 		},
 	];
 }
+
+describe("Projects inventory provenance", () => {
+	it("shows recorded provenance for unfamiliar projects without inferring their origin", async () => {
+		const unfamiliar = project({
+			display_project: "probe1",
+			project: "probe1",
+			identity_source: "cwd",
+			cwd: "/workspace/probe1",
+			git_remote: null,
+			latest_session_at: null,
+			session_count: 0,
+			memory_count: 0,
+			mapping_id: 7,
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([unfamiliar]));
+		await loadProjectsData();
+		const details = document.querySelector(".project-inventory-details-body");
+		const fields = new Map(
+			[...(details?.querySelectorAll(".project-detail-pair") ?? [])].map((field) => [
+				field.querySelector("dt")?.textContent,
+				field.querySelector("dd")?.textContent,
+			]),
+		);
+		expect(fields.get("Project")).toBe("probe1");
+		expect(fields.get("Identity source")).toBe("cwd");
+		expect(fields.get("Recorded workspace path")).toBe("/workspace/probe1");
+		expect(fields.get("Recorded sessions")).toBe("0");
+		expect(fields.get("Active memories")).toBe("0");
+		expect(fields.get("Latest recorded session")).toBe("Unknown");
+		expect(details?.textContent).toContain("saved mappings even with no active memories");
+		expect(details?.textContent).toContain("does not identify who created it");
+		expect(details?.textContent).not.toContain("synthetic");
+	});
+});
 
 function projectsInventoryTablePresentationTests(): void {
 	it("renders active Team and Identity recipients with only recipient management primary", async () => {
@@ -1343,7 +1398,7 @@ describe("Projects cached recipient presentation", () => {
 
 		await loadProjectsData();
 		const firstSurface = document.querySelector(".recipient-policy-review");
-		expect(firstSurface?.textContent).toContain("Sharing decisions 1");
+		expect(firstSurface?.textContent).toContain("Sharing review 1");
 		expect(firstSurface?.textContent).toContain("Suggested: Keep current setup unchanged");
 
 		await loadProjectsData();

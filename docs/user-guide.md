@@ -481,7 +481,9 @@ The normal flow is **Projects → Sharing → Devices → Health**, not manual p
 
 Team membership organizes people and devices, but it is not permission to every Project—only Projects explicitly assigned to that Team. Project access remains explicit and uses canonical Project identity.
 
-When **Projects** shows sharing decisions, review each row's choice before applying it. Use the row checkboxes and **Apply selected** for a subset, or **Apply all** to apply every choice that is ready; choices that still require recipient input remain unapplied.
+When **Projects** shows **Sharing review**, local Identity suggestions are optional: no action is needed to preserve your current setup. **Review this suggestion** shows the recorded evidence. **Apply** records the selected review decision only; it does not grant or revoke access, assign an Identity, or change project mappings. Recording a local preference does not remove existing recipients. Use **Update sharing** in the project list to change recipients explicitly. Use the review checkboxes and **Apply selected** for a subset, or **Apply all** to record every ready choice; choices that still require input remain unapplied.
+
+For an unfamiliar Project, open **Details** to check its Identity source, recorded workspace path, session and active-memory counts, and latest recorded session. A Project can appear from sessions or a saved mapping even with no active memories. Its name alone does not explain who created it or why; missing activity is shown as unknown.
 
 **Advanced → Coordinator Administration** keeps the last successfully loaded coordinator groups, Spaces, join requests, devices, and status visible if a refresh fails. A bounded notice names stale or unavailable sections and provides **Retry**. Mutations that require current coordinator state remain disabled until refresh succeeds; retained rows and counts do not imply deletion, and a section that has never loaded is shown as unavailable rather than empty.
 

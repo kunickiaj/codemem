@@ -153,7 +153,8 @@ export function detailFields(
 		["Workspace identity", project.workspace_identity],
 		["Repository identity", project.repository_identity],
 		["Project", project.project],
-		["CWD", project.cwd],
+		["Identity source", identitySourceLabel(project.identity_source)],
+		["Recorded workspace path", project.cwd],
 		["Git remote", project.git_remote],
 		["Git branch", project.git_branch],
 		["Current Space", projectDomainLabel(project, view)],
@@ -164,7 +165,11 @@ export function detailFields(
 		["Advanced: current Space ID", project.resolved_scope_id],
 		["Advanced: suggested Space ID", project.suggested_scope_id],
 		["Suggestion reason", project.suggestion_reason],
-		["Sessions", project.session_count],
-		["Memories", project.memory_count ?? "count unavailable"],
+		["Recorded sessions", project.session_count],
+		["Active memories", project.memory_count ?? "count unavailable"],
+		[
+			"Latest recorded session",
+			project.latest_session_at ? latestLabel(project.latest_session_at) : "Unknown",
+		],
 	];
 }
