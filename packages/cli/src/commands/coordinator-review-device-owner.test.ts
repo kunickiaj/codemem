@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
 	type CoordinatorOwnerReviewLocalOptions,
+	canonicalCoordinatorLegacyTeamCompletionManifestJson as canonical,
+	legacyTeamCandidateId,
+	normalizeCoordinatorLegacyTeamCompletionManifest as normalize,
 	RemoteCoordinatorRequestError,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -65,6 +68,46 @@ const config = {
 	sync_coordinator_url: "https://saved.example.test",
 	sync_coordinator_admin_secret: "fixture-secret",
 };
+function historicalEvidence() {
+	const manifest = normalize({
+		version: 1,
+		coordinator_id: preview.coordinator_id,
+		candidate_ref: legacyTeamCandidateId(preview.coordinator_id, "historical-group"),
+		candidate_digest: "a".repeat(64),
+		team_id: "historical-team",
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Historical Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: "old-actor", role: "member" }],
+		device_decisions: [
+			{
+				device_id: "device-a",
+				key_fingerprint: local.device.fingerprint,
+				enabled: true,
+				identity_id: "old-actor",
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-10-01T00:00:00.000Z",
+	});
+	return {
+		group_id: "historical-group",
+		candidate_ref: manifest.candidate_ref,
+		manifest_version: 1,
+		completed_at: manifest.completed_at,
+		created_at: manifest.completed_at,
+		manifest_json: canonical(manifest),
+		manifest,
+	};
+}
 const reviewedOwner = {
 	state: "created",
 	attestation_id: `controller-v1:${"d".repeat(64)}`,
@@ -149,6 +192,43 @@ it("JSON previews once with shared options and never prompts or exposes the publ
 	expect(output).not.toContain("fixture-secret");
 	expect(mocks.confirm).not.toHaveBeenCalled();
 });
+it("JSON preview preserves canonical historical assignments without prompting or committing", async () => {
+	// Arrange
+	const evidence = historicalEvidence();
+	mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
+		...preview,
+		legacy_history: [evidence],
+	});
+	// Act
+	await run(["--json"]);
+	// Assert
+	const output = JSON.parse(String(vi.mocked(process.stdout.write).mock.calls[0]?.[0]));
+	expect(output.review.legacy_history).toEqual([evidence]);
+	expect(mocks.confirm).not.toHaveBeenCalled();
+	expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledOnce();
+});
+it.each(["canonical-bytes", "metadata", "parsed-manifest"] as const)(
+	"rejects %s history before approval or commit",
+	async (invalid) => {
+		// Arrange
+		const evidence = historicalEvidence();
+		if (invalid === "canonical-bytes")
+			evidence.manifest_json = JSON.stringify(evidence.manifest, null, 2);
+		if (invalid === "metadata") evidence.completed_at = "2026-10-02T00:00:00.000Z";
+		if (invalid === "parsed-manifest") evidence.manifest.team.display_name = "Altered display";
+		mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
+			...preview,
+			legacy_history: [evidence],
+		});
+		mocks.confirm.mockResolvedValue(true);
+		// Act
+		await run();
+		// Assert
+		expect(process.exitCode).toBe(1);
+		expect(mocks.confirm).not.toHaveBeenCalled();
+		expect(mocks.coordinatorAuthControllerReviewAction).toHaveBeenCalledOnce();
+	},
+);
 it("shows the total reviewed invitations rather than the reference sample length", async () => {
 	mocks.coordinatorAuthControllerReviewAction.mockResolvedValue({
 		...preview,
