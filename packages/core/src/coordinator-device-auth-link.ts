@@ -22,10 +22,15 @@ import {
 	authSchemaUpgradeResponse,
 	CoordinatorAuthSchemaUpgradeRequiredError,
 } from "./coordinator-auth-schema.js";
+import {
+	captureResolvedAccountOwnerReceiptReference,
+	type ResolvedAccountOwnerStatusOperations,
+} from "./coordinator-resolved-account-owner-status.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 
 export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
 	Partial<CoordinatorAccountLinkStatusStore> &
+	Partial<Pick<ResolvedAccountOwnerStatusOperations, "readResolvedAccountOwnerStatus">> &
 	Pick<
 		CoordinatorAuthControllerStore,
 		"createAuthControllerAttestation" | "captureAuthControllerLegacyHistory"
@@ -72,7 +77,31 @@ interface DeviceAuthLinkApp {
 	get(path: string, handler: (c: Context) => Promise<Response>): unknown;
 	post(path: string, handler: (c: Context) => Promise<Response>): unknown;
 }
-type Action = "create" | "status" | "finalize" | "cancel" | "account_status";
+type Action =
+	| "create"
+	| "status"
+	| "finalize"
+	| "cancel"
+	| "account_status"
+	| "resolved_owner_status"
+	| "resolved_owner_receipt_status";
+const RECEIPT_QUERY_FIELDS = [
+	"attestation_id",
+	"review_receipt_id",
+	"review_evidence_digest",
+	"resolution_id",
+	"resolution_evidence_digest",
+] as const;
+
+function receiptFromData(data: Record<string, unknown>) {
+	return captureResolvedAccountOwnerReceiptReference({
+		attestationId: data.attestation_id,
+		reviewReceiptId: data.review_receipt_id,
+		reviewEvidenceDigest: data.review_evidence_digest,
+		resolutionId: data.resolution_id,
+		resolutionEvidenceDigest: data.resolution_evidence_digest,
+	});
+}
 const FIELDS = {
 	create: [
 		"group_id",
@@ -155,6 +184,26 @@ function rejectedResponse(
 	return c.json({ error: "auth_link_unavailable" }, 403);
 }
 
+async function readResolvedOwnerStatus(
+	c: Context,
+	action: "resolved_owner_status" | "resolved_owner_receipt_status",
+	store: CoordinatorDeviceAuthLinkStore,
+	data: Record<string, unknown>,
+	signer: CoordinatorAuthLinkSigner,
+	config: CoordinatorAuthBrowserConfig,
+): Promise<Response> {
+	if (!store.readResolvedAccountOwnerStatus) return c.json({ error: "auth_link_unavailable" }, 503);
+	const options = { ownerIdentityId: String(data.owner_identity_id) };
+	if (action === "resolved_owner_receipt_status") {
+		const expectedReceipt = receiptFromData(data);
+		if (!expectedReceipt) return c.json({ error: "auth_link_invalid_input" }, 400);
+		return c.json(
+			await store.readResolvedAccountOwnerStatus(signer, config, { ...options, expectedReceipt }),
+		);
+	}
+	return c.json(await store.readResolvedAccountOwnerStatus(signer, config, options));
+}
+
 async function applyDeviceAction(
 	c: Context,
 	action: Action,
@@ -164,6 +213,9 @@ async function applyDeviceAction(
 	signer: CoordinatorAuthLinkSigner,
 	config: CoordinatorAuthBrowserConfig,
 ): Promise<Response> {
+	if (action === "resolved_owner_status" || action === "resolved_owner_receipt_status") {
+		return readResolvedOwnerStatus(c, action, store, data, signer, config);
+	}
 	if (action === "account_status") {
 		if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
 		return c.json(
@@ -301,17 +353,23 @@ function readAccountStatusInput(
 	c: Context,
 	url: string,
 	deps: DeviceAuthLinkDeps,
+	options: { identityField?: "identity_id" | "owner_identity_id"; receipt?: true } = {},
 ): { raw: Uint8Array; data: Record<string, unknown> } | Response {
+	const identityField = options.identityField ?? "identity_id";
+	const fields = [
+		"group_id",
+		identityField,
+		"coordinator_origin",
+		...(options.receipt ? RECEIPT_QUERY_FIELDS : []),
+	];
 	const parsed = new URL(url);
 	const origin = new URL(deps.config.redirectUri).origin;
 	if (parsed.origin !== origin) return c.json({ error: "auth_link_unavailable" }, 403);
 	const entries = [...parsed.searchParams.entries()];
 	if (
 		c.req.raw.body !== null ||
-		entries.length !== 3 ||
-		parsed.searchParams.getAll("identity_id").length !== 1 ||
-		parsed.searchParams.getAll("group_id").length !== 1 ||
-		parsed.searchParams.getAll("coordinator_origin").length !== 1
+		entries.length !== fields.length ||
+		fields.some((field) => parsed.searchParams.getAll(field).length !== 1)
 	) {
 		return c.json({ error: "auth_link_invalid_input" }, 400);
 	}
@@ -319,10 +377,7 @@ function readAccountStatusInput(
 		return c.json({ error: "auth_link_unavailable" }, 403);
 	return {
 		raw: new Uint8Array(),
-		data: {
-			group_id: parsed.searchParams.get("group_id"),
-			identity_id: parsed.searchParams.get("identity_id"),
-		},
+		data: Object.fromEntries(entries.filter(([field]) => field !== "coordinator_origin")),
 	};
 }
 
@@ -333,6 +388,13 @@ async function readDeviceInput(
 	deps: DeviceAuthLinkDeps,
 ): Promise<{ raw: Uint8Array; data: Record<string, unknown> } | Response> {
 	if (action === "account_status") return readAccountStatusInput(c, url, deps);
+	if (action === "resolved_owner_status")
+		return readAccountStatusInput(c, url, deps, { identityField: "owner_identity_id" });
+	if (action === "resolved_owner_receipt_status")
+		return readAccountStatusInput(c, url, deps, {
+			identityField: "owner_identity_id",
+			receipt: true,
+		});
 	if (action === "status") {
 		const entries = [...new URL(url).searchParams.entries()];
 		const entry = entries[0];
@@ -354,6 +416,14 @@ function validDeviceInput(
 	attemptId: unknown,
 	config: CoordinatorAuthBrowserConfig,
 ): data is Record<string, unknown> & { group_id: string } {
+	if (action === "resolved_owner_status")
+		return isAuthControllerId(data.group_id) && isAuthControllerId(data.owner_identity_id);
+	if (action === "resolved_owner_receipt_status")
+		return (
+			isAuthControllerId(data.group_id) &&
+			isAuthControllerId(data.owner_identity_id) &&
+			receiptFromData(data) !== null
+		);
 	if (action === "account_status")
 		return isAuthControllerId(data.group_id) && isAuthControllerId(data.identity_id);
 	return isAuthControllerId(attemptId) && validInput(action, data, attemptId, config);
@@ -433,6 +503,12 @@ export function registerCoordinatorAccountLinkStatusRoute(
 	const config = Object.freeze({ coordinatorId, issuer, revision, enabled, redirectUri });
 	app.get("/v1/auth/account-link-status", (c) =>
 		handleDeviceRequest(c, "account_status", { ...deps, config }),
+	);
+	app.get("/v1/auth/resolved-account-owner-status", (c) =>
+		handleDeviceRequest(c, "resolved_owner_status", { ...deps, config }),
+	);
+	app.get("/v1/auth/resolved-account-owner-receipt-status", (c) =>
+		handleDeviceRequest(c, "resolved_owner_receipt_status", { ...deps, config }),
 	);
 }
 

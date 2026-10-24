@@ -221,6 +221,7 @@ import {
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
+import { ResolvedAccountOwnerStatusOperations } from "./coordinator-resolved-account-owner-status.js";
 import {
 	prepareRecipientOwnerConsistency,
 	recipientOwnerWriteSql,
@@ -1118,6 +1119,15 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		...args: Parameters<AccountOwnerTargetOperations["readAccountOwnerTarget"]>
 	) {
 		return this.accountOwnerTarget.readAccountOwnerTarget(...args);
+	}
+	readResolvedAccountOwnerStatus(
+		...args: Parameters<ResolvedAccountOwnerStatusOperations["readResolvedAccountOwnerStatus"]>
+	) {
+		return new ResolvedAccountOwnerStatusOperations({
+			...this.accountChangeBackend,
+			all: async <T>({ sql, values }: AuthLinkStatement) =>
+				this.db.prepare(sql).all(...values) as T[],
+		}).readResolvedAccountOwnerStatus(...args);
 	}
 	private ownerResolutionReviews(): OwnerResolutionReviewOperations {
 		return new OwnerResolutionReviewOperations({

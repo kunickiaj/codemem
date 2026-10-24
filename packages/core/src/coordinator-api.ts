@@ -202,6 +202,8 @@ function registerOptionalCoordinatorAuth(
 			: authenticationUnavailableResponse;
 	if (opts.browserAuth?.kind !== "ready") {
 		app.all("/v1/auth/account-link-status", unavailable);
+		app.all("/v1/auth/resolved-account-owner-status", unavailable);
+		app.all("/v1/auth/resolved-account-owner-receipt-status", unavailable);
 	}
 	if (opts.browserAuth?.kind === "unavailable") {
 		for (const path of [
