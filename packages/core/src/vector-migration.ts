@@ -20,6 +20,8 @@ import {
 	prepareVectorCutoverValidation,
 	type VectorCutoverValidation,
 } from "./vector-cutover-validation.js";
+import { resolveVectorLayout } from "./vector-layout.js";
+import { prepareVectorWrites } from "./vector-writes.js";
 import {
 	backfillVectors,
 	findMemoryIdsWithCompleteActiveVectorCoverage,
@@ -109,8 +111,8 @@ function mergeQueuedSyncMemoryIds(
 
 function deleteVectorsForMemoryIds(db: SqliteDatabase, memoryIds: number[]): void {
 	if (memoryIds.length === 0) return;
-	const placeholders = memoryIds.map(() => "?").join(", ");
-	db.prepare(`DELETE FROM memory_vectors WHERE memory_id IN (${placeholders})`).run(...memoryIds);
+	const write = prepareVectorWrites(db);
+	db.transaction(() => write({ deleteMemoryIds: memoryIds })).immediate();
 }
 
 function sameQueuedSyncWork(a: MigrationMetadata, b: MigrationMetadata): boolean {
@@ -457,7 +459,7 @@ function scanForSourceModelVectorsAfter(
 	}
 	const selectRowIds = db
 		.prepare(
-			"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */",
+			`SELECT rowid FROM ${vectorRowidsTable(db)} WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-source-scan-rowids */`,
 		)
 		.safeIntegers();
 	const selectMetadata = db.prepare(
@@ -492,14 +494,24 @@ function hasSourceModelVectors(db: SqliteDatabase, targetModel: string): boolean
 }
 
 function hasMemoryVectorRowidsShadowTable(db: SqliteDatabase): boolean {
+	const layout = resolveVectorLayout(db);
+	if (layout.kind === "absent") return false;
 	const tables = db.prepare("PRAGMA table_list").all() as Array<{ name: string }>;
-	return tables.some((table) => table.name === "memory_vectors_rowids");
+	return tables.some((table) => table.name === layout.rowidsName);
+}
+
+function vectorRowidsTable(
+	db: SqliteDatabase,
+): "memory_vectors_rowids" | "memory_vectors_v1_rowids" {
+	const layout = resolveVectorLayout(db);
+	if (layout.kind === "absent") throw new Error("vector_table_required");
+	return layout.rowidsName;
 }
 
 function readMaxMemoryVectorRowId(db: SqliteDatabase): number | null {
 	if (!hasMemoryVectorRowidsShadowTable(db)) return null;
 	const row = db
-		.prepare("SELECT MAX(rowid) AS max_rowid FROM memory_vectors_rowids")
+		.prepare(`SELECT MAX(rowid) AS max_rowid FROM ${vectorRowidsTable(db)}`)
 		.safeIntegers()
 		.get() as { max_rowid: bigint | null } | undefined;
 	if (row?.max_rowid == null) return 0;
@@ -688,8 +700,7 @@ function deleteCoveredStaleRows(
 		rows.flatMap((row) => (row.memoryId === null ? [] : [row.memoryId])),
 		targetModel,
 	);
-	const deleteRow = db.prepare("DELETE FROM memory_vectors WHERE rowid = ?");
-	let deleted = 0;
+	const rowIds: number[] = [];
 	let retainedFallback = false;
 	for (const row of rows) {
 		if (signal?.aborted) break;
@@ -697,8 +708,9 @@ function deleteCoveredStaleRows(
 			retainedFallback = true;
 			continue;
 		}
-		deleted += deleteRow.run(row.rowid).changes;
+		rowIds.push(row.rowid);
 	}
+	const { deleted } = prepareVectorWrites(db)({ deleteRowIds: rowIds, signal });
 	return { deleted, retainedFallback };
 }
 
@@ -770,7 +782,7 @@ function scanStaleModelVectorRows(
 
 	const selectRowIds = db
 		.prepare(
-			"SELECT rowid FROM memory_vectors_rowids WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-stale-scan-rowids */",
+			`SELECT rowid FROM ${vectorRowidsTable(db)} WHERE rowid > ? ORDER BY rowid ASC LIMIT ? /* vector-stale-scan-rowids */`,
 		)
 		.safeIntegers();
 	const staleRowIds: number[] = [];

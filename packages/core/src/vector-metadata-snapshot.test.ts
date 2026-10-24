@@ -40,18 +40,30 @@ function addVector(id: number, hash: string, label = model, chunkIndex = 0): voi
 }
 
 // Count actual streamed vec0 reads, not preparations or indexed scratch-DB probes.
-function observeMetadata({ failStream = false } = {}) {
+function observeMetadata({ failStream = false, failInsertAt = 0 } = {}) {
 	const prepare = Database.prototype.prepare;
 	const snapshots = new Set<Connection>();
 	const transactions: boolean[] = [];
 	const sourceReads: string[] = [];
 	const preparedSql: string[] = [];
+	const insertions = { attempted: 0, successful: 0 };
 	vi.spyOn(Database.prototype, "prepare").mockImplementation(function (
 		this: Connection,
 		sql: string,
 	) {
 		preparedSql.push(sql);
 		const statement = prepare.call(this, sql);
+		if (this === db && /\bINSERT\s+INTO\s+memory_vectors(?:_v1)?\s*\(/i.test(sql) && failInsertAt) {
+			const run = statement.run.bind(statement);
+			statement.run = (...params: unknown[]) => {
+				expect(db.inTransaction).toBe(true);
+				insertions.attempted++;
+				if (insertions.attempted === failInsertAt) throw new Error("synthetic failure");
+				const result = run(...params);
+				insertions.successful++;
+				return result;
+			};
+		}
 		if (this !== db && sql.includes("INSERT INTO vector_metadata")) snapshots.add(this);
 		if (this === db && /SELECT\b[\s\S]*FROM memory_vectors\b/.test(sql)) {
 			sourceReads.push(sql);
@@ -69,7 +81,7 @@ function observeMetadata({ failStream = false } = {}) {
 		}
 		return statement;
 	});
-	return { snapshots, transactions, sourceReads, preparedSql };
+	return { snapshots, transactions, sourceReads, preparedSql, insertions };
 }
 
 function prepareCount(observed: ReturnType<typeof observeMetadata>, pattern: RegExp): number {
@@ -349,27 +361,14 @@ describe("vector metadata write and failure semantics", () => {
 			addMemory("Failure one");
 			addMemory("Failure two");
 			db.exec("CREATE TEMP TABLE caller_state(value); INSERT INTO caller_state VALUES (42)");
-			const observed = observeMetadata();
-			let successfulInserts = 0;
+			const observed = observeMetadata({ failInsertAt: failure === "insert" ? 2 : 0 });
 			if (failure === "inference") {
 				vi.mocked(client.embed).mockRejectedValue(new Error("synthetic failure"));
-			} else {
-				const exec = db.exec.bind(db);
-				let inserts = 0;
-				vi.spyOn(db, "exec").mockImplementation((sql: string) => {
-					if (sql.includes("INSERT INTO memory_vectors")) {
-						inserts++;
-						if (inserts === 2) throw new Error("synthetic failure");
-					}
-					const result = exec(sql);
-					if (sql.includes("INSERT INTO memory_vectors")) successfulInserts++;
-					return result;
-				});
 			}
 
 			// Act / Assert: rollback and finally paths release all disposable state.
 			await expect(backfillVectors(db, { client })).rejects.toThrow("synthetic failure");
-			expect(successfulInserts).toBe(failure === "inference" ? 0 : 1);
+			expect(observed.insertions.successful).toBe(failure === "inference" ? 0 : 1);
 			expect(client.embed).toHaveBeenCalledTimes(1);
 			expect([...observed.snapshots].every((snapshot) => !snapshot.open)).toBe(true);
 			expect(observed.snapshots.size).toBe(failure === "inference" ? 1 : 2);

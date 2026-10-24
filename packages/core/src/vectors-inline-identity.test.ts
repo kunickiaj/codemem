@@ -17,7 +17,8 @@ import { storeVectors } from "./vectors.js";
 const REQUESTED_MODEL = "example/custom-embedding-model";
 const REQUESTED_REVISION = "mutable-release";
 const CANONICAL_REVISION = "0123456789abcdef0123456789abcdef01234567";
-const EXPECTED_VECTOR = new Float32Array(384).fill(0.25);
+const EXPECTED_VECTOR = new Float32Array(384);
+EXPECTED_VECTOR[0] = 1;
 
 describe("inline vector identity persistence", () => {
 	let tmpDir: string;
