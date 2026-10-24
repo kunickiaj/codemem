@@ -93,20 +93,23 @@ test("captured D1 binding works across sequential native HTTP request contexts",
 	}
 	assert.deepEqual(different, { status: 503, body: { sameBinding: false, setupCalls: 1 } });
 });
-test("cross-request global barrier is rejected by native request I/O ownership", async (t) => {
+test("local runtime completes shared setup across ten barrier-synchronized requests", async (t) => {
 	// Arrange: the tenth arrival releases setup, proving all ten overlap before its D1 read.
 	const mf = new Miniflare(options(undefined, "barrier"));
 	t.after(() => mf.dispose());
 	// Act
-	const results = await Promise.all(
-		Array.from({ length: 10 }, () => request(mf, "/concurrent", 500)),
-	);
+	const results = await Promise.all(Array.from({ length: 10 }, () => request(mf, "/concurrent")));
 	const different = await request(mf, "/different-db");
-	// Assert: preserve the unsupported candidate's failure, not a production success claim.
-	for (const result of results) {
-		assert.match(result.body, /Cannot perform I\/O on behalf of a different request/);
-		assert.match(result.body, /I\/O type: SpanParent/);
+	// Wrangler 4.127.1/workerd 1.20260828.1 returned 500 (SpanParent ownership).
+	// Wrangler 4.152.0/workerd 1.20261019.1 returns 200 here; this local observation
+	// does not approve sharing pending I/O in production. Finished-only caching stays unchanged.
+	for (const { body } of results) {
+		assert.deepEqual(body, { ...expected(10, body.count), joins: 9 });
 	}
+	assert.deepEqual(
+		results.map(({ body }) => body.count).sort((a, b) => a - b),
+		Array.from({ length: 10 }, (_, index) => index + 1),
+	);
 	assert.deepEqual(different, { status: 503, body: { sameBinding: false, setupCalls: 1 } });
 });
 test("natural shared setup records whether native requests join pending I/O", async (t) => {
