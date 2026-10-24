@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { loadSqliteVec } from "./db.js";
+import { DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL } from "./embeddings.js";
+import { MemoryStore } from "./index.js";
 import {
 	createFixture,
 	MODEL,
@@ -25,6 +28,7 @@ interface VectorRow {
 
 let directory: string;
 let fixture: RankingFixture;
+let store: MemoryStore | undefined;
 const connections: Connection[] = [];
 
 beforeEach(() => {
@@ -58,14 +62,27 @@ beforeEach(() => {
 		.run(tombstone);
 });
 
-afterEach(() => {
+afterEach(async () => {
 	vi.restoreAllMocks();
-	for (const db of connections.splice(0)) {
-		if (db.open) db.close();
+	try {
+		await store?.closeAsync();
+	} finally {
+		store = undefined;
+		for (const db of connections.splice(0)) {
+			if (db.open) db.close();
+		}
+		vi.unstubAllEnvs();
+		rmSync(directory, { recursive: true, force: true });
 	}
-	vi.unstubAllEnvs();
-	rmSync(directory, { recursive: true, force: true });
 });
+
+function openStore(): MemoryStore {
+	store = new MemoryStore(fixture.path, {
+		keysDir: join(directory, "keys"),
+		runtimeSigningKey: { deviceId: "fixture-device", publicKey: CANONICAL_PUBLIC_KEY },
+	});
+	return store;
+}
 
 function secondConnection(): Connection {
 	const db = new Database(fixture.path);
@@ -136,6 +153,59 @@ function explicitLegacyRowid(rowid: bigint, memoryId: number, model: string): vo
 }
 
 describe("automatic vector layout upgrade", () => {
+	it("upgrades an ordinary MemoryStore open and preserves explicit rowids, bytes, and source data", () => {
+		// Arrange: bootstrap remains the raw legacy fixture path, not a production upgrade.
+		const id = fixture.memory();
+		explicitLegacyRowid(41n, id, DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL);
+		// Match the existing session-project backfill before comparing an ordinary store open.
+		fixture.db.prepare("UPDATE memory_items SET project='fixture' WHERE session_id=1").run();
+		const before = rows(fixture.db);
+		const source = sourceSnapshot(fixture.db);
+		fixture.db.close();
+
+		// Act
+		const current = openStore();
+
+		// Assert: opening alone must perform the migration, without helper attachment or inference.
+		expect(
+			current.db.prepare("SELECT type FROM sqlite_schema WHERE name='memory_vectors'").get(),
+		).toEqual({ type: "view" });
+		expect(
+			current.db
+				.prepare("SELECT sql FROM sqlite_schema WHERE name='memory_vectors_v1'")
+				.pluck()
+				.get(),
+		).toMatch(/USING vec0\([\s\S]*embedding float\[384\]/i);
+		expectSameVectors(rows(current.db), before);
+		expect(current.db.prepare("SELECT rowid FROM memory_vectors WHERE rowid=41").all()).toEqual([
+			{ rowid: 41 },
+		]);
+		expect(sourceSnapshot(current.db)).toEqual(source);
+		expect(readCatalog(current.db)).toMatchObject({
+			status: "ready",
+			writerVersion: 1,
+			models: [{ model: DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL, count: 1 }],
+		});
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it("opens an empty legacy store with a ready, empty vector catalog", () => {
+		// Arrange
+		fixture.db.close();
+
+		// Act
+		const current = openStore();
+
+		// Assert
+		expect(readCatalog(current.db)).toMatchObject({
+			status: "ready",
+			writerVersion: 1,
+			models: [],
+		});
+		expect(rows(current.db)).toEqual([]);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
 	it("does not re-audit or change generation, revision, or versions on repeated upgrade", () => {
 		// Arrange
 		explicitLegacyRowid(41n, fixture.memory(), MODEL);

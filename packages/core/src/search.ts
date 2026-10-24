@@ -25,6 +25,7 @@ import { memoryLooksRecapLike, queryPrefersRecap, recapPenaltyMultiplier } from 
 import { findByConcept, findByFile, type RefQueryOptions } from "./ref-queries.js";
 import * as schema from "./schema.js";
 import { resolveVisibleScopeIds, type ScopeVisibilityOptions } from "./scope-resolution.js";
+import type { PackSemanticExecutor } from "./semantic/semantic-executor-seam.js";
 import { canonicalMemoryKind, summaryContinuityFilter } from "./summary-memory.js";
 import type {
 	ExplainError,
@@ -49,6 +50,7 @@ function getDrizzle(db: Database) {
 
 /** Structural type for the store parameter (avoids circular import). */
 export interface StoreHandle {
+	semanticSearchAsync?: PackSemanticExecutor["search"];
 	readonly db: import("better-sqlite3").Database;
 	readonly actorId: string;
 	readonly deviceId: string;

@@ -4,8 +4,14 @@ import { join } from "node:path";
 import { setImmediate, setTimeout } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { loadSqliteVec } from "./db.js";
-import { type EmbeddingClient, resolveEmbeddingClientVectorIdentityLabel } from "./embeddings.js";
+import {
+	_resetEmbeddingRuntimeFactory,
+	_setEmbeddingRuntimeFactory,
+	type EmbeddingClient,
+	resolveEmbeddingClientVectorIdentityLabel,
+} from "./embeddings.js";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
 import {
 	createFixture,
@@ -15,6 +21,7 @@ import {
 } from "./semantic/semantic-ranking.test-helper.js";
 import { auditBatch, startAudit } from "./semantic/validated-vector-index-audit.js";
 import { readCatalog, readState } from "./semantic/validated-vector-index-state.js";
+import { MemoryStore } from "./store.js";
 import { VectorIndexMaintenance } from "./vector-index-maintenance.js";
 import { ensureVectorIndexReady } from "./vector-index-upgrade.js";
 import { prepareVectorWrites } from "./vector-writes.js";
@@ -27,6 +34,7 @@ vi.mock("node:timers/promises", async (importOriginal) => {
 
 let directory: string;
 let fixture: RankingFixture;
+let store: MemoryStore | undefined;
 const drivers: VectorIndexMaintenance[] = [];
 const connections: Database.Database[] = [];
 
@@ -55,7 +63,10 @@ afterEach(async () => {
 	try {
 		for (const db of connections) if (db.inTransaction) db.exec("ROLLBACK");
 		await Promise.allSettled(drivers.splice(0).map((driver) => driver.close()));
+		await store?.closeAsync();
 	} finally {
+		store = undefined;
+		_resetEmbeddingRuntimeFactory();
 		vi.mocked(setTimeout).mockReset();
 		vi.restoreAllMocks();
 		for (const db of connections.splice(0)) if (db.open) db.close();
@@ -63,6 +74,14 @@ afterEach(async () => {
 		rmSync(directory, { recursive: true, force: true });
 	}
 });
+
+function openStore(): MemoryStore {
+	store = new MemoryStore(fixture.path, {
+		keysDir: join(directory, "keys"),
+		runtimeSigningKey: { deviceId: "fixture-device", publicKey: CANONICAL_PUBLIC_KEY },
+	});
+	return store;
+}
 
 function maintenance(): VectorIndexMaintenance {
 	const driver = new VectorIndexMaintenance(fixture.db, () => false);
@@ -118,6 +137,32 @@ function recoveryClient(): EmbeddingClient {
 }
 
 describe("vector maintenance ownership", () => {
+	it("keeps a reopened building index synchronous until an async owner requests maintenance", async () => {
+		// Arrange: first close the ordinary owner, then persist pending work on our own connection.
+		const id = fixture.memory();
+		fixture.rawVector(id, vector(1));
+		ensureVectorIndexReady(fixture.db, { configuredModel: MODEL });
+		await openStore().closeAsync();
+		startAudit(fixture.db, { knownModels: [MODEL] });
+		const before = readState(fixture.db);
+		const rows = fixture.db.prepare("SELECT * FROM validated_vector_rows ORDER BY rowid").all();
+
+		// Act
+		const reopened = openStore();
+		reopened.stats();
+		reopened.search("Fixture", 10);
+		const syncClose = () => reopened.close();
+
+		// Assert: merely opening/searching must neither schedule a batch nor require async close.
+		expect(syncClose).not.toThrow();
+		await setImmediate();
+		expect(readState(fixture.db)).toEqual(before);
+		expect(fixture.db.prepare("SELECT * FROM validated_vector_rows ORDER BY rowid").all()).toEqual(
+			rows,
+		);
+		expect(getMaintenanceJob(fixture.db, "vector_index_validation")).toBeNull();
+	});
+
 	it("audits pending rows when explicitly scheduled and closes without stale work", async () => {
 		// Arrange
 		pendingAudit();
@@ -138,6 +183,61 @@ describe("vector maintenance ownership", () => {
 		expect(getMaintenanceJob(fixture.db, "vector_index_validation")?.status).toBe("completed");
 		expect(driver.requiresAsyncClose).toBe(false);
 	});
+});
+
+describe("vector producer maintenance ownership", () => {
+	it.each(["building", "needsrepair"] as const)(
+		"flushes a committed producer write with a %s index without requiring async close",
+		async (status) => {
+			// Arrange: only explicit fixture work determines whether old rows await audit or declaration.
+			const client = recoveryClient();
+			const model = resolveEmbeddingClientVectorIdentityLabel(client);
+			vi.stubEnv("CODEMEM_EMBEDDING_MODEL", client.model);
+			vi.stubEnv("CODEMEM_EMBEDDING_REVISION", client.identity?.revision);
+			fixture.rawVector(fixture.memory(), vector(1), 0, model);
+			const unknownId = fixture.memory();
+			const unknown = fixture.rawVector(unknownId, vector(1), 0, "undeclared-model");
+			ensureVectorIndexReady(fixture.db, { configuredModel: model });
+			if (status === "building") startAudit(fixture.db, { knownModels: [model] });
+			_setEmbeddingRuntimeFactory(async () => client);
+			const current = openStore();
+			const session = current.startSession({ project: "producer-regression" });
+
+			// Act: remember uses enqueueCommittedVectorWrites and its real post-commit embedding queue.
+			const id = current.remember(
+				session,
+				"decision",
+				"Producer write",
+				"Persist before closing.",
+				0.9,
+			);
+			await current.flushPendingVectorWrites();
+			const source = fixture.db.prepare("SELECT * FROM memory_items ORDER BY id").all();
+			const before = readState(fixture.db);
+			const indexed = fixture.db
+				.prepare("SELECT * FROM validated_vector_rows ORDER BY rowid")
+				.all();
+
+			// Assert: a completed producer cannot silently create a new async maintenance owner.
+			expect(client.embed).toHaveBeenCalledTimes(1);
+			expect(
+				fixture.db.prepare("SELECT title,body_text FROM memory_items WHERE id=?").get(id),
+			).toEqual({ title: "Producer write", body_text: "Persist before closing." });
+			expect(version(id, model).count).toBe(1);
+			expect(before.status).toBe(status);
+			expect(() => current.close()).not.toThrow();
+			await setImmediate();
+			expect(readState(fixture.db)).toEqual(before);
+			expect(
+				fixture.db.prepare("SELECT * FROM validated_vector_rows ORDER BY rowid").all(),
+			).toEqual(indexed);
+			expect(fixture.db.prepare("SELECT * FROM memory_items ORDER BY id").all()).toEqual(source);
+			expect(
+				fixture.db.prepare("SELECT rowid FROM memory_vectors WHERE rowid=?").all(BigInt(unknown)),
+			).toEqual([{ rowid: unknown }]);
+			expect(getMaintenanceJob(fixture.db, "vector_index_validation")).toBeNull();
+		},
+	);
 });
 
 describe("vector maintenance writer contention", () => {

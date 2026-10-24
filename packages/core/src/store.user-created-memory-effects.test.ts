@@ -64,6 +64,7 @@ it("collects only identities and embeds committed redacted text once after the o
 		memoryId,
 		row?.title,
 		row?.body_text,
+		{ signal: expect.any(AbortSignal) },
 	);
 });
 
@@ -148,6 +149,7 @@ it.each([false, true])(
 			memoryId,
 			"Committed title",
 			"Committed body",
+			{ signal: expect.any(AbortSignal) },
 		);
 	},
 );

@@ -84,6 +84,19 @@ import {
 	type ScanDetection,
 	SecretScanner,
 } from "./secret-scanner.js";
+import {
+	getSemanticExecutorOverride,
+	isSemanticIdentityChangedError,
+	isSemanticStoreClosedError,
+	type PackSemanticExecutor,
+	type SemanticSearchInput,
+	SemanticStoreClosedError,
+} from "./semantic/semantic-executor-seam.js";
+import {
+	createSemanticExecutor,
+	hasReadySemanticCatalog,
+} from "./semantic/semantic-worker-executor.js";
+import { summarySessionId } from "./semantic/semantic-worker-ranking.js";
 import { summaryContinuityFilter } from "./summary-memory.js";
 import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
 import { recordReplicationOp } from "./sync-replication.js";
@@ -98,11 +111,15 @@ import type {
 	PackRenderOptions,
 	PackResponse,
 	PackTrace,
+	SemanticExecutionOptions,
 	StoreStats,
 	TimelineItemResponse,
 	UsageEventRow,
 } from "./types.js";
-import { storeVectors } from "./vectors.js";
+import { configuredVectorIndexModel, VectorIndexMaintenance } from "./vector-index-maintenance.js";
+import { ensureVectorIndexReady } from "./vector-index-upgrade.js";
+import { vectorStoreExists } from "./vector-layout.js";
+import { type SemanticSearchResult, semanticSearch, storeVectors } from "./vectors.js";
 
 // Recovery debits and per-batch call clocks are private accounting, not observer usage.
 const PUBLIC_USAGE_EVENT_PREDICATE =
@@ -412,6 +429,13 @@ export class MemoryStore {
 	 */
 	scanner: SecretScanner;
 	private readonly pendingVectorWrites = new Set<Promise<void>>();
+	private readonly vectorWriteAbort = new AbortController();
+	private semanticExecutor: PackSemanticExecutor | undefined;
+	private vectorIndexMaintenance: VectorIndexMaintenance | undefined;
+	private readonly pendingSemanticSearches = new Set<Promise<SemanticSearchResult[]>>();
+	private semanticClosing = false;
+	private closePromise: Promise<void> | undefined;
+	private closed = false;
 
 	/** Lazy Drizzle ORM wrapper — shares the same better-sqlite3 connection. */
 	private _drizzle: ReturnType<typeof drizzle> | null = null;
@@ -478,6 +502,19 @@ export class MemoryStore {
 		this.actorDisplayName =
 			configDisplayName || process.env.USER?.trim() || process.env.USERNAME?.trim() || this.actorId;
 		this.crossSessionDedupWindowMs = resolveCrossSessionDedupWindowMs();
+		this.initializeVectorIndex();
+	}
+
+	private initializeVectorIndex(): void {
+		// Non-reopenable databases retain inline compatibility; disabled stores do not upgrade vectors.
+		if (this.db.name === ":memory:" || this.db.name === "" || isEmbeddingDisabled()) return;
+		try {
+			ensureVectorIndexReady(this.db, { configuredModel: configuredVectorIndexModel(this.db) });
+			this.vectorIndexMaintenance = new VectorIndexMaintenance(this.db, () => this.semanticClosing);
+		} catch (error) {
+			this.db.close();
+			throw error;
+		}
 	}
 
 	hasCurrentIdentity(): boolean {
@@ -831,9 +868,10 @@ export class MemoryStore {
 
 	/** Raw best-effort embedding queue; user writes use enqueueCommittedVectorWrites. */
 	enqueueVectorWrite(memoryId: number, title: string, bodyText: string): void {
-		if (this.db.inTransaction) return;
+		if (this.db.inTransaction || this.semanticClosing || this.closed || isEmbeddingDisabled())
+			return;
 		let op: Promise<void> | null = null;
-		op = storeVectors(this.db, memoryId, title, bodyText)
+		op = storeVectors(this.db, memoryId, title, bodyText, { signal: this.vectorWriteAbort.signal })
 			.catch(() => {
 				// Non-fatal — keep memory writes resilient when embeddings are unavailable
 			})
@@ -1783,7 +1821,7 @@ export class MemoryStore {
 		const rawEvents = countRows(schema.rawEvents);
 
 		let vectorCount = 0;
-		if (!isEmbeddingDisabled() && tableExists(this.db, "memory_vectors")) {
+		if (!isEmbeddingDisabled() && vectorStoreExists(this.db)) {
 			try {
 				const visibleIds = visibleBranches
 					.map(
@@ -2247,13 +2285,63 @@ export class MemoryStore {
 		);
 	}
 
-	/**
-	 * Build a memory pack with semantic candidate merging.
-	 *
-	 * Async version that runs vector KNN search via sqlite-vec and merges
-	 * semantic candidates with FTS results.  Falls back to FTS-only when
-	 * embeddings are disabled or unavailable.
-	 */
+	/** Lazily owns one file-backed ranking worker; in-memory stores retain inline ranking. */
+	semanticSearchAsync(
+		input: SemanticSearchInput,
+		executionOptions?: SemanticExecutionOptions,
+	): Promise<SemanticSearchResult[]> {
+		if (this.semanticClosing || this.closed) return Promise.reject(new SemanticStoreClosedError());
+		const operation = this.runSemanticSearch(input, executionOptions);
+		this.pendingSemanticSearches.add(operation);
+		void operation.then(
+			() => this.pendingSemanticSearches.delete(operation),
+			() => this.pendingSemanticSearches.delete(operation),
+		);
+		return operation;
+	}
+
+	private async runSemanticSearch(
+		input: SemanticSearchInput,
+		executionOptions?: SemanticExecutionOptions,
+	): Promise<SemanticSearchResult[]> {
+		executionOptions?.signal?.throwIfAborted();
+		try {
+			const results = await this.dispatchSemanticSearch(input, executionOptions);
+			executionOptions?.signal?.throwIfAborted();
+			return results;
+		} catch (error) {
+			if (isSemanticIdentityChangedError(error) || isSemanticStoreClosedError(error)) throw error;
+			executionOptions?.signal?.throwIfAborted();
+			throw error;
+		}
+	}
+
+	private async dispatchSemanticSearch(
+		input: SemanticSearchInput,
+		executionOptions?: SemanticExecutionOptions,
+	): Promise<SemanticSearchResult[]> {
+		const override = getSemanticExecutorOverride(this);
+		if (override) return override.search(input, executionOptions);
+		// In-memory databases cannot be reopened by a worker; preserve their inline compatibility.
+		if (this.db.name === ":memory:" || this.db.name === "") {
+			return semanticSearch(
+				this.db,
+				input.query,
+				input.limit,
+				input.filters,
+				this.ownershipFilterContext(),
+				summarySessionId(this.db, input.automaticContext),
+			);
+		}
+		if (isEmbeddingDisabled() || input.query.trim().length < 3) return [];
+		this.vectorIndexMaintenance?.schedule();
+		if (!this.semanticExecutor) {
+			if (!hasReadySemanticCatalog(this.db)) return [];
+			this.semanticExecutor = createSemanticExecutor({ store: this });
+		}
+		return this.semanticExecutor.search(input, executionOptions);
+	}
+
 	async buildMemoryPackAsync(
 		context: string,
 		limit?: number,
@@ -2261,6 +2349,7 @@ export class MemoryStore {
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
 		automaticContext?: AutomaticContext | null,
+		executionOptions?: SemanticExecutionOptions,
 	): Promise<PackResponse> {
 		return buildMemoryPackAsync(
 			this,
@@ -2270,6 +2359,7 @@ export class MemoryStore {
 			filters,
 			renderOptions,
 			automaticContext,
+			executionOptions,
 		);
 	}
 
@@ -2280,6 +2370,7 @@ export class MemoryStore {
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
 		automaticContext?: AutomaticContext | null,
+		executionOptions?: SemanticExecutionOptions,
 	): Promise<PackArtifacts> {
 		return buildMemoryPackWithTraceAsync(
 			this,
@@ -2289,6 +2380,7 @@ export class MemoryStore {
 			filters,
 			renderOptions,
 			automaticContext,
+			executionOptions,
 		);
 	}
 
@@ -2299,6 +2391,7 @@ export class MemoryStore {
 		filters?: MemoryFilters,
 		renderOptions?: PackRenderOptions,
 		automaticContext?: AutomaticContext | null,
+		executionOptions?: SemanticExecutionOptions,
 	): Promise<PackTrace> {
 		return buildMemoryPackTraceAsync(
 			this,
@@ -2308,6 +2401,7 @@ export class MemoryStore {
 			filters,
 			renderOptions,
 			automaticContext,
+			executionOptions,
 		);
 	}
 
@@ -3667,13 +3761,47 @@ export class MemoryStore {
 
 	// close
 
-	/** Close the database connection. */
+	/** Cancels best-effort derived writes. Semantic/audit owners must await closeAsync(). */
 	close(): void {
+		if (this.closed) return;
+		if (
+			this.semanticExecutor ||
+			this.pendingSemanticSearches.size ||
+			this.vectorIndexMaintenance?.requiresAsyncClose ||
+			this.closePromise
+		) {
+			throw new Error("semantic_store_close_async_required");
+		}
+		this.semanticClosing = true;
+		this.vectorWriteAbort.abort();
+		this.closeDatabase();
+	}
+
+	/** Flushes admitted derived writes and joins semantic/audit work before closing SQLite. */
+	closeAsync(): Promise<void> {
+		if (this.closePromise) return this.closePromise;
+		this.semanticClosing = true;
+		this.closePromise = this.finishAsyncClose();
+		return this.closePromise;
+	}
+
+	private async finishAsyncClose(): Promise<void> {
+		await this.semanticExecutor?.close();
+		await Promise.allSettled([...this.pendingSemanticSearches]);
+		const maintenance = await Promise.allSettled([this.vectorIndexMaintenance?.close()]);
+		await this.flushPendingVectorWrites();
+		if (!this.closed) this.closeDatabase();
+		const outcome = maintenance[0];
+		if (outcome?.status === "rejected") throw outcome.reason;
+	}
+
+	private closeDatabase(): void {
 		this.identityChangeListeners.clear();
 		try {
 			optimizeWithoutWaiting(this.db);
 		} finally {
 			this.db.close();
+			this.closed = true;
 		}
 	}
 }

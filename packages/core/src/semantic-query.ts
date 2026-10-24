@@ -1,4 +1,4 @@
-/** Internal query stages shared with isolated ranking experiments, not a package API. */
+/** Internal query stages shared by inline and worker semantic ranking, not a package API. */
 import { DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL } from "./embeddings.js";
 import { buildFilterBranchesWithContext, type OwnershipFilterContext } from "./filters.js";
 import type { MaintenanceJobSnapshot } from "./maintenance-jobs.js";

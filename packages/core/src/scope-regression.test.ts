@@ -10,6 +10,7 @@ import { buildMemoryPack } from "./pack.js";
 import { MemoryStore } from "./store.js";
 import type { MixedScopeFixture } from "./test-utils.js";
 import { initTestSchema } from "./test-utils.js";
+import { ensureVectorWriteModel, prepareVectorWrites } from "./vector-writes.js";
 import { semanticSearch } from "./vectors.js";
 
 vi.mock("./embeddings.js", async () => {
@@ -127,12 +128,17 @@ function insertTestVector(
 	value: number,
 	contentHash: string,
 ): void {
-	const vector = new Float32Array(384).fill(value);
-	const vectorJson = JSON.stringify(Array.from(vector));
-	const escapedVectorJson = vectorJson.replaceAll("'", "''");
-	const escapedHash = contentHash.replaceAll("'", "''");
-	db.exec(`
-		INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model)
-		VALUES (vec_f32('${escapedVectorJson}'), ${memoryId}, 0, '${escapedHash}', 'test-model')
-	`);
+	const vector = new Float32Array(384);
+	vector[0] = value;
+	const write = prepareVectorWrites(db);
+	db.transaction(() => {
+		ensureVectorWriteModel(db, "test-model");
+		write({
+			insert: {
+				model: "test-model",
+				expectedCount: 1,
+				rows: [{ memoryId, chunkIndex: 0, contentHash, vector }],
+			},
+		});
+	}).immediate();
 }

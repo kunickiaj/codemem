@@ -2156,13 +2156,23 @@ describe("memory_vectors bootstrap on fresh databases", () => {
 	it("creates memory_vectors via auto-bootstrap when constructing MemoryStore against a fresh path", async () => {
 		const dbPath = join(tmpDir, "vectors-fresh.sqlite");
 		// No pre-seeding — constructor discovers an uninitialized file and
-		// runs ensureSchemaBootstrapped, which must now create memory_vectors.
+		// runs ensureSchemaBootstrapped and creates the physical store plus its compatibility view.
 		const store = new MemoryStore(dbPath);
 		try {
-			const tableRow = store.db
-				.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_vectors'")
-				.get() as { name: string } | undefined;
-			expect(tableRow?.name).toBe("memory_vectors");
+			const vectorObjects = store.db
+				.prepare(
+					"SELECT name, type FROM sqlite_master WHERE name IN ('memory_vectors', 'memory_vectors_v1') ORDER BY name",
+				)
+				.all();
+			expect(vectorObjects).toEqual([
+				{ name: "memory_vectors", type: "view" },
+				{ name: "memory_vectors_v1", type: "table" },
+			]);
+			expect(
+				store.db
+					.prepare("SELECT status, writer_version FROM validated_vector_state WHERE id=1")
+					.get(),
+			).toEqual({ status: "ready", writer_version: 1 });
 
 			// Unguarded model-resolution query must succeed on a fresh DB.
 			expect(() => resolveSemanticSearchModel(store.db, "test-model")).not.toThrow();

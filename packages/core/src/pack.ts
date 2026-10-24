@@ -35,6 +35,11 @@ import {
 	timeline,
 } from "./search.js";
 import {
+	getSemanticExecutorOverride,
+	isSemanticIdentityChangedError,
+	isSemanticStoreClosedError,
+} from "./semantic/semantic-executor-seam.js";
+import {
 	canonicalMemoryKind,
 	getSummaryMetadata,
 	isNativeSessionSummaryMemory,
@@ -58,6 +63,7 @@ import type {
 	PackTraceMode,
 	PackTraceSection,
 	RenderedPackItem,
+	SemanticExecutionOptions,
 	TimelineItemResponse,
 } from "./types.js";
 import { semanticSearch } from "./vectors.js";
@@ -2871,24 +2877,29 @@ export async function buildMemoryPackAsync(
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
 	automaticContext?: AutomaticContext | null,
+	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackResponse> {
+	executionOptions?.signal?.throwIfAborted();
 	// Run semantic search (returns [] when embeddings unavailable)
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(
-			store.db,
+		const raw = await packSemanticSearch(
+			store,
 			semanticQuery,
 			limit,
-			filters ?? null,
-			ownershipFilterContext(store),
-			automaticSummarySessionId(store, automaticContext),
+			filters,
+			automaticContext,
+			executionOptions,
 		);
 		semResults = semanticMemoryResults(raw);
-	} catch {
+	} catch (error) {
+		if (isSemanticIdentityChangedError(error) || isSemanticStoreClosedError(error)) throw error;
+		executionOptions?.signal?.throwIfAborted();
 		// Semantic search failure is non-fatal — fall through to FTS-only
 	}
 
+	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: true,
 		compact: renderOptions?.compact,
@@ -2906,23 +2917,28 @@ export async function buildMemoryPackWithTraceAsync(
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
 	automaticContext?: AutomaticContext | null,
+	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackArtifacts> {
+	executionOptions?.signal?.throwIfAborted();
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(
-			store.db,
+		const raw = await packSemanticSearch(
+			store,
 			semanticQuery,
 			limit,
-			filters ?? null,
-			ownershipFilterContext(store),
-			automaticSummarySessionId(store, automaticContext),
+			filters,
+			automaticContext,
+			executionOptions,
 		);
 		semResults = semanticMemoryResults(raw);
-	} catch {
+	} catch (error) {
+		if (isSemanticIdentityChangedError(error) || isSemanticStoreClosedError(error)) throw error;
+		executionOptions?.signal?.throwIfAborted();
 		// Semantic search failure is non-fatal — fall through to FTS-only.
 	}
 
+	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: true,
 		compact: renderOptions?.compact,
@@ -2940,23 +2956,28 @@ export async function buildMemoryPackTraceAsync(
 	filters?: MemoryFilters,
 	renderOptions?: PackRenderOptions,
 	automaticContext?: AutomaticContext | null,
+	executionOptions?: SemanticExecutionOptions,
 ): Promise<PackTrace> {
+	executionOptions?.signal?.throwIfAborted();
 	let semResults: MemoryResult[] = [];
 	const semanticQuery = sanitizeSearchQuery(context).clean_query;
 	try {
-		const raw = await semanticSearch(
-			store.db,
+		const raw = await packSemanticSearch(
+			store,
 			semanticQuery,
 			limit,
-			filters ?? null,
-			ownershipFilterContext(store),
-			automaticSummarySessionId(store, automaticContext),
+			filters,
+			automaticContext,
+			executionOptions,
 		);
 		semResults = semanticMemoryResults(raw);
-	} catch {
+	} catch (error) {
+		if (isSemanticIdentityChangedError(error) || isSemanticStoreClosedError(error)) throw error;
+		executionOptions?.signal?.throwIfAborted();
 		// Semantic search failure is non-fatal — fall through to FTS-only
 	}
 
+	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: false,
 		compact: renderOptions?.compact,
@@ -2964,4 +2985,29 @@ export async function buildMemoryPackTraceAsync(
 		compressionMode: renderOptions?.compressionMode,
 		automaticContext,
 	}).trace;
+}
+
+function packSemanticSearch(
+	store: StoreHandle,
+	query: string,
+	limit: number,
+	filters: MemoryFilters | undefined,
+	automaticContext: AutomaticContext | null | undefined,
+	executionOptions?: SemanticExecutionOptions,
+): Promise<import("./vectors.js").SemanticSearchResult[]> {
+	const input = { query, limit, filters: filters ?? null, automaticContext };
+	if (store.semanticSearchAsync) return store.semanticSearchAsync(input, executionOptions);
+	const executor = getSemanticExecutorOverride(store);
+	if (executor) return executor.search(input, executionOptions);
+	// Structural legacy handles may use inline ranking only for non-reopenable databases.
+	if (store.db.name !== ":memory:" && store.db.name !== "") return Promise.resolve([]);
+	executionOptions?.signal?.throwIfAborted();
+	return semanticSearch(
+		store.db,
+		query,
+		limit,
+		filters ?? null,
+		ownershipFilterContext(store),
+		automaticSummarySessionId(store, automaticContext),
+	);
 }

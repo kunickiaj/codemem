@@ -17,6 +17,7 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { loadReplicationOpsSince } from "./sync-replication.js";
 import { insertTestSession } from "./test-utils.js";
+import { vectorStoreExists } from "./vector-layout.js";
 import * as vectors from "./vectors.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -773,6 +774,7 @@ describe("MemoryStore", () => {
 					memId,
 					"Vector title",
 					"Vector body",
+					{ signal: expect.any(AbortSignal) },
 				);
 			} finally {
 				storeVectorsSpy.mockRestore();
@@ -2525,8 +2527,11 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("bootstraps schema when constructed against a path with no existing file", () => {
+	it("bootstraps schema when constructed against a path with no existing file", async () => {
 		const dbPath = join(tmpDir, "fresh.sqlite");
+		// This bootstrap round-trip tests persistence, not external embedding inference.
+		const storeVectorsSpy = vi.spyOn(vectors, "storeVectors").mockResolvedValue();
+		onTestFinished(() => storeVectorsSpy.mockRestore());
 		// No pre-seeding — let the constructor discover an uninitialized DB.
 		// This mirrors the MCP server / claude-hook-ingest entry points hitting
 		// a fresh plugin install inside a wiped sandbox VM.
@@ -2536,7 +2541,8 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 			const stats = store.stats();
 			expect(stats.database.memory_items).toBe(0);
 			expect(stats.database.sessions).toBe(0);
-			expect(tableExists(store.db, "memory_vectors")).toBe(true);
+			expect(vectorStoreExists(store.db)).toBe(true);
+			expect(tableExists(store.db, "memory_vectors_v1")).toBe(true);
 
 			// Real query-path coverage: exercising `recent` / `recentByKinds`
 			// hits memory_items + FTS/provenance joins that assertSchemaReady
@@ -2555,7 +2561,7 @@ describe("MemoryStore constructor auto-bootstrap", () => {
 			);
 			expect(store.get(memId)?.title).toBe("post-bootstrap insert");
 		} finally {
-			store.close();
+			await store.closeAsync();
 		}
 	});
 

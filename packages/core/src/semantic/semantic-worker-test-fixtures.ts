@@ -160,7 +160,7 @@ export function useSemanticWorkerFixture(options: FixtureOptions = {}): Fixture 
 		try {
 			await Promise.all(executors.splice(0).map((executor) => executor.close()));
 		} finally {
-			fixture.store?.close();
+			await fixture.store?.closeAsync();
 			vi.restoreAllMocks();
 			vi.unstubAllEnvs();
 			rmSync(fixture.directory, { recursive: true, force: true });
