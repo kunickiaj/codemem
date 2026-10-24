@@ -150,6 +150,10 @@ import {
 } from "./coordinator-identity-group-grant.js";
 import { joinReviewGuardEvidence } from "./coordinator-join-review-guards.js";
 import {
+	captureLegacyCompletionOwnerProof,
+	legacyCompletionOwnerProofSql,
+} from "./coordinator-legacy-completion-owner-proof.js";
+import {
 	assertLegacyDeviceScope,
 	captureLegacyEnrollment,
 	captureLegacyEnrollmentPublicKey,
@@ -164,8 +168,6 @@ import {
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import {
-	LEGACY_OWNER_COMPATIBLE_SQL,
-	LEGACY_OWNER_DENIAL_SQL,
 	LEGACY_OWNER_INPUT_SQL,
 	LEGACY_OWNER_KEYS_SQL,
 	LEGACY_OWNER_SOURCE_CURRENT_SQL,
@@ -3168,25 +3170,22 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const manifestJson = canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest);
 		const normalized = JSON.parse(manifestJson) as CoordinatorLegacyTeamCompletionManifestV1;
 		requireCoordinatorLegacyTeamCompletionTeamBinding(normalized);
-		const existing = this.db
-			.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
-				WHERE group_id = ? AND candidate_ref = ?`)
-			.get(normalizedGroupId, normalized.candidate_ref) as { manifest_json: string } | undefined;
-		if (existing) {
+		const existing = this.readStoredLegacyCompletion(normalizedGroupId, normalized.candidate_ref);
+		if (existing)
 			return legacyCompletionWriteResult(existing.manifest_json, manifestJson, "existing");
-		}
 		const coordinatorId = await this.requireLegacyTeamCompletionSources(
 			normalizedGroupId,
 			normalized,
 			manifestJson,
 		);
-		const keyRows = this.db.prepare(LEGACY_OWNER_KEYS_SQL).all(manifestJson, normalizedGroupId);
-		const keyMetadata = await legacyOwnerKeyMetadata(keyRows as { public_key: string }[]);
-		const ownerValues = [manifestJson, normalizedGroupId, keyMetadata];
+		const ownerProof = await this.prepareLegacyTeamCompletionOwnerProof(
+			normalizedGroupId,
+			manifestJson,
+		);
 		const { result, stored, denial } = this.db
 			.transaction(() => {
 				const result = this.db
-					.prepare(`${LEGACY_OWNER_INPUT_SQL}
+					.prepare(`${LEGACY_OWNER_INPUT_SQL}${ownerProof.ctes}
 			INSERT OR IGNORE INTO coordinator_legacy_team_completions(
 				group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
 			) SELECT ?, ?, ?, ?, ?, ?
@@ -3224,9 +3223,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			            AND enrolled.enabled = 1
 			        )
 			    ) AND ${LEGACY_OWNER_SOURCE_CURRENT_SQL}
-			      AND (${LEGACY_OWNER_COMPATIBLE_SQL})`)
+				      AND (${ownerProof.currentSql}) AND (${ownerProof.compatibleSql})`)
 					.run(
-						...ownerValues,
+						...ownerProof.values,
 						normalizedGroupId,
 						normalized.candidate_ref,
 						normalized.version,
@@ -3242,15 +3241,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						manifestJson,
 						normalizedGroupId,
 					);
-				const stored = this.db
-					.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
-				WHERE group_id = ? AND candidate_ref = ?`)
-					.get(normalizedGroupId, normalized.candidate_ref) as
-					| { manifest_json: string }
-					| undefined;
+				const stored = this.readStoredLegacyCompletion(normalizedGroupId, normalized.candidate_ref);
 				const denial = stored
 					? null
-					: (this.db.prepare(LEGACY_OWNER_DENIAL_SQL).get(...ownerValues) as { denial: string });
+					: (this.db.prepare(ownerProof.denialSql).get(...ownerProof.values) as { denial: string });
 				return { result, stored, denial };
 			})
 			.immediate();
@@ -3266,6 +3260,40 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			manifestJson,
 			result.changes === 1 ? "created" : "existing",
 		);
+	}
+
+	private readStoredLegacyCompletion(groupId: string, candidateRef: string) {
+		return this.db
+			.prepare(`SELECT manifest_json FROM coordinator_legacy_team_completions
+				WHERE group_id = ? AND candidate_ref = ?`)
+			.get(groupId, candidateRef) as { manifest_json: string } | undefined;
+	}
+
+	private async prepareLegacyTeamCompletionOwnerProof(groupId: string, manifestJson: string) {
+		const keyMetadata = await legacyOwnerKeyMetadata(
+			this.db.prepare(LEGACY_OWNER_KEYS_SQL).all(manifestJson, groupId) as { public_key: string }[],
+		);
+		const proof = legacyCompletionOwnerProofSql(
+			await captureLegacyCompletionOwnerProof({
+				backend: {
+					...this.schemaBackend,
+					all: async <T>({ sql, values }: AuthLinkStatement) =>
+						this.db.prepare(sql).all(...values) as T[],
+				},
+				groupId,
+				manifestJson,
+				keyMetadata,
+			}),
+		);
+		return {
+			...proof,
+			values: [manifestJson, groupId, keyMetadata, ...proof.values],
+			denialSql: `${LEGACY_OWNER_INPUT_SQL}${proof.ctes}
+		 SELECT CASE WHEN NOT (${LEGACY_OWNER_SOURCE_CURRENT_SQL}) OR NOT (${proof.currentSql})
+		 THEN 'completion_manifest_unavailable'
+		 WHEN NOT (${proof.compatibleSql}) THEN 'completion_conflict'
+		 ELSE 'completion_manifest_unavailable' END AS denial`,
+		};
 	}
 
 	private async requireLegacyTeamCompletionSources(
