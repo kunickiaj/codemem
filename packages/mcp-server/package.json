@@ -36,7 +36,7 @@
 		"@modelcontextprotocol/sdk": "^1.32.0",
 		"express": "^5.2.1",
 		"express-rate-limit": "^8.7.0",
-		"zod": "^4.5.4"
+		"zod": "catalog:"
 	},
 	"devDependencies": {
 		"@types/express": "^5.0.6",

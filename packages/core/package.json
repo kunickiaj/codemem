@@ -46,7 +46,7 @@
 		"limiter": "catalog:",
 		"openid-client": "6.8.8",
 		"sqlite-vec": "0.1.9",
-		"zod": "4.5.4"
+		"zod": "catalog:"
 	},
 	"peerDependencies": {
 		"@codemem/embeddings": "workspace:^"

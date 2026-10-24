@@ -25,7 +25,7 @@
 		"drizzle-orm": "catalog:",
 		"hono": "catalog:",
 		"limiter": "catalog:",
-		"zod": "4.6.6"
+		"zod": "catalog:"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "catalog:",

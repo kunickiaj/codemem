@@ -42,6 +42,7 @@ catalog:
   typescript: ^7.0.2
   vite: ^8.2.2
   vitest: ^4.1.11
+  zod: 4.6.6
 
 # Temporary, approved exception for the OpenCode 2.0.24 contract evaluation.
 # Remove once these exact versions clear the configured minimum release age.
