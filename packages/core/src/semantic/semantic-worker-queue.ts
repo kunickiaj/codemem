@@ -195,6 +195,10 @@ class WorkerQueue implements SemanticWorkerQueue {
 	}
 
 	private async prepare(job: Job): Promise<void> {
+		if (job.settled) {
+			this.release(job);
+			return;
+		}
 		try {
 			const input = await job.prepare();
 			if (job.settled || !input || this.circuit || this.exited) {
