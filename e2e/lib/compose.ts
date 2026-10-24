@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { writeCommandArtifact, type CommandRecord } from "./artifacts.js";
+import { type CommandRecord, writeCommandArtifact } from "./artifacts.js";
 
 const DEFAULT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const RESOURCE_INSPECTION_TIMEOUT_MS = 30_000;
@@ -17,11 +17,37 @@ export interface RunCommandOptions {
 
 export interface RunCommandResult extends CommandRecord {}
 
+type CommandTiming = Pick<CommandRecord, "status" | "durationMs">;
+
+export interface ComposeCommandTiming extends CommandTiming {
+	artifactName: string;
+}
+
+export interface ComposeTimingSummary {
+	count: number;
+	/** Sum of command durations only; excludes waitFor sleeps and other scenario work. */
+	totalCommandMs: number;
+	slowest: ComposeCommandTiming[];
+}
+
+class CommandFailure extends Error {
+	readonly timing: CommandTiming;
+
+	constructor(record: RunCommandResult) {
+		super(`Command failed: ${record.command}\n${record.stderr || record.stdout}`);
+		this.timing = { status: record.status, durationMs: record.durationMs };
+	}
+}
+
 function stringifyCommand(command: string, args: string[]): string {
 	return [command, ...args].join(" ");
 }
 
-export function runCommand(command: string, args: string[], options: RunCommandOptions): RunCommandResult {
+export function runCommand(
+	command: string,
+	args: string[],
+	options: RunCommandOptions,
+): RunCommandResult {
 	const startedAt = Date.now();
 	const result = spawnSync(command, args, {
 		cwd: options.cwd,
@@ -39,7 +65,7 @@ export function runCommand(command: string, args: string[], options: RunCommandO
 	};
 	writeCommandArtifact(options.artifactsDir, options.artifactName, record);
 	if (!options.allowFailure && record.status !== 0) {
-		throw new Error(`Command failed: ${record.command}\n${record.stderr || record.stdout}`);
+		throw new CommandFailure(record);
 	}
 	return record;
 }
@@ -55,6 +81,7 @@ export interface ComposeManagerOptions {
 export class ComposeManager {
 	private readonly composeFiles: readonly string[];
 	private readonly profiles: readonly string[];
+	private readonly commandTimings: ComposeCommandTiming[] = [];
 
 	constructor(
 		private readonly options: ComposeManagerOptions,
@@ -66,6 +93,34 @@ export class ComposeManager {
 		this.profiles = [...(options.profiles ?? [])];
 		if (this.composeFiles.length === 0) {
 			throw new Error("ComposeManager requires composeFile or at least one composeFiles entry");
+		}
+	}
+
+	getTimingSummary(): ComposeTimingSummary {
+		return {
+			count: this.commandTimings.length,
+			totalCommandMs: this.commandTimings.reduce((total, timing) => total + timing.durationMs, 0),
+			slowest: this.commandTimings
+				.map((timing) => ({ ...timing }))
+				.sort((a, b) => b.durationMs - a.durationMs)
+				.slice(0, 10),
+		};
+	}
+
+	private run(command: string, args: string[], options: RunCommandOptions): RunCommandResult {
+		try {
+			const result = this.commandRunner(command, args, options);
+			this.commandTimings.push({
+				artifactName: options.artifactName,
+				status: result.status,
+				durationMs: result.durationMs,
+			});
+			return result;
+		} catch (error) {
+			if (error instanceof CommandFailure) {
+				this.commandTimings.push({ artifactName: options.artifactName, ...error.timing });
+			}
+			throw error;
 		}
 	}
 
@@ -81,7 +136,7 @@ export class ComposeManager {
 	}
 
 	private serviceOperation(args: string[], artifactName: string): RunCommandResult {
-		return this.commandRunner("docker", this.composeArgs(args), {
+		return this.run("docker", this.composeArgs(args), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 			timeoutMs: SERVICE_OPERATION_TIMEOUT_MS,
@@ -95,7 +150,7 @@ export class ComposeManager {
 			...(process.env.CODEMEM_E2E_BUILD === "1" ? ["--build"] : []),
 			...services,
 		];
-		return this.commandRunner("docker", this.composeArgs(args), {
+		return this.run("docker", this.composeArgs(args), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 			timeoutMs: 600_000,
@@ -103,7 +158,7 @@ export class ComposeManager {
 	}
 
 	down(artifactName: string, allowFailure = false): RunCommandResult {
-		return this.commandRunner("docker", this.composeArgs(["down", "-v", "--remove-orphans"]), {
+		return this.run("docker", this.composeArgs(["down", "-v", "--remove-orphans"]), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 			timeoutMs: 180_000,
@@ -118,16 +173,12 @@ export class ComposeManager {
 		timeoutMs = 120_000,
 		allowFailure = false,
 	): RunCommandResult {
-		return this.commandRunner(
-			"docker",
-			this.composeArgs(["exec", "-T", service, ...commandArgs]),
-			{
-				artifactsDir: this.options.artifactsDir,
-				artifactName,
-				timeoutMs,
-				allowFailure,
-			},
-		);
+		return this.run("docker", this.composeArgs(["exec", "-T", service, ...commandArgs]), {
+			artifactsDir: this.options.artifactsDir,
+			artifactName,
+			timeoutMs,
+			allowFailure,
+		});
 	}
 
 	execDetached(
@@ -136,19 +187,15 @@ export class ComposeManager {
 		artifactName: string,
 		timeoutMs = 120_000,
 	): RunCommandResult {
-		return this.commandRunner(
-			"docker",
-			this.composeArgs(["exec", "-d", service, ...commandArgs]),
-			{
-				artifactsDir: this.options.artifactsDir,
-				artifactName,
-				timeoutMs,
-			},
-		);
+		return this.run("docker", this.composeArgs(["exec", "-d", service, ...commandArgs]), {
+			artifactsDir: this.options.artifactsDir,
+			artifactName,
+			timeoutMs,
+		});
 	}
 
 	ps(artifactName: string): RunCommandResult {
-		return this.commandRunner("docker", this.composeArgs(["ps"]), {
+		return this.run("docker", this.composeArgs(["ps"]), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 		});
@@ -156,7 +203,7 @@ export class ComposeManager {
 
 	hasProjectResources(artifactName: string): boolean {
 		const projectFilter = `label=com.docker.compose.project=${this.options.projectName}`;
-		const containers = this.commandRunner(
+		const containers = this.run(
 			"docker",
 			["ps", "-a", "--filter", projectFilter, "--format", "{{.ID}}"],
 			{
@@ -165,7 +212,7 @@ export class ComposeManager {
 				timeoutMs: RESOURCE_INSPECTION_TIMEOUT_MS,
 			},
 		);
-		const volumes = this.commandRunner(
+		const volumes = this.run(
 			"docker",
 			["volume", "ls", "--filter", projectFilter, "--format", "{{.Name}}"],
 			{
@@ -178,7 +225,7 @@ export class ComposeManager {
 	}
 
 	logs(artifactName: string, allowFailure = false): RunCommandResult {
-		return this.commandRunner("docker", this.composeArgs(["logs", "--no-color"]), {
+		return this.run("docker", this.composeArgs(["logs", "--no-color"]), {
 			artifactsDir: this.options.artifactsDir,
 			artifactName,
 			timeoutMs: 180_000,
@@ -204,29 +251,31 @@ export class ComposeManager {
 		);
 	}
 
-	copyFromContainer(containerPath: string, hostPath: string, artifactName: string, allowFailure = true) {
-		return this.commandRunner(
-			"docker",
-			this.composeArgs(["cp", containerPath, hostPath]),
-			{
-				artifactsDir: this.options.artifactsDir,
-				artifactName,
-				timeoutMs: 180_000,
-				allowFailure,
-			},
-		);
+	copyFromContainer(
+		containerPath: string,
+		hostPath: string,
+		artifactName: string,
+		allowFailure = true,
+	) {
+		return this.run("docker", this.composeArgs(["cp", containerPath, hostPath]), {
+			artifactsDir: this.options.artifactsDir,
+			artifactName,
+			timeoutMs: 180_000,
+			allowFailure,
+		});
 	}
 
-	copyToContainer(hostPath: string, containerPath: string, artifactName: string, allowFailure = false) {
-		return this.commandRunner(
-			"docker",
-			this.composeArgs(["cp", hostPath, containerPath]),
-			{
-				artifactsDir: this.options.artifactsDir,
-				artifactName,
-				timeoutMs: 180_000,
-				allowFailure,
-			},
-		);
+	copyToContainer(
+		hostPath: string,
+		containerPath: string,
+		artifactName: string,
+		allowFailure = false,
+	) {
+		return this.run("docker", this.composeArgs(["cp", hostPath, containerPath]), {
+			artifactsDir: this.options.artifactsDir,
+			artifactName,
+			timeoutMs: 180_000,
+			allowFailure,
+		});
 	}
 }

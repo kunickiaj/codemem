@@ -290,6 +290,31 @@ function syncOnce(ctx: ScenarioContext, service: string, artifact: string, peerD
 	);
 }
 
+async function waitForPeerTransport(
+	ctx: ScenarioContext,
+	options: { service: string; peerDeviceId: string; artifact: string },
+): Promise<void> {
+	// Discovery can still reflect a snapshot from before the recipient started.
+	await waitFor(
+		async () => {
+			const status = await request<{
+				peers: Array<{ peer_device_id: string; pinned: boolean; addresses: string[] }>;
+			}>(ctx, options.service, "/api/sync/status?includeDiagnostics=true", options.artifact);
+			assert(status.status === 200, "owner presence refresh failed before recipient sync");
+			const peer = status.body.peers.find((item) => item.peer_device_id === options.peerDeviceId);
+			assert(
+				peer?.pinned && peer.addresses.length > 0,
+				"owner has not discovered the pinned recipient's sync address",
+			);
+		},
+		{
+			description: "owner transport discovery before recipient sync",
+			timeoutMs: 120_000,
+			intervalMs: 2_000,
+		},
+	);
+}
+
 export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
@@ -473,13 +498,11 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		!startupTitles.includes("unrelated existing"),
 		"unrelated existing memory leaked to peer-b during its startup sync",
 	);
-	const ownerPresence = await request<Record<string, unknown>>(
-		ctx,
-		"peer-a",
-		"/api/sync/status?includeDiagnostics=true",
-		"23-refresh-owner-presence",
-	);
-	assert(ownerPresence.status === 200, "owner presence refresh failed before recipient sync");
+	await waitForPeerTransport(ctx, {
+		service: "peer-a",
+		peerDeviceId: peerB.device_id,
+		artifact: "23-refresh-owner-presence",
+	});
 
 	// The recipient's bootstrap-grant snapshot pull is the pre-provisioning leak window.
 	syncOnce(ctx, "peer-b", "24-sync-recipient-before-provisioning");

@@ -1,14 +1,15 @@
-import { runFleetReadyScenario } from "../scenarios/fleet-ready.js";
-import { runFleetCleanupScenario } from "../scenarios/fleet-cleanup.js";
-import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
+import type { ComposeTimingSummary } from "../lib/compose.js";
+import { createScenarioContext } from "../lib/scenario-context.js";
 import { runBootstrapScenario } from "../scenarios/bootstrap.js";
 import { runCoordinatorScenario } from "../scenarios/coordinator.js";
 import { runDirectSyncScenario } from "../scenarios/direct-sync.js";
+import { runFleetCleanupScenario } from "../scenarios/fleet-cleanup.js";
+import { runFleetReadyScenario } from "../scenarios/fleet-ready.js";
+import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runLegacyTeamMigrationScenario } from "../scenarios/legacy-team-migration.js";
 import { runProjectSharingScenario } from "../scenarios/project-sharing.js";
 import { runSharingDomainsScenario } from "../scenarios/sharing-domains.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
-import { createScenarioContext } from "../lib/scenario-context.js";
 
 const scenarios = {
 	bootstrap: runBootstrapScenario,
@@ -76,6 +77,21 @@ function printUsage(): void {
 	}
 }
 
+function printTimings(timings: ComposeTimingSummary, options: { failed?: boolean } = {}): void {
+	const slowest = timings.slowest
+		.map(
+			({ artifactName, durationMs, status }) =>
+				`${artifactName}: ${durationMs}ms (status ${status})`,
+		)
+		.join(", ");
+	const message = `Command timings: ${timings.count} commands, ${timings.totalCommandMs}ms summed (excludes waits). Slowest: ${slowest || "none"}`;
+	if (options.failed) {
+		console.error(message);
+		return;
+	}
+	console.log(message);
+}
+
 async function main(): Promise<void> {
 	const { scenarioName, json } = parseCliArgs(processRef.process.argv.slice(2));
 	if (scenarioName === "list") {
@@ -94,7 +110,13 @@ async function main(): Promise<void> {
 
 	const ctx = createScenarioContext(scenarioName);
 	if (json) {
-		console.log(JSON.stringify({ status: "starting", scenario: scenarioName, artifactsDir: ctx.artifactsDir }));
+		console.log(
+			JSON.stringify({
+				status: "starting",
+				scenario: scenarioName,
+				artifactsDir: ctx.artifactsDir,
+			}),
+		);
 	} else {
 		console.log(`Running E2E scenario '${scenarioName}'`);
 		console.log(`Artifacts: ${ctx.artifactsDir}`);
@@ -102,9 +124,17 @@ async function main(): Promise<void> {
 	try {
 		await scenario(ctx);
 		if (json) {
-			console.log(JSON.stringify({ status: "passed", scenario: scenarioName, artifactsDir: ctx.artifactsDir }));
+			console.log(
+				JSON.stringify({
+					status: "passed",
+					scenario: scenarioName,
+					artifactsDir: ctx.artifactsDir,
+					timings: ctx.compose.getTimingSummary(),
+				}),
+			);
 		} else {
 			console.log(`Scenario '${scenarioName}' passed. Artifacts: ${ctx.artifactsDir}`);
+			printTimings(ctx.compose.getTimingSummary());
 		}
 	} catch (error) {
 		ctx.captureFailure(error);
@@ -119,16 +149,18 @@ async function main(): Promise<void> {
 					scenario: scenarioName,
 					artifactsDir: ctx.artifactsDir,
 					error: error instanceof Error ? error.message : String(error),
+					timings: ctx.compose.getTimingSummary(),
 				}),
 			);
 		} else {
 			console.error(`Scenario '${scenarioName}' failed. Artifacts: ${ctx.artifactsDir}`);
+			printTimings(ctx.compose.getTimingSummary(), { failed: true });
 		}
 		throw error;
 	}
 }
 
 void main().catch((error) => {
-	console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+	console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
 	processRef.process.exitCode = 1;
 });

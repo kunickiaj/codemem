@@ -112,7 +112,7 @@ set -lx CODEMEM_E2E_JSON 1
 pnpm run e2e:project-sharing -- --json
 ```
 
-This scenario reuses one two-peer setup to prove:
+This scenario reuses one three-peer setup to prove:
 
 - direct Identity access without Team membership
 - Team access inherited by existing and future members
@@ -125,6 +125,15 @@ This scenario reuses one two-peer setup to prove:
 - unsupported old-peer rejection before coordinator mutations
 - durable ambiguous-migration `Keep current` decisions
 - rollback visibility through the safe reconciliation API
+
+The disposable peer containers use Docker's init process to forward termination
+signals to their idle process. This avoids spending the full stop grace period
+on every container restart; the harness still uses the same 30-second grace
+period and exercises real offline, restart, replication, and revocation paths.
+Detached viewer processes are not promised a graceful application shutdown by
+this setting; these cases test recovery from container restarts. Discovery checks
+wait for the pinned recipient's sync address instead of relying on time spent
+stopping a container to make cached discovery data fresh.
 
 ## Run the Team setup scenario
 
@@ -212,3 +221,11 @@ Artifacts are written to `.tmp/e2e-artifacts/`, which is intentionally ignored b
 Set `CODEMEM_E2E_ARTIFACTS_DIR` to override the artifact root for CI or scripted runs.
 
 For machine-readable runner status, pass `--json` or set `CODEMEM_E2E_JSON=1`.
+
+Completion and failure output includes a command-timing summary: invocation count,
+summed command milliseconds, and up to ten slowest artifact labels with durations
+and exit statuses. JSON completion events expose these values under `timings`.
+Repeated labels count as separate invocations, and command arguments and output
+are not included in the summary. Summed command time excludes polling sleeps and
+other scenario work; it is not the scenario's wall-clock duration. Unexpected
+runner exceptions without command metadata do not contribute invented timings.

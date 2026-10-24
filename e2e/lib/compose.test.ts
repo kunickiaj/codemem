@@ -1,11 +1,17 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { writeCommandArtifact } from "./artifacts.js";
 import {
 	ComposeManager,
 	type RunCommandOptions,
 	type RunCommandResult,
+	runCommand,
 } from "./compose.js";
+
+vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
+vi.mock("./artifacts.js", () => ({ writeCommandArtifact: vi.fn() }));
 
 const SUCCESS: RunCommandResult = {
 	command: "docker compose",
@@ -21,6 +27,138 @@ function createCommandRunner() {
 
 afterEach(() => {
 	vi.unstubAllEnvs();
+	vi.restoreAllMocks();
+});
+
+function createTimingManager(commandRunner = createCommandRunner()) {
+	return new ComposeManager(
+		{ composeFile: "docker-compose.e2e.yml", artifactsDir: "/artifacts", projectName: "timings" },
+		commandRunner,
+	);
+}
+
+describe("ComposeManager command timings", () => {
+	it("returns an empty summary before any command runs", () => {
+		// Arrange: no Docker calls are needed for an empty scenario.
+		const compose = createTimingManager();
+
+		// Act
+		const summary = compose.getTimingSummary();
+
+		// Assert
+		expect(summary).toEqual({ count: 0, totalCommandMs: 0, slowest: [] });
+	});
+
+	it("sums repeated labels separately and retains only timing metadata", () => {
+		// Arrange: command text and output must never enter the summary.
+		const commandRunner = createCommandRunner()
+			.mockReturnValueOnce({
+				...SUCCESS,
+				durationMs: 20,
+				command: "secret command",
+				stdout: "secret output",
+			})
+			.mockReturnValueOnce({ ...SUCCESS, durationMs: 50, status: 2, stderr: "secret error" });
+		const compose = createTimingManager(commandRunner);
+
+		// Act: the second result is an allowed failure, not an exception.
+		compose.exec("peer-a", ["secret argument"], "poll");
+		compose.logs("poll", true);
+		const summary = compose.getTimingSummary();
+
+		// Assert: exact shape excludes raw command, arguments, stdout, and stderr.
+		expect(summary).toEqual({
+			count: 2,
+			totalCommandMs: 70,
+			slowest: [
+				{ artifactName: "poll", status: 2, durationMs: 50 },
+				{ artifactName: "poll", status: 0, durationMs: 20 },
+			],
+		});
+	});
+
+	it("limits slowest commands to ten without truncating totals or sharing mutable records", () => {
+		// Arrange
+		const commandRunner = createCommandRunner();
+		const compose = createTimingManager(commandRunner);
+		for (let durationMs = 1; durationMs <= 12; durationMs++) {
+			commandRunner.mockReturnValueOnce({ ...SUCCESS, durationMs });
+		}
+
+		// Act
+		for (let index = 1; index <= 12; index++) compose.ps(`ps-${index}`);
+		const first = compose.getTimingSummary();
+		first.slowest[0].durationMs = 999;
+		first.slowest.pop();
+		const summary = compose.getTimingSummary();
+
+		// Assert
+		expect(summary.count).toBe(12);
+		expect(summary.totalCommandMs).toBe(78);
+		expect(summary.slowest.map((timing) => timing.durationMs)).toEqual([
+			12, 11, 10, 9, 8, 7, 6, 5, 4, 3,
+		]);
+	});
+
+	it.each([1, null])(
+		"records thrown command failures with status %s without changing the error",
+		(status) => {
+			// Arrange: mock process execution and artifact writes; never invoke Docker.
+			vi.mocked(spawnSync).mockReturnValue({
+				status,
+				stdout: "",
+				stderr: "failure detail",
+			} as ReturnType<typeof spawnSync>);
+			vi.spyOn(Date, "now").mockReturnValueOnce(100).mockReturnValueOnce(145);
+			const compose = new ComposeManager(
+				{
+					composeFile: "docker-compose.e2e.yml",
+					artifactsDir: "/artifacts",
+					projectName: "timings",
+				},
+				runCommand,
+			);
+
+			// Act
+			const invoke = () => compose.ps("failed-ps");
+
+			// Assert: original message and artifact stay intact, summary uses only metadata.
+			expect(invoke).toThrow(
+				"Command failed: docker compose -f docker-compose.e2e.yml -p timings ps\nfailure detail",
+			);
+			expect(writeCommandArtifact).toHaveBeenCalledWith(
+				"/artifacts",
+				"failed-ps",
+				expect.objectContaining({ status, durationMs: 45, stderr: "failure detail" }),
+			);
+			expect(compose.getTimingSummary()).toEqual({
+				count: 1,
+				totalCommandMs: 45,
+				slowest: [{ artifactName: "failed-ps", status, durationMs: 45 }],
+			});
+		},
+	);
+
+	it("rethrows an unknown runner error unchanged without inventing timing metadata", () => {
+		// Arrange
+		const failure = new Error("artifact could not be written");
+		const commandRunner = createCommandRunner().mockImplementation(() => {
+			throw failure;
+		});
+		const compose = createTimingManager(commandRunner);
+
+		// Act
+		let caught: unknown;
+		try {
+			compose.ps("unknown-failure");
+		} catch (error) {
+			caught = error;
+		}
+
+		// Assert
+		expect(caught).toBe(failure);
+		expect(compose.getTimingSummary()).toEqual({ count: 0, totalCommandMs: 0, slowest: [] });
+	});
 });
 
 describe("ComposeManager", () => {
@@ -63,10 +201,7 @@ describe("ComposeManager", () => {
 		const commandRunner = createCommandRunner();
 		const compose = new ComposeManager(
 			{
-				composeFiles: [
-					"/repo/docker-compose.e2e.yml",
-					"/repo/docker-compose.dogfood.yml",
-				],
+				composeFiles: ["/repo/docker-compose.e2e.yml", "/repo/docker-compose.dogfood.yml"],
 				profiles: ["bootstrap", "diagnostics"],
 				artifactsDir: "/artifacts",
 				projectName: "codemem-dogfood",
@@ -106,12 +241,7 @@ describe("ComposeManager", () => {
 
 		compose.up(["peer-a"], "compose-up");
 
-		expect(commandRunner.mock.calls[0]?.[1].slice(-4)).toEqual([
-			"up",
-			"-d",
-			"--build",
-			"peer-a",
-		]);
+		expect(commandRunner.mock.calls[0]?.[1].slice(-4)).toEqual(["up", "-d", "--build", "peer-a"]);
 	});
 
 	it("runs service lifecycle operations with fixed command bounds", () => {
@@ -228,6 +358,24 @@ describe("ComposeManager", () => {
 		expect(compose.hasProjectResources("dogfood-resources")).toBe(true);
 		expect(commandRunner).toHaveBeenCalledTimes(2);
 	});
+});
+
+describe("docker-compose.e2e.yml", () => {
+	it.each(["peer-a", "peer-b", "peer-c"])(
+		"uses an init process for %s rather than making sleep PID 1",
+		(service) => {
+			// Arrange
+			const contents = readFileSync(resolve("docker-compose.e2e.yml"), "utf8");
+
+			// Act: isolate this service so a neighboring init setting cannot satisfy it.
+			const block = contents.match(new RegExp(`^  ${service}:\\n(?:^    .*\\n|^\\n)*`, "mu"))?.[0];
+
+			// Assert
+			expect(block).toBeDefined();
+			expect(block).toMatch(/^ {4}init: true$/mu);
+			expect(block).not.toMatch(/^ {4}init: false$/mu);
+		},
+	);
 });
 
 describe("docker-compose.dogfood.yml", () => {

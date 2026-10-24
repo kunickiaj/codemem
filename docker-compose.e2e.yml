@@ -50,6 +50,7 @@ services:
       context: .
       dockerfile: e2e/images/peer.Dockerfile
     working_dir: /workspace
+    init: true
     command: ["sleep", "infinity"]
     environment:
       CODEMEM_DB: /data/mem.sqlite
@@ -70,6 +71,7 @@ services:
       context: .
       dockerfile: e2e/images/peer.Dockerfile
     working_dir: /workspace
+    init: true
     command: ["sleep", "infinity"]
     environment:
       CODEMEM_DB: /data/mem.sqlite
@@ -90,6 +92,7 @@ services:
       context: .
       dockerfile: e2e/images/peer.Dockerfile
     working_dir: /workspace
+    init: true
     command: ["sleep", "infinity"]
     environment:
       CODEMEM_DB: /data/mem.sqlite
