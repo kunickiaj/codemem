@@ -68,7 +68,7 @@ export interface CoordinatorControllerReviewPreview {
 	reviewed_invites: { invite_id: string; kind: "team_member" | "add_device" }[];
 	reviewed_invite_count: number;
 	/** Historical sharing assignments, not a change of account owner or Team access. */
-	legacy_history?: ControllerHistoryEvidence[];
+	legacy_history: ControllerHistoryEvidence[];
 }
 const PATH = "/v1/admin/auth-controller-reviews";
 const FIELDS = ["group_id", "device_id", "identity_id", "fingerprint"] as const;

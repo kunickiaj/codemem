@@ -19,6 +19,8 @@ const options = {
 	identityId: "actor-a",
 	fingerprint: "a".repeat(64),
 };
+// Stored canonical JSON and parsed manifests both travel in full-history responses.
+const historyResponseBytes = 2 * 750_000 + 16_384;
 
 beforeEach(() => {
 	vi.mocked(requestJson).mockReset();
@@ -33,42 +35,45 @@ it.each([
 	{ timeoutS: undefined, expected: 3 },
 	{ timeoutS: 10, expected: 10 },
 	{ timeoutS: 12, expected: 12 },
-])("forwards budget $expected and the unchanged 16 KiB limit", async ({ timeoutS, expected }) => {
-	// Arrange: preview omits the digest; confirmation includes it with the same HTTP budget.
-	const payload = { state: "ready" };
-	vi.mocked(requestJson).mockResolvedValue([200, payload]);
-	const digest = "b".repeat(64);
-	// Act
-	const preview = await coordinatorAuthControllerReviewAction({ ...options, timeoutS });
-	const confirmed = await coordinatorAuthControllerReviewAction({
-		...options,
-		timeoutS,
-		confirmEvidenceDigest: digest,
-	});
-	// Assert
-	const httpOptions = {
-		headers: { "X-Codemem-Coordinator-Admin": "fixture-secret" },
-		body: {
-			group_id: "group-a",
-			device_id: "device-a",
-			identity_id: "actor-a",
-			fingerprint: options.fingerprint,
-		},
-		timeoutS: expected,
-		maxResponseBytes: 16384,
-	};
-	const url = "https://coordinator.example.test/v1/admin/auth-controller-reviews";
-	expect(vi.mocked(requestJson).mock.calls).toEqual([
-		["POST", url, httpOptions],
-		[
-			"POST",
-			url,
-			{ ...httpOptions, body: { ...httpOptions.body, confirm_evidence_digest: digest } },
-		],
-	]);
-	expect(preview).toEqual(payload);
-	expect(confirmed).toEqual(payload);
-});
+])(
+	"forwards budget $expected and the full-history response limit",
+	async ({ timeoutS, expected }) => {
+		// Arrange: preview omits the digest; confirmation includes it with the same HTTP budget.
+		const payload = { state: "ready" };
+		vi.mocked(requestJson).mockResolvedValue([200, payload]);
+		const digest = "b".repeat(64);
+		// Act
+		const preview = await coordinatorAuthControllerReviewAction({ ...options, timeoutS });
+		const confirmed = await coordinatorAuthControllerReviewAction({
+			...options,
+			timeoutS,
+			confirmEvidenceDigest: digest,
+		});
+		// Assert
+		const httpOptions = {
+			headers: { "X-Codemem-Coordinator-Admin": "fixture-secret" },
+			body: {
+				group_id: "group-a",
+				device_id: "device-a",
+				identity_id: "actor-a",
+				fingerprint: options.fingerprint,
+			},
+			timeoutS: expected,
+			maxResponseBytes: historyResponseBytes,
+		};
+		const url = "https://coordinator.example.test/v1/admin/auth-controller-reviews";
+		expect(vi.mocked(requestJson).mock.calls).toEqual([
+			["POST", url, httpOptions],
+			[
+				"POST",
+				url,
+				{ ...httpOptions, body: { ...httpOptions.body, confirm_evidence_digest: digest } },
+			],
+		]);
+		expect(preview).toEqual(payload);
+		expect(confirmed).toEqual(payload);
+	},
+);
 
 it.each([
 	{
@@ -94,7 +99,7 @@ it.each([
 		expect(requestJson).toHaveBeenCalledExactlyOnceWith(
 			"POST",
 			"https://coordinator.example.test/v1/admin/auth-controller-reviews",
-			expect.objectContaining({ timeoutS: 12, maxResponseBytes: 16384 }),
+			expect.objectContaining({ timeoutS: 12, maxResponseBytes: historyResponseBytes }),
 		);
 	},
 );

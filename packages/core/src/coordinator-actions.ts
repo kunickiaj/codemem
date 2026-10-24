@@ -4,6 +4,7 @@ import {
 } from "./better-sqlite-coordinator-store.js";
 import { normalizeCoordinatorAccountLinkOrigin } from "./coordinator-account-link-receiver.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { CONTROLLER_REVIEW_MAX_RESPONSE_BYTES } from "./coordinator-auth-controller-history.js";
 import { capture, isHash } from "./coordinator-auth-link-input.js";
 import {
 	type CoordinatorIdentityGroupGrantActionResult,
@@ -382,7 +383,7 @@ export async function coordinatorAuthControllerReviewAction(
 		body,
 		null,
 		opts.timeoutS ?? 3,
-		16384,
+		CONTROLLER_REVIEW_MAX_RESPONSE_BYTES,
 	);
 	if (!payload) throw new Error("controller_review_response_invalid");
 	return payload;

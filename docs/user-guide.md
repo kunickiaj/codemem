@@ -811,6 +811,10 @@ The preview reads the existing local device database and current Identity, then 
 
 Without `--json`, the interactive prompt defaults to **No**. Only an operator confirmation writes a coordinator controller review; it does not write an actor, grant, or Identity/device ownership record. Noninteractive and JSON calls remain preview-only.
 
+Before confirmation, the command displays the relevant retained Team history, including historical Identity assignments. JSON previews preserve that history in `legacy_history`. These records are evidence to inspect, not permission to change Team or Project access; confirmation does not rewrite them.
+
+If the coordinator omits history or returns invalid history, update it before reviewing. If the terminal output cannot show all history, the command refuses confirmation; use `--json` to inspect the complete preview. Changed evidence requires a fresh review and explicit confirmation, never an automatic retry.
+
 To confirm the review, run the same command in a terminal without `--json`:
 
 ```fish

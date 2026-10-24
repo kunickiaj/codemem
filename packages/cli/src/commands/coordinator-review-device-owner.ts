@@ -6,6 +6,7 @@ import {
 	type CoordinatorOwnerReviewLocalOptions,
 	coordinatorAuthControllerReviewAction,
 	normalizeCoordinatorAccountLinkOrigin,
+	parseControllerHistoryEvidence,
 	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
@@ -37,6 +38,7 @@ const REVIEW_REASONS = [
 	"enrollment_identity_mismatch",
 	"invite_identity_mismatch",
 	"invite_evidence_invalid",
+	"legacy_history_invalid",
 ];
 function validId(value: unknown): value is string {
 	return (
@@ -51,6 +53,8 @@ function isHash(value: unknown): value is string {
 	return typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 }
 function reviewErrorMessage(error: unknown): string {
+	if (error instanceof CoordinatorHistoryUnavailableError)
+		return "Update the coordinator before reviewing this device owner: retained history evidence was missing or invalid in its response. Nothing changed.";
 	if (error instanceof RemoteCoordinatorRequestError) {
 		if (error.code === "review_stale")
 			return "Evidence changed since the preview. Nothing changed; run the review again.";
@@ -146,6 +150,23 @@ function validInviteRef(
 		(invite.kind === "team_member" || invite.kind === "add_device")
 	);
 }
+function previewEnrollment(enrollment: CoordinatorControllerReviewPreview["enrollment"]) {
+	if (!enrollment) return null;
+	return {
+		device_id: enrollment.device_id,
+		fingerprint: enrollment.fingerprint,
+		display_name: null,
+		identity_label: enrollment.identity_label,
+	};
+}
+class CoordinatorHistoryUnavailableError extends Error {}
+function parsePreviewHistory(value: unknown, coordinatorId: string) {
+	try {
+		return parseControllerHistoryEvidence(value, coordinatorId);
+	} catch {
+		throw new CoordinatorHistoryUnavailableError();
+	}
+}
 function parsePreview(
 	payload: unknown,
 	request: CoordinatorAuthControllerReviewActionOptions,
@@ -153,6 +174,7 @@ function parsePreview(
 	if (!payload || typeof payload !== "object" || Array.isArray(payload))
 		throw new Error("invalid_preview");
 	const reply = payload as Record<string, unknown>;
+	if (!Array.isArray(reply.legacy_history)) throw new CoordinatorHistoryUnavailableError();
 	const enrollment = reply.enrollment as CoordinatorControllerReviewPreview["enrollment"];
 	const invites = reply.reviewed_invites as CoordinatorControllerReviewPreview["reviewed_invites"];
 	if (
@@ -188,16 +210,10 @@ function parsePreview(
 	return {
 		state: reply.state,
 		coordinator_id: reply.coordinator_id,
+		legacy_history: parsePreviewHistory(reply.legacy_history, reply.coordinator_id),
 		reasons: reply.reasons as CoordinatorControllerReviewPreview["reasons"],
 		evidence_digest: reply.state === "ready" ? (reply.evidence_digest as string) : undefined,
-		enrollment: enrollment
-			? {
-					device_id: enrollment.device_id,
-					fingerprint: enrollment.fingerprint,
-					display_name: null,
-					identity_label: enrollment.identity_label,
-				}
-			: null,
+		enrollment: previewEnrollment(enrollment),
 		reviewed_invites: invites.map((invite) => ({ invite_id: invite.invite_id, kind: invite.kind })),
 		reviewed_invite_count: reply.reviewed_invite_count as number,
 	};
@@ -326,6 +342,129 @@ function emitReviewPreview(
 		`${JSON.stringify({ local: displayLocal(evidence), review: preview, unchanged: true, ...stopped })}\n`,
 	);
 }
+type HistorySubject = Pick<
+	CoordinatorAuthControllerReviewActionOptions,
+	"deviceId" | "fingerprint" | "identityId"
+>;
+
+function terminalIdentifier(value: string): string {
+	return JSON.stringify(value).replace(
+		/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu,
+		(character) => `\\u{${character.codePointAt(0)?.toString(16)}}`,
+	);
+}
+
+function historyAssociation(
+	deviceId: string,
+	fingerprint: string,
+	subject: HistorySubject,
+): string {
+	if (deviceId === subject.deviceId) {
+		if (fingerprint === subject.fingerprint) return "Current device; current fingerprint";
+		return "Current device; different recorded key";
+	}
+	if (fingerprint === subject.fingerprint) return "Other device; current fingerprint";
+	return "Other recorded device/key; canonical-key equivalence is not identified in this summary";
+}
+
+function* controllerHistoryRows(
+	preview: CoordinatorControllerReviewPreview,
+	subject: HistorySubject,
+): Generator<{ text: string; records: number; decisions: number }> {
+	for (const record of preview.legacy_history) {
+		yield {
+			text: `Historical group ${terminalIdentifier(record.group_id)}; Team ${terminalIdentifier(record.manifest.team_id)}; completed ${terminalIdentifier(record.completed_at)}\nCandidate: ${terminalIdentifier(record.candidate_ref)}; manifest version: ${record.manifest_version}; recorded: ${terminalIdentifier(record.created_at)}\nOriginal retained manifest JSON: ${terminalIdentifier(record.manifest_json)}`,
+			records: 1,
+			decisions: 0,
+		};
+		for (const decision of record.manifest.device_decisions) {
+			const identity =
+				decision.identity_id === null ? "none" : terminalIdentifier(decision.identity_id);
+			yield {
+				text: `  ${decision.decision}; Identity: ${identity}; enabled: ${decision.enabled ? "yes" : "no"}\n  Device: ${terminalIdentifier(decision.device_id)}; fingerprint: ${terminalIdentifier(decision.key_fingerprint)}\n  ${historyAssociation(decision.device_id, decision.key_fingerprint, subject)}`,
+				records: 0,
+				decisions: 1,
+			};
+		}
+	}
+}
+
+/** A truncated summary must never authorize the terminal confirmation. */
+export function formatControllerReviewHistory(
+	preview: CoordinatorControllerReviewPreview,
+	subject: HistorySubject,
+): { text: string; complete: boolean } {
+	const lines = [
+		`Proposed current owner Identity: ${terminalIdentifier(subject.identityId)}`,
+		"Retained legacy sharing assignments (not ownership changes):",
+		"Records may contain other devices. Different fingerprints may represent known key aliases; no row below is assumed to belong to this device unless labeled as an exact device/fingerprint match.",
+	];
+	let records = 0;
+	let decisions = 0;
+	let characters = lines.join("\n").length;
+	let complete = true;
+	for (const row of controllerHistoryRows(preview, subject)) {
+		if (
+			records + row.records > 20 ||
+			decisions + row.decisions > 40 ||
+			characters + row.text.length + 1 > 24_000
+		) {
+			complete = false;
+			break;
+		}
+		lines.push(row.text);
+		records += row.records;
+		decisions += row.decisions;
+		characters += row.text.length + 1;
+	}
+	if (preview.legacy_history.length === 0) lines.push("No relevant retained legacy assignments.");
+	if (!complete) {
+		const totalDecisions = preview.legacy_history.reduce(
+			(total, record) => total + record.manifest.device_decisions.length,
+			0,
+		);
+		lines.push(
+			`TRUNCATED: showing ${records} of ${preview.legacy_history.length} records and ${decisions} of ${totalDecisions} device decisions. Terminal confirmation is disabled.`,
+		);
+	}
+	lines.push(
+		"Previous assignments are retained. This review records current ownership; it does not migrate sharing, move memories, merge Identities, or grant Team/Project access.",
+		"Approval grants the existing controller authority, including account management when the coordinator permits it. Google account linking remains a separate step.",
+	);
+	return { text: lines.join("\n"), complete };
+}
+
+function showCoordinatorReview(
+	preview: CoordinatorControllerReviewPreview,
+	request: HistorySubject,
+	options: Options,
+): boolean {
+	p.log.info(
+		`Coordinator: ${preview.coordinator_id}; reviewed invitations: ${preview.reviewed_invite_count}`,
+		{ output: process.stderr },
+	);
+	const history = formatControllerReviewHistory(preview, request);
+	p.log.message(history.text, { output: process.stderr });
+	if (history.complete) return true;
+	failure(
+		options,
+		"Nothing changed. Run the same command with --json to inspect all retained evidence. Ask the coordinator operator to use the administrator review API for evidence exceeding this terminal's display limit.",
+		2,
+	);
+	return false;
+}
+
+function reportReviewFailure(options: Options, error: unknown): void {
+	if (options.json && error instanceof CoordinatorHistoryUnavailableError) {
+		process.stdout.write(
+			`${JSON.stringify({ error: "owner_review_unavailable", message: reviewErrorMessage(error), unchanged: true })}\n`,
+		);
+		process.exitCode = 1;
+		return;
+	}
+	failure(options, reviewErrorMessage(error));
+}
+
 async function reviewDeviceOwner(group: string, options: Options): Promise<void> {
 	try {
 		if (!validId(group)) return failure(options, "Use a valid coordinator group ID.", 2);
@@ -367,13 +506,10 @@ async function reviewDeviceOwner(group: string, options: Options): Promise<void>
 				options,
 				`Coordinator review stopped: ${preview.reasons.join(", ")}. Nothing changed.`,
 			);
-		p.log.info(
-			`Coordinator: ${preview.coordinator_id}; reviewed invitations: ${preview.reviewed_invite_count}`,
-			{ output: process.stderr },
-		);
+		if (!showCoordinatorReview(preview, request, options)) return;
 		await confirmReview(group, options, evidence, request, preview);
 	} catch (error) {
-		failure(options, reviewErrorMessage(error));
+		reportReviewFailure(options, error);
 	}
 }
 export function buildCoordinatorReviewDeviceOwnerCommand(): Command {

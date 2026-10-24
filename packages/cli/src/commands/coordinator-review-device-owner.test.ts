@@ -58,6 +58,7 @@ const preview = {
 	},
 	reviewed_invites: [],
 	reviewed_invite_count: 0,
+	legacy_history: [],
 };
 const config = {
 	actor_id: "actor-a",

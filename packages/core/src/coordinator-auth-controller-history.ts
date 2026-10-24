@@ -42,6 +42,10 @@ export interface ControllerHistoryInput {
 }
 
 const MAX_BYTES = 750_000;
+// The encoded snapshot already caps record metadata and JSON-escaped manifest_json
+// at MAX_BYTES. Its parsed manifests add at most MAX_BYTES more; reserve the old
+// response envelope budget for enrollment, invitations, reasons and digest fields.
+export const CONTROLLER_REVIEW_MAX_RESPONSE_BYTES = 2 * MAX_BYTES + 16_384;
 const MAX_KEYS = 4096;
 const MAX_DISCOVERY_KEYS = 8192;
 const MAX_RECORDS = 500;

@@ -132,6 +132,7 @@ export type {
 	CreateCoordinatorAppOptions,
 } from "./coordinator-api.js";
 export { createCoordinatorApp } from "./coordinator-api.js";
+export { parseControllerHistoryEvidence } from "./coordinator-auth-controller-history.js";
 export type {
 	CoordinatorControllerReviewDeps,
 	CoordinatorControllerReviewPreview,
