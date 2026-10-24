@@ -244,6 +244,41 @@ describe("semantic worker queue admission", () => {
 });
 
 describe("semantic worker queue cancellation and deadlines", () => {
+	it("skips preparation aborted before its microtask and completes followup work", async () => {
+		// Arrange: keep the worker ready so run schedules preparation immediately.
+		const f = fixture();
+		const warmup = f.queue.run(async () => null);
+		f.ready();
+		await flush();
+		await warmup;
+		const preparation = deferred<RankInput | null>();
+		const cancelledPrepare = vi.fn(() => preparation.promise);
+		const controller = new AbortController();
+		const nextPrepare = vi.fn(async () => null);
+		const nextSettled = vi.fn();
+
+		try {
+			// Act: abort synchronously, before the scheduled callback can start expensive work.
+			const cancelled = observe(f.queue.run(cancelledPrepare, { signal: controller.signal }));
+			controller.abort();
+			void observe(f.queue.run(nextPrepare)).then(nextSettled);
+			await flush();
+
+			// Assert: followup finishes while the cancelled preparation promise remains unresolved.
+			expect(await cancelled).toMatchObject({ error: { code: "aborted" } });
+			expect.soft(cancelledPrepare).not.toHaveBeenCalled();
+			expect.soft(nextPrepare).toHaveBeenCalledTimes(1);
+			expect(nextSettled).toHaveBeenCalledExactlyOnceWith({ value: null });
+		} finally {
+			// Release any incorrectly started preparation and join cleanup even on RED.
+			preparation.resolve(null);
+			const closing = f.queue.close();
+			await flush();
+			f.exit();
+			await closing;
+		}
+	});
+
 	it("expires queued work from enqueue time and reclaims capacity without preparing it", async () => {
 		// Arrange: active preparation remains unfinished even after its caller expires.
 		const f = fixture({ maxPending: 1, requestMs: 100 });
