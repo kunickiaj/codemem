@@ -10,8 +10,13 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const temps = join(root, ".tmp/ci-package-launcher-tests");
 const workerPath = "packages/cloudflare-coordinator-worker";
 const manifest = JSON.parse(fs.readFileSync(join(root, workerPath, "package.json"), "utf8"));
+const ciScript = JSON.parse(fs.readFileSync(join(root, "package.json"), "utf8")).scripts["test:ci"];
 fs.mkdirSync(temps, { recursive: true });
-const fixture = () => fs.mkdtempSync(join(temps, "unit-"));
+const fixture = (script = ciScript) => {
+	const root = fs.mkdtempSync(join(temps, "unit-"));
+	fs.writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { "test:ci": script } }));
+	return root;
+};
 const read = (path) => JSON.parse(fs.readFileSync(path, "utf8"));
 // Fabricated reports verify launcher contracts only; they are not performance evidence.
 function report(entry, data = {}) {
@@ -53,11 +58,92 @@ for (const project of ["core", "viewer-server", "cli"]) {
 		// Arrange
 		const cwd = join(root, "packages/other");
 		// Act
-		const [entry] = buildCommands(project, root, cwd);
+		const entries = buildCommands(project, root, cwd);
 		// Assert
-		assert.equal(entry.cwd, root);
 		assert.equal(outputDirectory(project, root, cwd), join(root, ".tmp/ci-package-test", project));
-		assert.ok(entry.args.includes(join(outputDirectory(project, root), "results.json")));
+		assert.equal(entries.length, project === "core" ? 2 : 1);
+		const reports = entries.map((entry) => entry.args[entry.args.indexOf("--outputFile") + 1]);
+		assert.equal(new Set(reports).size, entries.length);
+		for (const entry of entries) {
+			assert.equal(entry.cwd, root);
+			assert.equal(entry.args[entry.args.indexOf("--project") + 1], project);
+		}
+		assert.ok(reports.every((path) => dirname(path) === outputDirectory(project, root)));
+		if (project === "core") assert.ok(entries.at(-1).args.includes("--maxWorkers=1"));
+	});
+}
+
+for (const [selector, workers] of [
+	["fixture-first.test.ts", 1],
+	["fixture-renamed.test.ts", 3],
+]) {
+	it(`follows manifest-owned core scheduling for ${selector} and ${workers} workers`, () => {
+		// Arrange
+		const glob = `**/${selector}`,
+			file = `packages/core/src/${selector}`;
+		const root = fixture(
+			`pnpm exec vitest run --exclude "${glob}" && pnpm exec vitest run ${file} --maxWorkers=${workers}`,
+		);
+		// Act
+		const entries = buildCommands("core", root);
+		// Assert
+		assert.deepEqual(
+			entries.map((entry) => entry.name),
+			["core-1", "core-2"],
+		);
+		assert.deepEqual(entries[0].args.slice(0, 5), ["exec", "vitest", "run", "--exclude", glob]);
+		assert.deepEqual(entries[1].args.slice(0, 5), [
+			"exec",
+			"vitest",
+			"run",
+			file,
+			`--maxWorkers=${workers}`,
+		]);
+		assert.ok(!entries[1].args.includes(glob));
+	});
+}
+
+for (const script of [
+	"pnpm exec vitest run ; echo unsafe",
+	"node custom-runner.mjs",
+	'pnpm exec vitest run "$(echo unsafe)"',
+]) {
+	it(`rejects an unsafe or unsupported core script: ${script}`, () => {
+		// Arrange
+		const root = fixture(script);
+		// Act / Assert
+		assert.throws(
+			() => buildCommands("core", root),
+			/Expected a simple pnpm exec vitest run script/,
+		);
+	});
+}
+
+for (const failAt of [-1, 0, 1]) {
+	it(`records distinct core phase reports and stops at failing phase ${failAt}`, async () => {
+		// Arrange
+		const root = fixture(),
+			calls = [];
+		// Act
+		const code = await main(["core"], {
+			root,
+			baseEnv: {},
+			runCommand: (entry) => {
+				calls.push(entry);
+				report(entry);
+				return calls.length - 1 === failAt ? 19 : 0;
+			},
+		});
+		const metadata = read(join(outputDirectory("core", root), "execution.json"));
+		// Assert
+		assert.equal(code, failAt === -1 ? 0 : 19);
+		assert.equal(calls.length, failAt === 0 ? 1 : 2);
+		assert.equal(metadata.status, failAt === -1 ? "success" : "failure");
+		assert.deepEqual(
+			metadata.commands.map((entry) => entry.report),
+			calls.map((entry) => entry.args[entry.args.indexOf("--outputFile") + 1]),
+		);
+		assert.equal(new Set(metadata.commands.map((entry) => entry.report)).size, calls.length);
 	});
 }
 
@@ -338,17 +424,20 @@ for (const invalid of ["missing", "stale", "failed", "incomplete", "no-time"]) {
 			incomplete: { testResults: null },
 			"no-time": { startTime: null },
 		};
+		let calls = 0;
 		// Act / Assert
 		await assert.rejects(
 			main(["core"], {
 				root,
 				baseEnv: {},
 				runCommand: (entry) => {
+					calls++;
 					if (invalid !== "missing") report(entry, data[invalid]);
 					return 0;
 				},
 			}),
 		);
+		assert.equal(calls, 1);
 		assert.equal(read(join(output, "execution.json")).status, "failure");
 	});
 }

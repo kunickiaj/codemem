@@ -49,6 +49,23 @@ const reporters = (output, name = "results") => [
 ];
 const command = (name, args, cwd) => ({ name, command: "pnpm", args, cwd });
 
+function vitestScript(name, body, cwd, output, project) {
+	const tokens = body.match(/"[^"]*"|\S+/g) ?? [];
+	const words = tokens.map((token) => (/^"[^"]+"$/.test(token) ? token.slice(1, -1) : token));
+	if (
+		words.slice(0, 4).join(" ") !== "pnpm exec vitest run" ||
+		words.some((word) => !/^[A-Za-z0-9_./:@=*?-]+$/.test(word))
+	) {
+		throw new Error("Expected a simple pnpm exec vitest run script");
+	}
+	const filter = project ? ["--project", project] : [];
+	return command(
+		name,
+		[...words.slice(1), ...filter, ...reporters(output, name.replaceAll(":", "-"))],
+		cwd,
+	);
+}
+
 function workerCommands(cwd, output) {
 	const { scripts } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
 	const stages = scripts["test:worker"]
@@ -59,15 +76,15 @@ function workerCommands(cwd, output) {
 	return stages.map((name) => {
 		const body = scripts[name];
 		if (!body.startsWith("pnpm exec vitest run")) return command(name, ["run", name], cwd);
-		if (typeof body !== "string" || !/^pnpm exec vitest run(?: [A-Za-z0-9_./:@=-]+)*$/.test(body)) {
-			throw new Error("Expected a simple pnpm exec vitest run worker script");
-		}
-		return command(
-			name,
-			[...body.split(" ").slice(1), ...reporters(output, name.replace(":", "-"))],
-			cwd,
-		);
+		return vitestScript(name, body, cwd, output);
 	});
+}
+
+function coreCommands(root, output) {
+	const { scripts } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+	return scripts["test:ci"]
+		.split(/\s*&&\s*/)
+		.map((body, index) => vitestScript(`core-${index + 1}`, body, root, output, "core"));
 }
 
 export function buildCommands(project, root, cwd = root) {
@@ -75,6 +92,7 @@ export function buildCommands(project, root, cwd = root) {
 	const directory = projectDirectory(project, root, cwd);
 	const output = outputDirectory(project, root, cwd);
 	if (project === "worker-integration") return workerCommands(directory, output);
+	if (project === "core") return coreCommands(root, output);
 	const prerequisites =
 		project === "e2e-unit"
 			? ["test:release", "test:adapter-normalizers", "test:ci-workflow", "test:semantic-installed"]
@@ -166,10 +184,15 @@ export function runCommand(entry, env) {
 	});
 }
 
-function verifyReport(entry, executedAt) {
+function reportPath(entry) {
 	const reportIndex = entry.args.indexOf("--outputFile");
-	if (reportIndex === -1) return;
-	const report = JSON.parse(readFileSync(entry.args[reportIndex + 1], "utf8"));
+	return reportIndex === -1 ? undefined : entry.args[reportIndex + 1];
+}
+
+function verifyReport(entry, executedAt) {
+	const path = reportPath(entry);
+	if (!path) return;
+	const report = JSON.parse(readFileSync(path, "utf8"));
 	if (
 		report.success !== true ||
 		!Array.isArray(report.testResults) ||
@@ -205,7 +228,7 @@ export async function main(args = process.argv.slice(2), options = {}) {
 		const commands = buildCommands(project, root, cwd);
 		for (const entry of commands) {
 			exitCode = await (options.runCommand ?? runCommand)(entry, env);
-			metadata.commands.push({ name: entry.name, exitCode });
+			metadata.commands.push({ name: entry.name, exitCode, report: reportPath(entry) });
 			if (exitCode !== 0) break;
 			verifyReport(entry, metadata.executedAt);
 		}
