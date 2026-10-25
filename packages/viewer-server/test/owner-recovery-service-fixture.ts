@@ -35,6 +35,10 @@ export function recoveryAssociationFiles(legacyDirectory?: string): string[] {
 }
 export const scope = "historical_included_owner_labels_only";
 export function recoveryTests() {
+	// Each case builds a real signed coordinator (RSA OIDC keys, Ed25519 device key,
+	// SQLite) and makes real signed requests: ~0.2s idle, but over 5s on a busy CI
+	// runner. These are correctness checks, not five-second performance budgets.
+	vi.setConfig({ testTimeout: 15_000 });
 	beforeEach(() => {
 		const home = mkdtempSync(join(tmpdir(), "recovery-service-home-"));
 		vi.stubEnv("HOME", home);
