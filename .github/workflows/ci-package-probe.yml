@@ -1,0 +1,49 @@
+name: Package Cache Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-cache-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+# Optional fresh diagnostic; normal CI owns PR task reuse.
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        pipeline: [ci-packages, ci-worker]
+    env:
+      CI_FORCE_FULL: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build test prerequisites fresh
+        if: matrix.pipeline == 'ci-packages'
+        run: pnpm run build
+      - name: Run package tests fresh
+        run: pnpm run ci:package-probe ${{ matrix.pipeline }}
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-diagnostic-${{ matrix.pipeline }}
+          path: |
+            .tmp/ci-package-test/**
+            packages/*/.tmp/ci-package-test/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

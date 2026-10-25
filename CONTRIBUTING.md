@@ -32,6 +32,14 @@ pnpm exec vitest run packages/core/src/index.test.ts
 
 Branch protection requires `TypeScript Test`, `TypeScript Lint`, and `Plugin Smoke Test`, with pull requests kept up to date with `main` before merging.
 
+### Package test reuse
+
+After `pnpm build`, run `pnpm run ci:package-probe` for workspace tests or `pnpm run ci:package-probe ci-worker` for Worker integration. pnpm computes package and transitive dependency keys; shared configuration and runtime inputs are calculated automatically. Core, Viewer, and CLI tests use broader repository inputs because they cross package boundaries.
+
+Required PR test jobs reuse unchanged package results from earlier runs of the same PR. Changed inputs and cache misses run tests; there is no duplicate comparison run. This trusts the PR's CI-written native task cache. Builds, browser acceptance, and plugin smoke checks still run fresh.
+
+Add the `ci:full` PR label or use `env CI_FORCE_FULL=1 pnpm run ci:package-probe` to bypass cached results. Timing tests named `*.perf.test.ts` always execute. Main, forks, release contexts, and uncertain inputs run fresh. The separate diagnostic workflow is manual-only.
+
 ## Context injection validation
 
 When changing pack retrieval, context injection, or the adapter surfaces
