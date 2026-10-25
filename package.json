@@ -21,6 +21,7 @@
     "e2e:sharing-domains": "pnpm exec tsx e2e/bin/run-local.ts sharingDomains",
     "e2e:smoke": "pnpm exec tsx e2e/bin/run-local.ts smoke",
     "test": "pnpm exec vitest run",
+    "test:ci": "pnpm exec vitest run --exclude \"**/coordinator-legacy-completion-owner-proof.test.ts\" && pnpm exec vitest run packages/core/src/coordinator-legacy-completion-owner-proof.test.ts --maxWorkers=1",
     "test:watch": "pnpm exec vitest",
     "test:ci-workflow": "node --test scripts/ci-workflow.test.mjs scripts/ci-package-*.test.mjs",
     "test:ci-package": "node --test scripts/ci-package-*.test.mjs",

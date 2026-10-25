@@ -163,6 +163,8 @@ const subjectCtes = `completion_proof_input(value) AS MATERIALIZED (SELECT ?),
  JOIN completion_proof_subjects s ON s.ordinal=j.value),
  completion_proof_fragments(fragment) AS MATERIALIZED (
  SELECT DISTINCT f.value FROM completion_proof_active s,json_each(s.fragments) f),
+ completion_proof_fingerprints(fingerprint) AS MATERIALIZED (
+ SELECT DISTINCT f.value FROM completion_proof_active s,json_each(s.value,'$.fingerprints') f),
  completion_proof_approved AS MATERIALIZED (
  SELECT j.value FROM completion_proof_input i,json_each(i.value,'$.approved') j),
  completion_proof_keys AS MATERIALIZED (
@@ -209,24 +211,26 @@ const resolutionSql = rowset(
 );
 const historyParsed = `CASE WHEN json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END`;
 const historyDecision = `CASE WHEN d.type='object' THEN d.value ELSE '{}' END`;
+// Share exact device/fingerprint lookups within each statement, not across capture
+// and INSERT. Only malformed text discovery still needs per-subject matching.
 const historySql = rowset(
 	"c.group_id,c.candidate_ref,c.manifest_version,c.completed_at,c.created_at,c.manifest_json".split(
 		",",
 	),
-	`coordinator_legacy_team_completions c WHERE EXISTS (
- SELECT 1 FROM completion_proof_active s
+	`coordinator_legacy_team_completions c
  WHERE (json_extract(${historyParsed},'$.coordinator_id')=${coordinator}
  OR json_extract(${historyParsed},'$.coordinator_id') IS NULL)
  AND (EXISTS (SELECT 1 FROM json_each(${historyParsed},'$.device_decisions') d
- WHERE json_extract(${historyDecision},'$.device_id')=${field("deviceId")}
- OR json_extract(${historyDecision},'$.key_fingerprint') IN (SELECT value FROM json_each(s.value,'$.fingerprints'))
+ WHERE json_extract(${historyDecision},'$.device_id') IN (SELECT deviceId FROM completion_proof_active)
+ OR json_extract(${historyDecision},'$.key_fingerprint') IN (SELECT fingerprint FROM completion_proof_fingerprints)
  OR ((d.type<>'object' OR json_type(${historyDecision},'$.device_id') IS NOT 'text'
  OR json_type(${historyDecision},'$.key_fingerprint') IS NOT 'text')
- AND (instr(CASE WHEN d.type='text' THEN json_quote(d.value) ELSE d.value END,json_quote(${field("deviceId")}))>0
+ AND EXISTS (SELECT 1 FROM completion_proof_active s WHERE
+ instr(CASE WHEN d.type='text' THEN json_quote(d.value) ELSE d.value END,json_quote(${field("deviceId")}))>0
  OR EXISTS (SELECT 1 FROM json_each(s.value,'$.fingerprints') f WHERE instr(d.value,f.value)>0))))
  OR ((json_valid(c.manifest_json)=0 OR json_type(${historyParsed},'$.device_decisions') IS NOT 'array')
- AND (instr(c.manifest_json,json_quote(${field("deviceId")}))>0
- OR EXISTS (SELECT 1 FROM json_each(s.value,'$.fingerprints') f WHERE instr(c.manifest_json,f.value)>0)))))`,
+ AND EXISTS (SELECT 1 FROM completion_proof_active s WHERE instr(c.manifest_json,json_quote(${field("deviceId")}))>0
+ OR EXISTS (SELECT 1 FROM json_each(s.value,'$.fingerprints') f WHERE instr(c.manifest_json,f.value)>0))))`,
 );
 
 function evidenceQueries(): Record<string, string> {
@@ -403,28 +407,49 @@ function discoversKey(publicKey: string, subject: Subject): boolean {
 	return subject.fragments.some((fragment) => normalized.includes(fragment));
 }
 
-function subjectHistory(
+/** Internal capture preparation; not exported from the package entrypoint. */
+export function prepareCompletionHistory(
+	rows: EvidenceRow[],
+	decode: (text: string) => unknown = JSON.parse,
+) {
+	return rows.map((row) => {
+		const record = historyRecord(row);
+		let decoded = false;
+		let value: unknown;
+		return {
+			row,
+			record,
+			decode: () => {
+				if (decoded) return value;
+				decoded = true;
+				try {
+					value = decode(record.manifest_json);
+				} catch {
+					// A failed raw decode is not itself denial: each subject still
+					// checks whether this malformed row plausibly references it.
+				}
+				return value;
+			},
+		};
+	});
+}
+
+/** Internal subject view; canonical validation remains subject-specific. */
+export function subjectHistory(
 	rows: EvidenceRows,
 	subject: Subject,
 	keys: Map<string, string>,
+	prepared: ReturnType<typeof prepareCompletionHistory>,
 ): ControllerHistorySnapshot {
 	const pairs = (rows.historyKeys ?? []).filter(
 		(row) => keys.get(String(row[0])) === subject.keyId,
 	);
 	requireProof(pairs.length <= MAX_HISTORY_KEYS);
 	const fingerprints = new Set([subject.fingerprint, ...pairs.map((row) => String(row[1]))]);
-	const records = (rows.history ?? []).filter((row) => {
-		const record = historyRecord(row);
+	const records = prepared.filter(({ record, decode }) => {
 		// The SQL selector retains malformed plausible matches. Do not silently drop
 		// them while partitioning a shared capture into individual classifier views.
-		let value: unknown;
-		try {
-			value = JSON.parse(record.manifest_json);
-		} catch {
-			requireProof(!record.manifest_json.includes(JSON.stringify(subject.deviceId)));
-			requireProof(![...fingerprints].some((fp) => record.manifest_json.includes(fp)));
-			return false;
-		}
+		const value = decode();
 		const manifest = value as { device_decisions?: unknown[] };
 		if (!Array.isArray(manifest?.device_decisions)) {
 			requireProof(!record.manifest_json.includes(JSON.stringify(subject.deviceId)));
@@ -443,7 +468,9 @@ function subjectHistory(
 			);
 		});
 	});
-	requireProof(records.length <= MAX_SUBJECT_ROWS && bytes(records) <= MAX_HISTORY_BYTES);
+	requireProof(
+		records.length <= MAX_SUBJECT_ROWS && bytes(records.map(({ row }) => row)) <= MAX_HISTORY_BYTES,
+	);
 	const history: ControllerHistorySnapshot = {
 		...subject,
 		keys: pairs.map((row) => ({ public_key: String(row[0]), fingerprint: String(row[1]) })),
@@ -452,8 +479,7 @@ function subjectHistory(
 			.filter((publicKey) => discoversKey(publicKey, subject)),
 		discoveryFragments: subject.fragments,
 		fingerprints: [...fingerprints].sort(),
-		records: records.map((row) => {
-			const record = historyRecord(row);
+		records: records.map(({ record }) => {
 			parseControllerHistoryRecord(record, subject.coordinatorId);
 			return record;
 		}),
@@ -554,8 +580,9 @@ async function approveSubject(
 	rows: EvidenceRows,
 	subject: Subject,
 	keys: Map<string, string>,
+	prepared: ReturnType<typeof prepareCompletionHistory>,
 ): Promise<boolean> {
-	const history = subjectHistory(rows, subject, keys);
+	const history = subjectHistory(rows, subject, keys, prepared);
 	const selected = subjectRows(rows, subject, keys, history);
 	const classification = await classifyEvidence(selected, subject, subject.owner, history);
 	if (!["compatible", "weak_label_review_required"].includes(classification.decision)) return false;
@@ -687,9 +714,10 @@ async function captureReady(
 		snapshot.rows[name] = result.encoded;
 	}
 	const keys = await canonicalKeys(rows);
+	const prepared = prepareCompletionHistory(rows.history ?? []);
 	let compatible = true;
 	for (const subject of snapshot.active) {
-		if (!(await approveSubject(rows, subject, keys))) {
+		if (!(await approveSubject(rows, subject, keys, prepared))) {
 			compatible = false;
 			continue;
 		}

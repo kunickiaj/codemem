@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { describe, it } from "node:test";
 import { Script } from "node:vm";
 
@@ -23,6 +25,71 @@ const githubExpressionOpen = ["$", "{", "{"].join("");
 const pluginPackage = JSON.parse(
 	readFileSync(new URL("../packages/opencode-plugin/package.json", import.meta.url), "utf8"),
 );
+const rootPackage = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const heavyTest = "packages/core/src/coordinator-legacy-completion-owner-proof.test.ts";
+const parallelArgs = [
+	"exec",
+	"vitest",
+	"run",
+	"--exclude",
+	"**/coordinator-legacy-completion-owner-proof.test.ts",
+];
+const heavyArgs = ["exec", "vitest", "run", heavyTest, "--maxWorkers=1"];
+
+function pnpmLauncher(platform, nodePath, stubPath) {
+	if (platform === "win32") {
+		return `@echo off\r\n"${nodePath}" "${stubPath}" %*\r\nexit /b %errorlevel%\r\n`;
+	}
+	const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+	return `#!/bin/sh\nexec ${quote(nodePath)} ${quote(stubPath)} "$@"\n`;
+}
+
+function writePnpmStub(directory) {
+	const stub = join(directory, "node.cjs");
+	writeFileSync(
+		stub,
+		`const fs = require("node:fs");
+const log = process.env.CI_CONTRACT_LOG;
+fs.appendFileSync(log, JSON.stringify(process.argv.slice(2)) + "\\n");
+const phase = fs.readFileSync(log, "utf8").trim().split("\\n").length;
+process.exit(phase === Number(process.env.CI_CONTRACT_FAIL_PHASE) ? 23 : 0);
+`,
+	);
+	const executable = join(directory, process.platform === "win32" ? "pnpm.cmd" : "pnpm");
+	writeFileSync(executable, pnpmLauncher(process.platform, process.execPath, stub));
+	if (process.platform !== "win32") chmodSync(executable, 0o755);
+}
+
+function runCiScript(failPhase) {
+	const directory = mkdtempSync(join(tmpdir(), "codemem-ci-contract-"));
+	const log = join(directory, "calls.jsonl");
+	try {
+		writePnpmStub(directory);
+		const env = { ...process.env };
+		for (const key of Object.keys(env)) {
+			if (key.toLowerCase() === "path") delete env[key];
+		}
+		const result = spawnSync(rootPackage.scripts["test:ci"], {
+			shell: true,
+			encoding: "utf8",
+			env: {
+				...env,
+				PATH: `${directory}${delimiter}${process.env.PATH}`,
+				CI_CONTRACT_LOG: log,
+				CI_CONTRACT_FAIL_PHASE: String(failPhase),
+			},
+		});
+		return {
+			status: result.status,
+			calls: readFileSync(log, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line)),
+		};
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
 
 function readBetaWorkflow() {
 	return readFileSync(
@@ -180,10 +247,73 @@ describe("normal CI workflow source contract", () => {
 
 		assert.match(
 			testJob,
-			/^ {8}run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test$/m,
+			/^ {8}run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test:ci$/m,
 		);
 	});
+});
 
+describe("CI test scheduling contract", () => {
+	it("keeps normal test filtering and default CI concurrency unchanged", () => {
+		// Arrange: CI scheduling must not change development commands or deadlines.
+		const config = readFileSync(new URL("../vitest.config.ts", import.meta.url), "utf8");
+		const nodePath = "C:\\Program Files\\nodejs\\node.exe";
+		const stubPath = "C:\\Temp Files\\node.cjs";
+		// Act
+		const scripts = rootPackage.scripts;
+		const windowsLauncher = pnpmLauncher("win32", nodePath, stubPath);
+		const posixLauncher = pnpmLauncher("darwin", "/node's path/node", "/temp files/node.cjs");
+		// Assert
+		assert.equal(
+			windowsLauncher,
+			`@echo off\r\n"${nodePath}" "${stubPath}" %*\r\nexit /b %errorlevel%\r\n`,
+		);
+		assert.equal(
+			posixLauncher,
+			"#!/bin/sh\nexec '/node'\\''s path/node' '/temp files/node.cjs' \"$@\"\n",
+		);
+		assert.equal(scripts.test, "pnpm exec vitest run");
+		assert.equal(scripts["test:watch"], "pnpm exec vitest");
+		assert.match(config, /maxWorkers: process\.env\.CI \? 3 : undefined/u);
+		assert.doesNotMatch(
+			scripts["test:ci"],
+			/testTimeout|passWithNoTests|--testNamePattern|--project|--no-file-parallelism/u,
+		);
+		assert.match(getJob(ciWorkflow, "ts-test"), /^ {4}name: TypeScript Test$/m);
+		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^\s*(?:if|continue-on-error):/m);
+	});
+
+	for (const { name, failPhase, status, calls } of [
+		{
+			name: "runs both complete phases after parallel success",
+			failPhase: 0,
+			status: 0,
+			calls: [parallelArgs, heavyArgs],
+		},
+		{
+			name: "stops and fails when the parallel phase fails",
+			failPhase: 1,
+			status: 23,
+			calls: [parallelArgs],
+		},
+		{
+			name: "fails when the isolated file fails",
+			failPhase: 2,
+			status: 23,
+			calls: [parallelArgs, heavyArgs],
+		},
+	]) {
+		it(name, () => {
+			// Arrange: replace pnpm, never start a real suite or external service.
+			const failure = failPhase;
+			// Act
+			const result = runCiScript(failure);
+			// Assert: exact arguments also reject an extra forwarding separator or skipped cases.
+			assert.deepEqual(result, { status, calls });
+		});
+	}
+});
+
+describe("required lint workflow contract", () => {
 	it("enforces the Biome delta against immutable stacked PR revisions in required lint", () => {
 		const lintJob = getJob(ciWorkflow, "ts-lint");
 
