@@ -813,6 +813,18 @@ export function createRawEventTargetState(
 	};
 }
 
+function createOptionalOwnerRecovery(
+	serverModule: typeof import("@codemem/server"),
+	options: Parameters<typeof serverModule.createAccountOwnerRecoveryService>[0],
+) {
+	if (
+		!("createAccountOwnerRecoveryService" in serverModule) ||
+		typeof serverModule.createAccountOwnerRecoveryService !== "function"
+	)
+		return undefined;
+	return serverModule.createAccountOwnerRecoveryService(options);
+}
+
 function createViewerAccountLink(
 	store: MemoryStore,
 	invocation: ResolvedServeInvocation,
@@ -832,15 +844,31 @@ function createViewerAccountLink(
 		keysDir,
 	});
 	const registry = serverModule.createAccountLinkRegistry({ readContext });
+	const ownerRecovery = createOptionalOwnerRecovery(serverModule, {
+		readContext,
+		registry,
+		readAdminSecret: () => {
+			const envSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET?.trim();
+			if (envSecret) return envSecret;
+			const secret = readCodememConfigFileAtPath(configPath).sync_coordinator_admin_secret;
+			return typeof secret === "string" ? secret.trim() : null;
+		},
+	});
 	let actualBoundPort: number | null = null;
 	return {
 		registry,
+		ownerRecovery,
+		close: async () => {
+			if (ownerRecovery) await ownerRecovery.close();
+			await registry.close();
+		},
 		setBoundPort: (port: number) => {
 			actualBoundPort = port;
 		},
 		options: {
 			readContext,
 			registry,
+			ownerRecovery,
 			getListenerAddress: () =>
 				actualBoundPort === null ? null : { host: invocation.host, port: actualBoundPort },
 		},
@@ -1035,7 +1063,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 
 		try {
 			try {
-				await accountLink.registry.close();
+				await accountLink.close();
 				await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
 			} finally {
 				await closeViewerListeners(syncServer ? [syncServer, server] : [server]);
