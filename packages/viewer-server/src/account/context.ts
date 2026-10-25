@@ -27,6 +27,8 @@ export interface AccountContext extends AccountProfile {
 	coordinatorUrl: string;
 	groupId: string;
 	fingerprint: string;
+	/** Present on real profile contexts; optional for legacy injected readers. */
+	publicKeyHash?: string;
 	fileIdentity: { dev: string; ino: string };
 }
 export type AccountContextResult =
@@ -101,6 +103,7 @@ function readyContext(
 		groupId,
 		deviceId: device.deviceId,
 		fingerprint: device.fingerprint,
+		publicKeyHash: createHash("sha256").update(device.publicKey).digest("hex"),
 		identityId: actor,
 		identityLabel: label(profile.identityLabel),
 		deviceLabel: label(profile.deviceLabel),

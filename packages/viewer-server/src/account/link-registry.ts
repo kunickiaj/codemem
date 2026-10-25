@@ -40,6 +40,7 @@ export type AccountLinkStartResult =
 	| { error: "account_link_in_progress"; operationId?: string }
 	| { error: "account_shutting_down" | "account_context_changed" };
 export interface AccountLinkRegistry {
+	tryReserveRecovery?(): AccountRecoveryReservation | null;
 	start(options: {
 		intent?: "connect" | "refresh" | "disconnect";
 		context: AccountContext;
@@ -55,6 +56,10 @@ export interface AccountLinkRegistry {
 	browserUrl(operationId: string): string | null;
 	cancel(operationId: string): AccountLinkOperationV1 | null;
 	close(): Promise<void>;
+}
+export interface AccountRecoveryReservation {
+	isCurrent(): boolean;
+	release(): void;
 }
 export interface AccountLinkRegistryOptions {
 	readContext: AccountContextReader;
@@ -160,6 +165,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 	#shuttingDown = false;
 	#closing: Promise<void> | null = null;
 	#uncertainOwner: symbol | null = null;
+	#recoveryOwner: symbol | null = null;
 	constructor(options: AccountLinkRegistryOptions) {
 		this.#options = options;
 		this.#now = options.now ?? Date.now;
@@ -348,6 +354,24 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		busySlot.lifecycle ??= Symbol();
 		return busySlot.lifecycle;
 	}
+	tryReserveRecovery(): AccountRecoveryReservation | null {
+		if (this.#shuttingDown || this.#inProgress()) return null;
+		// Cleanup can invoke a clock callback that closes the registry or claims the slot.
+		if (this.#shuttingDown || busySlot.owner) return null;
+		const owner = Symbol();
+		busySlot.owner = owner;
+		busySlot.lifecycle = Symbol();
+		this.#recoveryOwner = owner;
+		return {
+			isCurrent: () =>
+				!this.#shuttingDown && this.#recoveryOwner === owner && busySlot.owner === owner,
+			release: () => {
+				if (this.#recoveryOwner !== owner) return;
+				this.#recoveryOwner = null;
+				releaseBusyOwner(owner);
+			},
+		};
+	}
 	get(operationId: string): AccountLinkOperationV1 | null {
 		this.#cleanup();
 		const job = this.#jobs.get(operationId);
@@ -405,6 +429,10 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 	close(): Promise<void> {
 		if (this.#closing) return this.#closing;
 		this.#shuttingDown = true;
+		if (this.#recoveryOwner) {
+			releaseBusyOwner(this.#recoveryOwner);
+			this.#recoveryOwner = null;
+		}
 		for (const job of this.#jobs.values()) {
 			this.#clearUrl(job);
 			if (!terminal(job)) {
