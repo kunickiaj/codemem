@@ -74,6 +74,68 @@ const stages = {
 	grant: /UPDATE coordinator_invites SET bootstrap_grant_id\s*=/u,
 };
 
+async function lostTokenRetry() {
+	const p = await producer("add_device");
+	await retain(p.subject);
+	const invite = await db
+		.prepare("SELECT token FROM coordinator_invites")
+		.first<{ token: string }>();
+	if (!invite) throw new Error("native invitation missing");
+	const input: CoordinatorConsumeRecipientInviteInput = {
+		...p.subject,
+		token: invite.token,
+		inviteKind: "add_device",
+		identityId: p.subject.ownerIdentityId,
+		now: timestamp,
+	};
+	const h = nativeHarness(/UPDATE coordinator_invites SET token\s*=/u);
+	const readInvite = h.store.getInviteByTokenForInspection.bind(h.store);
+	vi.spyOn(h.store, "getInviteByTokenForInspection").mockImplementationOnce(async (token) => {
+		const initial = await readInvite(token);
+		expect(initial?.consumed_at).toBeNull();
+		// Finish another invocation after the outer initial read, before its owner capture.
+		await exec("UPDATE enrolled_devices SET enabled=0 WHERE device_id='invite-seed'");
+		expect(await p.run()).toMatchObject({ status: "accepted", bootstrap_grant: null });
+		await exec("UPDATE enrolled_devices SET enabled=1 WHERE device_id='invite-seed'");
+		return initial;
+	});
+	return { h, input };
+}
+
+it.each(["unchanged owner", "conflicting owner"] as const)(
+	"native losing token update preserves authorization with %s",
+	async (mode) => {
+		// Both requests read an unused token; only the inner request consumes it.
+		const { h, input } = await lostTokenRetry();
+		h.arm(async () => {
+			if (mode === "conflicting owner") await conflictingController(input);
+		});
+		const outcome = await h.store.consumeRecipientInvite(input).then(
+			(value) => ({ kind: "accepted", value }),
+			(error: unknown) => ({ kind: "denied", error }),
+		);
+		expect(h.observed()).toBe(true);
+		if (mode === "conflicting owner") {
+			expect(outcome).toMatchObject({
+				kind: "denied",
+				error: { message: "device_ownership_authorization_unavailable" },
+			});
+			expect.soft(await state()).toEqual(h.afterMutation());
+			expect(
+				(await db.prepare("SELECT * FROM coordinator_bootstrap_grants").all()).results,
+			).toEqual([]);
+			return;
+		}
+		expect(outcome).toMatchObject({
+			kind: "accepted",
+			value: { status: "existing", bootstrap_grant: { worker_device_id: input.deviceId } },
+		});
+		expect(
+			(await db.prepare("SELECT * FROM coordinator_bootstrap_grants").all()).results,
+		).toHaveLength(1);
+	},
+);
+
 it.each(["repair", "grant"] as const)(
 	"native no-op identity retry retains the full pin at the %s SQL stage",
 	async (stage) => {
