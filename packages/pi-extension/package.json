@@ -18,6 +18,7 @@
 		"LICENSE"
 	],
 	"scripts": {
+		"ci:test": "node ../../scripts/ci-package-test.mjs",
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
 		"typecheck": "pnpm exec tsc --noEmit",

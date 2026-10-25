@@ -1,6 +1,49 @@
 packages:
   - packages/*
 
+# These nodes propagate source keys, without running dependency test suites.
+tasks:
+  'ci:inputs':
+    dependsOn: ['^ci:inputs']
+    outputs: []
+    env: [CI_SHARED_INPUTS, CI_RUNTIME, CI_RESULT_EPOCH]
+  'ci:test': &package_test
+    dependsOn: ['^ci:inputs']
+    outputs: ['.tmp/ci-package-test/unit/**']
+    env: [CI_SHARED_INPUTS, CI_RUNTIME, CI_RESULT_EPOCH]
+    concurrencyGroup: ci-vitest
+  'ci:test:ui':
+    <<: *package_test
+    env: [CI_SHARED_INPUTS, CI_RUNTIME, CI_RESULT_EPOCH, CI_UI_COMMIT]
+  'ci:worker':
+    <<: *package_test
+    outputs: ['.tmp/ci-package-test/worker-integration/**']
+  'ci:test:core': &broad_test
+    dependsOn: []
+    outputs: ['.tmp/ci-package-test/core/**']
+    env: [CI_SHARED_INPUTS, CI_RUNTIME, CI_RESULT_EPOCH]
+    concurrencyGroup: ci-vitest
+  'ci:test:viewer':
+    <<: *broad_test
+    outputs: ['.tmp/ci-package-test/viewer-server/**']
+  'ci:test:cli':
+    <<: *broad_test
+    outputs: ['.tmp/ci-package-test/cli/**']
+  'ci:test:root':
+    <<: *broad_test
+    outputs: ['.tmp/ci-package-test/e2e-unit/**']
+  'ci:test:performance':
+    dependsOn: []
+    cache: false
+    concurrencyGroup: ci-vitest
+
+concurrencyGroups:
+  ci-vitest: 1
+
+pipelines:
+  ci-packages: ['ci:test', 'ci:test:ui', 'ci:test:core', 'ci:test:viewer', 'ci:test:cli', 'ci:test:root', 'ci:test:performance']
+  ci-worker: ['ci:worker']
+
 allowBuilds:
   '@google/genai': false # transitive dev-only dep of pi-coding-agent; never run its build script
   '@opencode/cli': true

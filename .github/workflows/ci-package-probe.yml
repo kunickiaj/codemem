@@ -1,0 +1,100 @@
+name: Package Cache Diagnostic
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-cache-probe-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# This measures native cache behavior; required CI continues to execute fresh.
+jobs:
+  probe:
+    if: github.head_ref == 'ci/pr-restack-reuse-prototype' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        pipeline: [ci-packages, ci-worker]
+    env:
+      CI_FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - id: identity
+        name: Compute runtime and original-age cache window
+        env:
+          PIPELINE: ${{ matrix.pipeline }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { runtimeFingerprint } from './scripts/ci-package-inputs.mjs';
+          appendFileSync(process.env.GITHUB_OUTPUT, `runtime=${runtimeFingerprint(process.cwd())}\nepoch=${Math.floor(Date.now() / 86400000)}\ncache=${join(process.env.RUNNER_TEMP, 'ci-package-cache-' + process.env.PIPELINE)}\n`);
+          NODE
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: env.CI_FORCE_FULL != '1'
+        id: restore
+        continue-on-error: true
+        with:
+          path: ${{ steps.identity.outputs.cache }}/pipeline/*/tasks
+          key: package-probe-v1-${{ github.event.pull_request.number }}-${{ matrix.pipeline }}-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            package-probe-v1-${{ github.event.pull_request.number }}-${{ matrix.pipeline }}-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-
+      - name: Build test prerequisites fresh
+        if: matrix.pipeline == 'ci-packages'
+        run: pnpm run build
+      - name: Run native package-cache candidate
+        id: candidate
+        env:
+          CI_FORCE_FULL: ${{ steps.restore.outcome == 'failure' && '1' || env.CI_FORCE_FULL }}
+          CI_PACKAGE_CACHE_DIR: ${{ steps.identity.outputs.cache }}
+        run: pnpm run ci:package-probe ${{ matrix.pipeline }}
+      - name: Preserve candidate reports and original execution timestamps
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-candidate-${{ matrix.pipeline }}
+          path: |
+            .tmp/ci-package-test/**
+            packages/*/.tmp/ci-package-test/**
+            ${{ steps.identity.outputs.cache }}/pipeline/*/runs/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Run independent fresh control
+        id: control
+        env:
+          CI_FORCE_FULL: '1'
+          CI_PACKAGE_CACHE_DIR: ${{ steps.identity.outputs.cache }}
+        run: pnpm run ci:package-probe ${{ matrix.pipeline }}
+      - name: Preserve fresh-control reports
+        if: always() && (steps.control.outcome == 'success' || steps.control.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-control-${{ matrix.pipeline }}
+          path: |
+            .tmp/ci-package-test/**
+            packages/*/.tmp/ci-package-test/**
+            ${{ steps.identity.outputs.cache }}/pipeline/*/runs/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: success() && env.CI_FORCE_FULL != '1' && steps.restore.outcome != 'failure'
+        continue-on-error: true
+        with:
+          path: ${{ steps.identity.outputs.cache }}/pipeline/*/tasks
+          key: ${{ steps.restore.outputs.cache-primary-key }}

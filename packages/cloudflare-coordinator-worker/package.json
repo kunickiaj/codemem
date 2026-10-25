@@ -4,6 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"ci:test": "node ../../scripts/ci-package-test.mjs",
+		"ci:worker": "node ../../scripts/ci-package-test.mjs worker-integration",
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && pnpm run check:bundle:prepared && pnpm exec tsc --build",
 		"check:bundle": "pnpm --filter @codemem/core build && pnpm run check:bundle:prepared",

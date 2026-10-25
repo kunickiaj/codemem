@@ -3,6 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"ci:test:ui": "node ../../scripts/ci-package-test.mjs",
 		"clean": "rm -rf ../viewer-server/static",
 		"dev": "node ./scripts/make-dev-html.mjs && vite",
 		"gallery:dev": "node ./scripts/make-gallery-html.mjs && vite --config vite.gallery.config.ts",
