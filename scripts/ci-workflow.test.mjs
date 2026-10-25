@@ -171,6 +171,15 @@ describe("normal CI workflow source contract", () => {
 	});
 });
 
+it("keeps standalone packed smoke self-building and prepared smoke on the same acceptance script", () => {
+	const acceptanceScript = "node ./scripts/packed-artifact-smoke.mjs";
+	const standalone = pluginPackage.scripts["test:packed-artifact"];
+	const prepared = pluginPackage.scripts["test:packed-artifact:prepared"];
+
+	assert.equal(standalone, `pnpm --filter codemem build && ${acceptanceScript}`);
+	assert.equal(prepared, acceptanceScript);
+});
+
 describe("required OpenCode host workflow contract", () => {
 	it("tests the minimum OpenCode 1 plugin runtime through both package suites", () => {
 		const pluginJob = getJob(ciWorkflow, "plugin-smoke");
@@ -189,7 +198,14 @@ describe("required OpenCode host workflow contract", () => {
 	});
 
 	it("requires packed OpenCode 1 and exactly matched OpenCode 2.0.24 hosts on every normal run", () => {
+		const buildCommand = "run: pnpm run build";
+		const preparedCommand = "pnpm --filter @codemem/opencode-plugin test:packed-artifact:prepared";
+
 		const packedJob = getJob(ciWorkflow, "packaged-plugin-smoke");
+		const buildIndex = packedJob.indexOf(buildCommand);
+		const preparedIndex = packedJob.indexOf(preparedCommand);
+
+		// Assert: all host acceptance stays required after a successful same-checkout build.
 		assert.equal(pluginPackage.devDependencies["@opencode/cli"], "2.0.24");
 		assert.equal(pluginPackage.dependencies["@opencode/plugin"], "2.0.24");
 		assert.equal(
@@ -200,12 +216,24 @@ describe("required OpenCode host workflow contract", () => {
 			pluginPackage.scripts["test:packed-artifact"],
 			/node \.\/scripts\/packed-artifact-smoke\.mjs$/u,
 		);
-		assert.match(packedJob, /^ {10}pnpm --filter @codemem\/opencode-plugin test:packed-artifact$/m);
+		assert.match(
+			packedJob,
+			/^ {10}pnpm --filter @codemem\/opencode-plugin test:packed-artifact:prepared$/m,
+		);
+		assert.doesNotMatch(
+			packedJob,
+			/^ {10}pnpm --filter @codemem\/opencode-plugin test:packed-artifact$/m,
+		);
+		assert.match(packedJob, /^ {8}run: pnpm run build$/m);
+		assert.ok(buildIndex >= 0 && preparedIndex > buildIndex);
+		assert.equal([...packedJob.matchAll(/uses: actions\/checkout@/gu)].length, 1);
+		assert.ok(packedJob.indexOf("uses: actions/checkout@") < buildIndex);
 		assert.match(
 			packedJob,
 			/^ {10}pnpm --filter @codemem\/opencode-plugin test:opencode-v2-contract$/m,
 		);
 		assert.match(packedJob, /pnpm install --frozen-lockfile/u);
+		assert.match(packedJob, /^ {10}pnpm --filter codemem test:packed-artifact$/m);
 		assert.doesNotMatch(packedJob, /^\s*(?:if|continue-on-error):/m);
 		assert.doesNotMatch(ciWorkflow, /CODEMEM_OPENCODE_V2_VERSION|@opencode\/(?:cli|plugin)@beta/u);
 	});
