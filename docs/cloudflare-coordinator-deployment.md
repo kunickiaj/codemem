@@ -380,6 +380,52 @@ a partial or unknown installation. Execute the full array in **one atomic D1 bin
 batch**, not split requests, and do not add `BEGIN`/`COMMIT`. `--export-sql` rejects
 `--db-path` and its `--db` alias; `--owner-resolution` rejects `--device-unlink`.
 
+### Upcoming account-owner recovery review
+
+The Viewer recovery UI and this scoped review path are **unreleased**. Stable 0.47
+is not published, and performance-only beta 3 does not include recovery. Do not deploy
+or offer this workflow until a separate release and live rollout are approved.
+
+After the receipt-storage upgrade, an actual coordinator administrator can review an
+existing linked account owner through authenticated `POST /v1/admin/auth-controller-reviews`.
+Use the selected operator profile's existing server-side admin configuration
+(`CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET` or `sync_coordinator_admin_secret`); never put
+that credential in a browser field, support request, or copied reply. The operator must
+preview the current full history and target with `purpose` `existing_account_owner` and
+`resolution_scope` `historical_included_owner_labels_only`, then confirm with the
+distinct fresh `confirm_owner_resolution_digest`. `review-device-owner` does not expose
+this scope or confirmation flag, so its ordinary approval cannot complete owner recovery.
+
+A scoped review can create or reuse the administrator's normal device approval as
+well as the immutable owner resolution. Existing coordinator permission checks still
+govern that approval; the separate owner-display result is not a management capability.
+
+For a requester without that operator configuration, convert the confirmed HTTP
+response into this exact noncredential reply for **Verify operator reply**. HTTP response
+names map as follows: `coordinator_id`, `device_id`, `fingerprint`, `identity_id`,
+`group_id`, `attestation_id`, `recovery_receipt.review_receipt_id`,
+`recovery_receipt.evidence_digest`, `owner_resolution.resolution_id`, and
+`owner_resolution.evidence_digest` become the camel-cased reply fields below.
+
+```json
+{
+  "version": 1,
+  "purpose": "existing_account_owner",
+  "scope": "historical_included_owner_labels_only",
+  "coordinatorOrigin": "https://coordinator.example.test",
+  "coordinatorId": "coord-demo",
+  "deviceId": "device-demo",
+  "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "ownerIdentityId": "identity-existing",
+  "groups": [{ "groupId": "group-demo", "attestationId": "attestation-demo", "reviewReceiptId": "review-demo", "reviewEvidenceDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "resolutionId": "resolution-demo", "resolutionEvidenceDigest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210" }]
+}
+```
+
+These IDs and digests are synthetic. Receipt references are query selectors, not
+credentials or proof. The requester backend fetches fresh signed status for the exact
+receipt and owner before retaining anything locally. Partial, lost, or unknown results
+stay per group; inspect current status and make a fresh preview when the target changes.
+
 ### Deploy after separate approval
 
 Only after any required schema apply is complete and deployment is approved, run

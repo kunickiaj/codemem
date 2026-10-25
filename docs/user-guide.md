@@ -468,6 +468,52 @@ If the Viewer configuration changes during an attempt, **Cancel previous link** 
 
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
 
+### Upcoming: repair a reviewed account owner
+
+This recovery workflow is **unreleased**. Stable 0.47 has not been published, and
+the performance-only beta 3 did not include it. Do not use it for a live rollout until its
+release and coordinator deployment are separately approved.
+
+When available, **Review account ownership** appears in **My Account** only for a
+review-required, conflicting, or mismatched account state. It lets you select the
+Identity already linked to the account and the configured coordinator groups; it does
+not use the computer username or create a new Identity.
+
+1. Choose **Review account ownership**, select the already-linked existing owner and
+   each group to review, then choose **Preview account ownership**.
+2. Inspect every retained assignment and each group result. The preview keeps the
+   full retained history. Reviewed weak labels, including Project actor labels, are
+   display-only account-owner evidence, not device assignments or sharing access.
+3. An operator-configured Viewer shows an unchecked acknowledgement by default. Check
+   it only after reviewing the current preview, then choose **Confirm account ownership**.
+   The coordinator requires a fresh scoped review and confirmation; an ordinary
+   controller-only approval is not enough.
+4. Read each group result separately. **Check review status** is read-only and never
+   applies a review again. For a missing, unknown, stale, wrong-profile, wrong-group,
+   or wrong-target result, request a fresh preview and acknowledgement instead of retrying
+   an old confirmation.
+
+The confirmed account owner is displayed separately from the unchanged Memory author
+and sharing Identity. The workflow retains old records, memories, keys, configuration,
+services, sharing grants, and their full history. It is not an actor merge, reset,
+Google-account move, new Identity, Team/Project permission change, or future-policy
+setup. Existing Team and Project delivery or reconciliation warnings still need their
+own sharing review.
+
+After approval, **My Account** displays an owner profile only from fresh verified
+account status. The owner projection does not enable linking, profile refresh, unlink,
+disconnect, or permission changes.
+
+Without an operator-configured Viewer, use the dialog's **Copy support request** and
+send the noncredential request only to a trusted coordinator operator, never a public
+issue. It includes private coordinator, device, and group identifiers but no admin
+secret or private key. Paste only that operator's noncredential JSON reply and choose
+**Verify operator reply**. The local backend checks fresh device-signed receipt and
+owner proof before retaining an association; a verified import can restore that local
+association while immutable history remains unchanged. Use the local Viewer with
+your browser for the supported requester flow; do not bypass its loopback,
+Host/Origin, or CSRF protections with ad hoc console or SSH instructions.
+
 ### Choose a sharing flow
 
 The normal flow is **Projects → Sharing → Devices → Health**, not manual pairing. Inside **Sharing**, open **Teams** when you want to manage ongoing Team membership and inherited Project access:
