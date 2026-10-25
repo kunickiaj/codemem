@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
@@ -30,6 +30,57 @@ import {
 // Node-only profile/link I/O runs against the configured production handler and
 // disposable native D1, not a browser or workerd client. Historical operator tests
 // retain their seeded A; the account-mode journey below creates A's link via runtime.
+type OwnerProfileTraceStage =
+	| "fixture-start"
+	| "miniflare-start"
+	| "miniflare-ready"
+	| "schema-start"
+	| "schema-ready"
+	| "authority-start"
+	| "authority-ready"
+	| "prepare-start"
+	| "prepare-ready"
+	| "admit-start"
+	| "admit-ready"
+	| "adoption-start"
+	| "adoption-ready"
+	| "lost-reply-start"
+	| "lost-reply-retained"
+	| "client-request-start"
+	| "client-request-end"
+	| "browser-page-start"
+	| "browser-page-ready"
+	| "browser-claim-start"
+	| "browser-claim-ready"
+	| "browser-callback-start"
+	| "browser-callback-ready"
+	| "browser-confirm-start"
+	| "browser-confirm-ready"
+	| "reopen-start"
+	| "reopen-ready"
+	| "cleanup-start"
+	| "cleanup-ready";
+// The first two fixtures are the ordered false/true receipt cases; later cases stay quiet.
+let traceCase = 0;
+let traceStart = 0;
+let traceEvent = 0;
+// CI evidence only; opt in locally with CODEMEM_WORKER_PROFILE_TRACE=1.
+// Never accept dynamic labels or values: auth requests contain private credentials.
+function traceOwnerProfile(stage: OwnerProfileTraceStage): void {
+	if (process.env.CI !== "true" && process.env.CODEMEM_WORKER_PROFILE_TRACE !== "1") return;
+	if (traceCase < 1 || traceCase > 2) return;
+	// Write each boundary immediately, including when the reporter hides passing logs.
+	writeSync(
+		2,
+		`[owner-profile-stage] ${JSON.stringify({
+			stage,
+			elapsedMs: Math.round((performance.now() - traceStart) * 10) / 10,
+			lostReply: traceCase === 2,
+			event: ++traceEvent,
+		})}\n`,
+	);
+}
+
 const require = createRequire(import.meta.url);
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
 const { Miniflare, convertV4MiniflareOptions } = runtimeRequire("miniflare");
@@ -112,14 +163,22 @@ const form = (path: string, body: Record<string, string>, binder: string) =>
 		body: new URLSearchParams(body),
 	});
 async function browser(url: string) {
+	traceOwnerProfile("browser-page-start");
 	const page = await request(url);
+	traceOwnerProfile("browser-page-ready");
+	traceOwnerProfile("browser-claim-start");
 	const claimed = await form("/auth/owner/start", await fields(page), cookie(page));
+	traceOwnerProfile("browser-claim-ready");
 	expect(claimed.status).toBe(303);
 	const binder = cookie(claimed);
+	traceOwnerProfile("browser-callback-start");
 	const callback = await request(fakeProvider.authorize(claimed.headers.get("location") ?? ""), {
 		headers: { cookie: binder },
 	});
+	traceOwnerProfile("browser-callback-ready");
+	traceOwnerProfile("browser-confirm-start");
 	const confirmed = await form("/auth/owner/confirm", await fields(callback), binder);
+	traceOwnerProfile("browser-confirm-ready");
 	expect(confirmed.status).toBe(303);
 	const completion = new URL(confirmed.headers.get("location") ?? "");
 	expect(`${completion.origin}${completion.pathname}`).toBe(
@@ -193,6 +252,10 @@ async function seedHistoricalAuthority() {
 }
 
 beforeEach(async () => {
+	traceCase += 1;
+	traceStart = performance.now();
+	traceEvent = 0;
+	traceOwnerProfile("fixture-start");
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	// Only loopback delivery is substituted; the actual Worker supplies its proofs.
 	const completion = new Promise<{ completionSecret: string; confirmationHash: string }>(
@@ -205,6 +268,7 @@ beforeEach(async () => {
 		completion,
 		close: vi.fn().mockResolvedValue(undefined),
 	});
+	traceOwnerProfile("miniflare-start");
 	remote = new Miniflare(
 		convertV4MiniflareOptions({
 			modules: true,
@@ -221,7 +285,9 @@ beforeEach(async () => {
 		}),
 	);
 	db = await remote.getD1Database("DB");
+	traceOwnerProfile("miniflare-ready");
 	if (!db.batch) throw new Error("Native D1 batch unavailable");
+	traceOwnerProfile("schema-start");
 	const migrations = await readD1Migrations(join(import.meta.dirname, "../migrations"));
 	for (const migration of migrations)
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
@@ -231,6 +297,7 @@ beforeEach(async () => {
 			.filter(Boolean)
 			.map((sql) => db.prepare(sql)),
 	);
+	traceOwnerProfile("schema-ready");
 	bindings = {
 		COORDINATOR_DB: db,
 		CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
@@ -251,7 +318,9 @@ beforeEach(async () => {
 		coordinatorUrl: ORIGIN,
 		onBrowserStart: vi.fn(browser),
 		fetch: async (input, init) => {
+			traceOwnerProfile("client-request-start");
 			const response = await request(String(input), init);
+			traceOwnerProfile("client-request-end");
 			const path = new URL(String(input)).pathname;
 			calls.push({
 				path,
@@ -268,14 +337,18 @@ beforeEach(async () => {
 	};
 });
 afterEach(async () => {
+	traceOwnerProfile("cleanup-start");
 	await remote?.dispose();
+	traceOwnerProfile("cleanup-ready");
 });
 
 it.each([false, true])(
 	"adopts the configured Worker receipt and reopens B (lost final reply: %s)",
 	async (lostReply) => {
 		// Arrange: a real existing profile has no Identity assignment, and A is seeded.
+		traceOwnerProfile("authority-start");
 		await seedHistoricalAuthority();
+		traceOwnerProfile("authority-ready");
 		const before = facts();
 		const keys = ["device.key", "device.key.pub"].map((name) =>
 			readFileSync(join(fixture.options.keysDir, name)),
@@ -283,16 +356,22 @@ it.each([false, true])(
 		const device = fixture.db.prepare("SELECT * FROM sync_device").all();
 		const originalAuthority = await authority();
 		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
+		traceOwnerProfile("prepare-start");
 		await prepared();
+		traceOwnerProfile("prepare-ready");
 		const saved = ownerFileSnapshot(join(fixture.options.stateDir, "prepared.json"));
+		traceOwnerProfile("admit-start");
 		const capability = await admit();
+		traceOwnerProfile("admit-ready");
 		fixture.options.capability = capability;
 		dropFinalReply = lostReply;
 		// Act: client-generated signed start/final traverse actual configured production routes.
 		if (lostReply) {
+			traceOwnerProfile("lost-reply-start");
 			await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
 				code: "retained_request_incomplete",
 			});
+			traceOwnerProfile("lost-reply-retained");
 			expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
 			expect(existsSync(join(fixture.options.stateDir, "receipt.json"))).toBe(false);
 			expect(await rows("coordinator_device_ownership_bindings")).toHaveLength(1);
@@ -300,7 +379,9 @@ it.each([false, true])(
 			// A restart needs neither a browser nor another admission; only the exact saved final.
 			fixture.options = { ...fixture.options, capability: undefined, onBrowserStart: undefined };
 		}
+		traceOwnerProfile("adoption-start");
 		const result = await enrollOwnerProfile(fixture.options);
+		traceOwnerProfile("adoption-ready");
 		const reopened = new Sqlite(fixture.options.dbPath, { readonly: true, fileMustExist: true });
 		try {
 			// Assert: receipt-derived adoption, never fixture-written B identity or rotated key.
@@ -362,12 +443,14 @@ it.each([false, true])(
 		}
 		// Act: reopening the client after adoption uses its retained receipt offline.
 		const offline = vi.fn().mockRejectedValue(new Error("Reopen must not use transport"));
+		traceOwnerProfile("reopen-start");
 		const resumed = await enrollOwnerProfile({
 			...fixture.options,
 			fetch: offline,
 			capability: undefined,
 			onBrowserStart: undefined,
 		});
+		traceOwnerProfile("reopen-ready");
 		// Assert: no second ceremony or duplicate assignment is needed after reopen.
 		expect(resumed).toEqual(result);
 		expect(offline).not.toHaveBeenCalled();

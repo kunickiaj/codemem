@@ -16,7 +16,8 @@
 ## Commands worth using
 
 - Install: `pnpm install`
-- Full local gate / CI order: `pnpm run tsc && pnpm run lint && pnpm run test` (`pnpm run check`)
+- Full local gate: `pnpm run tsc && pnpm run lint && pnpm run test` (`pnpm run check`)
+- CI test scheduling: `pnpm run test:ci` runs the workspace suite in parallel except `coordinator-legacy-completion-owner-proof.test.ts`, then runs that entire file with one worker. Assertions and test deadlines are unchanged.
 - Build everything: `pnpm run build`
 - Run CLI from source: `pnpm run codemem --help`
 - Run one vitest file: `pnpm exec vitest run packages/cli/src/commands/serve.test.ts`
