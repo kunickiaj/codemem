@@ -180,10 +180,9 @@ test.for(["unsigned", "stale", "tampered-receipt"])(
 		// Arrange
 		const h = await setup(f);
 		const path = `${ROOT}?${h.params}`;
-		const signed =
-			mode === "unsigned"
-				? {}
-				: h.headers(path, String(NOW / 1000 - (mode === "stale" ? 10000 : 0)));
+		const ageSeconds = mode === "stale" ? 10000 : 0;
+		let signed = {};
+		if (mode !== "unsigned") signed = h.headers(path, String(NOW / 1000 - ageSeconds));
 		if (mode === "tampered-receipt") h.params.set("resolution_id", "other-receipt");
 		// Act
 		const response = await h.get(`${ROOT}?${h.params}`, signed);
