@@ -53,7 +53,14 @@ async function setup() {
 				if (property === "bind")
 					return (...values: unknown[]) => wrap(statement.bind(...values), query, values.length);
 				let stage: Stage | undefined;
-				if (query === AUTH_CONTROLLER_INSERT_SQL) stage = "create";
+				// The winning write retains the complete insert template after the consistency CTE.
+				if (
+					query.startsWith("WITH negative_owner_consistency AS MATERIALIZED (") &&
+					query.endsWith(
+						`${AUTH_CONTROLLER_INSERT_SQL.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
+					)
+				)
+					stage = "create";
 				else if (query === AUTH_CONTROLLER_RETRY_ACTIVE_SQL) stage = "retry";
 				if (stage && (property === "run" || property === "first")) {
 					return async (...args: unknown[]) => {
@@ -163,14 +170,10 @@ async function rows(f: Fixture) {
 	).results;
 }
 function expectBinds(f: Fixture, stage: Stage) {
-	expect(f.executions).toEqual(
-		stage === "create"
-			? [{ stage: "create", binds: 23 }]
-			: [
-					{ stage: "create", binds: 23 },
-					{ stage: "retry", binds: 14 },
-				],
-	);
+	// Four consistency binds precede the original 23 insert binds. Exact retries
+	// find the conflict before insertion and execute only the 14-bind active read.
+	const binds = stage === "create" ? 27 : 14;
+	expect(f.executions).toEqual([{ stage, binds }]);
 }
 
 it("native explicit nonempty history creates and exactly retries without rewriting proof or enrollment", async () => {
@@ -191,8 +194,7 @@ it("native explicit nonempty history creates and exactly retries without rewriti
 	expect(await rows(f)).toEqual(before);
 	expect(await f.store.getEnrollment(f.review.groupId, f.review.deviceId)).toEqual(enrollment);
 	expect(f.executions).toEqual([
-		{ stage: "create", binds: 23 },
-		{ stage: "create", binds: 23 },
+		{ stage: "create", binds: 27 },
 		{ stage: "retry", binds: 14 },
 	]);
 });
@@ -212,6 +214,8 @@ for (const stage of ["create", "retry"] as const) {
 			const before = await rows(f);
 			f.executions.length = 0;
 			const mutate = vi.fn(async () => {
+				// The injected change must precede execution, before any proof is added or rewritten.
+				expect(await rows(f)).toEqual(before);
 				if (change === "metadata") {
 					await db
 						.prepare(

@@ -325,8 +325,9 @@ function registerRevocationGates(test: ControllerTest, guarded: Guarded) {
 			}[stage];
 			let called = false;
 			const racing = guarded(f, async (query) => {
-				if (called || query !== sql) return;
+				if (called || !matchesControllerGate(query, sql)) return;
 				called = true;
+				expect(await history(f)).toEqual(before);
 				await revoke(f, "device");
 			});
 			// Act
@@ -346,6 +347,17 @@ function registerRevocationGates(test: ControllerTest, guarded: Guarded) {
 		});
 	}
 }
+// Consistency prepends a CTE; match the entire retained template and final guard,
+// not an earlier evidence query that only mentions the attestation table.
+function matchesControllerGate(query: string, sql: string) {
+	if (sql !== AUTH_CONTROLLER_INSERT_SQL) return query === sql;
+	return (
+		query.startsWith("WITH negative_owner_consistency AS MATERIALIZED (") &&
+		query.endsWith(
+			`${sql.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
+		)
+	);
+}
 function registerReplacementGates(test: ControllerTest, guarded: Guarded) {
 	for (const stage of ["insert", "active", "retry"] as const) {
 		test(`pins enrollment public key across hash/read and ${stage} SQL with a clean replacement control`, async ({
@@ -362,8 +374,10 @@ function registerReplacementGates(test: ControllerTest, guarded: Guarded) {
 			}[stage];
 			let called = false;
 			const racing = guarded(f, async (query) => {
-				if (called || query !== sql) return;
+				if (called || !matchesControllerGate(query, sql)) return;
 				called = true;
+				if (stage === "insert")
+					expect(await f.rows("coordinator_auth_controller_attestations")).toEqual([]);
 				await revoke(f, "key");
 				await f.exec(
 					"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",

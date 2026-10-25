@@ -160,7 +160,8 @@ it.each(["invite", "attestation"] as const)("native D1 retry rejects %s revoked 
 		get(statement, property) {
 			if (property === "bind") return (...values: unknown[]) => wrap(statement.bind(...values), query);
 			if (property === "first") return async (...args: Parameters<D1PreparedStatement["first"]>) => {
-				if (/^\s*WITH snapshot\b/u.test(query) && /SELECT (?:1 AS eligible|a\.\*)/u.test(query)) await beforeRead?.();
+				// Eligibility precedes the conflict read; revoke only at the final live retry read.
+				if (query === AUTH_CONTROLLER_RETRY_ACTIVE_SQL) await beforeRead?.();
 				return statement.first(...args);
 			};
 			const value = Reflect.get(statement, property);
