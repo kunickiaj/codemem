@@ -1297,7 +1297,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const hasConflict = conflict !== undefined;
 		const consistency = hasConflict ? null : await this.prepareAuthControllerConsistency(review);
 		if (!hasConflict && !consistency) return authControllerUnavailableResult(review);
-		return this.db
+		let retryAfterPinChange = false;
+		const result = this.db
 			.transaction((): CoordinatorAuthControllerCreateResult => {
 				const source = this.db
 					.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL)
@@ -1317,7 +1318,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						consistency ?? { sql: "SELECT 0 AS matches", values: [] },
 					);
 					const inserted = this.db.prepare(statement.sql).run(...statement.values);
-					if (inserted.changes === 0) return authControllerUnavailableResult(review);
+					if (inserted.changes === 0) {
+						retryAfterPinChange = true;
+						return authControllerUnavailableResult(review);
+					}
 				} catch (error) {
 					if (!isAuthControllerUniqueError(error)) throw error;
 					return this.resolveAuthControllerRetrySync(review, authority);
@@ -1329,6 +1333,32 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				);
 				if (!attestation) throw new Error("auth_controller_persistence_incomplete");
 				return { kind: "created", attestation };
+			})
+			.immediate();
+		if (!retryAfterPinChange) return result;
+		return this.retryAuthControllerAfterPinChange(review);
+	}
+
+	private async retryAuthControllerAfterPinChange(
+		review: CoordinatorAuthControllerReviewInput,
+	): Promise<CoordinatorAuthControllerCreateResult> {
+		// The winner changes the evidence pin. Recapture without accepting new conflicts.
+		const retryConsistency = await this.prepareAuthControllerConsistency(review);
+		if (!retryConsistency) return authControllerUnavailableResult(review);
+		return this.db
+			.transaction((): CoordinatorAuthControllerCreateResult => {
+				const pin = this.db.prepare(retryConsistency.sql).get(...retryConsistency.values) as
+					| { matches: number }
+					| undefined;
+				if (pin?.matches !== 1) return authControllerUnavailableResult(review);
+				const source = this.db
+					.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL)
+					.get(review.groupId, review.deviceId) as CoordinatorEnrollment | undefined;
+				if (!source) return authControllerUnavailableResult(review);
+				return this.resolveAuthControllerRetrySync(
+					review,
+					authControllerAuthorityValues(source, enrollmentRevocationKeyId(source.public_key)),
+				);
 			})
 			.immediate();
 	}

@@ -1412,11 +1412,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				consistency,
 			);
 			const inserted = await runChanges(this.db.prepare(statement.sql).bind(...statement.values));
-			if (inserted === 0)
-				return {
-					kind: "rejected",
-					error: review.verifiedSnapshot ? "review_stale" : "enrollment_mismatch",
-				};
+			if (inserted === 0) {
+				// The winner changes the evidence pin. Recapture without accepting new conflicts.
+				const retryConsistency = await this.prepareAuthControllerConsistency(review);
+				if (!retryConsistency) return authControllerUnavailableResult(review);
+				return this.resolveAuthControllerRetry(review, authority, retryConsistency);
+			}
 		} catch (error) {
 			if (!isAuthControllerUniqueError(error)) throw error;
 			return this.resolveAuthControllerRetry(review, authority);
@@ -1459,6 +1460,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private async resolveAuthControllerRetry(
 		input: CoordinatorAuthControllerReviewInput,
 		authority: (string | null)[],
+		consistency?: AuthLinkStatement,
 	): Promise<CoordinatorAuthControllerCreateResult> {
 		const eligible = await firstRow<{ eligible: number }>(
 			this.db
@@ -1471,10 +1473,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		const result = authControllerRetryResult(input, row);
 		if (result.kind === "rejected") return result;
+		let statement: AuthLinkStatement = {
+			sql: authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, input),
+			values: authControllerRetryActiveValues(input, authority),
+		};
+		if (consistency) statement = withNegativeOwnerConsistency(statement, consistency);
 		const active = await firstRow<CoordinatorAuthControllerAttestation>(
-			this.db
-				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, input))
-				.bind(...authControllerRetryActiveValues(input, authority)),
+			this.db.prepare(statement.sql).bind(...statement.values),
 		);
 		// A change after the conflict read makes this review stale, including revocation.
 		if (!active)
