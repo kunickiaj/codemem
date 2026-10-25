@@ -475,19 +475,21 @@ for (const kind of ["SQLite", "D1"] as const) {
 			// Arrange
 			const h = await setup(f, kind);
 			const factory = vi.fn(() => h.store);
+			let browserAuth: CreateCoordinatorAppOptions["browserAuth"];
+			if (mode === "absent") {
+				browserAuth = undefined;
+			} else if (mode === "schema-upgrade") {
+				browserAuth = {
+					kind: "unavailable",
+					error: "coordinator_auth_schema_upgrade_required",
+				};
+			} else {
+				browserAuth = { kind: "unavailable", error: undefined };
+			}
 			const app = createCoordinatorApp({
 				...h.options,
 				storeFactory: factory,
-				browserAuth:
-					mode === "absent"
-						? undefined
-						: {
-								kind: "unavailable",
-								error:
-									mode === "schema-upgrade"
-										? "coordinator_auth_schema_upgrade_required"
-										: undefined,
-							},
+				browserAuth,
 			});
 			// Act
 			const response = await get(h, { app });
