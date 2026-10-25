@@ -1,11 +1,12 @@
 // Runs package test scripts, narrowing each `vitest run` to files affected by the PR.
 // Vitest traces static imports; files that spawn processes, read repository files at
-// runtime, or import computed paths are invisible to that trace, so they always run.
+// runtime, or import computed paths (directly or via shared test fixtures) are invisible
+// to that trace, so they always run.
 // Main and `ci:full` runs set no base and execute every command unchanged.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const VITEST = "pnpm exec vitest run";
@@ -53,6 +54,24 @@ export function isUntraced(source) {
 	return READS_REPO.test(source) && REPO_PATH.test(source);
 }
 
+/** Relative imports of shared test-support files (fixtures, helpers) from a test file. */
+export function supportImports(file, source) {
+	return [...source.matchAll(/from\s+["'](\.{1,2}\/[^"']+)["']/g)]
+		.map((match) => resolve(dirname(file), match[1]))
+		.flatMap((path) => [path, path.replace(/\.js$/, ".ts"), `${path}.ts`, `${path}.js`])
+		.filter((path) => /test|fixture|helper/i.test(basename(path)) && !/\.test\./.test(path))
+		.filter((path) => existsSync(path) && statSync(path).isFile());
+}
+
+// Shared fixtures can also hide spawns, workers, and computed imports. Their repository
+// reads (Worker schema and migrations) are covered by forceRerunTriggers instead, which
+// avoids always running the ~85 Core tests that share the coordinator store fixture.
+function hasUntracedSupport(file, source) {
+	return supportImports(file, source).some((path) =>
+		UNTRACED.some((pattern) => pattern.test(readFileSync(path, "utf8"))),
+	);
+}
+
 /** Picks the files to run: traced changes plus untraced files, or `null` to run everything. */
 export function selectFiles({ all, changed, untraced }) {
 	const affected = all.filter((file) => changed.has(file));
@@ -88,7 +107,12 @@ function runSelected(command, cwd, base) {
 	const { flags, filters } = parseVitest(command);
 	const all = listFiles(cwd, [...flags, ...filters]);
 	const changed = new Set(listFiles(cwd, [...flags, "--changed", base]));
-	const untraced = new Set(all.filter((file) => isUntraced(readFileSync(file, "utf8"))));
+	const untraced = new Set(
+		all.filter((file) => {
+			const source = readFileSync(file, "utf8");
+			return isUntraced(source) || hasUntracedSupport(file, source);
+		}),
+	);
 	const files = selectFiles({ all, changed, untraced });
 	if (files === null) return run("pnpm", ["exec", "vitest", "run", ...flags, ...filters], cwd);
 	console.log(`Selected ${files.length} of ${all.length} test files (${untraced.size} untraced).`);

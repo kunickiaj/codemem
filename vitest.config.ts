@@ -12,8 +12,9 @@ export default defineConfig({
 			"**/pnpm-lock.yaml",
 			"**/pnpm-workspace.yaml",
 			"**/tsconfig*.json",
-			// Shared Core test fixtures read the Worker schema at runtime.
+			// Shared Core test fixtures read the Worker schema and migrations at runtime.
 			"**/schema.sql",
+			"**/migrations/**",
 		],
 		projects: [
 			"packages/*/vite.config.ts",

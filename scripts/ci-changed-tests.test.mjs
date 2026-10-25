@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { expandScripts, isUntraced, parseVitest, selectFiles } from "./ci-changed-tests.mjs";
+import { fileURLToPath } from "node:url";
+import {
+	expandScripts,
+	isUntraced,
+	parseVitest,
+	selectFiles,
+	supportImports,
+} from "./ci-changed-tests.mjs";
 
 describe("expandScripts", () => {
 	it("expands nested same-package scripts into ordered commands", () => {
@@ -94,6 +101,29 @@ describe("isUntraced", () => {
 			assert.equal(isUntraced(source), false);
 		});
 	}
+});
+
+describe("supportImports", () => {
+	it("finds the shared fixture that starts a real worker thread", () => {
+		// Arrange: this suite looks traceable, but its fixture spawns the worker entry by URL.
+		const file = fileURLToPath(
+			new URL("../packages/core/src/semantic/semantic-worker-integration.test.ts", import.meta.url),
+		);
+		// Act
+		const helpers = supportImports(file, readFileSync(file, "utf8"));
+		// Assert
+		const fixture = helpers.find((path) => path.endsWith("semantic-worker-test-fixtures.ts"));
+		assert.ok(fixture, `expected the semantic worker fixture in ${helpers.join(", ")}`);
+		assert.equal(isUntraced(readFileSync(fixture, "utf8")), true);
+	});
+
+	it("ignores production modules even when they spawn processes", () => {
+		// Arrange
+		const file = "/repo/src/sync.test.ts";
+		const source = 'import { identity } from "./sync-identity.js";';
+		// Act + Assert: only test-support file names are scanned.
+		assert.deepEqual(supportImports(file, source), []);
+	});
 });
 
 describe("selectFiles", () => {
