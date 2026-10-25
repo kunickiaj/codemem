@@ -178,7 +178,7 @@ async function setup() {
 		app,
 		input,
 		birthLinkId,
-		arm(reuse: boolean, action: () => Promise<void>) {
+		arm({ reuse }: { reuse: boolean }, action: () => Promise<void>) {
 			winningFragment = reuse
 				? "SELECT a.* FROM coordinator_auth_controller_attestations a"
 				: "INSERT INTO coordinator_auth_controller_attestations";
@@ -247,7 +247,7 @@ async function preview(f: Fixture) {
 async function confirm(f: Fixture, initial: Reply) {
 	return request(f, { confirm_evidence_digest: initial.evidence_digest });
 }
-async function reviewFor(f: Fixture, reuse: boolean) {
+async function reviewFor(f: Fixture, { reuse }: { reuse: boolean }) {
 	const initial = await preview(f);
 	if (reuse) expect((await confirm(f, initial)).status).toBe(201);
 	return preview(f);
@@ -429,7 +429,7 @@ it("native origin device/key retirement still permits creation and read-only reu
 	const f = await setup();
 	const initial = await preview(f);
 	let injected: Snapshot | undefined;
-	f.arm(false, async () => {
+	f.arm({ reuse: false }, async () => {
 		await tombstone(origin.signer, "device_id");
 		await tombstone(origin.signer, "ed25519_key");
 		injected = await snapshot(["coordinator_auth_controller_attestations"]);
@@ -459,9 +459,9 @@ for (const kind of ["device_id", "ed25519_key"] as const) {
 		it(`native current laptop ${kind} revocation denies the winning ${reuse ? "reuse" : "INSERT"}`, async () => {
 			// Arrange: the hook runs immediately before native statement execution, after preflight.
 			const f = await setup();
-			const initial = await reviewFor(f, reuse);
+			const initial = await reviewFor(f, { reuse });
 			let injected: Snapshot | undefined;
-			f.arm(reuse, async () => {
+			f.arm({ reuse }, async () => {
 				await tombstone(f.signer, kind);
 				injected = await snapshot();
 			});
@@ -481,9 +481,9 @@ it.each([false, true])(
 	async (reuse) => {
 		// Arrange: this revokes the account connection itself, not its origin signing device.
 		const f = await setup();
-		const initial = await reviewFor(f, reuse);
+		const initial = await reviewFor(f, { reuse });
 		let injected: Snapshot | undefined;
-		f.arm(reuse, async () => {
+		f.arm({ reuse }, async () => {
 			await db
 				.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms=?")
 				.bind(NOW + 1)
@@ -505,7 +505,7 @@ it("native valid reconnect after preview cannot satisfy the old connection gener
 	const f = await setup();
 	const initial = await preview(f);
 	let injected: Snapshot | undefined;
-	f.arm(false, async () => {
+	f.arm({ reuse: false }, async () => {
 		await reconnect();
 		injected = await snapshot();
 	});
@@ -527,10 +527,10 @@ it("native retained ACCOUNT generation revocation denies read-only reuse on the 
 	// Arrange
 	const f = await setup();
 	await reconnect();
-	const initial = await reviewFor(f, true);
+	const initial = await reviewFor(f, { reuse: true });
 	let injected: Snapshot | undefined;
 	expect(initial.account_owner_target.link_id).toBe("successor-link");
-	f.arm(true, async () => {
+	f.arm({ reuse: true }, async () => {
 		await db
 			.prepare("UPDATE coordinator_auth_account_connection_history SET revoked_at_ms=?")
 			.bind(NOW + 2)
@@ -557,7 +557,7 @@ it("native new-purpose SQL still rejects late canonical key-alias enrollment", a
 	const f = await setup();
 	const initial = await preview(f);
 	let injected: Snapshot | undefined;
-	f.arm(false, async () => {
+	f.arm({ reuse: false }, async () => {
 		const aliasKey = `${f.signer.publicKey} known-alias`;
 		await f.store.enrollDevice(f.secondGroup, {
 			deviceId: randomUUID(),
@@ -578,10 +578,10 @@ it("native new-purpose SQL still rejects late canonical key-alias enrollment", a
 it("native revoked controller discovered at final reuse cannot be replaced or renewed", async () => {
 	// Arrange
 	const f = await setup();
-	const initial = await reviewFor(f, true);
+	const initial = await reviewFor(f, { reuse: true });
 	let injected: Snapshot | undefined;
 	const create = vi.spyOn(f.store, "createAuthControllerAttestation");
-	f.arm(true, async () => {
+	f.arm({ reuse: true }, async () => {
 		await db
 			.prepare("UPDATE coordinator_auth_controller_attestations SET revoked_at='revoked'")
 			.run();
