@@ -39,6 +39,7 @@
 		"zod": "catalog:"
 	},
 	"devDependencies": {
+		"@codemem/server": "workspace:^",
 		"@types/express": "^5.0.6",
 		"@types/node": "^24.12.4",
 		"typescript": "catalog:",

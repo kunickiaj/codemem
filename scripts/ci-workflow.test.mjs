@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { Script } from "node:vm";
 
@@ -117,6 +118,41 @@ it("runs synthetic account acceptance separately with pinned package Chromium an
 	);
 	assert.match(job, /run: pnpm --filter @codemem\/ui test:account-browser/u);
 	assert.doesNotMatch(job, /^\s*(?:if|continue-on-error|permissions|secrets):/m);
+});
+
+it("keeps every CI package module and test unchanged under the existing Biome policy", () => {
+	// Arrange: use an already-included path without extending the repository's ignore policy.
+	const root = new URL("../", import.meta.url);
+	const scripts = new URL("scripts/", root);
+	const names = readdirSync(scripts).filter((name) => /^ci-package-.*\.mjs$/u.test(name));
+	assert.ok(names.length > 0, "expected CI package modules and tests");
+	for (const name of names) {
+		const source = readFileSync(new URL(name, scripts), "utf8");
+		for (const input of [source, `${source} `]) {
+			// Act: --write returns safe fixes on stdout, never writes the source file.
+			const result = spawnSync(
+				process.env.npm_execpath ?? "pnpm",
+				[
+					"exec",
+					"biome",
+					"check",
+					"--write",
+					"--error-on-warnings",
+					"--stdin-file-path=scripts/ci-workflow.test.mjs",
+				],
+				{ cwd: root, input, encoding: "utf8" },
+			);
+			// Assert: reject both diagnostics and safe fixes that would change the source bytes.
+			const diagnostic = `${name}: ${result.error?.message ?? ""}\n${result.stderr}`;
+			assert.equal(result.status, 0, diagnostic);
+			if (input === source) {
+				assert.equal(result.stdout, input, diagnostic);
+			} else {
+				// Negative control: a formatting violation must not pass byte equality.
+				assert.notEqual(result.stdout, input, diagnostic);
+			}
+		}
+	}
 });
 
 describe("normal CI workflow source contract", () => {

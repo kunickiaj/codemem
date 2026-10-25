@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	build: {
@@ -41,5 +41,9 @@ export default defineConfig({
 	},
 	test: {
 		name: "core",
+		exclude: [
+			...configDefaults.exclude,
+			...(process.env.CI_PACKAGE_TEST === "1" ? ["**/*.perf.test.ts"] : []),
+		],
 	},
 });

@@ -41,6 +41,7 @@
 		"tslib": "^2.8.1"
 	},
 	"devDependencies": {
+		"@codemem/server": "workspace:^",
 		"@playwright/test": "1.63.0",
 		"@fontsource-variable/geist": "5.3.0",
 		"@fontsource-variable/jetbrains-mono": "5.3.0",
