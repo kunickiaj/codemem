@@ -1,8 +1,11 @@
 import {
 	type CoordinatorAccountChangeCapabilitiesRead,
 	type CoordinatorAccountLinkStatusRead,
+	type CoordinatorResolvedAccountOwnerStatusRead,
+	type ResolvedAccountOwnerStatus,
 	readCoordinatorAccountChangeCapabilities,
 	readCoordinatorAccountLinkStatus,
+	readCoordinatorResolvedAccountOwnerStatus,
 } from "@codemem/core";
 import type {
 	AccountContext,
@@ -15,11 +18,13 @@ import {
 	type AccountLinkRegistry,
 	sameAuthority,
 } from "./link-registry.js";
+import { associatedOwnerView, ownerUnavailable, readOwnerAssociation } from "./owner-status.js";
 
 export interface AccountStatusOptions {
 	registry?: AccountLinkRegistry;
 	readContext?: AccountContextReader;
 	readRemoteStatus?: typeof readCoordinatorAccountLinkStatus;
+	readRemoteOwnerStatus?: typeof readCoordinatorResolvedAccountOwnerStatus;
 	readRemoteCapabilities?: typeof readCoordinatorAccountChangeCapabilities;
 }
 type UnavailableCode = Extract<CoordinatorAccountLinkStatusRead, { kind: "unavailable" }>["code"];
@@ -34,10 +39,20 @@ export interface AccountLinkViewV1 {
 		"deviceId" | "fingerprint" | "identityId" | "identityLabel" | "deviceLabel"
 	> | null;
 	coordinator: { origin: string } | null;
+	/** Display target only; local.identityId and all mutation contexts remain the memory actor. */
+	accountOwner?: { identityId: string; memoryActorId: string };
+	/** Read-only owner evidence, never ordinary account authority or management capabilities. */
+	ownerProjection?: {
+		kind: "resolved_account_owner";
+		status: Extract<ResolvedAccountOwnerStatus, { state: "owner_confirmed" }>;
+	};
 	remote:
 		| { kind: "not_checked" }
 		| { kind: "unsupported" }
-		| { kind: "unavailable"; code: UnavailableCode | "context_changed" }
+		| {
+				kind: "unavailable";
+				code: UnavailableCode | "context_changed" | "account_owner_association_invalid";
+		  }
 		| {
 				kind: "status";
 				coordinatorId: string;
@@ -62,17 +77,30 @@ export interface AccountLinkViewV1 {
 		| "identity_mismatch"
 		| "operation_active";
 	operation: AccountLinkOperationV1 | null;
+	/** Displayed operation's original context, never a mutation target. */
+	operationContextId?: string;
 	checkedAt: string;
 }
 type LocalResult = Exclude<AccountContextResult, { error: string }>;
 function attachOperation(
 	view: AccountLinkViewV1,
 	registry?: AccountLinkRegistry,
+	operationContextId = view.contextId,
 ): AccountLinkViewV1 {
-	const operation = view.contextId ? (registry?.forContext(view.contextId) ?? null) : null;
+	const operation = operationContextId ? (registry?.forContext(operationContextId) ?? null) : null;
+	const operationContext =
+		operation && operationContextId && operationContextId !== view.contextId
+			? { operationContextId }
+			: {};
 	if (registry?.hasActive())
-		return { ...view, operation, canLink: false, blockedReason: "operation_active" };
-	return { ...view, operation };
+		return {
+			...view,
+			...operationContext,
+			operation,
+			canLink: false,
+			blockedReason: "operation_active",
+		};
+	return { ...view, ...operationContext, operation };
 }
 export function accountLocalView(result: LocalResult): AccountLinkViewV1 {
 	const context = result.context;
@@ -196,9 +224,79 @@ export async function readAccountStatus(
 			options.registry,
 		);
 	}
+	return finishAccountStatus(options, initial.context, fresh, remote, signal);
+}
+
+async function finishAccountStatus(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	context: AccountContext,
+	fresh: LocalResult,
+	remote: CoordinatorAccountLinkStatusRead,
+	signal: AbortSignal,
+): Promise<AccountLinkViewV1> {
 	const currentView = applyRemote(accountLocalView(fresh), remote);
-	await attachManagementActions(options, initial.context, currentView, signal);
+	if (remote.kind === "status") {
+		const associated = await readAssociatedOwner(options, context, currentView, remote, signal);
+		if (associated) return attachOperation(associated, options.registry, context.contextId);
+	}
+	await attachManagementActions(options, context, currentView, signal);
+	if (remote.kind === "status") {
+		try {
+			if (readOwnerAssociation(context, remote.status.coordinatorId))
+				return attachOperation(
+					ownerUnavailable(accountLocalView(fresh), "context_changed"),
+					options.registry,
+				);
+		} catch {
+			return attachOperation(
+				ownerUnavailable(accountLocalView(fresh), "account_owner_association_invalid"),
+				options.registry,
+			);
+		}
+	}
 	return attachOperation(currentView, options.registry);
+}
+
+async function readAssociatedOwner(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	context: AccountContext,
+	view: AccountLinkViewV1,
+	actorRemote: Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>,
+	signal: AbortSignal,
+): Promise<AccountLinkViewV1 | null> {
+	const local = { ...view, remote: { kind: "not_checked" as const }, canLink: false };
+	try {
+		const association = readOwnerAssociation(context, actorRemote.status.coordinatorId);
+		if (!association) return null;
+		const before = options.readContext(context.groupId);
+		if ("error" in before || !before.context || !sameAuthority(context, before.context))
+			return ownerUnavailable(local, "context_changed");
+		const { dbPath, keysDir, groupId, coordinatorUrl } = context;
+		let remote: CoordinatorResolvedAccountOwnerStatusRead;
+		try {
+			remote = await (options.readRemoteOwnerStatus ?? readCoordinatorResolvedAccountOwnerStatus)({
+				dbPath,
+				keysDir,
+				groupId,
+				coordinatorUrl,
+				ownerIdentityId: association.ownerIdentityId,
+				signal,
+			});
+		} catch {
+			remote = { kind: "unavailable", code: "coordinator_unreachable" };
+		}
+		const after = options.readContext(context.groupId);
+		if (
+			signal.aborted ||
+			JSON.stringify(before) !== JSON.stringify(after) ||
+			JSON.stringify(association) !==
+				JSON.stringify(readOwnerAssociation(context, association.coordinatorId))
+		)
+			return ownerUnavailable(local, "context_changed");
+		return associatedOwnerView(local, context, association, remote);
+	} catch {
+		return ownerUnavailable(local, "account_owner_association_invalid");
+	}
 }
 
 async function attachManagementActions(
