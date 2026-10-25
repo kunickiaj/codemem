@@ -32,13 +32,13 @@ pnpm exec vitest run packages/core/src/index.test.ts
 
 Branch protection requires `TypeScript Test`, `TypeScript Lint`, and `Plugin Smoke Test`, with pull requests kept up to date with `main` before merging.
 
-### Package test reuse
+### PR test selection
 
-After `pnpm build`, run `pnpm run ci:package-probe` for workspace tests or `pnpm run ci:package-probe ci-worker` for Worker integration. pnpm computes package and transitive dependency keys; shared configuration and runtime inputs are calculated automatically. Core, Viewer, and CLI tests use broader repository inputs because they cross package boundaries.
+On pull requests, `TypeScript Test` and `Cloudflare Worker Test` run only the Vitest files affected by the PR. `scripts/ci-changed-tests.mjs` asks Vitest which tests import the changed files (`vitest --changed <PR base>`). Test files that spawn processes, read repository files at runtime, or use computed `import()` paths always run, because import tracing cannot see their dependencies. The same applies to tests importing Vite `?raw`/`?inline`/`?url` assets and to tests that start worker threads. Changes to `package.json`, Vite/Vitest config, `tsconfig*.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, the Worker `schema.sql`, or Worker migrations run everything.
 
-Required PR test jobs reuse unchanged package results from earlier runs of the same PR. Changed inputs and cache misses run tests; there is no duplicate comparison run. This trusts the PR's CI-written native task cache. Builds, browser acceptance, and plugin smoke checks still run fresh.
+Non-Vitest steps (Node test runner suites, bundle checks) always run. Pushes to `main` run the full suite, which catches anything selection misses. Add the `ci:full` label to run the full suite on a PR; it takes effect on the next push, because re-running a job reuses the original event.
 
-Add the `ci:full` PR label or use `env CI_FORCE_FULL=1 pnpm run ci:package-probe` to bypass cached results. Timing tests named `*.perf.test.ts` always execute. Main, forks, release contexts, and uncertain inputs run fresh. The separate diagnostic workflow is manual-only.
+To preview selection locally after `pnpm build`, run `env CI_TEST_BASE=origin/main node scripts/ci-changed-tests.mjs test:ci`.
 
 ## Context injection validation
 

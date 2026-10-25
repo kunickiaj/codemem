@@ -14,7 +14,6 @@
 		"dist/"
 	],
 	"scripts": {
-		"ci:test": "node ../../scripts/ci-package-test.mjs",
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
 		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts",
 		"typecheck": "pnpm exec tsc --noEmit",

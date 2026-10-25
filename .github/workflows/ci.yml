@@ -40,13 +40,12 @@ jobs:
   ts-test:
     name: TypeScript Test
     runs-on: ubuntu-latest
-    env:
-      CI_FORCE_FULL: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || contains(github.event.pull_request.labels.*.name, 'ci:full')) && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@v6
         with:
-          # The automatic-recall baseline test archives a pinned historical main commit.
+          # The automatic-recall baseline test archives a pinned historical main commit,
+          # and PR test selection diffs against the base commit.
           fetch-depth: 0
 
       - name: Install pnpm
@@ -69,41 +68,10 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Compute task-cache identity
-        id: identity
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from 'node:fs';
-          import { join } from 'node:path';
-          import { runtimeFingerprint } from './scripts/ci-package-inputs.mjs';
-          appendFileSync(process.env.GITHUB_OUTPUT, `runtime=${runtimeFingerprint(process.cwd())}\nepoch=${Math.floor(Date.now() / 86400000)}\ncache=${join(process.env.RUNNER_TEMP, 'ci-package-cache')}\n`);
-          NODE
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: task-cache
-        if: env.CI_FORCE_FULL == '0'
-        continue-on-error: true
-        with:
-          path: ${{ steps.identity.outputs.cache }}/pipeline/*/tasks
-          key: package-probe-v1-${{ github.event.pull_request.number }}-ci-packages-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            package-probe-v1-${{ github.event.pull_request.number }}-ci-packages-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-
       - name: Test
         env:
-          CI_FORCE_FULL: ${{ steps.task-cache.outcome == 'failure' && '1' || env.CI_FORCE_FULL }}
-          CI_PACKAGE_CACHE_DIR: ${{ steps.identity.outputs.cache }}
-        run: pnpm run ci:package-probe ci-packages
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: package-tests
-          path: |
-            .tmp/ci-package-test/**
-            packages/*/.tmp/ci-package-test/**
-            ${{ steps.identity.outputs.cache }}/pipeline/*/runs/**
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 7
+          CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
+        run: node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci
 
   account-browser:
     name: Account Browser Acceptance
@@ -130,11 +98,12 @@ jobs:
   worker-test:
     name: Cloudflare Worker Test
     runs-on: ubuntu-latest
-    env:
-      CI_FORCE_FULL: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || contains(github.event.pull_request.labels.*.name, 'ci:full')) && '1' || '0' }}
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # PR test selection diffs against the base commit.
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v5
@@ -148,40 +117,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Compute task-cache identity
-        id: identity
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from 'node:fs';
-          import { join } from 'node:path';
-          import { runtimeFingerprint } from './scripts/ci-package-inputs.mjs';
-          appendFileSync(process.env.GITHUB_OUTPUT, `runtime=${runtimeFingerprint(process.cwd())}\nepoch=${Math.floor(Date.now() / 86400000)}\ncache=${join(process.env.RUNNER_TEMP, 'ci-package-cache')}\n`);
-          NODE
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: task-cache
-        if: env.CI_FORCE_FULL == '0'
-        continue-on-error: true
-        with:
-          path: ${{ steps.identity.outputs.cache }}/pipeline/*/tasks
-          key: package-probe-v1-${{ github.event.pull_request.number }}-ci-worker-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            package-probe-v1-${{ github.event.pull_request.number }}-ci-worker-${{ steps.identity.outputs.runtime }}-${{ steps.identity.outputs.epoch }}-
       - name: Worker integration test
+        working-directory: packages/cloudflare-coordinator-worker
         env:
-          CI_FORCE_FULL: ${{ steps.task-cache.outcome == 'failure' && '1' || env.CI_FORCE_FULL }}
-          CI_PACKAGE_CACHE_DIR: ${{ steps.identity.outputs.cache }}
-        run: pnpm run ci:package-probe ci-worker
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: worker-tests
-          path: |
-            packages/cloudflare-coordinator-worker/.tmp/ci-package-test/**
-            ${{ steps.identity.outputs.cache }}/pipeline/*/runs/**
-          include-hidden-files: true
-          if-no-files-found: warn
-          retention-days: 7
+          CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
+        run: node ../../scripts/ci-changed-tests.mjs test:worker
 
   ts-lint:
     name: TypeScript Lint

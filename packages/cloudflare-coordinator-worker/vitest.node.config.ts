@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
 	resolve: {
@@ -15,5 +15,13 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		name: "cloudflare-coordinator-worker-node",
+		// PR test selection (`--changed`) runs everything when one of these changes.
+		forceRerunTriggers: [
+			...configDefaults.forceRerunTriggers,
+			"**/vitest.*.config.*",
+			"**/pnpm-lock.yaml",
+			"**/pnpm-workspace.yaml",
+			"**/tsconfig*.json",
+		],
 	},
 });

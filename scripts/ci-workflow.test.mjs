@@ -187,12 +187,12 @@ it("runs synthetic account acceptance separately with pinned package Chromium an
 	assert.doesNotMatch(job, /^\s*(?:if|continue-on-error|permissions|secrets):/m);
 });
 
-it("keeps every CI package module and test unchanged under the existing Biome policy", () => {
+it("keeps the CI test selector and its tests unchanged under the existing Biome policy", () => {
 	// Arrange: use an already-included path without extending the repository's ignore policy.
 	const root = new URL("../", import.meta.url);
 	const scripts = new URL("scripts/", root);
-	const names = readdirSync(scripts).filter((name) => /^ci-package-.*\.mjs$/u.test(name));
-	assert.ok(names.length > 0, "expected CI package modules and tests");
+	const names = readdirSync(scripts).filter((name) => /^ci-changed-tests.*\.mjs$/u.test(name));
+	assert.ok(names.length > 0, "expected the CI test selector and its tests");
 	for (const name of names) {
 		const source = readFileSync(new URL(name, scripts), "utf8");
 		for (const input of [source, `${source} `]) {
@@ -242,19 +242,28 @@ describe("normal CI workflow source contract", () => {
 		assert.equal(getTopLevelBlock(ciWorkflow, "concurrency"), getExpectedConcurrency("ci"));
 	});
 
-	it("routes the TypeScript Test job through the root prerequisite launcher", () => {
-		// Arrange
-		const testJob = getJob(ciWorkflow, "ts-test");
-		// Act
-		const commands = [...testJob.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
-		// Assert: root prerequisite execution is covered by buildCommands tests.
-		assert.equal(rootPackage.scripts["ci:package-probe"], "node scripts/ci-package-pipeline.mjs");
-		assert.equal(
-			commands.filter((command) => command === "pnpm run ci:package-probe ci-packages").length,
-			1,
-		);
-		assert.doesNotMatch(commands.join("\n"), /pnpm run test:release|pnpm run test:ci\b/);
-	});
+	for (const [id, command] of [
+		[
+			"ts-test",
+			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci",
+		],
+		["worker-test", "node ../../scripts/ci-changed-tests.mjs test:worker"],
+	]) {
+		it(`runs ${id} once through the PR test selector with full history`, () => {
+			// Arrange
+			const job = getJob(ciWorkflow, id);
+			// Act
+			const commands = [...job.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
+			// Assert: ci:full and non-PR events pass no base, so every command runs unchanged.
+			assert.equal(commands.filter((entry) => entry === command).length, 1);
+			assert.match(job, /fetch-depth: 0/u);
+			assert.match(
+				job,
+				/CI_TEST_BASE: \$\{\{ !contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci:full'\) && github\.event\.pull_request\.base\.sha \|\| '' \}\}/u,
+			);
+			assert.doesNotMatch(job, /actions\/cache|continue-on-error|ci:package-probe/u);
+		});
+	}
 });
 
 describe("CI test scheduling contract", () => {
