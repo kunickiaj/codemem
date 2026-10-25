@@ -362,7 +362,9 @@ describe("resolved owner profile pins", () => {
 	it("pins the public key and uses the signed coordinator ID rather than its URL", async () => {
 		// Arrange: real nonempty profile, keys and private association; actor C is not owner A.
 		const f = fixture();
-		const before = readFileSync(f.dbPath);
+		// Compare a digest: deep-equality on the whole SQLite file took ~1s per call.
+		const dbDigest = () => createHash("sha256").update(readFileSync(f.dbPath)).digest("hex");
+		const before = dbDigest();
 		// Act
 		const view = await f.read();
 		// Assert: display ownership never changes the memory actor or mutation authority.
@@ -398,7 +400,7 @@ describe("resolved owner profile pins", () => {
 		expect(view).not.toHaveProperty("ownerProjection.status.authority");
 		expect(f.readRemoteCapabilities).not.toHaveBeenCalled();
 		expect(view).not.toHaveProperty("managementActions");
-		expect(readFileSync(f.dbPath)).toEqual(before);
+		expect(dbDigest()).toBe(before);
 	});
 	it.each([
 		"ownerIdentity",

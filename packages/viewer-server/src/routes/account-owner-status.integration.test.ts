@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +37,9 @@ import { createApp } from "../index.js";
 // SQLite) and make real signed requests: well under a second idle, but over 5s
 // on a busy CI runner. These are correctness checks, not performance budgets.
 vi.setConfig({ testTimeout: 15_000 });
+
+// Compare digests: deep-equality on whole SQLite files took ~1s per call.
+const dbDigest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
 const LOCAL = "http://127.0.0.1:7441";
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -296,7 +299,7 @@ it("fixture control: checked resolution and real signed clients confirm A withou
 	// Arrange: the source is retained outside the current group, and current C stays weak.
 	const f = await fixture();
 	const before = f.snapshot();
-	const localBefore = readFileSync(f.dbPath);
+	const localBefore = dbDigest(f.dbPath);
 	const privateKeyBefore = readFileSync(join(f.keysDir, "device.key"));
 	const publicKeyBefore = readFileSync(join(f.keysDir, "device.key.pub"));
 	const input = {
@@ -338,7 +341,7 @@ it("fixture control: checked resolution and real signed clients confirm A withou
 			.get(f.deviceId),
 	).toEqual({ identity_id: "identity-b" });
 	expect(f.snapshot()).toEqual(before);
-	expect(readFileSync(f.dbPath)).toEqual(localBefore);
+	expect(dbDigest(f.dbPath)).toBe(localBefore);
 	expect(readFileSync(join(f.keysDir, "device.key"))).toEqual(privateKeyBefore);
 	expect(readFileSync(join(f.keysDir, "device.key.pub"))).toEqual(publicKeyBefore);
 	expect(f.db.prepare("SELECT * FROM request_nonces").all()).toHaveLength(3);
@@ -375,7 +378,7 @@ it("reads proven A through separate signed owner GET while ordinary C, A/B histo
 	const f = await fixture();
 	await seedScopes(f);
 	const before = f.snapshot();
-	const localBefore = readFileSync(f.dbPath);
+	const localBefore = dbDigest(f.dbPath);
 	const scopesBefore = await Promise.all([scopeDevices(f, "team-a"), scopeDevices(f, "project-b")]);
 	// Act: the production viewer calls the production client; only HTTPS transport is in-process.
 	const response = await f.read();
@@ -433,7 +436,7 @@ it("reads proven A through separate signed owner GET while ordinary C, A/B histo
 	expect(await Promise.all([scopeDevices(f, "team-a"), scopeDevices(f, "project-b")])).toEqual(
 		scopesBefore,
 	);
-	expect(readFileSync(f.dbPath)).toEqual(localBefore);
+	expect(dbDigest(f.dbPath)).toBe(localBefore);
 	const local = connect(f.dbPath);
 	try {
 		expect(
