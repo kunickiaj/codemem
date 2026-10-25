@@ -242,13 +242,18 @@ describe("normal CI workflow source contract", () => {
 		assert.equal(getTopLevelBlock(ciWorkflow, "concurrency"), getExpectedConcurrency("ci"));
 	});
 
-	it("runs the workflow source contract in the TypeScript Test job", () => {
+	it("routes the TypeScript Test job through the root prerequisite launcher", () => {
+		// Arrange
 		const testJob = getJob(ciWorkflow, "ts-test");
-
-		assert.match(
-			testJob,
-			/^ {8}run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test:ci$/m,
+		// Act
+		const commands = [...testJob.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
+		// Assert: root prerequisite execution is covered by buildCommands tests.
+		assert.equal(rootPackage.scripts["ci:package-probe"], "node scripts/ci-package-pipeline.mjs");
+		assert.equal(
+			commands.filter((command) => command === "pnpm run ci:package-probe ci-packages").length,
+			1,
 		);
+		assert.doesNotMatch(commands.join("\n"), /pnpm run test:release|pnpm run test:ci\b/);
 	});
 });
 
@@ -279,7 +284,7 @@ describe("CI test scheduling contract", () => {
 			/testTimeout|passWithNoTests|--testNamePattern|--project|--no-file-parallelism/u,
 		);
 		assert.match(getJob(ciWorkflow, "ts-test"), /^ {4}name: TypeScript Test$/m);
-		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^\s*(?:if|continue-on-error):/m);
+		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^ {4}(?:if|continue-on-error):/m);
 	});
 
 	for (const { name, failPhase, status, calls } of [
