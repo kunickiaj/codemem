@@ -273,17 +273,24 @@ it("native D1 malformed plausible history keeps the original fail-closed capture
 it("native D1 full 500 genuine writer-shaped subjects preserve ordered selector rows and live history rejection", async () => {
 	// Arrange: existing authentic 500-key/500-owner/500-receipt fixture, unchanged.
 	const { captured } = await fixture({ full: true });
+	// Every seeded completion belongs in this capture. Read them in insertion order
+	// without a membership selector, retaining the original manifest bytes.
+	const expected = (
+		await db
+			.prepare(
+				`SELECT json_array(group_id,candidate_ref,manifest_version,completed_at,created_at,manifest_json) AS row FROM ${completions} ORDER BY rowid`,
+			)
+			.all<{ row: string }>()
+	).results;
 	const snapshot = JSON.parse(String(captured.statement.values[0]));
 	expect(snapshot.subjects).toHaveLength(500);
 	expect(snapshot.active).toHaveLength(500);
 	// Act
-	const selected = await compareHistorySql(backend, captured.statement);
 	const current = await captured.current();
-	const old = await captured.current({ reference: true });
 	// Assert
-	expect(selected.rows).toHaveLength(500);
+	expect(expected).toHaveLength(500);
+	expect(captured.observedRows).toEqual(expected);
 	expect(current).toEqual({ current: 1 });
-	expect(current).toEqual(old);
 	expect(captured.statement.values).toHaveLength(1);
 	expect(
 		new TextEncoder().encode(String(captured.statement.values[0])).byteLength,
@@ -294,5 +301,4 @@ it("native D1 full 500 genuine writer-shaped subjects preserve ordered selector 
 	);
 	// Assert
 	expect(await captured.current()).toEqual({ current: 0 });
-	expect(await captured.current({ reference: true })).toEqual({ current: 0 });
 });

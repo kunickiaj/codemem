@@ -58,13 +58,18 @@ export async function captureHistorySql(
 	input: { groupId: string; manifestJson: string; keyMetadata: string },
 ) {
 	let observed: AuthLinkStatement | undefined;
+	let observedRows: unknown[] = [];
 	const proof = await captureLegacyCompletionOwnerProof({
 		...input,
 		backend: {
 			first: backend.first,
 			async all<T>(statement: AuthLinkStatement): Promise<T[]> {
-				if (statement.sql.includes(start)) observed = statement;
-				return backend.all<T>(statement);
+				const rows = await backend.all<T>(statement);
+				if (statement.sql.includes(start)) {
+					observed = statement;
+					observedRows = rows;
+				}
+				return rows;
 			},
 		},
 	});
@@ -74,6 +79,7 @@ export async function captureHistorySql(
 	const statement = observed;
 	return {
 		statement,
+		observedRows,
 		async current(options: { reference?: boolean } = {}) {
 			let sql = `${LEGACY_OWNER_INPUT_SQL}${winning.ctes} SELECT (${winning.currentSql}) AS current`;
 			if (options.reference) sql = referenceHistorySql(sql);
