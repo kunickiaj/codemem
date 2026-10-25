@@ -60,6 +60,22 @@ export type AccountView = {
 		deviceLabel?: string;
 	};
 	coordinator: null | { origin: string };
+	/** Read-only account display target, separate from local.identityId (the memory actor). */
+	accountOwner?: { identityId: string; memoryActorId: string };
+	ownerProjection?: {
+		kind: "resolved_account_owner";
+		status: {
+			version: 1;
+			coordinatorId: string;
+			groupId: string;
+			deviceId: string;
+			fingerprint: string;
+			state: "owner_confirmed";
+			ownerIdentity: string;
+			profileState: "linked" | "account_unlinked" | "unavailable";
+			profile: null | { email?: string; displayName?: string; pictureUrl?: string };
+		};
+	};
 	remote:
 		| { kind: "not_checked" }
 		| { kind: "unsupported" }
@@ -88,6 +104,8 @@ export type AccountView = {
 		| "identity_mismatch"
 		| "operation_active";
 	operation: AccountOperation | null;
+	/** Displayed operation's original context, never a mutation target. */
+	operationContextId?: string;
 	checkedAt: string;
 };
 
@@ -218,6 +236,7 @@ export function getAccountStatus(groupId?: string, signal?: AbortSignal): Promis
 		{ signal },
 	);
 }
+
 function checkedRecovery<T>(value: unknown, validate: (value: unknown) => value is T): T {
 	if (!validate(value)) throw new AccountRequestError(0, "invalid_response");
 	return value;

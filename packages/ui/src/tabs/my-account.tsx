@@ -6,6 +6,7 @@ import {
 	validAccountPictureUrl,
 } from "../lib/api/account";
 import { accountOperationCopy, unknownAccountOutcome, useMyAccount } from "./my-account-flow";
+import { MyAccountOwnerRecovery } from "./my-account-owner-recovery";
 
 const SCHEMA_UPGRADE_MESSAGE =
 	"The coordinator needs a database schema upgrade before Google account changes can work. Ask the person who runs it to back up and upgrade the coordinator. Normal device sync is still available.";
@@ -61,6 +62,8 @@ function remoteSummary(view: AccountView): string {
 			UNAVAILABLE_MESSAGES.get(view.remote.code) ??
 			"Google linking is unavailable. Check the selected coordinator, or ask the person who runs it for help."
 		);
+	if (view.ownerProjection)
+		return "Account owner information is read-only. Your memory author and sharing access are unchanged. This display does not allow Google account changes.";
 	if (view.remote.kind === "not_checked")
 		return "Choose Check status to see whether you can link Google.";
 	if (view.remote.state === "review_required")
@@ -154,6 +157,7 @@ function AccountAvatar({ displayName, pictureUrl }: { displayName?: string; pict
 }
 
 function VerifiedAccount({ view }: { view: AccountView }) {
+	if (view.ownerProjection) return <OwnerProfile view={view} />;
 	if (
 		view.remote.kind !== "status" ||
 		view.remote.state !== "linked" ||
@@ -176,6 +180,62 @@ function VerifiedAccount({ view }: { view: AccountView }) {
 					</p>
 				) : null}
 				<p className="small">Linked to Google</p>
+			</div>
+		</div>
+	);
+}
+
+function safeProfileText(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.length > 512 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value))
+		return undefined;
+	return value;
+}
+
+function OwnerProfile({ view }: { view: AccountView }) {
+	const status = view.ownerProjection?.status;
+	if (
+		view.ownerProjection?.kind !== "resolved_account_owner" ||
+		status?.version !== 1 ||
+		status.state !== "owner_confirmed" ||
+		status.deviceId !== view.local?.deviceId ||
+		status.fingerprint !== view.local?.fingerprint ||
+		status.groupId !== view.selectedGroupId ||
+		status.ownerIdentity !== view.accountOwner?.identityId ||
+		view.accountOwner.memoryActorId !== view.local?.identityId
+	)
+		return null;
+	const profile = status.profileState === "linked" ? status.profile : null;
+	const displayName = safeProfileText(profile?.displayName);
+	const email = safeProfileText(profile?.email);
+	let message = "Account profile unavailable. Check status again later.";
+	if (status.profileState === "linked") message = "Linked to Google";
+	if (status.profileState === "account_unlinked")
+		message = "This owner’s Google account is not linked.";
+	return (
+		<div className="my-account-profile">
+			<AccountAvatar
+				key={`${status.ownerIdentity}:${profile?.pictureUrl ?? ""}`}
+				displayName={displayName}
+				pictureUrl={profile?.pictureUrl}
+			/>
+			<div className="my-account-profile-text">
+				<p className="small">Account owner: {safeProfileText(status.ownerIdentity)}</p>
+				<strong>{displayName || "Account owner"}</strong>
+				{email ? (
+					<p className="small">
+						{email} <span>· Verified email</span>
+					</p>
+				) : null}
+				<p className="small">{message}</p>
+				<p className="small">
+					Memory author:{" "}
+					{safeProfileText(view.local?.identityLabel) || safeProfileText(view.local?.identityId)}{" "}
+					(unchanged).
+				</p>
+				<p className="small">
+					Sharing access is unchanged. Team and Project sharing and delivery warnings still need a
+					separate review.
+				</p>
 			</div>
 		</div>
 	);
@@ -291,6 +351,7 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	const linked = view?.remote.kind === "status" && view.remote.state === "linked";
 	const blocked =
 		busy ||
+		Boolean(view?.ownerProjection) ||
 		Boolean(pendingOperation) ||
 		operation?.state === "outcome_unknown" ||
 		view?.blockedReason === "operation_active";
@@ -306,7 +367,9 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 					Link Google account
 				</button>
 			) : null}
-			{linked && !running ? <ManagementActions flow={flow} blocked={blocked} /> : null}
+			{linked && !running && !view?.ownerProjection ? (
+				<ManagementActions flow={flow} blocked={blocked} />
+			) : null}
 			{fallback && running ? (
 				<button className="settings-save" type="button" onClick={flow.openFallback}>
 					Open Google sign-in
@@ -408,6 +471,7 @@ export function MyAccount({ onViewChange }: { onViewChange?: (view: AccountView 
 			) : null}
 			<DeviceLinkRecovery view={view} />
 			<AccountActions flow={flow} />
+			<MyAccountOwnerRecovery view={view} refresh={flow.refresh} selectedGroup={flow.group} />
 		</section>
 	);
 }

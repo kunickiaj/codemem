@@ -65,7 +65,7 @@ function sameOperationContext(
 	intent?: AccountIntent,
 ): boolean {
 	return (
-		operation.contextId === view.contextId &&
+		operation.contextId === (view.operationContextId ?? view.contextId) &&
 		operation.groupId === view.selectedGroupId &&
 		(intent === undefined || (operation.intent ?? "connect") === intent)
 	);
@@ -244,6 +244,7 @@ function showStatus(
 	}
 	flow.setOperation(
 		(!verifiedLinked ||
+			result.operation?.contextId !== result.contextId ||
 			(result.operation?.intent !== undefined && result.operation.intent !== "connect") ||
 			result.operation?.state === "outcome_unknown" ||
 			activeOperation(result.operation)) &&
@@ -456,7 +457,10 @@ async function link(
 			opened?.close();
 			return;
 		}
-		if (!sameOperationContext(result.operation, view, intent)) {
+		if (
+			result.operation.contextId !== view.contextId ||
+			!sameOperationContext(result.operation, view, intent)
+		) {
 			opened?.close();
 			void refresh(flow);
 			return;
@@ -529,7 +533,8 @@ function useBrowserDelivery(flow: Flow): void {
 			flow.refs.current.delivered === operation.operationId
 		)
 			return;
-		if (!sameOperationContext(operation, view)) return;
+		// Displaying an original-context operation must not deliver its browser handoff here.
+		if (operation.contextId !== view.contextId || !sameOperationContext(operation, view)) return;
 		flow.refs.current.delivered = operation.operationId;
 		const abort = new AbortController();
 		deliverBrowserUrl(flow, operation, view, flow.refs.current.generation, abort.signal);

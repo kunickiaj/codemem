@@ -14,6 +14,9 @@ vi.mock("./components/primitives/radix-dialog", () => ({
 				{props.children}
 			</div>
 		) : null,
+	RadixDialogTitle: (props: { children?: ComponentChildren; id?: string; tabIndex?: number }) => (
+		<h2 {...props}>{props.children}</h2>
+	),
 }));
 
 import { createRecipientPolicySharingLoader } from "./app-sharing";
