@@ -83,6 +83,10 @@ describe("isUntraced", () => {
 			"repository file reads",
 			'import { readFileSync } from "node:fs";\nreadFileSync(new URL("../x.sql", import.meta.url));',
 		],
+		[
+			"repository reads through vi.importActual",
+			'const fs = await vi.importActual("node:fs");\nfs.readFileSync(resolve(import.meta.dirname, "index.html"));',
+		],
 	]) {
 		it(`always runs files with ${label}`, () => {
 			assert.equal(isUntraced(source), true);

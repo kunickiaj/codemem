@@ -19,7 +19,9 @@ const UNTRACED = [
 	// Worker threads and files addressed by URL load outside the traced graph.
 	/new Worker\(|new URL\([^)]*import\.meta\.url/,
 ];
-const READS_REPO = /from\s+["'](?:node:)?fs(?:\/promises)?["']/;
+// Matches `fs` however it is loaded: `from "node:fs"`, `vi.importActual("node:fs")`,
+// `vi.mock("node:fs", ...)`, or `typeof import("node:fs")` in `importOriginal`.
+const READS_REPO = /["'](?:node:)?fs(?:\/promises)?["']/;
 const REPO_PATH = /import\.meta\.(?:url|dirname)|__dirname/;
 
 /** Splits a package script into commands, expanding `pnpm run <script>` from the same package. */
