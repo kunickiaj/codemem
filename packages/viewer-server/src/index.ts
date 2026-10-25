@@ -20,6 +20,7 @@ import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@code
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js";
+import type { createAccountOwnerRecoveryService } from "./account/owner-recovery-service.js";
 import type { AccountStatusOptions } from "./account/status.js";
 import { originGuard, preflightHandler } from "./middleware.js";
 import type { RawEventInbox } from "./raw-event-inbox.js";
@@ -28,6 +29,7 @@ import {
 	type InMemoryRequestRateLimiter,
 } from "./request-rate-limit.js";
 import { accountOperationRoutes } from "./routes/account-operations.js";
+import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
@@ -67,6 +69,8 @@ export type {
 	AccountLinkStartResult,
 } from "./account/link-registry.js";
 export { createAccountLinkRegistry } from "./account/link-registry.js";
+export type { AccountOwnerRecoveryServiceOptions } from "./account/owner-recovery-service.js";
+export { createAccountOwnerRecoveryService } from "./account/owner-recovery-service.js";
 export type { AccountLinkViewV1, AccountStatusOptions } from "./account/status.js";
 export type {
 	AdvancePendingProjectSharesResult,
@@ -150,7 +154,10 @@ export function closeStoreAsync(): Promise<void> {
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
 export interface AppOptions {
-	accountLink?: AccountLinkOptions & AccountStatusOptions;
+	accountLink?: AccountLinkOptions &
+		AccountStatusOptions & {
+			ownerRecovery?: ReturnType<typeof createAccountOwnerRecoveryService>;
+		};
 	storeFactory?: () => MemoryStore;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
@@ -234,14 +241,12 @@ function registerConfigRoutes(
 	);
 }
 
-function registerAccountRoutes(
-	app: Hono,
-	options?: AccountLinkOptions & AccountStatusOptions,
-): void {
+function registerAccountRoutes(app: Hono, options?: AppOptions["accountLink"]): void {
 	if (!options) return;
 	const account = createAccountGuard(options);
 	app.use("*", account.middleware);
 	app.route("/", account.routes);
+	if (options.ownerRecovery) app.route("/", accountOwnerRecoveryRoutes(options.ownerRecovery));
 	if (options.readContext)
 		app.route("/", accountStatusRoutes({ ...options, readContext: options.readContext }));
 	if (options.readContext && options.registry)
