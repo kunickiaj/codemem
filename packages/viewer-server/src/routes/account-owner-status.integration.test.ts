@@ -33,6 +33,11 @@ import { createAccountContextReader } from "../account/context.js";
 import { createAccountLinkRegistry } from "../account/link-registry.js";
 import { createApp } from "../index.js";
 
+// Cases build a real signed coordinator (RSA OIDC keys, Ed25519 device key,
+// SQLite) and make real signed requests: well under a second idle, but over 5s
+// on a busy CI runner. These are correctness checks, not performance budgets.
+vi.setConfig({ testTimeout: 15_000 });
+
 const LOCAL = "http://127.0.0.1:7441";
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
