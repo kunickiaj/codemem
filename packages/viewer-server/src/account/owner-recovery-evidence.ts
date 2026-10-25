@@ -11,6 +11,10 @@ import type {
 } from "./owner-recovery-types.js";
 
 export const RECOVERY_SCOPE = "historical_included_owner_labels_only";
+// The coordinator reports blocked reviews as a code, optionally followed by
+// operator guidance ("ownership_unavailable: inspect ..."). Accept only
+// bounded printable ASCII so control characters and dumps stay rejected.
+const RECOVERY_REASON = /^[a-z][a-z0-9_]{0,119}(?:: [\x20-\x7e]{1,240})?$/;
 export class AccountOwnerRecoveryError extends Error {
 	constructor(readonly code: "invalid" | "busy" | "context_changed" | "unavailable" = "invalid") {
 		super("account_owner_recovery_invalid");
@@ -174,9 +178,7 @@ export function validateRecoveryReview(
 	const rows = row.legacy_history.flatMap((history) => historyRows(history, selection, labels));
 	requireRecovery(
 		row.reasons.length <= 8 &&
-			row.reasons.every(
-				(reason) => typeof reason === "string" && /^[a-z][a-z0-9_]{0,119}$/.test(reason),
-			),
+			row.reasons.every((reason) => typeof reason === "string" && RECOVERY_REASON.test(reason)),
 	);
 	const reasons = row.reasons as string[];
 	if (row.state === "needs_review") {
