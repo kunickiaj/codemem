@@ -191,13 +191,13 @@ import {
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
-import { ResolvedAccountOwnerStatusOperations } from "./coordinator-resolved-account-owner-status.js";
 import {
 	assertRecipientOwnerConsistency,
 	prepareRecipientOwnerConsistency,
 	recipientOwnerWriteSql,
 	validateRecipientOwnerInput,
 } from "./coordinator-recipient-owner-consistency.js";
+import { ResolvedAccountOwnerStatusOperations } from "./coordinator-resolved-account-owner-status.js";
 import {
 	type CapturedScopeMember,
 	captureScopeAuthorizationInput,
