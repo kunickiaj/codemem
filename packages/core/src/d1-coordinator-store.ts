@@ -177,12 +177,12 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
-import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	type NegativeOwnerConsistency,
 	prepareNegativeOwnerConsistency,
 	withNegativeOwnerConsistency,
 } from "./coordinator-owner-negative-consistency.js";
+import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
