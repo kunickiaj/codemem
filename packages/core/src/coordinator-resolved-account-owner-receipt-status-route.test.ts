@@ -91,11 +91,15 @@ async function setup(f: LinkFixture) {
 			"X-Opencode-Signature": `${SIGNATURE_VERSION}:${sign(null, buildCanonicalRequest("GET", path, timestamp, n, Buffer.alloc(0)), key).toString("base64")}`,
 		};
 	}
-	async function get(path = `${ROOT}?${params}`, signed = headers(path), body = false) {
+	async function get(
+		path = `${ROOT}?${params}`,
+		signed = headers(path),
+		options: { body?: boolean } = {},
+	) {
 		const before = snapshot(f, ["request_nonces"]);
 		const providerCalls = oidc.requests.length;
 		const request = new Request(`${ORIGIN}${path}`, { headers: signed });
-		if (body)
+		if (options.body)
 			Object.defineProperty(request, "body", {
 				value: new ReadableStream({
 					start(c) {
@@ -222,7 +226,7 @@ test("receipt route rejects a raw GET body before projection", async ({ fixture:
 	const path = `${ROOT}?${h.params}`;
 	const read = vi.spyOn(f.store, "readResolvedAccountOwnerStatus");
 	// Act
-	const response = await h.get(path, h.headers(path), true);
+	const response = await h.get(path, h.headers(path), { body: true });
 	// Assert
 	expect(response.status).toBe(400);
 	expect(read).not.toHaveBeenCalled();
