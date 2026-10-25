@@ -374,15 +374,19 @@ for (const backend of ["SQLite", "D1"] as const) {
 			let executionHook: { mockRestore(): void } | undefined;
 			const hook = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
 				const statement = prepare(sql);
+				// Match the mutation after any consistency CTE, never a preflight SELECT.
 				const winning =
 					stage === "create"
 						? sql.includes("INSERT INTO coordinator_auth_link_attempts")
-						: sql.startsWith("UPDATE coordinator_auth_link_attempts SET state = 'finalized'");
+						: sql.includes(
+								"UPDATE coordinator_auth_link_attempts SET state = 'finalized', link_id = ?, finalized_at_ms = ?",
+							);
 				if (winning && !executionHook) {
 					const run = statement.run.bind(statement);
 					executionHook = vi.spyOn(statement, "run").mockImplementationOnce((...values) => {
 						injected = true;
 						f.db.exec("DELETE FROM coordinator_legacy_team_completions");
+						// The consistency CTE precedes the write and prepends its own bindings.
 						return run(...values);
 					});
 				}
