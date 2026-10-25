@@ -33,6 +33,8 @@ const parallelArgs = [
 	"run",
 	"--exclude",
 	"**/coordinator-legacy-completion-owner-proof.test.ts",
+	"--project",
+	"!cloudflare-coordinator-worker",
 ];
 const heavyArgs = ["exec", "vitest", "run", heavyTest, "--maxWorkers=1"];
 
@@ -229,6 +231,24 @@ describe("normal CI workflow source contract", () => {
 		assert.match(workerPackage.scripts["check:bundle"], /pnpm --filter @codemem\/core build/u);
 	});
 
+	it("runs every Worker source test in the Worker job, which TypeScript Test excludes", () => {
+		// test:ci excludes the Worker project, so a source test missing from test:node
+		// would silently never run in CI.
+		const sourceTests = readdirSync(
+			new URL("../packages/cloudflare-coordinator-worker/src", import.meta.url),
+		)
+			.filter((name) => name.endsWith(".test.ts"))
+			.map((name) => `src/${name}`)
+			.sort();
+		const nodeTests = workerPackage.scripts["test:node"]
+			.split(/\s+/u)
+			.filter((word) => word.endsWith(".test.ts"))
+			.sort();
+		assert.deepEqual(nodeTests, sourceTests);
+		assert.match(workerPackage.scripts["test:worker"], /pnpm run test:node/u);
+		assert.match(ciWorkflow, /ci-changed-tests\.mjs test:worker/u);
+	});
+
 	it("contains only main push, default pull request, and workflow call triggers", () => {
 		assert.equal(
 			getTopLevelBlock(ciWorkflow, "on"),
@@ -290,8 +310,13 @@ describe("CI test scheduling contract", () => {
 		assert.match(config, /maxWorkers: process\.env\.CI \? 3 : undefined/u);
 		assert.doesNotMatch(
 			scripts["test:ci"],
-			/testTimeout|passWithNoTests|--testNamePattern|--project|--no-file-parallelism/u,
+			/testTimeout|passWithNoTests|--testNamePattern|--no-file-parallelism/u,
 		);
+		// The only project filter excludes the Worker source tests, which the
+		// Worker job runs through test:node (pinned below).
+		assert.deepEqual(scripts["test:ci"].match(/--project \S+/gu), [
+			'--project "!cloudflare-coordinator-worker"',
+		]);
 		assert.match(getJob(ciWorkflow, "ts-test"), /^ {4}name: TypeScript Test$/m);
 		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^ {4}(?:if|continue-on-error):/m);
 	});
