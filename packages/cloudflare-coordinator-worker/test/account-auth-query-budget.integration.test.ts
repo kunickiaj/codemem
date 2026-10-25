@@ -306,7 +306,10 @@ it.each(["device_claim", "controller_attestation"] as const)("keeps public %s re
   expect(ownerReplay.status).toBe(403);
  }
   expect(Math.max(...Object.values(counts))).toBeLessThanOrEqual(45);
+  // Device-claim finalization pins retained-owner absence before its winning writes:
+  // catalog + subject-absence reads each require two fresh auth-schema reads (six
+  // statements total). The request ceiling stays at 45.
   expect(counts).toEqual(authority === "device_claim"
-   ? { create: 28, callback: 44, finalize: 35, "redemption-page": 13, redemption: 32 }
+   ? { create: 28, callback: 44, finalize: 41, "redemption-page": 13, redemption: 32 }
    : { create: 37, callback: 40, finalize: 38, "redemption-page": 9, redemption: 28, "owner-callback": 33 });
 });
