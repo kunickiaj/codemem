@@ -101,7 +101,9 @@ export function setupStore(
 	const db = new Database(options.databasePath ?? ":memory:");
 	try {
 		const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
-		db.exec(readFileSync(join(worker, "schema.sql"), "utf8"));
+		const schema = readFileSync(join(worker, "schema.sql"), "utf8");
+		// Commit the full fixture schema once instead of syncing each DDL statement.
+		db.transaction(() => db.exec(schema))();
 		return { store: new D1CoordinatorStore(sqliteD1(db), options), db };
 	} catch (error) {
 		db.close();
