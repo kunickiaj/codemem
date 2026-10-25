@@ -278,3 +278,96 @@ it("native ready-schema absence pin rejects a retained fact added only at the wi
 	expect(result).toMatchObject({ kind: "rejected" });
 	expect(await snapshot()).toEqual(race.afterChange());
 });
+
+it("native overlapping identical controller creates return created and existing with one new row", async () => {
+	// Arrange: pause the loser at its actual INSERT, after its initial conflict miss and pin capture.
+	await retainedResolution();
+	const winnerStore = new D1CoordinatorStore(db);
+	const input = await ordinaryReview(winnerStore);
+	let winner: Awaited<ReturnType<typeof winnerStore.createAuthControllerAttestation>> | undefined;
+	const race = winningWrite(async () => {
+		winner = await winnerStore.createAuthControllerAttestation(input);
+	});
+	// Act: the nested invocation completes while the original invocation is still pending.
+	const loser = await race.store.createAuthControllerAttestation(input);
+	// Assert: the winner changes the full evidence pin, but an exact retry remains eligible.
+	expect(race.injected()).toBe(true);
+	expect(race.bindCount()).toBeGreaterThan(0);
+	expect(race.bindCount()).toBeLessThanOrEqual(100);
+	expect(winner?.kind).toBe("created");
+	expect(loser).toEqual({
+		kind: "existing",
+		attestation: winner?.kind === "created" ? winner.attestation : null,
+	});
+	expect(await snapshot()).toEqual(race.afterChange());
+	expect(
+		await db
+			.prepare(`SELECT COUNT(*) AS count FROM ${controllerTable} WHERE attestation_id=?`)
+			.bind(input.attestationId)
+			.first(),
+	).toEqual({ count: 1 });
+});
+
+it.each(["receipt", "digest", "snapshot"] as const)(
+	"native overlapping wrong %s review cannot replay the winner",
+	async (change) => {
+		// Arrange: retain the same owner, but make the losing request differ from the winner.
+		await retainedResolution();
+		const store = new D1CoordinatorStore(db);
+		const input = await ordinaryReview(store);
+		const wrong = { ...input };
+		if (change === "receipt") wrong.reviewReceiptId = "wrong-receipt";
+		if (change === "digest") wrong.evidenceDigest = "e".repeat(64);
+		if (change === "snapshot")
+			wrong.verifiedSnapshot = {
+				...input.verifiedSnapshot,
+				enrollmentIdentityId: "wrong",
+				invites: [],
+			};
+		const race = winningWrite(async () => {
+			expect((await store.createAuthControllerAttestation(input)).kind).toBe("created");
+		});
+		const before = await snapshot();
+		// Act
+		const result = await race.store.createAuthControllerAttestation(wrong);
+		// Assert: invalid snapshots can be rejected before reaching the INSERT boundary.
+		expect(result.kind).toBe("rejected");
+		expect(await snapshot()).toEqual(race.injected() ? race.afterChange() : before);
+	},
+);
+
+it.each(["binding", "revocation"] as const)(
+	"native overlapping exact retry denies late %s after the winner",
+	async (change) => {
+		// Arrange: both calls initially see the same eligible review and retained source.
+		await retainedResolution();
+		const store = new D1CoordinatorStore(db);
+		const input = await ordinaryReview(store);
+		const race = winningWrite(async () => {
+			expect((await store.createAuthControllerAttestation(input)).kind).toBe("created");
+			if (change === "revocation") {
+				await db
+					.prepare(`UPDATE ${controllerTable} SET revoked_at=? WHERE attestation_id=?`)
+					.bind(timestamp, input.attestationId)
+					.run();
+				return;
+			}
+			await insert("coordinator_device_ownership_bindings", {
+				device_id: signer.deviceId,
+				key_id: EXPECTED_KEY_ID,
+				identity_id: "B",
+				coordinator_id: coordinatorId,
+				binding_id: "native-concurrent-binding",
+				provenance: "owner_enrollment",
+				source_ref: "synthetic-birth",
+				bound_at: timestamp,
+			});
+		});
+		// Act
+		const result = await race.store.createAuthControllerAttestation(input);
+		// Assert: recapturing a winner must not permit new owner conflicts or revoked replay.
+		expect(race.injected()).toBe(true);
+		expect(result.kind).toBe("rejected");
+		expect(await snapshot()).toEqual(race.afterChange());
+	},
+);
