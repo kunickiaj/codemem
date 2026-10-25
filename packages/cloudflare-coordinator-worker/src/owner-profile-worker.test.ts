@@ -31,6 +31,35 @@ import {
 // disposable native D1, not a browser or workerd client. Historical operator tests
 // retain their seeded A; the account-mode journey below creates A's link via runtime.
 type OwnerProfileTraceStage =
+	| "body-start"
+	| "a-key-start"
+	| "a-key-ready"
+	| "a-schema-start"
+	| "a-schema-ready"
+	| "a-review-start"
+	| "a-review-ready"
+	| "a-link-start"
+	| "a-link-ready"
+	| "link-page-start"
+	| "link-page-ready"
+	| "link-start-start"
+	| "link-start-ready"
+	| "link-oidc-start"
+	| "link-oidc-ready"
+	| "link-confirm-start"
+	| "link-confirm-ready"
+	| "grant-start"
+	| "grant-ready"
+	| "signin-start"
+	| "signin-ready"
+	| "snapshot-start"
+	| "snapshot-ready"
+	| "upload-start"
+	| "upload-ready"
+	| "reject-start"
+	| "reject-ready"
+	| "assert-start"
+	| "assert-ready"
 	| "fixture-start"
 	| "miniflare-start"
 	| "miniflare-ready"
@@ -60,7 +89,8 @@ type OwnerProfileTraceStage =
 	| "reopen-ready"
 	| "cleanup-start"
 	| "cleanup-ready";
-// The first two fixtures are the ordered false/true receipt cases; later cases stay quiet.
+// Temporary branch-only diagnosis: retain historical probes and trace actual wrong-CSRF body.
+let traceWrongCsrf = false;
 let traceCase = 0;
 let traceStart = 0;
 let traceEvent = 0;
@@ -68,12 +98,13 @@ let traceEvent = 0;
 // Never accept dynamic labels or values: auth requests contain private credentials.
 function traceOwnerProfile(stage: OwnerProfileTraceStage): void {
 	if (process.env.CI !== "true" && process.env.CODEMEM_WORKER_PROFILE_TRACE !== "1") return;
-	if (traceCase < 1 || traceCase > 2) return;
+	if (!traceWrongCsrf && (traceCase < 1 || traceCase > 2)) return;
 	// Write each boundary immediately, including when the reporter hides passing logs.
 	writeSync(
 		2,
 		`[owner-profile-stage] ${JSON.stringify({
 			stage,
+			case: traceWrongCsrf ? "wrong-csrf" : "historical-receipt",
 			elapsedMs: Math.round((performance.now() - traceStart) * 10) / 10,
 			lostReply: traceCase === 2,
 			event: ++traceEvent,
@@ -251,7 +282,8 @@ async function seedHistoricalAuthority() {
 	).toBe(200);
 }
 
-beforeEach(async () => {
+beforeEach(async (context) => {
+	traceWrongCsrf = context.task.name.includes("wrong CSRF");
 	traceCase += 1;
 	traceStart = performance.now();
 	traceEvent = 0;
@@ -521,6 +553,7 @@ function loopbackLink(html: string) {
 // A is an existing enrolled device. Only its initial local key/device and discovery
 // enrollment are fixtures; review, linking, sessions and grants use production APIs.
 async function reviewedA() {
+	traceOwnerProfile("a-key-start");
 	const directory = join(dirname(fixture.options.dbPath), "a");
 	const keysDir = join(directory, "keys");
 	mkdirSync(keysDir, { recursive: true });
@@ -528,6 +561,8 @@ async function reviewedA() {
 	const publicKey = loadPublicKey(keysDir) ?? "";
 	const fingerprint = fingerprintPublicKey(publicKey);
 	const dbPath = join(directory, "memory.sqlite");
+	traceOwnerProfile("a-key-ready");
+	traceOwnerProfile("a-schema-start");
 	const local = new Sqlite(dbPath);
 	try {
 		initTestSchema(local);
@@ -540,6 +575,8 @@ async function reviewedA() {
 		local.close();
 	}
 	const store = new D1CoordinatorStore(db);
+	traceOwnerProfile("a-schema-ready");
+	traceOwnerProfile("a-review-start");
 	await store.createGroup("group");
 	await store.enrollDevice("group", { deviceId: "device-a", publicKey, fingerprint });
 	const review = {
@@ -573,6 +610,7 @@ async function reviewedA() {
 	const attestation = (await committed.json()) as { attestation_id: string };
 	expect(await rows("coordinator_auth_account_links")).toEqual([]);
 	expect(await rows("coordinator_identity_group_grants")).toEqual([]);
+	traceOwnerProfile("a-review-ready");
 	return { dbPath, keysDir, publicKey, fingerprint, attestationId: attestation.attestation_id };
 }
 
@@ -593,10 +631,15 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 	let browserError: unknown;
 	let cleanupReply: { status: number; body: unknown } | undefined;
 	const driveBrowser = async (url: string) => {
+		traceOwnerProfile("link-page-start");
 		const page = await request(url);
+		traceOwnerProfile("link-page-ready");
+		traceOwnerProfile("link-start-start");
 		const started = await form("/auth/link/start", await fields(page), cookie(page));
+		traceOwnerProfile("link-start-ready");
 		expect(started.status, await started.clone().text()).toBe(200);
 		const binder = cookie(started);
+		traceOwnerProfile("link-oidc-start");
 		const callback = await request(
 			fakeProvider.authorize(providerAuthorization(await started.text())),
 			{
@@ -604,6 +647,8 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 			},
 		);
 		const body = await fields(callback);
+		traceOwnerProfile("link-oidc-ready");
+		traceOwnerProfile("link-confirm-start");
 		// A valid provider callback is insufficient without this browser's CSRF proof.
 		const bad = await form("/auth/link/confirm", { ...body, csrf: "wrong" }, binder);
 		expect(bad.status).toBe(403);
@@ -617,6 +662,7 @@ async function linkA(a: Awaited<ReturnType<typeof reviewedA>>, options: { cancel
 		);
 		// Clearly mocked receiver: forward only the real server-issued completion proof.
 		deliverLink(destination.searchParams.get("completion") ?? "");
+		traceOwnerProfile("link-confirm-ready");
 	};
 	const result = linkCoordinatorAccount({
 		dbPath: a.dbPath,
@@ -928,18 +974,29 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 	"rejects B's %s account admission before creating an attempt or changing the profile",
 	async (failure) => {
 		// Arrange
+		traceOwnerProfile("body-start");
 		const a = await reviewedA();
+		traceOwnerProfile("a-link-start");
 		await linkA(a);
+		traceOwnerProfile("a-link-ready");
+		traceOwnerProfile("grant-start");
 		if (failure !== "missing trusted grant")
 			expect(
 				(await json("/v1/admin/identity-group-grants", { attestation_id: a.attestationId }, admin))
 					.status,
 			).toBe(200);
+		traceOwnerProfile("grant-ready");
+		traceOwnerProfile("signin-start");
 		const session = await signIn();
+		traceOwnerProfile("signin-ready");
+		traceOwnerProfile("snapshot-start");
 		const before = facts();
 		const originalAuthority = await authority();
 		fixture.options.admissionMode = "account";
+		traceOwnerProfile("snapshot-ready");
+		traceOwnerProfile("prepare-start");
 		await prepared();
+		traceOwnerProfile("prepare-ready");
 		fixture.options.capability = undefined;
 		const configBefore = ownerFileSnapshot(fixture.options.configPath);
 		const deviceBefore = fixture.db.prepare("SELECT * FROM sync_device").all();
@@ -948,7 +1005,9 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 		fixture.options.onBrowserStart = async (url, details) => {
 			if (!details) throw new Error("Account upload details missing");
 			if (failure === "wrong CSRF") {
+				traceOwnerProfile("upload-start");
 				denied = await uploadB(url, session, details, "wrong");
+				traceOwnerProfile("upload-ready");
 			} else {
 				const cookie = failure === "missing session" ? "" : session;
 				denied = await request(url, { headers: { cookie } });
@@ -956,10 +1015,13 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 			throw new Error("Synthetic browser stopped after rejected upload");
 		};
 		// Act
+		traceOwnerProfile("reject-start");
 		await expect(enrollOwnerProfile(fixture.options)).rejects.toMatchObject({
 			code: "fresh_prepare_required",
 		});
 		// Assert
+		traceOwnerProfile("reject-ready");
+		traceOwnerProfile("assert-start");
 		expect(denied?.status).toBe(failure === "wrong CSRF" ? 400 : 403);
 		expect(await rows("coordinator_owner_enrollment_attempts")).toEqual([]);
 		expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
@@ -970,5 +1032,6 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 		expect(ownerFileSnapshot(join(fixture.options.keysDir, "device.key"))).toEqual(keyBefore);
 		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
 		expect(existsSync(join(fixture.options.stateDir, "receipt.json"))).toBe(false);
+		traceOwnerProfile("assert-ready");
 	},
 );

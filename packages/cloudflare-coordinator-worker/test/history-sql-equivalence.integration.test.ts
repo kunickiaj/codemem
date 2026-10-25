@@ -27,14 +27,64 @@ import {
 	timestamp,
 } from "./legacy-completion-owner-proof-test-fixtures.js";
 
+// DO NOT MERGE: branch-only stage evidence, never SQL, bound values or proof data.
+let traceFull = false;
+let traceStart = 0;
+let traceEvent = 0;
+let comparisonCall = 0;
+type FullStage =
+	| "reset-start"
+	| "reset-ready"
+	| "roster-start"
+	| "roster-ready"
+	| "metadata-start"
+	| "metadata-ready"
+	| "capture-start"
+	| "capture-ready"
+	| "comparison-start"
+	| "comparison-ready"
+	| "reference-selector-start"
+	| "reference-selector-ready"
+	| "current-selector-start"
+	| "current-selector-ready"
+	| "current-before-start"
+	| "current-before-ready"
+	| "reference-before-start"
+	| "reference-before-ready"
+	| "mutation-start"
+	| "mutation-ready"
+	| "current-after-start"
+	| "current-after-ready"
+	| "reference-after-start"
+	| "reference-after-ready";
+function traceFullStage(stage: FullStage) {
+	if (!traceFull) return;
+	// workerd has no node:fs stderr; console output is forwarded by the native pool.
+	console.error(
+		"[history-full500-stage]",
+		JSON.stringify({
+			stage,
+			case: "native-full500",
+			event: ++traceEvent,
+			elapsedMs: Math.round((performance.now() - traceStart) * 10) / 10,
+		}),
+	);
+}
 const backend = {
 	async all<T>({ sql, values }: AuthLinkStatement) {
-		return (
+		const call = comparisonCall;
+		if (call > 0) comparisonCall += 1;
+		if (call === 1) traceFullStage("reference-selector-start");
+		if (call === 2) traceFullStage("current-selector-start");
+		const results = (
 			await db
 				.prepare(sql)
 				.bind(...values)
 				.all<T>()
 		).results;
+		if (call === 1) traceFullStage("reference-selector-ready");
+		if (call === 2) traceFullStage("current-selector-ready");
+		return results;
 	},
 	async first<T>({ sql, values }: AuthLinkStatement) {
 		return db
@@ -44,11 +94,17 @@ const backend = {
 	},
 };
 
-beforeEach(async () => {
+beforeEach(async (context) => {
+	traceFull = context.task.name.includes("full 500 genuine");
+	traceStart = performance.now();
+	traceEvent = 0;
+	comparisonCall = 0;
 	vi.useFakeTimers({ toFake: ["Date"] });
 	vi.setSystemTime(new Date(timestamp));
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
+	traceFullStage("reset-start");
 	await reset();
+	traceFullStage("reset-ready");
 });
 afterEach(() => {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -57,7 +113,9 @@ afterEach(() => {
 });
 
 async function fixture(options: { full?: boolean } = {}) {
+	traceFullStage("roster-start");
 	const seeded = options.full ? await fullRecoveredRoster() : await recovery();
+	traceFullStage("roster-ready");
 	if (!options.full) {
 		await seeded.h.store.enrollDevice(futureGroup, {
 			deviceId: "legacy-alias-inventory",
@@ -65,6 +123,7 @@ async function fixture(options: { full?: boolean } = {}) {
 			fingerprint: "f".repeat(64),
 		});
 	}
+	traceFullStage("metadata-start");
 	const input = {
 		groupId: futureGroup,
 		manifestJson: canonical(seeded.value),
@@ -76,7 +135,11 @@ async function fixture(options: { full?: boolean } = {}) {
 			).results,
 		),
 	};
-	return { input, captured: await captureHistorySql(backend, input) };
+	traceFullStage("metadata-ready");
+	traceFullStage("capture-start");
+	const captured = await captureHistorySql(backend, input);
+	traceFullStage("capture-ready");
+	return { input, captured };
 }
 
 it("native D1 selectors retain exact raw rows/order across malformed, typed, collision and coordinator cases", async () => {
@@ -277,9 +340,17 @@ it("native D1 full 500 genuine writer-shaped subjects preserve ordered selector 
 	expect(snapshot.subjects).toHaveLength(500);
 	expect(snapshot.active).toHaveLength(500);
 	// Act
+	traceFullStage("comparison-start");
+	comparisonCall = 1;
 	const selected = await compareHistorySql(backend, captured.statement);
+	comparisonCall = 0;
+	traceFullStage("comparison-ready");
+	traceFullStage("current-before-start");
 	const current = await captured.current();
+	traceFullStage("current-before-ready");
+	traceFullStage("reference-before-start");
 	const old = await captured.current({ reference: true });
+	traceFullStage("reference-before-ready");
 	// Assert
 	expect(selected.rows).toHaveLength(500);
 	expect(current).toEqual({ current: 1 });
@@ -289,10 +360,16 @@ it("native D1 full 500 genuine writer-shaped subjects preserve ordered selector 
 		new TextEncoder().encode(String(captured.statement.values[0])).byteLength,
 	).toBeLessThanOrEqual(2_000_000);
 	// Act: the same generated winning predicate must reopen changed native D1 rows.
+	traceFullStage("mutation-start");
 	await exec(
 		`UPDATE ${completions} SET manifest_json=manifest_json || ' ' WHERE group_id=(SELECT group_id FROM ${completions} ORDER BY group_id DESC LIMIT 1)`,
 	);
 	// Assert
+	traceFullStage("mutation-ready");
+	traceFullStage("current-after-start");
 	expect(await captured.current()).toEqual({ current: 0 });
+	traceFullStage("current-after-ready");
+	traceFullStage("reference-after-start");
 	expect(await captured.current({ reference: true })).toEqual({ current: 0 });
+	traceFullStage("reference-after-ready");
 });
