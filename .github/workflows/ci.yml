@@ -15,8 +15,29 @@ permissions:
   contents: read
 
 jobs:
+  optimize-ci:
+    name: Graphite CI Optimizer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      # Skips CI for PRs high in a Graphite stack; they run once they are near the
+      # bottom. Fails open: a missing token, API error, or fork PR runs everything.
+      - name: Ask Graphite whether this PR should run CI
+        id: check
+        continue-on-error: true
+        uses: withgraphite/graphite-ci-action@402a89bc8aa6db18ae1f9c61953d001d5f9d828f # main 2026-06-25
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          graphite_token: ${{ secrets.GRAPHITE_CI_OPTIMIZER_TOKEN }}
+
   tsc:
     name: TypeScript Check
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -39,6 +60,9 @@ jobs:
 
   ts-test:
     name: TypeScript Test
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -75,6 +99,9 @@ jobs:
 
   account-browser:
     name: Account Browser Acceptance
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -97,6 +124,9 @@ jobs:
 
   worker-test:
     name: Cloudflare Worker Test
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -125,6 +155,9 @@ jobs:
 
   ts-lint:
     name: TypeScript Lint
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -168,6 +201,9 @@ jobs:
 
   plugin-smoke:
     name: Plugin Smoke Test
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -195,6 +231,9 @@ jobs:
 
   packaged-plugin-smoke:
     name: Packaged Plugin Smoke Test
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-24.04
 
     steps:
@@ -257,6 +296,9 @@ jobs:
 
   e2e-smoke:
     name: E2E Smoke
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
 
     steps:

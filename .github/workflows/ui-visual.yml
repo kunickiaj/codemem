@@ -13,8 +13,29 @@ permissions:
   contents: read
 
 jobs:
+  optimize-ci:
+    name: Graphite CI Optimizer
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      # Skips CI for PRs high in a Graphite stack; they run once they are near the
+      # bottom. Fails open: a missing token, API error, or fork PR runs everything.
+      - name: Ask Graphite whether this PR should run CI
+        id: check
+        continue-on-error: true
+        uses: withgraphite/graphite-ci-action@402a89bc8aa6db18ae1f9c61953d001d5f9d828f # main 2026-06-25
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          graphite_token: ${{ secrets.GRAPHITE_CI_OPTIMIZER_TOKEN }}
+
   ui-visual:
     name: UI Visual Regression
+    needs: optimize-ci
+    # Runs on push and when the optimizer is skipped, fails, or says to run.
+    if: ${{ !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}
     runs-on: ubuntu-24.04
     container:
       image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27

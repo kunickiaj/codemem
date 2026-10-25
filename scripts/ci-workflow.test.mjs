@@ -134,6 +134,18 @@ function getJob(workflow, jobId) {
 	return match[0];
 }
 
+const optimizerGate = [
+	"    needs: optimize-ci",
+	"    # Runs on push and when the optimizer is skipped, fails, or says to run.",
+	`    if: ${githubExpressionOpen} !cancelled() && needs.optimize-ci.outputs.skip != 'true' }}`,
+	"",
+].join("\n");
+
+function assertOptimizerGate(job) {
+	assert.ok(job.includes(optimizerGate), `expected the Graphite optimizer gate in:\n${job}`);
+	assert.equal(job.match(/^ {4}if:/gm)?.length, 1);
+}
+
 function getMatrixScenarios(job) {
 	return [...job.matchAll(/^ {10}- name: (.+)\n {12}script: (.+)$/gm)].map(([, name, script]) => ({
 		name,
@@ -184,7 +196,8 @@ it("runs synthetic account acceptance separately with pinned package Chromium an
 			job.indexOf("run: pnpm --filter @codemem/ui test:account-browser"),
 	);
 	assert.match(job, /run: pnpm --filter @codemem\/ui test:account-browser/u);
-	assert.doesNotMatch(job, /^\s*(?:if|continue-on-error|permissions|secrets):/m);
+	assertOptimizerGate(job);
+	assert.doesNotMatch(job, /^\s*(?:continue-on-error|permissions|secrets):/m);
 });
 
 it("keeps the CI test selector and its tests unchanged under the existing Biome policy", () => {
@@ -293,7 +306,8 @@ describe("CI test scheduling contract", () => {
 			/testTimeout|passWithNoTests|--testNamePattern|--project|--no-file-parallelism/u,
 		);
 		assert.match(getJob(ciWorkflow, "ts-test"), /^ {4}name: TypeScript Test$/m);
-		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^ {4}(?:if|continue-on-error):/m);
+		assertOptimizerGate(getJob(ciWorkflow, "ts-test"));
+		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^ {4}continue-on-error:/m);
 	});
 
 	for (const { name, failPhase, status, calls } of [
@@ -374,7 +388,8 @@ describe("required OpenCode host workflow contract", () => {
 		);
 		assert.match(pluginJob, /pnpm --filter @codemem\/opencode-plugin test &&/u);
 		assert.equal(pluginPackage.engines.opencode, ">=1.18.29");
-		assert.doesNotMatch(pluginJob, /^ {4}(?:if|continue-on-error):/m);
+		assertOptimizerGate(pluginJob);
+		assert.doesNotMatch(pluginJob, /^ {4}continue-on-error:/m);
 	});
 
 	it("requires packed OpenCode 1 and exactly matched OpenCode 2.0.24 hosts on every normal run", () => {
@@ -414,18 +429,53 @@ describe("required OpenCode host workflow contract", () => {
 		);
 		assert.match(packedJob, /pnpm install --frozen-lockfile/u);
 		assert.match(packedJob, /^ {10}pnpm --filter codemem test:packed-artifact$/m);
-		assert.doesNotMatch(packedJob, /^\s*(?:if|continue-on-error):/m);
+		// The optimizer gate is covered by the Graphite CI optimizer contract.
+		assert.doesNotMatch(packedJob, /^\s*continue-on-error:/m);
 		assert.doesNotMatch(ciWorkflow, /CODEMEM_OPENCODE_V2_VERSION|@opencode\/(?:cli|plugin)@beta/u);
 	});
 });
 
+describe("Graphite CI optimizer contract", () => {
+	for (const [label, workflow] of [
+		["CI", ciWorkflow],
+		["UI Visual Regression", uiVisualWorkflow],
+	]) {
+		it(`asks Graphite once per ${label} PR run and fails open`, () => {
+			// Arrange
+			const optimizer = getJob(workflow, "optimize-ci");
+			// Assert: PR-only, pinned, and non-blocking when the token or API is unavailable.
+			assert.match(optimizer, /^ {4}if: github\.event_name == 'pull_request'$/m);
+			assert.match(optimizer, /uses: withgraphite\/graphite-ci-action@[0-9a-f]{40} /u);
+			assert.match(optimizer, /^ {8}continue-on-error: true$/m);
+			assert.match(optimizer, /graphite_token: \$\{\{ secrets\.GRAPHITE_CI_OPTIMIZER_TOKEN \}\}/u);
+			assert.match(optimizer, /skip: \$\{\{ steps\.check\.outputs\.skip \}\}/u);
+		});
+
+		it(`gates every ${label} pull request job on the optimizer`, () => {
+			// Arrange
+			const jobs = [...getTopLevelBlock(workflow, "jobs").matchAll(/^ {2}([a-z0-9-]+):$/gm)].map(
+				(match) => match[1],
+			);
+			// Act: jobs already limited to non-PR events never compete for PR runners.
+			const prJobs = jobs.filter(
+				(id) =>
+					id !== "optimize-ci" &&
+					!getJob(workflow, id).includes("    if: github.event_name != 'pull_request'\n"),
+			);
+			// Assert
+			assert.ok(prJobs.length > 0);
+			for (const id of prJobs) assertOptimizerGate(getJob(workflow, id));
+		});
+	}
+});
+
 describe("normal CI E2E workflow contract", () => {
-	it("defines the regular E2E Smoke check without an event condition", () => {
+	it("defines the regular E2E Smoke check with only the stack optimizer gate", () => {
 		const smokeJob = getJob(ciWorkflow, "e2e-smoke");
 
 		assert.match(smokeJob, /^ {4}name: E2E Smoke$/m);
 		assert.match(smokeJob, /^ {8}run: pnpm run e2e:smoke -- --json$/m);
-		assert.doesNotMatch(smokeJob, /^ {4}if:/m);
+		assertOptimizerGate(smokeJob);
 	});
 
 	it("keeps specialized scenarios off pull request runs", () => {
@@ -451,7 +501,7 @@ function assertVisualWorkflowScope() {
 		[...getTopLevelBlock(uiVisualWorkflow, "jobs").matchAll(/^ {2}([a-z0-9-]+):$/gm)].map(
 			(match) => match[1],
 		),
-		["ui-visual"],
+		["optimize-ci", "ui-visual"],
 	);
 	const job = getJob(uiVisualWorkflow, "ui-visual");
 	assert.match(job, /^ {4}runs-on: ubuntu-24\.04$/m);
