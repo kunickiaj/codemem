@@ -313,8 +313,10 @@ function serve(getApp: () => ReturnType<typeof createAccountGuard>["routes"]) {
 			});
 			res.end(Buffer.from(await response.arrayBuffer()));
 		} catch (error) {
+			// Keep details in local test output; never echo them to the browser.
+			console.error("Owner recovery browser fixture request failed", error);
 			res.writeHead(500);
-			res.end(String(error));
+			res.end("Browser fixture request failed");
 		}
 	};
 }
