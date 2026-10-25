@@ -11,7 +11,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildIngestPayloadFromHook as buildIngestPayloadFromHookWithPolicy,
 	buildRawEventEnvelopeFromHook as buildRawEventEnvelopeFromHookWithPolicy,
@@ -1061,9 +1061,15 @@ describe("buildIngestPayloadFromHook", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /api/claude-hooks via viewer-server", () => {
+	// Loading the whole viewer-server graph cold can exceed one test's 5s budget
+	// on a busy CI runner; pay it once in setup so each case times only its request.
+	let createApp: typeof import("../../viewer-server/src/index.js").createApp;
+	beforeAll(async () => {
+		({ createApp } = await import("../../viewer-server/src/index.js"));
+	}, 30_000);
+
 	/** Build a minimal store stub + Hono app for HTTP-level tests. */
 	async function makeTestApp() {
-		const { createApp } = await import("../../viewer-server/src/index.js");
 		const { initTestSchema } = await import("./index.js");
 		const Database = (await import("better-sqlite3")).default;
 		const rawDb = new Database(":memory:");
