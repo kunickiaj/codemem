@@ -19,6 +19,8 @@
 		"@codemem/core": "workspace:^"
 	},
 	"devDependencies": {
+		"@codemem/server": "workspace:^",
+		"codemem": "workspace:^",
 		"@cloudflare/vitest-pool-workers": "^0.22.0",
 		"@cloudflare/workers-types": "^5.20261019.1",
 		"@types/better-sqlite3": "catalog:",

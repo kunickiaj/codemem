@@ -45,6 +45,7 @@
 		"@opencode/plugin": "2.0.24"
 	},
 	"devDependencies": {
+		"codemem": "workspace:^",
 		"@opencode/cli": "2.0.24",
 		"@types/node": "^24.12.4",
 		"vitest": "catalog:"

@@ -7,6 +7,18 @@ export default defineConfig({
 		maxWorkers: process.env.CI ? 3 : undefined,
 		projects: [
 			"packages/*/vite.config.ts",
+			...(process.env.CI_PACKAGE_TEST === "1"
+				? [
+						{
+							extends: true as const,
+							test: {
+								name: "fresh-performance",
+								environment: "node",
+								include: ["packages/*/src/**/*.perf.test.ts"],
+							},
+						},
+					]
+				: []),
 			{
 				extends: true,
 				test: {
