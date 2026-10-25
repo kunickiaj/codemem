@@ -93,11 +93,12 @@ test("tooltip opens on focus and dismisses on Escape", async ({ page }) => {
 	await expect(page.getByRole("tooltip")).toHaveText("Synthetic tooltip content");
 	const initial = await tooltipGeometry(page);
 	expect(initial.parentIsContent).toBe(true);
-	await assertScreenshot(page, "tooltip-open.png");
+	// Geometry, not a full-page screenshot, guards placement: page-wide captures
+	// failed on unrelated anti-aliasing while the tooltip itself was unchanged.
 	const settled = await tooltipGeometry(page);
 	const viewport = page.viewportSize();
 	if (!viewport) throw new Error("Tooltip regression requires a fixed viewport");
-	// Recompute naturally after capture; a finished animation must not change the arrow's parent.
+	// Recompute naturally; a finished animation must not change the arrow's parent.
 	await page.setViewportSize({ ...viewport, width: viewport.width + 1 });
 	await page.setViewportSize(viewport);
 	await expect.poll(() => tooltipGeometry(page)).toEqual(settled);

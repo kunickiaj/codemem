@@ -428,7 +428,9 @@ describe("OpenCode transform-time injection", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		for (const tmpDir of tmpDirs.splice(0)) {
-			rmSync(tmpDir, { recursive: true, force: true });
+			// Unawaited plugin debug/spool writers can still add files under HOME
+			// during teardown; retry instead of failing cleanup with ENOTEMPTY.
+			rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 		}
 		process.env = originalEnv;
 		Reflect.deleteProperty(globalThis, pluginRegistrationsKey);

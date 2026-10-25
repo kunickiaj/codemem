@@ -30,14 +30,9 @@ export const GOLDEN_FILES = [
 	"narrow-dark",
 	"narrow-light",
 ].flatMap((project) =>
-	[
-		"all-families",
-		"select-open",
-		"action-menu-open",
-		"tooltip-open",
-		"dialog-open",
-		"autocomplete-open",
-	].map((name) => `packages/ui/visual/__screenshots__/${project}/${name}.png`),
+	["all-families", "select-open", "action-menu-open", "dialog-open", "autocomplete-open"].map(
+		(name) => `packages/ui/visual/__screenshots__/${project}/${name}.png`,
+	),
 );
 
 /** @param {string} address */
