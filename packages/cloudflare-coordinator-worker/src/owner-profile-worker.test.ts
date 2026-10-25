@@ -888,7 +888,10 @@ async function verifyAccountReceiptReopensOffline({
 	expect(fakeProvider.requests.some(({ url }) => url.endsWith("/jwks"))).toBe(true);
 }
 
-// This real D1/OIDC correctness journey is not a five-second performance requirement.
+// Real D1/OIDC account-link journeys take ~3s uncontended; they are correctness
+// checks, not five-second performance requirements on shared CI runners.
+const ACCOUNT_JOURNEY_TIMEOUT_MS = 15_000;
+
 it.each([false, true])(
 	"links reviewed A then account-enrolls B without changing keys or grants (lost reply: %s)",
 	async (lostReply) => {
@@ -906,23 +909,27 @@ it.each([false, true])(
 		verifyAccountProfilePreserved({ ...adopted, ...profile, ...owner });
 		await verifyAccountReceiptReopensOffline(adopted);
 	},
-	15_000,
+	ACCOUNT_JOURNEY_TIMEOUT_MS,
 );
 
-it("browser cancellation of A creates no authority and runtime confirms the stopped link", async () => {
-	// Arrange
-	const a = await reviewedA();
-	const before = await authority();
-	// Act
-	await linkA(a, { cancel: true });
-	// Assert
-	expect(await authority()).toEqual(before);
-	expect(await rows("coordinator_auth_sessions")).toEqual([]);
-	expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
-	expect(await rows("coordinator_auth_link_attempts")).toMatchObject([
-		{ state: "failed", failure_reason: "browser_cancelled" },
-	]);
-});
+it(
+	"browser cancellation of A creates no authority and runtime confirms the stopped link",
+	async () => {
+		// Arrange
+		const a = await reviewedA();
+		const before = await authority();
+		// Act
+		await linkA(a, { cancel: true });
+		// Assert
+		expect(await authority()).toEqual(before);
+		expect(await rows("coordinator_auth_sessions")).toEqual([]);
+		expect(await rows("coordinator_device_ownership_bindings")).toEqual([]);
+		expect(await rows("coordinator_auth_link_attempts")).toMatchObject([
+			{ state: "failed", failure_reason: "browser_cancelled" },
+		]);
+	},
+	ACCOUNT_JOURNEY_TIMEOUT_MS,
+);
 
 it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 	"rejects B's %s account admission before creating an attempt or changing the profile",
@@ -971,4 +978,5 @@ it.each(["wrong CSRF", "missing trusted grant", "missing session"] as const)(
 		expect(fixture.db.prepare("SELECT * FROM identity_devices").all()).toEqual([]);
 		expect(existsSync(join(fixture.options.stateDir, "receipt.json"))).toBe(false);
 	},
+	ACCOUNT_JOURNEY_TIMEOUT_MS,
 );
