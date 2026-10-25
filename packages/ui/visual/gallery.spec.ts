@@ -21,6 +21,23 @@ async function tooltipGeometry(page: Page) {
 	});
 }
 
+/** Wait until positioning stops changing, then return the final geometry. */
+async function settledTooltipGeometry(page: Page) {
+	let previous = "";
+	await expect
+		.poll(
+			async () => {
+				const current = JSON.stringify(await tooltipGeometry(page));
+				const stable = current === previous;
+				previous = current;
+				return stable;
+			},
+			{ intervals: [50], timeout: 5_000 },
+		)
+		.toBe(true);
+	return tooltipGeometry(page);
+}
+
 test("all families include default, disabled, loading and long-label examples", async ({
 	page,
 }) => {
@@ -95,7 +112,8 @@ test("tooltip opens on focus and dismisses on Escape", async ({ page }) => {
 	expect(initial.parentIsContent).toBe(true);
 	// Geometry, not a full-page screenshot, guards placement: page-wide captures
 	// failed on unrelated anti-aliasing while the tooltip itself was unchanged.
-	const settled = await tooltipGeometry(page);
+	// The screenshot also waited for layout to settle, so wait explicitly here.
+	const settled = await settledTooltipGeometry(page);
 	const viewport = page.viewportSize();
 	if (!viewport) throw new Error("Tooltip regression requires a fixed viewport");
 	// Recompute naturally; a finished animation must not change the arrow's parent.
