@@ -1,4 +1,8 @@
-import { CONNECTION_REQUESTER_IDENTITY_SQL } from "./coordinator-account-connection-link.js";
+import {
+	CONNECTION_REQUESTER_ACTIVE_OTHER_CLAIM_SQL,
+	CONNECTION_REQUESTER_ATTESTATION_IDENTITY_SQL,
+	CONNECTION_REQUESTER_IDENTITY_SQL,
+} from "./coordinator-account-connection-link.js";
 import {
 	connectionAdmissionSql,
 	hasConnectionSessionSchema,
@@ -17,6 +21,7 @@ import {
 	AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
 	AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL,
+	AUTH_DEVICE_CLAIM_LEGACY_UNWAIVABLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL,
@@ -180,6 +185,11 @@ const scrub =
  * adapter after state/binder consumption. These methods do not verify signatures,
  * Google tokens, browser cookies or CSRF, and must never be mounted as JSON APIs.
  */
+/** This exact device key's ownership binding for the requested Identity, if any. */
+const REQUESTER_BINDING_SQL = `SELECT ob.binding_id, ob.identity_id FROM claim_input p
+ JOIN coordinator_device_ownership_bindings ob ON ob.coordinator_id = p.coordinator_id
+ AND ob.device_id = p.device_id AND ob.key_id = p.key_id AND ob.identity_id = p.identity_id`;
+
 export class AccountChangeOperations {
 	constructor(
 		private readonly backend: AuthLinkBackend,
@@ -204,6 +214,9 @@ export class AccountChangeOperations {
 			]),
 		);
 	}
+	// An ownership binding (ADR 0005 Section 8 rebind) is this exact device key's own
+	// proof for its Identity, like its own claim or attestation, and it supersedes
+	// conflicting legacy Team history for that device.
 	private async authority(
 		c: CoordinatorAuthLinkConfig,
 		s: CoordinatorAuthLinkSigner,
@@ -231,7 +244,8 @@ export class AccountChangeOperations {
  ${captured.connectionSession ? "AND (b.prior_link_id IS NULL OR EXISTS (SELECT 1 FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id=b.coordinator_id AND h.identity_id=b.identity_id AND h.link_id=b.prior_link_id AND h.successor_link_id=b.link_id))" : ""})`;
 		return sql(
 			`${AUTH_DEVICE_CLAIM_INPUT_SQL}, current_controller AS MATERIALIZED (SELECT a.* ${AUTH_LINK_CONTROLLER_SOURCE_SQL})${facts},
- requester_ok AS MATERIALIZED (SELECT p.* FROM claim_input p WHERE (${AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL}) AND (${CONNECTION_REQUESTER_IDENTITY_SQL}) AND ((${AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL}) OR EXISTS (SELECT 1 FROM current_controller cc WHERE cc.identity_id=p.identity_id)) AND (${AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL})), change_authority AS MATERIALIZED (
+ requester_binding AS MATERIALIZED (${REQUESTER_BINDING_SQL}),
+ requester_ok AS MATERIALIZED (SELECT p.* FROM claim_input p WHERE (${AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL}) AND (${CONNECTION_REQUESTER_ATTESTATION_IDENTITY_SQL}) AND ((${CONNECTION_REQUESTER_IDENTITY_SQL}) OR (EXISTS (SELECT 1 FROM requester_binding) AND ${CONNECTION_REQUESTER_ACTIVE_OTHER_CLAIM_SQL})) AND ((${AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL}) OR EXISTS (SELECT 1 FROM current_controller cc WHERE cc.identity_id=p.identity_id)) AND (${AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_LEGACY_UNWAIVABLE_SQL}) AND ((${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL}) OR EXISTS (SELECT 1 FROM requester_binding))), change_authority AS MATERIALIZED (
  SELECT l.*,e.identity_id AS enrollment_identity_id FROM requester_ok p
  JOIN ${current} l ON l.coordinator_id = p.coordinator_id AND l.link_id = ? AND l.identity_id = p.identity_id AND l.issuer = p.issuer
  JOIN enrolled_devices e ON e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key AND e.fingerprint = p.fingerprint
@@ -240,25 +254,40 @@ export class AccountChangeOperations {
  LEFT JOIN controller_births cb ON cb.coordinator_id=l.coordinator_id AND cb.link_id=l.link_id
  LEFT JOIN device_births db ON db.coordinator_id=l.coordinator_id AND db.link_id=l.link_id
  LEFT JOIN current_controller cc ON cc.identity_id=l.identity_id
+ LEFT JOIN requester_binding rb ON rb.identity_id=l.identity_id
  LEFT JOIN original_claims d ON d.coordinator_id=l.coordinator_id AND ${captured.connectionSession ? "d.identity_id=l.identity_id" : "d.claim_id=l.device_claim_id"} AND d.group_id=p.group_id AND d.device_id=p.device_id AND d.public_key=p.public_key AND d.fingerprint=p.fingerprint AND d.key_id=p.key_id
  WHERE (e.enabled = 1 AND g.archived_at IS NULL AND (e.identity_id IS NULL OR e.identity_id = l.identity_id))
  AND (b.identity_id = l.identity_id AND b.issuer = l.issuer AND b.account_subject = l.subject AND b.auth_config_revision = l.auth_config_revision AND b.state IN ('finalized','session_redeemed'))
  AND (${CONNECTION_NOT_REVOKED_SQL})
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id) OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))
- AND (cb.link_id IS NOT NULL OR db.link_id IS NOT NULL) AND (cc.attestation_id IS NOT NULL OR d.claim_id IS NOT NULL))`,
+ AND (cb.link_id IS NOT NULL OR db.link_id IS NOT NULL) AND (cc.attestation_id IS NOT NULL OR d.claim_id IS NOT NULL OR rb.binding_id IS NOT NULL))`,
 			[...captured.values, ...authLinkControllerSourceValues(c, s), target.target_link_id],
 		);
 	}
 	// Expected Identity is checked after deriving authority, never used to grant it.
+	// This device's binding wins a tie; the authority check still denies when an
+	// older claim's link is active.
 	private deriveTarget(c: CoordinatorAuthLinkConfig, i: Pick<Signed, "signer">, key: string) {
 		return this.first<{ identity_id: string; target_link_id: string }>(
 			sql(
 				`SELECT l.identity_id,l.link_id AS target_link_id FROM ${current} l
  LEFT JOIN coordinator_auth_device_claims d ON d.coordinator_id = l.coordinator_id AND d.identity_id = l.identity_id
  LEFT JOIN coordinator_auth_controller_attestations a ON a.coordinator_id = l.coordinator_id AND a.identity_id = l.identity_id
+ LEFT JOIN coordinator_device_ownership_bindings ob ON ob.coordinator_id = l.coordinator_id AND ob.identity_id = l.identity_id
  WHERE l.coordinator_id = ? AND ((d.device_id = ? AND d.key_id = ?) OR
- (a.group_id = ? AND a.device_id = ? AND a.public_key = ? AND a.fingerprint = ? AND a.revoked_at IS NULL))`,
-				[c.coordinatorId, i.signer.deviceId, key, ...signerValues(i.signer)],
+ (a.group_id = ? AND a.device_id = ? AND a.public_key = ? AND a.fingerprint = ? AND a.revoked_at IS NULL)
+ OR (ob.device_id = ? AND ob.key_id = ?))
+ ORDER BY (ob.device_id = ? AND ob.key_id = ?) DESC, l.link_id`,
+				[
+					c.coordinatorId,
+					i.signer.deviceId,
+					key,
+					...signerValues(i.signer),
+					i.signer.deviceId,
+					key,
+					i.signer.deviceId,
+					key,
+				],
 			),
 		);
 	}

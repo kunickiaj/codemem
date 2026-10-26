@@ -16,6 +16,7 @@ import {
 	finalize,
 	type LinkFixture,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
@@ -436,6 +437,42 @@ for (const backend of ["SQLite", "D1"] as const) {
 			).toEqual(before);
 		},
 	);
+	test(`${backend} shows account details to an assigned peer that holds its own binding`, async ({
+		fixture: f,
+	}) => {
+		// Arrange: device-a linked the shared Identity; its assigned peer later rebound.
+		seed(f);
+		await confirmed(f);
+		await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);
+		f.db.exec(`INSERT INTO coordinator_auth_account_profiles
+		(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
+		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'synthetic-session',${f.now}
+		FROM coordinator_auth_account_links`);
+		const peer = {
+			groupId: "group-a",
+			deviceId: "unrelated-device",
+			publicKey: otherKey,
+			fingerprint: "b".repeat(64),
+		};
+		const read = () => f.store.readAccountLinkStatus(peer, f.cfg, { identityId: input.identityId });
+		const unproven = await read();
+		// Act
+		f.db
+			.prepare(
+				`INSERT INTO coordinator_device_ownership_bindings
+				 (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
+				 VALUES ('unrelated-device',?,?,'coordinator-a','binding-peer','owner_enrollment','rebind:peer','bound')`,
+			)
+			.run(await ed25519KeyIdForRevocation(otherKey), input.identityId);
+		const bound = await read();
+		// Assert: the peer's legacy assignment still surfaces device-a's claim, so only
+		// the binding makes the profile this device's own.
+		expect(unproven).toMatchObject({ state: "linked", account: null });
+		expect(bound).toMatchObject({
+			state: "linked",
+			account: { displayName: "Synthetic Person", email: "synthetic@example.test" },
+		});
+	});
 	test(`${backend} shows account details only to the device that holds the claim`, async ({
 		fixture: f,
 	}) => {

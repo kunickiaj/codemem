@@ -183,6 +183,8 @@ Both intents use the same mandatory predicate at creation and winning finalizati
 4. For a `device_claim` target, the signer is exactly the original claimed device, canonical key, public-key bytes, and fingerprint, with intact genesis/current-generation provenance. Another enrolled or shared-assignment reader does not qualify.
 5. Fresh provider verification proves the target generation's exact issuer/subject, and the browser and device ceremony proofs pass.
 
+An ownership binding (ADR 0005 Section 8 rebind) is the third form of the signer's own proof, alongside rules 3 and 4. A binding for the signer's exact device and canonical key that names the target Identity satisfies rules 3 and 4 for either target kind. It also supersedes two kinds of older history for this device. The first is legacy Team completions that included this device under another Identity. The second is this device's own claim under another Identity whose account link is no longer active. Every other requester check still applies, including an owner's exclusion of this device and legacy history for the target Identity's other devices. A shared-assignment reader without its own binding still does not qualify. Account-link status follows the same rule: such a device sees `linked` with the account profile.
+
 All other cases deny without mutation. Google proof alone, an existing website session, a shared reader assignment, or a client-supplied role cannot substitute for this predicate. No management result upgrades a link's authority kind.
 
 ## Proofed change attempts

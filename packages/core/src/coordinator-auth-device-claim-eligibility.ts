@@ -120,18 +120,29 @@ export const AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL = `NOT EXISTS (
  * an exclusion. The label test sits beside the coordinator test so D1's
  * expression depth (max 100) does not grow.
  */
-export const AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL = `NOT EXISTS (
+const legacyCompletionSql = (predicate: string) => `NOT EXISTS (
  SELECT 1 FROM coordinator_legacy_team_completions c, json_each(${completionJson}, '$.device_decisions') d
  WHERE (${legacyDecisionCountsAsOwnerSql("d.value", "deny")} AND json_extract(${completionJson}, '$.coordinator_id') = p.coordinator_id) AND (
- ((json_extract(d.value, '$.device_id') = p.device_id OR json_extract(d.value, '$.key_fingerprint') = p.fingerprint)
- AND (json_extract(d.value, '$.decision') = 'excluded' OR json_extract(d.value, '$.identity_id') IS NOT p.identity_id))
- OR (json_extract(d.value, '$.identity_id') = p.identity_id
+ ${predicate}))`;
+const legacyThisDevice = `(json_extract(d.value, '$.device_id') = p.device_id OR json_extract(d.value, '$.key_fingerprint') = p.fingerprint)`;
+const legacyPeerBranch = `(json_extract(d.value, '$.identity_id') = p.identity_id
  AND (json_extract(d.value, '$.device_id') IS NOT p.device_id OR json_extract(d.value, '$.key_fingerprint') IS NOT p.fingerprint)
  AND NOT (json_extract(d.value, '$.device_id') <> p.device_id
  AND json_extract(d.value, '$.key_fingerprint') <> p.fingerprint
  AND json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1
  AND EXISTS (SELECT 1 FROM claim_current_assignment ca WHERE ca.group_id = c.group_id
- AND ca.candidate_ref = c.candidate_ref AND ca.manifest_json = c.manifest_json)))))`;
+ AND ca.candidate_ref = c.candidate_ref AND ca.manifest_json = c.manifest_json)))`;
+export const AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL = legacyCompletionSql(`(${legacyThisDevice}
+ AND (json_extract(d.value, '$.decision') = 'excluded' OR json_extract(d.value, '$.identity_id') IS NOT p.identity_id))
+ OR ${legacyPeerBranch}`);
+/**
+ * The legacy checks an ownership binding cannot waive: an exclusion of this
+ * device, and other devices' history under the claimed Identity. A binding
+ * waives only history that recorded this device under another Identity.
+ */
+export const AUTH_DEVICE_CLAIM_LEGACY_UNWAIVABLE_SQL = legacyCompletionSql(`(${legacyThisDevice}
+ AND json_extract(d.value, '$.decision') = 'excluded')
+ OR ${legacyPeerBranch}`);
 
 /**
  * p is the single claim_input row. This is device-claim eligibility, never operator

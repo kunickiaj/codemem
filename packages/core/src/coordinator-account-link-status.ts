@@ -59,6 +59,8 @@ interface StatusRow {
 	valid: number;
 	/** 1 when the proof is this device's own claim or attestation, not a peer's. */
 	own: number;
+	/** 1 when this exact device key holds an ownership binding for the Identity. */
+	bound: number;
 	claim_count: number;
 	controller_count: number;
 	controller_identity: string | null;
@@ -106,10 +108,12 @@ function projectStatus(
 	return { ...derived, state: "linked", account: requesterAccount(row, identityId) };
 }
 
-/** This device's own claim, or its own current attestation for the same Identity. */
+/** This device's own claim, ownership binding, or current attestation for the same Identity. */
 function requesterHoldsProof(row: StatusRow): boolean {
 	return (
-		row.own === 1 || (row.controller_count === 1 && row.controller_identity === row.identity_id)
+		row.own === 1 ||
+		row.bound === 1 ||
+		(row.controller_count === 1 && row.controller_identity === row.identity_id)
 	);
 }
 
@@ -134,6 +138,39 @@ function requesterAccount(
 	if (pictureUrl !== undefined) account.pictureUrl = pictureUrl;
 	return account;
 }
+
+/** This exact device key's ownership binding for the requested Identity (ADR 0005 Section 8). */
+const REQUESTER_BINDING_SQL = `SELECT 1 FROM claim_input bp JOIN coordinator_device_ownership_bindings ob
+ ON ob.coordinator_id = bp.coordinator_id AND ob.device_id = bp.device_id AND ob.key_id = bp.key_id
+ AND ob.identity_id = bp.identity_id`;
+
+/**
+ * A rebound device has no claim of its own; its binding names the Identity and
+ * the Identity's link is the account. Valid only while the device's exact
+ * enrollment is current, neither device nor key is revoked, and the link was
+ * born through a reviewed claim or attestation.
+ */
+const bindingCandidateSql = (
+	connections: boolean,
+) => `SELECT ob.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
+ CASE WHEN EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
+  WHERE e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key
+  AND e.fingerprint = p.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL
+  AND (e.identity_id IS NULL OR e.identity_id = ob.identity_id))
+ AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
+  WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
+  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))
+ AND (l.link_id IS NULL OR ${authAccountLinkProvenanceSql("l", { connections })})
+ THEN 1 ELSE 0 END, 1, 'device_claim'
+ FROM claim_input p JOIN coordinator_device_ownership_bindings ob ON ob.coordinator_id = p.coordinator_id
+ AND ob.device_id = p.device_id AND ob.key_id = p.key_id AND ob.identity_id = p.identity_id
+ LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = p.coordinator_id
+ AND l.identity_id = ob.identity_id`;
+
+/** This device's old claim under another Identity, once a binding moved it and that link ended. */
+const SUPERSEDED_OWN_CLAIM_SQL = `d.identity_id <> p.identity_id AND EXISTS (${REQUESTER_BINDING_SQL})
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links al WHERE al.coordinator_id = d.coordinator_id
+ AND al.identity_id = d.identity_id AND al.revoked_at_ms IS NULL)`;
 
 function statusConnectionFacts(connections: boolean): string {
 	if (!connections) return "";
@@ -242,8 +279,9 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id = p.coordinator_id
  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = d.coordinator_id AND ${connections ? "l.identity_id = d.identity_id" : "l.device_claim_id = d.claim_id"}
  ${connections ? "LEFT JOIN status_genesis sg ON sg.coordinator_id=d.coordinator_id AND sg.claim_id=d.claim_id LEFT JOIN status_links sl ON sl.coordinator_id=l.coordinator_id AND sl.link_id=l.link_id" : ""}
- WHERE d.device_id = p.device_id OR d.key_id = p.key_id
- OR (d.identity_id = p.identity_id AND EXISTS (SELECT 1 FROM status_assignment))),
+ WHERE (d.device_id = p.device_id OR d.key_id = p.key_id
+ OR (d.identity_id = p.identity_id AND EXISTS (SELECT 1 FROM status_assignment)))
+ AND NOT (${SUPERSEDED_OWN_CLAIM_SQL})),
  candidates AS (
  SELECT *, 'device_claim' AS authority FROM claims
  UNION ALL SELECT a.controller_identity_id, l.link_id, l.issuer, l.revoked_at_ms, ${connections ? "CASE WHEN l.link_id IS NULL OR valid_controller.link_id IS NOT NULL THEN 1 ELSE 0 END" : "1"}, 1, 'controller_attestation'
@@ -251,10 +289,13 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  AND l.identity_id = a.controller_identity_id ${connections ? "" : "AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL"}
  ${connections ? "LEFT JOIN status_links valid_controller ON valid_controller.coordinator_id=l.coordinator_id AND valid_controller.link_id=l.link_id" : ""}
  WHERE NOT EXISTS (SELECT 1 FROM claims)
+ UNION ALL ${bindingCandidateSql(connections)}
+ WHERE NOT EXISTS (SELECT 1 FROM claims) AND NOT EXISTS (SELECT 1 FROM controller)
  UNION ALL SELECT p.identity_id, NULL, NULL, NULL, 1, 1, 'device_claim' FROM claim_input p
  WHERE NOT EXISTS (SELECT 1 FROM claims) AND NOT EXISTS (SELECT 1 FROM controller)
- AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL})
+ AND NOT EXISTS (${REQUESTER_BINDING_SQL}) AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL})
  SELECT a.identity_id,a.link_id,a.issuer,a.valid,a.own,a.authority,
+ EXISTS (${REQUESTER_BINDING_SQL} AND ob.identity_id = a.identity_id) AS bound,
  ${connections ? `coalesce((SELECT min(h.revoked_at_ms) FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id = (SELECT coordinator_id FROM claim_input) AND h.identity_id = a.identity_id AND h.revoked_at_ms IS NOT NULL),a.revoked_at_ms)` : "a.revoked_at_ms"} AS revoked_at_ms,
  (SELECT count(*) FROM claims) AS claim_count,
  (SELECT count(*) FROM controller) AS controller_count,

@@ -33,9 +33,21 @@ export const CONNECTION_RELINK_ELIGIBLE_SQL = `(EXISTS (SELECT 1 FROM coordinato
  AND ((${AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL}))`;
 
 /** A renewed same-Identity review is distinct from a contradictory assignment. */
-export const CONNECTION_REQUESTER_IDENTITY_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_auth_controller_attestations a
- WHERE a.coordinator_id=p.coordinator_id AND (a.device_id=p.device_id OR EXISTS (SELECT 1 FROM claim_same_keys k WHERE k.value=a.public_key)) AND a.identity_id<>p.identity_id)
- AND NOT EXISTS (SELECT 1 FROM coordinator_auth_device_claims d WHERE d.coordinator_id=p.coordinator_id AND (d.device_id=p.device_id OR d.key_id=p.key_id) AND d.identity_id<>p.identity_id)`;
+export const CONNECTION_REQUESTER_ATTESTATION_IDENTITY_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_auth_controller_attestations a
+ WHERE a.coordinator_id=p.coordinator_id AND (a.device_id=p.device_id OR EXISTS (SELECT 1 FROM claim_same_keys k WHERE k.value=a.public_key)) AND a.identity_id<>p.identity_id)`;
+const otherIdentityClaimSql = (
+	extra: string,
+) => `NOT EXISTS (SELECT 1 FROM coordinator_auth_device_claims d
+ WHERE d.coordinator_id=p.coordinator_id AND (d.device_id=p.device_id OR d.key_id=p.key_id) AND d.identity_id<>p.identity_id${extra})`;
+export const CONNECTION_REQUESTER_IDENTITY_SQL = `${CONNECTION_REQUESTER_ATTESTATION_IDENTITY_SQL}
+ AND ${otherIdentityClaimSql("")}`;
+/**
+ * With an ownership binding, this device's own claim under its previous
+ * Identity is superseded once that Identity has no active link (ADR 0005 S8).
+ */
+export const CONNECTION_REQUESTER_ACTIVE_OTHER_CLAIM_SQL = otherIdentityClaimSql(`
+ AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id=d.coordinator_id
+ AND l.identity_id=d.identity_id AND l.revoked_at_ms IS NULL)`);
 /** Additional contradictions only: the outer writer must independently require
  * its exact live attestation, current enrollment snapshot and revocation checks. */
 export async function connectionRequesterGuard(
