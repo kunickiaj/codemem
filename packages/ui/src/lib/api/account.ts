@@ -61,7 +61,7 @@ export type AccountView = {
 	};
 	coordinator: null | { origin: string };
 	/** Read-only account display target, separate from local.identityId (the memory actor). */
-	accountOwner?: { identityId: string; memoryActorId: string };
+	accountOwner?: { identityId: string; memoryActorId: string; displayName?: string };
 	ownerProjection?: {
 		kind: "resolved_account_owner";
 		status: {

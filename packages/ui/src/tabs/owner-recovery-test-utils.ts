@@ -97,7 +97,11 @@ export function ownerAccount() {
 		...blockedAccount(),
 		contextId: "owner-display-context-a",
 		operationContextId: "context-one",
-		accountOwner: { identityId: "identity-a", memoryActorId: "identity-b" },
+		accountOwner: { identityId: "identity-a", memoryActorId: "identity-b" } as {
+			identityId: string;
+			memoryActorId: string;
+			displayName?: string;
+		},
 		remote: { kind: "not_checked" as const },
 		blockedReason: "already_linked" as const,
 		ownerProjection: {

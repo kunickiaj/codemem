@@ -1,8 +1,18 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { recoveryFixture } from "./fixture";
 
+const OWNER_ONLY =
+	"This device runs as Original B, but the Google account belongs to Known A. To refresh or unlink it, use a device that runs as Known A.";
+
+/** The Viewer picks a group itself; Technical details keeps an override. */
+async function chooseGroup(page: Page, groupId: string) {
+	const picker = page.getByLabel("Check status using group", { exact: true });
+	if (!(await picker.isVisible())) await page.getByText("Technical details", { exact: true }).click();
+	await picker.selectOption(groupId);
+}
+
 async function openRecovery(page: Page) {
-	await page.getByLabel("Group", { exact: true }).selectOption("group-a");
+	await chooseGroup(page, "group-a");
 	const trigger = page.getByRole("button", { name: "Review account ownership", exact: true });
 	await trigger.click();
 	const dialog = page.getByRole("dialog", { name: "Review account ownership", exact: true });
@@ -132,17 +142,14 @@ test("explicit default-No recovery confirms both groups once and survives restar
 		await dialog.getByRole("button", { name: "Close", exact: true }).click();
 		await f.restart();
 		await page.reload();
-		await page.getByLabel("Group", { exact: true }).selectOption("group-a");
 
-		// Assert: display is durable; original B operation context never gains A permissions.
-		await expect(page.getByText("Account owner: identity-a", { exact: true })).toBeVisible();
-		await expect(page.getByText("Canonical A profile", { exact: true })).toBeVisible();
-		await expect(
-			page.getByText("Memory author: Original B (unchanged).", { exact: true }),
-		).toBeVisible();
-		await expect(
-			page.getByText(/This display does not allow Google account changes/),
-		).toBeVisible();
+		// Assert: the Viewer picks a group itself and names this device's real state.
+		// The owner's Google profile stays off this device, which never signed in.
+		await expect(page.getByText(OWNER_ONLY, { exact: true })).toBeVisible();
+		await expect(page.getByText("Canonical A profile", { exact: true })).toHaveCount(0);
+		await expect(page.getByText(/Memory author|\(unchanged\)|does not allow Google/)).toHaveCount(
+			0,
+		);
 		await expect(
 			page.getByRole("button", { name: "Link Google account", exact: true }),
 		).toBeDisabled();
@@ -155,16 +162,13 @@ test("explicit default-No recovery confirms both groups once and survives restar
 		);
 		await page.getByRole("button", { name: "Check status", exact: true }).click();
 		expect((await refreshed).status()).toBe(200);
-		await expect(page.getByText("Account owner: identity-a", { exact: true })).toBeVisible();
+		await expect(page.getByText(OWNER_ONLY, { exact: true })).toBeVisible();
 		const selected = page.waitForResponse(
 			(response) => new URL(response.url()).searchParams.get("group_id") === "group-b",
 		);
-		await page.getByLabel("Group", { exact: true }).selectOption("group-b");
+		await chooseGroup(page, "group-b");
 		expect((await selected).status()).toBe(200);
-		await expect(page.getByText("Account owner: identity-a", { exact: true })).toBeVisible();
-		await expect(
-			page.getByText("Memory author: Original B (unchanged).", { exact: true }),
-		).toBeVisible();
+		await expect(page.getByText(OWNER_ONLY, { exact: true })).toBeVisible();
 		expect(
 			f.requests.filter(
 				(request) =>

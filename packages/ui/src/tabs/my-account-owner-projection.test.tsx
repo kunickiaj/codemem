@@ -43,40 +43,32 @@ afterEach(() => {
 });
 
 describe("read-only account owner projection", () => {
-	it("renders verified owner A separately from unchanged historical memory author B while remote is not_checked", async () => {
-		// Arrange
-		const historicalAuthor = "Historical author B";
-		// Act
-		await show();
-		// Assert: no fabricated ordinary remote status is needed to display this profile.
-		expect(view.remote).toEqual({ kind: "not_checked" });
-		expect(mount.textContent).toContain("Verified Owner A");
-		expect(mount.textContent).toContain("owner-a@example.test");
-		expect(mount.textContent).toMatch(/Account owner[\s\S]*(?:identity-a|Verified Owner A)/i);
-		expect(mount.textContent).toMatch(
-			new RegExp(`Memory author[\\s\\S]*(?:identity-b|${historicalAuthor})`, "i"),
-		);
-		expect(mount.textContent).toMatch(
-			/sharing[\s\S]*(?:unchanged|separate review)|(?:unchanged|separate review)[\s\S]*sharing/i,
-		);
-		expect(actionable()).toEqual([]);
-	});
-	it("describes the loaded owner-only account summary without inviting Google linking", async () => {
-		// Arrange: the normal owner fixture has not_checked remote status and no operation.
-		view = ownerAccount();
+	it("names both Identities and where account changes work, without the owner's Google profile", async () => {
+		// Arrange: this device runs as B; the coordinator confirmed A as the account owner.
+		view.accountOwner = { ...view.accountOwner, displayName: "Owner A" };
 		// Act
 		await show();
 		const summary = mount.querySelector('[aria-labelledby="my-account-heading"] > [role="status"]');
-		// Assert: the main summary describes display-only ownership, not linking eligibility.
-		expect(summary).not.toBeNull();
-		expect.soft(summary?.textContent).not.toMatch(/check status.*whether you can link Google/i);
-		expect
-			.soft(summary?.textContent)
-			.toMatch(
-				/account owner[\s\S]*(?:display.only|read.only)|(?:display.only|read.only)[\s\S]*account owner/i,
-			);
-		expect.soft(summary?.textContent).toMatch(/memory author[\s\S]*unchanged/i);
-		expect.soft(summary?.textContent).toMatch(/sharing[\s\S]*unchanged/i);
+		// Assert
+		expect(view.remote).toEqual({ kind: "not_checked" });
+		expect(summary?.textContent).toBe(
+			"This device runs as Historical author B, but the Google account belongs to Owner A. To refresh or unlink it, use a device that runs as Owner A.",
+		);
+		expect(mount.querySelector(".my-account-profile")).toBeNull();
+		expect(mount.textContent).not.toContain("owner-a@example.test");
+		expect(mount.textContent).not.toContain("Verified Owner A");
+		expect(mount.querySelector("img")).toBeNull();
+		expect(mount.textContent).not.toMatch(
+			/\(unchanged\)|read-only|Memory author|Sharing access is unchanged/i,
+		);
+		expect(actionable()).toEqual([]);
+	});
+	it("falls back to a generic owner name when the owner has no local People name", async () => {
+		// Act
+		await show();
+		// Assert
+		expect(mount.textContent).toContain("use a device that runs as the account owner");
+		expect(mount.textContent).not.toContain("identity-a");
 	});
 	it("ignores injected management capabilities and canLink for an owner-only view", async () => {
 		// Arrange
@@ -103,26 +95,13 @@ describe("read-only account owner projection", () => {
 			// Act
 			await show();
 			// Assert
-			expect(mount.textContent).toMatch(/Account owner[\s\S]*identity-a/i);
 			expect(mount.textContent).toMatch(
-				profileState === "account_unlinked"
-					? /unlinked|not linked/i
-					: /unavailable|could not.*profile/i,
+				profileState === "account_unlinked" ? /no linked Google account/i : /unavailable/i,
 			);
 			expect(mount.textContent).not.toContain("owner-a@example.test");
 			expect(actionable()).toEqual([]);
 		},
 	);
-	it("filters an unsafe avatar URL instead of fetching an arbitrary owner image", async () => {
-		// Arrange
-		if (!view.ownerProjection.status.profile) throw new Error("Missing fixture profile");
-		view.ownerProjection.status.profile.pictureUrl = "https://untrusted.example.test/tracker";
-		// Act
-		await show();
-		// Assert
-		expect(mount.querySelector('img[src="https://untrusted.example.test/tracker"]')).toBeNull();
-		expect(actionable()).toEqual([]);
-	});
 	it("does not display unverified owner metadata after an association-invalid status", async () => {
 		// Arrange: a malformed payload must not turn stale display data into authority.
 		Object.assign(view, {
@@ -139,7 +118,7 @@ describe("read-only account owner projection", () => {
 		expect(mount.querySelector(".my-account-profile")).toBeNull();
 		expect(actionable()).toEqual([]);
 	});
-	it("keeps an unknown original B operation visible while displaying A's linked profile", async () => {
+	it("keeps an unknown original B operation visible in the owner-only state", async () => {
 		// Arrange
 		view.operation = {
 			...operation("outcome_unknown"),
@@ -150,7 +129,7 @@ describe("read-only account owner projection", () => {
 		// Act
 		await show();
 		// Assert
-		expect(mount.textContent).toContain("owner-a@example.test");
+		expect(mount.textContent).not.toContain("owner-a@example.test");
 		expect(mount.textContent).toMatch(/unknown|could not confirm|couldn.t confirm|unconfirmed/i);
 		expect(mount.textContent).not.toMatch(/profile refreshed successfully|refresh completed/i);
 		expect(actionable()).toEqual([]);

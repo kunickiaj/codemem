@@ -825,6 +825,19 @@ function createOptionalOwnerRecovery(
 	return serverModule.createAccountOwnerRecoveryService(options);
 }
 
+/** The People name Sharing shows for an Identity; absent when the local store has none. */
+function localIdentityName(store: MemoryStore, identityId: string): string | undefined {
+	try {
+		const row = store.db
+			.prepare("SELECT display_name FROM actors WHERE actor_id = ? AND status <> 'deactivated'")
+			.get(identityId) as { display_name?: unknown } | undefined;
+		const name = typeof row?.display_name === "string" ? row.display_name.trim() : "";
+		return name || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function createViewerAccountLink(
 	store: MemoryStore,
 	invocation: ResolvedServeInvocation,
@@ -832,6 +845,7 @@ function createViewerAccountLink(
 ) {
 	const configPath = resolveCodememConfigPath(invocation.configPath ?? undefined).resolved.path;
 	const keysDir = dirname(resolveKeyPaths(process.env.CODEMEM_KEYS_DIR?.trim() || undefined)[0]);
+	const identityName = (identityId: string) => localIdentityName(store, identityId);
 	const readContext = serverModule.createAccountContextReader({
 		getProfile: () => ({
 			dbPath: store.dbPath,
@@ -869,6 +883,7 @@ function createViewerAccountLink(
 			readContext,
 			registry,
 			ownerRecovery,
+			identityName,
 			getListenerAddress: () =>
 				actualBoundPort === null ? null : { host: invocation.host, port: actualBoundPort },
 		},

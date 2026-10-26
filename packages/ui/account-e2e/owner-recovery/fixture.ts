@@ -517,6 +517,9 @@ export async function recoveryFixture(browser: BrowserContext) {
 				readContext,
 				registry,
 				getListenerAddress: () => address,
+				// Mirrors the Viewer's People-name lookup for the seeded actors.
+				identityName: (identityId: string) =>
+					({ "identity-a": "Known A", "identity-b": "Original B" })[identityId],
 				readRemoteStatus: (input: Parameters<typeof readCoordinatorAccountLinkStatus>[0]) =>
 					readCoordinatorAccountLinkStatus({ ...input, fetch: transport }),
 				readRemoteOwnerStatus: (

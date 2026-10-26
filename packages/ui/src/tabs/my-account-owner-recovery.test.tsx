@@ -602,7 +602,8 @@ describe("noncredential recovery assistance", () => {
 		expect(
 			transport.mock.calls.filter(([url]) => String(url).includes("link-status")).length,
 		).toBeGreaterThan(before);
-		expect(mount.textContent).toContain("owner-a@example.test");
+		expect(mount.textContent).toMatch(/Google account belongs to/);
+		expect(mount.textContent).not.toContain("owner-a@example.test");
 		expect(calls(`${ROOT}/confirm`)).toHaveLength(0);
 	});
 });
@@ -647,7 +648,7 @@ describe("recovery errors and focus", () => {
 		// Act
 		await tick();
 		// Assert: render verified A without interpreting it as successful authentication for B.
-		expect(mount.textContent).toContain("owner-a@example.test");
+		expect(mount.textContent).not.toContain("owner-a@example.test");
 		expect(mount.textContent).toMatch(/unknown|couldn.t confirm/i);
 		expect(popup.close).not.toHaveBeenCalled();
 		expect(calls(`${ROOT}/confirm`)).toHaveLength(0);

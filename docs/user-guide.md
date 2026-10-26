@@ -434,7 +434,7 @@ The **My Account** card at the top of **Sharing** is separate from sharing contr
 
 Identity, device, and coordinator information is collapsed under **Technical details**; **Link Google account** is hidden when the coordinator reports a linked account, while **Check status** remains available.
 
-This card is available from the current source checkout or a release that includes My Account. It is not available in every installed version. If more than one coordinator group is configured, choose the group in the card; it does not accept an arbitrary profile, URL, or identifier.
+This card is available from the current source checkout or a release that includes My Account. It is not available in every installed version. Account status is per coordinator. If more than one coordinator group is configured, the Viewer checks status with the first group whose enrollment the coordinator accepts. To use a specific group instead, choose it under **Technical details**. The card does not accept an arbitrary profile, URL, or identifier.
 
 To link an account:
 
@@ -457,6 +457,8 @@ Account linking is optional. It does not grant Team or Project access, move an I
 When the coordinator advertises account-management capability, a linked account can show **Refresh profile** and **Unlink Google account**. **Check status** only reads the signed coordinator result; it does not refresh a profile. Refresh requires fresh Google proof and has no extra confirmation.
 
 Unlink asks once in the Viewer and uses this device’s existing authorization; it does not open Google sign-in or another tab. Cancel leaves the account unchanged. Confirming ends the current link, its browser sessions and display profile, while preserving your Identity, device keys, history, memberships and access grants. To link again—whether to the same or another Google account—choose **Link Google account** and complete Google verification. There is no switch flow or automatic unlink.
+
+If this device runs as a different Identity than the account owner the coordinator confirmed, the card names both and does not show the owner's Google profile. Refresh and Unlink work only on a device that runs as the account owner.
 
 If these controls are absent, management is not currently available for this device and coordinator. Check status before retrying; do not use an external Google workaround or an operator credential.
 

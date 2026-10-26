@@ -467,3 +467,183 @@ describe("account status freshness", () => {
 		expect(response.status).toBe(404); // Assert
 	});
 });
+
+describe("account status group choice", () => {
+	const groups = ["group-a", "group-b"];
+	function multiGroup(groupId?: string): Context {
+		if (groupId === undefined)
+			return {
+				...structuredClone(ready),
+				groups,
+				selectedGroupId: null,
+				setup: "group_selection_required",
+				context: null,
+			};
+		if (!groups.includes(groupId)) return { error: "account_group_not_configured" };
+		return {
+			...structuredClone(ready),
+			groups,
+			selectedGroupId: groupId,
+			context: { ...subject, groupId },
+		};
+	}
+	function statusIn(
+		groupId: string,
+		state: Parameters<typeof status>[0],
+	): CoordinatorAccountLinkStatusRead {
+		const read = status(state);
+		if (read.kind !== "status") throw new Error("fixture must be a status");
+		return { ...read, status: { ...read.status, groupId } };
+	}
+	async function groupFixture(reads: Record<string, CoordinatorAccountLinkStatusRead>) {
+		const f = await fixture();
+		f.readContext.mockImplementation(multiGroup);
+		f.readRemoteStatus.mockImplementation(async ({ groupId }) => {
+			const read = reads[groupId];
+			if (!read) throw new Error(`unexpected group ${groupId}`);
+			return read;
+		});
+		return f;
+	}
+	const groupsRead = (f: Awaited<ReturnType<typeof fixture>>) =>
+		f.readRemoteStatus.mock.calls.map(([input]) => input.groupId);
+
+	it("signs with the first group whose enrollment the coordinator accepts", async () => {
+		// Arrange: this device is not enrolled in group-a.
+		const f = await groupFixture({
+			"group-a": { kind: "unavailable", code: "coordinator_rejected" },
+			"group-b": statusIn("group-b", "unlinked"),
+		});
+		// Act
+		const body = await (await f.request()).json();
+		// Assert
+		expect(groupsRead(f)).toEqual(["group-a", "group-b"]);
+		expect(body).toMatchObject({
+			setup: "ready",
+			selectedGroupId: "group-b",
+			canLink: true,
+			remote: { kind: "status", state: "unlinked" },
+		});
+	});
+	it("prefers a decided status over review in an earlier group", async () => {
+		// Arrange
+		const f = await groupFixture({
+			"group-a": statusIn("group-a", "review_required"),
+			"group-b": statusIn("group-b", "linked"),
+		});
+		// Act
+		const body = await (await f.request()).json();
+		// Assert
+		expect(body).toMatchObject({ selectedGroupId: "group-b", remote: { state: "linked" } });
+	});
+	it("keeps review when no group gives a decided status", async () => {
+		// Arrange
+		const f = await groupFixture({
+			"group-a": { kind: "unavailable", code: "coordinator_rejected" },
+			"group-b": statusIn("group-b", "review_required"),
+		});
+		// Act
+		const body = await (await f.request()).json();
+		// Assert
+		expect(body).toMatchObject({
+			selectedGroupId: "group-b",
+			canLink: false,
+			remote: { state: "review_required" },
+		});
+	});
+	it("reports the first group's failure when every group is refused", async () => {
+		// Arrange
+		const f = await groupFixture({
+			"group-a": { kind: "unavailable", code: "coordinator_rejected" },
+			"group-b": { kind: "unavailable", code: "coordinator_rejected" },
+		});
+		// Act
+		const body = await (await f.request()).json();
+		// Assert
+		expect(body).toMatchObject({
+			selectedGroupId: "group-a",
+			canLink: false,
+			remote: { kind: "unavailable", code: "coordinator_rejected" },
+		});
+	});
+	it("uses only an explicitly requested group", async () => {
+		// Arrange
+		const f = await groupFixture({
+			"group-a": { kind: "unavailable", code: "coordinator_rejected" },
+			"group-b": statusIn("group-b", "unlinked"),
+		});
+		// Act
+		const body = await (await f.request("?group_id=group-a")).json();
+		// Assert
+		expect(groupsRead(f)).toEqual(["group-a"]);
+		expect(body).toMatchObject({ selectedGroupId: "group-a", remote: { kind: "unavailable" } });
+	});
+	it.each(["rate_limited", "coordinator_unreachable", "coordinator_unavailable"] as const)(
+		"stops after a %s failure that every group would hit",
+		async (code) => {
+			// Arrange
+			const f = await groupFixture({
+				"group-a": { kind: "unavailable", code },
+				"group-b": statusIn("group-b", "unlinked"),
+			});
+			// Act
+			const body = await (await f.request()).json();
+			// Assert
+			expect(groupsRead(f)).toEqual(["group-a"]);
+			expect(body).toMatchObject({
+				selectedGroupId: "group-a",
+				remote: { kind: "unavailable", code },
+			});
+		},
+	);
+	it("keeps an earlier review when a later group hits a coordinator-wide failure", async () => {
+		// Arrange
+		const f = await groupFixture({
+			"group-a": statusIn("group-a", "review_required"),
+			"group-b": { kind: "unavailable", code: "rate_limited" },
+		});
+		// Act
+		const body = await (await f.request()).json();
+		// Assert
+		expect(body).toMatchObject({
+			selectedGroupId: "group-a",
+			remote: { state: "review_required" },
+		});
+	});
+});
+
+describe("account status People names", () => {
+	it("names the local Identity from People without changing the context", async () => {
+		// Arrange
+		const plain = await fixture();
+		plain.readRemoteStatus.mockResolvedValue(status("unlinked"));
+		const plainBody = await (await plain.request()).json();
+		const f = await fixture();
+		f.readRemoteStatus.mockResolvedValue(status("unlinked"));
+		const app = createApp({
+			storeFactory: () => {
+				throw new Error("Status must not initialize a store");
+			},
+			accountLink: {
+				getListenerAddress: () => ({ host: "127.0.0.1", port: 7441 }),
+				readContext: f.readContext,
+				readRemoteStatus: f.readRemoteStatus,
+				identityName: (identityId) => (identityId === local.identityId ? "People name" : undefined),
+			},
+		});
+		const session = await app.request(`${ORIGIN}/api/account/session`, {
+			headers: { Host: "127.0.0.1:7441", Origin: ORIGIN },
+		});
+		const { csrfToken } = await session.json();
+		// Act
+		const body = await (
+			await app.request(`${ORIGIN}${PATH}`, {
+				headers: { Host: "127.0.0.1:7441", Origin: ORIGIN, "X-Codemem-Account-Csrf": csrfToken },
+			})
+		).json();
+		// Assert
+		expect(body.local.identityLabel).toBe("People name");
+		expect(plainBody.local.identityLabel).toBe(local.identityLabel);
+		expect(body.contextId).toBe(plainBody.contextId);
+	});
+});

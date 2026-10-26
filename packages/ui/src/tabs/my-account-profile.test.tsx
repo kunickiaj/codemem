@@ -58,9 +58,10 @@ it("renders verified profile text and a lazy anonymous no-referrer photo", async
 	await show();
 	// Assert
 	expect(mount.querySelector(".my-account-profile")?.textContent).toContain(account.displayName);
-	expect(mount.textContent).toContain(
-		"This Google account is linked to the local Codemem Identity.",
+	expect(mount.textContent).not.toMatch(
+		/linked to the local Codemem Identity|does not change sharing/i,
 	);
+	expect(mount.querySelector('[role="status"]')?.textContent).toBe("");
 	expect(mount.textContent).toContain(`${account.email} · Verified email`);
 	const image = mount.querySelector("img");
 	for (const [key, value] of Object.entries({

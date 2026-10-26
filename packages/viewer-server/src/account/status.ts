@@ -26,6 +26,8 @@ export interface AccountStatusOptions {
 	readRemoteStatus?: typeof readCoordinatorAccountLinkStatus;
 	readRemoteOwnerStatus?: typeof readCoordinatorResolvedAccountOwnerStatus;
 	readRemoteCapabilities?: typeof readCoordinatorAccountChangeCapabilities;
+	/** The local People name for an Identity, so My Account and Sharing name it the same way. */
+	identityName?: (identityId: string) => string | undefined;
 }
 type UnavailableCode = Extract<CoordinatorAccountLinkStatusRead, { kind: "unavailable" }>["code"];
 export interface AccountLinkViewV1 {
@@ -40,7 +42,7 @@ export interface AccountLinkViewV1 {
 	> | null;
 	coordinator: { origin: string } | null;
 	/** Display target only; local.identityId and all mutation contexts remain the memory actor. */
-	accountOwner?: { identityId: string; memoryActorId: string };
+	accountOwner?: { identityId: string; memoryActorId: string; displayName?: string };
 	/** Read-only owner evidence, never ordinary account authority or management capabilities. */
 	ownerProjection?: {
 		kind: "resolved_account_owner";
@@ -164,14 +166,110 @@ function applyRemote(
 		blockedReason,
 	};
 }
+type AccountStatusResult = AccountLinkViewV1 | Extract<AccountContextResult, { error: string }>;
+
 export async function readAccountStatus(
 	options: AccountStatusOptions & { readContext: AccountContextReader },
 	groupId: string | undefined,
 	signal: AbortSignal,
 	readOptions: { expectedContext?: AccountContext } = {},
-): Promise<AccountLinkViewV1 | Extract<AccountContextResult, { error: string }>> {
+): Promise<AccountStatusResult> {
 	const initial = options.readContext(groupId);
 	if ("error" in initial) return initial;
+	if (
+		groupId === undefined &&
+		readOptions.expectedContext === undefined &&
+		initial.setup === "group_selection_required" &&
+		initial.groups.length > 0
+	)
+		return withPeopleNames(
+			options,
+			await readFirstUsableGroupStatus(options, initial.groups, signal),
+		);
+	return withPeopleNames(
+		options,
+		await readStatusFromContext(options, initial, groupId, signal, readOptions),
+	);
+}
+
+/**
+ * Names come from the local People list at view time. They stay out of the
+ * context, so renaming someone in Sharing cannot abort an account operation.
+ */
+function withPeopleNames(
+	options: AccountStatusOptions,
+	result: AccountStatusResult,
+): AccountStatusResult {
+	if ("error" in result) return result;
+	const name = (identityId: string) => {
+		try {
+			return options.identityName?.(identityId) || undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	let view = result;
+	const localName = view.local ? name(view.local.identityId) : undefined;
+	if (view.local && localName)
+		view = { ...view, local: { ...view.local, identityLabel: localName } };
+	const ownerName = view.accountOwner ? name(view.accountOwner.identityId) : undefined;
+	if (view.accountOwner && ownerName)
+		view = { ...view, accountOwner: { ...view.accountOwner, displayName: ownerName } };
+	return view;
+}
+
+/** 2: use this group. 1: review, keep looking. 0: this enrollment was refused. -1: stop. */
+function usableStatusRank(result: AccountStatusResult): number {
+	if ("error" in result) return -1;
+	if (result.ownerProjection) return 2;
+	if (result.remote.kind === "status") return result.remote.state === "review_required" ? 1 : 2;
+	// Only a refusal of this device's enrollment says another group might work.
+	// Outages, rate limits, and version problems apply to the whole coordinator.
+	if (result.remote.kind === "unavailable" && result.remote.code === "coordinator_rejected")
+		return 0;
+	return -1;
+}
+
+/**
+ * Account status is per coordinator, and the group only picks which enrollment
+ * signs the request. Try configured groups in order and keep the first one
+ * whose enrollment the coordinator accepts, preferring a decided status over
+ * review. Each attempt is a full signed read with its own context checks.
+ */
+async function readFirstUsableGroupStatus(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	groups: readonly string[],
+	signal: AbortSignal,
+): Promise<AccountStatusResult> {
+	let best: AccountStatusResult | null = null;
+	for (const groupId of groups) {
+		if (signal.aborted) break;
+		const result = await readGroupAccountStatus(options, groupId, signal);
+		const rank = usableStatusRank(result);
+		if (rank === 2) return result;
+		if (rank === -1) return best && usableStatusRank(best) === 1 ? best : result;
+		if (!best || rank > usableStatusRank(best)) best = result;
+	}
+	return best ?? readGroupAccountStatus(options, undefined, signal);
+}
+
+async function readGroupAccountStatus(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	groupId: string | undefined,
+	signal: AbortSignal,
+): Promise<AccountStatusResult> {
+	const initial = options.readContext(groupId);
+	if ("error" in initial) return initial;
+	return readStatusFromContext(options, initial, groupId, signal);
+}
+
+async function readStatusFromContext(
+	options: AccountStatusOptions & { readContext: AccountContextReader },
+	initial: LocalResult,
+	groupId: string | undefined,
+	signal: AbortSignal,
+	readOptions: { expectedContext?: AccountContext } = {},
+): Promise<AccountStatusResult> {
 	const view = accountLocalView(initial);
 	if (initial.setup !== "ready" || !initial.context) return attachOperation(view, options.registry);
 	const snapshot = JSON.stringify(initial);

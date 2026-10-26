@@ -391,7 +391,7 @@ describe("My Account synthetic end-to-end terminal states and context lifetime",
 			expect(button("Link Google account").disabled).toBe(true);
 			expect(mount.textContent).toContain(
 				{
-					review_required: "Check the selected profile and group",
+					review_required: "Check that you opened the right Codemem profile",
 					conflict: "conflicting account link",
 					revoked: "was revoked",
 				}[state],

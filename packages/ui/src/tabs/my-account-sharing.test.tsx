@@ -204,7 +204,7 @@ describe("My Account inside Sharing", () => {
 			if (state === "unavailable") expect(card().textContent).toContain("unavailable right now");
 			if (state === "review_required") {
 				expect(card().querySelector('[role="status"]')?.textContent).toBe(
-					"This profile can’t link Google yet. Check the selected profile and group. If they’re correct, ask the person who runs the coordinator to check this device.",
+					"This device can’t link Google yet. Check that you opened the right Codemem profile, then ask the person who runs the coordinator to check this device.",
 				);
 				const details = required(
 					card().querySelector<HTMLDetailsElement>("details.recipient-policy-management-details"),
@@ -212,7 +212,7 @@ describe("My Account inside Sharing", () => {
 				expect(details.open).toBe(false);
 				expect(details.querySelector("summary")?.textContent).toBe("What to check before linking");
 				const steps = [...details.querySelectorAll("ol > li")].map((step) => step.textContent);
-				expect(steps[0]).toMatch(/profile, group and coordinator/);
+				expect(steps[0]).toMatch(/profile and coordinator/);
 				expect(steps[1]).toMatch(/person who runs the coordinator.*device.*existing account link/);
 				expect(steps[2]).toContain("Check status");
 				expect(card().textContent).not.toMatch(

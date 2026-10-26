@@ -107,7 +107,7 @@ describe("My Account safe operator review guidance", () => {
 		await show();
 		// Assert
 		expect(mount.textContent).toMatch(/profile/i);
-		expect(mount.textContent).toMatch(/group/i);
+		expect(mount.textContent).toMatch(/coordinator/i);
 		expect(mount.textContent).toMatch(/operator|person who runs/i);
 		expect(mount.textContent).toMatch(/device|binding/i);
 		expect(mount.textContent).not.toMatch(
@@ -150,7 +150,7 @@ describe("My Account optional device review instructions", () => {
 		expect(details.querySelector("summary")?.textContent).toMatch(/device|link|check/i);
 		expect(details.querySelector("summary")?.hasAttribute("role")).toBe(false);
 		expect(details.textContent).toMatch(/profile/i);
-		expect(details.textContent).toMatch(/group/i);
+		expect(details.textContent).toMatch(/coordinator/i);
 		expect(details.textContent).toMatch(/operator|person who runs/i);
 		expect(details.textContent).toMatch(/binding|device/i);
 		expect(mount.textContent).not.toMatch(
@@ -370,7 +370,21 @@ describe("My Account read-only status", () => {
 		} else expect(mount.querySelector("details.recipient-policy-management-details")).toBeNull();
 		if (state === "conflict") expect(mount.textContent).toContain("conflicting account link");
 	});
-	it("requires explicit group selection rather than choosing the first group", async () => {
+	it("keeps the group override under Technical details when the Viewer picked a group", async () => {
+		// Arrange: the server chose group-two to sign the status read.
+		view = status({ groups: ["group-one", "group-two"], selectedGroupId: "group-two" });
+		// Act
+		await show();
+		// Assert
+		const details = mount.querySelector<HTMLDetailsElement>("details.my-account-technical-details");
+		const select = details?.querySelector<HTMLSelectElement>("select#my-account-group");
+		expect(details?.open).toBe(false);
+		expect(select?.value).toBe("");
+		expect(select?.options[0]?.textContent).toBe("Automatic (group-two)");
+		expect(mount.querySelectorAll("select")).toHaveLength(1);
+		expect(button("Link Google account").disabled).toBe(false);
+	});
+	it("opens Technical details when no group could be picked automatically", async () => {
 		// Arrange
 		view = status({
 			groups: ["group-one", "group-two"],
@@ -381,8 +395,9 @@ describe("My Account read-only status", () => {
 		// Act
 		await show();
 		// Assert
-		expect(mount.querySelector<HTMLSelectElement>("select")?.value).toBe("");
-		expect(mount.querySelector('label[for="my-account-group"]')?.textContent).toBe("Group");
+		const details = mount.querySelector<HTMLDetailsElement>("details.my-account-technical-details");
+		expect(details?.open).toBe(true);
+		expect(mount.querySelector('[role="status"]')?.textContent).toContain("Technical details");
 		expect(button("Link Google account").disabled).toBe(true);
 	});
 });
@@ -454,7 +469,7 @@ describe("My Account retained outcomes and current guidance", () => {
 					: "Linking did not finish",
 			);
 			expect(mount.textContent).toContain(
-				state === "review_required" ? "profile" : "does not match this local Identity",
+				state === "review_required" ? "profile" : "different Identity for this device",
 			);
 			expect(button("Link Google account").disabled).toBe(true);
 			expect(mount.textContent).not.toContain("Unverified secret");
