@@ -1951,7 +1951,7 @@ describe("legacy Team setup dialog", () => {
 			}),
 		);
 		const projects = Array.from({ length: 63 }, (_, index) => {
-			const displayName = index < 34 ? "greenroom" : `Project ${index + 1}`;
+			const displayName = index < 34 ? "atlas" : `Project ${index + 1}`;
 			return project({
 				projectRef: `internal-project-ref-${index + 1}`,
 				displayName,
@@ -2021,8 +2021,8 @@ describe("legacy Team setup dialog", () => {
 		});
 
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Review Projects"));
-		expect(document.body.textContent).toContain("greenroom — duplicate name 1 of 34");
-		expect(document.body.textContent).toContain("greenroom — duplicate name 34 of 34");
+		expect(document.body.textContent).toContain("atlas — duplicate name 1 of 34");
+		expect(document.body.textContent).toContain("atlas — duplicate name 34 of 34");
 		act(() => button("Review").click());
 		const review = document.querySelector<HTMLElement>(
 			'[aria-labelledby="legacy-team-setup-step-review"]',
@@ -2047,13 +2047,13 @@ describe("legacy Team setup dialog", () => {
 		expect(review.textContent).toContain("6 included devices");
 		expect(review.textContent).toContain("378 device-access changes");
 		expect(section("Projects").textContent).toContain(
-			"greenroom — 34 reviewed Projects, 34 Project changes",
+			"atlas — 34 reviewed Projects, 34 Project changes",
 		);
 		expect(section("Recipients").textContent).toContain(
-			"greenroom — 34 canonical Projects, 34 recipient changes",
+			"atlas — 34 canonical Projects, 34 recipient changes",
 		);
 		expect(section("Device access").textContent).toContain(
-			"greenroom — 34 canonical Projects, 204 device-access changes",
+			"atlas — 34 canonical Projects, 204 device-access changes",
 		);
 		expect(review.textContent).not.toContain("internal-");
 
@@ -2081,13 +2081,12 @@ describe("legacy Team setup dialog", () => {
 		expect([...review.querySelectorAll("details")].every((details) => !details.open)).toBe(true);
 		expect(
 			[...section("Projects").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) => row.textContent?.startsWith("Add greenroom — duplicate name "),
+				(row) => row.textContent?.startsWith("Add atlas — duplicate name "),
 			),
 		).toHaveLength(34);
 		expect(
 			[...section("Device access").querySelectorAll(".legacy-team-setup-exact-list > li")].filter(
-				(row) =>
-					row.textContent?.startsWith("Add Work laptop access to greenroom — duplicate name "),
+				(row) => row.textContent?.startsWith("Add Work laptop access to atlas — duplicate name "),
 			),
 		).toHaveLength(68);
 	});
@@ -2101,10 +2100,7 @@ describe("legacy Team setup dialog", () => {
 				targetIdentityRef: `cleanup-identity-${index + 1}`,
 			}),
 		);
-		const projects = [
-			project(),
-			project({ projectRef: "project-ref-two", displayName: "greenroom" }),
-		];
+		const projects = [project(), project({ projectRef: "project-ref-two", displayName: "atlas" })];
 		setup({
 			loadDetail: vi.fn().mockResolvedValue(
 				detail({

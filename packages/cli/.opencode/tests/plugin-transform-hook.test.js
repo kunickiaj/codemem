@@ -196,7 +196,7 @@ test("OpenCode identity retains a mutable revision for the default model", async
 	});
 });
 
-const normalizeIdentityPath = (value, cwd = "/tmp/greenroom") => {
+const normalizeIdentityPath = (value, cwd = "/tmp/atlas") => {
 	const trimmed = String(value || "").trim();
 	if (!trimmed) return null;
 	const expanded = trimmed.startsWith("~/")
@@ -455,9 +455,9 @@ describe("OpenCode transform-time injection", () => {
 		expect(secondPlugin).not.toBe(firstPlugin);
 
 		const pluginContext = {
-			project: { name: "greenroom" },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			project: { name: "atlas" },
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		};
 		const firstHooks = await firstPlugin({
 			...pluginContext,
@@ -522,10 +522,10 @@ describe("OpenCode transform-time injection", () => {
 		vi.resetModules();
 		const { OpencodeMemPlugin: secondPlugin } = await import("../plugins/codemem.js");
 		const pluginContext = {
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		};
 		const firstHooks = await firstPlugin(pluginContext);
 
@@ -654,13 +654,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		expect(typeof hooks["experimental.chat.messages.transform"]).toBe("function");
@@ -859,10 +859,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { CodememPlugin } = await import("../plugins/codemem.js");
 		const hooks = await CodememPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-default-budget" });
 
@@ -888,10 +888,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { CodememPlugin } = await import("../plugins/codemem.js");
 		const hooks = await CodememPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-missing-session", sessionID: null });
 
@@ -914,10 +914,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { CodememPlugin } = await import("../plugins/codemem.js");
 		const hooks = await CodememPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		// An overlapping session's event stream must not become another transform's requester.
 		await hooks.event({
@@ -959,10 +959,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { CodememPlugin } = await import("../plugins/codemem.js");
 		const hooks = await CodememPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-explicit-budget" });
 
@@ -989,10 +989,10 @@ describe("OpenCode transform-time injection", () => {
 		const appLog = vi.fn().mockResolvedValue(undefined);
 		const { CodememPlugin } = await import("../plugins/codemem.js");
 		const hooks = await CodememPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({
 			messageId: "user-tiny-budget",
@@ -1048,10 +1048,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = {
 			messages: [
@@ -1214,10 +1214,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = {
 			messages: [
@@ -1292,10 +1292,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = {
 			messages: [
@@ -1338,10 +1338,10 @@ describe("OpenCode transform-time injection", () => {
 		spawnMock.mockImplementation(() => makeProcess({ stdout: "" }));
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = {
 			messages: [
@@ -1380,13 +1380,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		expect(typeof hooks["experimental.session.compacting"]).toBe("function");
@@ -1417,7 +1417,7 @@ describe("OpenCode transform-time injection", () => {
 		expect(output.messages[0].parts.at(-1).text).toBe(
 			"[codemem context]\n## Summary\n[1] (feature) Normal turn context",
 		);
-		expect(packQueries).toEqual(["summarize this session greenroom"]);
+		expect(packQueries).toEqual(["summarize this session atlas"]);
 		expect(spawnMock).toHaveBeenCalledTimes(3);
 	});
 
@@ -1437,13 +1437,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		const output = { system: ["base system prompt"] };
@@ -1469,7 +1469,7 @@ describe("OpenCode transform-time injection", () => {
 		const store = new MemoryStore(dbPath);
 		const sessionId = insertSession(store.db, {
 			cwd: tmpDir,
-			project: "greenroom",
+			project: "atlas",
 		});
 		const firstMemoryId = store.remember(
 			sessionId,
@@ -1521,7 +1521,7 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
 			directory: tmpDir,
 			worktree: tmpDir,
@@ -1609,10 +1609,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const transform = hooks["experimental.chat.system.transform"];
 		const input = { sessionID: "sess-ledger-fingerprint", model: {} };
@@ -1645,7 +1645,7 @@ describe("OpenCode transform-time injection", () => {
 		const dbPath = join(tmpDir, "mem.sqlite");
 		const db = connect(dbPath);
 		initTestSchema(db);
-		const sessionId = insertSession(db, { cwd: tmpDir, project: "greenroom" });
+		const sessionId = insertSession(db, { cwd: tmpDir, project: "atlas" });
 		db.close();
 		const store = new MemoryStore(dbPath);
 		const firstMemoryId = store.remember(
@@ -1709,7 +1709,7 @@ describe("OpenCode transform-time injection", () => {
 			vi.resetModules();
 			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 			return OpencodeMemPlugin({
-				project: { name: "greenroom" },
+				project: { name: "atlas" },
 				client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
 				directory: tmpDir,
 				worktree: tmpDir,
@@ -1883,10 +1883,10 @@ describe("OpenCode transform-time injection", () => {
 
 			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 			const hooks = await OpencodeMemPlugin({
-				project: { name: "greenroom" },
+				project: { name: "atlas" },
 				client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-				directory: "/tmp/greenroom",
-				worktree: "/tmp/greenroom",
+				directory: "/tmp/atlas",
+				worktree: "/tmp/atlas",
 			});
 			const transform = hooks["experimental.chat.messages.transform"];
 			const messageOutput = () => ({
@@ -2007,10 +2007,10 @@ describe("OpenCode transform-time injection", () => {
 
 			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 			const hooks = await OpencodeMemPlugin({
-				project: { name: "greenroom" },
+				project: { name: "atlas" },
 				client: { app: { log: appLog }, tui: {} },
-				directory: "/tmp/greenroom",
-				worktree: "/tmp/greenroom",
+				directory: "/tmp/atlas",
+				worktree: "/tmp/atlas",
 			});
 			const transform = hooks["experimental.chat.system.transform"];
 			const input = { sessionID: `sess-repair-${expectedReason}`, model: {} };
@@ -2072,13 +2072,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks["experimental.session.compacting"]({ sessionID: "sess-legacy-compact" }, { context: [] });
@@ -2117,13 +2117,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		const output = { system: ["base system prompt"] };
@@ -2152,13 +2152,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		const output = {
@@ -2202,13 +2202,13 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: {},
 			},
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks.event({
@@ -2253,7 +2253,7 @@ describe("OpenCode transform-time injection", () => {
 
 		await hooks["experimental.chat.messages.transform"]({ sessionID: "sess-empty-override" }, output);
 
-		expect(packQueries).toEqual(["greenroom"]);
+		expect(packQueries).toEqual(["atlas"]);
 		expect(output.messages[0].parts.at(-1).text).toBe(
 			"[codemem context]\n## Summary\n[1] (feature) Empty prompt override respected",
 		);
@@ -2277,10 +2277,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		await hooks.event({
 			event: {
@@ -2309,7 +2309,7 @@ describe("OpenCode transform-time injection", () => {
 						modelID: "model-current",
 						providerID: "provider-current",
 						mode: "chat",
-						path: { cwd: "/tmp/greenroom", root: "/tmp/greenroom" },
+						path: { cwd: "/tmp/atlas", root: "/tmp/atlas" },
 						cost: 0,
 						tokens: {
 							input: 10,
@@ -2429,10 +2429,10 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_RAW_EVENTS = "0";
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await expect(hooks["tool.execute.after"](
@@ -2458,15 +2458,15 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		for (const filePath of [
-			"/tmp/greenroom/src/inside.ts",
+			"/tmp/atlas/src/inside.ts",
 			"src/relative.ts",
-			"/tmp/greenroom-private/prefix-secret.ts",
+			"/tmp/atlas-private/prefix-secret.ts",
 			"/tmp/outside-secret.ts",
 			"../traversal-secret.ts",
 			"x".repeat(401),
@@ -2493,7 +2493,7 @@ describe("OpenCode transform-time injection", () => {
 		);
 		expect(workingSetFiles).toEqual(["src/inside.ts", "src/relative.ts"]);
 		expect(command.join(" ")).not.toContain("secret");
-		expect(command.join(" ")).not.toContain("/tmp/greenroom");
+		expect(command.join(" ")).not.toContain("/tmp/atlas");
 	});
 
 	test.each([
@@ -2503,7 +2503,7 @@ describe("OpenCode transform-time injection", () => {
 		// Arrange: only a refreshed proof can authorize scope-a; raw scope-b stays denied.
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-plugin-scope-"));
 		tmpDirs.push(tmpDir);
-		const worktree = join(tmpDir, "greenroom");
+		const worktree = join(tmpDir, "atlas");
 		mkdirSync(worktree);
 		const dbPath = join(tmpDir, "mem.sqlite");
 		const deviceId = "plugin-scope-device";
@@ -2511,7 +2511,7 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_KEYS_DIR = keysDir;
 		const db = connect(dbPath);
 		initTestSchema(db);
-		const sessionId = insertSession(db, { cwd: worktree, project: "greenroom" });
+		const sessionId = insertSession(db, { cwd: worktree, project: "atlas" });
 		process.env.CODEMEM_SYNC_KEY_STORE = "file";
 		if (withProof) {
 			await grantScopeToDevice(db, "scope-a", deviceId, keysDir);
@@ -2524,14 +2524,14 @@ describe("OpenCode transform-time injection", () => {
 		insertScopedMemory(db, {
 			sessionId,
 			scopeId: "scope-a",
-			title: "Greenroom authorized scope note",
-			bodyText: "greenroom scope safety can use the authorized deployment note",
+			title: "Atlas authorized scope note",
+			bodyText: "atlas scope safety can use the authorized deployment note",
 		});
 		insertScopedMemory(db, {
 			sessionId,
 			scopeId: "scope-b",
-			title: "Greenroom forbidden payroll secret",
-			bodyText: "greenroom scope safety must not inject forbidden payroll details",
+			title: "Atlas forbidden payroll secret",
+			bodyText: "atlas scope safety must not inject forbidden payroll details",
 		});
 		db.close();
 
@@ -2550,7 +2550,7 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: {
 				app: { log: vi.fn().mockResolvedValue(undefined) },
 				tui: { showToast },
@@ -2569,7 +2569,7 @@ describe("OpenCode transform-time injection", () => {
 							sessionID: "sess-scope-a",
 							messageID: "user-scope",
 							type: "text",
-							text: "greenroom scope safety",
+							text: "atlas scope safety",
 						},
 					],
 				},
@@ -2581,11 +2581,11 @@ describe("OpenCode transform-time injection", () => {
 		// Assert
 		const userPrompt = output.messages[0].parts.map((part) => part.text || "").join("\n");
 		if (withProof) {
-			expect(userPrompt).toContain("Greenroom authorized scope note");
+			expect(userPrompt).toContain("Atlas authorized scope note");
 		} else {
-			expect(userPrompt).toBe("greenroom scope safety");
+			expect(userPrompt).toBe("atlas scope safety");
 		}
-		expect(userPrompt).not.toContain("Greenroom forbidden payroll secret");
+		expect(userPrompt).not.toContain("Atlas forbidden payroll secret");
 		expect(userPrompt).not.toContain("forbidden payroll details");
 		expect(showToast).toHaveBeenCalledTimes(withProof ? 1 : 0);
 		expect(JSON.stringify(showToast.mock.calls)).not.toContain("forbidden payroll");
@@ -2606,10 +2606,10 @@ describe("OpenCode transform-time injection", () => {
 		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput();
 
@@ -2655,10 +2655,10 @@ describe("OpenCode transform-time injection", () => {
 		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-range", sessionID: "sess-range" });
 
@@ -2677,7 +2677,7 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_VIEWER_AUTO = "0";
 		process.env.CODEMEM_RAW_EVENTS = "0";
 		process.env.CODEMEM_INJECT_CONTEXT = "0";
-		process.env.CODEMEM_DB = "~/greenroom.sqlite";
+		process.env.CODEMEM_DB = "~/atlas.sqlite";
 		process.env.CODEMEM_PACK_COMPRESSION = "off";
 		process.env.CODEMEM_EMBEDDING_DISABLED = "true";
 		process.env.CODEMEM_EMBEDDING_MODEL = "test-embedding-model";
@@ -2689,10 +2689,10 @@ describe("OpenCode transform-time injection", () => {
 		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-skipped", sessionID: "sess-skipped" });
 
@@ -2706,7 +2706,7 @@ describe("OpenCode transform-time injection", () => {
 		);
 		expect(fetchBody(fetchMock, 0)).toMatchObject({
 			action: "record",
-			db_path: join(process.env.HOME?.trim() || homedir(), "greenroom.sqlite"),
+			db_path: join(process.env.HOME?.trim() || homedir(), "atlas.sqlite"),
 			identity_target: {
 				pack_compression: "off",
 				embedding_disabled: true,
@@ -2737,10 +2737,10 @@ describe("OpenCode transform-time injection", () => {
 		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const firstOutput = messageOutput({ messageId: "user-cache", sessionID: "sess-cache" });
 		await hooks["experimental.chat.messages.transform"]({}, firstOutput);
@@ -2778,14 +2778,14 @@ describe("OpenCode transform-time injection", () => {
 		expect(cacheDelivery).toEqual({
 			action: "delivery",
 			attempt_id: cacheReuse.attempt_id,
-			db_path: "/tmp/greenroom/relative.sqlite",
+			db_path: "/tmp/atlas/relative.sqlite",
 			delivery_status: "handed_off",
 			identity_target: {
 				device_id: null,
 				actor_id_present: false,
 				actor_id: null,
-				config_path: "/tmp/greenroom/config/codemem.json",
-				runtime_root: "/tmp/greenroom/runtime",
+				config_path: "/tmp/atlas/config/codemem.json",
+				runtime_root: "/tmp/atlas/runtime",
 				workspace_id: null,
 				home_dir: resolve(process.env.HOME?.trim() || homedir()),
 				pack_compression: null,
@@ -2826,10 +2826,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-conflict", sessionID: "sess-conflict" });
 
@@ -2915,10 +2915,10 @@ describe("OpenCode transform-time injection", () => {
 		);
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-handshake", sessionID: "sess-handshake" });
 
@@ -2957,7 +2957,7 @@ describe("OpenCode transform-time injection", () => {
 		process.env.CODEMEM_VIEWER = "1";
 		process.env.CODEMEM_VIEWER_AUTO = "0";
 		process.env.CODEMEM_RAW_EVENTS = "0";
-		process.env.CODEMEM_DB = "/tmp/greenroom.sqlite";
+		process.env.CODEMEM_DB = "/tmp/atlas.sqlite";
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((url) =>
 			String(url).endsWith("/api/prompt-pack-profile")
 				? Promise.resolve(viewerProfileResponse())
@@ -2981,10 +2981,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-fallback", sessionID: "sess-fallback" });
 
@@ -3043,10 +3043,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-ledger-fallback", sessionID: "sess-ledger-fallback" });
 
@@ -3104,10 +3104,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		const output = messageOutput({ messageId: "user-invalid", sessionID: "sess-invalid" });
 
@@ -3157,10 +3157,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		// Act
@@ -3233,10 +3233,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: { showToast } },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks["tool.execute.after"](
@@ -3310,10 +3310,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks["tool.execute.after"](
@@ -3374,10 +3374,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		let { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		await hooks["tool.execute.after"](
 			{ tool: "read", args: {}, sessionID },
@@ -3395,10 +3395,10 @@ describe("OpenCode transform-time injection", () => {
 		vi.resetModules();
 		({ OpencodeMemPlugin } = await import("../plugins/codemem.js"));
 		await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await vi.waitFor(() => expect(postedEventIds).toHaveLength(1));
@@ -3428,10 +3428,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 		await hooks["tool.execute.after"](
 			{ tool: "read", args: {}, sessionID: "sess-disabled-spool" },
@@ -3479,10 +3479,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await vi.waitFor(() => expect(attemptedIds).toContain("event-valid"));
@@ -3511,10 +3511,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: { showToast } },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await vi.waitFor(() =>
@@ -3556,10 +3556,10 @@ describe("OpenCode transform-time injection", () => {
 
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: vi.fn().mockResolvedValue(undefined) }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await vi.waitFor(() => expect(attemptedIds).toHaveLength(1));
@@ -3591,10 +3591,10 @@ describe("OpenCode transform-time injection", () => {
 		try {
 			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 			const hooks = await OpencodeMemPlugin({
-				project: { name: "greenroom" },
+				project: { name: "atlas" },
 				client: { app: { log: appLog }, tui: { showToast } },
-				directory: "/tmp/greenroom",
-				worktree: "/tmp/greenroom",
+				directory: "/tmp/atlas",
+				worktree: "/tmp/atlas",
 			});
 			await assertSpoolLatchRecovery({ home, hooks, appLog, showToast, barrier });
 		} finally {
@@ -3622,10 +3622,10 @@ describe("OpenCode transform-time injection", () => {
 		});
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: {} },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks["tool.execute.after"](
@@ -3662,10 +3662,10 @@ describe("OpenCode transform-time injection", () => {
 		spawnMock.mockImplementation(() => makeProcess({ exitCode: 1, stderr: "fallback unavailable" }));
 		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
 		const hooks = await OpencodeMemPlugin({
-			project: { name: "greenroom" },
+			project: { name: "atlas" },
 			client: { app: { log: appLog }, tui: { showToast } },
-			directory: "/tmp/greenroom",
-			worktree: "/tmp/greenroom",
+			directory: "/tmp/atlas",
+			worktree: "/tmp/atlas",
 		});
 
 		await hooks["tool.execute.after"](

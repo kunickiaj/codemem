@@ -942,7 +942,7 @@ describe("buildRawEventEnvelopeFromHook", () => {
 
 		it("infers project from absolute tool_input filePath", () => {
 			const dir = mkdtempSync(join(tmpdir(), "codemem-test-"));
-			const repoRoot = join(dir, "greenroom");
+			const repoRoot = join(dir, "atlas");
 			mkdirSync(repoRoot);
 			mkdirSync(join(repoRoot, ".git"));
 			const srcDir = join(repoRoot, "src");
@@ -959,12 +959,12 @@ describe("buildRawEventEnvelopeFromHook", () => {
 				ts: "2026-01-01T00:00:00Z",
 			});
 
-			expect(envelope?.project).toBe("greenroom");
+			expect(envelope?.project).toBe("atlas");
 		});
 
 		it("infers project from relative tool_input filePath with cwd", () => {
 			const dir = mkdtempSync(join(tmpdir(), "codemem-test-"));
-			const repoRoot = join(dir, "greenroom");
+			const repoRoot = join(dir, "atlas");
 			mkdirSync(repoRoot);
 			mkdirSync(join(repoRoot, ".git"));
 			const srcDir = join(repoRoot, "src");
@@ -981,7 +981,7 @@ describe("buildRawEventEnvelopeFromHook", () => {
 				ts: "2026-01-01T00:00:00Z",
 			});
 
-			expect(envelope?.project).toBe("greenroom");
+			expect(envelope?.project).toBe("atlas");
 		});
 
 		it("does not infer project from relative tool path without cwd", () => {

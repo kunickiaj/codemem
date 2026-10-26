@@ -58,7 +58,7 @@ async function createScopeAccessFixture(tmpDir: string) {
 	let sessionId: number;
 	try {
 		initTestSchema(db);
-		sessionId = insertSession(db, { cwd: join(tmpDir, "greenroom"), project: "greenroom" });
+		sessionId = insertSession(db, { cwd: join(tmpDir, "atlas"), project: "atlas" });
 		grantScopeToDevice(db, "scope-a", "mcp-scope-device");
 		await refreshManagedScopeFixture(db, {
 			keysDir,
@@ -151,10 +151,10 @@ describe("MCP memory access scope guards", () => {
 	});
 
 	it("keeps blank project filters default-scoped for expansion-style direct reads", () => {
-		const greenroomId = insertScopedMemory(store, {
+		const atlasId = insertScopedMemory(store, {
 			sessionId,
 			scopeId: "scope-a",
-			title: "Greenroom default project note",
+			title: "Atlas default project note",
 		});
 		const otherSessionId = insertSession(store.db, {
 			cwd: join(tmpDir, "other"),
@@ -166,10 +166,10 @@ describe("MCP memory access scope guards", () => {
 			title: "Other project note",
 		});
 
-		expect(getMemoryForMcp(store, greenroomId, { project: "greenroom" })?.title).toBe(
-			"Greenroom default project note",
+		expect(getMemoryForMcp(store, atlasId, { project: "atlas" })?.title).toBe(
+			"Atlas default project note",
 		);
-		expect(getMemoryForMcp(store, otherId, { project: "greenroom" })).toBe(null);
+		expect(getMemoryForMcp(store, otherId, { project: "atlas" })).toBe(null);
 	});
 
 	it("refuses to forget unauthorized or explicitly filtered-out memories", () => {
@@ -196,7 +196,7 @@ describe("MCP memory access scope guards", () => {
 	it("stamps remembered MCP memories with the resolved project scope", () => {
 		// Arrange
 		insertProjectScopeMapping(store, {
-			projectPattern: join(tmpDir, "greenroom"),
+			projectPattern: join(tmpDir, "atlas"),
 			scopeId: "scope-a",
 		});
 
@@ -208,10 +208,10 @@ describe("MCP memory access scope guards", () => {
 				title: "MCP scoped remember",
 				body: "Remembered through MCP with a mapped project scope.",
 				confidence: 0.8,
-				project: "greenroom",
+				project: "atlas",
 			},
 			{
-				cwd: join(tmpDir, "greenroom"),
+				cwd: join(tmpDir, "atlas"),
 				user: "mcp-test",
 				now: () => "2026-01-01T00:00:00.000Z",
 			},
@@ -231,9 +231,9 @@ describe("MCP memory access scope guards", () => {
 				confidence: 0.8,
 			},
 			{
-				cwd: join(tmpDir, "greenroom"),
+				cwd: join(tmpDir, "atlas"),
 				user: "mcp-test",
-				envProject: "greenroom",
+				envProject: "atlas",
 				now: () => "2026-01-01T00:00:00.000Z",
 			},
 		);
@@ -246,7 +246,7 @@ describe("MCP memory access scope guards", () => {
 				 WHERE memory_items.id = ?`,
 			)
 			.get(result.memId) as { project: string | null };
-		expect(row.project).toBe("greenroom");
+		expect(row.project).toBe("atlas");
 	});
 
 	it("leaves the session project null when no explicit/env project is supplied", () => {
@@ -262,7 +262,7 @@ describe("MCP memory access scope guards", () => {
 				confidence: 0.8,
 			},
 			{
-				cwd: join(tmpDir, "greenroom"),
+				cwd: join(tmpDir, "atlas"),
 				user: "mcp-test",
 				now: () => "2026-01-01T00:00:00.000Z",
 			},
@@ -292,7 +292,7 @@ describe("MCP memory access scope guards", () => {
 				project: "   ",
 			},
 			{
-				cwd: join(tmpDir, "greenroom"),
+				cwd: join(tmpDir, "atlas"),
 				user: "mcp-test",
 				now: () => "2026-01-01T00:00:00.000Z",
 			},
@@ -306,7 +306,7 @@ describe("MCP memory access scope guards", () => {
 				confidence: 0.8,
 			},
 			{
-				cwd: join(tmpDir, "greenroom"),
+				cwd: join(tmpDir, "atlas"),
 				user: "mcp-test",
 				envProject: "   ",
 				now: () => "2026-01-01T00:00:00.000Z",
@@ -330,7 +330,7 @@ describe("MCP memory access scope guards", () => {
 		// Arrange
 		const sessionsBefore = store.db.prepare("SELECT * FROM sessions ORDER BY id").all();
 		insertProjectScopeMapping(store, {
-			projectPattern: join(tmpDir, "greenroom"),
+			projectPattern: join(tmpDir, "atlas"),
 			scopeId: "scope-b",
 		});
 
@@ -343,10 +343,10 @@ describe("MCP memory access scope guards", () => {
 					title: "Unauthorized MCP scoped remember",
 					body: "This should not be persisted into an unauthorized scope.",
 					confidence: 0.8,
-					project: "greenroom",
+					project: "atlas",
 				},
 				{
-					cwd: join(tmpDir, "greenroom"),
+					cwd: join(tmpDir, "atlas"),
 					user: "mcp-test",
 					now: () => "2026-01-01T00:00:00.000Z",
 				},
@@ -390,15 +390,15 @@ describe("MCP memory access scope guards", () => {
 		// at the tool boundary (direct-ID ops being silently default-project-scoped
 		// and memory_expand losing its explicit-blank-project escape hatch).
 		let otherSessionId: number;
-		let greenroomId: number;
+		let atlasId: number;
 		let otherProjectId: number;
 
 		beforeEach(() => {
 			otherSessionId = insertSession(store.db, { cwd: join(tmpDir, "other"), project: "other" });
-			greenroomId = insertScopedMemory(store, {
+			atlasId = insertScopedMemory(store, {
 				sessionId,
 				scopeId: "scope-a",
-				title: "Greenroom direct-ID note",
+				title: "Atlas direct-ID note",
 			});
 			otherProjectId = insertOwnedScopedMemory(store, {
 				sessionId: otherSessionId,
@@ -408,7 +408,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("memory_get returns an ID outside the server default project (B1 regression)", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const get = getTool(server, "memory_get");
 			const result = parseToolJson(await get.handler({ memory_id: otherProjectId })) as {
 				id?: number;
@@ -421,27 +421,27 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("memory_get still honors an explicit project filter on direct-ID lookups", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const get = getTool(server, "memory_get");
 			const result = parseToolJson(
-				await get.handler({ memory_id: otherProjectId, project: "greenroom" }),
+				await get.handler({ memory_id: otherProjectId, project: "atlas" }),
 			) as { id?: number; error?: string };
 			expect(result.error).toBe("not_found");
 			expect(result.id).toBeUndefined();
 		});
 
 		it("memory_get_observations returns IDs outside the server default project (B1 regression)", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const getMany = getTool(server, "memory_get_observations");
-			const result = parseToolJson(
-				await getMany.handler({ ids: [greenroomId, otherProjectId] }),
-			) as { items: Array<{ id: number }> };
+			const result = parseToolJson(await getMany.handler({ ids: [atlasId, otherProjectId] })) as {
+				items: Array<{ id: number }>;
+			};
 			const ids = result.items.map((item) => item.id).toSorted((a, b) => a - b);
-			expect(ids).toEqual([greenroomId, otherProjectId].toSorted((a, b) => a - b));
+			expect(ids).toEqual([atlasId, otherProjectId].toSorted((a, b) => a - b));
 		});
 
 		it("memory_forget removes an ID outside the server default project (B1 regression)", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const forget = getTool(server, "memory_forget");
 			const result = parseToolJson(await forget.handler({ memory_id: otherProjectId })) as {
 				status?: string;
@@ -452,7 +452,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("memory_expand with explicit blank project returns cross-project anchors (B2 regression)", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const expand = getTool(server, "memory_expand");
 			const result = parseToolJson(
 				await expand.handler({ ids: [otherProjectId], project: "" }),
@@ -467,14 +467,14 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("memory_expand still applies the default project when project is omitted", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const expand = getTool(server, "memory_expand");
 			const result = parseToolJson(await expand.handler({ ids: [otherProjectId] })) as {
 				anchors: Array<{ id: number }>;
 				errors: Array<{ code: string; ids: number[] }>;
 				metadata: { project: string | null };
 			};
-			expect(result.metadata.project).toBe("greenroom");
+			expect(result.metadata.project).toBe("atlas");
 			expect(result.anchors).toEqual([]);
 			const mismatch = result.errors.find((err) => err.code === "PROJECT_MISMATCH");
 			expect(mismatch?.ids).toContain(otherProjectId);
@@ -488,8 +488,8 @@ describe("MCP memory access scope guards", () => {
 			});
 			store.db
 				.prepare("UPDATE memory_items SET title = ? WHERE id = ?")
-				.run("Ledger scope target", greenroomId);
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+				.run("Ledger scope target", atlasId);
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const search = getTool(server, "memory_search");
 			const response = parseToolJson(
 				await search.handler(
@@ -498,24 +498,24 @@ describe("MCP memory access scope guards", () => {
 				),
 			) as { items: Array<{ id: number }> };
 
-			expect(response.items.map((item) => item.id)).toContain(greenroomId);
+			expect(response.items.map((item) => item.id)).toContain(atlasId);
 			expect(response.items.map((item) => item.id)).not.toContain(hiddenId);
 			const attempt = queryRetrievalAttempts(store.db, { surface: "mcp_search", limit: 1 })[0];
 			if (!attempt) throw new Error("expected a recorded MCP search attempt");
 			expect(attempt).toMatchObject({
 				retrievalStatus: "succeeded",
 				deliveryStatus: "handed_off",
-				project: "greenroom",
+				project: "atlas",
 				scopeId: "scope-a",
 				mode: null,
 				streamId: "transport-session-1",
 				limitRequested: 10,
-				filterSummary: { project: "greenroom", scope_id: "scope-a" },
+				filterSummary: { project: "atlas", scope_id: "scope-a" },
 			});
 			expect(attempt.latencyMs).toBeGreaterThanOrEqual(0);
 			expect(attempt.requestId).toMatch(/^[a-f0-9]{64}$/);
 			expect(attempt.requestId).not.toContain("request-search-1");
-			expect(attempt.exposures.map((exposure) => exposure.memoryId)).toContain(greenroomId);
+			expect(attempt.exposures.map((exposure) => exposure.memoryId)).toContain(atlasId);
 			expect(attempt.exposures.map((exposure) => exposure.memoryId)).not.toContain(hiddenId);
 			const persisted = JSON.stringify(
 				store.db
@@ -527,7 +527,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records successful empty search, recent, and timeline calls as undelivered no-results", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			await getTool(server, "memory_search").handler({
 				query: "no memory matches this exact query",
 				project: "missing-project",
@@ -554,7 +554,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records missing memory_explain input as failed without changing its structured payload", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const response = parseToolJson(await getTool(server, "memory_explain").handler({}));
 
 			expect(response).toEqual({
@@ -589,7 +589,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records a valid empty memory_explain result as no-results", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const response = parseToolJson(
 				await getTool(server, "memory_explain").handler({ ids: [999_999] }),
 			) as { items: unknown[]; errors: Array<{ code: string }> };
@@ -609,7 +609,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records invalid-only memory_explain ids as failed", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const response = parseToolJson(
 				await getTool(server, "memory_explain").handler({ ids: [-1] }),
 			) as { items: unknown[]; errors: Array<{ code: string; field: string }> };
@@ -639,16 +639,16 @@ describe("MCP memory access scope guards", () => {
 				scopeId: "scope-a",
 				title: "Filtered explain note",
 			});
-			store.db.prepare("UPDATE memory_items SET kind = 'decision' WHERE id = ?").run(greenroomId);
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			store.db.prepare("UPDATE memory_items SET kind = 'decision' WHERE id = ?").run(atlasId);
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const response = parseToolJson(
 				await getTool(server, "memory_explain").handler({
-					ids: [greenroomId, filteredId, otherProjectId, 999_999, -1],
+					ids: [atlasId, filteredId, otherProjectId, 999_999, -1],
 					kind: "decision",
 				}),
 			) as { items: Array<{ id: number }>; errors: Array<{ code: string }> };
 
-			expect(response.items.map((item) => item.id)).toEqual([greenroomId]);
+			expect(response.items.map((item) => item.id)).toEqual([atlasId]);
 			expect(response.errors.map((error) => error.code)).toEqual([
 				"INVALID_ARGUMENT",
 				"NOT_FOUND",
@@ -663,7 +663,7 @@ describe("MCP memory access scope guards", () => {
 				candidateCount: 1,
 				selectedCount: 1,
 				failureCode: null,
-				exposures: [{ memoryId: greenroomId, handoffStatus: "handed_off" }],
+				exposures: [{ memoryId: atlasId, handoffStatus: "handed_off" }],
 			});
 		});
 
@@ -671,7 +671,7 @@ describe("MCP memory access scope guards", () => {
 			const pack = store.buildMemoryPack("direct-ID note", 5);
 			expect(pack.rendered_items?.length).toBeGreaterThan(0);
 			vi.spyOn(store, "buildMemoryPackAsync").mockResolvedValue(pack);
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const response = parseToolJson(
 				await getTool(server, "memory_pack").handler({ context: "direct-ID note", limit: 5 }),
 			);
@@ -686,17 +686,17 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("covers direct, observations, index, explain, recent, pack, timeline, and expand surfaces", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			await getTool(server, "memory_get").handler({ memory_id: otherProjectId });
 			await getTool(server, "memory_get_observations").handler({
-				ids: [greenroomId, otherProjectId],
+				ids: [atlasId, otherProjectId],
 			});
 			await getTool(server, "memory_search_index").handler({ query: "direct-ID note", limit: 8 });
-			await getTool(server, "memory_explain").handler({ ids: [greenroomId], limit: 10 });
+			await getTool(server, "memory_explain").handler({ ids: [atlasId], limit: 10 });
 			await getTool(server, "memory_recent").handler({ limit: 8 });
 			await getTool(server, "memory_pack").handler({ context: "direct-ID note", limit: 5 });
 			await getTool(server, "memory_timeline").handler({
-				memory_id: greenroomId,
+				memory_id: atlasId,
 				depth_before: 1,
 				depth_after: 1,
 			});
@@ -732,17 +732,17 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("keeps duplicate processing of one runtime invocation idempotent", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const get = getTool(server, "memory_get");
 			const extra = requestExtra("retry-request-1", "transport-session-2");
 
-			const first = await get.handler({ memory_id: greenroomId }, extra);
-			const retry = await get.handler({ memory_id: greenroomId }, extra);
+			const first = await get.handler({ memory_id: atlasId }, extra);
+			const retry = await get.handler({ memory_id: atlasId }, extra);
 			expect(retry).toEqual(first);
 			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toHaveLength(1);
-			const secondServer = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const secondServer = createCodememMcpServer(store, { defaultProject: "atlas" });
 			await getTool(secondServer, "memory_get").handler(
-				{ memory_id: greenroomId },
+				{ memory_id: atlasId },
 				requestExtra("retry-request-1", "transport-session-3"),
 			);
 			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toHaveLength(2);
@@ -754,19 +754,19 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records repeated completed calls with identical IDs and arguments as new attempts", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const get = getTool(server, "memory_get");
 
 			await get.handler(
-				{ memory_id: greenroomId },
+				{ memory_id: atlasId },
 				requestExtra("reused-success-id", "long-lived-session"),
 			);
 			await get.handler(
-				{ memory_id: greenroomId },
+				{ memory_id: atlasId },
 				requestExtra("reused-success-id", "long-lived-session"),
 			);
 			await get.handler(
-				{ memory_id: greenroomId },
+				{ memory_id: atlasId },
 				requestExtra("different-success-id", "long-lived-session"),
 			);
 
@@ -777,7 +777,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("records repeated completed no-results calls as new attempts", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const search = getTool(server, "memory_search");
 			const args = { query: "no repeated result exists", project: "missing-project", limit: 5 };
 
@@ -791,24 +791,21 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("includes canonical call content when a transport session reuses a request ID", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const search = getTool(server, "memory_search");
 			const recent = getTool(server, "memory_recent");
 			const extra = requestExtra("reused-request-id", "long-lived-session");
 
-			await search.handler({ query: "direct-ID note", limit: 5, project: "greenroom" }, extra);
-			await search.handler({ project: "greenroom", limit: 5, query: "direct-ID note" }, extra);
+			await search.handler({ query: "direct-ID note", limit: 5, project: "atlas" }, extra);
+			await search.handler({ project: "atlas", limit: 5, query: "direct-ID note" }, extra);
 			expect(queryRetrievalAttempts(store.db, { surface: "mcp_search" })).toHaveLength(1);
 
-			await search.handler(
-				{ query: "different call content", limit: 5, project: "greenroom" },
-				extra,
-			);
+			await search.handler({ query: "different call content", limit: 5, project: "atlas" }, extra);
 			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_search" });
 			expect(attempts).toHaveLength(2);
 			expect(new Set(attempts.map((attempt) => attempt.requestId)).size).toBe(2);
 
-			await recent.handler({ limit: 5, project: "greenroom" }, extra);
+			await recent.handler({ limit: 5, project: "atlas" }, extra);
 			const recentAttempt = queryRetrievalAttempts(store.db, { surface: "mcp_recent" })[0];
 			expect(recentAttempt?.requestId).toMatch(/^[a-f0-9]{64}$/);
 			expect(attempts.map((attempt) => attempt.requestId)).not.toContain(recentAttempt?.requestId);
@@ -821,18 +818,18 @@ describe("MCP memory access scope guards", () => {
 
 		it("does not capture when MCP retrieval ledger capture is disabled", async () => {
 			const server = createCodememMcpServer(store, {
-				defaultProject: "greenroom",
+				defaultProject: "atlas",
 				captureRetrievalLedger: false,
 			});
 			const result = parseToolJson(
-				await getTool(server, "memory_get").handler({ memory_id: greenroomId }),
+				await getTool(server, "memory_get").handler({ memory_id: atlasId }),
 			) as { id: number };
-			expect(result.id).toBe(greenroomId);
+			expect(result.id).toBe(atlasId);
 			expect(queryRetrievalAttempts(store.db, { surface: "mcp_get" })).toEqual([]);
 		});
 
 		it("records retrieval failures without changing the MCP error response", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			vi.spyOn(store, "search").mockImplementationOnce(() => {
 				throw new Error("deterministic search failure");
 			});
@@ -846,7 +843,7 @@ describe("MCP memory access scope guards", () => {
 				retrievalStatus: "failed",
 				deliveryStatus: "not_attempted",
 				failureCode: "tool_failed",
-				filterSummary: { project: "greenroom" },
+				filterSummary: { project: "atlas" },
 			});
 		});
 
@@ -882,7 +879,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("reconciles a failed MCP request retry into the persisted handed-off success", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const search = getTool(server, "memory_search");
 			const extra = requestExtra("failed-then-successful", "retry-session");
 			const searchSpy = vi.spyOn(store, "search");
@@ -933,7 +930,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("reconciles a failed MCP request retry into one persisted no-results completion", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			const search = getTool(server, "memory_search");
 			const args = {
 				query: "no memory matches this exact retry query",
@@ -1033,7 +1030,7 @@ describe("MCP memory access scope guards", () => {
 					{
 						surface: "mcp_get",
 						toolName: "memory_get",
-						toolArguments: { memory_id: greenroomId },
+						toolArguments: { memory_id: atlasId },
 						requestId: "ordinary-error-content",
 						sourceSessionId: "ordinary-error-session",
 						invocationIdentity: signal,
@@ -1104,17 +1101,17 @@ describe("MCP memory access scope guards", () => {
 					{
 						surface: "mcp_explain",
 						toolName: "memory_explain",
-						toolArguments: { ids: [greenroomId] },
+						toolArguments: { ids: [atlasId] },
 					},
 					async () => ({
-						value: { items: [{ id: greenroomId }] },
-						memoryIds: [greenroomId],
+						value: { items: [{ id: atlasId }] },
+						memoryIds: [atlasId],
 						retrievalStatus: "failed",
 					}),
 				),
 			) as { items: Array<{ id: number }> };
 
-			expect(response.items).toEqual([{ id: greenroomId }]);
+			expect(response.items).toEqual([{ id: atlasId }]);
 			expect(
 				queryRetrievalAttempts(store.db, { surface: "mcp_explain", limit: 1 })[0],
 			).toMatchObject({
@@ -1129,7 +1126,7 @@ describe("MCP memory access scope guards", () => {
 		it("keeps concurrent identical successful invocations distinct", async () => {
 			const context: ToolRegistrationContext = {
 				store,
-				defaultProject: () => "greenroom",
+				defaultProject: () => "atlas",
 				envProject: () => null,
 				captureRetrievalLedger: true,
 				retrievalLedgerScopeId: "concurrent-ledger-scope",
@@ -1145,14 +1142,14 @@ describe("MCP memory access scope guards", () => {
 					{
 						surface: "mcp_get",
 						toolName: "memory_get",
-						toolArguments: { memory_id: greenroomId },
+						toolArguments: { memory_id: atlasId },
 						requestId: "concurrent-reused-id",
 						sourceSessionId: "concurrent-session",
 						invocationIdentity: signal,
 					},
 					async () => {
 						await gate;
-						return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+						return { value: { id: atlasId }, memoryIds: [atlasId] };
 					},
 				);
 
@@ -1168,7 +1165,7 @@ describe("MCP memory access scope guards", () => {
 
 		it("reconciles a concurrent failure after its successful sibling completes", async () => {
 			const context = retrievalContext(store, "failure-success-race-scope");
-			const args = { memory_id: greenroomId };
+			const args = { memory_id: atlasId };
 			let rejectFailure!: (error: Error) => void;
 			let resolveSuccess!: () => void;
 			const failureGate = new Promise<never>((_resolve, reject) => {
@@ -1197,7 +1194,7 @@ describe("MCP memory access scope guards", () => {
 			const failedCall = invoke(new AbortController().signal, () => failureGate);
 			const successfulSibling = invoke(new AbortController().signal, async () => {
 				await successGate;
-				return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+				return { value: { id: atlasId }, memoryIds: [atlasId] };
 			});
 			rejectFailure(new Error("concurrent transient failure"));
 			await failedCall;
@@ -1209,8 +1206,8 @@ describe("MCP memory access scope guards", () => {
 			await successfulSibling;
 
 			await invoke(new AbortController().signal, async () => ({
-				value: { id: greenroomId },
-				memoryIds: [greenroomId],
+				value: { id: atlasId },
+				memoryIds: [atlasId],
 			}));
 
 			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
@@ -1225,7 +1222,7 @@ describe("MCP memory access scope guards", () => {
 
 		it("reconciles two concurrent failures one-for-one with sequential successes", async () => {
 			const context = retrievalContext(store, "two-failure-fifo-scope");
-			const args = { memory_id: greenroomId };
+			const args = { memory_id: atlasId };
 			const invoke = (
 				signal: AbortSignal,
 				retrieve: () => Promise<{ value: object; memoryIds: number[] }>,
@@ -1266,8 +1263,8 @@ describe("MCP memory access scope guards", () => {
 
 			const succeed = () =>
 				invoke(new AbortController().signal, async () => ({
-					value: { id: greenroomId },
-					memoryIds: [greenroomId],
+					value: { id: atlasId },
+					memoryIds: [atlasId],
 				}));
 			await succeed();
 			expect(getRetrievalAttempt(store.db, firstAttempt.attemptId)?.retrievalStatus).toBe(
@@ -1285,7 +1282,7 @@ describe("MCP memory access scope guards", () => {
 
 		it("does not let completed active siblings consume or erase a pending failure", async () => {
 			const context = retrievalContext(store, "pending-slot-ownership-scope");
-			const args = { memory_id: greenroomId };
+			const args = { memory_id: atlasId };
 			let resolveSibling!: () => void;
 			const siblingGate = new Promise<void>((resolve) => {
 				resolveSibling = resolve;
@@ -1306,7 +1303,7 @@ describe("MCP memory access scope guards", () => {
 
 			const activeSibling = invoke(async () => {
 				await siblingGate;
-				return { value: { id: greenroomId }, memoryIds: [greenroomId] };
+				return { value: { id: atlasId }, memoryIds: [atlasId] };
 			});
 			await invoke(async () => {
 				throw new Error("failure while sibling active");
@@ -1315,14 +1312,14 @@ describe("MCP memory access scope guards", () => {
 				(attempt) => attempt.retrievalStatus === "failed",
 			);
 			if (!failedAttempt) throw new Error("expected pending failed attempt");
-			await invoke(async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }));
+			await invoke(async () => ({ value: { id: atlasId }, memoryIds: [atlasId] }));
 			resolveSibling();
 			await activeSibling;
 			expect(getRetrievalAttempt(store.db, failedAttempt.attemptId)?.retrievalStatus).toBe(
 				"failed",
 			);
 
-			await invoke(async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }));
+			await invoke(async () => ({ value: { id: atlasId }, memoryIds: [atlasId] }));
 			expect(getRetrievalAttempt(store.db, failedAttempt.attemptId)?.retrievalStatus).toBe(
 				"succeeded",
 			);
@@ -1344,10 +1341,10 @@ describe("MCP memory access scope guards", () => {
 						sourceSessionId: "hostile-session",
 						invocationIdentity: new AbortController().signal,
 					},
-					async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }),
+					async () => ({ value: { id: atlasId }, memoryIds: [atlasId] }),
 				),
 			) as { id: number };
-			expect(result.id).toBe(greenroomId);
+			expect(result.id).toBe(atlasId);
 
 			Object.defineProperty(context, "retrievalLedgerIdentityMode", {
 				get: () => {
@@ -1360,14 +1357,14 @@ describe("MCP memory access scope guards", () => {
 					{
 						surface: "mcp_get",
 						toolName: "memory_get",
-						toolArguments: { memory_id: greenroomId },
+						toolArguments: { memory_id: atlasId },
 						requestId: "hostile-completion",
 						sourceSessionId: "hostile-session",
 					},
-					async () => ({ value: { id: greenroomId }, memoryIds: [greenroomId] }),
+					async () => ({ value: { id: atlasId }, memoryIds: [atlasId] }),
 				),
 			) as { id: number };
-			expect(second.id).toBe(greenroomId);
+			expect(second.id).toBe(atlasId);
 			const attempts = queryRetrievalAttempts(store.db, { surface: "mcp_get" });
 			expect(attempts).toHaveLength(2);
 			expect(attempts.every((attempt) => attempt.retrievalStatus === "succeeded")).toBe(true);
@@ -1375,14 +1372,14 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("keeps MCP delivery fail-open when ledger tables are unavailable", async () => {
-			const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+			const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 			store.db.exec(
 				"DROP TABLE attribution_assessment_evidence; DROP TABLE attribution_assessments; DROP TABLE retrieval_exposures; DROP TABLE retrieval_attempts;",
 			);
 			const response = parseToolJson(
-				await getTool(server, "memory_get").handler({ memory_id: greenroomId }),
+				await getTool(server, "memory_get").handler({ memory_id: atlasId }),
 			) as { id: number };
-			expect(response.id).toBe(greenroomId);
+			expect(response.id).toBe(atlasId);
 		});
 	});
 });
@@ -1403,7 +1400,7 @@ function insertSession(
 function retrievalContext(store: MemoryStore, scopeId: string): ToolRegistrationContext {
 	return {
 		store,
-		defaultProject: () => "greenroom",
+		defaultProject: () => "atlas",
 		envProject: () => null,
 		captureRetrievalLedger: true,
 		retrievalLedgerScopeId: scopeId,

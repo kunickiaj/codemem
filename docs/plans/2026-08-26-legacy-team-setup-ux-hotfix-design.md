@@ -62,7 +62,7 @@ The Review step reconciles the raw mutation count across the five exact change c
 - recipient changes;
 - device-access changes.
 
-Project and device inventory counts appear separately as migration scope. Repeated labels are grouped with counts, for example `greenroom — 34 Projects with this name, 34 Project changes`. When grouping reduces a large Project mapping, recipient, or device-access section, the grouped summary appears by default and native `details` and `summary` disclosures expose every exact server-provided row. Small sections and large sections whose labels cannot be usefully grouped keep their exact rows visible.
+Project and device inventory counts appear separately as migration scope. Repeated labels are grouped with counts, for example `atlas — 34 Projects with this name, 34 Project changes`. When grouping reduces a large Project mapping, recipient, or device-access section, the grouped summary appears by default and native `details` and `summary` disclosures expose every exact server-provided row. Small sections and large sections whose labels cannot be usefully grouped keep their exact rows visible.
 
 The confirmation checkbox continues to bind to the attempt, finish, access-delta, and viewer-access-delta digests. Expanding or collapsing details does not alter evidence or the finish request.
 

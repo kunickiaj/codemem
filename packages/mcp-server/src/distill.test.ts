@@ -74,11 +74,11 @@ describe("memory_distill_candidates MCP tool", () => {
 	}
 
 	it("mines candidates within the server default project", async () => {
-		remember("greenroom", "mcp distill greenroom recurring lesson");
-		remember("greenroom", "mcp distill greenroom recurring lesson again");
+		remember("atlas", "mcp distill atlas recurring lesson");
+		remember("atlas", "mcp distill atlas recurring lesson again");
 		remember("other", "mcp distill other recurring lesson");
 		remember("other", "mcp distill other recurring lesson again");
-		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 		const distill = getTool(server, "memory_distill_candidates");
 
 		const result = parseToolJson(
@@ -94,15 +94,15 @@ describe("memory_distill_candidates MCP tool", () => {
 		expect(result.version).toBe(1);
 		expect(result.candidates).toHaveLength(1);
 		expect(result.candidates[0]).toMatchObject({
-			projects: ["greenroom"],
+			projects: ["atlas"],
 			scope: "project",
 		});
 	});
 
 	it("supports all-project mining for user-scoped candidates", async () => {
-		remember("greenroom", "purple otter lantern protocol recurring lesson");
+		remember("atlas", "purple otter lantern protocol recurring lesson");
 		remember("other", "purple otter lantern protocol lesson again");
-		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 		const distill = getTool(server, "memory_distill_candidates");
 
 		const result = parseToolJson(
@@ -116,17 +116,17 @@ describe("memory_distill_candidates MCP tool", () => {
 		) as { candidates: Array<{ projects: string[]; scope: string; suggested_target: string }> };
 
 		expect(result.candidates[0]).toMatchObject({
-			projects: ["greenroom", "other"],
+			projects: ["atlas", "other"],
 			scope: "user",
 			suggested_target: "~/.config/opencode/AGENTS.md",
 		});
 	});
 
 	it("judges candidates and drops routine-activity clusters when judge is set", async () => {
-		remember("greenroom", "mcp judge greenroom recurring lesson");
-		remember("greenroom", "mcp judge greenroom recurring lesson again");
+		remember("atlas", "mcp judge atlas recurring lesson");
+		remember("atlas", "mcp judge atlas recurring lesson again");
 		observeMock.mockResolvedValue({ raw: "ROUTINE: release status narration" });
-		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 		const distill = getTool(server, "memory_distill_candidates");
 
 		const result = parseToolJson(
@@ -151,10 +151,10 @@ describe("memory_distill_candidates MCP tool", () => {
 	});
 
 	it("falls back to unjudged output when the observer is unavailable", async () => {
-		remember("greenroom", "mcp judge fallback recurring lesson");
-		remember("greenroom", "mcp judge fallback recurring lesson again");
+		remember("atlas", "mcp judge fallback recurring lesson");
+		remember("atlas", "mcp judge fallback recurring lesson again");
 		observeMock.mockRejectedValue(new Error("no observer auth configured"));
-		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 		const distill = getTool(server, "memory_distill_candidates");
 
 		const result = parseToolJson(
@@ -178,9 +178,9 @@ describe("memory_distill_candidates MCP tool", () => {
 	});
 
 	it("rejects project filters when all-project mining is requested", async () => {
-		remember("greenroom", "project filter conflict recurring lesson");
+		remember("atlas", "project filter conflict recurring lesson");
 		remember("other", "project filter conflict recurring lesson again");
-		const server = createCodememMcpServer(store, { defaultProject: "greenroom" });
+		const server = createCodememMcpServer(store, { defaultProject: "atlas" });
 		const distill = getTool(server, "memory_distill_candidates");
 
 		const result = parseToolJson(
@@ -190,7 +190,7 @@ describe("memory_distill_candidates MCP tool", () => {
 				limit: 10,
 				max_evidence_items: 5,
 				min_recurrence: 2,
-				project: "greenroom",
+				project: "atlas",
 			}),
 		) as { error?: string };
 
