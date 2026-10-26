@@ -476,9 +476,16 @@ owner resolution, and that coordinator upgrade and live rollout are separate ope
 steps.
 
 When available, **Review account ownership** appears in **My Account** only for a
-review-required, conflicting, or mismatched account state. It lets you select the
-Identity already linked to the account and the configured coordinator groups; it does
-not use the computer username or create a new Identity.
+review-required, conflicting, or mismatched account state. It does not use the
+computer username or create a new Identity.
+
+This state often follows an upgrade from the older model, where each install created
+its own Identity. Each machine then claimed your other devices under its own ID, so
+different Teams can record different owners for the same device. With operator access,
+the owner list suggests every Identity that a Team records for this device and names
+the groups that record it. Pick the Identity that is linked to your Google account. If
+no owner is recorded, the dialog opens **Advanced: enter an existing owner ID** so you
+can enter that Identity ID directly.
 
 1. Choose **Review account ownership**, select the already-linked existing owner and
    each group to review, then choose **Preview account ownership**.
@@ -487,6 +494,8 @@ not use the computer username or create a new Identity.
    display-only account-owner evidence, not device assignments or sharing access.
 3. An operator-configured Viewer shows an unchecked acknowledgement by default. Check
    it only after reviewing the current preview, then choose **Confirm account ownership**.
+   While any selected group is blocked, the acknowledgement stays disabled and the
+   dialog names the blocked groups. Clear those groups or fix them, then preview again.
    The coordinator requires a fresh scoped review and confirmation; an ordinary
    controller-only approval is not enough.
 4. Read each group result separately. **Check review status** is read-only and never

@@ -202,24 +202,16 @@ describe("ownership choices and read-only preview", () => {
 		review();
 		// Assert
 		expect(document.body.textContent).toContain("Selected account owner: owner-a");
-		expect(document.body.textContent).toContain("group-one: Approval needed");
+		expect(document.body.textContent).toContain("group-one: Ready to confirm");
 		expect(document.body.textContent).toContain(
-			"Choose the Identity already linked to your Google account",
+			"Pick the Identity that is linked to your Google account",
 		);
-		expect(document.body.textContent).toContain("Memories keep their current author, author-c");
-		expect(document.body.textContent).toContain("Existing Team and Project access stays unchanged");
-		expect(document.body.textContent).toContain("coordinator groups are separate from Teams");
+		expect(document.body.textContent).toContain("Memories keep their author, author-c");
 		expect(document.body.textContent).toContain(
-			"This approval can allow account changes when the coordinator permits them",
+			"Team membership, Project access, and old records don't change",
 		);
 		expect(document.body.textContent).toContain(
-			"does not merge Identities, move history, or grant access to Teams or Projects",
-		);
-		expect(document.body.textContent).toContain(
-			"The confirmed owner will be used for future ownership checks",
-		);
-		expect(document.body.textContent).toContain(
-			"changes to Teams or Projects still need a separate review",
+			"future ownership checks, which can allow account changes",
 		);
 		expect(document.querySelector("a")).toBeNull();
 	});
@@ -367,8 +359,8 @@ describe("historical recovery scope and readable review labels", () => {
 		// Assert
 		const text = document.querySelector('[aria-label="Server ownership preview"]')?.textContent;
 		for (const label of [
-			"Already approved",
-			"Needs operator attention",
+			"Already confirmed",
+			"Blocked",
 			"Previously included",
 			"Previously excluded",
 			"This device",
@@ -1013,4 +1005,116 @@ describe("copy results cannot cross request contexts", () => {
 			expect(document.querySelector('[role="alert"]')).toBeNull();
 		},
 	);
+});
+
+describe("owner suggestions and blocked confirmation", () => {
+	it("opens manual owner entry and explains when no owner is recorded", () => {
+		// Arrange
+		draw({ candidates: [] });
+		// Act
+		const select = document.querySelector("select");
+		// Assert
+		expect(select?.disabled).toBe(true);
+		expect(select?.textContent).toBe("No recorded owners");
+		expect(document.querySelector("details")?.open).toBe(true);
+		expect(document.body.textContent).toContain("No recorded owner was found for this device");
+	});
+
+	it("names the blocked groups next to the disabled acknowledgement", () => {
+		// Arrange
+		draw();
+		choose();
+		const requested = request();
+		const preview = previewFor(requested);
+		preview.groupPreviews = [
+			{ groupId: "group-one", action: "blocked", reason: "account_owner_target_unavailable" },
+			{ groupId: "group-two", action: "new", reason: "Review needed" },
+		];
+		// Act
+		draw({ preview });
+		// Assert
+		const ack = input("I reviewed these records and groups");
+		expect(ack.disabled).toBe(true);
+		const reason = document.getElementById(ack.getAttribute("aria-describedby") ?? "");
+		expect(reason?.textContent).toBe(
+			"You can't confirm yet because group-one is blocked. Clear blocked groups or fix them, then preview again.",
+		);
+		expect(button("Confirm account ownership").disabled).toBe(true);
+	});
+
+	it("explains known blocker codes in plain language and keeps the code in operator details", () => {
+		// Arrange
+		draw();
+		choose();
+		const preview = previewFor(request());
+		preview.groupPreviews = [
+			{
+				groupId: "group-one",
+				action: "blocked",
+				reason: "account_owner_target_unavailable: verify the selected account connection",
+			},
+			{ groupId: "group-two", action: "new", reason: "Review needed" },
+		];
+		// Act
+		draw({ preview });
+		// Assert
+		const text = document.querySelector('[aria-label="Server ownership preview"]')?.textContent;
+		expect(text).toContain(
+			"group-one: Blocked — The coordinator has no Google account link for this Identity.",
+		);
+		const details = [...document.querySelectorAll("details")].find(
+			(item) => item.querySelector("summary")?.textContent === "Operator details",
+		);
+		expect(details?.open).toBe(false);
+		expect(details?.textContent).toContain(
+			"account_owner_target_unavailable: verify the selected account connection",
+		);
+	});
+
+	it("translates every joined blocker code and keeps unknown codes readable", () => {
+		// Arrange
+		draw();
+		choose();
+		const preview = previewFor(request());
+		preview.groupPreviews = [
+			{
+				groupId: "group-one",
+				action: "blocked",
+				reason: "account_owner_conflict: inspect; invite_identity_mismatch",
+			},
+			{ groupId: "group-two", action: "new", reason: "Review needed" },
+		];
+		// Act
+		draw({ preview });
+		// Assert
+		const text = document.querySelector('[aria-label="Server ownership preview"]')?.textContent;
+		expect(text).toContain(
+			"group-one: Blocked — The coordinator records a different owner for this Google account. invite_identity_mismatch",
+		);
+	});
+
+	it("describes what confirming allows when the acknowledgement is available", () => {
+		// Arrange
+		draw();
+		// Act
+		review();
+		// Assert
+		const ack = input("I reviewed these records and groups");
+		const description = document.getElementById(ack.getAttribute("aria-describedby") ?? "");
+		expect(ack.disabled).toBe(false);
+		expect(description?.textContent).toContain("which can allow account changes");
+	});
+
+	it("does not render empty reviewed-label sections or ready-state filler reasons", () => {
+		// Arrange
+		draw();
+		// Act
+		const preview = review();
+		draw({ preview: { ...preview, reviewedWeakLabels: [] } });
+		// Assert
+		const text = document.querySelector('[aria-label="Server ownership preview"]')?.textContent;
+		expect(text).not.toContain("Reviewed labels");
+		expect(text).toContain("group-one: Ready to confirm");
+		expect(text).not.toContain("Review needed");
+	});
 });

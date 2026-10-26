@@ -285,21 +285,14 @@ function RecoveryBody({
 			{matches ? <PreviewDetails preview={preview} /> : null}
 			{statusPreview ? <ReviewStatusDetails preview={statusPreview} /> : null}
 			{matches && props.reviewAccess === "operator" ? (
-				<label className="legacy-team-setup-target" style={{ display: "block", minHeight: 24 }}>
-					<input
-						type="checkbox"
-						checked={acknowledged === preview}
-						disabled={
-							props.busy ||
-							!preview.history.complete ||
-							preview.groupPreviews.some((group) => group.action === "blocked")
-						}
-						onChange={(event) => setAcknowledged(event.currentTarget.checked ? preview : null)}
-					/>
-					I reviewed these records and groups and confirm this device belongs to {review.owner}. I
-					understand this approval may allow account changes; existing memory authors and sharing
-					access will not change.
-				</label>
+				<Acknowledgement
+					id={id}
+					preview={preview}
+					owner={review.owner}
+					busy={props.busy}
+					checked={acknowledged === preview}
+					onChange={(checked) => setAcknowledged(checked ? preview : null)}
+				/>
 			) : null}
 			{review.status.result ? <RecoveryOutcomes result={review.status.result} /> : null}
 			{review.status.submitted && !review.status.result ? (
@@ -336,20 +329,13 @@ function RecoveryDisclosure({ id, profile }: { id: string; profile: RecoveryProf
 	return (
 		<>
 			<p id={`${id}-description`}>
-				Choose the Identity already linked to your Google account. This does not create a new
-				account, and your computer username does not choose the owner.
+				Confirm which existing Identity owns this device. Pick the Identity that is linked to your
+				Google account.
 			</p>
-			<p>
-				Memories keep their current author, <code>{profile.memoryActorId}</code>. Existing Team and
-				Project access stays unchanged; coordinator groups are separate from Teams.
-			</p>
-			<p>
-				This approval can allow account changes when the coordinator permits them. It does not merge
-				Identities, move history, or grant access to Teams or Projects.
-			</p>
-			<p>
-				The confirmed owner will be used for future ownership checks. Old assignments stay in the
-				record; changes to Teams or Projects still need a separate review.
+			<p id={`${id}-consequence`}>
+				The coordinator will use the confirmed owner for future ownership checks, which can allow
+				account changes. Memories keep their author, <code>{profile.memoryActorId}</code>. Team
+				membership, Project access, and old records don't change.
 			</p>
 			<dl>
 				<dt>Coordinator</dt>
@@ -405,27 +391,32 @@ function OwnerChoice(props: {
 	busy: boolean;
 	onChange: (owner: string) => void;
 }) {
+	const empty = props.candidates.length === 0;
+	const hint = empty
+		? "No recorded owner was found for this device. Enter the Identity ID that is linked to your Google account."
+		: "These Identities are recorded for this device. The coordinator checks the one you pick.";
 	return (
 		<fieldset disabled={props.busy}>
 			<legend>Existing account owner</legend>
-			<p>Names are suggestions. The coordinator checks the selected Identity ID.</p>
+			<p>{hint}</p>
 			<label htmlFor={`${props.id}-owner`}>Choose an already-linked owner</label>
 			<select
 				id={`${props.id}-owner`}
 				className="settings-input"
+				disabled={empty}
 				value={
 					props.candidates.some((candidate) => candidate.id === props.owner) ? props.owner : ""
 				}
 				onChange={(event) => props.onChange(event.currentTarget.value)}
 			>
-				<option value="">Choose an existing owner</option>
+				<option value="">{empty ? "No recorded owners" : "Choose an existing owner"}</option>
 				{props.candidates.map((candidate) => (
 					<option key={candidate.id} value={candidate.id}>
 						{candidate.label} ({candidate.id})
 					</option>
 				))}
 			</select>
-			<details>
+			<details open={empty}>
 				<summary style={{ minHeight: 24 }}>Advanced: enter an existing owner ID</summary>
 				<label htmlFor={`${props.id}-manual`}>Existing owner Identity ID (not a new account)</label>
 				<input
@@ -444,10 +435,79 @@ function OwnerChoice(props: {
 }
 
 const GROUP_ACTION_LABELS = {
-	new: "Approval needed",
-	reuse: "Already approved",
-	blocked: "Needs operator attention",
+	new: "Ready to confirm",
+	reuse: "Already confirmed",
+	blocked: "Blocked",
 };
+/** Plain-language meaning of coordinator blocker codes that a requester can act on. */
+const BLOCKED_REASON_TEXT: Record<string, string> = {
+	account_owner_target_unavailable:
+		"The coordinator has no Google account link for this Identity. Check that you entered the Identity linked to your Google account.",
+	account_owner_conflict: "The coordinator records a different owner for this Google account.",
+};
+
+/** The service joins several blocker codes with "; ", and each may carry ": detail". */
+function blockedReasonText(reason: string): string {
+	return reason
+		.split("; ")
+		.map((part) => BLOCKED_REASON_TEXT[part.split(":", 1)[0] ?? part] ?? part)
+		.join(" ");
+}
+
+/** A ready group's reason only restates its label; other states explain themselves. */
+function groupReason(group: RecoveryPreview["groupPreviews"][number]): string | null {
+	if (group.action === "new") return null;
+	if (group.action === "blocked") return blockedReasonText(group.reason);
+	return group.reason;
+}
+
+function reasonSuffix(group: RecoveryPreview["groupPreviews"][number]): string {
+	const reason = groupReason(group);
+	return reason ? ` — ${reason}` : "";
+}
+
+function blockedGroups(preview: RecoveryPreview): string[] {
+	return preview.groupPreviews
+		.filter((group) => group.action === "blocked")
+		.map((group) => group.groupId);
+}
+
+function confirmBlocker(preview: RecoveryPreview): string | null {
+	if (!preview.history.complete)
+		return "You can't confirm yet because some ownership records didn't load.";
+	const blocked = blockedGroups(preview);
+	if (blocked.length === 0) return null;
+	return `You can't confirm yet because ${blocked.join(", ")} ${blocked.length === 1 ? "is" : "are"} blocked. Clear blocked groups or fix them, then preview again.`;
+}
+
+function Acknowledgement(props: {
+	id: string;
+	preview: RecoveryPreview;
+	owner: string;
+	busy: boolean;
+	checked: boolean;
+	onChange: (checked: boolean) => void;
+}) {
+	const blocker = confirmBlocker(props.preview);
+	const reasonId = `${props.id}-confirm-blocker`;
+	// Without a blocker, screen readers hear what confirming allows.
+	const describedBy = blocker ? reasonId : `${props.id}-consequence`;
+	return (
+		<>
+			<label className="legacy-team-setup-target" style={{ display: "block", minHeight: 24 }}>
+				<input
+					type="checkbox"
+					checked={props.checked}
+					disabled={props.busy || blocker !== null}
+					aria-describedby={describedBy}
+					onChange={(event) => props.onChange(event.currentTarget.checked)}
+				/>
+				I reviewed these records and groups. This device belongs to {props.owner}.
+			</label>
+			{blocker ? <p id={reasonId}>{blocker}</p> : null}
+		</>
+	);
+}
 const HISTORY_RELATION_LABELS = {
 	exact_subject: "This device",
 	alias: "Same device key",
@@ -476,23 +536,13 @@ function PreviewDetails({ preview }: { preview: RecoveryPreview }) {
 			<ul>
 				{preview.groupPreviews.map((group) => (
 					<li key={group.groupId}>
-						{group.groupId}: {GROUP_ACTION_LABELS[group.action]} — {group.reason}
+						{group.groupId}: {GROUP_ACTION_LABELS[group.action]}
+						{reasonSuffix(group)}
 					</li>
 				))}
 			</ul>
-			{preview.groupPreviews.some((group) => group.action === "blocked") ? (
-				<p role="alert">
-					Ask the coordinator operator to check these blockers and upgrade the coordinator if
-					needed. Operators can inspect the required SQL with{" "}
-					<code>
-						codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
-					</code>
-					. This export applies nothing. Back up the coordinator and pause auth writers before
-					applying an upgrade. Do not reset this profile or create a new Identity.
-				</p>
-			) : null}
+			{blockedGroups(preview).length > 0 ? <BlockedHelp preview={preview} /> : null}
 			<h4>Recorded assignments ({preview.history.rows.length})</h4>
-			<p>These records explain why ownership needs review. They will be kept unchanged.</p>
 			{preview.history.complete === false ? (
 				<p role="alert">
 					We could not load all ownership records. Approval is disabled. Ask the coordinator
@@ -519,8 +569,42 @@ function PreviewDetails({ preview }: { preview: RecoveryPreview }) {
 					</li>
 				))}
 			</ol>
-			{preview.reviewedWeakLabels ? <WeakLabels preview={preview} /> : null}
+			{preview.reviewedWeakLabels?.length ? <WeakLabels preview={preview} /> : null}
 		</section>
+	);
+}
+
+function BlockedHelp({ preview }: { preview: RecoveryPreview }) {
+	const groups = blockedGroups(preview);
+	return (
+		<div role="alert">
+			<p>
+				{groups.join(", ")} can't be confirmed for {preview.existingOwnerId}. If the Identity is
+				correct, ask the coordinator operator to check the coordinator. Don't reset this profile or
+				create a new Identity.
+			</p>
+			<details>
+				<summary style={{ minHeight: 24 }}>Operator details</summary>
+				<ul>
+					{preview.groupPreviews
+						.filter((group) => group.action === "blocked")
+						.map((group) => (
+							<li key={group.groupId}>
+								{group.groupId}: <code>{group.reason}</code>
+							</li>
+						))}
+				</ul>
+				<p>
+					A coordinator without owner-resolution storage needs a schema upgrade. Inspect the SQL
+					with{" "}
+					<code>
+						codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
+					</code>
+					. The export applies nothing. Back up the coordinator and pause auth writers before
+					applying an upgrade.
+				</p>
+			</details>
+		</div>
 	);
 }
 
@@ -528,10 +612,7 @@ function WeakLabels({ preview }: { preview: RecoveryPreview }) {
 	return (
 		<section aria-label="Reviewed weak labels">
 			<h4>Reviewed labels (display only)</h4>
-			<p>
-				These labels are evidence for account owner display only, not device assignments or sharing
-				access.
-			</p>
+			<p>These labels only change how the account owner is displayed.</p>
 			<ul>
 				{preview.reviewedWeakLabels?.map((label) => (
 					<li key={JSON.stringify(label)}>

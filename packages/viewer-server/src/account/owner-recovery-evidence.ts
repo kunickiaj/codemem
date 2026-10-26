@@ -113,7 +113,7 @@ function historyRows(
 			identityId: decision.identity_id ?? "",
 			assignment: decision.decision,
 			relation,
-			reason: "Retained canonical Team decision; display metadata only.",
+			reason: "Recorded in Team history.",
 		};
 	});
 }

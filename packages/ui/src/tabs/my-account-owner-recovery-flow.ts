@@ -37,7 +37,7 @@ function recoveryError(error: unknown): string {
 		return "The profile changed. Close this review and check status before reviewing again.";
 	if (error instanceof AccountRequestError && error.code === "account_owner_recovery_busy")
 		return "Another account operation is active. Check status before trying another review.";
-	return "Account ownership review is unavailable or returned an incompatible response. Check status and ask the coordinator operator to check the service and upgrade the coordinator and Viewer if needed. Do not reset this profile or create a new Identity.";
+	return "The coordinator didn't answer, or sent a response this Viewer can't read. Try the preview again. If it keeps failing, ask the coordinator operator to check the coordinator, and keep this profile as it is.";
 }
 
 function unknownResult(preview: RecoveryPreview): RecoveryResult {

@@ -494,7 +494,7 @@ describe("recovery dispatch and unknown results", () => {
 			const freshText = freshReview?.textContent ?? "";
 			expect.soft(freshText).toContain("Ownership review for identity-a");
 			for (const groupId of original.groups) {
-				expect.soft(freshText).toContain(`${groupId}: Already approved`);
+				expect.soft(freshText).toContain(`${groupId}: Already confirmed`);
 				expect
 					.soft(freshText)
 					.toContain(`Existing review found for ${groupId}; local retention not verified.`);

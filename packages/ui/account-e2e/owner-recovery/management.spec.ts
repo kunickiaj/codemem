@@ -11,12 +11,14 @@ async function openRecovery(page: Page) {
 }
 
 async function explicitPreview(dialog: Locator) {
-	// The maintained server currently offers no candidate suggestions. Use its
-	// supported explicit existing-ID control, never a fabricated dropdown option.
-	await dialog.getByText("Advanced: enter an existing owner ID", { exact: true }).click();
-	await dialog
-		.getByLabel("Existing owner Identity ID (not a new account)", { exact: true })
-		.fill("identity-a");
+	// Use the supported explicit existing-ID control, never a fabricated dropdown
+	// option. The field starts open only when the server suggests no owners.
+	const manual = dialog.getByLabel("Existing owner Identity ID (not a new account)", {
+		exact: true,
+	});
+	if (!(await manual.isVisible()))
+		await dialog.getByText("Advanced: enter an existing owner ID", { exact: true }).click();
+	await manual.fill("identity-a");
 	for (const group of ["group-a", "group-b"]) {
 		await dialog.getByRole("checkbox", { name: group, exact: true }).uncheck();
 		await dialog.getByRole("checkbox", { name: group, exact: true }).check();
@@ -69,7 +71,7 @@ test("explicit default-No recovery confirms both groups once and survives restar
 		await page.goto(f.viewerOrigin);
 		const { dialog, trigger } = await openRecovery(page);
 		await expect(dialog).toHaveAccessibleDescription(
-			/Choose the Identity already linked to your Google account/,
+			/Pick the Identity that is linked to your Google account/,
 		);
 		await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
 		await expect(dialog.getByLabel("Choose an already-linked owner", { exact: true })).toHaveValue(
