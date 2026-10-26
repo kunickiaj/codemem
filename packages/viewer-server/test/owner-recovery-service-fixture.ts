@@ -125,7 +125,9 @@ export async function recoveryFixture(options: { fact?: boolean; groups?: string
 	cleanups.push(() => registry.close());
 	let adminSecret: string | null = options.admin === false ? null : "fixture-server-admin";
 	let now = NOW;
-	const serviceOptions = { readContext, readAdminSecret: () => adminSecret, registry, readRemoteStatus, readRemoteOwnerStatus, readRemoteReceiptStatus, reviewOwner, now: () => now };
+	// Owner suggestions are optional; tests that need them replace this read-only preview.
+	const previewDeviceOwner = vi.fn<typeof coordinatorAuthControllerReviewAction>(async () => ({}));
+	const serviceOptions = { readContext, readAdminSecret: () => adminSecret, registry, readRemoteStatus, readRemoteOwnerStatus, readRemoteReceiptStatus, reviewOwner, previewDeviceOwner, now: () => now };
 	const ownerProfile = (groupId = "group-a") => ({ dbPath: profile.dbPath, deviceId, publicKey, fingerprint, actorId: profile.identityId, coordinatorUrl: String(config.sync_coordinator_url), coordinatorId: remote.config.coordinatorId, groupId });
 	const association = (groupId = "group-a") => {
 		const p = ownerProfile(groupId);
@@ -142,7 +144,7 @@ export async function recoveryFixture(options: { fact?: boolean; groups?: string
 		return { attestationId: r.source_attestation_id, reviewReceiptId: r.source_review_receipt_id, reviewEvidenceDigest: r.source_evidence_digest, resolutionId: r.resolution_id, resolutionEvidenceDigest: r.resolution_evidence_digest };
 	};
 	const reply = (groups = ["group-a"]) => ({ version: 1, purpose: "existing_account_owner", scope, coordinatorOrigin: coordinatorUrl, coordinatorId: remote.config.coordinatorId, deviceId, fingerprint, ownerIdentityId: "identity-a", groups: groups.map((groupId) => ({ groupId, ...receipt() })) });
-	return { ...remote, directory, dbPath, keysDir, publicKey, deviceId, fingerprint, signer, proof, profile, config, readContext, serviceOptions, reviewOwner, readRemoteStatus, readRemoteOwnerStatus, readRemoteReceiptStatus, registry, link, requests, transport, ownerProfile, association, retain, immutableSnapshot, receipt, reply,
+	return { ...remote, directory, dbPath, keysDir, publicKey, deviceId, fingerprint, signer, proof, profile, config, readContext, serviceOptions, reviewOwner, previewDeviceOwner, readRemoteStatus, readRemoteOwnerStatus, readRemoteReceiptStatus, registry, link, requests, transport, ownerProfile, association, retain, immutableSnapshot, receipt, reply,
 		setAdmin: (value: string | null) => { adminSecret = value; }, advance: (ms: number) => { now += ms; },
 		cleanup: (close: () => void | Promise<void>) => cleanups.push(close),
 	};

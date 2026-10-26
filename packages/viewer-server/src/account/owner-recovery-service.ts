@@ -11,6 +11,10 @@ import { retainAccountOwnerAssociation } from "../../../core/src/account-owner-a
 import type { AccountContextReader } from "./context.js";
 import type { AccountLinkRegistry, AccountRecoveryReservation } from "./link-registry.js";
 import {
+	type RecoveryOwnerCandidate,
+	readRecoveryCandidates,
+} from "./owner-recovery-candidates.js";
+import {
 	assertNoCompetingOwner,
 	assertRecoverySelection,
 	captureRecoveryContext,
@@ -49,6 +53,8 @@ export interface AccountOwnerRecoveryServiceOptions {
 	readRemoteOwnerStatus?: typeof readCoordinatorResolvedAccountOwnerStatus;
 	readRemoteReceiptStatus?: typeof readCoordinatorResolvedAccountOwnerReceiptStatus;
 	reviewOwner?: typeof coordinatorAuthControllerReviewAction;
+	/** Read-only device-owner preview used only to suggest recorded owners. */
+	previewDeviceOwner?: typeof coordinatorAuthControllerReviewAction;
 	now?: () => number;
 }
 interface RetainedReview {
@@ -66,6 +72,7 @@ interface AppliedRecoveryGroup {
 	outcome: RecoveryResult["groups"][number];
 	verifiedReceipt?: ResolvedAccountOwnerReceiptReference;
 }
+const CANDIDATE_TTL_MS = 60_000;
 function groupAction(state: ValidatedRecoveryReview["state"]): "new" | "reuse" | "blocked" {
 	if (state === "ready") return "new";
 	if (state === "restored") return "reuse";
@@ -87,6 +94,7 @@ function staleDenial(error: unknown): boolean {
 class AccountOwnerRecoveryService {
 	#options: AccountOwnerRecoveryServiceOptions;
 	#handles = new Map<string, RetainedReview>();
+	#candidateCache?: { semanticId: string; at: number; candidates: RecoveryOwnerCandidate[] };
 	#reservations = new Set<AccountRecoveryReservation>();
 	#controller = new AbortController();
 	#closed = false;
@@ -139,16 +147,33 @@ class AccountOwnerRecoveryService {
 		const capture = this.#capture();
 		const coordinatorId = await this.#discover(capture);
 		this.#assertCurrent(capture);
-		const reviewAccess = this.#options.readAdminSecret()
-			? ("operator" as const)
-			: ("request" as const);
+		const adminSecret = this.#options.readAdminSecret();
+		const candidates = adminSecret ? await this.#candidates(capture, adminSecret) : [];
 		this.#assertCurrent(capture);
 		return {
 			version: 1 as const,
 			profile: recoveryProfile(capture, coordinatorId),
-			reviewAccess,
-			candidates: [],
+			reviewAccess: adminSecret ? ("operator" as const) : ("request" as const),
+			candidates,
 		};
+	}
+	async #candidates(capture: RecoveryCapture, adminSecret: string) {
+		// Suggestions share the coordinator's admin review rate limit with preview and
+		// confirm, so reopening the dialog for the same profile reuses recent results.
+		const cached = this.#candidateCache;
+		if (cached?.semanticId === capture.semanticId && this.#now() - cached.at < CANDIDATE_TTL_MS)
+			return structuredClone(cached.candidates);
+		const c = capture.context;
+		const candidates = await readRecoveryCandidates({
+			previewDeviceOwner: this.#options.previewDeviceOwner ?? coordinatorAuthControllerReviewAction,
+			remoteUrl: c.coordinatorUrl,
+			adminSecret,
+			groups: capture.groups,
+			device: { deviceId: c.deviceId, fingerprint: c.fingerprint, identityId: c.identityId },
+		});
+		this.#assertCurrent(capture);
+		this.#candidateCache = { semanticId: capture.semanticId, at: this.#now(), candidates };
+		return structuredClone(candidates);
 	}
 	#reviewInput(
 		capture: RecoveryCapture,
