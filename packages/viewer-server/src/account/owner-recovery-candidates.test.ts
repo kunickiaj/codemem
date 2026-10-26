@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vitest";
+import type { coordinatorAuthControllerReviewAction } from "@codemem/core";
+import { describe, expect, it, vi } from "vitest";
 import {
 	expectNoConfirmation,
 	recoveryFixture,
 	recoveryTests,
 	scope,
 } from "../../test/owner-recovery-service-fixture.js";
-import { candidateList, recordedOwnerGroups } from "./owner-recovery-candidates.js";
+import {
+	candidateList,
+	readRecoveryCandidates,
+	recordedOwnerGroups,
+} from "./owner-recovery-candidates.js";
 import { createAccountOwnerRecoveryService } from "./owner-recovery-service.js";
 
 recoveryTests();
@@ -154,11 +159,67 @@ describe("candidate projection", () => {
 		const candidates = candidateList(owners, "local:work");
 		// Assert
 		expect(candidates).toEqual([
-			{ id: "local:personal", label: "Identity recorded for this device in nerdworld" },
 			{
 				id: "local:work",
 				label: "This profile's Identity, recorded for this device in nerdworld, sre",
 			},
+			{ id: "local:personal", label: "Identity recorded for this device in nerdworld" },
+		]);
+	});
+
+	it("caps suggestions at the browser's 256-candidate limit and keeps this profile's Identity", () => {
+		// Arrange
+		const owners = new Map(
+			Array.from({ length: 300 }, (_, index) => [
+				`local:${String(index).padStart(3, "0")}`,
+				new Set(["g"]),
+			]),
+		);
+		owners.set("local:zzz-current", new Set(["g"]));
+		// Act
+		const candidates = candidateList(owners, "local:zzz-current");
+		// Assert
+		expect(candidates).toHaveLength(256);
+		expect(candidates[0]?.id).toBe("local:zzz-current");
+	});
+});
+
+describe("candidate request budget", () => {
+	const device = { deviceId: "device-a", fingerprint: "a".repeat(64), identityId: "local:a" };
+	const base = { remoteUrl: "https://coordinator.example", adminSecret: "secret", device };
+
+	it("stops after the first group whose preview found this device's enrollment", async () => {
+		// Arrange
+		const previewDeviceOwner = vi.fn(async () => ({ enrollment: {}, legacy_history: [] }));
+		// Act
+		await readRecoveryCandidates({ ...base, previewDeviceOwner, groups: ["g1", "g2", "g3"] });
+		// Assert
+		expect(previewDeviceOwner).toHaveBeenCalledOnce();
+	});
+
+	it("stops on returned history when an identity mismatch hides the enrollment", async () => {
+		// Arrange
+		const previewDeviceOwner = vi.fn(async () => ({ enrollment: null, legacy_history: [{}] }));
+		// Act
+		await readRecoveryCandidates({ ...base, previewDeviceOwner, groups: ["g1", "g2"] });
+		// Assert
+		expect(previewDeviceOwner).toHaveBeenCalledOnce();
+	});
+
+	it("tries the next group after a failure or a group without this device", async () => {
+		// Arrange
+		const previewDeviceOwner = vi
+			.fn<typeof coordinatorAuthControllerReviewAction>()
+			.mockRejectedValueOnce(new Error("unavailable"))
+			.mockResolvedValueOnce({ enrollment: null, legacy_history: [] })
+			.mockResolvedValueOnce({ enrollment: {}, legacy_history: [] });
+		// Act
+		await readRecoveryCandidates({ ...base, previewDeviceOwner, groups: ["g1", "g2", "g3", "g4"] });
+		// Assert
+		expect(previewDeviceOwner.mock.calls.map(([input]) => input.groupId)).toEqual([
+			"g1",
+			"g2",
+			"g3",
 		]);
 	});
 });

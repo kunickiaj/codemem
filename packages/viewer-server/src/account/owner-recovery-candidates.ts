@@ -68,12 +68,18 @@ function candidateLabel(prefix: string, groups: readonly string[]): string {
 	return `${prefix} recorded for this device in ${count}`;
 }
 
+// The browser also rejects the whole response above this many candidates.
+const MAX_CANDIDATES = 256;
+
 export function candidateList(
 	owners: Map<string, Set<string>>,
 	currentIdentityId: string,
 ): RecoveryOwnerCandidate[] {
+	// Sort this profile's Identity first so the cap never drops it.
+	const rank = (id: string) => (id === currentIdentityId ? 0 : 1);
 	return [...owners.entries()]
-		.sort(([left], [right]) => left.localeCompare(right))
+		.sort(([left], [right]) => rank(left) - rank(right) || left.localeCompare(right))
+		.slice(0, MAX_CANDIDATES)
 		.map(([id, groups]) => {
 			const prefix = id === currentIdentityId ? "This profile's Identity," : "Identity";
 			return { id, label: candidateLabel(prefix, [...groups]) };
@@ -81,8 +87,23 @@ export function candidateList(
 }
 
 /**
+ * The coordinator returns this device's history across all groups once it finds an
+ * enrollment. It hides the enrollment on an identity mismatch but still sends the
+ * history, so non-empty history also counts as complete.
+ */
+function hasCompleteHistory(response: unknown): boolean {
+	const row = response as { enrollment?: unknown; legacy_history?: unknown } | null;
+	const enrolled = row?.enrollment !== null && typeof row?.enrollment === "object";
+	return enrolled || historyRows(response).length > 0;
+}
+
+/**
  * Suggest owners from read-only coordinator previews of this device's current review.
  * Suggestions are display hints: the scoped owner preview still checks the chosen ID.
+ *
+ * Previews share the coordinator's admin review rate limit with the owner preview and
+ * confirmation. History is filtered by device, not group, so this asks one group at a
+ * time and stops at the first enrolled group instead of spending one request per group.
  */
 export async function readRecoveryCandidates(options: {
 	previewDeviceOwner: typeof coordinatorAuthControllerReviewAction;
@@ -92,20 +113,23 @@ export async function readRecoveryCandidates(options: {
 	device: CandidateDevice;
 }): Promise<RecoveryOwnerCandidate[]> {
 	const { device } = options;
-	const results = await Promise.allSettled(
-		options.groups.map((groupId) =>
-			options.previewDeviceOwner({
+	const responses: unknown[] = [];
+	for (const groupId of options.groups) {
+		let response: unknown;
+		try {
+			response = await options.previewDeviceOwner({
 				remoteUrl: options.remoteUrl,
 				adminSecret: options.adminSecret,
 				groupId,
 				deviceId: device.deviceId,
 				fingerprint: device.fingerprint,
 				identityId: device.identityId,
-			}),
-		),
-	);
-	const responses = results.flatMap((result) =>
-		result.status === "fulfilled" ? [result.value] : [],
-	);
+			});
+		} catch {
+			continue;
+		}
+		responses.push(response);
+		if (hasCompleteHistory(response)) break;
+	}
 	return candidateList(recordedOwnerGroups(responses, device), device.identityId);
 }
