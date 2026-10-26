@@ -159,7 +159,7 @@ it("native D1 links an assigned shared Identity and rejects ledger deletion afte
 	)).toMatchObject({
 		state: "linked", authority: "device_claim", identityId: input.identityId,
 	});
-	// Arrange: shared status would expose this profile without the requester attestation check.
+	// Arrange: a peer without its own claim must not see this profile (ADR 0005 Section 8).
 	await db.prepare(`INSERT INTO coordinator_auth_account_profiles
 		(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
 		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'synthetic-session',?
@@ -169,7 +169,7 @@ it("native D1 links an assigned shared Identity and rejects ledger deletion afte
 		publicKey: otherKey, fingerprint: "b".repeat(64),
 	};
 	expect(await store.readAccountLinkStatus(peer, config, { identityId: input.identityId }))
-		.toMatchObject({ state: "linked", account: { displayName: "Synthetic Person", email: "synthetic@example.test" } });
+		.toMatchObject({ state: "linked", account: null });
 	tables.push("groups", "coordinator_auth_account_profiles", "coordinator_auth_controller_attestations");
 	for (const [identityId, groupId, revokedAt] of [
 		["other", "group-a", "revoked"],

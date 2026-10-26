@@ -9,11 +9,11 @@ import {
 	expectDisplayOnly,
 	expectNoDisclosure,
 	replaceFacts,
-	safeProfile,
 	selectedOwnerId,
 	setupResolved,
 	signer,
 	sourceController,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 
 deterministicReviewTests();
@@ -51,7 +51,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			attestationId: "original-controller",
 			reviewReceiptId: "original-receipt",
 		});
-		expect(result).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+		expect(result).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 		expectDisplayOnly(result);
 		expect(ordinary.state).not.toBe("linked");
 		expect(
@@ -111,8 +111,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 		// Assert: both components really exist, but never together on one record.
 		expect(firstRef.resolutionId).not.toBe(secondRef.resolutionId);
 		expect(firstRef.resolutionEvidenceDigest).not.toBe(secondRef.resolutionEvidenceDigest);
-		expect(first).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
-		expect(next).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+		expect(first).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
+		expect(next).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 		expectNoDisclosure(mixed);
 	});
 	test.for([
@@ -214,7 +214,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			h.backend,
 		).readResolvedAccountOwnerStatus(signer, f.cfg, { ownerIdentityId: selectedOwnerId });
 		// Assert
-		expect(result).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+		expect(result).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 		expectDisplayOnly(result);
 	});
 }

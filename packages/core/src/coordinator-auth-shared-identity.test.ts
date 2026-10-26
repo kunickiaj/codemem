@@ -436,6 +436,49 @@ for (const backend of ["SQLite", "D1"] as const) {
 			).toEqual(before);
 		},
 	);
+	test(`${backend} shows account details only to the device that holds the claim`, async ({
+		fixture: f,
+	}) => {
+		// Arrange: device-a linked the shared Identity; unrelated-device is its assigned peer.
+		seed(f);
+		await confirmed(f);
+		await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);
+		f.db.exec(`INSERT INTO coordinator_auth_account_profiles
+		(coordinator_id,link_id,display_name,email,email_verified,picture_url,source_session_id,source_signed_in_at_ms)
+		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,
+		'https://lh3.googleusercontent.com/synthetic','synthetic-session',${f.now}
+		FROM coordinator_auth_account_links`);
+		const peer = {
+			groupId: "group-a",
+			deviceId: "unrelated-device",
+			publicKey: otherKey,
+			fingerprint: "b".repeat(64),
+		};
+		const read = (signer: typeof peer) =>
+			f.store.readAccountLinkStatus(signer, f.cfg, { identityId: input.identityId });
+		// Act
+		const own = await read(input.signer);
+		const unproven = await read(peer);
+		// Assert
+		expect(own).toMatchObject({
+			state: "linked",
+			account: { displayName: "Synthetic Person", email: "synthetic@example.test" },
+		});
+		expect(unproven).toMatchObject({
+			state: "linked",
+			identityId: input.identityId,
+			account: null,
+		});
+		expect(JSON.stringify(unproven)).not.toMatch(/Synthetic Person|synthetic@|googleusercontent/);
+		// An operator then attests the peer for the same Identity: that is its own proof.
+		f.db.exec(`INSERT INTO coordinator_auth_controller_attestations
+		(attestation_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,review_receipt_id,evidence_digest,created_at)
+		VALUES ('att-peer','coordinator-a','${input.identityId}','group-a','unrelated-device','${otherKey}','${"b".repeat(64)}','receipt-peer','${"a".repeat(64)}','created')`);
+		expect(await read(peer)).toMatchObject({
+			state: "linked",
+			account: { displayName: "Synthetic Person", email: "synthetic@example.test" },
+		});
+	});
 	test(`${backend} assigned peer reads historical linked/revoked state but an unassigned peer cannot guess it`, async ({
 		fixture: f,
 	}) => {
@@ -457,14 +500,15 @@ for (const backend of ["SQLite", "D1"] as const) {
 		FROM coordinator_auth_account_links`);
 		f.db.exec("UPDATE enrolled_devices SET enabled=0 WHERE device_id='device-a'");
 		const before = snapshot(f);
-		// Act / Assert: the origin enrollment is not current Google ownership authority.
+		// Act / Assert: the origin enrollment is not current Google ownership authority,
+		// and a peer without its own proof learns only that the account is linked.
 		expect(
 			await f.store.readAccountLinkStatus(peer, f.cfg, { identityId: input.identityId }),
 		).toMatchObject({
 			state: "linked",
 			identityId: input.identityId,
 			authority: "device_claim",
-			account: { displayName: "Synthetic Person", email: "synthetic@example.test" },
+			account: null,
 		});
 		expect(snapshot(f)).toEqual(before);
 		for (const contradiction of [

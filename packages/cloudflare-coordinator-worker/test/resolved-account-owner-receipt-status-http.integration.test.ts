@@ -43,6 +43,12 @@ const publicProfile = {
 	email: profile.email,
 	pictureUrl: profile.pictureUrl,
 };
+
+/** A device running as another Identity never receives the owner's details. */
+const withheldProfile = expect.toSatisfy(
+	(value: unknown) => JSON.stringify(value) === "{}",
+	"withheld owner profile",
+);
 type Definition = { type: string; name: string; sql: string };
 type Fixture = Awaited<ReturnType<typeof setup>>;
 let initialDefinitions: Definition[] | undefined;
@@ -374,7 +380,7 @@ function confirmed(f: Fixture) {
 		state: "owner_confirmed",
 		ownerIdentity: origin.identityId,
 		profileState: "linked",
-		profile: publicProfile,
+		profile: withheldProfile,
 	};
 }
 function unconfirmed(f: Fixture) {

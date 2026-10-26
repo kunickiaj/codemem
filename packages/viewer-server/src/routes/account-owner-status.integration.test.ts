@@ -33,6 +33,12 @@ import { createAccountContextReader } from "../account/context.js";
 import { createAccountLinkRegistry } from "../account/link-registry.js";
 import { createApp } from "../index.js";
 
+/** This device runs as another Identity, so it never receives the owner's details. */
+const withheldProfile = expect.toSatisfy(
+	(value: unknown) => JSON.stringify(value) === "{}",
+	"withheld owner profile",
+);
+
 // Cases build a real signed coordinator (RSA OIDC keys, Ed25519 device key,
 // SQLite) and make real signed requests: well under a second idle, but over 5s
 // on a busy CI runner. These are correctness checks, not performance budgets.
@@ -332,7 +338,7 @@ it("fixture control: checked resolution and real signed clients confirm A withou
 			state: "owner_confirmed",
 			ownerIdentity: "identity-a",
 			profileState: "linked",
-			profile: { displayName: "Birth" },
+			profile: withheldProfile,
 		},
 	});
 	expect(
@@ -402,7 +408,7 @@ it("reads proven A through separate signed owner GET while ordinary C, A/B histo
 				ownerIdentity: "identity-a",
 				state: "owner_confirmed",
 				profileState: "linked",
-				profile: { displayName: "Birth" },
+				profile: withheldProfile,
 			},
 		},
 		canLink: false,

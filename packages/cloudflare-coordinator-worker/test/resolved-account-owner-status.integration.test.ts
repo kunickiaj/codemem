@@ -36,6 +36,12 @@ const publicProfile = {
 	email: profile.email,
 	pictureUrl: profile.pictureUrl,
 };
+
+/** A device running as another Identity never receives the owner's details. */
+const withheldProfile = expect.toSatisfy(
+	(value: unknown) => JSON.stringify(value) === "{}",
+	"withheld owner profile",
+);
 type Definition = { type: string; name: string; sql: string };
 type Fixture = Awaited<ReturnType<typeof setup>>;
 let initialDefinitions: Definition[] | undefined;
@@ -487,7 +493,7 @@ it("native exact persisted proof displays Google profile read-only without grant
 		state: "owner_confirmed",
 		ownerIdentity: origin.identityId,
 		profileState: "linked",
-		profile: publicProfile,
+		profile: withheldProfile,
 	});
 	expect(delegated).toEqual(result);
 	displayOnly(result);
@@ -567,7 +573,7 @@ it.each(["missing", "revoked", "receipt mismatch"] as const)(
 				"UPDATE coordinator_auth_controller_attestations SET review_receipt_id='wrong-receipt' WHERE attestation_id='original-controller'",
 			);
 			// Act / Assert: a later complete proof survives an earlier incomplete receipt.
-			expect(await status(f)).toMatchObject({ state: "owner_confirmed", profile: publicProfile });
+			expect(await status(f)).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 			// Arrange: each receipt now disagrees with a different original source field.
 			await exec(
 				"UPDATE coordinator_auth_controller_attestations SET evidence_digest=? WHERE attestation_id='second-source'",
@@ -626,7 +632,7 @@ it("native removed source enrollment/group, later authentic weak labels and orig
 	expect(result).toMatchObject({
 		state: "owner_confirmed",
 		profileState: "linked",
-		profile: publicProfile,
+		profile: withheldProfile,
 	});
 	displayOnly(result);
 	expect(await snapshot()).toEqual(before);
@@ -651,9 +657,8 @@ it("native current verified profile wins; unverified email and credential-bearin
 	expect(result).toMatchObject({
 		state: "owner_confirmed",
 		profileState: "linked",
-		profile: { displayName: "Current A" },
+		profile: withheldProfile,
 	});
-	expect(result.profile).toEqual({ displayName: "Current A" });
 	expect(await snapshot()).toEqual(before);
 });
 
@@ -801,12 +806,7 @@ it("native final SELECT reads an actual refreshed profile consistently and rejec
 	// Assert
 	expect(f.diagnostics.finalReads).toBe(1);
 	expect(current.state).toBe("owner_confirmed");
-	if (current.profile !== null)
-		expect(current.profile).toEqual({
-			displayName: next.displayName,
-			email: next.email,
-			pictureUrl: next.pictureUrl,
-		});
+	if (current.profile !== null) expect(current.profile).toEqual(withheldProfile);
 	expect(JSON.stringify(current)).not.toContain(profile.email);
 	expect(await snapshot()).toEqual(afterMutation);
 	// Arrange: corrupt only the current connection generation after its preliminary reads.

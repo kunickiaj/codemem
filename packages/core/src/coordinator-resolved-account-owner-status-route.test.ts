@@ -17,6 +17,7 @@ import {
 	selectedOwnerId,
 	setupResolved,
 	signer,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
@@ -154,7 +155,7 @@ function confirmed(f: Fixture) {
 		state: "owner_confirmed",
 		ownerIdentity: selectedOwnerId,
 		profileState: "linked",
-		profile: safeProfile,
+		profile: withheldProfile,
 	};
 }
 for (const kind of ["SQLite", "D1"] as const) {

@@ -460,6 +460,8 @@ Unlink asks once in the Viewer and uses this device’s existing authorization; 
 
 If this device runs as a different Identity than the account owner the coordinator confirmed, the card names both and does not show the owner's Google profile. Refresh and Unlink work only on a device that runs as the account owner.
 
+Google account details (name, email, and picture) appear only on a device that holds its own proof for the Identity: the device that linked the account, or one with its own controller attestation. Another device of the same Identity shows **Linked on another device** without those details.
+
 If these controls are absent, management is not currently available for this device and coordinator. Check status before retrying; do not use an external Google workaround or an operator credential.
 
 If the coordinator reports an Identity mismatch, conflict, revoked link, or required review, ask the coordinator operator to resolve it; the card does not merge or repair identities.
@@ -512,9 +514,10 @@ Google-account move, new Identity, Team/Project permission change, or future-pol
 setup. Existing Team and Project delivery or reconciliation warnings still need their
 own sharing review.
 
-After approval, **My Account** displays an owner profile only from fresh verified
-account status. The owner projection does not enable linking, profile refresh, unlink,
-disconnect, or permission changes.
+After approval, **My Account** says which Identity this device runs as and who owns
+the account. It does not show the owner's Google name, email, or picture, because this
+device never signed in as the owner. The owner projection does not enable linking,
+profile refresh, unlink, disconnect, or permission changes.
 
 Without an operator-configured Viewer, use the dialog's **Copy support request** and
 send the noncredential request only to a trusted coordinator operator, never a public

@@ -875,7 +875,11 @@ the origin device or controller need not remain active. Current-requester
 ownership/enrollment mismatches, revoked or other-Identity attestations in any
 group/key alias, consumed other-Identity invitation assignments and committed
 other-Identity link history still deny access. Token revocation or retired
-controllers do not erase those pins. Guessed Identities expose no metadata, and
+controllers do not erase those pins. Such a peer sees `linked` with `account: null`:
+profile details (name, email, picture) go only to a requester whose own claim or
+attestation is the proof (ADR 0005 Section 8). The resolved-account-owner status
+likewise reports `profileState: "linked"` with an empty profile, because its reader
+runs as another Identity. Guessed Identities expose no metadata, and
 this read never permits another binding or replacement of a revoked link.
 
 The local Identity comes from the current profile context, whether config or

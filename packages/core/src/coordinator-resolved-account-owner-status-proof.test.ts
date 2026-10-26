@@ -18,11 +18,11 @@ import {
 	expectNoDisclosure,
 	overflowSources,
 	replaceFacts,
-	safeProfile,
 	selectedOwnerId,
 	setupResolved,
 	signer,
 	sourceController,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 
 deterministicReviewTests();
@@ -65,7 +65,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			h.backend,
 		).readResolvedAccountOwnerStatus(signer, f.cfg, { ownerIdentityId: selectedOwnerId });
 		// Assert
-		expect(result).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+		expect(result).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 	});
 	test(`${kind}: persisted exact-device/key fact displays selected A without changing ordinary authority or any database state`, async ({
 		fixture: f,
@@ -90,7 +90,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			state: "owner_confirmed",
 			ownerIdentity: selectedOwnerId,
 			profileState: "linked",
-			profile: safeProfile,
+			profile: withheldProfile,
 		});
 		expectDisplayOnly(result);
 		expect(h.finalRead.count).toBe(1);
@@ -188,7 +188,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(result).toMatchObject({
 			state: "owner_confirmed",
 			ownerIdentity: selectedOwnerId,
-			profile: safeProfile,
+			profile: withheldProfile,
 		});
 	});
 	test(`${kind}: an unknown current enrollment label denies instead of borrowing reviewed C`, async ({
@@ -238,7 +238,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			h.backend,
 		).readResolvedAccountOwnerStatus(signer, f.cfg, { ownerIdentityId: selectedOwnerId });
 		// Assert
-		expect(result).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+		expect(result).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 	});
 	test(`${kind}: two individually invalid facts cannot synthesize one source receipt`, async ({
 		fixture: f,
@@ -275,7 +275,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(result).toMatchObject({
 			state: "owner_confirmed",
 			profileState: "linked",
-			profile: safeProfile,
+			profile: withheldProfile,
 		});
 		expect(CANONICAL_PUBLIC_KEY).not.toBe(signer.publicKey);
 	});

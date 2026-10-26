@@ -110,7 +110,10 @@ function remoteSummary(view: AccountView): string {
 		return "This Identity’s account link was revoked, and it can’t be restored here. Ask the person who runs the coordinator if you need it back.";
 	if (view.blockedReason === "operation_active")
 		return "Another account operation is in progress in this Viewer. Check its status before starting another.";
-	if (view.remote.state === "linked") return "";
+	if (view.remote.state === "linked")
+		return view.remote.account
+			? ""
+			: "Linked on another device. Refresh and Unlink work only on the device that linked this account.";
 	return "No Google account is linked to this Identity. Linking will not move the Identity or grant sharing access.";
 }
 
@@ -195,10 +198,11 @@ function VerifiedAccount({ view }: { view: AccountView }) {
 		view.ownerProjection ||
 		view.remote.kind !== "status" ||
 		view.remote.state !== "linked" ||
-		!view.remote.identityMatches
+		!view.remote.identityMatches ||
+		!view.remote.account
 	)
 		return null;
-	const { displayName, email, pictureUrl } = view.remote.account ?? {};
+	const { displayName, email, pictureUrl } = view.remote.account;
 	return (
 		<div className="my-account-profile">
 			<AccountAvatar

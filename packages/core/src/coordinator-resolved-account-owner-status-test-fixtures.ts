@@ -23,6 +23,15 @@ export const safeProfile = {
 	pictureUrl: "https://lh3.googleusercontent.com/synthetic-owner-a",
 };
 
+/**
+ * A linked owner's profile as a device running as another Identity sees it:
+ * an empty object, never the name, email, or picture (ADR 0005 Section 8).
+ */
+export const withheldProfile = expect.toSatisfy(
+	(value: unknown) => JSON.stringify(value) === "{}",
+	"withheld owner profile",
+);
+
 export function databaseSnapshot(f: LinkFixture) {
 	return {
 		catalog: f.db

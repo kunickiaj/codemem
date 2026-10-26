@@ -154,9 +154,13 @@ function projectStatus(
 	if (!row.valid_link) return { ...confirmed, profileState: "unavailable", profile: null };
 	if (row.not_revoked === 0)
 		return { ...confirmed, profileState: "account_unlinked", profile: null };
-	const profile = projectProfile(row, issuer);
-	if (!profile) return { ...confirmed, profileState: "unavailable", profile: null };
-	return { ...confirmed, profileState: "linked", profile };
+	if (!projectProfile(row, issuer))
+		return { ...confirmed, profileState: "unavailable", profile: null };
+	// This read always comes from a device that runs as another Identity, so it
+	// holds no proof of its own for the owner. It learns that the owner's account
+	// is linked, but never the name, email, or picture (ADR 0005 Section 8).
+	// An empty profile keeps older Viewers' response checks working.
+	return { ...confirmed, profileState: "linked", profile: {} };
 }
 
 async function readCandidates(

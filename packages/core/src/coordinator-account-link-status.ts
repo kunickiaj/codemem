@@ -57,6 +57,8 @@ interface StatusRow {
 	picture_url: unknown;
 	authority: "device_claim" | "controller_attestation";
 	valid: number;
+	/** 1 when the proof is this device's own claim or attestation, not a peer's. */
+	own: number;
 	claim_count: number;
 	controller_count: number;
 	controller_identity: string | null;
@@ -101,7 +103,25 @@ function projectStatus(
 		return { ...derived, state: "unlinked", account: null };
 	}
 	if (row.issuer !== config.issuer) return { ...base, state: "conflict" };
-	if (row.identity_id !== identityId) return { ...derived, state: "linked", account: null };
+	return { ...derived, state: "linked", account: requesterAccount(row, identityId) };
+}
+
+/** This device's own claim, or its own current attestation for the same Identity. */
+function requesterHoldsProof(row: StatusRow): boolean {
+	return (
+		row.own === 1 || (row.controller_count === 1 && row.controller_identity === row.identity_id)
+	);
+}
+
+/**
+ * Profile details need this device's own proof. A peer of the Identity learns
+ * only that the account is linked elsewhere (ADR 0005 Section 8).
+ */
+function requesterAccount(
+	row: StatusRow,
+	identityId: string,
+): CoordinatorAccountLinkStatus["account"] {
+	if (row.identity_id !== identityId || !requesterHoldsProof(row)) return null;
 	const account: NonNullable<CoordinatorAccountLinkStatus["account"]> = {};
 	const displayName = safeDisplayText(row.display_name, 256);
 	const email = row.email_verified === 1 ? safeDisplayText(row.email, 320) : undefined;
@@ -112,7 +132,7 @@ function projectStatus(
 		row.issuer ?? "",
 	);
 	if (pictureUrl !== undefined) account.pictureUrl = pictureUrl;
-	return { ...derived, state: "linked", account };
+	return account;
 }
 
 function statusConnectionFacts(connections: boolean): string {
@@ -217,7 +237,8 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  AND d.key_id <> p.key_id AND d.fingerprint <> p.fingerprint
  AND EXISTS (SELECT 1 FROM status_assignment)
   AND ${connections ? "(sl.link_id IS NOT NULL AND sl.authority_kind = 'device_claim')" : authDeviceClaimProvenanceSql({ link: "l" })}))
- THEN 1 ELSE 0 END AS valid
+ THEN 1 ELSE 0 END AS valid,
+ CASE WHEN d.device_id = p.device_id AND d.key_id = p.key_id THEN 1 ELSE 0 END AS own
  FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id = p.coordinator_id
  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = d.coordinator_id AND ${connections ? "l.identity_id = d.identity_id" : "l.device_claim_id = d.claim_id"}
  ${connections ? "LEFT JOIN status_genesis sg ON sg.coordinator_id=d.coordinator_id AND sg.claim_id=d.claim_id LEFT JOIN status_links sl ON sl.coordinator_id=l.coordinator_id AND sl.link_id=l.link_id" : ""}
@@ -225,15 +246,15 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
  OR (d.identity_id = p.identity_id AND EXISTS (SELECT 1 FROM status_assignment))),
  candidates AS (
  SELECT *, 'device_claim' AS authority FROM claims
- UNION ALL SELECT a.controller_identity_id, l.link_id, l.issuer, l.revoked_at_ms, ${connections ? "CASE WHEN l.link_id IS NULL OR valid_controller.link_id IS NOT NULL THEN 1 ELSE 0 END" : "1"}, 'controller_attestation'
+ UNION ALL SELECT a.controller_identity_id, l.link_id, l.issuer, l.revoked_at_ms, ${connections ? "CASE WHEN l.link_id IS NULL OR valid_controller.link_id IS NOT NULL THEN 1 ELSE 0 END" : "1"}, 1, 'controller_attestation'
  FROM controller a LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = ?
  AND l.identity_id = a.controller_identity_id ${connections ? "" : "AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL"}
  ${connections ? "LEFT JOIN status_links valid_controller ON valid_controller.coordinator_id=l.coordinator_id AND valid_controller.link_id=l.link_id" : ""}
  WHERE NOT EXISTS (SELECT 1 FROM claims)
- UNION ALL SELECT p.identity_id, NULL, NULL, NULL, 1, 'device_claim' FROM claim_input p
+ UNION ALL SELECT p.identity_id, NULL, NULL, NULL, 1, 1, 'device_claim' FROM claim_input p
  WHERE NOT EXISTS (SELECT 1 FROM claims) AND NOT EXISTS (SELECT 1 FROM controller)
  AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL})
- SELECT a.identity_id,a.link_id,a.issuer,a.valid,a.authority,
+ SELECT a.identity_id,a.link_id,a.issuer,a.valid,a.own,a.authority,
  ${connections ? `coalesce((SELECT min(h.revoked_at_ms) FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id = (SELECT coordinator_id FROM claim_input) AND h.identity_id = a.identity_id AND h.revoked_at_ms IS NOT NULL),a.revoked_at_ms)` : "a.revoked_at_ms"} AS revoked_at_ms,
  (SELECT count(*) FROM claims) AS claim_count,
  (SELECT count(*) FROM controller) AS controller_count,

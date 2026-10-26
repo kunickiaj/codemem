@@ -891,3 +891,36 @@ describe("My Account recovery", () => {
 		},
 	);
 });
+
+describe("My Account on a device without its own proof", () => {
+	it("says the account is linked on another device and shows no profile or account changes", async () => {
+		// Arrange: the coordinator confirms the Identity is linked but withholds the profile.
+		view = status({
+			canLink: false,
+			managementActions: { refresh: false, disconnect: false },
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: "identity-one",
+				authority: "device_claim",
+				identityMatches: true,
+				state: "linked",
+				account: null,
+			},
+		});
+		// Act
+		await show();
+		// Assert
+		expect(mount.querySelector('[role="status"]')?.textContent).toBe(
+			"Linked on another device. Refresh and Unlink work only on the device that linked this account.",
+		);
+		expect(mount.querySelector(".my-account-profile")).toBeNull();
+		expect(
+			buttons().filter((node) =>
+				/^(Link Google account|Refresh profile|Unlink Google account)$/.test(
+					node.textContent ?? "",
+				),
+			),
+		).toEqual([]);
+	});
+});

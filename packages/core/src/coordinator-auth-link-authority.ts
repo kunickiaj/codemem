@@ -105,7 +105,8 @@ type AccountMetadata = { email?: string; displayName?: string; pictureUrl?: stri
  * Signed-device account-link status for the requested Identity.
  * `unlinked` is eligibility only; for `device_claim` nothing is verified or
  * reserved until the same operation's device finalization commits.
- * `account` is null whenever the link Identity differs from the requested one.
+ * `account` is null whenever the link Identity differs from the requested one, or
+ * the requester holds no claim or attestation of its own (ADR 0005 Section 8).
  */
 export type CoordinatorAccountLinkStatusV2 = AccountLinkStatusSubject &
 	(

@@ -19,6 +19,7 @@ import {
 	signer,
 	sourceController,
 	strongOtherOwner,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 
 deterministicReviewTests();
@@ -186,7 +187,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(h.finalRead.count).toBe(1);
 		if (result === null) return;
 		expect(JSON.stringify(result.profile)).not.toContain(safeProfile.email);
-		if (result.profile !== null) expect(result.profile).toEqual(nextProfile);
+		if (result.profile !== null) expect(result.profile).toEqual(withheldProfile);
 	});
 	test(`${kind}: a last-moment verified profile write is read consistently without cached email`, async ({
 		fixture: f,
@@ -204,11 +205,6 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(h.finalRead.count).toBe(1);
 		if (result === null) return;
 		expect(JSON.stringify(result.profile)).not.toContain(safeProfile.email);
-		if (result.profile !== null)
-			expect(result.profile).toEqual({
-				...safeProfile,
-				displayName: "New Verified Name",
-				email: "new-verified@example.test",
-			});
+		if (result.profile !== null) expect(result.profile).toEqual(withheldProfile);
 	});
 }

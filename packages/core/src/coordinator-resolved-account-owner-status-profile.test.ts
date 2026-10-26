@@ -12,13 +12,14 @@ import {
 	selectedOwnerId,
 	setupResolved,
 	signer,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
 	const test = backendTest(kind);
 	test.for([0, null])(
-		`${kind}: email verification %j never discloses an unverified email`,
+		`${kind}: email verification %j discloses no owner details`,
 		async (verified, { fixture: f }) => {
 			// Arrange
 			const h = await setupResolved(f, kind);
@@ -32,13 +33,12 @@ for (const kind of ["SQLite", "D1"] as const) {
 			expect(result).toMatchObject({
 				state: "owner_confirmed",
 				profileState: "linked",
-				profile: { displayName: safeProfile.displayName, pictureUrl: safeProfile.pictureUrl },
+				profile: withheldProfile,
 			});
-			expect(result.profile).not.toHaveProperty("email");
 			expect(databaseSnapshot(f)).toEqual(before);
 		},
 	);
-	test(`${kind}: control text and credential-bearing pictures are filtered by the existing safe-profile policy`, async ({
+	test(`${kind}: an unsafe profile still reports linked without owner details`, async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -54,10 +54,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(result).toMatchObject({
 			state: "owner_confirmed",
 			profileState: "linked",
-			profile: { email: safeProfile.email },
+			profile: withheldProfile,
 		});
-		expect(result.profile).not.toHaveProperty("displayName");
-		expect(result.profile).not.toHaveProperty("pictureUrl");
 	});
 	test.for([
 		"DELETE FROM coordinator_auth_account_links",

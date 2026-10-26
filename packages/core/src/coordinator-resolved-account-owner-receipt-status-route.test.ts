@@ -18,6 +18,7 @@ import {
 	setupResolved,
 	signer,
 	sourceController,
+	withheldProfile,
 } from "./coordinator-resolved-account-owner-status-test-fixtures.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
@@ -129,7 +130,7 @@ test("control: accepted three-selector route and real request signature still co
 	// Assert
 	expect(response.status).toBe(200);
 	const dto = await response.json();
-	expect(dto).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+	expect(dto).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 	expectDisplayOnly(dto);
 });
 test("receipt route forwards all five persisted pins and returns only the accepted DTO", async ({
@@ -143,7 +144,7 @@ test("receipt route forwards all five persisted pins and returns only the accept
 	// Assert
 	expect(response.status).toBe(200);
 	const dto = await response.json();
-	expect(dto).toMatchObject({ state: "owner_confirmed", profile: safeProfile });
+	expect(dto).toMatchObject({ state: "owner_confirmed", profile: withheldProfile });
 	expectDisplayOnly(dto);
 	expect(read).toHaveBeenCalledWith(signer, expect.objectContaining(f.cfg), {
 		ownerIdentityId: selectedOwnerId,
