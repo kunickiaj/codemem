@@ -2983,6 +2983,42 @@ describe("legacy Team setup dialog", () => {
 	});
 });
 
+describe("legacy Team setup device suggestions", () => {
+	it.each([
+		["self", "identity-ref-alex", "Current assignment: Alex · verified active assignment"],
+		["label", "", "This computer lists it as Alex. Confirm the person who uses that device."],
+	] as const)(
+		"pre-fills a %s assignment only when it is this device's own",
+		async (identityEvidence, selected, evidenceText) => {
+			// Arrange: this computer records the device under Alex.
+			const recorded = device({
+				existingIdentityRef: "identity-ref-alex",
+				suggestedIdentityRef: identityEvidence === "self" ? "identity-ref-alex" : null,
+				verifiedEvidenceKind: "active_assignment",
+				identityEvidence,
+				expectation: { kind: "existing", assignmentVersion: 7, identityRef: "identity-ref-alex" },
+			});
+			const loadDetail = vi
+				.fn()
+				.mockResolvedValue(
+					detail({ devices: [recorded], identityChoices: identities, unresolvedDeviceCount: 1 }),
+				);
+			// Act
+			setup({ loadDetail });
+			const select = await vi.waitFor(() => {
+				const match = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
+				if (!match) throw new Error("identity select missing");
+				return match;
+			});
+			// Assert
+			expect(select.value).toBe(selected);
+			expect(document.querySelector(".legacy-team-device-evidence")?.textContent).toContain(
+				evidenceText,
+			);
+		},
+	);
+});
+
 describe("Team setup dialog recovery from stale links", () => {
 	it("renders the close X immediately without waiting for icon initialization", () => {
 		setup(vi.fn().mockResolvedValue(detail()));

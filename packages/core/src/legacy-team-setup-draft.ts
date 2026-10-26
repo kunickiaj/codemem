@@ -74,6 +74,8 @@ export interface LegacyTeamSetupDraftSnapshotInput {
 	now?: string;
 }
 
+export type LegacyTeamDraftIdentityEvidence = "self" | "label";
+
 export interface LegacyTeamSetupDraftDeviceView {
 	deviceRef: string;
 	displayName: string;
@@ -81,6 +83,12 @@ export interface LegacyTeamSetupDraftDeviceView {
 	existingIdentityId: string | null;
 	suggestedIdentityId: string | null;
 	verifiedEvidenceKind: "active_assignment" | null;
+	/**
+	 * `self`: this is the running device. `label`: this machine's record about
+	 * another device, which that device never confirmed. `null`: a draft saved
+	 * before this distinction existed.
+	 */
+	identityEvidence: LegacyTeamDraftIdentityEvidence | null;
 	decision: LegacyTeamDeviceDecision;
 	targetIdentityId: string | null;
 	expectation: LegacyTeamAssignmentExpectation;
@@ -141,6 +149,7 @@ interface DeviceRow {
 	existing_identity_id: string | null;
 	existing_assignment_version: number | null;
 	verified_evidence_kind: "active_assignment" | null;
+	identity_evidence?: LegacyTeamDraftIdentityEvidence | null;
 	decision: LegacyTeamDeviceDecision;
 	target_identity_id: string | null;
 	expected_assignment_kind: "absent" | "existing" | null;
@@ -400,6 +409,30 @@ function currentDraft(db: Database, candidateId: string): DraftRow | null {
 	);
 }
 
+/**
+ * The device this runtime signs as. Only its own Identity assignment is first-hand;
+ * this machine's records about other devices are labels (ADR 0005 Section 8).
+ * `null` (no single known device) deliberately marks every row as a label.
+ */
+function runningDeviceId(db: Database): string | null {
+	try {
+		const rows = db.prepare("SELECT device_id FROM sync_device LIMIT 2").pluck().all() as string[];
+		return rows.length === 1 ? (rows[0] ?? null) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Records which draft device is this runtime's own; every other row is a label. */
+function markIdentityEvidence(db: Database, attemptId: string): string {
+	db.prepare(
+		`UPDATE legacy_team_setup_draft_devices
+		 SET identity_evidence = CASE WHEN device_id IS ? THEN 'self' ELSE 'label' END
+		 WHERE attempt_id = ?`,
+	).run(runningDeviceId(db), attemptId);
+	return attemptId;
+}
+
 function createAttempt(
 	db: Database,
 	input: LegacyTeamSetupDraftSnapshotInput,
@@ -599,7 +632,7 @@ function createAttempt(
 			now,
 		);
 	}
-	return attemptId;
+	return markIdentityEvidence(db, attemptId);
 }
 
 /**
@@ -627,7 +660,8 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 	const deviceRows = db
 		.prepare(
 			`SELECT device_id, device_ref, key_fingerprint, display_name, enabled,
-			        existing_identity_id, existing_assignment_version, verified_evidence_kind, decision,
+			        existing_identity_id, existing_assignment_version, verified_evidence_kind,
+			        identity_evidence, decision,
 			        target_identity_id, expected_assignment_kind, expected_assignment_version
 			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ? ORDER BY device_ref`,
 		)
@@ -721,27 +755,7 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 		// The coordinator key fingerprint stays in persisted CAS state only:
 		// it is stable security evidence that can correlate a physical device
 		// across Teams, and `deviceRef` already gives clients an opaque handle.
-		devices: deviceRows.map((row) => ({
-			deviceRef: row.device_ref,
-			displayName: row.display_name,
-			enabled: row.enabled !== 0,
-			existingIdentityId: row.existing_identity_id,
-			suggestedIdentityId:
-				row.verified_evidence_kind === "active_assignment" ? row.existing_identity_id : null,
-			verifiedEvidenceKind: row.verified_evidence_kind,
-			decision: row.decision,
-			targetIdentityId: row.target_identity_id,
-			expectation:
-				row.expected_assignment_kind === "existing" &&
-				row.expected_assignment_version != null &&
-				row.existing_identity_id != null
-					? {
-							kind: "existing",
-							assignmentVersion: row.expected_assignment_version,
-							identityId: row.existing_identity_id,
-						}
-					: { kind: "absent" },
-		})),
+		devices: deviceRows.map(draftDeviceView),
 		projects: projectRows.map((row) => ({
 			projectRef: row.project_ref,
 			displayName: row.display_name,
@@ -753,6 +767,34 @@ function loadDraftView(db: Database, attemptId: string): LegacyTeamSetupDraftVie
 				? legacyTeamResolvedProjectRef(row.project_ref, row.resolved_project_identity)
 				: null,
 		})),
+	};
+}
+
+function draftDeviceView(row: DeviceRow): LegacyTeamSetupDraftDeviceView {
+	return {
+		deviceRef: row.device_ref,
+		displayName: row.display_name,
+		enabled: row.enabled !== 0,
+		existingIdentityId: row.existing_identity_id,
+		// Only a first-hand assignment is suggested. A label is shown, never pre-filled.
+		suggestedIdentityId:
+			row.verified_evidence_kind === "active_assignment" && row.identity_evidence !== "label"
+				? row.existing_identity_id
+				: null,
+		verifiedEvidenceKind: row.verified_evidence_kind,
+		identityEvidence: row.identity_evidence ?? null,
+		decision: row.decision,
+		targetIdentityId: row.target_identity_id,
+		expectation:
+			row.expected_assignment_kind === "existing" &&
+			row.expected_assignment_version != null &&
+			row.existing_identity_id != null
+				? {
+						kind: "existing",
+						assignmentVersion: row.expected_assignment_version,
+						identityId: row.existing_identity_id,
+					}
+				: { kind: "absent" },
 	};
 }
 

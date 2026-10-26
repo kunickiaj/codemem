@@ -801,10 +801,7 @@ function completionOrChangedMessage(options: {
 			: null;
 	const terminalRecoveryCode = terminalCompletionCode(recoveryCompletionCode);
 	const completionCode = terminalRecoveryCode ?? causeCompletionCode;
-	const completionError =
-		completionCode === "team_setup_completion_unavailable" && command.kind === "finish"
-			? completionUnavailableAfterFinishMessage(cause)
-			: completionMessage(completionCode);
+	const completionError = finishCompletionMessage(command.kind, completionCode, cause);
 	if (terminalRecoveryCode) {
 		return {
 			completionCode,
@@ -820,6 +817,27 @@ function completionOrChangedMessage(options: {
 		message: completionError ?? safeError(command.kind),
 		terminalRecoveryCode,
 	};
+}
+
+const COORDINATOR_OUTDATED_ERROR =
+	"The coordinator needs an update before this Team setup can finish. No changes were applied. Ask the person who runs it to update it, then retry.";
+
+function finishCompletionMessage(
+	kind: SetupEffect["kind"],
+	code: ReturnType<typeof completionErrorCode>,
+	cause: unknown,
+): string | null {
+	if (kind !== "finish") return completionMessage(code);
+	if (code === "team_setup_completion_unavailable")
+		return completionUnavailableAfterFinishMessage(cause);
+	// Only the coordinator's own refusal of the manifest format means it is outdated.
+	if (
+		code === "team_setup_completion_invalid" &&
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.reason === "coordinator_rejected_manifest"
+	)
+		return COORDINATOR_OUTDATED_ERROR;
+	return completionMessage(code);
 }
 
 function completionUnavailableAfterFinishMessage(cause: unknown): string {

@@ -1179,3 +1179,46 @@ describe("legacy Team setup session reducer", () => {
 		).toBe(state);
 	});
 });
+
+describe("legacy Team setup finish against an outdated coordinator", () => {
+	function failFinish(cause: LegacyTeamSetupApiError) {
+		let state = reduceSetupSession(loaded(open(), readyView()), { type: "finish" });
+		if (state.status !== "open") throw new Error("expected finish session");
+		const command = state.commands[0];
+		if (command?.kind !== "finish") throw new Error("expected finish command");
+		state = reduceSetupSession(state, {
+			type: "effect_outcome",
+			outcome: {
+				status: "failure",
+				generation: command.generation,
+				id: command.id,
+				kind: command.kind,
+				cause,
+			},
+		});
+		if (state.status !== "open") throw new Error("expected failed finish session");
+		return globalError(state)?.message;
+	}
+
+	it("asks for a coordinator update when the coordinator refuses the manifest format", () => {
+		// Act
+		const message = failFinish(
+			new LegacyTeamSetupApiError(
+				409,
+				"team_setup_completion_invalid",
+				"coordinator_rejected_manifest",
+			),
+		);
+		// Assert
+		expect(message).toBe(
+			"The coordinator needs an update before this Team setup can finish. No changes were applied. Ask the person who runs it to update it, then retry.",
+		);
+	});
+
+	it("keeps the general message when local verification fails", () => {
+		// Act
+		const message = failFinish(new LegacyTeamSetupApiError(409, "team_setup_completion_invalid"));
+		// Assert
+		expect(message).toContain("could not be verified");
+	});
+});

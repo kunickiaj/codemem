@@ -2131,7 +2131,7 @@ describe("legacy Team setup drafts", () => {
 		expect(draft.canFinish).toBe(true);
 	});
 
-	it("emits active local assignments only as unselected verified suggestions", () => {
+	it("does not suggest an active local assignment for another device", () => {
 		db.prepare(
 			`INSERT INTO identity_devices(
 				device_id, identity_id, display_name, status, provenance, revision,
@@ -2143,7 +2143,7 @@ describe("legacy Team setup drafts", () => {
 		const draft = refreshLegacyTeamSetupDraft(db, snapshot());
 
 		expect(draft.devices[0]).toMatchObject({
-			suggestedIdentityId: "identity-a",
+			suggestedIdentityId: null,
 			verifiedEvidenceKind: "active_assignment",
 			decision: "unresolved",
 			targetIdentityId: null,

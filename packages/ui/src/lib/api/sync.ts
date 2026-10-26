@@ -1006,6 +1006,8 @@ export interface LegacyTeamSetupDeviceV1 {
 	existingIdentityRef: string | null;
 	suggestedIdentityRef: string | null;
 	verifiedEvidenceKind: "active_assignment" | null;
+	/** `label`: this machine's unconfirmed record about another device. Absent from older Viewers. */
+	identityEvidence?: "self" | "label" | null;
 	decision: "unresolved" | "included" | "excluded" | "removed";
 	targetIdentityRef: string | null;
 	expectation: LegacyTeamSetupAssignmentExpectationV1;
@@ -1304,6 +1306,7 @@ function isLegacyTeamSetupDevice(value: unknown): value is LegacyTeamSetupDevice
 		isStringOrNull(value.existingIdentityRef) &&
 		isStringOrNull(value.suggestedIdentityRef) &&
 		(value.verifiedEvidenceKind === "active_assignment" || value.verifiedEvidenceKind === null) &&
+		[undefined, null, "self", "label"].includes(value.identityEvidence as string | undefined) &&
 		typeof value.decision === "string" &&
 		["unresolved", "included", "excluded", "removed"].includes(value.decision) &&
 		isStringOrNull(value.targetIdentityRef) &&

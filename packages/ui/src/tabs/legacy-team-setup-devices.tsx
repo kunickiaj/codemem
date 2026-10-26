@@ -36,8 +36,19 @@ function identityName(detail: LegacyTeamSetupDetailResponseV1, identityRef: stri
 	);
 }
 
+/** Another device's record on this machine is a guess, so the person must pick. */
 function initialIdentityRef(device: LegacyTeamSetupDeviceV1): string {
-	return device.targetIdentityRef ?? device.existingIdentityRef ?? "";
+	if (device.targetIdentityRef) return device.targetIdentityRef;
+	if (device.identityEvidence === "label") return "";
+	return device.existingIdentityRef ?? "";
+}
+
+function assignmentEvidenceText(device: LegacyTeamSetupDeviceV1, name: string): string {
+	if (device.identityEvidence === "label")
+		return `This computer lists it as ${name}. Confirm the person who uses that device.`;
+	if (device.verifiedEvidenceKind === "active_assignment")
+		return `Current assignment: ${name} · verified active assignment`;
+	return `Current assignment: ${name}`;
 }
 
 function DeviceRow({
@@ -117,14 +128,7 @@ function DeviceRow({
 				<span>
 					{device.enabled ? "Current Team device" : "Device no longer active on this Team"}
 				</span>
-				{existingName ? (
-					<span>
-						Current assignment: {existingName}
-						{device.verifiedEvidenceKind === "active_assignment"
-							? " · verified active assignment"
-							: ""}
-					</span>
-				) : null}
+				{existingName ? <span>{assignmentEvidenceText(device, existingName)}</span> : null}
 				{!existingName && suggestedName ? <span>Suggested person: {suggestedName}</span> : null}
 				<span>Decision: {DECISION_LABELS[device.decision]}</span>
 			</div>

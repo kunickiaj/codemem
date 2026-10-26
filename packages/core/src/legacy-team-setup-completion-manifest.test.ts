@@ -474,7 +474,8 @@ describe("legacy Team setup completion manifests", () => {
 		expect(manifest.memberships).toEqual([{ identity_id: "identity-a", role: "member" }]);
 		expect(manifest.finish_digest).toMatch(/^[0-9a-f]{64}$/u);
 		expect(manifest.access_delta_digest).toMatch(/^[0-9a-f]{64}$/u);
-		expect(manifest.device_decisions).toEqual([
+		// Identity evidence is covered by legacy-team-two-machine-labels.test.ts.
+		expect(manifest.device_decisions).toMatchObject([
 			{
 				device_id: "device-a",
 				key_fingerprint: KEY_A,

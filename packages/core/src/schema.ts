@@ -1293,6 +1293,7 @@ export const legacyTeamSetupDraftDevices = sqliteTable(
 		existing_identity_id: text("existing_identity_id"),
 		existing_assignment_version: integer("existing_assignment_version"),
 		verified_evidence_kind: text("verified_evidence_kind"),
+		identity_evidence: text("identity_evidence"),
 		decision: text("decision").notNull().default("unresolved"),
 		target_identity_id: text("target_identity_id"),
 		expected_assignment_kind: text("expected_assignment_kind"),

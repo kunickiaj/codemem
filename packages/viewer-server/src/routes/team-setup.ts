@@ -1193,6 +1193,31 @@ interface ViewerSafeDraft {
 	identityChoices: LegacyTeamSetupIdentityChoiceV1[];
 }
 
+function viewerSafeDevice(
+	candidateRef: string,
+	device: LegacyTeamSetupDraftView["devices"][number],
+): ViewerSafeDraft["devices"][number] {
+	return {
+		deviceRef: device.deviceRef,
+		displayName: device.displayName,
+		enabled: device.enabled,
+		existingIdentityRef: identityRef(candidateRef, device.existingIdentityId),
+		suggestedIdentityRef: identityRef(candidateRef, device.suggestedIdentityId),
+		verifiedEvidenceKind: device.verifiedEvidenceKind,
+		identityEvidence: device.identityEvidence,
+		decision: device.decision,
+		targetIdentityRef: identityRef(candidateRef, device.targetIdentityId),
+		expectation:
+			device.expectation.kind === "existing"
+				? {
+						kind: "existing" as const,
+						assignmentVersion: device.expectation.assignmentVersion,
+						identityRef: requiredIdentityRef(candidateRef, device.expectation.identityId),
+					}
+				: { kind: "absent" as const },
+	};
+}
+
 function viewerSafeDraft(store: MemoryStore, draft: LegacyTeamSetupDraftView): ViewerSafeDraft {
 	if (draft.devices.length > MAX_DEVICES || draft.projects.length > MAX_PROJECTS) {
 		throw new Error("legacy_team_setup_roster_too_large");
@@ -1208,24 +1233,7 @@ function viewerSafeDraft(store: MemoryStore, draft: LegacyTeamSetupDraftView): V
 	requireCompleteMappingChoices(mappableProjectCount, mappingChoices.length);
 	const mappingChoiceIdentities = mappingChoices.map((choice) => choice.projectIdentity);
 	return {
-		devices: draft.devices.map((device) => ({
-			deviceRef: device.deviceRef,
-			displayName: device.displayName,
-			enabled: device.enabled,
-			existingIdentityRef: identityRef(draft.candidateRef, device.existingIdentityId),
-			suggestedIdentityRef: identityRef(draft.candidateRef, device.suggestedIdentityId),
-			verifiedEvidenceKind: device.verifiedEvidenceKind,
-			decision: device.decision,
-			targetIdentityRef: identityRef(draft.candidateRef, device.targetIdentityId),
-			expectation:
-				device.expectation.kind === "existing"
-					? {
-							kind: "existing" as const,
-							assignmentVersion: device.expectation.assignmentVersion,
-							identityRef: requiredIdentityRef(draft.candidateRef, device.expectation.identityId),
-						}
-					: { kind: "absent" as const },
-		})),
+		devices: draft.devices.map((device) => viewerSafeDevice(draft.candidateRef, device)),
 		projects: draft.projects.map((project) => ({
 			projectRef: project.projectRef,
 			displayName: project.displayName,

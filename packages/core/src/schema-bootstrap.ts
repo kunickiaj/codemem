@@ -379,6 +379,7 @@ CREATE TABLE IF NOT EXISTS legacy_team_setup_draft_devices (
 	existing_identity_id TEXT,
 	existing_assignment_version INTEGER,
 	verified_evidence_kind TEXT,
+	identity_evidence TEXT,
 	decision TEXT NOT NULL DEFAULT 'unresolved',
 	target_identity_id TEXT,
 	expected_assignment_kind TEXT,
@@ -428,11 +429,42 @@ export function ensureLegacyTeamSetupDraftSchema(db: Database): void {
 		["legacy_team_setup_drafts", "safe_error_code", "TEXT"],
 		["legacy_team_setup_drafts", "completed_team_id", "TEXT"],
 		["legacy_team_setup_draft_devices", "verified_evidence_kind", "TEXT"],
+		["legacy_team_setup_draft_devices", "identity_evidence", "TEXT"],
 		["legacy_team_setup_draft_projects", "target_scope_id", "TEXT"],
 	] as const) {
 		if (!columnExists(db, table, column)) {
 			db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 		}
+	}
+	// Every open, not just when the column is added: an older process may still
+	// write unmarked drafts, and a crash could split the ALTER from the backfill.
+	backfillOpenDraftIdentityEvidence(db);
+}
+
+const OPEN_DRAFT_DEVICES = `identity_evidence IS NULL AND attempt_id IN (
+	SELECT attempt_id FROM legacy_team_setup_drafts WHERE state IN ('needs_setup', 'in_progress'))`;
+
+/**
+ * Drafts still open at upgrade would otherwise upload other devices' local
+ * records as ownership. Mark them now. Completed drafts stay unmarked so
+ * republishing reproduces the bytes the coordinator already stored. Without
+ * exactly one known running device, every row is a label (fail closed).
+ */
+function backfillOpenDraftIdentityEvidence(db: Database): void {
+	// Read first: opening an up-to-date database must not need the write lock.
+	const pending = db
+		.prepare(`SELECT 1 FROM legacy_team_setup_draft_devices WHERE ${OPEN_DRAFT_DEVICES} LIMIT 1`)
+		.get();
+	if (!pending) return;
+	try {
+		db.exec(`UPDATE legacy_team_setup_draft_devices
+			SET identity_evidence = CASE WHEN device_id IS (
+				SELECT CASE WHEN COUNT(*) = 1 THEN MAX(device_id) END FROM sync_device
+			) THEN 'self' ELSE 'label' END
+			WHERE ${OPEN_DRAFT_DEVICES}`);
+	} catch {
+		db.exec(`UPDATE legacy_team_setup_draft_devices SET identity_evidence = 'label'
+			WHERE ${OPEN_DRAFT_DEVICES}`);
 	}
 }
 

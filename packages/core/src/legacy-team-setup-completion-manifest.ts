@@ -104,6 +104,7 @@ interface DraftDeviceRow {
 	enabled: number;
 	decision: string;
 	target_identity_id: string | null;
+	identity_evidence: "self" | "label" | null;
 }
 
 interface ApplyCompletionManifestInput {
@@ -227,6 +228,22 @@ function loadCompletedDraft(db: Database, candidateRef: string): DraftRow {
 	return row;
 }
 
+function manifestDeviceDecision(
+	device: DraftDeviceRow,
+): CoordinatorLegacyTeamCompletionManifestV1["device_decisions"][number] {
+	const included = device.decision === "included";
+	const decision = {
+		device_id: device.device_id,
+		key_fingerprint: device.key_fingerprint,
+		enabled: device.enabled !== 0,
+		identity_id: included ? device.target_identity_id : null,
+		decision: included ? ("included" as const) : ("excluded" as const),
+	};
+	// Drafts saved before evidence existed keep their original manifest bytes.
+	if (!included || !device.identity_evidence) return decision;
+	return { ...decision, identity_evidence: device.identity_evidence };
+}
+
 function deriveFromDraft(
 	db: Database,
 	draft: DraftRow,
@@ -236,7 +253,7 @@ function deriveFromDraft(
 	// without materializing an unbounded draft first.
 	const devices = db
 		.prepare(
-			`SELECT device_id, key_fingerprint, enabled, decision, target_identity_id
+			`SELECT device_id, key_fingerprint, enabled, decision, target_identity_id, identity_evidence
 			 FROM legacy_team_setup_draft_devices WHERE attempt_id = ? ORDER BY device_id
 			 LIMIT ?`,
 		)
@@ -274,13 +291,7 @@ function deriveFromDraft(
 		.map((identityId) => ({ identity_id: identityId, role: "member" as const }));
 	const deviceDecisions = devices
 		.filter((device) => device.decision !== "removed")
-		.map((device) => ({
-			device_id: device.device_id,
-			key_fingerprint: device.key_fingerprint,
-			enabled: device.enabled !== 0,
-			identity_id: device.decision === "included" ? device.target_identity_id : null,
-			decision: device.decision === "included" ? ("included" as const) : ("excluded" as const),
-		}));
+		.map(manifestDeviceDecision);
 	const projectMappings = projects.map((project) => {
 		const matchingScopeIds = project.target_scope_id
 			? [project.target_scope_id]
@@ -538,7 +549,25 @@ function resolveManifestProjects(
 	return resolved;
 }
 
+/** Applies a coordinator winner to the draft, including each decision's Identity evidence. */
 function rewriteDraftFromManifest(
+	db: Database,
+	draft: DraftRow,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[],
+	preservedTeamDisplayName?: string,
+): void {
+	rewriteDraftRowsFromManifest(db, draft, manifest, freshRoster, preservedTeamDisplayName);
+	// Keep the winner's evidence so reconstruction reproduces its exact bytes.
+	const setEvidence = db.prepare(
+		`UPDATE legacy_team_setup_draft_devices SET identity_evidence = ?
+		 WHERE attempt_id = ? AND device_id = ?`,
+	);
+	for (const decision of manifest.device_decisions)
+		setEvidence.run(decision.identity_evidence ?? null, draft.attempt_id, decision.device_id);
+}
+
+function rewriteDraftRowsFromManifest(
 	db: Database,
 	draft: DraftRow,
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,

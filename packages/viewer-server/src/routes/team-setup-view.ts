@@ -55,6 +55,8 @@ export interface LegacyTeamSetupDeviceV1 {
 	existingIdentityRef: string | null;
 	suggestedIdentityRef: string | null;
 	verifiedEvidenceKind: "active_assignment" | null;
+	/** `label`: this machine's unconfirmed record about another device. */
+	identityEvidence: "self" | "label" | null;
 	decision: "unresolved" | "included" | "excluded" | "removed";
 	targetIdentityRef: string | null;
 	expectation:
