@@ -209,6 +209,7 @@ export { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "./coordinator-legacy-
 export { upgradeCoordinatorOwnerResolutionSchemaFile } from "./coordinator-legacy-owner-resolution-upgrade.js";
 export type {
 	CoordinatorLegacyTeamCompletionDeviceDecisionV1,
+	CoordinatorLegacyTeamCompletionIdentityEvidence,
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionMembershipV1,
 	CoordinatorLegacyTeamCompletionProjectMappingV1,
@@ -226,6 +227,7 @@ export {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_VERSION,
 	CoordinatorLegacyTeamCompletionConflictError,
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	legacyDecisionCountsAsOwner,
 	normalizeCoordinatorLegacyTeamCompletionCandidateRef,
 	normalizeCoordinatorLegacyTeamCompletionGroupIds,
 	normalizeCoordinatorLegacyTeamCompletionManifest,

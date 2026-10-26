@@ -814,7 +814,7 @@ before its deadline, other than the attempt being checked.
 | Attestations for the target device or key | Any is revoked or names another Identity. An active matching attestation uses the attested path instead. |
 | Ownership bindings for the target device or key | The bound Identity is not the claim |
 | Consumed invites bound to the target device, key, or fingerprint, unless revoked before consumption | `assigned_identity_id` or `target_identity_id` is set to another Identity |
-| Legacy team completions | A device decision for the target is `excluded`, or includes it with another Identity |
+| Legacy team completions | A device decision for the target is `excluded`, or includes it with another Identity as recorded ownership (not a label) |
 | Owner-enrollment attempts for the target | One is live |
 | Device claims for the target | A committed claim exists for the device ID or key ID |
 | Link attempts from the target | A live device-claim attempt names another Identity |
@@ -826,7 +826,7 @@ before its deadline, other than the attempt being checked.
 | Identity-group grants for the claim | Any exists, active or revoked |
 | Invites naming the claim | An unrevoked invite assigns or targets it and is still pending, or is bound to another device or key |
 | Invite Identity footprints | `recipient_actor_id` names the claim and is bound to another device or key, or `inviter_actor_id` names the claim and `inviter_device_id` is another device |
-| Legacy team completions naming the claim | Another device/key names it without the exact current assignment described below; the current device with another key, or current key under another device, always denies |
+| Legacy team completions naming the claim | Another device/key names it as recorded ownership (not a label) without the exact current assignment described below; the current device with another key, or current key under another device, always denies |
 | Owner-enrollment attempts for the claim | One is live |
 | Link attempts for the claim | A live attempt of either kind comes from another device or key |
 
@@ -840,9 +840,20 @@ These are not contradictions, and must not block a claim:
 - invites that expired or were revoked before being consumed;
 - legacy completion memberships that neither name the claim nor assign it to
   another device or key;
-- evidence that agrees with both the target and the claim.
+- evidence that agrees with both the target and the claim;
+- legacy completion labels, described below.
 
-An exact assignment is an included, enabled decision matching the current device,
+A completion's included device decisions may carry `identity_evidence`. `self`
+marks the uploading device's own assignment. `label` marks that device's guess
+about another device. A manifest either omits the field everywhere, as older
+manifests do, or marks every included decision, with at most one `self`. A label
+keeps the device's Team inclusion, but it is never ownership evidence. It cannot
+form an exact assignment, admit a shared-Identity peer, suggest an owner in
+review, or deny another device's claim. A new upload's labels are still checked
+against recorded ownership, so a guess cannot contradict it. Decisions without the
+field keep their earlier meaning until an ownership binding supersedes them.
+
+An exact assignment is an included, enabled, non-label decision matching the current device,
 authenticated fingerprint and Identity in the canonical completion selected by
 `legacyTeamCandidateId(coordinator, group)`. Another coordinator's record cannot
 shadow it. Core validates the full manifest, exact canonical JSON, and stored

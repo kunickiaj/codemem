@@ -6,6 +6,7 @@ import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_RECORDS,
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	legacyDecisionCountsAsOwner,
 	normalizeCoordinatorLegacyTeamCompletionGroupIds,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 	requireCoordinatorLegacyTeamCompletionScopeBindings,
@@ -394,5 +395,84 @@ describe("coordinator legacy Team completion contract", () => {
 		expect(new TextEncoder().encode(JSON.stringify(value)).byteLength).toBeLessThanOrEqual(
 			COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
 		);
+	});
+});
+
+describe("coordinator legacy Team completion identity evidence", () => {
+	function marked(evidence: Array<"self" | "label" | undefined>) {
+		const value = manifest();
+		value.device_decisions.push(
+			{
+				device_id: "device-c",
+				key_fingerprint: "3".repeat(64),
+				enabled: true,
+				identity_id: "identity-b",
+				decision: "included",
+			},
+			{
+				device_id: "device-d",
+				key_fingerprint: "4".repeat(64),
+				enabled: false,
+				identity_id: null,
+				decision: "excluded",
+			},
+		);
+		value.device_decisions.forEach((decision, index) => {
+			const mark = evidence[index];
+			if (mark) decision.identity_evidence = mark;
+		});
+		return value;
+	}
+
+	it("keeps manifests without evidence byte-identical", () => {
+		// Arrange
+		const value = marked([]);
+		// Act
+		const json = canonicalCoordinatorLegacyTeamCompletionManifestJson(value);
+		// Assert
+		expect(json).not.toContain("identity_evidence");
+		expect(normalizeCoordinatorLegacyTeamCompletionManifest(value).device_decisions[0]).toEqual(
+			value.device_decisions[0],
+		);
+	});
+	it("keeps self and label marks last in each decision", () => {
+		// Act
+		const normalized = normalizeCoordinatorLegacyTeamCompletionManifest(marked(["self", "label"]));
+		// Assert
+		expect(Object.keys(normalized.device_decisions[0] ?? {})).toEqual([
+			"device_id",
+			"key_fingerprint",
+			"enabled",
+			"identity_id",
+			"decision",
+			"identity_evidence",
+		]);
+		expect(normalized.device_decisions.map((decision) => decision.identity_evidence)).toEqual([
+			"self",
+			"label",
+			undefined,
+		]);
+		expect(normalized.device_decisions.map(legacyDecisionCountsAsOwner)).toEqual([
+			true,
+			false,
+			true,
+		]);
+	});
+	it("accepts a manifest whose included devices are all labels", () => {
+		expect(() =>
+			normalizeCoordinatorLegacyTeamCompletionManifest(marked(["label", "label"])),
+		).not.toThrow();
+	});
+	it.each([
+		["only some included devices are marked", ["self", undefined]],
+		["two devices speak for themselves", ["self", "self"]],
+		["an excluded device is marked", ["self", "label", "label"]],
+		["an unknown mark", ["self", "guess"]],
+	] as const)("rejects a manifest where %s", (_name, evidence) => {
+		expect(() =>
+			normalizeCoordinatorLegacyTeamCompletionManifest(
+				marked(evidence as unknown as Array<"self" | "label" | undefined>),
+			),
+		).toThrow("completion_manifest_invalid");
 	});
 });

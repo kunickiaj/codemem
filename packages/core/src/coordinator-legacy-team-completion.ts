@@ -29,12 +29,42 @@ export interface CoordinatorLegacyTeamCompletionMembershipV1 {
 	role: "member";
 }
 
+/**
+ * Who asserted an included device's Identity. `self` is the uploading device's
+ * own assignment. `label` is that device's guess about another device. It keeps
+ * Team access but never counts as ownership evidence. Manifests written before
+ * this field existed omit it, and their rows keep the old meaning.
+ */
+export type CoordinatorLegacyTeamCompletionIdentityEvidence = "self" | "label";
+
 export interface CoordinatorLegacyTeamCompletionDeviceDecisionV1 {
 	device_id: string;
 	key_fingerprint: string;
 	enabled: boolean;
 	identity_id: string | null;
 	decision: "included" | "excluded";
+	identity_evidence?: CoordinatorLegacyTeamCompletionIdentityEvidence;
+}
+
+/** False only for a decision another device guessed; such rows never prove ownership. */
+export function legacyDecisionCountsAsOwner(
+	decision: Pick<CoordinatorLegacyTeamCompletionDeviceDecisionV1, "identity_evidence">,
+): boolean {
+	return decision.identity_evidence !== "label";
+}
+
+/**
+ * SQL form of {@link legacyDecisionCountsAsOwner} for one `json_each` element,
+ * e.g. `legacyDecisionCountsAsOwnerSql("d.value")`. Stored rows are canonical,
+ * but an unexpected value must still fail closed: a grant counts only `self` or
+ * an absent mark, and a denial counts everything except an explicit label.
+ */
+export function legacyDecisionCountsAsOwnerSql(
+	element: string,
+	use: "grant" | "deny" = "grant",
+): string {
+	if (use === "deny") return `json_extract(${element}, '$.identity_evidence') IS NOT 'label'`;
+	return `coalesce(json_extract(${element}, '$.identity_evidence'), 'self') = 'self'`;
 }
 
 export interface CoordinatorLegacyTeamCompletionProjectMappingV1 {
@@ -181,6 +211,50 @@ export function normalizeCoordinatorLegacyTeamCompletionCandidateRef(value: unkn
 	return normalized;
 }
 
+function normalizeDeviceDecision(value: unknown): CoordinatorLegacyTeamCompletionDeviceDecisionV1 {
+	const item = record(value);
+	exactFields(item, [
+		"device_id",
+		"key_fingerprint",
+		"enabled",
+		"identity_id",
+		"decision",
+		"identity_evidence",
+	]);
+	if (item.decision !== "included" && item.decision !== "excluded") invalid();
+	if (typeof item.enabled !== "boolean") invalid();
+	const identityId = item.identity_id == null ? null : identifier(item.identity_id);
+	if ((item.decision === "included") !== Boolean(identityId)) invalid();
+	if (item.decision === "included" && !item.enabled) invalid();
+	const decision: CoordinatorLegacyTeamCompletionDeviceDecisionV1["decision"] = item.decision;
+	const normalized: CoordinatorLegacyTeamCompletionDeviceDecisionV1 = {
+		device_id: identifier(item.device_id),
+		key_fingerprint: digest(item.key_fingerprint),
+		enabled: item.enabled,
+		identity_id: identityId,
+		decision,
+	};
+	// Absent stays absent, so manifests written before the field keep their exact bytes.
+	if (!Object.hasOwn(item, "identity_evidence")) return normalized;
+	if (decision !== "included") invalid();
+	if (item.identity_evidence !== "self" && item.identity_evidence !== "label") invalid();
+	return { ...normalized, identity_evidence: item.identity_evidence };
+}
+
+/**
+ * A manifest either predates evidence or marks every included device, and at
+ * most one device (the uploader) can speak for itself.
+ */
+function requireConsistentIdentityEvidence(
+	decisions: readonly CoordinatorLegacyTeamCompletionDeviceDecisionV1[],
+): void {
+	const included = decisions.filter((decision) => decision.decision === "included");
+	const marked = included.filter((decision) => decision.identity_evidence !== undefined);
+	if (marked.length === 0) return;
+	if (marked.length !== included.length) invalid();
+	if (marked.filter((decision) => decision.identity_evidence === "self").length > 1) invalid();
+}
+
 export function normalizeCoordinatorLegacyTeamCompletionManifest(
 	value: unknown,
 ): CoordinatorLegacyTeamCompletionManifestV1 {
@@ -217,26 +291,11 @@ export function normalizeCoordinatorLegacyTeamCompletionManifest(
 		(item) => item.identity_id,
 	);
 	const deviceDecisions = uniqueSorted(
-		array(input.device_decisions, LEGACY_TEAM_SETUP_MAX_DEVICES).map((value) => {
-			const item = record(value);
-			exactFields(item, ["device_id", "key_fingerprint", "enabled", "identity_id", "decision"]);
-			if (item.decision !== "included" && item.decision !== "excluded") invalid();
-			if (typeof item.enabled !== "boolean") invalid();
-			const identityId = item.identity_id == null ? null : identifier(item.identity_id);
-			if ((item.decision === "included") !== Boolean(identityId)) invalid();
-			if (item.decision === "included" && !item.enabled) invalid();
-			const decision: CoordinatorLegacyTeamCompletionDeviceDecisionV1["decision"] = item.decision;
-			return {
-				device_id: identifier(item.device_id),
-				key_fingerprint: digest(item.key_fingerprint),
-				enabled: item.enabled,
-				identity_id: identityId,
-				decision,
-			};
-		}),
+		array(input.device_decisions, LEGACY_TEAM_SETUP_MAX_DEVICES).map(normalizeDeviceDecision),
 		(item) => item.device_id,
 	);
 	if (deviceDecisions.length === 0) invalid();
+	requireConsistentIdentityEvidence(deviceDecisions);
 	const membershipIds = new Set(memberships.map((membership) => membership.identity_id));
 	const includedIdentityIds = new Set(
 		deviceDecisions.flatMap((decision) => (decision.identity_id ? [decision.identity_id] : [])),

@@ -131,6 +131,46 @@ describe("candidate projection", () => {
 		expect(owners.size).toBe(0);
 	});
 
+	it("does not suggest an Identity that another device only guessed", () => {
+		// Arrange: device-a uploaded the completion; its row for device-b is a label.
+		const decision = (deviceId: string, evidence: "self" | "label") => ({
+			device_id: deviceId,
+			key_fingerprint: (deviceId === "device-a" ? "1" : "2").repeat(64),
+			enabled: true,
+			identity_id: "identity-a",
+			decision: "included",
+			identity_evidence: evidence,
+		});
+		const manifest = {
+			version: 1,
+			coordinator_id: "coordinator-a",
+			candidate_ref: "legacy-team-candidate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			candidate_digest: "a".repeat(64),
+			team_id: "team-a",
+			team_digest: "b".repeat(64),
+			source_digest: "c".repeat(64),
+			finish_digest: "d".repeat(64),
+			access_delta_digest: "e".repeat(64),
+			team: {
+				display_name: "Synthetic Team",
+				policy_revision: "f".repeat(64),
+				device_eligibility_mode: "reviewed_allowlist",
+			},
+			memberships: [{ identity_id: "identity-a", role: "member" }],
+			device_decisions: [decision("device-a", "self"), decision("device-b", "label")],
+			project_mappings: [],
+			project_recipients: [],
+			completed_at: "2026-09-01T00:00:00.000Z",
+		};
+		const responses = [{ legacy_history: [{ group_id: "group-a", manifest }] }];
+		// Act
+		const uploader = recordedOwnerGroups(responses, { deviceId: "device-a" });
+		const guessed = recordedOwnerGroups(responses, { deviceId: "device-b" });
+		// Assert
+		expect([...uploader.keys()]).toEqual(["identity-a"]);
+		expect(guessed.size).toBe(0);
+	});
+
 	it("keeps labels within the browser's 256-character limit for many or long groups", () => {
 		// Arrange
 		const many = new Set(["g1", "g2", "g3", "g4", "g5"]);

@@ -9,6 +9,7 @@ import type {
 } from "./coordinator-auth-controller.js";
 import type { ControllerHistoryEvidence } from "./coordinator-auth-controller-history.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { legacyDecisionCountsAsOwner } from "./coordinator-legacy-team-completion.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 
 export type ExistingOwnerReviewCapabilities = Partial<
@@ -107,7 +108,10 @@ function projectTarget(
 	};
 }
 
-/** Hints are only subject assignments, never the other people in the retained manifests. */
+/**
+ * Hints are only subject assignments, never the other people in the retained
+ * manifests, and never another device's guessed label.
+ */
 export function historicalOwnerHints(
 	history: ControllerHistoryEvidence[],
 	snapshot: CoordinatorAuthControllerVerifiedSnapshot,
@@ -122,7 +126,8 @@ export function historicalOwnerHints(
 		row.manifest.device_decisions
 			.filter(
 				(decision) =>
-					decision.device_id === subject.deviceId || fingerprints.has(decision.key_fingerprint),
+					legacyDecisionCountsAsOwner(decision) &&
+					(decision.device_id === subject.deviceId || fingerprints.has(decision.key_fingerprint)),
 			)
 			.flatMap((decision) => (decision.identity_id ? [decision.identity_id] : [])),
 	);

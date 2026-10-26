@@ -1,6 +1,8 @@
 import type { CoordinatorAuthLinkSigner } from "./coordinator-auth-link-contract.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	legacyDecisionCountsAsOwner,
+	legacyDecisionCountsAsOwnerSql,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
@@ -53,7 +55,8 @@ export function captureCurrentLegacyAssignment(
 				d.key_fingerprint === input.signer.fingerprint &&
 				d.identity_id === input.identityId &&
 				d.decision === "included" &&
-				d.enabled,
+				d.enabled &&
+				legacyDecisionCountsAsOwner(d),
 		);
 		return assigned ? JSON.stringify({ ...row, distinct_keys: input.distinctKeys }) : null;
 	} catch {
@@ -61,6 +64,8 @@ export function captureCurrentLegacyAssignment(
 	}
 }
 
+// A label row (another device's guess) never makes a current assignment. Grouped
+// terms keep D1's expression depth (max 100) unchanged for embedding queries.
 // MATERIALIZED keeps the validated snapshot independent of deeper D1 predicates.
 // Exact bytes and row metadata pin normalization to the record used by the writer.
 export const AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE = `claim_current_assignment AS MATERIALIZED (
@@ -75,7 +80,8 @@ export const AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE = `claim_current_assignment AS M
  WHERE json_extract(d.value, '$.device_id') = p.device_id
  AND json_extract(d.value, '$.key_fingerprint') = p.fingerprint
  AND json_extract(d.value, '$.identity_id') = p.identity_id
- AND json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1)
+ AND (json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1
+ AND ${legacyDecisionCountsAsOwnerSql("d.value")}))
  AND EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
  WHERE e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key
  AND e.fingerprint = p.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL

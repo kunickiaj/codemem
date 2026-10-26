@@ -40,7 +40,11 @@ function roster(groupId: string, count: number, offset = 0) {
 	}));
 }
 
-function manifest(groupId: string, devices: ReturnType<typeof roster>) {
+function manifest(
+	groupId: string,
+	devices: ReturnType<typeof roster>,
+	evidence?: "self" | "label",
+) {
 	const coordinatorId = "native-legacy-owner-coordinator";
 	const candidateRef = legacyTeamCandidateId(coordinatorId, groupId);
 	const input: CoordinatorLegacyTeamCompletionManifestV1 = {
@@ -65,6 +69,7 @@ function manifest(groupId: string, devices: ReturnType<typeof roster>) {
 			enabled: true,
 			identity_id: owner,
 			decision: "included",
+			...(evidence ? { identity_evidence: evidence } : {}),
 		})),
 		project_mappings: [],
 		project_recipients: [],
@@ -153,5 +158,52 @@ describe("native D1 legacy completion owner compatibility", () => {
 			.first<{ count: number }>();
 		expect(row?.count).toBe(0);
 		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["label", "created", 2000],
+		["self", "completion_conflict", 3000],
+	] as const)("a stored %s decision on the shared key yields %s", async (evidence, expected, key) => {
+		// Arrange: g1 recorded the key's device for another owner, as a guess or as itself.
+		const firstGroup = `native-legacy-owner-${evidence}-first`;
+		const secondGroup = `native-legacy-owner-${evidence}-second`;
+		const first = roster(firstGroup, 1, key);
+		const second = roster(secondGroup, 1, key);
+		const store = await seed(firstGroup, first);
+		await store.createLegacyTeamCompletion(firstGroup, manifest(firstGroup, first, evidence));
+		// Only the retained completion may compete, not the enrollment's own Identity.
+		await env.COORDINATOR_DB.prepare("UPDATE enrolled_devices SET identity_id = NULL WHERE group_id = ?")
+			.bind(firstGroup)
+			.run();
+		await seed(secondGroup, second);
+		// Act
+		const pending = store.createLegacyTeamCompletion(
+			secondGroup,
+			manifest(secondGroup, second, "self"),
+		);
+		// Assert
+		if (expected === "created") await expect(pending).resolves.toMatchObject({ status: "created" });
+		else await expect(pending).rejects.toMatchObject({ code: "completion_conflict" });
+	});
+
+	it("rejects a new label that contradicts recorded ownership", async () => {
+		// Arrange: g1 recorded the key's device as its own; g2 guesses another owner.
+		const firstGroup = "native-legacy-owner-label-contradiction-first";
+		const secondGroup = "native-legacy-owner-label-contradiction-second";
+		const first = roster(firstGroup, 1, 4000);
+		const second = roster(secondGroup, 1, 4000);
+		const store = await seed(firstGroup, first);
+		await store.createLegacyTeamCompletion(firstGroup, manifest(firstGroup, first, "self"));
+		await env.COORDINATOR_DB.prepare("UPDATE enrolled_devices SET identity_id = NULL WHERE group_id = ?")
+			.bind(firstGroup)
+			.run();
+		await seed(secondGroup, second);
+		// Act
+		const pending = store.createLegacyTeamCompletion(
+			secondGroup,
+			manifest(secondGroup, second, "label"),
+		);
+		// Assert
+		await expect(pending).rejects.toMatchObject({ code: "completion_conflict" });
 	});
 });

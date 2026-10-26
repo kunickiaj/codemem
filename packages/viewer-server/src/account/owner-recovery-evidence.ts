@@ -1,5 +1,6 @@
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	legacyDecisionCountsAsOwner,
 	legacyTeamCandidateId,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 	type ResolvedAccountOwnerReceiptReference,
@@ -113,7 +114,9 @@ function historyRows(
 			identityId: decision.identity_id ?? "",
 			assignment: decision.decision,
 			relation,
-			reason: "Recorded in Team history.",
+			reason: legacyDecisionCountsAsOwner(decision)
+				? "Recorded in Team history."
+				: "Guessed by another device in Team history.",
 		};
 	});
 }

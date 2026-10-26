@@ -633,10 +633,18 @@ const approvedSubject = `EXISTS (SELECT 1 FROM completion_proof_approved a
 
 // Only the two weak-label branches gain an exception. Intra-roster owner
 // assignments and ledger bindings retain the exact existing checks.
-const recoveredCompatibleSql = LEGACY_OWNER_COMPATIBLE_SQL.replace(
-	"WHERE e.identity_id IS NOT NULL AND e.identity_id <> r.identity_id",
-	`WHERE e.identity_id IS NOT NULL AND e.identity_id <> r.identity_id AND NOT (${approvedSubject})`,
-).replace(
+function replaceExactlyOnce(sql: string, target: string, replacement: string): string {
+	if (sql.split(target).length !== 2) throw new Error("legacy_owner_compatible_sql_drifted");
+	return sql.replace(target, replacement);
+}
+
+// Fails at load rather than silently dropping an exception if the source SQL changes.
+const recoveredCompatibleSql = replaceExactlyOnce(
+	replaceExactlyOnce(
+		LEGACY_OWNER_COMPATIBLE_SQL,
+		"WHERE e.identity_id IS NOT NULL AND e.identity_id <> r.identity_id",
+		`WHERE e.identity_id IS NOT NULL AND e.identity_id <> r.identity_id AND NOT (${approvedSubject})`,
+	),
 	"AND json_extract(d.value, '$.identity_id') <> r.identity_id",
 	`AND json_extract(d.value, '$.identity_id') <> r.identity_id AND NOT (${approvedSubject})`,
 );

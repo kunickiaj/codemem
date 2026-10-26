@@ -378,8 +378,9 @@ function* controllerHistoryRows(
 			decisions: 0,
 		};
 		for (const decision of record.manifest.device_decisions) {
-			const identity =
+			let identity =
 				decision.identity_id === null ? "none" : terminalIdentifier(decision.identity_id);
+			if (decision.identity_evidence === "label") identity += " (guessed by another device)";
 			yield {
 				text: `  ${decision.decision}; Identity: ${identity}; enabled: ${decision.enabled ? "yes" : "no"}\n  Device: ${terminalIdentifier(decision.device_id)}; fingerprint: ${terminalIdentifier(decision.key_fingerprint)}\n  ${historyAssociation(decision.device_id, decision.key_fingerprint, subject)}`,
 				records: 0,

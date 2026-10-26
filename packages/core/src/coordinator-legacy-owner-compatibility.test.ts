@@ -129,7 +129,70 @@ describe.each(["SQLite", "D1"] as const)("%s legacy completion ownership", (back
 	registerReplay(test);
 	registerSourceValidity(test);
 	registerUnrelatedEnrollments(test);
+	registerLabels(test);
 });
+
+function withEvidence(
+	input: CoordinatorLegacyTeamCompletionManifestV1,
+	evidence: "self" | "label",
+): CoordinatorLegacyTeamCompletionManifestV1 {
+	return {
+		...input,
+		device_decisions: input.device_decisions.map((decision) => ({
+			...decision,
+			identity_evidence: evidence,
+		})),
+	};
+}
+
+function registerLabels(test: CompletionTest) {
+	for (const [evidence, expected] of [
+		["label", "created"],
+		["self", "completion_conflict"],
+	] as const) {
+		test(`a stored ${evidence} decision ${expected === "created" ? "does not block" : "blocks"} a later owner for that device`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: g1 recorded device-a under identity-a, as a guess or as the device itself.
+			const first = withEvidence(manifest("g1"), evidence);
+			await enroll(f, "g1", first);
+			expect(await f.store.createLegacyTeamCompletion("g1", first)).toMatchObject({
+				status: "created",
+			});
+			await f.store.removeDevice("g1", "device-a");
+			const second = withEvidence(
+				manifest("g2", { publicKey: OTHER_KEY, owner: "identity-b" }),
+				"self",
+			);
+			await enroll(f, "g2", second, OTHER_KEY);
+			// Act
+			const pending = f.store.createLegacyTeamCompletion("g2", second);
+			// Assert
+			if (expected === "created")
+				await expect(pending).resolves.toMatchObject({ status: "created" });
+			else await expect(pending).rejects.toMatchObject({ code: "completion_conflict" });
+		});
+	}
+	test("a new label cannot contradict recorded ownership", async ({ fixture: f }) => {
+		// Arrange: g1 recorded device-a as identity-a's own device.
+		const first = withEvidence(manifest("g1"), "self");
+		await enroll(f, "g1", first);
+		await f.store.createLegacyTeamCompletion("g1", first);
+		await f.store.removeDevice("g1", "device-a");
+		// g2's uploader guesses that the same device belongs to identity-b.
+		const second = withEvidence(
+			manifest("g2", { publicKey: OTHER_KEY, owner: "identity-b" }),
+			"label",
+		);
+		await enroll(f, "g2", second, OTHER_KEY);
+		const before = snapshot(f);
+		// Act
+		const pending = f.store.createLegacyTeamCompletion("g2", second);
+		// Assert
+		await expect(pending).rejects.toMatchObject({ code: "completion_conflict" });
+		expect(snapshot(f)).toEqual(before);
+	});
+}
 
 function registerUnrelatedEnrollments(test: CompletionTest) {
 	for (const size of ["key count", "serialized bytes"] as const) {

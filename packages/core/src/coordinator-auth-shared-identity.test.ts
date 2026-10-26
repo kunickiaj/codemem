@@ -74,6 +74,27 @@ function seed(f: LinkFixture) {
 		);
 	return manifest;
 }
+/** Rewrites the seeded completion canonically with per-decision Identity evidence. */
+function markEvidence(f: LinkFixture, evidence: readonly ("self" | "label")[]) {
+	const row = f.db
+		.prepare(
+			"SELECT manifest_json FROM coordinator_legacy_team_completions WHERE group_id='group-a'",
+		)
+		.get() as { manifest_json: string };
+	const stored = JSON.parse(row.manifest_json);
+	const manifest = normalizeCoordinatorLegacyTeamCompletionManifest({
+		...stored,
+		device_decisions: stored.device_decisions.map((decision: object, index: number) => ({
+			...decision,
+			identity_evidence: evidence[index],
+		})),
+	});
+	f.db
+		.prepare(
+			"UPDATE coordinator_legacy_team_completions SET manifest_json=? WHERE group_id='group-a'",
+		)
+		.run(canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest));
+}
 const request = () =>
 	attempt({
 		authority: { kind: "device_claim", identityId: input.identityId },
@@ -177,6 +198,14 @@ const invalidEvidence = [
 					manifest.completed_at,
 				);
 		},
+	],
+	[
+		"the current device's decision is another device's label",
+		(f: LinkFixture) => markEvidence(f, ["label", "self"]),
+	],
+	[
+		"the peer's decision is another device's label",
+		(f: LinkFixture) => markEvidence(f, ["self", "label"]),
 	],
 	["revoked key", seedKeyRevocationSql],
 	[

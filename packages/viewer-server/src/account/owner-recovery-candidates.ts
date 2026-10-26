@@ -1,5 +1,6 @@
 import {
 	type coordinatorAuthControllerReviewAction,
+	legacyDecisionCountsAsOwner,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "@codemem/core";
 import { recoveryId } from "./owner-recovery-evidence.js";
@@ -32,7 +33,9 @@ function recordedOwners(row: unknown, deviceId: string): Array<[string, string]>
 	}
 	return manifest.device_decisions.flatMap((decision): Array<[string, string]> => {
 		const identityId = decision.identity_id;
+		// Another device's guessed label is not a recorded owner.
 		if (decision.device_id !== deviceId || !recoveryId(identityId)) return [];
+		if (!legacyDecisionCountsAsOwner(decision)) return [];
 		return [[identityId, groupId]];
 	});
 }

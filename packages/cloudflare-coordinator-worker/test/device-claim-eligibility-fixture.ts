@@ -138,3 +138,25 @@ export const seedKeyRevocationSql = `INSERT INTO coordinator_device_revocations
 export const seedOwnerAttemptSql = `INSERT INTO coordinator_owner_enrollment_attempts
  (coordinator_id,attempt_id,purpose,origin,device_id,public_key,key_id,fingerprint,issuer,auth_config_revision,loopback_redirect,browser_start_hash,state,created_at_ms,expires_at_ms)
  VALUES ('coordinator-a','owner-attempt','owner_enroll','https://coordinator.example.test','device-a','${CANONICAL_PUBLIC_KEY}','${EXPECTED_KEY_ID}','${"a".repeat(64)}','https://accounts.example.test','${"a".repeat(64)}','http://127.0.0.1:4567/complete','${"c".repeat(64)}','pending',${NOW},${NOW + 600000});`;
+
+/** Rewrites the seeded completion's only decision; `label` marks it as another device's guess. */
+function completionDecisionSql(fields: Record<string, string>, evidence?: "self" | "label"): string {
+	const sets = Object.entries({ ...fields, ...(evidence ? { identity_evidence: evidence } : {}) })
+		.map(([key, value]) => `'$.device_decisions[0].${key}','${value}'`)
+		.join(",");
+	return `${seedUnrelatedCompletionSql} UPDATE coordinator_legacy_team_completions SET manifest_json=json_set(manifest_json,${sets});`;
+}
+
+const thisDeviceForOther = { device_id: "device-a", key_fingerprint: "a".repeat(64), identity_id: "other" };
+const thisIdentityElsewhere = { identity_id: "identity-a" };
+
+/** Each pair: the recorded owner row denies the claim, and the same row as a label does not. */
+export const labelledCompletionCases = [
+	["this device recorded for another Identity", thisDeviceForOther],
+	["this Identity recorded on another device", thisIdentityElsewhere],
+].map(([name, fields]) => ({
+	name: name as string,
+	ownerSql: completionDecisionSql(fields as Record<string, string>),
+	selfSql: completionDecisionSql(fields as Record<string, string>, "self"),
+	labelSql: completionDecisionSql(fields as Record<string, string>, "label"),
+}));

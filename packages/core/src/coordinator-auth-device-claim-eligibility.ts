@@ -15,7 +15,10 @@ import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
 } from "./coordinator-ed25519-key-id-compat.js";
-import { COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES } from "./coordinator-legacy-team-completion.js";
+import {
+	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+	legacyDecisionCountsAsOwnerSql,
+} from "./coordinator-legacy-team-completion.js";
 import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
 
 export interface CoordinatorDeviceClaimReadinessInput {
@@ -82,7 +85,8 @@ const matchingLegacyPeerEnrollment = `e.group_id = p.group_id AND e.enabled = 1
  WHERE json_extract(d.value, '$.device_id') = e.device_id
  AND json_extract(d.value, '$.key_fingerprint') = e.fingerprint
  AND json_extract(d.value, '$.identity_id') = p.identity_id
- AND json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1)`;
+ AND (json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1
+ AND ${legacyDecisionCountsAsOwnerSql("d.value")}))`;
 const live = (alias: string) =>
 	`${alias}.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND ${alias}.expires_at_ms > p.now_ms`;
 // Pending promises expire. Consumed evidence survives later expiry/revocation,
@@ -109,10 +113,16 @@ export const AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL = `NOT EXISTS (
  ON a.coordinator_id = l.coordinator_id AND a.link_id = l.link_id
  WHERE l.coordinator_id = p.coordinator_id AND a.device_id = p.device_id AND l.identity_id <> p.identity_id)`;
 
-/** Shared by first-link writes and exact-assignment status reads. */
+/**
+ * Shared by first-link writes and exact-assignment status reads. Another
+ * device's guessed label neither contradicts nor competes with this device's
+ * own claim. Labels exist only on included rows, so skipping them never skips
+ * an exclusion. The label test sits beside the coordinator test so D1's
+ * expression depth (max 100) does not grow.
+ */
 export const AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL = `NOT EXISTS (
  SELECT 1 FROM coordinator_legacy_team_completions c, json_each(${completionJson}, '$.device_decisions') d
- WHERE json_extract(${completionJson}, '$.coordinator_id') = p.coordinator_id AND (
+ WHERE (${legacyDecisionCountsAsOwnerSql("d.value", "deny")} AND json_extract(${completionJson}, '$.coordinator_id') = p.coordinator_id) AND (
  ((json_extract(d.value, '$.device_id') = p.device_id OR json_extract(d.value, '$.key_fingerprint') = p.fingerprint)
  AND (json_extract(d.value, '$.decision') = 'excluded' OR json_extract(d.value, '$.identity_id') IS NOT p.identity_id))
  OR (json_extract(d.value, '$.identity_id') = p.identity_id

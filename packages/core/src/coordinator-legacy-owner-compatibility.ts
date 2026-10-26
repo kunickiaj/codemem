@@ -4,6 +4,7 @@ import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_GROUPS,
 	CoordinatorLegacyTeamCompletionConflictError,
 	type CoordinatorLegacyTeamCompletionWriteResult,
+	legacyDecisionCountsAsOwnerSql,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 import { LEGACY_TEAM_SETUP_MAX_DEVICES } from "./legacy-team-setup-limits.js";
@@ -46,7 +47,7 @@ const ownerSourceKeysSql = `legacy_owner_source_keys AS NOT MATERIALIZED (
  AND e.device_id = json_extract(d.value, '$.device_id')
  AND e.fingerprint = json_extract(d.value, '$.key_fingerprint')
  WHERE json_extract(${completionJson}, '$.coordinator_id') = json_extract(p.manifest, '$.coordinator_id')
- AND json_extract(d.value, '$.decision') = 'included'
+ AND (json_extract(d.value, '$.decision') = 'included' AND ${legacyDecisionCountsAsOwnerSql("d.value")})
 )`;
 
 /** Bind canonical manifest JSON, then target group. */
@@ -127,7 +128,9 @@ export const LEGACY_OWNER_SOURCE_CURRENT_SQL = `(NOT EXISTS (SELECT 1 FROM legac
 ) AND NOT EXISTS (SELECT 1 FROM legacy_owner_requested WHERE key_id IS NULL)))`;
 
 /** Only included owner assignments compete. Labels, exclusions, and other people
- * never supply ownership. Old fingerprints need a verified current enrollment
+ * never supply ownership. A stored label (another device's guess) never blocks a
+ * later upload. Requested rows are all checked, labels included, so a new guess
+ * still cannot contradict recorded ownership. Old fingerprints need a verified current enrollment
  * for the historical group/device; the exact device ID needs no key inference.
  * This predicate belongs in the winning INSERT, not just a preview/read check.
  */
@@ -146,7 +149,7 @@ export const LEGACY_OWNER_COMPATIBLE_SQL = `NOT EXISTS (
  OR EXISTS (SELECT 1 FROM coordinator_legacy_team_completions c,
  json_each(${completionJson}, '$.device_decisions') d, legacy_owner_input p
  WHERE json_extract(${completionJson}, '$.coordinator_id') = json_extract(p.manifest, '$.coordinator_id')
- AND json_extract(d.value, '$.decision') = 'included'
+ AND (json_extract(d.value, '$.decision') = 'included' AND ${legacyDecisionCountsAsOwnerSql("d.value", "deny")})
  AND json_extract(d.value, '$.identity_id') <> r.identity_id
  AND (json_extract(d.value, '$.device_id') = r.device_id OR EXISTS (
  SELECT 1 FROM legacy_owner_enrollments e WHERE e.group_id = c.group_id

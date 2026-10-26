@@ -6,6 +6,7 @@ import {
 	denied,
 	eligible,
 	input,
+	labelledCompletionCases,
 	NOW,
 	otherKey,
 	seedAttemptSql,
@@ -225,6 +226,29 @@ function registerUnrelatedHistoryRead(fixture: () => Fixture) {
 	});
 }
 
+function registerLabelledCompletions(fixture: () => Fixture) {
+	const read = () => fixture().store.readAuthDeviceClaimReadiness(input, config);
+	it.each(labelledCompletionCases)(
+		"lets another device's label not block a claim when $name",
+		async ({ ownerSql, selfSql, labelSql }) => {
+			// Arrange: the same decision row, first as recorded ownership, then as a guess.
+			fixture().db.exec(ownerSql);
+			const asOwner = await read();
+			fixture().db.exec("DELETE FROM coordinator_legacy_team_completions");
+			fixture().db.exec(selfSql);
+			const asSelf = await read();
+			fixture().db.exec("DELETE FROM coordinator_legacy_team_completions");
+			fixture().db.exec(labelSql);
+			// Act
+			const asLabel = await read();
+			// Assert
+			expect(asOwner).toEqual(denied);
+			expect(asSelf).toEqual(denied);
+			expect(asLabel).toEqual(eligible);
+		},
+	);
+}
+
 describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) => {
 	let f: Fixture;
 	beforeEach(() => {
@@ -246,6 +270,7 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 		);
 		expect(await read()).toEqual(eligible);
 	});
+	registerLabelledCompletions(() => f);
 	it("accepts matching existing enrollment and ownership evidence without granting operator authority", async () => {
 		f.db.exec(
 			`UPDATE enrolled_devices SET identity_id='identity-a' WHERE device_id='device-a'; ${seedBindingSql}`,
