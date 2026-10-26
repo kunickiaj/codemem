@@ -130,6 +130,7 @@ import {
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
 import { COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL } from "./coordinator-device-ownership-schema.js";
+import { COORDINATOR_DEVICE_REBIND_SCHEMA_SQL } from "./coordinator-device-rebind-schema.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
@@ -546,6 +547,8 @@ function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 		)
 		.get();
 	if (!ownerTable) db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
+	// Additive rebind storage (ADR 0005 Section 8); never rebuilds an existing table.
+	db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
 }
 
 function initializeAuthBrowserSchema(db: DatabaseType): void {

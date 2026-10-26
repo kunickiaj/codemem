@@ -204,6 +204,15 @@ For a database originally created from `schema.sql`, first compare its schema wi
 the migration records. Baseline only the migrations whose changes are already present, then apply the remaining
 migrations; do not replay from `0001` or reset the database to make the migration bookkeeping match.
 
+### Device rebind storage (0038)
+
+Migration `0038_add_device_rebind.sql` adds two tables for signing in on a device whose
+Identity differs from the account's (ADR 0005 Section 8): rebind attempts and their audit log.
+It only creates tables, indexes and triggers; it changes no existing table or row. Nothing
+writes to these tables until the rebind routes ship. Apply it with the usual migration
+command after separate approval; a self-hosted SQLite coordinator creates the tables when it
+opens.
+
 ## 6. Deploy the Worker
 
 ### Owner admission pin source (not activated)
