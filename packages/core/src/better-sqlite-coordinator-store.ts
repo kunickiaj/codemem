@@ -130,7 +130,10 @@ import {
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
 import { COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL } from "./coordinator-device-ownership-schema.js";
-import { COORDINATOR_DEVICE_REBIND_SCHEMA_SQL } from "./coordinator-device-rebind-schema.js";
+import {
+	COORDINATOR_DEVICE_REBIND_SCHEMA_SQL,
+	upgradePreReleaseRebindAttemptsSql,
+} from "./coordinator-device-rebind-schema.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
@@ -547,8 +550,31 @@ function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 		)
 		.get();
 	if (!ownerTable) db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
-	// Additive rebind storage (ADR 0005 Section 8); never rebuilds an existing table.
+	// Additive rebind storage (ADR 0005 Section 8). Only an empty pre-release
+	// attempts table is recreated; see upgradePreReleaseRebindAttemptsSql.
+	upgradePreReleaseRebindAttempts(db);
 	db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
+}
+
+const REBIND_ATTEMPTS_SQL =
+	"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_device_rebind_attempts'";
+
+/** Reads first, so opening an up-to-date database takes no write lock. */
+function upgradePreReleaseRebindAttempts(db: DatabaseType): void {
+	const plan = () => {
+		const existing = db.prepare(REBIND_ATTEMPTS_SQL).pluck().get() as string | undefined;
+		if (!existing) return null;
+		const rows = db
+			.prepare("SELECT count(*) FROM coordinator_device_rebind_attempts")
+			.pluck()
+			.get() as number;
+		return upgradePreReleaseRebindAttemptsSql(existing, rows);
+	};
+	if (!plan()) return;
+	db.transaction(() => {
+		const upgrade = plan();
+		if (upgrade) db.exec(upgrade);
+	}).immediate();
 }
 
 function initializeAuthBrowserSchema(db: DatabaseType): void {

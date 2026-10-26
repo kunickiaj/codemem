@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
   OR (confirmation_hash IS NULL AND completion_secret_hash IS NULL)),
  CHECK (state NOT IN ('pending', 'browser_claimed') OR (account_subject IS NULL
   AND target_identity_id IS NULL AND link_id IS NULL AND link_authority_kind IS NULL
-  AND review_digest IS NULL AND team_effects_json IS NULL AND enrollment_count IS NULL)),
+  AND team_effects_json IS NULL AND enrollment_count IS NULL)),
+ CHECK (review_digest IS NOT NULL),
  CHECK (state <> 'pending' OR (browser_transaction_hash IS NULL AND browser_binder_hash IS NULL))
 );
 
@@ -176,3 +177,34 @@ BEGIN
  SELECT RAISE(ABORT, 'device_rebind_audit_immutable');
 END;
 `;
+
+const PRE_RELEASE_ATTEMPT_OBJECTS = [
+	"TRIGGER coordinator_device_rebind_attempt_pins",
+	"TRIGGER coordinator_device_rebind_attempt_insert_collision",
+	"TRIGGER coordinator_device_rebind_attempt_rowid",
+	"TRIGGER coordinator_device_rebind_attempt_retained",
+	"INDEX idx_coordinator_device_rebind_attempts_device",
+	"TABLE coordinator_device_rebind_attempts",
+];
+
+/**
+ * The first pre-release attempts table forbade a review digest before OIDC,
+ * but the ceremony pins it at start. A coordinator that opened that build has
+ * the old table; recreate it while it is still empty (nothing wrote attempts
+ * before the routes shipped). With rows present it is left as is and starts
+ * fail closed.
+ */
+export function upgradePreReleaseRebindAttemptsSql(
+	existingTableSql: string | null,
+	rows: number,
+): string | null {
+	if (
+		!existingTableSql ||
+		existingTableSql.includes("CHECK (review_digest IS NOT NULL)") ||
+		rows > 0
+	)
+		return null;
+	return PRE_RELEASE_ATTEMPT_OBJECTS.map(
+		(object) => `DROP ${object.replace(" ", " IF EXISTS ")};`,
+	).join("\n");
+}

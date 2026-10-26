@@ -1,5 +1,6 @@
 -- ADR 0005 Section 8 device rebinding: additive tables only; no existing table changes.
 -- Mirror of packages/core/src/coordinator-device-rebind-schema.ts.
+-- Amended before any deployment or release (review digest now required at start).
 CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
  coordinator_id TEXT NOT NULL,
  attempt_id TEXT NOT NULL,
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
   OR (confirmation_hash IS NULL AND completion_secret_hash IS NULL)),
  CHECK (state NOT IN ('pending', 'browser_claimed') OR (account_subject IS NULL
   AND target_identity_id IS NULL AND link_id IS NULL AND link_authority_kind IS NULL
-  AND review_digest IS NULL AND team_effects_json IS NULL AND enrollment_count IS NULL)),
+  AND team_effects_json IS NULL AND enrollment_count IS NULL)),
+ CHECK (review_digest IS NOT NULL),
  CHECK (state <> 'pending' OR (browser_transaction_hash IS NULL AND browser_binder_hash IS NULL))
 );
 
