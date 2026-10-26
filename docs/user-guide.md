@@ -468,11 +468,12 @@ If the Viewer configuration changes during an attempt, **Cancel previous link** 
 
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
 
-### Upcoming: repair a reviewed account owner
+### Repair a reviewed account owner (beta)
 
-This recovery workflow is **unreleased**. Stable 0.47 has not been published, and
-the performance-only beta 3 did not include it. Do not use it for a live rollout until its
-release and coordinator deployment are separately approved.
+This recovery workflow first ships in **0.47.0-beta.4**; stable 0.47 has not been
+published. It works only against a coordinator that its operator has upgraded for
+owner resolution, and that coordinator upgrade and live rollout are separate operator
+steps.
 
 When available, **Review account ownership** appears in **My Account** only for a
 review-required, conflicting, or mismatched account state. It lets you select the

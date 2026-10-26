@@ -2,9 +2,34 @@
 
 ## [Unreleased]
 
+## [0.47.0-beta.4] - 2026-10-25
+
+### Added
+
+- Reviewed account-owner recovery: **My Account** offers **Review account ownership** for review-required, conflicting, or mismatched account states. It previews the full retained history, requires a fresh scoped confirmation, and displays the confirmed owner separately from the Memory author and sharing Identity. See [Repair a reviewed account owner](docs/user-guide.md#repair-a-reviewed-account-owner-beta).
+- Explicit coordinator owner-resolution schema upgrade and retained, immutable owner-resolution receipts, verified with existing device keys.
+- Packaged worker-based semantic retrieval for installed CLI and plugin runtimes.
+- Native Pi session search (`memory_session_search`) with a CLI fallback.
+
+### Changed
+
+- Semantic retrieval uses a bounded queue: cancellation removes queued work, and shutdown drains started work before SQLite closes.
+- Validated vector generations and catalogs during audit, maintenance, and rebuilds; semantic search uses validated vectors while keyword retrieval remains available during repair.
+- Upgraded vector layouts transactionally before requests, preserving existing memories and vector identities.
+- Projects review treats local Identity suggestions as optional, records only applicable review responses, and keeps Sharing and Devices actions separate from review decisions.
+- Manual **Sync now** keeps a visible pending status and result in the Viewer header across tabs.
+
 ### Fixed
 
 - New Team setup records reject conflicting Identity assignments for the same device or signing key; existing records/replays and exclusions unchanged.
+- Kept retained owner consistency through controller creation, claims, enrollment, and future Team completion.
+- Skipped cancelled jobs before semantic preparation, and started semantic workers correctly when a store uses a relative database path.
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading packages so the new backend loads.
+- Applications that own an asynchronous semantic store should await `closeAsync()` during shutdown so workers stop before SQLite closes.
+- Account-owner recovery needs a coordinator with the owner-resolution schema upgrade. Coordinator upgrades and live recovery rollout remain separate operator steps; this release does not change any coordinator.
 
 ## [0.47.0-beta.3] - 2026-10-22
 
@@ -120,7 +145,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...HEAD
+[0.47.0-beta.4]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...v0.47.0-beta.4
 [0.47.0-beta.3]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...v0.47.0-beta.3
 [0.47.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.2
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
