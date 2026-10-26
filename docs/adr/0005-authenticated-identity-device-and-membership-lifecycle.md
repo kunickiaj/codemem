@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-05
 
-**Status:** Accepted for product boundaries; protocol and implementation gates remain open
+**Status:** Accepted for product boundaries; protocol and implementation gates remain open.
+Amended 2026-10-26 by [Section 8](#8-sign-in-sets-the-devices-identity-amended-2026-10-26).
 
 **Amends:** [ADR 0004](0004-authenticated-identity-and-live-relay-boundaries.md) (specific decisions listed below)
 
@@ -161,6 +162,99 @@ that ceremony, not from the login.
   direct paths fail (ADR 0004). It applies the same scoped Identity and device
   authorization as direct sync. A browser session is never a sync grant.
 
+### 8. Sign-in sets the device's Identity (amended 2026-10-26)
+
+**Why this changed.** Dogfooding showed that a person who used several machines
+before Google linking can't reach one Identity through the product. Each old
+install minted its own Identity and claimed the person's other devices, so
+machines disagree about which Identity is "me". Legacy Team migration then
+copied one machine's unverified claims into coordinator history. Owner recovery
+records an account owner but never switches the device's own Identity, and the
+only way to finish was a config edit, a local actor merge, and an admin review
+approved with a credential stored on the same machine. That machine then showed
+the Google profile without ever signing in. The decisions below replace that
+path for ordinary users.
+
+**Decision.** Signing in with Google on a device sets that device's Identity.
+
+| Account state at sign-in | Result |
+| --- | --- |
+| No active link | Link the device's current Identity (the existing first-link flow). |
+| Linked to the device's current Identity | Nothing changes. |
+| Linked to a different Identity | After explicit confirmation, rebind the device to the account's Identity (below). |
+
+**Rebinding an enrolled device.**
+
+- Rebinding requires three proofs bound to one short-lived attempt: an
+  attempt-bound OIDC sign-in whose issuer and subject resolve to the target
+  Identity's active link, a signature from the device's currently enrolled
+  key, and a browser confirmation. The confirmation names the Google account,
+  the device's current Identity, the target Identity, the device, and every
+  Team effect listed below. A local review digest pins the local state, and
+  any local change aborts the attempt.
+- The device's current Identity must have no account link of its own. If it
+  has one, the flow stops: accounts are never merged, and the user unlinks
+  that account first with its own proof.
+- The coordinator records an immutable device-to-Identity ownership binding and
+  an audit event in one commit that covers every enrollment of that device key.
+  The binding supersedes conflicting legacy Team history for that device
+  without rewriting the history.
+- An active device-claim link may authorize rebinding. This extends the
+  operator-only consumer rule in the account-link protocol for this ceremony
+  only. A device-claim link still can't authorize fresh-device enrollment,
+  invitations, or grants without the existing qualification.
+- The device then switches locally in one transaction: the configured Identity,
+  the local actor, and device bindings. The old local actor becomes a merged
+  alias of the target. `actor_id` and `origin_device_id` on existing memories
+  stay as they are (Section 6). Every capture or MCP process re-reads the
+  Identity before writing and refuses to write under a superseded one.
+- If the coordinator commit succeeds and the local switch fails, the device
+  reports "coordinator bound, local switch pending" and resumes from a receipt.
+  An unknown outcome means reading status before retrying. Nothing rolls back
+  automatically.
+
+**Teams and access.**
+
+- Rebinding never moves Team memberships or Project grants. The target Identity
+  keeps its own access. The device gets only what the target Identity already
+  has, filtered by each Team's device-eligibility mode and existing exclusions.
+  `reviewed_allowlist` Teams are not widened (Section 2).
+- For each Team that the old Identity belonged to and the target Identity does
+  not, the Viewer queues an existing-Identity membership request for that
+  Team's admins (decision A). The old Identity stays a member until an admin
+  acts, so other members' devices keep accepting that Identity's history.
+- Peers learn about the change only through Team policy updates, never through
+  a broadcast of the local merge.
+
+**Freshness and notice (narrows decision E).** Rebinding accepts an existing
+Google browser session with account selection and does not force
+reauthentication. Each rebind writes the audit event, appears on the Identity's
+other devices at their next sync with a one-step revoke action, and is limited
+to a small number per Identity per day.
+
+**Migration and admin review.**
+
+- Legacy Team migration records only the running device's own assignment as
+  verified. Assignments for other devices are unverified labels and grant
+  nothing until those devices prove them by rebinding or by their own sign-in.
+- Admin review remains for first-owner bootstrap, for accounts where neither
+  Identity has a link, for recovery without a usable account, and for
+  contradictions that rebinding can't resolve. It is not the normal path for a
+  person's own devices.
+
+**What a device sees.**
+
+- A device sees account profile details (name, email, picture), Refresh, and
+  Unlink only after it holds its own claim, attestation, or ownership binding
+  for that Identity. Another device shows only "Linked on another device" with
+  the action to sign in here.
+- Account status is per coordinator. The Viewer chooses an enabled enrollment
+  to sign the request and does not ask the user for a group.
+
+**Out of scope.** Several Identities on one device, splitting an Identity,
+replacing an Identity's Google account, restoring revoked links, required-auth
+enforcement, the live relay, and rewriting contradictory migration history.
+
 ## Amendments to ADR 0004
 
 ADR 0004 stays as the historical record. These statements change:
@@ -209,6 +303,21 @@ admin proof" must be updated to match Section 2 before enrollment code lands.
 - **Cons:** Email is not an ownership proof; wrong merges leak data.
 - **Why rejected:** ADR 0004 already forbids it; reaffirmed here.
 
+### Repair migrated devices with owner recovery and admin review (Section 8)
+- **Pros:** Already shipped in 0.47 betas, with no new coordinator schema.
+- **Cons:** Records an owner without switching the device, needs an admin
+  credential, leaves Refresh and Unlink unavailable, and lets a device show the
+  account profile without its own sign-in.
+- **Why rejected:** Not a path a user can finish, and it weakens per-device
+  proof. Kept only for the admin cases listed in Section 8.
+
+### Move Team memberships during rebinding (Section 8)
+- **Pros:** The device keeps every Team in one step.
+- **Cons:** Someone holding a victim's Google session could fold their own
+  Identity's Teams into the victim's Identity. It also contradicts "sign-in
+  grants nothing".
+- **Why rejected:** Membership changes stay with Team admins.
+
 ## Rework assessment
 
 Based on the current code paths, most auth groundwork is reusable. The real
@@ -249,7 +358,13 @@ consume-and-bind, and fail-closed errors.
   over old memories without rewriting authorship or origin fields.
 - **E. Account compromise and freshness.** How recent the sign-in must be for
   enrollment, whether enrollment notifies other devices, and how fast
-  revocation reaches online and offline peers.
+  revocation reaches online and offline peers. Section 8 settles this for
+  rebinding: no forced reauthentication, a mandatory audit event, notice on
+  other devices, and a daily limit. Fresh-device enrollment stays open.
+
+Section 8 also depends on decision A for membership requests and leaves
+decision D unchanged: control of a merged alias's memories follows today's
+provenance rules until D is decided.
 
 ## Consequences
 
@@ -266,6 +381,12 @@ consume-and-bind, and fail-closed errors.
 - Two invitation paths (new person, existing Identity) need clear UI.
 - Current control and deletion behavior stays provenance-based for a while.
 - Required auth stays unavailable until decisions B and C close.
+- Rebinding (Section 8) needs a coordinator schema change and a Worker
+  deployment, and someone holding a victim's Google session can fold their own
+  enrolled device into the victim's Identity. The audit event, notice, and
+  revoke action are the mitigation.
+- Until a Team admin approves a membership request, a rebound device can't
+  receive that Team's Projects through the target Identity.
 
 ## Implementation order and acceptance checks
 
@@ -296,3 +417,34 @@ remain separate approvals.
    `actor_id` or `origin_device_id` rewrite; local-only stores untouched.
 
 Relay work stays behind the separate ADR 0004 relay gates.
+
+### Section 8 slices (0.47.0 stable gate)
+
+Stable 0.47.0 ships after slices S1 to S5. S6 waits on decision A. The
+coordinator schema change and Worker deployment in S3 and S5 still need their
+own approval.
+
+- **S1. Stop new damage** (Core and Viewer). Legacy migration records only
+  self-assignments as verified. My Account drops the group picker, disabled
+  actions say why and what to do next, and owner recovery no longer leaves a
+  half-switched state. *Check:* a two-machine fixture produces no cross-device
+  binding, and the account card offers no action that does nothing.
+- **S2. Account visibility.** Profile details, Refresh, and Unlink require the
+  device's own claim, attestation, or ownership binding. Other devices show
+  "Linked on another device". *Check:* an unproven peer of a linked Identity
+  sees no name, email, or picture.
+- **S3. Coordinator rebinding attempt** (schema change and Worker). One commit
+  writes the ownership binding, sets the Identity on every enrollment of that
+  key, and writes the audit event, on SQLite and D1. *Check:* missing any proof
+  writes nothing. A current Identity with its own link is refused. An exact
+  retry returns the same receipt, and a status read resolves an unknown
+  outcome.
+- **S4. Local switch.** Config, actor merge, device bindings, and a generation
+  marker change in one transaction, with a resumable receipt. *Check:*
+  authorship is unchanged, and a capture process holding the old Identity
+  refuses to write.
+- **S5. Change authority from the ownership binding** (Worker). Refresh and
+  Unlink resolve through the binding. *Check:* a rebound device gets Refresh
+  and Unlink, and an unproven peer gets neither.
+- **S6. Team membership requests**, after decision A. *Check:* no membership
+  moves without an admin action.
