@@ -14,6 +14,7 @@
  * eligibility. Memories, Team memberships, grants and peers are untouched.
  */
 
+import BetterSqlite from "better-sqlite3";
 import type {
 	DeviceRebindPending,
 	DeviceRebindReceiptV1,
@@ -527,4 +528,30 @@ export function completeLocalIdentitySwitch(
 		`UPDATE local_identity_switches SET state = 'completed', updated_at = ?
 		 WHERE attempt_id = ? AND state = 'db_committed'`,
 	).run(new Date().toISOString(), row.attempt_id);
+}
+
+/** Completed switches on this device: who it moved away from, and when. Opens read-only. */
+export function readCompletedLocalIdentitySwitches(
+	dbPath: string,
+): Array<{ previousIdentityId: string; completedAtMs: number }> {
+	const db = new BetterSqlite(dbPath, { readonly: true, fileMustExist: true, timeout: 1000 });
+	try {
+		const table = db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_identity_switches'",
+			)
+			.get();
+		if (!table) return [];
+		const rows = db
+			.prepare(
+				"SELECT previous_identity_id, updated_at FROM local_identity_switches WHERE state = 'completed'",
+			)
+			.all() as Array<{ previous_identity_id: string; updated_at: string }>;
+		return rows.map((row) => ({
+			previousIdentityId: row.previous_identity_id,
+			completedAtMs: Date.parse(row.updated_at),
+		}));
+	} finally {
+		db.close();
+	}
 }

@@ -7,6 +7,8 @@ import {
 	type ResolvedAccountOwnerStatus,
 	readAccountLinkDevice,
 	readAccountOwnerAssociation,
+	readAccountOwnerAssociationRetainedAtMs,
+	readCompletedLocalIdentitySwitches,
 } from "@codemem/core";
 import type { AccountContext } from "./context.js";
 import type { AccountLinkViewV1 } from "./status.js";
@@ -20,17 +22,26 @@ export function readOwnerAssociation(
 	if (context.publicKeyHash === undefined) return null;
 	const before = statSync(context.dbPath, { bigint: true });
 	const device = readAccountLinkDevice(context.dbPath);
-	const profile = {
-		...context,
-		publicKey: device.publicKey,
-		actorId: context.identityId,
-		coordinatorId,
+	const profileFor = (actorId: string) => {
+		const profile = { ...context, publicKey: device.publicKey, actorId, coordinatorId };
+		return { profile, expectedProfilePins: captureAccountOwnerProfilePins(profile) };
 	};
-	const expectedProfilePins = captureAccountOwnerProfilePins(profile);
-	// Without an exact generation, retain the legacy reader's context-mismatch failure.
-	const association =
-		readAccountOwnerAssociation(profile, { expectedProfilePins }) ??
-		readAccountOwnerAssociation(profile);
+	const evidence: AssociationEvidence = {
+		// Exact generations are keyed by every pin, including the actor.
+		generation: (actorId) => {
+			const { profile, expectedProfilePins } = profileFor(actorId);
+			return readAccountOwnerAssociation(profile, { expectedProfilePins });
+		},
+		generationRetainedAtMs: (actorId) => {
+			const { profile, expectedProfilePins } = profileFor(actorId);
+			return readAccountOwnerAssociationRetainedAtMs(profile, { expectedProfilePins });
+		},
+		// The legacy file is shared by every actor in this coordinator and group.
+		legacy: (actorId) => readAccountOwnerAssociation(profileFor(actorId).profile),
+		legacyRetainedAtMs: (actorId) =>
+			readAccountOwnerAssociationRetainedAtMs(profileFor(actorId).profile),
+	};
+	const association = readCurrentAssociation(context, evidence);
 	const after = statSync(context.dbPath, { bigint: true });
 	if (
 		!before.isFile() ||
@@ -44,6 +55,67 @@ export function readOwnerAssociation(
 	)
 		throw new Error("account_owner_association_invalid");
 	return association;
+}
+
+type AssociationEvidence = {
+	generation: (actorId: string) => AccountOwnerAssociation | null;
+	generationRetainedAtMs: (actorId: string) => number | null;
+	legacy: (actorId: string) => AccountOwnerAssociation | null;
+	legacyRetainedAtMs: (actorId: string) => number | null;
+};
+type Switches = ReturnType<typeof readCompletedLocalIdentitySwitches>;
+
+/** A switch away from `actorId` completed after evidence published at `retainedAtMs`. */
+function switchedAwayAfter(switches: Switches, actorId: string, retainedAtMs: number | null) {
+	return (
+		retainedAtMs !== null &&
+		switches.some((s) => s.previousIdentityId === actorId && s.completedAtMs > retainedAtMs)
+	);
+}
+
+/** The shared legacy file pins a previous Identity whose switch superseded it. */
+function legacySuperseded(evidence: AssociationEvidence, switches: Switches): boolean {
+	return [...new Set(switches.map((s) => s.previousIdentityId))].some((actorId) => {
+		try {
+			return (
+				evidence.legacy(actorId) !== null &&
+				switchedAwayAfter(switches, actorId, evidence.legacyRetainedAtMs(actorId))
+			);
+		} catch {
+			return false;
+		}
+	});
+}
+
+/**
+ * A switch away from the pinned Identity, completed after the association was
+ * published, supersedes it for good. Read failures are suppressed only for the
+ * shared legacy file, and only when it pins such a superseded Identity; a
+ * failing exact generation for the current Identity is always reported.
+ */
+function readCurrentAssociation(
+	context: AccountContext,
+	evidence: AssociationEvidence,
+): AccountOwnerAssociation | null {
+	const current = context.identityId;
+	const generation = evidence.generation(current);
+	const switches = () => readCompletedLocalIdentitySwitches(context.dbPath);
+	if (generation)
+		return switchedAwayAfter(switches(), current, evidence.generationRetainedAtMs(current))
+			? null
+			: generation;
+	let legacy: AccountOwnerAssociation | null;
+	try {
+		legacy = evidence.legacy(current);
+	} catch (error) {
+		if (legacySuperseded(evidence, switches())) return null;
+		throw error;
+	}
+	if (!legacy) return null;
+	// Returning to the pinned Identity after switching away doesn't revive it.
+	return switchedAwayAfter(switches(), current, evidence.legacyRetainedAtMs(current))
+		? null
+		: legacy;
 }
 
 export function ownerUnavailable(

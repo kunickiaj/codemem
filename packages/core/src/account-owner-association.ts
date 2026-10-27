@@ -310,6 +310,26 @@ export function readAccountOwnerAssociation(
 }
 
 /**
+ * When the association this profile would read was published, in epoch ms, or
+ * null when there is none. Files are create-only, so the mtime is publication.
+ */
+export function readAccountOwnerAssociationRetainedAtMs(
+	profile: AccountOwnerProfile,
+	options?: AssociationOptions,
+): number | null {
+	let path: string | null;
+	if (options?.expectedProfilePins !== undefined)
+		path = readGeneration(captureGeneration(profile, options.expectedProfilePins))?.path ?? null;
+	else path = associationPath(profile);
+	if (!path) return null;
+	try {
+		return lstatSync(path).mtimeMs;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Create-only publication after review; an exact retry never replaces prior owner evidence.
  * Generation checks cover this profile object and the DB file, not runtime actor/config state.
  * A future recovery service must check that state before and after calling this helper.

@@ -65,13 +65,22 @@ function canBeginLink(
 	}[intent];
 	return Boolean(allowed && view.contextId && view.selectedGroupId);
 }
+/** An owner-only view's sign-in runs in this device's own context, not the view's. */
+function startsFromOwnIdentity(operation: AccountOperation, view: AccountView): boolean {
+	return operation.intent === "sign_in" && operation.contextId === view.signIn?.contextId;
+}
+/** The operation runs in this view's context, or is its owner-only sign-in. */
+function ownsOperation(operation: AccountOperation, view: AccountView): boolean {
+	return operation.contextId === view.contextId || startsFromOwnIdentity(operation, view);
+}
 function sameOperationContext(
 	operation: AccountOperation,
 	view: AccountView,
 	intent?: AccountIntent,
 ): boolean {
 	return (
-		operation.contextId === (view.operationContextId ?? view.contextId) &&
+		(operation.contextId === (view.operationContextId ?? view.contextId) ||
+			startsFromOwnIdentity(operation, view)) &&
 		operation.groupId === view.selectedGroupId &&
 		(intent === undefined || (operation.intent ?? "connect") === intent)
 	);
@@ -411,6 +420,35 @@ function reservePopup(intent: AccountIntent): Window | null {
 	if (opened) opened.opener = null;
 	return opened;
 }
+type StartTarget = {
+	contextId: string;
+	coordinatorId: string;
+	authority: "controller_attestation" | "device_claim";
+};
+
+/**
+ * The context and coordinator an operation starts against: the owner-only
+ * view's sign-in target, or this Identity's checked status.
+ */
+function startTarget(view: AccountView, intent: AccountIntent): StartTarget | null {
+	const signIn = intent === "sign_in" ? view.signIn : undefined;
+	if (signIn) return signIn.authority ? { ...signIn, authority: signIn.authority } : null;
+	const remote = view.remote;
+	if (
+		remote.kind !== "status" ||
+		remote.state !== expectedRemoteState(intent) ||
+		!remote.identityMatches ||
+		(remote.authority !== "controller_attestation" && remote.authority !== "device_claim") ||
+		!view.contextId
+	)
+		return null;
+	return {
+		contextId: view.contextId,
+		coordinatorId: remote.coordinatorId,
+		authority: remote.authority,
+	};
+}
+
 /** Linking and sign-in start from an unlinked Identity; account changes from a linked one. */
 function expectedRemoteState(intent: AccountIntent): "unlinked" | "linked" {
 	return intent === "connect" || intent === "sign_in" ? "unlinked" : "linked";
@@ -436,13 +474,8 @@ async function link(
 		!canBeginLink(view, busy, intent, confirmedView)
 	)
 		return;
-	if (
-		view.remote.kind !== "status" ||
-		view.remote.state !== expectedRemoteState(intent) ||
-		!view.remote.identityMatches ||
-		(view.remote.authority !== "controller_attestation" && view.remote.authority !== "device_claim")
-	)
-		return;
+	const target = startTarget(view, intent);
+	if (!target) return;
 	flow.refs.current.starting = true;
 	const epoch = flow.refs.current.generation;
 	let opened: Window | null = null;
@@ -456,10 +489,10 @@ async function link(
 		flow.refs.current.popup = opened;
 		const result = await startAccountLink(
 			view.selectedGroupId,
-			view.contextId,
+			target.contextId,
 			{
-				authority: view.remote.authority,
-				coordinatorId: view.remote.coordinatorId,
+				authority: target.authority,
+				coordinatorId: target.coordinatorId,
 				intent,
 				...(intent === "disconnect" ? { expectedLinkId: view.unlinkTarget } : {}),
 			},
@@ -470,7 +503,7 @@ async function link(
 			return;
 		}
 		if (
-			result.operation.contextId !== view.contextId ||
+			result.operation.contextId !== target.contextId ||
 			!sameOperationContext(result.operation, view, intent)
 		) {
 			opened?.close();
@@ -546,7 +579,7 @@ function useBrowserDelivery(flow: Flow): void {
 		)
 			return;
 		// Displaying an original-context operation must not deliver its browser handoff here.
-		if (operation.contextId !== view.contextId || !sameOperationContext(operation, view)) return;
+		if (!ownsOperation(operation, view) || !sameOperationContext(operation, view)) return;
 		flow.refs.current.delivered = operation.operationId;
 		const abort = new AbortController();
 		deliverBrowserUrl(flow, operation, view, flow.refs.current.generation, abort.signal);

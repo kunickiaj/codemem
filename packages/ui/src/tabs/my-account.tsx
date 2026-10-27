@@ -93,6 +93,11 @@ function ownerOnlySummary(view: AccountView): string {
 		return `This device runs as ${local}, and its account owner ${owner} has no linked Google account. To link one, use a device that runs as ${owner}.`;
 	if (status.profileState !== "linked")
 		return `This device runs as ${local}, and its account owner is ${owner}. The owner’s account details are unavailable. Check status again later.`;
+	if (view.canSignIn) {
+		const account =
+			safeProfileText(view.ownerProjection?.status.profile?.email) ?? `${owner}’s Google account`;
+		return `This device runs as ${local}, but the Google account belongs to ${owner}. Sign in with ${account} to switch this device to ${owner}.`;
+	}
 	return `This device runs as ${local}, but the Google account belongs to ${owner}. To refresh or unlink it, use a device that runs as ${owner}.`;
 }
 
@@ -361,11 +366,13 @@ function PrimaryAccountAction({
 	const view = flow.view;
 	if (!view) return null;
 	const signIn = view.canSignIn !== undefined;
+	// An owner-only view offers sign-in and nothing else.
+	const allowed = signIn ? view.canSignIn : view.canLink && !view.ownerProjection;
 	return (
 		<button
 			className="settings-save"
 			type="button"
-			disabled={blocked || !(signIn ? view.canSignIn : view.canLink)}
+			disabled={blocked || !allowed}
 			aria-describedby="my-account-summary"
 			onClick={() => void (signIn ? flow.signIn() : flow.link())}
 		>
@@ -403,7 +410,7 @@ function LinkFallbackAction({
 		<button
 			className="settings-button"
 			type="button"
-			disabled={blocked || !flow.view?.canLink}
+			disabled={blocked || !flow.view?.canLink || Boolean(flow.view?.ownerProjection)}
 			onClick={() => void flow.link()}
 		>
 			Link this account
@@ -415,9 +422,9 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	const { view, operation, pendingOperation, busy, fallback } = flow;
 	const running = operation?.state === "starting" || operation?.state === "awaiting_browser";
 	const linked = view?.remote.kind === "status" && view.remote.state === "linked";
+	// Owner-only views offer only sign-in; their other actions are off through canLink.
 	const blocked =
 		busy ||
-		Boolean(view?.ownerProjection) ||
 		Boolean(pendingOperation) ||
 		operation?.state === "outcome_unknown" ||
 		view?.blockedReason === "operation_active";

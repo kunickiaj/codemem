@@ -67,6 +67,15 @@ export interface AccountLinkViewV1 {
 	canLink: boolean;
 	/** "Sign in with Google": may link this Identity or switch the device to the account's. */
 	canSignIn?: boolean;
+	/**
+	 * Where sign-in starts when this view is the owner-only projection, whose
+	 * own contextId is not a mutation context: this device's own Identity.
+	 */
+	signIn?: {
+		contextId: string;
+		coordinatorId: string;
+		authority: "controller_attestation" | "device_claim" | null;
+	};
 	managementActions?: { refresh: boolean; disconnect: boolean };
 	unlinkTarget?: string;
 	blockedReason:
@@ -86,15 +95,40 @@ export interface AccountLinkViewV1 {
 	checkedAt: string;
 }
 type LocalResult = Exclude<AccountContextResult, { error: string }>;
+/**
+ * The owner-only state offers sign-in when the owner's Google account is
+ * linked and this device's own Identity has none: signing in switches the
+ * device to the owner's Identity.
+ */
+function withOwnerSignIn(
+	owner: AccountLinkViewV1,
+	own: AccountLinkViewV1,
+	context: AccountContext,
+	remote: Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>,
+): AccountLinkViewV1 {
+	if (owner.ownerProjection?.status.profileState !== "linked" || own.canSignIn !== true)
+		return owner;
+	return {
+		...owner,
+		canSignIn: true,
+		signIn: {
+			contextId: context.contextId,
+			coordinatorId: remote.status.coordinatorId,
+			authority: remote.status.authority,
+		},
+	};
+}
+
 function attachOperation(
 	input: AccountLinkViewV1,
 	registry?: AccountLinkRegistry,
 	operationContextId = input.contextId,
 ): AccountLinkViewV1 {
 	// Without a rebind runner there is no sign-in; the UI keeps the link action.
-	const { canSignIn, ...rest } = input;
+	const { canSignIn, signIn, ...rest } = input;
 	const view: AccountLinkViewV1 = registry?.supportsSignIn?.() ? input : rest;
 	void canSignIn;
+	void signIn;
 	const operation = operationContextId ? (registry?.forContext(operationContextId) ?? null) : null;
 	const operationContext =
 		operation && operationContextId && operationContextId !== view.contextId
@@ -177,11 +211,17 @@ function applyRemote(
 }
 type AccountStatusResult = AccountLinkViewV1 | Extract<AccountContextResult, { error: string }>;
 
+type ReadOptions = {
+	expectedContext?: AccountContext;
+	/** Sign-in checks this device's own Identity, not an owner-only projection. */
+	ownIdentityOnly?: boolean;
+};
+
 export async function readAccountStatus(
 	options: AccountStatusOptions & { readContext: AccountContextReader },
 	groupId: string | undefined,
 	signal: AbortSignal,
-	readOptions: { expectedContext?: AccountContext } = {},
+	readOptions: ReadOptions = {},
 ): Promise<AccountStatusResult> {
 	const initial = options.readContext(groupId);
 	if ("error" in initial) return initial;
@@ -277,7 +317,7 @@ async function readStatusFromContext(
 	initial: LocalResult,
 	groupId: string | undefined,
 	signal: AbortSignal,
-	readOptions: { expectedContext?: AccountContext } = {},
+	readOptions: ReadOptions = {},
 ): Promise<AccountStatusResult> {
 	const view = accountLocalView(initial);
 	if (initial.setup !== "ready" || !initial.context) return attachOperation(view, options.registry);
@@ -331,7 +371,10 @@ async function readStatusFromContext(
 			options.registry,
 		);
 	}
-	return finishAccountStatus(options, initial.context, fresh, remote, signal);
+	return finishAccountStatus(options, initial.context, fresh, remote, {
+		signal,
+		ownIdentityOnly: readOptions.ownIdentityOnly === true,
+	});
 }
 
 async function finishAccountStatus(
@@ -339,12 +382,19 @@ async function finishAccountStatus(
 	context: AccountContext,
 	fresh: LocalResult,
 	remote: CoordinatorAccountLinkStatusRead,
-	signal: AbortSignal,
+	read: { signal: AbortSignal; ownIdentityOnly: boolean },
 ): Promise<AccountLinkViewV1> {
+	const { signal } = read;
 	const currentView = applyRemote(accountLocalView(fresh), remote);
 	if (remote.kind === "status") {
 		const associated = await readAssociatedOwner(options, context, currentView, remote, signal);
-		if (associated) return attachOperation(associated, options.registry, context.contextId);
+		if (associated) {
+			const owner = withOwnerSignIn(associated, currentView, context, remote);
+			// Sign-in starts from this device's own view only where the owner view offers it.
+			if (read.ownIdentityOnly && owner.signIn?.contextId === context.contextId)
+				return attachOperation(currentView, options.registry);
+			return attachOperation(owner, options.registry, context.contextId);
+		}
 	}
 	await attachManagementActions(options, context, currentView, signal);
 	if (remote.kind === "status") {

@@ -99,6 +99,12 @@ export type AccountView = {
 	canLink: boolean;
 	/** Sign in with Google: links this Identity, or switches the device to the account's. */
 	canSignIn?: boolean;
+	/** Sign-in start fields for the owner-only view, whose contextId is not a mutation context. */
+	signIn?: {
+		contextId: string;
+		coordinatorId: string;
+		authority: "controller_attestation" | "device_claim" | null;
+	};
 	managementActions?: { refresh: boolean; disconnect: boolean };
 	unlinkTarget?: string;
 	blockedReason:

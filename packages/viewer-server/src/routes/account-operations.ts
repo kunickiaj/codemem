@@ -145,6 +145,7 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 	const expectedLifecycleToken = options.registry.lifecycleToken();
 	const view = await readAccountStatus(options, body.groupId, c.req.raw.signal, {
 		expectedContext: checkedContext,
+		ownIdentityOnly: body.intent === "sign_in",
 	});
 	if (
 		"error" in view ||

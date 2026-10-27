@@ -21,7 +21,10 @@ import {
 	loadPublicKey,
 } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { retainAccountOwnerAssociation } from "../../../core/src/account-owner-association.js";
+import {
+	captureAccountOwnerProfilePins,
+	retainAccountOwnerAssociation,
+} from "../../../core/src/account-owner-association.js";
 import { createApp } from "../index.js";
 import { type AccountContext, createAccountContextReader } from "./context.js";
 import { createAccountLinkRegistry } from "./link-registry.js";
@@ -757,4 +760,224 @@ describe("associated owner HTTP mutation isolation", () => {
 			expect(f.readContext()).toMatchObject({ context: f.context });
 		},
 	);
+});
+
+/** A switch completion time after the fixture's association file was published. */
+const later = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+
+describe("owner association after this device switched to its owner", () => {
+	function switchTo(
+		f: ReturnType<typeof fixture>,
+		options: { recorded: boolean; target?: string },
+	) {
+		const target = options.target ?? "identity-a";
+		if (options.recorded) {
+			const db = connect(f.dbPath);
+			db.exec(`CREATE TABLE IF NOT EXISTS local_identity_switches (attempt_id TEXT PRIMARY KEY,
+				previous_identity_id TEXT, target_identity_id TEXT, state TEXT, updated_at TEXT)`);
+			db.prepare(
+				"INSERT INTO local_identity_switches VALUES ('rebind-a', 'actor-c', ?, 'completed', ?)",
+			).run(target, later(1));
+			db.close();
+		}
+		f.profile.identityId = target;
+		f.config.actor_id = target;
+	}
+
+	it("stops showing an association the switch fulfilled", async () => {
+		// Arrange
+		const f = fixture();
+		switchTo(f, { recorded: true });
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).not.toHaveProperty("ownerProjection");
+		expect(view).toMatchObject({ remote: { kind: "status", identityId: "identity-a" } });
+	});
+
+	it("stops showing the association after a switch to another account's Identity", async () => {
+		// Arrange: the person signed in with a different linked account than the owner's.
+		const f = fixture();
+		switchTo(f, { recorded: true, target: "identity-c" });
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).not.toHaveProperty("ownerProjection");
+		expect(view).toMatchObject({ remote: { kind: "status", identityId: "identity-c" } });
+	});
+
+	it("stops showing the association after successive switches", async () => {
+		// Arrange: B -> A, then A -> C; the association still pins B.
+		const f = fixture();
+		switchTo(f, { recorded: true, target: "identity-a" });
+		const db = connect(f.dbPath);
+		db.prepare(
+			"INSERT INTO local_identity_switches VALUES ('rebind-b', 'identity-a', 'identity-c', 'completed', ?)",
+		).run(later(2));
+		db.close();
+		f.profile.identityId = "identity-c";
+		f.config.actor_id = "identity-c";
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).not.toHaveProperty("ownerProjection");
+		expect(view).toMatchObject({ remote: { kind: "status", identityId: "identity-c" } });
+	});
+
+	it("doesn't revive the association when the device returns to the pinned Identity", async () => {
+		// Arrange: actor-c -> identity-a, then identity-a -> actor-c again.
+		const f = fixture();
+		switchTo(f, { recorded: true, target: "identity-a" });
+		const db = connect(f.dbPath);
+		db.prepare(
+			"INSERT INTO local_identity_switches VALUES ('rebind-b', 'identity-a', 'actor-c', 'completed', ?)",
+		).run(later(2));
+		db.close();
+		f.profile.identityId = "actor-c";
+		f.config.actor_id = "actor-c";
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).not.toHaveProperty("ownerProjection");
+		expect(view).toMatchObject({ remote: { kind: "status", identityId: "actor-c" } });
+	});
+
+	it("keeps an association published after the device's earlier switches", async () => {
+		// Arrange: actor-c switched away and back long ago; owner recovery published this one since.
+		const f = fixture();
+		const db = connect(f.dbPath);
+		db.exec(`CREATE TABLE IF NOT EXISTS local_identity_switches (attempt_id TEXT PRIMARY KEY,
+			previous_identity_id TEXT, target_identity_id TEXT, state TEXT, updated_at TEXT)`);
+		db.prepare(
+			"INSERT INTO local_identity_switches VALUES ('old', 'actor-c', 'identity-z', 'completed', '2000-01-01T00:00:00Z')",
+		).run();
+		db.close();
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).toMatchObject({ ownerProjection: { kind: "resolved_account_owner" } });
+	});
+
+	it("still reports corrupt evidence for the current Identity next to a superseded one", async () => {
+		// Arrange: B's legacy association was superseded by B -> C; C then got its own, now corrupt.
+		const home = mkdtempSync(join(tmpdir(), "viewer-owner-home-"));
+		cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+		vi.stubEnv("HOME", home);
+		const f = fixture();
+		switchTo(f, { recorded: true, target: "identity-c" });
+		const current = { ...f.ownerProfile, actorId: "identity-c" };
+		retainAccountOwnerAssociation(
+			current,
+			{
+				ownerIdentityId: "identity-a",
+				attestationId: `controller-v1:${"c".repeat(64)}`,
+				reviewDigest: "d".repeat(64),
+			},
+			{ expectedProfilePins: captureAccountOwnerProfilePins(current) },
+		);
+		const directory = join(home, ".codemem", "account-owner-associations");
+		const file = readdirSync(directory).find((name) => name.startsWith(".account-owner-"));
+		if (!file) throw new Error("Missing current association fixture");
+		chmodSync(join(directory, file), 0o600);
+		writeFileSync(join(directory, file), "not json");
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).toMatchObject({ remote: { kind: "unavailable" } });
+	});
+
+	it("still flags an association whose Identity changed without a recorded switch", async () => {
+		// Arrange
+		const f = fixture();
+		switchTo(f, { recorded: false });
+		// Act
+		const view = await f.read();
+		// Assert
+		expect(view).toMatchObject({ remote: { kind: "unavailable" } });
+	});
+});
+
+describe("sign-in from the owner-only state", () => {
+	function readWith(f: ReturnType<typeof fixture>, options: { ownIdentityOnly?: boolean } = {}) {
+		const registry = createAccountLinkRegistry({
+			readContext: f.readContext,
+			rebind: async () => ({ kind: "failed" }),
+		});
+		cleanups.push(() => registry.close());
+		return readAccountStatus(
+			{
+				readContext: f.readContext,
+				readRemoteStatus: f.readRemoteStatus,
+				readRemoteOwnerStatus: f.readRemoteOwnerStatus,
+				registry,
+			},
+			undefined,
+			new AbortController().signal,
+			options,
+		);
+	}
+
+	it("offers sign-in that starts from this device's own Identity", async () => {
+		// Arrange
+		const f = fixture();
+		// Act
+		const view = await readWith(f);
+		// Assert
+		expect(view).toMatchObject({
+			ownerProjection: { kind: "resolved_account_owner" },
+			canSignIn: true,
+			signIn: {
+				contextId: f.context.contextId,
+				coordinatorId: "actual-coordinator-id",
+				authority: "device_claim",
+			},
+		});
+	});
+
+	it("does not offer sign-in when the owner has no linked account", async () => {
+		// Arrange
+		const f = fixture();
+		f.readRemoteOwnerStatus.mockResolvedValue({
+			kind: "owner_status",
+			status: { ...f.ownerStatus().status, profileState: "account_unlinked", profile: null },
+		} as CoordinatorResolvedAccountOwnerStatusRead);
+		// Act
+		const view = await readWith(f);
+		// Assert
+		expect(view).not.toHaveProperty("signIn");
+		expect((view as AccountLinkViewV1).canSignIn).not.toBe(true);
+	});
+
+	it("keeps the owner view for a sign-in start the owner view doesn't offer", async () => {
+		// Arrange: the owner has no linked Google account, so sign-in is not offered.
+		const f = fixture();
+		f.readRemoteOwnerStatus.mockResolvedValue({
+			kind: "owner_status",
+			status: { ...f.ownerStatus().status, profileState: "account_unlinked", profile: null },
+		} as CoordinatorResolvedAccountOwnerStatusRead);
+		// Act
+		const view = await readWith(f, { ownIdentityOnly: true });
+		// Assert: the start route rejects any view other than this device's own.
+		expect((view as AccountLinkViewV1).contextId).not.toBe(f.context.contextId);
+	});
+
+	it("fails closed for a sign-in start when the association is invalid", async () => {
+		// Arrange
+		const f = fixture();
+		f.editAssociation({ ownerIdentityId: "not valid!" });
+		// Act
+		const view = await readWith(f, { ownIdentityOnly: true });
+		// Assert
+		expect(view).toMatchObject({ remote: { kind: "unavailable" } });
+	});
+
+	it("checks sign-in against this device's own Identity when starting", async () => {
+		// Arrange
+		const f = fixture();
+		// Act
+		const view = await readWith(f, { ownIdentityOnly: true });
+		// Assert
+		expect(view).not.toHaveProperty("ownerProjection");
+		expect(view).toMatchObject({ contextId: f.context.contextId, canSignIn: true });
+	});
 });

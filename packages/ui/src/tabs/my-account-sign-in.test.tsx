@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountOperation, AccountView } from "../lib/api/account";
 import { MyAccount } from "./my-account";
 import { operation, response, settle, status } from "./my-account-test-utils";
+import { ownerAccount } from "./owner-recovery-test-utils";
 
 const transport = vi.fn<typeof fetch>();
 const rebindUrl = "https://coordinator.example/auth/rebind/start?attempt_id=a&start_code=b";
@@ -151,5 +152,53 @@ describe("My Account sign-in", () => {
 		await show();
 		// Assert
 		expect(summary()).toContain("Restart the Viewer to check again");
+	});
+});
+
+describe("My Account sign-in from the owner-only state", () => {
+	it("opens Google for a sign-in that starts from this device's own Identity", async () => {
+		// Arrange: this device runs as B; the coordinator confirmed A as the account owner.
+		const owner = ownerAccount();
+		const { operationContextId: _unused, ...withoutOperation } = owner;
+		view = {
+			...withoutOperation,
+			operation: null,
+			accountOwner: { ...owner.accountOwner, displayName: "Owner A" },
+			canSignIn: true,
+			signIn: {
+				contextId: "own-context",
+				coordinatorId: "coordinator-b",
+				authority: "device_claim",
+			},
+		} as AccountView;
+		const started = signInOperation({
+			contextId: "own-context",
+			groupId: owner.selectedGroupId ?? "",
+			state: "awaiting_browser",
+			browserUrlAvailable: true,
+		});
+		transport.mockImplementation(async (url) => {
+			if (url === "/api/account/session") return response({ version: 1, csrfToken: "token" });
+			if (String(url).includes("link-status")) return response(view);
+			if (String(url).endsWith("browser-url")) return response({ version: 1, url: rebindUrl });
+			return response({ version: 1, operation: started, current: true });
+		});
+		await show();
+		const offer = summary();
+		// Act
+		await act(async () => {
+			button("Sign in with Google")?.click();
+		});
+		await settle();
+		// Assert
+		expect(offer).toContain("Sign in with owner-a@example.test to switch this device to Owner A.");
+		const start = transport.mock.calls.find(([url]) => String(url).endsWith("link-operations"));
+		expect(JSON.parse(String(start?.[1]?.body))).toMatchObject({
+			intent: "sign_in",
+			contextId: "own-context",
+			coordinatorId: "coordinator-b",
+		});
+		expect(popup.location.replace).toHaveBeenCalledWith(rebindUrl);
+		expect(popup.close).not.toHaveBeenCalled();
 	});
 });

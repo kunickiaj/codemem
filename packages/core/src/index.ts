@@ -13,6 +13,7 @@ export {
 	type AccountOwnerProfilePins,
 	captureAccountOwnerProfilePins,
 	readAccountOwnerAssociation,
+	readAccountOwnerAssociationRetainedAtMs,
 } from "./account-owner-association.js";
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
@@ -707,6 +708,7 @@ export {
 	LocalIdentitySwitchError,
 	markLocalIdentitySwitchBound,
 	markLocalIdentitySwitchNotCommitted,
+	readCompletedLocalIdentitySwitches,
 	readOpenLocalIdentitySwitch,
 	recordLocalIdentitySwitch,
 } from "./local-identity-switch.js";
