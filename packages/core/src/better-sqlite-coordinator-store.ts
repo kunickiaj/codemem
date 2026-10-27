@@ -150,6 +150,10 @@ import {
 } from "./coordinator-device-revocation.js";
 import { parseSshEd25519PublicKeyForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
+	ENROLLMENT_OWNERSHIP_COLUMNS,
+	withEnrollmentOwnership,
+} from "./coordinator-enrollment-ownership.js";
+import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
 	type CoordinatorIdentityGroupGrantIssueResult,
@@ -1675,16 +1679,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		includeDisabled = false,
 	): Promise<CoordinatorEnrollment[]> {
 		const where = includeDisabled ? "" : "AND enrolled_devices.enabled = 1";
-		return this.db
-			.prepare(`SELECT ${ENROLLMENT_PRESENCE_COLUMNS}
+		return withEnrollmentOwnership(
+			this.db
+				.prepare(`SELECT ${ENROLLMENT_PRESENCE_COLUMNS}, ${ENROLLMENT_OWNERSHIP_COLUMNS}
 				 FROM enrolled_devices
 				 LEFT JOIN presence_records
 				   ON presence_records.group_id = enrolled_devices.group_id
 				  AND presence_records.device_id = enrolled_devices.device_id
 				 WHERE enrolled_devices.group_id = ? ${where}
 				 ORDER BY enrolled_devices.created_at ASC, enrolled_devices.device_id ASC`)
-			.all(groupId)
-			.map(rowToEnrollmentWithPresence);
+				.all(groupId)
+				.map(rowToEnrollmentWithPresence),
+		);
 	}
 
 	async getEnrollment(

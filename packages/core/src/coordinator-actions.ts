@@ -1405,20 +1405,7 @@ export async function coordinatorListDevicesAction(opts: {
 				enabled: record.enabled,
 				created_at: record.created_at,
 			};
-			if (
-				typeof record.presence_expires_at === "string" &&
-				record.presence_capabilities !== null &&
-				typeof record.presence_capabilities === "object" &&
-				!Array.isArray(record.presence_capabilities)
-			) {
-				const capabilities = record.presence_capabilities as Record<string, unknown>;
-				enrollment.presence_expires_at = record.presence_expires_at;
-				enrollment.presence_capabilities = {
-					sync_capability: capabilities.sync_capability,
-					sync_features: capabilities.sync_features,
-				};
-			}
-			return enrollment;
+			return { ...enrollment, ...remoteEnrollmentExtras(record) };
 		});
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH);
@@ -1427,6 +1414,25 @@ export async function coordinatorListDevicesAction(opts: {
 	} finally {
 		await store.close();
 	}
+}
+
+/** Optional fields; older coordinators omit them, and malformed values are dropped, never trusted. */
+function remoteEnrollmentExtras(record: Record<string, unknown>): Partial<CoordinatorEnrollment> {
+	const extras: Partial<CoordinatorEnrollment> = {};
+	if (isCanonicalCoordinatorIdentifier(record.ownership_identity_id))
+		extras.ownership_identity_id = record.ownership_identity_id;
+	const capabilities = record.presence_capabilities;
+	if (
+		typeof record.presence_expires_at !== "string" ||
+		!capabilities ||
+		typeof capabilities !== "object" ||
+		Array.isArray(capabilities)
+	)
+		return extras;
+	const { sync_capability, sync_features } = capabilities as Record<string, unknown>;
+	extras.presence_expires_at = record.presence_expires_at;
+	extras.presence_capabilities = { sync_capability, sync_features };
+	return extras;
 }
 
 function isCanonicalCoordinatorIdentifier(value: unknown): value is string {

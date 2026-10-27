@@ -43,6 +43,8 @@ export interface CoordinatorEnrollment {
 	presence_expires_at?: string;
 	/** Token-free capabilities from the same authenticated presence record. */
 	presence_capabilities?: Record<string, unknown>;
+	/** The Identity this exact device key is bound to, when the coordinator holds one binding. */
+	ownership_identity_id?: string;
 }
 
 export interface CoordinatorInvite {

@@ -226,7 +226,14 @@ path for ordinary users.
   Team's admins (decision A). The old Identity stays a member until an admin
   acts, so other members' devices keep accepting that Identity's history.
 - Peers learn about the change only through Team policy updates, never through
-  a broadcast of the local merge.
+  a broadcast of the local merge. (Amended 2026-10-27.) An admin device's
+  coordinator device list names the Identity each device's ownership binding
+  points to. When that binding names the enrollment's new Identity, the key the
+  admin device pinned still matches, and the admin device knows that Identity
+  as active, it moves the device to that Identity, so its Projects follow the
+  target Identity's access. The moved device counts as a plain coordinator
+  enrollment, never as one of the admin's own devices. Otherwise the change
+  stays an Identity conflict and the device gets nothing.
 
 **Freshness and notice (narrows decision E).** Rebinding accepts an existing
 Google browser session with account selection and does not force

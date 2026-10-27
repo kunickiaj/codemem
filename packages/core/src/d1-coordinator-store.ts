@@ -108,6 +108,10 @@ import {
 } from "./coordinator-device-revocation.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
+	ENROLLMENT_OWNERSHIP_COLUMNS,
+	withEnrollmentOwnership,
+} from "./coordinator-enrollment-ownership.js";
+import {
 	type CoordinatorIdentityGroupGrant,
 	type CoordinatorIdentityGroupGrantIssueInput,
 	type CoordinatorIdentityGroupGrantIssueResult,
@@ -1791,10 +1795,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		_includeDisabled?: boolean,
 	): Promise<CoordinatorEnrollment[]> {
 		const where = _includeDisabled ? "" : "AND enrolled_devices.enabled = 1";
-		return (
+		const rows = (
 			await allRows<CoordinatorEnrollment>(
 				this.db
-					.prepare(`SELECT ${ENROLLMENT_PRESENCE_COLUMNS}
+					.prepare(`SELECT ${ENROLLMENT_PRESENCE_COLUMNS}, ${ENROLLMENT_OWNERSHIP_COLUMNS}
 						 FROM enrolled_devices
 						 LEFT JOIN presence_records
 						   ON presence_records.group_id = enrolled_devices.group_id
@@ -1804,6 +1808,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.bind(_groupId),
 			)
 		).map(rowToEnrollmentWithPresence);
+		return withEnrollmentOwnership(rows);
 	}
 
 	async getEnrollment(

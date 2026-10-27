@@ -117,6 +117,113 @@ function adoptMembership(
 	).run(status, now, teamId, identityId);
 }
 
+type RosterDevices = Map<string, Map<string, { assignmentVersion: number; deviceId: string }>>;
+
+function addRosterDevice(
+	roster: RosterDevices,
+	identityId: string,
+	deviceId: string,
+	assignmentVersion: number,
+): void {
+	let devices = roster.get(identityId);
+	if (!devices) {
+		devices = new Map();
+		roster.set(identityId, devices);
+	}
+	devices.set(deviceId, { assignmentVersion, deviceId });
+}
+
+/** Keeps a coordinator-provided device name current; local names are left alone. */
+function refreshEnrollmentDisplayName(
+	db: Database,
+	existing: { provenance: string; display_name: string },
+	deviceId: string,
+	displayName: string | null,
+	now: string,
+): void {
+	if (
+		existing.provenance !== "coordinator_enrollment" ||
+		displayName == null ||
+		existing.display_name === displayName
+	)
+		return;
+	db.prepare(
+		`UPDATE identity_devices SET display_name = ?, updated_at = ?
+		 WHERE device_id = ? AND provenance = 'coordinator_enrollment'`,
+	).run(displayName, now, deviceId);
+}
+
+type LocalDeviceAssignment = {
+	assignment_version: number;
+	identity_id: string;
+	status: string;
+};
+
+/** This device's locally pinned key, or a local-actor claim, disagrees with the enrollment. */
+function hasPeerTrustConflict(db: Database, enrollment: CoordinatorEnrollment): boolean {
+	const peer = db
+		.prepare(
+			`SELECT public_key, pinned_fingerprint, claimed_local_actor
+			 FROM sync_peers WHERE peer_device_id = ?`,
+		)
+		.get(enrollment.device_id) as
+		| { public_key: string | null; pinned_fingerprint: string | null; claimed_local_actor: number }
+		| undefined;
+	if (!peer) return false;
+	return (
+		peer.claimed_local_actor === 1 ||
+		(peer.public_key != null && peer.public_key !== enrollment.public_key) ||
+		(peer.pinned_fingerprint != null && peer.pinned_fingerprint !== enrollment.fingerprint)
+	);
+}
+
+/**
+ * The coordinator moved this active device to another Identity: its ownership
+ * binding for this exact key (from a rebind or an owner enrollment, ADR 0005
+ * Section 8) names the enrollment's new Identity, and the key this device
+ * pinned locally still matches. Any other difference stays a conflict.
+ */
+function isRebound(
+	db: Database,
+	existing: LocalDeviceAssignment,
+	enrollment: CoordinatorEnrollment,
+): boolean {
+	return (
+		existing.status === "active" &&
+		existing.identity_id !== enrollment.identity_id &&
+		enrollment.ownership_identity_id === enrollment.identity_id &&
+		!hasPeerTrustConflict(db, enrollment)
+	);
+}
+
+/**
+ * Moves the device to its new Identity; it then gets only that Identity's
+ * access. Its provenance becomes a plain coordinator enrollment, so coordinator
+ * evidence alone never makes it one of this person's own devices.
+ */
+function adoptReboundDevice(
+	db: Database,
+	existing: LocalDeviceAssignment,
+	enrollment: CoordinatorEnrollment,
+	now: string,
+) {
+	const moved = assignIdentityDeviceInTransaction(db, {
+		deviceId: enrollment.device_id,
+		targetIdentityId: enrollment.identity_id as string,
+		expectation: {
+			kind: "existing",
+			identityId: existing.identity_id,
+			assignmentVersion: existing.assignment_version,
+		},
+		now,
+	});
+	db.prepare(
+		`UPDATE identity_devices SET provenance = 'coordinator_enrollment', updated_at = ?
+		 WHERE device_id = ? AND identity_id = ?`,
+	).run(now, enrollment.device_id, enrollment.identity_id);
+	return moved;
+}
+
 export async function reconcileCoordinatorEnrollmentSnapshot(
 	db: Database,
 	input: {
@@ -178,18 +285,8 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 			string,
 			Map<string, { assignmentVersion: number; deviceId: string }>
 		>();
-		const recordActiveRosterDevice = (
-			identityId: string,
-			deviceId: string,
-			assignmentVersion: number,
-		): void => {
-			let devices = activeRosterDevicesByIdentity.get(identityId);
-			if (!devices) {
-				devices = new Map();
-				activeRosterDevicesByIdentity.set(identityId, devices);
-			}
-			devices.set(deviceId, { assignmentVersion, deviceId });
-		};
+		const recordActiveRosterDevice = (identityId: string, deviceId: string, version: number) =>
+			addRosterDevice(activeRosterDevicesByIdentity, identityId, deviceId, version);
 
 		for (const invite of input.consumedTeamInvites) {
 			const identityId = invite.assigned_identity_id;
@@ -419,42 +516,27 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 						},
 						now,
 					});
-					if (
-						existing.provenance === "coordinator_enrollment" &&
-						normalizedDisplayName != null &&
-						existing.display_name !== displayName
-					) {
-						db.prepare(
-							`UPDATE identity_devices SET display_name = ?, updated_at = ?
-							 WHERE device_id = ? AND provenance = 'coordinator_enrollment'`,
-						).run(displayName, now, enrollment.device_id);
-					}
+					refreshEnrollmentDisplayName(
+						db,
+						existing,
+						enrollment.device_id,
+						normalizedDisplayName,
+						now,
+					);
 					recordActiveRosterDevice(identityId, enrollment.device_id, assignment.assignmentVersion);
 					result.unchanged += 1;
+				} else if (isRebound(db, existing, enrollment)) {
+					// Counted as added: this publisher now assigns the device to a new Identity.
+					const moved = adoptReboundDevice(db, existing, enrollment, now);
+					recordActiveRosterDevice(identityId, enrollment.device_id, moved.assignmentVersion);
+					changedIdentityIds.add(existing.identity_id).add(identityId);
+					result.devicesAdded += 1;
 				} else {
 					issue("device", enrollment.device_id, "device_identity_conflict");
 				}
 				continue;
 			}
-			const existingPeer = db
-				.prepare(
-					`SELECT public_key, pinned_fingerprint, claimed_local_actor
-					 FROM sync_peers WHERE peer_device_id = ?`,
-				)
-				.get(enrollment.device_id) as
-				| {
-						public_key: string | null;
-						pinned_fingerprint: string | null;
-						claimed_local_actor: number;
-				  }
-				| undefined;
-			if (
-				existingPeer &&
-				(existingPeer.claimed_local_actor === 1 ||
-					(existingPeer.public_key != null && existingPeer.public_key !== enrollment.public_key) ||
-					(existingPeer.pinned_fingerprint != null &&
-						existingPeer.pinned_fingerprint !== enrollment.fingerprint))
-			) {
+			if (hasPeerTrustConflict(db, enrollment)) {
 				issue("device", enrollment.device_id, "device_trust_conflict");
 				continue;
 			}

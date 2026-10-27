@@ -11,6 +11,7 @@ import {
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
+import type { CoordinatorStore } from "./coordinator-store-contract.js";
 import { createD1AuthLinkBackend } from "./d1-coordinator-store.js";
 
 export const NOW = 1_791_028_800_000;
@@ -32,6 +33,7 @@ export const EFFECT_TABLES = [
 
 export interface RebindFixture {
 	db: Database.Database;
+	store: CoordinatorStore;
 	backend: AuthLinkBackend;
 	attempt: DeviceRebindAttempt;
 	secret: string;
@@ -147,6 +149,7 @@ export async function rebindFixture(kind: Backend): Promise<RebindFixture> {
 	const rows = (table: string) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
 	return {
 		db,
+		store: store.store,
 		backend,
 		attempt,
 		secret,

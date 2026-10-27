@@ -283,6 +283,65 @@ async function expectLegacyRefreshReplay(db: InstanceType<typeof Database>): Pro
 	}
 }
 
+it("grants a rebound device again once this publisher moves it to its entitled Identity", async () => {
+	// Arrange: the coordinator rebound device-keep to identity-b, which is also a recipient.
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		insertPolicyGraph(db);
+		const now = new Date(BASE_TIME).toISOString();
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-b', 'Identity B', 0, 'active', ?, ?)`,
+		).run(now, now);
+		db.prepare(
+			`INSERT INTO project_recipients(
+			 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			 policy_revision, migration_state, idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity', 'identity-b', 'active', 'test', '1', 'native', 'recipient:b', ?, ?)`,
+		).run(PROJECT, now, now);
+		const { effects } = harness(["device-keep", "device-new"]);
+		vi.mocked(effects.listBoundaryEnrollments).mockResolvedValue([
+			{
+				deviceId: "device-keep",
+				identityId: "identity-b",
+				publicKey: "pk-keep",
+				fingerprint: "fp-keep",
+				enabled: true,
+			},
+			{
+				deviceId: "device-new",
+				identityId: "identity-a",
+				publicKey: "pk-new",
+				fingerprint: "fp-new",
+				enabled: true,
+			},
+		]);
+		const reconcile = (leaseOwner: string) =>
+			reconcileRecipientPolicyProject(
+				db,
+				{ canonicalProjectIdentity: PROJECT, leaseOwner },
+				effects,
+			);
+		const stale = await reconcile("worker-before-move");
+		// Act: the enrollment reconciler adopts the rebind, then the policy wakes.
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-b' WHERE device_id = 'device-keep'",
+		).run();
+		wakeRecipientPoliciesForProjectIdentities(
+			db,
+			[PROJECT],
+			new Date(BASE_TIME + 600_000).toISOString(),
+		);
+		const moved = await reconcile("worker-after-move");
+		// Assert
+		expect(stale).toMatchObject({ revokedDeviceIds: ["device-keep"] });
+		expect(moved).toMatchObject({ grantedDeviceIds: ["device-keep"] });
+	} finally {
+		db.close();
+	}
+});
+
 describe("recipient-policy reconciler executor", () => {
 	let db: InstanceType<typeof Database>;
 
