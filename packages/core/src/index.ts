@@ -152,6 +152,14 @@ export {
 	upgradeCoordinatorAuthSchemaFile,
 } from "./coordinator-auth-schema-operator.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
+export type {
+	DeviceRebindClientRefusal,
+	DeviceRebindOptions,
+	DeviceRebindOutcome,
+	DeviceRebindPending,
+	DeviceRebindReceiptV1,
+} from "./coordinator-device-rebind-client.js";
+export { resumeDeviceRebind, runDeviceRebind } from "./coordinator-device-rebind-client.js";
 export {
 	COORDINATOR_DEVICE_REVOCATION_SCOPE,
 	type CoordinatorDeviceRevocationCommit,

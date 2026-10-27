@@ -214,6 +214,7 @@ function validOptions(options: CoordinatorAccountLinkReceiverOptions): boolean {
 async function createReceiver(
 	options: CoordinatorAccountLinkReceiverOptions,
 	mode: "account_link" | "owner_enroll",
+	ownerPage = "Your computer received the confirmation. Return to the app to finish adding the device.",
 ): Promise<{
 	destination: string;
 	completion: Promise<string | CoordinatorOwnerEnrollmentCompletion>;
@@ -225,9 +226,7 @@ async function createReceiver(
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
 	const receipt = mode === "account_link" ? createAccountLinkReceipt(options.intent) : null;
 	const page =
-		mode === "owner_enroll"
-			? "Your computer received the confirmation. Return to the app to finish adding the device."
-			: (receipt?.page ?? "Return to Codemem and check status.");
+		mode === "owner_enroll" ? ownerPage : (receipt?.page ?? "Return to Codemem and check status.");
 	let authority = "";
 	let closing: Promise<void> | undefined;
 	const server = createServer(
@@ -293,6 +292,24 @@ export async function createCoordinatorOwnerEnrollmentReceiver(
 	options: Omit<CoordinatorAccountLinkReceiverOptions, "coordinatorOrigin">,
 ): Promise<CoordinatorOwnerEnrollmentReceiver> {
 	const receiver = await createReceiver(options, "owner_enroll");
+	return {
+		...receiver,
+		completion: receiver.completion as Promise<CoordinatorOwnerEnrollmentCompletion>,
+	};
+}
+
+/**
+ * Device rebind (ADR 0005 Section 8) delivers the same three values as owner
+ * enrollment: attempt, completion secret, and the browser's confirmation hash.
+ */
+export async function createCoordinatorDeviceRebindReceiver(
+	options: Omit<CoordinatorAccountLinkReceiverOptions, "coordinatorOrigin" | "intent">,
+): Promise<CoordinatorOwnerEnrollmentReceiver> {
+	const receiver = await createReceiver(
+		options,
+		"owner_enroll",
+		"Your computer received the confirmation. Return to Codemem to finish signing in.",
+	);
 	return {
 		...receiver,
 		completion: receiver.completion as Promise<CoordinatorOwnerEnrollmentCompletion>,
