@@ -98,6 +98,7 @@ import {
 	bootstrapRawInsertValues,
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
+import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
@@ -1164,6 +1165,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			authBackend,
 			options.authClock,
 		);
+	}
+	/** ADR 0005 Section 8 rebind storage; null until migration 0038 is applied. */
+	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
+		return readDeviceRebindBackend(createD1AuthLinkBackend(this.db));
 	}
 	async getAccountChanges(): Promise<AccountChangeOperations> {
 		await this.accountChangeBackend.first({ sql: "SELECT 1", values: [] });

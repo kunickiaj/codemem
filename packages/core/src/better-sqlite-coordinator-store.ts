@@ -132,6 +132,7 @@ import {
 import { COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL } from "./coordinator-device-ownership-schema.js";
 import {
 	COORDINATOR_DEVICE_REBIND_SCHEMA_SQL,
+	readDeviceRebindBackend,
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
@@ -923,7 +924,8 @@ function enrollmentRevocationKeyId(publicKey: string): string | null {
 }
 
 export class BetterSqliteCoordinatorStore implements CoordinatorStore {
-	private readonly schemaBackend: Pick<AuthLinkBackend, "first">;
+	/** The raw backend, without the auth schema wrapper. */
+	private readonly schemaBackend: AuthLinkBackend;
 	private readonly accountChangeBackend: AuthLinkBackend;
 	private readonly accountChangesCapability: AccountChangeOperations;
 	readonly path: string;
@@ -997,6 +999,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			authBackend,
 			options.authClock,
 		);
+	}
+	/** ADR 0005 Section 8 rebind storage; null before its tables exist. */
+	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
+		return readDeviceRebindBackend(this.schemaBackend);
 	}
 	/** Explicit capability: legacy V2 remains usable without enabling management. */
 	async getAccountChanges(): Promise<AccountChangeOperations> {

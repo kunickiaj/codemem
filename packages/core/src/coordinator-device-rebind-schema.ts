@@ -1,3 +1,5 @@
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+
 /**
  * Storage for ADR 0005 Section 8 rebinding: an enrolled device whose current
  * Identity has no account link of its own moves to the Identity linked to the
@@ -207,4 +209,25 @@ export function upgradePreReleaseRebindAttemptsSql(
 	return PRE_RELEASE_ATTEMPT_OBJECTS.map(
 		(object) => `DROP ${object.replace(" ", " IF EXISTS ")};`,
 	).join("\n");
+}
+
+const REBIND_SCHEMA_PRESENT_SQL = `SELECT
+ EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_device_rebind_attempts'
+  AND instr(sql, 'CHECK (review_digest IS NOT NULL)') > 0) AS attempts,
+ EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table'
+  AND name = 'coordinator_device_rebind_audit_log') AS audit`;
+
+/**
+ * The backend, only when this database has the current rebind tables. Without
+ * them (a D1 database before migration 0038) rebind routes report not found
+ * and the shared OIDC callback skips the rebind hook.
+ */
+export async function readDeviceRebindBackend(
+	backend: AuthLinkBackend,
+): Promise<AuthLinkBackend | null> {
+	const present = await backend.first<{ attempts: number; audit: number }>({
+		sql: REBIND_SCHEMA_PRESENT_SQL,
+		values: [],
+	});
+	return present?.attempts === 1 && present.audit === 1 ? backend : null;
 }

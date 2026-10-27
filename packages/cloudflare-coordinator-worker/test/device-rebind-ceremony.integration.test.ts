@@ -9,6 +9,7 @@ import {
 	type DeviceRebindAttempt,
 	deviceRebindFinalMessage,
 } from "../../core/src/coordinator-device-rebind-proof.js";
+import { readDeviceRebindBackend } from "../../core/src/coordinator-device-rebind-schema.js";
 import { createD1AuthLinkBackend } from "../../core/src/d1-coordinator-store.js";
 
 const NOW = 1_791_028_800_000;
@@ -104,7 +105,7 @@ it("native D1 runs the rebind ceremony from device start to the atomic commit", 
 			signer,
 			currentIdentityId: "local:native-device",
 			loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
-			browserStartCode: code,
+			browserStartHash: createHash("sha256").update(Buffer.from(code, "base64url")).digest("hex"),
 			reviewDigest: "e".repeat(64),
 		},
 		"client",
@@ -148,4 +149,11 @@ it("native D1 runs the rebind ceremony from device start to the atomic commit", 
 		.bind(signer.deviceId)
 		.all<{ identity_id: string }>();
 	expect(identities.results.map((r) => r.identity_id)).toEqual(["native-target", "native-target"]);
+});
+
+it("native D1 migrations leave the rebind tables the device routes require", async () => {
+	// Arrange
+	const backend = createD1AuthLinkBackend(db);
+	// Act / Assert: the routes report not found unless this check sees the migrated tables.
+	expect(await readDeviceRebindBackend(backend)).toBe(backend);
 });

@@ -6,6 +6,7 @@ import type {
 } from "./coordinator-auth-browser-transaction-contract.js";
 import type { CoordinatorAuthControllerStore } from "./coordinator-auth-controller.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_PURPOSE,
 	type CoordinatorAuthLinkRejected,
@@ -42,7 +43,10 @@ export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
 		| "finalizeAuthLinkAttempt"
 		| "failAuthLinkAttempt"
 	> &
-	Pick<CoordinatorAuthBrowserTransactionStore, "retireAuthBrowserTransactions">;
+	Pick<CoordinatorAuthBrowserTransactionStore, "retireAuthBrowserTransactions"> & {
+		/** Rebind storage (ADR 0005 Section 8), or null before its tables exist. */
+		readDeviceRebindBackend?(): Promise<AuthLinkBackend | null>;
+	};
 
 export interface CoordinatorDeviceAuthLinkOptions {
 	config: CoordinatorAuthBrowserConfig;

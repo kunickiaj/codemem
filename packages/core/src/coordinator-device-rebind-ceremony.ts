@@ -54,7 +54,8 @@ export interface DeviceRebindStart {
 	/** The device's current Identity (its local actor), checked against its enrollments. */
 	currentIdentityId: string;
 	loopbackRedirect: string;
-	browserStartCode: string;
+	/** SHA-256 hex of the browser start code; the device keeps the code itself. */
+	browserStartHash: string;
 	/** SHA-256 hex of the device's local review; any local change aborts the switch. */
 	reviewDigest: string;
 }
@@ -94,18 +95,24 @@ export type DeviceRebindResult =
 			kind: "status";
 			state: string;
 			expiresAtMs: number;
+			/** Shown once the person confirmed; the device signs it at finalize. */
+			targetIdentityId: string | null;
 			receipt: DeviceRebindReceipt | null;
 	  };
 
-export interface DeviceRebindDependencies {
+/** What the signed device steps need: no OIDC client or browser CSRF key. */
+export interface DeviceRebindDeviceDependencies {
 	backend: AuthLinkBackend;
 	/** Store settings of the enabled browser-auth configuration. */
 	config: CoordinatorAuthBrowserConfig;
 	publicOrigin: string;
-	csrfKey: BrowserCsrfKey;
 	limiter: InMemoryRequestRateLimiter;
-	client: Pick<CoordinatorOidcClient, "createAuthorizationRequest" | "verifyCallback">;
 	now(): number;
+}
+
+export interface DeviceRebindDependencies extends DeviceRebindDeviceDependencies {
+	csrfKey: BrowserCsrfKey;
+	client: Pick<CoordinatorOidcClient, "createAuthorizationRequest" | "verifyCallback">;
 }
 
 const ATTEMPT = "coordinator_device_rebind_attempts";
@@ -167,18 +174,20 @@ const EFFECTS_CURRENT_SQL = `json((${groupsWithoutAccessSql("a.target_identity_i
  = json_extract(a.team_effects_json, '$.groupsWithoutAccess')
  AND (SELECT count(*) FROM enrolled_devices e WHERE e.device_id = a.device_id) = a.enrollment_count`;
 
-interface Ctx {
-	deps: DeviceRebindDependencies;
+interface Ctx<D extends DeviceRebindDeviceDependencies = DeviceRebindDependencies> {
+	deps: D;
 	c: CoordinatorAuthBrowserConfig;
 	scope: BrowserCsrfScope;
 }
+/** Device steps and their helpers run with either dependency set. */
+type DeviceCtx = Ctx<DeviceRebindDeviceDependencies>;
 
-function live(ctx: Ctx, time: number, attemptId: string) {
+function live(ctx: DeviceCtx, time: number, attemptId: string) {
 	const { c, deps } = ctx;
 	return [c.coordinatorId, attemptId, deps.publicOrigin, c.issuer, c.revision, time, time];
 }
 
-function readAttempt(ctx: Ctx, attemptId: string) {
+function readAttempt(ctx: DeviceCtx, attemptId: string) {
 	return ctx.deps.backend.first<DeviceRebindAttempt>({
 		sql: `SELECT * FROM ${ATTEMPT} WHERE coordinator_id = ? AND attempt_id = ?`,
 		values: [ctx.c.coordinatorId, attemptId],
@@ -186,9 +195,9 @@ function readAttempt(ctx: Ctx, attemptId: string) {
 }
 
 /** Unexpected errors report an unknown outcome, never a failure. */
-function boundary<A extends unknown[]>(
-	ctx: Ctx,
-	step: (ctx: Ctx, ...args: A) => Promise<DeviceRebindResult | null>,
+function boundary<C extends DeviceCtx, A extends unknown[]>(
+	ctx: C,
+	step: (ctx: C, ...args: A) => Promise<DeviceRebindResult | null>,
 ) {
 	return async (...args: A): Promise<DeviceRebindResult | null> => {
 		try {
@@ -205,20 +214,35 @@ function boundary<A extends unknown[]>(
  * the refusal reason shown to the person.
  */
 export function createDeviceRebindCeremony(deps: DeviceRebindDependencies) {
-	const c = deps.config;
-	const ctx: Ctx = { deps, c, scope: Object.freeze({ publicOrigin: deps.publicOrigin, store: c }) };
+	const ctx = context(deps);
 	return Object.freeze({
-		start: boundary(ctx, start),
+		...deviceSteps(ctx),
 		claimBrowser: boundary(ctx, claimBrowser),
 		verifyCallback: boundary(ctx, verifyCallback),
 		confirm: boundary(ctx, confirm),
-		finalize: boundary(ctx, finalize),
-		status: boundary(ctx, status),
 	});
 }
 
+/** The steps a signed device request drives: start, status, and finalize. */
+export function createDeviceRebindDeviceSteps(deps: DeviceRebindDeviceDependencies) {
+	return Object.freeze(deviceSteps(context(deps)));
+}
+
+function context<D extends DeviceRebindDeviceDependencies>(deps: D): Ctx<D> {
+	const c = deps.config;
+	return { deps, c, scope: Object.freeze({ publicOrigin: deps.publicOrigin, store: c }) };
+}
+
+function deviceSteps(ctx: DeviceCtx) {
+	return {
+		start: boundary(ctx, start),
+		finalize: boundary(ctx, finalize),
+		status: boundary(ctx, status),
+	};
+}
+
 async function startRefusal(
-	ctx: Ctx,
+	ctx: DeviceCtx,
 	input: DeviceRebindStart,
 	keyId: string,
 ): Promise<DeviceRebindRefusal | null> {
@@ -247,7 +271,7 @@ async function startRefusal(
 	return null;
 }
 
-async function start(ctx: Ctx, input: DeviceRebindStart, clientKey: string) {
+async function start(ctx: DeviceCtx, input: DeviceRebindStart, clientKey: string) {
 	const limit = ctx.deps.limiter.check(
 		JSON.stringify(["device-rebind-start", ctx.c.coordinatorId, clientKey]),
 		START_CLIENT_LIMIT,
@@ -257,12 +281,13 @@ async function start(ctx: Ctx, input: DeviceRebindStart, clientKey: string) {
 		!isAuthControllerId(input.attemptId) ||
 		!isAuthControllerId(input.currentIdentityId) ||
 		!/^[0-9a-f]{64}$/.test(input.reviewDigest) ||
+		!/^[0-9a-f]{64}$/.test(input.browserStartHash) ||
 		!parseCoordinatorAuthLoopback(input.loopbackRedirect).ok
 	)
 		return refused("unavailable");
-	const startHash = await proofHash(input.browserStartCode);
+	const startHash = input.browserStartHash;
 	const keyId = await ed25519KeyId(input.signer.publicKey);
-	if (!startHash || !keyId) return refused("unavailable");
+	if (!keyId) return refused("unavailable");
 	const reason = await startRefusal(ctx, input, keyId);
 	if (reason) return refused(reason);
 	const time = ctx.deps.now();
@@ -551,7 +576,10 @@ async function persistVerified(
 }
 
 /** Explains why a guarded write matched nothing; never authorizes anything. */
-async function currentRefusal(ctx: Ctx, row: DeviceRebindAttempt): Promise<DeviceRebindRefusal> {
+async function currentRefusal(
+	ctx: DeviceCtx,
+	row: DeviceRebindAttempt,
+): Promise<DeviceRebindRefusal> {
 	const facts = await ctx.deps.backend.first<{ bound: number; linked: number }>({
 		sql: `SELECT
  EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?) AS bound,
@@ -635,7 +663,7 @@ async function confirm(ctx: Ctx, request: Request, clientKey: string, commitment
 }
 
 async function finalize(
-	ctx: Ctx,
+	ctx: DeviceCtx,
 	input: {
 		attemptId: string;
 		signer: DeviceRebindSigner;
@@ -665,7 +693,7 @@ async function finalize(
  * concurrent enrollment change elsewhere made the pinned scan refuse.
  */
 async function finalizeRefusal(
-	ctx: Ctx,
+	ctx: DeviceCtx,
 	input: { attemptId: string; completionSecret: string; signature: string },
 	row: DeviceRebindAttempt,
 ): Promise<DeviceRebindRefusal> {
@@ -691,7 +719,10 @@ async function finalizeRefusal(
 }
 
 /** The attempt pins its link and enrollments; once those change, retrying cannot succeed. */
-async function pinnedFactsHold(ctx: Ctx, a: DeviceRebindAttempt): Promise<DeviceRebindRefusal> {
+async function pinnedFactsHold(
+	ctx: DeviceCtx,
+	a: DeviceRebindAttempt,
+): Promise<DeviceRebindRefusal> {
 	const facts = await ctx.deps.backend.first<{ linked: number; enrollments: number }>({
 		sql: `SELECT ${TARGET_LINK_SQL} AS linked,
  ((SELECT count(*) FROM enrolled_devices e WHERE e.device_id = a.device_id) = a.enrollment_count
@@ -705,13 +736,16 @@ async function pinnedFactsHold(ctx: Ctx, a: DeviceRebindAttempt): Promise<Device
 }
 
 /** Signed read by the attempt's own device; resolves unknown outcomes without writing. */
-async function status(ctx: Ctx, input: { attemptId: string; signer: DeviceRebindSigner }) {
+async function status(ctx: DeviceCtx, input: { attemptId: string; signer: DeviceRebindSigner }) {
 	const row = await readAttempt(ctx, input.attemptId);
 	if (!row || !sameDevice(row, input.signer)) return refused("unavailable");
 	return {
 		kind: "status" as const,
 		state: row.state,
 		expiresAtMs: row.expires_at_ms,
+		targetIdentityId: ["confirmed", "finalized"].includes(row.state)
+			? row.target_identity_id
+			: null,
 		receipt:
 			row.state === "finalized"
 				? await readDeviceRebindReceipt(ctx.deps.backend, ctx.c.coordinatorId, row.attempt_id)

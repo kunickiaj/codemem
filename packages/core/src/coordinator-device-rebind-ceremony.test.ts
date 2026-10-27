@@ -105,7 +105,7 @@ function startInput(f: Fixture, code: string, attemptId = "rebind-a") {
 		signer: f.signer,
 		currentIdentityId: CURRENT,
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
-		browserStartCode: code,
+		browserStartHash: createHash("sha256").update(Buffer.from(code, "base64url")).digest("hex"),
 		reviewDigest: "e".repeat(64),
 	};
 }

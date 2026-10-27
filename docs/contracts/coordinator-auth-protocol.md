@@ -274,6 +274,66 @@ and disclose no proof or private cause. The local command and listener are
 implemented, along with optional app mounting; real browser checks remain outstanding.
 This option changes no enrollment or access.
 
+### Device rebind routes
+
+A device uses these signed routes to move itself to the Identity of the Google
+account the person signs in with (ADR 0005 Section 8). They mount only when
+optional browser authentication is ready, because the person confirms the
+change in the browser. Once a request passes signed admission, the routes
+report `404 not_found` until the coordinator has the current rebind tables. On
+D1 that means migration `0038_add_device_rebind.sql` has been applied.
+
+| Route | Signed input and result |
+| --- | --- |
+| `POST /v1/auth/rebind-attempts` | Exactly `group_id`, `identity_id` (the device's current Identity), `attempt_id`, `browser_start_hash`, `loopback_redirect` and `review_digest`. `browser_start_hash` is the lowercase SHA-256 hex of the decoded 32-byte start code, as for link attempts. The device keeps the raw code and gives it only to the browser. `review_digest` is the lowercase SHA-256 hex of the device's local review. Returns `attempt_id`, `expires_at_ms`, and the `coordinator_id`, `origin`, `issuer` and `auth_config_revision` that the final signature covers. |
+| `GET /v1/auth/rebind-attempts/:attemptId?group_id=...` | Only the device that started the attempt can read it. A missing attempt gets the same refusal. Returns `state`, `expires_at_ms`, `target_identity_id` and the receipt once finalized. `target_identity_id` stays null until the person confirms in the browser. |
+| `POST /v1/auth/rebind-attempts/:attemptId/finalize` | Exactly `group_id`, the raw `completion` secret and `signature`. Returns `state` (`finalized`, or `prior_commit` for a repeat) and the receipt. |
+
+After the person confirms, the browser returns to `loopback_redirect` with
+`attempt_id`, `completion` and `confirmation`. `confirmation` is the hash of
+what the person confirmed. The device signs, with its enrolled key, the UTF-8
+bytes of this JSON array:
+
+```json
+["codemem-device-rebind-finalize-v1", coordinator_id, origin, auth_config_revision,
+ attempt_id, device_id, public_key, key_id, fingerprint, issuer, current_identity_id,
+ target_identity_id, review_digest, confirmation, completion]
+```
+
+The pins come from the start response and `target_identity_id` from status.
+`key_id` is the device key's canonical Ed25519 key ID. `signature` is the
+unpadded base64url Ed25519 signature.
+
+The receipt contains `attempt_id`, `binding_id`, `device_id`,
+`previous_identity_id`, `target_identity_id`, `enrollment_count` and
+`finalized_at_ms`.
+
+A refusal returns `{ "error": "device_rebind_refused", "reason": ... }`. Its
+status is `409` when the reason is `retry`, which the device may repeat as is.
+Every other reason returns `403` and needs the person to act:
+- `unavailable`
+- `current_identity_linked`
+- `device_already_bound`
+- `account_not_linked`
+- `already_this_identity`
+- `daily_limit`
+
+An unknown outcome returns `503 device_rebind_unknown`. The device then reads
+status before it tries again. It never repeats the step blindly.
+
+Before a request reaches the ceremony, it can also get these responses:
+
+| Status | Body | Cause |
+| --- | --- | --- |
+| `400` | `device_rebind_invalid_input` | Missing, extra or malformed fields |
+| `413` | `body_too_large` | Body over 4 KiB |
+| `401`, `403` or `409` | `device_rebind_unavailable` | Wrong origin, or the request signature failed |
+| `429` | `rate_limited` | Request rate limit |
+| `503` | Plain text, or `coordinator_auth_schema_upgrade_required` | Browser authentication is configured but unavailable |
+
+A `403` with `device_rebind_unavailable` is an admission failure. A `403` with
+`device_rebind_refused` comes from the ceremony.
+
 ### Current-account link status
 
 `GET /v1/auth/account-link-status?group_id=...&coordinator_origin=...&identity_id=...` reports the

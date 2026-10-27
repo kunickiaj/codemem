@@ -29,6 +29,10 @@ import {
 	registerCoordinatorDeviceAuthLinkRoutes,
 } from "./coordinator-device-auth-link.js";
 import {
+	DEVICE_REBIND_ATTEMPTS_PATH,
+	registerCoordinatorDeviceRebindRoutes,
+} from "./coordinator-device-rebind-http.js";
+import {
 	type CoordinatorDeviceRevocationContext,
 	registerCoordinatorDeviceRevocationRoutes,
 } from "./coordinator-device-revocation-route.js";
@@ -215,6 +219,8 @@ function registerOptionalCoordinatorAuth(
 			"/v1/auth/owner-config",
 			"/v1/auth/owner-attempts",
 			"/v1/auth/owner-attempts/*",
+			DEVICE_REBIND_ATTEMPTS_PATH,
+			`${DEVICE_REBIND_ATTEMPTS_PATH}/*`,
 			"/v1/admin/auth-controller-reviews",
 		]) {
 			app.all(path, unavailable);
@@ -238,6 +244,12 @@ function registerOptionalCoordinatorAuth(
 	}
 	if (ready?.kind === "ready") {
 		registerCoordinatorAccountLinkStatusRoute(app, {
+			...deps,
+			config: ready.auth.storeConfig,
+			storeFactory: ready.storeFactory,
+		});
+		// Only with the browser half; a legacy link option has no rebind pages.
+		registerCoordinatorDeviceRebindRoutes(app, {
 			...deps,
 			config: ready.auth.storeConfig,
 			storeFactory: ready.storeFactory,
