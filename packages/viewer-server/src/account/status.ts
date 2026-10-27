@@ -106,7 +106,13 @@ function withOwnerSignIn(
 	context: AccountContext,
 	remote: Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>,
 ): AccountLinkViewV1 {
-	if (owner.ownerProjection?.status.profileState !== "linked" || own.canSignIn !== true)
+	// Switching to the owner needs this device's own Identity to be unlinked.
+	if (
+		owner.ownerProjection?.status.profileState !== "linked" ||
+		own.canSignIn !== true ||
+		own.remote.kind !== "status" ||
+		own.remote.state !== "unlinked"
+	)
 		return owner;
 	return {
 		...owner,
@@ -205,9 +211,13 @@ function applyRemote(
 			account: identityMatches && status.state === "linked" ? status.account : null,
 		},
 		canLink: status.state === "unlinked" && identityMatches,
-		canSignIn: status.state === "unlinked" && identityMatches,
+		canSignIn: identityMatches && signInState(status),
 		blockedReason,
 	};
+}
+/** Sign-in starts unlinked, or linked when this device has no proof of its own (a self-bind). */
+function signInState(status: { state: string; account: unknown }): boolean {
+	return status.state === "unlinked" || (status.state === "linked" && !status.account);
 }
 type AccountStatusResult = AccountLinkViewV1 | Extract<AccountContextResult, { error: string }>;
 

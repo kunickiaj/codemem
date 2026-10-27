@@ -859,10 +859,22 @@ describe("sign in with Google", () => {
 		expect((await response.json()).operation).toMatchObject({ intent: "sign_in" });
 	});
 
-	it("is not offered once this Identity is linked", async () => {
-		// Arrange
+	it("starts a self-bind when this Identity is linked on another device", async () => {
+		// Arrange: the coordinator withholds the profile, so this device has no proof of its own.
 		const f = await fixture({ rebind });
 		f.readRemoteStatus.mockResolvedValue(remote("linked"));
+		// Act
+		const response = await f.request(PATH, "POST", signIn);
+		// Assert
+		expect(response.status).toBe(202);
+	});
+
+	it("is not offered once this device holds the Identity's link", async () => {
+		// Arrange
+		const f = await fixture({ rebind });
+		f.readRemoteStatus.mockResolvedValue(
+			remote("linked", { account: { email: "person@example.test" } }),
+		);
 		// Act
 		const response = await f.request(PATH, "POST", signIn);
 		// Assert

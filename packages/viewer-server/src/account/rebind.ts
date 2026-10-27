@@ -23,6 +23,10 @@ import type { AccountContext } from "./context.js";
 
 export type AccountRebindResult =
 	| { kind: "switched"; targetIdentityId: string }
+	/** Self-bind: the account is this Identity's, and the device now holds its own binding. */
+	| { kind: "bound" }
+	/** A self-bind may have committed; nothing local changes, so status tells. */
+	| { kind: "bind_unknown" }
 	| { kind: "refused"; reason: DeviceRebindClientRefusal; beforeBrowser?: true }
 	| { kind: "failed" }
 	/** The coordinator may have committed, or did and the local switch is unfinished. */
@@ -151,8 +155,15 @@ function settleOutcome(
 			...(outcome.beforeBrowser ? { beforeBrowser: true as const } : {}),
 		};
 	if (outcome.kind === "failed") return { kind: "failed" };
-	if (outcome.kind === "unknown") return { kind: "pending" };
+	if (outcome.kind === "unknown")
+		return isSelfBind(outcome.pending) ? { kind: "bind_unknown" } : { kind: "pending" };
+	if (isSelfBind(outcome.receipt)) return { kind: "bound" };
 	return finishLocalSwitch(store, context, outcome.receipt.attemptId, outcome.receipt);
+}
+
+/** A self-bind keeps this device's Identity, so it has no local switch. */
+function isSelfBind(attempt: { previousIdentityId: string; targetIdentityId: string }): boolean {
+	return attempt.targetIdentityId === attempt.previousIdentityId;
 }
 
 function runRebind(
@@ -178,6 +189,7 @@ function runRebind(
 			if (!run.isCurrent()) throw new Error("device_rebind_context_changed");
 			if (reviewDigest(store, context) !== pending.reviewDigest)
 				throw new Error("device_rebind_review_changed");
+			if (isSelfBind(pending)) return;
 			recordLocalIdentitySwitch(store.db, pending, { configPath: context.configPath });
 			run.recorded.attemptId = pending.attemptId;
 		},

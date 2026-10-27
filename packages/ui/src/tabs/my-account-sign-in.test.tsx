@@ -138,20 +138,59 @@ describe("My Account sign-in", () => {
 		expect(button("Link this account")).toBeUndefined();
 	});
 
-	it("tells the person to restart when the switch may be pending", async () => {
-		// Arrange
+	it.each([
+		["switch_pending", "Restart the Viewer to check again"],
+		["bind_unconfirmed", "Restart the Viewer, then check status."],
+	] as const)(
+		"tells the person to restart after an unclear outcome (%s)",
+		async (failure, text) => {
+			// Arrange
+			view = status({
+				canSignIn: true,
+				operation: signInOperation({
+					state: "outcome_unknown",
+					failure,
+					finishedAt: "2026-01-01T00:01:00Z",
+				}),
+			});
+			// Act
+			await show();
+			// Assert
+			expect(summary()).toContain(text);
+		},
+	);
+});
+
+describe("My Account sign-in on a device linked elsewhere", () => {
+	it("offers sign-in so this device can manage its own linked account", async () => {
+		// Arrange: this Identity is linked, but this device has no proof of its own.
 		view = status({
 			canSignIn: true,
-			operation: signInOperation({
-				state: "outcome_unknown",
-				failure: "switch_pending",
-				finishedAt: "2026-01-01T00:01:00Z",
-			}),
+			canLink: false,
+			managementActions: { refresh: false, disconnect: false },
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: "identity-one",
+				authority: "device_claim",
+				identityMatches: true,
+				state: "linked",
+				account: null,
+			},
 		});
-		// Act
 		await show();
+		const before = summary();
+		// Act
+		await act(async () => {
+			button("Sign in with Google")?.click();
+		});
+		await settle();
 		// Assert
-		expect(summary()).toContain("Restart the Viewer to check again");
+		expect(before).toBe(
+			"Linked on another device. Sign in with Google to refresh or unlink it here too.",
+		);
+		const start = transport.mock.calls.find(([url]) => String(url).endsWith("link-operations"));
+		expect(JSON.parse(String(start?.[1]?.body))).toMatchObject({ intent: "sign_in" });
 	});
 });
 

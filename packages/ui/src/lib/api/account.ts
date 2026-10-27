@@ -40,7 +40,8 @@ export type AccountOperation = {
 		| "device_already_bound"
 		| "daily_limit"
 		| "sign_in_unavailable"
-		| "switch_pending";
+		| "switch_pending"
+		| "bind_unconfirmed";
 	browserUrlAvailable: boolean;
 	startedAt: string;
 	deadlineAt: string;

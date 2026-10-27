@@ -934,6 +934,21 @@ describe("sign-in from the owner-only state", () => {
 		});
 	});
 
+	it("does not offer switching to the owner when this device's own Identity is linked", async () => {
+		// Arrange: this device's Identity is linked on another device, so a switch would be refused.
+		const f = fixture();
+		f.readRemoteStatus.mockImplementation(async (input: { identityId: string }) => {
+			const read = f.status(input.identityId);
+			if (read.kind !== "status") throw new Error("expected status");
+			return { ...read, status: { ...read.status, state: "linked", account: null } };
+		});
+		// Act
+		const view = await readWith(f);
+		// Assert
+		expect(view).not.toHaveProperty("signIn");
+		expect((view as AccountLinkViewV1).canSignIn).not.toBe(true);
+	});
+
 	it("does not offer sign-in when the owner has no linked account", async () => {
 		// Arrange
 		const f = fixture();
@@ -979,5 +994,33 @@ describe("sign-in from the owner-only state", () => {
 		// Assert
 		expect(view).not.toHaveProperty("ownerProjection");
 		expect(view).toMatchObject({ contextId: f.context.contextId, canSignIn: true });
+	});
+});
+
+describe("sign-in for a linked Identity", () => {
+	it.each([
+		["without its own proof", null, true],
+		["with its own proof", { email: "owner@example.test" }, false],
+	] as const)("offers sign-in to a device %s: %s", async (_label, account, canSignIn) => {
+		// Arrange: this device's own Identity is linked.
+		const f = fixture({ associate: false });
+		f.readRemoteStatus.mockImplementation(async (input: { identityId: string }) => {
+			const read = f.status(input.identityId);
+			if (read.kind !== "status") throw new Error("expected status");
+			return { ...read, status: { ...read.status, state: "linked", account } };
+		});
+		const registry = createAccountLinkRegistry({
+			readContext: f.readContext,
+			rebind: async () => ({ kind: "failed" }),
+		});
+		cleanups.push(() => registry.close());
+		// Act
+		const view = await readAccountStatus(
+			{ readContext: f.readContext, readRemoteStatus: f.readRemoteStatus, registry },
+			undefined,
+			new AbortController().signal,
+		);
+		// Assert
+		expect(view).toMatchObject({ remote: { state: "linked" }, canSignIn });
 	});
 });

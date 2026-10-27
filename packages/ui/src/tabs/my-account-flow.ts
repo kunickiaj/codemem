@@ -436,7 +436,7 @@ function startTarget(view: AccountView, intent: AccountIntent): StartTarget | nu
 	const remote = view.remote;
 	if (
 		remote.kind !== "status" ||
-		remote.state !== expectedRemoteState(intent) ||
+		!expectedRemoteStates(intent).includes(remote.state) ||
 		!remote.identityMatches ||
 		(remote.authority !== "controller_attestation" && remote.authority !== "device_claim") ||
 		!view.contextId
@@ -449,9 +449,13 @@ function startTarget(view: AccountView, intent: AccountIntent): StartTarget | nu
 	};
 }
 
-/** Linking and sign-in start from an unlinked Identity; account changes from a linked one. */
-function expectedRemoteState(intent: AccountIntent): "unlinked" | "linked" {
-	return intent === "connect" || intent === "sign_in" ? "unlinked" : "linked";
+/**
+ * Linking starts from an unlinked Identity and account changes from a linked
+ * one. Sign-in also starts from a linked Identity this device has no proof for.
+ */
+function expectedRemoteStates(intent: AccountIntent): string[] {
+	if (intent === "sign_in") return ["unlinked", "linked"];
+	return intent === "connect" ? ["unlinked"] : ["linked"];
 }
 const WAITING_MESSAGES = {
 	disconnect: "Unlinking Google account…",

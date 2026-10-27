@@ -239,3 +239,59 @@ describe("signing in again after an attempt did not finish", () => {
 		expect(core.run).not.toHaveBeenCalled();
 	});
 });
+
+describe("signing in with the account already linked to this Identity", () => {
+	beforeEach(() => {
+		core.run.mockReset();
+		core.resume.mockReset();
+	});
+
+	/** The coordinator confirms a self-bind (target = current) and returns `outcome`. */
+	function selfBind(deviceId: string, outcome: (pending: DeviceRebindPending) => unknown) {
+		core.run.mockImplementation(
+			async (options: { reviewDigest: string; recordPending(p: DeviceRebindPending): void }) => {
+				const pending = {
+					...pendingFor(deviceId),
+					targetIdentityId: OLD,
+					reviewDigest: options.reviewDigest,
+				};
+				options.recordPending(pending);
+				return outcome(pending);
+			},
+		);
+	}
+
+	it("keeps the Identity and records no local switch", async () => {
+		// Arrange
+		const { store, deviceId, keysDir, configPath } = storeAsOld();
+		selfBind(deviceId, (pending) => ({
+			kind: "finalized",
+			receipt: { ...pending, bindingId: "binding-a", enrollmentCount: 1, finalizedAtMs: 1 },
+		}));
+		// Act
+		const result = await createAccountRebindRunner(store)({
+			context: contextFor(store, keysDir, configPath),
+			signal: new AbortController().signal,
+			onBrowserStart: () => {},
+		});
+		// Assert
+		expect(result).toEqual({ kind: "bound" });
+		expect(readOpenLocalIdentitySwitch(store.db)).toBeNull();
+		expect(JSON.parse(readFileSync(configPath, "utf8")).actor_id).toBe(OLD);
+	});
+
+	it("reports an unclear self-bind without a pending switch", async () => {
+		// Arrange
+		const { store, deviceId, keysDir, configPath } = storeAsOld();
+		selfBind(deviceId, (pending) => ({ kind: "unknown", pending }));
+		// Act
+		const result = await createAccountRebindRunner(store)({
+			context: contextFor(store, keysDir, configPath),
+			signal: new AbortController().signal,
+			onBrowserStart: () => {},
+		});
+		// Assert
+		expect(result).toEqual({ kind: "bind_unknown" });
+		expect(readOpenLocalIdentitySwitch(store.db)).toBeNull();
+	});
+});

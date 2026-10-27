@@ -69,7 +69,7 @@ describe("sign-in operations", () => {
 		expect(await finished(registry, id)).toMatchObject({ state: "succeeded", failure: null });
 	});
 
-	it.each<[string, AccountRebindResult, string, string]>([
+	it.each<[string, AccountRebindResult, string, string | null]>([
 		[
 			"an unlinked account",
 			{ kind: "refused", reason: "account_not_linked" },
@@ -91,6 +91,9 @@ describe("sign-in operations", () => {
 			"request_failed",
 		],
 		["an unclear outcome", { kind: "pending" }, "outcome_unknown", "switch_pending"],
+		["a self-bind", { kind: "bound" }, "succeeded", null],
+		// Nothing local changed, so status (not a pending switch) tells the outcome.
+		["an unclear self-bind", { kind: "bind_unknown" }, "outcome_unknown", "bind_unconfirmed"],
 	])("reports %s so the person knows what to do", async (_case, result, state, failure) => {
 		// Arrange / Act
 		const { registry, id } = fixture(async () => result);

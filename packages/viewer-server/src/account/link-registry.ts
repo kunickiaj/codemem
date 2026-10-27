@@ -34,7 +34,9 @@ export type AccountLinkFailure =
 	/** The coordinator can't switch this device (for example, no enrollment names its Identity). */
 	| "sign_in_unavailable"
 	/** The coordinator may have bound this device; the switch resumes on restart. */
-	| "switch_pending";
+	| "switch_pending"
+	/** A self-bind may have committed; this Viewer holds the operation until it restarts. */
+	| "bind_unconfirmed";
 export type AccountOperationIntent = "connect" | "refresh" | "disconnect" | "sign_in";
 export interface AccountLinkOperationV1 {
 	intent?: AccountOperationIntent;
@@ -170,7 +172,8 @@ const REBIND_REFUSALS: Partial<Record<string, AccountLinkFailure>> = {
 function rebindOutcome(
 	result: AccountRebindResult,
 ): [AccountLinkOperationV1["state"], AccountLinkFailure | null] {
-	if (result.kind === "switched") return ["succeeded", null];
+	if (result.kind === "switched" || result.kind === "bound") return ["succeeded", null];
+	if (result.kind === "bind_unknown") return ["outcome_unknown", "bind_unconfirmed"];
 	if (result.kind === "pending") return ["outcome_unknown", "switch_pending"];
 	if (result.kind === "refused" && result.reason === "unavailable" && result.beforeBrowser)
 		return ["failed", "sign_in_unavailable"];

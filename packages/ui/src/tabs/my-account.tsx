@@ -101,6 +101,13 @@ function ownerOnlySummary(view: AccountView): string {
 	return `This device runs as ${local}, but the Google account belongs to ${owner}. To refresh or unlink it, use a device that runs as ${owner}.`;
 }
 
+function linkedSummary(view: AccountView): string {
+	if (view.remote.kind === "status" && view.remote.account) return "";
+	if (view.canSignIn)
+		return "Linked on another device. Sign in with Google to refresh or unlink it here too.";
+	return "Linked on another device. Refresh and Unlink work only on the device that linked this account.";
+}
+
 function remoteSummary(view: AccountView): string {
 	if (view.setup === "group_selection_required")
 		return "Choose a group under Technical details to check account status.";
@@ -126,14 +133,13 @@ function remoteSummary(view: AccountView): string {
 		return "This Identity’s account link was revoked, and it can’t be restored here. Ask the person who runs the coordinator if you need it back.";
 	if (view.blockedReason === "operation_active")
 		return "Another account operation is in progress in this Viewer. Check its status before starting another.";
-	if (view.remote.state === "linked")
-		return view.remote.account
-			? ""
-			: "Linked on another device. Refresh and Unlink work only on the device that linked this account.";
+	if (view.remote.state === "linked") return linkedSummary(view);
 	return "No Google account is linked to this Identity. Sign in to link one, or to switch this device to your account’s Identity.";
 }
 
 function unknownOutcomeSummary(operation: AccountOperation): string {
+	if (operation.failure === "bind_unconfirmed")
+		return "Sign-in may have finished. Restart the Viewer, then check status.";
 	if (operation.failure === "switch_pending")
 		return "This device may have switched to your account’s Identity. Restart the Viewer to check again. An unfinished switch can take about 30 minutes to clear.";
 	return unknownAccountOutcome(operation);
@@ -430,7 +436,9 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 		view?.blockedReason === "operation_active";
 	return (
 		<div className="peer-actions">
-			{view && !running && !linked ? <PrimaryAccountAction flow={flow} blocked={blocked} /> : null}
+			{view && !running && (!linked || view.canSignIn) ? (
+				<PrimaryAccountAction flow={flow} blocked={blocked} />
+			) : null}
 			{running ? null : <LinkFallbackAction flow={flow} blocked={blocked} />}
 			{linked && !running && !view?.ownerProjection ? (
 				<ManagementActions flow={flow} blocked={blocked} />
