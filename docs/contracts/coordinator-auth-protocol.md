@@ -301,6 +301,23 @@ bytes of this JSON array:
 ```
 
 The pins come from the start response and `target_identity_id` from status.
+The browser steps are:
+
+1. The device opens `/auth/rebind/start?attempt_id=...&start_code=...`. The page
+   submits itself, and its form post claims the attempt for that browser and
+   continues to Google.
+2. After Google sign-in, the shared callback shows the confirmation page. It
+   lists the device, its key fingerprint, the current and new Identity, and the
+   Teams the new Identity cannot access yet. The person's chosen account must
+   already be linked to an Identity.
+3. Confirming posts `/auth/rebind/confirm`. The response is a page that returns
+   to the loopback address. It is a page rather than a redirect because the
+   form policy only allows posts back to the coordinator.
+
+A refusal at any browser step shows a short page that names the problem and the
+next action. Rebind does no storage work while browser authentication starts.
+On each use it first checks for its tables. Until they exist, its pages report
+not found and the callback ignores rebind.
 `key_id` is the device key's canonical Ed25519 key ID. `signature` is the
 unpadded base64url Ed25519 signature.
 

@@ -91,6 +91,26 @@ This actual API has separate cookie and hash fields; `verification` may contain
 the adapter's fixed error label, never raw state, nonce, PKCE, code, token, or
 provider-error text.
 
+## Account change, device rebind and owner dispatch
+Before ordinary consumption, the callback offers the request to other ceremonies
+in this order:
+
+1. Account changes, when configured, claim their own pending callbacks.
+2. The callback reads the transaction's stored purpose. A request cannot
+   nominate it. This happens on every callback, because the SQLite and D1
+   stores always offer device rebind.
+3. For `owner_enroll`, device rebind (ADR 0005 Section 8) runs first, because
+   rebind transactions reuse that purpose. It answers only for its own attempts,
+   as `device_rebind_dispatched`. Until it burns the transaction, it returns
+   nothing for any other callback, while its tables are missing, or when its
+   lookup fails. Owner enrollment then handles the request as
+   `owner_dispatched`, and fails closed when the transaction is not an owner
+   attempt.
+4. `signin` and `link` continue to ordinary consumption below. Any other purpose
+   gets `403 transaction_unavailable`.
+
+Sign-in and link callbacks run no rebind query beyond the purpose read.
+
 ## Normal sign-in
 Only a successfully consumed `signin` transaction may clear the transaction
 cookie. Verification failure returns generic `403` and clears that cookie.
@@ -127,6 +147,7 @@ do not disclose provider, token, configuration, cookie, or persistence causes.
 | `link_continuation_failed`, `internal_error` | 503 |
 | `session_live`, `signed_in`, `signed_in_profile_not_recorded` | 303 |
 | `link_dispatched` | Continuation-owned response |
+| `account_change_dispatched`, `device_rebind_dispatched`, `owner_dispatched` | Ceremony-owned response |
 
 If notice rendering fails, the fallback is static plain text with `no-store`
 and a `503`; it retains any already-selected transaction clear policy but reports

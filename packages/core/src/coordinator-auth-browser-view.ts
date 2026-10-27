@@ -228,7 +228,7 @@ export function projectAccountProfileView(
 	}
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
@@ -306,7 +306,7 @@ function form(
 	return `<form method="post" action="${escapeHtml(action)}">${fields}<button type="submit"${className}>${escapeHtml(label)}</button></form>`;
 }
 
-async function buildPage(
+export async function buildPage(
 	title: string,
 	content: string,
 	issuer?: string,

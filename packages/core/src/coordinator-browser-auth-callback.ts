@@ -49,6 +49,12 @@ export interface CoordinatorBrowserAuthCallbackInput {
 		trustedClientKey: string,
 		binderHash: string,
 	) => Promise<Response | null>;
+	/**
+	 * Device rebind (ADR 0005 Section 8). Its transactions reuse the
+	 * `owner_enroll` purpose, so it runs only for that stored purpose and before
+	 * owner dispatch; null means the callback is not a rebind.
+	 */
+	deviceRebindCallback?: (request: Request) => Promise<Response | null>;
 }
 export type CoordinatorBrowserAuthCallbackOutcome =
 	| "signed_in"
@@ -57,6 +63,7 @@ export type CoordinatorBrowserAuthCallbackOutcome =
 	| "link_dispatched"
 	| "owner_dispatched"
 	| "account_change_dispatched"
+	| "device_rebind_dispatched"
 	| "method_not_allowed"
 	| "not_found"
 	| "callback_invalid"
@@ -181,6 +188,7 @@ type Context = Readonly<{
 	completeLink: CoordinatorBrowserAuthCallbackInput["completeLink"];
 	ownerCallback?: CoordinatorBrowserAuthCallbackInput["ownerCallback"];
 	accountChangeCallback?: CoordinatorBrowserAuthCallbackInput["accountChangeCallback"];
+	deviceRebindCallback?: CoordinatorBrowserAuthCallbackInput["deviceRebindCallback"];
 	readPurpose?: CoordinatorAuthBrowserTransactionPurposeStore["readAuthBrowserTransactionPurpose"];
 }>;
 
@@ -357,6 +365,8 @@ async function dispatchOwnerCallback(
 ): Promise<CoordinatorBrowserAuthCallbackResponse | null> {
 	if (!context.readPurpose) return null;
 	const purpose = await context.readPurpose({ stateHash, binderHash }, context.storeConfig);
+	const rebind = purpose === "owner_enroll" ? await context.deviceRebindCallback?.(request) : null;
+	if (rebind) return result(rebind, "device_rebind_dispatched");
 	if (purpose === "owner_enroll" && context.ownerCallback)
 		return result(await context.ownerCallback(request, trustedClientKey), "owner_dispatched");
 	if (purpose === "signin" || purpose === "link") return null;
@@ -430,9 +440,12 @@ export async function createCoordinatorBrowserAuthCallback(
 		const accountChangeCallback = ownData(input, "accountChangeCallback");
 		if (accountChangeCallback !== undefined && typeof accountChangeCallback !== "function")
 			throw new Error();
+		const deviceRebindCallback = ownData(input, "deviceRebindCallback");
+		if (deviceRebindCallback !== undefined && typeof deviceRebindCallback !== "function")
+			throw new Error();
 		let readPurpose: Context["readPurpose"];
-		if (ownerCallback !== undefined) {
-			if (typeof ownerCallback !== "function") throw new Error();
+		if (ownerCallback !== undefined && typeof ownerCallback !== "function") throw new Error();
+		if (ownerCallback !== undefined || deviceRebindCallback !== undefined) {
 			const receiver = ownData(input, "purposeStore");
 			const method = dataMethod(
 				receiver,
@@ -453,6 +466,8 @@ export async function createCoordinatorBrowserAuthCallback(
 			ownerCallback: ownerCallback as CoordinatorBrowserAuthCallbackInput["ownerCallback"],
 			accountChangeCallback:
 				accountChangeCallback as CoordinatorBrowserAuthCallbackInput["accountChangeCallback"],
+			deviceRebindCallback:
+				deviceRebindCallback as CoordinatorBrowserAuthCallbackInput["deviceRebindCallback"],
 			readPurpose,
 		});
 		return Object.freeze({

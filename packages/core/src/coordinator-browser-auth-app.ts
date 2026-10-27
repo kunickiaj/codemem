@@ -10,6 +10,7 @@ import type {
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import {
 	AUTH_SCHEMA_UPGRADE_REQUIRED,
@@ -53,6 +54,8 @@ import {
 	type CoordinatorBrowserSigninStartInput,
 	createCoordinatorBrowserSigninStart,
 } from "./coordinator-browser-signin-start.js";
+import { createDeviceRebindBrowser } from "./coordinator-device-rebind-browser.js";
+import { DEVICE_REBIND_BROWSER_PATHS } from "./coordinator-device-rebind-view.js";
 import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
 import {
 	checkCoordinatorOwnerEnrollmentTransport,
@@ -135,6 +138,8 @@ const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
 	"/auth/owner/confirm": ["POST"],
 	"/auth/account/change/start": ["GET", "POST"],
 	"/auth/account/change/confirm": ["POST"],
+	[DEVICE_REBIND_BROWSER_PATHS.start]: ["GET", "POST"],
+	[DEVICE_REBIND_BROWSER_PATHS.confirm]: ["POST"],
 };
 const OWNER_PATHS = [
 	"/auth/owner/start",
@@ -323,6 +328,7 @@ function admitFormSetup(
 	if (url.pathname === "/auth/sign-in") action = "signin_start";
 	if (url.pathname === "/auth/link/start") action = "link_start";
 	if (url.pathname === ACCOUNT_CHANGE_BROWSER_PATHS.start) action = "link_start";
+	if (url.pathname === DEVICE_REBIND_BROWSER_PATHS.start) action = "link_start";
 	const failure = admitBrowserFormSetup({
 		request,
 		scope: payload.settings,
@@ -392,6 +398,24 @@ function registerRoutes(
 		});
 	}
 }
+/** The purpose store is read only when a ceremony shares the `owner_enroll` purpose. */
+function createSharedCallback(
+	input: Omit<CoordinatorBrowserAuthCallbackInput, "completeLink" | "store"> & {
+		store: CoordinatorBrowserAuthStore;
+	},
+	handlers: Pick<
+		CoordinatorBrowserAuthCallbackInput,
+		"completeLink" | "ownerCallback" | "accountChangeCallback" | "deviceRebindCallback"
+	>,
+) {
+	const sharesOwnerPurpose = handlers.ownerCallback || handlers.deviceRebindCallback;
+	return createCoordinatorBrowserAuthCallback({
+		...input,
+		...handlers,
+		purposeStore: sharesOwnerPurpose ? capturePurposeStore(input.store) : undefined,
+	});
+}
+
 /** Owns handlers, not the store lifetime. Nothing is mounted until all factories succeed. */
 export async function createCoordinatorBrowserAuth(
 	snapshot: CoordinatorBrowserAuthSnapshot,
@@ -407,7 +431,7 @@ export async function createCoordinatorBrowserAuth(
 		if (!payload) return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
 		const checked = await browserAuthStoreState(store);
 		if ("error" in checked) return Object.freeze({ ok: false, error: checked.error });
-		const purposeStore = payload.ownerEnrollment ? capturePurposeStore(store) : undefined;
+		const rebind = createRebindAdapter(payload, store, limiter);
 		const input = Object.freeze({
 			config: payload.config,
 			csrfKey: payload.csrfKey,
@@ -429,12 +453,11 @@ export async function createCoordinatorBrowserAuth(
 		const start = await createCoordinatorBrowserLinkStart(input);
 		const owner = await createOwnerAdapter(payload, limiter);
 		const change = await createChangeAdapter(payload, store, limiter, checked.operations);
-		const callback = await createCoordinatorBrowserAuthCallback({
-			...input,
+		const callback = await createSharedCallback(input, {
 			completeLink: link.handlers.completeLink,
 			ownerCallback: owner?.handleCallback,
-			purposeStore,
 			accountChangeCallback: change.callback,
+			deviceRebindCallback: rebind.callback,
 		});
 		const account = await createCoordinatorBrowserAccount(input);
 		if (!signin.ok || !start.ok || !callback.ok || !account.ok)
@@ -458,6 +481,7 @@ export async function createCoordinatorBrowserAuth(
 			{ path: "/auth/logout", post: account.handlers.logout },
 			...ownerRoutes(owner),
 			...change.routes,
+			...rebind.routes,
 		]);
 		return browserAuthReady(payload.settings.store, routes, { accountChanges: change.enabled });
 	} catch (error) {
@@ -516,6 +540,69 @@ async function createChangeAdapter(
 			return null;
 		},
 	};
+}
+
+type RebindHandlers = Extract<
+	Awaited<ReturnType<typeof createDeviceRebindBrowser>>,
+	{ ok: true }
+>["handlers"];
+
+/**
+ * Rebind is optional and does no I/O at setup. Each use first checks for its
+ * tables (absent on a D1 database before migration 0038); until they exist
+ * the pages report not found and the callback hook steps aside, so sign-in
+ * and owner enrollment are unaffected. Only a ready composition is kept.
+ */
+function createRebindAdapter(
+	payload: EnabledPayload,
+	store: CoordinatorBrowserAuthStore,
+	limiter: InMemoryRequestRateLimiter,
+): { routes: Route[]; callback?: (request: Request) => Promise<Response | null> } {
+	const read = storeMethod(store, "readDeviceRebindBackend");
+	if (!read) return { routes: [] };
+	let ready: RebindHandlers | undefined;
+	const resolve = async (): Promise<RebindHandlers | null> => {
+		if (ready) return ready;
+		const backend = (await read()) as AuthLinkBackend | null;
+		if (!backend) return null;
+		const created = await createDeviceRebindBrowser({
+			config: payload.config,
+			csrfKey: payload.csrfKey,
+			oidcOptions: payload.oidcOptions,
+			limiter,
+			backend,
+		});
+		if (!created.ok) return null;
+		ready ??= created.handlers;
+		return ready;
+	};
+	const page =
+		(step: "startPage" | "start" | "confirm"): BrowserHandler =>
+		async (request, key) => {
+			const handlers = await resolve();
+			return { response: handlers ? await handlers[step](request, key) : rebindNotFound() };
+		};
+	return {
+		routes: [
+			{ path: DEVICE_REBIND_BROWSER_PATHS.start, get: page("startPage"), post: page("start") },
+			{ path: DEVICE_REBIND_BROWSER_PATHS.confirm, post: page("confirm") },
+		],
+		callback: async (request) => {
+			try {
+				return (await (await resolve())?.callback(request)) ?? null;
+			} catch {
+				// Unreadable rebind storage: owner dispatch decides, and fails closed.
+				return null;
+			}
+		},
+	};
+}
+
+function rebindNotFound(): Response {
+	return new Response("Not found.", {
+		status: 404,
+		headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
+	});
 }
 
 function browserAuthReady(

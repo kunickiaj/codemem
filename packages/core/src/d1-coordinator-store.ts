@@ -538,33 +538,34 @@ export function createD1AuthLinkBackend(
 	db: D1DatabaseLike,
 	options: { connections?: boolean } = {},
 ): AuthLinkBackend {
-	return withCoordinatorAuthSchema(
-		{
-			first: <T>(statement: AuthLinkStatement) =>
-				db
-					.prepare(statement.sql)
-					.bind(...statement.values)
-					.first<T>(),
-			all: async <T>(statement: AuthLinkStatement) => {
-				const result = await db
-					.prepare(statement.sql)
-					.bind(...statement.values)
-					.all<T>();
-				if (!Array.isArray(result.results))
-					throw new Error("ownership_evidence_reader_unavailable");
-				return result.results;
-			},
-			run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
-			batch: async (statements) => {
-				if (!db.batch) throw new Error("auth_link_atomic_batch_required");
-				const results = await db.batch(
-					statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
-				);
-				return results.map(batchResultChanges);
-			},
+	return withCoordinatorAuthSchema(createRawD1AuthLinkBackend(db), options);
+}
+
+/** No auth-schema check per statement; callers gate on their own tables. */
+function createRawD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
+	return {
+		first: <T>(statement: AuthLinkStatement) =>
+			db
+				.prepare(statement.sql)
+				.bind(...statement.values)
+				.first<T>(),
+		all: async <T>(statement: AuthLinkStatement) => {
+			const result = await db
+				.prepare(statement.sql)
+				.bind(...statement.values)
+				.all<T>();
+			if (!Array.isArray(result.results)) throw new Error("ownership_evidence_reader_unavailable");
+			return result.results;
 		},
-		options,
-	);
+		run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
+		batch: async (statements) => {
+			if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+			const results = await db.batch(
+				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+			);
+			return results.map(batchResultChanges);
+		},
+	};
 }
 
 async function allRows<T>(statement: D1PreparedStatementLike): Promise<T[]> {
@@ -1166,9 +1167,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 	}
-	/** ADR 0005 Section 8 rebind storage; null until migration 0038 is applied. */
+	/**
+	 * ADR 0005 Section 8 rebind storage; null until migration 0038 is applied.
+	 * Raw like SQLite's: the rebind tables are gated here, not per statement.
+	 */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
-		return readDeviceRebindBackend(createD1AuthLinkBackend(this.db));
+		return readDeviceRebindBackend(createRawD1AuthLinkBackend(this.db));
 	}
 	async getAccountChanges(): Promise<AccountChangeOperations> {
 		await this.accountChangeBackend.first({ sql: "SELECT 1", values: [] });

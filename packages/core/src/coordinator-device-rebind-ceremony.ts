@@ -84,7 +84,12 @@ export interface DeviceRebindConfirmation {
 }
 
 export type DeviceRebindResult =
-	| { kind: "refused"; reason: DeviceRebindRefusal }
+	| {
+			kind: "refused";
+			reason: DeviceRebindRefusal;
+			/** This step burned the browser's transaction; its cookie can be cleared. */
+			retired?: true;
+	  }
 	| { kind: "unknown" }
 	| { kind: "started"; attemptId: string; expiresAtMs: number }
 	| { kind: "browser_claimed"; authorizationUrl: string; setCookies: string[] }
@@ -218,7 +223,7 @@ export function createDeviceRebindCeremony(deps: DeviceRebindDependencies) {
 	return Object.freeze({
 		...deviceSteps(ctx),
 		claimBrowser: boundary(ctx, claimBrowser),
-		verifyCallback: boundary(ctx, verifyCallback),
+		verifyCallback: (request: Request) => verifyCallback(ctx, request),
 		confirm: boundary(ctx, confirm),
 	});
 }
@@ -462,13 +467,29 @@ function callbackState(
 /**
  * Returns null when the callback belongs to another ceremony; the shared OIDC
  * callback then offers it to the next handler. Only this step may fall
- * through: rebind start and confirm forms have their own URLs.
+ * through: rebind start and confirm forms have their own URLs. Until the
+ * transaction is burned, any error also means "not mine", so a storage fault
+ * never takes another ceremony's callback; after the burn it is unknown.
  */
-async function verifyCallback(ctx: Ctx, request: Request) {
+async function verifyCallback(ctx: Ctx, request: Request): Promise<DeviceRebindResult | null> {
+	let match: Awaited<ReturnType<typeof matchCallback>>;
+	try {
+		match = await matchCallback(ctx, request);
+	} catch {
+		return null;
+	}
+	if (!match) return null;
+	try {
+		return await verifyMatched(ctx, match);
+	} catch {
+		return { kind: "unknown" };
+	}
+}
+
+async function matchCallback(ctx: Ctx, request: Request) {
 	const snapshot = snapshotBrowserRequest(request);
 	const state = callbackState(ctx, snapshot);
 	if (!state) return null;
-	const states = [state];
 	const cookie = await readBrowserCookie(snapshot.cookie, "transaction");
 	if (cookie.kind !== "present") return null;
 	const time = ctx.deps.now();
@@ -486,7 +507,7 @@ async function verifyCallback(ctx: Ctx, request: Request) {
  AND b.created_at_ms <= ? AND b.expires_at_ms > ? AND a.state = 'browser_claimed'`,
 		values: [
 			ctx.c.coordinatorId,
-			await sha256Hex(states[0] as string),
+			await sha256Hex(state),
 			cookie.cookieHash,
 			ctx.c.issuer,
 			ctx.c.revision,
@@ -495,7 +516,13 @@ async function verifyCallback(ctx: Ctx, request: Request) {
 			time,
 		],
 	});
-	if (!txn) return null;
+	return txn ? { snapshot, state, cookie, txn, time } : null;
+}
+
+async function verifyMatched(
+	ctx: Ctx,
+	{ snapshot, state, cookie, txn, time }: NonNullable<Awaited<ReturnType<typeof matchCallback>>>,
+): Promise<DeviceRebindResult> {
 	// Burn the transaction before provider verification, as every other ceremony does.
 	const claimToken = globalThis.crypto.randomUUID();
 	const burned = await ctx.deps.backend.run({
@@ -508,12 +535,15 @@ async function verifyCallback(ctx: Ctx, request: Request) {
 	const verified = await ctx.deps.client.verifyCallback(
 		{
 			callbackUrl: snapshot.url,
-			material: { state: states[0] as string, nonce: txn.nonce, pkceVerifier: txn.pkce_verifier },
+			material: { state, nonce: txn.nonce, pkceVerifier: txn.pkce_verifier },
 		},
 		{ fetchUserInfo: false },
 	);
-	if (!verified.ok || verified.account.issuer !== ctx.c.issuer) return refused("unavailable");
+	// This request burned the transaction, so a refusal from here on retires it.
+	if (!verified.ok || verified.account.issuer !== ctx.c.issuer)
+		return { kind: "refused", reason: "unavailable", retired: true };
 	const outcome = await persistVerified(ctx, txn.attempt_id, verified.account, claimToken);
+	if (outcome.kind === "refused") return { ...outcome, retired: true };
 	if (outcome.kind !== "verified") return outcome;
 	const csrf = await issueBrowserCsrfToken(
 		ctx.deps.csrfKey,
