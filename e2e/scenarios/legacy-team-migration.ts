@@ -114,6 +114,7 @@ interface TeamDetail {
 		existingIdentityRef: string | null;
 		suggestedIdentityRef: string | null;
 		verifiedEvidenceKind: "active_assignment" | null;
+		identityEvidence: "self" | "label" | null;
 		decision: string;
 		targetIdentityRef: string | null;
 		expectation:
@@ -861,9 +862,14 @@ export async function runLegacyTeamMigrationScenario(ctx: ScenarioContext): Prom
 	assert(
 		sharedDevice?.verifiedEvidenceKind === "active_assignment" &&
 			sharedDevice.existingIdentityRef !== null &&
-			sharedDevice.suggestedIdentityRef === sharedDevice.existingIdentityRef &&
 			sharedDevice.expectation.kind === "existing",
 		"Shared Device assignment was not reused across Team drafts",
+	);
+	// Another device's assignment is only a label here (ADR 0005 Section 8): it is
+	// shown, never suggested, so the person confirms it below.
+	assert(
+		sharedDevice.identityEvidence === "label" && sharedDevice.suggestedIdentityRef === null,
+		"Shared Device's label was suggested as this machine's own assignment",
 	);
 	await assignDevice(ctx, beta, "Shared Device", "Shared Person", "included", "28-beta-shared");
 	await assignDevice(
