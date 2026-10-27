@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-10-27
+
 ### Fixed
 
-- **Review account ownership** waits at least 10 seconds for the coordinator, or longer when `sync_coordinator_timeout_s` is higher. Owner reviews read the full Team history and confirming sends two requests, so the 3-second default made previews fail intermittently and made Confirm report every group as `unknown` without saving anything on the coordinator.
-- When `~/.codemem` is writable by your group or other users, as some managed workspaces create it, account ownership review names the folder and the `chmod` command that fixes it instead of reporting that the coordinator didn't answer.
-- The account ownership dialog wraps long fingerprints and IDs, shows the coordinator once, clears earlier results when you preview again, says why **Confirm account ownership** is disabled (including a preview that expired after 5 minutes), and explains that only one ownership request runs at a time.
+- **Review account ownership** waits at least 10 seconds for the coordinator, or longer when `sync_coordinator_timeout_s` is higher. Owner reviews read the full Team history and confirming sends two requests, so the 3-second default made previews fail intermittently and made Confirm report every group as `unknown` without saving anything on the coordinator. ([#2410])
+- When `~/.codemem` is writable by your group or other users, as some managed workspaces create it, account ownership review names the folder and the `chmod` command that fixes it instead of reporting that the coordinator didn't answer. ([#2410])
+- The account ownership dialog wraps long fingerprints and IDs, shows the coordinator once, clears earlier results when you preview again, says why **Confirm account ownership** is disabled (including a preview that expired after 5 minutes), and explains that only one ownership request runs at a time. ([#2410])
+
+**Upgrade notes:**
+
+- Restart the Viewer after upgrading so the new backend loads. No coordinator migration is needed.
 
 ## [0.47.0] - 2026-10-27
 
@@ -178,7 +184,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.1...HEAD
+[0.47.1]: https://github.com/kunickiaj/codemem/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...v0.47.0
 [0.47.0-beta.4]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...v0.47.0-beta.4
 [0.47.0-beta.3]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...v0.47.0-beta.3
@@ -234,3 +241,4 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2405]: https://github.com/kunickiaj/codemem/pull/2405
 [#2406]: https://github.com/kunickiaj/codemem/pull/2406
 [#2407]: https://github.com/kunickiaj/codemem/pull/2407
+[#2410]: https://github.com/kunickiaj/codemem/pull/2410

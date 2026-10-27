@@ -1,6 +1,6 @@
 {
 	"name": "@codemem/pi-extension",
-	"version": "0.47.0",
+	"version": "0.47.1",
 	"description": "CodeMem extension for the pi coding agent — ingest, injection, and native memory tools",
 	"type": "module",
 	"main": "./dist/index.js",

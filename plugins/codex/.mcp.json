@@ -4,9 +4,9 @@
     "args": [
       "-y",
       "--package",
-      "codemem@0.47.0",
+      "codemem@0.47.1",
       "--package",
-      "@codemem/embeddings@0.47.0",
+      "@codemem/embeddings@0.47.1",
       "codemem",
       "mcp"
     ],

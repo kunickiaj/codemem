@@ -1,7 +1,7 @@
 {
   "name": "codemem",
   "description": "Persistent memory for Claude Code. Capture work across sessions and recall relevant context.",
-  "version": "0.47.0",
+  "version": "0.47.1",
   "author": {
     "name": "Adam Kunicki"
   },
@@ -13,9 +13,9 @@
       "args": [
         "-y",
         "--package",
-        "codemem@0.47.0",
+        "codemem@0.47.1",
         "--package",
-        "@codemem/embeddings@0.47.0",
+        "@codemem/embeddings@0.47.1",
         "codemem",
         "mcp"
       ]
