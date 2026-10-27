@@ -95,6 +95,7 @@ export async function resetCeremony() {
 		await exec(`DELETE FROM ${table}`);
 	for (const name of [
 		"0028_add_device_ownership_bindings.sql",
+		"0039_guard_device_ownership_rowid.sql",
 		"0030_add_owner_enrollment_attempts.sql",
 		"0034_add_owner_admission_pin.sql",
 		"0036_add_owner_attempt_qualification_pin.sql",

@@ -129,7 +129,10 @@ import {
 	bootstrapRawInsertValues,
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
-import { COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL } from "./coordinator-device-ownership-schema.js";
+import {
+	COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL,
+	upgradeDeviceOwnershipTriggersSql,
+} from "./coordinator-device-ownership-schema.js";
 import {
 	COORDINATOR_DEVICE_REBIND_SCHEMA_SQL,
 	readDeviceRebindBackend,
@@ -541,6 +544,7 @@ function upgradeAuthLinkBrowserStartSchema(db: DatabaseType): void {
 }
 
 function initializeDeviceLedgerSchemas(db: DatabaseType): void {
+	upgradeDeviceOwnershipTriggers(db);
 	db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
 	db.exec(DEVICE_REVOCATION_SCHEMA_SQL);
 	// Optional owner storage never forces an upgrade of a legacy/direct coordinator.
@@ -559,6 +563,24 @@ function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 
 const REBIND_ATTEMPTS_SQL =
 	"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_device_rebind_attempts'";
+
+const OWNERSHIP_COLLISION_TRIGGER_SQL =
+	"SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'coordinator_device_ownership_insert_collision'";
+
+/** Reads first; replaces an outdated trigger and recreates it in one transaction. */
+function upgradeDeviceOwnershipTriggers(db: DatabaseType): void {
+	const plan = () =>
+		upgradeDeviceOwnershipTriggersSql(
+			(db.prepare(OWNERSHIP_COLLISION_TRIGGER_SQL).pluck().get() as string | undefined) ?? null,
+		);
+	if (!plan()) return;
+	db.transaction(() => {
+		const upgrade = plan();
+		if (!upgrade) return;
+		db.exec(upgrade);
+		db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
+	}).immediate();
+}
 
 /** Reads first, so opening an up-to-date database takes no write lock. */
 function upgradePreReleaseRebindAttempts(db: DatabaseType): void {

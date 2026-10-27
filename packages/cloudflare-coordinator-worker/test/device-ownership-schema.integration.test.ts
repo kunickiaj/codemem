@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	ownershipHarness,
 	registerOwnershipContract,
@@ -16,11 +16,16 @@ describe("native D1 device ownership schema foundation", () => {
 	// Local D1 fixture reset uses DDL, never disabling the immutable-row triggers.
 	const test = ownershipHarness(async (use) => {
 		await env.COORDINATOR_DB.prepare("DROP TABLE coordinator_device_ownership_bindings").run();
-		const migration = env.TEST_MIGRATIONS.find(
-			(entry) => entry.name === "0028_add_device_ownership_bindings.sql",
-		);
-		if (!migration) throw new Error("Missing ownership fixture migration");
-		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+		for (const name of [
+			"0028_add_device_ownership_bindings.sql",
+			"0039_guard_device_ownership_rowid.sql",
+		]) {
+			const migration = env.TEST_MIGRATIONS.find((entry) => entry.name === name);
+			if (!migration) throw new Error(`Missing ownership fixture migration ${name}`);
+			await env.COORDINATOR_DB.batch(
+				migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)),
+			);
+		}
 		expect((await env.COORDINATOR_DB.prepare(definitionSql).all()).results).toEqual(
 			migratedDefinition,
 		);
@@ -44,4 +49,43 @@ describe("native D1 device ownership schema foundation", () => {
 		}
 	});
 	registerOwnershipContract(test);
+});
+
+describe("native D1 device ownership rowid guard", () => {
+	it("rejects a REPLACE that reuses a binding's rowid with fresh keys", async () => {
+		// Arrange
+		const db = env.COORDINATOR_DB;
+		const values = (suffix: string) => [
+			`rowid-device-${suffix}`,
+			suffix.repeat(64).slice(0, 64),
+			`identity-${suffix}`,
+			"coordinator-a",
+			`rowid-binding-${suffix}`,
+			"owner_enrollment",
+			`rebind:${suffix}`,
+			"2026-10-26T00:00:00Z",
+		];
+		const columns = `device_id, key_id, identity_id, coordinator_id, binding_id, provenance,
+		 source_ref, bound_at`;
+		await db
+			.prepare(`INSERT INTO coordinator_device_ownership_bindings (${columns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+			.bind(...values("e"))
+			.run();
+		const rowid = await db
+			.prepare("SELECT rowid FROM coordinator_device_ownership_bindings WHERE device_id = 'rowid-device-e'")
+			.first<number>("rowid");
+		// Act
+		const replace = db
+			.prepare(`INSERT OR REPLACE INTO coordinator_device_ownership_bindings (rowid, ${columns})
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			.bind(rowid, ...values("f"))
+			.run();
+		// Assert
+		await expect(replace).rejects.toThrow("device_ownership_collision");
+		const kept = await db
+			.prepare("SELECT device_id FROM coordinator_device_ownership_bindings WHERE rowid = ?")
+			.bind(rowid)
+			.first<string>("device_id");
+		expect(kept).toBe("rowid-device-e");
+	});
 });

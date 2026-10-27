@@ -12,6 +12,10 @@ describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", ()
     const migration = env.TEST_MIGRATIONS.find(entry => entry.name === "0028_add_device_ownership_bindings.sql");
     if (!migration) throw new Error("Missing ownership fixture migration");
     await env.COORDINATOR_DB.batch(migration.queries.map(sql => env.COORDINATOR_DB.prepare(sql)));
+    // Then the rowid guard that replaced the collision trigger, as production has it.
+    const guard = env.TEST_MIGRATIONS.find((entry) => entry.name === "0039_guard_device_ownership_rowid.sql");
+    if (!guard) throw new Error("Missing ownership rowid migration");
+    await env.COORDINATOR_DB.batch(guard.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
     vi.useFakeTimers(); vi.setSystemTime(new Date(JOIN_NOW));
     const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
     const names = await env.COORDINATOR_DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations' ORDER BY name").all<{name: string}>();

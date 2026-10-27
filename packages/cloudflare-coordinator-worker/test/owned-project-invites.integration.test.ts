@@ -13,6 +13,10 @@ describe("native D1 project ownership (raw ledger is not owner proof)", () => {
 		const migration = env.TEST_MIGRATIONS.find(entry => entry.name === "0028_add_device_ownership_bindings.sql");
 		if (!migration) throw new Error("Missing ownership fixture migration");
 		await env.COORDINATOR_DB.batch(migration.queries.map(sql => env.COORDINATOR_DB.prepare(sql)));
+		// Then the rowid guard that replaced the collision trigger, as production has it.
+		const guard = env.TEST_MIGRATIONS.find((entry) => entry.name === "0039_guard_device_ownership_rowid.sql");
+		if (!guard) throw new Error("Missing ownership rowid migration");
+		await env.COORDINATOR_DB.batch(guard.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
 		const input = revocationInput(`owned-project-native-${++sequence}`);
 		const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 		try {

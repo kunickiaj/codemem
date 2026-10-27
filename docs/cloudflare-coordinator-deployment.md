@@ -213,6 +213,14 @@ writes to these tables until the rebind routes ship. Apply it with the usual mig
 command after separate approval; a self-hosted SQLite coordinator creates the tables when it
 opens.
 
+### Durable ownership bindings (0039)
+
+Migration `0039_guard_device_ownership_rowid.sql` replaces one trigger on the ownership
+bindings table so `INSERT OR REPLACE` can't remove a binding by reusing its row ID. It changes
+no rows. A database built from `schema.sql` without migration records can run the file directly
+with `wrangler d1 execute --remote --file`; a self-hosted SQLite coordinator upgrades the
+trigger when it opens.
+
 ## 6. Deploy the Worker
 
 ### Owner admission pin source (not activated)

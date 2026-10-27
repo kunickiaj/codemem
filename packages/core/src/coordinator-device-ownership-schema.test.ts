@@ -19,10 +19,13 @@ import {
 
 const workerPath = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
 const freshSql = readFileSync(join(workerPath, "schema.sql"), "utf8");
-const migration = readFileSync(
-	join(workerPath, "migrations/0028_add_device_ownership_bindings.sql"),
-	"utf8",
-);
+// The source-only path: the table's migration, then the rowid guard that replaced its trigger.
+const migration = [
+	"migrations/0028_add_device_ownership_bindings.sql",
+	"migrations/0039_guard_device_ownership_rowid.sql",
+]
+	.map((file) => readFileSync(join(workerPath, file), "utf8"))
+	.join("\n");
 function schema(db: SqliteDatabase) {
 	return {
 		columns: db.pragma(`table_info(${OWNERSHIP_TABLE})`),
@@ -99,7 +102,8 @@ describe("SQLite device ownership schema foundation", () => {
 			expect(actual.unique).toEqual(
 				["binding_id", "device_id", "key_id"].map((name) => ({ columns: [{ name }], partial: 0 })),
 			);
-			expect(actual.ddl.filter((entry) => entry.type === "trigger")).toHaveLength(3);
+			// Collision, rowid, immutable update, immutable delete.
+			expect(actual.ddl.filter((entry) => entry.type === "trigger")).toHaveLength(4);
 		} finally {
 			db.close();
 			fresh.close();

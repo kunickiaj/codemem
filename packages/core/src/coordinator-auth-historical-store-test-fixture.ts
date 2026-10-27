@@ -37,6 +37,7 @@ const callerMigrationNames = Object.freeze([
 	"0026_add_identity_group_grants.sql",
 	"0027_add_device_revocations.sql",
 	"0028_add_device_ownership_bindings.sql",
+	"0039_guard_device_ownership_rowid.sql",
 ]);
 const excludedOwnerMigrationNames = [
 	"0030_add_owner_enrollment_attempts.sql",
