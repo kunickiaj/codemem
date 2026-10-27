@@ -36,7 +36,12 @@ function recoveryError(error: unknown): string {
 	)
 		return "The profile changed. Close this review and check status before reviewing again.";
 	if (error instanceof AccountRequestError && error.code === "account_owner_recovery_busy")
-		return "Another account operation is active. Check status before trying another review.";
+		return "Another account operation is running, possibly in another tab. Codemem runs one at a time. Wait for it to finish, then check status.";
+	if (
+		error instanceof AccountRequestError &&
+		error.code === "account_owner_recovery_storage_unsafe"
+	)
+		return `Codemem can't save the account owner on this device. ${error.detail ?? "Check that only you can write to ~/.codemem and ~/.codemem/account-owner-associations, then try again."}`;
 	return "The coordinator didn't answer, or sent a response this Viewer can't read. Try the preview again. If it keeps failing, ask the coordinator operator to check the coordinator, and keep this profile as it is.";
 }
 
@@ -227,6 +232,12 @@ function previewRecovery(flow: RecoveryFlow, request: RecoveryPreviewRequest): v
 					"The ownership preview is not current. Request a new preview before approving.",
 				);
 				return;
+			}
+			// A new review reads the coordinator's current state, which replaces an earlier
+			// result. Status checks, and failed previews, keep the earlier submission.
+			if (request.purpose === "review") {
+				flow.setResult(null);
+				flow.setSubmittedPreview(null);
 			}
 			flow.setPreview(next);
 		},

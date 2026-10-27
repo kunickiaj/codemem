@@ -114,6 +114,7 @@ export async function readRecoveryCandidates(options: {
 	adminSecret: string;
 	groups: readonly string[];
 	device: CandidateDevice;
+	timeoutS?: number;
 }): Promise<RecoveryOwnerCandidate[]> {
 	const { device } = options;
 	const responses: unknown[] = [];
@@ -127,6 +128,7 @@ export async function readRecoveryCandidates(options: {
 				deviceId: device.deviceId,
 				fingerprint: device.fingerprint,
 				identityId: device.identityId,
+				timeoutS: options.timeoutS,
 			});
 		} catch {
 			continue;

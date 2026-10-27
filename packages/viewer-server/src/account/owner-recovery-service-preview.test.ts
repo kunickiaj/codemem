@@ -399,3 +399,37 @@ describe("strict browser selections and complete remote evidence", () => {
 		expect(f.association()).toBeNull();
 	});
 });
+
+describe("coordinator timeout for owner reviews", () => {
+	it.each([
+		{ configured: undefined, expected: 10 },
+		{ configured: 3, expected: 10 },
+		{ configured: 45, expected: 45 },
+	])(
+		"uses $expected s for suggestions, preview, and confirm when configured as $configured",
+		async ({ configured, expected }) => {
+			// Arrange
+			const f = await recoveryFixture({ fact: false });
+			const service = createAccountOwnerRecoveryService({
+				...f.serviceOptions,
+				...(configured === undefined ? {} : { readCoordinatorTimeoutS: () => configured }),
+			});
+			f.cleanup(() => service.close());
+			// Act
+			const selection = await selectionFor(service);
+			const preview = await service.preview({
+				...selection,
+				requestId: "timeout",
+				purpose: "review",
+			});
+			await service.confirm({ preview, approvalDigest: preview.approvalDigest });
+			// Assert
+			expect(f.previewDeviceOwner).toHaveBeenCalledWith(
+				expect.objectContaining({ timeoutS: expected }),
+			);
+			const reviews = f.reviewOwner.mock.calls.map(([input]) => input);
+			expect(reviews.map((input) => input.timeoutS)).toEqual([expected, expected]);
+			expect(reviews[1]?.confirmOwnerResolutionDigest).toBeDefined();
+		},
+	);
+});

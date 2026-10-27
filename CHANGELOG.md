@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Review account ownership** waits at least 10 seconds for the coordinator, or longer when `sync_coordinator_timeout_s` is higher. Owner reviews read the full Team history and confirming sends two requests, so the 3-second default made previews fail intermittently and made Confirm report every group as `unknown` without saving anything on the coordinator.
+- When `~/.codemem` is writable by your group or other users, as some managed workspaces create it, account ownership review names the folder and the `chmod` command that fixes it instead of reporting that the coordinator didn't answer.
+- The account ownership dialog wraps long fingerprints and IDs, shows the coordinator once, clears earlier results when you preview again, says why **Confirm account ownership** is disabled (including a preview that expired after 5 minutes), and explains that only one ownership request runs at a time.
+
 ## [0.47.0] - 2026-10-27
 
 First stable 0.47 release. It includes everything in the 0.47.0 betas below.

@@ -15,6 +15,10 @@ export {
 	readAccountOwnerAssociation,
 	readAccountOwnerAssociationRetainedAtMs,
 } from "./account-owner-association.js";
+export {
+	AccountOwnerAssociationDirectoryError,
+	type AccountOwnerAssociationDirectoryProblem,
+} from "./account-owner-association-directory.js";
 export * as Api from "./api-types.js";
 export { extractApplyPatchPaths, MUTATING_TOOL_NAMES } from "./apply-patch.js";
 export * from "./attribution-assessment.js";

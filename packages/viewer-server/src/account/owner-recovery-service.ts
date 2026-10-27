@@ -28,6 +28,7 @@ import {
 	RECOVERY_SCOPE,
 	recoveryId,
 	requireRecovery,
+	unsafeStorageMessage,
 	type ValidatedRecoveryReview,
 	validateRecoveryReview,
 } from "./owner-recovery-evidence.js";
@@ -55,8 +56,16 @@ export interface AccountOwnerRecoveryServiceOptions {
 	reviewOwner?: typeof coordinatorAuthControllerReviewAction;
 	/** Read-only device-owner preview used only to suggest recorded owners. */
 	previewDeviceOwner?: typeof coordinatorAuthControllerReviewAction;
+	/** Configured `sync_coordinator_timeout_s`, read on every request. */
+	readCoordinatorTimeoutS?: () => number;
 	now?: () => number;
 }
+/**
+ * Scoped owner reviews read the full Team history, and confirming sends a fresh preview
+ * and then the commit. Each request can take several seconds on the live coordinator, so
+ * the 3s sync default would abort a commit the user already approved.
+ */
+export const MIN_OWNER_REVIEW_TIMEOUT_S = 10;
 interface RetainedReview {
 	capture: RecoveryCapture;
 	destinations: RecoveryDestinations;
@@ -103,6 +112,10 @@ class AccountOwnerRecoveryService {
 	}
 	#now(): number {
 		return (this.#options.now ?? Date.now)();
+	}
+	#timeoutS(): number {
+		const configured = this.#options.readCoordinatorTimeoutS?.() ?? 0;
+		return Math.max(MIN_OWNER_REVIEW_TIMEOUT_S, Number.isFinite(configured) ? configured : 0);
 	}
 	#assertCurrent(capture: RecoveryCapture, reservation?: AccountRecoveryReservation): void {
 		requireRecovery(!this.#closed, "unavailable");
@@ -170,6 +183,7 @@ class AccountOwnerRecoveryService {
 			adminSecret,
 			groups: capture.groups,
 			device: { deviceId: c.deviceId, fingerprint: c.fingerprint, identityId: c.identityId },
+			timeoutS: this.#timeoutS(),
 		});
 		this.#assertCurrent(capture);
 		this.#candidateCache = { semanticId: capture.semanticId, at: this.#now(), candidates };
@@ -192,6 +206,7 @@ class AccountOwnerRecoveryService {
 			deviceId: capture.context.deviceId,
 			fingerprint: capture.context.fingerprint,
 			identityId: selection.existingOwnerId,
+			timeoutS: this.#timeoutS(),
 		};
 	}
 	async #previewReview(entry: RetainedReview, groupId: string): Promise<void> {
@@ -386,7 +401,9 @@ class AccountOwnerRecoveryService {
 				outcome: {
 					groupId,
 					status: staleDenial(error) ? "failed" : "unknown",
-					message: "Check coordinator status or import original receipts before trying again.",
+					message:
+						unsafeStorageMessage(error) ??
+						"Check coordinator status or import original receipts before trying again.",
 				},
 			};
 		}
@@ -503,11 +520,13 @@ class AccountOwnerRecoveryService {
 	): Promise<RecoveryResult["groups"][number]> {
 		try {
 			return await this.#verifyAndRetain(entry, groupId, receipt, reservation);
-		} catch {
+		} catch (error) {
 			return {
 				groupId,
 				status: "unknown",
-				message: "Context or proof outcome changed; check status before importing again.",
+				message:
+					unsafeStorageMessage(error) ??
+					"Context or proof outcome changed; check status before importing again.",
 			};
 		}
 	}

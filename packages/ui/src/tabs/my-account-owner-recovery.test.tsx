@@ -693,3 +693,118 @@ describe("recovery errors and focus", () => {
 		);
 	});
 });
+
+describe("ownership review dialog state after a slow or failed confirmation", () => {
+	it("clears the earlier unknown results when the user previews again", async () => {
+		// Arrange
+		confirmReply = (review) =>
+			response({
+				preview: review,
+				groups: review.groups.map((groupId) => ({
+					groupId,
+					status: "unknown",
+					message: "Check coordinator status before trying again.",
+				})),
+			});
+		await open();
+		await submit();
+		expect(dialog().querySelector('[aria-label="Reported review outcomes"]')).not.toBeNull();
+		// Act
+		await click("Preview account ownership");
+		// Assert
+		expect(dialog().querySelector('[aria-label="Reported review outcomes"]')).toBeNull();
+		expect(dialog().textContent).toContain("Ready to confirm");
+		expect(dialog().textContent).not.toContain("Closing does not undo");
+	});
+
+	it("keeps the unknown results and status check when the new preview fails", async () => {
+		// Arrange
+		confirmReply = (review) =>
+			response({
+				preview: review,
+				groups: review.groups.map((groupId) => ({
+					groupId,
+					status: "unknown",
+					message: "Check coordinator status before trying again.",
+				})),
+			});
+		await open();
+		await submit();
+		previewReply = () => response({ error: "account_owner_recovery_unavailable" }, 503);
+		// Act
+		await click("Preview account ownership");
+		// Assert
+		expect(dialog().querySelector('[aria-label="Reported review outcomes"]')).not.toBeNull();
+		expect(button("Check review status").disabled).toBe(false);
+	});
+
+	it("names why Confirm is disabled, including an expired preview", async () => {
+		// Arrange
+		await open();
+		const confirm = () => button("Confirm account ownership");
+		const reason = () =>
+			document.getElementById(confirm().getAttribute("aria-describedby") ?? "")?.textContent;
+		expect(reason()).toBe("Preview account ownership first.");
+		// Act
+		await preview();
+		// Assert
+		expect(confirm().disabled).toBe(true);
+		expect(reason()).toBe("Check the confirmation box first.");
+		// Act
+		await acknowledge();
+		// Assert
+		expect(confirm().disabled).toBe(false);
+		expect(confirm().hasAttribute("aria-describedby")).toBe(false);
+		// Act
+		await act(async () => {
+			vi.advanceTimersByTime(5 * 60_000);
+		});
+		// Assert
+		expect(confirm().disabled).toBe(true);
+		expect(reason()).toBe("This preview expired after 5 minutes. Preview again.");
+	});
+
+	it("says that one ownership request runs at a time", async () => {
+		// Arrange
+		previewReply = () => response({ error: "account_owner_recovery_busy" }, 409);
+		await open();
+		// Act
+		await preview();
+		// Assert
+		expect(dialog().textContent).toContain("Codemem runs one ownership request at a time.");
+		expect(dialog().querySelector('[role="alert"]')?.textContent).toContain(
+			"possibly in another tab",
+		);
+	});
+
+	it("shows the fix for an unsafe state directory instead of blaming the coordinator", async () => {
+		// Arrange
+		const detail =
+			"/home/me/.codemem is writable by other users. Run `chmod go-w /home/me/.codemem`, then try again.";
+		previewReply = () => response({ error: "account_owner_recovery_storage_unsafe", detail }, 409);
+		await open();
+		// Act
+		await preview();
+		// Assert
+		const alert = dialog().querySelector('[role="alert"]')?.textContent;
+		expect(alert).toContain("chmod go-w /home/me/.codemem");
+		expect(alert).not.toContain("coordinator didn't answer");
+	});
+
+	it("wraps long IDs and shows a coordinator whose ID is its origin once", async () => {
+		// Arrange
+		envelope = {
+			...envelope,
+			profile: { ...envelope.profile, coordinatorId: envelope.profile.coordinatorOrigin },
+		};
+		// Act
+		await open();
+		// Assert
+		const body = dialog().querySelector(".account-owner-recovery-body");
+		expect(body).not.toBeNull();
+		const coordinator = [...dialog().querySelectorAll("dt")].find(
+			(term) => term.textContent === "Coordinator",
+		)?.nextElementSibling?.textContent;
+		expect(coordinator).toBe(envelope.profile.coordinatorOrigin);
+	});
+});

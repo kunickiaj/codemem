@@ -32,7 +32,7 @@ Set these to enable coordinator-backed discovery:
 
 Optional knobs:
 
-- `sync_coordinator_timeout_s` - request timeout for coordinator calls (default: `3`)
+- `sync_coordinator_timeout_s` - request timeout for coordinator calls (default: `3`). Viewer account ownership reviews wait at least 10 seconds.
 - `sync_coordinator_presence_ttl_s` - advertised presence TTL in seconds (default: `180`)
 - `sync_mdns` - keep LAN mDNS discovery enabled or disable it independently
 - `sync_advertise` - controls which local addresses are published to peers and the coordinator

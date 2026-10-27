@@ -872,6 +872,8 @@ function createViewerAccountLink(
 			const secret = readCodememConfigFileAtPath(configPath).sync_coordinator_admin_secret;
 			return typeof secret === "string" ? secret.trim() : null;
 		},
+		readCoordinatorTimeoutS: () =>
+			readCoordinatorSyncConfig(readCodememConfigFileAtPath(configPath)).syncCoordinatorTimeoutS,
 	});
 	let actualBoundPort: number | null = null;
 	return {

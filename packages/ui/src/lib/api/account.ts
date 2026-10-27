@@ -130,6 +130,7 @@ const ACCOUNT_ERROR_CODES = new Set([
 	"account_owner_recovery_busy",
 	"account_owner_recovery_context_changed",
 	"account_owner_recovery_unavailable",
+	"account_owner_recovery_storage_unsafe",
 	"account_local_viewer_required",
 	"account_request_rejected",
 	"account_csrf_invalid",
@@ -159,30 +160,40 @@ function safeOperationId(value: unknown): string | undefined {
 		: undefined;
 }
 
+function safeDetail(value: unknown): string | undefined {
+	return typeof value === "string" && /^[\x20-\x7e]{1,512}$/.test(value) ? value : undefined;
+}
+
 async function responseError(response: Response, fallback: string): Promise<AccountRequestError> {
 	const payload = (await response.json().catch(() => null)) as {
 		error?: unknown;
 		operationId?: unknown;
+		detail?: unknown;
 	} | null;
 	return new AccountRequestError(
 		response.status,
 		safeCode(payload?.error, fallback),
 		safeOperationId(payload?.operationId),
+		typeof payload?.detail === "string" ? payload.detail : undefined,
 	);
 }
 
 export class AccountRequestError extends Error {
 	readonly code: string;
 	readonly operationId?: string;
+	/** Local Viewer guidance, such as the command that fixes an unsafe state directory. */
+	readonly detail?: string;
 	constructor(
 		public readonly status: number,
 		code: string,
 		operationId?: string,
+		detail?: string,
 	) {
 		const safe = safeCode(code, "request_failed");
 		super(safe);
 		this.code = safe;
 		this.operationId = safeOperationId(operationId);
+		this.detail = safeDetail(detail);
 	}
 }
 

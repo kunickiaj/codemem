@@ -21,6 +21,14 @@ export class AccountOwnerRecoveryError extends Error {
 		super("account_owner_recovery_invalid");
 	}
 }
+/**
+ * The fix for an unsafe local state directory, or null for any other error. Matches the
+ * core error by code because the bundle can carry a second copy of the core class.
+ */
+export function unsafeStorageMessage(error: unknown): string | null {
+	if (!(error instanceof Error) || !("code" in error)) return null;
+	return error.code === "account_owner_association_directory_unsafe" ? error.message : null;
+}
 export function requireRecovery(
 	condition: unknown,
 	code: AccountOwnerRecoveryError["code"] = "invalid",

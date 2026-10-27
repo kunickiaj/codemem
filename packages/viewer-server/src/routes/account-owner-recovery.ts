@@ -5,6 +5,7 @@ import {
 	recoveryId,
 	recoveryRecord,
 	requireRecovery,
+	unsafeStorageMessage,
 } from "../account/owner-recovery-evidence.js";
 import type { createAccountOwnerRecoveryService } from "../account/owner-recovery-service.js";
 import type { RecoveryProfile, RecoverySelection } from "../account/owner-recovery-types.js";
@@ -158,6 +159,9 @@ async function dispatch(c: Context, service: Service): Promise<Response> {
 export function accountOwnerRecoveryRoutes(service: Service): Hono {
 	const app = new Hono();
 	app.onError((error, c) => {
+		const storage = unsafeStorageMessage(error);
+		if (storage)
+			return c.json({ error: "account_owner_recovery_storage_unsafe", detail: storage }, 409);
 		if (!(error instanceof AccountOwnerRecoveryError))
 			return c.json({ error: "account_owner_recovery_unavailable" }, 503);
 		const statuses = { invalid: 400, busy: 409, context_changed: 409, unavailable: 503 } as const;

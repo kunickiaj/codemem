@@ -582,7 +582,7 @@ describe("reported outcomes and dialog access", () => {
 			);
 			expect(
 				[...document.querySelectorAll('[role="status"]')].some((item) =>
-					item.textContent?.includes("Waiting for the current request"),
+					item.textContent?.includes("Waiting for the coordinator to answer"),
 				),
 			).toBe(true);
 		},

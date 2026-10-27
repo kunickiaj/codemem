@@ -529,6 +529,17 @@ can enter that Identity ID directly.
    or wrong-target result, request a fresh preview and acknowledgement instead of retrying
    an old confirmation.
 
+A new preview replaces the previous results. A preview expires after 5 minutes, and the
+Viewer runs one ownership request at a time, so another tab waits while one confirms.
+When **Confirm account ownership** is disabled, the dialog says why below the button.
+Owner reviews wait at least 10 seconds for the coordinator, or longer when
+`sync_coordinator_timeout_s` is higher.
+
+Confirming saves the owner under `~/.codemem/account-owner-associations`. Codemem
+refuses to save it while `~/.codemem` is writable by your group or other users, and the
+dialog shows the command that fixes it, usually `chmod go-w ~/.codemem`. Some managed
+workspaces create that folder group-writable.
+
 The confirmed account owner is displayed separately from the unchanged Memory author
 and sharing Identity. The workflow retains old records, memories, keys, configuration,
 services, sharing grants, and their full history. It is not an actor merge, reset,

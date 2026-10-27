@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { RadixDialog, RadixDialogTitle } from "../components/primitives/radix-dialog";
 import {
 	RecoveryAssistance,
@@ -60,11 +60,10 @@ function useRecoveryReview(props: AccountOwnerRecoveryProps, id: string) {
 	const [groups, setGroups] = useState<readonly string[]>([...props.profile.configuredGroups]);
 	const [request, setRequest] = useState<RecoveryPreviewRequest | null>(null);
 	const selection = { profile: props.profile, existingOwnerId: owner, groups };
-	const preview = props.preview;
 	const matches =
 		request?.purpose !== "check_status" &&
-		matchesRecoveryPreview(preview, selection, activeRequest.current);
-	const statusPreview = matchStatusPreview(preview, request, activeRequest.current);
+		matchesRecoveryPreview(props.preview, selection, activeRequest.current);
+	const statusPreview = matchStatusPreview(props.preview, request, activeRequest.current);
 	const canPreview = !props.busy && owner.trim().length > 0 && groups.length > 0;
 	const consent = useRecoveryConsent(props, {
 		matches,
@@ -93,12 +92,13 @@ function useRecoveryReview(props: AccountOwnerRecoveryProps, id: string) {
 		owner,
 		groups,
 		selection,
-		preview,
+		preview: props.preview,
 		matches,
 		canPreview,
 		statusPreview,
 		status,
 		...consent,
+		request,
 		loadPreview,
 		changeOwner: (value: string) => {
 			invalidate();
@@ -153,27 +153,28 @@ function useRecoveryConsent(
 		matches: boolean;
 		request: RecoveryPreviewRequest | null;
 		activeRequest: { current: string | null };
-		onSubmitted: (preview: RecoveryPreview) => void;
+		onSubmitted: (preview: RecoveryPreview | null) => void;
 	},
 ) {
 	const dispatched = useRef(new WeakSet<RecoveryPreview>());
 	const [acknowledged, setAcknowledged] = useState<RecoveryPreview | null>(null);
 	const preview = props.preview;
 	useLayoutEffect(() => setAcknowledged(null), [preview]);
-	const canConfirm = Boolean(
-		preview &&
-			review.matches &&
-			review.request?.purpose === "review" &&
-			acknowledged === preview &&
-			preview.history.complete &&
-			preview.approvalDigest &&
-			!preview.groupPreviews.some((group) => group.action === "blocked") &&
-			!props.busy &&
-			!props.error &&
-			props.reviewAccess === "operator" &&
-			!dispatched.current.has(preview) &&
-			props.result?.preview !== preview,
-	);
+	const fresh = preview && review.matches && review.request?.purpose === "review";
+	// A new review preview replaces the earlier submission's reported result.
+	useLayoutEffect(() => {
+		if (fresh && !dispatched.current.has(preview)) review.onSubmitted(null);
+	}, [preview, fresh]);
+	const expired = usePreviewExpiry(review.request);
+	const blocker = confirmDisabledReason({
+		props,
+		preview,
+		matches: review.matches && review.request?.purpose === "review",
+		acknowledged: acknowledged === preview,
+		expired,
+		dispatched: Boolean(preview && dispatched.current.has(preview)),
+	});
+	const canConfirm = blocker === null;
 	const confirm = () => {
 		if (
 			!canConfirm ||
@@ -189,10 +190,51 @@ function useRecoveryConsent(
 	};
 	return {
 		canConfirm,
+		confirmBlockerText: blocker,
 		acknowledged,
 		setAcknowledged,
 		confirm,
 	};
+}
+
+/**
+ * The server forgets a preview 5 minutes after it starts the review. Timing from the
+ * request, not the reply, keeps a slow preview from outliving the server's copy.
+ */
+const PREVIEW_LIFETIME_MS = 5 * 60_000;
+
+function usePreviewExpiry(request: RecoveryPreviewRequest | null): boolean {
+	const [expired, setExpired] = useState<RecoveryPreviewRequest | null>(null);
+	useEffect(() => {
+		if (!request) return;
+		const timer = setTimeout(() => setExpired(request), PREVIEW_LIFETIME_MS);
+		return () => clearTimeout(timer);
+	}, [request]);
+	return request !== null && expired === request;
+}
+
+/** Why Confirm is disabled, in the order a user can act on, or null when it is enabled. */
+function confirmDisabledReason(state: {
+	props: AccountOwnerRecoveryProps;
+	preview: RecoveryPreview | null;
+	matches: boolean;
+	acknowledged: boolean;
+	expired: boolean;
+	dispatched: boolean;
+}): string | null {
+	const { props, preview } = state;
+	if (props.reviewAccess !== "operator")
+		return "Only the coordinator operator can confirm. Send them the request below.";
+	if (props.busy) return "Wait for the current request to finish.";
+	if (!preview || !state.matches) return "Preview account ownership first.";
+	if (state.dispatched || props.result?.preview === preview)
+		return "This preview was already submitted. Check review status, or preview again.";
+	if (props.error) return "Preview again after the error above.";
+	if (state.expired) return "This preview expired after 5 minutes. Preview again.";
+	if (confirmBlocker(preview) || !preview.approvalDigest)
+		return "Some groups can't be confirmed. See the details above.";
+	if (!state.acknowledged) return "Check the confirmation box first.";
+	return null;
 }
 
 type ReviewState = ReturnType<typeof useRecoveryReview>;
@@ -235,11 +277,17 @@ function RecoveryDialog(props: AccountOwnerRecoveryProps) {
 						type="button"
 						className="settings-save"
 						disabled={!review.canConfirm}
+						aria-describedby={review.confirmBlockerText ? `${id}-confirm-reason` : undefined}
 						onClick={review.confirm}
 					>
 						Confirm account ownership
 					</button>
 				</div>
+				{review.confirmBlockerText ? (
+					<p id={`${id}-confirm-reason`} className="account-owner-recovery-confirm-reason">
+						{review.confirmBlockerText}
+					</p>
+				) : null}
 			</div>
 		</RadixDialog>
 	);
@@ -254,9 +302,9 @@ function RecoveryBody({
 }) {
 	const { id, preview, matches, canPreview, acknowledged, setAcknowledged, loadPreview } = review;
 	const { statusPreview } = review;
-	const statusMessage = props.busy ? "Waiting for the current request…" : props.message;
+	const statusMessage = props.busy ? busyMessage(review) : props.message;
 	return (
-		<div className="modal-body">
+		<div className="modal-body account-owner-recovery-body">
 			<RecoveryDisclosure id={id} profile={props.profile} />
 			<OwnerChoice
 				id={id}
@@ -319,10 +367,29 @@ function RecoveryBody({
 					onImportReply={props.onImportReply}
 				/>
 			) : null}
+			<p>
+				Codemem runs one ownership request at a time. If another tab or window is confirming, this
+				one waits until it finishes.
+			</p>
 			{statusMessage ? <p role="status">{statusMessage}</p> : null}
 			{props.error ? <p role="alert">{props.error}</p> : null}
 		</div>
 	);
+}
+
+function busyMessage(review: ReviewState): string {
+	const request = review.request;
+	if (review.status.submitted && review.status.submitted.requestId === request?.requestId)
+		return "Confirming account ownership with the coordinator…";
+	if (request?.purpose === "check_status") return "Checking review status with the coordinator…";
+	if (request) return "Loading the ownership preview from the coordinator…";
+	return "Waiting for the coordinator to answer…";
+}
+
+/** The coordinator ID is often its origin; show it once in that case. */
+function coordinatorLabel(profile: RecoveryProfile): string {
+	if (profile.coordinatorId === profile.coordinatorOrigin) return profile.coordinatorOrigin;
+	return `${profile.coordinatorOrigin} (${profile.coordinatorId})`;
 }
 
 function RecoveryDisclosure({ id, profile }: { id: string; profile: RecoveryProfile }) {
@@ -339,9 +406,7 @@ function RecoveryDisclosure({ id, profile }: { id: string; profile: RecoveryProf
 			</p>
 			<dl>
 				<dt>Coordinator</dt>
-				<dd>
-					{profile.coordinatorOrigin} ({profile.coordinatorId})
-				</dd>
+				<dd>{coordinatorLabel(profile)}</dd>
 				<dt>Current device</dt>
 				<dd>{profile.deviceId}</dd>
 				<dt>Key fingerprint</dt>
