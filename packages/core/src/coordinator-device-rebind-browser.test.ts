@@ -294,15 +294,18 @@ describe.each(["SQLite", "D1"] as const)("device rebind browser pages (%s)", (ki
 });
 
 describe.each(["SQLite", "D1"] as const)("device rebind callback cleanup (%s)", (kind) => {
-	it("tells the person when their Google account isn't linked", async () => {
+	it("tells the person their Google account isn't linked, then returns to the device", async () => {
 		// Arrange
 		const f = await rebindBrowserFixture(kind);
 		f.db.prepare("DELETE FROM coordinator_auth_account_links").run();
 		// Act
 		const { callback } = await throughCallback(f);
-		// Assert: the spent transaction's cookie is cleared so the person can start again.
-		expect(callback.status).toBe(403);
-		expect(await callback.text()).toContain("This Google account isn’t set up");
+		const page = await callback.text();
+		// Assert: the device learns the refusal from the loopback and stops waiting.
+		expect(page).toContain("This Google account isn’t set up");
+		expect(decodeAmpersands(page)).toContain(
+			`${LOOPBACK}?attempt_id=rebind-a&refused=account_not_linked`,
+		);
 		expect(callback.headers.getSetCookie().join()).toMatch(/Max-Age=0/);
 	});
 

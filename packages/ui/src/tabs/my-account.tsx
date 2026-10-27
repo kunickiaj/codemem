@@ -15,6 +15,17 @@ const FAILURE_MESSAGES: Partial<Record<NonNullable<AccountOperation["failure"]>,
 	schema_upgrade_required: SCHEMA_UPGRADE_MESSAGE,
 	link_conflict:
 		"The account change conflicts with an existing or revoked link. Ask the coordinator operator; this action cannot replace links or move Identities.",
+	account_not_linked:
+		"That Google account isn’t linked to an Identity yet. Link it to this device’s Identity, or sign in with another account.",
+	already_this_identity: "This device already uses that Google account’s Identity.",
+	current_identity_linked:
+		"This device’s Identity already has its own Google account. Unlink it first, then sign in again.",
+	device_already_bound:
+		"This device already switched accounts once and can’t switch again. You can still link a Google account to its current Identity.",
+	daily_limit:
+		"That account’s Identity reached today’s limit for switching devices. Try again tomorrow.",
+	sign_in_unavailable:
+		"Signing in can’t switch this device’s Identity. Link a Google account to its current Identity instead.",
 };
 
 const UNAVAILABLE_MESSAGES = new Map<string, string>([
@@ -114,7 +125,13 @@ function remoteSummary(view: AccountView): string {
 		return view.remote.account
 			? ""
 			: "Linked on another device. Refresh and Unlink work only on the device that linked this account.";
-	return "No Google account is linked to this Identity. Linking will not move the Identity or grant sharing access.";
+	return "No Google account is linked to this Identity. Sign in to link one, or to switch this device to your account’s Identity.";
+}
+
+function unknownOutcomeSummary(operation: AccountOperation): string {
+	if (operation.failure === "switch_pending")
+		return "This device may have switched to your account’s Identity. Restart the Viewer to check again. An unfinished switch can take about 30 minutes to clear.";
+	return unknownAccountOutcome(operation);
 }
 
 function accountSummary(view: AccountView | null, operation: AccountOperation | null): string {
@@ -124,17 +141,20 @@ function accountSummary(view: AccountView | null, operation: AccountOperation | 
 	if (operation?.state === "starting")
 		return {
 			connect: "Preparing Google sign-in…",
+			sign_in: "Preparing Google sign-in…",
 			refresh: "Preparing Google sign-in to refresh your profile…",
 			disconnect: "Unlinking Google account…",
 		}[operation.intent ?? "connect"];
 	if (operation?.state === "awaiting_browser")
 		return {
 			connect: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+			sign_in:
+				"Waiting for Google sign-in. If the account belongs to another Identity, you’ll confirm before this device switches.",
 			refresh:
 				"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
 			disconnect: "Unlinking Google account…",
 		}[operation.intent ?? "connect"];
-	if (operation?.state === "outcome_unknown") return unknownAccountOutcome(operation);
+	if (operation?.state === "outcome_unknown") return unknownOutcomeSummary(operation);
 	if (operation?.state === "failed" && operation.failure === "link_stopped")
 		return `${copy.subject} stopped. Check status before trying again.`;
 	if (operation?.state === "failed")
@@ -327,6 +347,70 @@ function ManagementActions({
 	);
 }
 
+/**
+ * "Sign in with Google" when the Viewer offers it (canSignIn is present); a
+ * Viewer without sign-in keeps the plain link action.
+ */
+function PrimaryAccountAction({
+	flow,
+	blocked,
+}: {
+	flow: ReturnType<typeof useMyAccount>;
+	blocked: boolean;
+}) {
+	const view = flow.view;
+	if (!view) return null;
+	const signIn = view.canSignIn !== undefined;
+	return (
+		<button
+			className="settings-save"
+			type="button"
+			disabled={blocked || !(signIn ? view.canSignIn : view.canLink)}
+			aria-describedby="my-account-summary"
+			onClick={() => void (signIn ? flow.signIn() : flow.link())}
+		>
+			{signIn ? "Sign in with Google" : "Link Google account"}
+		</button>
+	);
+}
+
+/** Sign-in failures where linking to this device's current Identity is the next step. */
+const LINK_FALLBACK_FAILURES = new Set([
+	"account_not_linked",
+	"sign_in_unavailable",
+	"device_already_bound",
+]);
+
+/** After sign-in can't switch the device, offer to link an account to its current Identity. */
+function offerLinkFallback(view: AccountView | null, operation: AccountOperation | null): boolean {
+	return (
+		operation?.intent === "sign_in" &&
+		operation.state === "failed" &&
+		LINK_FALLBACK_FAILURES.has(operation.failure ?? "") &&
+		view?.canLink === true
+	);
+}
+
+function LinkFallbackAction({
+	flow,
+	blocked,
+}: {
+	flow: ReturnType<typeof useMyAccount>;
+	blocked: boolean;
+}) {
+	if (!offerLinkFallback(flow.view, flow.operation)) return null;
+	return (
+		<button
+			className="settings-button"
+			type="button"
+			disabled={blocked || !flow.view?.canLink}
+			onClick={() => void flow.link()}
+		>
+			Link this account
+		</button>
+	);
+}
+
 function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 	const { view, operation, pendingOperation, busy, fallback } = flow;
 	const running = operation?.state === "starting" || operation?.state === "awaiting_browser";
@@ -339,17 +423,8 @@ function AccountActions({ flow }: { flow: ReturnType<typeof useMyAccount> }) {
 		view?.blockedReason === "operation_active";
 	return (
 		<div className="peer-actions">
-			{view && !running && !linked ? (
-				<button
-					className="settings-save"
-					type="button"
-					disabled={blocked || !view.canLink}
-					aria-describedby="my-account-summary"
-					onClick={() => void flow.link()}
-				>
-					Link Google account
-				</button>
-			) : null}
+			{view && !running && !linked ? <PrimaryAccountAction flow={flow} blocked={blocked} /> : null}
+			{running ? null : <LinkFallbackAction flow={flow} blocked={blocked} />}
 			{linked && !running && !view?.ownerProjection ? (
 				<ManagementActions flow={flow} blocked={blocked} />
 			) : null}

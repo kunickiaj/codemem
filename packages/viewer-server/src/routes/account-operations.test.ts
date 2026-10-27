@@ -8,6 +8,7 @@ import { CoordinatorAccountLinkError } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountContextResult } from "../account/context.js";
 import { createAccountLinkRegistry } from "../account/link-registry.js";
+import type { AccountRebindRunner } from "../account/rebind.js";
 import { createApp, createSyncApp } from "../index.js";
 
 const ORIGIN = "http://127.0.0.1:7441";
@@ -74,7 +75,7 @@ afterEach(async () => {
 	await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 	vi.restoreAllMocks();
 });
-async function fixture() {
+async function fixture(registryOptions: { rebind?: AccountRebindRunner } = {}) {
 	const readContext = vi.fn((_group?: string): AccountContextResult => structuredClone(ready));
 	const readRemoteStatus = vi.fn(async (): Promise<CoordinatorAccountLinkStatusRead> => remote());
 	const done = deferred<Awaited<ReturnType<typeof linkCoordinatorAccount>>>();
@@ -94,7 +95,7 @@ async function fixture() {
 	const readRemoteCapabilities = vi.fn<typeof readCoordinatorAccountChangeCapabilities>(
 		async () => ({ kind: "unsupported" }),
 	);
-	const registry = createAccountLinkRegistry({ readContext, link, change });
+	const registry = createAccountLinkRegistry({ readContext, link, change, ...registryOptions });
 	cleanups.push(() => registry.close());
 	const storeFactory = vi.fn(() => {
 		throw new Error("HTTP account routes must not open a store");
@@ -834,5 +835,47 @@ describe("account operation origin and availability", () => {
 		const sync = await createSyncApp().request(`${ORIGIN}${PATH}`, { method: "POST", body: "{}" });
 		expect(disabled.status).toBe(404); // Assert
 		expect(sync.status).toBe(404);
+	});
+});
+
+describe("sign in with Google", () => {
+	const signIn = JSON.stringify({
+		groupId: context.groupId,
+		contextId: context.contextId,
+		authority: "device_claim",
+		coordinatorId: "coordinator-a",
+		intent: "sign_in",
+	});
+
+	const rebind: AccountRebindRunner = async () => ({ kind: "failed" });
+
+	it("starts when this device's Identity has no Google link", async () => {
+		// Arrange
+		const f = await fixture({ rebind });
+		// Act
+		const response = await f.request(PATH, "POST", signIn);
+		// Assert
+		expect(response.status).toBe(202);
+		expect((await response.json()).operation).toMatchObject({ intent: "sign_in" });
+	});
+
+	it("is not offered once this Identity is linked", async () => {
+		// Arrange
+		const f = await fixture({ rebind });
+		f.readRemoteStatus.mockResolvedValue(remote("linked"));
+		// Act
+		const response = await f.request(PATH, "POST", signIn);
+		// Assert
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: "account_link_not_allowed" });
+	});
+
+	it("is not offered by a Viewer without sign-in", async () => {
+		// Arrange
+		const f = await fixture();
+		// Act
+		const response = await f.request(PATH, "POST", signIn);
+		// Assert
+		expect(response.status).toBe(409);
 	});
 });

@@ -273,7 +273,15 @@ function registerRefusals(kind: Backend) {
 		// Act
 		const { callback } = await throughCallback(f, () => change(f));
 		// Assert
-		expect(callback).toEqual({ kind: "refused", reason, retired: true });
+		expect(callback).toEqual({
+			kind: "refused",
+			reason,
+			retired: true,
+			returnTo: {
+				loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
+				attemptId: "rebind-a",
+			},
+		});
 		expect(f.db.prepare("SELECT state FROM coordinator_device_rebind_attempts").pluck().get()).toBe(
 			"browser_claimed",
 		);
@@ -329,7 +337,15 @@ function registerReviewFixes(kind: Backend) {
 		// Act
 		const { callback } = await throughCallback(f, () => f.db.exec(linkCurrentSql));
 		// Assert
-		expect(callback).toEqual({ kind: "refused", reason: "current_identity_linked", retired: true });
+		expect(callback).toEqual({
+			kind: "refused",
+			reason: "current_identity_linked",
+			retired: true,
+			returnTo: {
+				loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
+				attemptId: "rebind-a",
+			},
+		});
 	});
 
 	it("refuses to confirm Team effects that changed after the person saw them", async () => {

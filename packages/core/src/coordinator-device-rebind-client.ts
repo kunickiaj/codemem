@@ -72,7 +72,8 @@ export interface DeviceRebindPending {
 
 export type DeviceRebindOutcome =
 	| { kind: "finalized"; receipt: DeviceRebindReceiptV1 }
-	| { kind: "refused"; reason: DeviceRebindClientRefusal }
+	/** `beforeBrowser`: the coordinator refused the start, so no Google trip happened. */
+	| { kind: "refused"; reason: DeviceRebindClientRefusal; beforeBrowser?: true }
 	/** Nothing was committed; the person may start again. */
 	| { kind: "failed"; error: "device_unavailable" | "request_failed" | "browser_stopped" }
 	/** Finalize may have committed; resolve with resumeDeviceRebind. */
@@ -295,7 +296,9 @@ async function start(
 	)
 		return d as unknown as Pins;
 	const reason = refusal(reply);
-	return reason ? { kind: "refused", reason } : { kind: "failed", error: "request_failed" };
+	return reason
+		? { kind: "refused", reason, beforeBrowser: true }
+		: { kind: "failed", error: "request_failed" };
 }
 
 async function signFinal(
@@ -383,7 +386,10 @@ async function runCeremony(
 	});
 	code.fill(0);
 	await abortable(options.openBrowser(`${c.origin}/auth/rebind/start?${query}`), c.signal);
-	const completion = await receiver.completion;
+	const delivery = await receiver.completion;
+	// The browser ended the attempt before confirmation; nothing was recorded or signed.
+	if (delivery.kind === "refused") return { kind: "refused", reason: delivery.reason };
+	const completion = delivery;
 	const status = await readStatus(c, attemptId);
 	if (status?.state !== "confirmed" || !status.targetIdentityId)
 		return { kind: "failed", error: "request_failed" };

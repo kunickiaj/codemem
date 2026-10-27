@@ -857,7 +857,12 @@ function createViewerAccountLink(
 		configPath,
 		keysDir,
 	});
-	const registry = serverModule.createAccountLinkRegistry({ readContext });
+	const registry = serverModule.createAccountLinkRegistry({
+		readContext,
+		rebind: serverModule.createAccountRebindRunner(store),
+	});
+	// A switch an earlier run left open resumes from its record; failures wait for the next start.
+	void serverModule.resumeAccountRebind(store, { keysDir, configPath }).catch(() => {});
 	const ownerRecovery = createOptionalOwnerRecovery(serverModule, {
 		readContext,
 		registry,

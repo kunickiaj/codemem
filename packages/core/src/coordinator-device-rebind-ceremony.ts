@@ -89,6 +89,8 @@ export type DeviceRebindResult =
 			reason: DeviceRebindRefusal;
 			/** This step burned the browser's transaction; its cookie can be cleared. */
 			retired?: true;
+			/** Where the browser tells the device the attempt ended, so it stops waiting. */
+			returnTo?: { loopbackRedirect: string; attemptId: string };
 	  }
 	| { kind: "unknown" }
 	| { kind: "started"; attemptId: string; expiresAtMs: number }
@@ -541,9 +543,9 @@ async function verifyMatched(
 	);
 	// This request burned the transaction, so a refusal from here on retires it.
 	if (!verified.ok || verified.account.issuer !== ctx.c.issuer)
-		return { kind: "refused", reason: "unavailable", retired: true };
+		return retiredRefusal(ctx, txn.attempt_id, "unavailable");
 	const outcome = await persistVerified(ctx, txn.attempt_id, verified.account, claimToken);
-	if (outcome.kind === "refused") return { ...outcome, retired: true };
+	if (outcome.kind === "refused") return retiredRefusal(ctx, txn.attempt_id, outcome.reason);
 	if (outcome.kind !== "verified") return outcome;
 	const csrf = await issueBrowserCsrfToken(
 		ctx.deps.csrfKey,
@@ -552,6 +554,19 @@ async function verifyMatched(
 		ctx.scope,
 	);
 	return { kind: "verified" as const, confirmation: outcome.confirmation, csrf };
+}
+
+/** The attempt can't continue; the browser hands the reason back to the waiting device. */
+async function retiredRefusal(
+	ctx: Ctx,
+	attemptId: string,
+	reason: DeviceRebindRefusal,
+): Promise<DeviceRebindResult> {
+	const row = await readAttempt(ctx, attemptId);
+	const returnTo = row?.loopback_redirect
+		? { loopbackRedirect: row.loopback_redirect, attemptId: row.attempt_id }
+		: undefined;
+	return { kind: "refused", reason, retired: true, ...(returnTo ? { returnTo } : {}) };
 }
 
 async function persistVerified(

@@ -219,6 +219,32 @@ describe("local Identity switch refusals", () => {
 		);
 	});
 
+	it("refuses a target the local switch couldn't apply, before finalize is sent", () => {
+		// Arrange: the target exists locally as a deactivated actor.
+		const { db, configPath } = localFixture();
+		db.prepare(
+			"INSERT INTO actors (actor_id, display_name, is_local, status, created_at, updated_at) VALUES (?, 'T', 0, 'deactivated', ?, ?)",
+		).run(TARGET, NOW, NOW);
+		// Act / Assert
+		expect(() => recordLocalIdentitySwitch(db, pending, ctx(configPath))).toThrow(
+			"local_identity_switch_conflict",
+		);
+		expect(readOpenLocalIdentitySwitch(db)).toBeNull();
+	});
+
+	it("refuses when this device's binding moved since the review", () => {
+		// Arrange: another route reassigned this device while Google sign-in was open.
+		const { db, configPath } = localFixture();
+		db.prepare(
+			"UPDATE identity_devices SET identity_id = 'identity-peer' WHERE device_id = 'device-a'",
+		).run();
+		// Act / Assert
+		expect(() => recordLocalIdentitySwitch(db, pending, ctx(configPath))).toThrow(
+			"local_identity_switch_conflict",
+		);
+		expect(readOpenLocalIdentitySwitch(db)).toBeNull();
+	});
+
 	it("refuses a receipt for a different switch or binding", () => {
 		// Arrange
 		const { db, configPath } = localFixture();

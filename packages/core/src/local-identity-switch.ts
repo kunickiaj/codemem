@@ -246,11 +246,34 @@ export function recordLocalIdentitySwitch(
 			throw new LocalIdentitySwitchError("local_identity_switch_in_progress");
 		if (
 			localDevice(db).device_id !== pending.deviceId ||
-			currentLocalActor(db) !== pending.previousIdentityId
+			currentLocalActor(db) !== pending.previousIdentityId ||
+			!targetActorUsable(db, pending.targetIdentityId) ||
+			!deviceBindingStillPrevious(db, pending)
 		)
 			conflict();
 		insertPending(db, pending);
 	}).immediate();
+}
+
+/**
+ * A target that exists locally must be an active, unmerged actor; otherwise the
+ * local switch would refuse it after the coordinator had already committed.
+ */
+function targetActorUsable(db: Database, targetIdentityId: string): boolean {
+	const target = db
+		.prepare("SELECT status, merged_into_actor_id FROM actors WHERE actor_id = ?")
+		.get(targetIdentityId) as { status: string; merged_into_actor_id: string | null } | undefined;
+	return !target || (target.status === "active" && target.merged_into_actor_id === null);
+}
+
+/** This device's binding must still name the previous Identity (or be absent). */
+function deviceBindingStillPrevious(db: Database, pending: DeviceRebindPending): boolean {
+	const current = db
+		.prepare("SELECT identity_id, status FROM identity_devices WHERE device_id = ?")
+		.get(pending.deviceId) as { identity_id: string; status: string } | undefined;
+	return (
+		!current || (current.status === "active" && current.identity_id === pending.previousIdentityId)
+	);
 }
 
 /**

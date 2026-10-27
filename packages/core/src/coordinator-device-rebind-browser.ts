@@ -27,6 +27,7 @@ import {
 	renderDeviceRebindConfirmPage,
 	renderDeviceRebindHopPage,
 	renderDeviceRebindNotice,
+	renderDeviceRebindReturnPage,
 	renderDeviceRebindStartPage,
 } from "./coordinator-device-rebind-view.js";
 import {
@@ -178,8 +179,12 @@ async function callback(context: Context, request: Request): Promise<Response | 
 	const result = await context.ceremony.verifyCallback(request);
 	if (result === null) return null;
 	if (result.kind === "refused" && result.retired) {
+		const response = result.returnTo
+			? pageResponse(
+					await renderDeviceRebindReturnPage({ reason: result.reason, ...result.returnTo }),
+				)
+			: await notice(result);
 		// Without this, the spent transaction blocks a fresh start until it expires.
-		const response = await notice(result);
 		response.headers.append("Set-Cookie", clearBrowserCookie("transaction"));
 		return response;
 	}

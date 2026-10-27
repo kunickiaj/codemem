@@ -91,6 +91,8 @@ vi.mock("@codemem/server", () => ({
 	createSyncApp: mocks.createSyncApp,
 	createAccountContextReader: mocks.createContext,
 	createAccountLinkRegistry: mocks.createRegistry,
+	createAccountRebindRunner: () => async () => ({ kind: "failed" }),
+	resumeAccountRebind: async () => null,
 	createViewerRawEventInbox: vi.fn(() => ({
 		inbox: { start: mocks.inboxStart },
 		stop: mocks.inboxStop,
@@ -274,7 +276,10 @@ describe("foreground account profile and listener wiring", () => {
 			vi.stubEnv("CODEMEM_KEYS_DIR", join(HOME, "later-keys"));
 			f.context.readConfig();
 			expect(mocks.readAtPath).toHaveBeenLastCalledWith(expectedPath);
-			expect(mocks.createRegistry).toHaveBeenCalledWith({ readContext: mocks.contextReader });
+			expect(mocks.createRegistry).toHaveBeenCalledWith({
+				readContext: mocks.contextReader,
+				rebind: expect.any(Function),
+			});
 			expect(f.account.registry).toBe(registry);
 			expect(f.app.storeFactory?.()).toBe(mocks.store);
 			expect(mocks.initDatabase).toHaveBeenCalledWith(DB);

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+	assertNoLocalIdentityOverride,
 	CoordinatorAccountLinkError,
 	changeCoordinatorAccount,
 	linkCoordinatorAccount,
 } from "@codemem/core";
 import type { AccountContext, AccountContextReader } from "./context.js";
+import type { AccountRebindResult, AccountRebindRunner } from "./rebind.js";
 
 type CoordinatorAuthLinkAuthorityKind = Parameters<
 	typeof linkCoordinatorAccount
@@ -22,9 +24,20 @@ export type AccountLinkFailure =
 	| "identity_mismatch"
 	| "link_stopped"
 	| "cancellation_unconfirmed"
-	| "receiver_close_failed";
+	| "receiver_close_failed"
+	// Sign-in (device rebind) refusals; the person can act on each one.
+	| "account_not_linked"
+	| "already_this_identity"
+	| "current_identity_linked"
+	| "device_already_bound"
+	| "daily_limit"
+	/** The coordinator can't switch this device (for example, no enrollment names its Identity). */
+	| "sign_in_unavailable"
+	/** The coordinator may have bound this device; the switch resumes on restart. */
+	| "switch_pending";
+export type AccountOperationIntent = "connect" | "refresh" | "disconnect" | "sign_in";
 export interface AccountLinkOperationV1 {
-	intent?: "connect" | "refresh" | "disconnect";
+	intent?: AccountOperationIntent;
 	operationId: string;
 	groupId: string;
 	contextId: string;
@@ -42,7 +55,7 @@ export type AccountLinkStartResult =
 export interface AccountLinkRegistry {
 	tryReserveRecovery?(): AccountRecoveryReservation | null;
 	start(options: {
-		intent?: "connect" | "refresh" | "disconnect";
+		intent?: AccountOperationIntent;
 		context: AccountContext;
 		expectedCoordinatorId: string;
 		expectedAuthority: CoordinatorAuthLinkAuthorityKind;
@@ -50,6 +63,8 @@ export interface AccountLinkRegistry {
 		expectedLinkId?: string;
 	}): AccountLinkStartResult;
 	lifecycleToken(): symbol;
+	/** True when a rebind runner was configured, so sign_in can run. */
+	supportsSignIn?(): boolean;
 	get(operationId: string): AccountLinkOperationV1 | null;
 	forContext(contextId: string): AccountLinkOperationV1 | null;
 	hasActive(): boolean;
@@ -65,6 +80,8 @@ export interface AccountLinkRegistryOptions {
 	readContext: AccountContextReader;
 	link?: typeof linkCoordinatorAccount;
 	change?: typeof changeCoordinatorAccount;
+	/** Sign-in that may switch this device's Identity; without it, sign_in is unavailable. */
+	rebind?: AccountRebindRunner;
 	now?: () => number;
 }
 interface Job {
@@ -135,6 +152,33 @@ function safeFailure(error: unknown): AccountLinkFailure {
 			return "request_failed";
 	}
 }
+function browserPath(intent: AccountLinkOperationV1["intent"]): string {
+	if (intent === "refresh" || intent === "disconnect") return "/auth/account/change/start";
+	if (intent === "sign_in") return "/auth/rebind/start";
+	return "/auth/link/start";
+}
+
+const REBIND_REFUSALS: Partial<Record<string, AccountLinkFailure>> = {
+	account_not_linked: "account_not_linked",
+	already_this_identity: "already_this_identity",
+	current_identity_linked: "current_identity_linked",
+	device_already_bound: "device_already_bound",
+	daily_limit: "daily_limit",
+};
+
+/** Maps a rebind result to the operation's terminal state and failure. */
+function rebindOutcome(
+	result: AccountRebindResult,
+): [AccountLinkOperationV1["state"], AccountLinkFailure | null] {
+	if (result.kind === "switched") return ["succeeded", null];
+	if (result.kind === "pending") return ["outcome_unknown", "switch_pending"];
+	if (result.kind === "refused" && result.reason === "unavailable" && result.beforeBrowser)
+		return ["failed", "sign_in_unavailable"];
+	if (result.kind === "refused")
+		return ["failed", REBIND_REFUSALS[result.reason] ?? "request_failed"];
+	return ["failed", "request_failed"];
+}
+
 function validBrowserUrl(
 	value: string,
 	origin: string,
@@ -144,10 +188,7 @@ function validBrowserUrl(
 		const url = new URL(value);
 		return (
 			url.origin === origin &&
-			url.pathname ===
-				(intent === "refresh" || intent === "disconnect"
-					? "/auth/account/change/start"
-					: "/auth/link/start") &&
+			url.pathname === browserPath(intent) &&
 			!url.username &&
 			!url.password &&
 			!url.hash
@@ -261,6 +302,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 				onBrowserStart: (url: string) => this.#browserStart(job, url),
 			};
 			const intent = job.operation.intent ?? "connect";
+			if (intent === "sign_in") return await this.#runSignIn(job, options.onBrowserStart);
 			if (intent === "connect") {
 				await (this.#options.link ?? linkCoordinatorAccount)({ ...options, expectedAuthority });
 			} else {
@@ -281,6 +323,26 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		} catch (error) {
 			this.#fail(job, error);
 		}
+	}
+	/** Sign-in may switch this device's Identity; its result maps to one terminal state. */
+	async #runSignIn(job: Job, onBrowserStart: (url: string) => void): Promise<void> {
+		const rebind = this.#options.rebind;
+		if (!rebind) throw new CoordinatorAccountLinkError("invalid_options");
+		const result = await rebind({
+			context: job.context,
+			signal: job.controller.signal,
+			onBrowserStart,
+			isCurrent: () => {
+				const current = this.#current(job.context);
+				if (!current) job.abortFailure = "context_changed";
+				return current;
+			},
+		});
+		const [state, failure] = rebindOutcome(result);
+		if (state !== "failed") this.#finish(job, state, failure);
+		else if (job.abortFailure) this.#finish(job, "failed", job.abortFailure);
+		else if (job.cancelled) this.#finish(job, "cancelled", "link_stopped");
+		else this.#finish(job, "failed", failure);
 	}
 	#fail(job: Job, error: unknown): void {
 		let failure = safeFailure(error);
@@ -349,6 +411,16 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 				else releaseBusyOwner(owner);
 			});
 		return { operation: this.#snapshot(job) };
+	}
+	supportsSignIn(): boolean {
+		if (!this.#options.rebind) return false;
+		try {
+			// An environment Identity override would ignore the switched config.
+			assertNoLocalIdentityOverride();
+			return true;
+		} catch {
+			return false;
+		}
 	}
 	lifecycleToken(): symbol {
 		busySlot.lifecycle ??= Symbol();

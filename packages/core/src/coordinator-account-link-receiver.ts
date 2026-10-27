@@ -17,6 +17,26 @@ export interface CoordinatorOwnerEnrollmentCompletion {
 	completionSecret: string;
 	confirmationHash: string;
 }
+/** A rebind attempt ends at the loopback either confirmed or refused in the browser. */
+export type CoordinatorDeviceRebindDelivery =
+	| ({ kind: "confirmed" } & CoordinatorOwnerEnrollmentCompletion)
+	| { kind: "refused"; reason: (typeof REBIND_REFUSALS)[number] };
+export interface CoordinatorDeviceRebindReceiver {
+	destination: string;
+	completion: Promise<CoordinatorDeviceRebindDelivery>;
+	close(): Promise<void>;
+}
+const REBIND_REFUSALS = [
+	"unavailable",
+	"current_identity_linked",
+	"device_already_bound",
+	"account_not_linked",
+	"already_this_identity",
+	"daily_limit",
+	"retry",
+] as const;
+type ReceiverMode = "account_link" | "owner_enroll" | "device_rebind";
+type Delivery = string | CoordinatorOwnerEnrollmentCompletion | CoordinatorDeviceRebindDelivery;
 export interface CoordinatorOwnerEnrollmentReceiver {
 	destination: string;
 	completion: Promise<CoordinatorOwnerEnrollmentCompletion>;
@@ -86,8 +106,8 @@ function readCompletion(
 	request: IncomingMessage,
 	host: string,
 	attemptId: string,
-	mode: "account_link" | "owner_enroll",
-): string | CoordinatorOwnerEnrollmentCompletion | null {
+	mode: ReceiverMode,
+): Delivery | null {
 	if (!isNavigation(request)) return null;
 	const raw = request.url ?? "";
 	const hosts = request.rawHeaders.filter(
@@ -100,6 +120,7 @@ function readCompletion(
 	if (request.headers["content-length"] !== undefined && request.headers["content-length"] !== "0")
 		return null;
 	const params = new URLSearchParams(raw.slice(PATH.length + 1));
+	if (mode === "device_rebind") return parseRebindParams(params, attemptId);
 	return parseCompletionParams(params, attemptId, mode);
 }
 function parseCompletionParams(
@@ -121,6 +142,26 @@ function parseCompletionParams(
 	const confirmationHash = params.get("confirmation");
 	if (!confirmationHash || !/^[0-9a-f]{64}$/.test(confirmationHash)) return null;
 	return { completionSecret: completion, confirmationHash };
+}
+/** Exactly attempt_id and an allowlisted refused reason, or the confirmed triple. */
+function parseRebindParams(
+	params: URLSearchParams,
+	attemptId: string,
+): CoordinatorDeviceRebindDelivery | null {
+	if (!params.has("refused")) {
+		const confirmed = parseCompletionParams(params, attemptId, "owner_enroll");
+		return confirmed && typeof confirmed !== "string" ? { kind: "confirmed", ...confirmed } : null;
+	}
+	const reason = params.get("refused");
+	if (
+		[...params].length !== 2 ||
+		params.getAll("refused").length !== 1 ||
+		params.getAll("attempt_id").length !== 1 ||
+		params.get("attempt_id") !== attemptId ||
+		!REBIND_REFUSALS.includes(reason as (typeof REBIND_REFUSALS)[number])
+	)
+		return null;
+	return { kind: "refused", reason: reason as (typeof REBIND_REFUSALS)[number] };
 }
 function isNavigation(request: IncomingMessage): boolean {
 	const headers = request.headers;
@@ -213,20 +254,20 @@ function validOptions(options: CoordinatorAccountLinkReceiverOptions): boolean {
 /** Bind before creating an attempt. Only this held literal-loopback listener owns delivery. */
 async function createReceiver(
 	options: CoordinatorAccountLinkReceiverOptions,
-	mode: "account_link" | "owner_enroll",
+	mode: ReceiverMode,
 	ownerPage = "Your computer received the confirmation. Return to the app to finish adding the device.",
 ): Promise<{
 	destination: string;
-	completion: Promise<string | CoordinatorOwnerEnrollmentCompletion>;
+	completion: Promise<Delivery>;
 	close(options?: AccountReceiptOutcome): Promise<void>;
 }> {
 	if (!validOptions(options)) throw new Error("Invalid account-link receiver options.");
-	if (mode === "owner_enroll" && options.coordinatorOrigin !== undefined)
+	if (mode !== "account_link" && options.coordinatorOrigin !== undefined)
 		throw new Error("Invalid owner-enrollment receiver options.");
 	const { attemptId, signal, port = 0, host = "127.0.0.1" } = options;
 	const receipt = mode === "account_link" ? createAccountLinkReceipt(options.intent) : null;
 	const page =
-		mode === "owner_enroll" ? ownerPage : (receipt?.page ?? "Return to Codemem and check status.");
+		mode === "account_link" ? (receipt?.page ?? "Return to Codemem and check status.") : ownerPage;
 	let authority = "";
 	let closing: Promise<void> | undefined;
 	const server = createServer(
@@ -250,10 +291,7 @@ async function createReceiver(
 		},
 	);
 	server.setTimeout(5000, (socket) => socket.destroy());
-	const lifecycle = receiverLifecycle<string | CoordinatorOwnerEnrollmentCompletion>(
-		server,
-		signal,
-	);
+	const lifecycle = receiverLifecycle<Delivery>(server, signal);
 	try {
 		await listen(server, host, port);
 		const address = server.address();
@@ -304,14 +342,14 @@ export async function createCoordinatorOwnerEnrollmentReceiver(
  */
 export async function createCoordinatorDeviceRebindReceiver(
 	options: Omit<CoordinatorAccountLinkReceiverOptions, "coordinatorOrigin" | "intent">,
-): Promise<CoordinatorOwnerEnrollmentReceiver> {
+): Promise<CoordinatorDeviceRebindReceiver> {
 	const receiver = await createReceiver(
 		options,
-		"owner_enroll",
-		"Your computer received the confirmation. Return to Codemem to finish signing in.",
+		"device_rebind",
+		"Your computer received the result. Return to Codemem.",
 	);
 	return {
 		...receiver,
-		completion: receiver.completion as Promise<CoordinatorOwnerEnrollmentCompletion>,
+		completion: receiver.completion as Promise<CoordinatorDeviceRebindDelivery>,
 	};
 }

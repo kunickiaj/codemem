@@ -65,6 +65,8 @@ export interface AccountLinkViewV1 {
 				account: { email?: string; displayName?: string; pictureUrl?: string } | null;
 		  };
 	canLink: boolean;
+	/** "Sign in with Google": may link this Identity or switch the device to the account's. */
+	canSignIn?: boolean;
 	managementActions?: { refresh: boolean; disconnect: boolean };
 	unlinkTarget?: string;
 	blockedReason:
@@ -85,10 +87,14 @@ export interface AccountLinkViewV1 {
 }
 type LocalResult = Exclude<AccountContextResult, { error: string }>;
 function attachOperation(
-	view: AccountLinkViewV1,
+	input: AccountLinkViewV1,
 	registry?: AccountLinkRegistry,
-	operationContextId = view.contextId,
+	operationContextId = input.contextId,
 ): AccountLinkViewV1 {
+	// Without a rebind runner there is no sign-in; the UI keeps the link action.
+	const { canSignIn, ...rest } = input;
+	const view: AccountLinkViewV1 = registry?.supportsSignIn?.() ? input : rest;
+	void canSignIn;
 	const operation = operationContextId ? (registry?.forContext(operationContextId) ?? null) : null;
 	const operationContext =
 		operation && operationContextId && operationContextId !== view.contextId
@@ -100,6 +106,7 @@ function attachOperation(
 			...operationContext,
 			operation,
 			canLink: false,
+			...("canSignIn" in view ? { canSignIn: false } : {}),
 			blockedReason: "operation_active",
 		};
 	return { ...view, ...operationContext, operation };
@@ -124,6 +131,7 @@ export function accountLocalView(result: LocalResult): AccountLinkViewV1 {
 			: null,
 		remote: { kind: "not_checked" },
 		canLink: false,
+		canSignIn: false,
 		blockedReason: "setup_incomplete",
 		operation: null,
 		checkedAt: new Date().toISOString(),
@@ -163,6 +171,7 @@ function applyRemote(
 			account: identityMatches && status.state === "linked" ? status.account : null,
 		},
 		canLink: status.state === "unlinked" && identityMatches,
+		canSignIn: status.state === "unlinked" && identityMatches,
 		blockedReason,
 	};
 }
@@ -362,7 +371,12 @@ async function readAssociatedOwner(
 	actorRemote: Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>,
 	signal: AbortSignal,
 ): Promise<AccountLinkViewV1 | null> {
-	const local = { ...view, remote: { kind: "not_checked" as const }, canLink: false };
+	const local = {
+		...view,
+		remote: { kind: "not_checked" as const },
+		canLink: false,
+		canSignIn: false,
+	};
 	try {
 		const association = readOwnerAssociation(context, actorRemote.status.coordinatorId);
 		if (!association) return null;

@@ -11,7 +11,7 @@ import {
 	validRecoveryResult,
 } from "./owner-recovery-validation";
 
-export type AccountIntent = "connect" | "refresh" | "disconnect";
+export type AccountIntent = "connect" | "refresh" | "disconnect" | "sign_in";
 export type AccountOperation = {
 	intent?: AccountIntent;
 	operationId: string;
@@ -33,7 +33,14 @@ export type AccountOperation = {
 		| "configuration_invalid"
 		| "shutting_down"
 		| "cancellation_unconfirmed"
-		| "receiver_close_failed";
+		| "receiver_close_failed"
+		| "account_not_linked"
+		| "already_this_identity"
+		| "current_identity_linked"
+		| "device_already_bound"
+		| "daily_limit"
+		| "sign_in_unavailable"
+		| "switch_pending";
 	browserUrlAvailable: boolean;
 	startedAt: string;
 	deadlineAt: string;
@@ -90,6 +97,8 @@ export type AccountView = {
 				account: null | { email?: string; displayName?: string; pictureUrl?: string };
 		  };
 	canLink: boolean;
+	/** Sign in with Google: links this Identity, or switches the device to the account's. */
+	canSignIn?: boolean;
 	managementActions?: { refresh: boolean; disconnect: boolean };
 	unlinkTarget?: string;
 	blockedReason:
@@ -318,6 +327,13 @@ export function cancelAccountLink(
 	});
 }
 
+const BROWSER_PATHS: Record<AccountIntent, string> = {
+	connect: "/auth/link/start",
+	sign_in: "/auth/rebind/start",
+	refresh: "/auth/account/change/start",
+	disconnect: "/auth/account/change/start",
+};
+
 export function validAccountBrowserUrl(
 	value: string,
 	origin: string,
@@ -331,7 +347,7 @@ export function validAccountBrowserUrl(
 		return (
 			(secure || localHttp) &&
 			url.origin === origin &&
-			url.pathname === (intent === "connect" ? "/auth/link/start" : "/auth/account/change/start") &&
+			url.pathname === BROWSER_PATHS[intent] &&
 			!url.username &&
 			!url.password &&
 			!url.hash

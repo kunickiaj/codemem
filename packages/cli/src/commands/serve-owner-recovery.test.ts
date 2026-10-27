@@ -93,6 +93,8 @@ vi.mock("@codemem/server", () => ({
 	createSyncApp: vi.fn(),
 	createAccountContextReader: mocks.createContext,
 	createAccountLinkRegistry: mocks.createRegistry,
+	createAccountRebindRunner: () => async () => ({ kind: "failed" }),
+	resumeAccountRebind: async () => null,
 	createAccountOwnerRecoveryService: mocks.createRecovery,
 	createViewerRawEventInbox: vi.fn(() => ({ inbox: { start: vi.fn() }, stop: vi.fn() })),
 	reconcileConfiguredCoordinatorEnrollment: vi.fn(),
@@ -200,7 +202,10 @@ it("composes recovery with the same trusted context reader and registry, exposin
 	const options = composed();
 	expect(options.readContext).toBe(mocks.context);
 	expect(options.registry).toBe(registry);
-	expect(mocks.createRegistry).toHaveBeenCalledWith({ readContext: mocks.context });
+	expect(mocks.createRegistry).toHaveBeenCalledWith({
+		readContext: mocks.context,
+		rebind: expect.any(Function),
+	});
 	expect(mocks.createApp.mock.calls[0]?.[0].accountLink).toMatchObject({
 		readContext: mocks.context,
 		registry,

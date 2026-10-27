@@ -3,6 +3,7 @@ import type { AccountContext, AccountContextReader } from "../account/context.js
 import {
 	type AccountLinkOperationV1,
 	type AccountLinkRegistry,
+	type AccountOperationIntent,
 	sameAuthority,
 } from "../account/link-registry.js";
 import {
@@ -96,7 +97,7 @@ function isCurrent(options: Options, operation: AccountLinkOperationV1): boolean
 }
 function validStartBody(body: Record<string, unknown> | null): body is {
 	groupId: string;
-	intent?: "connect" | "refresh" | "disconnect";
+	intent?: AccountOperationIntent;
 	contextId: string;
 	expectedLinkId?: string;
 	coordinatorId: string;
@@ -111,7 +112,8 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 		(body.intent === undefined ||
 			body.intent === "connect" ||
 			body.intent === "refresh" ||
-			body.intent === "disconnect") &&
+			body.intent === "disconnect" ||
+			body.intent === "sign_in") &&
 		(body.authority === "controller_attestation" || body.authority === "device_claim")
 	);
 }
@@ -175,6 +177,7 @@ async function startOperation(c: Context, options: Options): Promise<Response> {
 }
 function actionAllowed(view: AccountLinkViewV1, intent = "connect"): boolean {
 	if (intent === "connect") return view.canLink;
+	if (intent === "sign_in") return view.canSignIn === true;
 	if (intent === "refresh" || intent === "disconnect")
 		return view.managementActions?.[intent] === true;
 	return false;
@@ -183,7 +186,7 @@ function beginCurrentOperation(
 	c: Context,
 	options: Options,
 	body: {
-		intent?: "connect" | "refresh" | "disconnect";
+		intent?: AccountOperationIntent;
 		groupId: string;
 		contextId: string;
 		expectedLinkId?: string;

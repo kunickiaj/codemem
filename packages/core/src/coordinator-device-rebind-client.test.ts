@@ -257,7 +257,11 @@ describe("device rebind client", () => {
 		// Act
 		const outcome = await runDeviceRebind(options(f, { openBrowser }).input);
 		// Assert
-		expect(outcome).toEqual({ kind: "refused", reason: "current_identity_linked" });
+		expect(outcome).toEqual({
+			kind: "refused",
+			reason: "current_identity_linked",
+			beforeBrowser: true,
+		});
 		expect(openBrowser).not.toHaveBeenCalled();
 	});
 
@@ -374,5 +378,54 @@ describe("device rebind client edge cases", () => {
 		// Assert
 		expect(outcome).toEqual({ kind: "failed", error: "device_unavailable" });
 		expect(f.fetch).not.toHaveBeenCalled();
+	});
+});
+
+describe("device rebind client when the browser refuses", () => {
+	it("returns the browser's refusal at once, without recording or finalizing", async () => {
+		// Arrange: Google sign-in found no link for the account; the page returns to the device.
+		const f = await clientFixture();
+		const openBrowser = async (url: string) => {
+			const attemptId = new URL(url).searchParams.get("attempt_id") ?? "";
+			const loopback = f.remote.db
+				.prepare(
+					"SELECT loopback_redirect FROM coordinator_device_rebind_attempts WHERE attempt_id = ?",
+				)
+				.pluck()
+				.get(attemptId) as string;
+			expect(await navigate(`${loopback}?attempt_id=${attemptId}&refused=account_not_linked`)).toBe(
+				200,
+			);
+		};
+		const run = options(f, { openBrowser });
+		// Act
+		const outcome = await runDeviceRebind(run.input);
+		// Assert
+		expect(outcome).toEqual({ kind: "refused", reason: "account_not_linked" });
+		expect(run.recorded).toEqual([]);
+		expect(f.paths.some((path) => path.endsWith("/finalize"))).toBe(false);
+	});
+
+	it("ignores a refusal that names a reason it doesn't know", async () => {
+		// Arrange
+		const f = await clientFixture();
+		const controller = new AbortController();
+		const openBrowser = async (url: string) => {
+			const attemptId = new URL(url).searchParams.get("attempt_id") ?? "";
+			const loopback = f.remote.db
+				.prepare(
+					"SELECT loopback_redirect FROM coordinator_device_rebind_attempts WHERE attempt_id = ?",
+				)
+				.pluck()
+				.get(attemptId) as string;
+			expect(await navigate(`${loopback}?attempt_id=${attemptId}&refused=made_up`)).toBe(400);
+			controller.abort();
+		};
+		// Act
+		const outcome = await runDeviceRebind(
+			options(f, { openBrowser, signal: controller.signal }).input,
+		);
+		// Assert
+		expect(outcome).toEqual({ kind: "failed", error: "browser_stopped" });
 	});
 });

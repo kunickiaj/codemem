@@ -17,6 +17,7 @@ const active = (op: AccountOperation) => op.state === "starting" || op.state ===
 export function accountOperationCopy(operation?: AccountOperation | null) {
 	return {
 		connect: { activity: "linking", subject: "Linking", attempt: "link" },
+		sign_in: { activity: "sign-in", subject: "Sign-in", attempt: "sign-in" },
 		refresh: { activity: "refresh", subject: "Refresh", attempt: "refresh" },
 		disconnect: { activity: "unlinking", subject: "Unlinking", attempt: "unlink" },
 	}[operation?.intent ?? "connect"];
@@ -56,7 +57,12 @@ function canBeginLink(
 		view.blockedReason === "operation_active"
 	)
 		return false;
-	const allowed = intent === "connect" ? view.canLink : view.managementActions?.[intent] === true;
+	const allowed = {
+		connect: view.canLink,
+		sign_in: view.canSignIn === true,
+		refresh: view.managementActions?.refresh === true,
+		disconnect: view.managementActions?.disconnect === true,
+	}[intent];
 	return Boolean(allowed && view.contextId && view.selectedGroupId);
 }
 function sameOperationContext(
@@ -405,8 +411,14 @@ function reservePopup(intent: AccountIntent): Window | null {
 	if (opened) opened.opener = null;
 	return opened;
 }
+/** Linking and sign-in start from an unlinked Identity; account changes from a linked one. */
+function expectedRemoteState(intent: AccountIntent): "unlinked" | "linked" {
+	return intent === "connect" || intent === "sign_in" ? "unlinked" : "linked";
+}
 const WAITING_MESSAGES = {
 	disconnect: "Unlinking Google account…",
+	sign_in:
+		"Waiting for Google sign-in. If the account belongs to another Identity, you’ll confirm before this device switches.",
 	connect:
 		"Waiting for Google sign-in. This links your account to this Identity; it does not grant sharing access.",
 	refresh:
@@ -426,7 +438,7 @@ async function link(
 		return;
 	if (
 		view.remote.kind !== "status" ||
-		view.remote.state !== (intent === "connect" ? "unlinked" : "linked") ||
+		view.remote.state !== expectedRemoteState(intent) ||
 		!view.remote.identityMatches ||
 		(view.remote.authority !== "controller_attestation" && view.remote.authority !== "device_claim")
 	)
@@ -752,6 +764,7 @@ export function useMyAccount(onViewChange?: (view: AccountView | null) => void) 
 		refresh: (options?: { groupId?: string; notice?: string }) =>
 			refresh(flow, { ...options, checkExpiredPending: true }),
 		link: () => link(flow),
+		signIn: () => link(flow, "sign_in"),
 		change: (intent: "refresh" | "disconnect", confirmedView?: AccountView) =>
 			link(flow, intent, confirmedView),
 		openFallback: () => openFallback(flow),

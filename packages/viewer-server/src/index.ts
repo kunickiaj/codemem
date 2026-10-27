@@ -71,6 +71,11 @@ export type {
 export { createAccountLinkRegistry } from "./account/link-registry.js";
 export type { AccountOwnerRecoveryServiceOptions } from "./account/owner-recovery-service.js";
 export { createAccountOwnerRecoveryService } from "./account/owner-recovery-service.js";
+export {
+	type AccountRebindResult,
+	createAccountRebindRunner,
+	resumeAccountRebind,
+} from "./account/rebind.js";
 export type { AccountLinkViewV1, AccountStatusOptions } from "./account/status.js";
 export type {
 	AdvancePendingProjectSharesResult,

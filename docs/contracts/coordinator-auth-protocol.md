@@ -290,7 +290,10 @@ D1 that means migration `0038_add_device_rebind.sql` has been applied.
 | `POST /v1/auth/rebind-attempts/:attemptId/finalize` | Exactly `group_id`, the raw `completion` secret and `signature`. Returns `state` (`finalized`, or `prior_commit` for a repeat) and the receipt. |
 
 After the person confirms, the browser returns to `loopback_redirect` with
-`attempt_id`, `completion` and `confirmation`. `confirmation` is the hash of
+`attempt_id`, `completion` and `confirmation`. If the Google callback refuses
+the attempt instead, for example because the account has no link, the browser
+returns with `attempt_id` and `refused=<reason>` so the device stops waiting.
+A refusal there grants nothing; the worst a forged one can do is end the wait. `confirmation` is the hash of
 what the person confirmed. The device signs, with its enrolled key, the UTF-8
 bytes of this JSON array:
 

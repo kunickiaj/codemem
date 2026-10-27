@@ -130,6 +130,27 @@ const REFUSAL_COPY: Record<DeviceRebindNotice, [string, string]> = {
 	],
 };
 
+/**
+ * A refusal at the Google callback: explain it here and send the browser back
+ * to the device, which stops waiting and shows the next step.
+ */
+export function renderDeviceRebindReturnPage(input: {
+	reason: DeviceRebindRefusal;
+	loopbackRedirect: string;
+	attemptId: string;
+}): Promise<CoordinatorAuthBrowserPage> {
+	const parsed = parseCoordinatorAuthLoopback(input.loopbackRedirect);
+	if (!parsed.ok) throw new Error("device_rebind_view_invalid_input");
+	const [title, body] = REFUSAL_COPY[input.reason];
+	const href = `${parsed.destination}?attempt_id=${encodeURIComponent(input.attemptId)}&refused=${input.reason}`;
+	return buildPage(
+		title,
+		`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p><p>Returning to Codemem on this computer.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Return to Codemem</a></div>`,
+		undefined,
+		{ refreshUrl: href },
+	);
+}
+
 export function renderDeviceRebindNotice(
 	reason: DeviceRebindNotice,
 ): Promise<CoordinatorAuthBrowserPage> {
