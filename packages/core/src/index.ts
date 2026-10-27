@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.47.0-beta.4";
+export const VERSION = "0.47.0";
 
 export {
 	type AccountOwnerAssociation,

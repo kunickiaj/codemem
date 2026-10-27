@@ -456,11 +456,11 @@ Account linking is optional. It does not grant Team or Project access, move an I
 
 When the coordinator advertises account-management capability, a linked account can show **Refresh profile** and **Unlink Google account**. **Check status** only reads the signed coordinator result; it does not refresh a profile. Refresh requires fresh Google proof and has no extra confirmation.
 
-Unlink asks once in the Viewer and uses this device’s existing authorization; it does not open Google sign-in or another tab. Cancel leaves the account unchanged. Confirming ends the current link, its browser sessions and display profile, while preserving your Identity, device keys, history, memberships and access grants. To link again—whether to the same or another Google account—choose **Link Google account** and complete Google verification. There is no switch flow or automatic unlink.
+Unlink asks once in the Viewer and uses this device’s existing authorization; it does not open Google sign-in or another tab. Cancel leaves the account unchanged. Confirming ends the current link, its browser sessions and display profile, while preserving your Identity, device keys, history, memberships and access grants. To link again—whether to the same or another Google account—choose **Link Google account** (or **Sign in with Google**) and complete Google verification. Unlinking never switches this device to another Identity.
 
-If this device runs as a different Identity than the account owner the coordinator confirmed, the card names both and does not show the owner's Google profile. Refresh and Unlink work only on a device that runs as the account owner.
+If this device runs as a different Identity than the account owner the coordinator confirmed, the card names both and does not show the owner's Google profile. Refresh and Unlink work only on a device that runs as the account owner; **Sign in with Google** can switch this device to the owner (see below).
 
-Google account details (name, email, and picture) appear only on a device that holds its own proof for the Identity: the device that linked the account, or one with its own controller attestation. Another device of the same Identity shows **Linked on another device** without those details.
+Google account details (name, email, and picture) appear only on a device that holds its own proof for the Identity: the device that linked the account, one with its own controller attestation, or one that signed in with Google. Another device of the same Identity shows **Linked on another device** without those details, and offers **Sign in with Google** so it can refresh or unlink the account too.
 
 If these controls are absent, management is not currently available for this device and coordinator. Check status before retrying; do not use an external Google workaround or an operator credential.
 
@@ -472,12 +472,34 @@ If the Viewer configuration changes during an attempt, **Cancel previous link** 
 
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
 
-### Repair a reviewed account owner (beta)
+### Sign in with Google on a device
 
-This recovery workflow first ships in **0.47.0-beta.4**; stable 0.47 has not been
-published. It works only against a coordinator that its operator has upgraded for
-owner resolution, and that coordinator upgrade and live rollout are separate operator
-steps.
+Starting in 0.47.0, a Viewer whose coordinator supports it shows **Sign in with Google**
+instead of **Link Google account**. Signing in sets this device's Identity from your
+Google account:
+
+- **The account is linked to another Identity.** The browser shows both Identities
+  and the Teams this device would stop syncing with, and asks you to confirm. This
+  device then switches to your account's Identity. It gets only the Teams and
+  Projects that Identity already has; memberships and Project grants never move, and
+  memories keep their original author.
+- **The account is linked to this device's Identity on another device.** Confirming
+  gives this device its own proof, so it can refresh or unlink the account too. Its
+  Identity stays the same.
+- **The account isn't linked yet.** Choose **Link this account** to link it to this
+  device's current Identity, as in [Link a Google account](#link-a-google-account).
+
+Each device can switch or bind this way only once. If the result is unclear, for
+example after a network failure, restart the Viewer and check status before trying
+again; the Viewer resolves an unfinished switch by reading coordinator status.
+Devices that hand out Project access learn about the switch from the coordinator
+once they run 0.47.0, and keep sharing whatever the new Identity is allowed to see.
+
+### Repair a reviewed account owner
+
+This recovery workflow first shipped in **0.47.0-beta.4**. It works only against a
+coordinator that its operator has upgraded for owner resolution, and that coordinator
+upgrade and live rollout are separate operator steps.
 
 When available, **Review account ownership** appears in **My Account** only for a
 review-required, conflicting, or mismatched account state. It does not use the

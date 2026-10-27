@@ -405,12 +405,12 @@ a partial or unknown installation. Execute the full array in **one atomic D1 bin
 batch**, not split requests, and do not add `BEGIN`/`COMMIT`. `--export-sql` rejects
 `--db-path` and its `--db` alias; `--owner-resolution` rejects `--device-unlink`.
 
-### Account-owner recovery review (beta)
+### Account-owner recovery review
 
-The Viewer recovery UI and this scoped review path first ship in client
-**0.47.0-beta.4**; stable 0.47 is not published. Installing the client does not
-upgrade a coordinator. Do not offer this workflow to users until the coordinator
-upgrade and live rollout are separately approved.
+The Viewer recovery UI and this scoped review path first shipped in client
+**0.47.0-beta.4**. Installing the client does not upgrade a coordinator. Do not
+offer this workflow to users until the coordinator upgrade and live rollout are
+separately approved.
 
 After the receipt-storage upgrade, an actual coordinator administrator can review an
 existing linked account owner through authenticated `POST /v1/admin/auth-controller-reviews`.

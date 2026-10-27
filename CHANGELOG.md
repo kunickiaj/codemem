@@ -2,11 +2,38 @@
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-27
+
+First stable 0.47 release. It includes everything in the 0.47.0 betas below.
+
+### Added
+
+- **Sign in with Google** in **My Account** sets this device's Identity from your Google account. If the account belongs to another Identity, the browser shows both Identities and the Teams this device would lose, and the device switches after you confirm. If the account is already linked to this device's Identity from another device, signing in gives this device its own proof so it can refresh or unlink the account. Memberships and Project grants never move, and memories keep their original author. See [Sign in with Google on a device](docs/user-guide.md#sign-in-with-google-on-a-device). ([#2390], [#2395], [#2396], [#2398], [#2399], [#2400], [#2401], [#2402], [#2403], [#2405], [#2406])
+- A device bound to an Identity through an ownership binding can refresh and unlink that Identity's Google account. ([#2397])
+
+### Changed
+
+- Google account details appear only on a device with its own proof for the Identity; other devices show **Linked on another device**. ([#2394])
+- Guessed labels from older migrations no longer count as device ownership, and Team setup suggests only this device's own Identity. ([#2392], [#2393])
+- Account ownership review suggests recorded owners, explains blocked and empty states, and keeps admin review capacity for owner suggestions. ([#2387], [#2388], [#2389])
+- The Viewer lets you choose which coordinator group My Account checks, and names the owner-only account state. ([#2391])
+
+### Fixed
+
+- Devices that hand out Project access move a device that switched Identities to its new Identity, instead of revoking it from every shared Project. They do this only when the coordinator's ownership binding names the new Identity, the pinned key still matches, and the new Identity is already known. ([#2407])
+- Device ownership bindings can no longer be replaced through SQLite rowid updates. ([#2404])
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading packages so the new backend loads.
+- Self-hosted Cloudflare coordinators must apply migrations `0038`, `0039`, and `0040` before deploying this Worker. See [the deployment guide](docs/cloudflare-coordinator-deployment.md). SQLite coordinators upgrade when they open.
+- A device can switch or bind its Identity only once. Teams the old Identity belonged to are not requested automatically for the new Identity yet, and switching shows no follow-up notice yet.
+
 ## [0.47.0-beta.4] - 2026-10-25
 
 ### Added
 
-- Reviewed account-owner recovery: **My Account** offers **Review account ownership** for review-required, conflicting, or mismatched account states. It previews the full retained history, requires a fresh scoped confirmation, and displays the confirmed owner separately from the Memory author and sharing Identity. See [Repair a reviewed account owner](docs/user-guide.md#repair-a-reviewed-account-owner-beta).
+- Reviewed account-owner recovery: **My Account** offers **Review account ownership** for review-required, conflicting, or mismatched account states. It previews the full retained history, requires a fresh scoped confirmation, and displays the confirmed owner separately from the Memory author and sharing Identity. See [Repair a reviewed account owner](docs/user-guide.md#repair-a-reviewed-account-owner).
 - Explicit coordinator owner-resolution schema upgrade and retained, immutable owner-resolution receipts, verified with existing device keys.
 - Packaged worker-based semantic retrieval for installed CLI and plugin runtimes.
 - Native Pi session search (`memory_session_search`) with a CLI fallback.
@@ -145,7 +172,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...v0.47.0
 [0.47.0-beta.4]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...v0.47.0-beta.4
 [0.47.0-beta.3]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.2...v0.47.0-beta.3
 [0.47.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.46.2...v0.47.0-beta.2
@@ -179,3 +207,24 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#1880]: https://github.com/kunickiaj/codemem/pull/1880
 [#1881]: https://github.com/kunickiaj/codemem/pull/1881
 [#1882]: https://github.com/kunickiaj/codemem/pull/1882
+[#2387]: https://github.com/kunickiaj/codemem/pull/2387
+[#2388]: https://github.com/kunickiaj/codemem/pull/2388
+[#2389]: https://github.com/kunickiaj/codemem/pull/2389
+[#2390]: https://github.com/kunickiaj/codemem/pull/2390
+[#2391]: https://github.com/kunickiaj/codemem/pull/2391
+[#2392]: https://github.com/kunickiaj/codemem/pull/2392
+[#2393]: https://github.com/kunickiaj/codemem/pull/2393
+[#2394]: https://github.com/kunickiaj/codemem/pull/2394
+[#2395]: https://github.com/kunickiaj/codemem/pull/2395
+[#2396]: https://github.com/kunickiaj/codemem/pull/2396
+[#2397]: https://github.com/kunickiaj/codemem/pull/2397
+[#2398]: https://github.com/kunickiaj/codemem/pull/2398
+[#2399]: https://github.com/kunickiaj/codemem/pull/2399
+[#2400]: https://github.com/kunickiaj/codemem/pull/2400
+[#2401]: https://github.com/kunickiaj/codemem/pull/2401
+[#2402]: https://github.com/kunickiaj/codemem/pull/2402
+[#2403]: https://github.com/kunickiaj/codemem/pull/2403
+[#2404]: https://github.com/kunickiaj/codemem/pull/2404
+[#2405]: https://github.com/kunickiaj/codemem/pull/2405
+[#2406]: https://github.com/kunickiaj/codemem/pull/2406
+[#2407]: https://github.com/kunickiaj/codemem/pull/2407
