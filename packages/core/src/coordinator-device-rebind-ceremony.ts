@@ -29,6 +29,7 @@ import {
 	commitDeviceRebind,
 	DEVICE_REBIND_DAILY_LIMIT,
 	type DeviceRebindReceipt,
+	NO_OWN_PROOF_SQL,
 	readDeviceRebindReceipt,
 } from "./coordinator-device-rebind-commit.js";
 import {
@@ -158,9 +159,17 @@ const TARGET_LINK_SQL = `EXISTS (SELECT 1 FROM coordinator_auth_account_links l
  WHERE l.coordinator_id = a.coordinator_id AND l.link_id = a.link_id
  AND l.identity_id = a.target_identity_id AND l.issuer = a.issuer AND l.subject = a.account_subject
  AND l.authority_kind = a.link_authority_kind AND l.revoked_at_ms IS NULL)`;
+/**
+ * Switching Identities needs a current Identity without an account link
+ * (accounts are never merged). A self-bind (target = current) instead needs a
+ * device without its own proof. Before sign-in the target is unknown, so
+ * either may hold.
+ */
+const CURRENT_ACCOUNT_SQL = `(${CURRENT_UNLINKED_SQL}
+ OR ((a.target_identity_id IS NULL OR a.target_identity_id = a.current_identity_id) AND ${NO_OWN_PROOF_SQL}))`;
 const LIVE_SQL = `a.coordinator_id = ? AND a.attempt_id = ? AND a.origin = ? AND a.issuer = ?
  AND a.auth_config_revision = ? AND a.created_at_ms <= ? AND a.expires_at_ms > ?
- AND ${UNBOUND_SQL} AND ${UNREVOKED_SQL} AND ${CURRENT_UNLINKED_SQL}`;
+ AND ${UNBOUND_SQL} AND ${UNREVOKED_SQL} AND ${CURRENT_ACCOUNT_SQL}`;
 // Every enrollment of the device names no Identity or the current one.
 const ENROLLMENTS_CURRENT_SQL = `NOT EXISTS (SELECT 1 FROM enrolled_devices e WHERE e.device_id = a.device_id
  AND e.identity_id IS NOT NULL AND e.identity_id <> a.current_identity_id)`;
@@ -253,14 +262,22 @@ async function startRefusal(
 	input: DeviceRebindStart,
 	keyId: string,
 ): Promise<DeviceRebindRefusal | null> {
-	const facts = await ctx.deps.backend.first<{ bound: number; linked: number; enrolled: number }>({
+	const facts = await ctx.deps.backend.first<{
+		bound: number;
+		linked: number;
+		proof: number;
+		enrolled: number;
+	}>({
 		sql: `SELECT
  EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?) AS bound,
  EXISTS (SELECT 1 FROM coordinator_auth_account_links WHERE coordinator_id = ? AND identity_id = ?
   AND revoked_at_ms IS NULL) AS linked,
+ NOT (${NO_OWN_PROOF_SQL}) AS proof,
  EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
   WHERE e.group_id = ? AND e.device_id = ? AND e.public_key = ? AND e.fingerprint = ? AND e.enabled = 1
-  AND g.archived_at IS NULL) AS enrolled`,
+  AND g.archived_at IS NULL) AS enrolled
+ FROM (SELECT ? AS coordinator_id, ? AS current_identity_id, ? AS device_id, ? AS key_id,
+  ? AS public_key, ? AS fingerprint) a`,
 		values: [
 			input.signer.deviceId,
 			keyId,
@@ -270,11 +287,18 @@ async function startRefusal(
 			input.signer.deviceId,
 			input.signer.publicKey,
 			input.signer.fingerprint,
+			ctx.c.coordinatorId,
+			input.currentIdentityId,
+			input.signer.deviceId,
+			keyId,
+			input.signer.publicKey,
+			input.signer.fingerprint,
 		],
 	});
 	if (facts?.enrolled !== 1) return "unavailable";
 	if (facts.bound === 1) return "device_already_bound";
-	if (facts.linked === 1) return "current_identity_linked";
+	// A linked current Identity still allows a self-bind for a device without its own proof.
+	if (facts.linked === 1 && facts.proof === 1) return "current_identity_linked";
 	return null;
 }
 
@@ -311,7 +335,7 @@ async function start(ctx: DeviceCtx, input: DeviceRebindStart, clientKey: string
   WHERE e.group_id = ? AND e.device_id = a.device_id AND e.public_key = a.public_key
   AND e.fingerprint = a.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL)
  AND ${ENROLLMENTS_CURRENT_SQL} AND ${CURRENT_IS_DEVICES_SQL}
- AND ${UNBOUND_SQL} AND ${UNREVOKED_SQL} AND ${CURRENT_UNLINKED_SQL}
+ AND ${UNBOUND_SQL} AND ${UNREVOKED_SQL} AND (${CURRENT_UNLINKED_SQL} OR ${NO_OWN_PROOF_SQL})
  AND NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts o
   WHERE o.coordinator_id = a.coordinator_id AND o.attempt_id = a.attempt_id)
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts o
@@ -587,7 +611,6 @@ async function persistVerified(
 	});
 	if (!row) return refused("unavailable");
 	if (!link) return refused("account_not_linked");
-	if (link.identity_id === row.current_identity_id) return refused("already_this_identity");
 	const time = ctx.deps.now();
 	const wrote = await ctx.deps.backend.run({
 		sql: `UPDATE ${ATTEMPT} AS a SET state = 'oidc_verified', account_subject = ?, target_identity_id = ?,
@@ -599,7 +622,8 @@ async function persistVerified(
  AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
   AND l.link_id = ? AND l.identity_id = ? AND l.issuer = a.issuer AND l.subject = ? AND l.revoked_at_ms IS NULL)
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE b.coordinator_id = a.coordinator_id
-  AND b.browser_transaction_hash = a.browser_transaction_hash AND b.state = 'consumed' AND b.claim_token = ?)`,
+  AND b.browser_transaction_hash = a.browser_transaction_hash AND b.state = 'consumed' AND b.claim_token = ?)
+ AND (? = a.current_identity_id OR ${CURRENT_UNLINKED_SQL})`,
 		values: [
 			account.subject,
 			link.identity_id,
@@ -611,9 +635,11 @@ async function persistVerified(
 			link.identity_id,
 			account.subject,
 			claimToken,
+			// A switch needs an unlinked current Identity; a self-bind's no-own-proof rule is in LIVE_SQL.
+			link.identity_id,
 		],
 	});
-	if (wrote !== 1) return refused(await currentRefusal(ctx, row));
+	if (wrote !== 1) return refused(await currentRefusal(ctx, row, link.identity_id));
 	const verified = await readAttempt(ctx, attemptId);
 	if (verified?.state !== "oidc_verified" || verified.link_id !== link.link_id)
 		throw new Error("device_rebind_verify_unconfirmed");
@@ -624,15 +650,22 @@ async function persistVerified(
 async function currentRefusal(
 	ctx: DeviceCtx,
 	row: DeviceRebindAttempt,
+	target: string | null = row.target_identity_id,
 ): Promise<DeviceRebindRefusal> {
-	const facts = await ctx.deps.backend.first<{ bound: number; linked: number }>({
+	const facts = await ctx.deps.backend.first<{ bound: number; linked: number; proof: number }>({
 		sql: `SELECT
- EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = ? OR key_id = ?) AS bound,
- EXISTS (SELECT 1 FROM coordinator_auth_account_links WHERE coordinator_id = ? AND identity_id = ?
-  AND revoked_at_ms IS NULL) AS linked`,
-		values: [row.device_id, row.key_id, ctx.c.coordinatorId, row.current_identity_id],
+ EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings WHERE device_id = a.device_id
+  OR key_id = a.key_id) AS bound,
+ EXISTS (SELECT 1 FROM coordinator_auth_account_links WHERE coordinator_id = a.coordinator_id
+  AND identity_id = a.current_identity_id AND revoked_at_ms IS NULL) AS linked,
+ NOT (${NO_OWN_PROOF_SQL}) AS proof
+ FROM ${ATTEMPT} a WHERE a.coordinator_id = ? AND a.attempt_id = ?`,
+		values: [ctx.c.coordinatorId, row.attempt_id],
 	});
 	if (facts?.bound === 1) return "device_already_bound";
+	// A self-bind is only for a device without its own proof; switching needs an unlinked Identity.
+	if (target === row.current_identity_id)
+		return facts?.proof === 1 ? "already_this_identity" : "unavailable";
 	if (facts?.linked === 1) return "current_identity_linked";
 	return "unavailable";
 }

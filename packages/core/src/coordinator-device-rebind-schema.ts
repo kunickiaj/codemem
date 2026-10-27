@@ -3,7 +3,8 @@ import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 /**
  * Storage for ADR 0005 Section 8 rebinding: an enrolled device whose current
  * Identity has no account link of its own moves to the Identity linked to the
- * Google account it signs in with. Both tables are additive. They never change
+ * Google account it signs in with. A self-bind keeps the device's Identity
+ * (target = current) and gives a device without its own proof a binding. Both tables are additive. They never change
  * the owner-enrollment tables, whose schema readiness checks compare exact DDL.
  *
  * Mirror: packages/cloudflare-coordinator-worker/migrations/0038_add_device_rebind.sql
@@ -45,7 +46,6 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
  audit_event_id TEXT UNIQUE,
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR json_valid(final_outcome_json)),
  PRIMARY KEY (coordinator_id, attempt_id),
- CHECK (target_identity_id IS NULL OR target_identity_id <> current_identity_id),
  CHECK (state NOT IN ('confirmed', 'finalized') OR (account_subject IS NOT NULL
   AND target_identity_id IS NOT NULL AND link_id IS NOT NULL AND link_authority_kind IS NOT NULL
   AND review_digest IS NOT NULL AND team_effects_json IS NOT NULL AND enrollment_count IS NOT NULL
@@ -230,4 +230,55 @@ export async function readDeviceRebindBackend(
 		values: [],
 	});
 	return present?.attempts === 1 && present.audit === 1 ? backend : null;
+}
+
+const ATTEMPTS_TABLE = "coordinator_device_rebind_attempts";
+const REBUILT_TABLE = `${ATTEMPTS_TABLE}_rebuilt`;
+
+function attemptStatements() {
+	const sql = COORDINATOR_DEVICE_REBIND_SCHEMA_SQL;
+	const table = sql.match(
+		/CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts \([\s\S]*?\n\);/,
+	)?.[0];
+	const index = sql.match(
+		/CREATE INDEX IF NOT EXISTS idx_coordinator_device_rebind_attempts_device[\s\S]*?;/,
+	)?.[0];
+	const triggers = sql.match(
+		/CREATE TRIGGER IF NOT EXISTS coordinator_device_rebind_attempt_\w+[\s\S]*?\nEND;/g,
+	);
+	if (!table || !index || triggers?.length !== 4) throw new Error("device_rebind_schema_unparsed");
+	return { table, index, triggers };
+}
+
+/**
+ * Rebuilds the attempts table without the first release's "target differs
+ * from current" CHECK, which self-binds need. Rows, the index and every
+ * trigger are kept. Mirror: migrations/0040_allow_device_self_bind.sql.
+ */
+export function rebuildRebindAttemptsForSelfBindSql(): string {
+	const { table, index, triggers } = attemptStatements();
+	const names = triggers.map((t) => t.match(/coordinator_device_rebind_attempt_\w+/)?.[0]);
+	return [
+		...names.map((name) => `DROP TRIGGER IF EXISTS ${name};`),
+		"DROP INDEX IF EXISTS idx_coordinator_device_rebind_attempts_device;",
+		table.replace(`CREATE TABLE IF NOT EXISTS ${ATTEMPTS_TABLE}`, `CREATE TABLE ${REBUILT_TABLE}`),
+		`INSERT INTO ${REBUILT_TABLE} SELECT * FROM ${ATTEMPTS_TABLE};`,
+		`DROP TABLE ${ATTEMPTS_TABLE};`,
+		`ALTER TABLE ${REBUILT_TABLE} RENAME TO ${ATTEMPTS_TABLE};`,
+		index,
+		...triggers,
+	].join("\n");
+}
+
+/**
+ * True when an existing attempts table still forbids a self-bind. A
+ * pre-release table that kept rows (no review-digest CHECK) is left alone: its
+ * rows can't satisfy the current table, and it already fails closed.
+ */
+export function rebindAttemptsNeedSelfBindRebuild(existingTableSql: string | null): boolean {
+	return (
+		!!existingTableSql &&
+		existingTableSql.includes("target_identity_id <> current_identity_id") &&
+		existingTableSql.includes("CHECK (review_digest IS NOT NULL)")
+	);
 }

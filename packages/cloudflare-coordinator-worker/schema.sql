@@ -901,7 +901,6 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
  audit_event_id TEXT UNIQUE,
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR json_valid(final_outcome_json)),
  PRIMARY KEY (coordinator_id, attempt_id),
- CHECK (target_identity_id IS NULL OR target_identity_id <> current_identity_id),
  CHECK (state NOT IN ('confirmed', 'finalized') OR (account_subject IS NOT NULL
   AND target_identity_id IS NOT NULL AND link_id IS NOT NULL AND link_authority_kind IS NOT NULL
   AND review_digest IS NOT NULL AND team_effects_json IS NOT NULL AND enrollment_count IS NOT NULL

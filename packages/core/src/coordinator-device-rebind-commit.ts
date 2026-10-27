@@ -117,6 +117,26 @@ async function sameCanonicalKey(publicKey: string, keyId: string): Promise<boole
 	return (await ed25519KeyIdForRevocation(publicKey)) === keyId;
 }
 
+/**
+ * This device has no proof of its own for its current Identity, as account
+ * changes select it: no claim for this device and key in a live Team, and no
+ * active attestation for this key in a live Team it is still enrolled in (a binding
+ * already blocks every attempt). Only such a device may self-bind, getting a
+ * binding for the Identity it already uses.
+ */
+export const NO_OWN_PROOF_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_auth_device_claims d
+ WHERE d.coordinator_id = a.coordinator_id AND d.identity_id = a.current_identity_id
+ AND d.device_id = a.device_id AND d.key_id = a.key_id
+ AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = d.group_id AND g.archived_at IS NULL))
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_controller_attestations t
+ JOIN enrolled_devices e ON e.group_id = t.group_id AND e.device_id = t.device_id
+  AND e.public_key = t.public_key AND e.fingerprint = t.fingerprint AND e.enabled = 1
+  AND (e.identity_id IS NULL OR e.identity_id = t.identity_id)
+ JOIN groups g ON g.group_id = t.group_id AND g.archived_at IS NULL
+ WHERE t.coordinator_id = a.coordinator_id AND t.identity_id = a.current_identity_id
+ AND t.device_id = a.device_id AND t.public_key = a.public_key AND t.fingerprint = a.fingerprint
+ AND t.revoked_at IS NULL)`;
+
 function guards(
 	a: DeviceRebindAttempt,
 	now: number,
@@ -136,11 +156,15 @@ function guards(
  AND l.authority_kind = a.link_authority_kind AND l.revoked_at_ms IS NULL)`,
 			values: [],
 		},
-		// Accounts are never merged: the current Identity must have no active link.
+		// Accounts are never merged: switching needs a current Identity with no
+		// active link. A self-bind (target = current) keeps the Identity, so its
+		// link is the target link checked above, and the device must still have
+		// no proof of its own.
 		{
-			sql: `NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links l
- WHERE l.coordinator_id = a.coordinator_id AND l.identity_id = a.current_identity_id
- AND l.revoked_at_ms IS NULL)`,
+			sql: `((a.target_identity_id = a.current_identity_id AND ${NO_OWN_PROOF_SQL})
+ OR (a.target_identity_id <> a.current_identity_id AND NOT EXISTS (SELECT 1
+ FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
+ AND l.identity_id = a.current_identity_id AND l.revoked_at_ms IS NULL)))`,
 			values: [],
 		},
 		// Bindings are immutable, so a device is bound at most once.

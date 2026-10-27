@@ -47,11 +47,35 @@ function detail(label: string, value: string): string {
 	return `<dt>${escapeHtml(label)}</dt><dd><code>${escapeHtml(value)}</code></dd>`;
 }
 
+/** Self-bind: the account already belongs to this device's Identity. */
+function renderSelfBindConfirmPage(input: {
+	confirmation: DeviceRebindConfirmation;
+	csrf: string;
+}): Promise<CoordinatorAuthBrowserPage> {
+	const c = input.confirmation;
+	const details =
+		detail("Device", c.deviceId) +
+		detail("Key fingerprint", c.fingerprint) +
+		detail("Identity", c.currentIdentityId);
+	const fields = {
+		csrf: input.csrf,
+		attempt_id: c.attemptId,
+		confirmation_hash: c.confirmationHash,
+	};
+	return buildPage(
+		"Use this account on this device",
+		`<h1>Use this account on this device</h1><p>This Google account already belongs to this device’s Identity. Confirming lets this device refresh and unlink it too.</p><section aria-label="Device"><dl>${details}</dl></section><p>A device can do this only once.</p><div class="actions">${form(DEVICE_REBIND_BROWSER_PATHS.confirm, fields, "Confirm")}</div>`,
+		undefined,
+		{ referrerPolicy: "same-origin" },
+	);
+}
+
 export function renderDeviceRebindConfirmPage(input: {
 	confirmation: DeviceRebindConfirmation;
 	csrf: string;
 }): Promise<CoordinatorAuthBrowserPage> {
 	const c = input.confirmation;
+	if (c.targetIdentityId === c.currentIdentityId) return renderSelfBindConfirmPage(input);
 	const teams = c.groupsWithoutAccess.length ? c.groupsWithoutAccess.join(", ") : "None";
 	const details =
 		detail("Device", c.deviceId) +

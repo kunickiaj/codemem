@@ -113,7 +113,6 @@ function confirmedAndCurrent(a: DeviceRebindAttempt, revision: string, now: numb
 			a.review_digest,
 			a.confirmation_hash,
 		].every((value) => typeof value === "string" && value.length > 0) &&
-		a.target_identity_id !== a.current_identity_id &&
 		Number.isSafeInteger(now) &&
 		now >= a.created_at_ms &&
 		now < a.expires_at_ms &&

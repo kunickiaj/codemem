@@ -283,6 +283,13 @@ change in the browser. Once a request passes signed admission, the routes
 report `404 not_found` until the coordinator has the current rebind tables. On
 D1 that means migration `0038_add_device_rebind.sql` has been applied.
 
+A self-bind is the same ceremony when the Google account is linked to the
+device's current Identity: the target equals the current Identity, the commit
+writes the ownership binding and audit event, and no enrollment moves to another
+Identity. Only a device without its own claim, active attestation, or binding
+may self-bind. Switching to another Identity still requires a current Identity
+with no account link.
+
 | Route | Signed input and result |
 | --- | --- |
 | `POST /v1/auth/rebind-attempts` | Exactly `group_id`, `identity_id` (the device's current Identity), `attempt_id`, `browser_start_hash`, `loopback_redirect` and `review_digest`. `browser_start_hash` is the lowercase SHA-256 hex of the decoded 32-byte start code, as for link attempts. The device keeps the raw code and gives it only to the browser. `review_digest` is the lowercase SHA-256 hex of the device's local review. Returns `attempt_id`, `expires_at_ms`, and the `coordinator_id`, `origin`, `issuer` and `auth_config_revision` that the final signature covers. |

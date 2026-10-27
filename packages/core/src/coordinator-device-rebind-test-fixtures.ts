@@ -170,3 +170,33 @@ export async function rebindFixture(kind: Backend): Promise<RebindFixture> {
 		},
 	};
 }
+
+/** Gives the enrolled device its own claim for `identityId`, so it has proof and can't self-bind. */
+export async function insertOwnDeviceClaim(
+	db: Database.Database,
+	input: {
+		coordinatorId: string;
+		issuer: string;
+		revision: string;
+		identityId: string;
+		deviceId: string;
+	},
+): Promise<void> {
+	const device = db
+		.prepare("SELECT public_key, fingerprint FROM enrolled_devices WHERE device_id = ? LIMIT 1")
+		.get(input.deviceId) as { public_key: string; fingerprint: string };
+	db.prepare(
+		`INSERT INTO coordinator_auth_device_claims (claim_id, coordinator_id, identity_id, group_id,
+		 device_id, public_key, fingerprint, key_id, attempt_id, issuer, auth_config_revision, created_at_ms)
+		 VALUES ('claim-own', ?, ?, 'group-a', ?, ?, ?, ?, 'attempt-own', ?, ?, 1)`,
+	).run(
+		input.coordinatorId,
+		input.identityId,
+		input.deviceId,
+		device.public_key,
+		device.fingerprint,
+		await ed25519KeyId(device.public_key),
+		input.issuer,
+		input.revision,
+	);
+}

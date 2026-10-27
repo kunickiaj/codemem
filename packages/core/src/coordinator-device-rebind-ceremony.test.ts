@@ -10,6 +10,7 @@ import {
 	type DeviceRebindSigner,
 } from "./coordinator-device-rebind-ceremony.js";
 import { deviceRebindFinalMessage } from "./coordinator-device-rebind-proof.js";
+import { insertOwnDeviceClaim } from "./coordinator-device-rebind-test-fixtures.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
 	browserForm,
@@ -111,7 +112,11 @@ function startInput(f: Fixture, code: string, attemptId = "rebind-a") {
 }
 
 /** Device start, browser claim, and the Google callback, as the person would. */
-async function throughCallback(f: Fixture, beforeCallback?: () => void, attemptId = "rebind-a") {
+async function throughCallback(
+	f: Fixture,
+	beforeCallback?: () => void | Promise<void>,
+	attemptId = "rebind-a",
+) {
 	const code = startCode();
 	expect(await f.ceremony.start(startInput(f, code, attemptId), "client-a")).toMatchObject({
 		kind: "started",
@@ -120,7 +125,7 @@ async function throughCallback(f: Fixture, beforeCallback?: () => void, attemptI
 	const claimed = await f.ceremony.claimBrowser(form.request(), "client-a");
 	if (claimed?.kind !== "browser_claimed") throw new Error(`claim: ${JSON.stringify(claimed)}`);
 	const transactionCookie = claimed.setCookies[0]?.split(";")[0] ?? "";
-	beforeCallback?.();
+	await beforeCallback?.();
 	const callback = await f.ceremony.verifyCallback(
 		new Request(`${config.redirectUri}?state=${f.material.state}&code=provider-code`, {
 			headers: { cookie: transactionCookie },
@@ -229,6 +234,106 @@ function registerCeremony(kind: Backend) {
 	});
 }
 
+function registerSelfBind(kind: Backend) {
+	it("binds a device to its own linked Identity when it has no proof of its own", async () => {
+		// Arrange: the Google account is linked to this device's current Identity.
+		const f = await rebindCeremonyFixture(kind);
+		f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`);
+		const { confirmation, completionSecret } = await throughConfirm(f);
+		// Act
+		const finalized = await f.ceremony.finalize(finalizeInput(f, completionSecret));
+		// Assert: the device keeps its Identity and now holds its own binding.
+		expect(confirmation).toMatchObject({ currentIdentityId: CURRENT, targetIdentityId: CURRENT });
+		expect(finalized).toMatchObject({
+			kind: "finalized",
+			receipt: { previousIdentityId: CURRENT, targetIdentityId: CURRENT },
+		});
+		expect(identities(f)).toEqual([CURRENT, CURRENT]);
+		expect(
+			f.db.prepare("SELECT identity_id FROM coordinator_device_ownership_bindings").pluck().all(),
+		).toEqual([CURRENT]);
+	});
+}
+
+/** An attestation of this device's key for its current Identity, in Team `group`. */
+function attest(f: Fixture, revokedAt: string | null, group = "group-a") {
+	f.db
+		.prepare(
+			`INSERT INTO coordinator_auth_controller_attestations (attestation_id, coordinator_id, identity_id,
+			 group_id, device_id, public_key, fingerprint, review_receipt_id, evidence_digest, created_at, revoked_at)
+			 VALUES ('attestation-own', ?, ?, ?, ?, ?, ?, 'receipt-own', ?, 'created', ?)`,
+		)
+		.run(
+			config.coordinatorId,
+			CURRENT,
+			group,
+			f.signer.deviceId,
+			f.signer.publicKey,
+			f.signer.fingerprint,
+			"e".repeat(64),
+			revokedAt,
+		);
+}
+
+function registerSelfBindProof(kind: Backend) {
+	it("refuses a self-bind when an active attestation already proves this device", async () => {
+		// Arrange
+		const f = await rebindCeremonyFixture(kind);
+		f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`);
+		attest(f, null);
+		// Act
+		const result = await f.ceremony.start(startInput(f, startCode()), "client-a");
+		// Assert
+		expect(result).toEqual({ kind: "refused", reason: "current_identity_linked" });
+	});
+
+	it("refuses to commit a self-bind when the device got its own proof after confirming", async () => {
+		// Arrange
+		const f = await rebindCeremonyFixture(kind);
+		f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`);
+		const { completionSecret } = await throughConfirm(f);
+		attest(f, null);
+		// Act
+		const finalized = await f.ceremony.finalize(finalizeInput(f, completionSecret));
+		// Assert
+		expect(finalized).toEqual({ kind: "refused", reason: "already_this_identity" });
+		expect(
+			f.db.prepare("SELECT count(*) FROM coordinator_device_ownership_bindings").pluck().get(),
+		).toBe(0);
+	});
+
+	it.each([
+		["a revoked attestation", (f: Fixture) => attest(f, "revoked")],
+		[
+			"an attestation in an archived Team",
+			(f: Fixture) => {
+				// The device signs in from group-a; group-b is archived.
+				attest(f, null, "group-b");
+				f.db.exec("UPDATE groups SET archived_at = 'archived' WHERE group_id = 'group-b'");
+			},
+		],
+		[
+			"a claim for another key",
+			(f: Fixture) =>
+				f.db.exec(`INSERT INTO coordinator_auth_device_claims (claim_id, coordinator_id, identity_id,
+				 group_id, device_id, public_key, fingerprint, key_id, attempt_id, issuer, auth_config_revision,
+				 created_at_ms) VALUES ('claim-old', '${config.coordinatorId}', '${CURRENT}', 'group-a',
+				 '${f.signer.deviceId}', 'old', '${"d".repeat(64)}', '${"c".repeat(64)}', 'attempt-old',
+				 '${config.issuer}', '${config.revision}', 1)`),
+		],
+	] as const)("self-binds a device whose only proof is %s", async (_label, proof) => {
+		// Arrange: neither grants this device authority over the account.
+		const f = await rebindCeremonyFixture(kind);
+		f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`);
+		proof(f);
+		const { completionSecret } = await throughConfirm(f);
+		// Act
+		const finalized = await f.ceremony.finalize(finalizeInput(f, completionSecret));
+		// Assert
+		expect(finalized).toMatchObject({ kind: "finalized", receipt: { targetIdentityId: CURRENT } });
+	});
+}
+
 function registerRefusals(kind: Backend) {
 	it.each([
 		[
@@ -248,6 +353,8 @@ function registerRefusals(kind: Backend) {
 		// Arrange
 		const f = await rebindCeremonyFixture(kind);
 		f.db.exec(sql);
+		// A linked current Identity refuses only a device with its own proof.
+		if (reason === "current_identity_linked") await ownClaim(f);
 		// Act
 		const result = await f.ceremony.start(startInput(f, startCode()), "client-a");
 		// Assert
@@ -264,8 +371,11 @@ function registerRefusals(kind: Backend) {
 		],
 		[
 			"already_this_identity",
-			(f: Fixture) =>
-				f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`),
+			(f: Fixture) => {
+				// The account is this Identity's, and the device got its own proof meanwhile.
+				f.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}'`);
+				return ownClaim(f);
+			},
 		],
 	] as const)("refuses at the Google callback with %s", async (reason, change) => {
 		// Arrange: the account changes while the person is signing in.
@@ -325,6 +435,15 @@ function registerRefusals(kind: Backend) {
 	});
 }
 
+/** This device's own claim for its current Identity: it has proof, so no self-bind. */
+const ownClaim = (f: Fixture) =>
+	insertOwnDeviceClaim(f.db, {
+		coordinatorId: config.coordinatorId,
+		issuer: config.issuer,
+		revision: config.revision,
+		identityId: CURRENT,
+		deviceId: "device-work",
+	});
 const linkCurrentSql = `INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject,
  identity_id, attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
  VALUES ('${config.coordinatorId}', 'link-current', '${config.issuer}', 'subject-current', '${CURRENT}',
@@ -430,5 +549,7 @@ function registerReviewFixes(kind: Backend) {
 describe.each(["SQLite", "D1"] as const)("%s device rebind ceremony", (kind) => {
 	registerCeremony(kind);
 	registerRefusals(kind);
+	registerSelfBind(kind);
+	registerSelfBindProof(kind);
 	registerReviewFixes(kind);
 });

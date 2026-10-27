@@ -15,6 +15,7 @@ import {
 	resumeDeviceRebind,
 	runDeviceRebind,
 } from "./coordinator-device-rebind-client.js";
+import { insertOwnDeviceClaim } from "./coordinator-device-rebind-test-fixtures.js";
 import {
 	browserForm,
 	config,
@@ -243,6 +244,23 @@ describe("device rebind client", () => {
 		expect(bindings(f)).toEqual([TARGET]);
 	});
 
+	it("self-binds when the account is linked to this device's own Identity", async () => {
+		// Arrange: another device linked CURRENT, so this one sees no profile.
+		const f = await clientFixture();
+		f.remote.db.exec(`UPDATE coordinator_auth_account_links SET identity_id = '${CURRENT}';
+		 UPDATE enrolled_devices SET identity_id = '${CURRENT}'`);
+		const run = options(f);
+		// Act
+		const outcome = await runDeviceRebind(run.input);
+		// Assert: the device keeps CURRENT and holds its own binding.
+		expect(outcome).toMatchObject({
+			kind: "finalized",
+			receipt: { previousIdentityId: CURRENT, targetIdentityId: CURRENT },
+		});
+		expect(run.recorded).toEqual([expect.objectContaining({ targetIdentityId: CURRENT })]);
+		expect(bindings(f)).toEqual([CURRENT]);
+	});
+
 	it("returns the coordinator's refusal without opening the browser", async () => {
 		// Arrange: the device's current Identity already has its own Google account.
 		const f = await clientFixture();
@@ -253,6 +271,14 @@ describe("device rebind client", () => {
 				 VALUES (?, 'link-current', ?, 'subject-current', ?, 'link-current-attempt', ?, 1, 'device_claim', 'claim-current')`,
 			)
 			.run(config.coordinatorId, config.issuer, CURRENT, config.revision);
+		// The device also holds its own claim for that Identity, so it can't self-bind.
+		await insertOwnDeviceClaim(f.remote.db, {
+			coordinatorId: config.coordinatorId,
+			issuer: config.issuer,
+			revision: config.revision,
+			identityId: CURRENT,
+			deviceId: "device-a",
+		});
 		const openBrowser = vi.fn();
 		// Act
 		const outcome = await runDeviceRebind(options(f, { openBrowser }).input);

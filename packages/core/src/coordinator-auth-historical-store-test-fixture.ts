@@ -47,6 +47,7 @@ const excludedOwnerMigrationNames = [
 	"0036_add_owner_attempt_qualification_pin.sql",
 	"0037_add_legacy_owner_resolutions.sql",
 	"0038_add_device_rebind.sql",
+	"0040_allow_device_self_bind.sql",
 ];
 
 /** Closed fixture inputs only: unknown, missing or duplicate migrations require review. */

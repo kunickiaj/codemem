@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	commitDeviceRebind,
 	DEVICE_REBIND_DAILY_LIMIT,
 	readDeviceRebindReceipt,
 } from "./coordinator-device-rebind-commit.js";
-import { COORDINATOR_DEVICE_REBIND_SCHEMA_SQL } from "./coordinator-device-rebind-schema.js";
+import {
+	COORDINATOR_DEVICE_REBIND_SCHEMA_SQL,
+	rebuildRebindAttemptsForSelfBindSql,
+} from "./coordinator-device-rebind-schema.js";
 import {
 	COORDINATOR,
 	CURRENT,
@@ -376,13 +380,37 @@ describe.each(["SQLite", "D1"] as const)("%s device rebind commit", (kind) => {
 });
 
 describe("device rebind schema", () => {
-	it("matches the D1 migration and the Worker schema", () => {
-		const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
-		const migration = readFileSync(join(worker, "migrations/0038_add_device_rebind.sql"), "utf8");
-		const schema = readFileSync(join(worker, "schema.sql"), "utf8");
-		const sql = COORDINATOR_DEVICE_REBIND_SCHEMA_SQL.trim();
-		expect(migration).toContain(sql);
-		expect(schema).toContain(sql);
+	const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
+	const read = (file: string) => readFileSync(join(worker, file), "utf8");
+	const ddl = (db: Database.Database) =>
+		(
+			db
+				.prepare(
+					"SELECT type, name, sql FROM sqlite_master WHERE tbl_name LIKE 'coordinator_device_rebind%' AND sql IS NOT NULL ORDER BY type, name",
+				)
+				.all() as Array<{ type: string; name: string; sql: string }>
+		).map((row) => ({
+			...row,
+			sql: row.sql.replaceAll('"', "").replace("IF NOT EXISTS ", "").replace(/\s+/g, " ").trim(),
+		}));
+
+	it("matches the Worker schema", () => {
+		expect(read("schema.sql")).toContain(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL.trim());
+	});
+
+	it("builds the same tables through migrations 0038 and 0040", () => {
+		// Arrange
+		const migrated = new Database(":memory:");
+		const fresh = new Database(":memory:");
+		// Act
+		migrated.exec(read("migrations/0038_add_device_rebind.sql"));
+		migrated.exec(read("migrations/0040_allow_device_self_bind.sql"));
+		fresh.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
+		// Assert
+		expect(ddl(migrated)).toEqual(ddl(fresh));
+		expect(read("migrations/0040_allow_device_self_bind.sql")).toContain(
+			rebuildRebindAttemptsForSelfBindSql(),
+		);
 	});
 });
 

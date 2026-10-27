@@ -180,7 +180,7 @@ path for ordinary users.
 | Account state at sign-in | Result |
 | --- | --- |
 | No active link | Link the device's current Identity (the existing first-link flow). |
-| Linked to the device's current Identity | Nothing changes. |
+| Linked to the device's current Identity | The Identity stays. A device without its own claim, attestation, or binding gets an ownership binding (a self-bind, amended 2026-10-27), so it can manage the account too. |
 | Linked to a different Identity | After explicit confirmation, rebind the device to the account's Identity (below). |
 
 **Rebinding an enrolled device.**

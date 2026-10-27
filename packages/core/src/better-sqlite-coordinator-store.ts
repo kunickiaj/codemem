@@ -136,6 +136,8 @@ import {
 import {
 	COORDINATOR_DEVICE_REBIND_SCHEMA_SQL,
 	readDeviceRebindBackend,
+	rebindAttemptsNeedSelfBindRebuild,
+	rebuildRebindAttemptsForSelfBindSql,
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
@@ -558,6 +560,7 @@ function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 	// Additive rebind storage (ADR 0005 Section 8). Only an empty pre-release
 	// attempts table is recreated; see upgradePreReleaseRebindAttemptsSql.
 	upgradePreReleaseRebindAttempts(db);
+	upgradeRebindAttemptsForSelfBind(db);
 	db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
 }
 
@@ -579,6 +582,18 @@ function upgradeDeviceOwnershipTriggers(db: DatabaseType): void {
 		if (!upgrade) return;
 		db.exec(upgrade);
 		db.exec(COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL);
+	}).immediate();
+}
+
+/** Reads first; rebuilds an attempts table that forbids self-binds, keeping its rows. */
+function upgradeRebindAttemptsForSelfBind(db: DatabaseType): void {
+	const needed = () =>
+		rebindAttemptsNeedSelfBindRebuild(
+			(db.prepare(REBIND_ATTEMPTS_SQL).pluck().get() as string | undefined) ?? null,
+		);
+	if (!needed()) return;
+	db.transaction(() => {
+		if (needed()) db.exec(rebuildRebindAttemptsForSelfBindSql());
 	}).immediate();
 }
 

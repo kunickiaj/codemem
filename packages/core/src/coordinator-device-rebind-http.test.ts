@@ -10,6 +10,7 @@ import {
 	type DeviceRebindAttempt,
 	deviceRebindFinalMessage,
 } from "./coordinator-device-rebind-proof.js";
+import { insertOwnDeviceClaim } from "./coordinator-device-rebind-test-fixtures.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import {
 	browserForm,
@@ -191,6 +192,24 @@ async function finalizeBody(
 	};
 }
 
+/** The device's current Identity has its own Google link, and this device holds its own claim. */
+async function linkCurrentWithOwnClaim(f: Fixture) {
+	f.db
+		.prepare(
+			`INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id,
+			 attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
+			 VALUES (?, 'link-current', ?, 'subject-current', ?, 'link-current-attempt', ?, 1, 'device_claim', 'claim-current')`,
+		)
+		.run(config.coordinatorId, config.issuer, CURRENT, config.revision);
+	await insertOwnDeviceClaim(f.db, {
+		coordinatorId: config.coordinatorId,
+		issuer: config.issuer,
+		revision: config.revision,
+		identityId: CURRENT,
+		deviceId: "device-work",
+	});
+}
+
 describe.each(["SQLite", "D1"] as const)("signed device rebind routes (%s)", (kind) => {
 	it("starts, reports status, and finalizes a rebind", async () => {
 		// Arrange
@@ -243,13 +262,7 @@ describe.each(["SQLite", "D1"] as const)("signed device rebind routes (%s)", (ki
 	it("names the refusal so the device can tell the person what to do", async () => {
 		// Arrange: the device's current Identity already has its own Google account.
 		const f = await rebindHttpFixture(kind);
-		f.db
-			.prepare(
-				`INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id,
-				 attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
-				 VALUES (?, 'link-current', ?, 'subject-current', ?, 'link-current-attempt', ?, 1, 'device_claim', 'claim-current')`,
-			)
-			.run(config.coordinatorId, config.issuer, CURRENT, config.revision);
+		await linkCurrentWithOwnClaim(f);
 		// Act
 		const response = await f.send("POST", ROOT, startBody());
 		// Assert

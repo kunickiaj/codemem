@@ -221,6 +221,14 @@ no rows. A database built from `schema.sql` without migration records can run th
 with `wrangler d1 execute --remote --file`; a self-hosted SQLite coordinator upgrades the
 trigger when it opens.
 
+### Device self-binds (0040)
+
+Migration `0040_allow_device_self_bind.sql` rebuilds the rebind attempts table without the
+check that kept the target Identity different from the current one, so a device can sign in
+with the account already linked to its own Identity. It keeps every row, index, and trigger.
+Apply it before deploying a Worker that offers self-binds. A self-hosted SQLite coordinator
+rebuilds the table when it opens.
+
 ## 6. Deploy the Worker
 
 ### Owner admission pin source (not activated)
