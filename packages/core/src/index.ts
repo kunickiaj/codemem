@@ -691,6 +691,25 @@ export {
 	LEGACY_TEAM_SETUP_ERROR_REASONS,
 	legacyTeamSetupApiErrorCode,
 } from "./legacy-team-setup-errors.js";
+export {
+	assertLocalIdentityCurrent,
+	LocalIdentitySupersededError,
+	readLocalIdentityGeneration,
+} from "./local-identity-generation.js";
+export type {
+	LocalIdentitySwitch,
+	LocalIdentitySwitchState,
+} from "./local-identity-switch.js";
+export {
+	applyLocalIdentitySwitch,
+	assertNoLocalIdentityOverride,
+	completeLocalIdentitySwitch,
+	LocalIdentitySwitchError,
+	markLocalIdentitySwitchBound,
+	markLocalIdentitySwitchNotCommitted,
+	readOpenLocalIdentitySwitch,
+	recordLocalIdentitySwitch,
+} from "./local-identity-switch.js";
 export type {
 	BackfillTagsTextOptions,
 	BackfillTagsTextResult,

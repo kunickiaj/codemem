@@ -36,6 +36,7 @@ import {
 	buildFilterClausesWithContext,
 	type OwnershipFilterContext,
 } from "./filters.js";
+import { assertLocalIdentityCurrent } from "./local-identity-generation.js";
 import {
 	recordForeignMemoryRevision,
 	recordLocalCreationSnapshot,
@@ -543,6 +544,11 @@ export class MemoryStore {
 		return this.configuredIdentityMatches(deviceId);
 	}
 
+	/** Refuses writes from a process whose Identity a local switch superseded. */
+	assertLocalIdentityCurrent(): void {
+		assertLocalIdentityCurrent(this.db, this.actorId);
+	}
+
 	hasCurrentConfiguredIdentity(): boolean {
 		const deviceId = process.env.CODEMEM_DEVICE_ID?.trim() || this.deviceId;
 		return this.configuredIdentityMatches(deviceId);
@@ -637,6 +643,7 @@ export class MemoryStore {
 		if (!this.actorIdUsesDeviceFallback && !fallbackActor) {
 			this.db
 				.transaction(() => {
+					this.assertLocalIdentityCurrent();
 					assertLocalCaptureAdoptionActors(this.db, normalizedDeviceId, this.actorId);
 					this.adoptLocalCaptureForDevice(normalizedDeviceId);
 				})
@@ -681,6 +688,7 @@ export class MemoryStore {
 		const now = nowIso();
 		this.db
 			.transaction(() => {
+				this.assertLocalIdentityCurrent();
 				assertLocalCaptureAdoptionActors(this.db, deviceId, this.actorId);
 				this.adoptLocalCaptureForDevice(deviceId);
 				if (fallbackActor) {
@@ -1156,6 +1164,7 @@ export class MemoryStore {
 		const created: CreatedMemory[] = [];
 		const memoryId = this.db
 			.transaction(() => {
+				this.assertLocalIdentityCurrent();
 				this.assertSessionScopeWritable(sessionId, metadata);
 				return this.remember(sessionId, validKind, title, bodyText, confidence, tags, metadata, {
 					...options,

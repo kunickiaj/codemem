@@ -203,10 +203,12 @@ path for ordinary users.
   operator-only consumer rule in the account-link protocol for this ceremony
   only. A device-claim link still can't authorize fresh-device enrollment,
   invitations, or grants without the existing qualification.
-- The device then switches locally in one transaction: the configured Identity,
-  the local actor, and device bindings. The old local actor becomes a merged
-  alias of the target. `actor_id` and `origin_device_id` on existing memories
-  stay as they are (Section 6). Every capture or MCP process re-reads the
+- The device then switches locally: the local actor and this device's binding
+  change in one transaction, then the configured Identity follows. The old
+  local actor stops being the local actor but stays an active, unmerged
+  Identity, because the old Identity stays a Team member and a merged member
+  blocks that Team's device eligibility (amended 2026-10-26). `actor_id` and
+  `origin_device_id` on existing memories stay as they are (Section 6). Every capture or MCP process re-reads the
   Identity before writing and refuses to write under a superseded one.
 - If the coordinator commit succeeds and the local switch fails, the device
   reports "coordinator bound, local switch pending" and resumes from a receipt.

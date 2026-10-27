@@ -3022,6 +3022,8 @@ function isPendingCaptureActorConflict(error: unknown): error is Error {
 function ensureLocalActorRecord(store: MemoryStore): boolean {
 	return store.db
 		.transaction(() => {
+			// A stale process must not re-flag the Identity a local switch retired.
+			store.assertLocalIdentityCurrent();
 			try {
 				store.assertPendingLocalCaptureAdoptionActors();
 			} catch (error) {
