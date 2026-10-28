@@ -84,52 +84,52 @@ function completeDraft(
 		.run(teamId, NOW, NOW, draft.attemptId);
 }
 
-describe("Team setup terminal migration routing", () => {
-	function completionConfig(timeoutS?: number) {
-		return {
-			readConfig: () => ({
-				...readCoordinatorSyncConfig({}),
-				syncCoordinatorUrl: COORDINATOR_ID,
-				syncCoordinatorGroups: [GROUP_ID],
-				syncCoordinatorAdminSecret: "private-admin-secret",
-				...(timeoutS == null ? {} : { syncCoordinatorTimeoutS: timeoutS }),
-			}),
-			listGroups: vi.fn(async () => []),
-			listDevices: vi.fn(async () => []),
-		};
-	}
+function completionConfig(timeoutS?: number) {
+	return {
+		readConfig: () => ({
+			...readCoordinatorSyncConfig({}),
+			syncCoordinatorUrl: COORDINATOR_ID,
+			syncCoordinatorGroups: [GROUP_ID],
+			syncCoordinatorAdminSecret: "private-admin-secret",
+			...(timeoutS == null ? {} : { syncCoordinatorTimeoutS: timeoutS }),
+		}),
+		listGroups: vi.fn(async () => []),
+		listDevices: vi.fn(async () => []),
+	};
+}
 
-	async function readyDraftThroughSummary(
-		store: MemoryStore,
-		app: ReturnType<typeof teamSetupRoutes>,
-		candidateRef = CANDIDATE_REF,
-	) {
-		expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
-		store.db
-			.prepare(
-				`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+async function readyDraftThroughSummary(
+	store: MemoryStore,
+	app: ReturnType<typeof teamSetupRoutes>,
+	candidateRef = CANDIDATE_REF,
+) {
+	expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+	store.db
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
 				 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
-			)
-			.run(NOW, NOW);
-		let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
-		if (!draft) throw new Error("Team setup draft missing");
-		const device = draft.devices[0];
-		if (!device) throw new Error("Team setup device missing");
-		draft = setLegacyTeamSetupDeviceAssignment(store.db, {
-			attemptId: draft.attemptId,
-			deviceRef: device.deviceRef,
-			targetIdentityId: "identity-a",
-			expectation: device.expectation,
-			now: NOW,
-		});
-		return setLegacyTeamSetupDeviceDecision(store.db, {
-			attemptId: draft.attemptId,
-			deviceRef: device.deviceRef,
-			decision: "included",
-			now: NOW,
-		});
-	}
+		)
+		.run(NOW, NOW);
+	let draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+	if (!draft) throw new Error("Team setup draft missing");
+	const device = draft.devices[0];
+	if (!device) throw new Error("Team setup device missing");
+	draft = setLegacyTeamSetupDeviceAssignment(store.db, {
+		attemptId: draft.attemptId,
+		deviceRef: device.deviceRef,
+		targetIdentityId: "identity-a",
+		expectation: device.expectation,
+		now: NOW,
+	});
+	return setLegacyTeamSetupDeviceDecision(store.db, {
+		attemptId: draft.attemptId,
+		deviceRef: device.deviceRef,
+		decision: "included",
+		now: NOW,
+	});
+}
 
+describe("Team setup terminal migration routing", () => {
 	it("publishes before activating the immutable winner", async () => {
 		const store = new MemoryStore(":memory:");
 		const loadSnapshots = vi.fn(async () => SNAPSHOTS);
@@ -2669,6 +2669,71 @@ describe("Team setup terminal migration routing", () => {
 			store.close();
 		}
 	});
+});
+
+describe("Team setup reconciliation failure diagnostics", () => {
+	it.each([
+		{ failure: "validation", check: "validateLegacyTeamSetupCompletionManifest" },
+		{ failure: "apply", check: "requireIncludedDeviceEvidence" },
+	] as const)(
+		"logs the original $failure check without changing the API error",
+		async ({ failure, check }) => {
+			// Arrange: loaders succeed so the failure must cross reconcileCompletions' catch.
+			const store = new MemoryStore(":memory:");
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+			const setupApp = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				completionDependencies: null,
+			});
+			try {
+				const draft = await readyDraftThroughSummary(store, setupApp);
+				const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+					candidateRef: CANDIDATE_REF,
+					attemptId: draft.attemptId,
+					completedAt: NOW,
+				});
+				const listedManifest =
+					failure === "validation" ? { ...manifest, finish_digest: "0".repeat(64) } : manifest;
+				const snapshots =
+					failure === "apply"
+						? SNAPSHOTS.map((snapshot) => ({
+								...snapshot,
+								devices: snapshot.devices.map((device) => ({
+									...device,
+									fingerprint: FINGERPRINT_B,
+								})),
+							}))
+						: SNAPSHOTS;
+				const loadSnapshots = vi.fn(async () => snapshots);
+				const list = vi.fn(async () => [{ group_id: GROUP_ID, manifest: listedManifest }]);
+				const app = teamSetupRoutes({
+					getStore: () => store,
+					loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+					snapshotLoaderDependencies: completionConfig(),
+					completionDependencies: { create: vi.fn(), list },
+				});
+
+				// Act.
+				const response = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+				const body = await response.json();
+
+				// Assert: detailed diagnostics stay in the local log, not the API response.
+				expect(response.status).toBe(409);
+				expect(body).toEqual({ error: "team_setup_completion_invalid" });
+				expect(list).toHaveBeenCalledOnce();
+				expect(loadSnapshots).toHaveBeenCalledOnce();
+				expect(warn).toHaveBeenCalledWith(expect.stringContaining(`check=${check} (`));
+				expect(warn).not.toHaveBeenCalledWith(
+					expect.stringContaining("check=reconcileCompletions"),
+				);
+				expect(store.db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+			} finally {
+				warn.mockRestore();
+				store.close();
+			}
+		},
+	);
 });
 
 describe("Team setup coordinator retry classification", () => {

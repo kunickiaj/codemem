@@ -2063,3 +2063,30 @@ describe("Team setup summary after admin access is removed", () => {
 		}
 	});
 });
+
+describe("Team setup error logging", () => {
+	it("logs the route and internal check behind a team-setup error response", async () => {
+		const { store, close } = createRouteStore();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => {
+				throw new Error("team_setup_roster_unavailable");
+			},
+		});
+		try {
+			const response = await app.request("/api/sync/team-setup/v1");
+
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringMatching(
+					/^\[team-setup\] route=GET \/api\/sync\/team-setup\/v1 apiCode=team_setup_roster_unavailable check=\S+ \([\w.-]+:\d+\)$/u,
+				),
+			);
+		} finally {
+			warn.mockRestore();
+			close();
+		}
+	});
+});

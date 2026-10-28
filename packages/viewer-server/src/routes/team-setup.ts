@@ -42,6 +42,7 @@ import {
 	legacyTeamDeviceRef,
 	legacyTeamResolvedProjectRef,
 	legacyTeamSetupApiErrorCode,
+	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
@@ -1299,6 +1300,21 @@ function apiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {
 	return code === "team_setup_projection_changed" ? "team_setup_conflict" : code;
 }
 
+/**
+ * Maps a setup failure to its API code and logs the internal check that raised
+ * it. Dozens of checks share each public code, so the log is the only place an
+ * operator can see which one failed.
+ */
+function teamSetupFailure(
+	error: unknown,
+	route: string,
+): { code: LegacyTeamSetupActivationErrorCode; status: 400 | 409 | 503 } {
+	const code = apiErrorCode(error);
+	const check = legacyTeamSetupFailureCheck(error);
+	console.warn(`[team-setup] route=${route} apiCode=${code}${check ? ` check=${check}` : ""}`);
+	return { code, status: errorStatus(code) };
+}
+
 function completionApiError(error: unknown): LegacyTeamSetupActivationErrorCode {
 	const code = legacyTeamSetupApiErrorCode(error);
 	return code === "team_setup_failed" ? "team_setup_completion_unavailable" : code;
@@ -1828,7 +1844,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		try {
 			authorization = currentCompletionAuthorization();
 		} catch (error) {
-			throw new Error(completionApiError(error));
+			throw new Error(completionApiError(error), { cause: error });
 		}
 		// If current authorization cannot be proven, skip completion I/O without
 		// failing an otherwise serviceable persisted detail read.
@@ -2180,7 +2196,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				}
 			}
 		} catch (error) {
-			throw new Error(completionApiError(error));
+			throw new Error(completionApiError(error), { cause: error });
 		}
 	}
 	async function loadedCandidateSnapshots(
@@ -2230,8 +2246,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		try {
 			groups = await loadedSummarySnapshots();
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 		try {
 			const store = options.getStore();
@@ -2248,8 +2264,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			} satisfies LegacyTeamSetupSummaryResponseV1;
 			return c.json(response);
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2326,8 +2342,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 
 			return c.json(detailResponse(store, draft, candidate));
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2409,8 +2425,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				releaseMutation();
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2482,8 +2498,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				releaseMutation();
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2533,8 +2549,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				releaseMutation();
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2603,8 +2619,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				releaseMutation();
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2625,8 +2641,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 		let groups: LegacyTeamConfiguredGroupSnapshot[];
 		try {
@@ -2634,8 +2650,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				loadedCandidateSnapshots(candidateRef),
 			);
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 		if (
 			groups.filter(
@@ -2674,8 +2690,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 				releaseMutation();
 			}
 		} catch (error) {
-			const code = apiErrorCode(error);
-			return c.json({ error: code }, errorStatus(code));
+			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
+			return c.json({ error: failure.code }, failure.status);
 		}
 	});
 
@@ -2816,7 +2832,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						try {
 							authorization = currentCompletionAuthorization();
 						} catch (error) {
-							throw new Error(completionApiError(error));
+							throw new Error(completionApiError(error), { cause: error });
 						}
 						if (!completionDependencies || !authorization) {
 							throw new Error("team_setup_completion_unavailable");

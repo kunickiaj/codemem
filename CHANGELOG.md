@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `codemem coordinator diagnose-team-setup` dry-runs a coordinator's completed legacy Team setup against this device's database and names the check that fails. The viewer also logs that check when a Team setup request fails.
+
 ### Fixed
 
 - A legacy Team completed on another device now applies on a device that is not a member of every Space the Team maps Projects into. Previously, opening Team setup on that device failed on every load, and a failed apply could turn off the Team's sharing on that device. The device shares only the Projects in Spaces it belongs to and adds the others if it joins those Spaces later. ([#2421])

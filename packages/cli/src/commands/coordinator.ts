@@ -53,6 +53,7 @@ import {
 	buildCoordinatorAccountSchemaCommand,
 	buildCoordinatorAuthSchemaCommand,
 } from "./coordinator-auth-schema.js";
+import { buildCoordinatorDiagnoseTeamSetupCommand } from "./coordinator-diagnose-team-setup.js";
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
@@ -196,6 +197,7 @@ function createCoordinatorCommandRoot(): Command {
 	cmd.addCommand(buildCoordinatorQualifyOwnerCommand());
 	cmd.addCommand(buildCoordinatorGrantIdentityGroupCommand());
 	cmd.addCommand(buildCoordinatorRevokeDeviceCommand());
+	cmd.addCommand(buildCoordinatorDiagnoseTeamSetupCommand());
 	cmd.addCommand(buildCoordinatorAuthSchemaCommand());
 	cmd.addCommand(buildCoordinatorAccountSchemaCommand());
 	return cmd;

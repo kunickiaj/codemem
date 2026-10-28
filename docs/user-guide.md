@@ -608,6 +608,17 @@ If the page closes or the finish response is lost, refresh **Sharing** and open 
 
 Every device that finishes or recovers setup must use a coordinator that supports cross-device Team completion. The device must also list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. With an older coordinator, Codemem keeps the setup unfinished rather than creating a local-only result; update the coordinator, then retry. A device upgraded after a prior local completion makes that result available when it reconnects, after which other upgraded devices recover it automatically.
 
+A device that is not a member of every Space in a completed Team still applies the setup. It shares only the Projects in Spaces it belongs to, and adds the others if it later joins those Spaces.
+
+If a completed Team keeps asking for setup or the setup dialog will not load, run a dry run on the affected device. It needs the coordinator admin settings saved in your configuration:
+
+```bash
+codemem coordinator diagnose-team-setup
+codemem coordinator diagnose-team-setup '<group>' --json
+```
+
+For each configured group, the report shows whether the coordinator has a completed setup, which mapped Spaces are not active on this device, and what applying the completion would do. When the apply fails, the report names the failing check. The command opens the existing database read-only and diagnoses a private temporary SQLite backup, including committed changes from a running viewer. It needs temporary disk space for a full database copy and removes the copy afterward. Database initialization and compatibility upgrades run only on the copy. The viewer logs the original failing check as a `[team-setup]` warning when a setup request fails.
+
 ### Share exact Projects
 
 For direct sharing, including after Team onboarding:
