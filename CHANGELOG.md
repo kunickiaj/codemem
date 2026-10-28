@@ -2,18 +2,29 @@
 
 ## [Unreleased]
 
+## [0.47.3] - 2026-10-28
+
 ### Added
 
-- `codemem coordinator diagnose-team-setup` dry-runs a coordinator's completed legacy Team setup against this device's database and names the check that fails. The viewer also logs that check when a Team setup request fails.
+- `codemem coordinator diagnose-team-setup` checks a coordinator's completed legacy Team setup against a private temporary database copy and names the check that fails. It works before opening the Team in the Viewer and leaves the original database unchanged. The Viewer also logs the original failing check when a setup request fails. ([#2422], [#2426])
+
+### Changed
+
+- Packaged-artifact tests now exercise Team recovery through installed CLI, core, and Viewer packages, including a new device that has only its signed-in person's record. They also cover repeated recovery, Space membership controls, and rejection of disabled or rekeyed devices. ([#2428])
 
 ### Fixed
 
-- A new device can now recover a completed Team without already having person records for every teammate. Recovery creates missing non-local records from the validated completion and preserves existing identities and ownership evidence.
-- Team setup diagnosis now initializes missing review drafts inside its temporary copy, avoiding false completion errors before the viewer has opened a Team.
-- Opening a saved stale Team review now revalidates it once instead of requiring an initial Retry click. A failed automatic refresh remains visible for review.
-- Team setup lists now report recovery blockers instead of offering a migration that cannot load. Recovery also preserves verified matching sharing policy when a local Project scan limit prevents applying a coordinator completion after a publication conflict.
-- Leaving one of a completed Team's Spaces, or losing access to all of them, no longer makes that device treat the Team as needing setup again. Space refreshes also stop re-archiving Spaces that were already archived.
+- A new device can now recover a completed Team without already having person records for every teammate. Recovery creates missing non-local records from the validated completion and preserves existing identities and ownership evidence. ([#2427])
+- Opening a saved stale Team review now revalidates it once instead of requiring an initial Retry click. A failed automatic refresh remains visible for review. ([#2425])
+- Team setup lists now report recovery blockers instead of offering a migration that cannot load. Recovery also preserves verified matching sharing policy when a local Project scan limit prevents applying a coordinator completion after a publication conflict. Failed completion reads no longer trigger publication of an older local setup. ([#2424])
+- Leaving one of a completed Team's Spaces, or losing access to all of them, no longer makes that device treat the Team as needing setup again. Space refreshes also stop re-archiving Spaces that were already archived. ([#2423])
 - A legacy Team completed on another device now applies on a device that is not a member of every Space the Team maps Projects into. Previously, opening Team setup on that device failed on every load, and a failed apply could turn off the Team's sharing on that device. The device shares only the Projects in Spaces it belongs to and adds the others if it joins those Spaces later. ([#2421])
+
+**Upgrade notes:**
+
+- Restart the Viewer and agent host after upgrading so the new backend and UI load. No coordinator schema migration is required.
+- Newly recovered people may appear as **Team member** because the completed setup does not include person names. Recovery does not merge existing people or verify account ownership.
+- The diagnosis command needs temporary disk space for a full database copy. It removes the copy afterward.
 
 ## [0.47.2] - 2026-10-28
 
@@ -217,7 +228,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.2...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.3...HEAD
+[0.47.3]: https://github.com/kunickiaj/codemem/compare/v0.47.2...v0.47.3
 [0.47.2]: https://github.com/kunickiaj/codemem/compare/v0.47.1...v0.47.2
 [0.47.1]: https://github.com/kunickiaj/codemem/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...v0.47.0
@@ -284,3 +296,10 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2418]: https://github.com/kunickiaj/codemem/pull/2418
 [#2419]: https://github.com/kunickiaj/codemem/pull/2419
 [#2421]: https://github.com/kunickiaj/codemem/pull/2421
+[#2422]: https://github.com/kunickiaj/codemem/pull/2422
+[#2423]: https://github.com/kunickiaj/codemem/pull/2423
+[#2424]: https://github.com/kunickiaj/codemem/pull/2424
+[#2425]: https://github.com/kunickiaj/codemem/pull/2425
+[#2426]: https://github.com/kunickiaj/codemem/pull/2426
+[#2427]: https://github.com/kunickiaj/codemem/pull/2427
+[#2428]: https://github.com/kunickiaj/codemem/pull/2428
