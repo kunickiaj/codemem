@@ -131,30 +131,29 @@ export interface CapturedEvidenceRow {
 	row: string | null;
 }
 
+const CATEGORY_BLOCK_SIZE = 5;
+
 export function readCombinedEvidenceQuery(encoded: string): AuthLinkStatement {
 	const stages = EVIDENCE_QUERIES.map(
 		({ name, sql }) => `selected_${name}(row) AS MATERIALIZED (${sql})`,
 	);
-	const categories = EVIDENCE_QUERIES.map(({ name }) => `('${name}')`).join(",");
-	const counts = EVIDENCE_QUERIES.map(
-		({ name }) => `WHEN '${name}' THEN (SELECT count(*) FROM selected_${name})`,
-	).join("\n");
-	const rows = EVIDENCE_QUERIES.map(({ name }) => `WHEN '${name}' THEN selected_${name}.row`).join(
-		"\n",
+	const categories = EVIDENCE_QUERIES.map(
+		({ name }) => `SELECT '${name}' AS category,
+ (SELECT count(*) FROM selected_${name}) AS row_count, s.row
+ FROM (SELECT 1) LEFT JOIN selected_${name} s ON 1`,
 	);
-	const joins = EVIDENCE_QUERIES.map(
-		({ name }) => `LEFT JOIN selected_${name} ON category='${name}'`,
-	).join("\n");
-	stages.push(
-		`categories(category) AS (VALUES ${categories})`,
-		`captured AS (SELECT category,
- CASE category ${counts} END AS row_count,
- CASE category ${rows} END AS row
- FROM categories ${joins})`,
-	);
+	const blocks: string[] = [];
+	for (let offset = 0; offset < categories.length; offset += CATEGORY_BLOCK_SIZE) {
+		const name = `category_block_${offset}`;
+		stages.push(
+			`${name} AS MATERIALIZED (${categories.slice(offset, offset + CATEGORY_BLOCK_SIZE).join("\nUNION ALL\n")})`,
+		);
+		blocks.push(`SELECT * FROM ${name}`);
+	}
+	stages.push(`captured AS (${blocks.join("\nUNION ALL\n")})`);
 	return {
-		// VALUES avoids D1's compound-SELECT term limit. Only the matching
-		// category's join can return rows; every other LEFT JOIN contributes NULL.
+		// Independent branches avoid rescanning other categories for each emitted row.
+		// Materialized blocks keep each compound SELECT within D1's five-term limit.
 		// Empty categories retain an explicit count/NULL marker. Bound the entire
 		// response, not just each category, before evidence text crosses the backend.
 		sql: `${prefix}, ${stages.join(",\n")}
