@@ -602,6 +602,8 @@ If a Team needs device setup, **Sharing** shows a notice and **Continue setup**.
 
 Setup can become stale when devices, Project mappings, or access change while you are reviewing. Refresh the Team, review the updates, and finish again; new or changed devices need a fresh decision. Your unchanged saved choices remain available for review.
 
+When you first open a saved stale review, Codemem revalidates it once so you can continue without an initial Retry click. If revalidation fails, the dialog shows the error and keeps Retry available. Reads used only to check a completed setup do not refresh the review automatically.
+
 When another upgraded device opens **Sharing**, it automatically applies a completed Team's reviewed policy locally before removing the setup task. The Team then appears normally under **Sharing → Teams**, so you do not need to repeat setup on each device.
 
 If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. Retrying the same finish safely returns the completed result instead of applying access changes again. If setup cannot reach the shared completion service or cannot apply the completed result locally, the task stays visible and offers retry; it never hides an incomplete setup.
