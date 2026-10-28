@@ -228,23 +228,28 @@ function seedPriorContainmentState(
 		db.prepare("DELETE FROM policy_teams WHERE team_id = ?").run(teamId);
 }
 
+function createCompletionFixtureDb(): InstanceType<typeof Database> {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	db.prepare(
+		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
+	).run(NOW, NOW);
+	db.prepare(
+		`INSERT INTO replication_scopes(
+		 scope_id, label, kind, authority_type, coordinator_id, group_id,
+		 membership_epoch, status, created_at, updated_at
+		 ) VALUES ('scope-engineering', 'Engineering', 'team', 'coordinator', ?, ?, 1,
+		 'active', ?, ?)`,
+	).run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	return db;
+}
+
 describe("legacy Team setup completion manifests", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		initTestSchema(db);
-		db.prepare(
-			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-			 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		db.prepare(
-			`INSERT INTO replication_scopes(
-			 scope_id, label, kind, authority_type, coordinator_id, group_id,
-			 membership_epoch, status, created_at, updated_at
-			 ) VALUES ('scope-engineering', 'Engineering', 'team', 'coordinator', ?, ?, 1,
-			 'active', ?, ?)`,
-		).run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+		db = createCompletionFixtureDb();
 	});
 
 	afterEach(() => db.close());
@@ -2458,5 +2463,148 @@ describe("legacy Team setup completion manifests", () => {
 				.get(draft.attemptId),
 		).not.toBe("completed");
 		expect(db.prepare("SELECT COUNT(*) FROM policy_teams").pluck().get()).toBe(0);
+	});
+});
+
+const PROJECT_REF_B = legacyTeamProjectRef(CANDIDATE, PROJECT_B);
+const HIDDEN_SPACE_PROJECTS = [
+	{
+		projectRef: PROJECT_REF_A,
+		sourceProjectIdentity: PROJECT_A,
+		displayName: "API",
+		sourceFingerprint: "source-a",
+		deterministicProjectIdentity: PROJECT_A,
+		targetScopeId: "scope-engineering",
+	},
+	{
+		projectRef: PROJECT_REF_B,
+		sourceProjectIdentity: PROJECT_B,
+		displayName: "Web",
+		sourceFingerprint: "source-b",
+		deterministicProjectIdentity: PROJECT_B,
+		targetScopeId: "scope-personal",
+	},
+];
+
+function setScopeStatus(db: InstanceType<typeof Database>, scopeId: string, status: string): void {
+	db.prepare("UPDATE replication_scopes SET status = ? WHERE scope_id = ?").run(status, scopeId);
+}
+
+/**
+ * Completes setup with Projects in two Spaces, then replaces the local draft
+ * the way a device that still has evidence for both Projects would see it.
+ */
+function seedHiddenSpaceCompletion(db: InstanceType<typeof Database>) {
+	db.prepare(
+		`INSERT INTO replication_scopes(
+		 scope_id, label, kind, authority_type, coordinator_id, group_id,
+		 membership_epoch, status, created_at, updated_at
+		 ) VALUES ('scope-personal', 'Personal', 'team', 'coordinator', ?, ?, 1, 'active', ?, ?)`,
+	).run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	const draftInput = {
+		candidateId: CANDIDATE,
+		coordinatorId: COORDINATOR_ID,
+		groupId: GROUP_ID,
+		displayName: "Engineering",
+		devices: [{ deviceId: "device-a", fingerprint: KEY_A, displayName: "Laptop", enabled: true }],
+		projects: HIDDEN_SPACE_PROJECTS,
+	};
+	let source = refreshLegacyTeamSetupDraft(db, { ...draftInput, now: NOW });
+	const device = source.devices[0];
+	if (!device) throw new Error("missing source device");
+	source = setLegacyTeamSetupDeviceAssignment(db, {
+		attemptId: source.attemptId,
+		deviceRef: device.deviceRef,
+		targetIdentityId: "identity-a",
+		expectation: device.expectation,
+		now: NOW,
+	});
+	source = setLegacyTeamSetupDeviceDecision(db, {
+		attemptId: source.attemptId,
+		deviceRef: device.deviceRef,
+		decision: "included",
+		now: NOW,
+	});
+	const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+		candidateRef: source.candidateRef,
+		attemptId: source.attemptId,
+		completedAt: NOW,
+	});
+	const replacement = refreshLegacyTeamSetupDraft(db, {
+		...draftInput,
+		now: "2026-09-01T12:01:00.000Z",
+	});
+	return { manifest, attemptId: replacement.attemptId };
+}
+
+function hiddenSpaceCompletionState(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	attemptId: string,
+) {
+	return {
+		team: db.prepare("SELECT status, revision FROM policy_teams WHERE team_id = ?").get(teamId),
+		finishDigest: db
+			.prepare("SELECT finish_digest FROM legacy_team_setup_drafts WHERE attempt_id = ?")
+			.pluck()
+			.get(attemptId),
+		completions: db.prepare("SELECT COUNT(*) FROM legacy_team_setup_completions").pluck().get(),
+		draftProjects: db
+			.prepare(
+				"SELECT project_ref FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref",
+			)
+			.pluck()
+			.all(attemptId),
+		teamProjects: db
+			.prepare(
+				`SELECT canonical_project_identity FROM project_recipients
+				 WHERE recipient_kind = 'team' AND recipient_id = ? AND status = 'active'
+				 ORDER BY canonical_project_identity`,
+			)
+			.pluck()
+			.all(teamId),
+	};
+}
+
+describe("legacy Team setup completion manifests with hidden Spaces", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it("skips Projects mapped into a Space this device cannot see and adds them once it can", async () => {
+		const { manifest, attemptId } = seedHiddenSpaceCompletion(db);
+		// The coordinator omitted the personal Space from this device's listing.
+		setScopeStatus(db, "scope-personal", "archived");
+		const apply = () =>
+			applyLegacyTeamSetupCompletionManifest(db, {
+				coordinatorId: COORDINATOR_ID,
+				groupId: GROUP_ID,
+				freshRoster: FRESH_ROSTER,
+				manifest,
+			});
+		const state = () => hiddenSpaceCompletionState(db, manifest.team_id, attemptId);
+
+		await expect(apply()).resolves.toEqual(manifest);
+		const afterFirstApply = state();
+		expect(afterFirstApply).toMatchObject({
+			team: { status: "active" },
+			draftProjects: [PROJECT_REF_A],
+			teamProjects: [PROJECT_A],
+		});
+		await expect(apply()).resolves.toEqual(manifest);
+		expect(state()).toEqual(afterFirstApply);
+
+		setScopeStatus(db, "scope-personal", "active");
+		db.prepare("INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)").run(
+			NOW,
+			"Web workspace",
+			PROJECT_B,
+		);
+		await expect(apply()).resolves.toEqual(manifest);
+		expect(state().teamProjects).toEqual([PROJECT_A, PROJECT_B].toSorted());
 	});
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A legacy Team completed on another device now applies on a device that is not a member of every Space the Team maps Projects into. Previously, opening Team setup on that device failed on every load, and a failed apply could turn off the Team's sharing on that device. The device shares only the Projects in Spaces it belongs to and adds the others if it joins those Spaces later. ([#2421])
+
 ## [0.47.2] - 2026-10-28
 
 ### Changed
@@ -270,3 +274,4 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2416]: https://github.com/kunickiaj/codemem/pull/2416
 [#2418]: https://github.com/kunickiaj/codemem/pull/2418
 [#2419]: https://github.com/kunickiaj/codemem/pull/2419
+[#2421]: https://github.com/kunickiaj/codemem/pull/2421

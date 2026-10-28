@@ -465,7 +465,50 @@ export function validateLegacyTeamSetupCompletionManifestBinding(
 	return manifest;
 }
 
+/**
+ * The coordinator lists only the Spaces this device belongs to, so a Space
+ * omitted from this device's membership is archived locally. Mappings into
+ * such a Space carry no access for this device and are treated like Projects
+ * without local evidence: skipped here and picked up once the Space is visible.
+ */
+function activeCoordinatorScopeIds(
+	db: Database,
+	draft: DraftRow,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): Set<string> {
+	const scopeIds = [...new Set(manifest.project_mappings.map((mapping) => mapping.scope_id))];
+	if (scopeIds.length === 0) return new Set();
+	return new Set(
+		db
+			.prepare(
+				`SELECT scope_id FROM replication_scopes
+				 WHERE scope_id IN (${scopeIds.map(() => "?").join(", ")})
+				   AND coordinator_id = ? AND group_id = ?
+				   AND authority_type = 'coordinator' AND status = 'active'`,
+			)
+			.pluck()
+			.all(...scopeIds, draft.coordinator_id, draft.group_id) as string[],
+	);
+}
+
 function resolveManifestProjects(
+	db: Database,
+	draft: DraftRow,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): Map<string, ResolvedManifestProject> {
+	const visibleScopeIds = activeCoordinatorScopeIds(db, draft, manifest);
+	const scopeByProjectRef = new Map(
+		manifest.project_mappings.map((mapping) => [mapping.project_ref, mapping.scope_id]),
+	);
+	const resolved = resolveManifestProjectsWithLocalEvidence(db, draft.attempt_id, manifest);
+	return new Map(
+		[...resolved].filter(([projectRef]) =>
+			visibleScopeIds.has(scopeByProjectRef.get(projectRef) ?? ""),
+		),
+	);
+}
+
+function resolveManifestProjectsWithLocalEvidence(
 	db: Database,
 	attemptId: string,
 	manifest: CoordinatorLegacyTeamCompletionManifestV1,
@@ -722,7 +765,7 @@ function rewriteDraftRowsFromManifest(
 			decision.device_id,
 		);
 	}
-	const resolvedProjects = resolveManifestProjects(db, draft.attempt_id, manifest);
+	const resolvedProjects = resolveManifestProjects(db, draft, manifest);
 	const localProjectRefs = db
 		.prepare(
 			`SELECT project_ref FROM legacy_team_setup_draft_projects
@@ -737,7 +780,8 @@ function rewriteDraftRowsFromManifest(
 		"DELETE FROM legacy_team_setup_draft_projects WHERE attempt_id = ? AND project_ref = ?",
 	);
 	// Activation grants every Project left in the draft. Retain only historical
-	// mappings supported by this installation's local Project evidence.
+	// mappings supported by this installation's local Project evidence and
+	// targeting a Space this device can see.
 	for (const projectRef of localProjectRefs) {
 		if (!resolvedProjects.has(projectRef)) deleteProject.run(draft.attempt_id, projectRef);
 	}
@@ -755,6 +799,7 @@ function rewriteDraftRowsFromManifest(
 	for (const mapping of manifest.project_mappings) {
 		const resolvedProject = resolvedProjects.get(mapping.project_ref);
 		if (!resolvedProject) continue;
+		// Defensive: resolveManifestProjects already dropped inactive Spaces.
 		const scope = db
 			.prepare(
 				`SELECT 1 FROM replication_scopes
@@ -854,6 +899,7 @@ function appendResolvedManifestProjects(
 		const mapping = mappingsByRef.get(projectRef);
 		const resolved = resolvedProjects.get(projectRef);
 		if (!mapping || !resolved) fail("team_setup_completion_invalid");
+		// Defensive: resolveManifestProjects already dropped inactive Spaces.
 		const scope = db
 			.prepare(
 				`SELECT 1 FROM replication_scopes
@@ -1124,11 +1170,7 @@ async function applyCompletionManifest(
 							}
 							if (equivalentCompletionPolicyFacts(local, manifest, new Set())) {
 								compatibleLocalPolicy = true;
-								const additiveResolvedProjects = resolveManifestProjects(
-									db,
-									draft.attempt_id,
-									manifest,
-								);
+								const additiveResolvedProjects = resolveManifestProjects(db, draft, manifest);
 								if (
 									equivalentCompletionPolicyFacts(
 										local,
