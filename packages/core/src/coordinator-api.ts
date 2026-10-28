@@ -2270,9 +2270,7 @@ export function createCoordinatorApp(
 			return c.json({ error: "operation_id_and_group_id_required" }, 400);
 		const store = createStore();
 		try {
-			const invite = (await store.listInvites(groupId)).find(
-				(item) => item.operation_id === operationId,
-			);
+			const invite = await store.getInviteByOperationId(groupId, operationId);
 			if (!invite) return c.json({ error: "operation_not_found" }, 404);
 			let projects: ReturnType<typeof storedProjectIntent>;
 			try {

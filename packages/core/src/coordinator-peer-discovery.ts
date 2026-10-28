@@ -28,10 +28,12 @@ export function capturePeerEnrollments(
 
 // One JSON parameter keeps the bind count constant even for large groups. Only
 // unchanged captured candidates survive; metadata and presence come from this read.
+// Keep captured rows first so each candidate seeks one enrollment instead of
+// rescanning the captured JSON for every enrolled device when statistics are absent.
 export const READ_CURRENT_PEERS_SQL = `SELECT e.device_id, e.public_key, e.fingerprint,
 	e.display_name, p.addresses_json, p.last_seen_at, p.expires_at, p.capabilities_json
 	FROM json_each(?) AS captured
-	JOIN enrolled_devices AS e
+	CROSS JOIN enrolled_devices AS e
 	  ON e.group_id = json_extract(captured.value, '$.group_id')
 	 AND e.device_id = json_extract(captured.value, '$.device_id')
 	 AND e.public_key = json_extract(captured.value, '$.public_key')

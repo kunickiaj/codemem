@@ -1929,6 +1929,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return rowToRecord<CoordinatorInvite>(row);
 	}
 
+	async getInviteByOperationId(
+		groupId: string,
+		operationId: string,
+	): Promise<CoordinatorInvite | null> {
+		const row = this.db
+			.prepare(`SELECT ${INVITE_COLUMNS}
+				 FROM coordinator_invites WHERE group_id = ? AND operation_id = ?`)
+			.get(groupId, operationId);
+		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+	}
+
 	async getInviteByToken(token: string): Promise<CoordinatorInvite | null> {
 		const row = this.db
 			.prepare(`SELECT ${INVITE_COLUMNS}

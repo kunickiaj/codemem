@@ -2069,6 +2069,19 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return rowToRecord<CoordinatorInvite>(row);
 	}
 
+	async getInviteByOperationId(
+		groupId: string,
+		operationId: string,
+	): Promise<CoordinatorInvite | null> {
+		const row = await firstRow<CoordinatorInvite>(
+			this.db
+				.prepare(`SELECT ${INVITE_COLUMNS}
+					 FROM coordinator_invites WHERE group_id = ? AND operation_id = ?`)
+				.bind(groupId, operationId),
+		);
+		return row ? rowToRecord<CoordinatorInvite>(row) : null;
+	}
+
 	async getInviteByToken(_token: string): Promise<CoordinatorInvite | null> {
 		const digest = await tokenDigest(_token);
 		const row = await firstRow<CoordinatorInvite>(

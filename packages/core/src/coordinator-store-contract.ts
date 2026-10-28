@@ -548,6 +548,7 @@ export interface CoordinatorStore
 	recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean>;
 	cleanupNonces(cutoff: string): Promise<void>;
 	createInvite(opts: CoordinatorCreateInviteInput): Promise<CoordinatorInvite>;
+	getInviteByOperationId(groupId: string, operationId: string): Promise<CoordinatorInvite | null>;
 	getInviteByToken(token: string): Promise<CoordinatorInvite | null>;
 	getInviteByTokenForInspection(token: string): Promise<CoordinatorInvite | null>;
 	inspectRecipientInvite(
