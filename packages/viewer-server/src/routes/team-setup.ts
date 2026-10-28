@@ -171,6 +171,67 @@ export interface LegacyTeamCandidateGroupDescriptor {
 	coordinatorId: string;
 }
 
+interface CompletionReconciliationOptions {
+	isolateApplyFailures?: boolean;
+	onFailure?: (group: LegacyTeamCandidateGroupDescriptor, error: unknown) => void;
+}
+
+function completionFailureHandlers(options: CompletionReconciliationOptions) {
+	const handledGroupIds = new Set<string>();
+	const reportFailure = (group: LegacyTeamCandidateGroupDescriptor, error: unknown) => {
+		// A failed read is not proof that a coordinator completion is absent.
+		// Do not try publishing the local completion after reporting its blocker.
+		handledGroupIds.add(group.groupId);
+		options.onFailure?.(group, error);
+	};
+	const handleFailure = (group: LegacyTeamCandidateGroupDescriptor, error: unknown) => {
+		if (!options.isolateApplyFailures) throw error;
+		reportFailure(group, error);
+	};
+	return { handledGroupIds, handleFailure, reportFailure };
+}
+
+function completionConflictError(cause: unknown): Error {
+	return new Error("team_setup_completion_conflict", { cause });
+}
+
+function addFreshCompletionGroups(
+	index: Map<string, LegacyTeamConfiguredGroupSnapshot>,
+	groups: Array<LegacyTeamConfiguredGroupSnapshot | undefined>,
+	keyOf: (group: LegacyTeamConfiguredGroupSnapshot) => string,
+): void {
+	for (const group of groups) {
+		if (!group) continue;
+		const key = keyOf(group);
+		if (index.has(key)) throw new Error("team_setup_completion_invalid");
+		index.set(key, group);
+	}
+}
+
+function groupCompletionFailureHandler(
+	groups: Map<string, LegacyTeamCandidateGroupDescriptor>,
+	handleFailure: (group: LegacyTeamCandidateGroupDescriptor, error: unknown) => void,
+) {
+	return (groupId: string, error: unknown) => {
+		const group = groups.get(groupId);
+		if (group) handleFailure(group, error);
+	};
+}
+
+function summaryReconciliationOptions(
+	blockingErrors: Map<string, LegacyTeamSetupActivationErrorCode>,
+): CompletionReconciliationOptions {
+	return {
+		isolateApplyFailures: true,
+		onFailure: (group, error) => {
+			blockingErrors.set(
+				legacyTeamCandidateId(group.coordinatorId, group.groupId),
+				apiErrorCode(new Error(completionApiError(error))),
+			);
+		},
+	};
+}
+
 export type LegacyTeamConfiguredGroupSnapshotLoader = (
 	options?: LegacyTeamConfiguredGroupSnapshotLoadOptions,
 ) => Promise<LegacyTeamConfiguredGroupSnapshot[]>;
@@ -343,15 +404,21 @@ function isUnattributableCompletionBatchError(error: unknown): boolean {
 async function listCompletionRecordsPerGroup(
 	groupIds: readonly string[],
 	list: (groupIds: string[]) => Promise<CoordinatorLegacyTeamCompletionRecord[]>,
+	onFailure: (groupId: string, error: unknown) => void,
+	batchError: unknown,
 ): Promise<CoordinatorLegacyTeamCompletionRecord[]> {
-	// A single group re-query would repeat the same undecodable payload.
-	if (groupIds.length < 2) return [];
+	// The failed single-group query already identifies the affected candidate.
+	if (groupIds.length === 1) {
+		onFailure(groupIds[0] as string, batchError);
+		return [];
+	}
 	const records: CoordinatorLegacyTeamCompletionRecord[] = [];
 	for (const groupId of groupIds) {
 		try {
 			records.push(...(await list([groupId])));
 		} catch (error) {
 			if (!isUnattributableCompletionBatchError(error)) throw error;
+			onFailure(groupId, error);
 		}
 	}
 	return records;
@@ -707,6 +774,80 @@ function candidateFromDraft(draft: LegacyTeamSetupDraftView): LegacyTeamCandidat
 		projectCount: draft.projects.length,
 		unresolvedDeviceCount: draft.unresolvedDeviceCount,
 		unresolvedProjectCount: draft.unresolvedProjectCount,
+	};
+}
+
+function blockedCandidateSummary(
+	store: MemoryStore,
+	group: LegacyTeamConfiguredGroupSnapshot,
+	blockingError: LegacyTeamSetupActivationErrorCode,
+): LegacyTeamSetupPendingCandidateSummaryV1 {
+	const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
+	const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+	if (draft) {
+		return { ...candidateSummary(candidateFromDraft(draft)), status: "stale", blockingError };
+	}
+	const forbiddenIds = [
+		group.coordinatorId,
+		group.groupId,
+		candidateRef,
+		...group.devices.flatMap((device) => [
+			device.deviceId,
+			device.fingerprint,
+			...(device.labelRedactionIds ?? []),
+		]),
+	];
+	return {
+		candidateRef,
+		displayName: safeChoiceLabel(group.displayName, "Legacy Team", forbiddenIds),
+		status: "stale",
+		blockingError,
+		deviceCount: group.devices.length,
+		projectCount: 0,
+		unresolvedDeviceCount: 0,
+		unresolvedProjectCount: 0,
+	};
+}
+
+function pendingCandidateSummaries(
+	store: MemoryStore,
+	groups: LegacyTeamConfiguredGroupSnapshot[],
+	blockingErrors: Map<string, LegacyTeamSetupActivationErrorCode>,
+): LegacyTeamSetupPendingCandidateSummaryV1[] {
+	const unblockedGroups = groups.filter(
+		(group) => !blockingErrors.has(legacyTeamCandidateId(group.coordinatorId, group.groupId)),
+	);
+	const pending = readPureCandidateViews(store, unblockedGroups)
+		.map(candidateSummary)
+		.filter(
+			(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
+				candidate.status !== "ready",
+		);
+	const blocked = groups.flatMap((group) => {
+		const error = blockingErrors.get(legacyTeamCandidateId(group.coordinatorId, group.groupId));
+		return error ? [blockedCandidateSummary(store, group, error)] : [];
+	});
+	return [...pending, ...blocked].toSorted((left, right) => {
+		if (left.candidateRef < right.candidateRef) return -1;
+		return left.candidateRef > right.candidateRef ? 1 : 0;
+	});
+}
+
+async function reconcileSummaryCandidates(
+	store: MemoryStore,
+	groups: LegacyTeamConfiguredGroupSnapshot[],
+	reconcile: (
+		store: MemoryStore,
+		groups: LegacyTeamCandidateGroupDescriptor[],
+		options: CompletionReconciliationOptions,
+	) => Promise<void>,
+): Promise<LegacyTeamSetupSummaryResponseV1> {
+	readPureCandidateViews(store, groups);
+	const blockingErrors = new Map<string, LegacyTeamSetupActivationErrorCode>();
+	await reconcile(store, groups, summaryReconciliationOptions(blockingErrors));
+	return {
+		version: TEAM_SETUP_VERSION,
+		candidates: pendingCandidateSummaries(store, groups, blockingErrors),
 	};
 }
 
@@ -1837,8 +1978,10 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	async function reconcileCompletions(
 		store: MemoryStore,
 		groups: LegacyTeamCandidateGroupDescriptor[],
-		reconciliationOptions: { isolateApplyFailures?: boolean } = {},
+		reconciliationOptions: CompletionReconciliationOptions = {},
 	): Promise<void> {
+		const { handledGroupIds, handleFailure, reportFailure } =
+			completionFailureHandlers(reconciliationOptions);
 		if (!completionDependencies || groups.length === 0) return;
 		let authorization: CompletionAuthorization | null;
 		try {
@@ -1886,7 +2029,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 					// group's setup state. Re-query per group so the decode failure
 					// stays attributable; a group whose own record cannot be decoded is
 					// skipped, matching the unprovable-binding path below.
-					records = await listCompletionRecordsPerGroup(scopedGroupIds, listCompletionRecords);
+					records = await listCompletionRecordsPerGroup(
+						scopedGroupIds,
+						listCompletionRecords,
+						groupCompletionFailureHandler(groupById, handleFailure),
+						error,
+					);
 				} else {
 					throw error;
 				}
@@ -1898,23 +2046,19 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 					const freshGroups = onlyGroup
 						? [await loadFreshGroupSnapshot(onlyGroup, remoteUrl, reconciliationDeadlineMs)]
 						: await loadedSnapshots(undefined, reconciliationDeadlineMs);
-					for (const freshGroup of freshGroups) {
-						if (!freshGroup) continue;
-						const key = freshGroupKey(freshGroup);
-						if (freshGroupByKey.has(key)) throw new Error("team_setup_completion_invalid");
-						freshGroupByKey.set(key, freshGroup);
-					}
+					addFreshCompletionGroups(freshGroupByKey, freshGroups, freshGroupKey);
 				} catch (error) {
 					for (const record of records) {
 						const group = groupById.get(record.group_id);
 						if (!group || !belongsToGroupCandidate(record, group)) continue;
+						reportFailure(group, error);
 						try {
 							validateLegacyTeamSetupCompletionManifestBinding(record.manifest, {
 								coordinatorId: group.coordinatorId,
 								groupId: group.groupId,
 							});
 						} catch (bindingError) {
-							if (!reconciliationOptions.isolateApplyFailures) throw bindingError;
+							handleFailure(group, bindingError);
 							continue;
 						}
 						let canonicalManifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
@@ -1924,6 +2068,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								groupId: group.groupId,
 							});
 						} catch (validationError) {
+							reportFailure(group, validationError);
 							try {
 								const contained = await runCandidateMutation(
 									store.db,
@@ -1935,11 +2080,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 										}),
 								);
 								if (!contained) {
-									if (!reconciliationOptions.isolateApplyFailures) throw validationError;
+									handleFailure(group, validationError);
 									continue;
 								}
 							} catch (containmentError) {
-								if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+								handleFailure(group, containmentError);
 							}
 							if (!reconciliationOptions.isolateApplyFailures) throw validationError;
 							continue;
@@ -1974,14 +2119,13 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								}),
 							);
 						} catch (containmentError) {
-							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							handleFailure(group, containmentError);
 						}
 					}
 					if (!reconciliationOptions.isolateApplyFailures) throw error;
 					return;
 				}
 			}
-			const coordinatorCompletionGroupIds = new Set<string>();
 			for (const record of records) {
 				const group = groupById.get(record.group_id);
 				if (!group) throw new Error("team_setup_completion_invalid");
@@ -1992,7 +2136,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 					});
 				} catch (bindingError) {
-					if (!reconciliationOptions.isolateApplyFailures) throw bindingError;
+					handleFailure(group, bindingError);
 					continue;
 				}
 				let canonicalManifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
@@ -2002,6 +2146,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 					});
 				} catch (validationError) {
+					reportFailure(group, validationError);
 					try {
 						await runCandidateMutation(
 							store.db,
@@ -2013,12 +2158,12 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								}),
 						);
 					} catch (containmentError) {
-						if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+						handleFailure(group, containmentError);
 					}
 					if (!reconciliationOptions.isolateApplyFailures) throw validationError;
 					continue;
 				}
-				coordinatorCompletionGroupIds.add(record.group_id);
+				handledGroupIds.add(record.group_id);
 				try {
 					let freshGroup = freshGroupByKey.get(freshGroupKey(group));
 					if (!freshGroup && scopedGroups.length > 1) {
@@ -2038,9 +2183,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								}),
 						);
 						if (!contained) {
-							if (!reconciliationOptions.isolateApplyFailures) {
-								throw new Error("team_setup_completion_invalid");
-							}
+							handleFailure(group, new Error("team_setup_completion_invalid"));
 							continue;
 						}
 						throw new Error("team_setup_completion_invalid");
@@ -2054,11 +2197,11 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 					);
 					if (applied !== "applied") continue;
 				} catch (error) {
-					if (!reconciliationOptions.isolateApplyFailures) throw error;
+					handleFailure(group, error);
 				}
 			}
 			for (const group of scopedGroups) {
-				if (coordinatorCompletionGroupIds.has(group.groupId)) continue;
+				if (handledGroupIds.has(group.groupId)) continue;
 				const publicationTimeoutS = remainingCoordinatorTimeoutS(
 					timeoutS,
 					reconciliationDeadlineMs,
@@ -2138,18 +2281,14 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								}),
 							);
 							if (!contained) {
-								if (!reconciliationOptions.isolateApplyFailures) {
-									throw new Error("team_setup_completion_conflict");
-								}
+								handleFailure(group, new Error("team_setup_completion_conflict"));
 								continue;
 							}
 						} catch (containmentError) {
-							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							handleFailure(group, containmentError);
 							continue;
 						}
-						if (!reconciliationOptions.isolateApplyFailures) {
-							throw new Error("team_setup_completion_conflict");
-						}
+						handleFailure(group, new Error("team_setup_completion_conflict"));
 						continue;
 					}
 					try {
@@ -2169,7 +2308,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						if (applied !== "applied") continue;
 					} catch (applyError) {
 						if (applyError instanceof LegacyTeamSetupAdditiveConvergenceError) {
-							if (!reconciliationOptions.isolateApplyFailures) throw applyError;
+							handleFailure(group, applyError);
 							continue;
 						}
 						try {
@@ -2180,18 +2319,14 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								}),
 							);
 							if (!contained) {
-								if (!reconciliationOptions.isolateApplyFailures) {
-									throw new Error("team_setup_completion_conflict", { cause: applyError });
-								}
+								handleFailure(group, completionConflictError(applyError));
 								continue;
 							}
 						} catch (containmentError) {
-							if (!reconciliationOptions.isolateApplyFailures) throw containmentError;
+							handleFailure(group, containmentError);
 							continue;
 						}
-						if (!reconciliationOptions.isolateApplyFailures) {
-							throw new Error("team_setup_completion_conflict", { cause: applyError });
-						}
+						handleFailure(group, completionConflictError(applyError));
 					}
 				}
 			}
@@ -2251,17 +2386,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		}
 		try {
 			const store = options.getStore();
-			readPureCandidateViews(store, groups);
-			await reconcileCompletions(store, groups, { isolateApplyFailures: true });
-			const response = {
-				version: TEAM_SETUP_VERSION,
-				candidates: readPureCandidateViews(store, groups)
-					.map(candidateSummary)
-					.filter(
-						(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
-							candidate.status !== "ready",
-					),
-			} satisfies LegacyTeamSetupSummaryResponseV1;
+			const response = await reconcileSummaryCandidates(store, groups, reconcileCompletions);
 			return c.json(response);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);

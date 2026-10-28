@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Team setup lists now report recovery blockers instead of offering a migration that cannot load. Recovery also preserves verified matching sharing policy when a local Project scan limit prevents applying a coordinator completion after a publication conflict.
 - Leaving one of a completed Team's Spaces, or losing access to all of them, no longer makes that device treat the Team as needing setup again. Space refreshes also stop re-archiving Spaces that were already archived.
 - A legacy Team completed on another device now applies on a device that is not a member of every Space the Team maps Projects into. Previously, opening Team setup on that device failed on every load, and a failed apply could turn off the Team's sharing on that device. The device shares only the Projects in Spaces it belongs to and adds the others if it joins those Spaces later. ([#2421])
 

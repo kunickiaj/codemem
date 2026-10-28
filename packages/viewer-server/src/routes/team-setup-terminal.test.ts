@@ -9,6 +9,7 @@ import {
 	legacyTeamCandidateProjectInventory,
 	MemoryStore,
 	readCoordinatorSyncConfig,
+	reconstructLegacyTeamSetupCompletionManifest,
 	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
 	serializeRecipientPolicyPublicationMutation,
@@ -605,69 +606,6 @@ describe("Team setup terminal migration routing", () => {
 		} finally {
 			source.close();
 			target.close();
-		}
-	});
-
-	it("isolates an undecodable batch record to its group during summary reconciliation", async () => {
-		const store = new MemoryStore(":memory:");
-		const setupApp = teamSetupRoutes({
-			getStore: () => store,
-			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
-			completionDependencies: null,
-		});
-		try {
-			const draft = await readyDraftThroughSummary(store, setupApp);
-			const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
-				candidateRef: CANDIDATE_REF,
-				attemptId: draft.attemptId,
-				completedAt: NOW,
-			});
-			const secondGroup = {
-				...SNAPSHOTS[0],
-				groupId: "group-beta",
-				displayName: "Other Team",
-			} as LegacyTeamConfiguredGroupSnapshot;
-			// The production batch action rejects the whole payload when any one
-			// record fails decoding, so the route must re-query per group.
-			const list = vi.fn(async (input: { groupIds: string[] }) => {
-				if (input.groupIds.length === 1 && input.groupIds[0] === GROUP_ID) {
-					return [{ group_id: GROUP_ID, manifest }];
-				}
-				throw new Error("coordinator_completion_response_malformed");
-			});
-			const twoGroupConfig = completionConfig();
-			const app = teamSetupRoutes({
-				getStore: () => store,
-				loadLegacyTeamConfiguredGroupSnapshots: async () => [...SNAPSHOTS, secondGroup],
-				snapshotLoaderDependencies: {
-					...twoGroupConfig,
-					readConfig: () => ({
-						...twoGroupConfig.readConfig(),
-						syncCoordinatorGroups: [GROUP_ID, secondGroup.groupId],
-					}),
-				},
-				completionDependencies: { create: vi.fn(), list },
-			});
-
-			const response = await app.request("/api/sync/team-setup/v1");
-			expect(response.status).toBe(200);
-			const body = (await response.json()) as { candidates: unknown[] };
-			// The decodable group's completion applied (so it no longer needs setup)
-			// while the undecodable group still surfaces its own setup state.
-			expect(body.candidates).toEqual([
-				expect.objectContaining({
-					candidateRef: legacyTeamCandidateId(COORDINATOR_ID, secondGroup.groupId),
-					status: "needs_setup",
-				}),
-			]);
-			expect(list.mock.calls.map(([input]) => input.groupIds)).toEqual([
-				[GROUP_ID, secondGroup.groupId],
-				[GROUP_ID],
-				[secondGroup.groupId],
-			]);
-			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).toBe("completed");
-		} finally {
-			store.close();
 		}
 	});
 
@@ -2671,6 +2609,181 @@ describe("Team setup terminal migration routing", () => {
 	});
 });
 
+function seedCapacityProject(store: MemoryStore): void {
+	const projectIdentity = "https://example.test/capacity-project.git";
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+			 scope_id, label, kind, authority_type, coordinator_id, group_id,
+			 membership_epoch, status, created_at, updated_at
+			 ) VALUES ('scope-capacity', 'Capacity', 'team', 'coordinator', ?, ?, 1,
+			 'active', ?, ?)`,
+		)
+		.run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	const sessionId = Number(
+		store.db
+			.prepare("INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)")
+			.run(NOW, "capacity-project", projectIdentity).lastInsertRowid,
+	);
+	store.db
+		.prepare(
+			`INSERT INTO memory_items(
+			 session_id, kind, title, body_text, active, created_at, updated_at,
+			 visibility, project, scope_id
+			 ) VALUES (?, 'discovery', 'Capacity Project', 'body', 1, ?, ?, 'shared',
+			 'capacity-project', 'scope-capacity')`,
+		)
+		.run(sessionId, NOW, NOW);
+	store.db
+		.prepare(
+			`INSERT INTO project_scope_mappings(
+			 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+			 ) VALUES (?, ?, 'scope-capacity', 1000, 'reviewed_team_setup', ?, ?)`,
+		)
+		.run(projectIdentity, projectIdentity, NOW, NOW);
+}
+
+function overflowProjectCandidates(store: MemoryStore): void {
+	const insertSession = store.db.prepare(
+		"INSERT INTO sessions(started_at, project, git_remote) VALUES (?, ?, ?)",
+	);
+	store.db.transaction(() => {
+		for (let index = 0; index <= 500; index += 1) {
+			insertSession.run(NOW, `Project ${index}`, `https://example.test/project-${index}.git`);
+		}
+	})();
+}
+
+describe("Team setup publication conflict capacity failures", () => {
+	it.each(["compatible", "divergent"] as const)(
+		"%s winner preserves or contains completed policy when Project resolution exceeds capacity",
+		async (policy) => {
+			// Arrange: complete a real Project recipient before adding excess local candidates.
+			const store = new MemoryStore(":memory:");
+			const source = new MemoryStore(":memory:");
+			const setupApp = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				completionDependencies: null,
+			});
+			try {
+				seedCapacityProject(store);
+				const draft = await readyDraftThroughSummary(store, setupApp);
+				const review = inspectLegacyTeamSetupActivation(store.db, {
+					candidateRef: CANDIDATE_REF,
+					attemptId: draft.attemptId,
+				});
+				await finishLegacyTeamSetupActivation(store.db, {
+					candidateRef: CANDIDATE_REF,
+					attemptId: draft.attemptId,
+					finishDigest: review.finishDigest,
+					confirmedAccessDeltaDigest: review.accessDeltaDigest,
+					loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+					loadProjectInventory: () =>
+						legacyTeamCandidateProjectInventory(
+							store.db,
+							{ localActorId: store.actorId, localDeviceId: store.deviceId },
+							CANDIDATE_REF,
+						),
+					validateLockedPreview: () => true,
+					now: NOW,
+				});
+				let winner = {
+					...reconstructLegacyTeamSetupCompletionManifest(store.db, {
+						candidateRef: CANDIDATE_REF,
+					}),
+					completed_at: "2026-09-01T12:01:00.000Z",
+				};
+				if (policy === "divergent") {
+					const sourceApp = teamSetupRoutes({
+						getStore: () => source,
+						loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+						completionDependencies: null,
+					});
+					const sourceDraft = await readyDraftThroughSummary(source, sourceApp);
+					for (const participant of [source, store]) {
+						participant.db
+							.prepare(
+								`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+								 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
+							)
+							.run(NOW, NOW);
+					}
+					source.db
+						.prepare(
+							"UPDATE legacy_team_setup_draft_devices SET target_identity_id = 'identity-b' WHERE attempt_id = ?",
+						)
+						.run(sourceDraft.attemptId);
+					winner = deriveLegacyTeamSetupCompletionManifest(source.db, {
+						candidateRef: CANDIDATE_REF,
+						attemptId: sourceDraft.attemptId,
+						completedAt: NOW,
+					});
+				}
+				const completionKeys = () =>
+					store.db
+						.prepare(
+							`SELECT draft.finish_digest AS draft_key, completion.finish_digest AS completion_key
+							 FROM legacy_team_setup_drafts AS draft
+							 JOIN legacy_team_setup_completions AS completion ON completion.attempt_id = draft.attempt_id
+							 WHERE draft.attempt_id = ? ORDER BY completion.finish_digest`,
+						)
+						.all(draft.attemptId);
+				const recipients = () =>
+					store.db
+						.prepare(
+							`SELECT * FROM project_recipients WHERE recipient_kind = 'team' AND recipient_id = ?
+							 ORDER BY canonical_project_identity`,
+						)
+						.all(winner.team_id);
+				const existingKeys = completionKeys();
+				const existingRecipients = recipients();
+				expect(existingKeys).toEqual([
+					{ draft_key: review.finishDigest, completion_key: review.finishDigest },
+				]);
+				expect(existingRecipients).toHaveLength(1);
+				overflowProjectCandidates(store);
+				const create = vi.fn().mockRejectedValue(new Error("completion_conflict"));
+				const get = vi.fn(async () => winner);
+				const app = teamSetupRoutes({
+					getStore: () => store,
+					loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+					snapshotLoaderDependencies: completionConfig(),
+					completionDependencies: { create, get, list: async () => [] },
+				});
+
+				// Act: detail avoids the separate summary discovery budget.
+				const response = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+
+				// Assert: capacity alone cannot revoke an already compatible completed policy.
+				expect(create).toHaveBeenCalledOnce();
+				expect(get).toHaveBeenCalledOnce();
+				expect(
+					store.db
+						.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
+						.get(winner.team_id),
+				).toEqual(
+					policy === "compatible"
+						? { status: "active", migration_state: "completed" }
+						: { status: "inactive", migration_state: "needs_setup" },
+				);
+				if (policy === "compatible") {
+					expect(completionKeys()).toEqual(existingKeys);
+					expect(recipients()).toEqual(existingRecipients);
+					expect(response.status).toBe(503);
+					expect(await response.json()).toEqual({ error: "team_setup_roster_unavailable" });
+				} else {
+					expect(response.status).toBe(409);
+					expect(await response.json()).toEqual({ error: "team_setup_completion_conflict" });
+				}
+			} finally {
+				store.close();
+				source.close();
+			}
+		},
+	);
+});
+
 describe("Team setup reconciliation failure diagnostics", () => {
 	it.each([
 		{ failure: "validation", check: "validateLegacyTeamSetupCompletionManifest" },
@@ -2787,5 +2900,312 @@ describe("Team setup coordinator retry classification", () => {
 			}),
 		).rejects.toThrow("team_setup_roster_unavailable");
 		expect(listGroups).toHaveBeenCalledTimes(1);
+	});
+});
+
+async function completeCapacitySummaryFixture(store: MemoryStore) {
+	seedCapacityProject(store);
+	const setupApp = teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		completionDependencies: null,
+	});
+	const draft = await readyDraftThroughSummary(store, setupApp);
+	const review = inspectLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: draft.attemptId,
+	});
+	await finishLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: draft.attemptId,
+		finishDigest: review.finishDigest,
+		confirmedAccessDeltaDigest: review.accessDeltaDigest,
+		loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+		loadProjectInventory: () =>
+			legacyTeamCandidateProjectInventory(
+				store.db,
+				{ localActorId: store.actorId, localDeviceId: store.deviceId },
+				CANDIDATE_REF,
+			),
+		validateLockedPreview: () => true,
+		now: NOW,
+	});
+	return {
+		...reconstructLegacyTeamSetupCompletionManifest(store.db, { candidateRef: CANDIDATE_REF }),
+		completed_at: "2026-09-01T12:01:00.000Z",
+	};
+}
+
+describe("Team setup summary recovery blockers", () => {
+	it.each(["binding", "validation", "apply"] as const)(
+		"exposes a safe %s blocker without blocking review of another group",
+		async (failure) => {
+			// Arrange: use real drafts and reconciliation, replacing only coordinator I/O.
+			const store = new MemoryStore(":memory:");
+			const setupApp = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				completionDependencies: null,
+			});
+			try {
+				const draft = await readyDraftThroughSummary(store, setupApp);
+				const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+					candidateRef: CANDIDATE_REF,
+					attemptId: draft.attemptId,
+					completedAt: NOW,
+				});
+				let listedManifest = manifest;
+				if (failure === "binding") {
+					listedManifest = { ...manifest, coordinator_id: "https://other.example.test" };
+				}
+				if (failure === "validation") {
+					listedManifest = { ...manifest, finish_digest: "0".repeat(64) };
+				}
+				const primary = SNAPSHOTS[0];
+				if (!primary) throw new Error("missing test snapshot");
+				const broken = {
+					...primary,
+					devices: primary.devices.map((device) => ({
+						...device,
+						fingerprint: failure === "apply" ? FINGERPRINT_B : device.fingerprint,
+					})),
+				};
+				const healthy = { ...primary, groupId: "group-healthy", displayName: "Healthy Team" };
+				const config = completionConfig();
+				const app = teamSetupRoutes({
+					getStore: () => store,
+					loadLegacyTeamConfiguredGroupSnapshots: async () => [broken, healthy],
+					snapshotLoaderDependencies: {
+						...config,
+						readConfig: () => ({
+							...config.readConfig(),
+							syncCoordinatorGroups: [GROUP_ID, healthy.groupId],
+						}),
+					},
+					completionDependencies: {
+						create: vi.fn(),
+						list: async ({ groupIds }) =>
+							groupIds.includes(GROUP_ID) ? [{ group_id: GROUP_ID, manifest: listedManifest }] : [],
+					},
+				});
+
+				// Act: summary and detail must agree on the recovery reason.
+				const summary = await app.request("/api/sync/team-setup/v1");
+				const body = (await summary.json()) as { candidates: Record<string, unknown>[] };
+				const detail = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+				const healthyRef = legacyTeamCandidateId(COORDINATOR_ID, healthy.groupId);
+				const healthyDetail = await app.request(`/api/sync/team-setup/v1/${healthyRef}`);
+
+				// Assert: a broken group is never advertised as ordinary migration work.
+				expect(summary.status).toBe(200);
+				expect(body.candidates).toHaveLength(2);
+				const blocked = body.candidates.find(
+					(candidate) => candidate.candidateRef === CANDIDATE_REF,
+				);
+				expect(blocked).toMatchObject({ blockingError: "team_setup_completion_invalid" });
+				expect(["needs_setup", "in_progress", "stale"]).toContain(blocked?.status);
+				const reviewable = body.candidates.find(
+					(candidate) => candidate.candidateRef === healthyRef,
+				);
+				expect(reviewable).toMatchObject({ status: "needs_setup", displayName: "Healthy Team" });
+				expect(reviewable).not.toHaveProperty("blockingError");
+				expect(detail.status).toBe(409);
+				expect(await detail.json()).toEqual({ error: blocked?.blockingError });
+				expect(healthyDetail.status).toBe(200);
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it("keeps a compatible completed Team active while exposing its capacity blocker", async () => {
+		// Arrange: a compatible winner needs more Project evidence than this device can resolve.
+		const store = new MemoryStore(":memory:");
+		try {
+			const winner = await completeCapacitySummaryFixture(store);
+			overflowProjectCandidates(store);
+			const app = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				snapshotLoaderDependencies: completionConfig(),
+				completionDependencies: {
+					create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
+					get: async () => winner,
+					list: async () => [],
+				},
+			});
+
+			// Act.
+			const summary = await app.request("/api/sync/team-setup/v1");
+			const body = (await summary.json()) as { candidates: Record<string, unknown>[] };
+			const detail = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+
+			// Assert: recovery visibility must not revoke compatible completed policy.
+			expect(summary.status).toBe(200);
+			expect(body.candidates).toEqual([
+				expect.objectContaining({
+					candidateRef: CANDIDATE_REF,
+					blockingError: "team_setup_roster_unavailable",
+				}),
+			]);
+			expect(["needs_setup", "in_progress", "stale"]).toContain(body.candidates[0]?.status);
+			expect(detail.status).toBe(503);
+			expect(await detail.json()).toEqual({ error: "team_setup_roster_unavailable" });
+			expect(
+				store.db
+					.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
+					.get(winner.team_id),
+			).toEqual({ status: "active", migration_state: "completed" });
+			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).toBe("completed");
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Team setup completed group read failures", () => {
+	it.each(["decode", "binding"] as const)(
+		"preserves completed policy and the original %s blocker without publishing again",
+		async (failure) => {
+			// Arrange: publication fallback would replace the read error and contain this active Team.
+			const store = new MemoryStore(":memory:");
+			try {
+				const manifest = await completeCapacitySummaryFixture(store);
+				const completionKeys = () =>
+					store.db
+						.prepare(
+							`SELECT draft.finish_digest AS draft_key, completion.finish_digest AS completion_key
+							 FROM legacy_team_setup_drafts AS draft
+							 JOIN legacy_team_setup_completions AS completion ON completion.attempt_id = draft.attempt_id
+							 WHERE draft.attempt_id = ? ORDER BY completion.finish_digest`,
+						)
+						.all(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.attemptId);
+				const recipients = () =>
+					store.db
+						.prepare(
+							`SELECT * FROM project_recipients WHERE recipient_kind = 'team' AND recipient_id = ?
+							 ORDER BY canonical_project_identity`,
+						)
+						.all(manifest.team_id);
+				const existingKeys = completionKeys();
+				const existingRecipients = recipients();
+				expect(existingKeys).toHaveLength(1);
+				expect(existingRecipients).toHaveLength(1);
+				const create = vi.fn().mockRejectedValue(new Error("completion_conflict"));
+				const get = vi.fn(async () => ({ ...manifest, finish_digest: "0".repeat(64) }));
+				const list = vi.fn(async () => {
+					if (failure === "decode") {
+						throw new Error("coordinator_completion_response_malformed");
+					}
+					return [
+						{
+							group_id: GROUP_ID,
+							manifest: { ...manifest, coordinator_id: "https://other.example.test" },
+						},
+					];
+				});
+				const app = teamSetupRoutes({
+					getStore: () => store,
+					loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+					snapshotLoaderDependencies: completionConfig(),
+					completionDependencies: { create, get, list },
+				});
+
+				// Act: summary isolates the failure, while detail reports it directly.
+				const summary = await app.request("/api/sync/team-setup/v1");
+				const body = (await summary.json()) as { candidates: Record<string, unknown>[] };
+				const detail = await app.request(`/api/sync/team-setup/v1/${CANDIDATE_REF}`);
+				const detailBody = await detail.json();
+
+				// Assert: failed reads cannot trigger conflicting publication or revoke completed policy.
+				expect(create).not.toHaveBeenCalled();
+				expect(get).not.toHaveBeenCalled();
+				expect(list).toHaveBeenCalledTimes(2);
+				expect(summary.status).toBe(200);
+				expect(body.candidates).toEqual([
+					expect.objectContaining({
+						candidateRef: CANDIDATE_REF,
+						blockingError: "team_setup_completion_invalid",
+					}),
+				]);
+				expect(detail.status).toBe(409);
+				expect(detailBody).toEqual({ error: body.candidates[0]?.blockingError });
+				expect(
+					store.db
+						.prepare("SELECT status, migration_state FROM policy_teams WHERE team_id = ?")
+						.get(manifest.team_id),
+				).toEqual({ status: "active", migration_state: "completed" });
+				expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).toBe("completed");
+				expect(completionKeys()).toEqual(existingKeys);
+				expect(recipients()).toEqual(existingRecipients);
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
+describe("Team setup batch failure isolation", () => {
+	it("isolates an undecodable batch record to its group during summary reconciliation", async () => {
+		const store = new MemoryStore(":memory:");
+		const setupApp = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		try {
+			const draft = await readyDraftThroughSummary(store, setupApp);
+			const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+				completedAt: NOW,
+			});
+			const secondGroup = {
+				...SNAPSHOTS[0],
+				groupId: "group-beta",
+				displayName: "Other Team",
+			} as LegacyTeamConfiguredGroupSnapshot;
+			// The production batch action rejects the whole payload when any one
+			// record fails decoding, so the route must re-query per group.
+			const list = vi.fn(async (input: { groupIds: string[] }) => {
+				if (input.groupIds.length === 1 && input.groupIds[0] === GROUP_ID) {
+					return [{ group_id: GROUP_ID, manifest }];
+				}
+				throw new Error("coordinator_completion_response_malformed");
+			});
+			const twoGroupConfig = completionConfig();
+			const app = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => [...SNAPSHOTS, secondGroup],
+				snapshotLoaderDependencies: {
+					...twoGroupConfig,
+					readConfig: () => ({
+						...twoGroupConfig.readConfig(),
+						syncCoordinatorGroups: [GROUP_ID, secondGroup.groupId],
+					}),
+				},
+				completionDependencies: { create: vi.fn(), list },
+			});
+
+			const response = await app.request("/api/sync/team-setup/v1");
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { candidates: unknown[] };
+			// Only the undecodable group's recovery remains blocked.
+			expect(body.candidates).toEqual([
+				expect.objectContaining({
+					candidateRef: legacyTeamCandidateId(COORDINATOR_ID, secondGroup.groupId),
+					status: "stale",
+					blockingError: "team_setup_completion_invalid",
+				}),
+			]);
+			expect(list.mock.calls.map(([input]) => input.groupIds)).toEqual([
+				[GROUP_ID, secondGroup.groupId],
+				[GROUP_ID],
+				[secondGroup.groupId],
+			]);
+			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).toBe("completed");
+		} finally {
+			store.close();
+		}
 	});
 });

@@ -1666,3 +1666,81 @@ function testRecipientFocusedMigrationSurface() {
 }
 
 describe("recipient-focused Sharing migration surface", testRecipientFocusedMigrationSurface);
+
+function recoveryCandidate(
+	overrides: Partial<LegacyTeamSetupSummaryResponseV1["candidates"][number]> = {},
+): LegacyTeamSetupSummaryResponseV1["candidates"][number] {
+	return {
+		candidateRef: "candidate-blocked",
+		displayName: "Recovery Team",
+		status: "needs_setup",
+		deviceCount: 2,
+		projectCount: 1,
+		unresolvedDeviceCount: 0,
+		unresolvedProjectCount: 0,
+		...overrides,
+	};
+}
+
+describe("Sharing Team setup recovery blockers", () => {
+	registerRecipientFocusedSharingLifecycle();
+
+	it.each(["needs_setup", "in_progress", "stale"] as const)(
+		"opens recovery instead of migration for a blocked %s candidate",
+		(status) => {
+			// Arrange: the optional blocker takes precedence over every pending status.
+			const onOpenTeamSetup = vi.fn();
+			const teamSetupSummary: LegacyTeamSetupSummaryResponseV1 = {
+				version: 1,
+				candidates: [recoveryCandidate({ status, blockingError: "team_setup_completion_invalid" })],
+			};
+
+			// Act.
+			mount(intent(), { teamSetupSummary, onOpenTeamSetup });
+			const row = document.querySelector<HTMLElement>(".recipient-policy-sharing-team-setup-row");
+			const action = row?.querySelector<HTMLButtonElement>("button");
+			act(() => action?.click());
+
+			// Assert: users see a recovery reason without internal codes or a migrate action.
+			expect(row?.querySelector(".project-status-badge")?.textContent).toBe("Needs recovery");
+			expect(row?.textContent).toMatch(/Team setup could not be verified/i);
+			expect(action?.textContent).toBe("View recovery details");
+			expect(action?.getAttribute("aria-label")).toContain("Recovery Team");
+			expect(row?.textContent).not.toContain("Review and migrate");
+			expect(row?.textContent).not.toContain("Ready to review");
+			expect(row?.outerHTML).not.toContain("team_setup_completion_invalid");
+			expect(onOpenTeamSetup).toHaveBeenCalledExactlyOnceWith("candidate-blocked");
+		},
+	);
+
+	it("keeps a healthy candidate reviewable beside a blocked candidate with the same name", () => {
+		// Arrange: duplicate labels must not route the healthy action to the blocked candidate.
+		const onOpenTeamSetup = vi.fn();
+		const teamSetupSummary: LegacyTeamSetupSummaryResponseV1 = {
+			version: 1,
+			candidates: [
+				recoveryCandidate({ blockingError: "team_setup_completion_invalid" }),
+				recoveryCandidate({ candidateRef: "candidate-healthy" }),
+			],
+		};
+
+		// Act.
+		mount(intent(), { teamSetupSummary, onOpenTeamSetup });
+		const rows = [
+			...document.querySelectorAll<HTMLElement>(".recipient-policy-sharing-team-setup-row"),
+		];
+		const healthy = rows.find((row) => row.textContent?.includes("Ready to review"));
+		const action = healthy?.querySelector<HTMLButtonElement>("button");
+		act(() => action?.click());
+
+		// Assert: an absent optional blocker preserves the normal migration action.
+		expect(rows).toHaveLength(2);
+		expect(healthy).toBeDefined();
+		expect(healthy?.textContent).not.toContain("Needs recovery");
+		expect(action?.textContent).toBe("Review and migrate");
+		expect(onOpenTeamSetup).toHaveBeenCalledExactlyOnceWith("candidate-healthy");
+		expect(rows.filter((row) => row.textContent?.includes("View recovery details"))).toHaveLength(
+			1,
+		);
+	});
+});

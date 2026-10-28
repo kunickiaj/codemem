@@ -971,6 +971,7 @@ export type LegacyTeamSetupPendingCandidateSummaryV1 = Omit<
 	"status"
 > & {
 	status: Exclude<LegacyTeamSetupStatusV1, "ready">;
+	blockingError?: LegacyTeamSetupErrorCode;
 };
 
 export interface LegacyTeamSetupSummaryResponseV1 {
@@ -1243,15 +1244,22 @@ function isLegacyTeamSetupCandidateSummary(
 	);
 }
 
+function isLegacyTeamSetupPendingCandidateSummary(
+	value: unknown,
+): value is LegacyTeamSetupPendingCandidateSummaryV1 {
+	if (!isJsonRecord(value)) return false;
+	const validBlockingError =
+		!("blockingError" in value) ||
+		(typeof value.blockingError === "string" &&
+			LEGACY_TEAM_SETUP_ERROR_CODES.has(value.blockingError as LegacyTeamSetupErrorCode));
+	return validBlockingError && isLegacyTeamSetupCandidateSummary(value) && value.status !== "ready";
+}
+
 function isLegacyTeamSetupSummary(value: unknown): value is LegacyTeamSetupSummaryResponseV1 {
 	return (
 		isJsonRecord(value) &&
 		value.version === LEGACY_TEAM_SETUP_VERSION &&
-		isArrayOf(
-			value.candidates,
-			(candidate): candidate is LegacyTeamSetupPendingCandidateSummaryV1 =>
-				isLegacyTeamSetupCandidateSummary(candidate) && candidate.status !== "ready",
-		)
+		isArrayOf(value.candidates, isLegacyTeamSetupPendingCandidateSummary)
 	);
 }
 

@@ -60,7 +60,8 @@ export class LegacyTeamSetupAdditiveConvergenceError extends Error {
 	constructor(error: unknown) {
 		const code =
 			error instanceof LegacyTeamSetupActivationError ||
-			error instanceof LegacyTeamSetupCompletionManifestError
+			error instanceof LegacyTeamSetupCompletionManifestError ||
+			error instanceof LegacyTeamSetupRosterCapacityError
 				? error.code
 				: "team_setup_failed";
 		super(code, { cause: error });
@@ -85,6 +86,17 @@ export class LegacyTeamSetupRosterCapacityError extends Error {
 		super("team_setup_roster_unavailable");
 		this.name = "LegacyTeamSetupRosterCapacityError";
 	}
+}
+
+function completionApplyFailure(
+	error: unknown,
+	options: { compatibleLocalPolicy: boolean },
+): unknown {
+	// Publication-conflict recovery must retain core's proof of matching policy.
+	if (options.compatibleLocalPolicy && error instanceof LegacyTeamSetupRosterCapacityError) {
+		return new LegacyTeamSetupAdditiveConvergenceError(error);
+	}
+	return error;
 }
 
 interface DraftRow {
@@ -1309,7 +1321,7 @@ async function applyCompletionManifest(
 					teamId: boundManifest.team_id,
 				});
 			}
-			throw error;
+			throw completionApplyFailure(error, { compatibleLocalPolicy });
 		}
 	};
 	if (input.recipientPolicyLocksHeld) return apply();

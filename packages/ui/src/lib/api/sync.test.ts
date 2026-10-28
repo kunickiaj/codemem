@@ -101,6 +101,64 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+function summaryWithOptionalBlocker(blockingError?: unknown) {
+	return {
+		version: 1,
+		candidates: [
+			{
+				candidateRef: "candidate-recovery",
+				displayName: "Recovery Team",
+				status: "needs_setup",
+				deviceCount: 1,
+				projectCount: 0,
+				unresolvedDeviceCount: 0,
+				unresolvedProjectCount: 0,
+				...(blockingError === undefined ? {} : { blockingError }),
+			},
+		],
+	};
+}
+
+describe("Team setup summary optional recovery blocker API", () => {
+	it.each([undefined, "team_setup_completion_invalid", "team_setup_roster_unavailable"])(
+		"accepts the backward-compatible summary with blocker %s",
+		async (blockingError) => {
+			// Arrange: older servers omit the optional field entirely.
+			const summary = summaryWithOptionalBlocker(blockingError);
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(new Response(JSON.stringify(summary), { status: 200 }));
+
+			// Act.
+			const result = await loadLegacyTeamSetupSummary();
+
+			// Assert: known public codes survive validation without changing the payload.
+			expect(result).toEqual(summary);
+		},
+	);
+
+	it.each(["unknown_private_error", "", null, 42])(
+		"rejects an invalid optional recovery blocker %s",
+		async (blockingError) => {
+			// Arrange: invalid optional fields must not turn recovery into ordinary migration.
+			globalThis.fetch = vi
+				.fn()
+				.mockResolvedValue(
+					new Response(JSON.stringify(summaryWithOptionalBlocker(blockingError)), { status: 200 }),
+				);
+
+			// Act.
+			const result = loadLegacyTeamSetupSummary();
+
+			// Assert: client errors expose only the existing safe fallback code.
+			await expect(result).rejects.toMatchObject({
+				statusCode: 200,
+				errorCode: "team_setup_failed",
+			});
+		},
+	);
+});
+
 describe("recipient policy Team metadata API", () => {
 	it("sends the bounded rename contract and validates the response", async () => {
 		const result = {

@@ -14,6 +14,7 @@ import {
 	containLegacyTeamSetupCompletionConflict,
 	deriveLegacyTeamSetupCompletionManifest,
 	LegacyTeamSetupAdditiveConvergenceError,
+	LegacyTeamSetupRosterCapacityError,
 	reconstructLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifest,
 	validateLegacyTeamSetupCompletionManifestBinding,
@@ -243,6 +244,15 @@ function createCompletionFixtureDb(): InstanceType<typeof Database> {
 		 'active', ?, ?)`,
 	).run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
 	return db;
+}
+
+async function expectCompatibleCapacityFailure(application: Promise<unknown>): Promise<void> {
+	await expect(application).rejects.toBeInstanceOf(LegacyTeamSetupAdditiveConvergenceError);
+	await expect(application).rejects.toThrow("team_setup_roster_unavailable");
+	await expect(application).rejects.toMatchObject({
+		code: "team_setup_roster_unavailable",
+		cause: expect.any(LegacyTeamSetupRosterCapacityError),
+	});
 }
 
 describe("legacy Team setup completion manifests", () => {
@@ -1548,14 +1558,14 @@ describe("legacy Team setup completion manifests", () => {
 		});
 		insertCandidates();
 
-		await expect(
-			applyLegacyTeamSetupCompletionManifest(db, {
-				coordinatorId: COORDINATOR_ID,
-				groupId: GROUP_ID,
-				freshRoster: FRESH_ROSTER,
-				manifest: { ...manifest, completed_at: "2026-09-01T12:01:00.000Z" },
-			}),
-		).rejects.toThrow("team_setup_roster_unavailable");
+		const application = applyLegacyTeamSetupCompletionManifest(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+			freshRoster: FRESH_ROSTER,
+			manifest: { ...manifest, completed_at: "2026-09-01T12:01:00.000Z" },
+		});
+
+		await expectCompatibleCapacityFailure(application);
 		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
 	});
 
@@ -1589,14 +1599,14 @@ describe("legacy Team setup completion manifests", () => {
 		});
 		fillScanBudget();
 
-		await expect(
-			applyLegacyTeamSetupCompletionManifest(db, {
-				coordinatorId: COORDINATOR_ID,
-				groupId: GROUP_ID,
-				freshRoster: FRESH_ROSTER,
-				manifest: { ...manifest, completed_at: "2026-09-01T12:01:00.000Z" },
-			}),
-		).rejects.toThrow("team_setup_roster_unavailable");
+		const application = applyLegacyTeamSetupCompletionManifest(db, {
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+			freshRoster: FRESH_ROSTER,
+			manifest: { ...manifest, completed_at: "2026-09-01T12:01:00.000Z" },
+		});
+
+		await expectCompatibleCapacityFailure(application);
 		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
 	});
 

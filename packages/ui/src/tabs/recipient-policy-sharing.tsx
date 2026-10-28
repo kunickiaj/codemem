@@ -6,6 +6,7 @@ import { TextInput } from "../components/primitives/text-input";
 import type { AccountView } from "../lib/api/account";
 import type {
 	DeviceIdentityInventoryV1,
+	LegacyTeamSetupErrorCode,
 	LegacyTeamSetupPendingCandidateSummaryV1,
 	LegacyTeamSetupSummaryResponseV1,
 	RecipientPolicyIntentGraphV1,
@@ -73,6 +74,28 @@ function teamSetupStatusClass(status: unknown): string {
 		: "needs_attention";
 }
 
+function teamSetupRecoveryReason(error: LegacyTeamSetupErrorCode): string {
+	switch (error) {
+		case "team_setup_completion_conflict":
+		case "team_setup_conflict":
+			return "Saved Team setup conflicts with the current sharing policy. View recovery details before trying again.";
+		case "team_setup_completion_invalid":
+			return "Saved Team setup could not be verified. View recovery details before trying again.";
+		case "team_setup_roster_unavailable":
+			return "Current device or Project information is unavailable. View recovery details and try again.";
+		case "team_setup_completion_unavailable":
+			return "Saved Team setup cannot be recovered on this device right now. View recovery details and try again.";
+		case "team_setup_assignment_changed":
+		case "team_setup_roster_changed":
+		case "team_setup_confirmation_stale":
+			return "Team setup information has changed. View recovery details before trying again.";
+		case "team_setup_incomplete":
+			return "Team setup is incomplete. View recovery details to check what is missing.";
+		default:
+			return "Team setup could not be recovered. View recovery details and try again.";
+	}
+}
+
 interface TeamSetupCandidateGroup {
 	displayName: string;
 	candidates: LegacyTeamSetupPendingCandidateSummaryV1[];
@@ -94,6 +117,26 @@ function teamSetupCandidateGroups(
 			left.candidateRef < right.candidateRef ? -1 : left.candidateRef > right.candidateRef ? 1 : 0,
 		),
 	}));
+}
+
+function TeamSetupCandidateStatus({
+	candidate,
+}: {
+	candidate: LegacyTeamSetupPendingCandidateSummaryV1;
+}) {
+	const statusClass = candidate.blockingError
+		? "needs_attention"
+		: teamSetupStatusClass(candidate.status);
+	return (
+		<span className="recipient-policy-sharing-team-setup-status">
+			<span className={`project-status-badge ${statusClass}`.trim()}>
+				{candidate.blockingError ? "Needs recovery" : teamSetupStatusLabel(candidate.status)}
+			</span>{" "}
+			{candidate.blockingError ? (
+				<span className="small">{teamSetupRecoveryReason(candidate.blockingError)}</span>
+			) : null}
+		</span>
+	);
 }
 
 function TeamSetupOverview({
@@ -133,10 +176,13 @@ function TeamSetupOverview({
 							{group.candidates.map((candidate, index) => {
 								const ordinal = `${index + 1} of ${group.candidates.length}`;
 								const safeSummary = `${countLabel(candidate.deviceCount, "device")}, ${countLabel(candidate.projectCount, "Project")}`;
+								const action = candidate.blockingError
+									? "View recovery details"
+									: "Review and migrate";
 								const actionLabel =
 									group.candidates.length > 1
-										? `Review and migrate ${group.displayName} ${ordinal}: ${safeSummary}`
-										: `Review and migrate ${candidate.displayName}: ${safeSummary}`;
+										? `${action} ${group.displayName} ${ordinal}: ${safeSummary}`
+										: `${action} ${candidate.displayName}: ${safeSummary}`;
 								return (
 									<div
 										className="recipient-policy-sharing-team-setup-row"
@@ -161,13 +207,7 @@ function TeamSetupOverview({
 												—{" "}
 											</span>
 										</span>
-										<span className="recipient-policy-sharing-team-setup-status">
-											<span
-												className={`project-status-badge ${teamSetupStatusClass(candidate.status)}`.trim()}
-											>
-												{teamSetupStatusLabel(candidate.status)}
-											</span>
-										</span>
+										<TeamSetupCandidateStatus candidate={candidate} />
 										<span className="recipient-policy-sharing-team-setup-action">
 											{onOpenTeamSetup ? (
 												<button
@@ -176,7 +216,7 @@ function TeamSetupOverview({
 													onClick={() => onOpenTeamSetup(candidate.candidateRef)}
 													type="button"
 												>
-													Review and migrate
+													{action}
 												</button>
 											) : null}
 										</span>
