@@ -35,6 +35,7 @@ const RECORDING_FOCUS = `Focus on deliverables, capabilities, AND learnings:
 Use outcome-focused verbs: implemented, fixed, deployed, configured, migrated, optimized, added, refactored, discovered, learned, debugged.
 Only describe actions that are clearly supported by the observed context.
 Never invent file changes, API behavior, or code edits that are not explicitly present in the session evidence.
+Leave out unsupported claims instead of hedging them. Do not write about what the session context lacks, what was not measured, or what the evidence does not show. Do not record that something stayed unchanged or that a check found nothing unless a future session would otherwise assume the opposite.
 
 GOOD examples (describes what was built or learned):
 - "Authentication now supports OAuth2 with PKCE flow"
