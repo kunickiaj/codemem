@@ -423,7 +423,7 @@ function reservePopup(intent: AccountIntent): Window | null {
 type StartTarget = {
 	contextId: string;
 	coordinatorId: string;
-	authority: "controller_attestation" | "device_claim";
+	authority: "controller_attestation" | "device_claim" | null;
 };
 
 /**
@@ -432,13 +432,15 @@ type StartTarget = {
  */
 function startTarget(view: AccountView, intent: AccountIntent): StartTarget | null {
 	const signIn = intent === "sign_in" ? view.signIn : undefined;
-	if (signIn) return signIn.authority ? { ...signIn, authority: signIn.authority } : null;
+	if (signIn) return signIn;
 	const remote = view.remote;
 	if (
 		remote.kind !== "status" ||
 		!expectedRemoteStates(intent).includes(remote.state) ||
 		!remote.identityMatches ||
-		(remote.authority !== "controller_attestation" && remote.authority !== "device_claim") ||
+		(remote.authority !== "controller_attestation" &&
+			remote.authority !== "device_claim" &&
+			!(intent === "sign_in" && remote.authority === null)) ||
 		!view.contextId
 	)
 		return null;

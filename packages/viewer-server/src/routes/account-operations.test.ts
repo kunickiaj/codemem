@@ -849,6 +849,69 @@ describe("sign in with Google", () => {
 
 	const rebind: AccountRebindRunner = async () => ({ kind: "failed" });
 
+	it.each(["connect", "refresh", "disconnect", undefined])(
+		"rejects explicit null authority for %s without dispatching a runner",
+		async (intent) => {
+			// Arrange: null authority is a sign-in-only request shape, even with otherwise valid CSRF.
+			const runner = vi.fn(rebind);
+			const f = await fixture({ rebind: runner });
+			const body = {
+				...JSON.parse(signIn),
+				intent,
+				authority: null,
+				...(intent === "disconnect" ? { expectedLinkId: "current-link" } : {}),
+			};
+			// Act
+			const response = await f.request(PATH, "POST", JSON.stringify(body));
+			// Assert
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({ error: "account_invalid_request" });
+			expect(runner).not.toHaveBeenCalled();
+			expect(f.link).not.toHaveBeenCalled();
+			expect(f.change).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["unknown", undefined, {}, 0])(
+		"rejects invalid sign-in authority %s",
+		async (authority) => {
+			// Arrange
+			const runner = vi.fn(rebind);
+			const f = await fixture({ rebind: runner });
+			// Act
+			const response = await f.request(
+				PATH,
+				"POST",
+				JSON.stringify({ ...JSON.parse(signIn), authority }),
+			);
+			// Assert
+			expect(response.status).toBe(400);
+			expect(runner).not.toHaveBeenCalled();
+			expect(f.link).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["review_required", "conflict"] as const)(
+		"refuses null authority in %s without a verified linked owner",
+		async (state) => {
+			// Arrange
+			const runner = vi.fn(rebind);
+			const f = await fixture({ rebind: runner });
+			f.readRemoteStatus.mockResolvedValue(remote(state));
+			// Act
+			const response = await f.request(
+				PATH,
+				"POST",
+				JSON.stringify({ ...JSON.parse(signIn), authority: null }),
+			);
+			// Assert
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({ error: "account_link_not_allowed" });
+			expect(runner).not.toHaveBeenCalled();
+			expect(f.link).not.toHaveBeenCalled();
+		},
+	);
+
 	it("starts when this device's Identity has no Google link", async () => {
 		// Arrange
 		const f = await fixture({ rebind });

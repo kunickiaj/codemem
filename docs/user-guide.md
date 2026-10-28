@@ -552,6 +552,11 @@ the account. It does not show the owner's Google name, email, or picture, becaus
 device never signed in as the owner. The owner projection does not enable linking,
 profile refresh, unlink, disconnect, or permission changes.
 
+If the recovered owner has a Google link, choose **Sign in with Google** to run this
+device as that Identity. This starts a separate sign-in, not another owner review.
+The coordinator checks the device, and Google sign-in and your confirmation are still
+required before the device switches. Existing memories keep their original author.
+
 Without an operator-configured Viewer, use the dialog's **Copy support request** and
 send the noncredential request only to a trusted coordinator operator, never a public
 issue. It includes private coordinator, device, and group identifiers but no admin

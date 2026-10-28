@@ -195,6 +195,73 @@ describe("My Account sign-in on a device linked elsewhere", () => {
 });
 
 describe("My Account sign-in from the owner-only state", () => {
+	it.each([true, false])(
+		"dispatches recovered-owner null authority only when sign-in is allowed (%s)",
+		async (allowed) => {
+			// Arrange: owner evidence contains no Google profile and the ordinary actor still needs review.
+			const owner = ownerAccount();
+			view = {
+				...owner,
+				operation: null,
+				canSignIn: allowed,
+				canLink: false,
+				ownerProjection: {
+					...owner.ownerProjection,
+					status: { ...owner.ownerProjection.status, profile: {} },
+				},
+				...(allowed
+					? {
+							signIn: {
+								contextId: "own-recovered-context",
+								coordinatorId: "coordinator-one",
+								authority: null,
+							},
+						}
+					: {}),
+			};
+			transport.mockImplementation(async (url) => {
+				if (url === "/api/account/session") return response({ version: 1, csrfToken: "token" });
+				if (String(url).includes("link-status")) return response(view);
+				if (String(url).endsWith("browser-url")) return response({ version: 1, url: rebindUrl });
+				return response({
+					version: 1,
+					operation: signInOperation({
+						contextId: "own-recovered-context",
+						state: "awaiting_browser",
+						browserUrlAvailable: true,
+					}),
+					current: true,
+				});
+			});
+			await show();
+			// Act
+			await act(async () => {
+				button("Sign in with Google")?.click();
+			});
+			await settle();
+			// Assert: the display context and withheld owner account must never become dispatch authority.
+			const starts = transport.mock.calls.filter(([url]) =>
+				String(url).endsWith("link-operations"),
+			);
+			if (allowed) {
+				expect(starts).toHaveLength(1);
+				expect(JSON.parse(String(starts[0][1]?.body))).toEqual({
+					intent: "sign_in",
+					groupId: owner.selectedGroupId,
+					contextId: "own-recovered-context",
+					coordinatorId: "coordinator-one",
+					authority: null,
+				});
+				expect(popup.location.replace).toHaveBeenCalledWith(rebindUrl);
+			} else {
+				expect(starts).toHaveLength(0);
+				expect(window.open).not.toHaveBeenCalled();
+			}
+			expect(mount.textContent).not.toContain("owner-a@example.test");
+			expect(button("Link Google account")).toBeUndefined();
+		},
+	);
+
 	it("opens Google for a sign-in that starts from this device's own Identity", async () => {
 		// Arrange: this device runs as B; the coordinator confirmed A as the account owner.
 		const owner = ownerAccount();

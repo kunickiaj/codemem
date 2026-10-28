@@ -934,6 +934,46 @@ describe("sign-in from the owner-only state", () => {
 		});
 	});
 
+	it.each(["review_required", "conflict"] as const)(
+		"checks recovered-owner sign-in against ordinary %s status",
+		async (state) => {
+			// Arrange: the same verified owner must not override an ordinary conflict.
+			const f = fixture();
+			f.readRemoteStatus.mockImplementation(async () => {
+				const read = f.status("actor-c");
+				if (read.kind !== "status") throw new Error("Expected status");
+				return {
+					...read,
+					status: { ...read.status, state, identityId: null, authority: null, account: null },
+				};
+			});
+			// Act
+			const view = await readWith(f);
+			const own = await readWith(f, { ownIdentityOnly: true });
+			// Assert
+			expect(view).toMatchObject({ canLink: false, canSignIn: state === "review_required" });
+			if (state === "review_required") {
+				expect(view).toHaveProperty("signIn", {
+					contextId: f.context.contextId,
+					coordinatorId: "actual-coordinator-id",
+					authority: null,
+				});
+				expect(own).toMatchObject({
+					contextId: f.context.contextId,
+					canSignIn: true,
+					canLink: false,
+					remote: { kind: "status", state, authority: null },
+				});
+			} else {
+				expect(view).not.toHaveProperty("signIn");
+				expect(own).toMatchObject({ canSignIn: false });
+				expect(own).not.toHaveProperty("contextId", f.context.contextId);
+			}
+			expect(view).not.toHaveProperty("managementActions");
+			expect(view).not.toHaveProperty("unlinkTarget");
+		},
+	);
+
 	it("does not offer switching to the owner when this device's own Identity is linked", async () => {
 		// Arrange: this device's Identity is linked on another device, so a switch would be refused.
 		const f = fixture();

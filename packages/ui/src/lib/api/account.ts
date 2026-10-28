@@ -218,7 +218,7 @@ async function session(signal?: AbortSignal): Promise<string> {
 type RecoveryConfirmation = { preview: RecoveryPreview; approvalDigest: string };
 type RecoveryImport = { selection: RecoverySelection; replyText: string };
 type AccountJsonBody =
-	| Record<string, string>
+	| Record<string, string | null>
 	| RecoveryPreviewRequest
 	| RecoveryConfirmation
 	| RecoveryImport;
@@ -307,13 +307,19 @@ export function startAccountLink(
 	groupId: string,
 	contextId: string,
 	checked: {
-		authority: "controller_attestation" | "device_claim";
+		authority: "controller_attestation" | "device_claim" | null;
 		coordinatorId: string;
 		intent?: AccountIntent;
 		expectedLinkId?: string;
 	},
 	signal?: AbortSignal,
 ): Promise<{ version: 1; operation: AccountOperation }> {
+	if (
+		checked.authority !== "controller_attestation" &&
+		checked.authority !== "device_claim" &&
+		!(checked.intent === "sign_in" && checked.authority === null)
+	)
+		return Promise.reject(new AccountRequestError(0, "account_invalid_request"));
 	return request("/api/account/link-operations", {
 		method: "POST",
 		body: { groupId, contextId, ...checked },

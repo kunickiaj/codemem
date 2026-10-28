@@ -101,7 +101,7 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 	contextId: string;
 	expectedLinkId?: string;
 	coordinatorId: string;
-	authority: "controller_attestation" | "device_claim";
+	authority: "controller_attestation" | "device_claim" | null;
 } {
 	return (
 		body !== null &&
@@ -114,7 +114,9 @@ function validStartBody(body: Record<string, unknown> | null): body is {
 			body.intent === "refresh" ||
 			body.intent === "disconnect" ||
 			body.intent === "sign_in") &&
-		(body.authority === "controller_attestation" || body.authority === "device_claim")
+		(body.authority === "controller_attestation" ||
+			body.authority === "device_claim" ||
+			(body.intent === "sign_in" && body.authority === null))
 	);
 }
 function unlinkTargetChanged(
@@ -192,7 +194,7 @@ function beginCurrentOperation(
 		contextId: string;
 		expectedLinkId?: string;
 		coordinatorId: string;
-		authority: "controller_attestation" | "device_claim";
+		authority: "controller_attestation" | "device_claim" | null;
 	},
 	view: AccountLinkViewV1,
 	expectedCoordinatorId: string,

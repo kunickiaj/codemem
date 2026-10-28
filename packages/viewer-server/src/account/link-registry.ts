@@ -60,7 +60,7 @@ export interface AccountLinkRegistry {
 		intent?: AccountOperationIntent;
 		context: AccountContext;
 		expectedCoordinatorId: string;
-		expectedAuthority: CoordinatorAuthLinkAuthorityKind;
+		expectedAuthority: CoordinatorAuthLinkAuthorityKind | null;
 		expectedLifecycleToken?: symbol;
 		expectedLinkId?: string;
 	}): AccountLinkStartResult;
@@ -285,7 +285,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 	async #run(
 		job: Job,
 		expectedCoordinatorId: string,
-		expectedAuthority: CoordinatorAuthLinkAuthorityKind,
+		expectedAuthority: CoordinatorAuthLinkAuthorityKind | null,
 	): Promise<void> {
 		try {
 			if (terminal(job) || job.controller.signal.aborted) {
@@ -307,6 +307,7 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 			const intent = job.operation.intent ?? "connect";
 			if (intent === "sign_in") return await this.#runSignIn(job, options.onBrowserStart);
 			if (intent === "connect") {
+				if (expectedAuthority === null) throw new CoordinatorAccountLinkError("invalid_options");
 				await (this.#options.link ?? linkCoordinatorAccount)({ ...options, expectedAuthority });
 			} else {
 				const result = await (this.#options.change ?? changeCoordinatorAccount)({
@@ -367,6 +368,13 @@ class InProcessAccountLinkRegistry implements AccountLinkRegistry {
 		expectedLinkId,
 	}: Parameters<AccountLinkRegistry["start"]>[0]): AccountLinkStartResult {
 		if (this.#shuttingDown) return { error: "account_shutting_down" };
+		// Only rebind can start without ordinary account-link authority.
+		if (
+			expectedAuthority !== "controller_attestation" &&
+			expectedAuthority !== "device_claim" &&
+			!(intent === "sign_in" && expectedAuthority === null)
+		)
+			return { error: "account_context_changed" };
 		const pending = this.#inProgress();
 		if (pending) return pending;
 		if (expectedLifecycleToken && expectedLifecycleToken !== this.lifecycleToken())

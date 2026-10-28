@@ -97,8 +97,8 @@ export interface AccountLinkViewV1 {
 type LocalResult = Exclude<AccountContextResult, { error: string }>;
 /**
  * The owner-only state offers sign-in when the owner's Google account is
- * linked and this device's own Identity has none: signing in switches the
- * device to the owner's Identity.
+ * linked and this device is unlinked or still needs enrollment review.
+ * Rebind verifies the Google account before switching the device's Identity.
  */
 function withOwnerSignIn(
 	owner: AccountLinkViewV1,
@@ -106,12 +106,11 @@ function withOwnerSignIn(
 	context: AccountContext,
 	remote: Extract<CoordinatorAccountLinkStatusRead, { kind: "status" }>,
 ): AccountLinkViewV1 {
-	// Switching to the owner needs this device's own Identity to be unlinked.
 	if (
 		owner.ownerProjection?.status.profileState !== "linked" ||
-		own.canSignIn !== true ||
 		own.remote.kind !== "status" ||
-		own.remote.state !== "unlinked"
+		(own.remote.state !== "review_required" &&
+			!(own.canSignIn === true && own.remote.state === "unlinked"))
 	)
 		return owner;
 	return {
@@ -402,7 +401,7 @@ async function finishAccountStatus(
 			const owner = withOwnerSignIn(associated, currentView, context, remote);
 			// Sign-in starts from this device's own view only where the owner view offers it.
 			if (read.ownIdentityOnly && owner.signIn?.contextId === context.contextId)
-				return attachOperation(currentView, options.registry);
+				return attachOperation({ ...currentView, canSignIn: true }, options.registry);
 			return attachOperation(owner, options.registry, context.contextId);
 		}
 	}
