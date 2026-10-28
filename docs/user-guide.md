@@ -621,7 +621,7 @@ codemem coordinator diagnose-team-setup
 codemem coordinator diagnose-team-setup '<group>' --json
 ```
 
-For each configured group, the report shows whether the coordinator has a completed setup, which mapped Spaces are not active on this device, and what applying the completion would do. When the apply fails, the report names the failing check. The command opens the existing database read-only and diagnoses a private temporary SQLite backup, including committed changes from a running viewer. It needs temporary disk space for a full database copy and removes the copy afterward. Database initialization and compatibility upgrades run only on the copy. The viewer logs the original failing check as a `[team-setup]` warning when a setup request fails.
+For each configured group, the report shows whether the coordinator has a completed setup, which mapped Spaces are not active on this device, and what applying the completion would do. You can run it before opening **Sharing**. It creates any missing review draft inside the temporary copy, following the viewer's recovery sequence. When the apply fails, the report names the failing check. The command opens the existing database read-only and diagnoses a private temporary SQLite backup, including committed changes from a running viewer. It needs temporary disk space for a full database copy and removes the copy afterward. Database initialization and compatibility upgrades run only on the copy. The viewer logs the original failing check as a `[team-setup]` warning when a setup request fails.
 
 ### Share exact Projects
 

@@ -68,6 +68,7 @@ async function diagnoseGroup(
 	return diagnoseLegacyTeamSetupCompletion(store.db, {
 		coordinatorId: target.coordinatorId,
 		groupId,
+		projection: { localActorId: store.actorId, localDeviceId: store.deviceId },
 		completionManifest:
 			records.find(
 				(record) => record.group_id === groupId && record.manifest.candidate_ref === candidateRef,

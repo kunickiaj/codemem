@@ -1,6 +1,10 @@
 import { canonicalCoordinatorLegacyTeamCompletionManifestJson } from "./coordinator-legacy-team-completion.js";
 import type { Database } from "./db.js";
-import type { LegacyTeamRosterDeviceSnapshot } from "./legacy-team-candidate.js";
+import type { ListLegacyRecipientPolicyProjectionsOptions } from "./legacy-recipient-policy-projection.js";
+import {
+	discoverLegacyTeamCandidates,
+	type LegacyTeamRosterDeviceSnapshot,
+} from "./legacy-team-candidate.js";
 import {
 	applyLegacyTeamSetupCompletionManifest,
 	areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible,
@@ -132,6 +136,33 @@ function readTeamOutcome(db: Database, teamId: string) {
 	};
 }
 
+interface DryRunApplyInput {
+	coordinatorId: string;
+	groupId: string;
+	manifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
+	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
+	projection: ListLegacyRecipientPolicyProjectionsOptions;
+}
+
+function initializeMissingCandidateDraft(db: Database, input: DryRunApplyInput): void {
+	const draft = db
+		.prepare("SELECT 1 FROM legacy_team_setup_drafts WHERE candidate_id = ? LIMIT 1")
+		.get(input.manifest.candidate_ref);
+	if (draft) return;
+	// The viewer discovers candidates before applying a completion on a fresh device.
+	discoverLegacyTeamCandidates(db, {
+		projection: input.projection,
+		groups: [
+			{
+				coordinatorId: input.coordinatorId,
+				groupId: input.groupId,
+				displayName: input.manifest.team.display_name,
+				devices: [...input.freshRoster],
+			},
+		],
+	});
+}
+
 /**
  * Applies the coordinator's completion inside a transaction that is always
  * rolled back, so the result shows what the viewer would do without changing
@@ -139,16 +170,12 @@ function readTeamOutcome(db: Database, teamId: string) {
  */
 async function dryRunApply(
 	db: Database,
-	input: {
-		coordinatorId: string;
-		groupId: string;
-		manifest: ReturnType<typeof validateLegacyTeamSetupCompletionManifest>;
-		freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
-	},
+	input: DryRunApplyInput,
 ): Promise<NonNullable<LegacyTeamSetupCompletionDiagnosis["apply"]>> {
 	if (db.inTransaction) throw new Error("legacy_team_setup_diagnosis_requires_idle_database");
 	db.exec("BEGIN IMMEDIATE");
 	try {
+		initializeMissingCandidateDraft(db, input);
 		await applyLegacyTeamSetupCompletionManifest(db, input);
 		return { ok: true, ...readTeamOutcome(db, input.manifest.team_id) };
 	} catch (error) {
@@ -166,6 +193,7 @@ export async function diagnoseLegacyTeamSetupCompletion(
 		groupId: string;
 		completionManifest: unknown | null;
 		freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
+		projection: ListLegacyRecipientPolicyProjectionsOptions;
 	},
 ): Promise<LegacyTeamSetupCompletionDiagnosis> {
 	const { coordinatorId, groupId } = input;
@@ -205,6 +233,7 @@ export async function diagnoseLegacyTeamSetupCompletion(
 			groupId,
 			manifest,
 			freshRoster: input.freshRoster,
+			projection: input.projection,
 		}),
 	};
 }
