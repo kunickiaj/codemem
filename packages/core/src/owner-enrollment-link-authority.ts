@@ -1,4 +1,4 @@
-import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { hasConnectionSessionSchema } from "./coordinator-account-connection-session.js";
 import { authSchemaDefinitionCheck } from "./coordinator-auth-device-claim-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { authLinkLiveGenerationSql } from "./coordinator-auth-link-liveness.js";
@@ -73,7 +73,7 @@ export async function readOwnerLinkAuthority(
 	});
 	const hasPin = column?.present === 1;
 	let qualified = false;
-	if (hasPin && (await readConnectionSchemaState(backend)) === "ready") {
+	if (hasPin && (await hasConnectionSessionSchema(backend))) {
 		const result = await backend.first<{ ready: number }>({
 			sql: `SELECT (${readiness}) AS ready`,
 			values: [],

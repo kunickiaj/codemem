@@ -750,6 +750,32 @@ function confirmAuthorityCte(authority: Awaited<ReturnType<typeof readOwnerLinkA
  AND ${CONFIRM_AUTHORITY_SQL.replace(OWNER_ACTIVE_LINK_SQL, authority.active)}) `;
 }
 const CONFIRM_AUTHORITY_MATCH_SQL = `p.coordinator_id=a.coordinator_id AND p.attempt_id=a.attempt_id`;
+async function confirmationLinkAuthority(context: Context, row: OwnerAttempt, time: number) {
+	const scope = {
+		sql: "l.coordinator_id=? AND l.link_id=?",
+		values: [row.coordinator_id, row.link_id],
+	};
+	const hasQualificationPin = Object.hasOwn(row, "owner_qualification_id");
+	if (isAuthControllerId(row.link_controller_attestation_id)) {
+		if (hasQualificationPin && row.owner_qualification_id !== null) throw new Error();
+		const authority = controllerOwnerLinkAuthority(row, scope);
+		if (hasQualificationPin) return authority;
+		// A legacy snapshot cannot skip qualification pins added before either SQL executes.
+		return {
+			...authority,
+			active: `(${authority.active} AND NOT EXISTS (SELECT 1 FROM pragma_table_info('coordinator_owner_enrollment_attempts') WHERE name='owner_qualification_id'))`,
+		};
+	}
+	if (
+		row.link_controller_attestation_id !== null ||
+		!hasQualificationPin ||
+		typeof row.owner_qualification_id !== "string"
+	)
+		throw new Error();
+	const authority = await readOwnerLinkAuthority(context.backend, time, scope);
+	if (!authority.hasPin) throw new Error();
+	return authority;
+}
 async function readConfirmableAttempt(
 	context: Context,
 	attemptId: string,
@@ -765,10 +791,7 @@ async function readConfirmableAttempt(
 	if (!live(context, row, time) || !row.browser_transaction_hash || !row.loopback_redirect)
 		return null;
 	if (!parseCoordinatorAuthLoopback(row.loopback_redirect).ok) return null;
-	const authority = await readOwnerLinkAuthority(context.backend, time, {
-		sql: "l.coordinator_id=? AND l.link_id=?",
-		values: [row.coordinator_id, row.link_id],
-	});
+	const authority = await confirmationLinkAuthority(context, row, time);
 	const current = await context.backend.first({
 		sql: `${confirmAuthorityCte(authority)}SELECT 1 FROM coordinator_owner_enrollment_attempts a
  JOIN owner_confirm_authority p ON ${CONFIRM_AUTHORITY_MATCH_SQL} WHERE
@@ -833,10 +856,7 @@ async function confirmStatement(
 	a: OwnerAttempt,
 	p: { confirmationHash: string; completionHash: string; time: number },
 ): Promise<AuthLinkStatement> {
-	const authority = await readOwnerLinkAuthority(context.backend, p.time, {
-		sql: "l.coordinator_id=? AND l.link_id=?",
-		values: [a.coordinator_id, a.link_id],
-	});
+	const authority = await confirmationLinkAuthority(context, a, p.time);
 	return {
 		sql: `${confirmAuthorityCte(authority)}UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'confirmed',
  confirmation_hash = ?,completion_secret_hash = ? FROM owner_confirm_authority p WHERE
