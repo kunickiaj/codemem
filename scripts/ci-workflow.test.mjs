@@ -224,6 +224,20 @@ it("keeps the CI test selector and its tests unchanged under the existing Biome 
 	}
 });
 
+it("opts into D1 profiling only for the Worker integration test step", () => {
+	// Arrange
+	const job = getJob(ciWorkflow, "worker-test");
+	// Act
+	const step = job
+		.split(/^ {6}- /m)
+		.find((entry) => entry.startsWith("name: Worker integration test\n"));
+	// Assert: the step opts in, without enabling profiling for other steps or jobs.
+	assert.ok(step, "expected the Worker integration test step");
+	assert.match(step, /^ {8}env:\n(?:^ {10}.*\n)*^ {10}CODEMEM_WORKER_D1_PROFILE: '1'$/m);
+	assert.match(step, /^ {8}run: node \.\.\/\.\.\/scripts\/ci-changed-tests\.mjs test:worker$/m);
+	assert.doesNotMatch(ciWorkflow.replace(step, ""), /CODEMEM_WORKER_D1_PROFILE/u);
+});
+
 describe("normal CI workflow source contract", () => {
 	it("does not rebuild workspace dependencies from the Worker build", () => {
 		assert.match(workerPackage.scripts.build, /pnpm run check:bundle:prepared/u);

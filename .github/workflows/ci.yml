@@ -121,6 +121,8 @@ jobs:
         working-directory: packages/cloudflare-coordinator-worker
         env:
           CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
+          # Attribute cold enrollment delays in the two synthetic receipt cases.
+          CODEMEM_WORKER_D1_PROFILE: '1'
         run: node ../../scripts/ci-changed-tests.mjs test:worker
 
   ts-lint:

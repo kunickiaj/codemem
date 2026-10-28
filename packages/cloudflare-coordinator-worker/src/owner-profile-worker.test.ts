@@ -22,6 +22,7 @@ import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { generateKeypair, loadPublicKey } from "../../core/src/sync-identity.js";
 import { initTestSchema } from "../../core/src/test-utils.js";
 import { pendingKey, seedOwnerAuthority } from "../test/owner-authority-test-fixture.js";
+import { type OwnerProfileTraceStage, profileOwnerD1 } from "../test/owner-profile-d1-profile.js";
 import {
 	type CloudflareCoordinatorEnv,
 	createConfiguredCloudflareCoordinatorWorker,
@@ -30,43 +31,15 @@ import {
 // Node-only profile/link I/O runs against the configured production handler and
 // disposable native D1, not a browser or workerd client. Historical operator tests
 // retain their seeded A; the account-mode journey below creates A's link via runtime.
-type OwnerProfileTraceStage =
-	| "fixture-start"
-	| "miniflare-start"
-	| "miniflare-ready"
-	| "schema-start"
-	| "schema-ready"
-	| "authority-start"
-	| "authority-ready"
-	| "prepare-start"
-	| "prepare-ready"
-	| "admit-start"
-	| "admit-ready"
-	| "adoption-start"
-	| "adoption-ready"
-	| "lost-reply-start"
-	| "lost-reply-retained"
-	| "client-request-start"
-	| "client-request-end"
-	| "browser-page-start"
-	| "browser-page-ready"
-	| "browser-claim-start"
-	| "browser-claim-ready"
-	| "browser-callback-start"
-	| "browser-callback-ready"
-	| "browser-confirm-start"
-	| "browser-confirm-ready"
-	| "reopen-start"
-	| "reopen-ready"
-	| "cleanup-start"
-	| "cleanup-ready";
 // The first two fixtures are the ordered false/true receipt cases; later cases stay quiet.
 let traceCase = 0;
 let traceStart = 0;
 let traceEvent = 0;
+let d1Profile: ReturnType<typeof profileOwnerD1> | undefined;
 // CI evidence only; opt in locally with CODEMEM_WORKER_PROFILE_TRACE=1.
 // Never accept dynamic labels or values: auth requests contain private credentials.
 function traceOwnerProfile(stage: OwnerProfileTraceStage): void {
+	d1Profile?.setStage(stage);
 	if (process.env.CI !== "true" && process.env.CODEMEM_WORKER_PROFILE_TRACE !== "1") return;
 	if (traceCase < 1 || traceCase > 2) return;
 	// Write each boundary immediately, including when the reporter hides passing logs.
@@ -100,6 +73,7 @@ const admin = { "X-Codemem-Coordinator-Admin": "test-secret" };
 const provider = () => oidcFixture({ issuer: config.issuer });
 let remote: { dispose(): Promise<void>; getD1Database(name: string): Promise<D1DatabaseLike> };
 let db: D1DatabaseLike;
+let nativeDb: D1DatabaseLike;
 let bindings: CloudflareCoordinatorEnv;
 let deliver: (value: { completionSecret: string; confirmationHash: string }) => void;
 let fakeProvider: ReturnType<typeof provider>;
@@ -191,7 +165,8 @@ async function browser(url: string) {
 	});
 }
 async function rows(table: string) {
-	const result = await db
+	// Verification reads are not Worker or authority-setup costs.
+	const result = await nativeDb
 		.prepare(`SELECT * FROM ${table} ORDER BY rowid`)
 		.all<Record<string, unknown>>();
 	if (!result.results) throw new Error("D1 rows unavailable");
@@ -252,6 +227,7 @@ async function seedHistoricalAuthority() {
 }
 
 beforeEach(async () => {
+	d1Profile = undefined;
 	traceCase += 1;
 	traceStart = performance.now();
 	traceEvent = 0;
@@ -298,6 +274,12 @@ beforeEach(async () => {
 			.map((sql) => db.prepare(sql)),
 	);
 	traceOwnerProfile("schema-ready");
+	nativeDb = db;
+	if (traceCase <= 2 && process.env.CODEMEM_WORKER_D1_PROFILE === "1") {
+		// Migrations stay outside the profile. Authority seeding has its own fixed stage.
+		d1Profile = profileOwnerD1(db);
+		db = d1Profile.db;
+	}
 	bindings = {
 		COORDINATOR_DB: db,
 		CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
@@ -338,8 +320,19 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	traceOwnerProfile("cleanup-start");
-	await remote?.dispose();
-	traceOwnerProfile("cleanup-ready");
+	try {
+		// Capture pending calls even if native-runtime teardown stalls.
+		if (d1Profile) {
+			writeSync(
+				2,
+				`[owner-profile-d1] ${JSON.stringify({ lostReply: traceCase === 2, ...d1Profile.summary() })}\n`,
+			);
+		}
+	} finally {
+		d1Profile = undefined;
+		await remote?.dispose();
+		traceOwnerProfile("cleanup-ready");
+	}
 });
 
 it.each([false, true])(
