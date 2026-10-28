@@ -2,10 +2,25 @@
 
 ## [Unreleased]
 
+## [0.47.2] - 2026-10-28
+
+### Changed
+
+- Peer discovery and project-invite checks use more targeted coordinator database queries. ([#2412])
+- Adding a device to an existing Google-linked Identity uses fewer coordinator database calls during confirmation. ([#2416])
+- Observer instructions require unsupported claims to be omitted rather than qualified with comments about missing context or unmeasured results. ([#2415])
+- Recovery snapshot assertions and mocked retry tests run faster, and TypeScript-source scanning avoids repeated full-prefix searches. ([#2418], [#2419])
+
 ### Fixed
 
-- **Sign in with Google** is available after recovering a linked account owner even when this device's old Identity still needs review. Sign-in uses the existing coordinator checks and Google verification before asking you to confirm an Identity switch.
-- Account ownership reviews collect the twelve evidence categories in one database snapshot instead of twelve separate reads. This removes 11 database calls per preview and 22 per confirmation while retaining schema validation and atomic freshness checks.
+- **Sign in with Google** is available after recovering a linked account owner even when this device's old Identity still needs review. Sign-in uses the existing coordinator checks and Google verification before asking you to confirm an Identity switch. ([#2413])
+- Account ownership reviews collect the twelve evidence categories in one database snapshot instead of twelve separate reads. This removes 11 database calls per preview and 22 per confirmation while retaining schema validation and atomic freshness checks. ([#2414])
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading so the new backend loads.
+- Redeploy a self-hosted Cloudflare coordinator to use the coordinator query optimizations. Installations already upgraded to the 0.47.0 schema need no new migration.
+- Headless sign-in still needs a supported callback route. Forwarding only the Viewer port is insufficient.
 
 ## [0.47.1] - 2026-10-27
 
@@ -189,7 +204,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.1...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.2...HEAD
+[0.47.2]: https://github.com/kunickiaj/codemem/compare/v0.47.1...v0.47.2
 [0.47.1]: https://github.com/kunickiaj/codemem/compare/v0.47.0...v0.47.1
 [0.47.0]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.4...v0.47.0
 [0.47.0-beta.4]: https://github.com/kunickiaj/codemem/compare/v0.47.0-beta.3...v0.47.0-beta.4
@@ -247,3 +263,10 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2406]: https://github.com/kunickiaj/codemem/pull/2406
 [#2407]: https://github.com/kunickiaj/codemem/pull/2407
 [#2410]: https://github.com/kunickiaj/codemem/pull/2410
+[#2412]: https://github.com/kunickiaj/codemem/pull/2412
+[#2413]: https://github.com/kunickiaj/codemem/pull/2413
+[#2414]: https://github.com/kunickiaj/codemem/pull/2414
+[#2415]: https://github.com/kunickiaj/codemem/pull/2415
+[#2416]: https://github.com/kunickiaj/codemem/pull/2416
+[#2418]: https://github.com/kunickiaj/codemem/pull/2418
+[#2419]: https://github.com/kunickiaj/codemem/pull/2419
