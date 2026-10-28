@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import { invitation } from "../../../core/src/coordinator-device-ownership-evidence-test-fixtures.js";
 import { readCoordinatorResolvedAccountOwnerReceiptStatus } from "../../../core/src/coordinator-resolved-account-owner-status-client.js";
@@ -192,7 +193,7 @@ describe("real signed fixture controls", () => {
 				signature: request.headers.get("X-Opencode-Signature") ?? "",
 			}),
 		).toBe(true);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("rejects wrong receipt references despite an otherwise valid persisted owner fact", async () => {
 		// Arrange

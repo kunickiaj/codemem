@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { copyFileSync, readFileSync, renameSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { CoordinatorResolvedAccountOwnerStatusRead } from "../../../core/src/coordinator-resolved-account-owner-status-client.js";
@@ -89,7 +90,7 @@ describe("invalidation inside the maintained action's fresh preview await", () =
 				expect(freshPreviews).toBe(1);
 				if ("result" in outcome) expect(outcome.result.groups[0]?.status).toBe("unknown");
 				else expect(outcome.error).toBeInstanceOf(Error);
-				expect(f.immutableSnapshot()).toEqual(expectedLocal);
+				deepStrictEqual(f.immutableSnapshot(), expectedLocal);
 				expect(
 					f.db.prepare("SELECT * FROM coordinator_auth_controller_attestations").all(),
 				).toEqual(oldProof);
@@ -145,7 +146,7 @@ describe("private consent and owner association publication", () => {
 			attestationId: f.receipt().attestationId,
 			reviewDigest: f.receipt().reviewEvidenceDigest,
 		});
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("confirms a new group with the distinct owner-resolution digest, then verifies and retains its original source", async () => {
 		// Arrange
@@ -167,7 +168,7 @@ describe("private consent and owner association publication", () => {
 		expect(calls[0]?.[0]).not.toHaveProperty("confirmEvidenceDigest");
 		expect(f.readRemoteReceiptStatus).toHaveBeenCalled();
 		expect(f.association()?.ownerIdentityId).toBe("identity-a");
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("memoizes simultaneous and repeated confirms without duplicate remote mutation or publication", async () => {
 		// Arrange
@@ -196,7 +197,10 @@ describe("private consent and owner association publication", () => {
 			),
 		).toHaveLength(1);
 		expect(f.readRemoteReceiptStatus).toHaveBeenCalledOnce();
-		expect(recoveryAssociationFiles().map((path) => [path, readFileSync(path)])).toEqual(files);
+		deepStrictEqual(
+			recoveryAssociationFiles().map((path) => [path, readFileSync(path)]),
+			files,
+		);
 	});
 });
 
@@ -282,7 +286,7 @@ describe("final proof failure after real coordinator confirmation", () => {
 			expect(repeated).toEqual(result);
 			expect(f.association()).toBeNull();
 			expect(recoveryAssociationFiles()).toEqual([]);
-			expect(f.immutableSnapshot()).toEqual(before);
+			deepStrictEqual(f.immutableSnapshot(), before);
 			expect(result.groups).toMatchObject([{ groupId: "group-a", status: "unknown" }]);
 		},
 	);
@@ -322,7 +326,7 @@ describe("restored final proof failure without coordinator mutation", () => {
 		).toEqual(beforeCount);
 		expect(f.association()).toBeNull();
 		expect(recoveryAssociationFiles()).toEqual([]);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 });
 
@@ -486,7 +490,7 @@ describe("publication safety and partial outcomes", () => {
 			expect(f.readRemoteReceiptStatus.mock.calls[1]?.[0].receipt).toEqual(
 				f.readRemoteReceiptStatus.mock.calls[0]?.[0].receipt,
 			);
-			expect(f.immutableSnapshot()).toEqual(before);
+			deepStrictEqual(f.immutableSnapshot(), before);
 			expect(
 				f.snapshot().filter(([name]) => name !== "coordinator_legacy_owner_resolutions"),
 			).toEqual(beforeRemote);

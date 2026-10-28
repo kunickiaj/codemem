@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
 	recoveryFixture,
@@ -41,7 +42,7 @@ describe("noncredential receipt import", () => {
 			attestationId: f.receipt().attestationId,
 			reviewDigest: f.receipt().reviewEvidenceDigest,
 		});
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it.each([
 		"credential",

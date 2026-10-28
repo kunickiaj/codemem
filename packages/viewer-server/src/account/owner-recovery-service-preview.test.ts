@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { copyFileSync, renameSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
@@ -53,7 +54,7 @@ describe("trusted recovery profile and scoped preview", () => {
 		expect(f.readRemoteStatus).toHaveBeenCalledWith(
 			expect.objectContaining({ identityId: "identity-b" }),
 		);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("keeps semantic context stable across display, model, unrelated config and secret changes", async () => {
 		// Arrange
@@ -305,7 +306,7 @@ describe("operator and request review access", () => {
 		);
 		expectNoConfirmation(f);
 		expect(f.association()).toBeNull();
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("returns request-only assistance with incomplete history when no trusted admin callback credential exists", async () => {
 		// Arrange

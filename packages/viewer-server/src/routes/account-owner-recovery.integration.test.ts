@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import {
 	expectNoConfirmation,
@@ -186,7 +187,7 @@ describe("owner recovery uses the existing local account boundary", () => {
 			await publicError(response, [403]);
 		}
 		untouched(f);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 });
 
@@ -212,7 +213,7 @@ describe("read-only recovery projections", () => {
 		expect(f.calls.getProfile).toHaveBeenCalledOnce();
 		expect(f.association()).toBeNull();
 		expectNoConfirmation(f);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 	it("keeps check_status read-only even for a ready remote review", async () => {
 		// Arrange
@@ -236,7 +237,7 @@ describe("read-only recovery projections", () => {
 		expectNoConfirmation(f);
 		expect(f.association()).toBeNull();
 		expect(f.snapshot()).toEqual(remoteBefore);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 });
 
@@ -276,7 +277,7 @@ describe("explicit protected recovery publication", () => {
 		).toHaveLength(1);
 		expect(f.readRemoteReceiptStatus).toHaveBeenCalled();
 		expect(f.association()).toMatchObject({ ownerIdentityId: "identity-a", actorId: "identity-b" });
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 		expect(
 			f.snapshot().filter(([name]) => name !== "coordinator_legacy_owner_resolutions"),
 		).toEqual(remoteBefore);
@@ -336,7 +337,7 @@ describe("explicit protected recovery publication", () => {
 		expect(view).not.toHaveProperty("managementActions");
 		expect(view).not.toHaveProperty("unlinkTarget");
 		expect(f.readContext()).toMatchObject({ context: { identityId: "identity-b" } });
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 		expect(f.snapshot()).toEqual(remoteBefore);
 	});
 });
@@ -746,7 +747,7 @@ it("keeps carried proof failures unknown at HTTP 200 without retrying or losing 
 		expect(f.readRemoteReceiptStatus.mock.calls[1]?.[0].receipt).toEqual(
 			f.readRemoteReceiptStatus.mock.calls[0]?.[0].receipt,
 		);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 		expect(
 			f.snapshot().filter(([name]) => name !== "coordinator_legacy_owner_resolutions"),
 		).toEqual(beforeRemote);

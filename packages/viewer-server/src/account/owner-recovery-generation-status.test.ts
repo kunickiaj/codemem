@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 import { retainAccountOwnerAssociation } from "../../../core/src/account-owner-association.js";
@@ -29,7 +30,7 @@ it("fixture control: explicit pinned generation is readable by the existing core
 	f.retain("identity-a");
 	// Assert
 	expect(f.association()).toMatchObject({ ownerIdentityId: "identity-a", actorId: "identity-b" });
-	expect(f.immutableSnapshot()).toEqual(before);
+	deepStrictEqual(f.immutableSnapshot(), before);
 });
 
 it("finds a current-context generation through a fresh Viewer owner reader without rewriting it", async () => {
@@ -43,7 +44,10 @@ it("finds a current-context generation through a fresh Viewer owner reader witho
 	// Assert
 	expect(files).toHaveLength(1);
 	expect(result).toMatchObject({ ownerIdentityId: "identity-a", actorId: "identity-b" });
-	expect(files.map((path) => readFileSync(path))).toEqual(before);
+	deepStrictEqual(
+		files.map((path) => readFileSync(path)),
+		before,
+	);
 });
 
 it("keeps legacy association fallback readable when no current generation exists", async () => {
@@ -79,7 +83,10 @@ it("selects only the current actor generation while retaining the old actor's by
 	expect(oldFiles).toHaveLength(1);
 	expect(absent).toBeNull();
 	expect(result).toMatchObject({ ownerIdentityId: "identity-a", actorId: "identity-next" });
-	expect(oldFiles.map((path) => readFileSync(path))).toEqual(oldBytes);
+	deepStrictEqual(
+		oldFiles.map((path) => readFileSync(path)),
+		oldBytes,
+	);
 });
 
 it.each(["generation", "legacy"])(
@@ -130,7 +137,7 @@ it("reads the current generation without deleting an older valid legacy associat
 	const result = readOwnerAssociation(current.context, f.ownerProfile().coordinatorId);
 	// Assert
 	expect(result).toMatchObject({ ownerIdentityId: "identity-a", actorId: "identity-next" });
-	expect(readFileSync(path)).toEqual(original);
+	deepStrictEqual(readFileSync(path), original);
 });
 
 it("a restarted Viewer reads a proven imported generation while actor operations stay separate", async () => {
@@ -184,6 +191,6 @@ it("a restarted Viewer reads a proven imported generation while actor operations
 	expect(view).not.toHaveProperty("managementActions");
 	expect(view).not.toHaveProperty("unlinkTarget");
 	expect(freshReader()).toMatchObject({ context: { identityId: "identity-b" } });
-	expect(f.immutableSnapshot()).toEqual(before);
+	deepStrictEqual(f.immutableSnapshot(), before);
 	expect(f.link).not.toHaveBeenCalled();
 });

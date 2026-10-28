@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { connect } from "@codemem/core";
 import { expect, it, vi } from "vitest";
@@ -274,10 +275,10 @@ it("confirms conflicting A/B history without changing authored data or access, t
 	await restarted.close();
 	const importedRestart = await viewer(f);
 	for (const groupId of GROUPS) await expectSeparateOwnerDisplay(importedRestart, groupId);
-	expect(retainedBytes(f)).toEqual(retained);
+	deepStrictEqual(retainedBytes(f), retained);
 	expect(f.snapshot()).toEqual(beforeImport);
 	expect(withoutResolutions(f)).toEqual(beforeAccessAndHistory);
-	expect(f.immutableSnapshot()).toEqual(beforeLocal);
+	deepStrictEqual(f.immutableSnapshot(), beforeLocal);
 	expect(f.link).not.toHaveBeenCalled();
 });
 
@@ -350,7 +351,7 @@ it.each([
 		]);
 		expect(retainedBytes(f)).toHaveLength(1);
 		expect(f.association("group-b")).toBeNull();
-		expect(f.immutableSnapshot()).toEqual(expectedLocal);
+		deepStrictEqual(f.immutableSnapshot(), expectedLocal);
 		expect(withoutResolutions(f)).toEqual(beforeRemote);
 		expect(
 			f.db.prepare("SELECT COUNT(*) AS n FROM coordinator_legacy_owner_resolutions").get(),
@@ -405,6 +406,6 @@ it("keeps a committed but unverified outcome unknown; repeated status and stale 
 	expect(retainedBytes(f)).toEqual([]);
 	expect(f.snapshot()).toEqual(committed);
 	expect(withoutResolutions(f)).toEqual(beforeAccessAndHistory);
-	expect(f.immutableSnapshot()).toEqual(beforeLocal);
+	deepStrictEqual(f.immutableSnapshot(), beforeLocal);
 	expect(f.link).not.toHaveBeenCalled();
 });

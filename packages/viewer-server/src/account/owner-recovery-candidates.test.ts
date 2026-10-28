@@ -1,3 +1,4 @@
+import { deepStrictEqual } from "node:assert/strict";
 import type { coordinatorAuthControllerReviewAction } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -73,7 +74,7 @@ describe("recorded owner candidates", () => {
 		])
 			expect(calls[0]).not.toHaveProperty(field);
 		expectNoConfirmation(f);
-		expect(f.immutableSnapshot()).toEqual(before);
+		deepStrictEqual(f.immutableSnapshot(), before);
 	});
 
 	it("reuses recent suggestions for the same profile to spare the shared admin rate limit", async () => {

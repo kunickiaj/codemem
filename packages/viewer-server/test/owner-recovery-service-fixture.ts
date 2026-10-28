@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	connect, ensureDeviceIdentity, initTestSchema, loadPublicKey, MemoryStore,
+	connect, ensureDeviceIdentity, loadPublicKey, MemoryStore,
 	readCoordinatorAccountLinkStatus,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, vi } from "vitest";
@@ -60,12 +60,13 @@ export function deferred<T>() {
 	return { promise, resolve };
 }
 export async function recoveryFixture(options: { fact?: boolean; groups?: string[]; admin?: boolean; maintainedReview?: boolean } = {}) {
+	// Disable embeddings before either database opens so bootstrap skips vector setup.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	const remote = await accountFixture("device_claim", { issuer: "https://accounts.google.com" });
 	const directory = mkdtempSync(join(tmpdir(), "recovery-service-"));
 	cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
 	const dbPath = join(directory, "memory.sqlite"), keysDir = join(directory, "keys");
 	const db = connect(dbPath);
-	initTestSchema(db);
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
 	const { fingerprint } = db.prepare("SELECT fingerprint FROM sync_device").get() as { fingerprint: string };
 	// Existing authored data and identity rows must survive every recovery operation byte-for-byte.
@@ -74,7 +75,6 @@ export async function recoveryFixture(options: { fact?: boolean; groups?: string
 	const configPath = join(directory, "selected-config.json");
 	writeFileSync(configPath, JSON.stringify({ actor_id: "identity-b" }));
 	vi.stubEnv("CODEMEM_CONFIG", configPath);
-	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	const store = new MemoryStore(dbPath, { keysDir });
 	try {
 		const session = store.getOrCreateSessionForOpencodeSession({ opencodeSessionId: "recovery-capture", project: "fixture-project" });
