@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildAdapterNormalizers } from "../../../scripts/build-adapter-normalizers.mjs";
+import { smokeTeamRecovery } from "./packed-team-recovery-smoke.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(packageRoot, "..", "..");
@@ -740,6 +741,8 @@ try {
 			`Lexical-only install unexpectedly contains ${packageName}`,
 		);
 	}
+
+	await smokeTeamRecovery(installDir, tempDir, { runtimeEnv });
 
 	const semanticInstallDir = join(tempDir, "semantic-install");
 	mkdirSync(semanticInstallDir, { recursive: true });
