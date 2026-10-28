@@ -398,6 +398,7 @@ function reconcileGroupScopeSnapshot(
 			 FROM replication_scopes
 			 WHERE coordinator_id = ?
 				 AND group_id = ?
+				 AND status <> 'archived'
 				 ${scopeFilter}`,
 		)
 		.all(authority.coordinatorId, authority.groupId, ...scopeIds) as Array<{ scope_id: string }>;

@@ -628,6 +628,32 @@ describe("scope membership cache omission reconciliation", () => {
 		expect(listCachedScopesForDevice(local, "device-a").memberships).toEqual([]);
 	});
 
+	it("does not re-archive a scope that stays omitted", async () => {
+		const local = setup();
+		const refresh = (offsetMs: number, scopes: CoordinatorScope[]) =>
+			refreshScopeMembershipCache(local, {
+				groupIds: ["team-a"],
+				coordinatorId: "coord-a",
+				now: new Date(now(offsetMs)),
+				fetchers: {
+					listScopes: async () => scopes,
+					listMemberships: async () => (scopes.length > 0 ? [membership()] : []),
+				},
+			});
+		const archivedScope = () =>
+			local
+				.prepare("SELECT status, updated_at FROM replication_scopes WHERE scope_id = 'scope-acme'")
+				.get();
+		await refresh(0, [scope()]);
+		await refresh(1, []);
+		const firstArchive = archivedScope();
+
+		await refresh(2, []);
+
+		expect(firstArchive).toEqual({ status: "archived", updated_at: now(1) });
+		expect(archivedScope()).toEqual(firstArchive);
+	});
+
 	it("restores unchanged peer memberships when an enrolled device regains scope visibility", async () => {
 		const local = setup();
 		const fetch = async (visible: boolean) =>

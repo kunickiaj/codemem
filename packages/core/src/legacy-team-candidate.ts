@@ -277,20 +277,76 @@ function isRetiredFilesystemRootProjectRow(row: {
 	);
 }
 
+type CompletionProjectRow = {
+	project_ref: string;
+	source_project_identity: string;
+	resolved_project_identity: string | null;
+	target_scope_id: string | null;
+};
+
+/**
+ * Splits completed Project rows by whether their reviewed Space is active on
+ * this device. The coordinator lists only the Spaces a device belongs to, so a
+ * Project in a Space this device has left or never joined has no local
+ * evidence and syncs nothing here. Treating it as missing would turn this
+ * device's own membership into setup drift. Rows without a reviewed Space are
+ * always visible.
+ */
+function completionProjectRowsBySpaceVisibility(
+	db: Database,
+	attemptId: string,
+): { visible: CompletionProjectRow[]; hidden: CompletionProjectRow[] } {
+	const rows = db
+		.prepare(
+			`SELECT project.project_ref, project.source_project_identity,
+			        project.resolved_project_identity, project.target_scope_id,
+			        (project.target_scope_id IS NULL OR EXISTS (
+			          SELECT 1 FROM replication_scopes AS scope
+			          WHERE scope.scope_id = project.target_scope_id
+			            AND scope.coordinator_id = draft.coordinator_id
+			            AND scope.group_id = draft.group_id
+			            AND scope.authority_type = 'coordinator' AND scope.status = 'active'
+			        )) AS visible
+			 FROM legacy_team_setup_draft_projects AS project
+			 JOIN legacy_team_setup_drafts AS draft ON draft.attempt_id = project.attempt_id
+			 WHERE project.attempt_id = ?`,
+		)
+		.all(attemptId) as Array<CompletionProjectRow & { visible: number }>;
+	const strip = ({ visible: _visible, ...row }: CompletionProjectRow & { visible: number }) => row;
+	return {
+		visible: rows.filter((row) => row.visible === 1).map(strip),
+		hidden: rows.filter((row) => row.visible !== 1).map(strip),
+	};
+}
+
+/**
+ * Completed rows that readiness must check. A hidden row is skipped unless its
+ * selected mapping now points at another Space: then the review no longer
+ * describes it, and keeping the row lets the usual Space checks reject it.
+ */
+function completionProjectRowsForReadiness(
+	db: Database,
+	attemptId: string,
+): CompletionProjectRow[] {
+	const { visible, hidden } = completionProjectRowsBySpaceVisibility(db, attemptId);
+	const selected = selectedProjectScopeMappings(
+		db,
+		hidden.flatMap((row) => (row.resolved_project_identity ? [row.resolved_project_identity] : [])),
+	);
+	const remapped = hidden.filter(
+		(row) =>
+			!row.resolved_project_identity ||
+			selected.get(row.resolved_project_identity)?.scopeId !== row.target_scope_id,
+	);
+	return [...visible, ...remapped];
+}
+
 function completedInventoryCompatible(
 	db: Database,
 	attemptId: string,
 	projects: LegacyTeamSetupProjectInput[],
 ): boolean {
-	const rows = db
-		.prepare(
-			`SELECT source_project_identity, resolved_project_identity
-			 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
-		)
-		.all(attemptId) as Array<{
-		source_project_identity: string;
-		resolved_project_identity: string | null;
-	}>;
+	const rows = completionProjectRowsBySpaceVisibility(db, attemptId).visible;
 	const reviewableRows = rows.filter((row) => !isRetiredFilesystemRootProjectRow(row));
 	const reviewedIdentities = new Set<string>();
 	for (const row of reviewableRows) {
@@ -374,18 +430,9 @@ function isCompatibleReadyTeam(
 	// only required when the completed draft has Project rows to validate: a
 	// configured group with no displayed Projects has no mapping whose scope
 	// could drift, so its completion stays Ready without a local scope row.
-	const completionProjectRows = (
-		db
-			.prepare(
-				`SELECT source_project_identity, resolved_project_identity, target_scope_id
-				 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
-			)
-			.all(attemptId) as Array<{
-			source_project_identity: string;
-			resolved_project_identity: string | null;
-			target_scope_id: string | null;
-		}>
-	).filter((row) => !isRetiredFilesystemRootProjectRow(row));
+	const completionProjectRows = completionProjectRowsForReadiness(db, attemptId).filter(
+		(row) => !isRetiredFilesystemRootProjectRow(row),
+	);
 	const setupScopeIds = db
 		.prepare(
 			`SELECT scope_id FROM replication_scopes
@@ -694,6 +741,12 @@ function planMissingCompletedProjectRecipients(
 		.prepare("SELECT revision FROM policy_teams WHERE team_id = ? AND status = 'active'")
 		.get(draftRow.completed_team_id) as { revision: string } | undefined;
 	if (!team) return null;
+	// Repair only what readiness checked: a Project in a Space this device
+	// cannot see was not validated, so restoring its access here would grant
+	// it without review.
+	const readinessProjectRefs = new Set(
+		completionProjectRowsForReadiness(db, draftRow.attempt_id).map((row) => row.project_ref),
+	);
 	const completionProjects = (
 		db
 			.prepare(
@@ -702,7 +755,9 @@ function planMissingCompletedProjectRecipients(
 				 FROM legacy_team_setup_draft_projects WHERE attempt_id = ? ORDER BY project_ref`,
 			)
 			.all(draftRow.attempt_id) as CompletionProjectRecipientRow[]
-	).filter((row) => !isRetiredFilesystemRootProjectRow(row));
+	).filter(
+		(row) => readinessProjectRefs.has(row.project_ref) && !isRetiredFilesystemRootProjectRow(row),
+	);
 	const existingRecipient = db.prepare(
 		`SELECT status, provenance FROM project_recipients
 		 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,

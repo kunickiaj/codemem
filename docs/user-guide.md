@@ -608,7 +608,7 @@ If the page closes or the finish response is lost, refresh **Sharing** and open 
 
 Every device that finishes or recovers setup must use a coordinator that supports cross-device Team completion. The device must also list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. With an older coordinator, Codemem keeps the setup unfinished rather than creating a local-only result; update the coordinator, then retry. A device upgraded after a prior local completion makes that result available when it reconnects, after which other upgraded devices recover it automatically.
 
-A device that is not a member of every Space in a completed Team still applies the setup. It shares only the Projects in Spaces it belongs to, and adds the others if it later joins those Spaces.
+A device that is not a member of every Space in a completed Team still applies the setup. It shares only the Projects in Spaces it belongs to, and adds the others if it later joins those Spaces. Leaving one of the Team's Spaces later does not reopen setup on that device.
 
 If a completed Team keeps asking for setup or the setup dialog will not load, run a dry run on the affected device. It needs the coordinator admin settings saved in your configuration:
 
