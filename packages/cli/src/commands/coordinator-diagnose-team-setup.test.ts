@@ -12,6 +12,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as legacyTeamCandidate from "../../../core/src/legacy-team-candidate.js";
 import { legacyTeamProjectRef } from "../../../core/src/recipient-policy-identifiers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -305,9 +306,19 @@ it.each(["active", "archived"])(
 		try {
 			const record = completionRecord("https://coordinator.example.test", { withProject: true });
 			mocks.listCompletions.mockResolvedValue([record]);
+			mocks.listDevices.mockResolvedValue([
+				{ device_id: "device-a", fingerprint: "a".repeat(64), display_name: "Laptop", enabled: 1 },
+			]);
 			source.db.pragma("wal_autocheckpoint = 0");
 			source.db.pragma("wal_checkpoint(TRUNCATE)");
 			const mainBeforeCommit = readFileSync(path);
+			// The completion assigns this identity, which must exist locally before apply.
+			source.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+				 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
+				)
+				.run(record.completed_at, record.completed_at);
 			source.db
 				.prepare(
 					`INSERT INTO replication_scopes(
@@ -317,6 +328,7 @@ it.each(["active", "archived"])(
 				)
 				.run(record.manifest.coordinator_id, status, record.completed_at, record.completed_at);
 			const logicalBefore = source.db.serialize();
+			const discovery = vi.spyOn(legacyTeamCandidate, "discoverLegacyTeamCandidates");
 
 			// Act
 			await run([]);
@@ -325,6 +337,19 @@ it.each(["active", "archived"])(
 			expect(statSync(`${path}-wal`).size).toBeGreaterThan(0);
 			expect(readFileSync(path).equals(mainBeforeCommit)).toBe(true);
 			expect(source.db.serialize().equals(logicalBefore)).toBe(true);
+			expect(discovery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					projection: { localActorId: source.actorId, localDeviceId: source.deviceId },
+				}),
+			);
+			expect((jsonOutput() as { groups: { apply: unknown }[] }).groups[0]?.apply).toEqual({
+				ok: true,
+				teamStatus: "active",
+				migrationState: "completed",
+				// This fixture has a scope but no local project inventory to grant.
+				grantedProjects: 0,
+			});
 			expect(jsonOutput()).toMatchObject({
 				groups: [
 					{

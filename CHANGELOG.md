@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Team setup diagnosis now initializes missing review drafts inside its temporary copy, avoiding false completion errors before the viewer has opened a Team.
 - Opening a saved stale Team review now revalidates it once instead of requiring an initial Retry click. A failed automatic refresh remains visible for review.
 - Team setup lists now report recovery blockers instead of offering a migration that cannot load. Recovery also preserves verified matching sharing policy when a local Project scan limit prevents applying a coordinator completion after a publication conflict.
 - Leaving one of a completed Team's Spaces, or losing access to all of them, no longer makes that device treat the Team as needing setup again. Space refreshes also stop re-archiving Spaces that were already archived.
