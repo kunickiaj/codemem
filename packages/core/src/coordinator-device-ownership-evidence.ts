@@ -278,12 +278,10 @@ export class CoordinatorDeviceOwnershipEvidence {
 		const rows: EvidenceRows = {};
 		const encodedRows: Record<string, string[]> = {};
 		let bytes = parameters.length;
-		for (const query of EVIDENCE_QUERIES) {
-			const category = categories.get(query.name);
-			if (!category) throw new Error("invalid_evidence");
+		for (const [name, category] of categories) {
 			const values = parseRows(category);
-			rows[query.name] = values.parsed;
-			encodedRows[query.name] = values.encoded;
+			rows[name] = values.parsed;
+			encodedRows[name] = values.encoded;
 			bytes += values.encoded.reduce((total, row) => total + row.length, 0);
 			if (bytes > BYTE_LIMIT) throw new Error("evidence_too_large");
 		}
