@@ -250,6 +250,8 @@ Codex hook ingestion shares the same raw-event pipeline as Claude and OpenCode t
 
 ### Pi
 
+Codemem requires Pi 1.1.0 or newer, below 2.0; upgrade an older host with `pi update` before installing.
+
 Install the durable CLI, then configure only Pi. On Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install, as in Prerequisites above.
 
 ```text

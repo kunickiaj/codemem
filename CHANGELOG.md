@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `@codemem/pi-extension` now declares Pi `>=1.1.0 <2`; upgrade an older host with `pi update` before installing. Native tools remain the setup default (15 `memory_*` tools), and the explicit `native` / `mcp-adapter` modes are unchanged. See [Pi host compatibility](docs/versioning.md#pi-host-compatibility).
+
 ## [0.47.3] - 2026-10-28
 
 ### Added
