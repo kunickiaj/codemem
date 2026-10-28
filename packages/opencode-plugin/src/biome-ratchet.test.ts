@@ -1278,6 +1278,99 @@ describe("Biome glob coverage compatibility", () => {
 });
 
 describe("Biome policy bypass prevention", () => {
+	// Preserve keyword suffix boundaries while distinguishing JSX text from comments.
+	it.each([
+		{ prefix: "return", detected: false },
+		{ prefix: "yield", detected: false },
+		{ prefix: "value", detected: true },
+		{ prefix: "$return", detected: true },
+		{ prefix: "return2", detected: true },
+		{ prefix: "123", detected: true },
+		{ prefix: "123return", detected: false },
+		{ prefix: "éreturn", detected: false },
+		{ prefix: "returné", detected: true },
+	])("preserves JSX comment detection after $prefix", ({ prefix, detected }) => {
+		// Arrange: numeric prefixes also cover incomplete source handled by the scanner.
+		const coverage = config({ include: ["src/**/*.tsx"] });
+		const afterSource = `${prefix} <code>// biome-ignore lint/a</code>;`;
+		// Act
+		const violations = compareBiomePolicy(coverage, coverage, [
+			{ status: "modified", afterPath: "src/a.tsx", afterSource },
+		]);
+		// Assert
+		expect(violations).toEqual(
+			detected
+				? [
+						{
+							kind: "suppression",
+							message: "1 Biome suppression directive added or changed",
+							path: "src/a.tsx",
+						},
+					]
+				: [],
+		);
+	});
+
+	// A division operand may contain directive text that is not a source comment.
+	it.each([
+		'return /"/;',
+		'throw /"/;',
+		'123return /"/;',
+		'éreturn /"/;',
+		'value / "/// biome-ignore lint/a" / denominator;',
+		'$return / "/// biome-ignore lint/a" / denominator;',
+		'return2 / "/// biome-ignore lint/a" / denominator;',
+		'123 / "/// biome-ignore lint/a" / denominator;',
+		'returné / "/// biome-ignore lint/a" / denominator;',
+	])("detects only the real suppression after slash expression %s", (expression) => {
+		// Arrange
+		const afterSource = `${expression}\n// biome-ignore lint/b\nconst hidden = 1;`;
+		// Act
+		const violations = compareBiomePolicy(config(), config(), [
+			{ status: "modified", afterPath: "src/a.ts", afterSource },
+		]);
+		// Assert
+		expect(violations).toEqual([
+			{
+				kind: "suppression",
+				message: "1 Biome suppression directive added or changed",
+				path: "src/a.ts",
+			},
+		]);
+	});
+
+	// Control-flow bodies permit regex literals, unlike ordinary function calls.
+	it.each([
+		{ prefix: "if", detected: true },
+		{ prefix: "while", detected: true },
+		{ prefix: "notify", detected: false },
+		{ prefix: "$if", detected: false },
+		{ prefix: "if2", detected: false },
+		{ prefix: "123", detected: false },
+		{ prefix: "123if", detected: true },
+		{ prefix: "éif", detected: true },
+		{ prefix: "ifé", detected: false },
+	])("preserves regex body comment detection after $prefix", ({ prefix, detected }) => {
+		// Arrange
+		const afterSource = `${prefix} (ready) /"/;\n// biome-ignore lint/a\nconst hidden = 1;`;
+		// Act
+		const violations = compareBiomePolicy(config(), config(), [
+			{ status: "modified", afterPath: "src/a.ts", afterSource },
+		]);
+		// Assert
+		expect(violations).toEqual(
+			detected
+				? [
+						{
+							kind: "suppression",
+							message: "1 Biome suppression directive added or changed",
+							path: "src/a.ts",
+						},
+					]
+				: [],
+		);
+	});
+
 	it("treats an absent base linter as enabled by default", () => {
 		expect(
 			compareBiomePolicy("{}", JSON.stringify({ linter: { enabled: false } }), []),
@@ -1376,7 +1469,7 @@ describe("Biome suppressed-edit policy", () => {
 			message: "Code changed under an existing Biome suppression",
 			path: "src/a.ts",
 		});
-	}, 15_000);
+	}, 2_000);
 
 	it("rejects edits covered by existing broad suppressions", () => {
 		const fileWide = "// biome-ignore-all lint/a: legacy\nconst first = 1;";

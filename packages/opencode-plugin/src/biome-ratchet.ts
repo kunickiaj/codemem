@@ -758,13 +758,21 @@ function skipQuotedString(source: string, start: number, quote: string): number 
 	return source.length;
 }
 
+function trailingAsciiIdentifier(source: string): string | undefined {
+	let start = source.length;
+	while (start > 0 && /[\w$]/.test(source[start - 1] ?? "")) start -= 1;
+	// A suffix match can begin after leading digits, but not inside an identifier.
+	while (start < source.length && /[0-9]/.test(source[start] ?? "")) start += 1;
+	return start === source.length ? undefined : source.slice(start);
+}
+
 function canStartRegex(source: string, index: number): boolean {
 	const prefix = source.slice(0, index).trimEnd();
 	if (!prefix) return true;
 	const previous = prefix.at(-1) ?? "";
 	if ("([{:;,=!?&|+-*%^~<>".includes(previous)) return true;
 	if (previous === ")" && followsControlFlowHeader(prefix)) return true;
-	const keyword = prefix.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+	const keyword = trailingAsciiIdentifier(prefix);
 	return Boolean(
 		keyword &&
 			[
@@ -795,10 +803,7 @@ function followsControlFlowHeader(prefix: string): boolean {
 		if (prefix[index] === ")") {
 			const opening = openingParentheses.pop();
 			if (index !== prefix.length - 1 || opening === undefined) continue;
-			const keyword = prefix
-				.slice(0, opening)
-				.trimEnd()
-				.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+			const keyword = trailingAsciiIdentifier(prefix.slice(0, opening).trimEnd());
 			return Boolean(keyword && ["for", "if", "while", "with"].includes(keyword));
 		}
 		index = scanCodeToken(prefix, index, comments) - 1;

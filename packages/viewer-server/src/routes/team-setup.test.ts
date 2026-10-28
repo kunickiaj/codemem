@@ -331,6 +331,75 @@ describe("Team setup finish diagnostics", () => {
 	});
 });
 
+async function retriesTransientCoordinatorTimeouts(): Promise<void> {
+	const publicKey = "public-key-a";
+	const timeoutError = Object.assign(new Error("The operation was aborted due to timeout"), {
+		name: "TimeoutError",
+	});
+	const listGroups = vi
+		.fn()
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockResolvedValue([
+			{
+				group_id: "group-alpha",
+				display_name: "Migration Team",
+				archived_at: null,
+				created_at: "2026-08-24T00:00:00.000Z",
+			},
+		]);
+	const listDevices = vi
+		.fn()
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockRejectedValueOnce(timeoutError)
+		.mockResolvedValue([
+			{
+				group_id: "group-alpha",
+				device_id: "device-a",
+				public_key: publicKey,
+				fingerprint: fingerprintPublicKey(publicKey),
+				identity_id: null,
+				display_name: "Laptop",
+				enabled: 1,
+				created_at: "2026-08-24T00:00:00.000Z",
+			},
+		]);
+
+	// Advance Date.now with the backoff timers so the real retry deadline still applies.
+	const now = new Date("2026-08-24T00:00:00.000Z");
+	vi.useFakeTimers({ now });
+	try {
+		const result = expect(
+			__teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
+				readConfig: () => ({
+					...readCoordinatorSyncConfig({}),
+					syncCoordinatorUrl: "http://localhost:8787",
+					syncCoordinatorGroups: ["group-alpha"],
+					syncCoordinatorAdminSecret: "private-admin-secret",
+				}),
+				listGroups,
+				listDevices,
+			}),
+		).resolves.toEqual([
+			expect.objectContaining({ groupId: "group-alpha", displayName: "Migration Team" }),
+		]);
+		await vi.advanceTimersByTimeAsync(99);
+		expect(listGroups).toHaveBeenCalledTimes(1);
+		expect(listDevices).not.toHaveBeenCalled();
+		await vi.runAllTimersAsync();
+		await result;
+		expect(listGroups).toHaveBeenCalledTimes(5);
+		expect(listDevices).toHaveBeenCalledTimes(5);
+		expect(Date.now() - now.getTime()).toBe(3_000);
+	} finally {
+		vi.useRealTimers();
+	}
+}
+
 describe("Team setup roster loading", () => {
 	it("rolls back a mutation when response projection fails", () => {
 		const { store, close } = createRouteStore();
@@ -465,61 +534,10 @@ describe("Team setup roster loading", () => {
 		},
 	);
 
-	it("retries transient coordinator timeouts while loading a candidate roster", async () => {
-		const publicKey = "public-key-a";
-		const timeoutError = Object.assign(new Error("The operation was aborted due to timeout"), {
-			name: "TimeoutError",
-		});
-		const listGroups = vi
-			.fn()
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockResolvedValue([
-				{
-					group_id: "group-alpha",
-					display_name: "Migration Team",
-					archived_at: null,
-					created_at: "2026-08-24T00:00:00.000Z",
-				},
-			]);
-		const listDevices = vi
-			.fn()
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockRejectedValueOnce(timeoutError)
-			.mockResolvedValue([
-				{
-					group_id: "group-alpha",
-					device_id: "device-a",
-					public_key: publicKey,
-					fingerprint: fingerprintPublicKey(publicKey),
-					identity_id: null,
-					display_name: "Laptop",
-					enabled: 1,
-					created_at: "2026-08-24T00:00:00.000Z",
-				},
-			]);
-
-		await expect(
-			__teamSetupTestHooks.loadConfiguredLegacyTeamGroupSnapshotsWith({
-				readConfig: () => ({
-					...readCoordinatorSyncConfig({}),
-					syncCoordinatorUrl: "http://localhost:8787",
-					syncCoordinatorGroups: ["group-alpha"],
-					syncCoordinatorAdminSecret: "private-admin-secret",
-				}),
-				listGroups,
-				listDevices,
-			}),
-		).resolves.toEqual([
-			expect.objectContaining({ groupId: "group-alpha", displayName: "Migration Team" }),
-		]);
-		expect(listGroups).toHaveBeenCalledTimes(5);
-		expect(listDevices).toHaveBeenCalledTimes(5);
-	});
+	it(
+		"retries transient coordinator timeouts while loading a candidate roster",
+		retriesTransientCoordinatorTimeouts,
+	);
 
 	it("retries transient coordinator server errors", async () => {
 		const listGroups = vi
