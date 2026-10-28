@@ -77,7 +77,9 @@ function observeCatalog(
 			const result = await actual.all<T>(statement);
 			if (statement.sql.includes("json_array(type,name,tbl_name,sql)")) {
 				observed.captured.push(
-					(result as { row: string }[]).map(({ row }) => JSON.parse(row) as CatalogRow),
+					(result as { category: string; row: string }[])
+						.filter(({ category }) => category === "schema")
+						.map(({ row }) => JSON.parse(row) as CatalogRow),
 				);
 				observed.events.push("capture");
 				hooks.afterCapture?.();

@@ -125,6 +125,46 @@ export function readEvidenceQuery(query: EvidenceQuery, encoded: string): AuthLi
 	};
 }
 
+export interface CapturedEvidenceRow {
+	category: string;
+	row_count: number;
+	row: string | null;
+}
+
+export function readCombinedEvidenceQuery(encoded: string): AuthLinkStatement {
+	const stages = EVIDENCE_QUERIES.map(
+		({ name, sql }) => `selected_${name}(row) AS MATERIALIZED (${sql})`,
+	);
+	const categories = EVIDENCE_QUERIES.map(({ name }) => `('${name}')`).join(",");
+	const counts = EVIDENCE_QUERIES.map(
+		({ name }) => `WHEN '${name}' THEN (SELECT count(*) FROM selected_${name})`,
+	).join("\n");
+	const rows = EVIDENCE_QUERIES.map(({ name }) => `WHEN '${name}' THEN selected_${name}.row`).join(
+		"\n",
+	);
+	const joins = EVIDENCE_QUERIES.map(
+		({ name }) => `LEFT JOIN selected_${name} ON category='${name}'`,
+	).join("\n");
+	stages.push(
+		`categories(category) AS (VALUES ${categories})`,
+		`captured AS (SELECT category,
+ CASE category ${counts} END AS row_count,
+ CASE category ${rows} END AS row
+ FROM categories ${joins})`,
+	);
+	return {
+		// VALUES avoids D1's compound-SELECT term limit. Only the matching
+		// category's join can return rows; every other LEFT JOIN contributes NULL.
+		// Empty categories retain an explicit count/NULL marker. Bound the entire
+		// response, not just each category, before evidence text crosses the backend.
+		sql: `${prefix}, ${stages.join(",\n")}
+ SELECT category, row_count,
+ CASE WHEN SUM(length(CAST(row AS BLOB))) OVER () <= ${BYTE_LIMIT} THEN row ELSE NULL END AS row
+ FROM captured ORDER BY category, row`,
+		values: [encoded],
+	};
+}
+
 export function atomicEvidenceQuery(encoded: string): AuthLinkStatement {
 	const stages = EVIDENCE_QUERIES.flatMap(({ name, sql }) => [
 		`observed_${name}(row) AS MATERIALIZED (${sql})`,

@@ -20,10 +20,11 @@ import { capturedOwnershipEvidenceDigest } from "./coordinator-device-ownership-
 import {
 	atomicEvidenceQuery,
 	BYTE_LIMIT,
+	type CapturedEvidenceRow,
 	CONTROLLER_COLUMNS,
 	EVIDENCE_QUERIES,
 	ROW_LIMIT,
-	readEvidenceQuery,
+	readCombinedEvidenceQuery,
 } from "./coordinator-device-ownership-evidence-queries.js";
 import {
 	captureLegacyOwnerResolutionRecord,
@@ -110,6 +111,35 @@ function parseRows(rows: { row: string | null }[]): { encoded: string[]; parsed:
 		return value as EvidenceRow;
 	});
 	return { encoded, parsed };
+}
+
+function requireCapturedCategory(category: CapturedEvidenceRow[]): CapturedEvidenceRow[] {
+	const count = category[0]?.row_count;
+	if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > ROW_LIMIT)
+		throw new Error("invalid_evidence");
+	if (category.length !== Math.max(1, count)) throw new Error("invalid_evidence");
+	if (category.some((row) => row.row_count !== count)) throw new Error("invalid_evidence");
+	if (count !== 0) return category;
+	if (category[0]?.row !== null) throw new Error("invalid_evidence");
+	return [];
+}
+
+function groupCapturedRows(captured: CapturedEvidenceRow[]): Map<string, CapturedEvidenceRow[]> {
+	if (captured.length > EVIDENCE_QUERIES.length * (ROW_LIMIT + 1))
+		throw new Error("evidence_too_large");
+	const categories = new Map<string, CapturedEvidenceRow[]>(
+		EVIDENCE_QUERIES.map(({ name }) => [name, []]),
+	);
+	for (const value of captured) {
+		const row = captureFields(value, ["category", "row_count", "row"]);
+		if (typeof row.category !== "string") throw new Error("invalid_evidence");
+		const category = categories.get(row.category);
+		if (!category) throw new Error("invalid_evidence");
+		category.push(value);
+	}
+	for (const [name, category] of categories)
+		categories.set(name, requireCapturedCategory(category));
+	return categories;
 }
 
 function historyRows(history: ControllerHistorySnapshot): EvidenceRows {
@@ -242,13 +272,16 @@ export class CoordinatorDeviceOwnershipEvidence {
 			legacyHistory,
 		};
 		const parameters = JSON.stringify(base);
+		const categories = groupCapturedRows(
+			await this.backend.all<CapturedEvidenceRow>(readCombinedEvidenceQuery(parameters)),
+		);
 		const rows: EvidenceRows = {};
 		const encodedRows: Record<string, string[]> = {};
 		let bytes = parameters.length;
 		for (const query of EVIDENCE_QUERIES) {
-			const values = parseRows(
-				await this.backend.all<{ row: string | null }>(readEvidenceQuery(query, parameters)),
-			);
+			const category = categories.get(query.name);
+			if (!category) throw new Error("invalid_evidence");
+			const values = parseRows(category);
 			rows[query.name] = values.parsed;
 			encodedRows[query.name] = values.encoded;
 			bytes += values.encoded.reduce((total, row) => total + row.length, 0);

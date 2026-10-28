@@ -85,7 +85,9 @@ function evidenceBackend(
 				.all<T>();
 			if (statement.sql.includes("json_array(type,name,tbl_name,sql)")) {
 				observed.captured.push(
-					(results as { row: string }[]).map(({ row }) => JSON.parse(row) as CatalogRow),
+					(results as { category: string; row: string }[])
+						.filter(({ category }) => category === "schema")
+						.map(({ row }) => JSON.parse(row) as CatalogRow),
 				);
 				await hooks.afterCapture?.();
 			}

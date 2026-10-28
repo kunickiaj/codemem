@@ -5,6 +5,7 @@
 ### Fixed
 
 - **Sign in with Google** is available after recovering a linked account owner even when this device's old Identity still needs review. Sign-in uses the existing coordinator checks and Google verification before asking you to confirm an Identity switch.
+- Account ownership reviews collect the twelve evidence categories in one database snapshot instead of twelve separate reads. This removes 11 database calls per preview and 22 per confirmation while retaining schema validation and atomic freshness checks.
 
 ## [0.47.1] - 2026-10-27
 
