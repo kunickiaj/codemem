@@ -42,6 +42,7 @@ import {
 	legacyTeamDeviceRef,
 	legacyTeamResolvedProjectRef,
 	legacyTeamSetupApiErrorCode,
+	legacyTeamSetupCompletionActorIds,
 	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
 	previewLegacyTeamSetupActivation,
@@ -52,6 +53,7 @@ import {
 	refreshLegacyTeamCandidate,
 	replayLegacyTeamSetupActivation,
 	requireLegacyTeamSetupAccessDeltaWithinLimit,
+	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
@@ -108,6 +110,41 @@ const MAX_PROJECT_MAPPING_METADATA_ROWS = 10_000;
 const MAX_MUTATION_BODY_BYTES = 8_192;
 const SUMMARY_SNAPSHOT_CACHE_TTL_MS = 30_000;
 const COORDINATOR_ROSTER_READ_BUDGET_MS = 60_000;
+
+function serializeCanonicalManifestMutation<T>(
+	store: MemoryStore,
+	groupId: string,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	operation: (actorIds: readonly string[]) => Promise<T>,
+): Promise<T> {
+	// Keep publication -> sorted actors -> Team -> group ordering shared with core and finish.
+	return serializeRecipientPolicyPublicationMutation(store.db, () => {
+		const actorIds = legacyTeamSetupCompletionActorIds(store.db, manifest);
+		return serializeRecipientPolicyActorMutations(store.db, actorIds, () =>
+			serializeRecipientPolicyTeamMutation(store.db, manifest.team_id, () =>
+				serializeRecipientPolicyCoordinatorGroupMutation(store.db, groupId, () =>
+					operation(actorIds),
+				),
+			),
+		);
+	});
+}
+
+function finishDraftActorIds(draft: LegacyTeamSetupDraftView): string[] {
+	return draft.devices.flatMap((device) => [
+		...(device.decision === "included" && device.targetIdentityId ? [device.targetIdentityId] : []),
+		...(device.existingIdentityId ? [device.existingIdentityId] : []),
+	]);
+}
+
+function completionRecipientPolicyLocksHeld(actorIds: readonly string[]) {
+	return {
+		publication: true,
+		actors: actorIds,
+		team: true,
+		coordinatorGroup: true,
+	} as const;
+}
 export const TEAM_SETUP_ROUTE_PREFIX = "/api/sync/team-setup/v1";
 const CANDIDATE_REF_PATTERN = /^legacy-team-candidate:[0-9a-f]{32}$/u;
 const DEVICE_REF_PATTERN = /^legacy-team-device-ref-v1:[0-9a-f]{64}$/u;
@@ -1956,21 +1993,17 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			store.db,
 			legacyTeamCandidateId(group.coordinatorId, group.groupId),
 			() =>
-				serializeRecipientPolicyPublicationMutation(store.db, () =>
-					serializeRecipientPolicyTeamMutation(store.db, manifest.team_id, () =>
-						serializeRecipientPolicyCoordinatorGroupMutation(store.db, group.groupId, async () => {
-							if (!stillAuthorizesGroup(authorization, group)) return;
-							await applyLegacyTeamSetupCompletionManifest(store.db, {
-								coordinatorId: group.coordinatorId,
-								groupId: group.groupId,
-								manifest,
-								freshRoster,
-								recipientPolicyLocksHeld: { publication: true, team: true, coordinatorGroup: true },
-							});
-							outcome = "applied";
-						}),
-					),
-				),
+				serializeCanonicalManifestMutation(store, group.groupId, manifest, async (actorIds) => {
+					if (!stillAuthorizesGroup(authorization, group)) return;
+					await applyLegacyTeamSetupCompletionManifest(store.db, {
+						coordinatorId: group.coordinatorId,
+						groupId: group.groupId,
+						manifest,
+						freshRoster,
+						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
+					});
+					outcome = "applied";
+				}),
 		);
 		return ran ? outcome : "claimed";
 	}
@@ -2939,15 +2972,8 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			// assignment of every reviewed device (including excluded or removed ones,
 			// whose current assignment the access delta depends on). These locks cover
 			// coordinator creation, conflict recovery, and local application.
-			releaseActorMutations = await claimRecipientPolicyActorMutations(
-				store.db,
-				claimedDraft.devices.flatMap((device) => [
-					...(device.decision === "included" && device.targetIdentityId
-						? [device.targetIdentityId]
-						: []),
-					...(device.existingIdentityId ? [device.existingIdentityId] : []),
-				]),
-			);
+			const claimedActorIds = finishDraftActorIds(claimedDraft);
+			releaseActorMutations = await claimRecipientPolicyActorMutations(store.db, claimedActorIds);
 			const response = await serializeRecipientPolicyTeamMutation(
 				store.db,
 				deterministicPolicyTeamId(candidateRef),
@@ -3132,11 +3158,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 								freshRoster: postPublicationGroup.devices,
 								manifest: canonicalManifest,
 								expectedDraftManifest: proposedManifest,
-								recipientPolicyLocksHeld: {
-									publication: true,
-									team: true,
-									coordinatorGroup: true,
-								},
+								recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(claimedActorIds),
 							},
 						);
 						return c.json(finishResponse(candidateRef, result));

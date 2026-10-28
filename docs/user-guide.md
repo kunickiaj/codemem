@@ -606,6 +606,8 @@ When you first open a saved stale review, Codemem revalidates it once so you can
 
 When another upgraded device opens **Sharing**, it automatically applies a completed Team's reviewed policy locally before removing the setup task. The Team then appears normally under **Sharing → Teams**, so you do not need to repeat setup on each device.
 
+A new device can recover a Team even if it has not seen the other people before. It restores missing person records under their saved Identity IDs with the display name **Team member**, because the completed setup does not include person names. Existing names and identities are not merged or changed. Restoring a person record does not verify account or device ownership.
+
 If the page closes or the finish response is lost, refresh **Sharing** and open the Team again. Retrying the same finish safely returns the completed result instead of applying access changes again. If setup cannot reach the shared completion service or cannot apply the completed result locally, the task stays visible and offers retry; it never hides an incomplete setup.
 
 When a Team's completed setup cannot be recovered, **Sharing** shows **Needs recovery** with the reason and **View recovery details**, rather than asking you to migrate it again. Other Teams can still be reviewed. If this device verifies that its existing policy matches the coordinator's and only a local Project scan limit prevents recovery, its existing sharing stays active. Conflicting or unverifiable policy still requires containment before recovery can continue.

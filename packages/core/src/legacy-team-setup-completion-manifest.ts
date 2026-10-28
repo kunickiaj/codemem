@@ -35,6 +35,7 @@ import {
 } from "./recipient-policy-identifiers.js";
 import {
 	isRecipientPolicyTeamRenameRevision,
+	serializeRecipientPolicyActorMutations,
 	serializeRecipientPolicyCoordinatorGroupMutation,
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
@@ -127,6 +128,7 @@ interface ApplyCompletionManifestInput {
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
+		actors: readonly string[];
 		team: true;
 		coordinatorGroup: true;
 	};
@@ -949,6 +951,54 @@ function requireIncludedDeviceEvidence(
 	}
 }
 
+/** Compute under the publication lock, before acquiring actor, Team, and group locks. */
+export function legacyTeamSetupCompletionActorIds(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): string[] {
+	const assignmentForDevice = db.prepare(
+		"SELECT identity_id FROM identity_devices WHERE device_id = ? LIMIT 1",
+	);
+	const actorIds = new Set(manifest.memberships.map((membership) => membership.identity_id));
+	// Excluded devices can have assignments that activation must revoke or replace.
+	for (const decision of manifest.device_decisions) {
+		const assignment = assignmentForDevice.get(decision.device_id) as
+			| { identity_id: string }
+			| undefined;
+		if (assignment) actorIds.add(assignment.identity_id);
+	}
+	return [...actorIds].toSorted(compareCodepoints);
+}
+
+function requireCompletionActorLocks(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	heldActorIds: readonly string[],
+): void {
+	const held = new Set(heldActorIds);
+	if (legacyTeamSetupCompletionActorIds(db, manifest).some((actorId) => !held.has(actorId))) {
+		throw new LegacyTeamSetupConfirmationStaleError();
+	}
+}
+
+function ensureCanonicalMemberActorsInTransaction(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+): void {
+	if (!db.inTransaction) fail("team_setup_completion_invalid");
+	// Exact canonical IDs recover absent people without asserting local ownership.
+	// Existing names, locality, lifecycle state, and timestamps remain untouched.
+	const insert = db.prepare(
+		`INSERT INTO actors(
+		 actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		 ) VALUES (?, 'Team member', 0, 'active', NULL, ?, ?)
+		 ON CONFLICT(actor_id) DO NOTHING`,
+	);
+	for (const membership of manifest.memberships) {
+		insert.run(membership.identity_id, manifest.completed_at, manifest.completed_at);
+	}
+}
+
 function quarantineDivergentCompletedPolicy(
 	db: Database,
 	binding: { candidateRef: string; teamId: string },
@@ -1129,6 +1179,26 @@ export function areLegacyTeamSetupCompletionPolicyFactsAdditivelyCompatible(
 	return equivalentCompletionPolicyFacts(local, canonical, new Set());
 }
 
+function requireExpectedDraftManifest(
+	db: Database,
+	draft: DraftRow,
+	expected: CoordinatorLegacyTeamCompletionManifestV1 | undefined,
+): void {
+	if (!expected) return;
+	let current: CoordinatorLegacyTeamCompletionManifestV1;
+	try {
+		current = deriveFromDraft(db, draft, expected.completed_at);
+	} catch {
+		throw new LegacyTeamSetupConfirmationStaleError();
+	}
+	if (
+		canonicalCoordinatorLegacyTeamCompletionManifestJson(current) !==
+		canonicalCoordinatorLegacyTeamCompletionManifestJson(expected)
+	) {
+		throw new LegacyTeamSetupConfirmationStaleError();
+	}
+}
+
 async function applyCompletionManifest(
 	db: Database,
 	input: ApplyCompletionManifestInput,
@@ -1137,7 +1207,7 @@ async function applyCompletionManifest(
 	result: LegacyTeamSetupActivationResultV1;
 }> {
 	const boundManifest = validateLegacyTeamSetupCompletionManifestBinding(input.manifest, input);
-	const apply = async () => {
+	const apply = async (actorIds: readonly string[]) => {
 		let additiveConvergenceOnly = false;
 		// Set while the local completion is additively compatible with the
 		// winner: a failure there must preserve the active policy, whereas a
@@ -1147,26 +1217,10 @@ async function applyCompletionManifest(
 			const manifest = validateLegacyTeamSetupCompletionManifest(boundManifest, input);
 			return db
 				.transaction(() => {
+					requireCompletionActorLocks(db, manifest, actorIds);
 					let preservedTeamMetadata: { displayName: string; policyRevision: string } | null = null;
 					const draft = loadDraft(db, manifest.candidate_ref);
-					if (input.expectedDraftManifest) {
-						let currentManifest: CoordinatorLegacyTeamCompletionManifestV1;
-						try {
-							currentManifest = deriveFromDraft(
-								db,
-								draft,
-								input.expectedDraftManifest.completed_at,
-							);
-						} catch {
-							throw new LegacyTeamSetupConfirmationStaleError();
-						}
-						if (
-							canonicalCoordinatorLegacyTeamCompletionManifestJson(currentManifest) !==
-							canonicalCoordinatorLegacyTeamCompletionManifestJson(input.expectedDraftManifest)
-						) {
-							throw new LegacyTeamSetupConfirmationStaleError();
-						}
-					}
+					requireExpectedDraftManifest(db, draft, input.expectedDraftManifest);
 					const hasCompletedDraft = draft.state === "completed";
 					requireIncludedDeviceEvidence(manifest, input.freshRoster);
 					if (hasCompletedDraft) {
@@ -1293,6 +1347,7 @@ async function applyCompletionManifest(
 						input.freshRoster,
 						preservedTeamMetadata?.displayName,
 					);
+					ensureCanonicalMemberActorsInTransaction(db, manifest);
 					const result = applyCanonicalLegacyTeamSetupActivationInTransaction(db, {
 						candidateRef: manifest.candidate_ref,
 						attemptId: draft.attempt_id,
@@ -1324,12 +1379,25 @@ async function applyCompletionManifest(
 			throw completionApplyFailure(error, { compatibleLocalPolicy });
 		}
 	};
-	if (input.recipientPolicyLocksHeld) return apply();
-	return serializeRecipientPolicyPublicationMutation(db, () =>
-		serializeRecipientPolicyTeamMutation(db, boundManifest.team_id, () =>
-			serializeRecipientPolicyCoordinatorGroupMutation(db, input.groupId, apply),
-		),
-	);
+	if (input.recipientPolicyLocksHeld) return apply(input.recipientPolicyLocksHeld.actors);
+	return serializeCompletionManifestMutation(db, boundManifest, input.groupId, apply);
+}
+
+function serializeCompletionManifestMutation<T>(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	groupId: string,
+	apply: (actorIds: readonly string[]) => Promise<T>,
+): Promise<T> {
+	// Match viewer finish: publication -> sorted actors -> Team -> coordinator group.
+	return serializeRecipientPolicyPublicationMutation(db, () => {
+		const actorIds = legacyTeamSetupCompletionActorIds(db, manifest);
+		return serializeRecipientPolicyActorMutations(db, actorIds, () =>
+			serializeRecipientPolicyTeamMutation(db, manifest.team_id, () =>
+				serializeRecipientPolicyCoordinatorGroupMutation(db, groupId, () => apply(actorIds)),
+			),
+		);
+	});
 }
 
 /** Applies a manifest obtained from an authenticated coordinator transport. */

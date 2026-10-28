@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- A new device can now recover a completed Team without already having person records for every teammate. Recovery creates missing non-local records from the validated completion and preserves existing identities and ownership evidence.
 - Team setup diagnosis now initializes missing review drafts inside its temporary copy, avoiding false completion errors before the viewer has opened a Team.
 - Opening a saved stale Team review now revalidates it once instead of requiring an initial Retry click. A failed automatic refresh remains visible for review.
 - Team setup lists now report recovery blockers instead of offering a migration that cannot load. Recovery also preserves verified matching sharing policy when a local Project scan limit prevents applying a coordinator completion after a publication conflict.
