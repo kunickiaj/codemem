@@ -147,3 +147,158 @@ describe("legacy Team setup effect runner", () => {
 		await expect(Promise.all([first, second])).resolves.toHaveLength(2);
 	});
 });
+
+const staleView = {
+	state: "unavailable",
+	unavailableReason: "team_setup_confirmation_stale",
+} as LegacyTeamSetupViewV1;
+
+describe("initial Team setup stale draft revalidation", () => {
+	it.each(["reviewing", "ready_to_finish", "completed"] as const)(
+		"replaces a saved stale draft with the refreshed %s view",
+		async (state) => {
+			const replacement = { state, attemptId: "replacement" } as LegacyTeamSetupViewV1;
+			const deps = dependencies({
+				loadDetail: vi.fn().mockResolvedValue(staleView),
+				refreshCandidate: vi.fn().mockResolvedValue(replacement),
+			});
+			const command = effect({ kind: "load", refresh: false, focusOnOutcome: true });
+
+			const outcome = await createSetupEffectRunner(deps)(command);
+
+			expect(deps.loadDetail).toHaveBeenCalledExactlyOnceWith("candidate");
+			expect(deps.refreshCandidate).toHaveBeenCalledExactlyOnceWith("candidate");
+			expect(vi.mocked(deps.loadDetail).mock.invocationCallOrder[0]).toBeLessThan(
+				vi.mocked(deps.refreshCandidate).mock.invocationCallOrder[0] as number,
+			);
+			expect(outcome).toEqual({
+				status: "success",
+				generation: command.generation,
+				id: command.id,
+				kind: "load",
+				view: replacement,
+			});
+			// Revalidation must not apply draft choices or complete the setup.
+			expect(deps.saveAssignment).not.toHaveBeenCalled();
+			expect(deps.saveDecision).not.toHaveBeenCalled();
+			expect(deps.saveProjectMapping).not.toHaveBeenCalled();
+			expect(deps.clearDecision).not.toHaveBeenCalled();
+			expect(deps.finish).not.toHaveBeenCalled();
+			expect(deps.onCompleted).not.toHaveBeenCalled();
+		},
+	);
+
+	it("returns a still-unavailable refresh result without another POST", async () => {
+		const deps = dependencies({
+			loadDetail: vi.fn().mockResolvedValue(staleView),
+			refreshCandidate: vi.fn().mockResolvedValue(staleView),
+		});
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(deps.loadDetail).toHaveBeenCalledOnce();
+		expect(deps.refreshCandidate).toHaveBeenCalledOnce();
+		expect(outcome).toMatchObject({ status: "success", view: staleView });
+	});
+});
+
+describe("initial Team setup refresh exclusions", () => {
+	it.each([{ completionOnly: true }, { readOnlyRecovery: true }])(
+		"does not refresh stale detail for restricted load %j",
+		async (mode) => {
+			const deps = dependencies({ loadDetail: vi.fn().mockResolvedValue(staleView) });
+
+			const outcome = await createSetupEffectRunner(deps)(
+				effect({ kind: "load", refresh: false, focusOnOutcome: true, ...mode }),
+			);
+
+			expect(deps.loadDetail).toHaveBeenCalledExactlyOnceWith("candidate");
+			expect(deps.refreshCandidate).not.toHaveBeenCalled();
+			expect(outcome).toMatchObject({ status: "success", view: staleView });
+		},
+	);
+
+	it.each([
+		{ state: "reviewing" },
+		{ state: "ready_to_finish" },
+		{ state: "completed" },
+		{ state: "unavailable", unavailableReason: "team_setup_roster_changed" },
+		{ state: "unavailable", unavailableReason: "team_setup_conflict" },
+		{ state: "unavailable", unavailableReason: "team_setup_completion_unavailable" },
+	])("does not refresh ordinary detail %j", async (detail) => {
+		const loadedView = detail as LegacyTeamSetupViewV1;
+		const deps = dependencies({ loadDetail: vi.fn().mockResolvedValue(loadedView) });
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(deps.loadDetail).toHaveBeenCalledOnce();
+		expect(deps.refreshCandidate).not.toHaveBeenCalled();
+		expect(outcome).toMatchObject({ status: "success", view: loadedView });
+	});
+
+	it("keeps explicit refresh independent of detail loading and automatic revalidation", async () => {
+		const deps = dependencies({ refreshCandidate: vi.fn().mockResolvedValue(staleView) });
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: true, focusOnOutcome: true }),
+		);
+
+		expect(deps.loadDetail).not.toHaveBeenCalled();
+		expect(deps.refreshCandidate).toHaveBeenCalledExactlyOnceWith("candidate");
+		expect(outcome).toMatchObject({ status: "success", view: staleView });
+	});
+});
+
+describe("initial Team setup automatic refresh failures", () => {
+	it("preserves an automatic refresh failure", async () => {
+		const cause = new Error("refresh unavailable");
+		const deps = dependencies({
+			loadDetail: vi.fn().mockResolvedValue(staleView),
+			refreshCandidate: vi.fn().mockRejectedValue(cause),
+		});
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(deps.loadDetail).toHaveBeenCalledOnce();
+		expect(deps.refreshCandidate).toHaveBeenCalledOnce();
+		expect(outcome).toMatchObject({ status: "failure", cause });
+	});
+
+	it("does not turn a stale refresh failure into success or a second POST", async () => {
+		const cause = new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale");
+		const deps = dependencies({
+			loadDetail: vi.fn().mockResolvedValueOnce(staleView).mockResolvedValue(view),
+			refreshCandidate: vi.fn().mockRejectedValue(cause),
+		});
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(deps.refreshCandidate).toHaveBeenCalledOnce();
+		expect(deps.loadDetail).toHaveBeenCalledTimes(2);
+		expect(outcome).toMatchObject({ status: "failure", cause, recoveredView: view });
+		expect(deps.saveAssignment).not.toHaveBeenCalled();
+		expect(deps.saveDecision).not.toHaveBeenCalled();
+		expect(deps.finish).not.toHaveBeenCalled();
+	});
+
+	it("does not refresh after a rejected detail request", async () => {
+		const cause = new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable");
+		const deps = dependencies({ loadDetail: vi.fn().mockRejectedValue(cause) });
+
+		const outcome = await createSetupEffectRunner(deps)(
+			effect({ kind: "load", refresh: false, focusOnOutcome: true }),
+		);
+
+		expect(deps.loadDetail).toHaveBeenCalledOnce();
+		expect(deps.refreshCandidate).not.toHaveBeenCalled();
+		expect(outcome).toMatchObject({ status: "failure", cause });
+	});
+});

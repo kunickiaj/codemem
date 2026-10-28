@@ -94,6 +94,29 @@ export type SetupEffectOutcome =
 
 export type SetupEffectRunner = (effect: SetupEffect) => Promise<SetupEffectOutcome>;
 
+class InitialSetupRefreshError extends Error {
+	constructor(cause: unknown) {
+		super("initial_setup_refresh_failed", { cause });
+	}
+}
+
+function recoveredInitialLoad(
+	effect: SetupEffect,
+	error: unknown,
+	view: LegacyTeamSetupViewV1 | undefined,
+): boolean {
+	return (
+		!(error instanceof InitialSetupRefreshError) &&
+		effect.kind === "load" &&
+		!effect.refresh &&
+		!effect.completionOnly &&
+		error instanceof LegacyTeamSetupApiError &&
+		error.errorCode === "team_setup_confirmation_stale" &&
+		view !== undefined &&
+		view.state !== "unavailable"
+	);
+}
+
 export function createSetupEffectRunner(dependencies: SetupEffectDependencies): SetupEffectRunner {
 	let completedRefresh: {
 		attemptId: string;
@@ -118,42 +141,66 @@ export function createSetupEffectRunner(dependencies: SetupEffectDependencies): 
 				kind: effect.kind,
 				view,
 			};
-		} catch (cause) {
-			let recoveredView: LegacyTeamSetupViewV1 | undefined;
-			let recoveryCause: unknown;
-			try {
-				recoveredView = await recover(effect, dependencies, cause);
-			} catch (recoveryError) {
-				recoveryCause = recoveryError;
-			}
-			if (
-				effect.kind === "load" &&
-				!effect.refresh &&
-				!effect.completionOnly &&
-				cause instanceof LegacyTeamSetupApiError &&
-				cause.errorCode === "team_setup_confirmation_stale" &&
-				recoveredView &&
-				recoveredView.state !== "unavailable"
-			) {
-				return {
-					status: "success",
-					generation: effect.generation,
-					id: effect.id,
-					kind: effect.kind,
-					view: recoveredView,
-				};
-			}
-			return {
-				status: "failure",
-				generation: effect.generation,
-				id: effect.id,
-				kind: effect.kind,
-				cause,
-				...(recoveryCause ? { recoveryCause } : {}),
-				...(recoveredView ? { recoveredView } : {}),
-			};
+		} catch (error) {
+			return failedEffectOutcome(effect, dependencies, error);
 		}
 	};
+}
+
+async function failedEffectOutcome(
+	effect: SetupEffect,
+	dependencies: SetupEffectDependencies,
+	error: unknown,
+): Promise<SetupEffectOutcome> {
+	const cause = error instanceof InitialSetupRefreshError ? error.cause : error;
+	let recoveredView: LegacyTeamSetupViewV1 | undefined;
+	let recoveryCause: unknown;
+	try {
+		recoveredView = await recover(effect, dependencies, cause);
+	} catch (recoveryError) {
+		recoveryCause = recoveryError;
+	}
+	if (recoveredInitialLoad(effect, error, recoveredView)) {
+		return {
+			status: "success",
+			generation: effect.generation,
+			id: effect.id,
+			kind: effect.kind,
+			view: recoveredView,
+		};
+	}
+	return {
+		status: "failure",
+		generation: effect.generation,
+		id: effect.id,
+		kind: effect.kind,
+		cause,
+		...(recoveryCause ? { recoveryCause } : {}),
+		...(recoveredView ? { recoveredView } : {}),
+	};
+}
+
+async function loadCandidate(
+	effect: Extract<SetupEffect, { kind: "load" }>,
+	dependencies: SetupEffectDependencies,
+): Promise<LegacyTeamSetupViewV1> {
+	if (effect.refresh) return dependencies.refreshCandidate(effect.candidateRef);
+	const view = await dependencies.loadDetail(effect.candidateRef);
+	if (
+		effect.completionOnly ||
+		effect.readOnlyRecovery ||
+		view.state !== "unavailable" ||
+		view.unavailableReason !== "team_setup_confirmation_stale"
+	) {
+		return view;
+	}
+	// A saved stale attempt needs roster revalidation, not another read of the
+	// same attempt. Try once, leaving further failures visible to the reviewer.
+	try {
+		return await dependencies.refreshCandidate(effect.candidateRef);
+	} catch (cause) {
+		throw new InitialSetupRefreshError(cause);
+	}
 }
 
 async function execute(
@@ -170,9 +217,7 @@ async function execute(
 ): Promise<LegacyTeamSetupViewV1 | undefined> {
 	switch (effect.kind) {
 		case "load":
-			return effect.refresh
-				? dependencies.refreshCandidate(effect.candidateRef)
-				: dependencies.loadDetail(effect.candidateRef);
+			return loadCandidate(effect, dependencies);
 		case "assign_device":
 			return dependencies.saveAssignment(effect.candidateRef, effect.deviceRef, effect.input);
 		case "decide_device":
