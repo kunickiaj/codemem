@@ -37,6 +37,11 @@
 		"vitest": "catalog:"
 	},
 	"dependencies": {
+		"@libp2p/crypto": "5.2.0",
+		"@libp2p/interface": "3.4.0",
+		"@libp2p/noise": "17.0.7",
+		"@libp2p/peer-id": "6.0.18",
+		"@libp2p/utils": "7.4.5",
 		"@opencode/client": "2.0.24",
 		"better-sqlite3": "13.0.3",
 		"bonjour-service": "^1.4.4",
