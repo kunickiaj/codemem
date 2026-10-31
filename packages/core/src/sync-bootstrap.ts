@@ -24,7 +24,7 @@ import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
-import { requestJson } from "./sync-http-client.js";
+import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
 import {
 	clearReplicationCursorLastApplied,
 	clockDeviceIdFromMetadataJson,
@@ -58,6 +58,7 @@ interface ExistingSnapshotRow {
 }
 
 export interface BootstrapOptions {
+	requestExecutor?: RequestJsonExecutor;
 	/** Source-only snapshots require recipient-bound transport and additive application. */
 	sourceDeviceId?: string;
 	keysDir?: string;
@@ -124,6 +125,10 @@ function checkedSnapshotSource(options?: BootstrapOptions): string | undefined {
 	return source;
 }
 
+function snapshotRequestExecutor(options?: BootstrapOptions): RequestJsonExecutor {
+	return options?.requestExecutor ?? requestJson;
+}
+
 /**
  * Fetch all snapshot pages from a peer's /v1/snapshot endpoint.
  * Returns the full list of items and the boundary metadata.
@@ -141,6 +146,7 @@ export async function fetchAllSnapshotPages(
 }> {
 	const pageSize = options?.pageSize ?? 200;
 	const timeoutS = options?.timeoutS ?? 10;
+	const requestExecutor = snapshotRequestExecutor(options);
 	const keysDir = options?.keysDir;
 	const dbPath = options?.dbPath;
 	const bootstrapGrantId = options?.bootstrapGrantId?.trim() || undefined;
@@ -175,7 +181,7 @@ export async function fetchAllSnapshotPages(
 			[SYNC_CAPABILITY_HEADER]: LOCAL_SYNC_CAPABILITY,
 		};
 
-		const [status, payload] = await requestJson("GET", url, { headers, timeoutS });
+		const [status, payload] = await requestExecutor("GET", url, { headers, timeoutS });
 		if (status !== 200 || !payload) {
 			const error = payload?.error ? String(payload.error) : "";
 			const reason = payload?.reason ? String(payload.reason) : "";

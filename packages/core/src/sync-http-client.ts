@@ -55,6 +55,8 @@ export interface RequestJsonOptions {
 	redirect?: "error";
 }
 
+export type RequestJsonExecutor = typeof requestJson;
+
 function isolateDirectPeerConnection(headers: Record<string, string>): Record<string, string> {
 	const isDirectPeer = Object.keys(headers).some(
 		(name) => name.toLowerCase() === "x-codemem-recipient",
