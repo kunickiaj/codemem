@@ -217,6 +217,18 @@ Override for testing:
 export CODEMEM_MIN_VERSION=0.9.20
 ```
 
+## Pi host compatibility
+
+Codemem requires Pi 1.1.0 or newer, below 2.0. The `@codemem/pi-extension`
+package records this floor as its declared host peer
+(`@earendil-works/pi-coding-agent` `>=1.1.0 <2`). This is a breaking
+host-compatibility change from the previous `>=0.84.1 <1` peer: Pi 0.x hosts
+must upgrade before installing. `pi update` replaces the Pi host;
+`pi update --extensions` only reconciles installed packages. A Nix installation
+cannot update itself with `pi update`; use the official installer flow or
+`nix profile upgrade pi`. Native tools stay the setup default with 15 `memory_*`
+tools, and the explicit `native` and `mcp-adapter` modes are unchanged.
+
 ## Transition notes
 
 - `codemem` is the CLI package on npm.

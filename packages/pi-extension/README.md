@@ -4,6 +4,8 @@ Pi coding-agent extension for [codemem](https://github.com/kunickiaj/codemem): s
 
 ## Install
 
+Requires Pi 1.1.0 or newer, below 2.0. Upgrade an older host with `pi update` (`pi update --extensions` reconciles installed packages, not the host).
+
 ```bash
 npm i -g codemem
 codemem setup --pi-only
@@ -89,7 +91,7 @@ Per pi extension rules: the factory only wires handlers. Viewer auto-start and o
 
 ## Peer dependencies
 
-- `@earendil-works/pi-coding-agent` `>=0.84.1 <1` (declared host peer; this package does not declare Pi 1 support)
+- `@earendil-works/pi-coding-agent` `>=1.1.0 <2` (declared host peer)
 - `typebox` (tool parameter schemas)
 
 No `@codemem/core` or native modules load inside the pi process.
