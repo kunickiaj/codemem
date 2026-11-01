@@ -11,11 +11,34 @@ Related suffixes such as `.1.5` refer to `codemem-zjvr.1.5`.
 
 ## Purpose and scope
 
+The [peer direct traversal contract](peer-direct-traversal.md) defines the
+direct-before-relay ordering and the release gates for future traversal.
+
 This contract limits a future relay before it can forward an encrypted peer
 stream described by [the relay protocol](relay-protocol.md) and [the encrypted
 peer stream contract](relay-encrypted-peer-stream.md). Direct sync retains its
 current behavior and does not gain a 24-hour device-permission lease from relay
 admission.
+
+Connection selection tries the existing ordinary direct connection first,
+coordinator-assisted NAT hole punching second, and this relay last. The current
+WSS Noise proposal covers only the relay fallback. It does not implement UDP
+hole punching or make a Noise handshake sufficient to secure datagrams.
+
+The coordinator authenticates signaling and exchanges short-lived candidates
+only between authorized counterparts. Successful direct data bypasses the
+coordinator. Candidate addresses grant no permission: endpoints still require
+pinned-peer authentication and the current encryption, request authentication,
+scope, and revocation checks before memory data. Candidate probes must have
+reviewed deadlines, retries, and resource limits, and may target only the
+authorized counterpart. They must not probe arbitrary addresses or create an
+open proxy. UPnP, NAT-PMP, and manual port forwarding are not required.
+
+Blocked UDP or incompatible NATs can make hole punching fail. That failure uses
+the relay only after its existing admission checks. Each fallback starts a fresh
+exchange under current per-invocation rules. An implementation must not switch
+transports silently or automatically replay an operation that may have been
+partially applied.
 
 The v1 relay is online-only. It excludes portable tickets, offline cached grants,
 a new coordinator issuer key, payload queues, and payload retention. The source,
@@ -390,9 +413,15 @@ replay never succeeds.
 
 ## Rollout, observability, and privacy
 
-New setups do not automatically use relay fallback until approved dogfooding and
-disclosure. Existing setups require explicit opt-in. A coordinator-only setup
-continues to work while relay health is disabled or unavailable.
+New setups do not automatically use hole punching or relay fallback until
+feasibility evidence, transport selection, approved dogfooding, and disclosure
+are complete. Existing setups require explicit opt-in. Local disposable use
+stays disabled by default, and hosted execution, activation, and deployment
+remain separately gated. A coordinator-only setup continues to work while relay
+health is disabled or unavailable.
+
+`codemem-xvrt5`, the acknowledged outbound-ACK gap, remains a rollout blocker.
+This connection-selection design does not change acknowledgement semantics.
 
 Proposed retention is seven days for detailed operational events, 30 days for
 aggregate counters, and 90 days for policy-change audit records. Routine logs

@@ -12,6 +12,40 @@ and deployment remain separately gated.
 One fresh Noise channel carries one existing peer-sync HTTP/1.1 request and its
 final response. One outer WSS connection multiplexes named routes.
 
+## Connection selection
+
+The [peer direct traversal contract](peer-direct-traversal.md) defines the
+accepted direct-before-relay ordering and the feasibility, admission, and
+authorization work required before traversal integration.
+
+When choosing a sync pass's path, the client tries the existing ordinary direct connection
+first. If that path is unavailable, coordinator-assisted NAT hole punching is
+the next preferred attempt. The encrypted relay is the final fallback when
+traversal is unsupported or its connectivity checks fail or time out. This is
+the target selection policy. Traversal still requires feasibility and
+transport-selection review before integration. Current WSS Noise work implements
+relay foundations and does not implement UDP hole punching.
+
+The coordinator authenticates control signaling and exchanges short-lived
+candidates between authorized counterparts. It does not forward data after a
+direct connection succeeds. Observed addresses are candidates, not authority:
+each endpoint must authenticate its pinned peer and preserve the existing
+encryption, request authentication, scope, and revocation checks before sending
+memory data. After status negotiation succeeds, the pass keeps that path kind.
+Each peer HTTP exchange still requires a fresh channel.
+
+Before connection-selection integration or activation, the design must specify
+and test the selected transport, candidate lifetime and validation, probing only
+toward the authorized counterpart, deadlines, retries, and resource limits. The
+design must not permit arbitrary-address probing or turn a participant into an
+open proxy. UPnP, NAT-PMP, and manual port forwarding are outside this design.
+
+UDP may be blocked, and NAT behavior may prevent hole punching. Those outcomes
+select the relay fallback without relaxing its admission gates. A failed path
+must begin a fresh exchange under the existing per-invocation rules. It must not
+silently switch transport or automatically replay an operation that might have
+been partially applied.
+
 The opener is the HTTP client and Noise initiator. The target is the HTTP server
 and Noise responder. A reverse request opens a new route with reversed roles.
 
@@ -166,7 +200,7 @@ The transport passes immutable trusted context to shared dispatch.
 | Device ID | Admitted and Noise-authenticated endpoint identity. |
 | Pinned raw key | Existing local pin validated by Noise. |
 | Session ID | Admitted route ID. |
-| Transport kind | `relay`. |
+| Transport kind | `relay` for this fallback. |
 
 It does not derive that context from HTTP headers. The HTTP device ID must match
 the channel's authenticated device ID, and v2 and v3 signatures must verify under
@@ -357,6 +391,7 @@ No runtime tests implement this protocol yet. Later tests cover:
 | `.1.4` admission | Service proof, canonical schema and signatures, route binding, freshness, nonce handling, permissions, and initial connection proof. |
 | `.1.5` architecture | Human approval of transport, adapters, lifecycle, hibernation, and implementation boundary. |
 | `.1.7` operations | Rollout, disclosure, propagation, drain, operator disablement, incidents, control limits, and fleet quotas. |
+| Connection selection | Feasibility evidence and a reviewed traversal transport choice, signaling/candidate rules, and probe limits before integrating direct, hole-punch, and relay selection. |
 
 ## References
 
