@@ -325,7 +325,7 @@ Hooks loaded from the user config layer require a one-time trust approval in Cod
 
 ## Pi extension
 
-Pi support is the `@codemem/pi-extension` package. Install the durable CLI (on Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install; see the README), then:
+Pi support is the `@codemem/pi-extension` package. Supported host: Pi 1.1.0 or newer, below 2.0; upgrade an older host with `pi update` first ([Pi host compatibility](versioning.md#pi-host-compatibility)). Install the durable CLI (on Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install; see the README), then:
 
 ```text
 codemem setup --pi-only
