@@ -87,6 +87,52 @@ Implementing a new UDP, QUIC, or STUN stack is rejected as the default because i
 adds protocol, cryptography, portability, and maintenance work. UDP can be
 blocked, and incompatible mappings or filters can prevent traversal.
 
+## Byte framing over DataChannels
+
+The isolated codec puts each frame in one complete binary message on a
+DataChannel. Delivery must be reliable and ordered. Frames have no session,
+identity, or authentication fields. Version 1 has no multiplexing, heartbeat, or
+abort frame. It does not reuse
+the relay frame format, whose kind values have different meanings.
+The future adapter carries Noise wire fragments, which need not align with Noise
+record boundaries. The codec itself encrypts and authenticates nothing.
+
+| Frame | Exact bytes | Size |
+| --- | --- | --- |
+| Data | `0x01 0x00` followed by payload | 1–8,192 payload bytes, 3–8,194 total bytes |
+| End | `0x01 0x01` | Exactly 2 bytes |
+
+The first byte is version 1. Unknown versions and kinds, incomplete headers,
+empty data payloads, extra bytes on End, and frames over 8,194 bytes are protocol
+errors. The codec accepts only `Uint8Array` messages, including Buffer views,
+and returns independent byte copies. The encoder rejects oversized payloads
+before allocation and never splits a payload silently. A future adapter owns
+fragmentation into complete frames and any normalization of binary messages.
+
+Each encoder starts open, emits End once, and rejects data or another End
+afterward. Invalid encoder calls make it failed. Each decoder starts open and
+distinguishes three terminal outcomes:
+
+- `ended`: an End frame arrived. A later channel close leaves this state intact
+  and must not discard already decoded payloads awaiting a consumer.
+- `truncated`: the transport closed without End. Late messages cannot turn this
+  into a clean end.
+- `failed`: a protocol error occurred. The decoder rejects all later input.
+
+Data or another End after `ended` is a protocol error. Repeated close reports are
+idempotent. End acknowledges nothing and does not prove HTTP completeness,
+authentication, successful apply, or permission to advance a cursor. The future
+adapter must preserve queued bytes after End independently of Node's
+`readableEnded` event. That adapter and its drain behavior remain integration
+work.
+
+The 8,194-byte cap is a decoder rejection limit for one frame. It does not bound
+the RTC library's earlier inbound reassembly or internal queues. Future resource
+limits for traversal must account for bytes and separately limited control work.
+They cannot inherit the relay's 2,048-frame ceiling: a 16 MiB payload alone needs
+2,048 data frames. This framing decision assigns no Noise transport label and
+approves no rendezvous, SDP, ICE configuration, or network activation.
+
 ## Pair admission and safe signaling
 
 Before either peer sends a candidate, the coordinator must authorize a bounded
