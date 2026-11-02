@@ -167,7 +167,7 @@ function matchesParticipant(
 }
 
 // Only the two literal parameter slots below can enter this static SQL fragment.
-function currentParticipantSql(slot: "?9" | "?10"): string {
+export function currentParticipantSql(slot: "?9" | "?10"): string {
 	return `EXISTS (SELECT 1 FROM enrolled_devices e
  JOIN groups g ON g.group_id = e.group_id
  WHERE e.group_id = ?6 AND e.group_id = json_extract(${slot}, '$.group_id')

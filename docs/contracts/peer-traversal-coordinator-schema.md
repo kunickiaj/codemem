@@ -85,7 +85,28 @@ The carrier alone retains portable packets and owns their expiry and deletion.
 Shared nonce cleanup must preserve the existing 600-second coordinator retention
 rule and account for clock error.
 
-These constraints do not verify signatures, current participants, revocations,
-policy eligibility, freshness, or budget reservations. The conditional write
-compiler and private orchestrator must repeat those checks. A stored row or its
-shape alone is not evidence that an authorized decision occurred.
+## PREPARE conditional writes
+
+`peer-traversal-coordinator-attempt-write.ts` compiles separate nonce and phase-1
+statements. Both repeat the current participant, revocation, group, policy,
+readiness, time, and session checks. Other phases return no statement until their
+compare-and-swap transitions are implemented.
+
+The caller supplies a verified packet and captured participants. Compilation owns
+the inputs before asynchronous hashing and checks their byte and identity
+bindings. It executes no SQL and does not verify signatures again.
+
+The caller must execute the nonce statement once and validate its own receipt
+before executing the state statement with a fresh execution ID. The state write
+returns its stored execution ID and final SQL clock. `readTraversalStateReceipt`
+checks that row against the compiled statement. A quota failure can leave the
+nonce consumed without creating an attempt. A missing or uncertain receipt denies
+the request and cannot be recovered by a later read or an automatic retry.
+
+The schema constraints alone do not verify signatures, current participants,
+revocations, policy eligibility, freshness, or budget reservations. Conditional
+statements recheck database eligibility. The private orchestrator must also verify
+signatures, reserve budgets, and require receipts bound to its two writes before
+replying.
+A stored row or its shape alone is not evidence that an authorized decision
+occurred.
