@@ -147,7 +147,8 @@ export async function writeFixture(
 		policyRevision: 1,
 		execId: session(100),
 	};
-	const f = { db, now, authority: namespace.authorityId, options, rows, sign, session };
+	const pair = { source, target };
+	const f = { db, now, authority: namespace.authorityId, options, rows, sign, session, keys: pair };
 	await seedWrites(f, seed);
 	return f;
 }
