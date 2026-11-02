@@ -244,6 +244,7 @@ function safeSkippedSyncDetail(
 }
 
 interface SyncProtocolRouteOptions {
+	syncChannelPeerPin?: (request: Request) => string | null;
 	routeRateLimit?: {
 		limiter: InMemoryRequestRateLimiter;
 		readLimit: number;
@@ -2553,6 +2554,7 @@ function verifyDirectPeerRequestSignature(
 		publicKey: string;
 		expectedRecipientId: string;
 		highestObservedVersion: number | null;
+		requireDirectSignature?: boolean;
 	},
 ): VerifiedDirectPeerSignature {
 	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
@@ -2572,7 +2574,7 @@ function verifyDirectPeerRequestSignature(
 		signature: directSignatureHeader,
 		publicKey: options.publicKey,
 	});
-	if (hasDirectMaterial && direct.status === "absent") {
+	if ((hasDirectMaterial || options.requireDirectSignature) && direct.status === "absent") {
 		return { ok: false, reason: "invalid_direct_signature" };
 	}
 	if (direct.status === "invalid") {
@@ -2630,19 +2632,27 @@ function recordDirectPeerSignatureVersion(
 	}
 }
 
-function authorizeSyncRequest(
-	store: MemoryStore,
-	request: { method: string; url: string; header(name: string): string | undefined },
-	body: Buffer,
-): SyncAuthResult {
-	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
-	const signature = request.header("X-Opencode-Signature") ?? "";
-	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
-	const nonce = request.header("X-Opencode-Nonce") ?? "";
-	if (!deviceId || !signature || !timestamp || !nonce) {
-		return { ok: false, reason: "missing_headers", deviceId };
+function matchesSyncChannelPeer(
+	request: Request | undefined,
+	publicKey: string,
+	readPin: (request: Request) => string | null,
+): boolean {
+	if (!request || request.signal.aborted) return false;
+	try {
+		const [algorithm, blob] = publicKey.split(/\s+/);
+		const pin = readPin(request);
+		return algorithm === "ssh-ed25519" && !!blob && !!pin && pin === `${algorithm} ${blob}`;
+	} catch {
+		return false;
 	}
+}
 
+function checkedCurrentPeerKey(
+	store: MemoryStore,
+	deviceId: string,
+):
+	| { ok: true; publicKey: string; highestObservedVersion: number | null }
+	| { ok: false; reason: string; deviceId: string } {
 	const peerRow = store.db
 		.prepare(
 			`SELECT sync_peers.pinned_fingerprint, sync_peers.public_key,
@@ -2670,6 +2680,35 @@ function authorizeSyncRequest(
 	if (fingerprintPublicKey(publicKey) !== pinnedFingerprint) {
 		return { ok: false, reason: "fingerprint_mismatch", deviceId };
 	}
+	return {
+		ok: true,
+		publicKey,
+		highestObservedVersion: peerRow.highest_observed_direct_signature_version,
+	};
+}
+
+function authorizeSyncRequest(
+	store: MemoryStore,
+	request: { method: string; url: string; raw?: Request; header(name: string): string | undefined },
+	body: Buffer,
+	syncChannelPeerPin?: (request: Request) => string | null,
+): SyncAuthResult {
+	const deviceId = (request.header("X-Opencode-Device") ?? "").trim();
+	const signature = request.header("X-Opencode-Signature") ?? "";
+	const timestamp = request.header("X-Opencode-Timestamp") ?? "";
+	const nonce = request.header("X-Opencode-Nonce") ?? "";
+	if (!deviceId || !signature || !timestamp || !nonce) {
+		return { ok: false, reason: "missing_headers", deviceId };
+	}
+	const peer = checkedCurrentPeerKey(store, deviceId);
+	if (!peer.ok) return peer;
+	const { publicKey } = peer;
+	if (
+		syncChannelPeerPin !== undefined &&
+		!matchesSyncChannelPeer(request.raw, publicKey, syncChannelPeerPin)
+	) {
+		return { ok: false, reason: "channel_binding_mismatch", deviceId };
+	}
 
 	let verification: VerifiedDirectPeerSignature;
 	try {
@@ -2678,7 +2717,8 @@ function authorizeSyncRequest(
 			deviceId,
 			publicKey,
 			expectedRecipientId: localDeviceId,
-			highestObservedVersion: peerRow.highest_observed_direct_signature_version,
+			highestObservedVersion: peer.highestObservedVersion,
+			requireDirectSignature: syncChannelPeerPin !== undefined,
 		});
 	} catch {
 		return { ok: false, reason: "signature_verification_error", deviceId };
@@ -4743,9 +4783,44 @@ function serveAuthorizedSnapshot(c: Context, store: MemoryStore, auth: Authentic
 	}
 }
 
+function registerSyncChannelRestriction(
+	app: Hono,
+	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"],
+): void {
+	if (syncChannelPeerPin !== undefined) {
+		app.use("*", async (c, next) => {
+			if (c.req.path !== "/v1/ops" || !["GET", "POST"].includes(c.req.method)) {
+				return c.json({ error: "not found" }, 404);
+			}
+			if (c.req.raw.signal.aborted) return c.json(unauthorizedPayload(), 401);
+			await next();
+		});
+	}
+}
+
+function syncScopeProvided(
+	provided: boolean,
+	syncChannelPeerPin: SyncProtocolRouteOptions["syncChannelPeerPin"],
+): boolean {
+	return syncChannelPeerPin !== undefined || provided;
+}
+
+function syncScopeResetResponse(
+	c: Context,
+	store: MemoryStore,
+	reason: SyncScopeResetReason,
+): Response {
+	return c.json(
+		syncScopeResetRequiredPayload(getSyncResetState(store.db), reason, LOCAL_SYNC_CAPABILITY, null),
+		409,
+	);
+}
+
 export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRouteOptions = {}) {
 	const app = new Hono();
 	const routeRateLimit = opts.routeRateLimit ?? null;
+	const syncChannelPeerPin = opts.syncChannelPeerPin;
+	registerSyncChannelRestriction(app, syncChannelPeerPin);
 
 	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
 		if (!routeRateLimit) return null;
@@ -4860,7 +4935,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 	// GET /v1/ops (peer sync protocol)
 	app.get("/v1/ops", (c) => {
 		const store = getStore();
-		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0));
+		const auth = authorizeSyncRequest(store, c.req, Buffer.alloc(0), syncChannelPeerPin);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
@@ -4874,20 +4949,16 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			const rawScopeId = c.req.query(SYNC_SCOPE_QUERY_PARAM);
 			const negotiated = negotiatedSyncCapability(c);
 			const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
-			const scopeRequest = parseSyncScopeRequest(rawScopeId, rawScopeId !== undefined, {
-				...syncScopeAuthorizationContext(store, auth, localDeviceId),
-				negotiatedCapability: negotiated,
-			});
+			const scopeRequest = parseSyncScopeRequest(
+				rawScopeId,
+				syncScopeProvided(rawScopeId !== undefined, syncChannelPeerPin),
+				{
+					...syncScopeAuthorizationContext(store, auth, localDeviceId),
+					negotiatedCapability: negotiated,
+				},
+			);
 			if (!scopeRequest.ok) {
-				return c.json(
-					syncScopeResetRequiredPayload(
-						getSyncResetState(store.db),
-						scopeRequest.reason,
-						LOCAL_SYNC_CAPABILITY,
-						null,
-					),
-					409,
-				);
+				return syncScopeResetResponse(c, store, scopeRequest.reason);
 			}
 			const since = c.req.query("since") ?? null;
 			const rawLimit = Number.parseInt(c.req.query("limit") ?? "200", 10);
@@ -5004,7 +5075,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			return c.json({ error: "payload_too_large" }, 413);
 		}
 
-		const auth = authorizeSyncRequest(store, c.req, raw);
+		const auth = authorizeSyncRequest(store, c.req, raw, syncChannelPeerPin);
 		if (isSyncAuthStoreBusy(auth)) return syncAuthStoreBusyResponse(c);
 		if (!auth.ok) {
 			logDirectPeerAuthDiagnostic(auth.reason);
@@ -5031,20 +5102,16 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		);
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeContext = syncScopeAuthorizationContext(store, auth, localDeviceId);
-		const scopeRequest = parseSyncScopeRequest(body.scope_id, Object.hasOwn(body, "scope_id"), {
-			...scopeContext,
-			negotiatedCapability: negotiated,
-		});
+		const scopeRequest = parseSyncScopeRequest(
+			body.scope_id,
+			syncScopeProvided(Object.hasOwn(body, "scope_id"), syncChannelPeerPin),
+			{
+				...scopeContext,
+				negotiatedCapability: negotiated,
+			},
+		);
 		if (!scopeRequest.ok) {
-			return c.json(
-				syncScopeResetRequiredPayload(
-					getSyncResetState(store.db),
-					scopeRequest.reason,
-					LOCAL_SYNC_CAPABILITY,
-					null,
-				),
-				409,
-			);
+			return syncScopeResetResponse(c, store, scopeRequest.reason);
 		}
 		if (!Array.isArray(body.ops)) {
 			return c.json({ error: "invalid_ops" }, 400);
