@@ -3,6 +3,7 @@ import { finished } from "node:stream/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	cleanupRendezvous,
+	type Rendezvous,
 	rendezvousFixture,
 	sourceOffer,
 	sourceRelease,
@@ -13,6 +14,59 @@ import { channelPair, flush } from "./peer-traversal-stream-test-fixtures.js";
 import { readNoiseBytes, streamEvent } from "./relay-noise-test-fixtures.js";
 
 afterEach(cleanupRendezvous);
+
+async function expectDurableCharges(f: Rendezvous) {
+	const stored = await f.store.db.all(
+		"SELECT * FROM admission_budget_buckets WHERE authority_id=?1",
+		[f.store.authority],
+	);
+	const history = f.budget.history;
+	const { sourceDeviceId, targetDeviceId, groupId } = f.store.options.proof.value;
+	expect(stored).toHaveLength(5);
+	expect(stored.map((row) => [row.pool, row.audience_id, row.group_id, row.device_id])).toEqual(
+		expect.arrayContaining([
+			["authority", "", "", ""],
+			["traversal", "", "", ""],
+			["traversal", "", groupId, ""],
+			["device", "", groupId, sourceDeviceId],
+			["device", "", groupId, targetDeviceId],
+		]),
+	);
+	expect(history).toHaveLength(20);
+	expect(f.budget.attempts).toBe(20);
+	expect(f.budget.queries).toBe(10);
+	expect(f.budget.protocolWrites).toBe(10);
+	expect(new Set(history.map((row) => row.execId)).size).toBe(20);
+	for (const receipt of history) {
+		expect(receipt.granted).toBe(1);
+		expect(receipt.execId).toMatch(/^[0-9a-f]{32}$/);
+		expect(Object.isFrozen(receipt)).toBe(true);
+	}
+	for (const bucket of stored) {
+		const receipts = history.filter(
+			(row) =>
+				row.authorityId === bucket.authority_id &&
+				row.pool === bucket.pool &&
+				row.audienceId === bucket.audience_id &&
+				row.groupId === bucket.group_id &&
+				row.deviceId === bucket.device_id,
+		);
+		let count = 5;
+		if (bucket.pool === "device") count = bucket.device_id === sourceDeviceId ? 3 : 2;
+		expect(receipts).toHaveLength(count);
+		const first = receipts[0];
+		const last = receipts.at(-1);
+		if (!first || !last) throw new Error("missing committed budget history");
+		expect(bucket.exec_id).toBe(last.execId);
+		expect(bucket.units).toBe(last.units);
+		// These fixed rate-1 fixtures cannot refill a whole token within their 10-second lifetime.
+		expect(bucket.units).toBe(
+			Number(bucket.last_capacity) -
+				count * 60000 +
+				(Number(bucket.refilled_at_ms) - Number(first.decidedAtMs)) * Number(bucket.last_rate),
+		);
+	}
+}
 
 describe("controlled in-process traversal rendezvous, without RTC or network sockets", () => {
 	it("gates the same held A and responder B on both peers' own decisions, authenticates the phase pins and closes causally", async () => {
@@ -28,6 +82,7 @@ describe("controlled in-process traversal rendezvous, without RTC or network soc
 			await targetAnswer(f);
 			expect(f.channels.map((channel) => channel.sent.length)).toEqual([0, 0]);
 			const [source, target] = await sourceRelease(f);
+			await expectDurableCharges(f);
 			const complete = [...f.raw, source.duplex, target.duplex].map((stream) => finished(stream));
 			for (const promise of complete) void promise.catch(() => {});
 			const payload = Buffer.alloc(32768);
@@ -127,6 +182,7 @@ describe("rendezvous prefix and own-response denials", () => {
 				};
 				expect(f.trace).not.toContain(blocked[phase]);
 				expect(f.channels.map((channel) => channel.sent.length)).toEqual([0, 0]);
+				expect(f.budget.history.at(-1)?.granted).toBe(0);
 			} finally {
 				await cleanupRendezvous();
 			}
@@ -170,4 +226,50 @@ describe("rendezvous prefix and own-response denials", () => {
 			await cleanupRendezvous();
 		}
 	});
+});
+
+describe("durable budget failures before gather and Noise release", () => {
+	it.each(["missing", "disabled", "exhausted", "unknown"] as const)(
+		"denies PREPARE for %s budget state before gather, protocol state or Noise release",
+		async (fault) => {
+			const f = await rendezvousFixture({ budgetFault: fault });
+			try {
+				await expect(sourceOffer(f)).rejects.toThrow("own prepare denied");
+
+				expect(f.trace).toEqual(["source:send:prepare"]);
+				expect(f.channels.map((channel) => channel.sent.length)).toEqual([0, 0]);
+				expect(f.raw).toHaveLength(0);
+				expect(f.budget.attempts).toBe(1);
+				expect(f.budget.queries).toBe(0);
+				expect(f.budget.protocolWrites).toBe(0);
+				expect(await f.store.db.all("SELECT * FROM request_nonces")).toEqual([]);
+				expect(await f.store.db.all("SELECT * FROM traversal_attempts")).toEqual([]);
+				const stored = await f.store.db.all(
+					"SELECT * FROM admission_budget_buckets WHERE authority_id=?1",
+					[f.store.authority],
+				);
+				expect(stored).toHaveLength(fault === "missing" ? 0 : 1);
+				expect(f.budget.history).toHaveLength(stored.length);
+				if (fault === "missing") return;
+				const row = stored[0];
+				const receipt = f.budget.history[0];
+				if (!row || !receipt) throw new Error("missing budget outcome");
+				expect(row).toMatchObject({
+					pool: "traversal",
+					audience_id: "",
+					group_id: f.store.options.namespace.groupId,
+					device_id: "",
+					exec_id: receipt.execId,
+				});
+				expect(row.granted).toBe(fault === "unknown" ? 1 : 0);
+				if (fault === "unknown") expect(row.units).toBe(15 * 60000);
+				else {
+					expect(Number(row.units)).toBeGreaterThanOrEqual(0);
+					expect(Number(row.units)).toBeLessThan(60000);
+				}
+			} finally {
+				await cleanupRendezvous();
+			}
+		},
+	);
 });
