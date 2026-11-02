@@ -67,5 +67,44 @@ before dispatch and during response collection. A committed mutation can still
 have an uncertain exchange outcome. Failures cannot trigger an automatic replay
 or advance an acknowledgement cursor.
 
-Runtime wiring, transport selection and the scoped client pass still require
-separate integration before dogfooding.
+## Scoped client pass
+
+The internal `syncScopedChannelOnce` client uses one explicit scope, logical
+origin and owned connection factory for the whole pass. It does not discover
+addresses, run a default-scope exchange, refresh coordinator authorization, or
+persist the logical origin as a successful peer address.
+
+The client checks current local and peer keys and scope authorization before and
+after each exchange. Every connection must carry the authenticated Noise pin for
+the selected peer. Status must identify that peer and contain exactly the
+selected scope. Snapshot and operation reads retain source and scope checks
+before applying data.
+
+The client forms the complete scoped POST body before signing it. It splits
+serialized bodies locally to fit the 1 MiB request limit. An operation that
+cannot fit fails without advancing the outbound acknowledgement. A complete
+application `413` for size or operation count may split a batch further using
+fresh signatures. A transport failure never becomes a synthetic `413` and never
+triggers an automatic mutation retry or a switch to another transport.
+
+Snapshot recovery reuses the existing scoped pull implementation. The opt-in
+client stores completed pull boundaries and outbound acknowledgements in
+`sync_channel_progress`, keyed by peer and scope. Acknowledgements cannot replace
+the existing bootstrap marker, and another peer's snapshot cannot reset this
+peer's upload position. A changed peer boundary clears its previous outbound
+acknowledgement. The table is created only after the client authorizes the
+requested scope.
+
+When the peer requires reset recovery, the client deletes completion and outbound
+acknowledgement state for that peer and scope before clearing the inbound cursor.
+The next pass downloads a fresh snapshot even if the peer's snapshot boundary has
+not changed. If deleting completion fails, the inbound cursor is preserved.
+Runtime callers must serialize passes for the same peer and scope so an older
+pass cannot restore completion after another pass requires recovery.
+
+One absolute deadline covers the pass, including all pages, uploads and fresh
+connections. It is at most 60 seconds from invocation, shortened by an earlier
+caller deadline.
+
+Runtime wiring and transport selection still require separate integration before
+dogfooding.
