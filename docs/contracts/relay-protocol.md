@@ -174,7 +174,7 @@ response, and route close. Both messages require `Content-Length`, including
 | Raw ops | At most 2,000 or a lower configured maximum. |
 | Response body | At most 16 MiB. |
 
-The parser rejects transfer encoding, conflicting or duplicate content lengths,
+The HTTP boundary rejects transfer encoding, conflicting or duplicate content lengths,
 upgrades, `100-continue`, informational responses, trailers, close-delimited
 bodies, pipelining, and a second message. It parses one expected message. Bytes
 beyond the declared body are errors. EOF does not complete a message. The sender
@@ -190,6 +190,23 @@ The implementation uses a maintained runtime HTTP parser behind thin adapters.
 It does not hand-roll a general parser. A response is usable only when complete
 headers and the exact declared body arrive before the deadline. A terminal route
 cannot carry a second exchange. A stream owner may need explicit EOF cleanup.
+
+Native parser completion and clean transport closure do not prove that no surplus
+bytes arrived. `PeerHttpWireAudit` counts plaintext bytes independently through
+EOF and locates the first `CRLF CRLF` boundary. Its 16 KiB header limit includes
+the start line and that delimiter. After native header validation supplies the
+declared body length once, excess bytes fail immediately and EOF requires an
+exact total. The audit retains no header or body bytes and parses no fields.
+
+An adapter must register the observer before Node's parser on an owned pure-JS
+`RelayNoiseDuplex`. Native socket handles can bypass JavaScript data events and
+are outside this observer contract. The observer remains installed after HTTP
+message completion, and `finish()` runs only at plaintext EOF. Native syntax,
+header policy and completeness checks, clean raw I/O, and resource disposal are
+also required. The byte auditor alone installs no HTTP adapter or dispatch route.
+The client adapter maps a validated declared response length above its cap to
+`response_too_large` before setting the audit's expectation. Observed surplus
+remains a `framing` error and cannot trigger page halving.
 
 ## Dispatch and authorization
 
