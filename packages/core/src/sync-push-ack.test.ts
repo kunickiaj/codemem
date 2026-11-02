@@ -11,6 +11,11 @@ import {
 	getReplicationCursor,
 	setReplicationCursor,
 } from "./sync-replication.js";
+import {
+	readPeerSyncActivity,
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+} from "./sync-transfer-activity.js";
 import { initTestSchema } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
@@ -33,6 +38,8 @@ let source: InstanceType<typeof Database>;
 let receiver: InstanceType<typeof Database>;
 
 beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date("2026-11-02T12:00:00Z"));
 	source = new Database(":memory:");
 	receiver = new Database(":memory:");
 	initTestSchema(source);
@@ -82,6 +89,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	source.close();
@@ -191,6 +199,284 @@ function memoryKeys(): string[] {
 		}[]
 	).map((row) => row.import_key);
 }
+
+it.each([
+	{ failedStream: "default", reverseScopes: false },
+	{ failedStream: "default", reverseScopes: true },
+	{ failedStream: "scoped", reverseScopes: false },
+	{ failedStream: "scoped", reverseScopes: true },
+])(
+	"retains $failedStream apply failure across sibling successes (reversed: $reverseScopes) until retry",
+	async ({ failedStream, reverseScopes }) => {
+		// Arrange: each stream has one distinct peer operation, and one apply must roll back.
+		const streams = [null, scopeId, unrelatedScopeId];
+		const incoming = seedOps(3).map((op, index) => {
+			const scope = streams[index] ?? scopeId;
+			return {
+				...op,
+				device_id: peerId,
+				clock_device_id: peerId,
+				scope_id: scope,
+				payload_json: JSON.stringify({
+					kind: "discovery",
+					title: "Fixture",
+					visibility: "shared",
+					scope_id: scope,
+				}),
+			};
+		});
+		source.prepare("DELETE FROM replication_ops").run();
+		const failedIndex = failedStream === "default" ? 0 : 1;
+		const failed = opAt(incoming, failedIndex);
+		source.exec(`CREATE TRIGGER reject_sibling_op AFTER INSERT ON replication_ops
+		WHEN NEW.op_id = '${failed.op_id}' BEGIN SELECT RAISE(ABORT, 'fixture_apply_failure'); END`);
+		const order = reverseScopes ? [unrelatedScopeId, scopeId] : [scopeId, unrelatedScopeId];
+		const push = vi.fn(
+			async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>,
+		);
+		const base = executorFor(push, { scoped: true });
+		const executor: RequestJsonExecutor = async (method, url, request) => {
+			if (method === "GET" && new URL(url).pathname === "/v1/ops") {
+				const id = new URL(url).searchParams.get("scope_id");
+				const operation = opAt(incoming, streams.indexOf(id));
+				return [
+					200,
+					{
+						...boundary,
+						scope_id: id,
+						reset_required: false,
+						ops: [operation],
+						next_cursor: cursorOf(operation),
+						skipped: 0,
+					},
+				];
+			}
+			const [status, payload] = await base(method, url, request);
+			if (url.endsWith("/v1/status") && payload) {
+				payload.authorized_scopes = order.map((id) => ({
+					scope_id: id,
+					sync_reset: { ...boundary, scope_id: id },
+				}));
+			}
+			return [status, payload];
+		};
+
+		// Act: successful sibling applies must not erase the failed stream's precise error.
+		const first = await runSync(executor);
+		const afterFailure = readPeerSyncActivity(source, [peerId]).get(peerId)?.receive;
+		const cursorsAfterFailure = streams.map((id) => getReplicationCursor(source, peerId, id)[0]);
+		const committedAfterFailure = source.prepare("SELECT count(*) FROM memory_items").pluck().get();
+		source.exec("DROP TRIGGER reject_sibling_op");
+		const retry = await runSync(executor);
+
+		// Assert: partial progress commits, only the failed cursor stays held, and a clean retry recovers.
+		expect(first.ok).toBe(false);
+		expect(first.opsIn).toBe(2);
+		expect(committedAfterFailure).toBe(2);
+		expect(afterFailure).toMatchObject({ errorCode: "apply_failed", operations24h: 2 });
+		expect(cursorsAfterFailure).toEqual(
+			incoming.map((op, index) => (index === failedIndex ? baseline : cursorOf(op))),
+		);
+		expect(retry.ok).toBe(true);
+		expect(retry.opsIn).toBe(1);
+		expect(streams.map((id) => getReplicationCursor(source, peerId, id)[0])).toEqual(
+			incoming.map(cursorOf),
+		);
+		expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.receive).toMatchObject({
+			errorCode: null,
+			operations24h: 3,
+		});
+		expect(source.prepare("SELECT count(*) FROM memory_items").pluck().get()).toBe(3);
+		expect(push).toHaveBeenCalledTimes(2);
+		expect(push.mock.calls).toEqual([[[]], [[]]]);
+	},
+);
+
+it("persists successful split-batch acknowledgements before a later failure and deduplicates retries", async () => {
+	seedOps(2);
+	let singleBatch = 0;
+	const partial = executorFor(async (ops) => {
+		if (ops.length > 1) return [413, { error: "too_many_ops" }];
+		singleBatch++;
+		if (singleBatch === 2) return [500, { error: "private fixture failure" }];
+		return [200, { errors: [] }];
+	});
+	expect((await runSync(partial)).ok).toBe(false);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)).toMatchObject({
+		send: { operations24h: 1, errorCode: "exchange_failed", lastSuccessAt: expect.any(String) },
+		receive: { operations24h: 0, errorCode: null },
+	});
+	const reopened = source.serialize();
+	source.close();
+	source = new Database(reopened);
+	const retry = executorFor(async () => [200, { errors: [] }]);
+	expect((await runSync(retry)).ok).toBe(true);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.send).toMatchObject({
+		operations24h: 2,
+		errorCode: null,
+	});
+});
+
+it("does not count filtered outbound operations as acknowledged transfers", async () => {
+	// Arrange: filtering removes every row, but the peer must still acknowledge an empty exchange.
+	const ops = seedOps(2, "private");
+	const push = vi.fn(async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>);
+	const executor = executorFor(push);
+
+	// Act
+	const result = await runSync(executor);
+
+	// Assert
+	expect(result.ok).toBe(true);
+	expect(push).toHaveBeenCalledExactlyOnceWith([]);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.send).toMatchObject({
+		operations24h: 0,
+		errorCode: null,
+		lastSuccessAt: "2026-11-02T12:00:00.000Z",
+	});
+	expect(getReplicationCursor(source, peerId)[1]).toBe(cursorOf(opAt(ops, 1)));
+});
+
+it("records a positive receive and a signed empty send when there is no outbound data", async () => {
+	// Arrange: the peer owns the only operation in this exchange.
+	const incoming = {
+		...opAt(seedOps(1), 0),
+		device_id: peerId,
+		clock_device_id: peerId,
+	};
+	source.prepare("DELETE FROM replication_ops").run();
+	const push = vi.fn(async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>);
+	const base = executorFor(push);
+	const executor: RequestJsonExecutor = async (method, url, request) => {
+		if (method === "GET" && !url.endsWith("/v1/status")) {
+			return [
+				200,
+				{
+					...boundary,
+					reset_required: false,
+					ops: [incoming],
+					next_cursor: cursorOf(incoming),
+					skipped: 0,
+				},
+			];
+		}
+		return base(method, url, request);
+	};
+
+	// Act
+	const result = await runSync(executor);
+
+	// Assert: receiving does not substitute for an actual authenticated POST.
+	expect(result.ok).toBe(true);
+	expect(push).toHaveBeenCalledExactlyOnceWith([]);
+	expect(syncAuth.buildDirectPeerAuthHeaders).toHaveBeenCalledWith(
+		expect.objectContaining({
+			method: "POST",
+			url: `${baseUrl}/v1/ops`,
+			recipientId: peerId,
+		}),
+	);
+	expect(base.mock.calls.find(([method]) => method === "POST")?.[2]?.headers).toMatchObject({
+		"X-Codemem-Signature": "v3:fixture-signature",
+	});
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)).toMatchObject({
+		receive: { operations24h: 1, errorCode: null, lastSuccessAt: "2026-11-02T12:00:00.000Z" },
+		send: { operations24h: 0, errorCode: null, lastSuccessAt: "2026-11-02T12:00:00.000Z" },
+	});
+});
+
+it("refreshes stale send evidence with zero operations on a later idle pass", async () => {
+	// Arrange: an earlier acknowledged operation has aged out of the activity window.
+	recordSyncTransferObservation(source, peerId, "send", { now: new Date(timestamp) });
+	recordSyncTransferReceipts(source, peerId, "send", ["historical-op"], {
+		now: new Date(timestamp),
+	});
+	const push = vi.fn(async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>);
+
+	// Act
+	const result = await runSync(executorFor(push));
+
+	// Assert
+	expect(result.ok).toBe(true);
+	expect(push).toHaveBeenCalledExactlyOnceWith([]);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.send).toMatchObject({
+		operations24h: 0,
+		lastSuccessAt: "2026-11-02T12:00:00.000Z",
+		errorCode: null,
+	});
+});
+
+it("clears an old send failure only after an empty POST is acknowledged", async () => {
+	// Arrange
+	recordSyncTransferObservation(source, peerId, "send", {
+		errorCode: "exchange_failed",
+		now: new Date(timestamp),
+	});
+	const push = vi.fn(async () => [200, { errors: [] }] as Awaited<ReturnType<RequestJsonExecutor>>);
+
+	// Act
+	const result = await runSync(executorFor(push));
+
+	// Assert
+	expect(result.ok).toBe(true);
+	expect(push).toHaveBeenCalledExactlyOnceWith([]);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.send).toMatchObject({
+		operations24h: 0,
+		lastSuccessAt: "2026-11-02T12:00:00.000Z",
+		errorCode: null,
+	});
+});
+
+it.each(["http", "reported", "transport"])(
+	"retains a send failure after an empty POST %s error despite a successful receive check",
+	async (failure) => {
+		// Arrange: a stale success must not become fresh when the empty push fails.
+		recordSyncTransferObservation(source, peerId, "send", { now: new Date(timestamp) });
+		const push = vi.fn<(ops: ReplicationOp[]) => ReturnType<RequestJsonExecutor>>(async () => {
+			if (failure === "transport") throw new Error("fixture_transport_failure");
+			if (failure === "reported") return [200, { errors: ["fixture_apply_failure"] }];
+			return [500, { error: "fixture_exchange_failure" }];
+		});
+
+		// Act
+		const result = await runSync(executorFor(push));
+
+		// Assert
+		expect(result.ok).toBe(false);
+		expect(push).toHaveBeenCalledExactlyOnceWith([]);
+		expect(readPeerSyncActivity(source, [peerId]).get(peerId)).toMatchObject({
+			send: {
+				operations24h: 0,
+				errorCode: "exchange_failed",
+				lastSuccessAt: new Date(timestamp).toISOString(),
+			},
+			receive: { operations24h: 0, errorCode: null, lastSuccessAt: "2026-11-02T12:00:00.000Z" },
+		});
+	},
+);
+
+it("keeps directional receive failure after a later successful scope", async () => {
+	seedOps(1);
+	const base = executorFor(async () => [200, { errors: [] }], { scoped: true });
+	const executor: RequestJsonExecutor = async (method, url, request) => {
+		const [status, payload] = await base(method, url, request);
+		if (url.endsWith("/v1/status") && payload) {
+			payload.authorized_scopes = [scopeId, unrelatedScopeId].map((id) => ({
+				scope_id: id,
+				sync_reset: { ...boundary, scope_id: id },
+			}));
+		}
+		if (method === "GET" && new URL(url).searchParams.get("scope_id") === scopeId) {
+			return [500, { error: "fixture_scope_failure" }];
+		}
+		return [status, payload];
+	};
+	expect((await runSync(executor)).ok).toBe(false);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)).toMatchObject({
+		send: { operations24h: 1, errorCode: null },
+		receive: { operations24h: 0, errorCode: "exchange_failed" },
+	});
+});
 
 it.each([
 	{ scoped: false, count: 1 },
@@ -375,7 +661,8 @@ it("advances past intentionally filtered local operations without sending them",
 
 	// Assert
 	expect(result.ok).toBe(true);
-	expect(push).not.toHaveBeenCalled();
+	expect(push).toHaveBeenCalledExactlyOnceWith([]);
+	expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.send.operations24h).toBe(0);
 	expect(memoryKeys()).toEqual([]);
 	expect(getReplicationCursor(source, peerId)[1]).toBe(cursorOf(opAt(ops, 0)));
 });

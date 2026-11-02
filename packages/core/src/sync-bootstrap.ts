@@ -34,6 +34,10 @@ import {
 	setReplicationCursor,
 	setSyncResetState,
 } from "./sync-replication.js";
+import {
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+} from "./sync-transfer-activity.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForSyncBootstrap } from "./vector-migration.js";
 
@@ -451,7 +455,7 @@ export function applyBootstrapSnapshot(
 	resetInfo: SyncResetRequired,
 	scanner?: SecretScanner,
 ): BootstrapResult {
-	const result: BootstrapResult = { ok: false, applied: 0, deleted: 0 };
+	const result = newBootstrapResult();
 	// Bootstrap items are peer-authored content. Run them through the same
 	// scanner as locally-authored writes; without this, a single bootstrap
 	// from a misbehaving peer could re-populate the local store with secrets
@@ -485,6 +489,7 @@ export function applyBootstrapSnapshot(
 			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
+			recordSnapshotReceipt(db, peerDeviceId, item, bootstrapScopeId);
 		}
 
 		// 3. Update replication cursor to baseline_cursor. For scoped null-baseline
@@ -524,7 +529,7 @@ export function applyBootstrapSnapshot(
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
 
-		result.ok = true;
+		finishSnapshotActivity(db, peerDeviceId, result);
 	}).immediate();
 
 	return result;
@@ -602,7 +607,7 @@ export function mergeBootstrapSnapshot(
 	scanner?: SecretScanner,
 	options?: { cursorPolicy: "preserve" },
 ): BootstrapResult {
-	const result: BootstrapResult = { ok: false, applied: 0, deleted: 0 };
+	const result = newBootstrapResult();
 	const activeScanner = scanner ?? new SecretScanner();
 	const bootstrapScopeId = normalizeBootstrapScopeId(resetInfo.scope_id);
 	validateSnapshotScopes(items, bootstrapScopeId);
@@ -654,13 +659,40 @@ export function mergeBootstrapSnapshot(
 			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
 			if (inserted.embeddable) embeddableApplied++;
 			result.applied++;
+			recordSnapshotReceipt(db, peerDeviceId, item, bootstrapScopeId);
 		}
 
 		advanceMergedSnapshotBoundary(db, peerDeviceId, resetInfo, options);
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
-		result.ok = true;
+		finishSnapshotActivity(db, peerDeviceId, result);
 	}).immediate();
 
 	return result;
+}
+
+function recordSnapshotReceipt(
+	db: Database,
+	peerDeviceId: string,
+	item: SyncMemorySnapshotItem,
+	scopeId: string | null,
+): void {
+	const id = JSON.stringify([
+		scopeId,
+		item.entity_id,
+		item.op_type,
+		item.clock_rev,
+		item.clock_updated_at,
+		item.clock_device_id,
+	]);
+	recordSyncTransferReceipts(db, peerDeviceId, "receive", [id], { kind: "snapshot" });
+}
+
+function finishSnapshotActivity(db: Database, peerDeviceId: string, result: BootstrapResult): void {
+	recordSyncTransferObservation(db, peerDeviceId, "receive");
+	result.ok = true;
+}
+
+function newBootstrapResult(): BootstrapResult {
+	return { ok: false, applied: 0, deleted: 0 };
 }
