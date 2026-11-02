@@ -69,10 +69,29 @@ The source exports four operations:
 - `encodeTraversalSignalPacket` and `decodeTraversalSignalPacket` for the portable envelope.
 
 Packet decoding returns typed fields and independent raw body/signature byte copies.
-A future verifier is responsible for signatures, authority, timestamps and other
-freshness checks, nonce replay, packet-digest and session-chain binding. Its
-expected signer mapping is source for `prepare`, `offer`, and `answer-check`, and
-target for `offer-check` and `answer`.
+The expected signer is the source for `prepare`, `offer`, and `answer-check`, and
+the target for `offer-check` and `answer`.
+
+## Pinned phase proof
+
+`verifyTraversalSignalProof` verifies one portable packet against a caller-trusted
+existing Ed25519 pin, expected phase, device header, and actual external path.
+The phase's device ID must match both the trusted signer and the device header.
+Its key ID must equal SHA-256 of the pin's complete SSH wire key.
+
+The signature input is `POST`, external path, timestamp, nonce, and SHA-256 of the
+original body bytes, joined by newlines. The path includes the configured base
+prefix and `/v1/traversal/signal`. It has no query or fragment. Verification
+preserves its exact encoding rather than normalizing or removing the prefix.
+
+The verifier captures inputs and owned packet/key bytes before asynchronous
+hashing. It returns the decoded packet, captured signer and key ID, and packet
+digest on success. Invalid input or a failed signature returns `null`.
+
+A verified phase proof is not fresh or authorized. The caller must still check
+current authority, timestamps, nonce replay, and the complete packet chain,
+including session IDs, deadlines, and referenced packet digests. Verification
+does not consume a nonce or create a capability to start an RTC engine.
 
 The codec has no candidate-address classification or safety rules. It also does
 not implement RTC, an SDK integration, database or schema changes, migrations,
