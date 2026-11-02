@@ -28,7 +28,9 @@ function localOwner(duplex: Duplex, raw: TraversalByteStream): OwnedPeerHttpConn
 }
 
 /** Actual Label 3 traversal and Noise I/O over controlled application queues, with no sockets. */
-export async function serverNoisePair() {
+export async function serverNoisePair(
+	options: { sourcePinTransform?: (pin: string) => string } = {},
+) {
 	const channels = channelPair({ deferredDelivery: true });
 	const deadlineMs = performance.now() + 60000;
 	const sourceRaw = new TraversalByteStream({ channel: channels[0], side: "source", deadlineMs });
@@ -50,7 +52,8 @@ export async function serverNoisePair() {
 	const inbound = acceptTraversalNoiseResponder({
 		stream: targetRaw,
 		localIdentity: targetIdentity,
-		expectedRemotePin: sourceIdentity.expectedPin,
+		expectedRemotePin:
+			options.sourcePinTransform?.(sourceIdentity.expectedPin) ?? sourceIdentity.expectedPin,
 		sessionId: attempt.sessionId,
 		verifiedMessageADigest: opening.digest,
 		deadlineMs,
@@ -69,6 +72,8 @@ export async function serverNoisePair() {
 		target: target.duplex,
 		sourceOwner,
 		targetOwner,
+		sourcePin: sourceIdentity.expectedPin,
+		targetPin: targetIdentity.expectedPin,
 		async close() {
 			for (const stream of [source.duplex, target.duplex, ...raw]) stream.destroy();
 			await Promise.allSettled([sourceOwner.completion, targetOwner.completion]);

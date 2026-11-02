@@ -13,8 +13,16 @@ disposal, and an idempotent disposer for the whole connection.
 
 The caller supplies a logical HTTP origin and a trusted `dispatch` callback. The
 callback receives the method, exact origin-form target, full logical URL, copied
-header values, raw body bytes, and cancellation signal. It returns a status,
-optional header record, and raw response bytes. No JSON reserialization occurs.
+header values, raw body bytes, verified `peerPin`, and cancellation signal. It
+returns a status, optional header record, and raw response bytes. No JSON
+reserialization occurs.
+
+Noise authentication registers the verified remote pin against the exact duplex
+in a private weak map. Its canonical form is `ssh-ed25519 <base64 SSH wire key>`,
+with one space and no comment. The server reads `peerPin` from that registration
+before attaching the HTTP parser. It rejects manually constructed Noise duplexes
+without a registration. Caller-supplied connection or session metadata cannot
+replace the registered identity.
 
 This callback must enforce channel-bound identity, current pins, recipient-bound
 v3 authentication alongside v2, explicit scope authorization, and no bootstrap

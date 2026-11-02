@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import type { Upgrader } from "@libp2p/interface";
 import { type NoiseComponents, noise } from "@libp2p/noise";
+import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
 import {
 	importRelayNoiseIdentity,
 	type RelayNoiseContext,
@@ -47,6 +48,13 @@ export interface AuthenticatedRelayNoiseStream {
 	readonly observedPin: string;
 	readonly observedPeerId: string;
 	readonly observedPublicKey: Uint8Array;
+}
+
+const authenticatedPeerPins = new WeakMap<Duplex, string>();
+
+/** Bind callers to the exact duplex created after remote Noise peer verification. */
+export function readAuthenticatedRelayNoisePeerPin(duplex: Duplex): string | null {
+	return authenticatedPeerPins.get(duplex) ?? null;
 }
 
 export interface PreparedRelayNoiseInitiator {
@@ -197,6 +205,11 @@ class RelayNoiseAttempt {
 				accountReceived: (bytes) => this.accountPlaintext("receivedBytes", bytes),
 			});
 			this.duplex.once("close", this.applicationClosed);
+			const { wireKey } = parseRelayEd25519PublicKey(this.expectedPin);
+			authenticatedPeerPins.set(
+				this.duplex,
+				`ssh-ed25519 ${Buffer.from(wireKey).toString("base64")}`,
+			);
 			return {
 				duplex: this.duplex,
 				observedPin: this.expectedPin,
