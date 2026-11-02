@@ -79,7 +79,7 @@ Every reservation uses `RELAY_ADMISSION_CLOCK_SQL` in its own statement. NULL,
 fractional, text, negative, unsafe, or backward clocks produce no receipt.
 There is no application-clock fallback or caller-provided time parameter.
 
-## Own receipts and later adapters
+## Own receipts and adapters
 
 `buildAdmissionBudgetReservationStatement` binds only the bucket key and a fresh
 32-hex execution ID. It reads the current allocation inside the write and returns
@@ -92,10 +92,23 @@ that invocation. A matching `granted = 1` means `reserved`, and a matching
 receipts mean `unknown`. No later read or retry can recover a reservation.
 These receipts reserve capacity only and do not authenticate or admit a peer.
 
-The later adapters charge realm, pool, then authority before enrollment lookup.
+`createAdmissionBudgetAdapters({ database })` supplies the existing relay and
+traversal decision callbacks as `relay` and `traversal`. Its database port exposes
+only `writeReturning(sql, bindings)`, which executes once and returns the singular
+raw row. The factory captures that method and its receiver without performing I/O.
+Every scope write uses a fresh execution ID and the current persisted allocation.
+
+Ingress callbacks charge realm, pool, then authority before enrollment lookup.
 After signature verification, registration charges its device subset before the
 shared device/realm bucket. A parent denial may leave child capacity consumed.
 Nothing refunds it. Relay audiences and traversal share the same device bucket.
+The callbacks return the first denied or unknown result without charging later
+scopes, retrying, or reading back an uncertain write.
+
+The decision operation authenticates the caller before invoking the verified
+device callback. The adapter reserves capacity and performs no authentication of
+its own. It captures the namespace and device before awaiting storage, so later
+caller mutation cannot redirect a partially completed reservation.
 
 Trusted profile provisioning must validate protected capacity, registration
 population and churn reserves, and the actual service ceiling before activation.
