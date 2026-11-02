@@ -50,6 +50,21 @@ export async function settle() {
 	for (let i = 0; i < 40; i++) await Promise.resolve();
 }
 
+export const terminal = (socket: ReturnType<typeof fakeSocket>) =>
+	socket.texts.filter((m) => m.type === "CLOSE" || m.type === "REJECTED");
+
+export async function grantAndDrain(
+	grants: ReturnType<typeof deferred<void>>[],
+	receiver: ReturnType<typeof fakeSocket>,
+) {
+	for (let refill = 0; refill < 3; refill++) {
+		for (const grant of grants.splice(0)) grant.resolve();
+		await settle();
+		while (receiver.callbacks.length) receiver.written();
+		await settle();
+	}
+}
+
 // Fixed disposable seeds keep cryptographic assertions reproducible without credentials.
 export function testSigner(seed: number) {
 	const privateKey = createPrivateKey({
