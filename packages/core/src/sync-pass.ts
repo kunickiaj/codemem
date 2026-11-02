@@ -452,6 +452,17 @@ function loadLocalOpsSince(
  */
 const MAX_PUSH_SPLIT_DEPTH = 8;
 
+function hasPeerApplyErrors(payload: Record<string, unknown>): boolean {
+	if (Object.hasOwn(payload, "error")) {
+		const error = payload.error;
+		if (error != null) return true;
+	}
+	// Legacy peers may omit errors. A present field must explicitly report no failures.
+	if (!Object.hasOwn(payload, "errors")) return false;
+	const errors = payload.errors;
+	return !Array.isArray(errors) || errors.length > 0;
+}
+
 async function pushOps(
 	postUrl: string,
 	deviceId: string,
@@ -488,7 +499,12 @@ async function pushOps(
 		bodyBytes,
 	});
 
-	if (status === 200 && payload != null) return;
+	if (status === 200 && payload != null) {
+		if (hasPeerApplyErrors(payload)) {
+			throw new Error("peer ops push failed (200: peer reported apply errors)");
+		}
+		return;
+	}
 
 	const detail = errorDetail(payload);
 	if (
