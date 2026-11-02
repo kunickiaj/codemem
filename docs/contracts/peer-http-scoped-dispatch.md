@@ -14,10 +14,11 @@ The existing sync app receives a trusted `syncChannelPeerPin(Request)` reader.
 A configured reader makes the binding mandatory. A missing binding denies
 authentication rather than falling back to ordinary listener authentication.
 
-The adapter accepts only GET and POST on exactly `/v1/ops`. Other paths return
-the generic 404 before reading the store. The channel-only app also excludes
-status, snapshot, bootstrap and unrelated routes. The ordinary sync app retains
-its existing behavior when no channel reader is configured.
+The adapter accepts GET and POST on `/v1/ops`, plus GET on `/v1/status` and
+`/v1/snapshot`. Other method/path combinations return the generic 404 before
+reading the store. The channel-only app excludes bootstrap and unrelated routes.
+The ordinary sync app retains its existing behavior when no channel reader is
+configured.
 
 The logical URL must preserve the exact target, including query encoding and
 order. Normalized targets and nonempty GET bodies return 400. POST bytes are
@@ -39,6 +40,22 @@ POST must provide it in the signed body. Existing scope checks require current
 authorization for both the local and peer signing keys. Missing, empty,
 unsupported or unauthorized scopes cannot enter the legacy default-scope path.
 
+## Scoped status and recovery
+
+Status returns the requested scope's reset boundary and one `authorized_scopes`
+entry. It does not enumerate other scopes or return the legacy default boundary.
+Snapshot uses the same explicit scope authorization before loading any page,
+and preserves the existing generation, snapshot ID and page-token checks.
+
+Both read endpoints authenticate once against the channel before handling scope
+or page parameters. Neither attempts bootstrap authentication or refreshes
+coordinator membership in response to request headers. Membership maintenance
+must update the local cache independently.
+
+Channel scope denials return `409 reset_required` with the scope failure reason
+and `scope_id: null`. They omit reset boundary fields because no scope has been
+authorized. This also applies to channel ops requests.
+
 ## Completion and limits
 
 Each dispatcher instance reuses one sync app and its existing rate limiter for
@@ -50,5 +67,5 @@ before dispatch and during response collection. A committed mutation can still
 have an uncertain exchange outcome. Failures cannot trigger an automatic replay
 or advance an acknowledgement cursor.
 
-The dispatcher supplies no runtime wiring, transport selection, status exchange
-or snapshot support. Those require separate integration before dogfooding.
+Runtime wiring, transport selection and the scoped client pass still require
+separate integration before dogfooding.

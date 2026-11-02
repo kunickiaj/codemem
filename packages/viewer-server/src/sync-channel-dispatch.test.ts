@@ -28,6 +28,47 @@ async function fixture(options?: Parameters<typeof channelStore>[0]) {
 	return { ...f, dispatch: createSyncChannelDispatcher({ storeFactory: f.storeFactory }) };
 }
 
+const READ_ROUTES = ["/v1/status", "/v1/snapshot"] as const;
+const OTHER_SCOPE = "other-channel-scope";
+
+async function addOtherScope(f: Awaited<ReturnType<typeof fixture>>) {
+	f.store.db
+		.prepare(
+			`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id,
+			group_id, membership_epoch, status, created_at, updated_at)
+			SELECT ?, 'Other scope', kind, authority_type,
+			coordinator_id, group_id, membership_epoch, status, created_at, updated_at
+			FROM replication_scopes WHERE scope_id = ?`,
+		)
+		.run(OTHER_SCOPE, SCOPE);
+	f.store.db
+		.prepare(
+			`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+			SELECT ?, device_id, role, status, membership_epoch, updated_at
+			FROM scope_memberships WHERE scope_id = ?`,
+		)
+		.run(OTHER_SCOPE, SCOPE);
+	await refreshTestScopeRows(f.store.db, {
+		[f.localDeviceId]: f.localPublicKey,
+		[f.peerDeviceId]: f.peerPublicKey,
+	});
+}
+
+function readTarget(
+	f: Awaited<ReturnType<typeof fixture>>,
+	route: (typeof READ_ROUTES)[number],
+	scopeId = SCOPE,
+) {
+	const boundary = core.getSyncResetState(f.store.db, scopeId);
+	const query = new URLSearchParams({
+		scope_id: scopeId,
+		generation: String(boundary.generation),
+		snapshot_id: boundary.snapshot_id,
+	});
+	if (boundary.baseline_cursor !== null) query.set("baseline_cursor", boundary.baseline_cursor);
+	return `${route}?${query}&z=2&x=%2f&z=1`;
+}
+
 it("serves exact signed query encoding and records one nonce, then rejects replay", async () => {
 	// Arrange
 	const f = await fixture();
@@ -266,7 +307,7 @@ it.each([
 	).toBeUndefined();
 });
 
-it("keeps construction inert and excludes status, snapshot, bootstrap and local routes before store access", async () => {
+it("keeps construction inert and excludes bootstrap, local routes and unsupported methods before store access", async () => {
 	// Arrange
 	const storeFactory = vi.fn<() => MemoryStore>(() => {
 		throw new Error("Store must remain unopened");
@@ -282,12 +323,19 @@ it("keeps construction inert and excludes status, snapshot, bootstrap and local 
 	};
 	expect(storeFactory).not.toHaveBeenCalled();
 	// Act
-	for (const target of ["/v1/status", "/v1/snapshot", "/v1/bootstrap-grants", "/api/sync/peers"]) {
+	for (const target of ["/v1/bootstrap-grants", "/api/sync/peers"]) {
 		const response = await dispatch({ ...base, target, url: ORIGIN + target });
 		const direct = await app.fetch(new Request(ORIGIN + target, { headers: base.headers }));
 		// Assert
 		expect(response.status).toBe(404);
 		expect(json(response)).toEqual({ error: "not found" });
+		expect(direct.status).toBe(404);
+		expect(storeFactory).not.toHaveBeenCalled();
+	}
+	for (const target of ["/v1/status", "/v1/snapshot"]) {
+		const response = await dispatch({ ...base, method: "POST", target, url: ORIGIN + target });
+		const direct = await app.fetch(new Request(ORIGIN + target, { method: "POST" }));
+		expect(response.status).toBe(404);
 		expect(direct.status).toBe(404);
 		expect(storeFactory).not.toHaveBeenCalled();
 	}
@@ -479,4 +527,341 @@ it("cancels a stalled response read once without retrying the authenticated requ
 	expect(nonceCount(f)).toBe(1);
 	expect(storeCallsBeforeAbort).toBe(1);
 	expect(f.storeFactory).toHaveBeenCalledTimes(storeCallsBeforeAbort);
+});
+
+it.each(READ_ROUTES)("serves scoped %s once and denies replay", async (route) => {
+	// Arrange: both read routes must authenticate exactly once, without an internal retry.
+	const f = await fixture();
+	const request = signedRequest(f, { target: readTarget(f, route) });
+	// Act
+	const first = await f.dispatch(request);
+	const replay = await f.dispatch(request);
+	// Assert
+	expect(first.status, JSON.stringify(json(first))).toBe(200);
+	expect(replay.status).toBe(401);
+	expect(json(replay)).toEqual({ error: "unauthorized" });
+	expect(nonceCount(f)).toBe(1);
+});
+
+it("returns only the selected status scope and never creates other reset boundaries", async () => {
+	// Arrange: the other scope is authorized too, so filtering cannot rely on denied membership.
+	const f = await fixture();
+	await addOtherScope(f);
+	core.setSyncResetState(f.store.db, { generation: 17, snapshot_id: "selected-status" }, SCOPE);
+	const boundary = core.getSyncResetState(f.store.db, SCOPE);
+	const before = f.store.db.prepare("SELECT * FROM sync_reset_state_v2 ORDER BY scope_id").all();
+	// Act
+	const response = await f.dispatch(signedRequest(f, { target: readTarget(f, "/v1/status") }));
+	// Assert
+	expect(response.status).toBe(200);
+	expect(json(response)).toMatchObject({
+		device_id: f.localDeviceId,
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		sync_reset: { ...boundary, scope_id: SCOPE },
+		authorized_scopes: [
+			{ scope_id: SCOPE, membership_epoch: 1, sync_reset: { ...boundary, scope_id: SCOPE } },
+		],
+	});
+	expect((json(response) as { authorized_scopes: unknown[] }).authorized_scopes).toHaveLength(1);
+	expect(JSON.stringify(json(response))).not.toContain(OTHER_SCOPE);
+	expect(f.store.db.prepare("SELECT * FROM sync_reset_state_v2 ORDER BY scope_id").all()).toEqual(
+		before,
+	);
+});
+
+it("returns only selected snapshot content and its own boundary, including tombstones", async () => {
+	// Arrange: include another authorized scope and local-default to expose accidental broad reads.
+	const f = await fixture();
+	await addOtherScope(f);
+	const session = core.insertTestSession(f.store.db);
+	const now = "2026-01-01T00:00:00Z";
+	for (const [scopeId, key, active] of [
+		[SCOPE, "selected-a", 1],
+		[SCOPE, "selected-b", 0],
+		[OTHER_SCOPE, "other-secret", 1],
+		["local-default", "default-secret", 1],
+	] as const) {
+		f.store.db
+			.prepare(`INSERT INTO memory_items(session_id, kind, title, body_text,
+			created_at, updated_at, import_key, rev, active, deleted_at, visibility, scope_id, metadata_json)
+			VALUES (?, 'discovery', ?, 'body', ?, ?, ?, 1, ?, ?, 'shared', ?, '{}')`)
+			.run(session, key, now, now, key, active, active ? null : now, scopeId);
+	}
+	core.setSyncResetState(
+		f.store.db,
+		{
+			generation: 23,
+			snapshot_id: "selected-snapshot",
+			baseline_cursor: `${now}|baseline`,
+			retained_floor_cursor: `${now}|floor`,
+		},
+		SCOPE,
+	);
+	const boundary = core.getSyncResetState(f.store.db, SCOPE);
+	// Act
+	const response = await f.dispatch(signedRequest(f, { target: readTarget(f, "/v1/snapshot") }));
+	// Assert
+	expect(response.status, JSON.stringify(json(response))).toBe(200);
+	expect(json(response)).toMatchObject({
+		...boundary,
+		scope_id: SCOPE,
+		has_more: false,
+		next_page_token: null,
+		items: [
+			{ entity_id: "selected-a", op_type: "upsert" },
+			{ entity_id: "selected-b", op_type: "delete" },
+		],
+	});
+	expect((json(response) as { items: unknown[] }).items).toHaveLength(2);
+	for (const item of (json(response) as { items: { payload_json: string }[] }).items)
+		expect(JSON.parse(item.payload_json)).toHaveProperty("scope_id", SCOPE);
+	expect(JSON.stringify(json(response))).not.toContain("other-secret");
+	expect(JSON.stringify(json(response))).not.toContain("default-secret");
+});
+
+it.each(READ_ROUTES)(
+	"requires an explicit authorized scope for %s without leaking reset metadata",
+	async (route) => {
+		// Arrange
+		const f = await fixture();
+		core.setSyncResetState(f.store.db, { generation: 91, snapshot_id: "default-secret" });
+		const targets = [
+			route,
+			`${route}?scope_id=`,
+			`${route}?scope_id=not-granted`,
+			`${route}?scope_id=local-default`,
+		];
+		const before = f.store.db.prepare("SELECT * FROM sync_reset_state_v2 ORDER BY scope_id").all();
+		// Act
+		const responses = [];
+		for (const target of targets) responses.push(await f.dispatch(signedRequest(f, { target })));
+		// Assert
+		for (const response of responses) {
+			expect(response.status).toBe(409);
+			expect(json(response)).toMatchObject({ error: "reset_required", scope_id: null });
+			for (const field of [
+				"generation",
+				"snapshot_id",
+				"baseline_cursor",
+				"retained_floor_cursor",
+				"authorized_scopes",
+				"items",
+				"sync_reset",
+			])
+				expect(json(response)).not.toHaveProperty(field);
+		}
+		expect(f.store.db.prepare("SELECT * FROM sync_reset_state_v2 ORDER BY scope_id").all()).toEqual(
+			before,
+		);
+	},
+);
+
+it.each(READ_ROUTES)("denies revoked or passive-only scope proof on %s", async (route) => {
+	// Arrange
+	const f = await fixture({ passiveOnly: true });
+	const request = signedRequest(f, { target: readTarget(f, route) });
+	// Act
+	const passive = await f.dispatch(request);
+	await refreshTestScopeRows(f.store.db, {
+		[f.localDeviceId]: f.localPublicKey,
+		[f.peerDeviceId]: f.peerPublicKey,
+	});
+	f.store.db
+		.prepare("UPDATE scope_memberships SET status = 'revoked' WHERE device_id = ?")
+		.run(f.peerDeviceId);
+	const revoked = await f.dispatch(signedRequest(f, { target: readTarget(f, route) }));
+	// Assert
+	for (const response of [passive, revoked]) {
+		expect(response.status).toBe(409);
+		expect(json(response)).toMatchObject({ error: "reset_required", scope_id: null });
+		expect(json(response)).not.toHaveProperty("generation");
+		expect(json(response)).not.toHaveProperty("snapshot_id");
+		expect(json(response)).not.toHaveProperty("items");
+		expect(json(response)).not.toHaveProperty("authorized_scopes");
+	}
+});
+
+it.each(READ_ROUTES)(
+	"denies channel, recipient, signature and signed-query tampering before nonce use on %s",
+	async (route) => {
+		// Arrange
+		const f = await fixture();
+		const request = signedRequest(f, { target: readTarget(f, route) });
+		const v2Only = { ...request.headers };
+		delete v2Only["X-Codemem-Signature"];
+		delete v2Only["X-Codemem-Recipient"];
+		const v3Only = { ...request.headers };
+		delete v3Only["X-Opencode-Signature"];
+		const wrongRecipient = signedRequest(f, {
+			target: request.target,
+			recipientId: "other-recipient",
+		});
+		const tampered = request.target.replaceAll("%2f", "%2F");
+		const verifyV2 = vi.spyOn(core, "verifySignature");
+		const verifyV3 = vi.spyOn(core, "verifyDirectPeerSignature");
+		// Act
+		const wrongPin = await f.dispatch({
+			...request,
+			peerPin: f.localPublicKey,
+			headers: { ...request.headers, "X-Peer-Pin": f.peerPin },
+		});
+		const callsBeforePinMatch = [verifyV2.mock.calls.length, verifyV3.mock.calls.length];
+		const denied = [wrongPin];
+		for (const input of [
+			{ ...request, headers: v2Only },
+			{ ...request, headers: v3Only },
+			wrongRecipient,
+			{ ...request, target: tampered, url: ORIGIN + tampered },
+			{
+				...request,
+				headers: {
+					...request.headers,
+					"X-Opencode-Signature": `v2:${Buffer.alloc(64).toString("base64")}`,
+				},
+			},
+		])
+			denied.push(await f.dispatch(input));
+		const unused = nonceCount(f);
+		const accepted = await f.dispatch(request);
+		// Assert
+		for (const response of denied) {
+			expect(response.status).toBe(401);
+			expect(json(response)).toEqual({ error: "unauthorized" });
+		}
+		expect(callsBeforePinMatch).toEqual([0, 0]);
+		expect(unused).toBe(0);
+		expect(accepted.status).toBe(200);
+		expect(nonceCount(f)).toBe(1);
+	},
+);
+
+it.each(READ_ROUTES)(
+	"rechecks the current peer key and fingerprint before nonce use on %s",
+	async (route) => {
+		// Arrange
+		const f = await fixture();
+		const request = signedRequest(f, { target: readTarget(f, route) });
+		const update = f.store.db.prepare(
+			"UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ? WHERE peer_device_id = ?",
+		);
+		// Act
+		update.run(f.localPublicKey, fingerprintPublicKey(f.localPublicKey), f.peerDeviceId);
+		const rotated = await f.dispatch(request);
+		update.run(f.peerPublicKey, "inconsistent-fingerprint", f.peerDeviceId);
+		const inconsistent = await f.dispatch(request);
+		const unused = nonceCount(f);
+		update.run(f.peerPublicKey, fingerprintPublicKey(f.peerPublicKey), f.peerDeviceId);
+		const restored = await f.dispatch(request);
+		// Assert
+		expect([rotated.status, inconsistent.status, restored.status]).toEqual([401, 401, 200]);
+		expect(unused).toBe(0);
+		expect(nonceCount(f)).toBe(1);
+	},
+);
+
+it.each(READ_ROUTES)(
+	"never attempts bootstrap or coordinator refresh fallback on %s",
+	async (route) => {
+		// Arrange: external calls throw deterministically if either fallback is entered.
+		const f = await fixture();
+		const network = vi
+			.spyOn(core, "requestJson")
+			.mockRejectedValue(new Error("No network allowed"));
+		const config = vi.spyOn(core, "readCoordinatorSyncConfig").mockImplementation(() => {
+			throw new Error("Channel requests must not configure a coordinator fallback");
+		});
+		const refresh = vi
+			.spyOn(core, "refreshConfiguredScopeMembershipCache")
+			.mockRejectedValue(new Error("No refresh allowed"));
+		const request = signedRequest(f, { target: readTarget(f, route) });
+		const headers = {
+			...request.headers,
+			"X-Codemem-Bootstrap-Grant": "disposable-grant",
+			[core.SYNC_AUTHORIZATION_REFRESH_HEADER]: "1",
+			[core.SYNC_FEATURES_HEADER]: "reassign_scope",
+		};
+		// Act
+		const accepted = await f.dispatch({ ...request, headers });
+		const denied = await f.dispatch({ ...request, peerPin: "wrong-channel-pin", headers });
+		// Assert
+		expect(accepted.status).toBe(200);
+		expect(denied.status).toBe(401);
+		expect(json(denied)).toEqual({ error: "unauthorized" });
+		expect(network).not.toHaveBeenCalled();
+		expect(config).not.toHaveBeenCalled();
+		expect(refresh).not.toHaveBeenCalled();
+		expect(nonceCount(f)).toBe(1);
+	},
+);
+
+it.each(READ_ROUTES)(
+	"denies a different known scope on %s while the selected scope remains authorized",
+	async (route) => {
+		// Arrange: pairing and membership in one scope cannot authorize a second scope.
+		const f = await fixture();
+		await addOtherScope(f);
+		f.store.db
+			.prepare(
+				"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = ? AND device_id = ?",
+			)
+			.run(OTHER_SCOPE, f.peerDeviceId);
+		const selected = signedRequest(f, { target: readTarget(f, route) });
+		const other = signedRequest(f, { target: `${route}?scope_id=${OTHER_SCOPE}` });
+		// Act
+		const accepted = await f.dispatch(selected);
+		const denied = await f.dispatch(other);
+		// Assert
+		expect(accepted.status).toBe(200);
+		expect(denied.status).toBe(409);
+		expect(json(denied)).toMatchObject({ error: "reset_required", scope_id: null });
+		expect(json(denied)).not.toHaveProperty("items");
+		expect(json(denied)).not.toHaveProperty("authorized_scopes");
+		expect(json(denied)).not.toHaveProperty("snapshot_id");
+		expect(
+			f.store.db.prepare("SELECT 1 FROM sync_reset_state_v2 WHERE scope_id = ?").get(OTHER_SCOPE),
+		).toBeUndefined();
+	},
+);
+
+it.each(READ_ROUTES)("requires scoped capability negotiation on %s", async (route) => {
+	// Arrange
+	const f = await fixture();
+	const request = signedRequest(f, { target: readTarget(f, route) });
+	const headers = { ...request.headers };
+	delete headers[core.SYNC_CAPABILITY_HEADER];
+	// Act
+	const denied = await f.dispatch({ ...request, headers });
+	const accepted = await f.dispatch(signedRequest(f, { target: request.target }));
+	// Assert
+	expect(denied.status).toBe(409);
+	expect(json(denied)).toMatchObject({ error: "reset_required", scope_id: null });
+	expect(json(denied)).not.toHaveProperty("generation");
+	expect(json(denied)).not.toHaveProperty("items");
+	expect(accepted.status).toBe(200);
+});
+
+it("rejects another scope's snapshot boundary and a forged snapshot source", async () => {
+	// Arrange
+	const f = await fixture();
+	core.setSyncResetState(f.store.db, { generation: 4, snapshot_id: "selected" }, SCOPE);
+	core.setSyncResetState(f.store.db, { generation: 8, snapshot_id: "other" }, OTHER_SCOPE);
+	const target = readTarget(f, "/v1/snapshot");
+	// Act
+	const wrongBoundary = await f.dispatch(
+		signedRequest(f, {
+			target: target
+				.replace("generation=4", "generation=8")
+				.replace("snapshot_id=selected", "snapshot_id=other"),
+		}),
+	);
+	const wrongSource = await f.dispatch(
+		signedRequest(f, {
+			target: `${target}&source_device_id=${encodeURIComponent(f.peerDeviceId)}`,
+		}),
+	);
+	// Assert
+	expect(wrongBoundary.status).toBe(409);
+	expect(json(wrongBoundary)).not.toHaveProperty("items");
+	expect(wrongSource.status).toBe(400);
+	expect(json(wrongSource)).toEqual({ error: "retirement_snapshot_source_required" });
 });

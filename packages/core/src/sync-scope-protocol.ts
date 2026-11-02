@@ -217,9 +217,13 @@ export function listAuthorizedScopesForPeer(
 		peerDeviceId: string;
 		localSigningPublicKey?: string | null;
 		authenticatedPeerSigningKey?: string | null;
+		scopeId?: string;
 	},
 ): AuthorizedScopeEntry[] {
-	return listAuthorizedScopeMembershipsForPeer(db, options).map((scope) => {
+	const memberships = listAuthorizedScopeMembershipsForPeer(db, options).filter(
+		(scope) => options.scopeId === undefined || scope.scope_id === options.scopeId,
+	);
+	return memberships.map((scope) => {
 		const reset = getSyncResetState(db, scope.scope_id);
 		return {
 			...scope,

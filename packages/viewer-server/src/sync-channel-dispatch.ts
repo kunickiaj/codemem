@@ -108,7 +108,9 @@ function prepareChannelRequest(
 	if (method !== "GET" && method !== "POST") return errorResponse(404, "not found");
 	const parsed = validLogicalUrl(url, target);
 	if (!parsed) return errorResponse(400, "invalid_request");
-	if (parsed.pathname !== "/v1/ops") return errorResponse(404, "not found");
+	const isOps = parsed.pathname === "/v1/ops";
+	const isRead = method === "GET" && ["/v1/status", "/v1/snapshot"].includes(parsed.pathname);
+	if (!isOps && !isRead) return errorResponse(404, "not found");
 	const source = input.bodyBytes;
 	if (source.byteLength > MAX_REQUEST_BYTES) return errorResponse(413, "payload_too_large");
 	if (invalidGetBody(method, source)) return errorResponse(400, "invalid_request");
