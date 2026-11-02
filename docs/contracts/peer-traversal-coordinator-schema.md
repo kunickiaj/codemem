@@ -116,3 +116,24 @@ signatures, reserve budgets, and require receipts bound to its two writes before
 replying.
 A stored row or its shape alone is not evidence that an authorized decision
 occurred.
+
+## Coordinator decisions
+
+`decideTraversalSignal` composes those checks through private database and budget
+ports. It reserves ingress before lookup or hashing, captures the current policy
+and both participants, verifies the phase signature against its actor's current
+pin, and reserves verified-device budget before writing.
+
+The function requires a receipt from its own nonce write before attempting the
+state write with a different execution ID. It returns `null` for missing or
+unknown budgets, invalid signatures, rejected writes, or uncertain receipts.
+It never retries a write or reads state to recover a lost receipt.
+
+A positive result contains only the request association, policy revision, final
+state decision clock, readiness observation, and remaining attempt lifetime.
+`remainingMs` equals `attemptNotAfter * 1000 - decidedAtMs`. Earlier nonce clocks
+and readiness observations do not replace the final state's values.
+
+The ports must settle within the caller's request lifetime. In-memory budget
+reservations in tests prove this composition only. Production requires a durable
+budget implementation, clock evidence, and separate activation approval.
