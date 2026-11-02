@@ -774,7 +774,7 @@ describe("Devices cached snapshot aliases", () => {
 			});
 			expect(stableDeviceDetails()).toBe(before);
 			expect(deviceRow()?.querySelector(".devices-table-sync")?.textContent).toContain(
-				"Sync status unavailable",
+				"Not verified",
 			);
 			const panel = document.getElementById("tab-devices");
 			expect(panel?.textContent).toContain("Refresh failed; showing previous device information");
@@ -1024,7 +1024,7 @@ describe("Devices app inventory recovery", () => {
 describe("Devices app sync health", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
-	it("shows synced peer health and targets only that peer from Devices", async () => {
+	it("keeps legacy sync evidence unverified and targets only that peer from Devices", async () => {
 		const originalLoad = mocks.loadSyncData.getMockImplementation();
 		mocks.loadSyncData.mockImplementation(async () => {
 			await originalLoad?.();
@@ -1048,8 +1048,9 @@ describe("Devices app sync health", () => {
 		});
 		const row = document.getElementById("device-identity-card-device-private");
 		expect(row?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"24h: received 4 · sent 2",
+			"Acknowledged (24h): Not verified",
 		);
+		expect(row?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 4");
 		const action = workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
 		expect(action?.disabled).toBe(false);
 		await act(async () => {
@@ -1088,7 +1089,72 @@ describe("Devices app sync health", () => {
 				?.querySelector(".devices-table-sync")?.textContent,
 		).toContain("This device is no longer paired here");
 	});
+});
 
+describe("Devices sync evidence refresh", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+	it("maps receive-only evidence without replacing unknown sending with legacy counters", async () => {
+		// Arrange
+		const originalLoad = mocks.loadSyncData.getMockImplementation();
+		mocks.loadSyncData.mockImplementation(async () => {
+			await originalLoad?.();
+			const { state } = await import("./lib/state");
+			const peer = state.lastSyncPeers.find((item) => item.peer_device_id === "device-private");
+			if (!peer) throw new Error("paired fixture missing");
+			const unknown = {
+				state: "not_verified" as const,
+				last_attempt_at: null,
+				last_success_at: null,
+				operations_24h: null,
+				pending_count: null,
+				reason_code: null,
+			};
+			peer.pinned = true;
+			peer.recent_ops = { in: 99, out: 99 };
+			peer.sync_health = {
+				state: "not_verified",
+				send: unknown,
+				receive: {
+					...unknown,
+					state: "succeeded",
+					operations_24h: 4,
+					last_success_at: "2026-11-02T18:00:00Z",
+				},
+			};
+			state.lastSyncStatus = {
+				sync_health: {
+					state: "not_verified",
+					peer_count: 2,
+					attention_count: 0,
+					unverified_count: 1,
+					stale_count: 0,
+				},
+			};
+			return true;
+		});
+		// Act
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(5_100);
+		});
+		// Assert
+		const text = document
+			.getElementById("device-identity-card-device-private")
+			?.querySelector(".devices-table-sync")?.textContent;
+		expect(text).toContain("Sending: Not verified");
+		expect(text).toContain("Acknowledged (24h): Not verified");
+		expect(text).toContain("Receiving: Exchange succeeded");
+		expect(text).toContain("Applied (24h): 4");
+		expect(text).not.toContain("99");
+		expect(document.getElementById("tab-devices")?.textContent).toContain(
+			"2 paired devices · 0 need attention · 1 not verified",
+		);
+	});
+});
+
+describe("Devices sync evidence outage", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
 	it("marks a retained peer sync snapshot unavailable when the required refresh fails", async () => {
 		const originalLoad = mocks.loadSyncData.getMockImplementation();
 		mocks.loadSyncData.mockImplementation(async () => {
@@ -1098,6 +1164,34 @@ describe("Devices app sync health", () => {
 			if (peer) {
 				peer.pinned = true;
 				peer.recent_ops = { in: 3, out: 2 };
+				peer.sync_health = {
+					state: "exchange_succeeded",
+					send: {
+						state: "succeeded",
+						last_attempt_at: null,
+						last_success_at: null,
+						operations_24h: 2,
+						pending_count: null,
+						reason_code: null,
+					},
+					receive: {
+						state: "succeeded",
+						last_attempt_at: null,
+						last_success_at: null,
+						operations_24h: 3,
+						pending_count: null,
+						reason_code: null,
+					},
+				};
+				state.lastSyncStatus = {
+					sync_health: {
+						state: "exchange_succeeded",
+						peer_count: 1,
+						attention_count: 0,
+						unverified_count: 0,
+						stale_count: 0,
+					},
+				};
 				peer.status = { sync_status: "ok", peer_state: "online", fresh: true };
 			}
 			return true;
@@ -1106,17 +1200,16 @@ describe("Devices app sync health", () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
 		const row = () => document.getElementById("device-identity-card-device-private");
-		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"received 3 · sent 2",
-		);
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain("Applied (24h): 3");
 		mocks.loadSyncData.mockResolvedValueOnce(false);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
-		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Sync status unavailable",
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain("Not verified");
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain(
+			"Applied (24h): 3",
 		);
-		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 3");
+		expect(document.getElementById("tab-devices")?.textContent).not.toContain("Recent exchange");
 		expect(
 			workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
 		).toBe(true);

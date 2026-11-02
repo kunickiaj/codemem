@@ -2108,7 +2108,7 @@
       .devices-table-head,
       .devices-table-row {
         display: grid;
-        grid-template-columns: 16px minmax(0, 1fr) 128px 110px minmax(165px, 220px) 48px;
+        grid-template-columns: 16px minmax(0, 1fr) 112px 80px minmax(320px, 420px) 48px;
         align-items: center;
         column-gap: var(--sp-4);
       }
@@ -2131,6 +2131,8 @@
       .devices-table-version { color: var(--text-tertiary); font-family: var(--font-mono); font-size: var(--font-size-xs); }
       .devices-table-sync { display: grid; gap: 2px; color: var(--text-tertiary); font-size: var(--font-size-xs); }
       .devices-table-sync strong { color: var(--text-secondary); font-weight: var(--font-weight-medium); }
+      .device-sync-directions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); margin-top: var(--sp-2); }
+      .device-sync-direction { min-width: 0; display: grid; align-content: start; gap: 2px; overflow-wrap: anywhere; }
       .devices-table-details { border-top: 1px solid var(--border); background: var(--surface-2); }
       .devices-table-details > td { display: grid; gap: var(--sp-3); padding: var(--sp-4) var(--sp-6); }
       .devices-table-details p { margin: 0; }

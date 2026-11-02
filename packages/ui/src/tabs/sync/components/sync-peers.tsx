@@ -102,11 +102,17 @@ function useExpandedPeer(): string | null {
 }
 
 const DIRECTION_GLYPH: Record<PeerDirection, { glyph: string; label: string } | null> = {
-	bidirectional: { glyph: "↕", label: "Bidirectional sync in the last 24 hours" },
-	publishing: { glyph: "↑", label: "Publishing only in the last 24 hours" },
-	subscribed: { glyph: "↓", label: "Subscribed only in the last 24 hours" },
+	bidirectional: { glyph: "↕", label: "Applied and acknowledged operations observed (24h)" },
+	publishing: { glyph: "↑", label: "Acknowledged operations observed (24h)" },
+	subscribed: { glyph: "↓", label: "Applied operations observed (24h)" },
 	none: null,
 };
+
+function initiatedExchangeLabel(value: string): string {
+	return value
+		? `Initiated exchange: ${formatTimestamp(value)}`
+		: "Initiated exchange: not recorded";
+}
 
 type SyncPeer = PeerLike & {
 	actor_display_name?: string;
@@ -414,7 +420,7 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 	// Reintroduce a "syncing" state only when peer-level in-flight shows up
 	// in SyncPeerStatusLike.
 	const presenceState: PresenceState = presenceForPeer(peer);
-	const syncMetaText = lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never";
+	const syncMetaText = initiatedExchangeLabel(lastSyncAt);
 	const canManageSpaces = canManageLegacyCoordinatorSpaces();
 
 	const toggleLabel = `${isExpanded ? "Collapse" : "Expand"} device ${displayName}`;
@@ -576,7 +582,7 @@ function SyncPeerCard({ peer, onRemove, onRename, onSync }: SyncPeerCardProps) {
 						{discoverySummary ? <div className="peer-meta">{discoverySummary}</div> : null}
 						<div className="peer-meta">
 							{[
-								lastSyncAt ? `Sync: ${formatTimestamp(lastSyncAt)}` : "Sync: never",
+								syncMetaText,
 								lastPingAt ? `Ping: ${formatTimestamp(lastPingAt)}` : "Ping: never",
 							].join(" · ")}
 						</div>
