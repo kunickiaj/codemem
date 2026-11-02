@@ -137,3 +137,19 @@ and readiness observations do not replace the final state's values.
 The ports must settle within the caller's request lifetime. In-memory budget
 reservations in tests prove this composition only. Production requires a durable
 budget implementation, clock evidence, and separate activation approval.
+
+## Own replies
+
+`requestTraversalSignalDecision` sends one raw canonical phase array with its v2
+header fields through an injected authenticated HTTPS port. Portable packet
+objects are not the HTTP entity body. The port owns origin authentication,
+cancellation, and settlement within the supplied deadline.
+
+The client accepts only a matching status-200 reply of at most 1,024 bytes. It
+checks every reply field, the decision window, readiness, and any earlier policy
+revision. It maps the remaining lifetime to the local request-start monotonic
+clock, intersects earlier leases and the caller deadline, and rechecks expiry
+after parsing. It never retries an uncertain request.
+
+Peers still verify the pinned packet prefix, obtain their own phase decisions,
+and enforce the returned deadlines before using descriptions or releasing Noise.
