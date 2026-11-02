@@ -11,7 +11,6 @@ import { attemptRow, insertAttempt } from "./peer-traversal-coordinator-schema-t
 import {
 	encodeTraversalSignalBody,
 	type TraversalSignalBody,
-	type TraversalSignalCommon,
 } from "./peer-traversal-signal-codec.js";
 import { verifyTraversalSignalProof } from "./peer-traversal-signal-proof.js";
 import { readRelayAdmissionNonceReceipt } from "./relay-admission-clock.js";
@@ -56,15 +55,17 @@ async function disposableSigner() {
 }
 async function signedProof(
 	body: TraversalSignalBody,
-	key: Awaited<ReturnType<typeof disposableSigner>>,
+	keys: {
+		source: Awaited<ReturnType<typeof disposableSigner>>;
+		target: Awaited<ReturnType<typeof disposableSigner>>;
+	},
+	nonce = "c".repeat(32),
 ) {
 	const bodyBytes = encodeTraversalSignalBody(body);
-	const nonce = "c".repeat(32);
 	const path = "/v1/traversal/signal";
-	const deviceId =
-		body.phase === "offer-check" || body.phase === "answer"
-			? body.targetDeviceId
-			: body.sourceDeviceId;
+	const targetActor = body.phase === "offer-check" || body.phase === "answer";
+	const deviceId = targetActor ? body.targetDeviceId : body.sourceDeviceId;
+	const key = targetActor ? keys.target : keys.source;
 	const canonical = ["POST", path, String(body.createdAt), nonce, await hash(bodyBytes)].join("\n");
 	const signature = new Uint8Array(
 		await crypto.subtle.sign("Ed25519", key.privateKey, new TextEncoder().encode(canonical)),
@@ -137,8 +138,8 @@ export async function writeFixture(
 		attemptNotAfter: createdAt + 55,
 		phase: "prepare",
 	};
-	const sign = (value: TraversalSignalBody) =>
-		signedProof(value, value.phase === "offer-check" || value.phase === "answer" ? target : source);
+	const sign = (value: TraversalSignalBody, nonce?: string) =>
+		signedProof(value, { source, target }, nonce);
 	const options: TraversalSignalWriteOptions = {
 		proof: await sign(body),
 		participants,
@@ -226,7 +227,6 @@ export function registerWriteScenarios(create: Create) {
 		registerCompetingWrites(create);
 		registerReceipts(create);
 		registerInvalidInputs(create);
-		registerDeferredPhases(create);
 		registerStaticSql(create);
 	});
 }
@@ -612,41 +612,6 @@ function corruptParticipant(
 				}),
 			}),
 		});
-}
-function registerDeferredPhases(create: Create) {
-	it.each(["offer", "offer-check", "answer", "answer-check"] as const)(
-		"defers the verified %s phase without compiling a write",
-		async (phase) => {
-			const f = await create();
-			const common: TraversalSignalCommon = { ...f.options.proof.value };
-			const prepareDigest = "1".repeat(64);
-			const offerDigest = "2".repeat(64);
-			const answerDigest = "3".repeat(64);
-			let body: TraversalSignalBody;
-			if (phase === "offer")
-				body = {
-					...common,
-					phase,
-					prepareDigest,
-					descriptionBytes: new TextEncoder().encode("opaque offer"),
-				};
-			else if (phase === "offer-check") body = { ...common, phase, prepareDigest, offerDigest };
-			else if (phase === "answer")
-				body = {
-					...common,
-					phase,
-					prepareDigest,
-					offerDigest,
-					descriptionBytes: new TextEncoder().encode("opaque answer"),
-				};
-			else body = { ...common, phase, prepareDigest, offerDigest, answerDigest };
-			const input = { ...f.options, proof: await f.sign(body) };
-
-			const results = await Promise.all(BUILDERS.map(([, build]) => build(input)));
-
-			expect(results).toEqual([null, null]);
-		},
-	);
 }
 function registerStaticSql(create: Create) {
 	it("keeps SQL static, binds digests instead of bodies and executes nothing while compiling", async () => {
