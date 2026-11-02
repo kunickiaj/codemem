@@ -22,7 +22,7 @@ beforeEach(() => {
 describe("AdvancedSyncStatus", () => {
 	it.each([
 		["disabled", "Sync is off", "Off"],
-		["healthy", "Sync: Not verified", "Not verified"],
+		["healthy", "Not verified", "Not verified"],
 		["needs-attention", "Sync needs attention", "Attention"],
 	] as const)("renders the %s status", (state, label, badge) => {
 		// Arrange / Act: a legacy primary status alone cannot prove replication.
@@ -39,8 +39,8 @@ describe("AdvancedSyncStatus", () => {
 	});
 
 	it.each([
-		["exchange_succeeded", "Recent exchange", 0, 0],
-		["needs_attention", "Needs attention", 1, 0],
+		["exchange_succeeded", "OK", 0, 0],
+		["needs_attention", "Sync needs attention", 1, 0],
 		["not_verified", "Not verified", 0, 1],
 	] as const)(
 		"uses aggregate %s rather than a legacy healthy primary status",
@@ -63,10 +63,12 @@ describe("AdvancedSyncStatus", () => {
 				nextAction: null,
 			});
 			// Assert
-			expect(root.querySelector('[role="status"]')?.textContent).toContain(`Sync: ${label}`);
-			expect(root.textContent).toContain(
-				`2 paired devices · ${attention} need attention · ${unverified} not verified`,
+			expect(root.querySelector('[role="status"] .sync-health-state')?.textContent).toContain(
+				label,
 			);
+			expect(
+				[...root.querySelectorAll(".sync-health-kpis dd")].map((node) => node.textContent),
+			).toEqual(["2", String(attention), String(unverified)]);
 			expect(root.textContent).not.toContain("Sync is on");
 		},
 	);

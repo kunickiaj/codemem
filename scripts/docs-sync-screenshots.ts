@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Browser, BrowserContext, Page, Route } from "@playwright/test";
+import type { Browser, BrowserContext, Locator, Page, Route } from "@playwright/test";
 import type {
 	OverallSyncHealth,
 	PeerSyncHealth,
@@ -23,6 +23,65 @@ const IDENTITY = "docs-person";
 const PROJECT = "docs-atlas-notes";
 const requireFromUi = createRequire(new URL("../packages/ui/package.json", import.meta.url));
 const { chromium, expect } = requireFromUi("@playwright/test") as typeof import("@playwright/test");
+
+interface CaptureProfile {
+	theme: "dark" | "light";
+	name: string;
+	viewport: { width: number; height: number };
+	fullPage?: boolean;
+	detailsDevice?: string;
+}
+
+function captureProfiles(): CaptureProfile[] {
+	if (!process.argv.includes("--preview")) {
+		return (["dark", "light"] as const).map((theme) => ({
+			theme,
+			name: `docs-devices-sync-${theme}`,
+			viewport: { width: 1440, height: 1050 },
+		}));
+	}
+	return [
+		{ theme: "dark", name: "sync-overview-dark", viewport: { width: 1440, height: 900 } },
+		{ theme: "light", name: "sync-overview-light", viewport: { width: 1440, height: 900 } },
+		{
+			theme: "dark",
+			name: "sync-details-dark",
+			viewport: { width: 1440, height: 1050 },
+			detailsDevice: "notebook",
+			fullPage: true,
+		},
+		{
+			theme: "dark",
+			name: "sync-overview-tablet",
+			viewport: { width: 1024, height: 900 },
+			fullPage: true,
+		},
+		{
+			theme: "dark",
+			name: "sync-overview-mobile",
+			viewport: { width: 390, height: 844 },
+			fullPage: true,
+		},
+	];
+}
+
+async function localFontStyles(): Promise<string> {
+	const fonts = [
+		{ family: "Geist", name: "geist" },
+		{ family: "JetBrains Mono", name: "jetbrains-mono" },
+	];
+	const styles = await Promise.all(
+		fonts.map(async ({ family, name }) => {
+			const file = resolve(
+				ROOT,
+				`packages/ui/node_modules/@fontsource-variable/${name}/files/${name}-latin-wght-normal.woff2`,
+			);
+			const bytes = await readFile(file);
+			return `@font-face { font-family: "${family}"; font-style: normal; font-weight: 100 900; font-display: block; src: url(data:font/woff2;base64,${bytes.toString("base64")}) format("woff2"); }`;
+		}),
+	);
+	return `<style>${styles.join("\n")}</style>`;
+}
 
 function direction(
 	state: SyncDirectionHealth["state"],
@@ -94,7 +153,7 @@ function syncStatus() {
 				actor_display_name: "Demo Developer",
 				pinned: true,
 				trust_state: "trusted",
-				runtime_version: "0.0.0-docs",
+				runtime_version: "0.47.3",
 				runtime_version_observed_at: SUCCESS,
 				status: { peer_state: "online", sync_status: "ok", ping_status: "ok" },
 				sync_health: peerHealth(device.displayName),
@@ -245,11 +304,53 @@ async function staticFile(pathname: string): Promise<string | null> {
 	}
 }
 
+function fixtureJson(payload: unknown, options: { live: boolean }): string {
+	if (!options.live) return JSON.stringify(payload);
+	const now = Date.now();
+	const times = new Map([
+		[NOW, new Date(now).toISOString()],
+		[SUCCESS, new Date(now - 3 * 60_000).toISOString()],
+	]);
+	return JSON.stringify(payload, (_key, value) =>
+		typeof value === "string" ? (times.get(value) ?? value) : value,
+	);
+}
+
+function serveFixtureApi(
+	request: IncomingMessage,
+	response: ServerResponse,
+	pathname: string,
+	mocks: Map<string, unknown>,
+	options: { live: boolean },
+): boolean {
+	if (request.method !== "GET" && request.method !== "HEAD") {
+		response.writeHead(405, { "Content-Type": "application/json", Allow: "GET, HEAD" });
+		response.end(JSON.stringify({ error: "preview_read_only" }));
+		return true;
+	}
+	if (!pathname.startsWith("/api/")) return false;
+	const known = mocks.has(pathname);
+	response.writeHead(known ? 200 : 404, { "Content-Type": "application/json" });
+	const payload = known ? mocks.get(pathname) : { error: "unknown_preview_request" };
+	response.end(request.method === "HEAD" ? undefined : fixtureJson(payload, options));
+	return true;
+}
+
 async function startStaticServer(): Promise<{ server: Server; origin: string }> {
+	const fonts = await localFontStyles();
+	const live = process.argv.includes("--serve");
+	const mocks = fixtures();
 	const server = createServer((request, response) => {
+		response.setHeader("Cache-Control", "no-store");
+		response.setHeader("X-Content-Type-Options", "nosniff");
+		response.setHeader(
+			"Content-Security-Policy",
+			"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
+		);
 		void (async () => {
 			const url = new URL(request.url ?? "/", "http://127.0.0.1");
-			const path = request.method === "GET" ? await staticFile(url.pathname) : null;
+			if (serveFixtureApi(request, response, url.pathname, mocks, { live })) return;
+			const path = await staticFile(url.pathname);
 			if (!path) {
 				response.writeHead(404).end();
 				return;
@@ -258,11 +359,18 @@ async function startStaticServer(): Promise<{ server: Server; origin: string }> 
 				"Content-Type": CONTENT_TYPES[extname(path)] ?? "application/octet-stream",
 				"Cache-Control": "no-store",
 			});
+			if (request.method === "HEAD") {
+				response.end();
+				return;
+			}
 			const body = await readFile(path);
 			// Remove remote font links before parsing, so even preconnects stay offline.
 			response.end(
 				extname(path) === ".html"
-					? body.toString().replace(/<link\b[^>]*https:\/\/[^>]*>/g, "")
+					? body
+							.toString()
+							.replace(/<link\b[^>]*https:\/\/[^>]*>/g, "")
+							.replace("</head>", `${fonts}</head>`)
 					: body,
 			);
 		})().catch(() => {
@@ -271,7 +379,7 @@ async function startStaticServer(): Promise<{ server: Server; origin: string }> 
 	});
 	await new Promise<void>((resolveListening, reject) => {
 		server.once("error", reject);
-		server.listen(0, "127.0.0.1", resolveListening);
+		server.listen(live ? 18763 : 0, "127.0.0.1", resolveListening);
 	});
 	const address = server.address();
 	assert(address && typeof address !== "string");
@@ -303,6 +411,18 @@ async function routeRequest(
 	await route.abort();
 }
 
+async function verifyDirection(
+	row: Locator,
+	options: { index: number; label: string; value: string; state: string },
+): Promise<void> {
+	const metric = row.locator(".device-sync-direction").nth(options.index);
+	await expect(metric.locator(".device-sync-metric-heading")).toContainText(options.label);
+	await expect(metric.locator(".device-sync-metric-value strong > [aria-hidden]")).toHaveText(
+		options.value,
+	);
+	await expect(metric).toHaveAttribute("data-state", options.state);
+}
+
 async function verifyDevices(page: Page): Promise<void> {
 	await expect(
 		page.locator(".devices-local-row").getByText("Owned by Demo Developer", { exact: true }),
@@ -314,18 +434,70 @@ async function verifyDevices(page: Page): Promise<void> {
 				.getByText(name, { exact: true }),
 		).toBeVisible();
 	const studio = page.locator("#device-identity-card-docs-studio");
-	await expect(studio.getByText("Sending: Exchange succeeded", { exact: true })).toBeVisible();
-	await expect(studio.getByText("Receiving: Exchange succeeded", { exact: true })).toBeVisible();
+	await verifyDirection(studio, { index: 0, label: "Sent", value: "12", state: "succeeded" });
+	await verifyDirection(studio, { index: 1, label: "Received", value: "8", state: "succeeded" });
 	const workshop = page.locator("#device-identity-card-docs-workshop");
-	await expect(workshop.getByText("Sending: Not verified", { exact: true })).toBeVisible();
-	await expect(workshop.getByText("Receiving: Exchange succeeded", { exact: true })).toBeVisible();
-	await expect(page.getByText("Sending: Needs attention", { exact: true })).toBeVisible();
+	await verifyDirection(workshop, {
+		index: 0,
+		label: "Sent",
+		value: "—",
+		state: "not_verified",
+	});
+	await verifyDirection(workshop, { index: 1, label: "Received", value: "5", state: "succeeded" });
+	const notebook = page.locator("#device-identity-card-docs-notebook");
+	await verifyDirection(notebook, {
+		index: 0,
+		label: "Sent",
+		value: "0",
+		state: "needs_attention",
+	});
+	await expect(notebook.locator(".device-sync-failure")).toBeVisible();
+	await expect(page.locator(".sync-health-summary:visible")).toHaveAttribute(
+		"data-state",
+		"needs_attention",
+	);
+	await expect(page.locator(".device-sync-details[open]")).toHaveCount(0);
 }
 
-async function capture(browser: Browser, origin: string, theme: "dark" | "light"): Promise<void> {
+async function verifyLayout(page: Page, profile: CaptureProfile): Promise<void> {
+	const layout = await page.evaluate(() => ({
+		width: window.innerWidth,
+		contentWidth: document.documentElement.scrollWidth,
+	}));
+	assert(layout.contentWidth <= layout.width, "Device metrics must not overflow the viewport");
+	if (profile.fullPage || profile.detailsDevice) return;
+	const lastRow = await page.locator("#device-identity-card-docs-workshop").boundingBox();
+	assert(lastRow, "The final fixture device must be rendered");
+	if (lastRow.y + lastRow.height > profile.viewport.height) {
+		await page.screenshot({
+			path: resolve(OUTPUT, `${profile.name}-layout-diagnostic.png`),
+			fullPage: true,
+			animations: "disabled",
+		});
+	}
+	assert(
+		lastRow.y + lastRow.height <= profile.viewport.height,
+		`Device rows end at ${Math.ceil(lastRow.y + lastRow.height)}px in a ${profile.viewport.height}px viewport`,
+	);
+}
+
+async function openSyncDetails(page: Page, device: string): Promise<void> {
+	const row = page.locator(`#device-identity-card-docs-${device}`);
+	const disclosure = row.locator(".device-sync-details");
+	const toggle = disclosure.locator("summary");
+	await toggle.focus();
+	await toggle.press("Enter");
+	await expect(disclosure).toHaveAttribute("open", "");
+	await toggle.press("Space");
+	await expect(disclosure).not.toHaveAttribute("open", "");
+	await toggle.click();
+	await expect(row.locator(".device-sync-details-content")).toBeVisible();
+}
+
+async function capture(browser: Browser, origin: string, profile: CaptureProfile): Promise<void> {
 	const context: BrowserContext = await browser.newContext({
-		viewport: { width: 1440, height: 1050 },
-		colorScheme: theme,
+		viewport: profile.viewport,
+		colorScheme: profile.theme,
 		locale: "en-US",
 		timezoneId: "America/Los_Angeles",
 		deviceScaleFactor: 1,
@@ -340,7 +512,7 @@ async function capture(browser: Browser, origin: string, theme: "dark" | "light"
 		});
 		await context.addInitScript((mode) => {
 			localStorage.setItem("codemem-theme", mode);
-		}, theme);
+		}, profile.theme);
 		const page = await context.newPage();
 		page.on("pageerror", () => failures.push("Unexpected browser application error"));
 		await page.clock.setFixedTime(new Date(NOW));
@@ -348,11 +520,28 @@ async function capture(browser: Browser, origin: string, theme: "dark" | "light"
 		assert.equal(failures.length, 0, `Capture rejected: ${failures.join(", ")}`);
 		await page.addStyleTag({ content: "#metaLine { display: none !important; }" });
 		await verifyDevices(page);
+		if (profile.detailsDevice) {
+			await openSyncDetails(page, profile.detailsDevice);
+		}
+		await verifyLayout(page, profile);
+		await page.evaluate(() =>
+			Promise.all([
+				document.fonts.load('400 14px "Geist"'),
+				document.fonts.load('400 12px "JetBrains Mono"'),
+			]),
+		);
 		await page.evaluate(() => document.fonts.ready);
+		const loadedFamilies = await page.evaluate(() =>
+			[...document.fonts]
+				.filter((font) => font.status === "loaded")
+				.map((font) => font.family.replaceAll('"', "")),
+		);
+		assert(loadedFamilies.includes("Geist"), "The viewer font must load from the local fixture");
+		assert(loadedFamilies.includes("JetBrains Mono"), "The metric font must load locally");
 		assert.equal(failures.length, 0, `Capture rejected: ${failures.join(", ")}`);
 		await page.screenshot({
-			path: resolve(OUTPUT, `docs-devices-sync-${theme}.png`),
-			fullPage: false,
+			path: resolve(OUTPUT, `${profile.name}.png`),
+			fullPage: profile.fullPage ?? false,
 			animations: "disabled",
 		});
 		assert.deepEqual(failures, []);
@@ -366,10 +555,14 @@ async function main(): Promise<void> {
 		throw new Error("Build viewer assets first: pnpm --filter @codemem/ui build");
 	await mkdir(OUTPUT, { recursive: true });
 	const { server, origin } = await startStaticServer();
+	if (process.argv.includes("--serve")) {
+		process.stdout.write(`Read-only fictional viewer: ${origin}/#devices\n`);
+		return;
+	}
 	try {
 		const browser = await chromium.launch({ headless: true });
 		try {
-			for (const theme of ["dark", "light"] as const) await capture(browser, origin, theme);
+			for (const profile of captureProfiles()) await capture(browser, origin, profile);
 		} finally {
 			await browser.close();
 		}

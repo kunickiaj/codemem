@@ -254,7 +254,7 @@ describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 
 describe("deriveTeamSyncPrimaryStatus pending work", () => {
 	it.each([
-		["exchange_succeeded", "Recent exchange", 0, 0, 0],
+		["exchange_succeeded", "OK", 0, 0, 0],
 		["needs_attention", "Needs attention", 1, 0, 0],
 		["not_verified", "Not verified", 0, 1, 0],
 		["stale", "Stale", 0, 0, 1],

@@ -60,7 +60,7 @@ The Devices captures use the current built viewer assets with fictional API resp
 
 | Device | Fixture state | Expected presentation |
 | --- | --- | --- |
-| Studio | Send and receive succeeded | Recent exchange, with acknowledged and applied operation counters. |
+| Studio | Send and receive succeeded | Sync: OK, with acknowledged and applied operation counters. |
 | Workshop | Receive succeeded, send has not been observed | Not verified overall, with successful receiving shown separately. |
 | Notebook | Send failed, receive has not been observed | Needs attention, with unknown history left unavailable. |
 
@@ -83,9 +83,26 @@ The helper:
 - serves `packages/viewer-server/static` on loopback
 - fulfills every viewer API request with fictional fixture data
 - blocks external requests, WebSockets, mutations, and unmatched API routes
+- embeds the UI's pinned Geist and JetBrains Mono fonts from local dependencies
 - writes `docs-devices-sync-dark.png` and `docs-devices-sync-light.png` to `.tmp/docs-screenshots/` for inspection before publication.
 
 The helper captures the Devices viewport at `1440x1050` in both themes. After inspection, copy the files to `docs/images/docs-devices-sync-dark.png` and `docs/images/docs-devices-sync-light.png`. Link those checked-in images in the PR description and identify the data as fictional.
+
+For design review, also capture the compact desktop, expanded details, tablet, and mobile profiles:
+
+```fish
+pnpm exec tsx --conditions source scripts/docs-sync-screenshots.ts --preview
+```
+
+Preview overviews use a `1440x900` viewport. The additional captures show the full page for expanded details and widths of 1024px and 390px. The helper checks keyboard operation of **Sync details**, loaded local fonts, horizontal overflow, and whether all fixture devices fit in the desktop overview. Publish the reviewed detail and mobile images as `docs-devices-sync-details-dark.png` and `docs-devices-sync-mobile.png` when including those views in a PR.
+
+To review the interactive fixture in a browser:
+
+```fish
+pnpm exec tsx --conditions source scripts/docs-sync-screenshots.ts --serve
+```
+
+Open `http://127.0.0.1:18763/#devices`. This mode serves fictional read-only API responses with recent fixture timestamps. It rejects mutations and unknown API routes, blocks external connections with a content security policy, and never opens an application database or configuration. Stop the foreground server with `ctrl-c`.
 
 ## Publish after review
 

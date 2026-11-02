@@ -5,7 +5,11 @@ import { ActionMenu, type MenuAction } from "../components/primitives/action-men
 import { Chip } from "../components/primitives/chip";
 import { NativeSelect } from "../components/primitives/native-select";
 import { PresencePip } from "../components/primitives/presence-pip";
-import { DirectionalSyncHealth, SyncHealthSummary } from "../components/sync-health";
+import {
+	DirectionalSyncHealth,
+	SyncHealthState,
+	SyncHealthSummary,
+} from "../components/sync-health";
 import type {
 	RecipientPolicyIntentGraphV1,
 	RecipientPolicyReconciliationReadState,
@@ -1419,6 +1423,7 @@ function DeviceNameCell({
 					This device
 				</Chip>
 			) : null}
+			<DeviceNameSyncState device={device} options={options} />
 		</td>
 	);
 }
@@ -1434,6 +1439,33 @@ function syncHealthLabel(
 	if (!peer) return "Not paired here";
 	if (!peer.paired) return "Pairing required";
 	return evidenceLabel(peer.syncHealth);
+}
+
+function deviceSyncStatusUnavailable(device: DeviceProjection, options: DevicesRendererOptions) {
+	return (
+		options.syncStatusUnavailable === true ||
+		options.refreshError === true ||
+		device.syncPeer?.statusAvailable === false
+	);
+}
+
+function DeviceNameSyncState({
+	device,
+	options,
+}: {
+	device: DeviceProjection;
+	options: DevicesRendererOptions;
+}) {
+	const isLocal = directLocalDeviceId(options) === device.deviceId;
+	if (isLocal) return null;
+	const unavailable = deviceSyncStatusUnavailable(device, options);
+	const showState = device.syncPeer?.paired && !unavailable;
+	return (
+		<SyncHealthState
+			label={`Sync: ${syncHealthLabel(device, isLocal, unavailable)}`}
+			state={showState ? device.syncPeer?.syncHealth?.state : undefined}
+		/>
+	);
 }
 
 function DeviceSyncCell({
@@ -1453,7 +1485,6 @@ function DeviceSyncCell({
 	const showCounts = peer?.paired && !statusUnavailable && !isLocal;
 	return (
 		<td className="devices-table-sync" data-label="Sync">
-			<strong>{syncHealthLabel(device, isLocal, statusUnavailable)}</strong>
 			{busy ? (
 				<span aria-live="polite" className="small">
 					Syncing this device…
@@ -1518,11 +1549,7 @@ function DeviceRowStatusCells({
 			<DeviceSyncCell
 				device={device}
 				isLocal={directLocalDeviceId(options) === device.deviceId}
-				statusUnavailable={
-					options.syncStatusUnavailable === true ||
-					options.refreshError === true ||
-					device.syncPeer?.statusAvailable === false
-				}
+				statusUnavailable={deviceSyncStatusUnavailable(device, options)}
 				feedback={feedback}
 				busy={busy}
 			/>

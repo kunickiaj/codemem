@@ -26,8 +26,8 @@ export interface OverallSyncHealth {
 }
 
 const LABELS: Record<OverallSyncHealth["state"] | DirectionHealthState, string> = {
-	exchange_succeeded: "Recent exchange",
-	succeeded: "Exchange succeeded",
+	exchange_succeeded: "OK",
+	succeeded: "OK",
 	not_verified: "Not verified",
 	stale: "Stale",
 	needs_attention: "Needs attention",
@@ -53,5 +53,5 @@ export function syncHealthSummary(health?: OverallSyncHealth | null): string {
 	if (!health) return "Directional sync evidence is unavailable. Refresh to check again.";
 	if (health.state === "disabled") return "Turn on sync in Settings → Device Sync.";
 	if (health.state === "no_peers") return "Pair a device to exchange operations.";
-	return `${health.peer_count} paired devices · ${health.attention_count} need attention · ${health.unverified_count} not verified · ${health.stale_count} stale. Backlog: Not verified.`;
+	return `${health.peer_count} paired devices · ${health.attention_count} need attention · ${health.unverified_count} not verified · ${health.stale_count} stale.`;
 }
