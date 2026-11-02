@@ -120,11 +120,11 @@ distinguishes three terminal outcomes:
 - `failed`: a protocol error occurred. The decoder rejects all later input.
 
 Data or another End after `ended` is a protocol error. Repeated close reports are
-idempotent. End acknowledges nothing and does not prove HTTP completeness,
-authentication, successful apply, or permission to advance a cursor. The future
-adapter must preserve queued bytes after End independently of Node's
-`readableEnded` event. That adapter and its drain behavior remain integration
-work.
+idempotent. End reports completion of one framing direction. It does not prove
+HTTP completeness, authentication, successful apply, or permission to advance a cursor. The owned
+stream preserves queued bytes after End independently of Node's `readableEnded`
+event. Binding that stream to an RTC engine and shared HTTP dispatch remains
+integration work.
 
 The 8,194-byte cap is a decoder rejection limit for one frame. It does not bound
 the RTC library's earlier inbound reassembly or internal queues. Future resource
@@ -132,6 +132,74 @@ limits for traversal must account for bytes and separately limited control work.
 They cannot inherit the relay's 2,048-frame ceiling: a 16 MiB payload alone needs
 2,048 data frames. This framing decision assigns no Noise transport label and
 approves no rendezvous, SDP, ICE configuration, or network activation.
+
+### Owned stream port
+
+`TraversalByteStream` adapts the framing to a Node Duplex through a trusted,
+already-open message channel. The port must verify reliable, ordered delivery,
+report its current state and outgoing queue size, and deliver notifications
+asynchronously in order. It owns the complete underlying transport, including
+the RTC peer when one is used. A delivery declaration supplied by an untrusted
+caller cannot satisfy this contract.
+
+The adapter copies accepted writes and waits for the visible queue to reach zero
+before sending another frame. It fragments writes to fit both the framing limit
+and the configured queue cap. Incoming overflow aborts the exchange instead of
+accumulating an extra queue or claiming that an RTC engine can pause delivery.
+Read encodings are rejected before Node can change queue accounting from bytes
+to characters. Consumers decode returned buffers outside this transport.
+
+| Limit | Default ceiling |
+| --- | --- |
+| Node read and write queues | 256 KiB each |
+| Visible outgoing channel queue | 256 KiB |
+| Encoded bytes sent or received | 32 MiB per direction, including headers and End |
+| Frames sent or received | 8,192 per direction, including End |
+| Data lifetime | Earlier of the caller's monotonic deadline and 60 seconds |
+| Disposal grace | 1,500 ms |
+
+Callers may only lower these limits. A smaller channel cap also reduces the
+fragment size. An in-flight frame can require up to another 8,194 bytes outside
+the Node queues. These checks do not bound native queues, inbound reassembly, or
+ICE/STUN traffic. Those engine limits still require separate proof.
+
+Invalid options before subscription leave ownership with the caller. Once
+subscription starts, cancellation, expiry, protocol errors, and queue or traffic
+overflows dispose the owned transport. Disposal runs once and has a separate
+completion promise. Rejection or timeout reports cleanup failure rather than
+claiming that the underlying resources closed.
+`disposed` reports resource release only. Callers must observe `error` or use
+`finished()` to determine whether I/O succeeded.
+
+The caller fixes each stream's side as source or target before subscription.
+Source is the HTTP client and Noise initiator. Target may send response data
+early, but holds its End until it has decoded source End. Only source initiates
+clean physical teardown, after it receives target End. Ordered delivery then
+means both directions' preceding data and End have arrived, without relying on
+SDK queue counts as delivery acknowledgements.
+
+Target waits for source's physical close, even if Node or Noise has already
+requested clean destruction. The overall data deadline bounds that wait. The
+disposal grace begins only when actual port disposal starts. Abort signals,
+`destroy(error)`, deadline expiry, and late protocol errors still force cleanup
+while Node reports `destroyed`. Repeated `destroy()` without an error leaves a
+clean target wait intact. Resource accounting releases target on `disposed`,
+not on HTTP response completion.
+
+The transport may close before a Node consumer drains its readable queue. The
+queued bytes remain available. A close without End is an error. Source rejects
+target End before it has sent source End, and completes its pending writable
+final before exposing target EOF. Target's clean disposal means resources were
+released. It does not prove that source consumed, authenticated, or applied the
+response.
+
+This close order requires a self-framed HTTP/1.1 response: Content-Length,
+complete chunked framing, or a bodyless response. Source sends
+`Connection: close` and explicitly ends its socket once the HTTP parser completes the
+response, before waiting for transport EOF. Close-delimited responses and
+protocol upgrades are rejected. A keep-alive or framing deadlock fails at the
+deadline. Source accepts a response only after clean transport completion, and
+no failure permits automatic replay after a request may have applied.
 
 ## Pair admission and safe signaling
 
