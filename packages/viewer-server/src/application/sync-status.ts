@@ -13,6 +13,7 @@ import {
 import { count, eq, max } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { safeJsonList } from "../helpers.js";
+import { overallSyncHealth, readPeerSyncHealth } from "./sync-health.js";
 
 export type SyncRuntimeStatus = {
 	phase:
@@ -364,6 +365,10 @@ function readPeerStatus(input: SyncStatusInput, localDeviceId: string | null): P
 	const scopeRejections = traceSync("recentScopeRejectionsByPeer", () =>
 		input.operations.recentScopeRejectionsByPeer(input.store),
 	);
+	const health = readPeerSyncHealth(
+		input.store,
+		rows.map((row) => String(row.peer_device_id)),
+	);
 	const items = rows.map((row) => {
 		const peer = input.operations.mapPeerRow(
 			input.store,
@@ -374,6 +379,7 @@ function readPeerStatus(input: SyncStatusInput, localDeviceId: string | null): P
 			localDeviceId,
 		);
 		peer.status = input.operations.peerStatus(peer);
+		peer.sync_health = health.get(String(peer.peer_device_id));
 		return peer;
 	});
 	const byId: Record<string, unknown> = {};
@@ -535,6 +541,26 @@ async function readJoinRequests(
 	}
 }
 
+function addSyncHealth(
+	base: BaseStatus,
+	peers: PeerStatusReadModel,
+	status: Record<string, unknown>,
+) {
+	const health = overallSyncHealth(peers.items, {
+		enabled: base.config.syncEnabled,
+		daemonState: status.daemon_state,
+	});
+	status.sync_health = health;
+	return health;
+}
+
+function markPeerFailures(peers: PeerStatusReadModel, failedPeerIds: Set<string>): void {
+	for (const peer of peers.items) {
+		const status = peer.status as Record<string, unknown>;
+		status.recent_failed_attempt = failedPeerIds.has(String(peer.peer_device_id ?? ""));
+	}
+}
+
 export async function buildSyncStatusResponse(
 	input: SyncStatusInput,
 ): Promise<Record<string, unknown>> {
@@ -551,10 +577,7 @@ export async function buildSyncStatusResponse(
 		activePeerIds,
 		input.operations.isRecentIso,
 	);
-	for (const peer of peers.items) {
-		const status = peer.status as Record<string, unknown>;
-		status.recent_failed_attempt = failedPeerIds.has(String(peer.peer_device_id ?? ""));
-	}
+	markPeerFailures(peers, failedPeerIds);
 	const statusBlock: Record<string, unknown> = {
 		...base.statusPayload,
 		background_maintenance: input.operations.summarizeMaintenanceJobs(
@@ -578,8 +601,10 @@ export async function buildSyncStatusResponse(
 	);
 	const joinRequests = await readJoinRequests(input, base.config);
 	applyDerivedDaemonState(base, peers, attempts, failedPeerIds, statusBlock);
+	const syncHealth = addSyncHealth(base, peers, statusBlock);
 	const response: Record<string, unknown> = {
 		...base.statusPayload,
+		sync_health: syncHealth,
 		status: statusBlock,
 		peers: peers.items,
 		attempts: attempts.items.slice(0, 5),
