@@ -138,7 +138,7 @@ The ports must settle within the caller's request lifetime. In-memory budget
 reservations in tests prove this composition only. Production requires a durable
 budget implementation, clock evidence, and separate activation approval.
 
-## Own replies
+## Own replies and request carrier
 
 `requestTraversalSignalDecision` sends one raw canonical phase array with its v2
 header fields through an injected authenticated HTTPS port. Portable packet
@@ -151,5 +151,14 @@ revision. It maps the remaining lifetime to the local request-start monotonic
 clock, intersects earlier leases and the caller deadline, and rechecks expiry
 after parsing. It never retries an uncertain request.
 
+`createTraversalSignalCarrier` holds one offer and one answer for one session.
+Each envelope contains exactly two signed requests. It accepts each envelope
+type once, copies the packet values, and releases stored references on receipt,
+close, or expiry within its maximum 55-second lifetime. It stores no coordinator
+approvals and grants no permission to use a description or activate RTC.
+
 Peers still verify the pinned packet prefix, obtain their own phase decisions,
 and enforce the returned deadlines before using descriptions or releasing Noise.
+Controlled tests combine disposable SQLite, real signatures,
+and Noise over owned memory channels. They do not prove HTTPS origin handling,
+RTC resource limits, or NAT traversal.
