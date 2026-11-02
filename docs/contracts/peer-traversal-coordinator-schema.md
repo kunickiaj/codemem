@@ -85,12 +85,18 @@ The carrier alone retains portable packets and owns their expiry and deletion.
 Shared nonce cleanup must preserve the existing 600-second coordinator retention
 rule and account for clock error.
 
-## PREPARE conditional writes
+## Conditional phase writes
 
-`peer-traversal-coordinator-attempt-write.ts` compiles separate nonce and phase-1
-statements. Both repeat the current participant, revocation, group, policy,
-readiness, time, and session checks. Other phases return no statement until their
-compare-and-swap transitions are implemented.
+`peer-traversal-coordinator-attempt-write.ts` compiles separate nonce and state
+statements for all five phases. Both repeat the current participant, revocation,
+group, policy, readiness, time, and phase-association checks. PREPARE requires an
+absent session and inserts phase 1. Later phases require the exact predecessor,
+fixed attempt tuple, and earlier packet digests before updating the state.
+
+The source signs phases 1, 2, and 5. The target signs phases 3 and 4. Each phase
+has its own signed creation time, admission window, and nonce. Phase times can
+lag or move backward while still passing freshness checks. They never reset the
+original PREPARE creation time or its fixed 55-second deadline.
 
 The caller supplies a verified packet and captured participants. Compilation owns
 the inputs before asynchronous hashing and checks their byte and identity

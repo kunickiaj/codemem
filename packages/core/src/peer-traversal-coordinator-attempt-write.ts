@@ -1,7 +1,4 @@
-import {
-	TRAVERSAL_NONCE_SQL,
-	TRAVERSAL_STATE_SQL,
-} from "./peer-traversal-coordinator-write-sql.js";
+import { TRAVERSAL_PHASE_SQL } from "./peer-traversal-coordinator-write-sql.js";
 import {
 	decodeTraversalSignalPacket,
 	encodeTraversalSignalBody,
@@ -37,14 +34,13 @@ export interface TraversalSignalWriteStatement {
 	readonly expected: {
 		readonly sessionId: string;
 		readonly packetDigest: string;
-		readonly phase: 1;
+		readonly phase: 1 | 2 | 3 | 4 | 5;
 		readonly policyRevision: number;
 	};
 }
 
 function capturePacket(proof: VerifiedTraversalSignalProof) {
 	const { value, bodyBytes, signatureBytes, timestamp, nonce } = proof;
-	if (value.phase !== "prepare") return null;
 	const encoded = encodeTraversalSignalBody({ ...value });
 	if (!(bodyBytes instanceof Uint8Array) || !(signatureBytes instanceof Uint8Array)) return null;
 	const ownedBody = new Uint8Array(bodyBytes);
@@ -87,6 +83,7 @@ function captureInputs(options: TraversalSignalWriteOptions) {
 	)
 		return null;
 	const body = decoded.value;
+	const actor = body.phase === "offer-check" || body.phase === "answer" ? targetTuple : sourceTuple;
 	if (
 		body.authorityId !== authorityId ||
 		body.groupId !== groupId ||
@@ -96,9 +93,9 @@ function captureInputs(options: TraversalSignalWriteOptions) {
 		targetTuple.device_id !== body.targetDeviceId ||
 		sourceTuple.keyId !== body.sourceKeyId ||
 		targetTuple.keyId !== body.targetKeyId ||
-		signerDevice !== body.sourceDeviceId ||
-		signerKeyId !== sourceTuple.keyId ||
-		signerPublicKey !== sourceTuple.public_key
+		signerDevice !== actor.device_id ||
+		signerKeyId !== actor.keyId ||
+		signerPublicKey !== actor.public_key
 	)
 		return null;
 	return {
@@ -149,8 +146,13 @@ async function buildStatement(
 		const { decoded, participants, authorityId, groupId, policyRevision, execId, packetDigest } =
 			captured;
 		const body = decoded.value;
+		const sql = TRAVERSAL_PHASE_SQL[body.phase];
+		const deviceId =
+			body.phase === "offer-check" || body.phase === "answer"
+				? body.targetDeviceId
+				: body.sourceDeviceId;
 		const bindings: (string | number | null)[] = [
-			body.sourceDeviceId,
+			deviceId,
 			decoded.nonce,
 			execId,
 			body.admitBefore * 1000,
@@ -163,19 +165,24 @@ async function buildStatement(
 			body.createdAt * 1000,
 			body.attemptNotAfter * 1000,
 		];
-		if (kind === "state") bindings.push(body.messageADigest, packetDigest);
+		if (body.phase !== "prepare") {
+			bindings.push(body.messageADigest, body.prepareDigest);
+			if ("offerDigest" in body) bindings.push(body.offerDigest);
+			if ("answerDigest" in body) bindings.push(body.answerDigest);
+			if (kind === "state") bindings.push(packetDigest);
+		} else if (kind === "state") bindings.push(body.messageADigest, packetDigest);
 		return Object.freeze({
-			sql: kind === "nonce" ? TRAVERSAL_NONCE_SQL : TRAVERSAL_STATE_SQL,
+			sql: sql[kind],
 			bindings: Object.freeze(bindings),
 			association: Object.freeze({
-				deviceId: body.sourceDeviceId,
+				deviceId,
 				nonce: decoded.nonce,
 				attemptId: execId,
 			}),
 			expected: Object.freeze({
 				sessionId: body.sessionId,
 				packetDigest,
-				phase: 1 as const,
+				phase: sql.phase,
 				policyRevision,
 			}),
 		});
@@ -184,7 +191,7 @@ async function buildStatement(
 	}
 }
 
-/** Private PREPARE compiler only. It executes nothing and authenticates no cast proof.
+/** Private signal compiler only. It executes nothing and authenticates no cast proof.
  * The caller owns provenance, signature checks, budgets and both execution receipts. */
 export async function buildTraversalNonceStatement(
 	options: TraversalSignalWriteOptions,
@@ -199,7 +206,7 @@ export async function buildTraversalStateStatement(
 	return buildStatement(options, "state");
 }
 
-/** Shape parser for the same INSERT RETURNING only. A stored row alone grants nothing. */
+/** Shape parser for the same write's RETURNING only. A stored row alone grants nothing. */
 export function readTraversalStateReceipt(
 	row: unknown,
 	statement: TraversalSignalWriteStatement,
@@ -240,7 +247,6 @@ export function readTraversalStateReceipt(
 			!receipt ||
 			sessionId !== expected.sessionId ||
 			packetDigest !== expected.packetDigest ||
-			phase !== 1 ||
 			phase !== expected.phase ||
 			policyRevision !== expected.policyRevision ||
 			updatedAtMs !== receipt.decidedAtMs
