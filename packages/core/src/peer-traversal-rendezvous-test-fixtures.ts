@@ -1,6 +1,8 @@
 import type { Duplex } from "node:stream";
 import Database from "better-sqlite3";
 import { expect } from "vitest";
+import { createAdmissionBudgetAdapters } from "./admission-budget-adapters.js";
+import { ADMISSION_BUDGET_SCHEMA_STATEMENTS } from "./admission-budget-schema.js";
 import { createTraversalSignalCarrier } from "./peer-traversal-carrier.js";
 import {
 	type WriteDatabase,
@@ -13,7 +15,6 @@ import {
 	type TraversalSignalClientRequest,
 } from "./peer-traversal-coordinator-client.js";
 import { decideTraversalSignal } from "./peer-traversal-coordinator-decision.js";
-import { decisionHarness } from "./peer-traversal-coordinator-decision-test-fixtures.js";
 import { TRAVERSAL_COORDINATOR_SCHEMA_STATEMENTS } from "./peer-traversal-coordinator-schema.js";
 import type { Value } from "./peer-traversal-coordinator-schema-common-test-fixtures.js";
 import {
@@ -33,6 +34,12 @@ import { RELAY_ADMISSION_CLOCK_SQL } from "./relay-admission-clock.js";
 import { PARTICIPANT_TEST_SCHEMA_SQL } from "./relay-admission-participant-nonce-test-fixtures.js";
 
 type Side = "source" | "target";
+type BudgetFault = "missing" | "disabled" | "exhausted" | "unknown";
+interface RendezvousOptions {
+	denyPhase?: TraversalSignalPhase;
+	lateOwnReply?: boolean;
+	budgetFault?: BudgetFault;
+}
 const PATH = "/v1/traversal/signal";
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 export async function cleanupRendezvous() {
@@ -44,7 +51,11 @@ async function databaseFixture() {
 	cleanups.push(() => native.close());
 	native.pragma("foreign_keys=ON");
 	native.exec(PARTICIPANT_TEST_SCHEMA_SQL);
-	for (const sql of TRAVERSAL_COORDINATOR_SCHEMA_STATEMENTS) native.exec(sql);
+	for (const sql of [
+		...TRAVERSAL_COORDINATOR_SCHEMA_STATEMENTS,
+		...ADMISSION_BUDGET_SCHEMA_STATEMENTS,
+	])
+		native.exec(sql);
 	const bind = (values: readonly Value[]) =>
 		Object.fromEntries(values.map((value, index) => [index + 1, value]));
 	const run = (sql: string, values: readonly Value[] = []) => native.prepare(sql).run(bind(values));
@@ -61,6 +72,77 @@ async function databaseFixture() {
 	};
 	const row = native.prepare(`SELECT ${RELAY_ADMISSION_CLOCK_SQL} AS now`).get() as { now: number };
 	return writeFixture(db, row.now, ++sequence);
+}
+
+async function budgetFixture(store: WriteFixture, fault: BudgetFault | undefined) {
+	// Synthetic local allocations only. These values do not define a production service ceiling.
+	if (fault !== "missing") {
+		const rate = fault === "disabled" ? 0 : 1;
+		for (const [pool, group] of [
+			["authority", ""],
+			["traversal", ""],
+			["traversal", store.options.namespace.groupId],
+			["device", ""],
+		] as const) {
+			await store.db.run(
+				"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,?2,'',?3,?4,?5)",
+				[store.authority, pool, group, rate, rate * 16],
+			);
+		}
+	}
+	if (fault === "exhausted") {
+		await store.db.run(
+			"INSERT INTO admission_budget_buckets(authority_id,pool,audience_id,group_id,device_id,units,refilled_at_ms,last_rate,last_capacity,exec_id,granted) VALUES (?1,'traversal','',?2,'',0,?3,1,960000,?4,0)",
+			[store.authority, store.options.namespace.groupId, store.now, store.session(980)],
+		);
+	}
+	return decisionPorts(store, fault);
+}
+
+function decisionPorts(store: WriteFixture, fault: BudgetFault | undefined) {
+	const history: Readonly<Record<string, Value>>[] = [];
+	let attempts = 0;
+	let queries = 0;
+	let protocolWrites = 0;
+	const budgets = createAdmissionBudgetAdapters({
+		database: {
+			writeReturning: async (sql, bindings) => {
+				attempts++;
+				const row = (await store.db.all(sql, [...bindings]))[0] ?? null;
+				if (row) history.push(Object.freeze({ ...row }));
+				if (fault === "unknown" && attempts === 1) return null;
+				return row;
+			},
+		},
+	});
+	const deps = {
+		budgets: budgets.traversal,
+		database: {
+			query: async (sql: string, bindings: readonly Value[]) => {
+				queries++;
+				return store.db.all(sql, [...bindings]);
+			},
+			writeReturning: async (sql: string, bindings: readonly Value[]) => {
+				protocolWrites++;
+				return (await store.db.all(sql, [...bindings]))[0] ?? null;
+			},
+		},
+	};
+	return {
+		deps,
+		get history() {
+			return Object.freeze([...history]);
+		},
+		get attempts() {
+			return attempts;
+		},
+		get queries() {
+			return queries;
+		},
+		get protocolWrites() {
+			return protocolWrites;
+		},
+	};
 }
 
 function memoryChannels(trace: string[]) {
@@ -106,10 +188,9 @@ function trackNoise(
 	});
 }
 
-export async function rendezvousFixture(
-	options: { denyPhase?: TraversalSignalPhase; lateOwnReply?: boolean } = {},
-) {
+export async function rendezvousFixture(options: RendezvousOptions = {}) {
 	const store = await databaseFixture();
+	const budget = await budgetFixture(store, options.budgetFault);
 	const trace: string[] = [];
 	const deadlineMs = performance.now() + 10000;
 	const { sourceIdentity, targetIdentity } = await noiseIdentities(store);
@@ -147,6 +228,7 @@ export async function rendezvousFixture(
 	const leases: Partial<Record<Side, TraversalDecisionLease>> = {};
 	const f = {
 		store,
+		budget,
 		trace,
 		deadlineMs,
 		sourceIdentity,
@@ -172,7 +254,12 @@ function liveDeadline(f: Rendezvous, side: Side): number {
 	return deadline;
 }
 function sendFor(
-	f: { store: WriteFixture; trace: string[]; options: { denyPhase?: TraversalSignalPhase } },
+	f: {
+		store: WriteFixture;
+		budget: ReturnType<typeof decisionPorts>;
+		trace: string[];
+		options: RendezvousOptions;
+	},
 	side: Side,
 ) {
 	const deviceId =
@@ -194,9 +281,11 @@ function sendFor(
 			nonce: request.nonce,
 			signature: request.signature,
 		};
-		const h = decisionHarness(f.store);
 		if (request.expectedPhase === f.options.denyPhase)
-			h.deps.budgets.reserveIngress.mockResolvedValue("denied");
+			await f.store.db.run(
+				"UPDATE admission_budget_allocations SET rate_per_min=0,burst=0 WHERE authority_id=?1 AND pool='traversal' AND group_id=?2",
+				[f.store.authority, f.store.options.namespace.groupId],
+			);
 		const decision = await decideTraversalSignal(
 			{
 				packet,
@@ -206,7 +295,7 @@ function sendFor(
 				externalPathname: PATH,
 				ingressKey: "in-process-test",
 			},
-			h.deps,
+			f.budget.deps,
 		);
 		return {
 			status: 200,
