@@ -8,6 +8,7 @@ import { readPeerHttpBodyLength } from "./peer-http-headers.js";
 import { PEER_HTTP_LIMITS, PeerHttpExchangeError } from "./peer-http-policy.js";
 import { capturePeerHttpResponse } from "./peer-http-server-response.js";
 import { PeerHttpWireAudit } from "./peer-http-wire-audit.js";
+import { readAuthenticatedRelayNoisePeerPin } from "./relay-noise.js";
 import { RelayNoiseDuplex } from "./relay-noise-stream.js";
 
 export interface PeerHttpServerRequest {
@@ -16,6 +17,7 @@ export interface PeerHttpServerRequest {
 	readonly url: string;
 	readonly headers: Readonly<Record<string, string>>;
 	readonly bodyBytes: Uint8Array;
+	readonly peerPin: string;
 	readonly signal: AbortSignal;
 }
 
@@ -62,7 +64,7 @@ function captureOptions(options: PeerHttpServerOptions, startedAt: number) {
 	}
 }
 
-function requireFreshConnection(duplex: Duplex): void {
+function requireFreshConnection(duplex: Duplex): string {
 	if (
 		!(duplex instanceof RelayNoiseDuplex) ||
 		duplex.destroyed ||
@@ -74,6 +76,9 @@ function requireFreshConnection(duplex: Duplex): void {
 		duplex.readableFlowing === true
 	)
 		throw new PeerHttpExchangeError("transport");
+	const peerPin = readAuthenticatedRelayNoisePeerPin(duplex);
+	if (peerPin === null) throw new PeerHttpExchangeError("transport");
+	return peerPin;
 }
 
 function validateTargetCharacters(target: string): void {
@@ -229,6 +234,7 @@ async function dispatchRequest(
 	options: ReturnType<typeof captureOptions>,
 	audit: PeerHttpWireAudit,
 	lifetime: PeerHttpLifetime,
+	peerPin: string,
 ): Promise<void> {
 	response.on("error", () => lifetime.fail("transport"));
 	lifetime.check();
@@ -247,6 +253,7 @@ async function dispatchRequest(
 		url: request.url,
 		headers: request.headers,
 		bodyBytes,
+		peerPin,
 		signal: lifetime.controller.signal,
 	});
 	const result = await lifetime.wait(options.dispatch(dto));
@@ -267,7 +274,7 @@ async function exchange(
 	options: ReturnType<typeof captureOptions>,
 	lifetime: PeerHttpLifetime,
 ): Promise<void> {
-	requireFreshConnection(duplex);
+	const peerPin = requireFreshConnection(duplex);
 	duplex.pause();
 	const observer = observeRequest(duplex, lifetime);
 	const plaintext = finished(duplex, { cleanup: true });
@@ -292,7 +299,7 @@ async function exchange(
 			return;
 		}
 		requested = true;
-		void dispatchRequest(incoming, outgoing, options, observer.audit, lifetime).then(
+		void dispatchRequest(incoming, outgoing, options, observer.audit, lifetime, peerPin).then(
 			response.resolve,
 			() => response.reject(lifetime.fail("transport")),
 		);
