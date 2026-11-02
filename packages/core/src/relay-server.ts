@@ -119,6 +119,7 @@ interface Direction {
 	pendingEnd: boolean;
 	ended: boolean;
 	endForwarded: boolean;
+	/** Bytes submitted by this direction whose write callback has not completed. */
 	writes: number;
 }
 interface Route {
@@ -379,11 +380,7 @@ class RelayServerEngine {
 				this.disconnect(connection);
 				return;
 			}
-			if (connection.controlPending && message.type === "OPEN") {
-				this.reject(connection, message.session);
-				return;
-			}
-			if (message.type === "OPEN") {
+			if (message.type === "OPEN" && !connection.controlPending) {
 				await this.open(connection, message);
 				return;
 			}
@@ -434,6 +431,10 @@ class RelayServerEngine {
 	}
 	private async control(connection: Connection, message: RelayControl): Promise<void> {
 		switch (message.type) {
+			case "OPEN":
+				// Busy OPENs remain denials, but their replies spend control quota first.
+				this.reject(connection, message.session);
+				return;
 			case "SERVICE_CHALLENGE":
 				await this.service(connection, message);
 				return;
@@ -625,14 +626,17 @@ class RelayServerEngine {
 		message: Extract<RelayControl, { type: "OPEN" }>,
 	): Promise<void> {
 		const route = this.reserveRoute(connection, message);
-		if (!route) {
-			this.reject(connection, message.session);
-			return;
-		}
 		connection.controlPending = true;
 		try {
+			if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
+				this.disconnect(connection);
+				return;
+			}
+			if (!route) {
+				this.reject(connection, message.session);
+				return;
+			}
 			if (
-				!(await this.quota(connection, "control", 1, route.cancel.signal)) ||
 				!(await this.quota(
 					connection,
 					"open",
@@ -785,7 +789,7 @@ class RelayServerEngine {
 		route.bytes += bytes.length;
 		// Already-parsed socket batches may arrive after pauseInput. Charge every retained copy.
 		connection.held += bytes.length;
-		if (!this.withinBuffers() || this.directionQueued(route, direction) > DIRECTION_BYTES) {
+		if (!this.withinBuffers() || this.directionQueued(direction) + bytes.length > DIRECTION_BYTES) {
 			connection.held -= bytes.length;
 			this.removeRoute(route, "abort");
 			return;
@@ -843,7 +847,7 @@ class RelayServerEngine {
 		if (
 			!this.live(target) ||
 			!this.withinBuffers() ||
-			this.directionQueued(route, direction) > DIRECTION_BYTES
+			this.directionQueued(direction) > DIRECTION_BYTES
 		) {
 			this.removeRoute(route, "abort");
 			return;
@@ -851,11 +855,11 @@ class RelayServerEngine {
 		direction.frames.shift();
 		direction.sender.held -= bytes.length;
 		direction.credit -= bytes.length;
-		direction.writes++;
+		direction.writes += bytes.length;
 		target.writes += bytes.length;
-		if (!this.withinBuffers() || this.directionQueued(route, direction) > DIRECTION_BYTES) {
+		if (!this.withinBuffers() || this.directionQueued(direction) > DIRECTION_BYTES) {
 			target.writes -= bytes.length;
-			direction.writes--;
+			direction.writes -= bytes.length;
 			this.removeRoute(route, "abort");
 			return;
 		}
@@ -865,12 +869,12 @@ class RelayServerEngine {
 				if (written) return;
 				written = true;
 				target.writes -= bytes.length;
-				direction.writes--;
+				direction.writes -= bytes.length;
 				if (error) this.removeRoute(route, "abort");
 				else if (this.routeLive(route)) this.flushEnd(route, direction);
 				this.updatePressure();
 			});
-			if (!this.withinBuffers() || this.directionQueued(route, direction) > DIRECTION_BYTES)
+			if (!this.withinBuffers() || this.directionQueued(direction) > DIRECTION_BYTES)
 				this.removeRoute(route, "abort");
 			this.updatePressure();
 		} catch {
@@ -925,10 +929,8 @@ class RelayServerEngine {
 		}
 		return total <= this.limits.queuedBytes;
 	}
-	private directionQueued(route: Route, direction: Direction): number {
-		const target = this.recipient(route, direction);
-		if (!target) return direction.sender.held;
-		return direction.sender.held + this.socketBytes(target);
+	private directionQueued(direction: Direction): number {
+		return direction.frames.reduce((sum, frame) => sum + frame.length, direction.writes);
 	}
 	private updatePressure(): void {
 		for (const connection of this.connections) {
@@ -937,8 +939,7 @@ class RelayServerEngine {
 				route.directions.some(
 					(direction) =>
 						direction.sender === connection &&
-						(direction.waiting ||
-							this.directionQueued(route, direction) >= DIRECTION_BYTES - MAX_FRAME),
+						(direction.waiting || this.directionQueued(direction) >= DIRECTION_BYTES - MAX_FRAME),
 				),
 			);
 			if (pressure === connection.paused) continue;

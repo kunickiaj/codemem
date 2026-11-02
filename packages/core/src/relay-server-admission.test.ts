@@ -265,9 +265,10 @@ describe("OPEN binding and admission", () => {
 		// Act
 		const opening = a.events.text(bytes(encodeRelayControl(open)));
 		const reserved = f.server.counters().routes;
-		await a.events.text(bytes(encodeRelayControl(open)));
+		const collision = a.events.text(bytes(encodeRelayControl(open)));
+		await settle();
 		pending.resolve("reserved");
-		await opening;
+		await Promise.all([opening, collision]);
 		// Assert
 		expect(reserved).toBe(1);
 		expect(f.server.counters().routes).toBe(1);
@@ -304,6 +305,123 @@ describe("OPEN binding and admission", () => {
 		expect(f.server.counters().routes).toBe(0);
 		expect(b.binaries).toHaveLength(0);
 		expect(terminal(b).at(-1)).toMatchObject({ type: "CLOSE", body: { mode: "abort" } });
+	});
+});
+
+describe("OPEN rejection control quotas", () => {
+	it.each(["collision", "capacity"])(
+		"charges one control credit for an OPEN %s rejection and preserves the admitted route",
+		async (reason) => {
+			// Arrange: capacity uses a fresh session so the limit, rather than the ID, rejects it.
+			f.dispose();
+			f = await serverFixture({ routes: 1 });
+			const { a, b, open } = await f.route();
+			const packet = reason === "collision" ? open : await f.openPacket({}, "2".repeat(32));
+			const calls = f.quota.reserve.mock.calls.length;
+			const checks = f.coordinator.check.mock.calls.length;
+			const credits = f.credits.control;
+			// Act
+			await a.events.text(bytes(encodeRelayControl(packet)));
+			a.events.binary(data());
+			await settle();
+			// Assert
+			expect(
+				f.quota.reserve.mock.calls.slice(calls).filter(([r]) => r.purpose === "control"),
+			).toHaveLength(1);
+			expect(f.credits.control).toBe(credits - 1);
+			expect(f.quota.reserve.mock.calls.slice(calls).some(([r]) => r.purpose === "open")).toBe(
+				false,
+			);
+			expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+			expect(terminal(a)).toEqual([{ v: 1, type: "REJECTED", session: packet.session, body: {} }]);
+			expect(f.server.counters().routes).toBe(1);
+			expect(b.binaries).toEqual([data()]);
+			expect(a.close).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["denied", "unknown"] as const)(
+		"closes without free OPEN rejections when control allocation is %s",
+		async (status) => {
+			// Arrange: the original route is already admitted before control credits run out.
+			const { a, open } = await f.route();
+			const calls = f.quota.reserve.mock.calls.length;
+			const checks = f.coordinator.check.mock.calls.length;
+			f.credits.control = 0;
+			if (status === "unknown") f.quota.reserve.mockResolvedValueOnce("unknown");
+			// Act
+			for (let i = 0; i < 3; i++) await a.events.text(bytes(encodeRelayControl(open)));
+			// Assert
+			expect(a.texts.filter((m) => m.type === "REJECTED")).toHaveLength(0);
+			expect(a.close).toHaveBeenCalledOnce();
+			expect(f.quota.reserve.mock.calls.slice(calls).map(([r]) => r.purpose)).toEqual(["control"]);
+			expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+			expect(f.server.counters().routes).toBe(0);
+		},
+	);
+	it("queues a busy OPEN rejection behind one pending control quota reservation", async () => {
+		// Arrange
+		const { a, open } = await f.route();
+		const gate = deferred<"reserved">();
+		const calls = f.quota.reserve.mock.calls.length;
+		const checks = f.coordinator.check.mock.calls.length;
+		f.quota.reserve.mockImplementationOnce(() => gate.promise);
+		const ending = control(a.events, "CLOSE", { mode: "end" });
+		await settle();
+		// Act
+		const opening = a.events.text(bytes(encodeRelayControl(open)));
+		await settle();
+		const earlyRejections = a.texts.filter((m) => m.type === "REJECTED");
+		const pendingCalls = f.quota.reserve.mock.calls.length - calls;
+		gate.resolve("reserved");
+		await Promise.all([ending, opening]);
+		// Assert: the queued rejection cannot respond or allocate quota concurrently.
+		expect(earlyRejections).toHaveLength(0);
+		expect(pendingCalls).toBe(1);
+		expect(f.quota.reserve.mock.calls.slice(calls).map(([r]) => r.purpose)).toEqual([
+			"control",
+			"control",
+		]);
+		expect(a.texts.filter((m) => m.type === "REJECTED")).toHaveLength(1);
+		expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+		expect(f.server.counters().routes).toBe(1);
+	});
+	it("bounds busy OPEN rejections with the existing control queue limit", async () => {
+		// Arrange
+		const { a, open } = await f.route();
+		const gate = deferred<"reserved">();
+		const calls = f.quota.reserve.mock.calls.length;
+		f.quota.reserve.mockImplementationOnce(() => gate.promise);
+		const ending = control(a.events, "CLOSE", { mode: "end" });
+		await settle();
+		// Act
+		const openings = Array.from({ length: finiteLimits.deviceRoutes + 1 }, () =>
+			a.events.text(bytes(encodeRelayControl(open))),
+		);
+		await settle();
+		gate.resolve("reserved");
+		await Promise.all([ending, ...openings]);
+		// Assert
+		expect(a.close).toHaveBeenCalledOnce();
+		expect(a.texts.filter((m) => m.type === "REJECTED")).toHaveLength(0);
+		expect(f.quota.reserve).toHaveBeenCalledTimes(calls + 1);
+		expect(f.server.counters().routes).toBe(0);
+	});
+	it("charges exactly one control and one OPEN allocation for valid admission", async () => {
+		// Arrange
+		const a = await f.register();
+		const b = await f.register("target");
+		const open = await f.openPacket();
+		const calls = f.quota.reserve.mock.calls.length;
+		// Act
+		await a.events.text(bytes(encodeRelayControl(open)));
+		// Assert
+		expect(f.quota.reserve.mock.calls.slice(calls).map(([r]) => [r.purpose, r.units])).toEqual([
+			["control", 1],
+			["open", 1],
+		]);
+		expect(b.texts.at(-1)).toEqual(open);
+		expect(f.coordinator.check).toHaveBeenCalledTimes(3);
+		expect(f.server.counters().routes).toBe(1);
 	});
 });
 

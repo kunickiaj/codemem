@@ -344,7 +344,23 @@ function fixtureControls({
 		if (accepted) await control(b.events, "ACCEPTED");
 		return { a, b, open };
 	}
-	return { adopt, challenge, registration, register, openPacket, route };
+	async function oppositeRoutes() {
+		const { a, b, open } = await route();
+		const reverseId = "2".repeat(32);
+		const reverse = await openPacket(
+			{
+				sourceDeviceId: "target",
+				sourceKeyId: target.keyId,
+				targetDeviceId: "source",
+				targetKeyId: source.keyId,
+			},
+			reverseId,
+		);
+		await b.events.text(bytes(encodeRelayControl(reverse)));
+		await control(a.events, "ACCEPTED", {}, reverseId);
+		return { a, b, open, reverse, reverseId };
+	}
+	return { adopt, challenge, registration, register, openPacket, route, oppositeRoutes };
 }
 
 function openPackets({

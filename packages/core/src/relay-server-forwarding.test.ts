@@ -20,6 +20,99 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+describe("per-direction write accounting", () => {
+	it("keeps independent directions below 256 KiB alive on shared physical sockets", async () => {
+		// Arrange: both routes use real, independently signed admission envelopes.
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		const first = Array.from({ length: 3 }, (_, i) => data(65536, SESSION, i));
+		const second = Array.from({ length: 2 }, (_, i) => data(65536, reverseId, i + 3));
+		// Act: retain 192 KiB and 128 KiB on separate directions with the same sender/recipient.
+		for (const frame of [...first, ...second]) {
+			a.events.binary(frame);
+			await settle();
+		}
+		const retained = f.server.counters();
+		const delivered = [...b.binaries];
+		while (b.callbacks.length) b.written();
+		a.events.binary(data(1, SESSION));
+		a.events.binary(data(1, reverseId));
+		await settle();
+		// Assert
+		expect(retained).toMatchObject({ routes: 2, queuedBytes: 5 * (65536 + 22) });
+		expect(delivered).toEqual([...first, ...second]);
+		expect(b.binaries).toEqual([...first, ...second, data(1, SESSION), data(1, reverseId)]);
+		expect(f.server.counters()).toMatchObject({ routes: 2, queuedBytes: 46 });
+		expect(terminal(a).concat(terminal(b))).toHaveLength(0);
+		expect(a.resumeInput).toHaveBeenCalled();
+	});
+	it("aborts only the direction's route when its own pending writes exceed 256 KiB", async () => {
+		// Arrange
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		const frames = Array.from({ length: 4 }, (_, i) => data(65514, SESSION, i));
+		for (const frame of frames) {
+			a.events.binary(frame);
+			await settle();
+		}
+		// Act: four complete frames fill exactly 256 KiB, so one more byte exceeds it.
+		a.events.binary(data(1));
+		await settle();
+		const afterOverflow = f.server.counters();
+		while (b.callbacks.length) b.written();
+		a.events.binary(data(1, reverseId));
+		await settle();
+		// Assert
+		expect(afterOverflow).toMatchObject({ routes: 1, queuedBytes: 256 * 1024 });
+		expect(terminal(a)).toEqual([
+			{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "abort" } },
+		]);
+		expect(b.binaries).toEqual([...frames, data(1, reverseId)]);
+		expect(f.server.counters()).toMatchObject({ routes: 1, queuedBytes: 23 });
+	});
+	it("releases direction write bytes once when an adapter repeats its callback", async () => {
+		// Arrange
+		const { a, b } = await f.route();
+		a.events.binary(data(65514));
+		await settle();
+		const callback = b.callbacks[0];
+		if (!callback) throw new Error("Missing write callback");
+		// Act
+		b.written();
+		callback();
+		const released = f.server.counters().queuedBytes;
+		for (let i = 0; i < 4; i++) {
+			a.events.binary(data(65514));
+			await settle();
+		}
+		a.events.binary(data(1));
+		await settle();
+		// Assert: duplicate completion must not create extra per-direction capacity.
+		expect(released).toBe(0);
+		expect(b.binaries).toHaveLength(5);
+		expect(f.server.counters()).toMatchObject({ routes: 0, queuedBytes: 256 * 1024 });
+	});
+	it("retains a throwing adapter's write until physical closure and tolerates a late callback", async () => {
+		// Arrange
+		const { a, b } = await f.route();
+		let callback: ((error?: Error) => void) | undefined;
+		b.sendBinary.mockImplementationOnce((_frame, written) => {
+			callback = written;
+			throw new Error("adapter owns the frame before throwing");
+		});
+		// Act
+		a.events.binary(data(100));
+		await settle();
+		const retained = f.server.counters();
+		b.events.closed();
+		callback?.();
+		callback?.();
+		// Assert
+		expect(callback).toBeTypeOf("function");
+		expect(b.close).toHaveBeenCalledOnce();
+		expect(retained).toMatchObject({ routes: 0, queuedBytes: 122 });
+		expect(f.server.counters()).toMatchObject({ sockets: 1, routes: 0, queuedBytes: 0 });
+	});
+});
+
 describe("opaque DATA, pressure, and terminal cleanup", () => {
 	it("preserves exact binary frames in order in both directions", async () => {
 		// Arrange
@@ -221,23 +314,43 @@ describe("relay failure limits", () => {
 			expect(terminal(a).at(-1)).toMatchObject({ type: "CLOSE", body: { mode: "abort" } });
 		},
 	);
-	it.each(["direction", "device", "realm"])(
+	it("enforces direction queued byte caps before retaining excess", async () => {
+		// Arrange: four tracked writes fill exactly 256 KiB on one of two admitted routes.
+		const { a, b } = await f.oppositeRoutes();
+		const frames = [...Array.from({ length: 3 }, () => data(65536)), data(65448)];
+		for (const frame of frames) {
+			a.events.binary(frame);
+			await settle();
+		}
+		const beforeOverflow = f.server.counters();
+		const paused = a.pauseInput.mock.calls.length;
+		// Act
+		a.events.binary(data(1));
+		await settle();
+		// Assert: excess never reaches the adapter, and only the overflowing route aborts.
+		expect(b.binaries).toEqual(frames);
+		expect(beforeOverflow).toMatchObject({ routes: 2, queuedBytes: 256 * 1024 });
+		expect(paused).toBeGreaterThan(0);
+		expect(f.server.counters()).toMatchObject({ routes: 1, queuedBytes: 256 * 1024 });
+		expect(terminal(a).concat(terminal(b))).toEqual([
+			{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "abort" } },
+			{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "abort" } },
+		]);
+	});
+	it.each(["device", "realm"])(
 		"enforces %s queued byte caps before retaining excess",
 		async (limit) => {
 			// Arrange
-			if (limit !== "direction") {
-				f.dispose();
-				f = await serverFixture(
-					limit === "device" ? { deviceQueuedBytes: 8192 } : { queuedBytes: 8192 },
-				);
-			}
+			f.dispose();
+			f = await serverFixture(
+				limit === "device" ? { deviceQueuedBytes: 8192 } : { queuedBytes: 8192 },
+			);
 			const { a, b } = await f.route();
 			a.events.binary(data(100));
 			await settle();
 			b.written();
-			if (limit === "direction") b.buffered = 256 * 1024;
 			// Act
-			a.events.binary(data(limit === "direction" ? 1 : 8192));
+			a.events.binary(data(8192));
 			await settle();
 			// Assert
 			expect(b.binaries).toEqual([data(100)]);
