@@ -73,7 +73,7 @@ or Noise record parser.
   ordered payload bytes before passing them to the Noise library.
 - Source, target, session ID, and bound WSS sockets determine direction. Data
   frames contain no HTTP correlation, source, target, scope, key, or auth field.
-- Close, rejection, expiry, and disconnect discard partial state. A reconnect
+- Abort, rejection, expiry, and disconnect discard partial state. A reconnect
   needs a new route, handshake, and signed-request nonce.
 
 ## Admission and capacity
@@ -124,6 +124,20 @@ Clients send `SERVICE_CHALLENGE` and `REGISTER`; the relay sends `SERVICE_PROOF`
 replace an active route, or grant route permission. The admission contract fixes
 the allowed state transitions and message bodies. Renewal is initiated by a fresh
 client service challenge when work needs registration, not by a keepalive timer.
+
+`ACCEPTED` and `REJECTED` have exactly `{}` as their body. `CLOSE` has exactly
+`{"mode":"end"}` or `{"mode":"abort"}`. No control includes a failure reason.
+
+An endpoint sends `end` after its last DATA frame to finish its own direction.
+The relay forwards that control only after preceding DATA writes complete. The
+opposite direction remains usable. The route finishes cleanly after both
+directions end and every pending write completes. Duplicate ends or DATA after
+an end abort the route.
+
+An `abort` ends the whole route immediately and fails the exchange. The relay
+uses `abort` for disconnect, expiry, quota denial, and other route failures. It
+never generates `end` on behalf of an endpoint. End controls do not replace the
+Noise and HTTP completion checks at either endpoint.
 
 ## Binary frames
 
