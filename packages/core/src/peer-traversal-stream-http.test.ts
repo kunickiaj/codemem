@@ -9,13 +9,12 @@ import {
 } from "node:http";
 import type { Duplex } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	acceptTraversalNoiseResponder,
+	prepareTraversalNoiseInitiator,
+} from "./peer-traversal-noise.js";
 import { TraversalByteStream } from "./peer-traversal-stream.js";
 import { channelPair, flush } from "./peer-traversal-stream-test-fixtures.js";
-import {
-	acceptRelayNoiseResponder,
-	prepareRelayNoiseInitiator,
-	type RelayNoiseOptions,
-} from "./relay-noise.js";
 import { disposableNoiseIdentity } from "./relay-noise-test-fixtures.js";
 
 const DATA_EXCHANGE_MS = 10000;
@@ -43,22 +42,21 @@ async function noiseFixture(signal?: AbortSignal) {
 		await Promise.allSettled(raw.map((stream) => stream.disposed));
 	});
 	const identities = [disposableNoiseIdentity(), disposableNoiseIdentity()] as const;
-	const options = (i: 0 | 1): RelayNoiseOptions => ({
-		transport: raw[i],
+	const options = (i: 0 | 1) => ({
 		localIdentity: identities[i],
 		expectedRemotePin: identities[i === 0 ? 1 : 0].expectedPin,
-		context: { transportLabel: 1, sessionId: Buffer.alloc(16, 7) },
 		deadlineMs,
 		signal,
 	});
-	const initiator = prepareRelayNoiseInitiator(options(0));
+	const initiator = prepareTraversalNoiseInitiator(options(0));
 	const opening = await initiator.opening;
-	const responder = acceptRelayNoiseResponder({
+	const responder = acceptTraversalNoiseResponder({
 		...options(1),
+		stream: raw[1],
+		sessionId: initiator.sessionId,
 		verifiedMessageADigest: opening.digest,
-		acceptedAtMs: performance.now(),
 	});
-	initiator.release(performance.now());
+	initiator.attachAndRelease(raw[0]);
 	const secured = await Promise.all([initiator.authenticated, responder]);
 	for (const result of secured) {
 		plain.push(result.duplex);
