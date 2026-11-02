@@ -143,8 +143,7 @@ it.each([false, true])(
 			if (method === "GET") return [200, emptyOps()];
 			pushes++;
 			if (pushes === 1) return [413, { error: "too_many_ops" }];
-			// Preserve the existing non-null HTTP 200 success predicate, including errors[].
-			return [200, { errors: ["fixture apply error"] }];
+			return [200, { errors: [] }];
 		});
 
 		// Act

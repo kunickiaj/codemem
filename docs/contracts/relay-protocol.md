@@ -269,11 +269,11 @@ Relay response limits apply only to this transport. Existing HTTP callers usuall
 omit `maxResponseBytes`, so this contract does not claim compatibility for every
 current HTTP record. Raising a server environment limit does not raise relay caps.
 
-Initial relay push success uses the existing predicate: HTTP 200 and a non-null
-body, even when `errors[]` is nonempty. This does not show that every operation
-was durably applied. `codemem-xvrt5` tracks this existing outbound acknowledgement
-gap separately. Runtime approval must address that issue's disposition. This
-transport proposal does not silently change direct acknowledgement semantics.
+Push success requires HTTP 200 and a non-null body without a non-null own `error`
+field. An own `errors` field must be an empty array. Legacy peers may omit it.
+Apply errors leave the outbound window unacknowledged, including when a later
+part of a split batch fails. Policy filter skips do not count as errors.
+This shared predicate applies to direct requests and injected transport executors.
 Route acknowledgement and `CLOSE` never advance a cursor or apply acknowledgement.
 
 ## Resource limits
