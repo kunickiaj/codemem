@@ -93,6 +93,28 @@ current authority, timestamps, nonce replay, and the complete packet chain,
 including session IDs, deadlines, and referenced packet digests. Verification
 does not consume a nonce or create a capability to start an RTC engine.
 
+## Signed transcript prefixes
+
+`verifyTraversalSignalChain` verifies an exact ordered prefix ending at the
+requested phase. The only order is `prepare`, `offer`, `offer-check`, `answer`,
+`answer-check`. Missing, reordered, or extra packets fail verification.
+
+Every body must match the caller's expected authority, group, both device IDs
+and pinned SSH wire-key IDs, session ID, and Message A digest. This includes the
+target key ID in a PREPARE-only prefix. All packets carry PREPARE's fixed attempt
+deadline. Later creation times may differ or lag and do not reset that deadline.
+
+Each later `prepareDigest` references the exact PREPARE body digest. The last
+three phases reference the OFFER body digest, and `answer-check` also references
+the ANSWER body digest. These links use the verified original bytes.
+
+The function captures its inputs before awaiting cryptography and returns owned
+phase proofs, the terminal phase, and the attempt deadline. For portable packets,
+it supplies the expected signer's device ID to the phase verifier. Validation of
+an actual received HTTP device header remains separate. A valid transcript does
+not prove that any coordinator request was approved or replace freshness, replay,
+policy, or each endpoint's own coordinator checks.
+
 The codec has no candidate-address classification or safety rules. It also does
 not implement RTC, an SDK integration, database or schema changes, migrations,
 activation, or a public index export.
