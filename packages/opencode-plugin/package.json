@@ -41,7 +41,7 @@
 		"test:packed-artifact:prepared": "node ./scripts/packed-artifact-smoke.mjs"
 	},
 	"dependencies": {
-		"@opencode-ai/plugin": "1.19.3",
+		"@opencode-ai/plugin": "1.19.5",
 		"@opencode/plugin": "2.0.24"
 	},
 	"devDependencies": {
