@@ -208,6 +208,12 @@ The client adapter maps a validated declared response length above its cap to
 `response_too_large` before setting the audit's expectation. Observed surplus
 remains a `framing` error and cannot trigger page halving.
 
+`preparePeerHttpRequest` captures the supported method, exact origin target,
+header values, and an owned copy of pre-serialized body bytes before I/O. It
+rejects normalization and request-size failures. `readPeerHttpBodyLength`
+validates native header fields and classifies oversized declared responses.
+These metadata helpers open no connection and grant no authorization.
+
 ## Dispatch and authorization
 
 The transport passes immutable trusted context to shared dispatch.
