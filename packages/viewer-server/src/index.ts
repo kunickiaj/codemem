@@ -164,6 +164,7 @@ export interface AppOptions {
 			ownerRecovery?: ReturnType<typeof createAccountOwnerRecoveryService>;
 		};
 	storeFactory?: () => MemoryStore;
+	syncChannelPeerPin?: (request: Request) => string | null;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
 	sweeper?: RawEventSweeper | null;
@@ -352,6 +353,7 @@ export function createSyncApp(opts?: AppOptions) {
 	app.route(
 		"/",
 		syncProtocolRoutes(storeFactory, {
+			syncChannelPeerPin: opts?.syncChannelPeerPin,
 			routeRateLimit: {
 				limiter: rateLimiter,
 				readLimit,
