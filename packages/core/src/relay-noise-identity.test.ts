@@ -168,7 +168,7 @@ describe("relay Noise peer pin boundary", () => {
 });
 
 describe("relay Noise prologue", () => {
-	it.each([1, 2] as const)(
+	it.each([1, 2, 3] as const)(
 		"encodes the exact contract vector for transport %i from a byte view",
 		(transportLabel) => {
 			// Arrange
@@ -198,7 +198,20 @@ describe("relay Noise prologue", () => {
 		expect(second[0]).toBe(99);
 	});
 
-	it.each([0, 3, -1, 256, "1", null, undefined])(
+	it("separates traversal from relay and coordinator-free direct for the same session", () => {
+		const sessionId = Uint8Array.from({ length: 16 }, (_, i) => i);
+
+		const prologues = ([1, 2, 3] as const).map((transportLabel) =>
+			relayNoisePrologue({ transportLabel, sessionId }),
+		);
+
+		expect(new Set(prologues.map((bytes) => Buffer.from(bytes).toString("hex"))).size).toBe(3);
+		for (const prologue of prologues) {
+			expect(Uint8Array.from(prologue.subarray(-16))).toEqual(sessionId);
+		}
+	});
+
+	it.each([0, 4, -1, 256, 1.5, Number.NaN, "1", "3", null, undefined])(
 		"rejects unknown runtime transport label %j",
 		(transportLabel) => {
 			// Arrange

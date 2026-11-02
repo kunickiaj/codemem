@@ -77,13 +77,15 @@ export function verifyRelayNoisePeer(observed: PeerId, expectedPin: string): voi
 }
 
 export interface RelayNoiseContext {
-	readonly transportLabel: 1 | 2;
+	readonly transportLabel: 1 | 2 | 3;
 	readonly sessionId: Uint8Array;
 }
 
 export function relayNoisePrologue(context: RelayNoiseContext): Uint8Array {
 	if (
-		(context.transportLabel !== 1 && context.transportLabel !== 2) ||
+		(context.transportLabel !== 1 &&
+			context.transportLabel !== 2 &&
+			context.transportLabel !== 3) ||
 		!(context.sessionId instanceof Uint8Array) ||
 		context.sessionId.byteLength !== 16
 	) {
