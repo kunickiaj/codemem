@@ -143,6 +143,10 @@ export class TraversalByteStream extends Duplex {
 	private sentFrames = 0;
 	private receivedFrames = 0;
 
+	get side(): "source" | "target" {
+		return this.prepared.side;
+	}
+
 	constructor(options: TraversalByteStreamOptions) {
 		const prepared = prepare(options);
 		super({
