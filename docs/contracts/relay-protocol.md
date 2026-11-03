@@ -155,6 +155,13 @@ The maximum binary frame is 65,558 bytes. The advertised length must match the
 remaining frame exactly. Extra bytes, zero payload, an unknown version or kind,
 an unadmitted session, or a wrong socket closes the route.
 
+DATA naming an unknown session closes the sending socket. This includes late
+frames for a route that has already been removed. The relay does not keep a
+grace queue for such frames. Other exchanges on that socket also fail when it
+closes, and any exchange that may have applied an update remains uncertain.
+Registration expiry alone does not stop DATA on an admitted route within its
+original lease.
+
 Payloads include length-prefixed Noise handshake or record bytes. Handshake
 messages can carry public identity material. The protocol does not claim that
 every handshake byte is encrypted. An operational frame counter can account for

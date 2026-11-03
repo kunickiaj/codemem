@@ -769,7 +769,11 @@ class RelayServerEngine {
 		}
 		const frame = decodeRelayDataFrame(bytes);
 		const route = this.routes.get(frame.sessionId);
-		if (!route || !this.routeLive(route)) return;
+		if (!route) {
+			this.disconnect(connection);
+			return;
+		}
+		if (!this.routeLive(route)) return;
 		if (connection !== route.source && connection !== route.target) {
 			this.disconnect(connection);
 			return;

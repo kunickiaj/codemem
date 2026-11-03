@@ -20,6 +20,84 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+describe("unadmitted DATA sessions", () => {
+	it.each(["active", "expired"])(
+		"disconnects a socket with %s registration once for repeated unknown-session DATA without spending quota",
+		async (registration) => {
+			// Arrange: exhausted traffic credits cannot turn unknown sessions into free discard work.
+			const a = await f.register();
+			const b = await f.register("target");
+			f.credits.traffic = 0;
+			if (registration === "expired") {
+				f.clock.now = 900000;
+				await vi.advanceTimersByTimeAsync(900000);
+			}
+			const quotaCalls = f.quota.reserve.mock.calls.length;
+			const checks = f.coordinator.check.mock.calls.length;
+			const responses = a.texts.length;
+			// Act
+			for (let i = 0; i < 3; i++) a.events.binary(data(65536, "0".repeat(32)));
+			await settle();
+			// Assert: logical disconnect retains the physical slot until the adapter reports closure.
+			expect(a.close).toHaveBeenCalledOnce();
+			expect(a.texts).toHaveLength(responses);
+			expect(b.binaries).toHaveLength(0);
+			expect(f.quota.reserve).toHaveBeenCalledTimes(quotaCalls);
+			expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+			expect(f.server.counters()).toMatchObject({ sockets: 2, routes: 0, queuedBytes: 0 });
+			a.events.closed();
+			expect(f.server.counters().sockets).toBe(1);
+		},
+	);
+	it("disconnects for late DATA after clean closure and aborts another multiplexed route", async () => {
+		// Arrange: the other admitted route shares the same physical sockets.
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		await control(a.events, "CLOSE", { mode: "end" });
+		await control(b.events, "CLOSE", { mode: "end" });
+		const before = f.server.counters();
+		const quotaCalls = f.quota.reserve.mock.calls.length;
+		const checks = f.coordinator.check.mock.calls.length;
+		// Act
+		for (let i = 0; i < 3; i++) a.events.binary(data());
+		await settle();
+		// Assert: late DATA ends the physical connection even when another route is healthy.
+		expect(before.routes).toBe(1);
+		expect(a.close).toHaveBeenCalledOnce();
+		expect(b.close).not.toHaveBeenCalled();
+		expect(b.binaries).toHaveLength(0);
+		expect(terminal(b)).toEqual([
+			{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "end" } },
+			{ v: 1, type: "CLOSE", session: reverseId, body: { mode: "abort" } },
+		]);
+		expect(f.server.counters()).toMatchObject({ sockets: 2, routes: 0, queuedBytes: 0 });
+		expect(f.quota.reserve).toHaveBeenCalledTimes(quotaCalls);
+		expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+	});
+	it("continues admitted DATA within its original route lease after registration expires", async () => {
+		// Arrange: open near registration expiry, with an independent route lease beyond it.
+		const a = await f.register();
+		const b = await f.register("target");
+		f.clock.now = 880000;
+		await vi.advanceTimersByTimeAsync(880000);
+		f.refreshReadiness();
+		const open = await f.openPacket({ createdAt: 990, admitBefore: 1020, routeNotAfter: 1045 });
+		await control(a.events, "OPEN", open.body, open.session);
+		await control(b.events, "ACCEPTED");
+		const checks = f.coordinator.check.mock.calls.length;
+		// Act
+		f.clock.now = 900000;
+		await vi.advanceTimersByTimeAsync(20000);
+		a.events.binary(data(5));
+		await settle();
+		// Assert
+		expect(b.binaries).toEqual([data(5)]);
+		expect(a.close).not.toHaveBeenCalled();
+		expect(b.close).not.toHaveBeenCalled();
+		expect(f.server.counters().routes).toBe(1);
+		expect(f.coordinator.check).toHaveBeenCalledTimes(checks);
+	});
+});
+
 describe("per-direction write accounting", () => {
 	it("keeps independent directions below 256 KiB alive on shared physical sockets", async () => {
 		// Arrange: both routes use real, independently signed admission envelopes.
