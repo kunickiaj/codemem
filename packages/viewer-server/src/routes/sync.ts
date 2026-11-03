@@ -42,7 +42,7 @@ import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	analyzeProjectScopeMappingChangesGuardrails,
 	analyzeProjectScopeMappingDeletionGuardrails,
-	applyReplicationOps,
+	applyPeerReplicationOps,
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
@@ -159,6 +159,7 @@ import {
 	reconcileShareOperationAcceptance,
 	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
+	recordSyncTransferObservation,
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
@@ -199,6 +200,7 @@ import {
 	type ReconcileRecipientPolicyProjectsResult,
 	reconcileRecipientPolicyProjectsOperation,
 } from "../application/coordinator-maintenance.js";
+import { readPeerSyncHealth } from "../application/sync-health.js";
 import { buildSyncStatusResponse, type SyncRuntimeStatus } from "../application/sync-status.js";
 import { snapshotErrorStatus, snapshotPageRequest } from "../snapshot-source.js";
 
@@ -3720,9 +3722,15 @@ function staleRowsForCleanupDiagnostics(store: MemoryStore, localDeviceId: strin
 	});
 }
 
-function applyInboundSyncOps(store: MemoryStore, ops: ReplicationOp[], localDeviceId: string) {
-	return applyReplicationOps(store.db, ops, localDeviceId, store.scanner, {
+function applyInboundSyncOps(
+	store: MemoryStore,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	peerDeviceId: string,
+) {
+	return applyPeerReplicationOps(store, ops, localDeviceId, {
 		keysDir: syncKeysDir(),
+		peerDeviceId,
 	});
 }
 
@@ -4630,6 +4638,10 @@ function createPeerScopeDiagnosticKeyLoader() {
 
 function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 	const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
+	const health = readPeerSyncHealth(
+		store,
+		rows.map((row) => String(row.peer_device_id)),
+	);
 	const recentOpsByPeer = recentPeerOps(store);
 	const scopeRejectionsByPeer = recentScopeRejectionsByPeer(store);
 	const d = drizzle(store.db, { schema });
@@ -4640,8 +4652,8 @@ function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 		.get();
 	const localDeviceId = deviceRow?.device_id ?? null;
 	const loadDiagnosticKey = createPeerScopeDiagnosticKeyLoader();
-	return rows.map((row) =>
-		mapPeerRow(
+	return rows.map((row) => ({
+		...mapPeerRow(
 			store,
 			row,
 			showDiag,
@@ -4650,7 +4662,8 @@ function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 			localDeviceId,
 			loadDiagnosticKey,
 		),
-	);
+		sync_health: health.get(String(row.peer_device_id)),
+	}));
 }
 
 // Default-lane batches omit body.scope_id; validate all signed operation scopes,
@@ -4711,6 +4724,7 @@ function rejectUnauthorizedInboundBatch(
 		peerDeviceId: context.peerDeviceId,
 	});
 	if (rejected) {
+		recordInboundScopeFailure(context);
 		return c.json(
 			{
 				error: "scope_rejected",
@@ -4727,6 +4741,7 @@ function rejectUnauthorizedInboundBatch(
 	addExistingMutationScopes(context.db, ops, scopeIds);
 	const failure = validateManagedScopes(scopeIds, context);
 	if (!failure) return null;
+	recordInboundScopeFailure(context);
 	return c.json(
 		syncScopeResetRequiredPayload(
 			getSyncResetState(context.db),
@@ -4735,6 +4750,30 @@ function rejectUnauthorizedInboundBatch(
 			failure.scopeId,
 		),
 		409,
+	);
+}
+
+function recordInboundScopeFailure(
+	context: ReturnType<typeof syncScopeAuthorizationContext>,
+): void {
+	recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+		errorCode: "scope_rejected",
+		source: "inbound",
+	});
+}
+
+function parseInboundScopeRequest(
+	body: Record<string, unknown>,
+	context: ReturnType<typeof syncScopeAuthorizationContext>,
+	options: {
+		negotiated: ReturnType<typeof negotiateSyncCapability>;
+		syncChannelPeerPin?: SyncProtocolRouteOptions["syncChannelPeerPin"];
+	},
+) {
+	return parseSyncScopeRequest(
+		body.scope_id,
+		syncScopeProvided(Object.hasOwn(body, "scope_id"), options.syncChannelPeerPin),
+		{ ...context, negotiatedCapability: options.negotiated },
 	);
 }
 
@@ -5178,15 +5217,12 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		);
 		const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir: syncKeysDir() });
 		const scopeContext = syncScopeAuthorizationContext(store, auth, localDeviceId);
-		const scopeRequest = parseSyncScopeRequest(
-			body.scope_id,
-			syncScopeProvided(Object.hasOwn(body, "scope_id"), syncChannelPeerPin),
-			{
-				...scopeContext,
-				negotiatedCapability: negotiated,
-			},
-		);
+		const scopeRequest = parseInboundScopeRequest(body, scopeContext, {
+			negotiated,
+			syncChannelPeerPin,
+		});
 		if (!scopeRequest.ok) {
+			recordInboundScopeFailure(scopeContext);
 			return syncScopeResetResponse(c, store, scopeRequest.reason, syncChannelPeerPin);
 		}
 		if (!Array.isArray(body.ops)) {
@@ -5238,7 +5274,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (rejected) return rejected;
 
-		const result = applyInboundSyncOps(store, filtered.allowed, localDeviceId);
+		const result = applyInboundSyncOps(store, filtered.allowed, localDeviceId, peerDeviceId);
 		const skipped = result.skipped + filtered.skipped;
 		return c.json({
 			...result,
