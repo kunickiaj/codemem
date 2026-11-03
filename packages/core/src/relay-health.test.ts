@@ -569,6 +569,46 @@ describe("relay health maintenance ownership", () => {
 		expect(f.fetcher).toHaveBeenCalledTimes(4);
 		expect(f.monitor.snapshot().state).toBe("tripped");
 	});
+	it("retries maintenance after the remaining millisecond and cancels it on stop", async () => {
+		// Arrange: timer deadlines and the monotonic clock advance independently.
+		vi.useFakeTimers();
+		const f = setup();
+		f.route({ duration: 0 });
+		f.monitor.start();
+		await vi.advanceTimersByTimeAsync(0);
+		// Act: the first callback is late, so the next callback is one millisecond early.
+		f.setTime(150001);
+		await vi.advanceTimersByTimeAsync(30000);
+		f.setTime(180000);
+		await vi.advanceTimersByTimeAsync(30000);
+		const beforeDue = f.fetcher.mock.calls.length;
+		f.setTime(180001);
+		await vi.advanceTimersByTimeAsync(1);
+		const afterDue = f.fetcher.mock.calls.length;
+		// Stop while the following callback is also one millisecond early.
+		f.setTime(210000);
+		await vi.advanceTimersByTimeAsync(29999);
+		await f.monitor.stop();
+		const beforeStop = f.fetcher.mock.calls.length;
+		f.setTime(210001);
+		await vi.advanceTimersByTimeAsync(1);
+		const afterStop = f.fetcher.mock.calls.length;
+		f.setTime(240001);
+		await vi.advanceTimersByTimeAsync(30000);
+		const whileStopped = f.fetcher.mock.calls.length;
+		f.monitor.start();
+		f.monitor.start();
+		await vi.advanceTimersByTimeAsync(0);
+		const afterRestart = f.fetcher.mock.calls.length;
+		await f.monitor.stop();
+		// Assert: never probe early, wait only the remainder, and retain one timer owner.
+		expect.soft(beforeDue).toBe(4);
+		expect.soft(afterDue).toBe(6);
+		expect(afterStop).toBe(beforeStop);
+		expect(whileStopped).toBe(beforeStop);
+		expect(afterRestart).toBe(beforeStop + 2);
+		expect(vi.getTimerCount()).toBe(0);
+	});
 	it("does not start requests or instrument responses while disabled", async () => {
 		// Arrange
 		const f = setup(false);

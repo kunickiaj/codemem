@@ -8,6 +8,8 @@ import {
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "./d1-coordinator-store.js";
+import { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "./relay-health.js";
+import { d1RelayHealthPublisher } from "./relay-health-storage.js";
 
 export interface CreateD1CoordinatorAppOptions {
 	db: D1DatabaseLike;
@@ -17,6 +19,7 @@ export interface CreateD1CoordinatorAppOptions {
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionRuntimeOptions;
+	relayHealth?: RelayHealthRuntimeOptions;
 	recipientInviteCoordinatorId?: string;
 	browserAuth?:
 		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
@@ -32,6 +35,7 @@ export function createD1CoordinatorApp(
 		now: opts.now ?? (() => new Date().toISOString()),
 	};
 	return createCoordinatorApp({
+		relayHealth: createD1HealthMonitor(opts.relayHealth, db),
 		storeFactory: () => new D1CoordinatorStore(db),
 		deviceRevocation: opts.deviceRevocation,
 		recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
@@ -65,4 +69,17 @@ export function createD1CoordinatorApp(
 				? { ...opts.browserAuth, storeFactory: () => new D1CoordinatorStore(db) }
 				: opts.browserAuth,
 	});
+}
+
+function createD1HealthMonitor(
+	options: RelayHealthRuntimeOptions | undefined,
+	db: D1DatabaseLike,
+): RelayHealthMonitor | undefined {
+	if (!options?.enabled) return undefined;
+	const monitor = new RelayHealthMonitor({
+		...options,
+		publish: d1RelayHealthPublisher(db, options),
+	});
+	options.onMonitor(monitor);
+	return monitor;
 }
