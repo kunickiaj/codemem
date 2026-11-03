@@ -51,6 +51,10 @@ import {
 	CoordinatorMembershipError,
 	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
 } from "./coordinator-membership-effects.js";
+import {
+	type CoordinatorRelayAdmissionOptions,
+	registerCoordinatorRelayAdmissionRoute,
+} from "./coordinator-relay-admission-route.js";
 import { scopeAuthorizationResponse } from "./coordinator-scope-authorization-response.js";
 import type {
 	CoordinatorBootstrapGrantAuthorizationError,
@@ -118,6 +122,7 @@ export interface CreateCoordinatorAppOptions {
 	recipientInviteCoordinatorId?: string;
 	accountChanges?: CoordinatorDeviceAccountChangeOptions;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
+	relayAdmission?: CoordinatorRelayAdmissionOptions;
 }
 export type CoordinatorAppBrowserAuthOptions =
 	| {
@@ -602,6 +607,12 @@ async function peerDiscoveryResponse(
 	}
 }
 
+function coordinatorAppWithRelay(options?: CoordinatorRelayAdmissionOptions): Hono {
+	const app = new Hono();
+	registerCoordinatorRelayAdmissionRoute(app, options);
+	return app;
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -629,7 +640,7 @@ export function createCoordinatorApp(
 		1,
 		Math.trunc(requestRateLimit.unauthenticatedMutationLimit ?? Math.min(10, mutationLimit)),
 	);
-	const app = new Hono();
+	const app = coordinatorAppWithRelay(opts.relayAdmission);
 	const textDecoder = new TextDecoder();
 
 	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
