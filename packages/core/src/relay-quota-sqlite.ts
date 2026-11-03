@@ -42,12 +42,20 @@ const PURPOSES: Purpose[] = ["upgrade", "control", "open", "traffic"];
 const SCOPES: Scope[] = ["service", "realm", "device", "pair"];
 const DENIED = Symbol("relay quota denied");
 
+function tightenPolicy(reference: "OLD" | "NEW", allocation = reference): string {
+	return `UPDATE relay_quota_buckets SET
+ last_rate = MIN(last_rate, ${allocation}.rate),
+ last_capacity = MIN(last_capacity, ${allocation}.burst * 60000),
+ balance = MIN(balance, ${allocation}.burst * 60000)
+ WHERE purpose = ${reference}.purpose AND scope = ${reference}.scope AND ${allocation}.rate > 0;`;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS relay_quota_root (
  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
  realm_id TEXT NOT NULL,
  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1))
-) STRICT;
+ ) STRICT;
 CREATE TABLE IF NOT EXISTS relay_quota_allocations (
  purpose TEXT NOT NULL CHECK(purpose IN ('upgrade','control','open','traffic')),
  scope TEXT NOT NULL CHECK(scope IN ('service','realm','device','pair')),
@@ -66,11 +74,48 @@ CREATE TABLE IF NOT EXISTS relay_quota_buckets (
  last_capacity INTEGER NOT NULL CHECK(last_capacity BETWEEN 0 AND 16106127360000),
  CHECK(balance <= last_capacity),
  PRIMARY KEY(purpose,scope,subject)
-) STRICT;`;
+ ) STRICT;
+CREATE TRIGGER IF NOT EXISTS relay_quota_policy_insert
+ AFTER INSERT ON relay_quota_allocations BEGIN ${tightenPolicy("NEW")} END;
+CREATE TRIGGER IF NOT EXISTS relay_quota_policy_update
+ AFTER UPDATE ON relay_quota_allocations BEGIN
+ ${tightenPolicy("OLD")}
+ ${tightenPolicy("OLD", "NEW")}
+ ${tightenPolicy("NEW")}
+ END;
+CREATE TRIGGER IF NOT EXISTS relay_quota_policy_delete
+ BEFORE DELETE ON relay_quota_allocations BEGIN ${tightenPolicy("OLD")} END;`;
 
-/** Explicit, inert schema installation. No profile, enabled policy or capacity is created. */
+const RECONCILE_POLICY = `UPDATE relay_quota_buckets AS b SET
+ last_rate = MIN(last_rate, (SELECT a.rate FROM relay_quota_allocations a
+  WHERE a.purpose = b.purpose AND a.scope = b.scope)),
+ last_capacity = MIN(last_capacity, (SELECT a.burst * 60000 FROM relay_quota_allocations a
+  WHERE a.purpose = b.purpose AND a.scope = b.scope)),
+ balance = MIN(balance, (SELECT a.burst * 60000 FROM relay_quota_allocations a
+  WHERE a.purpose = b.purpose AND a.scope = b.scope))
+ WHERE EXISTS (SELECT 1 FROM relay_quota_allocations a
+  WHERE a.purpose = b.purpose AND a.scope = b.scope AND a.rate > 0);`;
+
+/** Explicit installation. Existing floors only tighten. No profile or enabled policy is created. */
 export function initializeRelayQuotaSchema(database: RelayQuotaDatabase): void {
-	database.exec(SCHEMA);
+	database
+		.transaction(() => {
+			database.exec(SCHEMA);
+			// Zero or missing allocations pause admission without erasing positive history.
+			// Older databases may have a committed tightening that no successful reservation retained.
+			database.exec(RECONCILE_POLICY);
+		})
+		.immediate();
+}
+
+function requireQuotaProtection(database: RelayQuotaDatabase): void {
+	const value = database
+		.prepare(`SELECT COUNT(*) AS installed FROM sqlite_schema
+ WHERE type = 'trigger' AND tbl_name = 'relay_quota_allocations'
+ AND name IN ('relay_quota_policy_insert', 'relay_quota_policy_update', 'relay_quota_policy_delete')`)
+		.get();
+	if (!value || typeof value !== "object" || (value as { installed?: unknown }).installed !== 3)
+		throw new Error("Relay quota policy protection unavailable");
 }
 
 function validRealm(value: unknown): value is string {
@@ -244,6 +289,7 @@ function reserveTransaction(
 	request: QuotaRequest,
 	signal: AbortSignal,
 ): RelayAdmissionBudgetStatus {
+	requireQuotaProtection(database);
 	const policy = record(
 		database
 			.prepare(
