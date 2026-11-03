@@ -106,7 +106,7 @@ the socket challenge ID. Its body has exactly `deviceId`, `keyId`, `authorityId`
 remaining duration of at most 900,000 ms. Renewal retains the
 physical connection ID but uses a new one-time challenge and coordinator check.
 
-Registration expires after at most 15 minutes. Renewal needs a fresh socket challenge, a new v2 packet, and a current online check. On expiry, the relay stops new OPEN and target lookup. It may retain the WSS connection in an unregistered state and permits only bounded renewal/service controls and terminal route CLOSE. Established routes may still carry bytes within their original remaining lease unless they learn a revocation, key or Identity change, or operator disablement. Renewal cannot revive or extend a route. The operations contract bounds pending and closing sockets and replacement replays.
+Registration expires after at most 15 minutes. Renewal needs a fresh socket challenge, a new v2 packet, and a current online check. On expiry, the relay stops new OPEN and target lookup. It may retain the WSS connection in an unregistered state and permits only bounded renewal/service controls and route CLOSE controls. CLOSE `end` finishes one direction, while CLOSE `abort` terminates the route, as defined in the protocol contract. Established routes may still carry bytes within their original remaining lease unless they learn a revocation, key or Identity change, or operator disablement. Renewal cannot revive or extend a route. The operations contract bounds pending and closing sockets and replacement replays.
 Failed service proof or registration, including failed renewal, invalidates the
 connection's application state and closes the socket generically. It exposes no
 participant-specific cause. Existing routes can therefore end earlier than their
@@ -260,6 +260,15 @@ Operations evidence must show every coordinator backend clock remains within fiv
 Queued packets and handler work that already committed cannot be recalled. Endpoints drop late HTTP after the route deadline. An admitted route may finish its unextended remaining lease during an outage unless it learns a revocation, key or Identity change, or operator disablement. A learned change closes affected routes. The design makes no 24-hour permission claim.
 
 ## Response contract
+
+The positive registration response has this exact association shape:
+
+```json
+{"v":1,"registered":true,"role":"registration","packetDigest":"<sha256 raw body>","requestNonce":"<nonce>","deviceId":"<device>","keyId":"<key>","decidedAtMs":0,"remainingMs":900000,"health":{"revision":1,"state":"ready","observedAtMs":0,"validUntilMs":0}}
+```
+
+The relay matches the digest, nonce, device and key against its own registration
+request. The readiness and decision-time checks below also apply to registration.
 
 Each actual independent HTTPS request returns at most 1,024 bytes. A positive route response has this exact association shape:
 

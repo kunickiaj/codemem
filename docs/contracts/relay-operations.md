@@ -223,6 +223,27 @@ limit. Endpoint transport buffers are capped at 40 MiB per route. The relay does
 not allocate a complete HTTP body. A realm object's 16 MiB application queue
 does not mean it has a dedicated 128 MiB isolate.
 
+The internal adapter must report its current queued bytes through
+`bufferedBytes()`, including control text and DATA. Both `sendText` and
+`sendBinary` receive a completion callback. That callback fires once after the
+adapter releases the submitted bytes, including when the write fails. Partial
+native drain may happen before completion. A thrown send keeps its bytes charged
+until its callback or physical closure.
+
+The engine tracks all submitted text and DATA until completion and checks the
+full destination queue before handing off another frame. Each addition checks
+the affected device's budget. An unrelated device over its own cap does not fail
+that per-device check. The shared realm limit still applies to all traffic.
+Same-key replacement registration checks the combined old and new socket buffers,
+including its reply, before switching the active mapping. A verified current-key
+change invalidates old-key routes even if the new connection cannot fit.
+Physical closure releases adapter bytes before cleanup messages are sent to
+other sockets. Frames still held by the engine remain charged until removed.
+
+Registration replies currently take effect in completion order. An older
+decision arriving late can displace a newer registration and require the device
+to register again. Per-route admission still checks the current keys.
+
 The application queue cap does not bound native, operating-system, or provider
 buffers. The provider can allocate an incoming message before a handler enforces
 the smaller protocol cap. `send()` success is not a delivery receipt, and a hard

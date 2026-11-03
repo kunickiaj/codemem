@@ -73,7 +73,7 @@ or Noise record parser.
   ordered payload bytes before passing them to the Noise library.
 - Source, target, session ID, and bound WSS sockets determine direction. Data
   frames contain no HTTP correlation, source, target, scope, key, or auth field.
-- Close, rejection, expiry, and disconnect discard partial state. A reconnect
+- Abort, rejection, expiry, and disconnect discard partial state. A reconnect
   needs a new route, handshake, and signed-request nonce.
 
 ## Admission and capacity
@@ -125,6 +125,20 @@ replace an active route, or grant route permission. The admission contract fixes
 the allowed state transitions and message bodies. Renewal is initiated by a fresh
 client service challenge when work needs registration, not by a keepalive timer.
 
+`ACCEPTED` and `REJECTED` have exactly `{}` as their body. `CLOSE` has exactly
+`{"mode":"end"}` or `{"mode":"abort"}`. No control includes a failure reason.
+
+An endpoint sends `end` after its last DATA frame to finish its own direction.
+The relay forwards that control only after preceding DATA writes complete. The
+opposite direction remains usable. The route finishes cleanly after both
+directions end and every pending write completes. Duplicate ends or DATA after
+an end abort the route.
+
+An `abort` ends the whole route immediately and fails the exchange. The relay
+uses `abort` for disconnect, expiry, quota denial, and other route failures. It
+never generates `end` on behalf of an endpoint. End controls do not replace the
+Noise and HTTP completion checks at either endpoint.
+
 ## Binary frames
 
 Each data frame has a fixed 22-byte header and a nonempty Noise fragment.
@@ -140,6 +154,13 @@ Each data frame has a fixed 22-byte header and a nonempty Noise fragment.
 The maximum binary frame is 65,558 bytes. The advertised length must match the
 remaining frame exactly. Extra bytes, zero payload, an unknown version or kind,
 an unadmitted session, or a wrong socket closes the route.
+
+DATA naming an unknown session closes the sending socket. This includes late
+frames for a route that has already been removed. The relay does not keep a
+grace queue for such frames. Other exchanges on that socket also fail when it
+closes, and any exchange that may have applied an update remains uncertain.
+Registration expiry alone does not stop DATA on an admitted route within its
+original lease.
 
 Payloads include length-prefixed Noise handshake or record bytes. Handshake
 messages can carry public identity material. The protocol does not claim that
