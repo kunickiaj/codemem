@@ -89,7 +89,7 @@ interface FakeSocket {
 	binaries: Uint8Array[];
 	callbacks: ((error?: Error) => void)[];
 	buffered: number;
-	sendText: Mock<RelayServerSocket["sendText"]>;
+	sendText: Mock<(json: string, callback?: (error?: Error) => void) => void>;
 	sendBinary: Mock<RelayServerSocket["sendBinary"]>;
 	bufferedBytes: Mock<RelayServerSocket["bufferedBytes"]>;
 	pauseInput: Mock<RelayServerSocket["pauseInput"]>;
@@ -106,8 +106,9 @@ export function fakeSocket(): FakeSocket {
 		binaries,
 		callbacks,
 		buffered: 0,
-		sendText: vi.fn((json: string) => {
+		sendText: vi.fn((json: string, callback?: (error?: Error) => void) => {
 			texts.push(decodeRelayControl(bytes(json)));
+			callback?.();
 		}),
 		sendBinary: vi.fn((frame: Uint8Array, callback: (error?: Error) => void) => {
 			binaries.push(new Uint8Array(frame));
@@ -126,6 +127,61 @@ export function fakeSocket(): FakeSocket {
 	return socket;
 }
 export type TestSocket = ReturnType<typeof fakeSocket> & { events: RelaySocketEvents };
+
+/** Models adapter-native DATA plus unread control bytes, without a real WebSocket. */
+export function modelNativeBuffer(
+	socket: TestSocket,
+	unreadControlBytes = 0,
+	{ nativeDataFraction = 1, retainText = false } = {},
+) {
+	const send = socket.sendBinary.getMockImplementation();
+	const sendText = socket.sendText.getMockImplementation();
+	if (!send || !sendText) throw new Error("Missing adapter fixture");
+	let dataBytes = 0;
+	let textBytes = 0;
+	const textCallbacks: ((error?: Error) => void)[] = [];
+	socket.buffered = unreadControlBytes;
+	socket.bufferedBytes.mockImplementation(() =>
+		Math.floor(socket.buffered - dataBytes * (1 - nativeDataFraction)),
+	);
+	socket.sendBinary.mockImplementation((frame, callback) => {
+		socket.buffered += frame.length;
+		dataBytes += frame.length;
+		let completed = false;
+		send(frame, (error) => {
+			if (!completed) {
+				socket.buffered -= frame.length;
+				dataBytes -= frame.length;
+			}
+			completed = true;
+			callback(error);
+		});
+	});
+	if (retainText)
+		socket.sendText.mockImplementation((json, callback) => {
+			const length = Buffer.byteLength(json);
+			socket.buffered += length;
+			textBytes += length;
+			let completed = false;
+			textCallbacks.push((error) => {
+				if (!completed) {
+					socket.buffered -= length;
+					textBytes -= length;
+				}
+				completed = true;
+				callback?.(error);
+			});
+			sendText(json);
+		});
+	return {
+		textCallbacks,
+		pendingTextBytes: () => textBytes,
+		flushText: () => {
+			for (const callback of textCallbacks.splice(0)) callback();
+		},
+	};
+}
+
 export function control(
 	events: RelaySocketEvents,
 	type: RelayControl["type"],
@@ -276,6 +332,14 @@ export async function serverFixture(limits: Partial<RelayServerLimits> = {}) {
 		service,
 		packet,
 		...controls,
+		rotateSourceEnrollment(seed = 4) {
+			// Rotate only the disposable trusted enrollment and the packet fixture's signing key.
+			const rotated = testSigner(seed);
+			db.prepare(
+				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
+			).run(rotated.publicKey, rotated.keyId, namespace.groupId, "source");
+			Object.assign(source, rotated);
+		},
 		refreshReadiness() {
 			// Only the disposable coordinator fixture publishes these trusted health rows.
 			for (const scope of ["authority", "realm"])

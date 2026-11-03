@@ -4,6 +4,7 @@ import {
 	data,
 	deferred,
 	grantAndDrain,
+	modelNativeBuffer,
 	SESSION,
 	serverFixture,
 	settle,
@@ -18,6 +19,153 @@ beforeEach(async () => {
 afterEach(() => {
 	f.dispose();
 	vi.useRealTimers();
+});
+
+describe("control text write ownership", () => {
+	it("preflights unread control text when native DATA has partially drained before callbacks", async () => {
+		// Arrange: native DATA can drain before its completion callback without draining control text.
+		const { a, b, reverse, reverseId } = await f.oppositeRoutes();
+		const native = modelNativeBuffer(b, 0, { nativeDataFraction: 0.5, retainText: true });
+		for (let i = 0; i < 3; i++) {
+			a.events.binary(data(65514));
+			await settle();
+		}
+		await control(b.events, "OPEN", reverse.body, reverseId);
+		// Act: the eighth DATA frame fits the cap only if pending control text is omitted.
+		for (const id of [SESSION, ...Array.from({ length: 4 }, () => reverseId)]) {
+			a.events.binary(data(65514, id));
+			await settle();
+		}
+		// Assert: adapter-owned DATA plus control text must fit before another send.
+		expect(native.pendingTextBytes()).toBeGreaterThan(0);
+		expect(b.sendBinary).toHaveBeenCalledTimes(7);
+		expect(b.buffered).toBeLessThanOrEqual(512 * 1024);
+		expect(a.close).not.toHaveBeenCalled();
+	});
+	it("retains control text until completion and releases duplicate callbacks only once", async () => {
+		// Arrange: report an empty native queue while adapter completion callbacks remain pending.
+		const socket = f.adopt();
+		const native = modelNativeBuffer(socket, 0, { retainText: true });
+		await f.challenge(socket);
+		const retained = native.pendingTextBytes();
+		socket.bufferedBytes.mockReturnValue(0);
+		const callback = native.textCallbacks[0];
+		if (!callback) throw new Error("Missing control text callback");
+		// Act
+		const before = f.server.counters().queuedBytes;
+		callback();
+		const afterFirst = f.server.counters().queuedBytes;
+		callback();
+		const afterDuplicate = f.server.counters().queuedBytes;
+		native.flushText();
+		// Assert
+		expect(retained).toBeGreaterThan(0);
+		expect(before).toBe(retained);
+		expect(afterFirst).toBeGreaterThan(0);
+		expect(afterFirst).toBeLessThan(before);
+		expect(afterDuplicate).toBe(afterFirst);
+		expect(f.server.counters().queuedBytes).toBe(0);
+		expect(socket.close).not.toHaveBeenCalled();
+	});
+	it("disconnects once when an outstanding control text write completes with an error", async () => {
+		// Arrange
+		const socket = f.adopt();
+		const native = modelNativeBuffer(socket, 0, { retainText: true });
+		await f.challenge(socket);
+		const callback = native.textCallbacks[0];
+		if (!callback) throw new Error("Missing control text callback");
+		// Act
+		callback(new Error("control write failed"));
+		callback(new Error("duplicate completion"));
+		// Assert
+		expect(socket.close).toHaveBeenCalledOnce();
+		expect(f.server.counters().sockets).toBe(1);
+		socket.events.closed();
+		expect(f.server.counters()).toMatchObject({ sockets: 0, queuedBytes: 0 });
+	});
+	it("retains a throwing control adapter's bytes until physical closure", async () => {
+		// Arrange
+		const socket = f.adopt();
+		let retained = 0;
+		let callback: ((error?: Error) => void) | undefined;
+		socket.sendText.mockImplementationOnce((json, written) => {
+			retained = Buffer.byteLength(json);
+			callback = written;
+			throw new Error("control adapter owns the text before throwing");
+		});
+		// Act
+		await control(socket.events, "SERVICE_CHALLENGE", {
+			audienceId: f.options.namespace.relayAudienceId,
+		});
+		const charged = f.server.counters().queuedBytes;
+		socket.events.closed();
+		callback?.();
+		callback?.();
+		// Assert
+		expect(retained).toBeGreaterThan(0);
+		expect(charged).toBe(retained);
+		expect(socket.close).toHaveBeenCalledOnce();
+		expect(f.server.counters()).toMatchObject({ sockets: 0, queuedBytes: 0 });
+	});
+});
+
+describe("native buffering and device isolation", () => {
+	it("does not enqueue DATA beyond the combined native control and DATA device cap", async () => {
+		// Arrange: each route fits its direction cap, but the recipient also has unread controls.
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		modelNativeBuffer(b, 600);
+		const frames = [SESSION, reverseId].flatMap((id) =>
+			Array.from({ length: 4 }, () => data(65514, id)),
+		);
+		// Act
+		for (const frame of frames) {
+			a.events.binary(frame);
+			await settle();
+		}
+		// Assert: preflight must reject the eighth frame before the adapter owns it.
+		expect(b.sendBinary).toHaveBeenCalledTimes(7);
+		expect(b.buffered).toBe(7 * 65536 + 600);
+		expect(f.server.counters()).toMatchObject({ routes: 1, queuedBytes: 7 * 65536 + 600 });
+		expect(a.close).not.toHaveBeenCalled();
+	});
+	it("isolates an over-limit device while unrelated forwarding and service controls progress", async () => {
+		// Arrange: even after close is requested, native bytes remain charged until physical closure.
+		const { a, b } = await f.route();
+		const slow = await f.register("third");
+		slow.buffered = 512 * 1024 + 1;
+		const fresh = f.adopt();
+		// Act
+		slow.events.binary(data(1, "0".repeat(32)));
+		a.events.binary(data(5));
+		await settle();
+		await control(fresh.events, "SERVICE_CHALLENGE", {
+			audienceId: f.options.namespace.relayAudienceId,
+		});
+		// Assert: the realm has room despite the other device exceeding its own allocation.
+		expect(slow.close).toHaveBeenCalledOnce();
+		expect(b.binaries).toEqual([data(5)]);
+		expect(a.close).not.toHaveBeenCalled();
+		expect(b.close).not.toHaveBeenCalled();
+		expect(fresh.close).not.toHaveBeenCalled();
+		expect(fresh.texts.map((m) => m.type)).toEqual(["SERVICE_PROOF", "SOCKET_CHALLENGE"]);
+		expect(f.server.counters()).toMatchObject({ sockets: 4, routes: 1 });
+	});
+	it("releases physically closed native bytes before sending both route aborts to the peer", async () => {
+		// Arrange: stale native bytes leave less realm headroom than one CLOSE message.
+		f.dispose();
+		f = await serverFixture({ queuedBytes: 4096 + 60 });
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		b.buffered = 4096;
+		// Act
+		b.events.closed();
+		// Assert: the physical closure releases its slot and bytes before peer notifications.
+		expect(a.close).not.toHaveBeenCalled();
+		expect(terminal(a)).toEqual([
+			{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "abort" } },
+			{ v: 1, type: "CLOSE", session: reverseId, body: { mode: "abort" } },
+		]);
+		expect(f.server.counters()).toMatchObject({ sockets: 1, routes: 0, queuedBytes: 0 });
+	});
 });
 
 describe("unadmitted DATA sessions", () => {

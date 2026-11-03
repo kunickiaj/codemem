@@ -22,7 +22,8 @@ import {
 } from "./relay-service-proof.js";
 
 export interface RelayServerSocket {
-	sendText(json: string): void;
+	/** Calls onWritten exactly once when the adapter no longer owns these bytes, or with an error. */
+	sendText(json: string, onWritten: (error?: Error) => void): void;
 	/** Calls onWritten exactly once when the adapter no longer owns these bytes, or with an error. */
 	sendBinary(frame: Uint8Array, onWritten: (error?: Error) => void): void;
 	bufferedBytes(): number;
@@ -107,9 +108,15 @@ interface Connection {
 	controlPending: boolean;
 	readonly controls: { readonly message: RelayControl; readonly resolve: () => void }[];
 	paused: boolean;
+	/** Application bytes still owned by the adapter, including control text and DATA. */
 	writes: number;
 	held: number;
 	timer?: ReturnType<typeof setTimeout>;
+}
+interface BufferChange {
+	readonly additionalBytes?: number;
+	readonly releasedHeld?: { readonly connection: Connection; readonly bytes: number };
+	readonly deviceId?: string;
 }
 interface Direction {
 	sender: Connection;
@@ -217,8 +224,8 @@ class RelayServerEngine {
 				}
 			},
 			closed: () => {
-				this.disconnect(connection);
 				connection.physicalClosed = true;
+				this.disconnect(connection);
 				this.connections.delete(connection);
 			},
 		};
@@ -293,16 +300,23 @@ class RelayServerEngine {
 		if (!this.live(connection)) return;
 		try {
 			const json = encodeRelayControl(message);
-			connection.held += Buffer.byteLength(json);
-			const available = this.withinBuffers();
-			connection.held -= Buffer.byteLength(json);
-			if (!available) {
+			const bytes = Buffer.byteLength(json);
+			if (!this.withinBuffers(connection, { additionalBytes: bytes })) {
 				this.disconnect(connection);
 				return;
 			}
-			connection.socket.sendText(json);
-			if (!this.withinBuffers()) this.disconnect(connection);
+			connection.writes += bytes;
+			let written = false;
+			connection.socket.sendText(json, (error) => {
+				if (written) return;
+				written = true;
+				connection.writes -= bytes;
+				if (error) this.disconnect(connection);
+				this.updatePressure();
+			});
+			if (!this.withinBuffers(connection)) this.disconnect(connection);
 		} catch {
+			// A throwing adapter may still own text bytes until its callback or physical close.
 			this.disconnect(connection);
 		}
 	}
@@ -532,36 +546,61 @@ class RelayServerEngine {
 			return;
 		}
 		const identity = check.value;
-		const peers = [...this.connections].filter(
-			(other) => other !== connection && other.registration?.deviceId === identity.deviceId,
+		this.completeRegistration(
+			connection,
+			Object.freeze({
+				deviceId: identity.deviceId,
+				keyId: identity.keyId,
+				started: grant.started,
+				expires: grant.expires,
+			}),
+			message.session,
 		);
-		if (peers.some((other) => other.closing) || peers.length > 1) {
+	}
+	private completeRegistration(
+		connection: Connection,
+		registration: Registration,
+		session: string,
+	): void {
+		const peers = [...this.connections].filter(
+			(other) => other !== connection && other.registration?.deviceId === registration.deviceId,
+		);
+		const hadClosingPeer = peers.some((other) => other.closing);
+		// A verified key change invalidates old routes even when the replacement cannot fit.
+		for (const other of peers)
+			if (other.registration?.keyId !== registration.keyId) this.disconnect(other);
+		if (hadClosingPeer || peers.length > 1) {
+			this.disconnect(connection);
+			return;
+		}
+		const reply: RelayControl = {
+			v: 1,
+			type: "REGISTERED",
+			session,
+			body: {
+				deviceId: registration.deviceId,
+				keyId: registration.keyId,
+				authorityId: this.namespace.authorityId,
+				realmId: this.realmId,
+				remainingMs: Math.floor(registration.expires - this.now()),
+			},
+		};
+		if (
+			!this.withinBuffers(connection, {
+				deviceId: registration.deviceId,
+				additionalBytes: Buffer.byteLength(encodeRelayControl(reply)),
+			})
+		) {
 			this.disconnect(connection);
 			return;
 		}
 		for (const other of peers) this.disconnect(other);
-		connection.registration = Object.freeze({
-			deviceId: identity.deviceId,
-			keyId: identity.keyId,
-			started: grant.started,
-			expires: grant.expires,
-		});
+		connection.registration = registration;
 		connection.challenge = undefined;
 		connection.pending = false;
 		connection.phase = "ready";
-		this.registrations.set(identity.deviceId, connection);
-		this.send(connection, {
-			v: 1,
-			type: "REGISTERED",
-			session: message.session,
-			body: {
-				deviceId: identity.deviceId,
-				keyId: identity.keyId,
-				authorityId: this.namespace.authorityId,
-				realmId: this.realmId,
-				remainingMs: Math.floor(grant.expires - this.now()),
-			},
-		});
+		this.registrations.set(registration.deviceId, connection);
+		this.send(connection, reply);
 		this.armConnection(connection);
 	}
 	private reserveRoute(
@@ -793,7 +832,10 @@ class RelayServerEngine {
 		route.bytes += bytes.length;
 		// Already-parsed socket batches may arrive after pauseInput. Charge every retained copy.
 		connection.held += bytes.length;
-		if (!this.withinBuffers() || this.directionQueued(direction) + bytes.length > DIRECTION_BYTES) {
+		if (
+			!this.withinBuffers(connection) ||
+			this.directionQueued(direction) + bytes.length > DIRECTION_BYTES
+		) {
 			connection.held -= bytes.length;
 			this.removeRoute(route, "abort");
 			return;
@@ -850,7 +892,10 @@ class RelayServerEngine {
 		if (!bytes || !target || !this.routeLive(route)) return;
 		if (
 			!this.live(target) ||
-			!this.withinBuffers() ||
+			!this.withinBuffers(target, {
+				additionalBytes: bytes.length,
+				releasedHeld: { connection: direction.sender, bytes: bytes.length },
+			}) ||
 			this.directionQueued(direction) > DIRECTION_BYTES
 		) {
 			this.removeRoute(route, "abort");
@@ -861,7 +906,7 @@ class RelayServerEngine {
 		direction.credit -= bytes.length;
 		direction.writes += bytes.length;
 		target.writes += bytes.length;
-		if (!this.withinBuffers() || this.directionQueued(direction) > DIRECTION_BYTES) {
+		if (!this.withinBuffers(target) || this.directionQueued(direction) > DIRECTION_BYTES) {
 			target.writes -= bytes.length;
 			direction.writes -= bytes.length;
 			this.removeRoute(route, "abort");
@@ -878,7 +923,7 @@ class RelayServerEngine {
 				else if (this.routeLive(route)) this.flushEnd(route, direction);
 				this.updatePressure();
 			});
-			if (!this.withinBuffers() || this.directionQueued(direction) > DIRECTION_BYTES)
+			if (!this.withinBuffers(target) || this.directionQueued(direction) > DIRECTION_BYTES)
 				this.removeRoute(route, "abort");
 			this.updatePressure();
 		} catch {
@@ -904,7 +949,8 @@ class RelayServerEngine {
 			this.removeRoute(route, "clean");
 	}
 	private socketBytes(connection: Connection): number {
-		if (connection.physicalClosed) return 0;
+		// Physical closure releases adapter writes, while route cleanup still owns held frames.
+		if (connection.physicalClosed) return connection.held;
 		try {
 			const bytes = connection.socket.bufferedBytes();
 			if (!Number.isSafeInteger(bytes) || bytes < 0) return Number.POSITIVE_INFINITY;
@@ -918,20 +964,23 @@ class RelayServerEngine {
 		for (const connection of this.connections) total += this.socketBytes(connection);
 		return total;
 	}
-	private withinBuffers(): boolean {
-		let total = 0;
-		const devices = new Map<string, number>();
-		for (const connection of this.connections) {
-			const bytes = this.socketBytes(connection);
+	private withinBuffers(connection: Connection, change: BufferChange = {}): boolean {
+		const additional = change.additionalBytes ?? 0;
+		const deviceId = change.deviceId ?? connection.registration?.deviceId;
+		let total = additional;
+		let deviceBytes = additional;
+		for (const current of this.connections) {
+			let bytes = this.socketBytes(current);
+			if (change.releasedHeld?.connection === current) bytes -= change.releasedHeld.bytes;
+			if (bytes < 0) return false;
 			total += bytes;
-			if (connection.registration) {
-				const device = connection.registration.deviceId;
-				const count = (devices.get(device) ?? 0) + bytes;
-				if (count > this.limits.deviceQueuedBytes) return false;
-				devices.set(device, count);
-			}
+			const currentDevice = current === connection ? deviceId : current.registration?.deviceId;
+			if (deviceId !== undefined && currentDevice === deviceId) deviceBytes += bytes;
 		}
-		return total <= this.limits.queuedBytes;
+		return (
+			total <= this.limits.queuedBytes &&
+			(deviceId === undefined || deviceBytes <= this.limits.deviceQueuedBytes)
+		);
 	}
 	private directionQueued(direction: Direction): number {
 		return direction.frames.reduce((sum, frame) => sum + frame.length, direction.writes);

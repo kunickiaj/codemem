@@ -8,6 +8,8 @@ import {
 	deferred,
 	fakeSocket,
 	finiteLimits,
+	modelNativeBuffer,
+	SESSION,
 	serverFixture,
 	settle,
 	terminal,
@@ -250,6 +252,107 @@ describe("socket registration", () => {
 		const fourth = await f.register();
 		expect(second.close).toHaveBeenCalledOnce();
 		expect(fourth.close).not.toHaveBeenCalled();
+	});
+});
+
+describe("registration device byte attribution", () => {
+	it("denies an over-limit replacement before replacing the active registration or its routes", async () => {
+		// Arrange: two directions retain exactly the device cap on the old source socket.
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		modelNativeBuffer(a);
+		for (const id of [SESSION, reverseId]) {
+			for (let i = 0; i < 4; i++) {
+				b.events.binary(data(65514, id));
+				await settle();
+			}
+		}
+		const replacement = f.adopt();
+		const request = await f.registration(replacement);
+		replacement.buffered = 200;
+		// Act
+		await control(replacement.events, "REGISTER", request.body, request.session);
+		// Assert: candidate bytes must be attributed before changing the active mapping.
+		expect(a.close).not.toHaveBeenCalled();
+		expect(replacement.close).toHaveBeenCalledOnce();
+		expect(replacement.texts.some((m) => m.type === "REGISTERED")).toBe(false);
+		expect(f.server.counters()).toMatchObject({ sockets: 3, pendingSockets: 1, routes: 2 });
+		expect(a.buffered).toBe(512 * 1024);
+	});
+	it("counts the same socket only once when renewing near the device byte cap", async () => {
+		// Arrange: enough room remains for renewal responses, but not for double attribution.
+		const socket = await f.register();
+		socket.buffered = 512 * 1024 - 2048;
+		f.clock.now = 720000;
+		f.refreshReadiness();
+		const request = await f.registration(socket, "source", { createdAt: 830, admitBefore: 860 });
+		// Act
+		await control(socket.events, "REGISTER", request.body, request.session);
+		// Assert
+		expect(socket.close).not.toHaveBeenCalled();
+		expect(socket.texts.filter((m) => m.type === "REGISTERED")).toHaveLength(2);
+		expect(f.server.counters()).toMatchObject({ sockets: 1, pendingSockets: 0, routes: 0 });
+	});
+});
+
+describe("learned registration key rotation", () => {
+	it("invalidates old-key routes when a current-key replacement exceeds the device byte cap", async () => {
+		// Arrange: retain the old device's bytes even if its logical registration is invalidated.
+		const { a, b, reverseId } = await f.oppositeRoutes();
+		modelNativeBuffer(a);
+		for (const id of [SESSION, reverseId]) {
+			for (let i = 0; i < 4; i++) {
+				b.events.binary(data(65514, id));
+				await settle();
+			}
+		}
+		const oldKeyId = f.source.keyId;
+		f.rotateSourceEnrollment();
+		const replacement = f.adopt();
+		const request = await f.registration(replacement);
+		replacement.buffered = 200;
+		// Act
+		await control(replacement.events, "REGISTER", request.body, request.session);
+		const reply = await f.coordinator.check.mock.results.at(-1)?.value;
+		// Assert: the real coordinator learned rotation even though replacement cannot fit.
+		expect(f.source.keyId).not.toBe(oldKeyId);
+		expect(JSON.parse(new TextDecoder().decode(reply))).toMatchObject({
+			registered: true,
+			keyId: f.source.keyId,
+		});
+		expect(a.close).toHaveBeenCalledOnce();
+		expect(replacement.close).toHaveBeenCalledOnce();
+		expect(replacement.texts.some((m) => m.type === "REGISTERED")).toBe(false);
+		expect(b.close).not.toHaveBeenCalled();
+		expect(f.server.counters()).toMatchObject({
+			sockets: 3,
+			routes: 0,
+			queuedBytes: 512 * 1024 + 200,
+		});
+	});
+	it("invalidates an active old key before denying a third registration beside a closing peer", async () => {
+		// Arrange: one old-key socket is closing and a same-key replacement is still active.
+		const first = await f.register();
+		const active = await f.register();
+		const target = await f.register("target");
+		const open = await f.openPacket();
+		await active.events.text(bytes(encodeRelayControl(open)));
+		await control(target.events, "ACCEPTED");
+		f.rotateSourceEnrollment();
+		const replacement = f.adopt();
+		const request = await f.registration(replacement);
+		// Act
+		await control(replacement.events, "REGISTER", request.body, request.session);
+		const reply = await f.coordinator.check.mock.results.at(-1)?.value;
+		// Assert: physical replacement limits cannot preserve a key known to be outdated.
+		expect(JSON.parse(new TextDecoder().decode(reply))).toMatchObject({
+			registered: true,
+			keyId: f.source.keyId,
+		});
+		expect(first.close).toHaveBeenCalledOnce();
+		expect(active.close).toHaveBeenCalledOnce();
+		expect(replacement.close).toHaveBeenCalledOnce();
+		expect(target.close).not.toHaveBeenCalled();
+		expect(f.server.counters()).toMatchObject({ sockets: 4, routes: 0 });
 	});
 });
 
