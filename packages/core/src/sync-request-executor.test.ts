@@ -441,11 +441,12 @@ it("isolates overlapping sync invocations and restores default behavior when omi
 	const held = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	const first = vi.fn<RequestJsonExecutor>(async (_method, url) => {
+	const first = vi.fn<RequestJsonExecutor>(async (method, url) => {
 		if (url.endsWith("/v1/status")) {
 			await held;
 			return [200, statusPayload()];
 		}
+		if (method === "POST") return [200, { applied: 0, skipped: 0, errors: [] }];
 		return [200, emptyOps()];
 	});
 	const second = vi.fn<RequestJsonExecutor>(async (_method, url) => {
@@ -467,7 +468,9 @@ it("isolates overlapping sync invocations and restores default behavior when omi
 	// Assert
 	expect(results[0]?.ok).toBe(true);
 	expect(results[1]?.error).toContain("second executor");
-	expect(first).toHaveBeenCalledTimes(2);
+	expect(first).toHaveBeenCalledTimes(3);
+	expect(first.mock.calls.map(([method]) => method)).toEqual(["GET", "GET", "POST"]);
+	expect(first.mock.calls[2]?.[2]?.body?.ops).toEqual([]);
 	expect(second).toHaveBeenCalledOnce();
 	expect(omitted.error).toContain("default executor");
 	expect(http.requestJson).toHaveBeenCalledOnce();

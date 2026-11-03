@@ -37,6 +37,12 @@ import { ensureMemoryScopeId } from "./scope-stamping.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
 import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
+import {
+	ensureSyncTransferActivitySchema,
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+	type SyncTransferObservationSource,
+} from "./sync-transfer-activity.js";
 import { deriveTags } from "./tags.js";
 import type {
 	ReplicationOp,
@@ -2823,6 +2829,10 @@ export interface InboundScopeValidationOptions {
 }
 
 export interface ApplyReplicationOpsOptions extends LocalCreationContext {
+	/** Authenticated transport peer, for durable applied-mutation accounting. */
+	activityPeerDeviceId?: string;
+	/** Keep incoming requests from resolving failures owned by local cursor retries. */
+	activitySource?: SyncTransferObservationSource;
 	inboundScopeValidation?: InboundScopeValidationOptions | null;
 	keysDir?: string;
 }
@@ -3661,8 +3671,11 @@ function finishReplicationOp(
 		opVectorWork: Map<number, "upsert" | "delete">;
 		upsertMemoryIds: Set<number>;
 		deleteMemoryIds: Set<number>;
+		activityPeer?: string;
 	},
+	opId: string,
 ): void {
+	recordAppliedReceipt(db, effects.activityPeer, result.applied, opId);
 	db.exec("RELEASE codemem_replication_op");
 	effects.batchResult.applied += result.applied;
 	effects.batchResult.skipped += result.skipped;
@@ -3677,6 +3690,15 @@ function finishReplicationOp(
 			effects.deleteMemoryIds.add(memoryId);
 		}
 	}
+}
+
+function recordAppliedReceipt(
+	db: Database,
+	peer: string | undefined,
+	applied: number,
+	opId: string,
+): void {
+	if (peer && applied > 0) recordSyncTransferReceipts(db, peer, "receive", [opId]);
 }
 
 function applyAccessCleanupForLocalDevice(
@@ -3721,6 +3743,40 @@ export function applyReplicationOps(
 	scanner?: SecretScanner,
 	options: ApplyReplicationOpsOptions = {},
 ): ApplyResult {
+	const peer = options.activityPeerDeviceId;
+	if (!peer) return applyReplicationOpsInternal(db, ops, localDeviceId, scanner, options);
+	ensureSyncTransferActivitySchema(db);
+	try {
+		return db.transaction(() => {
+			const result = applyReplicationOpsInternal(db, ops, localDeviceId, scanner, {
+				...options,
+				activityPeerDeviceId: peer,
+			});
+			let errorCode: "scope_rejected" | "apply_failed" | undefined;
+			if (result.rejected > 0) errorCode = "scope_rejected";
+			else if (result.errors.length > 0) errorCode = "apply_failed";
+			recordSyncTransferObservation(db, peer, "receive", {
+				errorCode,
+				source: options.activitySource,
+			});
+			return result;
+		})();
+	} catch (error) {
+		recordSyncTransferObservation(db, peer, "receive", {
+			errorCode: "apply_failed",
+			source: options.activitySource,
+		});
+		throw error;
+	}
+}
+
+function applyReplicationOpsInternal(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	scanner: SecretScanner | undefined,
+	options: ApplyReplicationOpsOptions,
+): ApplyResult {
 	const d = drizzle(db, { schema });
 	// Peer-shipped content goes through the same redaction policy as
 	// locally-authored writes. Callers that maintain their own scanner
@@ -3728,11 +3784,8 @@ export function applyReplicationOps(
 	// rule overrides apply uniformly. Otherwise fall back to defaults.
 	const activeScanner = scanner ?? new SecretScanner();
 	const result: ApplyResult = emptyApplyResult();
-	const inboundScopeValidation = options.inboundScopeValidation;
-	if (inboundScopeValidation) {
-		const rejected = rejectUnretiredScopeFailures(db, ops, localDeviceId, inboundScopeValidation);
-		if (rejected) return rejected;
-	}
+	const rejected = rejectedInboundBatch(db, ops, localDeviceId, options);
+	if (rejected) return rejected;
 	const upsertMemoryIds = new Set<number>();
 	const deleteMemoryIds = new Set<number>();
 	const opVectorWork = new Map<number, "upsert" | "delete">();
@@ -3747,7 +3800,13 @@ export function applyReplicationOps(
 	const applyAccessCleanupOp = (op: ReplicationOp): boolean =>
 		applyAccessCleanupForLocalDevice(db, d, op, { localDeviceId, queueVectorDelete });
 
-	const effects = { batchResult: result, opVectorWork, upsertMemoryIds, deleteMemoryIds };
+	const effects = {
+		batchResult: result,
+		opVectorWork,
+		upsertMemoryIds,
+		deleteMemoryIds,
+		activityPeer: options.activityPeerDeviceId,
+	};
 	const applyAll = db.transaction(() => {
 		for (const op of ops) {
 			const result = emptyApplyResult();
@@ -4120,17 +4179,50 @@ export function applyReplicationOps(
 				rollbackReplicationOp(db, result, opVectorWork);
 				result.errors.push(`op ${op.op_id}: ${err instanceof Error ? err.message : String(err)}`);
 			} finally {
-				finishReplicationOp(db, result, effects);
+				finishReplicationOp(db, result, effects, op.op_id);
 			}
 		}
 	});
 
+	return completeAppliedReplicationOps(applyAll, result, upsertMemoryIds, deleteMemoryIds);
+}
+
+function completeAppliedReplicationOps(
+	applyAll: () => void,
+	result: ApplyResult,
+	upsertMemoryIds: Set<number>,
+	deleteMemoryIds: Set<number>,
+): ApplyResult {
 	applyAll();
 	result.vectorWork = {
 		upsertMemoryIds: [...upsertMemoryIds],
 		deleteMemoryIds: [...deleteMemoryIds],
 	};
 	return result;
+}
+
+function rejectedInboundBatch(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: ApplyReplicationOpsOptions,
+): ApplyResult | null {
+	if (!options.inboundScopeValidation) return null;
+	return rejectUnretiredScopeFailures(db, ops, localDeviceId, options.inboundScopeValidation);
+}
+
+/** Apply authenticated inbound operations using the caller's scanner and scope policy. */
+export function applyPeerReplicationOps(
+	store: { db: Database; scanner: SecretScanner },
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	options: ApplyReplicationOpsOptions & { peerDeviceId: string },
+): ApplyResult {
+	return applyReplicationOps(store.db, ops, localDeviceId, store.scanner, {
+		...options,
+		activityPeerDeviceId: options.peerDeviceId,
+		activitySource: "inbound",
+	});
 }
 
 /** Insert a replication op row into the replication_ops table (ignore on conflict). */
