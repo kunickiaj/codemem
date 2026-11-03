@@ -765,7 +765,12 @@ describe("Devices cached snapshot aliases", () => {
 			}
 			const stableDeviceDetails = () =>
 				[...(deviceRow()?.querySelectorAll("td:not(.devices-table-sync)") ?? [])]
-					.map((cell) => cell.textContent)
+					.map((cell) =>
+						cell.textContent?.replace(
+							cell.querySelector(".sync-health-state")?.textContent ?? "",
+							"",
+						),
+					)
 					.join("");
 			const before = stableDeviceDetails();
 			mocks.loadRecipientPolicyIntent.mockRejectedValueOnce(new Error("intent unavailable"));
@@ -773,7 +778,7 @@ describe("Devices cached snapshot aliases", () => {
 				await vi.advanceTimersByTimeAsync(5_100);
 			});
 			expect(stableDeviceDetails()).toBe(before);
-			expect(deviceRow()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			expect(deviceRow()?.querySelector(".sync-health-state")?.textContent).toContain(
 				"Not verified",
 			);
 			const panel = document.getElementById("tab-devices");
@@ -1048,7 +1053,7 @@ describe("Devices app sync health", () => {
 		});
 		const row = document.getElementById("device-identity-card-device-private");
 		expect(row?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Acknowledged (24h): Not verified",
+			"Acknowledged operations in 24 hours: Not verified",
 		);
 		expect(row?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 4");
 		const action = workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
@@ -1141,14 +1146,16 @@ describe("Devices sync evidence refresh", () => {
 		const text = document
 			.getElementById("device-identity-card-device-private")
 			?.querySelector(".devices-table-sync")?.textContent;
-		expect(text).toContain("Sending: Not verified");
-		expect(text).toContain("Acknowledged (24h): Not verified");
-		expect(text).toContain("Receiving: Exchange succeeded");
-		expect(text).toContain("Applied (24h): 4");
+		expect(text).toContain("Sent: Not verified");
+		expect(text).toContain("Acknowledged operations in 24 hours: Not verified");
+		expect(text).toContain("Received: OK");
+		expect(text).toContain("Applied operations in 24 hours: 4");
 		expect(text).not.toContain("99");
-		expect(document.getElementById("tab-devices")?.textContent).toContain(
-			"2 paired devices · 0 need attention · 1 not verified",
-		);
+		expect(
+			[...document.querySelectorAll("#tab-devices .sync-health-kpis dd")].map(
+				(node) => node.textContent,
+			),
+		).toEqual(["2", "0", "1"]);
 	});
 });
 
@@ -1200,7 +1207,9 @@ describe("Devices sync evidence outage", () => {
 			await vi.advanceTimersByTimeAsync(5_100);
 		});
 		const row = () => document.getElementById("device-identity-card-device-private");
-		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain("Applied (24h): 3");
+		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
+			"Applied operations in 24 hours: 3",
+		);
 		mocks.loadSyncData.mockResolvedValueOnce(false);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(5_100);
@@ -1209,7 +1218,7 @@ describe("Devices sync evidence outage", () => {
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain(
 			"Applied (24h): 3",
 		);
-		expect(document.getElementById("tab-devices")?.textContent).not.toContain("Recent exchange");
+		expect(document.getElementById("tab-devices")?.textContent).not.toContain("OK");
 		expect(
 			workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.disabled,
 		).toBe(true);

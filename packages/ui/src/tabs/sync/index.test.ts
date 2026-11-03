@@ -196,12 +196,12 @@ describe("sync directional health payload", () => {
 		expect(await loadSyncData()).toBe(true);
 		expect(state.lastSyncStatus?.sync_health).toEqual(health);
 		expect(state.lastSyncPeers[0]?.sync_health?.send).toEqual(direction);
-		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).toBe("Recent exchange");
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).toBe("OK");
 		vi.mocked(api.loadSyncStatus).mockRejectedValueOnce(new Error("status unavailable"));
 		expect(await loadSyncData({ requireFreshSyncStatus: true })).toBe(false);
 		expect(state.lastSyncStatus?.sync_health).toBeNull();
 		expect(state.lastSyncPeers[0]?.sync_health).toBeNull();
-		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).not.toBe("Recent exchange");
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).not.toBe("OK");
 		const renders = vi.mocked(renderTeamSync).mock.calls.length;
 		// Act: the payload is byte-identical to the one before failure.
 		expect(await loadSyncData({ requireFreshSyncStatus: true })).toBe(true);

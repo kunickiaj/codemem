@@ -202,6 +202,12 @@ afterEach(() => {
 	state.pendingDeviceIdentityFocus = undefined;
 });
 
+function syncSuccessValues(sync: Element | null | undefined) {
+	return [...(sync?.querySelectorAll("details dd:first-of-type") ?? [])].map(
+		(node) => node.textContent,
+	);
+}
+
 describe("Devices sync health", () => {
 	it("shows per-peer sync status and runs a sync only for that device", async () => {
 		const onSyncDevice = vi.fn(async () => ({
@@ -225,9 +231,9 @@ describe("Devices sync health", () => {
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
 		const sync = row?.querySelector(".devices-table-sync");
 		// Legacy contact and counters do not prove directional replication.
-		expect(sync?.textContent).toContain("Sending: Not verified");
-		expect(sync?.textContent).toContain("Receiving: Not verified");
-		expect(sync?.textContent).toContain("Last success: Not verified");
+		expect(sync?.textContent).toContain("Sent: Not verified");
+		expect(sync?.textContent).toContain("Received: Not verified");
+		expect(syncSuccessValues(sync)).toEqual(["Not verified", "Not verified"]);
 		expect(sync?.textContent).not.toContain("received 7 · sent 3");
 		const action = [
 			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
@@ -275,9 +281,7 @@ describe("Devices sync health", () => {
 		expect(
 			document.getElementById("device-identity-card-device-address-fingerprint-secret"),
 		).toBeNull();
-		expect(unpaired?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Not paired here",
-		);
+		expect(unpaired?.querySelector(".sync-health-state")?.textContent).toContain("Not paired here");
 		expect(document.querySelectorAll('[aria-label="Sync Work Laptop"]')).toHaveLength(0);
 		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
 		mount(intent(), reconciliation(), {
@@ -317,10 +321,79 @@ describe("Devices sync health", () => {
 		expect(
 			document
 				.getElementById("device-identity-card-unpaired-device")
-				?.querySelector(".devices-table-sync")?.textContent,
+				?.querySelector(".sync-health-state")?.textContent,
 		).toContain("Not verified");
 		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
 	});
+});
+
+describe("Devices peer state presentation", () => {
+	function peerEvidence() {
+		const succeeded = {
+			state: "succeeded" as const,
+			last_success_at: "2026-11-02T18:00:00Z",
+			last_attempt_at: "2026-11-02T18:00:00Z",
+			operations_24h: 2,
+			pending_count: null,
+			reason_code: null,
+		};
+		return {
+			deviceId: "device-address-fingerprint-secret",
+			paired: true,
+			status: "ok" as const,
+			lastSyncAt: null,
+			recentIn: null,
+			recentOut: null,
+			statusAvailable: true,
+			syncHealth: { state: "needs_attention" as const, send: succeeded, receive: succeeded },
+		};
+	}
+
+	it("keeps peer attention visible beside its name when both directions succeeded", () => {
+		// Arrange: the peer-level result contains evidence that direction results cannot override.
+		const peer = peerEvidence();
+		// Act
+		mount(intent(), reconciliation(), { peerSyncMetadata: [peer] });
+		// Assert
+		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		const name = row?.querySelector(".devices-table-device");
+		expect(name?.textContent).toContain("Work Laptop");
+		expect(name?.querySelector(".sync-health-state")?.textContent).toContain("Needs attention");
+		expect(name?.querySelector(".sync-health-state")?.closest("details")).toBeNull();
+		expect(row?.querySelectorAll(".device-sync-direction[data-state='succeeded']")).toHaveLength(2);
+		expect(row?.textContent).not.toMatch(/caught up|up to date/i);
+	});
+
+	it.each(["syncStatusUnavailable", "refreshError", "peerUnavailable"] as const)(
+		"replaces retained success in the name and directions when %s",
+		(unavailable) => {
+			// Arrange
+			const peer = {
+				...peerEvidence(),
+				syncHealth: { ...peerEvidence().syncHealth, state: "exchange_succeeded" as const },
+			};
+			mount(intent(), reconciliation(), { peerSyncMetadata: [peer] });
+			const row = () =>
+				document.getElementById("device-identity-card-device-address-fingerprint-secret");
+			expect(row()?.querySelector(".sync-health-state")?.textContent).toContain("OK");
+			// Act
+			mount(intent(), reconciliation(), {
+				peerSyncMetadata: [{ ...peer, statusAvailable: unavailable !== "peerUnavailable" }],
+				syncStatusUnavailable: unavailable === "syncStatusUnavailable",
+				refreshError: unavailable === "refreshError",
+			});
+			// Assert
+			expect(
+				row()?.querySelector(".devices-table-device .sync-health-state")?.textContent,
+			).toContain("Not verified");
+			expect(
+				[...(row()?.querySelectorAll(".device-sync-freshness") ?? [])].map(
+					(node) => node.textContent,
+				),
+			).toEqual(["Not verified", "Not verified"]);
+			expect(row()?.textContent).not.toMatch(/\bOK\b|caught up|up to date/i);
+		},
+	);
 });
 
 describe("Devices sync peer identity", () => {
@@ -1689,7 +1762,9 @@ describe("Device identity grouping", () => {
 		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
 			"Adam & Co · 1 device",
 		);
-		expect(table.textContent).toContain("Work LaptopAvailable—");
+		expect(table.querySelector(".devices-table-device > strong")?.textContent).toBe("Work Laptop");
+		expect(table.querySelector(".devices-table-availability")?.textContent).toBe("Available");
+		expect(table.querySelector(".devices-table-version")?.textContent).toBe("—");
 		expect(table.textContent).not.toContain("Owning Identity");
 		expect(table.textContent).not.toContain("Per-device Team access");
 		expect(document.body.textContent).toContain("Changing access stops future delivery");
@@ -1958,7 +2033,10 @@ describe("Device safe rendering", () => {
 		});
 
 		const text = document.body.textContent ?? "";
-		expect(text).toContain("Work LaptopAvailable");
+		expect(document.querySelector(".devices-table-device > strong")?.textContent).toBe(
+			"Work Laptop",
+		);
+		expect(document.querySelector(".devices-table-availability")?.textContent).toBe("Available");
 		expect(text).toContain("Setup required");
 		expect(text).toContain("Pair this device first");
 		expect(text).toContain("Device evidence conflicts");

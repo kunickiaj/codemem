@@ -236,7 +236,7 @@ it("renders the four compact health tiles in contract order", () => {
 });
 
 it.each([
-	["exchange_succeeded", "Recent exchange", "online", 0, 0, 0],
+	["exchange_succeeded", "OK", "online", 0, 0, 0],
 	["needs_attention", "Needs attention", "attention", 1, 0, 0],
 	["not_verified", "Not verified", "unknown", 0, 1, 0],
 	["stale", "Stale", "degraded", 0, 0, 1],

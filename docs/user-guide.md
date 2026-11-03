@@ -664,23 +664,26 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 These screenshots use fictional devices. **Laptop** is the local device. **Studio** has recent exchanges in both directions, **Workshop** has received operations but has no observed send, and **Notebook** has a failed send.
 
-![Devices sync status in the dark theme](images/docs-devices-sync-dark.png)
-
-![Devices sync status in the light theme](images/docs-devices-sync-light.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/docs-devices-sync-dark.png">
+  <img alt="Devices with an overall sync summary and separate sending and receiving activity" src="images/docs-devices-sync-light.png">
+</picture>
 
 Use **Rename device** on a configured row in **Devices** to change its friendly name. A coordinator-enrolled device is renamed in every configured group where it is enrolled; if one group fails, retry the same name after the coordinator recovers. A device without coordinator enrollment gets a name local to this installation. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
 
-The **Sync** column shows a paired device's send and receive checks separately from availability. It shows **acknowledged operations** for sending and **applied operations** for receiving during the past 24 hours, starting when this installation began recording activity. Retried operations count once. An acknowledgment means the remote endpoint accepted the batch without reporting apply errors. It can include operations the peer already had or intentionally skipped. Snapshot entries have a separate counter.
+Each device name carries its overall sync state. The **Sync** column shows **Sent** and **Received** activity for the **Last 24h**, with relative freshness. Sent counts **acknowledged operations**, and Received counts **applied operations**, starting when this installation began recording activity. Retried operations count once. An acknowledgment means the remote endpoint accepted the batch without reporting apply errors. It can include operations the peer already had or intentionally skipped.
+
+Open **Sync details** for exact timestamps, count definitions, snapshot counts, tracking coverage, queued work, and recovery guidance. Failures remain visible when details are closed. An unknown activity count appears as **—** rather than zero. See the [expanded example](images/docs-devices-sync-details-dark.png).
 
 An idle check can succeed with zero operations. Codemem retains operation and snapshot revision IDs beyond the display window to avoid counting retries again. This tracking uses additional database space as activity accumulates.
 
-**Recent exchange** means both directions have recent successful observations. It does not prove that every page of eligible data has transferred. **Backlog: Not verified** means Codemem has not measured the remaining work. It does not mean zero pending operations.
+**Sync: OK** means both directions have recent successful checks. It does not prove that every page of eligible data has transferred. In **Sync details**, **Queued for sync: Unknown** means Codemem has not measured the remaining work. It does not mean zero pending operations.
 
 Sync starts as **Not verified** after an upgrade until Codemem observes the direction. Older history can also be unknown, so Devices leaves its time and counters unavailable instead of treating them as zero. A successful exchange with one peer does not hide another peer that is unknown, stale, or needs attention. An unpaired device does not show zeroes as though it had synced. If the status refresh fails, Devices hides stale counts and disables manual sync until a successful refresh. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
 
 | Sync check | Meaning | What to do |
 | --- | --- | --- |
-| Recent exchange | Codemem observed successful send and receive checks for the peer. | Review each direction's timestamps and backlog status. |
+| OK | Codemem observed successful send and receive checks for the peer. | Open **Sync details** to review exact timestamps and queued work. |
 | Not verified | Codemem has not observed that direction yet. | Wait for the next sync or run **Sync this device**. |
 | Stale | The last observed check is older than the current freshness window. | Check that the device can connect, then retry sync. |
 | Needs attention | A send or receive check reported a problem. | Open **Advanced → Sync** for the reason and retry after resolving it. |
