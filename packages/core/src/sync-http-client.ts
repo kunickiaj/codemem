@@ -53,6 +53,7 @@ export interface RequestJsonOptions {
 	timeoutS?: number;
 	maxResponseBytes?: number;
 	redirect?: "error";
+	signal?: AbortSignal;
 }
 
 export type RequestJsonExecutor = typeof requestJson;
@@ -97,6 +98,11 @@ function buildRequestHeaders(options: {
 	return headers;
 }
 
+function requestSignal(timeoutS: number, signal?: AbortSignal): AbortSignal {
+	const timeout = AbortSignal.timeout(Math.round(timeoutS * 1000));
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 /**
  * Send an HTTP request and parse the JSON response.
  *
@@ -123,7 +129,7 @@ export async function requestJson(
 		headers: isolateDirectPeerConnection(requestHeaders),
 		body: requestBody,
 		redirect: requestRedirectPolicy(requestHeaders, options.redirect),
-		signal: AbortSignal.timeout(Math.round(timeoutS * 1_000)),
+		signal: requestSignal(timeoutS, options.signal),
 	});
 
 	let raw: string;

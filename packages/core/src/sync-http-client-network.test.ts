@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import { requestJson } from "./sync-http-client.js";
 
@@ -46,6 +47,40 @@ interface ReceivedRequest {
 }
 
 describe("requestJson direct-peer socket isolation", () => {
+	it("aborts an in-flight caller request and closes its socket without retry", async () => {
+		// Arrange: the loopback peer cancels on receipt, without timer-based coordination.
+		const controller = new AbortController();
+		const socketClosed = Promise.withResolvers<void>();
+		let requests = 0;
+		const receiver = createServer((request) => {
+			requests++;
+			request.socket.once("close", () => socketClosed.resolve());
+			controller.abort(new Error("caller cancelled"));
+		});
+		receiver.listen(0, "127.0.0.1");
+		await once(receiver, "listening");
+		const address = receiver.address();
+		if (!address || typeof address === "string") throw new Error("Missing loopback port");
+		try {
+			// Act.
+			const request = requestJson("POST", `http://127.0.0.1:${address.port}/sync`, {
+				headers: { "X-Codemem-Recipient": "peer-b" },
+				body: { ops: [] },
+				signal: controller.signal,
+				timeoutS: 30,
+			});
+			// Assert: caller cancellation takes effect before the request timeout.
+			await expect(request).rejects.toThrow("caller cancelled");
+			await socketClosed.promise;
+			expect(requests).toBe(1);
+		} finally {
+			receiver.closeAllConnections();
+			await new Promise<void>((resolve, reject) => {
+				receiver.close((error) => (error ? reject(error) : resolve()));
+			});
+		}
+	});
+
 	it("uses fresh closed connections for GET, scoped GET, and POST across sender stalls", async () => {
 		// Arrange: no external service, global dispatcher changes, or fake clocks.
 		const receiver = spawn(process.execPath, ["--input-type=module", "--eval", RECEIVER_SOURCE], {
