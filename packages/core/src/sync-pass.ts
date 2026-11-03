@@ -785,6 +785,50 @@ function mergedReceiveVectorWork(
 	};
 }
 
+interface ScopedPeerPullOptions {
+	peerDeviceId: string;
+	baseUrl: string;
+	deviceId: string;
+	scope: PeerAuthorizedScope;
+	requestExecutor: RequestJsonExecutor;
+	keysDir?: string;
+	dbPath?: string;
+	scanner?: SecretScanner;
+	limit: number;
+	/** Explicit per-peer completion overrides the legacy marker, including on boundary changes. */
+	completedNullBaseline?: boolean;
+	sourceDeviceId?: string;
+	validateCurrentAuthorization?: () => void;
+	/** Must finish synchronously before the inbound cursor can be cleared. */
+	invalidateCompletedBoundary?: () => void;
+}
+
+function resetScopedPullProgress(db: Database, options: ScopedPeerPullOptions): void {
+	// Dropping completion first prevents an interrupted reset from skipping recovery.
+	options.invalidateCompletedBoundary?.();
+	clearReplicationCursorLastApplied(db, options.peerDeviceId, options.scope.scope_id);
+}
+
+function scopedNullBaselineIsCurrent(options: {
+	marker: boolean;
+	completed?: boolean;
+	baseline: string | null;
+}): boolean {
+	return (options.completed ?? options.marker) && options.baseline == null;
+}
+
+function scopedBootstrapOptions(options: ScopedPeerPullOptions) {
+	return {
+		requestExecutor: options.requestExecutor,
+		keysDir: options.keysDir,
+		dbPath: options.dbPath,
+		recipientId: options.peerDeviceId,
+		pageSize: BOOTSTRAP_PAGE_SIZE,
+		timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
+		sourceDeviceId: options.sourceDeviceId,
+	};
+}
+
 /**
  * Sync a single Sharing-domain scope with a peer. Caller is responsible for
  * having already authenticated against the peer (via legacy default-scope
@@ -806,32 +850,18 @@ function mergedReceiveVectorWork(
  */
 async function syncOneScope(
 	db: Database,
-	options: {
-		peerDeviceId: string;
-		baseUrl: string;
-		deviceId: string;
-		scope: PeerAuthorizedScope;
-		requestExecutor: RequestJsonExecutor;
-		keysDir?: string;
-		dbPath?: string;
-		scanner?: SecretScanner;
-		limit: number;
-	},
+	options: ScopedPeerPullOptions,
 ): Promise<SyncScopeResult> {
 	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, dbPath, scanner, limit } = options;
-	const bootstrapOptions = {
-		requestExecutor: options.requestExecutor,
-		keysDir,
-		dbPath,
-		recipientId: peerDeviceId,
-		pageSize: BOOTSTRAP_PAGE_SIZE,
-		timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
-	};
+	const bootstrapOptions = scopedBootstrapOptions(options);
 	const scopeId = scope.scope_id;
 	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scopeId);
 	const hasNullBaselineBootstrapMarker = lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
-	const nullBaselineBootstrapStillCurrent =
-		hasNullBaselineBootstrapMarker && scope.sync_reset.baseline_cursor == null;
+	const nullBaselineBootstrapStillCurrent = scopedNullBaselineIsCurrent({
+		marker: hasNullBaselineBootstrapMarker,
+		completed: options.completedNullBaseline,
+		baseline: scope.sync_reset.baseline_cursor,
+	});
 	const localRowsPresent = hasLocalRowsInScope(db, scopeId);
 	const shouldMergeRecoverScope =
 		lastApplied == null && localRowsPresent && !nullBaselineBootstrapStillCurrent;
@@ -884,6 +914,7 @@ async function syncOneScope(
 				reason: "initial_bootstrap" as SyncResetRequired["reason"],
 			};
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
+			options.validateCurrentAuthorization?.();
 			const mergeResult = mergeBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!mergeResult.ok) {
 				const error = "scoped merge bootstrap apply failed";
@@ -937,6 +968,7 @@ async function syncOneScope(
 				reason: "initial_bootstrap" as SyncResetRequired["reason"],
 			};
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
+			options.validateCurrentAuthorization?.();
 			// TOCTOU re-check: another process (CLI write, plugin, concurrent
 			// sync pass) could have created shared memories in this scope while
 			// the snapshot was downloading. applyBootstrapSnapshot wipes all
@@ -1021,6 +1053,7 @@ async function syncOneScope(
 			...capabilityHeader(),
 		};
 		const [status, payload] = await options.requestExecutor("GET", url, { headers });
+		options.validateCurrentAuthorization?.();
 
 		if (status === 409 && payload?.reset_required === true) {
 			// Per-scope reset requested. Clear the stale scoped cursor so the
@@ -1028,7 +1061,7 @@ async function syncOneScope(
 			// same invalid boundary forever. We deliberately do not auto-bootstrap from here
 			// to avoid surprising state changes mid-loop; the default-scope
 			// auto-bootstrap path remains the canonical recovery mechanism.
-			clearReplicationCursorLastApplied(db, peerDeviceId, scopeId);
+			resetScopedPullProgress(db, options);
 			const reason = ((): SyncResetRequired["reason"] => {
 				switch (payload.reason) {
 					case "generation_mismatch":
@@ -1158,6 +1191,7 @@ async function syncOneScope(
 			}
 		}
 
+		options.validateCurrentAuthorization?.();
 		const inboundCursorCandidate = asOptionalCursor(payload.next_cursor);
 		// Never advance the inbound cursor past a pass that had apply errors: a
 		// failed op that was not durably recorded would otherwise be skipped
@@ -1212,6 +1246,9 @@ async function syncOneScope(
 		};
 	}
 }
+
+// Internal transport entrypoint. The caller authenticates one selected scope first.
+export { syncOneScope as syncScopedPeerPull };
 
 // ---------------------------------------------------------------------------
 // Preflight
