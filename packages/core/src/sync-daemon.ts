@@ -24,12 +24,15 @@ import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { DeviceIdentityError, ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
+import type { SyncReachabilityOptions } from "./sync-reachability-pass.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface SyncDaemonOptions {
+	/** Explicit programmatic relay integration. The caller owns the client lifecycle. */
+	reachability?: SyncReachabilityOptions;
 	host?: string;
 	port?: number;
 	intervalS?: number;
@@ -250,6 +253,7 @@ export async function syncDaemonTick(
 	stalePeers?: Set<string>,
 	scanner?: SecretScanner,
 	dbPath?: string,
+	reachability?: SyncReachabilityOptions,
 ): Promise<SyncTickResult[]> {
 	const hasPinnedFingerprint = tableColumnExists(db, "sync_peers", "pinned_fingerprint");
 	const rows = db
@@ -295,6 +299,7 @@ export async function syncDaemonTick(
 			dbPath,
 			limit: opsLimit,
 			scanner,
+			reachability,
 		});
 		results.push({
 			ok: result.ok,
@@ -362,7 +367,14 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 	// are not blocked by large sync preflight work on the main request path.
 	return new Promise<void>((resolve) => {
 		const runTick = createSerializedDaemonTickRunner(
-			() => runTickOnce(dbPath, keysDir, scanner, onAfterCoordinatorRefresh),
+			() =>
+				runTickOnce(
+					dbPath,
+					keysDir,
+					scanner,
+					onAfterCoordinatorRefresh,
+					daemonReachability(options),
+				),
 			() => onPhaseChange?.("running"),
 		);
 
@@ -423,6 +435,7 @@ export async function runTickOnce(
 	keysDir?: string,
 	scanner?: SecretScanner,
 	onAfterCoordinatorRefresh?: SyncDaemonTickCallback,
+	reachability?: SyncReachabilityOptions,
 ): Promise<void> {
 	const resolvedKeysDir = resolveSyncDaemonKeysDir(keysDir);
 	const db = connectDb(dbPath);
@@ -444,12 +457,23 @@ export async function runTickOnce(
 			callbackFailed = true;
 			reportSyncDaemonError(db, error, { prefix: "daemon tick callback failed" });
 		}
+		if (reachability && db.prepare("SELECT 1 FROM sync_peers LIMIT 1").get()) {
+			const { maintainSyncReachability } = await import("./sync-reachability-pass.js");
+			await maintainSyncReachability(reachability);
+		}
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
 		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir, {
 			peers: coordinatorPeers ?? undefined,
 		});
-		const results = await syncDaemonTick(db, resolvedKeysDir, stalePeers, scanner, dbPath);
+		const results = await syncDaemonTick(
+			db,
+			resolvedKeysDir,
+			stalePeers,
+			scanner,
+			dbPath,
+			reachability,
+		);
 		const needsAttention = results.some((r) => !r.ok && r.error?.includes("needs_attention"));
 		if (needsAttention) {
 			setSyncDaemonPhase(db, "needs_attention");
@@ -464,4 +488,14 @@ export async function runTickOnce(
 	} finally {
 		db.close();
 	}
+}
+
+function daemonReachability(options?: SyncDaemonOptions): SyncReachabilityOptions | undefined {
+	const reachability = options?.reachability;
+	if (!reachability) return undefined;
+	let signal = options?.signal ?? reachability.signal;
+	if (options?.signal && reachability.signal)
+		signal = AbortSignal.any([options.signal, reachability.signal]);
+	// A daemon tick starts a new pass. Absolute deadlines apply only to one-shot calls.
+	return { ...reachability, signal, deadlineMs: undefined };
 }

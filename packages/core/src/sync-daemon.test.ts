@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { columnExists, connect } from "./db.js";
@@ -17,11 +18,174 @@ import {
 	setSyncDaemonPhase,
 	syncDaemonTick,
 } from "./sync-daemon.js";
+import * as syncIdentity from "./sync-identity.js";
 import { ensureDeviceIdentity, resolveKeyPaths } from "./sync-identity.js";
+import * as reachabilityPass from "./sync-reachability-pass.js";
 
 import { initTestSchema } from "./test-utils.js";
 
 const ORIGINAL_KEYS_DIR = process.env.CODEMEM_KEYS_DIR;
+
+describe("daemon reachability wiring", () => {
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		const { coordinatorEnabled } = await import("./coordinator-runtime.js");
+		const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(false);
+		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue(["local", "public-key"]);
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	it("maintains opt-in reachability before passing the same configuration to peer sync", async () => {
+		// Arrange: the existing tick callback seeds a peer in an in-memory database.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const reachability = {
+			scopeId: "space",
+			logicalOrigin: "https://peer.invalid",
+			signal: new AbortController().signal,
+		};
+		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+		// Act.
+		await runTickOnce(
+			":memory:",
+			undefined,
+			undefined,
+			({ db }) => {
+				db.prepare(
+					"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES ('peer', 'pin', '2026-01-01')",
+				).run();
+			},
+			reachability,
+		);
+		// Assert.
+		expect(maintain).toHaveBeenCalledExactlyOnceWith(reachability);
+		expect(runSyncPass).toHaveBeenCalledExactlyOnceWith(
+			expect.any(Database),
+			"peer",
+			expect.objectContaining({ reachability }),
+		);
+		expect(maintain.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(runSyncPass).mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("does not invoke relay maintenance for a default daemon tick", async () => {
+		// Arrange.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+		// Act.
+		await runTickOnce(":memory:", undefined, undefined, ({ db }) => {
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES ('peer', 'pin', '2026-01-01')",
+			).run();
+		});
+		// Assert.
+		expect(maintain).not.toHaveBeenCalled();
+		expect(runSyncPass).toHaveBeenCalledExactlyOnceWith(
+			expect.any(Database),
+			"peer",
+			expect.objectContaining({ reachability: undefined }),
+		);
+	});
+
+	it("combines daemon and caller cancellation for the scheduled startup tick", async () => {
+		// Arrange: stop through the existing first-tick completion callback.
+		const daemonAbort = new AbortController();
+		const callerAbort = new AbortController();
+		let cancelledBeforeDaemonStopped = false;
+		const maintain = vi
+			.spyOn(reachabilityPass, "maintainSyncReachability")
+			.mockImplementation(async (options) => {
+				callerAbort.abort();
+				cancelledBeforeDaemonStopped =
+					options.signal?.aborted === true && !daemonAbort.signal.aborted;
+			});
+		// Act.
+		await runSyncDaemon({
+			dbPath: ":memory:",
+			signal: daemonAbort.signal,
+			reachability: {
+				scopeId: "space",
+				logicalOrigin: "https://peer.invalid",
+				signal: callerAbort.signal,
+			},
+			onAfterCoordinatorRefresh: ({ db }) => {
+				db.prepare(
+					"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES ('peer', 'pin', '2026-01-01')",
+				).run();
+			},
+			onPhaseChange: (phase) => {
+				if (phase === "running") daemonAbort.abort();
+			},
+		});
+		// Assert: a distinct combined signal carries caller cancellation into maintenance.
+		expect(maintain).toHaveBeenCalledTimes(1);
+		const signal = maintain.mock.calls[0]?.[0].signal;
+		expect(signal).not.toBe(daemonAbort.signal);
+		expect(signal).not.toBe(callerAbort.signal);
+		expect(signal?.aborted).toBe(true);
+		expect(cancelledBeforeDaemonStopped).toBe(true);
+	});
+
+	it("does not maintain an opted-in relay when no peers are configured", async () => {
+		// Arrange: a fresh in-memory store has no sync peers.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+		// Act.
+		await runTickOnce(":memory:", undefined, undefined, undefined, {
+			scopeId: "space",
+			logicalOrigin: "https://peer.invalid",
+		});
+		// Assert.
+		expect(maintain).not.toHaveBeenCalled();
+		expect(runSyncPass).not.toHaveBeenCalled();
+	});
+});
+
+it("starts each daemon tick without reusing an expired absolute pass deadline", async () => {
+	// Arrange: virtual scheduling runs the existing startup and periodic tick.
+	vi.useFakeTimers();
+	vi.clearAllMocks();
+	const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+	const { coordinatorEnabled } = await import("./coordinator-runtime.js");
+	vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+	vi.mocked(coordinatorEnabled).mockReturnValue(false);
+	vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue(["local", "public-key"]);
+	const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+	const abort = new AbortController();
+	const daemon = runSyncDaemon({
+		dbPath: ":memory:",
+		signal: abort.signal,
+		reachability: {
+			scopeId: "space",
+			logicalOrigin: "https://peer.invalid",
+			deadlineMs: performance.now() - 1,
+		},
+		onAfterCoordinatorRefresh: ({ db }) => {
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES ('peer', 'pin', '2026-01-01')",
+			).run();
+		},
+	});
+	try {
+		// Act.
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(120_000);
+		abort.abort();
+		await daemon;
+		// Assert.
+		expect(maintain).toHaveBeenCalledTimes(2);
+		expect(runSyncPass).toHaveBeenCalledTimes(2);
+		for (const [, , options] of vi.mocked(runSyncPass).mock.calls)
+			expect(options?.reachability?.deadlineMs).toBeUndefined();
+	} finally {
+		abort.abort();
+		await daemon;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	}
+});
 
 afterEach(() => {
 	if (ORIGINAL_KEYS_DIR === undefined) {
