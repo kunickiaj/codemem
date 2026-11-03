@@ -391,6 +391,9 @@ importers:
       sqlite-vec:
         specifier: 0.1.9
         version: 0.1.9
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
       zod:
         specifier: 'catalog:'
         version: 4.6.6
@@ -401,6 +404,9 @@ importers:
       '@types/better-sqlite3':
         specifier: 'catalog:'
         version: 9.6.0
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

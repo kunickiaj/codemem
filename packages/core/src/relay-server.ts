@@ -35,6 +35,7 @@ export interface RelaySocketEvents {
 	text(bytes: Uint8Array): Promise<void>;
 	binary(bytes: Uint8Array): void;
 	closed(): void;
+	pending(): boolean;
 }
 export interface RelayServerLimits {
 	sockets: number;
@@ -215,6 +216,7 @@ class RelayServerEngine {
 		this.connections.add(connection);
 		this.armConnection(connection);
 		return {
+			pending: () => connection.pending && !connection.closing,
 			text: (bytes) => this.text(connection, bytes),
 			binary: (bytes) => {
 				try {
