@@ -20,14 +20,10 @@ import type {
 	UiSyncStatus,
 } from "./types";
 
-// Classify a peer's recent sync direction from observed traffic:
-// ↕ bidirectional when both directions have flowed in the recent window,
-// ↑ publishing when we have only sent, ↓ subscribed when we have only
-// received, and "none" when no qualifying attempts landed. Source data is
-// the /api/sync/peers recent_ops aggregate (24-hour successful window).
+// Direction hints describe observed activity, independently of backlog or completeness.
 export function derivePeerDirection(peer: PeerLike): PeerDirection {
-	const inCount = Math.max(0, Number(peer?.recent_ops?.in ?? 0));
-	const outCount = Math.max(0, Number(peer?.recent_ops?.out ?? 0));
+	const inCount = peer.sync_health?.receive?.operations_24h ?? 0;
+	const outCount = peer.sync_health?.send?.operations_24h ?? 0;
 	if (inCount > 0 && outCount > 0) return "bidirectional";
 	if (outCount > 0) return "publishing";
 	if (inCount > 0) return "subscribed";

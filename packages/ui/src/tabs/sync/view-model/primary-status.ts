@@ -1,5 +1,10 @@
+import {
+	type OverallSyncHealth,
+	syncHealthLabel,
+	syncHealthSummary,
+} from "../../../lib/sync-health";
 import { cleanText } from "./internal";
-import { derivePeerScopeSyncView, derivePeerTrustSummary } from "./peer-status";
+import { derivePeerTrustSummary } from "./peer-status";
 import type {
 	DiscoveredDeviceLike,
 	PeerLike,
@@ -21,6 +26,7 @@ type CoordinatorLike = {
 };
 
 type SyncStatusLike = {
+	sync_health?: OverallSyncHealth | null;
 	enabled?: boolean;
 	daemon_state?: TeamSyncDaemonState;
 	daemon_running?: boolean;
@@ -81,48 +87,6 @@ function hasTrustBlocker(peers: PeerLike[], coordinator?: CoordinatorLike | null
 	return peers.some((peer) => {
 		const trust = derivePeerTrustSummary(peer).state;
 		return trust === "trusted-by-you" || trust === "needs-repairing";
-	});
-}
-
-function hasHealthyDataPlane(peers: PeerLike[], status?: SyncStatusLike | null): boolean {
-	if (status?.enabled !== true || status.daemon_state !== "ok" || status.daemon_running === false) {
-		return false;
-	}
-	return peers.some(
-		(peer) =>
-			peer.status?.sync_status === "ok" &&
-			derivePeerTrustSummary(peer).state === "mutual-trust" &&
-			!derivePeerScopeSyncView(peer).rows.some((scope) => scope.status === "pending"),
-	);
-}
-
-function hasReachableTrustedPeer(peers: PeerLike[]): boolean {
-	return peers.some(
-		(peer) =>
-			cleanText(peer.status?.peer_state) === "online" &&
-			derivePeerTrustSummary(peer).state === "mutual-trust",
-	);
-}
-
-function hasDeviceConnectivityProblem(peers: PeerLike[], status?: SyncStatusLike | null): boolean {
-	if (
-		status?.daemon_state === "offline-peers" ||
-		status?.daemon_state === "stale" ||
-		status?.daemon_state === "degraded"
-	) {
-		return true;
-	}
-	return peers.some((peer) => {
-		const peerState = cleanText(peer.status?.peer_state);
-		const trustState = derivePeerTrustSummary(peer).state;
-		return (
-			(peer.has_error === true && trustState !== "needs-repairing") ||
-			trustState === "offline" ||
-			trustState === "needs-review" ||
-			peerState === "offline" ||
-			peerState === "stale" ||
-			peerState === "degraded"
-		);
 	});
 }
 
@@ -279,38 +243,15 @@ function derivePresenceStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPr
 }
 
 function deriveDataPlaneStatus(input: NormalizedPrimaryStatusInput): UiTeamSyncPrimaryStatus {
-	if (hasDeviceConnectivityProblem(input.peers, input.status)) {
-		return {
-			state: "reachable",
-			badgeLabel: "Check devices",
-			meta: `Team: ${input.label}. The coordinator is reachable, but one or more paired devices are offline or degraded.`,
-			nextAction:
-				"Bring the paired devices online, check their sync errors, then run Sync now again.",
-		};
-	}
-	if (input.coordinator?.sync_enabled === true && hasHealthyDataPlane(input.peers, input.status)) {
-		return {
-			state: "healthy",
-			badgeLabel: "Healthy",
-			meta: `Team: ${input.label}. Sync is enabled and a trusted device has a healthy data-plane connection.`,
-			nextAction: null,
-		};
-	}
-	if (hasReachableTrustedPeer(input.peers)) {
-		return {
-			state: "reachable",
-			badgeLabel: "Reachable",
-			meta: `Team: ${input.label}. The coordinator and a paired device are reachable, but successful Project sync is not confirmed.`,
-			nextAction:
-				"Run Sync now, then review the device sync status below if delivery is still pending.",
-		};
-	}
-
+	const health = input.status?.sync_health;
 	return {
-		state: "reachable",
-		badgeLabel: "Reachable",
-		meta: `Team: ${input.label}. The coordinator is reachable, but healthy Project data sync is not confirmed.`,
-		nextAction: "Pair and approve a device, then run Sync now to confirm data delivery.",
+		state: health?.state === "exchange_succeeded" ? "healthy" : "reachable",
+		badgeLabel: syncHealthLabel(health),
+		meta: syncHealthSummary(health),
+		nextAction:
+			health?.state === "exchange_succeeded"
+				? null
+				: "Review Sending and Receiving on Devices, then retry sync.",
 	};
 }
 

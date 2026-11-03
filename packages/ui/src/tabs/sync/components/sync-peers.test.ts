@@ -111,6 +111,70 @@ describe("Sync peer badge compatibility", () => {
 	});
 });
 
+describe("Sync peer observed activity labels", () => {
+	it.each([
+		[undefined, undefined, null, null],
+		[0, 0, null, null],
+		[4, null, "↓", "Applied operations observed (24h)"],
+		[null, 3, "↑", "Acknowledged operations observed (24h)"],
+		[4, 3, "↕", "Applied and acknowledged operations observed (24h)"],
+	] as const)(
+		"labels applied %s and acknowledged %s without implying a zero opposite direction",
+		(applied, acknowledged, glyph, label) => {
+			// Arrange
+			document.body.innerHTML = '<div id="mount"></div>';
+			const mount = document.getElementById("mount");
+			if (!mount) throw new Error("mount missing");
+			const direction = {
+				state: "not_verified" as const,
+				last_attempt_at: null,
+				last_success_at: null,
+				pending_count: null,
+				reason_code: null,
+			};
+			const peer = {
+				peer_device_id: "observed-peer",
+				name: "Example laptop",
+				status: {
+					sync_status: "ok",
+					last_sync_at: glyph === "↕" ? "2026-11-02T18:00:00Z" : undefined,
+				},
+				recent_ops: { in: 99, out: 99 },
+				sync_health:
+					applied === undefined
+						? undefined
+						: {
+								state: "not_verified" as const,
+								receive: { ...direction, operations_24h: applied },
+								send: { ...direction, operations_24h: acknowledged ?? null },
+							},
+			};
+			// Act
+			act(() =>
+				renderSyncPeersList(mount, {
+					peers: [peer],
+					onRemove: vi.fn(),
+					onRename: vi.fn(),
+					onSync: vi.fn(),
+				}),
+			);
+			// Assert
+			const hint = mount.querySelector(".peer-direction");
+			if (label) {
+				expect(hint?.textContent).toBe(glyph);
+				expect(hint?.getAttribute("aria-label")).toBe(label);
+				expect(hint?.getAttribute("title")).toBe(label);
+			} else {
+				expect(hint).toBeNull();
+			}
+			expect(hint?.getAttribute("aria-label") ?? "").not.toMatch(/only|zero|caught up/i);
+			expect(mount.textContent).toContain("Initiated exchange:");
+			expect(mount.textContent?.includes("Initiated exchange: not recorded")).toBe(glyph !== "↕");
+			expect(mount.textContent).not.toContain("Sync: never");
+		},
+	);
+});
+
 describe("Advanced device Identity ownership", () => {
 	it("uses only an active binding as authoritative ownership", () => {
 		const view = advancedDeviceIdentityView(

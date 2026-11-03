@@ -5,6 +5,7 @@ import {
 	deriveCoordinatorSetupBlocker,
 	deriveDuplicatePeople,
 	derivePeerAuthorizedDomainsView,
+	derivePeerDirection,
 	derivePeerGrantRoleMismatchView,
 	derivePeerProjectNarrowingView,
 	derivePeerScopeRejectionsView,
@@ -125,6 +126,41 @@ const postedCoordinator: NonNullable<
 	presence_status: "posted",
 };
 
+describe("observed peer direction", () => {
+	it.each([
+		[undefined, undefined, "none"],
+		[null, null, "none"],
+		[0, 0, "none"],
+		[4, null, "subscribed"],
+		[null, 3, "publishing"],
+		[4, 3, "bidirectional"],
+	] as const)("maps applied %s and acknowledged %s to %s", (applied, acknowledged, expected) => {
+		// Arrange: legacy attempted counts must never supply missing observations.
+		const direction = {
+			state: "not_verified" as const,
+			last_attempt_at: null,
+			last_success_at: null,
+			pending_count: null,
+			reason_code: null,
+		};
+		const peer = {
+			recent_ops: { in: 99, out: 99 },
+			sync_health:
+				applied === undefined
+					? undefined
+					: {
+							state: "not_verified" as const,
+							receive: { ...direction, operations_24h: applied },
+							send: { ...direction, operations_24h: acknowledged ?? null },
+						},
+		};
+		// Act
+		const result = derivePeerDirection(peer);
+		// Assert
+		expect(result).toBe(expected);
+	});
+});
+
 describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 	it("keeps sync disabled above posted presence and every lower-priority signal", () => {
 		const view = deriveTeamSyncPrimaryStatus({
@@ -217,6 +253,37 @@ describe("deriveTeamSyncPrimaryStatus policy precedence", () => {
 });
 
 describe("deriveTeamSyncPrimaryStatus pending work", () => {
+	it.each([
+		["exchange_succeeded", "Recent exchange", 0, 0, 0],
+		["needs_attention", "Needs attention", 1, 0, 0],
+		["not_verified", "Not verified", 0, 1, 0],
+		["stale", "Stale", 0, 0, 1],
+	] as const)(
+		"uses aggregate %s even when another peer reports success",
+		(healthState, label, attention, unverified, stale) => {
+			// Arrange
+			const health = {
+				state: healthState,
+				peer_count: 2,
+				attention_count: attention,
+				unverified_count: unverified,
+				stale_count: stale,
+			};
+			// Act
+			const view = deriveTeamSyncPrimaryStatus({
+				status: { enabled: true, daemon_state: "ok", daemon_running: true, sync_health: health },
+				coordinator: postedCoordinator,
+				peers: [healthyPeer, { peer_device_id: "other-peer", status: { peer_state: "online" } }],
+			});
+			// Assert
+			expect(view.badgeLabel).toBe(label);
+			expect(view.state).toBe(healthState === "exchange_succeeded" ? "healthy" : "reachable");
+			expect(view.meta).toContain(
+				`2 paired devices · ${attention} need attention · ${unverified} not verified · ${stale} stale`,
+			);
+			expect(view.nextAction === null).toBe(healthState === "exchange_succeeded");
+		},
+	);
 	it("keeps pending setup above trust blockers, healthy peers, and posted presence", () => {
 		const view = deriveTeamSyncPrimaryStatus({
 			status: { enabled: true, daemon_state: "ok" },
@@ -277,13 +344,13 @@ describe("deriveTeamSyncPrimaryStatus pending work", () => {
 
 		expect(view).toMatchObject({
 			state: "reachable",
-			badgeLabel: "Reachable",
-			nextAction: expect.stringContaining("Pair and approve"),
+			badgeLabel: "Not verified",
+			nextAction: expect.stringContaining("Review Sending and Receiving"),
 		});
 		expect(`${view.badgeLabel} ${view.meta}`).not.toContain("Online");
 	});
 
-	it("reports healthy only for an enabled trusted data plane without higher blockers", () => {
+	it("does not infer replication success from a trusted reachable peer", () => {
 		expect(
 			deriveTeamSyncPrimaryStatus({
 				status: { enabled: true, daemon_state: "ok", daemon_running: true },
@@ -293,7 +360,11 @@ describe("deriveTeamSyncPrimaryStatus pending work", () => {
 					items: [{ canonicalProjectIdentity: "Roadmap", state: "active" }],
 				},
 			}),
-		).toMatchObject({ state: "healthy", badgeLabel: "Healthy", nextAction: null });
+		).toMatchObject({
+			state: "reachable",
+			badgeLabel: "Not verified",
+			nextAction: expect.stringContaining("Review Sending and Receiving"),
+		});
 	});
 });
 
@@ -317,8 +388,8 @@ describe("deriveTeamSyncPrimaryStatus reachability", () => {
 			],
 		});
 
-		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Reachable" });
-		expect(view.nextAction).toContain("Run Sync now");
+		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Not verified" });
+		expect(view.nextAction).toContain("Review Sending and Receiving");
 	});
 
 	it.each([
@@ -350,8 +421,8 @@ describe("deriveTeamSyncPrimaryStatus reachability", () => {
 			peers: [{ peer_device_id: "peer-no-sync", status: peerStatus }],
 		});
 
-		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Reachable" });
-		expect(view.nextAction).toContain("Run Sync now");
+		expect(view).toMatchObject({ state: "reachable", badgeLabel: "Not verified" });
+		expect(view.nextAction).toContain("Review Sending and Receiving");
 		expect(view.nextAction).not.toContain("Pair and approve");
 	});
 
@@ -395,7 +466,7 @@ describe("deriveTeamSyncPrimaryStatus operations", () => {
 	});
 
 	it.each(["offline-peers", "stale", "degraded"] as const)(
-		"directs users to check paired devices when daemon_state is %s",
+		"keeps replication unverified without directional evidence when daemon_state is %s",
 		(daemonState) => {
 			const view = deriveTeamSyncPrimaryStatus({
 				status: { enabled: true, daemon_state: daemonState, daemon_running: true },
@@ -405,8 +476,8 @@ describe("deriveTeamSyncPrimaryStatus operations", () => {
 
 			expect(view).toMatchObject({
 				state: "reachable",
-				badgeLabel: "Check devices",
-				nextAction: expect.stringContaining("Bring the paired devices online"),
+				badgeLabel: "Not verified",
+				nextAction: expect.stringContaining("Review Sending and Receiving"),
 			});
 			expect(view.nextAction).not.toContain("Pair and approve");
 		},
@@ -421,8 +492,8 @@ describe("deriveTeamSyncPrimaryStatus operations", () => {
 
 		expect(view).toMatchObject({
 			state: "reachable",
-			badgeLabel: "Check devices",
-			nextAction: expect.stringContaining("Bring the paired devices online"),
+			badgeLabel: "Not verified",
+			nextAction: expect.stringContaining("Review Sending and Receiving"),
 		});
 	});
 
@@ -438,8 +509,8 @@ describe("deriveTeamSyncPrimaryStatus operations", () => {
 
 		expect(view).toMatchObject({
 			state: "reachable",
-			badgeLabel: "Check devices",
-			nextAction: expect.stringContaining("check their sync errors"),
+			badgeLabel: "Not verified",
+			nextAction: expect.stringContaining("Review Sending and Receiving"),
 		});
 		expect(view.nextAction).not.toContain("Pair and approve");
 	});
@@ -545,7 +616,7 @@ describe("deriveTeamSyncPrimaryStatus fail-closed states", () => {
 		(_name, status, coordinator) => {
 			const view = deriveTeamSyncPrimaryStatus({ status, coordinator, peers: [healthyPeer] });
 
-			expect(view).toMatchObject({ state: "reachable", badgeLabel: "Reachable" });
+			expect(view).toMatchObject({ state: "reachable", badgeLabel: "Not verified" });
 		},
 	);
 

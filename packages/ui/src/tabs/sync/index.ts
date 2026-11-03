@@ -49,6 +49,7 @@ export { renderSyncPeers } from "./people";
 
 let lastSyncHash = "";
 type SyncStatusResponseLike = {
+	sync_health?: import("../../lib/sync-health").OverallSyncHealth | null;
 	status?: Record<string, unknown> | null;
 	peers?: Array<{ peer_device_id?: string }>;
 	coordinator?: CachedSyncCoordinator | null;
@@ -323,9 +324,7 @@ async function runLoadSyncData(
 		if (hash === lastSyncHash) return refreshSucceeded;
 		lastSyncHash = hash;
 
-		const statusPayload =
-			payload.status && typeof payload.status === "object" ? payload.status : null;
-		if (statusPayload) state.lastSyncStatus = statusPayload;
+		const statusPayload = updateSyncHealthStatus(payload);
 		if (Array.isArray(actorsPayload?.items)) {
 			state.lastSyncActors = actorsPayload.items;
 		} else {
@@ -403,7 +402,28 @@ async function runLoadSyncData(
 	}
 }
 
+function updateSyncHealthStatus(payload: SyncStatusResponseLike) {
+	const status = payload.status;
+	if (!status || typeof status !== "object") return null;
+	state.lastSyncStatus = { ...status, sync_health: payload.sync_health ?? null };
+	return state.lastSyncStatus;
+}
+
+function invalidateSyncHealth(): void {
+	// A successful refresh of the same payload must restore evidence after a failure.
+	cachedSyncStatus = null;
+	lastSyncHash = "";
+	if (state.lastSyncStatus) {
+		state.lastSyncStatus = { ...state.lastSyncStatus, sync_health: null };
+	}
+	state.lastSyncPeers = state.lastSyncPeers.map((peer) => ({ ...peer, sync_health: null }));
+	state.lastSyncViewModel = null;
+	renderTeamSync();
+	refreshHealthStatusAfterSync();
+}
+
 function renderSyncLoadFailure(): void {
+	invalidateSyncHealth();
 	// Clear all skeletons so the error state is visible, not masked by loading placeholders
 	hideSkeleton("syncTeamSkeleton");
 	hideSkeleton("syncActorsSkeleton");
