@@ -6,6 +6,7 @@ import {
 	createCoordinatorApp,
 } from "./coordinator-api.js";
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
+import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "./d1-coordinator-store.js";
 
 export interface CreateD1CoordinatorAppOptions {
@@ -15,6 +16,7 @@ export interface CreateD1CoordinatorAppOptions {
 	requestVerifier: CoordinatorRequestVerifier;
 	requestRateLimit?: CoordinatorRequestRateLimitOptions;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
+	relayAdmission?: CoordinatorRelayAdmissionRuntimeOptions;
 	recipientInviteCoordinatorId?: string;
 	browserAuth?:
 		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
@@ -36,6 +38,28 @@ export function createD1CoordinatorApp(
 		runtime,
 		requestVerifier: opts.requestVerifier,
 		requestRateLimit: opts.requestRateLimit,
+		relayAdmission: opts.relayAdmission
+			? {
+					...opts.relayAdmission,
+					open: () => ({
+						database: {
+							query: async (sql, values) =>
+								(
+									await db
+										.prepare(sql)
+										.bind(...values)
+										.all()
+								).results,
+							insertReturning: (sql, values) =>
+								db
+									.prepare(sql)
+									.bind(...values)
+									.first(),
+						},
+						close: () => {},
+					}),
+				}
+			: undefined,
 		browserAuth:
 			opts.browserAuth?.kind === "ready"
 				? { ...opts.browserAuth, storeFactory: () => new D1CoordinatorStore(db) }
