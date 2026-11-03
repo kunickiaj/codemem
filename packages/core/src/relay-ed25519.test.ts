@@ -28,6 +28,26 @@ function sha256(value: string | Uint8Array): string {
 }
 
 describe("relay Ed25519 public-key format", () => {
+	it.each([
+		["mixed separators", " \t \t", ""],
+		["mixed comment whitespace", "\t ", " \t comment\t with spaces !"],
+		["whitespace-only comment", " ", "\t \t "],
+		["long tab separator", "\t".repeat(8192), " comment"],
+		["long tab comment", " ", `${"\t".repeat(8192)}comment`],
+	])("preserves wire bytes and identity with %s", async (_name, separator, comment) => {
+		// Arrange: whitespace and comments must not change the canonical SSH blob.
+		const key = syntheticPublicKey();
+		const text = `ssh-ed25519${separator}${key.wireKey.toString("base64")}${comment}`;
+		const canonicalId = await relayEd25519KeyId(key.text);
+		// Act
+		const parsed = parseRelayEd25519PublicKey(text);
+		const id = await relayEd25519KeyId(text);
+		// Assert
+		expect(Buffer.from(parsed.wireKey)).toEqual(key.wireKey);
+		expect(id).toBe(canonicalId);
+		expect(id).toBe(sha256(key.wireKey));
+	});
+
 	it.each(["", " synthetic test key", " comment with spaces !"])(
 		"parses the exact JWK public bytes with comment %j",
 		(comment) => {
@@ -80,6 +100,15 @@ describe("relay Ed25519 malformed public keys", () => {
 	const malformed = [
 		["empty text", () => ""],
 		["missing blob", () => "ssh-ed25519"],
+		["missing blob after long whitespace", () => `ssh-ed25519${" \t".repeat(8192)}`],
+		[
+			"control in long tab comment",
+			(key: ReturnType<typeof syntheticPublicKey>) => `${key.text}${"\t".repeat(8192)}test\0`,
+		],
+		[
+			"invalid base64 suffix without comment separator",
+			(key: ReturnType<typeof syntheticPublicKey>) => `${key.text}!`,
+		],
 		[
 			"outer key type",
 			(key: ReturnType<typeof syntheticPublicKey>) => key.text.replace("ssh-ed25519", "ssh-rsa"),

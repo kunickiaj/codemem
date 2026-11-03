@@ -2,6 +2,14 @@ export {
 	createRelayCoordinatorClient,
 	type RelayCoordinatorClientOptions,
 } from "../relay-coordinator-client.js";
+export { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "../relay-health.js";
+export type { RelayHealthClockStamp } from "../relay-health-probe.js";
+export {
+	createRelayPeerClient,
+	type RelayPeerClient,
+	type RelayPeerClientOptions,
+	type RelayPeerContext,
+} from "../relay-peer-client.js";
 export {
 	createSqliteRelayQuota,
 	initializeRelayQuotaSchema,
