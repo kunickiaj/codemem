@@ -322,6 +322,7 @@ export async function serverFixture(limits: Partial<RelayServerLimits> = {}) {
 	const controls = fixtureControls({ server, namespace, source, target, packet });
 	return {
 		server,
+		db: db as Database.Database,
 		options,
 		clock,
 		coordinator,

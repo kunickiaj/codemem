@@ -19,6 +19,7 @@ export default defineConfig({
 					import.meta.dirname,
 					"src/internal/cloudflare-coordinator.ts",
 				),
+				"internal/relay-runtime": resolve(import.meta.dirname, "src/internal/relay-runtime.ts"),
 			},
 			formats: ["es"],
 			fileName: (_format, entryName) => `${entryName}.js`,
@@ -29,6 +30,7 @@ export default defineConfig({
 			external: [
 				"@codemem/embeddings",
 				"better-sqlite3",
+				"ws",
 				"sqlite-vec",
 				"drizzle-orm",
 				/^drizzle-orm\//,

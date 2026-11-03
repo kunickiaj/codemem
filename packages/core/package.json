@@ -14,6 +14,11 @@
 			"import": "./dist/recipient-policy-contract.js",
 			"types": "./dist/recipient-policy-contract.d.ts"
 		},
+		"./internal/relay-runtime": {
+			"source": "./src/internal/relay-runtime.ts",
+			"import": "./dist/internal/relay-runtime.js",
+			"types": "./dist/internal/relay-runtime.d.ts"
+		},
 		"./internal/cloudflare-coordinator": {
 			"source": "./src/internal/cloudflare-coordinator.ts",
 			"import": "./dist/internal/cloudflare-coordinator.js",
@@ -32,6 +37,7 @@
 	"devDependencies": {
 		"@codemem/embeddings": "workspace:^",
 		"@types/better-sqlite3": "catalog:",
+		"@types/ws": "8.18.1",
 		"typescript": "catalog:",
 		"vite": "catalog:",
 		"vitest": "catalog:"
@@ -51,6 +57,7 @@
 		"limiter": "catalog:",
 		"openid-client": "6.8.8",
 		"sqlite-vec": "0.1.9",
+		"ws": "8.21.3",
 		"zod": "catalog:"
 	},
 	"peerDependencies": {
