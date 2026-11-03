@@ -25,6 +25,10 @@ import { ensureDeviceIdentity, fingerprintPublicKey } from "./sync-identity.js";
 import { type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
 import { filterReplicationOpsForSyncWithStatus } from "./sync-replication.js";
 import { parseSyncScopeRequest } from "./sync-scope-protocol.js";
+import {
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+} from "./sync-transfer-activity.js";
 import type { ReplicationOp } from "./types.js";
 
 const MAX_BODY_BYTES = 1_048_576;
@@ -322,6 +326,16 @@ async function pushBatch(
 	}
 	if (status !== 200) throw new Error("channel push failed");
 	checkPushReply(payload, context.scopeId);
+	checkAuthorization(context);
+	context.db.transaction(() => {
+		recordSyncTransferReceipts(
+			context.db,
+			context.peerDeviceId,
+			"send",
+			ops.map((op) => op.op_id),
+		);
+		recordSyncTransferObservation(context.db, context.peerDeviceId, "send");
+	})();
 }
 
 async function pushOutbound(
@@ -358,6 +372,7 @@ async function pushOutbound(
 export async function syncScopedChannelOnce(
 	options: ScopedChannelSyncOptions,
 ): Promise<SyncScopeResult> {
+	let sending = false;
 	let result: SyncScopeResult = {
 		scope_id: options.scopeId,
 		ok: false,
@@ -395,9 +410,14 @@ export async function syncScopedChannelOnce(
 			scopeId: context.scopeId,
 			boundary: status.scope.sync_reset,
 		});
+		sending = true;
 		const opsOut = await pushOutbound(context, execute, status.features, status.scope.sync_reset);
 		return { ...result, opsOut };
 	} catch {
+		if (sending)
+			recordSyncTransferObservation(options.db, options.peerDeviceId, "send", {
+				errorCode: "exchange_failed",
+			});
 		return { ...result, ok: false, error: "scoped channel exchange failed" };
 	}
 }

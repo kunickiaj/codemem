@@ -16,6 +16,10 @@ import {
 	setReplicationCursor,
 	setSyncResetState,
 } from "../../core/src/sync-replication.js";
+import {
+	readPeerSyncActivity,
+	recordSyncTransferObservation,
+} from "../../core/src/sync-transfer-activity.js";
 import { bytes, ORIGIN, SCOPE } from "./sync-channel-dispatch-test-fixtures.js";
 import {
 	addPassPeer,
@@ -56,6 +60,20 @@ function outboundAck(f: Fixture) {
 }
 function posts(f: Fixture) {
 	return f.requests.filter((request) => request.method === "POST");
+}
+function assertFailedSendActivity(f: Fixture) {
+	expect(
+		f.client.db
+			.prepare(`SELECT source, error_code FROM sync_transfer_observations
+		WHERE peer_device_id = ? AND direction = 'send'`)
+			.all(f.remote.localDeviceId),
+	).toEqual([{ source: "initiated", error_code: "exchange_failed" }]);
+	expect(
+		readPeerSyncActivity(f.client.db, [f.remote.localDeviceId]).get(f.remote.localDeviceId),
+	).toMatchObject({
+		send: { errorCode: "exchange_failed", lastSuccessAt: null, operations24h: 0 },
+		receive: { errorCode: null, lastSuccessAt: expect.any(String) },
+	});
 }
 function snapshotCount(requests: Fixture["requests"]) {
 	return requests.filter((request) => new URL(request.url).pathname === "/v1/snapshot").length;
@@ -174,6 +192,67 @@ it("converges one scoped pull and push through signed fresh Noise HTTP exchanges
 			.pluck()
 			.get(f.remote.localDeviceId),
 	).toBeNull();
+});
+
+it("clears a prior initiated receive error after a real empty incremental pull", async () => {
+	// Arrange: an empty pull must resolve a failed exchange without inventing operations.
+	const f = await fixture();
+	incremental(f);
+	const peerId = f.remote.localDeviceId;
+	recordSyncTransferObservation(f.client.db, peerId, "receive", {
+		source: "initiated",
+		errorCode: "exchange_failed",
+	});
+	expect(readPeerSyncActivity(f.client.db, [peerId]).get(peerId)?.receive).toMatchObject({
+		errorCode: "exchange_failed",
+		lastSuccessAt: null,
+	});
+	// Act
+	const result = await syncScopedChannelOnce(f.options);
+	// Assert: the actual GET/apply path records success even with no operations.
+	expect(result).toMatchObject({ ok: true, opsIn: 0, opsOut: 0, bootstrapped: false });
+	expect(f.requests.some((r) => r.method === "GET" && new URL(r.url).pathname === "/v1/ops")).toBe(
+		true,
+	);
+	expect(snapshotCount(f.requests)).toBe(0);
+	expect(posts(f)).toHaveLength(0);
+	expect(readPeerSyncActivity(f.client.db, [peerId]).get(peerId)?.receive).toMatchObject({
+		errorCode: null,
+		lastSuccessAt: expect.any(String),
+		operations24h: 0,
+	});
+});
+
+it("clears a prior initiated send error and counts acknowledged unique operations after a real POST", async () => {
+	// Arrange: a successful receive must not resolve this independently seeded send error.
+	const f = await fixture();
+	incremental(f);
+	f.seed("client", "acknowledged-item");
+	const peerId = f.remote.localDeviceId;
+	vi.useFakeTimers({ toFake: ["Date"] });
+	cleanups.push(async () => {
+		vi.useRealTimers();
+	});
+	recordSyncTransferObservation(f.client.db, peerId, "send", {
+		source: "initiated",
+		errorCode: "exchange_failed",
+	});
+	expect(readPeerSyncActivity(f.client.db, [peerId]).get(peerId)?.send).toMatchObject({
+		errorCode: "exchange_failed",
+		lastSuccessAt: null,
+	});
+	// Act
+	const result = await syncScopedChannelOnce(f.options);
+	// Assert: remote application and the saved ACK precede the missing activity update.
+	expect(result).toMatchObject({ ok: true, opsOut: 1 });
+	expect(posts(f)).toHaveLength(1);
+	expect(ids(f, "remote")).toEqual(["acknowledged-item"]);
+	expect(outboundAck(f)).toContain("|acknowledged-item-op");
+	expect(readPeerSyncActivity(f.client.db, [peerId]).get(peerId)?.send).toMatchObject({
+		errorCode: null,
+		lastSuccessAt: expect.any(String),
+		operations24h: 1,
+	});
 });
 
 it("retains the null-baseline bootstrap marker while saving outbound ACK independently", async () => {
@@ -587,6 +666,7 @@ it("holds ACK and never replays an uncertain POST that the remote already applie
 	expect(posts(f)).toHaveLength(1);
 	expect(ids(f, "remote")).toEqual(["uncertain-item"]);
 	expect(outboundAck(f)).toBeNull();
+	assertFailedSendActivity(f);
 	expect(getSyncChannelProgress(f.client.db, f.remote.localDeviceId, SCOPE)).toMatchObject({
 		generation: getSyncResetState(f.remote.store.db, SCOPE).generation,
 		snapshot_id: getSyncResetState(f.remote.store.db, SCOPE).snapshot_id,
@@ -612,6 +692,7 @@ it.each([500, 200])(
 		expect(result.ok).toBe(false);
 		expect(posts(f)).toHaveLength(1);
 		expect(outboundAck(f)).toBeNull();
+		assertFailedSendActivity(f);
 	},
 );
 
@@ -733,6 +814,17 @@ it("splits only after a completed authenticated 413 and uses fresh nonces for th
 	expect(
 		posts(f).map((request) => JSON.parse(Buffer.from(request.bodyBytes).toString()).ops.length),
 	).toEqual([2, 1, 1]);
+	expect(
+		readPeerSyncActivity(f.client.db, [f.remote.localDeviceId]).get(f.remote.localDeviceId)?.send,
+	).toMatchObject({ errorCode: null, lastSuccessAt: expect.any(String), operations24h: 2 });
+	expect(
+		f.client.db
+			.prepare(`SELECT transfer_id FROM sync_transfer_receipts
+		WHERE peer_device_id = ? AND direction = 'send' AND kind = 'operation'
+		ORDER BY transfer_id`)
+			.pluck()
+			.all(f.remote.localDeviceId),
+	).toEqual(["split-a-op", "split-b-op"]);
 	assertSignedScope(f);
 });
 
@@ -761,6 +853,7 @@ it("does not split or replay a 413 when the owned channel cannot confirm complet
 	expect(posts(f)).toHaveLength(1);
 	expect(outboundAck(f)).toBeNull();
 	expect(f.factory.open).toHaveBeenCalledTimes(f.requests.length);
+	assertFailedSendActivity(f);
 });
 
 it.each(["empty", "populated"])(
