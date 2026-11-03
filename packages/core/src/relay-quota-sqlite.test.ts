@@ -259,6 +259,304 @@ describe("quota intersections and fixed-point units", () => {
 	);
 });
 
+describe("policy writes retain quota floors independently of reservations", () => {
+	it("retains tightening after an oversized denial and an enable pause", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		// Act: rejection before the bucket upsert must not erase the policy minimum.
+		db.prepare("UPDATE relay_quota_allocations SET rate=1,burst=1 WHERE purpose='traffic'").run();
+		const oversized = await quota.reserve(request("traffic", 2), signal());
+		db.prepare("UPDATE relay_quota_allocations SET rate=2,burst=4 WHERE purpose='traffic'").run();
+		setRelayQuotaEnabled(db, { realmId, enabled: false });
+		const paused = await quota.reserve(request(), signal());
+		setRelayQuotaEnabled(db, { realmId, enabled: true });
+		const restored = await adapter(db).reserve(request("traffic", 3), signal());
+		// Assert
+		expect({
+			oversized,
+			paused,
+			restored,
+			floors: db.prepare("SELECT DISTINCT last_rate,last_capacity FROM relay_quota_buckets").all(),
+		}).toEqual({
+			oversized: "denied",
+			paused: "denied",
+			restored: "denied",
+			floors: [{ last_rate: 1, last_capacity: 60000 }],
+		});
+	});
+
+	it("retains service and realm floors when a later pair denial rolls consumption back", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.prepare("UPDATE relay_quota_buckets SET balance=0 WHERE scope='pair'").run();
+		// Act
+		db.prepare(
+			"UPDATE relay_quota_allocations SET rate=1,burst=2 WHERE purpose='traffic' AND scope IN ('service','realm')",
+		).run();
+		const snapshot = buckets(db);
+		const denied = await quota.reserve(request(), signal());
+		// Assert: the request is atomic, but the prior policy transaction already tightened parents.
+		expect(denied).toBe("denied");
+		expect(buckets(db)).toEqual(snapshot);
+		expect(
+			db
+				.prepare(
+					"SELECT scope,balance,last_rate,last_capacity FROM relay_quota_buckets WHERE scope IN ('service','realm') ORDER BY scope",
+				)
+				.all(),
+		).toEqual([
+			{ scope: "realm", balance: 120000, last_rate: 1, last_capacity: 120000 },
+			{ scope: "service", balance: 120000, last_rate: 1, last_capacity: 120000 },
+		]);
+	});
+
+	it("retains floors across allocation deletion and reinsertion without an intervening reservation", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		// Act
+		db.prepare(
+			"UPDATE relay_quota_allocations SET rate=1,burst=1 WHERE purpose='traffic' AND scope='service'",
+		).run();
+		db.prepare(
+			"DELETE FROM relay_quota_allocations WHERE purpose='traffic' AND scope='service'",
+		).run();
+		const missing = await quota.reserve(request(), signal());
+		db.prepare(
+			"INSERT INTO relay_quota_allocations(purpose,scope,rate,burst) VALUES('traffic','service',2,4)",
+		).run();
+		const restored = await adapter(db).reserve(request("traffic", 3), signal());
+		// Assert
+		expect({
+			missing,
+			restored,
+			floor: db
+				.prepare("SELECT last_rate,last_capacity FROM relay_quota_buckets WHERE scope='service'")
+				.get(),
+		}).toEqual({
+			missing: "denied",
+			restored: "denied",
+			floor: { last_rate: 1, last_capacity: 60000 },
+		});
+	});
+
+	it("retains the old identity's floor when a tightened allocation is rekeyed", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.prepare(
+			"DELETE FROM relay_quota_allocations WHERE purpose='open' AND scope='service'",
+		).run();
+		// Act
+		db.prepare(
+			"UPDATE relay_quota_allocations SET purpose='open',rate=1,burst=1 WHERE purpose='traffic' AND scope='service'",
+		).run();
+		db.prepare(
+			"INSERT INTO relay_quota_allocations(purpose,scope,rate,burst) VALUES('traffic','service',2,4)",
+		).run();
+		const restored = await adapter(db).reserve(request("traffic", 3), signal());
+		// Assert
+		expect({
+			restored,
+			floor: db
+				.prepare(
+					"SELECT last_rate,last_capacity FROM relay_quota_buckets WHERE purpose='traffic' AND scope='service'",
+				)
+				.get(),
+		}).toEqual({
+			restored: "denied",
+			floor: { last_rate: 1, last_capacity: 60000 },
+		});
+	});
+});
+
+describe("temporary allocation disable preserves positive quota floors", () => {
+	it("resumes after a zero allocation without exceeding the prior positive minimum", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.prepare("UPDATE relay_quota_allocations SET rate=1,burst=1 WHERE purpose='traffic'").run();
+		// Act
+		db.prepare("UPDATE relay_quota_allocations SET rate=0,burst=0 WHERE purpose='traffic'").run();
+		const disabled = await quota.reserve(request(), signal());
+		db.prepare("UPDATE relay_quota_allocations SET rate=2,burst=4 WHERE purpose='traffic'").run();
+		const resumed = await quota.reserve(request(), signal());
+		const exhausted = await quota.reserve(request(), signal());
+		// Assert: zero disables access, while only positive policy values reduce historical capacity.
+		expect({
+			disabled,
+			resumed,
+			exhausted,
+			floors: db
+				.prepare("SELECT DISTINCT last_rate,last_capacity,balance FROM relay_quota_buckets")
+				.all(),
+		}).toEqual({
+			disabled: "denied",
+			resumed: "reserved",
+			exhausted: "denied",
+			floors: [{ last_rate: 1, last_capacity: 60000, balance: 0 }],
+		});
+	});
+
+	it("initializes legacy zero and missing allocations without erasing known positive capacity", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.prepare("UPDATE relay_quota_allocations SET rate=1,burst=1 WHERE purpose='traffic'").run();
+		const snapshot = buckets(db);
+		db.exec(
+			"DROP TRIGGER relay_quota_policy_insert; DROP TRIGGER relay_quota_policy_update; DROP TRIGGER relay_quota_policy_delete;",
+		);
+		db.prepare(
+			"UPDATE relay_quota_allocations SET rate=0,burst=0 WHERE purpose='traffic' AND scope='service'",
+		).run();
+		db.prepare(
+			"DELETE FROM relay_quota_allocations WHERE purpose='traffic' AND scope='realm'",
+		).run();
+		// Act
+		const unprotected = await quota.reserve(request(), signal());
+		initializeRelayQuotaSchema(db);
+		const reconciled = buckets(db);
+		const zero = await quota.reserve(request(), signal());
+		db.prepare(
+			"UPDATE relay_quota_allocations SET rate=2,burst=4 WHERE purpose='traffic' AND scope='service'",
+		).run();
+		const missing = await quota.reserve(request(), signal());
+		db.prepare(
+			"INSERT INTO relay_quota_allocations(purpose,scope,rate,burst) VALUES('traffic','realm',2,4)",
+		).run();
+		const resumed = await quota.reserve(request(), signal());
+		const exhausted = await quota.reserve(request(), signal());
+		// Assert
+		expect({
+			unprotected,
+			zero,
+			missing,
+			resumed,
+			exhausted,
+			retainedCapacity: reconciled,
+		}).toEqual({
+			unprotected: "unknown",
+			zero: "denied",
+			missing: "denied",
+			resumed: "reserved",
+			exhausted: "denied",
+			retainedCapacity: snapshot,
+		});
+	});
+});
+
+describe("explicit quota protection upgrades", () => {
+	it("rejects legacy storage until explicit initialization retains its lowered policy", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.exec(
+			"DROP TRIGGER relay_quota_policy_insert; DROP TRIGGER relay_quota_policy_update; DROP TRIGGER relay_quota_policy_delete;",
+		);
+		db.prepare("UPDATE relay_quota_allocations SET rate=1,burst=1 WHERE purpose='traffic'").run();
+		const snapshot = buckets(db);
+		// Act
+		const legacy = adapter(db);
+		const unprotected = await legacy.reserve(request(), signal());
+		const unchanged = buckets(db);
+		initializeRelayQuotaSchema(db);
+		const floors = db
+			.prepare("SELECT DISTINCT last_rate,last_capacity,balance FROM relay_quota_buckets")
+			.all();
+		db.prepare("UPDATE relay_quota_allocations SET rate=2,burst=4 WHERE purpose='traffic'").run();
+		const restored = await legacy.reserve(request("traffic", 3), signal());
+		// Assert
+		expect(unprotected).toBe("unknown");
+		expect(unchanged).toEqual(snapshot);
+		expect(floors).toEqual([{ last_rate: 1, last_capacity: 60000, balance: 60000 }]);
+		expect(restored).toBe("denied");
+		expect(await legacy.reserve(request(), signal())).toBe("reserved");
+	});
+
+	it("checks protection on each reservation after a live adapter loses a trigger", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		const snapshot = buckets(db);
+		db.exec("DROP TRIGGER relay_quota_policy_update");
+		// Act
+		const unprotected = await quota.reserve(request(), signal());
+		const unchanged = buckets(db);
+		initializeRelayQuotaSchema(db);
+		const repaired = await quota.reserve(request(), signal());
+		// Assert
+		expect(unprotected).toBe("unknown");
+		expect(unchanged).toEqual(snapshot);
+		expect(repaired).toBe("reserved");
+	});
+
+	it("retains INSERT OR REPLACE minima when SQLite recursive triggers are off", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		db.pragma("recursive_triggers = OFF");
+		db.prepare("UPDATE relay_quota_allocations SET rate=2 WHERE purpose='traffic'").run();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		// Act
+		db.prepare(
+			"INSERT OR REPLACE INTO relay_quota_allocations(purpose,scope,rate,burst) VALUES('traffic','service',1,1)",
+		).run();
+		db.prepare(
+			"INSERT OR REPLACE INTO relay_quota_allocations(purpose,scope,rate,burst) VALUES('traffic','service',2,4)",
+		).run();
+		const oversized = await quota.reserve(request("traffic", 3), signal());
+		// Assert
+		expect(db.pragma("recursive_triggers", { simple: true })).toBe(0);
+		expect(oversized).toBe("denied");
+		expect(
+			db
+				.prepare(
+					"SELECT last_rate,last_capacity,balance FROM relay_quota_buckets WHERE scope='service'",
+				)
+				.get(),
+		).toEqual({ last_rate: 1, last_capacity: 60000, balance: 60000 });
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+	});
+
+	it("rolls trigger installation back if legacy bucket reconciliation fails", async () => {
+		// Arrange
+		const { db, quota } = fixture();
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+		db.exec(
+			"DROP TRIGGER relay_quota_policy_insert; DROP TRIGGER relay_quota_policy_update; DROP TRIGGER relay_quota_policy_delete;",
+		);
+		db.prepare("UPDATE relay_quota_allocations SET burst=1 WHERE purpose='traffic'").run();
+		const snapshot = buckets(db);
+		const wrapped = boundary(db, {});
+		// Act
+		const initialize = () =>
+			initializeRelayQuotaSchema({
+				...wrapped,
+				exec(sql) {
+					if (sql.startsWith("UPDATE relay_quota_buckets AS b SET"))
+						throw new Error("Reconciliation failed");
+					return db.exec(sql);
+				},
+			});
+		// Assert: failed reconciliation must not advertise installed protection.
+		expect(initialize).toThrow("Reconciliation failed");
+		expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='trigger'").all()).toEqual([]);
+		expect(buckets(db)).toEqual(snapshot);
+		expect(await quota.reserve(request(), signal())).toBe("unknown");
+		initializeRelayQuotaSchema(db);
+		expect(await quota.reserve(request(), signal())).toBe("reserved");
+	});
+});
+
 describe("quota lock handling", () => {
 	it("disables SQLite lock waits, attempts once without writes, and recovers after unlock", async () => {
 		// Arrange
@@ -361,13 +659,24 @@ describe("quota cancellation and durable history", () => {
 		// Arrange
 		const { db } = fixture();
 		const reads: string[] = [];
-		const quota = adapter(boundary(db, { fail: true, reads }));
+		let readsAtCommit = 0;
+		const quota = adapter(
+			boundary(db, {
+				fail: true,
+				reads,
+				after: () => {
+					readsAtCommit = reads.length;
+				},
+			}),
+		);
 		// Act
 		const result = await quota.reserve(request("traffic", 4), signal());
 		// Assert
 		expect(result).toBe("unknown");
-		expect(reads).toHaveLength(11); // One policy read plus allocation and RETURNING per scope.
-		expect(reads.filter((sql) => sql.startsWith("SELECT"))).toHaveLength(6);
+		expect(reads[0]).toContain("FROM sqlite_schema");
+		expect(reads).toHaveLength(12); // Protection and policy reads plus allocation and RETURNING per scope.
+		expect(reads.filter((sql) => sql.startsWith("SELECT"))).toHaveLength(7);
+		expect(reads.length).toBe(readsAtCommit);
 		expect(await adapter(db).reserve(request(), signal())).toBe("denied");
 	});
 
