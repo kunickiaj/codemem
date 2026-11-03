@@ -75,7 +75,7 @@ export class RelayHealthMonitor {
 	private suspended = false;
 	private cycleAbort: AbortController | undefined;
 	private activeCycle: Promise<RelayHealthSnapshot> | undefined;
-	private timer: ReturnType<typeof setInterval> | undefined;
+	private timer: ReturnType<typeof setTimeout> | undefined;
 	private publication: Promise<void> | undefined;
 	private publicationRequested = false;
 	private publishedState: RelayHealthPublication["state"] | null = null;
@@ -354,19 +354,26 @@ export class RelayHealthMonitor {
 	}
 	start(): void {
 		if (!this.options.enabled || this.timer !== undefined) return;
+		this.scheduleMaintenance(30000);
 		void this.runProbeCycle().catch(() => {
 			this.trip();
 		});
-		this.timer = setInterval(() => {
-			void this.runProbeCycle().catch(() => {
-				this.trip();
-			});
-		}, 30000);
+	}
+	private scheduleMaintenance(delayMs: number): void {
+		this.timer = setTimeout(() => {
+			if (this.timer === undefined) return;
+			const remaining = 30000 - (performance.now() - this.lastCycle);
+			this.scheduleMaintenance(remaining > 0 ? remaining : 30000);
+			if (remaining <= 0)
+				void this.runProbeCycle().catch(() => {
+					this.trip();
+				});
+		}, Math.ceil(delayMs));
 		this.timer.unref?.();
 	}
 	async stop(): Promise<boolean> {
 		if (!this.options.enabled) return true;
-		clearInterval(this.timer);
+		clearTimeout(this.timer);
 		this.timer = undefined;
 		this.suspended = true;
 		this.trip();

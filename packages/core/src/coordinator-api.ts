@@ -79,6 +79,7 @@ import {
 	type RecipientReviewedIntentV1,
 	verifyRecipientReviewedIntent,
 } from "./recipient-reviewed-intent.js";
+import type { RelayHealthMonitor } from "./relay-health.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
@@ -123,6 +124,7 @@ export interface CreateCoordinatorAppOptions {
 	accountChanges?: CoordinatorDeviceAccountChangeOptions;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionOptions;
+	relayHealth?: RelayHealthMonitor;
 }
 export type CoordinatorAppBrowserAuthOptions =
 	| {
@@ -613,6 +615,100 @@ function coordinatorAppWithRelay(options?: CoordinatorRelayAdmissionOptions): Ho
 	return app;
 }
 
+type ScopeReadRateLimit = (c: Context, key: string, authenticated: boolean) => Response | null;
+
+async function authorizeScopeGroupMember(
+	store: CoordinatorStore,
+	groupId: string,
+	c: Context,
+	opts: CreateCoordinatorAppOptions,
+	rateLimitedResponse: ScopeReadRateLimit,
+) {
+	const auth = await authorizeRequest(store, opts.runtime, opts.requestVerifier, {
+		method: c.req.method,
+		url: c.req.url,
+		groupId,
+		body: new Uint8Array(0),
+		deviceId: c.req.header("X-Opencode-Device") ?? null,
+		signature: c.req.header("X-Opencode-Signature") ?? null,
+		timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+		nonce: c.req.header("X-Opencode-Nonce") ?? null,
+	});
+	if (!auth.ok || !auth.enrollment)
+		return {
+			auth,
+			response:
+				rateLimitedResponse(c, c.req.path, false) ??
+				c.json({ error: auth.error }, authErrorStatus(auth.error)),
+		};
+	opts.relayHealth?.verifiedGroupMember(c.req.raw, String(auth.enrollment.device_id), groupId);
+	return { auth, response: rateLimitedResponse(c, String(auth.enrollment.device_id), true) };
+}
+
+function activeCurrentMembership(
+	membership: CoordinatorScopeMembership,
+	scope: CoordinatorScope,
+): boolean {
+	return membership.status === "active" && membership.membership_epoch >= scope.membership_epoch;
+}
+
+async function scopeCatalogueResponse(
+	c: Context,
+	opts: CreateCoordinatorAppOptions,
+	rateLimit: ScopeReadRateLimit,
+): Promise<Response> {
+	const groupId = (c.req.query("group_id") ?? "").trim();
+	if (!groupId) return c.json({ error: "group_id_required" }, 400);
+	const store = opts.storeFactory();
+	try {
+		const { auth, response } = await authorizeScopeGroupMember(store, groupId, c, opts, rateLimit);
+		if (response) return response;
+		if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
+		const scopes = await store.listScopes({ groupId, includeInactive: false });
+		// One indexed lookup of this device's memberships avoids reading all scope members.
+		const memberships = await store.listDeviceScopeMemberships(
+			String(auth.enrollment.device_id),
+			false,
+		);
+		const membershipByScope = new Map(
+			memberships.map((membership) => [membership.scope_id, membership]),
+		);
+		const items = scopes.filter((scope) => {
+			if (scope.status !== "active") return false;
+			const membership = membershipByScope.get(scope.scope_id);
+			return Boolean(membership && activeCurrentMembership(membership, scope));
+		});
+		// Catalogue version describes discovery format only, never member/key authority.
+		return c.json({ version: 1, items });
+	} finally {
+		await store.close();
+	}
+}
+
+async function scopeMemberResponse(
+	c: Context,
+	opts: CreateCoordinatorAppOptions,
+	rateLimit: ScopeReadRateLimit,
+): Promise<Response> {
+	const groupId = (c.req.query("group_id") ?? "").trim();
+	const scopeId = String(c.req.param("scope_id") ?? "").trim();
+	if (!groupId) return c.json({ error: "group_id_required" }, 400);
+	if (!scopeId) return c.json({ error: "scope_id_required" }, 400);
+	const store = opts.storeFactory();
+	try {
+		const { auth, response } = await authorizeScopeGroupMember(store, groupId, c, opts, rateLimit);
+		if (response) return response;
+		if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
+		return await scopeAuthorizationResponse(c, store, {
+			groupId,
+			scopeId,
+			requester: auth.enrollment,
+		});
+	} finally {
+		await store.close();
+	}
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -641,6 +737,7 @@ export function createCoordinatorApp(
 		Math.trunc(requestRateLimit.unauthenticatedMutationLimit ?? Math.min(10, mutationLimit)),
 	);
 	const app = coordinatorAppWithRelay(opts.relayAdmission);
+	opts.relayHealth?.install(app);
 	const textDecoder = new TextDecoder();
 
 	function rateLimitedResponse(c: Context, key: string, authenticated: boolean) {
@@ -779,36 +876,6 @@ export function createCoordinatorApp(
 		return { scope, response: null };
 	}
 
-	async function authorizeGroupMember(store: CoordinatorStore, groupId: string, c: Context) {
-		const auth = await authorizeRequest(store, runtime, requestVerifier, {
-			method: c.req.method,
-			url: c.req.url,
-			groupId,
-			body: new Uint8Array(0),
-			deviceId: c.req.header("X-Opencode-Device") ?? null,
-			signature: c.req.header("X-Opencode-Signature") ?? null,
-			timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
-			nonce: c.req.header("X-Opencode-Nonce") ?? null,
-		});
-		if (!auth.ok || !auth.enrollment) {
-			return {
-				auth,
-				response:
-					rateLimitedResponse(c, c.req.path, false) ??
-					c.json({ error: auth.error }, authErrorStatus(auth.error)),
-			};
-		}
-		const limited = rateLimitedResponse(c, String(auth.enrollment.device_id), true);
-		return { auth, response: limited };
-	}
-
-	function activeCurrentMembership(
-		membership: CoordinatorScopeMembership,
-		scope: CoordinatorScope,
-	): boolean {
-		return membership.status === "active" && membership.membership_epoch >= scope.membership_epoch;
-	}
-
 	// -----------------------------------------------------------------------
 	// POST /v1/presence — upsert device presence (authenticated)
 	// -----------------------------------------------------------------------
@@ -927,61 +994,13 @@ export function createCoordinatorApp(
 	// GET /v1/scopes — discovery catalogue, never member/key authority
 	// -----------------------------------------------------------------------
 
-	app.get("/v1/scopes", async (c) => {
-		const groupId = (c.req.query("group_id") ?? "").trim();
-		if (!groupId) return c.json({ error: "group_id_required" }, 400);
-		const store = createStore();
-		try {
-			const { auth, response } = await authorizeGroupMember(store, groupId, c);
-			if (response) return response;
-			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
-			const scopes = await store.listScopes({ groupId, includeInactive: false });
-			// One indexed lookup of the requester's own memberships, rather than
-			// reading every member of every scope to answer a question about one
-			// device. (scope_id, device_id) is unique, so the map is 1:1.
-			const memberships = await store.listDeviceScopeMemberships(
-				String(auth.enrollment.device_id),
-				false,
-			);
-			const membershipByScope = new Map(
-				memberships.map((membership) => [membership.scope_id, membership]),
-			);
-			const items: CoordinatorScope[] = scopes.filter((scope) => {
-				if (scope.status !== "active") return false;
-				const membership = membershipByScope.get(scope.scope_id);
-				return Boolean(membership && activeCurrentMembership(membership, scope));
-			});
-			// Version describes the catalogue format only. Consumers must fetch each
-			// actual scope's current member snapshot before granting cache authority.
-			return c.json({ version: 1, items });
-		} finally {
-			await store.close();
-		}
-	});
+	app.get("/v1/scopes", (c) => scopeCatalogueResponse(c, opts, rateLimitedResponse));
 
 	// -----------------------------------------------------------------------
 	// GET /v1/scopes/:scope_id/members — list members of an authorized scope
 	// -----------------------------------------------------------------------
 
-	app.get("/v1/scopes/:scope_id/members", async (c) => {
-		const groupId = (c.req.query("group_id") ?? "").trim();
-		const scopeId = String(c.req.param("scope_id") ?? "").trim();
-		if (!groupId) return c.json({ error: "group_id_required" }, 400);
-		if (!scopeId) return c.json({ error: "scope_id_required" }, 400);
-		const store = createStore();
-		try {
-			const { auth, response } = await authorizeGroupMember(store, groupId, c);
-			if (response) return response;
-			if (!auth.enrollment) return c.json({ error: "unknown_device" }, 401);
-			return await scopeAuthorizationResponse(c, store, {
-				groupId,
-				scopeId,
-				requester: auth.enrollment,
-			});
-		} finally {
-			await store.close();
-		}
-	});
+	app.get("/v1/scopes/:scope_id/members", (c) => scopeMemberResponse(c, opts, rateLimitedResponse));
 
 	// -----------------------------------------------------------------------
 	// GET /v1/reciprocal-approvals — list pending local approval state

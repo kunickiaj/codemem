@@ -9,6 +9,8 @@ import {
 } from "./coordinator-api.js";
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
+import { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "./relay-health.js";
+import { sqliteRelayHealthPublisher } from "./relay-health-storage.js";
 import { verifySignature } from "./sync-auth.js";
 
 export interface CreateBetterSqliteCoordinatorAppOptions {
@@ -16,6 +18,7 @@ export interface CreateBetterSqliteCoordinatorAppOptions {
 	runtime?: CoordinatorRuntimeDeps;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionRuntimeOptions;
+	relayHealth?: RelayHealthRuntimeOptions;
 }
 
 export function createBetterSqliteCoordinatorApp(
@@ -32,7 +35,9 @@ export function createBetterSqliteCoordinatorApp(
 			bodyBytes: Buffer.from(input.bodyBytes),
 		});
 	const dbPath = opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH;
+	const relayHealth = createSqliteHealthMonitor(opts.relayHealth, dbPath);
 	return createCoordinatorApp({
+		relayHealth,
 		storeFactory: (options) => new BetterSqliteCoordinatorStore(dbPath, options),
 		deviceRevocation: opts.deviceRevocation,
 		runtime,
@@ -55,4 +60,20 @@ export function createBetterSqliteCoordinatorApp(
 				}
 			: undefined,
 	});
+}
+
+function createSqliteHealthMonitor(
+	options: RelayHealthRuntimeOptions | undefined,
+	dbPath: string,
+): RelayHealthMonitor | undefined {
+	if (!options?.enabled) return undefined;
+	const monitor = new RelayHealthMonitor({
+		...options,
+		publish: sqliteRelayHealthPublisher(
+			() => new BetterSqliteCoordinatorStore(dbPath, { existingOnly: true }),
+			options,
+		),
+	});
+	options.onMonitor(monitor);
+	return monitor;
 }
