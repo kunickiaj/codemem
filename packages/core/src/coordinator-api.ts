@@ -79,7 +79,7 @@ import {
 	type RecipientReviewedIntentV1,
 	verifyRecipientReviewedIntent,
 } from "./recipient-reviewed-intent.js";
-import type { RelayHealthMonitor } from "./relay-health.js";
+import type { RelayHealthServerHook } from "./relay-health.js";
 import {
 	createInMemoryRequestRateLimiter,
 	type InMemoryRequestRateLimiter,
@@ -124,7 +124,7 @@ export interface CreateCoordinatorAppOptions {
 	accountChanges?: CoordinatorDeviceAccountChangeOptions;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionOptions;
-	relayHealth?: RelayHealthMonitor;
+	relayHealth?: RelayHealthServerHook;
 }
 export type CoordinatorAppBrowserAuthOptions =
 	| {

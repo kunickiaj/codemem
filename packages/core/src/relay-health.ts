@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import {
 	createRelayHealthProbe,
+	type RelayHealthClockStamp,
 	type RelayHealthEndpoint,
 	type RelayHealthProbeObservation,
 	type RelayHealthProbeOptions,
@@ -9,18 +10,54 @@ import {
 import type { RelayHealthPublication, RelayHealthPublisher } from "./relay-health-storage.js";
 
 type Cohort = "probe-server" | "probe-client" | "real-client";
+export type RelayHealthServerCohort = Exclude<Cohort, "probe-client">;
 const ENDPOINTS: readonly RelayHealthEndpoint[] = ["catalogue", "members"];
 const COHORTS: readonly Cohort[] = ["probe-server", "probe-client", "real-client"];
 const WINDOW_MS = 60000;
 const FRESH_MS = 50000;
 const MAX_SAMPLES = 4096;
 
-interface Window {
+export interface RelayHealthWindow {
 	durations: number[];
 	failures: number;
 	successAt: number | null;
 	lastSuccessAt: number | null;
 	badWindows: number;
+}
+/** One authenticated server observation, produced by coordinator instrumentation. */
+export interface RelayHealthServerSample {
+	readonly groupId: string;
+	readonly cohort: RelayHealthServerCohort;
+	readonly observation: RelayHealthProbeObservation;
+}
+/** What instrumentation saw for one matched request. A fault means classification threw. */
+export interface RelayHealthServerEvent {
+	readonly sample: RelayHealthServerSample | null;
+	readonly fault: boolean;
+}
+export interface RelayHealthInstrumentationOptions {
+	/** Instrumented group IDs mapped to each group's synthetic probe scope. */
+	readonly groups: ReadonlyMap<string, string>;
+	readonly probeDeviceId: string;
+	readonly clock: () => RelayHealthClockStamp;
+}
+/** The part of a monitor the coordinator app calls. */
+export interface RelayHealthServerHook {
+	verifiedGroupMember(request: Request, deviceId: string, groupId: string): void;
+	install(app: Hono): void;
+}
+/** Persistable monitor state. Timers, in-flight cycles and the monotonic cycle guard are excluded. */
+export interface RelayHealthState {
+	readonly version: 1;
+	readonly windows: Readonly<Record<string, RelayHealthWindow>>;
+	readonly windowStart: number | null;
+	readonly fullWindow: boolean;
+	readonly tripped: boolean;
+	readonly healthyWindows: number;
+	readonly clockValid: boolean;
+	readonly revision: number | null;
+	readonly lastNow: number | null;
+	readonly publishedState: RelayHealthPublication["state"] | null;
 }
 export interface RelayHealthSnapshot extends RelayHealthPublication {
 	readonly revision: number | null;
@@ -38,18 +75,18 @@ export interface RelayHealthRuntimeOptions extends Omit<RelayHealthOptions, "pub
 	readonly onMonitor: (monitor: RelayHealthMonitor) => void;
 }
 
-function emptyWindow(): Window {
+function emptyWindow(): RelayHealthWindow {
 	return { durations: [], failures: 0, successAt: null, lastSuccessAt: null, badWindows: 0 };
 }
 function fresh(timestamp: number | null, now: number): timestamp is number {
 	return timestamp !== null && timestamp <= now && timestamp + FRESH_MS > now;
 }
-function healthy(window: Window, now: number): boolean {
+function healthy(window: RelayHealthWindow, now: number): boolean {
 	const count = window.durations.length;
 	if (!count || !fresh(window.successAt, now)) return false;
 	return !badPerformance(window);
 }
-function badPerformance(window: Window): boolean {
+function badPerformance(window: RelayHealthWindow): boolean {
 	const count = window.durations.length;
 	if (count < 20) return window.failures > 0 || window.durations.some((value) => value > 3000);
 	const sorted = [...window.durations].sort((a, b) => a - b);
@@ -58,10 +95,128 @@ function badPerformance(window: Window): boolean {
 	);
 }
 
+const nullableNumber = (value: unknown): value is number | null =>
+	value === null || (typeof value === "number" && Number.isFinite(value));
+
+function isWindow(value: unknown): value is RelayHealthWindow {
+	if (!value || typeof value !== "object") return false;
+	const window = value as Record<string, unknown>;
+	return (
+		Array.isArray(window.durations) &&
+		window.durations.length <= MAX_SAMPLES &&
+		window.durations.every((duration) => typeof duration === "number" && duration >= 0) &&
+		Number.isSafeInteger(window.failures) &&
+		Number.isSafeInteger(window.badWindows) &&
+		nullableNumber(window.successAt) &&
+		nullableNumber(window.lastSuccessAt)
+	);
+}
+
+function isRelayHealthState(value: unknown): value is RelayHealthState {
+	if (!value || typeof value !== "object") return false;
+	const state = value as Record<string, unknown>;
+	const windows = state.windows as Record<string, unknown> | null;
+	const keys = ENDPOINTS.flatMap((endpoint) => COHORTS.map((cohort) => `${endpoint}:${cohort}`));
+	return (
+		state.version === 1 &&
+		!!windows &&
+		typeof windows === "object" &&
+		Object.keys(windows).length === keys.length &&
+		keys.every((key) => isWindow(windows[key])) &&
+		nullableNumber(state.windowStart) &&
+		typeof state.fullWindow === "boolean" &&
+		typeof state.tripped === "boolean" &&
+		Number.isSafeInteger(state.healthyWindows) &&
+		typeof state.clockValid === "boolean" &&
+		(state.revision === null || Number.isSafeInteger(state.revision)) &&
+		nullableNumber(state.lastNow) &&
+		(state.publishedState === null ||
+			["ready", "paused", "tripped"].includes(String(state.publishedState)))
+	);
+}
+
+/**
+ * Times authenticated catalogue and member reads and classifies each into a server
+ * cohort. The sink decides where samples go, so a monitor can record them locally
+ * and a Worker can forward them to the isolate that owns the monitor.
+ */
+export class RelayHealthInstrumentation implements RelayHealthServerHook {
+	private readonly verified = new WeakMap<Request, { deviceId: string; groupId: string }>();
+
+	constructor(
+		private readonly options: RelayHealthInstrumentationOptions,
+		private readonly sink: (event: RelayHealthServerEvent) => void | Promise<void>,
+	) {
+		this.options = Object.freeze({ ...options });
+	}
+	/** Called only after the existing normal enrollment proof and nonce check succeed. */
+	verifiedGroupMember(request: Request, deviceId: string, groupId: string): void {
+		if (this.options.groups.has(groupId)) this.verified.set(request, { deviceId, groupId });
+	}
+	private endpoint(request: Request): RelayHealthEndpoint | null {
+		if (request.method !== "GET") return null;
+		const url = new URL(request.url);
+		if (!this.options.groups.has((url.searchParams.get("group_id") ?? "").trim())) return null;
+		if (url.pathname === "/v1/scopes") return "catalogue";
+		return /^\/v1\/scopes\/[^/]+\/members$/.test(url.pathname) ? "members" : null;
+	}
+	private complete(
+		request: Request,
+		endpoint: RelayHealthEndpoint,
+		started: number,
+		status: number,
+	): RelayHealthServerSample | null {
+		const principal = this.verified.get(request);
+		this.verified.delete(request);
+		// Admission health measures authenticated work, not callers exhausting a rate bucket.
+		if (!principal || status === 401 || status === 403 || status === 429) return null;
+		const url = new URL(request.url);
+		const scopeId = this.options.groups.get(principal.groupId) ?? "";
+		const synthetic = url.pathname === `/v1/scopes/${encodeURIComponent(scopeId)}/members`;
+		const probe =
+			principal.deviceId === this.options.probeDeviceId && (endpoint === "catalogue" || synthetic);
+		const success = status === 200;
+		if (!success && status < 500) return null;
+		return {
+			groupId: principal.groupId,
+			cohort: probe ? "probe-server" : "real-client",
+			observation: {
+				endpoint,
+				completedAt: this.options.clock(),
+				durationMs: performance.now() - started,
+				outcome: success ? "success" : "failure",
+			},
+		};
+	}
+	install(app: Hono): void {
+		app.use("*", async (c, next) => {
+			const endpoint = this.endpoint(c.req.raw);
+			if (!endpoint) {
+				await next();
+				return;
+			}
+			const started = performance.now();
+			let status = 500;
+			try {
+				await next();
+				status = c.res.status;
+			} finally {
+				let event: RelayHealthServerEvent;
+				try {
+					event = { sample: this.complete(c.req.raw, endpoint, started, status), fault: false };
+				} catch {
+					event = { sample: null, fault: true };
+				}
+				await this.sink(event);
+			}
+		});
+	}
+}
+
 /** One authority with one configured realm. No public observation ingestion surface. */
 export class RelayHealthMonitor {
-	private readonly windows = new Map<string, Window>();
-	private readonly verified = new WeakMap<Request, { deviceId: string; groupId: string }>();
+	private readonly windows = new Map<string, RelayHealthWindow>();
+	private readonly instrumentation: RelayHealthInstrumentation;
 	private readonly probe: (signal?: AbortSignal) => Promise<void>;
 	private windowStart: number | null = null;
 	private fullWindow = false;
@@ -79,12 +234,21 @@ export class RelayHealthMonitor {
 	private publication: Promise<void> | undefined;
 	private publicationRequested = false;
 	private publishedState: RelayHealthPublication["state"] | null = null;
+	private publishedObservedAtMs: number | null = null;
 
 	constructor(private readonly options: RelayHealthOptions) {
 		this.options = Object.freeze({ ...options });
 		for (const endpoint of ENDPOINTS)
 			for (const cohort of COHORTS) this.windows.set(`${endpoint}:${cohort}`, emptyWindow());
 		this.probe = createRelayHealthProbe(options, (observation) => this.observeProbe(observation));
+		this.instrumentation = new RelayHealthInstrumentation(
+			{
+				groups: new Map([[options.groupId, options.syntheticScopeId]]),
+				probeDeviceId: options.probeDeviceId,
+				clock: options.clock,
+			},
+			(event) => this.afterServerRequest(event),
+		);
 	}
 	private clock(): number | null {
 		try {
@@ -113,7 +277,7 @@ export class RelayHealthMonitor {
 		this.tripped = true;
 		this.healthyWindows = 0;
 	}
-	private window(endpoint: RelayHealthEndpoint, cohort: Cohort): Window {
+	private window(endpoint: RelayHealthEndpoint, cohort: Cohort): RelayHealthWindow {
 		const window = this.windows.get(`${endpoint}:${cohort}`);
 		if (!window) throw new Error("relay_health_internal_cohort");
 		return window;
@@ -127,7 +291,7 @@ export class RelayHealthMonitor {
 			if (this.healthyWindows === 5) this.tripped = false;
 		} else this.healthyWindows = 0;
 	}
-	private finishCohort(key: string, window: Window, end: number): boolean {
+	private finishCohort(key: string, window: RelayHealthWindow, end: number): boolean {
 		const count = window.durations.length;
 		if (key.endsWith(":real-client") && count === 0) {
 			window.badWindows = 0;
@@ -175,7 +339,7 @@ export class RelayHealthMonitor {
 		this.addSample(window, completedAt, observation);
 	}
 	private addSample(
-		window: Window,
+		window: RelayHealthWindow,
 		completedAt: number,
 		observation: RelayHealthProbeObservation,
 	): void {
@@ -205,63 +369,38 @@ export class RelayHealthMonitor {
 	}
 	/** Called only after the existing normal enrollment proof and nonce check succeed. */
 	verifiedGroupMember(request: Request, deviceId: string, groupId: string): void {
-		if (this.options.enabled && groupId === this.options.groupId)
-			this.verified.set(request, { deviceId, groupId });
-	}
-	private endpoint(request: Request): RelayHealthEndpoint | null {
-		if (request.method !== "GET") return null;
-		const url = new URL(request.url);
-		if ((url.searchParams.get("group_id") ?? "").trim() !== this.options.groupId) return null;
-		if (url.pathname === "/v1/scopes") return "catalogue";
-		return /^\/v1\/scopes\/[^/]+\/members$/.test(url.pathname) ? "members" : null;
-	}
-	private complete(
-		request: Request,
-		endpoint: RelayHealthEndpoint,
-		started: number,
-		status: number,
-	): void {
-		const principal = this.verified.get(request);
-		this.verified.delete(request);
-		// Admission health measures authenticated work, not callers exhausting a rate bucket.
-		if (!principal || status === 401 || status === 403 || status === 429) return;
-		const url = new URL(request.url);
-		const synthetic =
-			url.pathname === `/v1/scopes/${encodeURIComponent(this.options.syntheticScopeId)}/members`;
-		const probe =
-			principal?.deviceId === this.options.probeDeviceId && (endpoint === "catalogue" || synthetic);
-		const success = status === 200;
-		if (!success && status < 500) return;
-		this.observe(endpoint, probe ? "probe-server" : "real-client", {
-			endpoint,
-			completedAt: this.options.clock(),
-			durationMs: performance.now() - started,
-			outcome: success ? "success" : "failure",
-		});
+		if (this.options.enabled) this.instrumentation.verifiedGroupMember(request, deviceId, groupId);
 	}
 	/** Install before routes so timing includes auth, nonce, DB, serialization and close. */
 	install(app: Hono): void {
-		if (!this.options.enabled) return;
-		app.use("*", async (c, next) => {
-			const endpoint = this.endpoint(c.req.raw);
-			if (!endpoint) {
-				await next();
-				return;
-			}
-			const started = performance.now();
-			let status = 500;
-			try {
-				await next();
-				status = c.res.status;
-			} finally {
-				try {
-					this.complete(c.req.raw, endpoint, started, status);
-				} catch {
-					this.invalidateClock();
-				}
-				if (this.snapshot().state !== this.publishedState) await this.publish();
-			}
-		});
+		if (this.options.enabled) this.instrumentation.install(app);
+	}
+	private async afterServerRequest(event: RelayHealthServerEvent): Promise<void> {
+		if (event.fault) this.invalidateClock();
+		else if (event.sample)
+			this.observe(
+				event.sample.observation.endpoint,
+				event.sample.cohort,
+				event.sample.observation,
+			);
+		if (this.snapshot().state !== this.publishedState) await this.publish();
+	}
+	/**
+	 * Trusted internal producer link for an owner whose instrumentation runs elsewhere,
+	 * such as another Worker isolate. The sample keeps its own completion time.
+	 */
+	async recordServerSample(sample: RelayHealthServerSample): Promise<void> {
+		if (!this.options.enabled || sample.groupId !== this.options.groupId) return;
+		await this.afterServerRequest({ sample, fault: false });
+		// A forwarded probe sample can land after its cycle published. Publish again
+		// when it advances a ready stamp, so readiness does not lag a cycle behind.
+		const snapshot = this.snapshot();
+		if (
+			sample.cohort === "probe-server" &&
+			snapshot.state === "ready" &&
+			snapshot.observedAtMs !== this.publishedObservedAtMs
+		)
+			await this.publish();
 	}
 	snapshot(): RelayHealthSnapshot {
 		const now = this.clock();
@@ -313,12 +452,14 @@ export class RelayHealthMonitor {
 						throw new Error("relay_health_receipt_invalid");
 					this.revision = revision;
 					this.publishedState = snapshot.state;
+					this.publishedObservedAtMs = snapshot.observedAtMs;
 					// A newer state can match the previous publication while this write is in flight.
 					if (this.snapshot().state !== snapshot.state) this.publicationRequested = true;
 				} catch {
 					this.trip();
 					this.revision = null;
 					this.publishedState = null;
+					this.publishedObservedAtMs = null;
 					this.invalidateClock();
 					this.publicationRequested = false;
 					return;
@@ -334,6 +475,18 @@ export class RelayHealthMonitor {
 		if (!this.options.enabled || this.running || monotonicNow - this.lastCycle < 30000)
 			return Promise.resolve(this.snapshot());
 		this.lastCycle = monotonicNow;
+		return this.startCycle();
+	}
+	/**
+	 * Runs one cycle now, for an owner that schedules cycles itself instead of
+	 * calling start(), such as a Durable Object alarm. The owner enforces the
+	 * 30 s cadence, because a fresh object has no monotonic history.
+	 */
+	runScheduledCycle(): Promise<RelayHealthSnapshot> {
+		if (!this.options.enabled || this.running) return Promise.resolve(this.snapshot());
+		return this.startCycle();
+	}
+	private startCycle(): Promise<RelayHealthSnapshot> {
 		this.suspended = false;
 		this.running = true;
 		this.cycleAbort = new AbortController();
@@ -351,6 +504,56 @@ export class RelayHealthMonitor {
 		await this.publish();
 		this.running = false;
 		return this.snapshot();
+	}
+	/** Window and publication state for an owner that persists the monitor between cycles. */
+	exportState(): RelayHealthState {
+		const windows: Record<string, RelayHealthWindow> = {};
+		for (const [key, window] of this.windows)
+			windows[key] = { ...window, durations: [...window.durations] };
+		return {
+			version: 1,
+			windows,
+			windowStart: this.windowStart,
+			fullWindow: this.fullWindow,
+			tripped: this.tripped,
+			healthyWindows: this.healthyWindows,
+			clockValid: this.clockValid,
+			revision: this.revision,
+			lastNow: this.lastNow,
+			publishedState: this.publishedState,
+		};
+	}
+	/**
+	 * Restores exported state into a new, idle monitor. Returns false and keeps the
+	 * conservative startup state when the value does not have the exported shape,
+	 * or when `maxGapMs` is set and the state was last updated longer ago than that
+	 * by the verified clock. A restart after such a gap must repeat the five-window
+	 * recovery, as a new Node monitor does.
+	 */
+	importState(value: unknown, options: { readonly maxGapMs?: number } = {}): boolean {
+		if (this.running || !isRelayHealthState(value)) return false;
+		if (options.maxGapMs !== undefined && !this.withinGap(value.lastNow, options.maxGapMs))
+			return false;
+		for (const [key, window] of Object.entries(value.windows))
+			this.windows.set(key, { ...window, durations: [...window.durations] });
+		this.windowStart = value.windowStart;
+		this.fullWindow = value.fullWindow;
+		this.tripped = value.tripped;
+		this.healthyWindows = value.healthyWindows;
+		this.clockValid = value.clockValid;
+		this.revision = value.revision;
+		this.lastNow = value.lastNow;
+		this.publishedState = value.publishedState;
+		return true;
+	}
+	private withinGap(lastNow: number | null, maxGapMs: number): boolean {
+		let now: number | null = null;
+		try {
+			now = verifiedRelayHealthTime(this.options.clock());
+		} catch {
+			/* No clock proof, so the gap is unknown. */
+		}
+		return now !== null && lastNow !== null && now >= lastNow && now - lastNow <= maxGapMs;
 	}
 	start(): void {
 		if (!this.options.enabled || this.timer !== undefined) return;
