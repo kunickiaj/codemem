@@ -1,14 +1,20 @@
-import type { InMemoryRequestRateLimiter } from "@codemem/core/internal/cloudflare-coordinator";
+import type {
+	D1DatabaseLike,
+	InMemoryRequestRateLimiter,
+} from "@codemem/core/internal/cloudflare-coordinator";
 import { authenticate, readOwnerJsonRequest } from "./owner-admin.js";
+import { provisionRelayAdmission } from "./relay-admission-setup.js";
 import { captureRelayEnv, type RelayRealmConfig, readRelayConfig } from "./relay-config.js";
 import type { RelayRealm } from "./relay-realm.js";
 
 const RELAY_UPGRADE_PATH = /^\/v1\/relay\/([0-9a-f]{64})$/;
 const REALM_ID = /^[0-9a-f]{64}$/;
 export const RELAY_QUOTA_ADMIN_PATH = "/v1/admin/relay/quota";
+export const RELAY_ADMISSION_ADMIN_PATH = "/v1/admin/relay/admission";
 
 export interface RelayWorkerEnv {
 	readonly RELAY_REALM?: DurableObjectNamespace<RelayRealm>;
+	readonly COORDINATOR_DB?: D1DatabaseLike;
 }
 
 function relayConfig(env: RelayWorkerEnv): RelayRealmConfig | null {
@@ -83,23 +89,33 @@ async function readQuotaRequest(
 	return { realmId, enabled };
 }
 
+/** Method, query, Origin, secret, rate limit and content type checks shared by relay admin routes. */
+async function refuseAdminRequest(
+	request: Request,
+	options: RelayAdminOptions,
+	limitKey: string,
+): Promise<Response | null> {
+	if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+	if (new URL(request.url).search || request.headers.has("Origin"))
+		return json({ error: "invalid_request" }, 400);
+	if (!(await authenticate(request, options.adminSecret)))
+		return json({ error: "unauthorized" }, 401);
+	if (!options.limiter.check(limitKey, 20).allowed) return json({ error: "rate_limited" }, 429);
+	if (
+		!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers.get("Content-Type") ?? "")
+	)
+		return json({ error: "invalid_content_type" }, 415);
+	return null;
+}
+
 async function provisionRealmQuota(
 	request: Request,
 	config: RelayRealmConfig,
 	namespace: DurableObjectNamespace<RelayRealm>,
 	options: RelayAdminOptions,
 ): Promise<Response> {
-	if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-	if (new URL(request.url).search || request.headers.has("Origin"))
-		return json({ error: "invalid_request" }, 400);
-	if (!(await authenticate(request, options.adminSecret)))
-		return json({ error: "unauthorized" }, 401);
-	if (!options.limiter.check("relay-quota-admin", 20).allowed)
-		return json({ error: "rate_limited" }, 429);
-	if (
-		!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(request.headers.get("Content-Type") ?? "")
-	)
-		return json({ error: "invalid_content_type" }, 415);
+	const refused = await refuseAdminRequest(request, options, "relay-quota-admin");
+	if (refused) return refused;
 	const input = await readQuotaRequest(request);
 	if (!input) return json({ error: "invalid_request" }, 400);
 	// Only configured realms are named, so this route cannot create arbitrary objects either.
@@ -109,4 +125,38 @@ async function provisionRealmQuota(
 	if (!result.ok)
 		return json({ error: result.error }, result.error === "relay_quota_conflict" ? 409 : 404);
 	return json({ realm_id: result.realmId, enabled: result.enabled }, 200);
+}
+
+/**
+ * Operator route that writes the D1 admission policy, realm rows and budgets for
+ * the relay config. It takes an empty JSON object, because every value comes
+ * from config and the fixed budget profile. Returns null while relay is off.
+ */
+export function handleRelayAdmissionSetup(
+	request: Request,
+	env: RelayWorkerEnv,
+	options: RelayAdminOptions,
+): Promise<Response> | null {
+	if (new URL(request.url).pathname !== RELAY_ADMISSION_ADMIN_PATH) return null;
+	const config = relayConfig(env);
+	const db = env.COORDINATOR_DB;
+	if (!config || !db) return null;
+	return setupRelayAdmission(request, config, db, options).catch(() =>
+		json({ error: "relay_admission_unavailable" }, 503),
+	);
+}
+
+async function setupRelayAdmission(
+	request: Request,
+	config: RelayRealmConfig,
+	db: D1DatabaseLike,
+	options: RelayAdminOptions,
+): Promise<Response> {
+	const refused = await refuseAdminRequest(request, options, "relay-admission-admin");
+	if (refused) return refused;
+	const body = await readOwnerJsonRequest(request).catch(() => null);
+	if (!body || Object.keys(body).length !== 0) return json({ error: "invalid_request" }, 400);
+	const result = await provisionRelayAdmission(db, config);
+	if (!result.ok) return json({ error: result.error }, 409);
+	return json(result.body, 200);
 }

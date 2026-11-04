@@ -29,14 +29,18 @@ function serviceKeyId(serviceKey: string): Promise<string> {
 	return cachedKeyId.keyId;
 }
 
+/** The relay audience every configured realm shares: the coordinator host and service key. */
+export async function relayServiceAudienceId(config: RelayRealmConfig): Promise<string> {
+	return relayAudienceId(config.audienceOrigin, await serviceKeyId(config.serviceKey));
+}
+
 /** One server-owned namespace per group. Every group shares the authority and relay audience. */
 export async function relayAdmissionOptions(
 	config: RelayRealmConfig,
 	groupIds: readonly string[],
 	ingressKey: string,
 ): Promise<RelayAdmissionOptions> {
-	const keyId = await serviceKeyId(config.serviceKey);
-	const audience = relayAudienceId(config.audienceOrigin, keyId);
+	const audience = await relayServiceAudienceId(config);
 	return {
 		namespaces: new Map(
 			groupIds.map((groupId) => [

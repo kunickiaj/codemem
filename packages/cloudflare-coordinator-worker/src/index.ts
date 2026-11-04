@@ -29,7 +29,12 @@ import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { publicRelayAdmission, type RelayAdmissionOptions } from "./relay-admission-options.js";
 import { RELAY_ADMISSION_PATH } from "./relay-config.js";
-import { handleRelayQuotaAdmin, type RelayWorkerEnv, routeRelayUpgrade } from "./relay-route.js";
+import {
+	handleRelayAdmissionSetup,
+	handleRelayQuotaAdmin,
+	type RelayWorkerEnv,
+	routeRelayUpgrade,
+} from "./relay-route.js";
 import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
 export interface CloudflareCoordinatorEnv extends CloudflareBrowserAuthEnv, RelayWorkerEnv {
@@ -406,6 +411,18 @@ function configuredRevocation(
 	return app.fetch(request);
 }
 
+/** The relay operator routes, or null for every other path and while relay is off. */
+function relayAdminRoute(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	limiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+): Promise<Response> | null {
+	const options = { adminSecret: coordinatorAdminSecret(env, {}), limiter };
+	return (
+		handleRelayQuotaAdmin(request, env, options) ?? handleRelayAdmissionSetup(request, env, options)
+	);
+}
+
 /** Capture configured authentication once; only settled setup crosses requests. */
 export function createConfiguredCloudflareCoordinatorWorker() {
 	const pin: ConfiguredBindingPin = {};
@@ -435,11 +452,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 			// Relay first, so an upgrade never waits on coordinator setup. After the
 			// hand-off the Worker does nothing else for that request.
 			const relay =
-				routeRelayUpgrade(request, env) ??
-				handleRelayQuotaAdmin(request, env, {
-					adminSecret: coordinatorAdminSecret(env, {}),
-					limiter: relayAdminLimiter,
-				});
+				routeRelayUpgrade(request, env) ?? relayAdminRoute(request, env, relayAdminLimiter);
 			if (relay) return relay;
 			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
 				return fetchOwnerQualification(request, env, pin, qualificationLimiter);

@@ -246,7 +246,7 @@ and `RelayAdmission`, and copy these settings from the package's `wrangler.jsonc
 
 - the `RELAY_REALM` Durable Object binding and the `v1-relay-realm` migration with `new_sqlite_classes`
 - `CODEMEM_RELAY_AUTHORITY_URL`, the coordinator origin with no path
-- `CODEMEM_RELAY_GROUPS`, a JSON array of up to 64 group IDs, one realm each
+- `CODEMEM_RELAY_GROUPS`, a JSON array of up to 8 group IDs, one realm each
 - the Ed25519 service key as a secret: `wrangler secret put CODEMEM_RELAY_SERVICE_KEY`
 
 Admission checks from realm objects reach the `RelayAdmission` entrypoint through the Worker's own
@@ -256,17 +256,75 @@ still need device-signed packets. The public admission route serves every config
 picks the group from the device-signed packet body. Each realm's loopback admits only its own
 group.
 
-Each configured group needs its own admission rows in D1 before its checks succeed:
+Turning relay on takes these steps, in order:
 
-- a `relay_admission_realms` row with `operator_state` `enabled`
-- a `relay_admission_readiness` row with `scope` `realm` for that group
-- `relay-route` and `relay-registration` rows in `admission_budget_allocations` for that group and
-  the relay audience, each under a parent row for the same pool and audience with `group_id` `''`
+1. Apply the D1 migrations, including 0041 and 0042.
+2. Set the service key secret.
+3. Set `CODEMEM_RELAY_ENABLED`, `CODEMEM_RELAY_AUTHORITY_URL`, and `CODEMEM_RELAY_GROUPS`.
+4. Deploy.
+5. Write the admission rows with `POST /v1/admin/relay/admission`.
+6. Provision each realm's quota with `POST /v1/admin/relay/quota`.
+7. Publish readiness. No production writer exists yet (codemem-zjvr.2.6.6), so admission checks
+   stay denied until it ships.
 
-The authority policy, audience, authority readiness, `authority`, `device`, and
-`device-registration` rows are shared by every group. A parent allocation must cover the sum of its
-per-group children, and the `authority` allocation must cover the sum of the group `''` ingress
-parents, so raise the parents before adding a group's allocations.
+The admission route takes an empty JSON object, because every value comes from the Worker's relay
+config and a fixed budget profile in code. It uses the same admin secret and request checks as the
+quota route, and the same 20-per-minute admin rate limit, counted separately from the quota route.
+It rejects an `Origin` header and any query string:
+
+```fish
+curl -sS -X POST "https://<coordinator>/v1/admin/relay/admission" \
+  -H "Content-Type: application/json" \
+  -H "X-Codemem-Coordinator-Admin: <admin secret>" \
+  --data '{}'
+```
+
+It writes the authority policy, the relay audience, a `relay_admission_realms` row for each
+configured group, and the `authority`, `device`, `device-registration`, `relay-route`, and
+`relay-registration` budget allocations, all in one D1 batch. The reply lists each realm ID for
+step 6, reports `"changed"`, and always carries `"readiness":"not_written"`: this route never writes
+readiness rows. While relay is off the coordinator answers the path, which returns 404.
+
+| Allocation | Rate per minute | Burst |
+| --- | --- | --- |
+| Each group, in `relay-route` and in `relay-registration` | 120 | 64 |
+| Each pool's audience parent (`group_id` `''`) | 120 × groups | 64 × groups |
+| `authority` | 240 × groups | 128 × groups |
+| `device` | 96 | 16 |
+| `device-registration` | 2 | 2 |
+
+The D1 triggers require each parent to cover the sum of its children and the `authority` row to
+cover the sum of the audience parents, so each parent is set to exactly that sum. The per-group
+values are the default one-group profile: 120 route checks per minute admit about 40 route opens per
+minute, because each open needs a source, relay, and responder check, which stays below the
+contract's realm open ceiling of 128 per minute. Eight groups need 960/512 per audience parent and 1,920/1,024 at the
+authority, which is far below the schema ceilings, so the per-group allotment needs no scaling.
+The `device` and `device-registration` values are the schema maximums.
+
+Rows are permanent, and the route only adds or raises:
+
+- Repeating setup with the same config writes nothing.
+- A new group in config raises the authority and audience parents by its share first, then adds
+  its realm row and allocations. The policy revision goes up by one in the same batch, as the
+  metadata triggers require. Existing per-group allocations are never raised. Adding a group or
+  rotating the key bumps `policy_revision`, so admission checks already in flight fail closed once
+  and then recover.
+- A group removed from config keeps all its rows and still counts toward its parents. The Worker
+  just stops serving its realm.
+- A rotated service key gives a new audience, so setup adds that audience and its parents. The old
+  audience's parents still count toward the authority. Optionally, an operator can revoke the old
+  audience and close its allocations by hand, setting the children to 0/0 before their parents, so
+  the authority total stays meaningful.
+- A stored row is never lowered, and a disabled policy or realm is never re-enabled.
+
+The route answers 409 instead of writing when a change would need something the schema or this
+policy forbids: `relay_audience_revoked` for a revoked audience, which can never be re-enabled
+(rotate the service key to get a new audience), `relay_budget_closed` when a parent that must grow
+is stored as 0/0, which this route treats as an operator closure, and `relay_budget_ceiling` when a
+value would exceed a schema limit. `relay_admission_conflict` means a concurrent writer changed the
+rows first, so read them and retry. To change a budget by hand, update D1 directly: lower children
+before their parent, and raise a parent before its children, so every statement passes the
+triggers.
 
 Checks are charged before authentication. A packet that names a configured group charges that
 group's ingress bucket as well as the shared buckets, so anyone who knows a group ID can drain that
@@ -274,7 +332,7 @@ group's bucket with junk packets until it refills. This is an accepted risk: the
 already allow the same junk to delay checks for every group. A packet that does not decode, or
 names an unconfigured group, charges only the shared buckets.
 
-Each realm also needs its quota provisioned before upgrades succeed. Use the admin secret:
+Each realm also needs its quota provisioned (step 6) before upgrades succeed:
 
 ```fish
 curl -sS -X POST "https://<coordinator>/v1/admin/relay/quota" \
