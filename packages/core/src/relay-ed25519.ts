@@ -9,7 +9,8 @@ export function parseRelayEd25519PublicKey(publicKey: string): ParsedRelayEd2551
 	if (typeof publicKey !== "string" || hasInvalidControl(publicKey)) {
 		throw new RelayPublicKeyError("Invalid SSH public key");
 	}
-	const match = /^ssh-ed25519[ \t]+([A-Za-z0-9+/]+={0,2})(?:[ \t]+[^\r\n]*)?$/.exec(publicKey);
+	// Further comment whitespace belongs to the comment, avoiding overlapping repetitions.
+	const match = /^ssh-ed25519[ \t]+([A-Za-z0-9+/]+={0,2})(?:[ \t][^\r\n]*)?$/.exec(publicKey);
 	const encoded = match?.[1];
 	if (encoded === undefined || encoded.length !== 68) {
 		throw new RelayPublicKeyError("Invalid SSH public key encoding");

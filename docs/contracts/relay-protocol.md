@@ -162,6 +162,12 @@ closes, and any exchange that may have applied an update remains uncertain.
 Registration expiry alone does not stop DATA on an admitted route within its
 original lease.
 
+At an endpoint, DATA or ACCEPTED already forwarded by the relay can arrive after
+local route cancellation. The endpoint discards those frames for session IDs it
+retains as closed on that socket. It must limit retained IDs without evicting
+them while the socket remains open. Genuinely unknown DATA still closes the
+endpoint socket.
+
 Payloads include length-prefixed Noise handshake or record bytes. Handshake
 messages can carry public identity material. The protocol does not claim that
 every handshake byte is encrypted. An operational frame counter can account for
