@@ -27,9 +27,12 @@ import {
 } from "./browser-auth-env.js";
 import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
+import { publicRelayAdmission, type RelayAdmissionOptions } from "./relay-admission-options.js";
+import { RELAY_ADMISSION_PATH } from "./relay-config.js";
+import { handleRelayQuotaAdmin, type RelayWorkerEnv, routeRelayUpgrade } from "./relay-route.js";
 import { verifyCloudflareCoordinatorRequest } from "./request-verifier.js";
 
-export interface CloudflareCoordinatorEnv extends CloudflareBrowserAuthEnv {
+export interface CloudflareCoordinatorEnv extends CloudflareBrowserAuthEnv, RelayWorkerEnv {
 	COORDINATOR_DB?: D1DatabaseLike;
 	CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET?: string;
 }
@@ -54,6 +57,18 @@ function coordinatorAdminSecret(
 ): string | null {
 	if (opts.adminSecret) return opts.adminSecret(env);
 	return String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null;
+}
+
+/**
+ * Relay admission options for the public coordinator route, read only for that
+ * route. Every other request, and every relay-off deployment, gets undefined.
+ */
+function relayAdmissionFor(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+): Promise<RelayAdmissionOptions | undefined> {
+	if (new URL(request.url).pathname !== RELAY_ADMISSION_PATH) return Promise.resolve(undefined);
+	return publicRelayAdmission(env as unknown as Readonly<Record<string, unknown>>);
 }
 
 function createLegacyCloudflareCoordinatorWorker(
@@ -82,6 +97,7 @@ function createLegacyCloudflareCoordinatorWorker(
 				now: opts.now,
 				requestVerifier: verifyCloudflareCoordinatorRequest,
 				recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
+				relayAdmission: await relayAdmissionFor(request, env),
 			});
 			return app.fetch(request);
 		},
@@ -103,6 +119,7 @@ async function authenticationUnavailable(
 			requestVerifier: verifyCloudflareCoordinatorRequest,
 			requestRateLimit: { limiter: dependencies.deviceLimiter },
 			browserAuth: { kind: "unavailable" },
+			relayAdmission: await relayAdmissionFor(request, env),
 		}).fetch(request);
 	} catch {
 		return jsonResponse({ error: "coordinator_unavailable" }, 503);
@@ -184,6 +201,7 @@ function createBrowserAuthWorker(
 					requestVerifier: verifyCloudflareCoordinatorRequest,
 					requestRateLimit: { limiter: deviceLimiter },
 					browserAuth: browserRuntimeOptions(result),
+					relayAdmission: await relayAdmissionFor(request, env),
 				});
 				dispatched = true;
 				return await app.fetch(request);
@@ -395,6 +413,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 	const ownerLimiter = createInMemoryRequestRateLimiter();
 	const deviceLimiter = createInMemoryRequestRateLimiter();
 	const qualificationLimiter = createInMemoryRequestRateLimiter();
+	const relayAdminLimiter = createInMemoryRequestRateLimiter();
 	async function configured(env: CloudflareCoordinatorEnv) {
 		const bindings = configuredBindings(env);
 		// Removing or disabling config after capture is drift, not an initial legacy rollout.
@@ -413,6 +432,15 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 	}
 	return {
 		fetch: (request: Request, env: CloudflareCoordinatorEnv) => {
+			// Relay first, so an upgrade never waits on coordinator setup. After the
+			// hand-off the Worker does nothing else for that request.
+			const relay =
+				routeRelayUpgrade(request, env) ??
+				handleRelayQuotaAdmin(request, env, {
+					adminSecret: coordinatorAdminSecret(env, {}),
+					limiter: relayAdminLimiter,
+				});
+			if (relay) return relay;
 			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
 				return fetchOwnerQualification(request, env, pin, qualificationLimiter);
 			return (

@@ -4,7 +4,11 @@ import {
 	getRelayAdmissionTimeBudget,
 } from "../../core/src/relay-admission-codec.js";
 import { relayBodyDigest } from "../../core/src/relay-service-proof.js";
-import { RELAY_DURABLE_OBJECT_LIMITS, RelayRealm } from "../src/relay-realm.js";
+import {
+	RELAY_DURABLE_OBJECT_LIMITS,
+	type RelayAdmissionFetcher,
+	RelayRealm,
+} from "../src/relay-realm.js";
 
 /**
  * Shared between the test file and the object, which run in one isolate.
@@ -14,6 +18,8 @@ export interface RelayRealmTestState {
 	enabled: boolean;
 	limits: Partial<RelayServerLimits>;
 	admissions: { pathname: string; kind: string; deviceHeader: string }[];
+	/** Overrides CODEMEM_RELAY_GROUPS, as a deploy that adds or removes groups would. */
+	groups?: string[];
 }
 export function relayRealmTestState(): RelayRealmTestState {
 	const scope = globalThis as { __relayRealmTest?: RelayRealmTestState };
@@ -88,11 +94,30 @@ export class RelayRealmTestObject extends RelayRealm {
 		super(ctx, {
 			...env,
 			CODEMEM_RELAY_ENABLED: state.enabled ? "true" : "false",
-			CODEMEM_RELAY_ADMISSION_BINDING: "RELAY_ADMISSION_TEST",
-			RELAY_ADMISSION_TEST: { fetch: stubAdmission },
+			...(state.groups ? { CODEMEM_RELAY_GROUPS: JSON.stringify(state.groups) } : {}),
 		});
+	}
+	protected override admissionFetcher(): RelayAdmissionFetcher {
+		return { fetch: stubAdmission };
 	}
 	protected override relayLimits(): Readonly<RelayServerLimits> {
 		return { ...RELAY_DURABLE_OBJECT_LIMITS, ...relayRealmTestState().limits };
+	}
+}
+
+type Loopback = (options: { props: { realmId: string } }) => RelayAdmissionFetcher;
+
+/**
+ * Test-only realm object with the relay switch on. Admission goes over the real
+ * `ctx.exports` loopback to RelayAdmission code and D1, through the test export
+ * that also turns the switch on.
+ */
+export class RelayRealmLoopbackTestObject extends RelayRealm {
+	constructor(ctx: DurableObjectState, env: Readonly<Record<string, unknown>>) {
+		super(ctx, { ...env, CODEMEM_RELAY_ENABLED: "true" });
+	}
+	protected override admissionFetcher(realmId: string): RelayAdmissionFetcher | null {
+		const exports = this.ctx.exports as { RelayAdmissionEnabledTest?: Loopback };
+		return exports.RelayAdmissionEnabledTest?.({ props: { realmId } }) ?? null;
 	}
 }

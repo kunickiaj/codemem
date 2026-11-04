@@ -1,6 +1,6 @@
 {
 	"name": "codemem-coordinator-worker",
-	"main": "src/index.ts",
+	"main": "src/worker.ts",
 	"compatibility_date": "2026-03-28",
 	"compatibility_flags": ["nodejs_compat"],
 	"d1_databases": [
@@ -9,5 +9,18 @@
 			"database_name": "codemem-coordinator",
 			"database_id": "00000000-0000-0000-0000-000000000000"
 		}
-	]
+	],
+	// Relay stays off unless CODEMEM_RELAY_ENABLED is exactly "true". Turning it on also
+	// needs CODEMEM_RELAY_AUTHORITY_URL (the coordinator origin, no path), the
+	// CODEMEM_RELAY_GROUPS JSON array, and the CODEMEM_RELAY_SERVICE_KEY secret, set
+	// with `wrangler secret put CODEMEM_RELAY_SERVICE_KEY`. Never put the key here.
+	// Admission checks reach the RelayAdmission entrypoint through ctx.exports, so
+	// they need no service binding.
+	"vars": {
+		"CODEMEM_RELAY_ENABLED": "false"
+	},
+	"durable_objects": {
+		"bindings": [{ "name": "RELAY_REALM", "class_name": "RelayRealm" }]
+	},
+	"migrations": [{ "tag": "v1-relay-realm", "new_sqlite_classes": ["RelayRealm"] }]
 }

@@ -3,10 +3,15 @@ import {
 	createRelayCoordinatorClient,
 	createRelayServer,
 	initializeRelayQuotaSchema,
+	provisionLocalRelayQuota,
+	type RelayCoordinatorClientOptions,
 	type RelayServerLimits,
 	type RelayServerSocket,
 	relayAudienceId,
+	relayQuotaShardProfile,
 	type SqliteRelayQuotaPort,
+	setRelayQuotaEnabled,
+	tightenRelayQuota,
 } from "@codemem/core/internal/relay-host";
 import {
 	captureRelayEnv,
@@ -74,6 +79,22 @@ if (concurrentRouteOutboundBound(RELAY_DURABLE_OBJECT_LIMITS) > RELAY_OUTBOUND_B
 
 const RELAY_PATH = /^\/v1\/relay\/([0-9a-f]{64})$/;
 
+export type RelayAdmissionFetcher = NonNullable<RelayCoordinatorClientOptions["fetcher"]>;
+/**
+ * Props the RelayAdmission entrypoint trusts. Only this Worker, or a service
+ * binding from the same account, can set them. Same-account Workers are inside
+ * the operator's trust boundary, and their checks still need device-signed packets.
+ */
+export interface RelayAdmissionProps {
+	readonly realmId: string;
+}
+type AdmissionLoopback = (options: { props: RelayAdmissionProps }) => RelayAdmissionFetcher;
+
+/** Result of the operator quota call. */
+export type RelayQuotaProvisioning =
+	| { readonly ok: true; readonly realmId: string; readonly enabled: boolean }
+	| { readonly ok: false; readonly error: "relay_not_configured" | "relay_quota_conflict" };
+
 interface RealmHost {
 	readonly realmId: string;
 	readonly engine: ReturnType<typeof createRelayServer>;
@@ -120,11 +141,38 @@ function isUpgrade(request: Request): boolean {
 export class RelayRealm extends DurableObject<Record<string, never>> {
 	private readonly config: RelayRealmConfig | null;
 	private host: Promise<RealmHost | null> | null = null;
+	/** Set once the stored allotments fit this deploy's realm count. */
+	private quotaFitted = false;
 
 	constructor(ctx: DurableObjectState, env: Readonly<Record<string, unknown>>) {
 		// The base class keeps no env. Only the allowlisted snapshot survives this call.
 		super(ctx, {});
 		this.config = readRelayConfig(captureRelayEnv(env));
+	}
+
+	/**
+	 * Operator path, reached only through the Worker's authenticated admin route.
+	 * The first call provisions the static share of the service ceilings for the
+	 * configured realm count. Later calls only lower allotments to the current
+	 * share, so adding realms keeps the sum within each ceiling. Then the quota
+	 * root switch is set. Disabling also closes every socket now.
+	 */
+	async provisionQuota(realmId: string, enabled: boolean): Promise<RelayQuotaProvisioning> {
+		const config = this.config;
+		if (!config?.realms.has(realmId)) return { ok: false, error: "relay_not_configured" };
+		const database = durableObjectRelayQuotaDatabase(this.ctx.storage);
+		initializeRelayQuotaSchema(database);
+		const stored = this.ctx.storage.sql
+			.exec("SELECT realm_id FROM relay_quota_root WHERE singleton = 1")
+			.toArray()[0]?.realm_id;
+		if (stored !== undefined && stored !== realmId)
+			return { ok: false, error: "relay_quota_conflict" };
+		const profile = relayQuotaShardProfile(config.realms.size);
+		if (stored === undefined) provisionLocalRelayQuota(database, { realmId, profile });
+		else tightenRelayQuota(database, { realmId, profile });
+		setRelayQuotaEnabled(database, { realmId, enabled });
+		if (!enabled) this.closeAll();
+		return { ok: true, realmId, enabled };
 	}
 
 	override async fetch(request: Request): Promise<Response> {
@@ -154,6 +202,16 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 
 	override async webSocketError(ws: WebSocket): Promise<void> {
 		await this.peerGone(ws, 1011);
+	}
+
+	/**
+	 * The coordinator admission check, through the Worker's own `ctx.exports`
+	 * loopback to the RelayAdmission entrypoint. Props carry the realm, so the
+	 * entrypoint picks its namespace without reading the request.
+	 */
+	protected admissionFetcher(realmId: string): RelayAdmissionFetcher | null {
+		const exports = this.ctx.exports as { RelayAdmission?: AdmissionLoopback } | undefined;
+		return exports?.RelayAdmission?.({ props: { realmId } }) ?? null;
 	}
 
 	/** Tests narrow these to reach limits within the quota bursts. Never raise them. */
@@ -227,9 +285,18 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			.toArray()[0];
 		const realmId = typeof row?.realm_id === "string" ? row.realm_id : null;
 		const groupId = realmId ? config.realms.get(realmId) : undefined;
+		// Engine socket and route limits stay per object. Dividing them across
+		// realms is tracked in codemem-zjvr.2.6.13.
 		const limits = this.relayLimits();
-		if (!realmId || !groupId || concurrentRouteOutboundBound(limits) > RELAY_OUTBOUND_BUDGET_BYTES)
+		const admission = realmId ? this.admissionFetcher(realmId) : null;
+		if (
+			!realmId ||
+			!groupId ||
+			!admission ||
+			concurrentRouteOutboundBound(limits) > RELAY_OUTBOUND_BUDGET_BYTES
+		)
 			return null;
+		this.fitQuotaShare(config, realmId);
 		const signer = await importRelayServiceSigner(config.serviceKey);
 		const sockets = new Map<WebSocket, RelaySocketAdapter>();
 		const quota = createDurableObjectRelayQuota({ storage, realmId, enabled: true });
@@ -242,7 +309,7 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			limits,
 			coordinator: createRelayCoordinatorClient({
 				url: config.admissionUrl,
-				fetcher: config.admission,
+				fetcher: admission,
 			}),
 			quota,
 			signer,
@@ -253,6 +320,21 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 		const host = { realmId, engine, quota, sockets };
 		this.restoreSockets(host);
 		return host;
+	}
+
+	/**
+	 * Adding a group needs a deploy, which reconstructs every object. Each realm
+	 * lowers its stored allotments to the new share on its first event, so the
+	 * total stays within each service ceiling without an operator call. This only
+	 * lowers. A share that cannot cover every realm throws, and the realm stays closed.
+	 */
+	private fitQuotaShare(config: RelayRealmConfig, realmId: string): void {
+		if (this.quotaFitted) return;
+		tightenRelayQuota(durableObjectRelayQuotaDatabase(this.ctx.storage), {
+			realmId,
+			profile: relayQuotaShardProfile(config.realms.size),
+		});
+		this.quotaFitted = true;
 	}
 
 	/** Pending setups, routes and queued frames never survive. Only verified registrations do. */

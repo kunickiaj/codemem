@@ -171,6 +171,7 @@ describe("relay coordinator bounded reply handling", () => {
 		);
 		expect(fetcher.fetch.mock.calls[0]?.[1]).toMatchObject({
 			method: "POST",
+			redirect: "manual",
 			signal: request.signal,
 			body: h.f.bodyBytes,
 		});
@@ -253,6 +254,23 @@ describe("relay coordinator bounded reply handling", () => {
 		// Assert
 		expect(reply).toBeNull();
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+});
+
+describe("relay coordinator injected fetcher redirects", () => {
+	it("denies a redirect from an injected fetcher without following it", async () => {
+		// Arrange
+		const h = await setup();
+		const redirect = new Response(null, { status: 302, headers: { Location: "/elsewhere" } });
+		const fetcher = { fetch: vi.fn().mockResolvedValue(redirect) };
+		// Act
+		const reply = await createRelayCoordinatorClient({
+			url: "https://coordinator.example/v1/relay/admission-check",
+			fetcher,
+		}).check(checkRequest(h));
+		// Assert
+		expect(reply).toBeNull();
+		expect(fetcher.fetch).toHaveBeenCalledOnce();
 	});
 });
 

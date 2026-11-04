@@ -8,10 +8,14 @@ export {
 	createExclusiveWriterRelayQuota,
 	createSqliteRelayQuota,
 	initializeRelayQuotaSchema,
+	provisionLocalRelayQuota,
+	RELAY_QUOTA_MAX_SHARDS,
 	type RelayQuotaDatabase,
 	type RelayQuotaProfile,
+	relayQuotaShardProfile,
 	type SqliteRelayQuotaPort,
 	setRelayQuotaEnabled,
+	tightenRelayQuota,
 } from "../relay-quota-sqlite.js";
 export {
 	createRelayServer,
