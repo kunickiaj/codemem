@@ -266,7 +266,8 @@ describe("per-direction write accounting", () => {
 		// Assert
 		expect(retained).toMatchObject({ routes: 2, queuedBytes: 5 * (65536 + 22) });
 		expect(delivered).toEqual([...first, ...second]);
-		expect(b.binaries).toEqual([...first, ...second, data(1, SESSION), data(1, reverseId)]);
+		// The reverse direction still has leftover credit, so it forwards before SESSION reserves.
+		expect(b.binaries).toEqual([...first, ...second, data(1, reverseId), data(1, SESSION)]);
 		expect(f.server.counters()).toMatchObject({ routes: 2, queuedBytes: 46 });
 		expect(terminal(a).concat(terminal(b))).toHaveLength(0);
 		expect(a.resumeInput).toHaveBeenCalled();
@@ -478,20 +479,53 @@ describe("traffic credit refills", () => {
 		}
 		// Assert
 		expect(b.binaries).toEqual(frames);
-		expect(f.quota.reserve.mock.calls.filter(([r]) => r.purpose === "traffic")).toHaveLength(3);
+		// Grants start at the queued frame and double until they reach 256 KiB.
+		expect(
+			f.quota.reserve.mock.calls.filter(([r]) => r.purpose === "traffic").map(([r]) => r.units),
+		).toEqual([61462, 122924, 245848, 256 * 1024]);
 		expect(terminal(b)).toEqual([{ v: 1, type: "CLOSE", session: SESSION, body: { mode: "end" } }]);
 		expect(f.server.counters()).toMatchObject({ routes: 1, queuedBytes: 0 });
 		expect(a.close).not.toHaveBeenCalled();
 		expect(a.resumeInput).toHaveBeenCalled();
 	});
+	it("forwards small exchanges when less than one full-size grant remains", async () => {
+		// Arrange: below 256 KiB, as in the hosted reconnect trial's final route.
+		f.credits.traffic = 200 * 1024;
+		const { a, b } = await f.route();
+		// Act
+		a.events.binary(data(56));
+		await settle();
+		b.events.binary(data(226));
+		await settle();
+		// Assert
+		expect(b.binaries).toEqual([data(56)]);
+		expect(a.binaries).toEqual([data(226)]);
+		expect(
+			f.quota.reserve.mock.calls.filter(([r]) => r.purpose === "traffic").map(([r]) => r.units),
+		).toEqual([16 * 1024, 16 * 1024]);
+		expect(f.server.counters()).toMatchObject({ routes: 1, trafficQuotaAborts: 0 });
+	});
+	it("counts routes aborted by a traffic reservation denial", async () => {
+		// Arrange
+		f.credits.traffic = 1024;
+		const { a, b } = await f.route();
+		// Act
+		a.events.binary(data(56));
+		await settle();
+		// Assert
+		expect(b.binaries).toHaveLength(0);
+		expect(f.server.counters()).toMatchObject({ routes: 0, trafficQuotaAborts: 1 });
+		expect(terminal(a).at(-1)).toMatchObject({ type: "CLOSE", body: { mode: "abort" } });
+	});
 	it("aborts and releases the held FIFO once when a parsed burst exceeds 256 KiB", async () => {
 		// Arrange
 		const { a, b } = await f.route(),
 			gate = deferred<"reserved">();
-		for (let i = 0; i < 4; i++) {
+		// Growing grants of 64 KiB then 128 KiB consume all credit after three frames.
+		for (let i = 0; i < 3; i++) {
 			a.events.binary(data(65514));
 			await settle();
-			if (i < 3) b.written();
+			if (i < 2) b.written();
 		}
 		f.quota.reserve.mockImplementationOnce(() => gate.promise);
 		// Act
@@ -501,7 +535,7 @@ describe("traffic credit refills", () => {
 		await settle();
 		// Assert
 		expect(f.server.counters()).toMatchObject({ routes: 0, queuedBytes: 65536 });
-		expect(b.binaries).toEqual(Array.from({ length: 4 }, () => data(65514)));
+		expect(b.binaries).toEqual(Array.from({ length: 3 }, () => data(65514)));
 		b.written();
 		expect(f.server.counters().queuedBytes).toBe(0);
 		for (const socket of [a, b])
@@ -512,34 +546,38 @@ describe("traffic credit refills", () => {
 });
 
 describe("relay failure limits", () => {
-	it.each(["denied", "unknown", "timeout", "write error", "disconnect", "deadline", "after end"])(
-		"aborts without EOF on %s",
-		async (failure) => {
-			// Arrange
-			const { a, b } = await f.route();
-			if (failure === "denied" || failure === "unknown")
-				f.quota.reserve.mockResolvedValueOnce(failure);
-			if (failure === "timeout")
-				f.quota.reserve.mockImplementationOnce(() => new Promise(() => {}));
-			if (failure === "after end") await control(a.events, "CLOSE", { mode: "end" });
-			// Act
-			a.events.binary(data());
-			await settle();
-			if (failure === "timeout") {
-				f.clock.now = 3000;
-				await vi.advanceTimersByTimeAsync(3000);
-			}
-			if (failure === "write error") b.written(new Error("write failed"));
-			if (failure === "disconnect") b.events.closed();
-			if (failure === "deadline") {
-				f.clock.now = 45000;
-				await vi.advanceTimersByTimeAsync(45000);
-			}
-			// Assert
-			expect(f.server.counters().routes).toBe(0);
-			expect(terminal(a).at(-1)).toMatchObject({ type: "CLOSE", body: { mode: "abort" } });
-		},
-	);
+	it.each([
+		["denied", 1],
+		["unknown", 1],
+		["timeout", 1],
+		["write error", 0],
+		["disconnect", 0],
+		["deadline", 0],
+		["after end", 0],
+	] as const)("aborts without EOF on %s", async (failure, trafficQuotaAborts) => {
+		// Arrange
+		const { a, b } = await f.route();
+		if (failure === "denied" || failure === "unknown")
+			f.quota.reserve.mockResolvedValueOnce(failure);
+		if (failure === "timeout") f.quota.reserve.mockImplementationOnce(() => new Promise(() => {}));
+		if (failure === "after end") await control(a.events, "CLOSE", { mode: "end" });
+		// Act
+		a.events.binary(data());
+		await settle();
+		if (failure === "timeout") {
+			f.clock.now = 3000;
+			await vi.advanceTimersByTimeAsync(3000);
+		}
+		if (failure === "write error") b.written(new Error("write failed"));
+		if (failure === "disconnect") b.events.closed();
+		if (failure === "deadline") {
+			f.clock.now = 45000;
+			await vi.advanceTimersByTimeAsync(45000);
+		}
+		// Assert
+		expect(f.server.counters()).toMatchObject({ routes: 0, trafficQuotaAborts });
+		expect(terminal(a).at(-1)).toMatchObject({ type: "CLOSE", body: { mode: "abort" } });
+	});
 	it("enforces direction queued byte caps before retaining excess", async () => {
 		// Arrange: four tracked writes fill exactly 256 KiB on one of two admitted routes.
 		const { a, b } = await f.oppositeRoutes();

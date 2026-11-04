@@ -85,6 +85,7 @@ describe("loopback relay WebSocket runtime", () => {
 			pendingSockets: 0,
 			routes: 0,
 			queuedBytes: 0,
+			trafficQuotaAborts: 0,
 			pendingUpgrades: 0,
 		});
 	});
@@ -422,6 +423,7 @@ describe("runtime resource ownership", () => {
 			pendingSockets: 0,
 			routes: 0,
 			queuedBytes: 0,
+			trafficQuotaAborts: 0,
 			pendingUpgrades: 0,
 		});
 	});
