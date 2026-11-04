@@ -12,6 +12,11 @@ import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "./relay-admission-me
 import { PARTICIPANT_TEST_SCHEMA_SQL } from "./relay-admission-participant-nonce-test-fixtures.js";
 import { createRelayCoordinatorClient } from "./relay-coordinator-client.js";
 import {
+	createRelayFaultProxy,
+	type RelayFaultProxy,
+	type RelayFaultRule,
+} from "./relay-fault-proxy-test-fixtures.js";
+import {
 	createRelayPeerClient,
 	type RelayPeerClient,
 	type RelayPeerClientOptions,
@@ -70,6 +75,8 @@ export interface RelayClientTestOptions {
 	readonly beforeCheck?: (
 		options: Parameters<RelayPeerClientOptions["coordinator"]["check"]>[0],
 	) => Promise<void>;
+	/** Routes every client socket through a keyless fault proxy in front of the runtime. */
+	readonly faultProxy?: { readonly rule?: RelayFaultRule };
 }
 
 async function admissionDatabase(
@@ -242,6 +249,18 @@ function runtimeFixture(
 	});
 }
 
+/** Clients bind the relay audience to the origin they dial, so a proxy owns the public origin. */
+async function faultProxyFixture(
+	relayHost: string,
+	options: RelayClientTestOptions,
+): Promise<RelayFaultProxy | undefined> {
+	if (!options.faultProxy) return undefined;
+	return createRelayFaultProxy({
+		upstreamUrl: `ws://${relayHost}/v1/relay`,
+		rule: options.faultProxy.rule,
+	});
+}
+
 /** Real local protocol participants with disposable identities and separate quota/admission databases. */
 export async function relayClientFixture(
 	identities: Identities = { source: disposableIdentity(1), target: disposableIdentity(2) },
@@ -250,7 +269,9 @@ export async function relayClientFixture(
 ) {
 	const service = testSigner(3);
 	const socketServer = createServer();
-	const host = await listen(socketServer);
+	const relayHost = await listen(socketServer);
+	const proxy = await faultProxyFixture(relayHost, options);
+	const host = proxy?.host ?? relayHost;
 	const namespace = {
 		authorityId: "a".repeat(64),
 		groupId: "group-A",
@@ -288,8 +309,10 @@ export async function relayClientFixture(
 		checks,
 		checkTimes,
 		namespace,
+		proxy,
 		async dispose() {
 			await Promise.all(clients.map((client) => client.close()));
+			await proxy?.close();
 			await runtime.close();
 			await closeServer(socketServer);
 			await closeServer(http);
