@@ -99,12 +99,22 @@ When the peer requires reset recovery, the client deletes completion and outboun
 acknowledgement state for that peer and scope before clearing the inbound cursor.
 The next pass downloads a fresh snapshot even if the peer's snapshot boundary has
 not changed. If deleting completion fails, the inbound cursor is preserved.
-Runtime callers must serialize passes for the same peer and scope so an older
-pass cannot restore completion after another pass requires recovery.
+
+`runSyncPass` serializes reachability-enabled passes for the same database handle
+and peer. Direct callers of the private `syncScopedChannelOnce` must still
+serialize the same peer and scope. Neither rule coordinates separate processes.
 
 One absolute deadline covers the pass, including all pages, uploads and fresh
 connections. It is at most 60 seconds from invocation, shortened by an earlier
 caller deadline.
 
-Runtime wiring and transport selection still require separate integration before
-dogfooding.
+When `runSyncPass` receives `reachability`, direct sync retains its legacy
+full-scope behavior. Direct receives a 10-second status probe budget inside the
+60-second absolute pass deadline. A matching pinned fingerprint commits that
+route. A network failure before commitment can select the explicit-Space relay
+path; after commitment, the pass cannot switch paths or replay an exchange.
+
+The relay client opens a fresh relay route and Noise session for each channel HTTP
+request. The synthetic logical origin is used only to construct the request and
+is never dialed or persisted. Current selection is direct, relay, then wait
+because no approved RTC factory is available.
