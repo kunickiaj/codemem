@@ -5,6 +5,7 @@ export {
 	type RelayCoordinatorClientOptions,
 } from "../relay-coordinator-client.js";
 export {
+	createExclusiveWriterRelayQuota,
 	createSqliteRelayQuota,
 	initializeRelayQuotaSchema,
 	type RelayQuotaDatabase,
@@ -24,4 +25,9 @@ export {
 	RELAY_RESTORE_GUARD_MS,
 	type RelayRegistrationSnapshot,
 } from "../relay-server-restore.js";
-export { relayAudienceId, relayRealmId } from "../relay-service-proof.js";
+export {
+	relayAudienceId,
+	relayAuthorityId,
+	relayBodyDigest,
+	relayRealmId,
+} from "../relay-service-proof.js";

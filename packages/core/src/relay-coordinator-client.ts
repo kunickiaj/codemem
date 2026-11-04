@@ -6,6 +6,11 @@ export interface RelayCoordinatorClientOptions {
 	readonly url: string;
 	/** Disposable localhost fixtures only. Remote cleartext is never accepted. */
 	readonly allowLoopbackHttp?: boolean;
+	/**
+	 * Sends the request instead of global fetch, for example a Workers service binding.
+	 * The URL is still validated and sent unchanged, because the route checks its pathname.
+	 */
+	readonly fetcher?: { fetch(url: string, init: RequestInit): Promise<Response> };
 }
 
 function admissionUrl(options: RelayCoordinatorClientOptions): URL {
@@ -48,12 +53,16 @@ export function createRelayCoordinatorClient(
 	options: RelayCoordinatorClientOptions,
 ): RelayServerOptions["coordinator"] {
 	const url = admissionUrl(options).href;
+	const fetcher = options.fetcher;
+	const send = fetcher
+		? (init: RequestInit) => fetcher.fetch(url, init)
+		: (init: RequestInit) => fetch(url, init);
 	return {
 		async check({ packet, deviceHeader, signal }) {
 			try {
 				if (signal.aborted) return null;
 				const body = decodeRelayCheckPacket(packet).bodyBytes;
-				const response = await fetch(url, {
+				const response = await send({
 					method: "POST",
 					redirect: "error",
 					signal,

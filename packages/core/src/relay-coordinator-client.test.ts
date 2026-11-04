@@ -150,6 +150,43 @@ describe("relay coordinator bounded reply handling", () => {
 			"accept-encoding": "identity",
 		});
 	});
+	it("sends through an injected fetcher instead of global fetch", async () => {
+		// Arrange
+		const h = await setup();
+		const globalFetch = vi.fn();
+		vi.stubGlobal("fetch", globalFetch);
+		const fetcher = { fetch: vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2]))) };
+		const request = checkRequest(h);
+		// Act
+		const reply = await createRelayCoordinatorClient({
+			url: "https://coordinator.example/trusted/v1/relay/admission-check",
+			fetcher,
+		}).check(request);
+		// Assert
+		expect(reply).toEqual(new Uint8Array([1, 2]));
+		expect(globalFetch).not.toHaveBeenCalled();
+		expect(fetcher.fetch).toHaveBeenCalledOnce();
+		expect(fetcher.fetch.mock.calls[0]?.[0]).toBe(
+			"https://coordinator.example/trusted/v1/relay/admission-check",
+		);
+		expect(fetcher.fetch.mock.calls[0]?.[1]).toMatchObject({
+			method: "POST",
+			signal: request.signal,
+			body: h.f.bodyBytes,
+		});
+	});
+	it("denies when the injected fetcher rejects", async () => {
+		// Arrange
+		const h = await setup();
+		const fetcher = { fetch: vi.fn().mockRejectedValue(new Error("binding unavailable")) };
+		// Act
+		const reply = await createRelayCoordinatorClient({
+			url: "https://coordinator.example/v1/relay/admission-check",
+			fetcher,
+		}).check(checkRequest(h));
+		// Assert
+		expect(reply).toBeNull();
+	});
 
 	it.each(["oversize", "status", "absent-route", "read-error", "fetch-error", "no-body"])(
 		"denies %s without retries and cancels readable reply streams",

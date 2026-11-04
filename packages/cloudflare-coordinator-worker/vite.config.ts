@@ -8,6 +8,10 @@ export default defineConfig({
 				import.meta.dirname,
 				"../core/src/internal/cloudflare-coordinator.ts",
 			),
+			"@codemem/core/internal/relay-host": resolve(
+				import.meta.dirname,
+				"../core/src/internal/relay-host.ts",
+			),
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
 		},
 		conditions: ["source"],
