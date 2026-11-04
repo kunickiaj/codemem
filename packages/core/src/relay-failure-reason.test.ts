@@ -166,6 +166,28 @@ describe("relay client local failure origins", () => {
 		await owner.dispose(new Error("Capacity test complete"));
 	}, 15000);
 
+	it("keeps relay_disabled when the client closes while an open waits for capacity", async () => {
+		// Arrange: one source route per peer is active, so a second open waits for capacity.
+		const f = await relayClientFixture();
+		cleanups.push(() => f.dispose());
+		const target = f.client("target", { onInbound: async (connection) => connection.completion });
+		await target.connect(new AbortController().signal, relayDeadline());
+		const source = f.client("source");
+		await source
+			.factory("target", f.identities.target.expectedPin)
+			.open({ signal: new AbortController().signal, deadlineMs: relayDeadline() });
+		const factory = source.factory("target", f.identities.target.expectedPin);
+		const waiting = factory.open({
+			signal: new AbortController().signal,
+			deadlineMs: performance.now() + 7000,
+		});
+		// Act: closing the client rejects the waiter before the 3 s cap.
+		await source.close();
+		// Assert.
+		await expect(waiting).rejects.toThrow("Relay WebSocket disconnected");
+		expect(factory.failureReason()).toBe("relay_disabled");
+	}, 15000);
+
 	it("records relay_disabled when the operator switch is off", async () => {
 		// Act.
 		const reason = await openReason({ enabled: false });

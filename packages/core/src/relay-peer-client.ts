@@ -576,8 +576,14 @@ class Client implements RelayPeerClient {
 		try {
 			await wait(waiter.promise, signal, Math.min(deadline, performance.now() + 3000)).catch(
 				(error: unknown) => {
-					// Only the local 3 s cap ended the wait when the caller is still live and in time.
-					if (signal.aborted || performance.now() >= deadline) throw error;
+					// Only the local 3 s cap ends the wait with relay_expired while the caller is still
+					// live and in time. Keep any other failure, such as a socket failure rejecting the waiter.
+					const capTimedOut =
+						error instanceof RelayFailure &&
+						error.reason === "relay_expired" &&
+						!signal.aborted &&
+						performance.now() < deadline;
+					if (!capTimedOut) throw error;
 					throw new RelayFailure("relay_unavailable", "Relay capacity exhausted");
 				},
 			);
