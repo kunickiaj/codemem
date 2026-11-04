@@ -153,6 +153,30 @@ describe("relay health driven by an external scheduler", () => {
 });
 
 describe("relay health instrumentation for several groups", () => {
+	it("keeps the coordinator response when the sample sink rejects", async () => {
+		// Arrange: a sink whose delivery fails, as a forwarder to another isolate can.
+		const f = healthFixture();
+		const app = new Hono();
+		const instrumentation = new RelayHealthInstrumentation(
+			{ groups: new Map([["group-a", "scope-a"]]), probeDeviceId: "probe", clock: f.clock },
+			async () => {
+				throw new Error("sample forwarding failed");
+			},
+		);
+		instrumentation.install(app);
+		app.get("*", (c) => {
+			instrumentation.verifiedGroupMember(c.req.raw, "peer", "group-a");
+			return Response.json({ ok: true });
+		});
+		// Act
+		const response = await app.request(
+			"https://coordinator.example.test/v1/scopes?group_id=group-a",
+		);
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true });
+	});
+
 	it("classifies verified reads per group and forwards nothing for others", async () => {
 		// Arrange
 		const f = healthFixture();

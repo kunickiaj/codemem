@@ -207,7 +207,14 @@ export class RelayHealthInstrumentation implements RelayHealthServerHook {
 				} catch {
 					event = { sample: null, fault: true };
 				}
-				await this.sink(event);
+				// An event without a sample still lets a local monitor re-check its state,
+				// as before. Telemetry delivery must never change the coordinator response,
+				// so a failing sink is dropped here.
+				try {
+					await this.sink(event);
+				} catch {
+					// Health samples are best effort.
+				}
 			}
 		});
 	}
