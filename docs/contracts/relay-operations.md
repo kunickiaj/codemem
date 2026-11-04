@@ -133,13 +133,15 @@ Unknown client identity never creates another per-device quota allowance.
 
 ## Hosting and isolation
 
-The self-hosted Node relay is the first supported host
-([ADR 0006](../adr/0006-node-relay-host.md)). It runs co-hosted with the Node
-coordinator or as a standalone process. A Cloudflare Durable Object host is a
-later track, pending the proofs below. On either host, the relay keeps its own
-routes, health, configuration, switches, and quota storage. On Cloudflare, that
-means a separate Worker/service and Durable Object namespace, or equivalent
-isolated host resources.
+The primary host is a Durable Object class in the coordinator Worker, reached at
+`/v1/relay` on the coordinator's host ([ADR 0006](../adr/0006-relay-hosts.md)).
+The Worker passes relay upgrades to that Durable Object and does no other relay
+work, so relay traffic does not run in coordinator request handling. Activation
+still requires the proofs below. The self-hosted Node relay remains supported
+for self-hosted coordinators and as the reference implementation. On either
+host, the relay keeps its own routes, health, configuration, switches, and
+quota storage. On Cloudflare, that means its own Durable Object namespace and
+storage, without use of the coordinator's D1 binding.
 
 The relay has no direct coordinator database credentials. It forwards no frames
 through the coordinator or D1, and the planes share no payload or session tables.
