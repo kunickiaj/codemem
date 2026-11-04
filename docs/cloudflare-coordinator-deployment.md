@@ -241,13 +241,15 @@ denied, so applying them changes nothing for coordinator-only deployments.
 The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays
 off unless `CODEMEM_RELAY_ENABLED` is exactly `"true"`. While it is off, the coordinator answers
 relay upgrades and the relay quota route exactly as before, and no object is created. To turn it on, deploy with
-`main` set to `packages/cloudflare-coordinator-worker/src/worker.ts`, which exports `RelayRealm`
-and `RelayAdmission`, and copy these settings from the package's `wrangler.jsonc`:
+`main` set to `packages/cloudflare-coordinator-worker/src/worker.ts`, which exports `RelayRealm`,
+`RelayHealth`, and `RelayAdmission`, and copy these settings from the package's `wrangler.jsonc`:
 
-- the `RELAY_REALM` Durable Object binding and the `v1-relay-realm` migration with `new_sqlite_classes`
+- the `RELAY_REALM` and `RELAY_HEALTH` Durable Object bindings, and the `v1-relay-realm` and
+  `v2-relay-health` migrations with `new_sqlite_classes`
 - `CODEMEM_RELAY_AUTHORITY_URL`, the coordinator origin with no path
 - `CODEMEM_RELAY_GROUPS`, a JSON array of up to 8 group IDs, one realm each
 - the Ed25519 service key as a secret: `wrangler secret put CODEMEM_RELAY_SERVICE_KEY`
+- the health probe settings described in [Relay health on Workers](#relay-health-on-workers)
 
 Admission checks from realm objects reach the `RelayAdmission` entrypoint through the Worker's own
 `ctx.exports`, so no service binding is needed. A Worker in the same account could also bind to
@@ -259,13 +261,16 @@ group.
 Turning relay on takes these steps, in order:
 
 1. Apply the D1 migrations, including 0041 and 0042.
-2. Set the service key secret.
-3. Set `CODEMEM_RELAY_ENABLED`, `CODEMEM_RELAY_AUTHORITY_URL`, and `CODEMEM_RELAY_GROUPS`.
-4. Deploy.
-5. Write the admission rows with `POST /v1/admin/relay/admission`.
-6. Provision each realm's quota with `POST /v1/admin/relay/quota`.
-7. Publish readiness. No production writer exists yet (codemem-zjvr.2.6.6), so admission checks
-   stay denied until it ships.
+2. Enroll the health probe device in every configured group, and make it a member of one
+   synthetic scope in each group.
+3. Set the service key and probe key secrets.
+4. Set `CODEMEM_RELAY_ENABLED`, `CODEMEM_RELAY_AUTHORITY_URL`, `CODEMEM_RELAY_GROUPS`,
+   `CODEMEM_RELAY_HEALTH_PROBE_DEVICE`, and `CODEMEM_RELAY_HEALTH_SCOPES`.
+5. Deploy.
+6. Write the admission rows with `POST /v1/admin/relay/admission`. This also arms the health alarm.
+7. Provision each realm's quota with `POST /v1/admin/relay/quota`.
+8. Wait about six minutes. Admission checks are denied until the health object has seen five
+   complete healthy minutes and published ready readiness rows.
 
 The admission route takes an empty JSON object, because every value comes from the Worker's relay
 config and a fixed budget profile in code. It uses the same admin secret and request checks as the
@@ -282,8 +287,11 @@ curl -sS -X POST "https://<coordinator>/v1/admin/relay/admission" \
 It writes the authority policy, the relay audience, a `relay_admission_realms` row for each
 configured group, and the `authority`, `device`, `device-registration`, `relay-route`, and
 `relay-registration` budget allocations, all in one D1 batch. The reply lists each realm ID for
-step 6, reports `"changed"`, and always carries `"readiness":"not_written"`: this route never writes
-readiness rows. While relay is off the coordinator answers the path, which returns 404.
+step 7, reports `"changed"`, and always carries `"readiness":"not_written"`: this route never writes
+readiness rows. Its `"health"` field is `"scheduled"` when the health alarm is armed,
+`"not_configured"` when a probe setting is missing or invalid, and `"unavailable"` when the health
+object could not be reached; repeat the call to retry. While relay is off the coordinator answers the
+path, which returns 404.
 
 | Allocation | Rate per minute | Burst |
 | --- | --- | --- |
@@ -332,7 +340,7 @@ group's bucket with junk packets until it refills. This is an accepted risk: the
 already allow the same junk to delay checks for every group. A packet that does not decode, or
 names an unconfigured group, charges only the shared buckets.
 
-Each realm also needs its quota provisioned (step 6) before upgrades succeed:
+Each realm also needs its quota provisioned (step 7) before upgrades succeed:
 
 ```fish
 curl -sS -X POST "https://<coordinator>/v1/admin/relay/quota" \
@@ -349,6 +357,68 @@ never raised. Relay supports at most 8 groups per Worker, because each group's c
 sockets close. Changing `CODEMEM_RELAY_ENABLED` needs a deploy. A realm object reads it when it
 starts, so after the deploy it refuses upgrades and closes each existing socket on that socket's
 next event.
+
+#### Relay health on Workers
+
+Admission checks need a fresh `ready` readiness row for the authority and for the check's realm. The
+`RelayHealth` Durable Object writes them. One instance serves the Worker. Every 30 seconds an alarm
+runs one probe cycle per configured group: a signed `GET /v1/scopes` and a signed
+`GET /v1/scopes/<synthetic scope>/members`, each with the group's `group_id`. The object keeps the
+health windows in its own storage, so they survive eviction between alarms, and it publishes to
+`relay_admission_readiness` in `COORDINATOR_DB`. On its first cycle it inserts tripped readiness rows
+for the authority and for every realm row that setup created. Readiness starts tripped and turns
+ready after five complete healthy minutes. A ready row expires 50 seconds after its observation.
+
+The probe needs three settings:
+
+- `CODEMEM_RELAY_HEALTH_PROBE_DEVICE`: the device ID of a normal, low-privilege enrolled device.
+  Enroll it in every configured group.
+- `CODEMEM_RELAY_HEALTH_SCOPES`: a JSON object that maps every configured group ID to a synthetic
+  scope ID in that group. The probe device must be a member of each one, and nothing else should
+  depend on those scopes.
+- the probe device's Ed25519 private key, base64 PKCS#8, as a secret:
+  `wrangler secret put CODEMEM_RELAY_HEALTH_PROBE_KEY`
+
+If any of these is missing or invalid, or relay is off, the object arms no alarm and an alarm that
+is already set does not re-arm itself. Readiness then expires and admission is denied.
+
+Things to know before relying on it:
+
+- **Probe path.** A Worker cannot fetch its own `workers.dev` URL, so the probe calls the Worker's
+  default handler through `ctx.exports`. It measures the coordinator's handling of a real signed
+  request, including auth, nonce, and D1 work, but not the public HTTPS path in front of it. On a
+  custom domain the probe could use the real path. That needs a DNS change and separate approval.
+- **Clock.** The object treats the Cloudflare host clock as verified UTC with a declared 1 second
+  error bound. Cloudflare publishes no skew figure, so this is an operator assumption.
+- **Real-client samples.** Authenticated scope reads in any group are timed in the isolate that
+  serves them. A failure or a slow read can pause or trip readiness. Each isolate forwards at most one
+  real-client sample per second, with a burst of ten, through `ctx.waitUntil`, so the read never
+  waits for the health object. Probe-originated samples are always forwarded.
+- **Authority row.** Each realm row carries only its own group's state. The schema makes every realm
+  update also bump the authority row, so each publication writes the authority row with a value
+  combined from every group: ready when at least one group is ready, with the freshest ready
+  group's observation time. Otherwise it takes the least severe group state, paused before tripped.
+  A check still needs its own realm row to be ready and fresh, so one group's trip denies only that
+  group's checks.
+- **Restarts.** The object discards saved windows older than two minutes when it loads them. After
+  relay is disabled and re-enabled, or the object was idle that long, each group starts tripped and
+  needs five healthy minutes again. A disable and re-enable, or a deploy, within two minutes keeps
+  the saved windows, so readiness can return after one healthy cycle, as after an ordinary eviction.
+- **Alarm delivery.** Alarms run at least once and can be delayed by up to a minute. A repeat within
+  29 seconds of the last cycle skips its probe and keeps the original 30 second schedule. The handler
+  never throws, so platform retries do not add cycles. A delayed cycle publishes paused, never a
+  stale ready.
+- **Sample cap.** A one-minute window holds at most 4,096 samples per endpoint and cohort. A sample
+  past that trips the group. At the forwarding cap of one sample per second per isolate, roughly 68
+  or more isolates serving steady scope reads in one group would reach it.
+
+The cost per Worker is about 2,880 alarms a day. Each alarm makes two coordinator requests per group,
+each with the usual auth, nonce, and scope queries in D1, and up to three readiness publications per
+group, each one D1 read and one two-statement batch. Each forwarded sample costs one Durable Object
+request and one storage write of that group's saved windows, which grow with the window's samples.
+Under steady authenticated scope reads, forwarded samples keep the object resident, so expect
+continuous duration charges and one storage write per forwarded sample rather than activity only
+during alarms.
 
 ## 6. Deploy the Worker
 

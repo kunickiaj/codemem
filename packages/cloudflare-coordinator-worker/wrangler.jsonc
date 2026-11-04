@@ -16,11 +16,20 @@
 	// with `wrangler secret put CODEMEM_RELAY_SERVICE_KEY`. Never put the key here.
 	// Admission checks reach the RelayAdmission entrypoint through ctx.exports, so
 	// they need no service binding.
+	// Relay health also needs CODEMEM_RELAY_HEALTH_PROBE_DEVICE, the
+	// CODEMEM_RELAY_HEALTH_SCOPES JSON object, and the CODEMEM_RELAY_HEALTH_PROBE_KEY
+	// secret. Without them the RelayHealth object never arms an alarm.
 	"vars": {
 		"CODEMEM_RELAY_ENABLED": "false"
 	},
 	"durable_objects": {
-		"bindings": [{ "name": "RELAY_REALM", "class_name": "RelayRealm" }]
+		"bindings": [
+			{ "name": "RELAY_REALM", "class_name": "RelayRealm" },
+			{ "name": "RELAY_HEALTH", "class_name": "RelayHealth" }
+		]
 	},
-	"migrations": [{ "tag": "v1-relay-realm", "new_sqlite_classes": ["RelayRealm"] }]
+	"migrations": [
+		{ "tag": "v1-relay-realm", "new_sqlite_classes": ["RelayRealm"] },
+		{ "tag": "v2-relay-health", "new_sqlite_classes": ["RelayHealth"] }
+	]
 }
