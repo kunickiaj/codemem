@@ -42,9 +42,11 @@ function linkDependencies(source, target) {
     }
     if (name.startsWith(".")) continue;
     const dependency = realpathSync(join(source, name));
-    const destination = workspacePackageSegments(dependency)
-      ? join(snapshot, ...workspacePackageSegments(dependency))
-      : dependency;
+    const segments = workspacePackageSegments(dependency);
+    const destination = segments ? join(snapshot, ...segments) : dependency;
+    // A workspace package added after the historical commit has no counterpart
+    // in the snapshot; a dangling link there would fail the containment check.
+    if (segments && !existsSync(destination)) continue;
     symlinkSync(destination, join(target, name), "dir");
   }
 }

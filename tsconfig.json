@@ -5,6 +5,7 @@
 		{ "path": "packages/embeddings" },
 		{ "path": "packages/cloudflare-coordinator-worker" },
 		{ "path": "packages/mcp-server" },
+		{ "path": "packages/memory-tools" },
 		{ "path": "packages/opencode-plugin" },
 		{ "path": "packages/viewer-server" },
 		{ "path": "packages/cli" },

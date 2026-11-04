@@ -1,0 +1,33 @@
+{
+	"name": "@codemem/memory-tools",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Host-neutral codemem memory tool contracts and viewer HTTP/CLI transport, bundled into thin hosts",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"source": "./src/index.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"clean": "rm -rf dist tsconfig.tsbuildinfo",
+		"build": "pnpm exec vite build && pnpm exec tsc --build --force",
+		"typecheck": "pnpm exec tsc --noEmit",
+		"test": "pnpm exec vitest run"
+	},
+	"devDependencies": {
+		"@codemem/core": "workspace:^",
+		"@types/node": "^24.12.4",
+		"typescript": "catalog:",
+		"vite": "catalog:",
+		"vitest": "catalog:"
+	},
+	"engines": {
+		"node": ">=24.15.0"
+	},
+	"license": "MIT"
+}
