@@ -19,6 +19,11 @@
 			"import": "./dist/internal/relay-runtime.js",
 			"types": "./dist/internal/relay-runtime.d.ts"
 		},
+		"./internal/relay-host": {
+			"source": "./src/internal/relay-host.ts",
+			"import": "./dist/internal/relay-host.js",
+			"types": "./dist/internal/relay-host.d.ts"
+		},
 		"./internal/cloudflare-coordinator": {
 			"source": "./src/internal/cloudflare-coordinator.ts",
 			"import": "./dist/internal/cloudflare-coordinator.js",

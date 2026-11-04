@@ -198,6 +198,10 @@ UTC clock. Never restore as
 `wake time + original remainingMs`, and never revive a closed or expired route.
 If the host clock bound or the original conservative bound is unavailable, close
 the affected route. Registration restoration follows the same non-extension rule.
+A restored registration keeps its original renewal point. If the original and
+waking host clocks differ, it can renew up to 10 seconds sooner than the
+12-minute same-socket interval. Each renewal still needs a fresh coordinator
+check, and the restored lease keeps its original deadline.
 
 No recurring keepalive, poll, or ping may keep an object resident. One earliest-
 expiry alarm may perform cleanup. Alarms can wake an object and can be delayed or
