@@ -177,7 +177,11 @@ worktree })`. The tool executor passes:
 - `project`: explicit argument if the model gave one, else the plugin's
   project label. Sent on every read except `memory_get`,
   `memory_get_observations`, and `memory_forget`, which are ID-addressed and
-  unscoped in MCP.
+  unscoped in MCP. `memory_distill_candidates` with `all_projects: true` also
+  gets no default project, because MCP (`buildDistillFilters` in
+  `packages/mcp-server/src/tools/distill.ts`) and the viewer route reject
+  `all_projects` combined with a project. The pi extension's
+  `buildDistillBody` already makes the same exception.
 - `directory`: `context.directory` from the tool execution context (V1
   `ToolContext.directory`, V2 location), **not** the runtime's `cwd`, which
   prefers the worktree (`runtime.js:2292`). Stdio users today run with
