@@ -259,6 +259,7 @@ export type {
 	CoordinatorOwnerReviewLocalOptions,
 } from "./coordinator-owner-review-local.js";
 export { readCoordinatorOwnerReviewLocalEvidence } from "./coordinator-owner-review-local.js";
+export { relayAdmissionNamespaces } from "./coordinator-relay-admission-route.js";
 export type {
 	ResolvedAccountOwnerReceiptReference,
 	ResolvedAccountOwnerStatus,

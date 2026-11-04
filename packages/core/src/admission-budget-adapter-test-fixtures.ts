@@ -155,6 +155,7 @@ async function warmDenied(f: WriteFixture, key: ScopeKey) {
 export function registerAdapterScenarios(create: Create) {
 	describe("durable callback composition", () => {
 		registerIngressMapping(create);
+		registerSharedIngress(create);
 		registerStageStops(create);
 		registerDeviceStops(create);
 		registerCapture(create);
@@ -171,6 +172,42 @@ export function registerAdapterScenarios(create: Create) {
 		registerUnknownDecision(create);
 	});
 }
+function registerSharedIngress(create: Create) {
+	it.each(["registration", "admission"] as const)(
+		"charges only the shared %s pool and authority before a group is known",
+		async (kind) => {
+			const f = await create();
+			await seedProfiles(f);
+			const h = adapterHarness(f);
+			const pool = kind === "registration" ? "relay-registration" : "relay-route";
+
+			const result = await h.adapters.relay.reserveSharedIngress({
+				authorityId: f.authority,
+				relayAudienceId: AUDIENCE,
+				expected: relayIngress(f, kind).expected,
+			});
+
+			expect(result).toBe("reserved");
+			expect(keys(h)).toEqual(ingressKeys(f, pool).slice(1));
+			expect(await rows(f)).toHaveLength(2);
+		},
+	);
+	it("returns unknown without writing for an invalid shared audience", async () => {
+		const f = await create();
+		await seedProfiles(f);
+		const h = adapterHarness(f);
+
+		const result = await h.adapters.relay.reserveSharedIngress({
+			authorityId: f.authority,
+			relayAudienceId: "not-an-audience",
+			expected: { kind: "admission", role: "relay" },
+		});
+
+		expect(result).toBe("unknown");
+		expect(h.trace).toEqual([]);
+	});
+}
+
 function registerIngressMapping(create: Create) {
 	it.each(["registration", "route", "traversal"] as const)(
 		"charges %s realm, pool, authority in order with fresh stored executions",

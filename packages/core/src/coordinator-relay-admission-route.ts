@@ -10,8 +10,12 @@ import type { RelayProofExpectation } from "./relay-admission-proof.js";
 import { encodeRelayAdmissionReply } from "./relay-admission-reply.js";
 
 export interface CoordinatorRelayAdmissionRuntimeOptions {
-	/** Explicit server-owned namespace, never derived from request headers or body. */
-	readonly namespace: RelayAdmissionNamespace;
+	/**
+	 * Server-owned namespaces keyed by group ID. The signed body's group ID only
+	 * selects an entry. Every entry must share one authority and relay audience,
+	 * and an unknown group is denied without a default.
+	 */
+	readonly namespaces: ReadonlyMap<string, RelayAdmissionNamespace>;
 	/** Exact externally signed pathname, including a configured mount prefix. */
 	readonly externalPathname: string;
 	/** Server-owned transport classification, not the forwarded packet's role. */
@@ -84,14 +88,79 @@ function packetFromRequest(request: Request, bytes: Uint8Array): RelayCheckPacke
 	};
 }
 
-function packetExpectation(packet: RelayCheckPacket): RelayProofExpectation | null {
+interface PacketClaim {
+	readonly expected: RelayProofExpectation;
+	/** Unverified until the decision checks the device signature over the body. */
+	readonly groupId: string;
+}
+
+function packetExpectation(packet: RelayCheckPacket): PacketClaim | null {
 	try {
 		const check = decodeRelayCheckPacket(packet);
-		if (check.kind === "registration") return { kind: "registration" };
-		return { kind: "admission", role: check.value.role };
+		const groupId = check.value.groupId;
+		if (check.kind === "registration") return { expected: { kind: "registration" }, groupId };
+		return { expected: { kind: "admission", role: check.value.role }, groupId };
 	} catch {
 		return null;
 	}
+}
+
+interface CapturedRelayAdmission {
+	readonly namespaces: ReadonlyMap<string, RelayAdmissionNamespace>;
+	readonly authorityId: string;
+	readonly relayAudienceId: string;
+	readonly externalPathname: string;
+	readonly ingressKey: string;
+	readonly open: CoordinatorRelayAdmissionOptions["open"];
+}
+
+/** Copies and freezes every entry, or returns null when entries are unreadable or disagree. */
+function captureOptions(options: CoordinatorRelayAdmissionOptions): CapturedRelayAdmission | null {
+	try {
+		return captureNamespaces(options);
+	} catch {
+		return null;
+	}
+}
+
+function captureNamespaces(options: CoordinatorRelayAdmissionOptions) {
+	const namespaces = new Map<string, RelayAdmissionNamespace>();
+	for (const [groupId, entry] of options.namespaces) {
+		const { authorityId, relayAudienceId } = entry;
+		namespaces.set(
+			groupId,
+			Object.freeze({ authorityId, groupId: entry.groupId, relayAudienceId }),
+		);
+	}
+	const [first] = namespaces.values();
+	if (!first) return null;
+	for (const [groupId, entry] of namespaces) {
+		if (
+			entry.groupId !== groupId ||
+			entry.authorityId !== first.authorityId ||
+			entry.relayAudienceId !== first.relayAudienceId
+		)
+			return null;
+	}
+	return {
+		namespaces,
+		authorityId: first.authorityId,
+		relayAudienceId: first.relayAudienceId,
+		externalPathname: options.externalPathname,
+		ingressKey: options.ingressKey,
+		open: options.open,
+	};
+}
+
+/** A fresh three-field copy, so no caller can hold or mutate a stored entry. */
+function namespaceFor(
+	options: CapturedRelayAdmission,
+	claim: PacketClaim | null,
+): RelayAdmissionNamespace | undefined {
+	const entry = claim ? options.namespaces.get(claim.groupId) : undefined;
+	if (!entry) return undefined;
+	const { authorityId, groupId, relayAudienceId } = entry;
+	return { authorityId, groupId, relayAudienceId };
 }
 
 function admissionResponse(bytes = encodeRelayAdmissionReply(null), status = 200): Response {
@@ -101,33 +170,53 @@ function admissionResponse(bytes = encodeRelayAdmissionReply(null), status = 200
 	});
 }
 
+type RelayBudgets = ReturnType<typeof createAdmissionBudgetAdapters>["relay"];
+
+/**
+ * Malformed packets still consume the dedicated ingress budget. Until a
+ * configured group is known, only the shared (authority, audience) and
+ * authority buckets are charged. No device budget or nonce is touched until
+ * the decision verifies the proof.
+ */
+function reserveRouteIngress(
+	budgets: RelayBudgets,
+	options: CapturedRelayAdmission,
+	claim: PacketClaim | null,
+	namespace: RelayAdmissionNamespace | undefined,
+) {
+	const expected = claim?.expected ?? { kind: "admission", role: "relay" };
+	if (!namespace)
+		return budgets.reserveSharedIngress({
+			authorityId: options.authorityId,
+			relayAudienceId: options.relayAudienceId,
+			expected,
+		});
+	return budgets.reserveIngress({ namespace, ingressKey: options.ingressKey, expected });
+}
+
 async function admissionCheck(
 	request: Request,
-	options?: CoordinatorRelayAdmissionOptions,
+	options: CapturedRelayAdmission | null,
 ): Promise<Response> {
 	try {
 		const bytes = await readAdmissionBody(request);
 		if (!options) return admissionResponse(undefined, bytes === null ? 413 : 200);
 		const packet = packetFromRequest(request, bytes ?? new Uint8Array());
-		const expected = packetExpectation(packet);
+		const claim = packetExpectation(packet);
+		const namespace = namespaceFor(options, claim);
 		const connection = options.open();
 		try {
 			const budgets = createAdmissionBudgetAdapters({
 				database: { writeReturning: connection.database.insertReturning.bind(connection.database) },
 			}).relay;
-			// Malformed packets still consume the dedicated ingress budget. No device
-			// budget or nonce is touched until the decision verifies the proof.
-			const reserved = await budgets.reserveIngress({
-				namespace: options.namespace,
-				ingressKey: options.ingressKey,
-				expected: expected ?? { kind: "admission", role: "relay" },
-			});
+			const reserved = await reserveRouteIngress(budgets, options, claim, namespace);
 			if (bytes === null) return admissionResponse(undefined, 413);
 			if (bytes === undefined) return admissionResponse();
 			const url = new URL(request.url);
 			if (
 				reserved !== "reserved" ||
-				!expected ||
+				!claim ||
+				!namespace ||
 				url.search !== "" ||
 				url.pathname !== options.externalPathname
 			)
@@ -135,10 +224,10 @@ async function admissionCheck(
 			const decision = await decideRelayAdmission(
 				{
 					packet,
-					expected,
+					expected: claim.expected,
 					deviceHeader: request.headers.get("X-Opencode-Device") ?? "",
 					externalPathname: options.externalPathname,
-					namespace: options.namespace,
+					namespace,
 					ingressKey: options.ingressKey,
 				},
 				{
@@ -155,12 +244,27 @@ async function admissionCheck(
 	}
 }
 
-/** Optional capability only. This route never provisions policy, schema, or readiness. */
+/**
+ * Keys namespaces by their own group ID. Single-group callers pass one entry.
+ * Duplicate group IDs return an empty map, so the route registered with it
+ * serves only denials instead of silently keeping one of the entries.
+ */
+export function relayAdmissionNamespaces(
+	...namespaces: readonly RelayAdmissionNamespace[]
+): ReadonlyMap<string, RelayAdmissionNamespace> {
+	const map = new Map(namespaces.map((namespace) => [namespace.groupId, namespace]));
+	return map.size === namespaces.length ? map : new Map();
+}
+
+/**
+ * Optional capability only. This route never provisions policy, schema, or
+ * readiness. An empty or inconsistent namespace map serves only denials.
+ */
 export function registerCoordinatorRelayAdmissionRoute(
 	app: Hono,
 	options?: CoordinatorRelayAdmissionOptions,
 ): void {
 	if (!options) return;
-	const captured = { ...options, namespace: Object.freeze({ ...options.namespace }) };
+	const captured = captureOptions(options);
 	app.post("/v1/relay/admission-check", (c) => admissionCheck(c.req.raw, captured));
 }

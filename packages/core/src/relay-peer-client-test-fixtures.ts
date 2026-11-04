@@ -6,7 +6,10 @@ import { Hono } from "hono";
 import { vi } from "vitest";
 import WebSocket from "ws";
 import { ADMISSION_BUDGET_SCHEMA_STATEMENTS } from "./admission-budget-schema.js";
-import { registerCoordinatorRelayAdmissionRoute } from "./coordinator-relay-admission-route.js";
+import {
+	registerCoordinatorRelayAdmissionRoute,
+	relayAdmissionNamespaces,
+} from "./coordinator-relay-admission-route.js";
 import { decisionFixture, decisionSeed } from "./relay-admission-decision-test-fixtures.js";
 import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "./relay-admission-metadata-schema.js";
 import { PARTICIPANT_TEST_SCHEMA_SQL } from "./relay-admission-participant-nonce-test-fixtures.js";
@@ -121,7 +124,7 @@ async function admissionDatabase(
 function admissionHttp(db: Database.Database, namespace: Namespace) {
 	const child = new Hono();
 	registerCoordinatorRelayAdmissionRoute(child, {
-		namespace,
+		namespaces: relayAdmissionNamespaces(namespace),
 		externalPathname: admissionPath,
 		ingressKey: "disposable-test",
 		open: () => ({
