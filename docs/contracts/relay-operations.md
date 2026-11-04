@@ -133,12 +133,13 @@ Unknown client identity never creates another per-device quota allowance.
 
 ## Hosting and isolation
 
-Cloudflare Durable Objects are the recommended host candidate, pending the
-proofs below. A self-hosted Node host is a possible fallback that requires
-review. It is not an automatic implementation choice. The relay runs in a
-separate Worker/service and Durable
-Object namespace, or equivalent isolated host resources, with independently
-configured health, configuration, and switches.
+The self-hosted Node relay is the first supported host
+([ADR 0006](../adr/0006-node-relay-host.md)). It runs co-hosted with the Node
+coordinator or as a standalone process. A Cloudflare Durable Object host is a
+later track, pending the proofs below. On either host, the relay keeps its own
+routes, health, configuration, switches, and quota storage. On Cloudflare, that
+means a separate Worker/service and Durable Object namespace, or equivalent
+isolated host resources.
 
 The relay has no direct coordinator database credentials. It forwards no frames
 through the coordinator or D1, and the planes share no payload or session tables.
