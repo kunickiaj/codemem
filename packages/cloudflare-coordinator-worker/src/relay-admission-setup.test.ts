@@ -82,7 +82,7 @@ const CASES: readonly [string, RelayAdmissionTarget, RelayAdmissionSnapshot, unk
 			statements: [
 				[BUMP, A, 2],
 				["insert relay_admission_audiences", A, NEW_AUDIENCE, 2],
-				[RAISE, A, "authority", "", "", 960, 512],
+				[RAISE, A, "authority", "", "", 960, 512, 480, 256],
 				[ADD, A, "relay-route", NEW_AUDIENCE, "", 240, 128],
 				[ADD, A, "relay-registration", NEW_AUDIENCE, "", 240, 128],
 				[ADD, A, "relay-route", NEW_AUDIENCE, "g1", 120, 64],
@@ -101,9 +101,9 @@ const CASES: readonly [string, RelayAdmissionTarget, RelayAdmissionSnapshot, unk
 			statements: [
 				[BUMP, A, 2],
 				[REALM, A, "g2", 2],
-				[RAISE, A, "authority", "", "", 420, 224],
-				[RAISE, A, "relay-route", OLD_AUDIENCE, "", 180, 96],
-				[RAISE, A, "relay-registration", OLD_AUDIENCE, "", 240, 128],
+				[RAISE, A, "authority", "", "", 420, 224, 240, 128],
+				[RAISE, A, "relay-route", OLD_AUDIENCE, "", 180, 96, 120, 64],
+				[RAISE, A, "relay-registration", OLD_AUDIENCE, "", 240, 128, 120, 64],
 				[ADD, A, "relay-route", OLD_AUDIENCE, "g2", 120, 64],
 				[ADD, A, "relay-registration", OLD_AUDIENCE, "g2", 120, 64],
 			],
@@ -152,6 +152,12 @@ const CASES: readonly [string, RelayAdmissionTarget, RelayAdmissionSnapshot, unk
 		{ ok: false, error: "relay_budget_ceiling" },
 	],
 	[
+		"a raise with no child to admit, from an inconsistent snapshot, is refused",
+		target(["g1"]),
+		withRows(setUp(["g1"]), row("relay-route", OLD_AUDIENCE, "", 60, 32)),
+		{ ok: false, error: "relay_admission_conflict" },
+	],
+	[
 		"a revoked audience is refused",
 		target(["g1"]),
 		{ ...setUp(["g1"]), audienceState: "revoked" },
@@ -181,6 +187,26 @@ describe("relay admission setup plan", () => {
 			[A, "g2", 5],
 		]);
 		expect(policy?.sql).not.toContain("operator_state");
+	});
+
+	it("raises only a row that still holds its snapshot values", () => {
+		// Arrange: a stored rate above the need is kept while the burst rises.
+		const snapshot = withRows(setUp(["g1"]), row("relay-route", OLD_AUDIENCE, "", 300, 64));
+		// Act
+		const plan = planRelayAdmissionSetup(target(["g1", "g2"]), snapshot);
+		// Assert
+		if (!plan.ok) throw new Error(plan.error);
+		const raises = plan.value.statements.filter(({ sql }) => sql.startsWith("UPDATE admission"));
+		expect(raises.map(({ values }) => values)).toEqual([
+			[A, "authority", "", "", 540, 256, 240, 128],
+			[A, "relay-route", OLD_AUDIENCE, "", 300, 128, 300, 64],
+			[A, "relay-registration", OLD_AUDIENCE, "", 240, 128, 120, 64],
+		]);
+		for (const { sql } of raises) {
+			expect(sql).toContain("SET rate_per_min = ?5, burst = ?6");
+			expect(sql).toContain("AND rate_per_min = ?7 AND burst = ?8");
+			expect(sql).not.toContain("MAX(");
+		}
 	});
 
 	it("writes the fresh profile in trigger order", () => {

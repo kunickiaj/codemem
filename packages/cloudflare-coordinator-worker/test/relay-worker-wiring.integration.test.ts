@@ -864,6 +864,47 @@ describe("relay admission setup route", () => {
 		expect(await admissionSnapshot()).toEqual(before);
 	});
 
+	/** Direct operator edits that move budgets after the snapshot, children before parents. */
+	const setBudget = (authorityId: string, pool: string, audience: string, group: string, rate: number, burst: number) =>
+		env.COORDINATOR_DB.prepare(
+			"UPDATE admission_budget_allocations SET rate_per_min = ?5, burst = ?6 WHERE authority_id = ?1 AND pool = ?2 AND audience_id = ?3 AND group_id = ?4",
+		).bind(authorityId, pool, audience, group, rate, burst);
+
+	it.each([
+		[
+			"an audience parent closed to 0/0",
+			"https://closed-parent.example.test",
+			(id: string, audience: string) => [
+				setBudget(id, "relay-route", audience, groupId, 0, 0),
+				setBudget(id, "relay-route", audience, "", 0, 0),
+			],
+		],
+		[
+			"the authority lowered",
+			"https://lowered-authority.example.test",
+			(id: string, audience: string) => [
+				setBudget(id, "relay-registration", audience, groupId, 0, 0),
+				setBudget(id, "relay-registration", audience, "", 0, 0),
+				setBudget(id, "authority", "", "", 120, 64),
+			],
+		],
+	])("refuses a stale raise after %s, without reopening it", async (_name, origin, edit) => {
+		// Arrange: the snapshot is read, then the operator moves budgets by hand.
+		const one = otherAuthority(origin, [groupId]);
+		await send(setupRequest(), one.workerEnv);
+		const grown = otherAuthority(origin, [groupId, otherGroupId]);
+		const target = await relayAdmissionTarget(grown.config);
+		const stale = await readRelayAdmissionSnapshot(env.COORDINATOR_DB, target);
+		await env.COORDINATOR_DB.batch(edit(one.authorityId, one.audience));
+		const before = await admissionSnapshot();
+		// Act
+		const result = await applyRelayAdmissionSetup(env.COORDINATOR_DB, grown.config, target, stale);
+		// Assert
+		expect(result).toEqual({ ok: false, error: "relay_admission_conflict" });
+		expect(await admissionSnapshot()).toEqual(before);
+		expect(Object.keys(await allocations(one.authorityId))).not.toContain(`relay-route:${otherGroupId}`);
+	});
+
 	it("answers 409 when another setup commits between the route's read and write", async () => {
 		// Arrange: the wrapped D1 lets a competing setup run right after the snapshot read.
 		const origin = "https://race.example.test";

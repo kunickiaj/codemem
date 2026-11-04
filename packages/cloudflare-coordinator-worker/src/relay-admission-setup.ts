@@ -84,10 +84,12 @@ const REALM_INSERT =
 	"INSERT INTO relay_admission_realms(authority_id,group_id,operator_state,changed_revision) VALUES (?1,?2,'enabled',?3)";
 const ALLOCATION_INSERT =
 	"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,?2,?3,?4,?5,?6)";
-// MAX keeps a concurrent higher value. This statement can only raise.
+// Compare-and-swap against the snapshot (?7, ?8). A row an operator changed after
+// the snapshot, for example closed to 0/0, matches nothing and is left as stored.
 const ALLOCATION_RAISE = `UPDATE admission_budget_allocations
- SET rate_per_min = MAX(rate_per_min, ?5), burst = MAX(burst, ?6)
- WHERE authority_id = ?1 AND pool = ?2 AND audience_id = ?3 AND group_id = ?4`;
+ SET rate_per_min = ?5, burst = ?6
+ WHERE authority_id = ?1 AND pool = ?2 AND audience_id = ?3 AND group_id = ?4
+ AND rate_per_min = ?7 AND burst = ?8`;
 const READ_POLICY =
 	"SELECT policy_revision, operator_state FROM relay_admission_authority_policy WHERE authority_id = ?1";
 const READ_AUDIENCE =
@@ -138,9 +140,15 @@ const sum = (budgets: readonly RelayBudget[]): RelayBudget => ({
 const covers = (stored: RelayBudget, need: RelayBudget) =>
 	stored.ratePerMin >= need.ratePerMin && stored.burst >= need.burst;
 
+const larger = (a: RelayBudget, b: RelayBudget): RelayBudget => ({
+	ratePerMin: Math.max(a.ratePerMin, b.ratePerMin),
+	burst: Math.max(a.burst, b.burst),
+});
+
 /**
- * Inserts a missing row at `need`, or raises a stored row to cover `need`. A
- * stored 0/0 row is an operator closure, so it is never reopened here.
+ * Inserts a missing row at `need`, or raises a stored row to cover `need` only
+ * if it still holds its snapshot values. A stored 0/0 row is an operator
+ * closure, so it is never reopened here.
  */
 function fit(
 	authorityId: string,
@@ -152,8 +160,20 @@ function fit(
 	if (stored && stored.ratePerMin === 0) return failed("relay_budget_closed");
 	if (!Number.isSafeInteger(need.ratePerMin) || need.burst > MAX_BURST)
 		return failed("relay_budget_ceiling");
-	const values = [authorityId, slot.pool, slot.audience, slot.group, need.ratePerMin, need.burst];
-	return { ok: true, value: { sql: stored ? ALLOCATION_RAISE : ALLOCATION_INSERT, values } };
+	const key = [authorityId, slot.pool, slot.audience, slot.group];
+	if (!stored)
+		return {
+			ok: true,
+			value: { sql: ALLOCATION_INSERT, values: [...key, need.ratePerMin, need.burst] },
+		};
+	const raised = larger(stored, need);
+	return {
+		ok: true,
+		value: {
+			sql: ALLOCATION_RAISE,
+			values: [...key, raised.ratePerMin, raised.burst, stored.ratePerMin, stored.burst],
+		},
+	};
 }
 
 const budgetOf = (row: AllocationRow): RelayBudget => ({
@@ -162,11 +182,6 @@ const budgetOf = (row: AllocationRow): RelayBudget => ({
 });
 const budgetsOf = (rows: readonly AllocationRow[]): Map<string, RelayBudget> =>
 	new Map(rows.map((row) => [keyOf(row.pool, row.audience_id, row.group_id), budgetOf(row)]));
-const larger = (a: RelayBudget, b: RelayBudget): RelayBudget => ({
-	ratePerMin: Math.max(a.ratePerMin, b.ratePerMin),
-	burst: Math.max(a.burst, b.burst),
-});
-
 /**
  * Parent then new children for one relay ingress pool at the configured
  * audience. The parent must cover every stored child, including groups no longer
@@ -199,7 +214,8 @@ function planIngressPool(
 /**
  * Allocation rows, ordered so every statement passes the AFTER hierarchy
  * triggers: the authority covers the raised parents, the parents cover their new
- * children, and device rows follow the authority. Child rows are only inserted.
+ * children, and device rows follow the authority. Child and device rows are only
+ * inserted, never raised.
  */
 function planBudgets(target: RelayAdmissionTarget, rows: readonly AllocationRow[]) {
 	const { authorityId, audienceId } = target;
@@ -236,6 +252,13 @@ function planBudgets(target: RelayAdmissionTarget, rows: readonly AllocationRow[
 			values: [authorityId, pool, "", "", budget.ratePerMin, budget.burst],
 		}));
 	const head = authority.value ? [authority.value] : [];
+	// A raise that matched no row writes nothing, so the batch relies on a later
+	// trigger to abort. Every child insert fires the AFTER INSERT hierarchy
+	// trigger, which rechecks the authority against all ingress parents and every
+	// parent against its children. A raise is only needed to admit a new child, so
+	// a plan with a raise and no child insert comes from an inconsistent snapshot.
+	const raises = [...head, ...parents].some((statement) => statement.sql === ALLOCATION_RAISE);
+	if (raises && children.length === 0) return failed("relay_admission_conflict");
 	return { ok: true as const, value: [...head, ...devices, ...parents, ...children] };
 }
 
