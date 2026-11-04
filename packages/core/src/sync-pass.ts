@@ -113,6 +113,7 @@ export type SyncAttemptFailureCategory = SyncFailureCategory | "compatibility";
 
 export interface SyncResult {
 	ok: boolean;
+	transport?: "direct" | "traversal" | "relay" | "wait";
 	error?: string;
 	failureCategory?: SyncFailureCategory;
 	receiveFailureCode?: SyncTransferErrorCode;
@@ -168,6 +169,9 @@ export interface SyncScopeResult {
 
 export interface SyncPassOptions {
 	requestExecutor?: RequestJsonExecutor;
+	/** @internal A selected pass defers address-level diagnostics to its final result. */
+	attemptRecorder?: typeof recordSyncAttempt;
+	reachability?: import("./sync-reachability-pass.js").SyncReachabilityOptions;
 	limit?: number;
 	keysDir?: string;
 	dbPath?: string;
@@ -1269,6 +1273,7 @@ function scopedInboundOptions(peerDeviceId: string, keysDir: string | undefined)
 
 interface SyncExchangeContext {
 	requestExecutor: RequestJsonExecutor;
+	recordAttempt: typeof recordSyncAttempt;
 	db: Database;
 	peerDeviceId: string;
 	deviceId: string;
@@ -1400,7 +1405,7 @@ function snapshotAccessDenied(
 	});
 	if (!failure) return null;
 	const result = scopedSnapshotAccessDeniedResult(peer.baseUrl, reset, failure);
-	recordSyncAttempt(context.db, context.peerDeviceId, {
+	context.recordAttempt(context.db, context.peerDeviceId, {
 		ok: false,
 		error: `reset_required:${failure}`,
 		failureCategory: result.failureCategory,
@@ -1447,7 +1452,7 @@ async function finishInitialBootstrap(
 				.join("; ")}`;
 	const failureCategory = aggregateScopeFailureCategory(scoped.results);
 	recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
-	recordSyncAttempt(context.db, context.peerDeviceId, {
+	context.recordAttempt(context.db, context.peerDeviceId, {
 		ok,
 		opsIn: bootstrap.applied + scoped.totalOpsIn,
 		opsOut: 0,
@@ -1492,7 +1497,7 @@ async function performInitialBootstrap(
 	});
 	const postFetchSharedCount = sharedMemoryCount(context.db);
 	if (postFetchSharedCount > 0) {
-		recordSyncAttempt(context.db, context.peerDeviceId, {
+		context.recordAttempt(context.db, context.peerDeviceId, {
 			ok: false,
 			error: "needs_attention:shared_memories_appeared_during_bootstrap",
 			failureCategory: "other",
@@ -1571,7 +1576,7 @@ function failedResetBootstrap(
 	error: unknown,
 ): SyncResult {
 	const detail = error instanceof Error ? error.message : String(error);
-	recordSyncAttempt(context.db, context.peerDeviceId, {
+	context.recordAttempt(context.db, context.peerDeviceId, {
 		ok: false,
 		error: `bootstrap_failed:${detail}`,
 		failureCategory: "other",
@@ -1596,7 +1601,7 @@ async function performResetBootstrap(
 ): Promise<SyncResult> {
 	const dirtyLocal = hasUnsyncedSharedMemoryChanges(context.db);
 	if (dirtyLocal.dirty) {
-		recordSyncAttempt(context.db, context.peerDeviceId, {
+		context.recordAttempt(context.db, context.peerDeviceId, {
 			ok: false,
 			error: `needs_attention:local_unsynced_shared_memory:${dirtyLocal.count}`,
 			failureCategory: "other",
@@ -1616,7 +1621,7 @@ async function performResetBootstrap(
 		});
 		const dirtyAfterFetch = hasUnsyncedSharedMemoryChanges(context.db);
 		if (dirtyAfterFetch.dirty) {
-			recordSyncAttempt(context.db, context.peerDeviceId, {
+			context.recordAttempt(context.db, context.peerDeviceId, {
 				ok: false,
 				error: `needs_attention:local_unsynced_shared_memory:${dirtyAfterFetch.count}`,
 				failureCategory: "other",
@@ -1633,7 +1638,7 @@ async function performResetBootstrap(
 		);
 		if (!bootstrapResult.ok) throw new Error("bootstrap apply failed");
 		recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
-		recordSyncAttempt(context.db, context.peerDeviceId, {
+		context.recordAttempt(context.db, context.peerDeviceId, {
 			ok: true,
 			opsIn: bootstrapResult.applied,
 			opsOut: 0,
@@ -1878,7 +1883,7 @@ async function finishIncrementalExchange(
 		? "other"
 		: aggregateScopeFailureCategory(scoped.results);
 	if (!inboundIncomplete) recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
-	recordSyncAttempt(context.db, context.peerDeviceId, {
+	context.recordAttempt(context.db, context.peerDeviceId, {
 		ok,
 		opsIn: applied.applied + scoped.totalOpsIn,
 		opsOut: pushed.outboundOps.length,
@@ -2003,11 +2008,16 @@ function peerPin(
 	};
 }
 
-function unavailableIdentityResult(db: Database, peerDeviceId: string, error: unknown): SyncResult {
+function unavailableIdentityResult(
+	db: Database,
+	peerDeviceId: string,
+	error: unknown,
+	recordAttempt = recordSyncAttempt,
+): SyncResult {
 	const detail =
 		error instanceof Error ? error.message.trim() || error.constructor.name : "unknown";
 	const message = `device identity unavailable: ${detail}`;
-	recordSyncAttempt(db, peerDeviceId, { ok: false, error: message, failureCategory: "other" });
+	recordAttempt(db, peerDeviceId, { ok: false, error: message, failureCategory: "other" });
 	return {
 		ok: false,
 		error: message,
@@ -2047,13 +2057,17 @@ function prepareSyncExchange(
 	try {
 		[deviceId] = ensureDeviceIdentity(db, { keysDir: options?.keysDir });
 	} catch (error) {
-		return { kind: "result", result: unavailableIdentityResult(db, peerDeviceId, error) };
+		return {
+			kind: "result",
+			result: unavailableIdentityResult(db, peerDeviceId, error, options?.attemptRecorder),
+		};
 	}
 	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId);
 	return {
 		kind: "ready",
 		context: {
 			requestExecutor: options?.requestExecutor ?? requestJson,
+			recordAttempt: options?.attemptRecorder ?? recordSyncAttempt,
 			db,
 			peerDeviceId,
 			deviceId,
@@ -2075,13 +2089,13 @@ function failedAddressResult(
 	addressErrors: Array<{ address: string; error: string }>,
 	attemptedAny: boolean,
 	capabilities: SyncCapabilityDiagnostics | undefined,
-	options: { protocolMismatch: boolean },
+	options: { protocolMismatch: boolean; recordAttempt: typeof recordSyncAttempt },
 ): SyncResult {
 	let error = summarizeAddressErrors(addressErrors);
 	if (!attemptedAny) error = "no dialable peer addresses";
 	if (!error) error = "sync failed without diagnostic detail";
 	const failureCategory = categorizeSyncFailure(error);
-	recordSyncAttempt(db, peerDeviceId, {
+	options.recordAttempt(db, peerDeviceId, {
 		ok: false,
 		error,
 		failureCategory: options.protocolMismatch
@@ -2135,7 +2149,7 @@ async function tryPeerAddresses(
 		addressErrors,
 		attemptedAny,
 		capabilities,
-		{ protocolMismatch },
+		{ protocolMismatch, recordAttempt: context.recordAttempt },
 	);
 }
 
@@ -2194,7 +2208,21 @@ export async function runSyncPass(
 		}
 	}
 
-	return syncOnce(db, peerDeviceId, addresses, options);
+	if (!options?.reachability) return syncOnce(db, peerDeviceId, addresses, options);
+	const { runReachableSyncPass } = await import("./sync-reachability-pass.js");
+	let directRecord: Parameters<typeof recordSyncAttempt>[2] | undefined;
+	const result = await runReachableSyncPass(db, peerDeviceId, addresses, {
+		...options,
+		attemptRecorder: (_db, _peer, record) => {
+			directRecord = record;
+		},
+	});
+	const inheritsDirect =
+		result.transport === "direct" ||
+		(result.transport === "wait" && result.error === directRecord?.error);
+	const record = inheritsDirect && directRecord ? directRecord : result;
+	recordSyncAttempt(db, peerDeviceId, record);
+	return result;
 }
 
 // ---------------------------------------------------------------------------
