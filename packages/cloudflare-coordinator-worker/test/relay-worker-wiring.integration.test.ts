@@ -10,7 +10,7 @@ import {
 import {
 	METADATA_AUDIENCE_INSERT,
 	METADATA_POLICY_INSERT,
-	metadataSeed,
+	METADATA_READINESS_INSERT,
 } from "../../core/src/relay-admission-metadata-test-fixtures.js";
 import {
 	PARTICIPANT_CREATED_AT,
@@ -23,7 +23,14 @@ import { relayEd25519KeyId } from "../../core/src/relay-ed25519.js";
 import { relayAudienceId, relayRealmId } from "../../core/src/relay-service-proof.js";
 import worker, { type CloudflareCoordinatorEnv } from "../src/index.js";
 import { captureRelayEnv, RELAY_ADMISSION_PATH, readRelayConfig } from "../src/relay-config.js";
-import { RELAY_QUOTA_ADMIN_PATH } from "../src/relay-route.js";
+import {
+	applyRelayAdmissionSetup,
+	isRelayAdmissionRaceAbort,
+	planRelayAdmissionSetup,
+	readRelayAdmissionSnapshot,
+	relayAdmissionTarget,
+} from "../src/relay-admission-setup.js";
+import { RELAY_ADMISSION_ADMIN_PATH, RELAY_QUOTA_ADMIN_PATH } from "../src/relay-route.js";
 
 // Local miniflare D1 and Durable Objects only. Nothing here reaches a remote account.
 const base = "https://coordinator.example.test";
@@ -210,13 +217,14 @@ describe("relay admission loopback", () => {
 	});
 });
 
-function adminRequest(body: unknown, secret = "test-secret") {
-	return new Request(`${base}${RELAY_QUOTA_ADMIN_PATH}`, {
+function adminRequest(body: unknown, secret = "test-secret", path = RELAY_QUOTA_ADMIN_PATH) {
+	return new Request(`${base}${path}`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json", "X-Codemem-Coordinator-Admin": secret },
 		body: JSON.stringify(body),
 	});
 }
+const setupRequest = () => adminRequest({}, "test-secret", RELAY_ADMISSION_ADMIN_PATH);
 
 describe("relay quota provisioning route", () => {
 	it("leaves the path to the coordinator while relay is off", async () => {
@@ -299,36 +307,29 @@ interface Enrolled {
 	readonly publicKey: string;
 }
 
-/** Realm rows for one group. The first group also publishes the authority-wide rows. */
-function groupMetadata(group: string, index: number, now: number) {
-	const authorityRows = new Set([METADATA_POLICY_INSERT, METADATA_AUDIENCE_INSERT]);
-	return metadataSeed({
-		authority: namespace.authorityId,
-		group,
-		audience: audienceId,
-		authorityObserved: now,
-		realmObserved: now,
-	}).filter(
-		({ sql, values }) => index === 0 || !(authorityRows.has(sql) || values[1] === "authority"),
+const ADMISSION_TABLES = [
+	"relay_admission_authority_policy",
+	"relay_admission_audiences",
+	"relay_admission_realms",
+	"relay_admission_readiness",
+	"admission_budget_allocations",
+] as const;
+
+/** Every admission policy and budget row, in a stable order, for before and after comparisons. */
+async function admissionSnapshot() {
+	const tables = await Promise.all(
+		ADMISSION_TABLES.map(async (table) => {
+			const { results } = await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table}`).all();
+			return [table, results.map((row) => JSON.stringify(row)).sort()] as const;
+		}),
 	);
+	return Object.fromEntries(tables);
 }
 
-/** Coordinator-side rows admission needs: enrollment, policy, readiness and budgets per group. */
-async function seedAdmission(devices: readonly Enrolled[]) {
+/** Enrollment comes from the normal coordinator flows, which these tests skip. */
+async function enroll(devices: readonly Enrolled[]) {
 	const db = env.COORDINATOR_DB;
-	const now = Date.now();
 	const groups = [...new Set(devices.map((device) => device.group))];
-	const allocate = (pool: string, audience = "", group = "", rate = 1, burst = 16) =>
-		db
-			.prepare(
-				"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,?2,?3,?4,?5,?6)",
-			)
-			.bind(config?.authorityId, pool, audience, group, rate, burst);
-	// Each group-'' parent covers the sum of its per-group children.
-	const relayPools = ["relay-registration", "relay-route"].flatMap((pool) => [
-		allocate(pool, audienceId, "", groups.length, 16 * groups.length),
-		...groups.map((group) => allocate(pool, audienceId, group)),
-	]);
 	await db.batch([
 		...groups.map((group) => db.prepare(PARTICIPANT_GROUP_INSERT).bind(group, PARTICIPANT_CREATED_AT)),
 		...devices.map(({ group, deviceId, publicKey }) =>
@@ -336,14 +337,32 @@ async function seedAdmission(devices: readonly Enrolled[]) {
 				.prepare(PARTICIPANT_DEVICE_INSERT)
 				.bind(group, deviceId, publicKey, hex(32), null, 1, PARTICIPANT_CREATED_AT),
 		),
-		...groups
-			.flatMap((group, index) => groupMetadata(group, index, now))
-			.map(({ sql, values }) => db.prepare(sql).bind(...values)),
-		allocate("authority", "", "", 4, 64),
-		allocate("device"),
-		allocate("device-registration", "", "", 1, 2),
-		...relayPools,
 	]);
+}
+
+/** Readiness has its own writer (codemem-zjvr.2.6.6), so tests still seed it at revision 1. */
+async function seedReadiness(groups: readonly string[], options: { authority: boolean }) {
+	const db = env.COORDINATOR_DB;
+	const now = Date.now();
+	const row = (scope: string, group: string) =>
+		db.prepare(METADATA_READINESS_INSERT).bind(config?.authorityId, scope, group, 1, "ready", now);
+	await db.batch([
+		...(options.authority ? [row("authority", "")] : []),
+		...groups.map((group) => row("realm", group)),
+	]);
+}
+
+/**
+ * Starts from the fresh migrated D1: the production setup route writes policy,
+ * realm and budget rows. Only enrollment and readiness are seeded.
+ */
+async function seedAdmission(devices: readonly Enrolled[]) {
+	const empty = Object.values(await admissionSnapshot()).every((rows) => rows.length === 0);
+	if (!empty) throw new Error("Admission tables are not fresh");
+	await enroll(devices);
+	const setup = await send(setupRequest(), enabledEnv());
+	if (setup.status !== 200) throw new Error(`Admission setup failed: ${setup.status}`);
+	await seedReadiness([...new Set(devices.map((device) => device.group))], { authority: true });
 }
 
 type DeviceKey = Awaited<ReturnType<typeof deviceKey>>;
@@ -450,8 +469,8 @@ async function admitted(response: Response, check: SignedCheck) {
 	return readRelayAdmissionReply(new Uint8Array(await response.arrayBuffer()), check.packet) !== null;
 }
 
-const publicCheck = (check: SignedCheck) =>
-	send(new Request(`${base}${RELAY_ADMISSION_PATH}`, checkInit(check)), enabledEnv());
+const publicCheck = (check: SignedCheck, workerEnv = enabledEnv()) =>
+	send(new Request(`${base}${RELAY_ADMISSION_PATH}`, checkInit(check)), workerEnv);
 
 async function nonceCount() {
 	const row = await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS n FROM request_nonces").first<{
@@ -463,21 +482,22 @@ async function nonceCount() {
 /**
  * Admission rows are permanent and storage is shared across this file, so both
  * configured groups are enrolled once: a source and target per group, plus the
- * relay device the hand-off test registers.
+ * relay device the hand-off test registers in each group.
  */
-let seeding: Promise<{ relayKey: DeviceKey; teams: Team[] }> | undefined;
+let seeding: Promise<{ relayKeys: DeviceKey[]; teams: Team[] }> | undefined;
 function seededAdmission() {
 	seeding ??= (async () => {
-		const [relayKey, ...teams] = await Promise.all([
-			deviceKey(),
-			team(groupId),
-			team(otherGroupId),
-		]);
+		const teams = await Promise.all([team(groupId), team(otherGroupId)]);
+		const relayKeys = await Promise.all(teams.map(() => deviceKey()));
 		await seedAdmission([
-			{ group: groupId, deviceId: "relay-device", publicKey: relayKey.publicKey },
+			...teams.map((t, index) => ({
+				group: t.group,
+				deviceId: "relay-device",
+				publicKey: (relayKeys[index] as DeviceKey).publicKey,
+			})),
 			...teams.flatMap(enrolled),
 		]);
-		return { relayKey, teams };
+		return { relayKeys, teams };
 	})();
 	return seeding;
 }
@@ -522,32 +542,47 @@ function listen(ws: WebSocket) {
 	};
 }
 
+/** Upgrades to the group's realm object and registers the relay device over the real loopback. */
+async function registerThroughRealm(group: string, key: DeviceKey) {
+	const realm = relayRealmId(namespace.authorityId, group);
+	const response = await send(
+		new Request(`${base}/v1/relay/${realm}`, { headers: upgrade }),
+		enabledEnv(),
+	);
+	if (response.status !== 101 || !response.webSocket) throw new Error(`${response.status}`);
+	const peer = listen(response.webSocket);
+	peer.send({ v: 1, type: "SERVICE_CHALLENGE", session: hex(16), body: { audienceId } });
+	await peer.next("SERVICE_PROOF");
+	const challenge = await peer.next("SOCKET_CHALLENGE");
+	const { packet: body } = await signedRegistration(key, "relay-device", challenge.session, group);
+	peer.send({ v: 1, type: "REGISTER", session: challenge.session, body });
+	return { peer, registered: await peer.next("REGISTERED") };
+}
+
 describe("relay hand-off with real admission over the loopback", () => {
-	it("registers end to end against migrated D1, then the quota switch closes the socket", async () => {
+	it("registers both teams against migrated D1 after admission setup, then the quota switch closes a socket", async () => {
 		// Arrange
-		const { relayKey: key } = await seededAdmission();
-		const provisioned = await send(adminRequest({ realm_id: realmId, enabled: true }), enabledEnv());
-		const upgradeRequest = () => new Request(`${base}${realmPath}`, { headers: upgrade });
+		const { relayKeys, teams } = await seededAdmission();
+		const realms = teams.map((t) => relayRealmId(namespace.authorityId, t.group));
+		const provisioned = await Promise.all(
+			realms.map((realm) => send(adminRequest({ realm_id: realm, enabled: true }), enabledEnv())),
+		);
 		// Act
-		const response = await send(upgradeRequest(), enabledEnv());
-		if (response.status !== 101 || !response.webSocket) throw new Error(`${response.status}`);
-		const peer = listen(response.webSocket);
-		peer.send({ v: 1, type: "SERVICE_CHALLENGE", session: hex(16), body: { audienceId } });
-		await peer.next("SERVICE_PROOF");
-		const challenge = await peer.next("SOCKET_CHALLENGE");
-		const { packet: body } = await signedRegistration(key, "relay-device", challenge.session);
-		peer.send({ v: 1, type: "REGISTER", session: challenge.session, body });
-		const registered = await peer.next("REGISTERED");
+		const sessions = [];
+		for (const [index, t] of teams.entries())
+			sessions.push(await registerThroughRealm(t.group, relayKeys[index] as DeviceKey));
 		const nonces = await env.COORDINATOR_DB.prepare(
 			"SELECT device_id FROM request_nonces WHERE device_id = 'relay-device'",
 		).all();
 		await send(adminRequest({ realm_id: realmId, enabled: false }), enabledEnv());
-		const refused = await send(upgradeRequest(), enabledEnv());
+		const refused = await send(new Request(`${base}${realmPath}`, { headers: upgrade }), enabledEnv());
 		// Assert
-		expect(provisioned.status).toBe(200);
-		expect(registered.body).toMatchObject({ deviceId: "relay-device", realmId });
-		expect(nonces.results).toHaveLength(1);
-		await vi.waitUntil(() => peer.closeCode() !== null);
+		expect(provisioned.map((response) => response.status)).toEqual([200, 200]);
+		expect(sessions.map(({ registered }) => registered.body)).toMatchObject(
+			realms.map((realm) => ({ deviceId: "relay-device", realmId: realm })),
+		);
+		expect(nonces.results).toHaveLength(2);
+		await vi.waitUntil(() => sessions[0]?.peer.closeCode() !== null);
 		expect(refused.status).toBe(429);
 	});
 });
@@ -619,4 +654,284 @@ describe("public relay admission for several configured groups", () => {
 			expect(await admitted(viaPublic, check)).toBe(true);
 		},
 	);
+});
+
+const thirdGroupId = "relay-third-group";
+const threeGroups = () =>
+	enabledEnv({ CODEMEM_RELAY_GROUPS: JSON.stringify([groupId, otherGroupId, thirdGroupId]) });
+
+async function allocations(authorityId = namespace.authorityId) {
+	const { results } = await env.COORDINATOR_DB.prepare(
+		"SELECT pool || ':' || group_id AS scope, rate_per_min AS rate, burst FROM admission_budget_allocations WHERE authority_id = ?1",
+	)
+		.bind(authorityId)
+		.all<{ scope: string; rate: number; burst: number }>();
+	return Object.fromEntries(results.map(({ scope, rate, burst }) => [scope, [rate, burst]]));
+}
+
+/** Relay config for another authority origin, so its permanent rows stay apart from this file's. */
+function otherAuthority(origin: string, groups: readonly string[]) {
+	const overrides = {
+		CODEMEM_RELAY_AUTHORITY_URL: origin,
+		CODEMEM_RELAY_GROUPS: JSON.stringify(groups),
+	};
+	const other = readRelayConfig(captureRelayEnv({ ...env, ...overrides, CODEMEM_RELAY_ENABLED: "true" }));
+	if (!other) throw new Error("Relay test config is invalid");
+	return {
+		config: other,
+		authorityId: other.authorityId,
+		audience: relayAudienceId(other.audienceOrigin, serviceKeyId),
+		workerEnv: enabledEnv(overrides),
+	};
+}
+
+describe("relay admission setup route", () => {
+	const withHeaders = (headers: Record<string, string>, init: RequestInit = {}) => {
+		const request = setupRequest();
+		return new Request(request, { ...init, headers: { ...Object.fromEntries(request.headers), ...headers } });
+	};
+	it.each([
+		["a wrong secret", () => adminRequest({}, "wrong", RELAY_ADMISSION_ADMIN_PATH), 401],
+		["an Origin header", () => withHeaders({ Origin: base }), 400],
+		["a query string", () => new Request(`${base}${RELAY_ADMISSION_ADMIN_PATH}?x=1`, setupRequest()), 400],
+		["a non-empty body", () => adminRequest({ groups: [] }, "test-secret", RELAY_ADMISSION_ADMIN_PATH), 400],
+		["a JSON array", () => adminRequest([], "test-secret", RELAY_ADMISSION_ADMIN_PATH), 400],
+		["a non-JSON content type", () => withHeaders({ "Content-Type": "text/plain" }), 415],
+		["GET", () => new Request(`${base}${RELAY_ADMISSION_ADMIN_PATH}`, { headers: setupRequest().headers }), 405],
+	])("refuses %s and writes nothing", async (_name, request, status) => {
+		// Arrange
+		const before = await admissionSnapshot();
+		// Act
+		const response = await send(request(), enabledEnv());
+		// Assert
+		expect(response.status).toBe(status);
+		expect(await admissionSnapshot()).toEqual(before);
+	});
+
+	it("leaves the path to the coordinator while relay is off", async () => {
+		// Arrange
+		const before = await admissionSnapshot();
+		// Act
+		const response = await send(setupRequest(), disabledEnv());
+		// Assert
+		expect(response.status).toBe(404);
+		expect(await admissionSnapshot()).toEqual(before);
+	});
+
+	it("writes the default profile once, so repeating setup changes nothing", async () => {
+		// Arrange: its own authority, so no other test's rows or order matter.
+		const other = otherAuthority("https://profile.example.test", [groupId, otherGroupId]);
+		const reply = {
+			authority_id: other.authorityId,
+			audience_id: other.audience,
+			policy_revision: 1,
+			readiness: "not_written",
+		};
+		// Act
+		const first = await send(setupRequest(), other.workerEnv);
+		const before = await admissionSnapshot();
+		const again = await send(setupRequest(), other.workerEnv);
+		// Assert
+		expect([first.status, again.status]).toEqual([200, 200]);
+		expect(await first.json()).toMatchObject({ ...reply, changed: true });
+		expect(await again.json()).toMatchObject({ ...reply, changed: false });
+		expect(await admissionSnapshot()).toEqual(before);
+		expect(await allocations(other.authorityId)).toEqual({
+			// Two groups: each audience parent sums its children, the authority sums the parents.
+			"authority:": [480, 256],
+			"device:": [96, 16],
+			"device-registration:": [2, 2],
+			"relay-route:": [240, 128],
+			"relay-registration:": [240, 128],
+			...Object.fromEntries(
+				["relay-route", "relay-registration"].flatMap((pool) =>
+					[groupId, otherGroupId].map((group) => [`${pool}:${group}`, [120, 64]]),
+				),
+			),
+		});
+	});
+
+	it("raises the parents for a third group and admits its team", async () => {
+		// Arrange
+		await seededAdmission();
+		const third = await team(thirdGroupId);
+		await enroll(enrolled(third));
+		// Act
+		const setup = await send(setupRequest(), threeGroups());
+		await seedReadiness([thirdGroupId], { authority: false });
+		const results: boolean[] = [];
+		for (const check of await teamChecks(third))
+			results.push(await admitted(await publicCheck(check, threeGroups()), check));
+		// Assert
+		expect(setup.status).toBe(200);
+		expect(await setup.json()).toMatchObject({ policy_revision: 2, changed: true });
+		expect(await allocations()).toMatchObject({
+			"authority:": [720, 384],
+			"relay-route:": [360, 192],
+			"relay-registration:": [360, 192],
+			[`relay-route:${groupId}`]: [120, 64],
+			[`relay-route:${thirdGroupId}`]: [120, 64],
+		});
+		expect(results).toEqual([true, true, true, true]);
+	});
+
+	it("keeps every row when a group leaves the config", async () => {
+		// Arrange
+		await seededAdmission();
+		const before = await admissionSnapshot();
+		// Act
+		const response = await send(setupRequest(), enabledEnv({ CODEMEM_RELAY_GROUPS: `["${groupId}"]` }));
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await admissionSnapshot()).toEqual(before);
+	});
+
+	it("fits eight groups within the allocation triggers", async () => {
+		// Arrange
+		const groups = Array.from({ length: 8 }, (_, index) => `relay-eight-${index}`);
+		const other = otherAuthority("https://eight.example.test", groups);
+		// Act
+		const response = await send(setupRequest(), other.workerEnv);
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await allocations(other.authorityId)).toMatchObject({
+			"authority:": [1920, 1024],
+			"relay-route:": [960, 512],
+			"relay-registration:": [960, 512],
+			"relay-route:relay-eight-7": [120, 64],
+		});
+	});
+
+	it.each([
+		[
+			"a revoked audience",
+			"https://revoked.example.test",
+			"relay_audience_revoked",
+			(authorityId: string, audience: string) => [
+				env.COORDINATOR_DB.prepare(METADATA_POLICY_INSERT).bind(authorityId, 1, "enabled"),
+				env.COORDINATOR_DB.prepare(METADATA_AUDIENCE_INSERT).bind(authorityId, audience, "revoked", 1),
+			],
+		],
+		[
+			"a closed authority budget",
+			"https://closed.example.test",
+			"relay_budget_closed",
+			(authorityId: string) => [
+				env.COORDINATOR_DB.prepare(
+					"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,'authority','','',0,0)",
+				).bind(authorityId),
+			],
+		],
+	])("answers 409 for %s and writes nothing", async (_name, origin, error, seed) => {
+		// Arrange
+		const other = otherAuthority(origin, [groupId]);
+		await env.COORDINATOR_DB.batch(seed(other.authorityId, other.audience));
+		const before = await admissionSnapshot();
+		// Act
+		const response = await send(setupRequest(), other.workerEnv);
+		// Assert
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error });
+		expect(await admissionSnapshot()).toEqual(before);
+	});
+
+	it("aborts a stale plan in D1 and reports a conflict without writing", async () => {
+		// Arrange: a real setup bumps the revision after the stale snapshot was read.
+		const origin = "https://stale.example.test";
+		await send(setupRequest(), otherAuthority(origin, [groupId]).workerEnv);
+		const grown = otherAuthority(origin, [groupId, otherGroupId]);
+		const target = await relayAdmissionTarget(grown.config);
+		const stale = await readRelayAdmissionSnapshot(env.COORDINATOR_DB, target);
+		const fresh = await send(setupRequest(), grown.workerEnv);
+		const plan = planRelayAdmissionSetup(target, stale);
+		if (!plan.ok) throw new Error(plan.error);
+		const before = await admissionSnapshot();
+		// Act
+		const raw = await env.COORDINATOR_DB.batch(
+			plan.value.statements.map(({ sql, values }) => env.COORDINATOR_DB.prepare(sql).bind(...values)),
+		).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		const result = await applyRelayAdmissionSetup(env.COORDINATOR_DB, grown.config, target, stale);
+		// Assert
+		expect(fresh.status).toBe(200);
+		expect((raw as Error).message).toBe(
+			"D1_ERROR: relay_policy_revision: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_TRIGGER)",
+		);
+		expect(isRelayAdmissionRaceAbort(raw)).toBe(true);
+		expect(result).toEqual({ ok: false, error: "relay_admission_conflict" });
+		expect(await admissionSnapshot()).toEqual(before);
+	});
+
+	/** Direct operator edits that move budgets after the snapshot, children before parents. */
+	const setBudget = (authorityId: string, pool: string, audience: string, group: string, rate: number, burst: number) =>
+		env.COORDINATOR_DB.prepare(
+			"UPDATE admission_budget_allocations SET rate_per_min = ?5, burst = ?6 WHERE authority_id = ?1 AND pool = ?2 AND audience_id = ?3 AND group_id = ?4",
+		).bind(authorityId, pool, audience, group, rate, burst);
+
+	it.each([
+		[
+			"an audience parent closed to 0/0",
+			"https://closed-parent.example.test",
+			(id: string, audience: string) => [
+				setBudget(id, "relay-route", audience, groupId, 0, 0),
+				setBudget(id, "relay-route", audience, "", 0, 0),
+			],
+		],
+		[
+			"the authority lowered",
+			"https://lowered-authority.example.test",
+			(id: string, audience: string) => [
+				setBudget(id, "relay-registration", audience, groupId, 0, 0),
+				setBudget(id, "relay-registration", audience, "", 0, 0),
+				setBudget(id, "authority", "", "", 120, 64),
+			],
+		],
+	])("refuses a stale raise after %s, without reopening it", async (_name, origin, edit) => {
+		// Arrange: the snapshot is read, then the operator moves budgets by hand.
+		const one = otherAuthority(origin, [groupId]);
+		await send(setupRequest(), one.workerEnv);
+		const grown = otherAuthority(origin, [groupId, otherGroupId]);
+		const target = await relayAdmissionTarget(grown.config);
+		const stale = await readRelayAdmissionSnapshot(env.COORDINATOR_DB, target);
+		await env.COORDINATOR_DB.batch(edit(one.authorityId, one.audience));
+		const before = await admissionSnapshot();
+		// Act
+		const result = await applyRelayAdmissionSetup(env.COORDINATOR_DB, grown.config, target, stale);
+		// Assert
+		expect(result).toEqual({ ok: false, error: "relay_admission_conflict" });
+		expect(await admissionSnapshot()).toEqual(before);
+		expect(Object.keys(await allocations(one.authorityId))).not.toContain(`relay-route:${otherGroupId}`);
+	});
+
+	it("answers 409 when another setup commits between the route's read and write", async () => {
+		// Arrange: the wrapped D1 lets a competing setup run right after the snapshot read.
+		const origin = "https://race.example.test";
+		await send(setupRequest(), otherAuthority(origin, [groupId]).workerEnv);
+		const grown = otherAuthority(origin, [groupId, otherGroupId]);
+		const db = env.COORDINATOR_DB;
+		let raced = false;
+		const racing = {
+			prepare: (sql: string) => db.prepare(sql),
+			batch: async (statements: D1PreparedStatement[]) => {
+				const results = await db.batch(statements);
+				if (!raced) {
+					raced = true;
+					await send(setupRequest(), grown.workerEnv);
+				}
+				return results;
+			},
+		};
+		// Act
+		const response = await send(setupRequest(), { ...grown.workerEnv, COORDINATOR_DB: racing });
+		const after = await admissionSnapshot();
+		const again = await send(setupRequest(), grown.workerEnv);
+		// Assert
+		expect(raced).toBe(true);
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ error: "relay_admission_conflict" });
+		expect(await admissionSnapshot()).toEqual(after);
+		expect(await again.json()).toMatchObject({ policy_revision: 2, changed: false });
+	});
 });
