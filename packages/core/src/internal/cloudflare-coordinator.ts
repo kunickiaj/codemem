@@ -97,6 +97,15 @@ export {
 	verifyOwnerEnrollmentAdmission,
 	verifyOwnerEnrollmentAdmissionV2,
 } from "../owner-enrollment-admission.js";
+// The Worker's relay Durable Object keeps quota in its own SQLite storage.
+export {
+	createExclusiveWriterRelayQuota,
+	initializeRelayQuotaSchema,
+	type RelayQuotaDatabase,
+	type RelayQuotaProfile,
+	type SqliteRelayQuotaPort,
+	setRelayQuotaEnabled,
+} from "../relay-quota-sqlite.js";
 export type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 export { createInMemoryRequestRateLimiter } from "../request-rate-limit.js";
 export { DEFAULT_TIME_WINDOW_S } from "../sync-auth-constants.js";

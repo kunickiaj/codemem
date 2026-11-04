@@ -306,20 +306,39 @@ function reserveTransaction(
 	return "reserved";
 }
 
-/** No initialization, provisioning, retries, readback, refunds or application clock.
- * One immediate transaction charges all applicable scopes or rolls them all back.
- * A post-commit abort denies delivery but deliberately retains consumption.
- */
-export function createSqliteRelayQuota(options: {
+interface RelayQuotaOptions {
 	readonly database: RelayQuotaDatabase;
 	readonly realmId: string;
 	readonly enabled?: boolean;
-}): SqliteRelayQuotaPort {
+}
+
+/** No initialization, provisioning, retries, readback, refunds or application clock.
+ * One immediate transaction charges all applicable scopes or rolls them all back.
+ * A post-commit abort denies delivery but deliberately retains consumption.
+ * Another connection's lock makes a reservation return "unknown" instead of waiting.
+ */
+export function createSqliteRelayQuota(options: RelayQuotaOptions): SqliteRelayQuotaPort {
+	return createRelayQuotaPort(options, { lockWait: "disable" });
+}
+
+/**
+ * Internal: only for storage that no other writer can lock, such as a Durable
+ * Object, whose SQL API rejects `PRAGMA busy_timeout`. On a shared SQLite file a
+ * held lock would block the event loop instead of returning "unknown".
+ */
+export function createExclusiveWriterRelayQuota(options: RelayQuotaOptions): SqliteRelayQuotaPort {
+	return createRelayQuotaPort(options, { lockWait: "impossible" });
+}
+
+function createRelayQuotaPort(
+	options: RelayQuotaOptions,
+	locking: { readonly lockWait: "disable" | "impossible" },
+): SqliteRelayQuotaPort {
 	const { database, realmId } = options;
 	const enabled = options.enabled === true && validRealm(realmId);
 	// A lock must deny promptly instead of blocking relay deadlines on the event loop.
 	let available = true;
-	if (enabled) {
+	if (enabled && locking.lockWait === "disable") {
 		try {
 			database.exec("PRAGMA busy_timeout = 0");
 		} catch {
