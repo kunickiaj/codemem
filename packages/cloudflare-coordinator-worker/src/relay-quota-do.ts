@@ -2,7 +2,7 @@ import {
 	createExclusiveWriterRelayQuota,
 	type RelayQuotaDatabase,
 	type SqliteRelayQuotaPort,
-} from "@codemem/core/internal/cloudflare-coordinator";
+} from "@codemem/core/internal/relay-host";
 
 /**
  * Maps a Durable Object's SQLite storage onto the relay quota database boundary,
