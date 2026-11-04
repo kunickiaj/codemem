@@ -11,6 +11,7 @@ import {
 } from "./coordinator-device-revocation-test-harness.js";
 import { JOIN_NOW } from "./coordinator-join-revocation-test-harness.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys-test-fixtures.js";
 import {
 	type LifecycleFixture,
 	registerOwnershipWriterLifecycle,
@@ -45,7 +46,8 @@ describe.each(["SQLite", "D1"] as const)(
 						coordinator_auth_device_claims: "claim_id",
 						coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
 					};
-					const orderBy = snapshotKeys[table] ?? "rowid";
+					const orderBy =
+						snapshotKeys[table] ?? RELAY_ADMISSION_TABLE_KEYS[table]?.join(", ") ?? "rowid";
 					return local.db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all();
 				},
 				reopen: async () => {

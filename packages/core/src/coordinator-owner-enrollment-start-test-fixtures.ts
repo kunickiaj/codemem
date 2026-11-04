@@ -15,6 +15,7 @@ import {
 import { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from "./coordinator-owner-enrollment-commit.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys-test-fixtures.js";
 
 export const ORIGIN = "https://app.example.test";
 export const config = {
@@ -130,7 +131,8 @@ export function ownerStartFixture(prepared?: {
 	const second = new Database(path);
 	const key = commitPendingKey();
 	const rows = (table: string) => {
-		const order = table === "coordinator_auth_device_claims" ? "claim_id" : "rowid";
+		let order = RELAY_ADMISSION_TABLE_KEYS[table]?.join(", ") ?? "rowid";
+		if (table === "coordinator_auth_device_claims") order = "claim_id";
 		return db.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all() as Record<
 			string,
 			unknown

@@ -5,6 +5,7 @@ import { JOIN_NOW } from "../../core/src/coordinator-join-revocation-test-harnes
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { type LifecycleFixture, registerOwnershipWriterLifecycle } from "../../core/src/shared-ownership-writer-lifecycle-test-harness.js";
 import { disposeNativeAuthFixture } from "./owner-ceremony-test-fixtures.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys.js";
 
 describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", () => {
   const test = revocationHarness(async use => {
@@ -28,7 +29,7 @@ describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", ()
           coordinator_auth_device_claims: "claim_id",
           coordinator_owner_enrollment_qualifications: "qualification_id",
           coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
-        } as Record<string, string>)[table] ?? "rowid";
+        } as Record<string, string>)[table] ?? RELAY_ADMISSION_TABLE_KEYS[table]?.join(", ") ?? "rowid";
         return (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all()).results;
       },
     };
