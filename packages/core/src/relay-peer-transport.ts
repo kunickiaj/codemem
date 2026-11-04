@@ -28,6 +28,23 @@ export interface RelayPeerTransportOptions {
 	readonly remove: (options: { clean: boolean }) => void;
 	/** Native writes still owned after the cleanup grace require physical socket termination. */
 	readonly terminate: () => void;
+	/** Called synchronously with the first terminal reason, before asynchronous cleanup finishes. */
+	readonly onFailure?: (reason: RelayFailureReason) => void;
+}
+
+/** An executor failure such as malformed framing aborts the route, but did not expire it. */
+export function relayAbortReason(
+	signal: AbortSignal,
+	options: { readonly secured: boolean },
+): RelayFailureReason {
+	const cause: unknown = signal.reason;
+	if (
+		!(cause instanceof PeerHttpExchangeError) ||
+		cause.code === "deadline" ||
+		cause.code === "cancelled"
+	)
+		return "relay_expired";
+	return options.secured ? "relay_record_invalid" : "relay_handshake_failed";
 }
 
 /** One logical route. Disposing this stream never closes an otherwise healthy outer socket. */
@@ -255,27 +272,21 @@ export class RelayPeerTransport extends Duplex {
 		this.destroy(new RelayFailure(this.abortReason(), "Relay route cancelled"));
 	};
 
-	/** An executor failure such as malformed framing aborts the route, but did not expire it. */
 	private abortReason(): RelayFailureReason {
-		const cause: unknown = this.options.signal.reason;
-		if (
-			!(cause instanceof PeerHttpExchangeError) ||
-			cause.code === "deadline" ||
-			cause.code === "cancelled"
-		)
-			return "relay_expired";
-		return this.secured ? "relay_record_invalid" : "relay_handshake_failed";
+		return relayAbortReason(this.options.signal, { secured: this.secured });
 	}
 
 	override _destroy(error: Error | null, callback: Done): void {
 		const clean = !error && this.remoteEnd && this.endWritten && this.writes === 0;
 		const failure = error ?? new Error("Relay route disposed before clean completion");
 		// Streams call _destroy once, so the first terminal error decides the reason.
-		if (!clean)
+		if (!clean) {
 			this.reason = relayFailureReason(
 				failure,
 				this.secured ? "relay_record_invalid" : "relay_handshake_failed",
 			);
+			this.options.onFailure?.(this.reason);
+		}
 		this.released = true;
 		clearTimeout(this.deadlineTimer);
 		clearTimeout(this.idleTimer);

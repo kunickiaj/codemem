@@ -173,19 +173,44 @@ describe("relay client local failure origins", () => {
 		const target = f.client("target", { onInbound: async (connection) => connection.completion });
 		await target.connect(new AbortController().signal, relayDeadline());
 		const source = f.client("source");
-		await source
+		const owner = await source
 			.factory("target", f.identities.target.expectedPin)
 			.open({ signal: new AbortController().signal, deadlineMs: relayDeadline() });
+		// Closing the client also fails this first route, so observe its rejection.
+		const firstRoute = owner.completion.catch(() => {});
 		const factory = source.factory("target", f.identities.target.expectedPin);
 		const waiting = factory.open({
 			signal: new AbortController().signal,
 			deadlineMs: performance.now() + 7000,
 		});
+		const rejected = expect(waiting).rejects.toThrow("Relay WebSocket disconnected");
 		// Act: closing the client rejects the waiter before the 3 s cap.
 		await source.close();
 		// Assert.
-		await expect(waiting).rejects.toThrow("Relay WebSocket disconnected");
+		await rejected;
 		expect(factory.failureReason()).toBe("relay_disabled");
+		await firstRoute;
+	}, 15000);
+
+	it("records the caller's abort before an open that is still in progress settles", async () => {
+		// Arrange: the source opens a route to a target that never registers, so OPEN stays pending.
+		const f = await relayClientFixture();
+		cleanups.push(() => f.dispose());
+		const source = f.client("source");
+		await source.connect(new AbortController().signal, relayDeadline());
+		const factory = source.factory("target", f.identities.target.expectedPin);
+		const caller = new AbortController();
+		const opening = factory.open({ signal: caller.signal, deadlineMs: relayDeadline() });
+		const settled = opening.then(
+			() => "opened",
+			() => "failed",
+		);
+		// Act: the caller gives up and reads the reason without awaiting the open.
+		caller.abort();
+		const reason = factory.failureReason();
+		// Assert.
+		expect(reason).toBe("relay_expired");
+		expect(await settled).toBe("failed");
 	}, 15000);
 
 	it("records relay_disabled when the operator switch is off", async () => {

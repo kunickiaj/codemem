@@ -32,6 +32,7 @@ import type { RelayNoiseLocalIdentity } from "./relay-noise-identity.js";
 import {
 	ownRelayPeerConnection,
 	RelayPeerTransport,
+	relayAbortReason,
 	relayPeerError,
 } from "./relay-peer-transport.js";
 import {
@@ -551,12 +552,17 @@ class Client implements RelayPeerClient {
 		const failures = createRelayFailureRecorder();
 		return {
 			open: async ({ signal, deadlineMs }) => {
+				// A caller can abort and return before this open settles, so record the abort at once.
+				const aborted = (): void => failures.record(relayAbortReason(signal, { secured: false }));
+				signal.addEventListener("abort", aborted, { once: true });
 				try {
 					return await this.open(peerDeviceId, currentPin, signal, deadlineMs, failures.record);
 				} catch (error) {
 					// Routes record their own reason first. This covers failures before a route exists.
 					failures.record(relayFailureReason(error, "relay_unavailable"));
 					throw error;
+				} finally {
+					signal.removeEventListener("abort", aborted);
 				}
 			},
 			failureReason: failures.reason,
@@ -601,6 +607,7 @@ class Client implements RelayPeerClient {
 		side: Route["side"],
 		signal: AbortSignal,
 		deadline: number,
+		onFailure?: (reason: RelayFailureReason) => void,
 	): Route {
 		this.validate(peer, pin);
 		if (signal.aborted || deadline <= performance.now())
@@ -632,6 +639,7 @@ class Client implements RelayPeerClient {
 					signal.removeEventListener("abort", abort);
 					if (!clean) cancel.abort();
 				}),
+			onFailure,
 		});
 		const route: Route = {
 			id,
@@ -771,8 +779,9 @@ class Client implements RelayPeerClient {
 			"source",
 			signal,
 			deadline,
+			record,
 		);
-		// Registered before any failure can settle the route, so its first reason is recorded first.
+		// The transport records its reason synchronously. This covers a route that ends otherwise.
 		void route.raw.completion.catch(() => record(route.raw.failureReason ?? "relay_unavailable"));
 		try {
 			await this.maintainRegistration(route.cancel.signal, deadline);
