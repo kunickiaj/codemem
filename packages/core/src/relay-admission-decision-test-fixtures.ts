@@ -37,7 +37,7 @@ async function disposableSigner() {
 	};
 }
 
-async function signedPacket(
+export async function signedPacket(
 	bodyBytes: Uint8Array,
 	privateKey: Awaited<ReturnType<typeof disposableSigner>>["privateKey"],
 	createdAt: number,
@@ -126,7 +126,8 @@ export async function decisionFixture(
 		namespace,
 		ingressKey: "trusted-ingress",
 	};
-	return { request, rows, sourceKeyId: source.keyId, bodyBytes, signatureBytes, nonce, createdAt };
+	const signer = { sourceKeyId: source.keyId, sourcePrivateKey: source.privateKey };
+	return { request, rows, ...signer, bodyBytes, signatureBytes, nonce, createdAt };
 }
 
 export type DecisionFixture = Awaited<ReturnType<typeof decisionFixture>>;

@@ -7,11 +7,16 @@ import { createCoordinatorApp } from "./coordinator-api.js";
 import {
 	type CoordinatorRelayAdmissionRuntimeOptions,
 	registerCoordinatorRelayAdmissionRoute,
+	relayAdmissionNamespaces,
 } from "./coordinator-relay-admission-route.js";
 import { createD1CoordinatorApp } from "./d1-coordinator-runtime.js";
 import type { D1DatabaseLike } from "./d1-coordinator-store.js";
 import { decisionFixture, decisionSeed } from "./relay-admission-decision-test-fixtures.js";
 import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "./relay-admission-metadata-schema.js";
+import {
+	METADATA_AUDIENCE_INSERT,
+	METADATA_POLICY_INSERT,
+} from "./relay-admission-metadata-test-fixtures.js";
 import { PARTICIPANT_TEST_SCHEMA_SQL } from "./relay-admission-participant-nonce-test-fixtures.js";
 
 type Bindings = readonly (string | number | null)[];
@@ -26,7 +31,8 @@ export interface RouteFixture {
 	f: Awaited<ReturnType<typeof decisionFixture>>;
 	db: Database.Database;
 	app: Hono;
-	options: CoordinatorRelayAdmissionRuntimeOptions & {
+	options: Omit<CoordinatorRelayAdmissionRuntimeOptions, "namespaces"> & {
+		namespaces: CoordinatorRelayAdmissionRuntimeOptions["namespaces"];
 		open: Mock<() => { database: RouteDatabase; close: Mock<() => void> }>;
 	};
 	database: RouteDatabase;
@@ -38,6 +44,14 @@ export interface RouteFixture {
 	nonces: () => unknown[];
 	buckets: () => unknown[];
 	mount: (pathname: string, prefix?: string) => Hono;
+	/**
+	 * Seeds another configured group and adds it to later `mount` registrations.
+	 * `sameKeysAs` enrolls that fixture's source and target keys in the new group.
+	 */
+	addGroup: (
+		groupId: string,
+		options?: { sameKeysAs?: RouteFixture["f"] },
+	) => Promise<RouteFixture["f"]>;
 }
 
 export function d1App(h: Awaited<ReturnType<typeof routeFixture>>) {
@@ -116,6 +130,25 @@ export function seedRouteDatabase(
 	allocate("device-registration", "", "", 1, 2);
 }
 
+/** A second realm under the same authority policy, audience and authority readiness. */
+function seedExtraGroup(db: Database.Database, f: RouteFixture["f"]) {
+	const shared = new Set([METADATA_POLICY_INSERT, METADATA_AUDIENCE_INSERT]);
+	for (const { sql, values } of decisionSeed(f, 110_000)) {
+		if (shared.has(sql) || values[1] === "authority") continue;
+		db.prepare(sql).run(bind(values));
+	}
+	const { authorityId, groupId, relayAudienceId } = f.request.namespace;
+	// Each group-'' parent must cover the sum of its per-group children.
+	const grow = db.prepare(
+		"UPDATE admission_budget_allocations SET rate_per_min=rate_per_min+?1,burst=burst+?2 WHERE authority_id=?3 AND pool=?4 AND audience_id=?5 AND group_id=''",
+	);
+	for (const pool of ["relay-route", "relay-registration"]) {
+		const burst = pool === "relay-registration" ? 2 : 16;
+		grow.run(bind([1, burst, authorityId, pool, relayAudienceId]));
+		db.prepare(ALLOCATION).run(bind([authorityId, pool, relayAudienceId, groupId, 1, burst]));
+	}
+}
+
 function createPorts(db: Database.Database, f: RouteFixture["f"]) {
 	const trace: string[] = [];
 	const database = {
@@ -130,12 +163,36 @@ function createPorts(db: Database.Database, f: RouteFixture["f"]) {
 	};
 	const close = vi.fn();
 	const options = {
-		namespace: { ...f.request.namespace },
+		namespaces: relayAdmissionNamespaces({ ...f.request.namespace }),
 		externalPathname: f.request.externalPathname,
 		ingressKey: "trusted-ingress",
 		open: vi.fn(() => ({ database, close })),
 	};
 	return { trace, database, close, options };
+}
+
+/** Fresh registrations that capture the current namespace map and signed pathname. */
+function routeMounts(db: Database.Database, options: ReturnType<typeof createPorts>["options"]) {
+	const mount = (pathname: string, prefix = "/trusted") => {
+		options.externalPathname = pathname;
+		const inner = new Hono();
+		registerCoordinatorRelayAdmissionRoute(inner, options);
+		return new Hono().route(prefix, inner);
+	};
+	const addGroup = async (
+		groupId: string,
+		extraOptions: { sameKeysAs?: RouteFixture["f"] } = {},
+	) => {
+		const extra = await decisionFixture({ groupId });
+		const keys = extraOptions.sameKeysAs;
+		if (keys) extra.rows = keys.rows.map((row) => ({ ...row, group_id: groupId }));
+		seedExtraGroup(db, extra);
+		options.namespaces = relayAdmissionNamespaces(...options.namespaces.values(), {
+			...extra.request.namespace,
+		});
+		return extra;
+	};
+	return { mount, addGroup };
 }
 
 export async function routeFixture(
@@ -158,12 +215,7 @@ export async function routeFixture(
 		},
 	});
 	const app = new Hono().route("/trusted", child);
-	const mount = (pathname: string, prefix = "/trusted") => {
-		options.externalPathname = pathname;
-		const inner = new Hono();
-		registerCoordinatorRelayAdmissionRoute(inner, options);
-		return new Hono().route(prefix, inner);
-	};
+	const { mount, addGroup } = routeMounts(db, options);
 	const headers = () => requestHeaders(f);
 	const request = (init: RequestInit = {}, path = f.request.externalPathname) =>
 		app.request(path, {
@@ -193,10 +245,11 @@ export async function routeFixture(
 		nonces,
 		buckets,
 		mount,
+		addGroup,
 	};
 }
 
-function requestHeaders(f: RouteFixture["f"]): Headers {
+export function requestHeaders(f: RouteFixture["f"]): Headers {
 	return new Headers({
 		"Content-Type": "application/json",
 		"X-Opencode-Device": f.request.deviceHeader,

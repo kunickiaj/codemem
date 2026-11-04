@@ -7,18 +7,28 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMISSION_BUDGET_SCHEMA_STATEMENTS } from "./admission-budget-schema.js";
 import { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import { registerCoordinatorRelayAdmissionRoute } from "./coordinator-relay-admission-route.js";
+import {
+	registerCoordinatorRelayAdmissionRoute,
+	relayAdmissionNamespaces,
+} from "./coordinator-relay-admission-route.js";
 import {
 	DENIAL,
 	d1App,
+	requestHeaders,
 	routeFixture,
 	seedRouteDatabase,
 } from "./coordinator-relay-admission-route-test-fixtures.js";
 import { RELAY_ADMISSION_CLOCK_SQL } from "./relay-admission-clock.js";
+import { decisionFixture, signedPacket } from "./relay-admission-decision-test-fixtures.js";
 import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "./relay-admission-metadata-schema.js";
 import { readRelayAdmissionReply } from "./relay-admission-reply.js";
 
 type Fixture = Awaited<ReturnType<typeof routeFixture>>;
+/** Charges before any configured group is known: shared relay-route and authority only. */
+const SHARED_ONLY = [
+	expect.objectContaining({ pool: "authority", group_id: "", device_id: "" }),
+	expect.objectContaining({ pool: "relay-route", group_id: "", device_id: "" }),
+];
 const fixtures: Fixture[] = [];
 const directories: string[] = [];
 // Every scenario uses actual eligibility SQL and committed budget writes.
@@ -361,10 +371,12 @@ describe("mounted coordinator relay admission HTTP endpoint", () => {
 						{ headers, body },
 						`${h.f.request.externalPathname}${change === "query" ? "?ignored=1" : ""}`,
 					);
-		// Assert
+		// Assert: a packet that no longer decodes names no group, so only the
+		// shared buckets are charged.
+		const decodes = ["device", "query", "wrong-path-signature"].includes(change);
 		expect(await response.json()).toEqual(DENIAL);
 		expect(h.nonces()).toEqual([]);
-		expect(h.buckets()).toHaveLength(3);
+		expect(h.buckets()).toHaveLength(decodes ? 3 : 2);
 		expect(h.trace).not.toContain("nonce");
 		expect(h.close).toHaveBeenCalledOnce();
 	});
@@ -416,7 +428,8 @@ describe("relay endpoint body limits and malformed input", () => {
 			expect(response.status).toBe(stop === "oversize" ? 413 : 200);
 			expect(await response.json()).toEqual(DENIAL);
 			expect(cancel).toHaveBeenCalledOnce();
-			expect(h.trace).toEqual(["budget", "budget", "budget"]);
+			expect(h.trace).toEqual(["budget", "budget"]);
+			expect(h.buckets()).toEqual(SHARED_ONLY);
 			expect(h.nonces()).toEqual([]);
 			expect(vi.getTimerCount()).toBe(0);
 		},
@@ -440,8 +453,8 @@ describe("relay endpoint body limits and malformed input", () => {
 			});
 			// Assert
 			expect(await response.json()).toEqual(DENIAL);
-			expect(h.trace).toEqual(["budget", "budget", "budget"]);
-			expect(h.buckets()).toHaveLength(3);
+			expect(h.trace).toEqual(["budget", "budget"]);
+			expect(h.buckets()).toEqual(SHARED_ONLY);
 			expect(h.nonces()).toEqual([]);
 		},
 	);
@@ -472,7 +485,8 @@ describe("relay endpoint body limits and malformed input", () => {
 			expect(response.status).toBe(413);
 			expect(await response.json()).toEqual(DENIAL);
 			expect(cancel).toHaveBeenCalledOnce();
-			expect(h.trace).toEqual(["budget", "budget", "budget"]);
+			expect(h.trace).toEqual(["budget", "budget"]);
+			expect(h.buckets()).toEqual(SHARED_ONLY);
 			expect(h.nonces()).toEqual([]);
 		},
 	);
@@ -501,6 +515,187 @@ describe("relay endpoint body limits and malformed input", () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual(DENIAL);
 		expect(cancel).not.toHaveBeenCalled();
-		expect(h.trace).toEqual(["budget", "budget", "budget"]);
+		expect(h.trace).toEqual(["budget", "budget"]);
+	});
+});
+
+type GroupFixture = Fixture["f"];
+const send = (app: Hono, f: GroupFixture, body: Uint8Array = f.bodyBytes) =>
+	app.request(f.request.externalPathname, {
+		method: "POST",
+		headers: requestHeaders(f),
+		body: new Uint8Array(body),
+	});
+const admitted = async (response: Response, f: GroupFixture) =>
+	readRelayAdmissionReply(new Uint8Array(await response.arrayBuffer()), f.request.packet);
+const scopes = (h: Fixture) =>
+	(h.buckets() as { pool: string; group_id: string }[]).map(
+		({ pool, group_id }) => `${pool}:${group_id}`,
+	);
+
+describe("relay endpoint with several configured groups", () => {
+	async function twoGroups() {
+		const h = await setup();
+		const b = await h.addGroup("group-B");
+		return { h, b, app: h.mount(h.f.request.externalPathname) };
+	}
+
+	it("admits a packet for the second group and charges only that group's buckets", async () => {
+		// Arrange
+		const { h, b, app } = await twoGroups();
+		// Act
+		const response = await send(app, b);
+		// Assert
+		expect(await admitted(response, b)).not.toBeNull();
+		expect(scopes(h)).toEqual([
+			"authority:",
+			"device:group-B",
+			"relay-route:",
+			"relay-route:group-B",
+		]);
+		expect(h.nonces()).toHaveLength(1);
+	});
+
+	it("denies an unconfigured group and charges only the shared buckets", async () => {
+		// Arrange
+		const { h, app } = await twoGroups();
+		const c = await decisionFixture({ groupId: "group-C" });
+		// Act
+		const response = await send(app, c);
+		// Assert
+		expect(await response.json()).toEqual(DENIAL);
+		expect(h.buckets()).toEqual(SHARED_ONLY);
+		expect(h.trace).toEqual(["budget", "budget"]);
+		expect(h.nonces()).toEqual([]);
+	});
+
+	it("keeps admitting the second group after the first group's ingress bucket is exhausted", async () => {
+		// Arrange
+		const { h, b, app } = await twoGroups();
+		h.db.exec(
+			"UPDATE admission_budget_allocations SET rate_per_min=0,burst=0 WHERE pool='relay-route' AND group_id='group-A'",
+		);
+		// Act
+		const first = await send(app, h.f);
+		const second = await send(app, b);
+		// Assert
+		expect(await first.json()).toEqual(DENIAL);
+		expect(await admitted(second, b)).not.toBeNull();
+		expect(h.nonces()).toHaveLength(1);
+	});
+
+	it("denies a packet for another group on a route registered for one group", async () => {
+		// Arrange: the fixture app was registered before group B joined the map,
+		// like the realm-pinned loopback, even though B is seeded in the database.
+		const h = await setup();
+		const b = await h.addGroup("group-B");
+		// Act
+		const response = await send(h.app, b);
+		// Assert
+		expect(await response.json()).toEqual(DENIAL);
+		expect(h.buckets()).toEqual(SHARED_ONLY);
+		expect(h.nonces()).toEqual([]);
+	});
+
+	it("fails only the body signature when the signed group ID is changed to another configured group", async () => {
+		// Arrange: B enrolls A's devices with the same keys, so the context,
+		// readiness and participant checks pass and only the signature can fail.
+		const h = await setup();
+		await h.addGroup("group-B", { sameKeysAs: h.f });
+		const app = h.mount(h.f.request.externalPathname);
+		const tampered = new TextEncoder().encode(
+			new TextDecoder().decode(h.f.bodyBytes).replace('"group-A"', '"group-B"'),
+		);
+		// Act
+		const response = await send(app, h.f, tampered);
+		// Assert: preflight and participant lookups ran, then no device budget or nonce.
+		expect(await response.json()).toEqual(DENIAL);
+		expect(h.trace).toEqual(["budget", "budget", "budget", "query", "query"]);
+		expect(scopes(h)).toEqual(["authority:", "relay-route:", "relay-route:group-B"]);
+		expect(h.nonces()).toEqual([]);
+	});
+
+	it("admits the same keys in the second group when the body is signed for it", async () => {
+		// Arrange: control for the tamper case, with the same enrollment and a valid signature.
+		const h = await setup();
+		await h.addGroup("group-B", { sameKeysAs: h.f });
+		const app = h.mount(h.f.request.externalPathname);
+		const bodyBytes = new TextEncoder().encode(
+			new TextDecoder().decode(h.f.bodyBytes).replace('"group-A"', '"group-B"'),
+		);
+		const { packet } = await signedPacket(bodyBytes, h.f.sourcePrivateKey, h.f.createdAt);
+		const resigned = { ...h.f, bodyBytes, request: { ...h.f.request, packet } };
+		// Act
+		const response = await send(app, resigned);
+		// Assert
+		expect(await admitted(response, resigned)).not.toBeNull();
+		expect(scopes(h)).toEqual([
+			"authority:",
+			"device:group-B",
+			"relay-route:",
+			"relay-route:group-B",
+		]);
+	});
+});
+
+describe("relay endpoint namespace map capture", () => {
+	const A = { authorityId: "a".repeat(64), groupId: "group-A", relayAudienceId: "f".repeat(64) };
+	const B = { ...A, groupId: "group-B" };
+	it.each([
+		["empty", new Map()],
+		["mismatched key", new Map([["group-B", A]])],
+		["mixed authority", relayAdmissionNamespaces(A, { ...B, authorityId: "b".repeat(64) })],
+		[
+			"mixed relay audience",
+			relayAdmissionNamespaces(A, { ...B, relayAudienceId: "e".repeat(64) }),
+		],
+		["duplicate group", relayAdmissionNamespaces(A, { ...A })],
+	])(
+		"serves only denials for a %s namespace map without opening storage",
+		async (_name, namespaces) => {
+			// Arrange
+			const h = await setup();
+			const child = new Hono();
+			registerCoordinatorRelayAdmissionRoute(child, { ...h.options, namespaces });
+			// Act
+			const response = await send(new Hono().route("/trusted", child), h.f);
+			// Assert
+			expect(await response.json()).toEqual(DENIAL);
+			expect(h.options.open).not.toHaveBeenCalled();
+		},
+	);
+
+	it("returns an empty map for duplicate group IDs instead of keeping one entry", () => {
+		// Act
+		const namespaces = relayAdmissionNamespaces(A, B, { ...A, relayAudienceId: "e".repeat(64) });
+		// Assert
+		expect(namespaces.size).toBe(0);
+		expect(relayAdmissionNamespaces(A, B).size).toBe(2);
+	});
+
+	it("ignores in-place changes to the namespace map after registration", async () => {
+		// Arrange: register with A and B, then mutate the caller's map and entries.
+		const h = await setup();
+		const b = await h.addGroup("group-B");
+		const namespaces = new Map(
+			[...h.options.namespaces].map(([groupId, entry]) => [groupId, { ...entry }]),
+		);
+		const child = new Hono();
+		registerCoordinatorRelayAdmissionRoute(child, { ...h.options, namespaces });
+		const app = new Hono().route("/trusted", child);
+		namespaces.delete("group-B");
+		const entryA = namespaces.get("group-A");
+		if (entryA) entryA.groupId = "group-B";
+		namespaces.set("group-C", { ...A, groupId: "group-C" });
+		// Act
+		const response = await send(app, b);
+		// Assert: B is still served from the captured copy.
+		expect(await admitted(response, b)).not.toBeNull();
+		expect(scopes(h)).toEqual([
+			"authority:",
+			"device:group-B",
+			"relay-route:",
+			"relay-route:group-B",
+		]);
 	});
 });

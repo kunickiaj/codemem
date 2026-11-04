@@ -121,6 +121,44 @@ async function reserveRelay(
 	}
 }
 
+/** Shared ingress scopes for a relay packet whose group is unknown or unconfigured. */
+export interface RelayAdmissionSharedIngressReservation {
+	readonly authorityId: string;
+	readonly relayAudienceId: string;
+	readonly expected: RelayAdmissionIngressReservation["expected"];
+}
+
+async function reserveRelaySharedIngress(
+	writer: Writer | null,
+	reservation: RelayAdmissionSharedIngressReservation,
+): Promise<RelayAdmissionBudgetStatus> {
+	try {
+		if (!writer) return "unknown";
+		const { authorityId, relayAudienceId, expected } = reservation;
+		const kind = expected.kind;
+		if (kind !== "registration" && kind !== "admission") return "unknown";
+		// Only the (authority, audience) bucket at group '' and the authority bucket.
+		// No per-group bucket is written before a configured group is known.
+		const shared: AdmissionBudgetKey = {
+			authorityId,
+			pool: kind === "registration" ? "relay-registration" : "relay-route",
+			audienceId: relayAudienceId,
+			groupId: "",
+			deviceId: "",
+		};
+		const authority: AdmissionBudgetKey = {
+			authorityId,
+			pool: "authority",
+			audienceId: "",
+			groupId: "",
+			deviceId: "",
+		};
+		return await reserveScopes(writer, [shared, authority]);
+	} catch {
+		return "unknown";
+	}
+}
+
 async function reserveTraversal(
 	writer: Writer | null,
 	reservation: TraversalSignalIngressReservation | TraversalSignalDeviceReservation,
@@ -153,6 +191,8 @@ export function createAdmissionBudgetAdapters(options: AdmissionBudgetAdapterOpt
 		relay: Object.freeze({
 			reserveIngress: (reservation: RelayAdmissionIngressReservation) =>
 				reserveRelay(writer, reservation, "ingress"),
+			reserveSharedIngress: (reservation: RelayAdmissionSharedIngressReservation) =>
+				reserveRelaySharedIngress(writer, reservation),
 			reserveVerifiedDevice: (reservation: RelayAdmissionDeviceReservation) =>
 				reserveRelay(writer, reservation, "device"),
 		}),

@@ -33,7 +33,9 @@ export class RelayAdmission extends WorkerEntrypoint<
 		const db = this.env.COORDINATOR_DB;
 		if (!config || !groupId || !db) return unavailable(503);
 		try {
-			const relayAdmission = await relayAdmissionOptions(config, groupId, RELAY_INGRESS_LOOPBACK);
+			// A one-entry map pinned to the props realm. A realm object for one group
+			// can never obtain admissions for another group.
+			const relayAdmission = await relayAdmissionOptions(config, [groupId], RELAY_INGRESS_LOOPBACK);
 			return await createD1CoordinatorApp({
 				db,
 				requestVerifier: verifyCloudflareCoordinatorRequest,

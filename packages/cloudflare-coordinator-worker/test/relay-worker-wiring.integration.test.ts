@@ -2,15 +2,22 @@ import { listDurableObjectIds, runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import {
+	encodeRelayAdmissionBody,
 	encodeRelayCheckPacket,
 	encodeRelayRegistrationBody,
+	type RelayAdmissionRole,
 } from "../../core/src/relay-admission-codec.js";
-import { metadataSeed } from "../../core/src/relay-admission-metadata-test-fixtures.js";
+import {
+	METADATA_AUDIENCE_INSERT,
+	METADATA_POLICY_INSERT,
+	metadataSeed,
+} from "../../core/src/relay-admission-metadata-test-fixtures.js";
 import {
 	PARTICIPANT_CREATED_AT,
 	PARTICIPANT_DEVICE_INSERT,
 	PARTICIPANT_GROUP_INSERT,
 } from "../../core/src/relay-admission-participant-nonce-test-fixtures.js";
+import { readRelayAdmissionReply } from "../../core/src/relay-admission-reply.js";
 import { decodeRelayControl, type RelayControl } from "../../core/src/relay-control-codec.js";
 import { relayEd25519KeyId } from "../../core/src/relay-ed25519.js";
 import { relayAudienceId, relayRealmId } from "../../core/src/relay-service-proof.js";
@@ -88,6 +95,11 @@ describe("Worker relay routing", () => {
 		if (handedOff) {
 			expect(await relayOn.text()).toBe("relay-handoff");
 			expect(calls).toEqual([`idFromName:${realmId}`, "get"]);
+		} else if (method === "POST" && path === RELAY_ADMISSION_PATH) {
+			// Relay on serves the coordinator admission check, which denies this empty body.
+			expect(calls).toEqual([]);
+			expect([relayOn.status, relayOff.status]).toEqual([200, 404]);
+			expect(await relayOn.json()).toEqual({ v: 1, eligible: false });
 		} else {
 			expect(calls).toEqual([]);
 			expect(relayOn.status).toBe(relayOff.status);
@@ -143,7 +155,7 @@ describe("Worker relay routing", () => {
 		expect(await listDurableObjectIds(env.RELAY_REALM as DurableObjectNamespace)).toEqual([]);
 	});
 
-	it("serves public admission checks through the coordinator for a single realm", async () => {
+	it("serves public admission checks through the coordinator for one or several realms", async () => {
 		// Arrange
 		const request = () =>
 			new Request(`${base}${RELAY_ADMISSION_PATH}`, { method: "POST", body: "{}" });
@@ -151,9 +163,11 @@ describe("Worker relay routing", () => {
 		const single = await send(request(), enabledEnv({ CODEMEM_RELAY_GROUPS: `["${groupId}"]` }));
 		const multiple = await send(request(), enabledEnv());
 		// Assert: an unsigned packet gets the coordinator's fixed denial reply.
-		expect(single.status).toBe(200);
-		expect(single.headers.get("Cache-Control")).toBe("no-store");
-		expect(multiple.status).toBe(404);
+		for (const response of [single, multiple]) {
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Cache-Control")).toBe("no-store");
+			expect(await response.json()).toEqual({ v: 1, eligible: false });
+		}
 	});
 
 	it.each([
@@ -279,50 +293,63 @@ async function deviceKey() {
 	return { privateKey: keys.privateKey, publicKey, keyId: await relayEd25519KeyId(publicKey) };
 }
 
-/** Coordinator-side rows a registration needs: enrollment, policy, readiness and budgets. */
-async function seedAdmission(deviceId: string, publicKey: string) {
+interface Enrolled {
+	readonly group: string;
+	readonly deviceId: string;
+	readonly publicKey: string;
+}
+
+/** Realm rows for one group. The first group also publishes the authority-wide rows. */
+function groupMetadata(group: string, index: number, now: number) {
+	const authorityRows = new Set([METADATA_POLICY_INSERT, METADATA_AUDIENCE_INSERT]);
+	return metadataSeed({
+		authority: namespace.authorityId,
+		group,
+		audience: audienceId,
+		authorityObserved: now,
+		realmObserved: now,
+	}).filter(
+		({ sql, values }) => index === 0 || !(authorityRows.has(sql) || values[1] === "authority"),
+	);
+}
+
+/** Coordinator-side rows admission needs: enrollment, policy, readiness and budgets per group. */
+async function seedAdmission(devices: readonly Enrolled[]) {
 	const db = env.COORDINATOR_DB;
 	const now = Date.now();
+	const groups = [...new Set(devices.map((device) => device.group))];
 	const allocate = (pool: string, audience = "", group = "", rate = 1, burst = 16) =>
 		db
 			.prepare(
 				"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,?2,?3,?4,?5,?6)",
 			)
 			.bind(config?.authorityId, pool, audience, group, rate, burst);
+	// Each group-'' parent covers the sum of its per-group children.
+	const relayPools = ["relay-registration", "relay-route"].flatMap((pool) => [
+		allocate(pool, audienceId, "", groups.length, 16 * groups.length),
+		...groups.map((group) => allocate(pool, audienceId, group)),
+	]);
 	await db.batch([
-		db.prepare(PARTICIPANT_GROUP_INSERT).bind(groupId, PARTICIPANT_CREATED_AT),
-		db
-			.prepare(PARTICIPANT_DEVICE_INSERT)
-			.bind(groupId, deviceId, publicKey, "0".repeat(64), null, 1, PARTICIPANT_CREATED_AT),
-		...metadataSeed({
-			authority: namespace.authorityId,
-			group: groupId,
-			audience: audienceId,
-			authorityObserved: now,
-			realmObserved: now,
-		}).map(({ sql, values }) => db.prepare(sql).bind(...values)),
+		...groups.map((group) => db.prepare(PARTICIPANT_GROUP_INSERT).bind(group, PARTICIPANT_CREATED_AT)),
+		...devices.map(({ group, deviceId, publicKey }) =>
+			db
+				.prepare(PARTICIPANT_DEVICE_INSERT)
+				.bind(group, deviceId, publicKey, hex(32), null, 1, PARTICIPANT_CREATED_AT),
+		),
+		...groups
+			.flatMap((group, index) => groupMetadata(group, index, now))
+			.map(({ sql, values }) => db.prepare(sql).bind(...values)),
 		allocate("authority", "", "", 4, 64),
 		allocate("device"),
 		allocate("device-registration", "", "", 1, 2),
-		allocate("relay-registration", audienceId),
-		allocate("relay-registration", audienceId, groupId),
+		...relayPools,
 	]);
 }
 
-async function signedRegistration(
-	key: Awaited<ReturnType<typeof deviceKey>>,
-	deviceId: string,
-	socketChallengeId: string,
-) {
-	const createdAt = Math.floor(Date.now() / 1000);
-	const bodyBytes = encodeRelayRegistrationBody({
-		...namespace,
-		deviceId,
-		keyId: key.keyId,
-		socketChallengeId,
-		createdAt,
-		admitBefore: createdAt + 30,
-	});
+type DeviceKey = Awaited<ReturnType<typeof deviceKey>>;
+
+/** Signs a body for the public admission pathname, as a peer or relay would. */
+async function signedCheck(key: DeviceKey, bodyBytes: Uint8Array, createdAt: number) {
 	const nonce = hex(16);
 	const canonical = ["POST", RELAY_ADMISSION_PATH, String(createdAt), nonce, await sha256Hex(bodyBytes)];
 	const signature = await crypto.subtle.sign(
@@ -330,12 +357,144 @@ async function signedRegistration(
 		key.privateKey,
 		new TextEncoder().encode(canonical.join("\n")),
 	);
-	return encodeRelayCheckPacket({
+	const packet = encodeRelayCheckPacket({
 		bodyBytes,
 		timestamp: String(createdAt),
 		nonce,
 		signatureBytes: new Uint8Array(signature),
 	});
+	return { packet, bodyBytes };
+}
+
+function registrationBody(key: DeviceKey, deviceId: string, socketChallengeId: string, group: string) {
+	const createdAt = Math.floor(Date.now() / 1000);
+	const bodyBytes = encodeRelayRegistrationBody({
+		...namespace,
+		groupId: group,
+		deviceId,
+		keyId: key.keyId,
+		socketChallengeId,
+		createdAt,
+		admitBefore: createdAt + 30,
+	});
+	return { bodyBytes, createdAt };
+}
+
+async function signedRegistration(
+	key: DeviceKey,
+	deviceId: string,
+	socketChallengeId: string,
+	group = groupId,
+) {
+	const { bodyBytes, createdAt } = registrationBody(key, deviceId, socketChallengeId, group);
+	return signedCheck(key, bodyBytes, createdAt);
+}
+
+const otherGroupId = "relay-other-group";
+type Team = { readonly group: string; readonly source: DeviceKey; readonly target: DeviceKey };
+type SignedCheck = Awaited<ReturnType<typeof signedCheck>>;
+
+async function team(group: string): Promise<Team> {
+	const [source, target] = await Promise.all([deviceKey(), deviceKey()]);
+	return { group, source, target };
+}
+
+const enrolled = (t: Team): Enrolled[] => [
+	{ group: t.group, deviceId: "source", publicKey: t.source.publicKey },
+	{ group: t.group, deviceId: "target", publicKey: t.target.publicKey },
+];
+
+function signedAdmission(t: Team, role: RelayAdmissionRole) {
+	const createdAt = Math.floor(Date.now() / 1000);
+	const bodyBytes = encodeRelayAdmissionBody({
+		...namespace,
+		groupId: t.group,
+		role,
+		sourceDeviceId: "source",
+		sourceKeyId: t.source.keyId,
+		targetDeviceId: "target",
+		targetKeyId: t.target.keyId,
+		routeSessionId: hex(16),
+		messageADigest: hex(32),
+		createdAt,
+		admitBefore: createdAt + 30,
+		routeNotAfter: createdAt + 55,
+	});
+	return signedCheck(t.source, bodyBytes, createdAt);
+}
+
+/** The registration, then a source, relay and responder check, all signed by the source. */
+async function teamChecks(t: Team): Promise<SignedCheck[]> {
+	return [
+		await signedRegistration(t.source, "source", hex(16), t.group),
+		await signedAdmission(t, "source"),
+		await signedAdmission(t, "relay"),
+		await signedAdmission(t, "responder"),
+	];
+}
+
+function checkInit(check: SignedCheck): RequestInit {
+	return {
+		method: "POST",
+		headers: {
+			"X-Opencode-Device": "source",
+			"X-Opencode-Timestamp": check.packet.timestamp,
+			"X-Opencode-Nonce": check.packet.nonce,
+			"X-Opencode-Signature": check.packet.signature,
+		},
+		body: check.bodyBytes,
+	};
+}
+
+async function admitted(response: Response, check: SignedCheck) {
+	return readRelayAdmissionReply(new Uint8Array(await response.arrayBuffer()), check.packet) !== null;
+}
+
+const publicCheck = (check: SignedCheck) =>
+	send(new Request(`${base}${RELAY_ADMISSION_PATH}`, checkInit(check)), enabledEnv());
+
+async function nonceCount() {
+	const row = await env.COORDINATOR_DB.prepare("SELECT COUNT(*) AS n FROM request_nonces").first<{
+		n: number;
+	}>();
+	return row?.n;
+}
+
+/**
+ * Admission rows are permanent and storage is shared across this file, so both
+ * configured groups are enrolled once: a source and target per group, plus the
+ * relay device the hand-off test registers.
+ */
+let seeding: Promise<{ relayKey: DeviceKey; teams: Team[] }> | undefined;
+function seededAdmission() {
+	seeding ??= (async () => {
+		const [relayKey, ...teams] = await Promise.all([
+			deviceKey(),
+			team(groupId),
+			team(otherGroupId),
+		]);
+		await seedAdmission([
+			{ group: groupId, deviceId: "relay-device", publicKey: relayKey.publicKey },
+			...teams.flatMap(enrolled),
+		]);
+		return { relayKey, teams };
+	})();
+	return seeding;
+}
+
+/** Bucket scopes (pool:group) whose reservation changed since `before`. */
+async function bucketStamps() {
+	const { results } = await env.COORDINATOR_DB.prepare(
+		"SELECT pool || ':' || group_id || ':' || device_id AS key, pool || ':' || group_id AS scope, exec_id FROM admission_budget_buckets",
+	).all<{ key: string; scope: string; exec_id: string }>();
+	return results;
+}
+
+async function chargedScopes(before: Awaited<ReturnType<typeof bucketStamps>>) {
+	const previous = new Map(before.map((row) => [row.key, row.exec_id]));
+	const after = await bucketStamps();
+	const changed = after.filter((row) => previous.get(row.key) !== row.exec_id);
+	return [...new Set(changed.map((row) => row.scope))].sort();
 }
 
 function listen(ws: WebSocket) {
@@ -366,8 +525,7 @@ function listen(ws: WebSocket) {
 describe("relay hand-off with real admission over the loopback", () => {
 	it("registers end to end against migrated D1, then the quota switch closes the socket", async () => {
 		// Arrange
-		const key = await deviceKey();
-		await seedAdmission("relay-device", key.publicKey);
+		const { relayKey: key } = await seededAdmission();
 		const provisioned = await send(adminRequest({ realm_id: realmId, enabled: true }), enabledEnv());
 		const upgradeRequest = () => new Request(`${base}${realmPath}`, { headers: upgrade });
 		// Act
@@ -377,7 +535,7 @@ describe("relay hand-off with real admission over the loopback", () => {
 		peer.send({ v: 1, type: "SERVICE_CHALLENGE", session: hex(16), body: { audienceId } });
 		await peer.next("SERVICE_PROOF");
 		const challenge = await peer.next("SOCKET_CHALLENGE");
-		const body = await signedRegistration(key, "relay-device", challenge.session);
+		const { packet: body } = await signedRegistration(key, "relay-device", challenge.session);
 		peer.send({ v: 1, type: "REGISTER", session: challenge.session, body });
 		const registered = await peer.next("REGISTERED");
 		const nonces = await env.COORDINATOR_DB.prepare(
@@ -392,4 +550,73 @@ describe("relay hand-off with real admission over the loopback", () => {
 		await vi.waitUntil(() => peer.closeCode() !== null);
 		expect(refused.status).toBe(429);
 	});
+});
+
+describe("public relay admission for several configured groups", () => {
+	it("registers and admits source, relay and responder checks for two groups", async () => {
+		// Arrange
+		const { teams } = await seededAdmission();
+		const before = await bucketStamps();
+		const nonces = await nonceCount();
+		// Act
+		const results: boolean[] = [];
+		for (const t of teams)
+			for (const check of await teamChecks(t)) results.push(await admitted(await publicCheck(check), check));
+		// Assert
+		expect(results).toEqual(Array(8).fill(true));
+		expect(await nonceCount()).toBe((nonces ?? 0) + 8);
+		expect(await chargedScopes(before)).toEqual([
+			"authority:",
+			`device-registration:${groupId}`,
+			`device-registration:${otherGroupId}`,
+			`device:${groupId}`,
+			`device:${otherGroupId}`,
+			"relay-registration:",
+			`relay-registration:${groupId}`,
+			`relay-registration:${otherGroupId}`,
+			"relay-route:",
+			`relay-route:${groupId}`,
+			`relay-route:${otherGroupId}`,
+		].sort());
+	});
+
+	it("denies a group the Worker does not serve and charges only the shared buckets", async () => {
+		// Arrange
+		await seededAdmission();
+		const check = await signedAdmission(await team("relay-unknown-group"), "source");
+		const before = await bucketStamps();
+		const nonces = await nonceCount();
+		// Act
+		const response = await publicCheck(check);
+		// Assert
+		expect(await response.json()).toEqual({ v: 1, eligible: false });
+		expect(await chargedScopes(before)).toEqual(["authority:", "relay-route:"]);
+		expect(await nonceCount()).toBe(nonces);
+	});
+
+	it.each(["source", "relay"] as const)(
+		"pins the loopback to its realm, so one group's realm cannot admit another group's %s check",
+		async (role) => {
+			// Arrange
+			const { teams } = await seededAdmission();
+			const loopback = (
+				exports as unknown as {
+					RelayAdmissionEnabledTest: (options: { props: { realmId: string } }) => Fetcher;
+				}
+			).RelayAdmissionEnabledTest({ props: { realmId } });
+			const check = await signedAdmission(teams[1] as Team, role);
+			const before = await bucketStamps();
+			// Act
+			const pinned = await loopback.fetch(`${base}${RELAY_ADMISSION_PATH}`, {
+				...checkInit(check),
+				redirect: "manual",
+			});
+			const charged = await chargedScopes(before);
+			const viaPublic = await publicCheck(check);
+			// Assert: the loopback wrote no nonce, so the same packet still admits publicly.
+			expect(await pinned.json()).toEqual({ v: 1, eligible: false });
+			expect(charged).toEqual(["authority:", "relay-route:"]);
+			expect(await admitted(viaPublic, check)).toBe(true);
+		},
+	);
 });

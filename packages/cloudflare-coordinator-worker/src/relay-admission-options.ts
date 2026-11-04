@@ -29,18 +29,21 @@ function serviceKeyId(serviceKey: string): Promise<string> {
 	return cachedKeyId.keyId;
 }
 
+/** One server-owned namespace per group. Every group shares the authority and relay audience. */
 export async function relayAdmissionOptions(
 	config: RelayRealmConfig,
-	groupId: string,
+	groupIds: readonly string[],
 	ingressKey: string,
 ): Promise<RelayAdmissionOptions> {
 	const keyId = await serviceKeyId(config.serviceKey);
+	const audience = relayAudienceId(config.audienceOrigin, keyId);
 	return {
-		namespace: {
-			authorityId: config.authorityId,
-			groupId,
-			relayAudienceId: relayAudienceId(config.audienceOrigin, keyId),
-		},
+		namespaces: new Map(
+			groupIds.map((groupId) => [
+				groupId,
+				{ authorityId: config.authorityId, groupId, relayAudienceId: audience },
+			]),
+		),
 		externalPathname: RELAY_ADMISSION_PATH,
 		ingressKey,
 	};
@@ -48,14 +51,14 @@ export async function relayAdmissionOptions(
 
 /**
  * Admission options for the public coordinator route, or undefined to leave the
- * route off. One route instance has one server-owned namespace, so only a
- * deployment with exactly one configured realm serves public checks.
+ * route off. The route serves every configured realm and selects the namespace
+ * by the group ID in the device-signed packet body.
  */
 export async function publicRelayAdmission(
 	env: Readonly<Record<string, unknown>>,
 ): Promise<RelayAdmissionOptions | undefined> {
 	const config = readRelayConfig(captureRelayEnv(env));
-	const [groupId, ...others] = config ? [...config.realms.values()] : [];
-	if (!config || !groupId || others.length > 0) return undefined;
-	return relayAdmissionOptions(config, groupId, RELAY_INGRESS_PUBLIC).catch(() => undefined);
+	const groupIds = config ? [...config.realms.values()] : [];
+	if (!config || groupIds.length === 0) return undefined;
+	return relayAdmissionOptions(config, groupIds, RELAY_INGRESS_PUBLIC).catch(() => undefined);
 }

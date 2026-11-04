@@ -3,7 +3,10 @@ import Database from "better-sqlite3";
 import { Hono } from "hono";
 import WebSocket from "ws";
 import { ADMISSION_BUDGET_SCHEMA_STATEMENTS } from "./admission-budget-schema.js";
-import { registerCoordinatorRelayAdmissionRoute } from "./coordinator-relay-admission-route.js";
+import {
+	registerCoordinatorRelayAdmissionRoute,
+	relayAdmissionNamespaces,
+} from "./coordinator-relay-admission-route.js";
 import { createRelayCoordinatorClient } from "./relay-coordinator-client.js";
 import {
 	createSqliteRelayQuota,
@@ -62,7 +65,7 @@ async function listen(server: Server) {
 function admissionServer(signed: Awaited<ReturnType<typeof serverFixture>>) {
 	const child = new Hono();
 	registerCoordinatorRelayAdmissionRoute(child, {
-		namespace: signed.options.namespace,
+		namespaces: relayAdmissionNamespaces(signed.options.namespace),
 		externalPathname: admissionPath,
 		ingressKey: "integration",
 		open: () => ({

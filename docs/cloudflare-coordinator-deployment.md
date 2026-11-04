@@ -252,8 +252,27 @@ and `RelayAdmission`, and copy these settings from the package's `wrangler.jsonc
 Admission checks from realm objects reach the `RelayAdmission` entrypoint through the Worker's own
 `ctx.exports`, so no service binding is needed. A Worker in the same account could also bind to
 that entrypoint. Same-account Workers are inside the operator's trust boundary, and their checks
-still need device-signed packets. The public admission route serves peers only when
-exactly one group is configured.
+still need device-signed packets. The public admission route serves every configured group and
+picks the group from the device-signed packet body. Each realm's loopback admits only its own
+group.
+
+Each configured group needs its own admission rows in D1 before its checks succeed:
+
+- a `relay_admission_realms` row with `operator_state` `enabled`
+- a `relay_admission_readiness` row with `scope` `realm` for that group
+- `relay-route` and `relay-registration` rows in `admission_budget_allocations` for that group and
+  the relay audience, each under a parent row for the same pool and audience with `group_id` `''`
+
+The authority policy, audience, authority readiness, `authority`, `device`, and
+`device-registration` rows are shared by every group. A parent allocation must cover the sum of its
+per-group children, and the `authority` allocation must cover the sum of the group `''` ingress
+parents, so raise the parents before adding a group's allocations.
+
+Checks are charged before authentication. A packet that names a configured group charges that
+group's ingress bucket as well as the shared buckets, so anyone who knows a group ID can drain that
+group's bucket with junk packets until it refills. This is an accepted risk: the shared buckets
+already allow the same junk to delay checks for every group. A packet that does not decode, or
+names an unconfigured group, charges only the shared buckets.
 
 Each realm also needs its quota provisioned before upgrades succeed. Use the admin secret:
 
