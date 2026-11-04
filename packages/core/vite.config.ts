@@ -20,6 +20,7 @@ export default defineConfig({
 					"src/internal/cloudflare-coordinator.ts",
 				),
 				"internal/relay-runtime": resolve(import.meta.dirname, "src/internal/relay-runtime.ts"),
+				"internal/relay-host": resolve(import.meta.dirname, "src/internal/relay-host.ts"),
 			},
 			formats: ["es"],
 			fileName: (_format, entryName) => `${entryName}.js`,

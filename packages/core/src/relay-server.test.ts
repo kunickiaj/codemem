@@ -476,3 +476,85 @@ describe("same-socket registration renewal", () => {
 		},
 	);
 });
+
+describe("host-supplied relay ports", () => {
+	it("draws socket challenge IDs from the injected random port", async () => {
+		// Arrange
+		const random = vi.fn((size: number) => new Uint8Array(size).fill(0xab));
+		f.dispose();
+		f = await serverFixture({}, { random });
+		const socket = f.adopt();
+		// Act
+		const session = await f.challenge(socket);
+		// Assert
+		expect(random).toHaveBeenCalledWith(16);
+		expect(session).toBe("ab".repeat(16));
+	});
+	it("closes the socket when the random port returns the wrong length", async () => {
+		// Arrange
+		f.dispose();
+		f = await serverFixture({}, { random: () => new Uint8Array(15) });
+		const socket = f.adopt();
+		// Act
+		await control(socket.events, "SERVICE_CHALLENGE", {
+			audienceId: f.options.namespace.relayAudienceId,
+		});
+		// Assert
+		expect(socket.close).toHaveBeenCalledOnce();
+		expect(socket.texts.some((m) => m.type === "SOCKET_CHALLENGE")).toBe(false);
+	});
+});
+
+describe("configurable route byte limit", () => {
+	it("defaults an omitted route byte limit to the 20 MiB ceiling", () => {
+		// Arrange
+		const { routeBytes: _omitted, ...limits } = finiteLimits;
+		// Act
+		const server = createRelayServer({ ...f.options, limits });
+		// Assert
+		expect(server.adopt(fakeSocket())).not.toBeNull();
+		server.close();
+	});
+	it.each([0.5, -1, 20 * 1024 * 1024 + 1])("rejects route byte limit %s", (routeBytes) => {
+		// Act and Assert
+		expect(() =>
+			createRelayServer({ ...f.options, limits: { ...finiteLimits, routeBytes } }),
+		).toThrow("Invalid relay limits");
+	});
+	it("caps traffic grants and aborts the route at a lower configured limit", async () => {
+		// Arrange: each 478-byte payload is a 500-byte wire frame.
+		f.dispose();
+		f = await serverFixture({ routeBytes: 1024 });
+		const { a, b } = await f.route();
+		// Act
+		a.events.binary(data(478));
+		await settle();
+		b.written();
+		a.events.binary(data(478));
+		await settle();
+		b.written();
+		const before = f.server.counters().routes;
+		a.events.binary(data(478));
+		await settle();
+		// Assert
+		expect(
+			f.quota.reserve.mock.calls.filter(([r]) => r.purpose === "traffic").map(([r]) => r.units),
+		).toEqual([1024]);
+		expect(b.binaries).toHaveLength(2);
+		expect(before).toBe(1);
+		expect(f.server.counters().routes).toBe(0);
+		expect(terminal(b).at(-1)).toMatchObject({ body: { mode: "abort" } });
+	});
+});
+
+describe("idle registered sockets", () => {
+	it("arm no timer, so a hibernating host can evict them", async () => {
+		// Arrange
+		const socket = await f.register();
+		// Act
+		await settle();
+		// Assert
+		expect(socket.texts.some((m) => m.type === "REGISTERED")).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+});

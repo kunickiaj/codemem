@@ -1,5 +1,3 @@
-import { randomBytes } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import {
 	decodeRelayCheckPacket,
 	type RelayAdmissionBody,
@@ -15,6 +13,12 @@ import {
 	relayHex,
 } from "./relay-control-codec.js";
 import { decodeRelayDataFrame } from "./relay-data-frame.js";
+import {
+	RELAY_RENEW_AFTER_MS,
+	type RelayRegistrationSnapshot,
+	readRelayRegistrationSnapshot,
+	snapshotRelayRegistration,
+} from "./relay-server-restore.js";
 import {
 	createRelayServiceProof,
 	type RelayServiceSigner,
@@ -46,6 +50,8 @@ export interface RelayServerLimits {
 	deviceQueuedBytes: number;
 	coordinatorTimeoutMs: number;
 	quotaTimeoutMs: number;
+	/** Wire bytes per exchange. Unlike other limits, an omitted value means the ceiling. */
+	routeBytes: number;
 }
 export interface RelayQuotaPort {
 	/** Must reserve durable or finite preallocated capacity. Missing or uncertain outcomes deny. */
@@ -76,7 +82,23 @@ export interface RelayServerOptions {
 	};
 	readonly quota: RelayQuotaPort;
 	readonly signer: RelayServiceSigner;
+	/** Defaults to globalThis.performance and Date.now. */
 	readonly clock?: { monotonicMs(): number; utcMs(): number };
+	/** Returns `bytes` cryptographically random bytes. Defaults to crypto.getRandomValues. */
+	readonly random?: (bytes: number) => Uint8Array;
+	/**
+	 * Runs after a registration is verified and before REGISTERED is sent, so a hibernating
+	 * host can store the snapshot with the socket. A null snapshot means there is no restorable
+	 * lease, because the UTC clock is unusable or no more than the 10 s guard remains. The host must
+	 * then clear any stored copy. Throwing closes the socket.
+	 *
+	 * Host adapters must also clear the stored snapshot when the engine calls `socket.close()`,
+	 * so a socket the engine closed cannot be restored after a later wake.
+	 */
+	readonly onRegistration?: (
+		socket: RelayServerSocket,
+		snapshot: RelayRegistrationSnapshot | null,
+	) => void;
 }
 const CEILINGS: RelayServerLimits = {
 	sockets: 128,
@@ -87,11 +109,28 @@ const CEILINGS: RelayServerLimits = {
 	deviceQueuedBytes: 2 * 1024 * 1024,
 	coordinatorTimeoutMs: 30_000,
 	quotaTimeoutMs: 3000,
+	routeBytes: 20 * 1024 * 1024,
 };
 const DIRECTION_BYTES = 256 * 1024;
+/** Longest lifetime of any route, from OPEN to forced expiry. */
+const ROUTE_LIFETIME_MS = 60_000;
 /** First traffic grant per direction. Later grants double up to DIRECTION_BYTES. */
 const INITIAL_TRAFFIC_GRANT = 16 * 1024;
 const MAX_FRAME = 65_558;
+const textBytes = new TextEncoder();
+function defaultRandom(bytes: number): Uint8Array {
+	return globalThis.crypto.getRandomValues(new Uint8Array(bytes));
+}
+function randomHex(random: (bytes: number) => Uint8Array, bytes: number): string {
+	const value = random(bytes);
+	if (!(value instanceof Uint8Array) || value.length !== bytes)
+		throw new Error("Invalid relay random bytes");
+	return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+/** Hosts whose timer handles lack unref, such as Workers, skip it. */
+function background(timer: ReturnType<typeof setTimeout>): void {
+	(timer as { unref?: () => unknown }).unref?.();
+}
 interface Registration {
 	readonly deviceId: string;
 	readonly keyId: string;
@@ -115,6 +154,8 @@ interface Connection {
 	writes: number;
 	held: number;
 	timer?: ReturnType<typeof setTimeout>;
+	/** Present only on restored sockets: wake time and sessions already answered with CLOSE abort. */
+	readonly restored?: { readonly at: number; readonly orphans: Set<string> };
 }
 interface BufferChange {
 	readonly additionalBytes?: number;
@@ -154,6 +195,8 @@ export function createRelayServer(options: RelayServerOptions) {
 	const engine = new RelayServerEngine(options);
 	return {
 		adopt: (socket: RelayServerSocket) => engine.adopt(socket),
+		/** Re-adopts a socket after host eviction, or returns null so the host closes it. */
+		restore: (socket: RelayServerSocket, snapshot: unknown) => engine.restore(socket, snapshot),
 		close: () => engine.close(),
 		counters: () => engine.counters(),
 	};
@@ -175,14 +218,14 @@ class RelayServerEngine {
 		if (!relayHex(this.namespace.relayAudienceId)) throw new Error("Invalid relay namespace");
 		this.limits = { ...CEILINGS };
 		for (const key of Object.keys(CEILINGS) as (keyof RelayServerLimits)[]) {
-			const value = options.limits?.[key] ?? 0;
+			const value = options.limits?.[key] ?? (key === "routeBytes" ? CEILINGS.routeBytes : 0);
 			if (!Number.isSafeInteger(value) || value < 0 || value > CEILINGS[key])
 				throw new Error("Invalid relay limits");
 			this.limits[key] = value;
 		}
 	}
 	private now(): number {
-		return this.options.clock?.monotonicMs() ?? performance.now();
+		return this.options.clock?.monotonicMs() ?? globalThis.performance.now();
 	}
 	private utc(): number {
 		return this.options.clock?.utcMs() ?? Date.now();
@@ -196,15 +239,17 @@ class RelayServerEngine {
 			trafficQuotaAborts: this.trafficQuotaAborts,
 		};
 	}
+	private accepting(): boolean {
+		return (
+			!this.stopped &&
+			typeof this.options.quota?.reserve === "function" &&
+			Object.values(this.limits).every((value) => value !== 0) &&
+			this.connections.size < this.limits.sockets
+		);
+	}
 	adopt(socket: RelayServerSocket): RelaySocketEvents | null {
 		if ([...this.connections].some((connection) => connection.socket === socket)) return null;
-		if (
-			this.stopped ||
-			typeof this.options.quota?.reserve !== "function" ||
-			Object.values(this.limits).some((value) => value === 0) ||
-			this.connections.size >= this.limits.sockets ||
-			this.counters().pendingSockets >= this.limits.pendingSockets
-		)
+		if (!this.accepting() || this.counters().pendingSockets >= this.limits.pendingSockets)
 			return null;
 		const connection: Connection = {
 			socket,
@@ -222,6 +267,59 @@ class RelayServerEngine {
 		};
 		this.connections.add(connection);
 		this.armConnection(connection);
+		return this.events(connection);
+	}
+	/** Restores only the registration. Routes, challenges, controls, and frames never survive. */
+	restore(socket: RelayServerSocket, snapshot: unknown): RelaySocketEvents | null {
+		const known = [...this.connections].find((connection) => connection.socket === socket);
+		if (known) {
+			// A tracked socket cannot be re-adopted. Fail closed instead of merging state.
+			this.disconnect(known);
+			return null;
+		}
+		if (!this.accepting()) return null;
+		const lease = readRelayRegistrationSnapshot(snapshot, {
+			realmId: this.realmId,
+			utcMs: this.utc(),
+		});
+		if (!lease) return null;
+		const claimants = [...this.connections].filter(
+			// A closing peer still counts, so no third socket can take the device during teardown.
+			(other) => other.registration?.deviceId === lease.deviceId,
+		);
+		if (claimants.length > 0) {
+			// Two sockets claiming one device after wake cannot be ordered. Close both.
+			for (const other of claimants) this.disconnect(other);
+			return null;
+		}
+		const now = this.now();
+		const registration: Registration = Object.freeze({
+			deviceId: lease.deviceId,
+			keyId: lease.keyId,
+			started: now + lease.renewInMs - RELAY_RENEW_AFTER_MS,
+			expires: now + lease.remainingMs,
+		});
+		const connection: Connection = {
+			socket,
+			cancel: new AbortController(),
+			setupExpires: now,
+			registration,
+			phase: "ready",
+			closing: false,
+			physicalClosed: false,
+			pending: false,
+			controlPending: false,
+			controls: [],
+			paused: false,
+			writes: 0,
+			held: 0,
+			restored: { at: now, orphans: new Set() },
+		};
+		this.connections.add(connection);
+		this.registrations.set(registration.deviceId, connection);
+		return this.events(connection);
+	}
+	private events(connection: Connection): RelaySocketEvents {
 		return {
 			pending: () => connection.pending && !connection.closing,
 			text: (bytes) => this.text(connection, bytes),
@@ -275,8 +373,7 @@ class RelayServerEngine {
 		const deadlines: number[] = [];
 		if (connection.pending) deadlines.push(connection.setupExpires);
 		if (connection.challenge) deadlines.push(connection.challenge.expires);
-		if (connection.registration && connection.registration.expires > this.now())
-			deadlines.push(connection.registration.expires);
+		// Registration expiry is checked lazily, so an idle registered socket arms no timer.
 		if (connection.closing || deadlines.length === 0) return;
 		connection.timer = setTimeout(
 			() => {
@@ -284,7 +381,7 @@ class RelayServerEngine {
 			},
 			Math.max(1, Math.ceil(Math.min(...deadlines) - this.now())),
 		);
-		connection.timer.unref();
+		background(connection.timer);
 	}
 	private disconnect(connection: Connection): void {
 		if (connection.closing) return;
@@ -309,7 +406,7 @@ class RelayServerEngine {
 		if (!this.live(connection)) return;
 		try {
 			const json = encodeRelayControl(message);
-			const bytes = Buffer.byteLength(json);
+			const bytes = textBytes.encode(json).byteLength;
 			if (!this.withinBuffers(connection, { additionalBytes: bytes })) {
 				this.disconnect(connection);
 				return;
@@ -357,7 +454,7 @@ class RelayServerEngine {
 				cancel = () => finish(null);
 				signal.addEventListener("abort", cancel, { once: true });
 				timer = setTimeout(cancel, timeout);
-				timer.unref();
+				background(timer);
 				Promise.resolve()
 					.then(() => {
 						if (controller.signal.aborted) return null;
@@ -480,7 +577,8 @@ class RelayServerEngine {
 		if (
 			(connection.phase !== "service" && connection.phase !== "ready") ||
 			message.body.audienceId !== this.namespace.relayAudienceId ||
-			(connection.registration && this.now() < connection.registration.started + 720_000)
+			(connection.registration &&
+				this.now() < connection.registration.started + RELAY_RENEW_AFTER_MS)
 		) {
 			this.disconnect(connection);
 			return;
@@ -503,7 +601,10 @@ class RelayServerEngine {
 		}
 		this.send(connection, { v: 1, type: "SERVICE_PROOF", session: message.session, body });
 		if (!this.live(connection)) return;
-		connection.challenge = { id: randomBytes(16).toString("hex"), expires: this.now() + 30_000 };
+		connection.challenge = {
+			id: randomHex(this.options.random ?? defaultRandom, 16),
+			expires: this.now() + 30_000,
+		};
 		connection.phase = "register";
 		this.send(connection, {
 			v: 1,
@@ -597,9 +698,13 @@ class RelayServerEngine {
 		if (
 			!this.withinBuffers(connection, {
 				deviceId: registration.deviceId,
-				additionalBytes: Buffer.byteLength(encodeRelayControl(reply)),
+				additionalBytes: textBytes.encode(encodeRelayControl(reply)).byteLength,
 			})
 		) {
+			this.disconnect(connection);
+			return;
+		}
+		if (!this.announceRegistration(connection, registration)) {
 			this.disconnect(connection);
 			return;
 		}
@@ -611,6 +716,27 @@ class RelayServerEngine {
 		this.registrations.set(registration.deviceId, connection);
 		this.send(connection, reply);
 		this.armConnection(connection);
+	}
+	private announceRegistration(connection: Connection, registration: Registration): boolean {
+		const hook = this.options.onRegistration;
+		if (!hook) return true;
+		try {
+			hook(
+				connection.socket,
+				snapshotRelayRegistration({
+					realmId: this.realmId,
+					deviceId: registration.deviceId,
+					keyId: registration.keyId,
+					startedMs: registration.started,
+					expiresMs: registration.expires,
+					nowMs: this.now(),
+					utcMs: this.utc(),
+				}),
+			);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 	private reserveRoute(
 		connection: Connection,
@@ -660,7 +786,7 @@ class RelayServerEngine {
 			context,
 			cancel: new AbortController(),
 			directions: [direction(connection), direction(connection)],
-			expires: this.now() + 60_000,
+			expires: this.now() + ROUTE_LIFETIME_MS,
 			accepted: false,
 			closed: false,
 			bytes: 0,
@@ -749,7 +875,7 @@ class RelayServerEngine {
 			},
 			Math.max(1, Math.ceil(route.expires - this.now())),
 		);
-		route.timer.unref();
+		background(route.timer);
 	}
 	private routeControl(connection: Connection, message: RelayControl): void {
 		const route = this.routes.get(message.session);
@@ -819,7 +945,7 @@ class RelayServerEngine {
 		const frame = decodeRelayDataFrame(bytes);
 		const route = this.routes.get(frame.sessionId);
 		if (!route) {
-			this.disconnect(connection);
+			this.orphan(connection, frame.sessionId);
 			return;
 		}
 		if (!this.routeLive(route)) return;
@@ -834,7 +960,7 @@ class RelayServerEngine {
 			direction.pendingEnd ||
 			direction.ended ||
 			++route.frames > 2048 ||
-			bytes.length > 20 * 1024 * 1024 - route.bytes
+			bytes.length > this.limits.routeBytes - route.bytes
 		) {
 			this.removeRoute(route, "abort");
 			return;
@@ -852,6 +978,31 @@ class RelayServerEngine {
 		}
 		direction.frames.push(new Uint8Array(bytes));
 		this.drainDirection(route, direction);
+	}
+	/** Restored sockets may still send DATA for routes lost with the evicted instance. */
+	private orphan(connection: Connection, session: string): void {
+		// After the longest lifetime of a lost route, unknown DATA is a protocol error as on Node.
+		const restored = connection.restored;
+		if (!restored || this.now() >= restored.at + ROUTE_LIFETIME_MS) {
+			this.disconnect(connection);
+			return;
+		}
+		const orphans = restored.orphans;
+		if (orphans.has(session)) return;
+		if (orphans.size >= this.limits.deviceRoutes) {
+			this.disconnect(connection);
+			return;
+		}
+		orphans.add(session);
+		void this.abortOrphan(connection, session).catch(() => this.disconnect(connection));
+	}
+	private async abortOrphan(connection: Connection, session: string): Promise<void> {
+		// The reply spends control quota like any other server-originated control.
+		if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
+			this.disconnect(connection);
+			return;
+		}
+		this.send(connection, { v: 1, type: "CLOSE", session, body: { mode: "abort" } });
 	}
 	private drainDirection(route: Route, direction: Direction): void {
 		if (!this.routeLive(route) || direction.waiting) return;
@@ -875,7 +1026,7 @@ class RelayServerEngine {
 		// toward full-size grants so the reservation count stays logarithmic.
 		const units = Math.min(
 			DIRECTION_BYTES,
-			20 * 1024 * 1024 - route.bytes + queued,
+			this.limits.routeBytes - route.bytes + queued,
 			Math.max(queued, direction.nextGrant),
 		);
 		const reserved = await this.quota(

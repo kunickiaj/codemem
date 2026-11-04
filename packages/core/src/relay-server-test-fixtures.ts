@@ -44,6 +44,7 @@ export const finiteLimits: RelayServerLimits = {
 	deviceQueuedBytes: 512 * 1024,
 	coordinatorTimeoutMs: 5000,
 	quotaTimeoutMs: 3000,
+	routeBytes: 20 * 1024 * 1024,
 };
 export const deferred = <T>() => Promise.withResolvers<T>();
 export async function settle() {
@@ -304,7 +305,10 @@ function finiteQuota() {
 }
 
 /** No listener, network, payload storage, or production quota implementation. */
-export async function serverFixture(limits: Partial<RelayServerLimits> = {}) {
+export async function serverFixture(
+	limits: Partial<RelayServerLimits> = {},
+	hooks: Pick<RelayServerOptions, "onRegistration" | "random"> = {},
+) {
 	const backend = await decisionBackend();
 	const { namespace, source, target, service, clock, db } = backend;
 	const packet = signedPackets(backend);
@@ -317,6 +321,7 @@ export async function serverFixture(limits: Partial<RelayServerLimits> = {}) {
 		quota,
 		signer: service,
 		clock,
+		...hooks,
 	};
 	const server = createRelayServer(options);
 	const controls = fixtureControls({ server, namespace, source, target, packet });
