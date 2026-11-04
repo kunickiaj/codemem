@@ -21,7 +21,12 @@ export default defineConfig(async () => {
 				wrangler: {
 					configPath: path.resolve(import.meta.dirname, "wrangler.jsonc"),
 				},
+				// Test-only entry adds the quota Durable Object without changing production config.
+				main: path.resolve(import.meta.dirname, "test/relay-quota-do-worker.ts"),
 				miniflare: {
+					durableObjects: {
+						RELAY_QUOTA_TEST: { className: "RelayQuotaTestObject", useSQLite: true },
+					},
 					bindings: {
 						CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
 						TEST_MIGRATIONS: migrations,
@@ -43,6 +48,8 @@ export default defineConfig(async () => {
 				"**/migrations/**",
 				"**/wrangler.jsonc",
 				"**/test/apply-migrations.ts",
+				"**/test/relay-quota-do-worker.ts",
+				"**/test/relay-quota-do-object.ts",
 			],
 		},
 	};
