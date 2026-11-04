@@ -30,10 +30,12 @@ separate server or a second endpoint for the relay.
 
 - The primary relay host is a Durable Object class in the coordinator Worker.
   The coordinator and relay deploy together from one Worker configuration.
-- Peers reach the relay at `/v1/relay` on the coordinator's host. The Worker's
-  fetch handler passes a WebSocket upgrade on that path to the relay Durable
-  Object and does no other relay work. All other paths stay with the
-  coordinator.
+- Peers reach the relay at `/v1/relay/<realmId>` on the coordinator's host.
+  Each realm (authority and group) has one relay Durable Object, so both peers
+  of a route reach the same object. The Worker's fetch handler passes a
+  WebSocket upgrade on that path to the realm's Durable Object and does no other
+  relay work. It returns 404 for realms the coordinator does not serve. All
+  other paths stay with the coordinator.
 - Relay processing must not block coordinator requests. After the upgrade,
   frames go between peers and the Durable Object, not through the coordinator's
   request handling. The relay uses the WebSocket Hibernation API, so idle
@@ -61,5 +63,5 @@ separate server or a second endpoint for the relay.
 - The coordinator and relay share account-level Cloudflare limits and one
   deploy. A load test must show that relay traffic does not slow membership or
   discovery, and the relay switch must stop relay work without affecting them.
-- Peers can derive the relay URL from the coordinator URL, so adding the relay
+- Peers can derive the relay URL from the coordinator URL and realm, so adding the relay
   needs no new hostname.

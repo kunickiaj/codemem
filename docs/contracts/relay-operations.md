@@ -134,8 +134,9 @@ Unknown client identity never creates another per-device quota allowance.
 ## Hosting and isolation
 
 The primary host is a Durable Object class in the coordinator Worker, reached at
-`/v1/relay` on the coordinator's host ([ADR 0006](../adr/0006-relay-hosts.md)).
-The Worker passes relay upgrades to that Durable Object and does no other relay
+`/v1/relay/<realmId>` on the coordinator's host, with one object per realm
+([ADR 0006](../adr/0006-relay-hosts.md)).
+The Worker passes relay upgrades to that realm's Durable Object and does no other relay
 work, so relay traffic does not run in coordinator request handling. Activation
 still requires the proofs below. The self-hosted Node relay remains supported
 for self-hosted coordinators and as the reference implementation. On either
