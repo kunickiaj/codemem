@@ -29,6 +29,7 @@ import {
 	signInInput,
 } from "./coordinator-auth-session-test-fixtures.js";
 import type { Backend } from "./coordinator-auth-store-test-fixtures.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys-test-fixtures.js";
 
 const SESSIONS = "coordinator_auth_sessions";
 const RECEIPTS = "coordinator_auth_session_receipts";
@@ -48,7 +49,7 @@ function rows(f: LinkFixture, table: string) {
 		coordinator_auth_device_claims: "claim_id",
 		coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
 	};
-	const orderBy = snapshotKeys[table] ?? "rowid";
+	const orderBy = snapshotKeys[table] ?? RELAY_ADMISSION_TABLE_KEYS[table]?.join(", ") ?? "rowid";
 	return f.db.prepare(`SELECT * FROM "${table}" ORDER BY ${orderBy}`).all() as Record<
 		string,
 		unknown

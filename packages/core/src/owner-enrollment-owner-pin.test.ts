@@ -15,6 +15,7 @@ import {
 } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import { registerOwnerPinTests } from "./owner-enrollment-owner-pin-test-harness.js";
 import { ownerEnrollmentStartMessage } from "./owner-enrollment-start.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys-test-fixtures.js";
 
 registerOwnerPinTests(async (use) => {
 	const f = ownerStartFixture();
@@ -63,14 +64,11 @@ registerOwnerPinTests(async (use) => {
 							!options?.authorityOnly ||
 							![ATTEMPTS, "coordinator_auth_browser_transactions"].includes(name),
 					)
-					.map(({ name }) => [
-						name,
-						f.db
-							.prepare(
-								`SELECT * FROM ${name} ORDER BY ${name === "coordinator_auth_device_claims" ? "claim_id" : "rowid"}`,
-							)
-							.all(),
-					]);
+					.map(({ name }) => {
+						let orderBy = RELAY_ADMISSION_TABLE_KEYS[name]?.join(", ") ?? "rowid";
+						if (name === "coordinator_auth_device_claims") orderBy = "claim_id";
+						return [name, f.db.prepare(`SELECT * FROM ${name} ORDER BY ${orderBy}`).all()];
+					});
 			},
 		});
 		expect(network).not.toHaveBeenCalled();

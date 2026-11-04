@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+// Node type stripping cannot follow the worker re-export's `.js` specifier, so load core's map directly.
+import { RELAY_ADMISSION_TABLE_KEYS } from "../../core/src/relay-admission-table-keys-test-fixtures.ts";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
@@ -70,7 +72,7 @@ async function snapshot(db) {
       coordinator_auth_device_claims: "claim_id",
       coordinator_owner_enrollment_qualifications: "qualification_id",
       coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
-    }[name] ?? "rowid";
+    }[name] ?? RELAY_ADMISSION_TABLE_KEYS[name]?.join(", ") ?? "rowid";
     return [name, (await db.prepare(`SELECT * FROM ${name} ORDER BY ${orderBy}`).all()).results];
   }));
 }

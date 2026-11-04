@@ -71,15 +71,21 @@ it("classifies every repository migration without replaying auth or excluded own
 		"0038_add_device_rebind.sql",
 		"0040_allow_device_self_bind.sql",
 	];
+	const excludedRelayAdmission = [
+		"0041_add_relay_admission_metadata.sql",
+		"0042_add_admission_budgets.sql",
+	];
+	const excluded = [
+		...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES,
+		...excludedOwner,
+		...excludedRelayAdmission,
+	];
 	// Act
 	const caller = historicalCallerMigrationNames(availableMigrations);
 	// Assert
 	expect(Object.isFrozen(caller)).toBe(true);
-	expect(new Set([...caller, ...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES, ...excludedOwner])).toEqual(
-		new Set(availableMigrations),
-	);
-	for (const name of [...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES, ...excludedOwner])
-		expect(caller).not.toContain(name);
+	expect(new Set([...caller, ...excluded])).toEqual(new Set(availableMigrations));
+	for (const name of excluded) expect(caller).not.toContain(name);
 });
 
 it.each([

@@ -49,6 +49,11 @@ const excludedOwnerMigrationNames = [
 	"0038_add_device_rebind.sql",
 	"0040_allow_device_self_bind.sql",
 ];
+// Relay admission storage is neither caller nor auth history; replaying it adds no caller tables.
+const excludedRelayAdmissionMigrationNames = [
+	"0041_add_relay_admission_metadata.sql",
+	"0042_add_admission_budgets.sql",
+];
 
 /** Closed fixture inputs only: unknown, missing or duplicate migrations require review. */
 export function historicalCallerMigrationNames(available: readonly string[]): readonly string[] {
@@ -56,6 +61,7 @@ export function historicalCallerMigrationNames(available: readonly string[]): re
 		...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES,
 		...callerMigrationNames,
 		...excludedOwnerMigrationNames,
+		...excludedRelayAdmissionMigrationNames,
 	];
 	const known = new Set(classified);
 	if (
@@ -84,7 +90,7 @@ export function setupHistoricalStore(
 	let db = new Database(path);
 	try {
 		const history = prepareHistoricalAccountDatabase(db, options.history);
-		// Caller tables are explicit; neither excluded owner storage nor future auth DDL is replayed.
+		// Caller tables are explicit; excluded owner/relay admission storage and future auth DDL are not replayed.
 		for (const name of callerMigrations) db.exec(readFileSync(new URL(name, migrations), "utf8"));
 		// Atomic V3 activation: explicitly call upgradeAuthLifecycleSchema(db) here,
 		// after seeding and before either current store opens. V2 intentionally stays V2 now.
