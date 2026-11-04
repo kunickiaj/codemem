@@ -37,7 +37,8 @@ export class PeerHttpLifetime {
 
 	fail(code: PeerHttpExchangeErrorCode): PeerHttpExchangeError {
 		this.failure ??= new PeerHttpExchangeError(code);
-		this.controller.abort();
+		// The relay route reads this reason to tell a malformed response from a deadline.
+		this.controller.abort(this.failure);
 		this.stopped.reject(this.failure);
 		return this.failure;
 	}

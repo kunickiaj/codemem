@@ -20,11 +20,19 @@ import {
 } from "./relay-control-codec.js";
 import { decodeRelayDataFrame } from "./relay-data-frame.js";
 import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
+import {
+	asRelayFailure,
+	createRelayFailureRecorder,
+	RelayFailure,
+	type RelayFailureReason,
+	relayFailureReason,
+} from "./relay-failure-reason.js";
 import { acceptRelayNoiseResponder, prepareRelayNoiseInitiator } from "./relay-noise.js";
 import type { RelayNoiseLocalIdentity } from "./relay-noise-identity.js";
 import {
 	ownRelayPeerConnection,
 	RelayPeerTransport,
+	relayAbortReason,
 	relayPeerError,
 } from "./relay-peer-transport.js";
 import {
@@ -78,10 +86,16 @@ export interface RelayPeerCoordinator {
 	}): Promise<Uint8Array | null>;
 }
 
+export interface RelayPeerConnectionFactory extends PeerHttpConnectionFactory {
+	/** The first local failure reason across this factory's routes. Later failures never replace it. */
+	failureReason(): RelayFailureReason | undefined;
+}
+
 export interface RelayPeerClient {
 	connect(signal: AbortSignal, deadlineMs: number): Promise<void>;
 	maintainRegistration(signal: AbortSignal, deadlineMs: number): Promise<void>;
-	factory(peerDeviceId: string, currentPin: string): PeerHttpConnectionFactory;
+	/** Create one factory per sync pass so its failure reason describes only that pass. */
+	factory(peerDeviceId: string, currentPin: string): RelayPeerConnectionFactory;
 	/** Call synchronously when local trust or the operator switch changes. */
 	revalidate(): void;
 	close(): Promise<void>;
@@ -129,7 +143,8 @@ function wait<T>(promise: Promise<T>, signal: AbortSignal, deadline: number): Pr
 			if ("error" in result) reject(result.error);
 			else resolve(result.value);
 		};
-		const abort = (): void => finish({ error: new Error("Relay operation cancelled or expired") });
+		const abort = (): void =>
+			finish({ error: new RelayFailure("relay_expired", "Relay operation cancelled or expired") });
 		const timer = setTimeout(abort, Math.max(0, deadline - performance.now()));
 		signal.addEventListener("abort", abort, { once: true });
 		void promise.then(
@@ -138,6 +153,23 @@ function wait<T>(promise: Promise<T>, signal: AbortSignal, deadline: number): Pr
 		);
 		if (signal.aborted || deadline <= performance.now()) abort();
 	});
+}
+
+/**
+ * Registration runs on its own client-owned deadline, so a timeout there means the relay did not
+ * answer. Service proof, association, timeout, and socket failures all leave the relay unusable.
+ */
+function registrationFailure(error: unknown): RelayFailure {
+	const failure = asRelayFailure(error, "relay_unavailable");
+	if (failure.reason !== "relay_expired") return failure;
+	return new RelayFailure("relay_unavailable", failure.message);
+}
+
+/** REJECTED and CLOSE abort carry no cause on the wire. Other controls here violate route order. */
+function routeControlReason(message: RelayControl): RelayFailureReason {
+	if (message.type === "REJECTED") return "relay_rejected";
+	if (message.type === "CLOSE" && message.body.mode === "abort") return "relay_aborted";
+	return "relay_frame_invalid";
 }
 
 function keyId(pin: string): string {
@@ -212,9 +244,12 @@ class Client implements RelayPeerClient {
 
 	private validate(peer?: string, pin?: string): void {
 		if (this.closed || this.options.enabled !== true || !this.options.validateLocal())
-			throw new Error("Relay client disabled or local identity no longer current");
+			throw new RelayFailure(
+				"relay_disabled",
+				"Relay client disabled or local identity no longer current",
+			);
 		if (peer !== undefined && this.options.resolvePeerPin(peer) !== pin)
-			throw new Error("Relay peer pin no longer current");
+			throw new RelayFailure("relay_peer_revoked", "Relay peer pin no longer current");
 	}
 
 	connect(signal: AbortSignal, deadlineMs: number): Promise<void> {
@@ -225,7 +260,7 @@ class Client implements RelayPeerClient {
 		this.validate();
 		const deadline = Math.min(deadlineMs, performance.now() + 30_000);
 		if (!Number.isFinite(deadlineMs) || signal.aborted || deadline <= performance.now())
-			throw new Error("Invalid relay setup lifetime");
+			throw new RelayFailure("relay_expired", "Invalid relay setup lifetime");
 		if (
 			this.socket?.readyState === WebSocket.OPEN &&
 			this.registrationExpires - performance.now() >= 150_000
@@ -278,14 +313,15 @@ class Client implements RelayPeerClient {
 		socket.once("close", () => {
 			this.failSocket(socket);
 			if (this.socket !== socket) return;
-			for (const write of this.writes) write(new Error("Relay WebSocket closed"));
+			for (const write of this.writes)
+				write(new RelayFailure("relay_unavailable", "Relay WebSocket closed"));
 			this.retiredRoutes.clear();
 			this.socket = undefined;
 			socketClosed.resolve();
 		});
 		socket.on("message", (bytes, binary) => this.receive(socket, bytes, binary));
-		socket.on("ping", () => this.failSocket(socket));
-		socket.on("pong", () => this.failSocket(socket));
+		socket.on("ping", () => this.failSocket(socket, "relay_frame_invalid"));
+		socket.on("pong", () => this.failSocket(socket, "relay_frame_invalid"));
 		try {
 			await wait(opened.promise, signal, deadline);
 		} finally {
@@ -338,7 +374,7 @@ class Client implements RelayPeerClient {
 			this.registrationExpires = registrationStarted + reply.body.remainingMs;
 		} catch (error) {
 			if (this.socket) this.failSocket(this.socket);
-			throw relayPeerError(error);
+			throw registrationFailure(error);
 		} finally {
 			this.setup = undefined;
 		}
@@ -401,14 +437,14 @@ class Client implements RelayPeerClient {
 				this.writes.size >= 16 ||
 				Math.max(socket.bufferedAmount, this.pendingBytes) + length > 1024 * 1024
 			) {
-				reject(new Error("Relay WebSocket write capacity unavailable"));
+				reject(new RelayFailure("relay_unavailable", "Relay WebSocket write capacity unavailable"));
 				return;
 			}
 			this.pendingBytes += length;
 			const done = (error?: Error): void => {
 				if (!this.writes.delete(done)) return;
 				this.pendingBytes -= length;
-				if (error) reject(error);
+				if (error) reject(asRelayFailure(error, "relay_unavailable"));
 				else resolve();
 			};
 			this.writes.add(done);
@@ -437,8 +473,9 @@ class Client implements RelayPeerClient {
 				return;
 			}
 			this.control(decodeRelayControl(bytes));
-		} catch {
-			this.failSocket(socket);
+		} catch (error) {
+			// Untagged errors here are cleartext frame decode or ordering failures.
+			this.failSocket(socket, relayFailureReason(error, "relay_frame_invalid"));
 		}
 	}
 
@@ -461,7 +498,10 @@ class Client implements RelayPeerClient {
 			route.accepted.resolve();
 		} else if (message.type === "CLOSE" && message.body.mode === "end" && route.active)
 			route.raw.receiveEnd();
-		else route.raw.destroy(new Error("Relay route rejected or aborted"));
+		else
+			route.raw.destroy(
+				new RelayFailure(routeControlReason(message), "Relay route rejected or aborted"),
+			);
 	}
 
 	private connectionControl(message: RelayControl): boolean {
@@ -493,11 +533,11 @@ class Client implements RelayPeerClient {
 		return false;
 	}
 
-	private failSocket(socket: WebSocket): void {
+	private failSocket(socket: WebSocket, reason: RelayFailureReason = "relay_unavailable"): void {
 		if (this.socket !== socket) return;
 		this.registrationAbort?.abort();
 		this.registrationExpires = 0;
-		const error = new Error("Relay WebSocket disconnected");
+		const error = new RelayFailure(reason, "Relay WebSocket disconnected");
 		this.opening?.reject(error);
 		this.setup?.proof.reject(error);
 		this.setup?.challenge.reject(error);
@@ -508,9 +548,24 @@ class Client implements RelayPeerClient {
 		socket.terminate();
 	}
 
-	factory(peerDeviceId: string, currentPin: string): PeerHttpConnectionFactory {
+	factory(peerDeviceId: string, currentPin: string): RelayPeerConnectionFactory {
+		const failures = createRelayFailureRecorder();
 		return {
-			open: ({ signal, deadlineMs }) => this.open(peerDeviceId, currentPin, signal, deadlineMs),
+			open: async ({ signal, deadlineMs }) => {
+				// A caller can abort and return before this open settles, so record the abort at once.
+				const aborted = (): void => failures.record(relayAbortReason(signal, { secured: false }));
+				signal.addEventListener("abort", aborted, { once: true });
+				try {
+					return await this.open(peerDeviceId, currentPin, signal, deadlineMs, failures.record);
+				} catch (error) {
+					// Routes record their own reason first. This covers failures before a route exists.
+					failures.record(relayFailureReason(error, "relay_unavailable"));
+					throw error;
+				} finally {
+					signal.removeEventListener("abort", aborted);
+				}
+			},
+			failureReason: failures.reason,
 		};
 	}
 
@@ -521,13 +576,25 @@ class Client implements RelayPeerClient {
 	private async capacity(peer: string, signal: AbortSignal, deadline: number): Promise<void> {
 		if (!this.hasRoute(peer, "source") && this.routes.size < 4) return;
 		if (this.waiters.has(peer) || this.waiters.size >= 4)
-			throw new Error("Relay capacity exhausted");
+			throw new RelayFailure("relay_unavailable", "Relay capacity exhausted");
 		const waiter = deferred<void>();
 		this.waiters.set(peer, waiter);
 		try {
-			await wait(waiter.promise, signal, Math.min(deadline, performance.now() + 3000));
+			await wait(waiter.promise, signal, Math.min(deadline, performance.now() + 3000)).catch(
+				(error: unknown) => {
+					// Only the local 3 s cap ends the wait with relay_expired while the caller is still
+					// live and in time. Keep any other failure, such as a socket failure rejecting the waiter.
+					const capTimedOut =
+						error instanceof RelayFailure &&
+						error.reason === "relay_expired" &&
+						!signal.aborted &&
+						performance.now() < deadline;
+					if (!capTimedOut) throw error;
+					throw new RelayFailure("relay_unavailable", "Relay capacity exhausted");
+				},
+			);
 			if (this.hasRoute(peer, "source") || this.routes.size >= 4)
-				throw new Error("Relay capacity exhausted");
+				throw new RelayFailure("relay_unavailable", "Relay capacity exhausted");
 		} finally {
 			if (this.waiters.get(peer) === waiter) this.waiters.delete(peer);
 		}
@@ -540,10 +607,11 @@ class Client implements RelayPeerClient {
 		side: Route["side"],
 		signal: AbortSignal,
 		deadline: number,
+		onFailure?: (reason: RelayFailureReason) => void,
 	): Route {
 		this.validate(peer, pin);
 		if (signal.aborted || deadline <= performance.now())
-			throw new Error("Relay route lifetime expired");
+			throw new RelayFailure("relay_expired", "Relay route lifetime expired");
 		if (
 			this.routes.has(id) ||
 			this.retiredRoutes.has(id) ||
@@ -551,11 +619,11 @@ class Client implements RelayPeerClient {
 			this.retiredRoutes.size + this.routes.size >= MAX_SOCKET_SESSIONS ||
 			this.hasRoute(peer, side)
 		)
-			throw new Error("Relay route capacity exhausted");
+			throw new RelayFailure("relay_unavailable", "Relay route capacity exhausted");
 		const cancel = new AbortController();
-		const abort = (): void => cancel.abort();
+		const abort = (): void => cancel.abort(signal.reason);
 		signal.addEventListener("abort", abort, { once: true });
-		if (signal.aborted) cancel.abort();
+		if (signal.aborted) cancel.abort(signal.reason);
 		const raw = new RelayPeerTransport({
 			sessionId: id,
 			side,
@@ -571,6 +639,7 @@ class Client implements RelayPeerClient {
 					signal.removeEventListener("abort", abort);
 					if (!clean) cancel.abort();
 				}),
+			onFailure,
 		});
 		const route: Route = {
 			id,
@@ -638,12 +707,20 @@ class Client implements RelayPeerClient {
 			this.options.coordinator.check({ packet, deviceHeader, signal: route.cancel.signal }),
 			route.cancel.signal,
 			route.deadline,
-		);
+		).catch((error: unknown) => {
+			throw asRelayFailure(error, "relay_admission_failed");
+		});
 		const reply = bytes && readRelayAdmissionReply(bytes, packet);
-		if (!reply) throw new Error("Relay independent coordinator check denied");
+		// The coordinator client returns null for both a denial and an unreachable coordinator.
+		if (!reply)
+			throw new RelayFailure(
+				"relay_admission_failed",
+				"Relay independent coordinator check denied",
+			);
 		this.validate(route.peer, route.pin);
 		route.deadline = Math.min(route.deadline, started + reply.remainingMs);
-		if (route.deadline <= performance.now()) throw new Error("Relay admission expired in transit");
+		if (route.deadline <= performance.now())
+			throw new RelayFailure("relay_expired", "Relay admission expired in transit");
 		clearTimeout(route.timer);
 		route.timer = setTimeout(() => route.cancel.abort(), route.deadline - performance.now());
 		route.timer.unref();
@@ -654,7 +731,7 @@ class Client implements RelayPeerClient {
 		for (const [id, deadline] of this.nextPairOpen)
 			if (deadline <= now) this.nextPairOpen.delete(id);
 		if (!this.nextPairOpen.has(peer) && this.nextPairOpen.size >= 128)
-			throw new Error("Relay pacing capacity unavailable");
+			throw new RelayFailure("relay_unavailable", "Relay pacing capacity unavailable");
 		// Each direction receives half the pair's 20 opens/minute and burst of two.
 		// Acceptance anchors the delay after the relay actually reserved the previous open.
 		this.nextPairOpen.set(peer, Math.max(this.nextPairOpen.get(peer) ?? 0, now + 6000));
@@ -685,8 +762,10 @@ class Client implements RelayPeerClient {
 		pin: string,
 		signal: AbortSignal,
 		deadlineMs: number,
+		record: (reason: RelayFailureReason) => void,
 	): Promise<OwnedPeerHttpConnection> {
-		if (!Number.isFinite(deadlineMs)) throw new Error("Invalid relay exchange deadline");
+		if (!Number.isFinite(deadlineMs))
+			throw new RelayFailure("relay_expired", "Invalid relay exchange deadline");
 		const deadline = Math.min(deadlineMs, performance.now() + 60_000);
 		this.validate(peer, pin);
 		parseRelayEd25519PublicKey(pin);
@@ -700,7 +779,10 @@ class Client implements RelayPeerClient {
 			"source",
 			signal,
 			deadline,
+			record,
 		);
+		// The transport records its reason synchronously. This covers a route that ends otherwise.
+		void route.raw.completion.catch(() => record(route.raw.failureReason ?? "relay_unavailable"));
 		try {
 			await this.maintainRegistration(route.cancel.signal, deadline);
 			await this.pacePair(route);
@@ -722,6 +804,7 @@ class Client implements RelayPeerClient {
 			this.validate(peer, pin);
 			prepared.release(route.acceptedAtMs);
 			const secured = await wait(prepared.authenticated, route.cancel.signal, route.deadline);
+			route.raw.markSecured();
 			this.validate(peer, pin);
 			return ownRelayPeerConnection(route.raw, secured.duplex);
 		} catch (error) {
@@ -829,6 +912,7 @@ class Client implements RelayPeerClient {
 			verifiedMessageADigest: messageADigest,
 			acceptedAtMs,
 		});
+		route.raw.markSecured();
 		this.validate(route.peer, route.pin);
 		const connection = ownRelayPeerConnection(route.raw, secured.duplex);
 		try {
@@ -862,8 +946,8 @@ class Client implements RelayPeerClient {
 	revalidate(): void {
 		try {
 			this.validate();
-		} catch {
-			if (this.socket) this.failSocket(this.socket);
+		} catch (error) {
+			if (this.socket) this.failSocket(this.socket, relayFailureReason(error, "relay_disabled"));
 			return;
 		}
 		for (const route of this.routes.values()) {
@@ -881,7 +965,7 @@ class Client implements RelayPeerClient {
 		this.registrationAbort?.abort();
 		const completions = [...this.routes.values()].map((route) => route.raw.completion);
 		const socketClosed = this.socketClosed?.promise ?? Promise.resolve();
-		if (this.socket) this.failSocket(this.socket);
+		if (this.socket) this.failSocket(this.socket, "relay_disabled");
 		await Promise.all([
 			Promise.allSettled([...completions, registration]),
 			wait(socketClosed, new AbortController().signal, performance.now() + 1500),

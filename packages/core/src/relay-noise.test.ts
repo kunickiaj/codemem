@@ -362,6 +362,23 @@ describe("relay Noise lifecycle and budgets", () => {
 		await expect(attempt.authenticated).rejects.toThrow(/deadline/);
 	});
 
+	it("tags the Noise handshake deadline as relay_expired and keeps its message", async () => {
+		// Arrange: the responder never answers, so only the handshake timer can end the attempt.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const now = vi.spyOn(performance, "now").mockReturnValue(1000);
+		const f = fixture({ handshakeMs: 20 });
+		const attempt = f.prepare();
+		await attempt.opening;
+		attempt.release(1000);
+		// Act.
+		now.mockReturnValue(1020);
+		await vi.advanceTimersByTimeAsync(20);
+		// Assert: the route transport receives the same tagged error.
+		const expired = { reason: "relay_expired", message: "Noise deadline exceeded" };
+		await expect(attempt.authenticated).rejects.toMatchObject(expired);
+		expect(f.raw[0].errored).toMatchObject(expired);
+	});
+
 	it("expires held preparation at the caller deadline without releasing Message A", async () => {
 		// Arrange
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 import type { Upgrader } from "@libp2p/interface";
 import { type NoiseComponents, noise } from "@libp2p/noise";
 import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
+import { RelayFailure } from "./relay-failure-reason.js";
 import {
 	importRelayNoiseIdentity,
 	type RelayNoiseContext,
@@ -254,7 +255,7 @@ class RelayNoiseAttempt {
 		if (this.failed !== undefined) throw this.failed;
 		if (this.terminated) throw new Error("Noise stream closed");
 		if (performance.now() >= this.phaseDeadline) {
-			const error = new Error("Noise deadline exceeded");
+			const error = new RelayFailure("relay_expired", "Noise deadline exceeded");
 			this.stop(error);
 			throw error;
 		}
@@ -269,7 +270,7 @@ class RelayNoiseAttempt {
 					this.setTimer();
 					return;
 				}
-				this.stop(new Error("Noise deadline exceeded"));
+				this.stop(new RelayFailure("relay_expired", "Noise deadline exceeded"));
 			},
 			Math.min(2_147_483_647, Math.max(1, Math.ceil(this.phaseDeadline - performance.now()))),
 		);

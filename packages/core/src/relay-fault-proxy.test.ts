@@ -68,7 +68,11 @@ async function settle<T>(promise: Promise<T>) {
 }
 
 /** One real Noise-pinned HTTP exchange from source to target, routed only through the proxy. */
-async function exchange(rule?: RelayFaultRule, budgetMs?: number) {
+async function exchange(
+	rule?: RelayFaultRule,
+	budgetMs?: number,
+	options: { offline?: boolean } = {},
+) {
 	const f = await relayClientFixture(undefined, undefined, { faultProxy: { rule } });
 	cleanups.push(() => f.dispose());
 	if (!f.proxy) throw new Error("Missing fault proxy");
@@ -82,16 +86,21 @@ async function exchange(rule?: RelayFaultRule, budgetMs?: number) {
 		},
 	});
 	const source = f.client("source");
-	const registered = await settle(target.connect(new AbortController().signal, relayDeadline()));
-	if (!registered.ok) return { f, proxy, registered, result: registered, dispatch };
+	const factory = source.factory("target", f.identities.target.expectedPin);
+	const registered = await settle(
+		options.offline
+			? Promise.resolve()
+			: target.connect(new AbortController().signal, relayDeadline()),
+	);
+	if (!registered.ok) return { f, proxy, registered, result: registered, dispatch, factory };
 	const execute = createPeerHttpExecutor({
-		factory: source.factory("target", f.identities.target.expectedPin),
+		factory,
 		deadlineMs: budgetMs === undefined ? undefined : performance.now() + budgetMs,
 	});
 	const result = await settle(execute("GET", "https://peer.invalid/private-marker"));
 	await Promise.allSettled(completions);
 	await vi.waitFor(() => expect(f.runtime.counters().routes).toBe(0));
-	return { f, proxy, registered, result, dispatch };
+	return { f, proxy, registered, result, dispatch, factory };
 }
 
 function actions(events: readonly RelayFaultEvent[]) {
@@ -335,5 +344,119 @@ describe("relay fault proxy frame ordering", () => {
 		expect(proxy.held()).toBe(0);
 		expect(actions(proxy.events)).toEqual(["reorder", "delay", "release", "release"]);
 		client.close();
+	}, 15000);
+});
+
+const toRejected: RelayFaultAction = {
+	type: "substitute",
+	bytes: (original) => {
+		const { session } = JSON.parse(original.toString()) as { session: string };
+		return encodeRelayControl({ v: 1, type: "REJECTED", session, body: {} });
+	},
+};
+const flip: RelayFaultAction = { type: "substitute", bytes: flipLastByte };
+
+describe("relay fault local reason codes", () => {
+	it.each([
+		[
+			"truncated DATA",
+			onData(SOURCE, "toPeer", 0, { type: "truncate", keep: 40 }),
+			"relay_frame_invalid",
+		],
+		["substituted handshake DATA", onData(SOURCE, "toPeer", 0, flip), "relay_handshake_failed"],
+		["substituted record DATA", onData(SOURCE, "toPeer", 1, flip), "relay_record_invalid"],
+		[
+			"replayed record DATA",
+			onData(SOURCE, "toPeer", 1, { type: "duplicate" }),
+			"relay_record_invalid",
+		],
+		[
+			"DATA truncated toward the target",
+			onData(TARGET, "toPeer", 1, { type: "truncate", keep: 40 }),
+			"relay_aborted",
+		],
+		[
+			"ACCEPTED substituted with REJECTED",
+			onControl(SOURCE, "toPeer", "ACCEPTED", toRejected),
+			"relay_rejected",
+		],
+	] as const)(
+		"records the stable source reason for %s",
+		async (_name, rule, reason) => {
+			// Act.
+			const { result, factory } = await exchange(rule);
+			// Assert: callers still see only the generic exchange error.
+			expect(result).toMatchObject({ ok: false, error: { name: "PeerHttpExchangeError" } });
+			expect(factory.failureReason()).toBe(reason);
+		},
+		15000,
+	);
+
+	it("records a dropped OPEN as relay_expired when the caller deadline passes", async () => {
+		// Act.
+		const { result, factory } = await exchange(
+			onControl(TARGET, "toPeer", "OPEN", { type: "drop" }),
+			1000,
+		);
+		// Assert.
+		expect(result.ok).toBe(false);
+		expect(factory.failureReason()).toBe("relay_expired");
+	}, 15000);
+
+	it("records an offline target as relay_rejected because the relay sends a bare REJECTED", async () => {
+		// Act.
+		const { proxy, result, factory } = await exchange(undefined, undefined, { offline: true });
+		// Assert.
+		expect(result.ok).toBe(false);
+		expect(lane(proxy.events, 0, "toPeer").at(-1)).toBe("REJECTED");
+		expect(factory.failureReason()).toBe("relay_rejected");
+	}, 15000);
+
+	it("keeps the first reason when a later CLOSE abort and a second failure follow", async () => {
+		// Arrange: the source aborts after REJECTED, so the relay echoes a CLOSE abort afterwards.
+		const { proxy, factory } = await exchange(onControl(SOURCE, "toPeer", "ACCEPTED", toRejected));
+		// Act: a second open on the same factory fails differently before any route exists.
+		const late = await settle(
+			factory.open({ signal: new AbortController().signal, deadlineMs: performance.now() - 1 }),
+		);
+		// Assert.
+		expect(lane(proxy.events, SOURCE, "toPeer").slice(-2)).toEqual(["ACCEPTED", "CLOSE"]);
+		expect(late.ok).toBe(false);
+		expect(factory.failureReason()).toBe("relay_rejected");
+	}, 15000);
+
+	it("puts no reason on the wire and keeps the generic control sequence", async () => {
+		// Arrange: observe every text frame written by clients, proxy, and runtime.
+		const sends = vi.spyOn(WebSocket.prototype, "send");
+		// Act.
+		const { proxy, factory } = await exchange(onControl(SOURCE, "toPeer", "ACCEPTED", toRejected));
+		// Assert: the local reason exists, while every control frame keeps its generic shape.
+		expect(factory.failureReason()).toBe("relay_rejected");
+		expect(lane(proxy.events, SOURCE, "toRelay")).toEqual([
+			"SERVICE_CHALLENGE",
+			"REGISTER",
+			"OPEN",
+			"CLOSE",
+		]);
+		expect(lane(proxy.events, SOURCE, "toPeer")).toEqual([
+			"SERVICE_PROOF",
+			"SOCKET_CHALLENGE",
+			"REGISTERED",
+			"ACCEPTED",
+			"CLOSE",
+		]);
+		const controls = sends.mock.calls
+			.map(([data]) => Buffer.from(data as Uint8Array | string))
+			.filter((bytes) => bytes[0] === 0x7b)
+			.map((bytes) => JSON.parse(bytes.toString()) as Record<string, unknown>);
+		expect(controls.length).toBeGreaterThan(0);
+		for (const control of controls) {
+			expect(Object.keys(control).sort()).toEqual(["body", "session", "type", "v"]);
+			expect(JSON.stringify(control)).not.toMatch(/relay_|reason/);
+		}
+		for (const control of controls.filter(({ type }) => type === "REJECTED" || type === "ACCEPTED"))
+			expect(control.body).toEqual({});
+		for (const control of controls.filter(({ type }) => type === "CLOSE"))
+			expect(control.body).toEqual({ mode: "abort" });
 	}, 15000);
 });

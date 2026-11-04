@@ -68,6 +68,27 @@ Zero or missing allocations pause reservations without erasing the last positive
 
 The relay charges traffic quota before it forwards DATA, and it never refunds unused credit. Each route direction's first reservation covers the queued bytes, with a 16 KiB minimum. Each later reservation covers the queued bytes and is at least double the previous grant, up to 256 KiB or the route's remaining 20 MiB byte budget. A small HTTP exchange therefore costs about 16 KiB per direction, and a sustained transfer reaches full-size grants after a few reservations. Size traffic allocations so every scope's burst holds at least one 256 KiB grant, plus headroom for the expected number of concurrent routes. When a traffic reservation is denied, uncertain, or times out, the relay aborts that route, and peers report only a generic exchange failure. The runtime's `counters().trafficQuotaAborts` field counts these aborts, so check it when relayed requests fail without other errors.
 
+## Relay failure reasons
+
+When a relay route fails, the source records one stable reason code locally. A failed `syncScopedChannelOnce` result sets `relayFailureReason` and appends the code to its generic error, for example `scoped channel exchange failed: relay_rejected`. Through `runSyncPass`, that error text is what `sync_attempts.error` stores. The transfer observation keeps its existing `exchange_failed` code.
+
+The first failure in a pass decides the code. A CLOSE, a duplicate frame, or a second failed open that arrives later does not replace it, and none of them saves an ACK or moves a cursor. Relay control frames still carry no reason, so peers and the relay see only the existing generic REJECTED and CLOSE frames.
+
+| Code | Meaning | Next action |
+| --- | --- | --- |
+| `relay_disabled` | The client is closed, its `enabled` switch is off, or `validateLocal()` returned false. | Check the operator switch and local identity, then call `client.revalidate()`. |
+| `relay_peer_revoked` | The peer's current pin no longer matches the pin this pass started with. | Re-pin or re-approve the peer before the next pass. |
+| `relay_unavailable` | The relay socket failed or closed, registration failed (including service proof and timeouts), or the client hit its own route, pacing, write, or wire-budget capacity. A second route to the same peer that waits three seconds for local capacity also ends here. | Check relay reachability, the service key pin, and the number of concurrent routes. |
+| `relay_admission_failed` | The source's own coordinator check returned no valid approval. The client cannot tell a denial from an unreachable coordinator. | Check coordinator reachability, its admission logs, and budget allocations. |
+| `relay_rejected` | The relay sent REJECTED. This covers an offline or unregistered target, a relay or target admission denial, a target that rejected the route, and a relay route lifetime that ended before acceptance. The client cannot tell these apart. | Confirm the target is online and registered, then check relay and target admission. |
+| `relay_aborted` | The relay sent CLOSE abort after acceptance. This covers a traffic quota abort, a route expiry at the relay, and a fault that made the target abort. | Check the relay's `counters().trafficQuotaAborts` and the target's own failure reason. |
+| `relay_frame_invalid` | A cleartext relay frame failed to decode, arrived out of order, or exceeded a route buffer. This includes truncated DATA and unexpected controls. | Look for a proxy or relay modifying frames, and check version alignment. |
+| `relay_handshake_failed` | The Noise handshake did not authenticate, for example because a handshake DATA frame was substituted. | Confirm both pins and look for frame tampering. |
+| `relay_record_invalid` | An encrypted record failed after authentication, or the authenticated peer's HTTP response was malformed. Substituted, duplicated, and replayed records produce this code, as do a wrong HTTP version, a status outside 200 to 599, an oversized or mismatched body, trailers, and 1xx or upgrade responses. | Look for frame tampering or replay between the peers and the relay. For malformed HTTP, check the peer's codemem version. |
+| `relay_expired` | The route lease, receive-idle timer, Noise handshake deadline, admission lifetime, or caller deadline ended, or the caller cancelled. A dropped OPEN usually ends here. | Check relay latency, and raise the pass deadline only if routes regularly run out of time. |
+
+A failure seen at the target reaches the source as `relay_aborted`, because the target can only send CLOSE abort. A source-side pass that fails without a route failure, such as a scope authorization denial, keeps the generic error without a code.
+
 ## Relay health
 
 Pass `relayHealth` factory options, including its namespace and probe identity, to a coordinator runtime. When `enabled` is true, the runtime constructs a stopped `RelayHealthMonitor` and passes it to `onMonitor`. The owner controls `start()` and `stop()`. `stop()` returns false if storage has not confirmed the final pause. Use the independent relay switch when traffic must stop immediately.
@@ -81,7 +102,7 @@ The monitor starts tripped and needs five complete healthy windows before it pub
 Run focused relay peer, reachability, health, scoped-channel, and relay integration tests, then type-check:
 
 ```fish
-pnpm exec vitest run packages/core/src/relay-peer-client.test.ts packages/core/src/sync-reachability-pass.test.ts packages/core/src/relay-health.test.ts packages/core/src/relay-health-probe.test.ts packages/core/src/relay-health-storage.test.ts packages/core/src/relay-health-runtime.test.ts packages/viewer-server/src/relay-sync.test.ts packages/viewer-server/src/sync-channel-pass.test.ts
+pnpm exec vitest run packages/core/src/relay-peer-client.test.ts packages/core/src/relay-failure-reason.test.ts packages/core/src/relay-fault-proxy.test.ts packages/core/src/sync-reachability-pass.test.ts packages/core/src/relay-health.test.ts packages/core/src/relay-health-probe.test.ts packages/core/src/relay-health-storage.test.ts packages/core/src/relay-health-runtime.test.ts packages/viewer-server/src/relay-sync.test.ts packages/viewer-server/src/sync-channel-pass.test.ts
 pnpm run tsc
 ```
 
