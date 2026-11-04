@@ -1,7 +1,9 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import type { RelayControl } from "./relay-control-codec.js";
 import { decodeRelayDataFrame } from "./relay-data-frame.js";
+import { RelayFailure } from "./relay-failure-reason.js";
 import { RelayPeerTransport } from "./relay-peer-transport.js";
 
 const transports: RelayPeerTransport[] = [];
@@ -185,5 +187,99 @@ describe("relay transport idle and lease deadlines", () => {
 		// Assert.
 		await expect(f.stream.completion).rejects.toThrow("Relay route expired");
 		expect(f.remove).toHaveBeenCalledExactlyOnceWith({ clean: false });
+	});
+});
+
+describe("relay transport failure reasons", () => {
+	it("keeps the first terminal reason when later faults arrive", async () => {
+		// Arrange.
+		const f = fixture();
+		// Act: a rejection, then a late abort, late DATA, and a cancellation.
+		f.stream.destroy(new RelayFailure("relay_rejected", "rejected"));
+		f.stream.destroy(new RelayFailure("relay_aborted", "aborted"));
+		f.stream.receive(Buffer.from("late"));
+		f.abort.abort();
+		// Assert.
+		await expect(f.stream.completion).rejects.toThrow("rejected");
+		expect(f.stream.failureReason).toBe("relay_rejected");
+	});
+
+	it.each([
+		["before", "relay_handshake_failed"],
+		["after", "relay_record_invalid"],
+	] as const)(
+		"classifies an untagged Noise failure %s authentication as %s",
+		async (phase, reason) => {
+			// Arrange.
+			const f = fixture();
+			if (phase === "after") f.stream.markSecured();
+			// Act.
+			f.stream.destroy(new Error("Noise decrypt failed"));
+			// Assert.
+			await expect(f.stream.completion).rejects.toThrow("Noise decrypt failed");
+			expect(f.stream.failureReason).toBe(reason);
+		},
+	);
+
+	it.each([
+		["framing", { secured: true }, "relay_record_invalid"],
+		["response_too_large", { secured: true }, "relay_record_invalid"],
+		["framing", { secured: false }, "relay_handshake_failed"],
+		["deadline", { secured: true }, "relay_expired"],
+		["cancelled", { secured: true }, "relay_expired"],
+	] as const)("maps an executor %s abort with %o to %s", async (code, { secured }, reason) => {
+		// Arrange.
+		const f = fixture();
+		if (secured) f.stream.markSecured();
+		// Act: the executor aborts the route signal with its own failure as the reason.
+		f.abort.abort(new PeerHttpExchangeError(code));
+		// Assert.
+		await expect(f.stream.completion).rejects.toThrow("Relay route cancelled");
+		expect(f.stream.failureReason).toBe(reason);
+	});
+
+	it("maps an abort without an executor reason to relay_expired", async () => {
+		// Arrange.
+		const f = fixture();
+		f.stream.markSecured();
+		// Act.
+		f.abort.abort();
+		// Assert.
+		await expect(f.stream.completion).rejects.toThrow("Relay route cancelled");
+		expect(f.stream.failureReason).toBe("relay_expired");
+	});
+
+	it("tags its own route faults at their origin", async () => {
+		// Arrange.
+		const f = fixture("target");
+		f.stream.receiveEnd();
+		// Act.
+		f.stream.receive(Buffer.from("late"));
+		// Assert.
+		await expect(f.stream.completion).rejects.toThrow("DATA after End");
+		expect(f.stream.failureReason).toBe("relay_frame_invalid");
+	});
+
+	it("records relay_expired when the route lease ends", async () => {
+		// Arrange.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const f = fixture();
+		// Act.
+		await vi.advanceTimersByTimeAsync(8000);
+		// Assert.
+		await expect(f.stream.completion).rejects.toThrow("Relay route expired");
+		expect(f.stream.failureReason).toBe("relay_expired");
+	});
+
+	it("records no reason after a clean completion", async () => {
+		// Arrange.
+		const f = fixture();
+		f.stream.resume();
+		// Act.
+		await new Promise<void>((resolve) => f.stream.end(resolve));
+		f.stream.receiveEnd();
+		await f.stream.completion;
+		// Assert.
+		expect(f.stream.failureReason).toBeUndefined();
 	});
 });

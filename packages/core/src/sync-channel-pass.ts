@@ -3,6 +3,7 @@ import type { Database } from "./db.js";
 import { createPeerHttpExecutor, type PeerHttpConnectionFactory } from "./peer-http-client.js";
 import { adoptPeerHttpConnection } from "./peer-http-client-lifecycle.js";
 import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
+import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { readAuthenticatedRelayNoisePeerPin } from "./relay-noise.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
@@ -37,7 +38,8 @@ export interface ScopedChannelSyncOptions {
 	peerDeviceId: string;
 	scopeId: string;
 	logicalOrigin: string;
-	factory: PeerHttpConnectionFactory;
+	/** Relay factories report their first route failure, which the result records locally. */
+	factory: PeerHttpConnectionFactory & { failureReason?: () => RelayFailureReason | undefined };
 	keysDir?: string;
 	dbPath?: string;
 	scanner?: SecretScanner;
@@ -368,6 +370,17 @@ async function pushOutbound(
 	return ops.length;
 }
 
+/** Appends the factory's first relay reason, if any, to the existing generic local error. */
+function failedResult(
+	result: SyncScopeResult,
+	factory: ScopedChannelSyncOptions["factory"],
+	error: string,
+): SyncScopeResult {
+	const reason = factory.failureReason?.();
+	if (!reason) return { ...result, ok: false, error };
+	return { ...result, ok: false, error: `${error}: ${reason}`, relayFailureReason: reason };
+}
+
 /** Internal, opt-in scoped exchange. Never discovers addresses or refreshes authorization. */
 export async function syncScopedChannelOnce(
 	options: ScopedChannelSyncOptions,
@@ -403,7 +416,7 @@ export async function syncScopedChannelOnce(
 			invalidateCompletedBoundary: () =>
 				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
 		});
-		if (!result.ok) return { ...result, error: "channel pull failed" };
+		if (!result.ok) return failedResult(result, options.factory, "channel pull failed");
 		checkAuthorization(context);
 		saveSyncChannelCompletedBoundary(context.db, {
 			peerDeviceId: context.peerDeviceId,
@@ -418,6 +431,6 @@ export async function syncScopedChannelOnce(
 			recordSyncTransferObservation(options.db, options.peerDeviceId, "send", {
 				errorCode: "exchange_failed",
 			});
-		return { ...result, ok: false, error: "scoped channel exchange failed" };
+		return failedResult(result, options.factory, "scoped channel exchange failed");
 	}
 }

@@ -11,6 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility } from "./db.js";
+import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
 import type { SecretScanner } from "./secret-scanner.js";
@@ -158,6 +159,8 @@ export interface SyncScopeResult {
 	opsIn: number;
 	opsOut: number;
 	error?: string;
+	/** First local relay route failure for a relay channel pass. Never sent to peers. */
+	relayFailureReason?: RelayFailureReason;
 	resetRequired?: SyncResetRequired;
 	/**
 	 * True when the pass began with an empty cursor and no local rows in the

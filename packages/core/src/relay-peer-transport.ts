@@ -1,8 +1,14 @@
 import { performance } from "node:perf_hooks";
 import { Duplex } from "node:stream";
 import type { OwnedPeerHttpConnection } from "./peer-http-client.js";
+import { PeerHttpExchangeError } from "./peer-http-policy.js";
 import type { RelayControl } from "./relay-control-codec.js";
 import { encodeRelayDataFrame } from "./relay-data-frame.js";
+import {
+	RelayFailure,
+	type RelayFailureReason,
+	relayFailureReason,
+} from "./relay-failure-reason.js";
 
 type Done = (error?: Error | null) => void;
 const BUFFER_BYTES = 256 * 1024;
@@ -41,6 +47,8 @@ export class RelayPeerTransport extends Duplex {
 	private idleTimer?: ReturnType<typeof setTimeout>;
 	private receivingPartial = false;
 	private waitingForResponse = false;
+	private secured = false;
+	private reason?: RelayFailureReason;
 
 	constructor(private readonly options: RelayPeerTransportOptions) {
 		super({ allowHalfOpen: true, autoDestroy: true, highWaterMark: 16384 });
@@ -54,7 +62,7 @@ export class RelayPeerTransport extends Duplex {
 			else this.result.resolve();
 		});
 		this.deadlineTimer = setTimeout(
-			() => this.destroy(new Error("Relay route expired")),
+			() => this.destroy(new RelayFailure("relay_expired", "Relay route expired")),
 			Math.max(0, Math.min(options.deadlineMs - performance.now(), 60_000)),
 		);
 		this.deadlineTimer.unref();
@@ -67,7 +75,10 @@ export class RelayPeerTransport extends Duplex {
 		this.receivingPartial = active;
 		clearTimeout(this.idleTimer);
 		if (!active || this.destroyed) return;
-		this.idleTimer = setTimeout(() => this.destroy(new Error("Relay receive idle")), 10_000);
+		this.idleTimer = setTimeout(
+			() => this.destroy(new RelayFailure("relay_expired", "Relay receive idle")),
+			10_000,
+		);
 		this.idleTimer.unref();
 	}
 
@@ -95,25 +106,35 @@ export class RelayPeerTransport extends Duplex {
 		});
 	}
 
+	/** Marks Noise authentication complete, so later untagged stream failures are record faults. */
+	markSecured(): void {
+		this.secured = true;
+	}
+
+	/** The first terminal reason. Unset while the route is open or after a clean completion. */
+	get failureReason(): RelayFailureReason | undefined {
+		return this.reason;
+	}
+
 	private check(): void {
 		if (this.destroyed || this.released || performance.now() >= this.options.deadlineMs)
-			throw new Error("Relay route unavailable");
+			throw new RelayFailure("relay_expired", "Relay route unavailable");
 		this.options.validate();
 	}
 
 	private account(length: number): void {
 		this.check();
 		if (++this.frames > 2048 || length > 20 * 1024 * 1024 - this.bytes)
-			throw new Error("Relay route wire budget exceeded");
+			throw new RelayFailure("relay_unavailable", "Relay route wire budget exceeded");
 		this.bytes += length;
 	}
 
 	receive(payload: Uint8Array): void {
 		try {
-			if (this.remoteEnd) throw new Error("Relay DATA after End");
+			if (this.remoteEnd) throw new RelayFailure("relay_frame_invalid", "Relay DATA after End");
 			this.account(payload.byteLength + 22);
 			if (this.readableLength + payload.byteLength > BUFFER_BYTES)
-				throw new Error("Relay route read buffer exceeded");
+				throw new RelayFailure("relay_frame_invalid", "Relay route read buffer exceeded");
 			this.push(Buffer.from(payload));
 		} catch (error) {
 			this.destroy(relayPeerError(error));
@@ -124,7 +145,7 @@ export class RelayPeerTransport extends Duplex {
 		try {
 			this.check();
 			if (this.remoteEnd || (this.options.side === "source" && !this.endSubmitted))
-				throw new Error("Relay End out of order");
+				throw new RelayFailure("relay_frame_invalid", "Relay End out of order");
 			this.remoteEnd = true;
 			this.remoteEOF.resolve();
 			this.setReceivingPartial({ active: false });
@@ -152,7 +173,7 @@ export class RelayPeerTransport extends Duplex {
 				length < 0 ||
 				length + this.writableLength > BUFFER_BYTES - FRAME_RESERVE_BYTES
 			)
-				throw new Error("Relay route write buffer exceeded");
+				throw new RelayFailure("relay_unavailable", "Relay route write buffer exceeded");
 			const owned = Buffer.allocUnsafe(length);
 			for (let index = 0; index < length; index++) owned[index] = chunk[index] ?? 0;
 			return super.write(owned, done);
@@ -231,12 +252,30 @@ export class RelayPeerTransport extends Duplex {
 	}
 
 	private readonly aborted = (): void => {
-		this.destroy(new Error("Relay route cancelled"));
+		this.destroy(new RelayFailure(this.abortReason(), "Relay route cancelled"));
 	};
+
+	/** An executor failure such as malformed framing aborts the route, but did not expire it. */
+	private abortReason(): RelayFailureReason {
+		const cause: unknown = this.options.signal.reason;
+		if (
+			!(cause instanceof PeerHttpExchangeError) ||
+			cause.code === "deadline" ||
+			cause.code === "cancelled"
+		)
+			return "relay_expired";
+		return this.secured ? "relay_record_invalid" : "relay_handshake_failed";
+	}
 
 	override _destroy(error: Error | null, callback: Done): void {
 		const clean = !error && this.remoteEnd && this.endWritten && this.writes === 0;
 		const failure = error ?? new Error("Relay route disposed before clean completion");
+		// Streams call _destroy once, so the first terminal error decides the reason.
+		if (!clean)
+			this.reason = relayFailureReason(
+				failure,
+				this.secured ? "relay_record_invalid" : "relay_handshake_failed",
+			);
 		this.released = true;
 		clearTimeout(this.deadlineTimer);
 		clearTimeout(this.idleTimer);

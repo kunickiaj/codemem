@@ -6,8 +6,15 @@ import { applyReplicationOps } from "@codemem/core";
 import { serve } from "@hono/node-server";
 import { afterEach, expect, it, vi } from "vitest";
 import { decodeRelayCheckPacket } from "../../core/src/relay-admission-codec.js";
+import { encodeRelayControl } from "../../core/src/relay-control-codec.js";
+import type {
+	RelayFaultAction,
+	RelayFaultFrame,
+	RelayFaultRule,
+} from "../../core/src/relay-fault-proxy-test-fixtures.js";
 import {
 	observeRelayWrites,
+	type RelayClientTestOptions,
 	relayClientFixture,
 	relayDeadline,
 } from "../../core/src/relay-peer-client-test-fixtures.js";
@@ -16,6 +23,7 @@ import { getSyncChannelProgress } from "../../core/src/sync-channel-progress.js"
 import { loadPrivateKey } from "../../core/src/sync-identity.js";
 import { runSyncPass } from "../../core/src/sync-pass.js";
 import { getReplicationCursor, setReplicationCursor } from "../../core/src/sync-replication.js";
+import { readPeerSyncActivity } from "../../core/src/sync-transfer-activity.js";
 import { createSyncApp } from "./index.js";
 import { createSyncChannelDispatcher } from "./sync-channel-dispatch.js";
 import { ORIGIN, SCOPE } from "./sync-channel-dispatch-test-fixtures.js";
@@ -32,7 +40,7 @@ function identity(keysDir: string, expectedPin: string) {
 	if (!key) throw new Error("Missing disposable identity");
 	return { key: createPrivateKey(key), expectedPin };
 }
-async function fixture() {
+async function fixture(relayOptions: RelayClientTestOptions = {}) {
 	const stores = await passFixture();
 	cleanups.push(stores.cleanup);
 	const { remote } = stores;
@@ -43,6 +51,7 @@ async function fixture() {
 			target: identity(serverKeys, remote.localPublicKey),
 		},
 		{ source: remote.peerDeviceId, target: remote.localDeviceId },
+		relayOptions,
 	);
 	cleanups.push(() => relay.dispose());
 	const dispatch = createSyncChannelDispatcher({ storeFactory: remote.storeFactory });
@@ -63,6 +72,7 @@ async function fixture() {
 	const original = source.factory(remote.localDeviceId, remote.localPublicKey);
 	const factory = {
 		open: vi.fn(original.open),
+		failureReason: original.failureReason,
 	};
 	const options = { ...stores.options, factory };
 	return { ...stores, relay, source, target, options, factory, control };
@@ -241,8 +251,12 @@ it("leaves scoped progress and outbound ACK unchanged when the relay target is o
 	const before = getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE);
 	// Act.
 	const result = await syncScopedChannelOnce(f.options);
-	// Assert.
-	expect(result.ok).toBe(false);
+	// Assert: the relay sends a bare REJECTED, so the local reason cannot say "offline".
+	expect(result).toMatchObject({
+		ok: false,
+		error: "scoped channel exchange failed: relay_rejected",
+		relayFailureReason: "relay_rejected",
+	});
 	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)).toEqual(before);
 	expect(
 		getSyncChannelProgress(f.client.db, f.remote.localDeviceId, SCOPE)?.last_acked_cursor ?? null,
@@ -250,6 +264,77 @@ it("leaves scoped progress and outbound ACK unchanged when the relay target is o
 	expect(titles(f, "remote")).toEqual([]);
 	expect(f.factory.open).toHaveBeenCalledTimes(1);
 }, 10000);
+
+/** Applies `action` to the nth frame toward the source socket that `matches` selects. */
+function onSourceFrame(
+	matches: (frame: RelayFaultFrame) => boolean,
+	nth: number,
+	action: RelayFaultAction,
+): RelayFaultRule {
+	let seen = 0;
+	return (frame) => {
+		// The target registers first, so the source owns proxy socket 1.
+		if (frame.socket !== 1 || frame.direction !== "toPeer" || !matches(frame)) return;
+		return seen++ === nth ? action : undefined;
+	};
+}
+
+it("holds the outbound ACK and records relay_rejected when the push route is rejected", async () => {
+	// Arrange: status and pull routes succeed, then the push route's ACCEPTED becomes REJECTED.
+	const rule = onSourceFrame((frame) => frame.kind === "control" && frame.type === "ACCEPTED", 2, {
+		type: "substitute",
+		bytes: (original) => {
+			const { session } = JSON.parse(original.toString()) as { session: string };
+			return encodeRelayControl({ v: 1, type: "REJECTED", session, body: {} });
+		},
+	});
+	const f = await fixture({ faultProxy: { rule } });
+	setReplicationCursor(
+		f.client.db,
+		f.remote.localDeviceId,
+		{ lastApplied: "2025-01-01T00:00:00Z|initial" },
+		SCOPE,
+	);
+	f.seed("client", "rejected-push-item");
+	await f.target.connect(new AbortController().signal, relayDeadline());
+	// Act.
+	const result = await syncScopedChannelOnce(f.options);
+	// Assert: the push never reached the remote, so no ACK advances.
+	expect(result).toMatchObject({
+		ok: false,
+		error: "scoped channel exchange failed: relay_rejected",
+		relayFailureReason: "relay_rejected",
+	});
+	expect(titles(f, "remote")).toEqual([]);
+	expect(
+		getSyncChannelProgress(f.client.db, f.remote.localDeviceId, SCOPE)?.last_acked_cursor ?? null,
+	).toBeNull();
+	expect(
+		readPeerSyncActivity(f.client.db, [f.remote.localDeviceId]).get(f.remote.localDeviceId),
+	).toMatchObject({ send: { errorCode: "exchange_failed" } });
+	expect(f.factory.open).toHaveBeenCalledTimes(3);
+}, 30000);
+
+it("keeps the replication cursor and records relay_frame_invalid for a truncated response DATA frame", async () => {
+	// Arrange: the first DATA toward the source is the responder handshake of the status route.
+	const rule = onSourceFrame((frame) => frame.kind === "data", 0, { type: "truncate", keep: 40 });
+	const f = await fixture({ faultProxy: { rule } });
+	f.seed("remote", "truncated-remote-item");
+	f.seed("client", "truncated-client-item");
+	const before = getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE);
+	await f.target.connect(new AbortController().signal, relayDeadline());
+	// Act.
+	const result = await syncScopedChannelOnce(f.options);
+	// Assert.
+	expect(result).toMatchObject({ ok: false, opsIn: 0, relayFailureReason: "relay_frame_invalid" });
+	expect(getReplicationCursor(f.client.db, f.remote.localDeviceId, SCOPE)).toEqual(before);
+	expect(
+		getSyncChannelProgress(f.client.db, f.remote.localDeviceId, SCOPE)?.last_acked_cursor ?? null,
+	).toBeNull();
+	expect(titles(f, "client")).toEqual(["truncated-client-item"]);
+	expect(titles(f, "remote")).toEqual(["truncated-remote-item"]);
+	expect(f.factory.open).toHaveBeenCalledTimes(1);
+}, 30000);
 
 it("selects the actual relay after a persisted direct address fails and completes authorized Space sync", async () => {
 	// Arrange: a closed, owned loopback port produces an actual pre-authentication network failure.
