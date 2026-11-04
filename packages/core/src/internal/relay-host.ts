@@ -9,6 +9,7 @@ export {
 	createSqliteRelayQuota,
 	initializeRelayQuotaSchema,
 	provisionLocalRelayQuota,
+	RELAY_QUOTA_MAX_SHARDS,
 	type RelayQuotaDatabase,
 	type RelayQuotaProfile,
 	relayQuotaShardProfile,

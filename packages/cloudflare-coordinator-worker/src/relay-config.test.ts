@@ -62,21 +62,21 @@ describe("relay config", () => {
 		["oversized group", { CODEMEM_RELAY_GROUPS: JSON.stringify(["g".repeat(129)]) }],
 		["duplicate groups", { CODEMEM_RELAY_GROUPS: '["group-a","group-a"]' }],
 		[
-			"more than 64 groups",
-			{ CODEMEM_RELAY_GROUPS: JSON.stringify(Array.from({ length: 65 }, (_, i) => `g${i}`)) },
+			"more than 8 groups",
+			{ CODEMEM_RELAY_GROUPS: JSON.stringify(Array.from({ length: 9 }, (_, i) => `g${i}`)) },
 		],
 	])("stays off with %s", (_name, overrides) => {
 		// Act / Assert
 		expect(config(overrides)).toBeNull();
 	});
 
-	it("accepts exactly 64 groups", () => {
+	it("accepts exactly 8 groups", () => {
 		// Arrange
-		const groups = Array.from({ length: 64 }, (_, i) => `g${i}`);
+		const groups = Array.from({ length: 8 }, (_, i) => `g${i}`);
 		// Act
 		const result = config({ CODEMEM_RELAY_GROUPS: JSON.stringify(groups) });
 		// Assert
-		expect(result?.realms.size).toBe(64);
+		expect(result?.realms.size).toBe(8);
 	});
 });
 

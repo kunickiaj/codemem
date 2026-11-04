@@ -13,6 +13,7 @@ import {
 	createSqliteRelayQuota,
 	initializeRelayQuotaSchema,
 	provisionLocalRelayQuota,
+	RELAY_QUOTA_MAX_SHARDS,
 	type RelayQuotaDatabase,
 	type RelayQuotaProfile,
 	relayQuotaShardProfile,
@@ -630,7 +631,15 @@ describe("static service ceiling split", () => {
 		).toThrow("Relay quota realm mismatch");
 	});
 
-	it.each([0, 1.5, 17])("refuses %s shards", (shards) => {
+	it("keeps two control tokens per realm at the largest supported shard count", () => {
+		// Registration spends SERVICE_CHALLENGE and REGISTER back to back.
+		expect(RELAY_QUOTA_MAX_SHARDS).toBe(8);
+		const shares = relayQuotaShardProfile(RELAY_QUOTA_MAX_SHARDS);
+		expect(shares.control?.service?.burst).toBeGreaterThanOrEqual(2);
+		expect(shares.control?.realm?.burst).toBeGreaterThanOrEqual(2);
+		expect(shares.upgrade?.service?.burst).toBeGreaterThanOrEqual(1);
+	});
+	it.each([0, 1.5, 9, 17])("refuses %s shards", (shards) => {
 		// Act / Assert
 		expect(() => relayQuotaShardProfile(shards)).toThrow();
 	});

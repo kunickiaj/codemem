@@ -142,11 +142,27 @@ function readAllocation(profile: RelayQuotaProfile, purpose: Purpose, scope: Sco
 }
 
 /**
+ * Smallest burst each realm share needs. Registration spends two control tokens
+ * back to back (SERVICE_CHALLENGE, then REGISTER), so a one-token control burst
+ * would accept the challenge and then deny the registration.
+ */
+const MIN_SHARD_BURST: Record<Purpose, number> = { upgrade: 1, control: 2, open: 1, traffic: 1 };
+
+/** The most realm objects whose static shares still allow a complete registration. */
+export const RELAY_QUOTA_MAX_SHARDS: number = Math.min(
+	...PURPOSES.map((purpose) => {
+		const [rate, burst] = CEILINGS[purpose].service;
+		return Math.min(rate, Math.floor(burst / MIN_SHARD_BURST[purpose]));
+	}),
+);
+
+/**
  * Static split of the service ceilings across `shards` realm objects, so the
  * shards' service allotments together stay within each service ceiling. Realm
  * allotments are capped by the shard's service share. Device and pair use their
  * ceilings, because every request also intersects the realm and service parents.
- * Throws when a share would round down to zero, rather than minting capacity.
+ * Throws when a share would fall below what one registration needs, rather than
+ * minting capacity or provisioning a realm that can never register.
  */
 export function relayQuotaShardProfile(shards: number): RelayQuotaProfile {
 	if (!Number.isSafeInteger(shards) || shards < 1) throw new Error("Invalid relay quota shards");
@@ -155,7 +171,7 @@ export function relayQuotaShardProfile(shards: number): RelayQuotaProfile {
 		PURPOSES.map((purpose) => {
 			const [serviceRate, serviceBurst] = CEILINGS[purpose].service;
 			const service = { ratePerMinute: share(serviceRate), burst: share(serviceBurst) };
-			if (service.ratePerMinute === 0 || service.burst === 0)
+			if (service.ratePerMinute === 0 || service.burst < MIN_SHARD_BURST[purpose])
 				throw new Error("Relay quota service ceiling cannot cover every realm");
 			const scopes = SCOPES.map((scope) => {
 				const [rate, burst] = CEILINGS[purpose][scope];

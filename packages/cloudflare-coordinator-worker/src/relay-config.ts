@@ -1,4 +1,9 @@
-import { relayAuthorityId, relayBodyDigest, relayRealmId } from "@codemem/core/internal/relay-host";
+import {
+	RELAY_QUOTA_MAX_SHARDS,
+	relayAuthorityId,
+	relayBodyDigest,
+	relayRealmId,
+} from "@codemem/core/internal/relay-host";
 
 /**
  * The only env keys the relay reads. Bindings are never copied: the admission
@@ -32,7 +37,8 @@ export interface RelayRealmConfig {
 	readonly serviceKey: string;
 }
 
-const MAX_REALMS = 64;
+// Each realm's static quota share must still cover one complete registration.
+const MAX_REALMS = RELAY_QUOTA_MAX_SHARDS;
 const encoder = new TextEncoder();
 
 /** Copies only allowlisted string keys. Callers must drop `env` after this returns. */
