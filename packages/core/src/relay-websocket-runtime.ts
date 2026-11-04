@@ -35,6 +35,7 @@ export interface RelayWebSocketRuntimeHandle {
 		pendingSockets: number;
 		routes: number;
 		queuedBytes: number;
+		trafficQuotaAborts: number;
 		pendingUpgrades: number;
 	};
 	disable(): void;

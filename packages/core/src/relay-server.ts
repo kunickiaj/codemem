@@ -89,6 +89,8 @@ const CEILINGS: RelayServerLimits = {
 	quotaTimeoutMs: 3000,
 };
 const DIRECTION_BYTES = 256 * 1024;
+/** First traffic grant per direction. Later grants double up to DIRECTION_BYTES. */
+const INITIAL_TRAFFIC_GRANT = 16 * 1024;
 const MAX_FRAME = 65_558;
 interface Registration {
 	readonly deviceId: string;
@@ -122,6 +124,8 @@ interface BufferChange {
 interface Direction {
 	sender: Connection;
 	credit: number;
+	/** Minimum size of the next traffic reservation. */
+	nextGrant: number;
 	readonly frames: Uint8Array[];
 	waiting: boolean;
 	pendingEnd: boolean;
@@ -163,6 +167,8 @@ class RelayServerEngine {
 	private readonly namespace: RelayServerOptions["namespace"];
 	private readonly realmId: string;
 	private stopped = false;
+	/** Live routes aborted because a traffic reservation was denied, uncertain or timed out. */
+	private trafficQuotaAborts = 0;
 	constructor(private readonly options: RelayServerOptions) {
 		this.namespace = Object.freeze({ ...options.namespace });
 		this.realmId = relayRealmId(this.namespace.authorityId, this.namespace.groupId);
@@ -187,6 +193,7 @@ class RelayServerEngine {
 			pendingSockets: [...this.connections].filter((connection) => connection.pending).length,
 			routes: this.routes.size,
 			queuedBytes: this.queuedBytes(),
+			trafficQuotaAborts: this.trafficQuotaAborts,
 		};
 	}
 	adopt(socket: RelayServerSocket): RelaySocketEvents | null {
@@ -639,6 +646,7 @@ class RelayServerEngine {
 		const direction = (sender: Connection): Direction => ({
 			sender,
 			credit: 0,
+			nextGrant: INITIAL_TRAFFIC_GRANT,
 			frames: [],
 			waiting: false,
 			pendingEnd: false,
@@ -862,11 +870,13 @@ class RelayServerEngine {
 			direction.sender === route.source
 				? route.context.targetDeviceId
 				: route.context.sourceDeviceId;
+		const queued = direction.frames.reduce((sum, frame) => sum + frame.length, 0);
+		// Small exchanges spend roughly their actual size. Sustained transfers grow
+		// toward full-size grants so the reservation count stays logarithmic.
 		const units = Math.min(
 			DIRECTION_BYTES,
-			20 * 1024 * 1024 -
-				route.bytes +
-				direction.frames.reduce((sum, frame) => sum + frame.length, 0),
+			20 * 1024 * 1024 - route.bytes + queued,
+			Math.max(queued, direction.nextGrant),
 		);
 		const reserved = await this.quota(
 			direction.sender,
@@ -878,10 +888,12 @@ class RelayServerEngine {
 		if (!this.routeLive(route)) return;
 		direction.waiting = false;
 		if (!reserved) {
+			this.trafficQuotaAborts++;
 			this.removeRoute(route, "abort");
 			return;
 		}
 		direction.credit += units;
+		direction.nextGrant = Math.min(DIRECTION_BYTES, units * 2);
 		this.drainDirection(route, direction);
 	}
 	private recipient(route: Route, direction: Direction): Connection | undefined {

@@ -35,7 +35,13 @@ describe("disabled internal relay server", () => {
 		const result = server.adopt(socket);
 		// Assert
 		expect(result).toBeNull();
-		expect(server.counters()).toEqual({ sockets: 0, pendingSockets: 0, routes: 0, queuedBytes: 0 });
+		expect(server.counters()).toEqual({
+			sockets: 0,
+			pendingSockets: 0,
+			routes: 0,
+			queuedBytes: 0,
+			trafficQuotaAborts: 0,
+		});
 		expect(f.coordinator.check).not.toHaveBeenCalled();
 		expect(f.quota.reserve).not.toHaveBeenCalled();
 		expect(f.service.sign).not.toHaveBeenCalled();
@@ -104,7 +110,13 @@ describe("disabled internal relay server", () => {
 		const events = server.adopt(socket);
 		// Assert
 		expect(events).toBeNull();
-		expect(server.counters()).toEqual({ sockets: 0, pendingSockets: 0, routes: 0, queuedBytes: 0 });
+		expect(server.counters()).toEqual({
+			sockets: 0,
+			pendingSockets: 0,
+			routes: 0,
+			queuedBytes: 0,
+			trafficQuotaAborts: 0,
+		});
 		expect(f.service.sign).not.toHaveBeenCalled();
 		expect(f.coordinator.check).not.toHaveBeenCalled();
 		expect(f.quota.reserve).not.toHaveBeenCalled();
