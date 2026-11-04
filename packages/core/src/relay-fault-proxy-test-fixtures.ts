@@ -211,6 +211,8 @@ class ProxiedSocket {
 	private release(entry: Held): void {
 		if (!this.held.delete(entry)) return;
 		this.record(entry.frame, "release", this.write(entry.frame, entry));
+		// A released delayed frame counts as the next forwarded frame for pending reorders.
+		this.releaseReordered(entry.frame.direction);
 	}
 
 	private write(frame: RelayFaultFrame, message: { data: Buffer; binary: boolean }): number {

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { createPeerHttpExecutor } from "./peer-http-client.js";
 import { encodeRelayControl } from "./relay-control-codec.js";
 import type {
@@ -11,6 +11,7 @@ import type {
 	RelayFaultProxyOptions,
 	RelayFaultRule,
 } from "./relay-fault-proxy-test-fixtures.js";
+import { createRelayFaultProxy } from "./relay-fault-proxy-test-fixtures.js";
 import { relayClientFixture, relayDeadline } from "./relay-peer-client-test-fixtures.js";
 
 // Accept order is deterministic because the target registers before the source opens its socket.
@@ -299,5 +300,40 @@ describe("relay fault proxy memory release", () => {
 		expect(proxy.held()).toBe(0);
 		expect(actions(proxy.events)).toEqual(["delay", "discard"]);
 		expect((await connecting).ok).toBe(false);
+	}, 15000);
+});
+
+describe("relay fault proxy frame ordering", () => {
+	it("releases a reordered frame after the delayed frame that follows it", async () => {
+		// Arrange: a plain loopback upstream records the text frames it receives.
+		const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+		await new Promise<void>((resolve) => upstream.once("listening", resolve));
+		cleanups.push(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
+		const received: string[] = [];
+		upstream.on("connection", (socket) =>
+			socket.on("message", (data) => received.push(String(data))),
+		);
+		const address = upstream.address();
+		if (!address || typeof address === "string") throw new Error("Missing upstream listener");
+		const rule: RelayFaultRule = (frame) => {
+			if (frame.direction !== "toRelay") return;
+			if (frame.index === 0) return { type: "reorder" };
+			if (frame.index === 1) return { type: "delay", ms: 20 };
+		};
+		const proxy = await createRelayFaultProxy({
+			upstreamUrl: `ws://127.0.0.1:${address.port}`,
+			rule,
+		});
+		cleanups.push(() => proxy.close());
+		const client = new WebSocket(`ws://${proxy.host}/v1/relay`);
+		await new Promise<void>((resolve) => client.once("open", resolve));
+		// Act.
+		client.send("first");
+		client.send("second");
+		// Assert: the delayed frame is forwarded first, then the reordered one, with nothing held.
+		await vi.waitFor(() => expect(received).toEqual(["second", "first"]));
+		expect(proxy.held()).toBe(0);
+		expect(actions(proxy.events)).toEqual(["reorder", "delay", "release", "release"]);
+		client.close();
 	}, 15000);
 });
