@@ -1,33 +1,28 @@
-import {
-	type RelayCoordinatorClientOptions,
-	relayAuthorityId,
-	relayBodyDigest,
-	relayRealmId,
-} from "@codemem/core/internal/relay-host";
+import { relayAuthorityId, relayBodyDigest, relayRealmId } from "@codemem/core/internal/relay-host";
 
 /**
- * The only plain env keys the relay reads. The admission fetcher is the one other
- * value copied, from the binding that CODEMEM_RELAY_ADMISSION_BINDING names.
- * COORDINATOR_DB and every other coordinator binding stay out of relay code.
+ * The only env keys the relay reads. Bindings are never copied: the admission
+ * fetcher comes from the Worker's own `ctx.exports` loopback, so COORDINATOR_DB
+ * and every other coordinator binding stay out of relay code.
  */
 export const RELAY_ENV_KEYS = [
 	"CODEMEM_RELAY_ENABLED",
 	"CODEMEM_RELAY_AUTHORITY_URL",
 	"CODEMEM_RELAY_GROUPS",
 	"CODEMEM_RELAY_SERVICE_KEY",
-	"CODEMEM_RELAY_ADMISSION_BINDING",
 ] as const;
 type RelayEnvKey = (typeof RELAY_ENV_KEYS)[number];
-type RelayAdmissionFetcher = NonNullable<RelayCoordinatorClientOptions["fetcher"]>;
+
+/** The coordinator app serves this exact path. The Worker has no mount prefix. */
+export const RELAY_ADMISSION_PATH = "/v1/relay/admission-check";
 
 export interface RelayEnvSnapshot {
 	readonly values: Readonly<Partial<Record<RelayEnvKey, string>>>;
-	readonly admission?: RelayAdmissionFetcher;
 }
 
 export interface RelayRealmConfig {
 	readonly authorityId: string;
-	/** Full admission-check URL. The route compares its pathname, so it keeps any mount prefix. */
+	/** Full admission-check URL on the coordinator origin. */
 	readonly admissionUrl: string;
 	/** `wss://` origin of the coordinator host. Every realm object shares one audience. */
 	readonly audienceOrigin: string;
@@ -35,32 +30,19 @@ export interface RelayRealmConfig {
 	readonly realms: ReadonlyMap<string, string>;
 	/** Base64 PKCS#8 Ed25519 private key, from a Worker secret. */
 	readonly serviceKey: string;
-	readonly admission: RelayAdmissionFetcher;
 }
 
-const BINDING_NAME = /^RELAY_[A-Z0-9_]{1,58}$/;
 const MAX_REALMS = 64;
 const encoder = new TextEncoder();
 
-/** Copies only allowlisted keys. Callers must drop `env` after this returns. */
+/** Copies only allowlisted string keys. Callers must drop `env` after this returns. */
 export function captureRelayEnv(env: Readonly<Record<string, unknown>>): RelayEnvSnapshot {
 	const values: Partial<Record<RelayEnvKey, string>> = {};
 	for (const key of RELAY_ENV_KEYS) {
 		const value = env[key];
 		if (typeof value === "string") values[key] = value;
 	}
-	const name = values.CODEMEM_RELAY_ADMISSION_BINDING;
-	// The name pattern cannot match COORDINATOR_DB, so the D1 binding is never read.
-	if (!name || !BINDING_NAME.test(name)) return Object.freeze({ values });
-	const binding = env[name] as Partial<RelayAdmissionFetcher> | undefined;
-	if (typeof binding?.fetch !== "function") return Object.freeze({ values });
-	const fetcher = binding as RelayAdmissionFetcher;
-	return Object.freeze({
-		values,
-		admission: Object.freeze({
-			fetch: (url: string, init: RequestInit) => fetcher.fetch(url, init),
-		}),
-	});
+	return Object.freeze({ values });
 }
 
 function readGroups(json: string | undefined): string[] | null {
@@ -84,22 +66,22 @@ function readGroups(json: string | undefined): string[] | null {
 
 /** Returns null, meaning relay disabled, unless the switch is on and every setting is valid. */
 export function readRelayConfig(snapshot: RelayEnvSnapshot): RelayRealmConfig | null {
-	const { values, admission } = snapshot;
-	if (values.CODEMEM_RELAY_ENABLED !== "true" || !admission || !values.CODEMEM_RELAY_SERVICE_KEY)
-		return null;
+	const { values } = snapshot;
+	if (values.CODEMEM_RELAY_ENABLED !== "true" || !values.CODEMEM_RELAY_SERVICE_KEY) return null;
 	const groups = readGroups(values.CODEMEM_RELAY_GROUPS);
 	if (!groups) return null;
 	try {
 		const authorityUrl = new URL(values.CODEMEM_RELAY_AUTHORITY_URL ?? "");
+		// The Worker routes the coordinator from the root, so a path would sign an
+		// admission pathname that no route serves.
+		if (authorityUrl.pathname !== "/") return null;
 		const authorityId = relayAuthorityId(authorityUrl.href);
-		const base = `${authorityUrl.origin}${authorityUrl.pathname}`.replace(/\/+$/, "");
 		return Object.freeze({
 			authorityId,
-			admissionUrl: `${base}/v1/relay/admission-check`,
+			admissionUrl: `${authorityUrl.origin}${RELAY_ADMISSION_PATH}`,
 			audienceOrigin: `wss://${authorityUrl.host}`,
 			realms: new Map(groups.map((group) => [relayRealmId(authorityId, group), group])),
 			serviceKey: values.CODEMEM_RELAY_SERVICE_KEY,
-			admission,
 		});
 	} catch {
 		return null;

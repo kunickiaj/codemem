@@ -141,7 +141,41 @@ function readAllocation(profile: RelayQuotaProfile, purpose: Purpose, scope: Sco
 	return { purpose, scope, rate, burst };
 }
 
-/** Disposable local fixtures only. Insert once, default disabled and zero.
+/**
+ * Static split of the service ceilings across `shards` realm objects, so the
+ * shards' service allotments together stay within each service ceiling. Realm
+ * allotments are capped by the shard's service share. Device and pair use their
+ * ceilings, because every request also intersects the realm and service parents.
+ * Throws when a share would round down to zero, rather than minting capacity.
+ */
+export function relayQuotaShardProfile(shards: number): RelayQuotaProfile {
+	if (!Number.isSafeInteger(shards) || shards < 1) throw new Error("Invalid relay quota shards");
+	const share = (value: number) => Math.floor(value / shards);
+	return Object.fromEntries(
+		PURPOSES.map((purpose) => {
+			const [serviceRate, serviceBurst] = CEILINGS[purpose].service;
+			const service = { ratePerMinute: share(serviceRate), burst: share(serviceBurst) };
+			if (service.ratePerMinute === 0 || service.burst === 0)
+				throw new Error("Relay quota service ceiling cannot cover every realm");
+			const scopes = SCOPES.map((scope) => {
+				const [rate, burst] = CEILINGS[purpose][scope];
+				if (scope === "service") return [scope, service] as const;
+				if (scope === "realm")
+					return [
+						scope,
+						{
+							ratePerMinute: Math.min(rate, service.ratePerMinute),
+							burst: Math.min(burst, service.burst),
+						},
+					] as const;
+				return [scope, { ratePerMinute: rate, burst }] as const;
+			});
+			return [purpose, Object.fromEntries(scopes)];
+		}),
+	) as RelayQuotaProfile;
+}
+
+/** Insert once, default disabled and zero. Local fixtures and operator provisioning use it.
  * Reprovisioning an existing root fails rather than replacing policy or counters.
  * Parent allocations intersect every request, so children cannot multiply capacity.
  */
@@ -163,6 +197,34 @@ export function provisionLocalRelayQuota(
 			);
 			for (const { purpose, scope, rate, burst } of allocations)
 				insert.run(purpose, scope, rate, burst);
+		})
+		.immediate();
+}
+
+/**
+ * Lowers each stored allocation to at most `profile`, so a smaller share after
+ * more realms are configured keeps the sum within the ceiling. It never raises
+ * an allocation. The policy triggers lower the matching bucket floors.
+ */
+export function tightenRelayQuota(
+	database: RelayQuotaDatabase,
+	options: { readonly realmId: string; readonly profile: RelayQuotaProfile },
+): void {
+	if (!validRealm(options.realmId)) throw new Error("Invalid relay quota realm");
+	const allocations = PURPOSES.flatMap((purpose) =>
+		SCOPES.map((scope) => readAllocation(options.profile, purpose, scope)),
+	);
+	database
+		.transaction(() => {
+			const root = database
+				.prepare("SELECT realm_id FROM relay_quota_root WHERE singleton = 1")
+				.get() as { realm_id?: unknown } | undefined;
+			if (root?.realm_id !== options.realmId) throw new Error("Relay quota realm mismatch");
+			const update = database.prepare(
+				"UPDATE relay_quota_allocations SET rate = MIN(rate, ?), burst = MIN(burst, ?) WHERE purpose = ? AND scope = ? AND (rate > ? OR burst > ?)",
+			);
+			for (const { purpose, scope, rate, burst } of allocations)
+				update.run(rate, burst, purpose, scope, rate, burst);
 		})
 		.immediate();
 }

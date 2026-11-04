@@ -229,6 +229,50 @@ with the account already linked to its own Identity. It keeps every row, index, 
 Apply it before deploying a Worker that offers self-binds. A self-hosted SQLite coordinator
 rebuilds the table when it opens.
 
+### Relay admission tables (0041 and 0042)
+
+Migrations `0041_add_relay_admission_metadata.sql` and `0042_add_admission_budgets.sql` add the
+empty policy, readiness, and admission budget tables that `POST /v1/relay/admission-check` reads.
+They are generated from the core schema constants. With no rows, every relay admission check is
+denied, so applying them changes nothing for coordinator-only deployments.
+
+### Optional relay host (off by default)
+
+The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays
+off unless `CODEMEM_RELAY_ENABLED` is exactly `"true"`. While it is off, the coordinator answers
+relay upgrades and the relay quota route exactly as before, and no object is created. To turn it on, deploy with
+`main` set to `packages/cloudflare-coordinator-worker/src/worker.ts`, which exports `RelayRealm`
+and `RelayAdmission`, and copy these settings from the package's `wrangler.jsonc`:
+
+- the `RELAY_REALM` Durable Object binding and the `v1-relay-realm` migration with `new_sqlite_classes`
+- `CODEMEM_RELAY_AUTHORITY_URL`, the coordinator origin with no path
+- `CODEMEM_RELAY_GROUPS`, a JSON array of up to 64 group IDs, one realm each
+- the Ed25519 service key as a secret: `wrangler secret put CODEMEM_RELAY_SERVICE_KEY`
+
+Admission checks from realm objects reach the `RelayAdmission` entrypoint through the Worker's own
+`ctx.exports`, so no service binding is needed. A Worker in the same account could also bind to
+that entrypoint. Same-account Workers are inside the operator's trust boundary, and their checks
+still need device-signed packets. The public admission route serves peers only when
+exactly one group is configured.
+
+Each realm also needs its quota provisioned before upgrades succeed. Use the admin secret:
+
+```fish
+curl -sS -X POST "https://<coordinator>/v1/admin/relay/quota" \
+  -H "Content-Type: application/json" \
+  -H "X-Codemem-Coordinator-Admin: <admin secret>" \
+  --data '{"realm_id":"<64-hex realm ID>","enabled":true}'
+```
+
+The first call stores that realm's equal share of the service ceilings. Adding a group needs a
+deploy, and after it each provisioned realm lowers its stored allotments to the new, smaller share
+on its first event, so the total stays within each ceiling without another call. Allotments are
+never raised. With more than 16 groups the share rounds to zero, and realms stay closed.
+`"enabled":false` switches the realm off without a deploy: new upgrades are refused and open
+sockets close. Changing `CODEMEM_RELAY_ENABLED` needs a deploy. A realm object reads it when it
+starts, so after the deploy it refuses upgrades and closes each existing socket on that socket's
+next event.
+
 ## 6. Deploy the Worker
 
 ### Owner admission pin source (not activated)

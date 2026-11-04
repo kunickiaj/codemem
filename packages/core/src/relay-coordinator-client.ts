@@ -57,6 +57,9 @@ export function createRelayCoordinatorClient(
 	const send = fetcher
 		? (init: RequestInit) => fetcher.fetch(url, init)
 		: (init: RequestInit) => fetch(url, init);
+	// Workers throws a TypeError for redirect "error", including on service-binding
+	// fetch. A fetcher gets "manual" instead: any 3xx reply is a non-200 denial below.
+	const redirect: RequestInit["redirect"] = fetcher ? "manual" : "error";
 	return {
 		async check({ packet, deviceHeader, signal }) {
 			try {
@@ -64,7 +67,7 @@ export function createRelayCoordinatorClient(
 				const body = decodeRelayCheckPacket(packet).bodyBytes;
 				const response = await send({
 					method: "POST",
-					redirect: "error",
+					redirect,
 					signal,
 					headers: {
 						"content-type": "application/json",

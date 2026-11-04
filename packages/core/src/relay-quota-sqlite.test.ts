@@ -15,7 +15,9 @@ import {
 	provisionLocalRelayQuota,
 	type RelayQuotaDatabase,
 	type RelayQuotaProfile,
+	relayQuotaShardProfile,
 	setRelayQuotaEnabled,
+	tightenRelayQuota,
 } from "./relay-quota-sqlite.js";
 
 const realmId = "a".repeat(64);
@@ -591,5 +593,45 @@ describe("quota cancellation and durable history", () => {
 		expect(reads.filter((sql) => sql.startsWith("SELECT"))).toHaveLength(7);
 		expect(reads.length).toBe(readsAtCommit);
 		expect(await adapter(db).reserve(request(), signal())).toBe("denied");
+	});
+});
+
+describe("static service ceiling split", () => {
+	it("splits service ceilings so shard allotments sum within them and provision cleanly", () => {
+		// Act
+		const shares = relayQuotaShardProfile(3);
+		// Assert
+		expect(shares.upgrade).toMatchObject({
+			service: { ratePerMinute: 40, burst: 5 },
+			realm: { ratePerMinute: 40, burst: 5 },
+		});
+		expect(shares.open?.service).toEqual({ ratePerMinute: 341, burst: 341 });
+		expect(shares.open?.realm).toEqual({ ratePerMinute: 128, burst: 128 });
+		expect(shares.open?.pair).toEqual({ ratePerMinute: 20, burst: 2 });
+		expect(() => fixture(shares)).not.toThrow();
+	});
+
+	it("tightens stored allotments to a smaller share and never raises them", () => {
+		// Arrange
+		const { db } = fixture(relayQuotaShardProfile(2));
+		const read = () =>
+			db
+				.prepare("SELECT rate, burst FROM relay_quota_allocations WHERE purpose = ? AND scope = ?")
+				.get("upgrade", "service");
+		// Act
+		tightenRelayQuota(db, { realmId, profile: relayQuotaShardProfile(4) });
+		const tightened = read();
+		tightenRelayQuota(db, { realmId, profile: relayQuotaShardProfile(1) });
+		// Assert
+		expect(tightened).toEqual({ rate: 30, burst: 4 });
+		expect(read()).toEqual({ rate: 30, burst: 4 });
+		expect(() =>
+			tightenRelayQuota(db, { realmId: "b".repeat(64), profile: relayQuotaShardProfile(4) }),
+		).toThrow("Relay quota realm mismatch");
+	});
+
+	it.each([0, 1.5, 17])("refuses %s shards", (shards) => {
+		// Act / Assert
+		expect(() => relayQuotaShardProfile(shards)).toThrow();
 	});
 });

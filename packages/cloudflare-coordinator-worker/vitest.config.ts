@@ -43,12 +43,13 @@ export default defineConfig(async () => {
 						RELAY_QUOTA_TEST: { className: "RelayQuotaTestObject", useSQLite: true },
 						RELAY_REALM_TEST: { className: "RelayRealmTestObject", useSQLite: true },
 						RELAY_REALM_PRODUCTION: { className: "RelayRealm", useSQLite: true },
+						RELAY_REALM_LOOPBACK_TEST: { className: "RelayRealmLoopbackTestObject", useSQLite: true },
 					},
 					bindings: {
 						CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
 						TEST_MIGRATIONS: migrations,
 						// Relay settings for the test realm object only. Production sets none of these.
-						CODEMEM_RELAY_AUTHORITY_URL: "https://coordinator.example.test/sync",
+						CODEMEM_RELAY_AUTHORITY_URL: "https://coordinator.example.test",
 						CODEMEM_RELAY_GROUPS: JSON.stringify(["relay-test-group", "relay-other-group"]),
 						CODEMEM_RELAY_SERVICE_KEY: relayServiceKey,
 						RELAY_TEST_SERVICE_PUBLIC_KEY: `ssh-ed25519 ${relayPublicWire.toString("base64")}`,
@@ -73,6 +74,7 @@ export default defineConfig(async () => {
 				"**/test/relay-quota-do-worker.ts",
 				"**/test/relay-quota-do-object.ts",
 				"**/test/relay-realm-do-object.ts",
+				"**/test/relay-admission-test-entrypoint.ts",
 			],
 		},
 	};

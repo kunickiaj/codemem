@@ -32,7 +32,8 @@ function response(value: unknown, status = 200): Response {
 	});
 }
 
-async function authenticate(request: Request, secret: string | null): Promise<boolean> {
+/** Constant-time check of the operator admin secret header. */
+export async function authenticate(request: Request, secret: string | null): Promise<boolean> {
 	const supplied = request.headers.get("X-Codemem-Coordinator-Admin");
 	if (!secret || !supplied || supplied.length > 8192) return false;
 	const digest = (value: string) =>

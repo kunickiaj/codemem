@@ -63,14 +63,7 @@ const PROFILE: RelayQuotaProfile = {
 	},
 };
 
-const config = readRelayConfig(
-	captureRelayEnv({
-		...env,
-		CODEMEM_RELAY_ENABLED: "true",
-		CODEMEM_RELAY_ADMISSION_BINDING: "RELAY_ADMISSION_CONFIG",
-		RELAY_ADMISSION_CONFIG: { fetch: () => Promise.reject(new Error("unused")) },
-	}),
-);
+const config = readRelayConfig(captureRelayEnv({ ...env, CODEMEM_RELAY_ENABLED: "true" }));
 if (!config) throw new Error("Relay test config is invalid");
 const { authorityId } = config;
 const realmId = relayRealmId(authorityId, "relay-test-group");
@@ -222,7 +215,12 @@ const frame = (session: string, size: number, fill = 7) =>
 const closedWith = (peer: Peer, code: number) => vi.waitUntil(() => peer.closeCode === code);
 
 afterEach(() => {
-	Object.assign(relayRealmTestState(), { enabled: true, limits: {}, admissions: [] });
+	Object.assign(relayRealmTestState(), {
+		enabled: true,
+		limits: {},
+		admissions: [],
+		groups: undefined,
+	});
 });
 
 describe("RelayRealm upgrade and registration", () => {
@@ -235,7 +233,7 @@ describe("RelayRealm upgrade and registration", () => {
 		expect(proof.body).toMatchObject({ keyId: serviceKeyId });
 		expect(registered.body).toMatchObject({ deviceId: "source", realmId, authorityId });
 		expect(relayRealmTestState().admissions).toEqual([
-			{ pathname: "/sync/v1/relay/admission-check", kind: "registration", deviceHeader: "source" },
+			{ pathname: "/v1/relay/admission-check", kind: "registration", deviceHeader: "source" },
 		]);
 	});
 
@@ -308,6 +306,40 @@ describe("RelayRealm upgrade and registration", () => {
 		expect(retried.status).toBe(101);
 		retried.webSocket?.accept();
 		retried.webSocket?.close(1000);
+	});
+
+	it("lowers a stored share to the new realm count when a deploy adds a group", async () => {
+		// Arrange: provisioned while one group was configured.
+		relayRealmTestState().groups = ["relay-test-group"];
+		const stub = env.RELAY_REALM_TEST.get(env.RELAY_REALM_TEST.newUniqueId());
+		const provisioned = await stub.provisionQuota(realmId, true);
+		const allotments = () =>
+			runInDurableObject(stub, (_object, state) =>
+				state.storage.sql
+					.exec(
+						"SELECT scope, rate, burst FROM relay_quota_allocations WHERE purpose = 'upgrade' AND scope IN ('service','realm') ORDER BY scope",
+					)
+					.toArray(),
+			);
+		const before = await allotments();
+		// Act: the deploy reconstructs the object with two groups, then a peer connects.
+		relayRealmTestState().groups = ["relay-test-group", "relay-other-group"];
+		await evictDurableObject(stub);
+		const response = await upgrade(stub);
+		response.webSocket?.accept();
+		response.webSocket?.close(1000);
+		const after = await allotments();
+		// Assert
+		expect(provisioned).toEqual({ ok: true, realmId, enabled: true });
+		expect(before).toEqual([
+			{ scope: "realm", rate: 120, burst: 16 },
+			{ scope: "service", rate: 120, burst: 16 },
+		]);
+		expect(response.status).toBe(101);
+		expect(after).toEqual([
+			{ scope: "realm", rate: 60, burst: 8 },
+			{ scope: "service", rate: 60, burst: 8 },
+		]);
 	});
 });
 
@@ -383,7 +415,9 @@ describe("RelayRealm forwarding", () => {
 
 describe("RelayRealm hibernation and switch", () => {
 	it("restores registrations after eviction and fails a lost route closed", async () => {
-		// Arrange
+		// Arrange: one configured group keeps the full control burst. With two, the
+		// object lowers it to 8 on its first event, and this route spends more than that.
+		relayRealmTestState().groups = ["relay-test-group"];
 		const stub = await realmObject();
 		const { a, b, session } = await route(stub);
 		// A live route's 60 s timer keeps the object resident, so end it before eviction.
