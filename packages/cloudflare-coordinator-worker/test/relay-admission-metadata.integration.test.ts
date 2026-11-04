@@ -31,13 +31,13 @@ async function seed(options: MetadataSeedOptions = {}) {
 const insert = (policyRevision = 1) => db.prepare(METADATA_INSERT_SQL)
 	.bind(...metadataBindings({ authority, policyRevision }));
 
-it("fails closed before private metadata is installed in local D1", async () => {
-	// Arrange: run before the nested suite installs its private test schema.
+it("fails closed in migrated local D1 before any metadata row exists", async () => {
+	// Arrange: migration 0041 installs the tables. Run before the nested suite seeds rows.
 	await db.prepare(RELAY_CLOCK_TEST_SCHEMA_SQL).run();
 	// Act
-	const attempt = () => db.prepare(METADATA_INSERT_SQL).bind(...metadataBindings()).first();
+	const inserted = await db.prepare(METADATA_INSERT_SQL).bind(...metadataBindings()).first();
 	// Assert
-	await expect(attempt()).rejects.toThrow(/no such table/i);
+	expect(inserted).toBeNull();
 	expect((await db.prepare(RELAY_CLOCK_TEST_ROWS_SQL).all()).results).toEqual([]);
 });
 

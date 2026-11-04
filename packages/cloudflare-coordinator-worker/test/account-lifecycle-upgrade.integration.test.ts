@@ -5,6 +5,7 @@ import { AUTH_LIFECYCLE_COPY_TABLE_NAMES } from "../../core/src/coordinator-auth
 import { AUTH_LIFECYCLE_UPGRADE_SQL, AUTH_LIFECYCLE_UPGRADE_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-upgrade.js";
 import { AUTH_SCHEMA_V2_READINESS_SQL } from "../../core/src/coordinator-auth-lifecycle-predecessor.js";
 import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys.js";
 
 const db = env.COORDINATOR_DB;
 const links = "coordinator_auth_account_links";
@@ -14,7 +15,8 @@ const snapshotKeys: Record<string, string[]> = {
 	[claims]: ["claim_id"],
 	coordinator_owner_enrollment_qualifications: ["qualification_id"],
 	coordinator_legacy_owner_resolutions: ["coordinator_id", "resolution_id"],
-};
+	...RELAY_ADMISSION_TABLE_KEYS,
+} as Record<string, string[]>;
 const hash = (index: number) => String(index + 1).repeat(64);
 type Definition = { type: string; name: string; tbl_name: string; sql: string | null };
 type Inventory = { table: string; columns: string[]; rowid: boolean }[];

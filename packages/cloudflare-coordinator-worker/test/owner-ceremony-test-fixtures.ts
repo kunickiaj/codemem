@@ -18,6 +18,7 @@ import {
 	ownerEnrollmentStartMessage,
 } from "../../core/src/owner-enrollment-start.js";
 import { pendingKey, seedOwnerAuthority } from "./owner-authority-test-fixture.js";
+import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys.js";
 export { pendingKey } from "./owner-authority-test-fixture.js";
 
 // Deliberately do not import the core SQLite fixture into the native worker pool.
@@ -51,6 +52,7 @@ export const rows = async (table: string) => {
 	if (table === "coordinator_auth_account_connection_orders") orderBy = "coordinator_id";
 	if (table === "coordinator_owner_enrollment_qualifications") orderBy = "qualification_id";
 	if (table === "coordinator_legacy_owner_resolutions") orderBy = "coordinator_id, resolution_id";
+	orderBy = RELAY_ADMISSION_TABLE_KEYS[table]?.join(", ") ?? orderBy;
 	return (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all()).results;
 };
 export async function attempt() {
