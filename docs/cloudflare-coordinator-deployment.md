@@ -263,10 +263,12 @@ devices. It uses the same device-signed authorization as `/v1/peers`, and it ret
 public key derived from `CODEMEM_RELAY_SERVICE_KEY` as `ssh-ed25519` text, the group's
 `/v1/relay/<realmId>` path, and `/v1/relay/admission-check`. A group outside
 `CODEMEM_RELAY_GROUPS`, and every group while relay is off, gets the same `401 unknown_device` that
-`/v1/peers` gives a non-member. No device fetches this route yet. When device-side relay activation
-ships, devices will pin the key on first fetch for each coordinator and group, and will pause relay
-when it changes until the user approves the new key. From then on, rotating the service key secret
-will pause relay on every pinned device until each user approves the new key.
+`/v1/peers` gives a non-member. A device running `codemem serve` with this coordinator and group
+configured fetches the route, pins the key on first fetch for each coordinator and group, and
+pauses relay when the key changes until its user approves the new key with
+`codemem sync approve-relay-key`. Rotating the service key secret therefore pauses relay on every
+pinned device until each user approves the new key. Devices relay only after the steps below are
+complete. Until then, every group resolves as disabled and devices sync directly.
 
 Turning relay on takes these steps, in order:
 

@@ -93,6 +93,7 @@ vi.mock("@codemem/server", () => ({
 	createAccountLinkRegistry: mocks.createRegistry,
 	createAccountRebindRunner: () => async () => ({ kind: "failed" }),
 	resumeAccountRebind: async () => null,
+	createViewerRelayReachability: () => null,
 	createViewerRawEventInbox: vi.fn(() => ({
 		inbox: { start: mocks.inboxStart },
 		stop: mocks.inboxStop,
