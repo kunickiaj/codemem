@@ -82,6 +82,9 @@ export async function runMemoryTool(
 		const outcome = await callCodememToolLocally(store, name, args, {
 			sessionId: opts.sessionId?.trim() || undefined,
 			requestId: opts.requestId?.trim() || undefined,
+			// Same ledger identity as the viewer route, so a host call retried
+			// through this fallback after a lost viewer response records once.
+			statelessLedger: true,
 		});
 		write(JSON.stringify(outcome));
 	} catch (err) {

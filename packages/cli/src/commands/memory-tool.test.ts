@@ -1,7 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, initTestSchema } from "@codemem/core";
+import { connect, initTestSchema, MemoryStore, queryRetrievalAttempts } from "@codemem/core";
+import { callCodememToolLocally } from "@codemem/mcp";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseToolArguments, runMemoryTool } from "./memory-tool.js";
 
@@ -114,5 +115,40 @@ describe("runMemoryTool", () => {
 
 		expect(lastLine()).toMatchObject({ ok: false, error: "invalid_arguments" });
 		expect(process.exitCode).toBe(1);
+	});
+});
+
+describe("runMemoryTool ledger identity", () => {
+	it("records one attempt when a viewer call is retried through the CLI", async () => {
+		// The viewer route runs the same handler statelessly. A read whose viewer
+		// response was lost and that the host retried here must not count twice.
+		await run(
+			"memory_remember",
+			JSON.stringify({ kind: "decision", title: "Ledger", body: "b", project: "tool-fixture" }),
+		);
+		const store = new MemoryStore(databasePath);
+		try {
+			await callCodememToolLocally(
+				store,
+				"memory_search",
+				{ query: "Ledger" },
+				{ sessionId: "ses_retry", requestId: "call_1", statelessLedger: true },
+			);
+		} finally {
+			await store.closeAsync();
+		}
+
+		await runMemoryTool(
+			"memory_search",
+			{ dbPath: databasePath, sessionId: "ses_retry", requestId: "call_1" },
+			{ readStdin: async () => JSON.stringify({ query: "Ledger" }), write: () => {} },
+		);
+
+		const reader = new MemoryStore(databasePath);
+		try {
+			expect(queryRetrievalAttempts(reader.db, { surface: "mcp_search" })).toHaveLength(1);
+		} finally {
+			await reader.closeAsync();
+		}
 	});
 });

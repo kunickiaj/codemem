@@ -14,6 +14,11 @@ import {
   resolveUpgradeGuidance,
 } from "./compat.js";
 import { V2_ADAPTER_DIAGNOSTICS } from "./host-contract.js";
+import {
+  createMemoryToolExecutor,
+  createNativeMemoryTools,
+  nativeMemoryToolsEnabled,
+} from "./memory-tools.js";
 import { createPromptTransportDiagnostics } from "./prompt-transport-diagnostics.js";
 import {
   classifyRawEventTransportCause,
@@ -2292,6 +2297,79 @@ const createViewerCliArgs = ({ viewerHost, viewerPort, viewerDbPath, viewerConfi
   return args;
 };
 
+/** The CLI-backed `mem-*` status tools every plugin instance registers. */
+const createCliStatusTools = ({ runCli, viewerUrlHost, viewerPort, logPath }) => ({
+  "mem-status": {
+    description: "Show codemem stats and recent entries",
+    args: {},
+    async execute() {
+      const stats = await runCli(["stats"]);
+      const recent = await runCli(["recent", "--limit", "5"]);
+      const lines = [
+        `viewer: http://${viewerUrlHost}:${viewerPort}`,
+        `log: ${logPath || "disabled"}`,
+      ];
+      if (stats.exitCode === 0 && stats.stdout.trim()) {
+        lines.push("", "stats:", stats.stdout.trim());
+      }
+      if (recent.exitCode === 0 && recent.stdout.trim()) {
+        lines.push("", "recent:", recent.stdout.trim());
+      }
+      return lines.join("\n");
+    },
+  },
+
+  "mem-recent": {
+    description: "Show recent codemem entries",
+    args: {
+      limit: { type: "number", optional: true },
+    },
+    async execute({ limit }) {
+      // Number.isFinite accepts floats and negatives; coerce to a positive
+      // integer (default 5) before forwarding to the CLI.
+      const safeLimit = String(parsePositiveInt(limit, 5));
+      const recent = await runCli(["recent", "--limit", safeLimit]);
+      if (recent.exitCode === 0) {
+        return recent.stdout.trim() || "No recent memories.";
+      }
+      return `Failed to fetch recent: ${recent.stderr || recent.exitCode}`;
+    },
+  },
+
+  "mem-stats": {
+    description: "Show codemem stats",
+    args: {},
+    async execute() {
+      const stats = await runCli(["stats"]);
+      if (stats.exitCode === 0) {
+        return stats.stdout.trim() || "No stats yet.";
+      }
+      return `Failed to fetch stats: ${stats.stderr || stats.exitCode}`;
+    },
+  },
+});
+
+/** Native memory tools, or null unless CODEMEM_OPENCODE_NATIVE_TOOLS enables them. */
+const createRuntimeMemoryTools = ({
+  viewerEnabled, viewerBaseUrl, dbPath, identityTarget, runCli, location, log, notify,
+}) => {
+  if (!nativeMemoryToolsEnabled()) return null;
+  return createNativeMemoryTools({
+    executor: createMemoryToolExecutor({
+      viewerEnabled,
+      viewerBaseUrl,
+      dbPath,
+      identityTarget,
+      // The same target proof prompt recall uses.
+      isProfileMatch: (profile) => viewerProfileFailureKind(profile, dbPath, identityTarget) === null,
+      runCli,
+      defaultDirectory: resolve(location.directory || location.cwd),
+    }),
+    log,
+    notify,
+  });
+};
+
 export const createCodememRuntime = async ({ location, host, hostGeneration = null }) => {
   const { project, directory, worktree } = location;
   const hostLog = typeof host?.log === "function" ? host.log : async () => {};
@@ -2848,6 +2926,17 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       return runCommand(cmd, options);
     });
   };
+
+  const memoryTools = createRuntimeMemoryTools({
+    viewerEnabled,
+    viewerBaseUrl: `http://${viewerUrlHost}:${viewerPort}`,
+    dbPath: promptPackDbPath,
+    identityTarget: promptPackIdentityTarget,
+    runCli,
+    location: { directory, cwd },
+    log,
+    notify: hostNotify,
+  });
 
   const installCliUpdate = async (command) => {
     const result = await runCommand(command, { env: resolveAutoUpdateEnvironment(), timeoutMs: 480_000 });
@@ -4706,56 +4795,8 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         await flushEvents();
       }
     },
-    tools: {
-      "mem-status": {
-        description: "Show codemem stats and recent entries",
-        args: {},
-        async execute() {
-          const stats = await runCli(["stats"]);
-          const recent = await runCli(["recent", "--limit", "5"]);
-          const lines = [
-            `viewer: http://${viewerUrlHost}:${viewerPort}`,
-            `log: ${logPath || "disabled"}`,
-          ];
-          if (stats.exitCode === 0 && stats.stdout.trim()) {
-            lines.push("", "stats:", stats.stdout.trim());
-          }
-          if (recent.exitCode === 0 && recent.stdout.trim()) {
-            lines.push("", "recent:", recent.stdout.trim());
-          }
-          return lines.join("\n");
-        },
-      },
-
-      "mem-recent": {
-        description: "Show recent codemem entries",
-        args: {
-          limit: { type: "number", optional: true },
-        },
-        async execute({ limit }) {
-          // Number.isFinite accepts floats and negatives; coerce to a positive
-          // integer (default 5) before forwarding to the CLI.
-          const safeLimit = String(parsePositiveInt(limit, 5));
-          const recent = await runCli(["recent", "--limit", safeLimit]);
-          if (recent.exitCode === 0) {
-            return recent.stdout.trim() || "No recent memories.";
-          }
-          return `Failed to fetch recent: ${recent.stderr || recent.exitCode}`;
-        },
-      },
-
-      "mem-stats": {
-        description: "Show codemem stats",
-        args: {},
-        async execute() {
-          const stats = await runCli(["stats"]);
-          if (stats.exitCode === 0) {
-            return stats.stdout.trim() || "No stats yet.";
-          }
-          return `Failed to fetch stats: ${stats.stderr || stats.exitCode}`;
-        },
-      },
-    },
+    memoryTools,
+    tools: createCliStatusTools({ runCli, viewerUrlHost, viewerPort, logPath }),
   };
 };
 

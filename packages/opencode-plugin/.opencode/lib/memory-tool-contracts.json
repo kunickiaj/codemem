@@ -1,0 +1,1712 @@
+[
+	{
+		"name": "memory_search",
+		"description": "Keyword-search memories when you know exact terms or identifiers. Returns full body text for each match; use memory_search_index when you only need compact candidates.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string",
+					"description": "Search query"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Max results",
+					"default": 5
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["query"]
+		}
+	},
+	{
+		"name": "memory_search_index",
+		"description": "Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string",
+					"description": "Search query"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Max results",
+					"default": 8
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["query"]
+		}
+	},
+	{
+		"name": "memory_explain",
+		"description": "Explain search results with detailed scoring breakdown.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string",
+					"description": "Search query"
+				},
+				"ids": {
+					"type": "array",
+					"items": {
+						"type": "integer"
+					},
+					"maxItems": 200,
+					"description": "Specific memory IDs to explain"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Max results",
+					"default": 10
+				},
+				"include_pack_context": {
+					"type": "boolean",
+					"description": "Include formatted pack context",
+					"default": false
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "memory_recent",
+		"description": "Return recent memories, newest first.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100,
+					"description": "Max results",
+					"default": 8
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "memory_pack",
+		"description": "Build a formatted context block for a concept or task using keyword and semantic search when embeddings are available, with automatic keyword-only fallback. Use for conceptually relevant context; use memory_search or memory_search_index for exact identifiers.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"context": {
+					"type": "string",
+					"description": "Context description to search for"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Max items to include"
+				},
+				"compact": {
+					"type": "boolean",
+					"description": "When true, render a scannable index of all items with full detail only for the top N (default 3). Saves tokens when broad overview matters more than per-item detail."
+				},
+				"compact_detail_count": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 50,
+					"description": "Number of items to show in full detail in compact mode (default 3)"
+				},
+				"compression_mode": {
+					"type": "string",
+					"enum": ["off", "compact", "ids"],
+					"description": "Near-related compression mode: off disables it, compact applies only to compact rendering, ids applies in all modes. Defaults to CODEMEM_PACK_COMPRESSION or compact."
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["context"]
+		}
+	},
+	{
+		"name": "memory_timeline",
+		"description": "Get a chronological window of memories around an anchor (by ID or query).",
+		"input": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string",
+					"description": "Search query to find anchor"
+				},
+				"memory_id": {
+					"type": "integer",
+					"description": "Anchor memory ID"
+				},
+				"depth_before": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Items before anchor",
+					"default": 3
+				},
+				"depth_after": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Items after anchor",
+					"default": 3
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "memory_expand",
+		"description": "Fetch memories by ID with surrounding timeline context.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"ids": {
+					"type": "array",
+					"items": {
+						"anyOf": [
+							{
+								"type": "number"
+							},
+							{
+								"type": "string"
+							}
+						]
+					},
+					"maxItems": 200,
+					"description": "Memory IDs to expand"
+				},
+				"depth_before": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Timeline items before",
+					"default": 3
+				},
+				"depth_after": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Timeline items after",
+					"default": 3
+				},
+				"include_observations": {
+					"type": "boolean",
+					"description": "Include full observation details",
+					"default": false
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["ids"]
+		}
+	},
+	{
+		"name": "memory_get",
+		"description": "Fetch one memory by exact ID. Does not inherit the default project; optional filters constrain the lookup, and a mismatch returns not_found.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"memory_id": {
+					"type": "integer",
+					"description": "Memory ID"
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["memory_id"]
+		}
+	},
+	{
+		"name": "memory_get_observations",
+		"description": "Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"ids": {
+					"type": "array",
+					"items": {
+						"type": "integer"
+					},
+					"maxItems": 200,
+					"description": "Memory IDs to fetch"
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["ids"]
+		}
+	},
+	{
+		"name": "memory_remember",
+		"description": "Create a new memory. Use for milestones, decisions, and notable facts.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"kind": {
+					"type": "string",
+					"enum": [
+						"discovery",
+						"change",
+						"feature",
+						"bugfix",
+						"refactor",
+						"decision",
+						"exploration"
+					],
+					"description": "Memory kind"
+				},
+				"title": {
+					"type": "string",
+					"description": "Short title"
+				},
+				"body": {
+					"type": "string",
+					"description": "Body text (high-signal content)"
+				},
+				"confidence": {
+					"type": "number",
+					"minimum": 0,
+					"maximum": 1,
+					"description": "Confidence 0-1",
+					"default": 0.5
+				},
+				"project": {
+					"type": "string",
+					"description": "Project identifier"
+				}
+			},
+			"required": ["kind", "title", "body"]
+		}
+	},
+	{
+		"name": "memory_forget",
+		"description": "Soft-delete a memory by exact ID so it no longer appears in normal retrieval; this is not secure erasure. Does not inherit the default project; optional filters must match or the tool returns not_found.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"memory_id": {
+					"type": "integer",
+					"description": "Memory ID to forget"
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			},
+			"required": ["memory_id"]
+		}
+	},
+	{
+		"name": "memory_distill_candidates",
+		"description": "Mine recurring memories into reviewable context candidates. Reads project/user context files without modifying them and can call the optional observer when judge=true.",
+		"input": {
+			"type": "object",
+			"properties": {
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Max candidates",
+					"default": 10
+				},
+				"min_recurrence": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"description": "Minimum member count per candidate",
+					"default": 2
+				},
+				"all_projects": {
+					"type": "boolean",
+					"description": "Mine memories across all projects",
+					"default": false
+				},
+				"include_documented": {
+					"type": "boolean",
+					"description": "Include candidates already represented in context files",
+					"default": false
+				},
+				"max_evidence_items": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 20,
+					"description": "Evidence snippets per candidate",
+					"default": 5
+				},
+				"judge": {
+					"type": "boolean",
+					"description": "Judge candidates with the observer model and drop routine-activity clusters (on by default; falls back to unjudged output when no observer model is configured)",
+					"default": true
+				},
+				"kind": {
+					"type": "string",
+					"description": "Filter by memory kind"
+				},
+				"project": {
+					"type": "string",
+					"description": "Filter by project scope (matches sessions.project)"
+				},
+				"scope_id": {
+					"type": "string",
+					"description": "Filter by a single sharing domain scope_id"
+				},
+				"include_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to include"
+				},
+				"exclude_scope_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Sharing domain scope_ids to exclude"
+				},
+				"visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_visibility": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_workspace_kinds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_actor_ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"include_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"exclude_trust_states": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"ownership_scope": {
+					"type": "string"
+				},
+				"personal_first": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"trust_bias": {
+					"type": "string"
+				},
+				"widen_shared_when_weak": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "string"
+						}
+					]
+				},
+				"widen_shared_min_personal_results": {
+					"type": "integer"
+				},
+				"widen_shared_min_personal_score": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "memory_schema",
+		"description": "Return the memory schema — kinds, fields, and available filters.",
+		"input": {
+			"type": "object",
+			"properties": {}
+		}
+	},
+	{
+		"name": "memory_learn",
+		"description": "Learn how to use codemem memory tools. Call this first if unfamiliar.",
+		"input": {
+			"type": "object",
+			"properties": {}
+		}
+	}
+]
