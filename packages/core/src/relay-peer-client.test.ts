@@ -134,6 +134,34 @@ describe("actual relay peer HTTP exchange", () => {
 	);
 });
 
+describe("relay peer graceful socket close", () => {
+	it("completes a route opened while the relay socket closes gracefully, on a new socket", async () => {
+		// Arrange: a registered source, and one refilled upgrade for its reconnect.
+		const f = await fixture();
+		const target = f.client("target", {
+			onInbound: async (_connection, context) =>
+				context.serve({
+					origin: "https://peer.invalid",
+					dispatch: async () => ({ status: 200, bodyBytes: Buffer.from("{}") }),
+				}),
+		});
+		const source = f.client("source");
+		await target.connect(new AbortController().signal, relayDeadline());
+		await source.connect(new AbortController().signal, relayDeadline());
+		await new Promise((resolve) => setTimeout(resolve, 6100));
+		const socket = (source as unknown as { socket: WebSocket }).socket;
+		// Act: the socket enters CLOSING with no event yet, and a route opens in that window.
+		socket.close(1000);
+		expect(socket.readyState).toBe(WebSocket.CLOSING);
+		const result = await createPeerHttpExecutor({
+			factory: source.factory("target", f.identities.target.expectedPin),
+		})("GET", "https://peer.invalid/after-close");
+		// Assert
+		expect(result).toEqual([200, {}]);
+		expect((source as unknown as { socket: WebSocket }).socket).not.toBe(socket);
+	}, 20000);
+});
+
 describe("relay peer trust and independent admission", () => {
 	it.each(["source", "responder"])(
 		"requires the %s independent coordinator check before application dispatch",
