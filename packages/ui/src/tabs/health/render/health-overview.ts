@@ -22,6 +22,7 @@ import {
 	type SyncPeer,
 	state,
 } from "../../../lib/state";
+import { syncHealthLabel, syncHealthSummary } from "../../../lib/sync-health";
 import { formatAgentClientList } from "../../settings/data/value-helpers";
 import {
 	buildHealthCard,
@@ -37,16 +38,6 @@ import type { HealthAction, HealthCardInput } from "../types";
 import { selectPackUsage } from "../usage";
 
 const SCOPE_BACKFILL_JOB = "scope_id_backfill";
-const SYNC_PROBLEM_STATES = new Set([
-	"error",
-	"needs_attention",
-	"stopped",
-	"degraded",
-	"stale",
-	"offline-peers",
-	"rebootstrapping",
-]);
-const SYNC_TRANSITION_STATES = new Set(["starting", "stopping"]);
 const SYNC_STATE_LABELS: Record<string, string> = {
 	"offline-peers": "Offline peers",
 	needs_attention: "Needs attention",
@@ -318,6 +309,8 @@ function applySyncRecencyRisk(result: RiskResult, signals: OverviewSignals): voi
 
 function calculateRisk(signals: OverviewSignals): RiskResult {
 	const result: RiskResult = { score: 0, drivers: [] };
+	if (state.lastSyncStatus?.sync_health?.state === "needs_attention")
+		addRisk(result, 26, "device sync needs attention");
 	applyPipelineRisk(result, signals);
 	if (signals.hasLowTagCoverage) addRisk(result, 8, "low tag coverage");
 	if (signals.hasFailedMaintenance) addRisk(result, 30, "maintenance job failed");
@@ -428,41 +421,15 @@ function pipelineTile(signals: OverviewSignals): HealthTileInput {
 }
 
 function syncTile(signals: OverviewSignals): HealthTileInput {
-	if (signals.syncDisabled)
-		return tile("sync", "Sync", "Off", "unknown", "Daemon state and sync recency");
-	if (signals.syncState === "unknown") {
-		return tile("sync", "Sync", "Unknown", "unknown", "Daemon state and sync recency");
+	const health = state.lastSyncStatus?.sync_health;
+	if (!signals.syncDisabled) {
+		let tone: HealthTileInput["state"] = "unknown";
+		if (health?.state === "exchange_succeeded") tone = "online";
+		if (health?.state === "needs_attention") tone = "attention";
+		if (health?.state === "stale") tone = "degraded";
+		return tile("sync", "Sync", syncHealthLabel(health), tone, syncHealthSummary(health));
 	}
-	if (signals.syncNoPeers && signals.syncState !== "error") {
-		return tile("sync", "Sync", "No peers", "unknown", "Daemon state and sync recency");
-	}
-	if (signals.syncState === "ok" && signals.syncHasRecentFailedAttempt) {
-		return tile("sync", "Sync", "Degraded", "degraded", "Daemon state and sync recency");
-	}
-	if (
-		signals.syncState === "degraded" &&
-		signals.syncRecentlyOk &&
-		!signals.syncHasRecentFailedAttempt &&
-		signals.syncProblemPeers.length === 0
-	) {
-		return tile("sync", "Sync", "Syncing", "online", "Daemon state and sync recency");
-	}
-	if (SYNC_PROBLEM_STATES.has(signals.syncState)) {
-		return tile(
-			"sync",
-			"Sync",
-			signals.syncStateLabel,
-			"degraded",
-			"Daemon state and sync recency",
-		);
-	}
-	if (SYNC_TRANSITION_STATES.has(signals.syncState)) {
-		return tile("sync", "Sync", signals.syncStateLabel, "unknown", "Daemon state and sync recency");
-	}
-	if (signals.syncLooksStale) {
-		return tile("sync", "Sync", "Stale", "degraded", "Daemon state and sync recency");
-	}
-	return tile("sync", "Sync", "On", "online", "Daemon state and sync recency");
+	return tile("sync", "Sync", "Off", "unknown", "Sync is disabled");
 }
 
 function retrievalTile(signals: OverviewSignals): HealthTileInput {
@@ -699,9 +666,15 @@ export function renderHealthOverview(): void {
 	}
 	const signals = deriveOverviewSignals(stats, usage, raw);
 	const risk = calculateRisk(signals);
-	const hasStaleData = [state.healthStats, state.healthUsage, state.healthRawEvents].some(
-		(resource) => healthResourceIsStale(resource),
-	);
+	const syncEvidence = state.lastSyncStatus?.sync_health;
+	const syncUnverified =
+		!signals.syncDisabled &&
+		(!syncEvidence || ["not_verified", "stale"].includes(syncEvidence.state));
+	const hasStaleData =
+		syncUnverified ||
+		[state.healthStats, state.healthUsage, state.healthRawEvents].some((resource) =>
+			healthResourceIsStale(resource),
+		);
 	commitHealthOverview(mounts, signals, risk, healthStatus(risk.score, hasStaleData), hasStaleData);
 }
 

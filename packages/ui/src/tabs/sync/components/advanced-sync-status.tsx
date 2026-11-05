@@ -1,5 +1,7 @@
 import { Chip } from "../../../components/primitives/chip";
 import { PresencePip } from "../../../components/primitives/presence-pip";
+import { SyncHealthSummary } from "../../../components/sync-health";
+import { state } from "../../../lib/state";
 import type { UiTeamSyncPrimaryStatus } from "../view-model";
 
 export function AdvancedSyncStatus({ status }: { status: UiTeamSyncPrimaryStatus }) {
@@ -14,17 +16,8 @@ export function AdvancedSyncStatus({ status }: { status: UiTeamSyncPrimaryStatus
 			</div>
 		);
 	}
-	if (status.state === "healthy") {
-		return (
-			<div className="advanced-sync-status-label">
-				<PresencePip aria-label="Sync on" state="online" />
-				<strong className="xl">Sync is on</strong>
-				<Chip tone="badge-online" variant="badge">
-					On
-				</Chip>
-			</div>
-		);
-	}
+	if (status.state !== "needs-attention")
+		return <SyncHealthSummary health={state.lastSyncStatus?.sync_health} />;
 	return (
 		<div className="advanced-sync-status-label">
 			<PresencePip aria-label="Sync needs attention" state="degraded" />

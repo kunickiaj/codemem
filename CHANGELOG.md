@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.47.4] - 2026-11-05
+
+### Fixed
+
+- Sync keeps outbound operations available for retry when a peer reports failures applying a batch, instead of advancing past them. ([#2451])
+- Devices, Health, and Advanced Sync show independent send and receive evidence. Unknown history is no longer treated as zero, one successful peer cannot hide another peer's failure, and a failed refresh clears stale success until a successful refresh restores it. ([#2475], [#2476], [#2477])
+- Remote MCP public-client registration accepts the exact Google callback `https://oauth-redirect.googleusercontent.com/r/google-gemini`. Other Google callbacks remain rejected. A live Gemini web connection has not yet been verified. ([#2522])
+
+### Changed
+
+- Maintenance releases can ship from the matching `release/X.Y` branch after version and remote-ancestry checks. Stable `.0` releases create their maintenance branch when absent, and older stable releases use a series-specific npm tag rather than replacing `latest`. ([#2531])
+
+**Upgrade notes:**
+
+- Restart the Viewer, agent host, and remote MCP server after upgrading.
+- Sync activity starts as **Not verified** until a direction is observed. Additional local tables record activity, and retained transfer IDs use more database space as activity accumulates. Idle passes now send an authenticated empty request to verify the send path.
+- A persistent receiver-side apply error now keeps the affected outbound window available for retry and reports a failure. Review sync diagnostics and fix the underlying error before retrying.
+- MCP registration still requires public clients with `token_endpoint_auth_method=none`. Direct browser requests from `https://gemini.google.com` remain blocked by the separate Origin check.
+
 ## [0.47.3] - 2026-10-28
 
 ### Added
@@ -228,7 +247,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.3...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.4...HEAD
+[0.47.4]: https://github.com/kunickiaj/codemem/compare/v0.47.3...v0.47.4
 [0.47.3]: https://github.com/kunickiaj/codemem/compare/v0.47.2...v0.47.3
 [0.47.2]: https://github.com/kunickiaj/codemem/compare/v0.47.1...v0.47.2
 [0.47.1]: https://github.com/kunickiaj/codemem/compare/v0.47.0...v0.47.1
@@ -303,3 +323,9 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2426]: https://github.com/kunickiaj/codemem/pull/2426
 [#2427]: https://github.com/kunickiaj/codemem/pull/2427
 [#2428]: https://github.com/kunickiaj/codemem/pull/2428
+[#2451]: https://github.com/kunickiaj/codemem/pull/2451
+[#2475]: https://github.com/kunickiaj/codemem/pull/2475
+[#2476]: https://github.com/kunickiaj/codemem/pull/2476
+[#2477]: https://github.com/kunickiaj/codemem/pull/2477
+[#2522]: https://github.com/kunickiaj/codemem/pull/2522
+[#2531]: https://github.com/kunickiaj/codemem/pull/2531

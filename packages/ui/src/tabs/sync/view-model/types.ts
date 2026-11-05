@@ -261,6 +261,7 @@ export interface PeerClaimedLocalActorScopeLike {
 }
 
 export interface PeerLike {
+	sync_health?: import("../../../lib/sync-health").PeerSyncHealth | null;
 	peer_device_id?: string;
 	name?: string;
 	discovered_via_coordinator_id?: string | null;
