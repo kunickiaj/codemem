@@ -9,6 +9,7 @@ import {
 	type RelayCoordinatorClientOptions,
 	type RelayServerLimits,
 	type RelayServerSocket,
+	relayAddressKey,
 	relayAudienceId,
 	relayQuotaShardProfile,
 	type SqliteRelayQuotaPort,
@@ -133,7 +134,7 @@ function closeQuietly(webSocket: WebSocket, code: number): void {
  * Requests without it, such as local development, share one conservative bucket.
  */
 function clientAddress(request: Request): string {
-	return request.headers.get("CF-Connecting-IP")?.trim() ?? "";
+	return relayAddressKey(request.headers.get("CF-Connecting-IP") ?? "");
 }
 
 function isUpgrade(request: Request): boolean {

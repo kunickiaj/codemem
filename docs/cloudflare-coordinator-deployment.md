@@ -367,7 +367,7 @@ on its first event, so the total stays within each ceiling without another call.
 never raised. Relay supports at most 8 groups per Worker, because each group's control share must keep two tokens for the challenge and registration that every connection sends back to back. With more groups, relay stays off.
 Each realm also limits upgrades per client address, using the `CF-Connecting-IP` header that
 Cloudflare sets: at most two sockets that have not registered yet, and ten upgrade attempts a
-minute with a burst of two. Excess upgrades get `429`. Devices behind one NAT share that
+minute with a burst of two. IPv6 clients are grouped by /64. Excess upgrades get `429`. Devices behind one NAT, or in one IPv6 /64, share that
 allowance, so a third device connecting to the same group at the same moment retries a few
 seconds later.
 `"enabled":false` switches the realm off without a deploy: new upgrades are refused and open
