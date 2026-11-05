@@ -44,6 +44,12 @@ unsupported or unauthorized scopes cannot enter the legacy default-scope path.
 
 Status returns the requested scope's reset boundary and one `authorized_scopes`
 entry. It does not enumerate other scopes or return the legacy default boundary.
+The entry also carries `applied_cursor`: the `created_at|op_id` of the last op
+this device applied from the calling peer in that scope, or null. It describes
+only the authenticated peer's own ops. The client's push starts after the later
+of that cursor and its own saved acknowledgement, so a peer that already pulled
+the ops directly is not sent them again. An absent or malformed value changes
+nothing, and the saved acknowledgement never moves backwards.
 Snapshot uses the same explicit scope authorization before loading any page,
 and preserves the existing generation, snapshot ID and page-token checks.
 

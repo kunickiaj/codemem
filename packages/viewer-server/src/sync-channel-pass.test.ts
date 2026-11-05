@@ -787,6 +787,70 @@ it("fails an unsplittable oversized operation without sending it or advancing AC
 	expect(outboundAck(f)).toBeNull();
 });
 
+it("starts the first relayed push after the ops the peer already pulled directly", async () => {
+	// Arrange: the remote pulled the client's first two ops over direct sync before relay.
+	// Seeded ops share one created_at, so op IDs decide the window order here.
+	const f = await fixture();
+	incremental(f);
+	const direct = ["a-pulled", "b-pulled"].map((id) => f.seed("client", id));
+	const last = direct.at(-1);
+	if (!last) throw new Error("seed failed");
+	setReplicationCursor(
+		f.remote.store.db,
+		f.remote.peerDeviceId,
+		{ lastApplied: `${last.created_at}|${last.op_id}` },
+		SCOPE,
+	);
+	f.seed("client", "c-new-after-direct");
+	// Act
+	const result = await syncScopedChannelOnce(f.options);
+	// Assert: only the new op is sent, and the ACK covers everything the remote has.
+	expect(result).toMatchObject({ ok: true, opsOut: 1 });
+	expect(
+		posts(f).flatMap((request) =>
+			JSON.parse(Buffer.from(request.bodyBytes).toString()).ops.map(
+				(op: { op_id: string }) => op.op_id,
+			),
+		),
+	).toEqual(["c-new-after-direct-op"]);
+	expect(outboundAck(f)).toContain("|c-new-after-direct-op");
+});
+
+it("records the peer's position when it already has every op, and ignores a malformed one", async () => {
+	const f = await fixture();
+	incremental(f);
+	const op = f.seed("client", "a-already-there");
+	setReplicationCursor(
+		f.remote.store.db,
+		f.remote.peerDeviceId,
+		{ lastApplied: `${op.created_at}|${op.op_id}` },
+		SCOPE,
+	);
+	const result = await syncScopedChannelOnce(f.options);
+	expect(result).toMatchObject({ ok: true, opsOut: 0 });
+	expect(posts(f)).toEqual([]);
+	expect(outboundAck(f)).toBe(`${op.created_at}|${op.op_id}`);
+	// A later pass whose status reports a malformed cursor still pushes from the saved ACK.
+	f.seed("client", "b-second");
+	f.control.afterDispatch = (request, response) => {
+		if (!request.target.startsWith("/v1/status")) return response;
+		const payload = JSON.parse(Buffer.from(response.bodyBytes).toString());
+		payload.authorized_scopes[0].applied_cursor = "no-separator";
+		return { ...response, bodyBytes: bytes(payload) };
+	};
+	expect(await syncScopedChannelOnce(f.options)).toMatchObject({ ok: true, opsOut: 1 });
+	expect(outboundAck(f)).toContain("|b-second-op");
+	// An idle pass whose status reports a position behind the saved ACK keeps the ACK and succeeds.
+	f.control.afterDispatch = (request, response) => {
+		if (!request.target.startsWith("/v1/status")) return response;
+		const payload = JSON.parse(Buffer.from(response.bodyBytes).toString());
+		payload.authorized_scopes[0].applied_cursor = `${op.created_at}|${op.op_id}`;
+		return { ...response, bodyBytes: bytes(payload) };
+	};
+	expect(await syncScopedChannelOnce(f.options)).toMatchObject({ ok: true, opsOut: 0 });
+	expect(outboundAck(f)).toContain("|b-second-op");
+});
+
 it("saves the outbound ACK after each confirmed push batch, so a later failure keeps earlier progress", async () => {
 	// Arrange: three ~600 KB operations push as three batches; the second POST fails unapplied.
 	const f = await fixture();

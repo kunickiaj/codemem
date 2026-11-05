@@ -9,6 +9,7 @@ import {
 import { isScopedSyncCapability, type SyncCapability } from "./sync-capability.js";
 import {
 	DEFAULT_SYNC_SCOPE_ID,
+	getReplicationCursor,
 	getSyncResetState,
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 } from "./sync-replication.js";
@@ -189,6 +190,12 @@ export interface AuthorizedScopeEntry {
 	authority_type: string;
 	membership_epoch: number;
 	sync_reset: SyncResetBoundaryShape & { scope_id: string | null };
+	/**
+	 * The `created_at|op_id` cursor of the last op this device applied from the
+	 * calling peer in this Space, or null. Only the authenticated peer's own
+	 * cursor is reported. A peer that pushes can start after it.
+	 */
+	applied_cursor?: string | null;
 }
 
 /**
@@ -225,8 +232,10 @@ export function listAuthorizedScopesForPeer(
 	);
 	return memberships.map((scope) => {
 		const reset = getSyncResetState(db, scope.scope_id);
+		const [appliedCursor] = getReplicationCursor(db, options.peerDeviceId, scope.scope_id);
 		return {
 			...scope,
+			applied_cursor: appliedCursor,
 			sync_reset: {
 				scope_id: scope.scope_id,
 				generation: reset.generation,
