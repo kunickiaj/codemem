@@ -46,6 +46,7 @@ export {
 export type { RelayQuotaPort, RelayServerLimits, RelayServerOptions } from "../relay-server.js";
 export {
 	approveRelayServiceKey,
+	listRelayServicePins,
 	type RelayServicePin,
 	type RelayServicePinOutcome,
 	readRelayServicePin,

@@ -59,6 +59,7 @@ import {
 	parseProjectList,
 	type SyncLifecycleOptions,
 } from "./sync-helpers.js";
+import { approveRelayKeyCommand, relayKeysCommand } from "./sync-relay-keys.js";
 
 function readCliConfig(configPath?: string): Record<string, unknown> {
 	return configPath ? readCodememConfigFileAtPath(configPath) : readCodememConfigFile();
@@ -1199,6 +1200,8 @@ peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; js
 });
 peersCommand.addCommand(peersRemoveCmd);
 syncCommand.addCommand(peersCommand);
+syncCommand.addCommand(relayKeysCommand);
+syncCommand.addCommand(approveRelayKeyCommand);
 
 // ---- sync bootstrap <peer-device-id> ----
 

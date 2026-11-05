@@ -8,7 +8,8 @@
 			"@codemem/core": ["./packages/core/src/index.ts"],
 			"@codemem/core/internal/cloudflare-coordinator": [
 				"./packages/core/src/internal/cloudflare-coordinator.ts"
-			]
+			],
+			"@codemem/core/internal/relay-runtime": ["./packages/core/src/internal/relay-runtime.ts"]
 		},
 		"lib": ["ES2024"],
 		"strict": true,
