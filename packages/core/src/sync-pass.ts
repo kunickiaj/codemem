@@ -36,7 +36,7 @@ import {
 	categorizeSyncFailure,
 	storedAddressFailureCategory,
 } from "./sync-failure-classification.js";
-import { buildBaseUrl, requestJson } from "./sync-http-client.js";
+import { buildBaseUrl, type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import {
 	applyReplicationOps,
@@ -160,6 +160,7 @@ export interface SyncScopeResult {
 }
 
 export interface SyncPassOptions {
+	requestExecutor?: RequestJsonExecutor;
 	limit?: number;
 	keysDir?: string;
 	dbPath?: string;
@@ -451,11 +452,23 @@ function loadLocalOpsSince(
  */
 const MAX_PUSH_SPLIT_DEPTH = 8;
 
+function hasPeerApplyErrors(payload: Record<string, unknown>): boolean {
+	if (Object.hasOwn(payload, "error")) {
+		const error = payload.error;
+		if (error != null) return true;
+	}
+	// Legacy peers may omit errors. A present field must explicitly report no failures.
+	if (!Object.hasOwn(payload, "errors")) return false;
+	const errors = payload.errors;
+	return !Array.isArray(errors) || errors.length > 0;
+}
+
 async function pushOps(
 	postUrl: string,
 	deviceId: string,
 	recipientId: string,
 	ops: ReplicationOp[],
+	requestExecutor: RequestJsonExecutor,
 	keysDir?: string,
 	dbPath?: string,
 	depth = 0,
@@ -480,13 +493,18 @@ async function pushOps(
 		}),
 		...capabilityHeader(),
 	};
-	const [status, payload] = await requestJson("POST", postUrl, {
+	const [status, payload] = await requestExecutor("POST", postUrl, {
 		headers,
 		body,
 		bodyBytes,
 	});
 
-	if (status === 200 && payload != null) return;
+	if (status === 200 && payload != null) {
+		if (hasPeerApplyErrors(payload)) {
+			throw new Error("peer ops push failed (200: peer reported apply errors)");
+		}
+		return;
+	}
 
 	const detail = errorDetail(payload);
 	if (
@@ -496,8 +514,18 @@ async function pushOps(
 		(detail === "payload_too_large" || detail === "too_many_ops")
 	) {
 		const mid = Math.floor(ops.length / 2);
-		await pushOps(postUrl, deviceId, recipientId, ops.slice(0, mid), keysDir, dbPath, depth + 1);
-		await pushOps(postUrl, deviceId, recipientId, ops.slice(mid), keysDir, dbPath, depth + 1);
+		for (const batch of [ops.slice(0, mid), ops.slice(mid)]) {
+			await pushOps(
+				postUrl,
+				deviceId,
+				recipientId,
+				batch,
+				requestExecutor,
+				keysDir,
+				dbPath,
+				depth + 1,
+			);
+		}
 		return;
 	}
 
@@ -677,6 +705,7 @@ function aggregateScopeFailureCategory(
  */
 async function runScopedSync(
 	db: Database,
+	requestExecutor: RequestJsonExecutor,
 	options: {
 		peerDeviceId: string;
 		baseUrl: string;
@@ -699,6 +728,7 @@ async function runScopedSync(
 			peerDeviceId: options.peerDeviceId,
 			baseUrl: options.baseUrl,
 			deviceId: options.deviceId,
+			requestExecutor,
 			scope,
 			keysDir: options.keysDir,
 			dbPath: options.dbPath,
@@ -737,6 +767,7 @@ async function syncOneScope(
 		baseUrl: string;
 		deviceId: string;
 		scope: PeerAuthorizedScope;
+		requestExecutor: RequestJsonExecutor;
 		keysDir?: string;
 		dbPath?: string;
 		scanner?: SecretScanner;
@@ -744,6 +775,14 @@ async function syncOneScope(
 	},
 ): Promise<SyncScopeResult> {
 	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, dbPath, scanner, limit } = options;
+	const bootstrapOptions = {
+		requestExecutor: options.requestExecutor,
+		keysDir,
+		dbPath,
+		recipientId: peerDeviceId,
+		pageSize: BOOTSTRAP_PAGE_SIZE,
+		timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
+	};
 	const scopeId = scope.scope_id;
 	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scopeId);
 	const hasNullBaselineBootstrapMarker = lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
@@ -800,13 +839,7 @@ async function syncOneScope(
 				reset_required: true,
 				reason: "initial_bootstrap" as SyncResetRequired["reason"],
 			};
-			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
-				keysDir,
-				dbPath,
-				recipientId: peerDeviceId,
-				pageSize: BOOTSTRAP_PAGE_SIZE,
-				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
-			});
+			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
 			const mergeResult = mergeBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!mergeResult.ok) {
 				const error = "scoped merge bootstrap apply failed";
@@ -859,13 +892,7 @@ async function syncOneScope(
 				reset_required: true,
 				reason: "initial_bootstrap" as SyncResetRequired["reason"],
 			};
-			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, {
-				keysDir,
-				dbPath,
-				recipientId: peerDeviceId,
-				pageSize: BOOTSTRAP_PAGE_SIZE,
-				timeoutS: BOOTSTRAP_REQUEST_TIMEOUT_S,
-			});
+			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
 			// TOCTOU re-check: another process (CLI write, plugin, concurrent
 			// sync pass) could have created shared memories in this scope while
 			// the snapshot was downloading. applyBootstrapSnapshot wipes all
@@ -949,7 +976,7 @@ async function syncOneScope(
 			}),
 			...capabilityHeader(),
 		};
-		const [status, payload] = await requestJson("GET", url, { headers });
+		const [status, payload] = await options.requestExecutor("GET", url, { headers });
 
 		if (status === 409 && payload?.reset_required === true) {
 			// Per-scope reset requested. Clear the stale scoped cursor so the
@@ -1159,6 +1186,7 @@ export function syncPassPreflight(db: Database): void {
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
 
 interface SyncExchangeContext {
+	requestExecutor: RequestJsonExecutor;
 	db: Database;
 	peerDeviceId: string;
 	deviceId: string;
@@ -1225,7 +1253,7 @@ async function negotiatePeerExchange(
 		...capabilityHeader(),
 		...(context.refreshAuthorization ? { [SYNC_AUTHORIZATION_REFRESH_HEADER]: "1" } : {}),
 	};
-	const [statusCode, statusPayload] = await requestJson("GET", statusUrl, {
+	const [statusCode, statusPayload] = await context.requestExecutor("GET", statusUrl, {
 		headers: statusHeaders,
 	});
 	if (statusCode !== 200 || !statusPayload) {
@@ -1317,7 +1345,7 @@ async function finishInitialBootstrap(
 	if (!bootstrap.ok) throw new Error("initial bootstrap apply failed");
 	const scoped =
 		peer.capabilities.negotiated === "scoped"
-			? await runScopedSync(context.db, {
+			? await runScopedSync(context.db, context.requestExecutor, {
 					peerDeviceId: context.peerDeviceId,
 					baseUrl: peer.baseUrl,
 					deviceId: context.deviceId,
@@ -1372,6 +1400,7 @@ async function performInitialBootstrap(
 	const accessDenied = snapshotAccessDenied(context, peer, resetInfo);
 	if (accessDenied) return accessDenied;
 	const { items } = await fetchAllSnapshotPages(peer.baseUrl, resetInfo, context.deviceId, {
+		requestExecutor: context.requestExecutor,
 		keysDir: context.keysDir,
 		dbPath: context.dbPath,
 		recipientId: context.peerDeviceId,
@@ -1496,6 +1525,7 @@ async function performResetBootstrap(
 		const accessDenied = snapshotAccessDenied(context, peer, resetRequired);
 		if (accessDenied) return accessDenied;
 		const { items } = await fetchAllSnapshotPages(peer.baseUrl, resetRequired, context.deviceId, {
+			requestExecutor: context.requestExecutor,
 			keysDir: context.keysDir,
 			dbPath: context.dbPath,
 			recipientId: context.peerDeviceId,
@@ -1576,7 +1606,7 @@ async function pullDefaultScope(
 		}),
 		...capabilityHeader(),
 	};
-	const [status, payload] = await requestJson("GET", getUrl, { headers: getHeaders });
+	const [status, payload] = await context.requestExecutor("GET", getUrl, { headers: getHeaders });
 	if (status === 409 && payload?.reset_required === true) {
 		return {
 			kind: "result",
@@ -1683,6 +1713,7 @@ async function pushDefaultScope(
 			context.deviceId,
 			context.peerDeviceId,
 			batch,
+			context.requestExecutor,
 			context.keysDir,
 			context.dbPath,
 		);
@@ -1709,7 +1740,7 @@ async function finishIncrementalExchange(
 ): Promise<SyncResult> {
 	const scoped =
 		peer.capabilities.negotiated === "scoped"
-			? await runScopedSync(context.db, {
+			? await runScopedSync(context.db, context.requestExecutor, {
 					peerDeviceId: context.peerDeviceId,
 					baseUrl: peer.baseUrl,
 					deviceId: context.deviceId,
@@ -1882,6 +1913,7 @@ function prepareSyncExchange(
 	return {
 		kind: "ready",
 		context: {
+			requestExecutor: options?.requestExecutor ?? requestJson,
 			db,
 			peerDeviceId,
 			deviceId,
