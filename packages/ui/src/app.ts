@@ -629,6 +629,7 @@ function deriveDevicePeerSyncMetadata(statusAvailable: boolean): DevicePeerSyncI
 				lastSyncAt: peer.last_sync_at ?? peer.status?.last_sync_at ?? null,
 				recentIn: safeRecentOps(peer.recent_ops?.in),
 				recentOut: safeRecentOps(peer.recent_ops?.out),
+				syncHealth: peer.sync_health,
 				statusAvailable,
 			},
 		];

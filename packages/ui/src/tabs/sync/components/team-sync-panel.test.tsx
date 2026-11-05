@@ -169,8 +169,8 @@ describe("TeamSyncPanel primary status", () => {
 			[
 				"enrolled and reachable only",
 				{ status: { enabled: true, daemon_state: "ok" }, coordinator },
-				"Reachable",
-				"Pair and approve",
+				"Not verified",
+				"Review Sending and Receiving",
 			],
 			[
 				"not enrolled",
@@ -211,15 +211,28 @@ describe("TeamSyncPanel primary status", () => {
 		expect(root.textContent).not.toContain(deriveTeamSyncPrimaryStatus(input).meta);
 	});
 
-	it("reserves no-urgent copy for healthy enabled data-plane sync", () => {
+	it("reserves no-urgent copy for server-confirmed recent exchanges", () => {
+		// Arrange / Act
 		const root = renderPrimaryStatus(
 			deriveTeamSyncPrimaryStatus({
-				status: { enabled: true, daemon_state: "ok", daemon_running: true },
+				status: {
+					enabled: true,
+					daemon_state: "ok",
+					daemon_running: true,
+					sync_health: {
+						state: "exchange_succeeded",
+						peer_count: 1,
+						attention_count: 0,
+						unverified_count: 0,
+						stale_count: 0,
+					},
+				},
 				coordinator,
 				peers: [healthyPeer],
 			}),
 		);
 
+		// Assert
 		expect(root.textContent).toContain("No urgent team work right now.");
 		expect(root.querySelector("[data-primary-sync-state]")).toBeNull();
 	});

@@ -5,6 +5,7 @@ import { ActionMenu, type MenuAction } from "../components/primitives/action-men
 import { Chip } from "../components/primitives/chip";
 import { NativeSelect } from "../components/primitives/native-select";
 import { PresencePip } from "../components/primitives/presence-pip";
+import { DirectionalSyncHealth, SyncHealthSummary } from "../components/sync-health";
 import type {
 	RecipientPolicyIntentGraphV1,
 	RecipientPolicyReconciliationReadState,
@@ -25,8 +26,8 @@ import {
 	deviceIdentitySetupGate,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
-import { formatTimestamp } from "../lib/format";
 import { state } from "../lib/state";
+import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { RenameDevicePanel } from "./device-rename";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
@@ -49,6 +50,7 @@ export interface DevicePeerRuntimeMetadataInput {
 }
 
 export interface DevicePeerSyncInput {
+	syncHealth?: PeerSyncHealth | null;
 	deviceId: string;
 	paired: boolean;
 	status: "ok" | "error" | "stale" | "unknown";
@@ -1428,13 +1430,10 @@ function syncHealthLabel(
 ): string {
 	const peer = device.syncPeer;
 	if (isLocal) return "This device";
-	if (statusUnavailable) return "Sync status unavailable";
+	if (statusUnavailable) return "Not verified";
 	if (!peer) return "Not paired here";
 	if (!peer.paired) return "Pairing required";
-	if (peer.status === "ok") return "Synced recently";
-	if (peer.status === "error") return "Needs attention";
-	if (peer.status === "stale") return "Not recent";
-	return peer.lastSyncAt ? "Sync status unknown" : "No sync yet";
+	return evidenceLabel(peer.syncHealth);
 }
 
 function DeviceSyncCell({
@@ -1460,14 +1459,8 @@ function DeviceSyncCell({
 					Syncing this device…
 				</span>
 			) : null}
-			{showCounts ? (
-				<>
-					<span>Last sync: {formatTimestamp(peer.lastSyncAt)}</span>
-					<span>
-						24h: received {peer.recentIn?.toLocaleString() ?? "—"} · sent{" "}
-						{peer.recentOut?.toLocaleString() ?? "—"}
-					</span>
-				</>
+			{!isLocal && peer?.paired ? (
+				<DirectionalSyncHealth health={showCounts ? peer.syncHealth : null} />
 			) : null}
 			{feedback ? (
 				<span aria-live="polite" className="small" data-tone={feedback.tone} role="status">
@@ -2282,6 +2275,12 @@ function DevicesView({
 	);
 }
 
+function DevicesSyncSummary({ options }: { options: DevicesRendererOptions }) {
+	const unavailable =
+		options.refreshError || options.syncStatusUnavailable || options.loading || options.loadError;
+	return <SyncHealthSummary health={state.lastSyncStatus?.sync_health} unavailable={unavailable} />;
+}
+
 function DevicesRoot({
 	intent,
 	options,
@@ -2346,6 +2345,7 @@ function DevicesRoot({
 			{pairingOpen ? (
 				<PairingPanel onClose={closePairing} showExplanation={showPairingExplanation} />
 			) : null}
+			<DevicesSyncSummary options={options} />
 			<DevicesView
 				intent={intent}
 				onOpenPairing={openPairing}

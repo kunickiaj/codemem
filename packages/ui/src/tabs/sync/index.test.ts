@@ -130,7 +130,8 @@ describe("initial sync import availability", () => {
 			expect(panel.parentElement?.id).toBe("syncJoinSection");
 			expect(panel.querySelector("textarea")?.value).toBe("pending invite");
 			expect(panel.querySelector("button")?.disabled).toBe(false);
-			expect(renderTeamSync).not.toHaveBeenCalled();
+			// Failed reads rerender Team sync to remove retained success evidence.
+			expect(renderTeamSync).toHaveBeenCalledOnce();
 
 			vi.mocked(api.loadSyncStatus).mockResolvedValueOnce({ peers: [] } as never);
 			vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
@@ -138,11 +139,187 @@ describe("initial sync import availability", () => {
 			vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
 			vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({} as never);
 			await expect(loadSyncData()).resolves.toBe(true);
-			expect(renderTeamSync).toHaveBeenCalledOnce();
+			expect(renderTeamSync).toHaveBeenCalledTimes(2);
 			expect(panel.hidden).toBe(false);
 			document.body.innerHTML = "";
 		},
 	);
+});
+
+describe("sync directional health payload", () => {
+	beforeEach(() => resetSyncTestState("advanced"));
+
+	it("copies root health into cached status and restores identical evidence after a failed refresh", async () => {
+		// Arrange: the API contract puts aggregate health beside status, not inside it.
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		const { renderTeamSync } = await import("./team-sync");
+		const health = {
+			state: "exchange_succeeded" as const,
+			peer_count: 1,
+			attention_count: 0,
+			unverified_count: 0,
+			stale_count: 0,
+		};
+		const direction = {
+			state: "succeeded" as const,
+			last_attempt_at: null,
+			last_success_at: "2026-11-02T18:00:00Z",
+			operations_24h: 0,
+			pending_count: null,
+			reason_code: null,
+		};
+		const payload = {
+			status: { enabled: true, daemon_state: "ok" },
+			sync_health: health,
+			coordinator: {
+				configured: true,
+				sync_enabled: true,
+				groups: ["Example"],
+				presence_status: "posted",
+			},
+			peers: [
+				{
+					peer_device_id: "peer-a",
+					status: { peer_state: "online", sync_status: "ok" },
+					sync_health: { state: "exchange_succeeded", send: direction, receive: direction },
+				},
+			],
+		};
+		vi.mocked(api.loadSyncStatus).mockResolvedValue(payload as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+		vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({} as never);
+		// Act / Assert: initial success retains both levels of evidence.
+		expect(await loadSyncData()).toBe(true);
+		expect(state.lastSyncStatus?.sync_health).toEqual(health);
+		expect(state.lastSyncPeers[0]?.sync_health?.send).toEqual(direction);
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).toBe("Recent exchange");
+		vi.mocked(api.loadSyncStatus).mockRejectedValueOnce(new Error("status unavailable"));
+		expect(await loadSyncData({ requireFreshSyncStatus: true })).toBe(false);
+		expect(state.lastSyncStatus?.sync_health).toBeNull();
+		expect(state.lastSyncPeers[0]?.sync_health).toBeNull();
+		expect(state.lastSyncViewModel?.primaryStatus.badgeLabel).not.toBe("Recent exchange");
+		const renders = vi.mocked(renderTeamSync).mock.calls.length;
+		// Act: the payload is byte-identical to the one before failure.
+		expect(await loadSyncData({ requireFreshSyncStatus: true })).toBe(true);
+		// Assert: deduplication must not retain the invalidated summary.
+		expect(state.lastSyncStatus?.sync_health).toEqual(health);
+		expect(state.lastSyncPeers[0]?.sync_health?.receive).toEqual(direction);
+		expect(vi.mocked(renderTeamSync).mock.calls.length).toBeGreaterThan(renders);
+	});
+});
+
+describe("Health sync response cache after failure", () => {
+	beforeEach(() => resetSyncTestState("advanced"));
+
+	it("requires a fresh server success before restoring health after a forced refresh fails", async () => {
+		// Arrange: freeze time so every refresh occurs inside the 15-second cache TTL.
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+		state.activeTab = "health";
+		const health = {
+			state: "exchange_succeeded" as const,
+			peer_count: 1,
+			attention_count: 0,
+			unverified_count: 0,
+			stale_count: 0,
+		};
+		const direction = {
+			state: "succeeded" as const,
+			last_attempt_at: null,
+			last_success_at: "2026-11-02T18:00:00Z",
+			operations_24h: 0,
+			pending_count: null,
+			reason_code: null,
+		};
+		const payload = {
+			status: { enabled: true, daemon_state: "ok" },
+			sync_health: health,
+			peers: [
+				{
+					peer_device_id: "peer-a",
+					sync_health: { state: "exchange_succeeded", send: direction, receive: direction },
+				},
+			],
+		};
+		vi.mocked(api.loadSyncStatus)
+			.mockResolvedValueOnce(payload)
+			.mockRejectedValueOnce(new Error("forced refresh unavailable"))
+			.mockRejectedValueOnce(new Error("normal refresh still unavailable"))
+			.mockResolvedValueOnce(payload);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+		try {
+			// Act / Assert: initial success populates the response cache and displayed evidence.
+			expect(await loadSyncData({ requiredSurface: "health" })).toBe(true);
+			expect(api.loadSyncStatus).toHaveBeenCalledTimes(1);
+			expect(state.lastSyncStatus?.sync_health).toEqual(health);
+			expect(state.lastSyncPeers[0]?.sync_health?.receive).toEqual(direction);
+
+			// Act / Assert: a forced refresh failure invalidates both levels of evidence.
+			expect(await loadSyncData({ requiredSurface: "health", requireFreshSyncStatus: true })).toBe(
+				false,
+			);
+			expect(api.loadSyncStatus).toHaveBeenCalledTimes(2);
+			expect(state.lastSyncStatus?.sync_health).toBeNull();
+			expect(state.lastSyncPeers[0]?.sync_health).toBeNull();
+
+			// Act / Assert: normal polling must contact the server instead of restoring cached success.
+			expect(await loadSyncData({ requiredSurface: "health" })).toBe(false);
+			expect(api.loadSyncStatus).toHaveBeenCalledTimes(3);
+			expect(state.lastSyncStatus?.sync_health).toBeNull();
+			expect(state.lastSyncPeers[0]?.sync_health).toBeNull();
+			expect(state.lastSyncViewModel).toBeNull();
+
+			// Act / Assert: only a new successful response restores directional health.
+			expect(await loadSyncData({ requiredSurface: "health" })).toBe(true);
+			expect(api.loadSyncStatus).toHaveBeenCalledTimes(4);
+			expect(state.lastSyncStatus?.sync_health).toEqual(health);
+			expect(state.lastSyncPeers[0]?.sync_health?.send).toEqual(direction);
+		} finally {
+			now.mockRestore();
+		}
+	});
+});
+
+describe("sync health older-server fallback", () => {
+	beforeEach(() => resetSyncTestState("advanced"));
+	it("drops previous aggregate and direction evidence when an older server responds", async () => {
+		// Arrange
+		const api = await import("../../lib/api");
+		const { state } = await import("../../lib/state");
+		const { loadSyncData } = await import("./index");
+		state.lastSyncStatus = {
+			enabled: true,
+			sync_health: {
+				state: "exchange_succeeded",
+				peer_count: 1,
+				attention_count: 0,
+				unverified_count: 0,
+				stale_count: 0,
+			},
+		};
+		vi.mocked(api.loadSyncStatus).mockResolvedValue({
+			status: { enabled: true, last_sync_at: "2026-11-02T18:00:00Z" },
+			peers: [{ peer_device_id: "peer-a", recent_ops: { in: 4, out: 2 } }],
+		} as never);
+		vi.mocked(api.loadSyncActors).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadShareOperations).mockResolvedValue({ items: [] });
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue({});
+		vi.mocked(api.loadDeviceIdentityInventory).mockResolvedValue({} as never);
+		// Act
+		const result = await loadSyncData();
+		// Assert
+		expect(result).toBe(true);
+		expect(state.lastSyncStatus?.sync_health).toBeNull();
+		expect(state.lastSyncPeers[0]?.sync_health).toBeUndefined();
+	});
 });
 
 describe("loadSyncData", () => {
