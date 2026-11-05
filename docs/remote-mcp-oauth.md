@@ -126,6 +126,8 @@ Plan tier note: claude.ai custom connectors require Pro / Max / Team / Enterpris
 
 Supported hosted redirect callbacks are currently Claude's fixed MCP callback (`https://claude.ai/api/mcp/auth_callback`), ChatGPT connector callbacks matching `https://chatgpt.com/connector/oauth/<connector-id>`, and ChatGPT's legacy published-app callback (`https://chatgpt.com/connector_platform_oauth_redirect`). Native loopback callbacks remain supported for local MCP clients, including Gemini CLI-style `http://localhost:<port>/oauth/callback` redirects.
 
+The server also accepts the exact Google callback `https://oauth-redirect.googleusercontent.com/r/google-gemini`. Other Google project callbacks, sandbox hosts, and wildcard prefixes are not accepted. This callback entry has not been verified against a live Gemini web connection. Registration still requires `token_endpoint_auth_method=none`; entering a client secret does not enable confidential-client support. Direct browser requests from `https://gemini.google.com` remain blocked by the separate Origin check.
+
 The bearer token expires after one hour. Revoke at any time with:
 
 ```sh
