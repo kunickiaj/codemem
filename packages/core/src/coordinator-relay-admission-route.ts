@@ -20,6 +20,14 @@ export interface CoordinatorRelayAdmissionRuntimeOptions {
 	readonly externalPathname: string;
 	/** Server-owned transport classification, not the forwarded packet's role. */
 	readonly ingressKey: string;
+	/**
+	 * The relay service's Ed25519 public key as SSH text (`ssh-ed25519 <base64>`).
+	 * Only `GET /v1/relay/info` reads it, to advertise the key to enrolled devices.
+	 * Without a valid key that route serves no group. The options do not carry
+	 * the relay origin, so the route cannot check this key against the
+	 * namespaces' relay audience ID. Callers must derive both from one key.
+	 */
+	readonly servicePublicKey?: string;
 }
 
 export interface CoordinatorRelayAdmissionOptions extends CoordinatorRelayAdmissionRuntimeOptions {
@@ -123,9 +131,16 @@ function captureOptions(options: CoordinatorRelayAdmissionOptions): CapturedRela
 	}
 }
 
-function captureNamespaces(options: CoordinatorRelayAdmissionOptions) {
+/**
+ * Frozen copies keyed by group ID, or null when the map is empty or its
+ * entries disagree on group key, authority, or relay audience. Throws when an
+ * entry is unreadable.
+ */
+export function consistentRelayNamespaces(
+	source: ReadonlyMap<string, RelayAdmissionNamespace>,
+): ReadonlyMap<string, RelayAdmissionNamespace> | null {
 	const namespaces = new Map<string, RelayAdmissionNamespace>();
-	for (const [groupId, entry] of options.namespaces) {
+	for (const [groupId, entry] of source) {
 		const { authorityId, relayAudienceId } = entry;
 		namespaces.set(
 			groupId,
@@ -142,6 +157,13 @@ function captureNamespaces(options: CoordinatorRelayAdmissionOptions) {
 		)
 			return null;
 	}
+	return namespaces;
+}
+
+function captureNamespaces(options: CoordinatorRelayAdmissionOptions) {
+	const namespaces = consistentRelayNamespaces(options.namespaces);
+	const [first] = namespaces?.values() ?? [];
+	if (!namespaces || !first) return null;
 	return {
 		namespaces,
 		authorityId: first.authorityId,

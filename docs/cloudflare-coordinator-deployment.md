@@ -258,6 +258,16 @@ still need device-signed packets. The public admission route serves every config
 picks the group from the device-signed packet body. Each realm's loopback admits only its own
 group.
 
+With relay on, the coordinator also serves `GET /v1/relay/info?group_id=<group>` to enrolled
+devices. It uses the same device-signed authorization as `/v1/peers`, and it returns the service
+public key derived from `CODEMEM_RELAY_SERVICE_KEY` as `ssh-ed25519` text, the group's
+`/v1/relay/<realmId>` path, and `/v1/relay/admission-check`. A group outside
+`CODEMEM_RELAY_GROUPS`, and every group while relay is off, gets the same `401 unknown_device` that
+`/v1/peers` gives a non-member. No device fetches this route yet. When device-side relay activation
+ships, devices will pin the key on first fetch for each coordinator and group, and will pause relay
+when it changes until the user approves the new key. From then on, rotating the service key secret
+will pause relay on every pinned device until each user approves the new key.
+
 Turning relay on takes these steps, in order:
 
 1. Apply the D1 migrations, including 0041 and 0042.

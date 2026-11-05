@@ -28,7 +28,7 @@ import {
 import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { publicRelayAdmission, type RelayAdmissionOptions } from "./relay-admission-options.js";
-import { RELAY_ADMISSION_PATH } from "./relay-config.js";
+import { RELAY_ADMISSION_PATH, RELAY_INFO_PATH } from "./relay-config.js";
 import { type RelayHealthContext, relayHealthInstrumentation } from "./relay-health-link.js";
 import {
 	handleRelayAdmissionSetup,
@@ -65,15 +65,18 @@ function coordinatorAdminSecret(
 	return String(env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET ?? "").trim() || null;
 }
 
+const RELAY_OPTION_PATHS: ReadonlySet<string> = new Set([RELAY_ADMISSION_PATH, RELAY_INFO_PATH]);
+
 /**
- * Relay admission options for the public coordinator route, read only for that
- * route. Every other request, and every relay-off deployment, gets undefined.
+ * Relay admission options for the public admission and info routes, read only
+ * for those routes. Every other request, and every relay-off deployment, gets
+ * undefined.
  */
 function relayAdmissionFor(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 ): Promise<RelayAdmissionOptions | undefined> {
-	if (new URL(request.url).pathname !== RELAY_ADMISSION_PATH) return Promise.resolve(undefined);
+	if (!RELAY_OPTION_PATHS.has(new URL(request.url).pathname)) return Promise.resolve(undefined);
 	return publicRelayAdmission(env as unknown as Readonly<Record<string, unknown>>);
 }
 
