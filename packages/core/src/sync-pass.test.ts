@@ -5,10 +5,12 @@ import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import {
 	LOCAL_SYNC_CAPABILITY,
+	LOCAL_SYNC_FEATURES,
 	negotiateSyncCapability,
 	normalizeSyncCapability,
 	SYNC_CAPABILITY_HEADER,
 } from "./sync-capability.js";
+import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncHttpClient from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import {
@@ -28,7 +30,73 @@ import * as vectors from "./vectors.js";
 
 beforeEach(() => {
 	vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
+	vi.spyOn(syncHttpClient, "requestJson").mockImplementation(async () => {
+		throw new Error("unexpected_fixture_http_request");
+	});
 });
+
+// Keep the idle POST distinct from the next scoped GET in sequential fixtures.
+const acknowledgeEmptyPush: RequestJsonExecutor = async (method, url, request) => {
+	expect(method).toBe("POST");
+	expect(new URL(url).pathname).toBe("/v1/ops");
+	expect(new URL(url).search).toBe("");
+	expect(request?.body).toEqual({
+		ops: [],
+		sync_capability: LOCAL_SYNC_CAPABILITY,
+		sync_features: LOCAL_SYNC_FEATURES,
+	});
+	expect(request?.headers?.[SYNC_CAPABILITY_HEADER]).toBe(LOCAL_SYNC_CAPABILITY);
+	expect(request?.bodyBytes).toEqual(Buffer.from(JSON.stringify(request?.body), "utf-8"));
+	expect(syncAuth.buildDirectPeerAuthHeaders).toHaveBeenCalledWith(
+		expect.objectContaining({
+			method: "POST",
+			url,
+			bodyBytes: request?.bodyBytes,
+		}),
+	);
+	return [200, { applied: 0, skipped: 0, errors: [] }];
+};
+
+function mockDefaultExchange(
+	statusResponse: Record<string, unknown>,
+	defaultOpsResponse: Record<string, unknown>,
+) {
+	return vi
+		.spyOn(syncHttpClient, "requestJson")
+		.mockResolvedValueOnce([200, statusResponse])
+		.mockResolvedValueOnce([200, defaultOpsResponse])
+		.mockImplementationOnce(acknowledgeEmptyPush);
+}
+
+function multiSpaceSnapshots(scopes: readonly string[], itemsPerScope: number) {
+	return scopes.map((scope_id) => ({
+		scope_id,
+		generation: 1,
+		snapshot_id: `snap-${scope_id}`,
+		baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
+		retained_floor_cursor: null,
+		sync_capability: "scoped",
+		items: Array.from({ length: itemsPerScope }, (_, i) => ({
+			entity_id: `key:${scope_id}-${i + 1}`,
+			op_type: "upsert",
+			payload_json: JSON.stringify({
+				kind: "discovery",
+				title: `${scope_id} item ${i + 1}`,
+				body_text: `Body for ${scope_id} #${i + 1}`,
+				active: 1,
+				created_at: "2026-01-01T00:00:00Z",
+				updated_at: "2026-01-01T00:00:00Z",
+				scope_id,
+				visibility: "shared",
+			}),
+			clock_rev: 1,
+			clock_updated_at: "2026-01-01T00:00:00Z",
+			clock_device_id: "peer-multi",
+		})),
+		next_page_token: null,
+		has_more: false,
+	}));
+}
 
 // ---------------------------------------------------------------------------
 // Schema helper — adds sync tables not in base test schema
@@ -743,7 +811,8 @@ describe("syncOnce", () => {
 					next_cursor: "2026-01-01T00:00:00Z|remote-op-1",
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 
 		const result = await syncOnce(db, "peer-1", ["http://127.0.0.1:9090"]);
 
@@ -844,7 +913,8 @@ describe("syncOnce", () => {
 					next_cursor: "2026-01-01T00:00:00Z|remote-bad-op",
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 
 		const result = await syncOnce(db, "peer-err", ["http://127.0.0.1:9090"]);
 
@@ -945,6 +1015,7 @@ describe("syncOnce", () => {
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, statusResponse])
 			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([200, scopedSnapshotResponse]);
 
 		const result = await syncOnce(db, "peer-scoped", ["http://127.0.0.1:9090"]);
@@ -1075,10 +1146,7 @@ describe("syncOnce", () => {
 			next_cursor: null,
 			skipped: 0,
 		};
-		const requestSpy = vi
-			.spyOn(syncHttpClient, "requestJson")
-			.mockResolvedValueOnce([200, statusResponse])
-			.mockResolvedValueOnce([200, defaultOpsResponse]);
+		const requestSpy = mockDefaultExchange(statusResponse, defaultOpsResponse);
 		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
 			items: [
 				{
@@ -1245,7 +1313,8 @@ describe("syncOnce", () => {
 					next_cursor: null,
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 		const fetchSpy = vi.spyOn(syncBootstrap, "fetchAllSnapshotPages");
 
 		const result = await syncOnce(db, "peer-local-scope", ["http://127.0.0.1:9090"]);
@@ -1316,6 +1385,7 @@ describe("syncOnce", () => {
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, statusResponse])
 			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([409, { error: "reset_required", reason: "missing_scope" }]);
 
 		const result = await syncOnce(db, "peer-mixed", ["http://127.0.0.1:9090"]);
@@ -1411,6 +1481,7 @@ describe("syncOnce", () => {
 					skipped: 0,
 				},
 			])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockRejectedValueOnce(new Error("fetch failed"));
 
 		const result = await syncOnce(db, "peer-connectivity", ["http://127.0.0.1:9090"]);
@@ -1489,37 +1560,9 @@ describe("syncOnce", () => {
 			skipped: 0,
 		};
 
-		const scopedSnapshots = scopes.map((scope_id) => ({
-			scope_id,
-			generation: 1,
-			snapshot_id: `snap-${scope_id}`,
-			baseline_cursor: `2026-01-01T00:00:00Z|baseline-${scope_id}`,
-			retained_floor_cursor: null,
-			sync_capability: "scoped",
-			items: Array.from({ length: itemsPerScope }, (_, i) => ({
-				entity_id: `key:${scope_id}-${i + 1}`,
-				op_type: "upsert",
-				payload_json: JSON.stringify({
-					kind: "discovery",
-					title: `${scope_id} item ${i + 1}`,
-					body_text: `Body for ${scope_id} #${i + 1}`,
-					active: 1,
-					created_at: "2026-01-01T00:00:00Z",
-					updated_at: "2026-01-01T00:00:00Z",
-					scope_id,
-					visibility: "shared",
-				}),
-				clock_rev: 1,
-				clock_updated_at: "2026-01-01T00:00:00Z",
-				clock_device_id: "peer-multi",
-			})),
-			next_page_token: null,
-			has_more: false,
-		}));
+		const scopedSnapshots = multiSpaceSnapshots(scopes, itemsPerScope);
 
-		vi.spyOn(syncHttpClient, "requestJson")
-			.mockResolvedValueOnce([200, statusResponse])
-			.mockResolvedValueOnce([200, defaultOpsResponse])
+		mockDefaultExchange(statusResponse, defaultOpsResponse)
 			.mockResolvedValueOnce([200, scopedSnapshots[0]])
 			.mockResolvedValueOnce([200, scopedSnapshots[1]]);
 
@@ -1664,7 +1707,10 @@ describe("syncOnce", () => {
 		}
 
 		const spy = vi.spyOn(syncHttpClient, "requestJson");
-		for (const call of calls) spy.mockResolvedValueOnce([200, call]);
+		for (const [index, call] of calls.entries()) {
+			spy.mockResolvedValueOnce([200, call]);
+			if (index === 1) spy.mockImplementationOnce(acknowledgeEmptyPush);
+		}
 
 		const result = await syncOnce(db, "peer-canary", ["http://127.0.0.1:9090"]);
 
@@ -1796,6 +1842,7 @@ describe("syncOnce", () => {
 		vi.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, statusResponse])
 			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([200, scopedOpsResponse]);
 
 		const result = await syncOnce(db, "peer-cursor", ["http://127.0.0.1:9090"]);
@@ -1881,6 +1928,7 @@ describe("syncOnce", () => {
 					skipped: 0,
 				},
 			])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([
 				409,
 				{
@@ -1975,6 +2023,7 @@ describe("syncOnce", () => {
 						skipped: 0,
 					},
 				])
+				.mockImplementationOnce(acknowledgeEmptyPush)
 				.mockResolvedValueOnce([
 					409,
 					{
@@ -2064,6 +2113,7 @@ describe("syncOnce", () => {
 					skipped: 0,
 				},
 			])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([
 				409,
 				{
@@ -2153,6 +2203,7 @@ describe("syncOnce", () => {
 					skipped: 0,
 				},
 			])
+			.mockImplementationOnce(acknowledgeEmptyPush)
 			.mockResolvedValueOnce([
 				200,
 				{
@@ -2246,7 +2297,8 @@ describe("syncOnce", () => {
 					next_cursor: null,
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 		vi.spyOn(syncBootstrap, "fetchAllSnapshotPages").mockResolvedValue({
 			items: [],
 			generation: 2,
@@ -2565,7 +2617,8 @@ describe("syncOnce", () => {
 					next_cursor: "2026-01-01T00:00:00Z|legacy-op-1",
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 
 		const result = await syncOnce(db, "peer-legacy", ["http://127.0.0.1:9090"]);
 
@@ -2666,7 +2719,8 @@ describe("syncOnce", () => {
 					next_cursor: "2026-01-01T00:00:00Z|remote-op-fallback",
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 
 		const result = await syncOnce(db, "peer-1", ["http://127.0.0.1:9090"]);
 
@@ -2725,7 +2779,8 @@ describe("syncOnce", () => {
 					next_cursor: null,
 					skipped: 0,
 				},
-			]);
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 
 		const result = await syncOnce(db, "peer-1", ["http://10.0.0.9:9090", "http://100.64.0.5:9090"]);
 
@@ -3332,7 +3387,8 @@ describe("sync_attempts.failure_category", () => {
 		const request = vi
 			.spyOn(syncHttpClient, "requestJson")
 			.mockResolvedValueOnce([200, scopedStatusPayload("peer-scoped", scopeIds)])
-			.mockResolvedValueOnce([200, EMPTY_DEFAULT_OPS]);
+			.mockResolvedValueOnce([200, EMPTY_DEFAULT_OPS])
+			.mockImplementationOnce(acknowledgeEmptyPush);
 		for (const response of scopeResponses) {
 			if (response instanceof Error) request.mockRejectedValueOnce(response);
 			else request.mockResolvedValueOnce(response);
