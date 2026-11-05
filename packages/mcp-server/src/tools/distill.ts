@@ -61,7 +61,7 @@ function readContextFile(
 
 function loadDefaultContextDocuments(
 	includeProjectContext: boolean,
-	cwd = process.cwd(),
+	cwd: string,
 ): DistillContextDocument[] {
 	// The repo-root AGENTS.md describes the current repo (scope "project") and is
 	// gated to current-project runs; the user-global context (scope "user")
@@ -84,16 +84,15 @@ function loadDefaultContextDocuments(
 function shouldIncludeProjectContext(
 	args: { all_projects?: boolean; project?: unknown },
 	defaultProject: string | null,
+	cwd: string,
 ): boolean {
 	if (args.all_projects) return false;
-	const currentProject = resolveProject(process.cwd());
+	const currentProject = resolveProject(cwd);
 	if (!currentProject) return false;
 	const explicitProject = typeof args.project === "string" ? args.project.trim() : "";
 	// Match the corpus filter: the cwd AGENTS.md is only valid when the mined
 	// project (explicit arg or the server default project) is this repo.
-	const targetProject = explicitProject
-		? resolveProject(process.cwd(), explicitProject)
-		: defaultProject;
+	const targetProject = explicitProject ? resolveProject(cwd, explicitProject) : defaultProject;
 	if (!targetProject) return false;
 	return projectMatchesFilter(targetProject, currentProject);
 }
@@ -134,7 +133,8 @@ export function registerDistillTools(server: McpServer, context: ToolRegistratio
 						maxEvidenceItems: args.max_evidence_items,
 					},
 					contextDocuments: loadDefaultContextDocuments(
-						shouldIncludeProjectContext(args, resolvedDefaultProject),
+						shouldIncludeProjectContext(args, resolvedDefaultProject, context.cwd()),
+						context.cwd(),
 					),
 					corpus: { filters: filters ?? null, kinds },
 					limit: fetchLimit,

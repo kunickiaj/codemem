@@ -119,6 +119,7 @@ function registerRememberTool(server: McpServer, context: ToolRegistrationContex
 				// explicit `project` input or CODEMEM_PROJECT; otherwise project stays null.
 				const result = rememberMemoryForMcp(context.store, args, {
 					envProject: context.envProject(),
+					cwd: context.cwd(),
 				});
 
 				try {

@@ -1124,14 +1124,7 @@ describe("MCP memory access scope guards", () => {
 		});
 
 		it("keeps concurrent identical successful invocations distinct", async () => {
-			const context: ToolRegistrationContext = {
-				store,
-				defaultProject: () => "atlas",
-				envProject: () => null,
-				captureRetrievalLedger: true,
-				retrievalLedgerScopeId: "concurrent-ledger-scope",
-				retrievalLedgerIdentityMode: "session",
-			};
+			const context = retrievalContext(store, "concurrent-ledger-scope");
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => {
 				release = resolve;
@@ -1402,6 +1395,7 @@ function retrievalContext(store: MemoryStore, scopeId: string): ToolRegistration
 		store,
 		defaultProject: () => "atlas",
 		envProject: () => null,
+		cwd: () => process.cwd(),
 		captureRetrievalLedger: true,
 		retrievalLedgerScopeId: scopeId,
 		retrievalLedgerIdentityMode: "session",

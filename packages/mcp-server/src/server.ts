@@ -15,6 +15,9 @@ export function createCodememMcpServer(
 	options: CodememMcpServerOptions = {},
 ): McpServer {
 	const server = new McpServer({ name: "codemem", version: VERSION });
+	const envProject = () =>
+		options.envProject !== undefined ? options.envProject : (process.env.CODEMEM_PROJECT ?? null);
+	const cwd = () => options.cwd ?? process.cwd();
 	const context: ToolRegistrationContext = {
 		store,
 		// Resolve lazily per call so long-running servers pick up the current
@@ -22,10 +25,10 @@ export function createCodememMcpServer(
 		defaultProject: () => {
 			if (options.resolveDefaultProject) return options.resolveDefaultProject();
 			if (options.defaultProject !== undefined) return options.defaultProject;
-			return resolveDefaultProject();
+			return resolveDefaultProject({ envProject: envProject(), cwd: cwd() });
 		},
-		envProject: () =>
-			options.envProject !== undefined ? options.envProject : (process.env.CODEMEM_PROJECT ?? null),
+		envProject,
+		cwd,
 		captureRetrievalLedger: options.captureRetrievalLedger !== false,
 		retrievalLedgerScopeId: options.retrievalLedgerScopeId ?? randomUUID(),
 		retrievalLedgerIdentityMode: options.retrievalLedgerIdentityMode ?? "session",

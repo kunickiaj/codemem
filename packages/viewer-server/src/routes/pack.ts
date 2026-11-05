@@ -521,7 +521,7 @@ async function handleLedgerRequest(c: Context, getStore: StoreFactory) {
 	}
 }
 
-function handleProfileRequest(c: Context, getStore: StoreFactory) {
+function handleProfileRequest(c: Context, getStore: StoreFactory, capabilities: readonly string[]) {
 	try {
 		const store = getStore();
 		if (!store.hasCurrentIdentity()) return c.json(viewerIdentityMismatch(), 409);
@@ -531,6 +531,9 @@ function handleProfileRequest(c: Context, getStore: StoreFactory) {
 			min_supported_protocol_version: PROMPT_TRANSPORT_PROTOCOL_RANGE.minSupportedProtocolVersion,
 			db_path: resolvePath(store.dbPath),
 			identity_target: currentIdentityTarget(),
+			// Optional routes this viewer serves. Clients treat a missing entry
+			// (including older viewers that omit the field) as unsupported.
+			capabilities: [...capabilities],
 		});
 	} catch {
 		return c.json(
@@ -540,10 +543,14 @@ function handleProfileRequest(c: Context, getStore: StoreFactory) {
 	}
 }
 
-export function packTransportRoutes(getStore: StoreFactory) {
+export function packTransportRoutes(
+	getStore: StoreFactory,
+	options: { capabilities?: readonly string[] } = {},
+) {
 	const app = new Hono();
+	const capabilities = options.capabilities ?? [];
 
-	app.get("/api/prompt-pack-profile", (c) => handleProfileRequest(c, getStore));
+	app.get("/api/prompt-pack-profile", (c) => handleProfileRequest(c, getStore, capabilities));
 
 	app.post("/api/pack", async (c) => {
 		const parsed = await c.req.json().catch(() => INVALID_JSON);

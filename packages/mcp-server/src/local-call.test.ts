@@ -94,6 +94,54 @@ describe("callCodememToolLocally", () => {
 		expect(outcome.ok).toBe(false);
 	});
 
+	it("uses the caller's directory instead of the process directory for default reads", async () => {
+		await rememberSentinel();
+		vi.spyOn(process, "cwd").mockReturnValue(join(tempDirectory, "viewer-home"));
+
+		const outcome = await callCodememToolLocally(
+			store,
+			"memory_search",
+			{ query: "sentinel" },
+			{ cwd: join(tempDirectory, "local-call-fixture"), envProject: null },
+		);
+
+		expect((outcome as { result: { items: unknown[] } }).result.items).toHaveLength(1);
+	});
+
+	it("ignores this process's CODEMEM_PROJECT when the caller says it has none", async () => {
+		await rememberSentinel();
+		process.env.CODEMEM_PROJECT = "viewer-env-project";
+
+		const outcome = await callCodememToolLocally(
+			store,
+			"memory_search",
+			{ query: "sentinel" },
+			{ cwd: join(tempDirectory, "local-call-fixture"), envProject: null },
+		);
+
+		expect((outcome as { result: { items: unknown[] } }).result.items).toHaveLength(1);
+	});
+
+	it("records the caller's directory on the write session, not the process directory", async () => {
+		vi.spyOn(process, "cwd").mockReturnValue(join(tempDirectory, "viewer-home"));
+		const callerDirectory = join(tempDirectory, "local-call-fixture");
+
+		const outcome = await callCodememToolLocally(
+			store,
+			"memory_remember",
+			{ kind: "decision", title: "Caller cwd", body: "Session cwd comes from the caller." },
+			{ cwd: callerDirectory, envProject: null },
+		);
+
+		const id = (outcome as { result: { id: number } }).result.id;
+		const row = store.db
+			.prepare(
+				"SELECT sessions.cwd AS cwd FROM memory_items JOIN sessions ON sessions.id = memory_items.session_id WHERE memory_items.id = ?",
+			)
+			.get(id) as { cwd: string };
+		expect(row.cwd).toBe(callerDirectory);
+	});
+
 	it("records each identical call from one session as its own attempt", async () => {
 		await rememberSentinel();
 		const call = () =>
@@ -101,7 +149,7 @@ describe("callCodememToolLocally", () => {
 				store,
 				"memory_search",
 				{ query: "sentinel" },
-				{ sessionId: "ses_repeat" },
+				{ sessionId: "ses_repeat", statelessLedger: true },
 			);
 
 		await call();
@@ -117,7 +165,7 @@ describe("callCodememToolLocally", () => {
 				store,
 				"memory_search",
 				{ query: "sentinel" },
-				{ sessionId: "ses_retry", requestId: "call_1" },
+				{ sessionId: "ses_retry", statelessLedger: true, requestId: "call_1" },
 			);
 
 		await call();
