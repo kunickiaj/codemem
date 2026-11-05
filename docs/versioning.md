@@ -94,6 +94,8 @@ After a successful stable `vX.Y.0` publication, the workflow creates `release/X.
 
 When a higher stable version is already tagged, an older maintenance release publishes under the npm tag `maintenance-X.Y` and is not marked Latest on GitHub. For example, after `v0.48.0` is tagged, `v0.47.4` publishes under `maintenance-0.47` so it does not move npm's `latest` backward. Install that maintenance version explicitly or use its series tag.
 
+Run stable releases one at a time across version series. Finish the newer stable release before tagging an older maintenance release so its workflow sees the newer tag when choosing an npm channel.
+
 Stable publication requires the tagged checkout to contain the history-aware dist-tag helper. A retry of an older stable tag without that helper stops before publishing packages. Prepare a new maintenance release with the updated tooling rather than moving an existing tag.
 
 ## Release discovery
