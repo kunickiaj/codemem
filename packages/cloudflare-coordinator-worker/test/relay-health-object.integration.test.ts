@@ -392,6 +392,36 @@ describe("relay health Durable Object", () => {
 		expect(state.samples).toBe(samples);
 	});
 
+	it("lets a failed re-arm throw so the platform retries, then keeps the cadence", async () => {
+		// Arrange: the first setAlarm fails, as a transient storage error would.
+		await runInDurableObject(stub, (_instance, s) => s.storage.delete(CYCLE_KEY));
+		const failed = await runInDurableObject(stub, async (instance, s) => {
+			const setAlarm = s.storage.setAlarm.bind(s.storage);
+			let calls = 0;
+			s.storage.setAlarm = ((...args: Parameters<typeof setAlarm>) => {
+				calls += 1;
+				if (calls === 1) throw new Error("transient storage failure");
+				return setAlarm(...args);
+			}) as typeof s.storage.setAlarm;
+			try {
+				// Act
+				await instance.alarm();
+				return null;
+			} catch (error) {
+				return error instanceof Error ? error.message : String(error);
+			} finally {
+				s.storage.setAlarm = setAlarm;
+			}
+		});
+		const cycle = await runInDurableObject(stub, (_instance, s) => s.storage.get<number>(CYCLE_KEY));
+		// Act: the platform's retry arrives inside the repeat gap.
+		await runInDurableObject(stub, (instance) => instance.alarm());
+		const alarm = await runInDurableObject(stub, (_instance, s) => s.storage.getAlarm());
+		// Assert: the failure propagated, and the retry re-armed the original cadence.
+		expect(failed).toBe("transient storage failure");
+		expect(alarm).toBe((cycle ?? Number.NaN) + 30_000);
+	});
+
 	it("stops while disabled, and after a re-enable past the gap needs five windows again", async () => {
 		// Arrange
 		const healthy = group;
