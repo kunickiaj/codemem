@@ -381,6 +381,14 @@ export const createV2Tool = (name, definition, { isActive = () => true } = {}) =
   };
 };
 
+const registerV2Tools = (context, runtime, isActive) =>
+  context.tool.transform((editor) => {
+    if (!isActive()) return;
+    for (const [name, definition] of Object.entries(runtime.tools)) {
+      editor.add(createV2Tool(name, definition, { isActive }));
+    }
+  });
+
 const defaultWaitForEventTask = (eventTask, timeoutMs) =>
   new Promise((resolve) => {
     let settled = false;
@@ -614,21 +622,34 @@ const cleanupAdapter = async ({
   if (firstError) throw firstError;
 };
 
-export const createOpenCodeV2Adapter = ({
-  createRuntime = createCodememRuntime,
-  eventTaskTimeoutMs = DEFAULT_EVENT_TASK_TIMEOUT_MS,
-  waitForCaptureTask = defaultWaitForEventTask,
-  waitForContextTask = defaultWaitForEventTask,
-  waitForDiagnosticTask = defaultWaitForEventTask,
-  waitForEventTask = defaultWaitForEventTask,
-  waitForRegistrationTask = defaultWaitForEventTask,
-  waitForRuntimeDisposalTask = defaultWaitForEventTask,
-} = {}) => async (context) => {
+const ADAPTER_DEFAULTS = Object.freeze({
+  createRuntime: createCodememRuntime,
+  eventTaskTimeoutMs: DEFAULT_EVENT_TASK_TIMEOUT_MS,
+  waitForCaptureTask: defaultWaitForEventTask,
+  waitForContextTask: defaultWaitForEventTask,
+  waitForDiagnosticTask: defaultWaitForEventTask,
+  waitForEventTask: defaultWaitForEventTask,
+  waitForRegistrationTask: defaultWaitForEventTask,
+  waitForRuntimeDisposalTask: defaultWaitForEventTask,
+});
+
+// Explicit `undefined` keeps the default, as destructuring defaults would.
+const resolveAdapterOptions = (overrides) => ({
+  ...ADAPTER_DEFAULTS,
+  ...Object.fromEntries(Object.entries(overrides).filter(([, value]) => value !== undefined)),
+});
+
+/** Create the runtime; release the notification bridge when activation stops here. */
+const createAdapterRuntime = async (context, notificationBridge, options) => {
   const location = context.location;
-  const notificationBridge = await registerV2NotificationBridge(context);
+  const releaseBridge = () => disposeNotificationRegistration(
+    notificationBridge.registration,
+    options.waitForRegistrationTask,
+    options.eventTaskTimeoutMs,
+  );
   let runtime;
   try {
-    runtime = await createRuntime({
+    runtime = await options.createRuntime({
       location: createRuntimeLocation({
         project: { ...location.project, root: location.project.canonical },
         directory: location.directory,
@@ -637,126 +658,148 @@ export const createOpenCodeV2Adapter = ({
       host: createRuntimeHost({ log: async () => {}, notify: notificationBridge.notify }),
     });
   } catch (error) {
-    await disposeNotificationRegistration(
-      notificationBridge.registration,
-      waitForRegistrationTask,
-      eventTaskTimeoutMs,
-    );
+    await releaseBridge();
     throw error;
   }
-  if (!runtime) {
-    await disposeNotificationRegistration(
-      notificationBridge.registration,
-      waitForRegistrationTask,
-      eventTaskTimeoutMs,
-    );
-    return undefined;
-  }
+  if (!runtime) await releaseBridge();
+  return runtime;
+};
 
-  const abortController = new AbortController();
-  const registrations = notificationBridge.registration ? [notificationBridge.registration] : [];
-  const translator = createV2EventTranslator();
-  const scheduleCapture = createCaptureScheduler();
-  const scheduleContext = createContextScheduler();
-  let active = true;
-  let eventTask;
-  try {
-    registrations.push(await context.session.hook("context", async (input) => {
-      if (!active) return;
-      try {
-        await scheduleContext.schedule(contextScheduleKey(input), async () => {
-          if (active) await transformV2Context(runtime, input, { isActive: () => active });
-        });
-      } catch {
-        await reportDiagnosticWithinTimeout(
-          runtime,
-          V2_ADAPTER_DIAGNOSTICS.contextRecallFailed,
-          waitForDiagnosticTask,
-          eventTaskTimeoutMs,
-        );
-      }
-    }));
-    registrations.push(await context.tool.hook("execute.after", async (input) => {
-      if (!active) return;
-      const translated = translateV2ToolResult(input);
-      await captureRuntimeTaskWithinTimeout({
-        runtime,
-        run: () => runtime.handleToolResult(translated.input, translated.output),
-        scheduleCapture,
-        diagnosticCode: V2_ADAPTER_DIAGNOSTICS.toolCaptureFailed,
-        timeoutMs: eventTaskTimeoutMs,
-        waitForCaptureTask,
-        waitForDiagnosticTask,
+const registerContextHook = (context, state, options) =>
+  context.session.hook("context", async (input) => {
+    if (!state.active) return;
+    try {
+      await state.scheduleContext.schedule(contextScheduleKey(input), async () => {
+        if (state.active) {
+          await transformV2Context(state.runtime, input, { isActive: () => state.active });
+        }
       });
-    }));
-    registrations.push(await context.tool.transform((editor) => {
-      if (!active) return;
-      for (const [name, definition] of Object.entries(runtime.tools)) {
-        editor.add(createV2Tool(name, definition, { isActive: () => active }));
-      }
-    }));
-    eventTask = consumeEvents(context, abortController.signal, runtime, translator, {
-      eventTaskTimeoutMs,
-      scheduleCapture,
-      waitForCaptureTask,
-      waitForDiagnosticTask,
+    } catch {
+      await reportDiagnosticWithinTimeout(
+        state.runtime,
+        V2_ADAPTER_DIAGNOSTICS.contextRecallFailed,
+        options.waitForDiagnosticTask,
+        options.eventTaskTimeoutMs,
+      );
+    }
+  });
+
+const registerCaptureHook = (context, state, options) =>
+  context.tool.hook("execute.after", async (input) => {
+    if (!state.active) return;
+    const translated = translateV2ToolResult(input);
+    await captureRuntimeTaskWithinTimeout({
+      runtime: state.runtime,
+      run: () => state.runtime.handleToolResult(translated.input, translated.output),
+      scheduleCapture: state.scheduleCapture,
+      diagnosticCode: V2_ADAPTER_DIAGNOSTICS.toolCaptureFailed,
+      timeoutMs: options.eventTaskTimeoutMs,
+      waitForCaptureTask: options.waitForCaptureTask,
+      waitForDiagnosticTask: options.waitForDiagnosticTask,
+    });
+  });
+
+const reportCleanupTimeout = async (runtime, cleanup, code, options) => {
+  if (cleanup.completed) return;
+  await reportDiagnosticWithinTimeout(
+    runtime,
+    code,
+    options.waitForDiagnosticTask,
+    options.eventTaskTimeoutMs,
+  );
+};
+
+/** Undo a partial activation after a registration failed. */
+const rollBackActivation = async (state, options) => {
+  state.active = false;
+  state.runtime.deactivate?.();
+  state.abortController.abort();
+  state.translator.clear();
+  const registrationCleanup = await waitForRegistrationDisposal(
+    state.registrations,
+    options.waitForRegistrationTask,
+    options.eventTaskTimeoutMs,
+  );
+  await reportCleanupTimeout(
+    state.runtime,
+    registrationCleanup,
+    V2_ADAPTER_DIAGNOSTICS.registrationCleanupTimeout,
+    options,
+  );
+  const runtimeCleanup = await waitForRuntimeDisposal(
+    state.runtime,
+    options.waitForRuntimeDisposalTask,
+    options.eventTaskTimeoutMs,
+  );
+  await reportCleanupTimeout(
+    state.runtime,
+    runtimeCleanup,
+    V2_ADAPTER_DIAGNOSTICS.runtimeCleanupTimeout,
+    options,
+  );
+};
+
+const activateAdapter = async (context, runtime, registrations, options) => {
+  const state = {
+    active: true,
+    abortController: new AbortController(),
+    eventTask: undefined,
+    registrations,
+    runtime,
+    scheduleCapture: createCaptureScheduler(),
+    scheduleContext: createContextScheduler(),
+    translator: createV2EventTranslator(),
+  };
+  try {
+    registrations.push(await registerContextHook(context, state, options));
+    registrations.push(await registerCaptureHook(context, state, options));
+    registrations.push(await registerV2Tools(context, runtime, () => state.active));
+    state.eventTask = consumeEvents(context, state.abortController.signal, runtime, state.translator, {
+      eventTaskTimeoutMs: options.eventTaskTimeoutMs,
+      scheduleCapture: state.scheduleCapture,
+      waitForCaptureTask: options.waitForCaptureTask,
+      waitForDiagnosticTask: options.waitForDiagnosticTask,
     });
   } catch (error) {
-    active = false;
-    runtime.deactivate?.();
-    abortController.abort();
-    translator.clear();
-    const registrationCleanup = await waitForRegistrationDisposal(
-      registrations,
-      waitForRegistrationTask,
-      eventTaskTimeoutMs,
-    );
-    if (!registrationCleanup.completed) {
-      await reportDiagnosticWithinTimeout(
-        runtime,
-        V2_ADAPTER_DIAGNOSTICS.registrationCleanupTimeout,
-        waitForDiagnosticTask,
-        eventTaskTimeoutMs,
-      );
-    }
-    const runtimeCleanup = await waitForRuntimeDisposal(
-      runtime,
-      waitForRuntimeDisposalTask,
-      eventTaskTimeoutMs,
-    );
-    if (!runtimeCleanup.completed) {
-      await reportDiagnosticWithinTimeout(
-        runtime,
-        V2_ADAPTER_DIAGNOSTICS.runtimeCleanupTimeout,
-        waitForDiagnosticTask,
-        eventTaskTimeoutMs,
-      );
-    }
+    await rollBackActivation(state, options);
     // Preserve the setup error that explains why activation failed.
     throw error;
   }
+  return state;
+};
 
+const createAdapterCleanup = (state, options) => {
   let cleanupTask;
   return () => {
     if (!cleanupTask) {
-      active = false;
+      state.active = false;
       cleanupTask = cleanupAdapter({
-        abortController,
-        contextTask: scheduleContext.waitForIdle(),
-        eventTask,
-        eventTaskTimeoutMs,
-        registrations,
-        runtime,
-        translator,
-        waitForDiagnosticTask,
-        waitForContextTask,
-        waitForEventTask,
-        waitForRegistrationTask,
-        waitForRuntimeDisposalTask,
+        abortController: state.abortController,
+        contextTask: state.scheduleContext.waitForIdle(),
+        eventTask: state.eventTask,
+        eventTaskTimeoutMs: options.eventTaskTimeoutMs,
+        registrations: state.registrations,
+        runtime: state.runtime,
+        translator: state.translator,
+        waitForDiagnosticTask: options.waitForDiagnosticTask,
+        waitForContextTask: options.waitForContextTask,
+        waitForEventTask: options.waitForEventTask,
+        waitForRegistrationTask: options.waitForRegistrationTask,
+        waitForRuntimeDisposalTask: options.waitForRuntimeDisposalTask,
       });
     }
     return cleanupTask;
   };
+};
+
+export const createOpenCodeV2Adapter = (overrides = {}) => async (context) => {
+  const options = resolveAdapterOptions(overrides);
+  const notificationBridge = await registerV2NotificationBridge(context);
+  const runtime = await createAdapterRuntime(context, notificationBridge, options);
+  if (!runtime) return undefined;
+  const registrations = notificationBridge.registration ? [notificationBridge.registration] : [];
+  const state = await activateAdapter(context, runtime, registrations, options);
+  return createAdapterCleanup(state, options);
 };
 
 export const setupOpenCodeV2 = createOpenCodeV2Adapter();
