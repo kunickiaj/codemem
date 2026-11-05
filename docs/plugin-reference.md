@@ -449,7 +449,10 @@ supports tool calls. Otherwise it runs `codemem memory-tool <name>` in the
 session directory and the result ends with a note that the viewer was
 unavailable. A write (`memory_remember`, `memory_forget`) that times out or fails
 inside the viewer returns an error rather than retrying through the CLI,
-because the write may already have happened.
+because the write may already have happened. A read retried through the CLI
+counts as one retrieval in `codemem stats`: both attempts carry the same call
+ID, which is OpenCode 2's tool-call ID or, on OpenCode 1 (which has none), an
+ID the plugin generates for that call.
 
 If a `codemem` MCP server is still configured (`mcp.codemem` on OpenCode 1,
 `mcp.servers.codemem` on OpenCode 2) and not disabled, the plugin keeps the MCP

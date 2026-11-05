@@ -104,6 +104,29 @@ afterEach(() => {
 	root = undefined;
 });
 
+describe("OpenCode 1 native memory tool call IDs", () => {
+	it("generates a fresh call ID for each execution", async () => {
+		stubRuntimeEnv({ nativeTools: true });
+		const hooks = await createV1Plugin(makeV1Client());
+		const requestId = async () => {
+			await hooks.tool.codemem_memory_search.execute(
+				{ query: "auth" },
+				{ directory, sessionID: "ses_v1", abort: new AbortController().signal },
+			);
+			const args = readRecord("args").trim().split("\n");
+			return args[args.indexOf("--request-id") + 1];
+		};
+		try {
+			const first = await requestId();
+			const second = await requestId();
+			expect(first).toBeTruthy();
+			expect(second).not.toBe(first);
+		} finally {
+			await hooks.dispose();
+		}
+	});
+});
+
 describe("OpenCode 1 native memory tools", () => {
 	it("registers nothing new while the flag is off", async () => {
 		stubRuntimeEnv({ nativeTools: false });
@@ -142,7 +165,8 @@ describe("OpenCode 1 native memory tools", () => {
 
 			expect(output).toBe(`{"via":"cli"}\n${CLI_FALLBACK_NOTE}`);
 			// --db-path pins the database the viewer proof uses, independent of the CLI's cwd.
-			expect(readRecord("args").trim().split("\n")).toEqual([
+			const args = readRecord("args").trim().split("\n");
+			expect(args.slice(0, 6)).toEqual([
 				"memory-tool",
 				"memory_search",
 				"--db-path",
@@ -150,6 +174,11 @@ describe("OpenCode 1 native memory tools", () => {
 				"--session-id",
 				"ses_v1",
 			]);
+			// OpenCode 1 has no call ID; the plugin generates one per execution.
+			expect(args[6]).toBe("--request-id");
+			expect(args[7]).toMatch(
+				/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+			);
 			expect(readRecord("cwd").trim()).toBe(realpathSync(directory));
 			expect(JSON.parse(readRecord("stdin"))).toEqual({ query: "auth", limit: 3 });
 		} finally {
