@@ -42,7 +42,7 @@ import {
 	analyzeProjectScopeMappingChangeGuardrails,
 	analyzeProjectScopeMappingChangesGuardrails,
 	analyzeProjectScopeMappingDeletionGuardrails,
-	applyReplicationOps,
+	applyPeerReplicationOps,
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
@@ -159,6 +159,7 @@ import {
 	reconcileShareOperationAcceptance,
 	recordHighestObservedDirectSignatureVersion,
 	recordNonce,
+	recordSyncTransferObservation,
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
@@ -199,6 +200,7 @@ import {
 	type ReconcileRecipientPolicyProjectsResult,
 	reconcileRecipientPolicyProjectsOperation,
 } from "../application/coordinator-maintenance.js";
+import { readPeerSyncHealth } from "../application/sync-health.js";
 import { buildSyncStatusResponse, type SyncRuntimeStatus } from "../application/sync-status.js";
 import { snapshotErrorStatus, snapshotPageRequest } from "../snapshot-source.js";
 
@@ -3680,9 +3682,15 @@ function staleRowsForCleanupDiagnostics(store: MemoryStore, localDeviceId: strin
 	});
 }
 
-function applyInboundSyncOps(store: MemoryStore, ops: ReplicationOp[], localDeviceId: string) {
-	return applyReplicationOps(store.db, ops, localDeviceId, store.scanner, {
+function applyInboundSyncOps(
+	store: MemoryStore,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	peerDeviceId: string,
+) {
+	return applyPeerReplicationOps(store, ops, localDeviceId, {
 		keysDir: syncKeysDir(),
+		peerDeviceId,
 	});
 }
 
@@ -4590,6 +4598,10 @@ function createPeerScopeDiagnosticKeyLoader() {
 
 function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 	const rows = store.db.prepare(PEERS_QUERY).all() as Record<string, unknown>[];
+	const health = readPeerSyncHealth(
+		store,
+		rows.map((row) => String(row.peer_device_id)),
+	);
 	const recentOpsByPeer = recentPeerOps(store);
 	const scopeRejectionsByPeer = recentScopeRejectionsByPeer(store);
 	const d = drizzle(store.db, { schema });
@@ -4600,8 +4612,8 @@ function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 		.get();
 	const localDeviceId = deviceRow?.device_id ?? null;
 	const loadDiagnosticKey = createPeerScopeDiagnosticKeyLoader();
-	return rows.map((row) =>
-		mapPeerRow(
+	return rows.map((row) => ({
+		...mapPeerRow(
 			store,
 			row,
 			showDiag,
@@ -4610,7 +4622,8 @@ function readPeerScopeDiagnostics(store: MemoryStore, showDiag: boolean) {
 			localDeviceId,
 			loadDiagnosticKey,
 		),
-	);
+		sync_health: health.get(String(row.peer_device_id)),
+	}));
 }
 
 // Default-lane batches omit body.scope_id; validate all signed operation scopes,
@@ -4671,6 +4684,7 @@ function rejectUnauthorizedInboundBatch(
 		peerDeviceId: context.peerDeviceId,
 	});
 	if (rejected) {
+		recordInboundScopeFailure(context);
 		return c.json(
 			{
 				error: "scope_rejected",
@@ -4687,6 +4701,7 @@ function rejectUnauthorizedInboundBatch(
 	addExistingMutationScopes(context.db, ops, scopeIds);
 	const failure = validateManagedScopes(scopeIds, context);
 	if (!failure) return null;
+	recordInboundScopeFailure(context);
 	return c.json(
 		syncScopeResetRequiredPayload(
 			getSyncResetState(context.db),
@@ -4694,6 +4709,28 @@ function rejectUnauthorizedInboundBatch(
 			LOCAL_SYNC_CAPABILITY,
 			failure.scopeId,
 		),
+		409,
+	);
+}
+
+function recordInboundScopeFailure(
+	context: ReturnType<typeof syncScopeAuthorizationContext>,
+): void {
+	recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+		errorCode: "scope_rejected",
+		source: "inbound",
+	});
+}
+
+function inboundScopeResetResponse(
+	c: Context,
+	store: MemoryStore,
+	reason: SyncScopeResetReason,
+	context: ReturnType<typeof syncScopeAuthorizationContext>,
+): Response {
+	recordInboundScopeFailure(context);
+	return c.json(
+		syncScopeResetRequiredPayload(getSyncResetState(store.db), reason, LOCAL_SYNC_CAPABILITY, null),
 		409,
 	);
 }
@@ -5036,15 +5073,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			negotiatedCapability: negotiated,
 		});
 		if (!scopeRequest.ok) {
-			return c.json(
-				syncScopeResetRequiredPayload(
-					getSyncResetState(store.db),
-					scopeRequest.reason,
-					LOCAL_SYNC_CAPABILITY,
-					null,
-				),
-				409,
-			);
+			return inboundScopeResetResponse(c, store, scopeRequest.reason, scopeContext);
 		}
 		if (!Array.isArray(body.ops)) {
 			return c.json({ error: "invalid_ops" }, 400);
@@ -5095,7 +5124,7 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		});
 		if (rejected) return rejected;
 
-		const result = applyInboundSyncOps(store, filtered.allowed, localDeviceId);
+		const result = applyInboundSyncOps(store, filtered.allowed, localDeviceId, peerDeviceId);
 		const skipped = result.skipped + filtered.skipped;
 		return c.json({
 			...result,

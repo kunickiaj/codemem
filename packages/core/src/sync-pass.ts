@@ -53,7 +53,12 @@ import {
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
 } from "./sync-replication.js";
-import type { ReplicationOp, SyncResetRequired } from "./types.js";
+import {
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+	type SyncTransferErrorCode,
+} from "./sync-transfer-activity.js";
+import type { ReplicationOp, SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForIncrementalSync } from "./vector-migration.js";
 import { bestEffortMaintainVectorsForSyncFallback } from "./vectors.js";
 
@@ -90,6 +95,9 @@ const BOOTSTRAP_PAGE_SIZE = 2000;
  */
 const BOOTSTRAP_REQUEST_TIMEOUT_S = 60;
 
+// Initiated windows share one observation. Only the final receive result resolves errors.
+const RECEIVE_WINDOW_OPTIONS = { activityOptions: { preserveError: true } };
+
 /** Current sync protocol version expected from peers. */
 const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
 
@@ -110,6 +118,7 @@ export interface SyncResult {
 	ok: boolean;
 	error?: string;
 	failureCategory?: SyncFailureCategory;
+	receiveFailureCode?: SyncTransferErrorCode;
 	address?: string;
 	opsIn: number;
 	opsOut: number;
@@ -147,6 +156,7 @@ export interface SyncScopeResult {
 	label?: string;
 	ok: boolean;
 	failureCategory?: SyncFailureCategory;
+	receiveFailureCode?: SyncTransferErrorCode;
 	opsIn: number;
 	opsOut: number;
 	error?: string;
@@ -469,12 +479,11 @@ async function pushOps(
 	recipientId: string,
 	ops: ReplicationOp[],
 	requestExecutor: RequestJsonExecutor,
+	onAcknowledged: (ops: ReplicationOp[]) => void,
 	keysDir?: string,
 	dbPath?: string,
 	depth = 0,
 ): Promise<void> {
-	if (ops.length === 0) return;
-
 	const body = {
 		ops,
 		sync_capability: LOCAL_SYNC_CAPABILITY,
@@ -503,6 +512,7 @@ async function pushOps(
 		if (hasPeerApplyErrors(payload)) {
 			throw new Error("peer ops push failed (200: peer reported apply errors)");
 		}
+		onAcknowledged(ops);
 		return;
 	}
 
@@ -521,6 +531,7 @@ async function pushOps(
 				recipientId,
 				batch,
 				requestExecutor,
+				onAcknowledged,
 				keysDir,
 				dbPath,
 				depth + 1,
@@ -736,9 +747,79 @@ async function runScopedSync(
 			limit: options.limit,
 		});
 		results.push(scopeResult);
+		if (!scopeResult.ok)
+			recordSyncTransferObservation(db, options.peerDeviceId, "receive", {
+				errorCode: scopeReceiveFailure(scopeResult),
+			});
 		if (scopeResult.ok) totalOpsIn += scopeResult.opsIn;
 	}
 	return { results, totalOpsIn };
+}
+
+function scopeReceiveFailure(result: SyncScopeResult): SyncTransferErrorCode {
+	if (result.receiveFailureCode) return result.receiveFailureCode;
+	return result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed";
+}
+
+// A successful sibling window cannot resolve another scope's failed apply.
+function aggregateReceiveFailure(
+	results: SyncScopeResult[],
+	options: { applyErrors?: readonly string[] } = {},
+): SyncTransferErrorCode | undefined {
+	const failures = results.filter((result) => !result.ok).map(scopeReceiveFailure);
+	if ((options.applyErrors?.length ?? 0) > 0 || failures.includes("apply_failed"))
+		return "apply_failed";
+	if (failures.includes("scope_rejected")) return "scope_rejected";
+	if (failures.length > 0) return "exchange_failed";
+	return undefined;
+}
+
+function applyReceiveFailure(errors: readonly string[]): "apply_failed" | undefined {
+	return errors.length > 0 ? "apply_failed" : undefined;
+}
+
+function mergedReceiveVectorWork(
+	work: ReturnType<typeof applyReplicationOps>["vectorWork"],
+	deletedMemoryIds: number[],
+) {
+	return {
+		upsertMemoryIds: work.upsertMemoryIds,
+		deleteMemoryIds: [...work.deleteMemoryIds, ...deletedMemoryIds],
+	};
+}
+
+function mergeScopeSnapshot(
+	db: Database,
+	peerDeviceId: string,
+	items: SyncMemorySnapshotItem[],
+	resetInfo: SyncResetRequired,
+	scanner: SecretScanner | undefined,
+) {
+	return mergeBootstrapSnapshot(
+		db,
+		peerDeviceId,
+		items,
+		resetInfo,
+		scanner,
+		RECEIVE_WINDOW_OPTIONS,
+	);
+}
+
+function applyScopeSnapshot(
+	db: Database,
+	peerDeviceId: string,
+	items: SyncMemorySnapshotItem[],
+	resetInfo: SyncResetRequired,
+	scanner: SecretScanner | undefined,
+) {
+	return applyBootstrapSnapshot(
+		db,
+		peerDeviceId,
+		items,
+		resetInfo,
+		scanner,
+		RECEIVE_WINDOW_OPTIONS,
+	);
 }
 
 /**
@@ -840,7 +921,7 @@ async function syncOneScope(
 				reason: "initial_bootstrap" as SyncResetRequired["reason"],
 			};
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
-			const mergeResult = mergeBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const mergeResult = mergeScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!mergeResult.ok) {
 				const error = "scoped merge bootstrap apply failed";
 				return {
@@ -913,7 +994,7 @@ async function syncOneScope(
 					bootstrapped: true,
 				};
 			}
-			const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const bootstrapResult = applyScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!bootstrapResult.ok) {
 				const error = "bootstrap apply failed";
 				return {
@@ -1072,10 +1153,8 @@ async function syncOneScope(
 			};
 		}
 
-		const applied = applyReplicationOps(db, ops, deviceId, scanner, {
-			inboundScopeValidation: { peerDeviceId },
-			keysDir,
-		});
+		const applyOptions = scopedInboundOptions(peerDeviceId, keysDir);
+		const applied = applyReplicationOps(db, ops, deviceId, scanner, applyOptions);
 		if (applied.rejected > 0) {
 			const reason = applied.rejections[0]?.reason ?? "scope_rejected";
 			const error = `inbound scope rejected:${reason}`;
@@ -1092,13 +1171,10 @@ async function syncOneScope(
 		}
 
 		const reconciliation = reconcileReceivedRowsForExchange(db, options);
-		const vectorWork = {
-			upsertMemoryIds: applied.vectorWork.upsertMemoryIds,
-			deleteMemoryIds: [
-				...applied.vectorWork.deleteMemoryIds,
-				...reconciliation.deleted_memory_ids,
-			],
-		};
+		const vectorWork = mergedReceiveVectorWork(
+			applied.vectorWork,
+			reconciliation.deleted_memory_ids,
+		);
 		try {
 			queueVectorBackfillForIncrementalSync(db, vectorWork);
 		} catch (queueErr) {
@@ -1110,6 +1186,7 @@ async function syncOneScope(
 					label: scope.label,
 					ok: false,
 					failureCategory: "other",
+					receiveFailureCode: applyReceiveFailure(applied.errors),
 					opsIn: 0,
 					opsOut: 0,
 					error,
@@ -1143,6 +1220,7 @@ async function syncOneScope(
 				ok: false,
 				failureCategory: "other",
 				opsIn: applied.applied,
+				receiveFailureCode: "apply_failed",
 				opsOut: 0,
 				error: `inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
 				bootstrapped: hasNullBaselineBootstrapMarker,
@@ -1184,6 +1262,15 @@ export function syncPassPreflight(db: Database): void {
 }
 
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
+
+function scopedInboundOptions(peerDeviceId: string, keysDir: string | undefined) {
+	return {
+		...RECEIVE_WINDOW_OPTIONS,
+		activityPeerDeviceId: peerDeviceId,
+		inboundScopeValidation: { peerDeviceId },
+		keysDir,
+	};
+}
 
 interface SyncExchangeContext {
 	requestExecutor: RequestJsonExecutor;
@@ -1341,6 +1428,7 @@ async function finishInitialBootstrap(
 		items,
 		resetInfo,
 		context.scanner,
+		RECEIVE_WINDOW_OPTIONS,
 	);
 	if (!bootstrap.ok) throw new Error("initial bootstrap apply failed");
 	const scoped =
@@ -1380,6 +1468,7 @@ async function finishInitialBootstrap(
 		opsIn: bootstrap.applied + scoped.totalOpsIn,
 		opsOut: 0,
 		addressErrors: [],
+		receiveFailureCode: aggregateReceiveFailure(scoped.results),
 		perScopeResults: scoped.results.length > 0 ? scoped.results : undefined,
 	};
 }
@@ -1547,6 +1636,7 @@ async function performResetBootstrap(
 			items,
 			resetRequired,
 			context.scanner,
+			RECEIVE_WINDOW_OPTIONS,
 		);
 		if (!bootstrapResult.ok) throw new Error("bootstrap apply failed");
 		recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
@@ -1640,6 +1730,8 @@ async function applyPulledDefaultOps(
 			? { peerDeviceId: context.peerDeviceId, enabled: false }
 			: { peerDeviceId: context.peerDeviceId };
 	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
+		...RECEIVE_WINDOW_OPTIONS,
+		activityPeerDeviceId: context.peerDeviceId,
 		inboundScopeValidation,
 		keysDir: context.keysDir,
 	});
@@ -1707,13 +1799,26 @@ async function pushDefaultScope(
 			),
 		});
 	const postUrl = `${peer.baseUrl}/v1/ops`;
-	for (const batch of chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES)) {
+	// An idle sender still verifies the signed POST path without claiming any transfer.
+	const batches = outboundOps.length > 0 ? chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES) : [[]];
+	for (const batch of batches) {
 		await pushOps(
 			postUrl,
 			context.deviceId,
 			context.peerDeviceId,
 			batch,
 			context.requestExecutor,
+			(acknowledged) => {
+				context.db.transaction(() => {
+					recordSyncTransferReceipts(
+						context.db,
+						context.peerDeviceId,
+						"send",
+						acknowledged.map((op) => op.op_id),
+					);
+					recordSyncTransferObservation(context.db, context.peerDeviceId, "send");
+				})();
+			},
 			context.keysDir,
 			context.dbPath,
 		);
@@ -1730,6 +1835,27 @@ async function pushDefaultScope(
 		opsSkipped: skippedOutbound?.skipped_count ?? 0,
 		lastAcked: nextLastAcked,
 	};
+}
+
+function incrementalReceiveErrors(
+	applyErrors: readonly string[],
+	scopes: SyncScopeResult[],
+): string[] {
+	const errors: string[] = [];
+	if (applyErrors.length > 0) {
+		errors.push(
+			`inbound apply incomplete: ${applyErrors.length} op(s) failed; cursor held for retry`,
+		);
+	}
+	const failedScopes = scopes.filter((result) => !result.ok);
+	if (failedScopes.length > 0) {
+		errors.push(
+			`scoped sync incomplete: ${failedScopes
+				.map((result) => `${result.scope_id}=${result.error ?? "unknown"}`)
+				.join("; ")}`,
+		);
+	}
+	return errors;
 }
 
 async function finishIncrementalExchange(
@@ -1753,20 +1879,7 @@ async function finishIncrementalExchange(
 			: { results: [], totalOpsIn: 0 };
 	const allScopesOk = scoped.results.every((result) => result.ok);
 	const inboundIncomplete = applied.errors.length > 0;
-	const errors: string[] = [];
-	if (inboundIncomplete) {
-		errors.push(
-			`inbound apply incomplete: ${applied.errors.length} op(s) failed; cursor held for retry`,
-		);
-	}
-	if (!allScopesOk) {
-		errors.push(
-			`scoped sync incomplete: ${scoped.results
-				.filter((result) => !result.ok)
-				.map((result) => `${result.scope_id}=${result.error ?? "unknown"}`)
-				.join("; ")}`,
-		);
-	}
+	const errors = incrementalReceiveErrors(applied.errors, scoped.results);
 	const ok = allScopesOk && !inboundIncomplete;
 	const error = errors.length > 0 ? errors.join("; ") : undefined;
 	const failureCategory = inboundIncomplete
@@ -1791,6 +1904,7 @@ async function finishIncrementalExchange(
 		opsSkipped: pushed.opsSkipped,
 		skippedOut: pushed.skippedOutbound ?? null,
 		addressErrors: [],
+		receiveFailureCode: aggregateReceiveFailure(scoped.results, { applyErrors: applied.errors }),
 		perScopeResults: scoped.results.length > 0 ? scoped.results : undefined,
 	};
 }
@@ -1803,6 +1917,26 @@ type SyncAddressOutcome =
 			capabilities: SyncCapabilityDiagnostics | undefined;
 	  };
 
+function recordReceiveResult<
+	T extends {
+		ok: boolean;
+		failureCategory?: SyncFailureCategory;
+		receiveFailureCode?: SyncTransferErrorCode;
+	},
+>(context: SyncExchangeContext, result: T, options: { preserveError?: boolean } = {}): T {
+	let errorCode: SyncTransferErrorCode | undefined;
+	if (!result.ok) {
+		errorCode =
+			result.receiveFailureCode ??
+			(result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed");
+	}
+	recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+		...options,
+		errorCode,
+	});
+	return result;
+}
+
 async function syncAddress(
 	context: SyncExchangeContext,
 	baseUrl: string,
@@ -1812,26 +1946,45 @@ async function syncAddress(
 	try {
 		peer = await negotiatePeerExchange(context, baseUrl);
 	} catch (error) {
+		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+			errorCode: "exchange_failed",
+		});
 		return {
 			kind: "failure",
 			error,
 			capabilities: error instanceof PeerNegotiationError ? error.capabilities : undefined,
 		};
 	}
+	let direction: "send" | "receive" = "receive";
 	try {
 		const bootstrap = await tryInitialBootstrap(context, peer, cursors);
-		if (bootstrap) return { kind: "success", result: bootstrap };
+		if (bootstrap) {
+			recordReceiveResult(context, bootstrap);
+			return { kind: "success", result: bootstrap };
+		}
 		const pulled = await pullDefaultScope(context, peer, cursors.lastApplied);
-		if (pulled.kind === "result") return { kind: "success", result: pulled.result };
+		if (pulled.kind === "result") {
+			// Reset recovery checks only the default scope, not the remaining receive scopes.
+			recordReceiveResult(context, pulled.result, RECEIVE_WINDOW_OPTIONS.activityOptions);
+			return { kind: "success", result: pulled.result };
+		}
 		const applied = await applyPulledDefaultOps(context, peer, pulled, cursors.lastApplied);
 		cursors.lastApplied = applied.lastApplied;
+		direction = "send";
 		const pushed = await pushDefaultScope(context, peer, cursors.lastAcked);
 		cursors.lastAcked = pushed.lastAcked;
+		direction = "receive";
 		return {
 			kind: "success",
-			result: await finishIncrementalExchange(context, peer, applied.applied, pushed),
+			result: recordReceiveResult(
+				context,
+				await finishIncrementalExchange(context, peer, applied.applied, pushed),
+			),
 		};
 	} catch (error) {
+		recordSyncTransferObservation(context.db, context.peerDeviceId, direction, {
+			errorCode: "exchange_failed",
+		});
 		return { kind: "failure", error, capabilities: peer.capabilities };
 	}
 }

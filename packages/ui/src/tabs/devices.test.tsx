@@ -224,9 +224,11 @@ describe("Devices sync health", () => {
 		});
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
 		const sync = row?.querySelector(".devices-table-sync");
-		expect(sync?.textContent).toContain("Synced recently");
-		expect(sync?.textContent).toContain("Last sync:");
-		expect(sync?.textContent).toContain("24h: received 7 · sent 3");
+		// Legacy contact and counters do not prove directional replication.
+		expect(sync?.textContent).toContain("Sending: Not verified");
+		expect(sync?.textContent).toContain("Receiving: Not verified");
+		expect(sync?.textContent).toContain("Last success: Not verified");
+		expect(sync?.textContent).not.toContain("received 7 · sent 3");
 		const action = [
 			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
 		].find((button) => button.textContent === "Sync this device");
@@ -300,9 +302,7 @@ describe("Devices sync health", () => {
 			onSyncDevice,
 		});
 		const stale = document.getElementById("device-identity-card-device-address-fingerprint-secret");
-		expect(stale?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Sync status unavailable",
-		);
+		expect(stale?.querySelector(".devices-table-sync")?.textContent).toContain("Not verified");
 		expect(stale?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 2");
 		expect(
 			openActionMenu(stale ?? document).querySelector<HTMLButtonElement>(
@@ -318,7 +318,7 @@ describe("Devices sync health", () => {
 			document
 				.getElementById("device-identity-card-unpaired-device")
 				?.querySelector(".devices-table-sync")?.textContent,
-		).toContain("Sync status unavailable");
+		).toContain("Not verified");
 		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
 	});
 });

@@ -5,7 +5,7 @@
  * and type definitions shared across the codemem TS backend.
  */
 
-export const VERSION = "0.47.3";
+export const VERSION = "0.47.4";
 
 export {
 	type AccountOwnerAssociation,
@@ -1532,6 +1532,7 @@ export type {
 } from "./sync-replication.js";
 export {
 	ACCESS_CLEANUP_OP_TYPE,
+	applyPeerReplicationOps,
 	applyReplicationOps,
 	backfillReplicationOps,
 	bulkPruneReplicationOpsByAgeCutoff,
@@ -1587,6 +1588,17 @@ export {
 	scopeAuthorizationFailureReason,
 	syncScopeResetRequiredPayload,
 } from "./sync-scope-protocol.js";
+export type {
+	PeerSyncActivity,
+	SyncDirectionalActivity,
+	SyncTransferDirection,
+	SyncTransferErrorCode,
+} from "./sync-transfer-activity.js";
+export {
+	readPeerSyncActivity,
+	recordSyncTransferObservation,
+	recordSyncTransferReceipts,
+} from "./sync-transfer-activity.js";
 export { deriveTags, fileTags, normalizeTag } from "./tags.js";
 // Test utilities (exported for consumer packages like viewer-server)
 export type { MixedScopeFixture } from "./test-utils.js";

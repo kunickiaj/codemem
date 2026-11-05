@@ -199,7 +199,8 @@ function peerAttentionItems(device: MergedDevice, name: string): UiSyncAttention
 						? `${name} needs re-pairing`
 						: `${name} needs review`,
 				summary:
-					trustSummary.description || cleanText(device.peer.last_error) || "Sync needs review.",
+					trustSummary.description ||
+					"Sync needs review. Check device sync diagnostics, then retry.",
 			}),
 		);
 	}
@@ -256,6 +257,7 @@ export function deriveSyncViewModel(input: {
 		discovered_devices?: DiscoveredDeviceLike[];
 	};
 	status?: {
+		sync_health?: import("../../../lib/sync-health").OverallSyncHealth | null;
 		enabled?: boolean;
 		daemon_state?: TeamSyncDaemonState;
 		daemon_running?: boolean;

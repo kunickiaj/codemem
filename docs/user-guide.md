@@ -663,7 +663,15 @@ The recipient accepts on the new device. Codemem links it to the same Identity, 
 
 Use **Rename device** on a configured row in **Devices** to change its friendly name. A coordinator-enrolled device is renamed in every configured group where it is enrolled; if one group fails, retry the same name after the coordinator recovers. A device without coordinator enrollment gets a name local to this installation. **Change Identity** is a separate, reviewed ownership reassignment; the target picker lists only other active Identities. It cannot rename a device.
 
-The **Sync** column shows a paired device's sync health separately from its availability, its last sync time, and operations received and sent in the past 24 hours—not bytes or a lifetime total. An unpaired device does not show zeroes as though it had synced. If the status refresh fails, Devices hides stale counts and disables manual sync until a successful refresh. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
+The **Sync** column shows a paired device's sync health separately from its availability and last sync time. **Sending** and **Receiving** report separate, unique-operation counts for the past 24 hours. Sending counts operations that the peer acknowledged. Receiving counts operations that this device applied. These historical counts measure neither bytes, lifetime activity, nor queued work.
+
+Devices shows an overall summary across paired devices and separate evidence for each peer. A successful peer does not hide another peer that is unknown, stale, or needs attention. Snapshot entries are counted separately from operations. Counts begin when Codemem can record them. It does not invent history for activity before that point. An unpaired device does not show zeroes as though it had synced, and an idle pass with zero activity does not prove that no backlog exists.
+
+If a status refresh fails, Devices hides stale sync evidence and disables manual sync until a later refresh succeeds. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
+
+When a receiver cannot apply an operation, it withholds its acknowledgement so the sender can retry. Fix the underlying receiver error before retrying sync. Even when there is no work to send, an idle pass sends an authenticated empty request to verify the sending path. That request can expose rate-limit or POST failures.
+
+Codemem retains operation and snapshot receipt IDs longer than 24 hours so retries do not inflate the displayed counts. Local receipt storage can therefore grow over time. There is no automatic pruning policy. This storage is added locally and does not require a coordinator migration.
 
 | Identity setup state | Meaning | What to do |
 | --- | --- | --- |

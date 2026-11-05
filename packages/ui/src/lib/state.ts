@@ -220,6 +220,7 @@ export function healthResourceIsStale(
 }
 
 export interface CachedSyncStatus {
+	sync_health?: import("./sync-health").OverallSyncHealth | null;
 	device_id?: string | null;
 	daemon_state?: TeamSyncDaemonState;
 	daemon_issue_code?: "coordinator_timeout" | "coordinator_error" | null;
@@ -254,6 +255,7 @@ export interface SyncPeerStatus {
 }
 
 export interface SyncPeer {
+	sync_health?: import("./sync-health").PeerSyncHealth | null;
 	peer_device_id?: string;
 	pinned?: boolean;
 	last_sync_at?: string | null;

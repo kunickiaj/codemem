@@ -235,6 +235,42 @@ it("renders the four compact health tiles in contract order", () => {
 	expect(document.querySelector("#healthGrid .stat")).toBeNull();
 });
 
+it.each([
+	["exchange_succeeded", "Recent exchange", "online", 0, 0, 0],
+	["needs_attention", "Needs attention", "attention", 1, 0, 0],
+	["not_verified", "Not verified", "unknown", 0, 1, 0],
+	["stale", "Stale", "degraded", 0, 0, 1],
+] as const)(
+	"renders aggregate %s without letting one peer's success override it",
+	(healthState, label, tone, attention, unverified, stale) => {
+		// Arrange
+		state.lastSyncPeers = [
+			{ peer_device_id: "good-peer", status: { sync_status: "ok", peer_state: "online" } },
+			{ peer_device_id: "other-peer" },
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: "ok",
+			sync_health: {
+				state: healthState,
+				peer_count: 2,
+				attention_count: attention,
+				unverified_count: unverified,
+				stale_count: stale,
+			},
+		};
+		// Act
+		renderOverview();
+		// Assert
+		const sync = document.querySelectorAll("#healthGrid .health-tile")[1];
+		expect(sync?.querySelector(".health-tile-value")?.textContent).toBe(label);
+		expect(sync?.querySelector(`.presence-pip--${tone}`)).not.toBeNull();
+		expect(sync?.getAttribute("title")).toContain(
+			`2 paired devices · ${attention} need attention · ${unverified} not verified · ${stale} stale`,
+		);
+	},
+);
+
 it.each([0, 0.5])("counts tag coverage %s with active memories as an issue", (coverage) => {
 	const stats = statsPayload();
 	stats.database.active_memory_items = 10;
@@ -280,8 +316,8 @@ it("marks pending pipeline work and the current sync problem as degraded", () =>
 	const values = [...document.querySelectorAll("#healthGrid .health-tile-value")];
 	expect(values[0]?.textContent).toBe("3 pending · Reliability unknown");
 	expect(values[0]?.querySelector(".presence-pip--degraded")).not.toBeNull();
-	expect(values[1]?.textContent).toBe("Stopped");
-	expect(values[1]?.querySelector(".presence-pip--degraded")).not.toBeNull();
+	expect(values[1]?.textContent).toBe("Not verified");
+	expect(values[1]?.querySelector(".presence-pip--unknown")).not.toBeNull();
 });
 
 it("marks pipeline reliability failures when the queue is clear", () => {
@@ -358,7 +394,7 @@ it("counts failed maintenance in the headline", () => {
 	);
 });
 
-it("shows a recently successful degraded daemon as syncing", () => {
+it("keeps replication unverified despite a recent daemon success", () => {
 	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
 	state.lastSyncStatus = {
 		daemon_state: "degraded",
@@ -369,21 +405,24 @@ it("shows a recently successful degraded daemon as syncing", () => {
 	renderOverview();
 
 	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
-	expect(sync?.textContent).toBe("Syncing");
-	expect(sync?.querySelector(".presence-pip--online")).not.toBeNull();
+	expect(sync?.textContent).toBe("Not verified");
+	expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
 	expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
 });
 
-it.each(["starting", "stopping"] as const)("preserves the %s sync transition", (daemonState) => {
-	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
-	state.lastSyncStatus = { daemon_state: daemonState, enabled: true };
+it.each(["starting", "stopping"] as const)(
+	"does not treat %s as replication evidence",
+	(daemonState) => {
+		state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
+		state.lastSyncStatus = { daemon_state: daemonState, enabled: true };
 
-	renderOverview();
+		renderOverview();
 
-	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
-	expect(sync?.textContent).toBe(daemonState === "starting" ? "Starting" : "Stopping");
-	expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
-});
+		const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
+		expect(sync?.textContent).toBe("Not verified");
+		expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
+	},
+);
 
 it("describes issue drivers below the degraded status threshold", () => {
 	state.healthRawEvents = completeHealthLoad({ pending: 200, sessions: 1 });
@@ -399,19 +438,19 @@ it("does not report unknown, unconfigured, or stale sync as online", () => {
 	state.lastSyncStatus = { enabled: true };
 	renderOverview();
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
-		"Unknown",
+		"Not verified",
 	);
 
 	state.lastSyncStatus = { enabled: true, daemon_state: "ok" };
 	renderOverview();
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
-		"No peers",
+		"Not verified",
 	);
 
 	state.lastSyncStatus = { enabled: true, daemon_state: "stopped" };
 	renderOverview();
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
-		"No peers",
+		"Not verified",
 	);
 
 	state.lastSyncPeers = [{ peer_device_id: "peer-a" }];
@@ -422,8 +461,8 @@ it("does not report unknown, unconfigured, or stale sync as online", () => {
 	};
 	renderOverview();
 	const staleSync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
-	expect(staleSync?.textContent).toBe("Stale");
-	expect(staleSync?.querySelector(".presence-pip--degraded")).not.toBeNull();
+	expect(staleSync?.textContent).toBe("Not verified");
+	expect(staleSync?.querySelector(".presence-pip--unknown")).not.toBeNull();
 });
 
 it("treats an explicit stale daemon state as degraded even after a recent sync", () => {
@@ -437,8 +476,8 @@ it("treats an explicit stale daemon state as degraded even after a recent sync",
 	renderOverview();
 
 	const sync = document.querySelectorAll("#healthGrid .health-tile-value")[1];
-	expect(sync?.textContent).toBe("Stale");
-	expect(sync?.querySelector(".presence-pip--degraded")).not.toBeNull();
+	expect(sync?.textContent).toBe("Not verified");
+	expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
 	expect(document.getElementById("healthMeta")?.textContent).toContain("sync daemon stale");
 });
 
@@ -506,7 +545,9 @@ it("shows a coordinator sync failure even when no peers are configured", () => {
 		daemon_issue_code: "coordinator_timeout",
 	};
 	renderOverview();
-	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe("Error");
+	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+		"Not verified",
+	);
 	expect(document.getElementById("healthActions")?.textContent).toContain(
 		"Coordinator sync requests timed out",
 	);
@@ -552,7 +593,7 @@ it("does not hide a failed device just because another device synced recently", 
 		"sync with paired devices failed",
 	);
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
-		"Degraded",
+		"Not verified",
 	);
 });
 
@@ -572,7 +613,7 @@ it("shows a failed device when the daemon reports ok after a different peer succ
 	};
 	renderOverview();
 	expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
-		"Degraded",
+		"Not verified",
 	);
 	expect(document.getElementById("healthMeta")?.textContent).toContain(
 		"sync with paired devices failed",
