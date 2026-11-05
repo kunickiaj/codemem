@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { sharedManagedScopes } from "./coordinator-runtime.js";
 import { RELAY_LOGICAL_ORIGIN } from "./relay-client-config.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
 import { createRelayPeerReachability, relayPeerScopes } from "./relay-peer-reachability.js";
@@ -10,9 +11,10 @@ import { initTestSchema } from "./test-utils.js";
 
 const COORDINATOR = "https://coord.example";
 const SCOPES = [
-	{ scopeId: "space-b", groupId: "group-2" },
-	{ scopeId: "space-a", groupId: "group-1" },
-	{ scopeId: "space-c", groupId: "group-1" },
+	{ scopeId: "space-b", groupId: "group-2", kind: "team" },
+	{ scopeId: "space-a", groupId: "group-1", kind: "managed_project" },
+	{ scopeId: "space-c", groupId: "group-1", kind: "managed_project" },
+	{ scopeId: "space-d", groupId: "group-1", kind: "user" },
 ];
 
 async function seedSharedSpaces(db: InstanceType<typeof Database>): Promise<void> {
@@ -24,10 +26,11 @@ async function seedSharedSpaces(db: InstanceType<typeof Database>): Promise<void
 			"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, public_key, created_at) VALUES (?, ?, ?, ?)",
 		).run(peer, fingerprintPublicKey(CANONICAL_PUBLIC_KEY), CANONICAL_PUBLIC_KEY, cacheTime);
 	}
-	for (const { scopeId, groupId } of SCOPES) {
+	for (const { scopeId, groupId, kind } of SCOPES) {
 		db.prepare(`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
-			VALUES (?, 'Project', 'managed_project', 'coordinator', ?, ?, 1, 'active', ?, ?)`).run(
+			VALUES (?, 'Space', ?, 'coordinator', ?, ?, 1, 'active', ?, ?)`).run(
 			scopeId,
+			kind,
 			COORDINATOR,
 			groupId,
 			cacheTime,
@@ -70,12 +73,22 @@ describe("relay peer reachability", () => {
 		vi.useRealTimers();
 	});
 
-	it("lists every shared managed Space in scope ID order", () => {
+	// space-b is a coordinator team Space and space-d another kind, so relay carries the
+	// first and skips the second, while Project-only callers still see only space-a.
+	it("lists every shared Project and team Space in scope ID order", () => {
 		expect(relayPeerScopes(db, "peer", COORDINATOR)).toEqual([
 			{ scopeId: "space-a", groupId: "group-1" },
 			{ scopeId: "space-b", groupId: "group-2" },
 		]);
 		expect(relayPeerScopes(db, "peer", "https://other.example")).toEqual([]);
+		const projectsOnly = sharedManagedScopes(db, {
+			localDeviceId: "local",
+			peerDeviceId: "peer",
+			coordinatorId: COORDINATOR,
+			peerGroupIds: null,
+			peerPublicKey: CANONICAL_PUBLIC_KEY,
+		});
+		expect(projectsOnly.scopes).toEqual([{ scopeId: "space-a", groupId: "group-1" }]);
 	});
 
 	it("rotates shared Spaces across ticks and routes each through its group's client", () => {

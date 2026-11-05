@@ -4,7 +4,13 @@ import { RELAY_LOGICAL_ORIGIN } from "./relay-client-config.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
 import type { SyncPeerReachabilityResolver } from "./sync-reachability-pass.js";
 
-/** Every managed Space the local device shares with a peer under one coordinator, by scope ID. */
+/**
+ * Coordinator Space kinds relay may carry. Both are coordinator-authority
+ * Spaces whose membership the receiver checks on every exchange.
+ */
+const RELAY_SPACE_KINDS = ["managed_project", "team"] as const;
+
+/** Every coordinator Project or team Space the local device shares with a peer, by scope ID. */
 export function relayPeerScopes(
 	db: Database,
 	peerDeviceId: string,
@@ -24,6 +30,7 @@ export function relayPeerScopes(
 		coordinatorId,
 		peerGroupIds: null,
 		peerPublicKey,
+		kinds: RELAY_SPACE_KINDS,
 	}).scopes;
 }
 
