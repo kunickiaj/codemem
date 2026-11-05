@@ -29,6 +29,7 @@ import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { publicRelayAdmission, type RelayAdmissionOptions } from "./relay-admission-options.js";
 import { RELAY_ADMISSION_PATH } from "./relay-config.js";
+import { type RelayHealthContext, relayHealthInstrumentation } from "./relay-health-link.js";
 import {
 	handleRelayAdmissionSetup,
 	handleRelayQuotaAdmin,
@@ -76,13 +77,29 @@ function relayAdmissionFor(
 	return publicRelayAdmission(env as unknown as Readonly<Record<string, unknown>>);
 }
 
+/** Per-request relay options: the public admission route and relay health instrumentation. */
+async function relayAppOptions(
+	request: Request,
+	env: CloudflareCoordinatorEnv,
+	ctx: RelayHealthContext | undefined,
+): Promise<Pick<CreateD1CoordinatorAppOptions, "relayAdmission" | "relayHealthInstrumentation">> {
+	return {
+		relayAdmission: await relayAdmissionFor(request, env),
+		relayHealthInstrumentation: relayHealthInstrumentation(request, env, ctx),
+	};
+}
+
 function createLegacyCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
 ) {
 	const qualificationLimiter = createInMemoryRequestRateLimiter();
 	const deviceLimiter = createInMemoryRequestRateLimiter();
 	return {
-		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+		async fetch(
+			request: Request,
+			env: CloudflareCoordinatorEnv,
+			ctx?: RelayHealthContext,
+		): Promise<Response> {
 			if (new URL(request.url).pathname === OWNER_QUALIFICATION_PATH)
 				return createOwnerQualificationHttp({
 					config: null,
@@ -102,7 +119,7 @@ function createLegacyCloudflareCoordinatorWorker(
 				now: opts.now,
 				requestVerifier: verifyCloudflareCoordinatorRequest,
 				recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
-				relayAdmission: await relayAdmissionFor(request, env),
+				...(await relayAppOptions(request, env, ctx)),
 			});
 			return app.fetch(request);
 		},
@@ -113,7 +130,10 @@ async function authenticationUnavailable(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 	opts: CreateCloudflareCoordinatorWorkerOptions,
-	dependencies: { deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter> },
+	dependencies: {
+		deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>;
+		ctx?: RelayHealthContext;
+	},
 ): Promise<Response> {
 	try {
 		if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
@@ -124,7 +144,7 @@ async function authenticationUnavailable(
 			requestVerifier: verifyCloudflareCoordinatorRequest,
 			requestRateLimit: { limiter: dependencies.deviceLimiter },
 			browserAuth: { kind: "unavailable" },
-			relayAdmission: await relayAdmissionFor(request, env),
+			...(await relayAppOptions(request, env, dependencies.ctx)),
 		}).fetch(request);
 	} catch {
 		return jsonResponse({ error: "coordinator_unavailable" }, 503);
@@ -181,7 +201,11 @@ function createBrowserAuthWorker(
 		return pinnedDb;
 	}
 	return {
-		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+		async fetch(
+			request: Request,
+			env: CloudflareCoordinatorEnv,
+			ctx?: RelayHealthContext,
+		): Promise<Response> {
 			const operator = configuredRevocation(request, env, deviceLimiter, null, opts);
 			if (operator) return operator;
 			let dispatched = false;
@@ -196,7 +220,7 @@ function createBrowserAuthWorker(
 					}).fetch(request);
 				if (!env.COORDINATOR_DB) return jsonResponse({ error: "missing_d1_binding" }, 500);
 				const db = pinBinding(env);
-				if (!db) return authenticationUnavailable(request, env, opts, { deviceLimiter });
+				if (!db) return authenticationUnavailable(request, env, opts, { deviceLimiter, ctx });
 				const result = await setup(request, db);
 				if (result instanceof Response) return result;
 				const app = createD1CoordinatorApp({
@@ -206,13 +230,13 @@ function createBrowserAuthWorker(
 					requestVerifier: verifyCloudflareCoordinatorRequest,
 					requestRateLimit: { limiter: deviceLimiter },
 					browserAuth: browserRuntimeOptions(result),
-					relayAdmission: await relayAdmissionFor(request, env),
+					...(await relayAppOptions(request, env, ctx)),
 				});
 				dispatched = true;
 				return await app.fetch(request);
 			} catch {
 				if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
-				return authenticationUnavailable(request, env, opts, { deviceLimiter });
+				return authenticationUnavailable(request, env, opts, { deviceLimiter, ctx });
 			}
 		},
 		scheduled(
@@ -312,7 +336,11 @@ async function createWorkerFromSettings(
 	};
 	return {
 		...underlying,
-		async fetch(request: Request, env: CloudflareCoordinatorEnv): Promise<Response> {
+		async fetch(
+			request: Request,
+			env: CloudflareCoordinatorEnv,
+			ctx?: RelayHealthContext,
+		): Promise<Response> {
 			if (owner) {
 				const handled = await owner.admit(
 					request,
@@ -330,7 +358,7 @@ async function createWorkerFromSettings(
 				});
 				if (handled) return handled;
 			}
-			return underlying.fetch(request, env);
+			return underlying.fetch(request, env, ctx);
 		},
 	};
 }
@@ -448,7 +476,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		return completed;
 	}
 	return {
-		fetch: (request: Request, env: CloudflareCoordinatorEnv) => {
+		fetch: (request: Request, env: CloudflareCoordinatorEnv, ctx?: RelayHealthContext) => {
 			// Relay first, so an upgrade never waits on coordinator setup. After the
 			// hand-off the Worker does nothing else for that request.
 			const relay =
@@ -458,7 +486,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 				return fetchOwnerQualification(request, env, pin, qualificationLimiter);
 			return (
 				configuredRevocation(request, env, deviceLimiter, pin) ??
-				fetchConfiguredWorker(request, env, configured, deviceLimiter)
+				fetchConfiguredWorker(request, env, configured, { deviceLimiter, ctx })
 			);
 		},
 		scheduled(
@@ -486,7 +514,10 @@ async function fetchConfiguredWorker(
 	configured: (
 		env: CloudflareCoordinatorEnv,
 	) => Promise<ReturnType<typeof createCloudflareCoordinatorWorker> | null>,
-	deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
+	dependencies: {
+		deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>;
+		ctx?: RelayHealthContext;
+	},
 ): Promise<Response> {
 	let dispatched = false;
 	const admissionRequest = new URL(request.url).pathname === OWNER_BROWSER_ADMISSION_PATH;
@@ -494,13 +525,13 @@ async function fetchConfiguredWorker(
 		if (admissionRequest && ownerAdmissionDisabled(env)) return ownerAdmissionUnavailable(404);
 		const worker = await configured(env);
 		if (!worker && admissionRequest) return ownerAdmissionUnavailable(503);
-		if (!worker) return await authenticationUnavailable(request, env, {}, { deviceLimiter });
+		if (!worker) return await authenticationUnavailable(request, env, {}, dependencies);
 		dispatched = true;
-		return await worker.fetch(request, env);
+		return await worker.fetch(request, env, dependencies.ctx);
 	} catch {
 		if (admissionRequest) return ownerAdmissionUnavailable(503);
 		if (dispatched) return jsonResponse({ error: "coordinator_unavailable" }, 503);
-		return authenticationUnavailable(request, env, {}, { deviceLimiter });
+		return authenticationUnavailable(request, env, {}, dependencies);
 	}
 }
 

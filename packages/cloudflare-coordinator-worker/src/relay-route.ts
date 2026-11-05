@@ -5,6 +5,7 @@ import type {
 import { authenticate, readOwnerJsonRequest } from "./owner-admin.js";
 import { provisionRelayAdmission } from "./relay-admission-setup.js";
 import { captureRelayEnv, type RelayRealmConfig, readRelayConfig } from "./relay-config.js";
+import { type RelayHealthWorkerEnv, startRelayHealth } from "./relay-health-link.js";
 import type { RelayRealm } from "./relay-realm.js";
 
 const RELAY_UPGRADE_PATH = /^\/v1\/relay\/([0-9a-f]{64})$/;
@@ -12,7 +13,7 @@ const REALM_ID = /^[0-9a-f]{64}$/;
 export const RELAY_QUOTA_ADMIN_PATH = "/v1/admin/relay/quota";
 export const RELAY_ADMISSION_ADMIN_PATH = "/v1/admin/relay/admission";
 
-export interface RelayWorkerEnv {
+export interface RelayWorkerEnv extends RelayHealthWorkerEnv {
 	readonly RELAY_REALM?: DurableObjectNamespace<RelayRealm>;
 	readonly COORDINATOR_DB?: D1DatabaseLike;
 }
@@ -130,7 +131,8 @@ async function provisionRealmQuota(
 /**
  * Operator route that writes the D1 admission policy, realm rows and budgets for
  * the relay config. It takes an empty JSON object, because every value comes
- * from config and the fixed budget profile. Returns null while relay is off.
+ * from config and the fixed budget profile. After a successful setup it arms the
+ * relay health alarm, which writes readiness. Returns null while relay is off.
  */
 export function handleRelayAdmissionSetup(
 	request: Request,
@@ -141,7 +143,7 @@ export function handleRelayAdmissionSetup(
 	const config = relayConfig(env);
 	const db = env.COORDINATOR_DB;
 	if (!config || !db) return null;
-	return setupRelayAdmission(request, config, db, options).catch(() =>
+	return setupRelayAdmission(request, config, db, options, env).catch(() =>
 		json({ error: "relay_admission_unavailable" }, 503),
 	);
 }
@@ -151,6 +153,7 @@ async function setupRelayAdmission(
 	config: RelayRealmConfig,
 	db: D1DatabaseLike,
 	options: RelayAdminOptions,
+	env: RelayHealthWorkerEnv,
 ): Promise<Response> {
 	const refused = await refuseAdminRequest(request, options, "relay-admission-admin");
 	if (refused) return refused;
@@ -158,5 +161,5 @@ async function setupRelayAdmission(
 	if (!body || Object.keys(body).length !== 0) return json({ error: "invalid_request" }, 400);
 	const result = await provisionRelayAdmission(db, config);
 	if (!result.ok) return json({ error: result.error }, 409);
-	return json(result.body, 200);
+	return json({ ...result.body, health: await startRelayHealth(env) }, 200);
 }

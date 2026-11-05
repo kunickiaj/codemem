@@ -365,6 +365,14 @@ real-client window must pass its own rules and can trip admission regardless of
 probe speed. Missing real-client traffic alone is not unhealthy if the required
 probe and server paths are fresh.
 
+Approved exception for the Cloudflare host (2026-11-04): a Worker cannot fetch
+its own `workers.dev` URL, so while the coordinator has no custom domain the
+probe client reaches the coordinator through the Worker's internal loopback.
+That measures coordinator handling, auth, nonce, and database work, but not the
+edge or public HTTPS path, and its client and server samples come from the
+same request. Once the coordinator has a custom domain, the probe must use the
+real HTTPS path again.
+
 The default probe cycle is once every 30 seconds while monitoring is enabled,
 at most two cycles or four endpoint requests/minute per realm. Higher rates
 require a new protected-capacity allocation. An approved probe uses a normal

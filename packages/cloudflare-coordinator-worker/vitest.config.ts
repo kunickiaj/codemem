@@ -44,6 +44,7 @@ export default defineConfig(async () => {
 						RELAY_REALM_TEST: { className: "RelayRealmTestObject", useSQLite: true },
 						RELAY_REALM_PRODUCTION: { className: "RelayRealm", useSQLite: true },
 						RELAY_REALM_LOOPBACK_TEST: { className: "RelayRealmLoopbackTestObject", useSQLite: true },
+						RELAY_HEALTH_TEST: { className: "RelayHealthTestObject", useSQLite: true },
 					},
 					bindings: {
 						CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET: "test-secret",
@@ -75,6 +76,7 @@ export default defineConfig(async () => {
 				"**/test/relay-quota-do-object.ts",
 				"**/test/relay-realm-do-object.ts",
 				"**/test/relay-admission-test-entrypoint.ts",
+				"**/test/relay-health-do-object.ts",
 			],
 		},
 	};
