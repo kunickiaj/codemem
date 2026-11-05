@@ -3,6 +3,12 @@ import {
   createRuntimeLocation,
   V2_ADAPTER_DIAGNOSTICS,
 } from "./host-contract.js";
+import {
+  formatMemoryToolOutcome,
+  isMemoryToolId,
+  MEMORY_TOOL_NAMESPACE,
+  MEMORY_TOOL_NAMESPACE_DESCRIPTION,
+} from "./memory-tools.js";
 import { createCodememRuntime } from "./runtime.js";
 import { registerV2NotificationBridge } from "./v2-notification-bridge.js";
 
@@ -381,13 +387,110 @@ export const createV2Tool = (name, definition, { isActive = () => true } = {}) =
   };
 };
 
-const registerV2Tools = (context, runtime, isActive) =>
-  context.tool.transform((editor) => {
+let toolErrorClass;
+// Tool.Error is how a V2 tool reports a failure the model sees and recovers
+// from, like an MCP isError result. Loaded lazily so OpenCode 1 hosts, which
+// import this module through the package entrypoint, never load the V2 SDK.
+const createV2ToolError = async (message) => {
+  toolErrorClass ??= await import("@opencode/plugin/promise/tool").then(
+    (module) => module.Error,
+    () => Error,
+  );
+  return toolErrorClass === Error ? new Error(message) : new toolErrorClass({ message });
+};
+
+export const createV2MemoryTool = (contract, execute, { directory, isActive = () => true }) => ({
+  name: contract.name,
+  description: contract.description,
+  input: contract.input,
+  options: { namespace: MEMORY_TOOL_NAMESPACE, codemode: true },
+  execute: async (args, context) => {
+    if (!isActive()) throw new Error("Codemem tool is unavailable after adapter cleanup");
+    const outcome = await execute(contract.name, asRecord(args), {
+      directory,
+      sessionID: context?.sessionID,
+      callID: context?.id,
+      signal: context?.signal,
+    });
+    const { isError, text, note } = formatMemoryToolOutcome(outcome);
+    if (isError) throw await createV2ToolError(note ? `${text}\n${note}` : text);
+    const noteParts = note ? [{ type: "text", text: note }] : [];
+    return { content: [{ type: "text", text }, ...noteParts] };
+  },
+});
+
+const addV2MemoryTools = (editor, memoryTools, options) => {
+  if (!memoryTools) return;
+  editor.namespace({
+    name: MEMORY_TOOL_NAMESPACE,
+    description: MEMORY_TOOL_NAMESPACE_DESCRIPTION,
+  });
+  for (const contract of memoryTools.contracts) {
+    editor.add(createV2MemoryTool(contract, memoryTools.execute, options));
+  }
+};
+
+const isV2CodememMcpConfigured = async (context) => {
+  const response = await context.mcp.list();
+  if (!Array.isArray(response?.data)) throw new TypeError("MCP server list unavailable");
+  return response.data.some(
+    (server) => server?.name === MEMORY_TOOL_NAMESPACE && server?.status?.status !== "disabled",
+  );
+};
+
+/** True when the setup-time MCP list already shows a codemem server (usually empty in OpenCode 2). */
+const resolveV2InitialDeferral = async (context, memoryTools) => {
+  const register = await memoryTools.shouldRegister({
+    isCodememMcpConfigured: typeof context.mcp?.list === "function"
+      ? () => isV2CodememMcpConfigured(context)
+      : null,
+  });
+  return !register;
+};
+
+// OpenCode 2 loads MCP config after plugin setup returns (observed: mcp.list()
+// is [] during setup), so precedence is also read from the MCP config itself.
+// A read-only mcp.transform sees the configured servers every time OpenCode
+// rebuilds the MCP registry, before the server connects. Each pass recomputes
+// precedence; when it changes either way, the tools reload so an added codemem
+// server withdraws them and a removed or disabled one restores them.
+const observeV2McpPrecedence = async (context, memoryTools, gate, isActive) => {
+  if (typeof context.mcp?.transform !== "function") return null;
+  const applyChange = async (deferToMcp) => {
+    if (deferToMcp) await memoryTools.announceMcpPreferred();
+    await context.tool.reload();
+  };
+  return context.mcp.transform((editor) => {
+    if (!isActive()) return;
+    const server = editor.get(MEMORY_TOOL_NAMESPACE);
+    const deferToMcp = Boolean(server) && server.disabled !== true;
+    if (deferToMcp === gate.deferToMcp) return;
+    gate.deferToMcp = deferToMcp;
+    // Reload outside the MCP transform pass.
+    setTimeout(() => void applyChange(deferToMcp).catch(() => {}), 0);
+  });
+};
+
+const registerV2Tools = async (context, runtime, isActive) => {
+  const memoryTools = runtime.memoryTools;
+  const gate = { deferToMcp: memoryTools ? await resolveV2InitialDeferral(context, memoryTools) : false };
+  const mcpObserver = memoryTools
+    ? await observeV2McpPrecedence(context, memoryTools, gate, isActive)
+    : null;
+  const tools = await context.tool.transform((editor) => {
     if (!isActive()) return;
     for (const [name, definition] of Object.entries(runtime.tools)) {
       editor.add(createV2Tool(name, definition, { isActive }));
     }
+    // The plugin instance's directory, not the runtime cwd (which prefers the
+    // worktree): stdio MCP ran in this directory, and sharing scopes match it.
+    addV2MemoryTools(editor, gate.deferToMcp ? null : memoryTools, {
+      directory: context.location.directory,
+      isActive,
+    });
   });
+  return mcpObserver ? [tools, mcpObserver] : [tools];
+};
 
 const defaultWaitForEventTask = (eventTask, timeoutMs) =>
   new Promise((resolve) => {
@@ -684,9 +787,22 @@ const registerContextHook = (context, state, options) =>
     }
   });
 
+/**
+ * True for a native memory tool result, including a Code Mode `execute` call
+ * whose inner calls (result metadata `toolCalls`) include a memory tool. The
+ * whole script result is skipped: it carries the retrieved memories.
+ */
+const isNativeMemoryToolResult = (input) => {
+  if (isMemoryToolId(input?.tool)) return true;
+  const calls = asRecord(asRecord(input?.result).metadata).toolCalls;
+  return Array.isArray(calls) && calls.some((call) => isMemoryToolId(call?.tool));
+};
+
 const registerCaptureHook = (context, state, options) =>
   context.tool.hook("execute.after", async (input) => {
-    if (!state.active) return;
+    // Native memory tool output is retrieved memory; capturing it would distill it into new
+    // memories. With the flag off, MCP-provided codemem tools keep their existing capture path.
+    if (!state.active || (state.runtime.memoryTools && isNativeMemoryToolResult(input))) return;
     const translated = translateV2ToolResult(input);
     await captureRuntimeTaskWithinTimeout({
       runtime: state.runtime,
@@ -753,7 +869,7 @@ const activateAdapter = async (context, runtime, registrations, options) => {
   try {
     registrations.push(await registerContextHook(context, state, options));
     registrations.push(await registerCaptureHook(context, state, options));
-    registrations.push(await registerV2Tools(context, runtime, () => state.active));
+    registrations.push(...(await registerV2Tools(context, runtime, () => state.active)));
     state.eventTask = consumeEvents(context, state.abortController.signal, runtime, state.translator, {
       eventTaskTimeoutMs: options.eventTaskTimeoutMs,
       scheduleCapture: state.scheduleCapture,

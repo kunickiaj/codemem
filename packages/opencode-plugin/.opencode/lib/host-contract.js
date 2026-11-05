@@ -75,6 +75,8 @@ export const V2_ADAPTER_DIAGNOSTICS = Object.freeze({
  * @property {(input: CodememToolResult, output: object) => Promise<void>} handleToolResult
  * @property {(code: string) => Promise<void>} reportDiagnostic
  * @property {Record<string, {description: string, args: object, execute: Function}>} tools
+ * @property {{contracts: ReadonlyArray<{name: string, description: string, input: object}>, execute: Function, shouldRegister: Function} | null} memoryTools
+ *   Native memory tools, or null unless CODEMEM_OPENCODE_NATIVE_TOOLS enables them.
  */
 
 export const createRuntimeLocation = ({ project, directory, worktree }) => ({

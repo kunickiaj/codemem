@@ -434,6 +434,28 @@ These are plugin tools callable by the agent/runtime, not user-facing slash
 commands. OpenCode 2 registers the same hyphenated IDs through `tool.transform`
 with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 
+### Built-in memory tools (experimental, opt-in)
+
+Set `CODEMEM_OPENCODE_NATIVE_TOOLS=1` (or `true`/`yes`) to have the plugin
+register the 14 codemem memory tools itself, so OpenCode no longer needs a
+`codemem mcp` process per project. The tools have the same names, inputs, and
+JSON results as the MCP tools, with `codemem_memory_` IDs on both hosts
+(`codemem_memory_search`, `codemem_memory_remember`, and so on). On OpenCode 2
+they live in the `codemem` namespace with Code Mode enabled, so Code Mode
+callers use `tools.codemem.memory_search(...)`.
+
+Each call runs on the shared viewer when it serves this plugin's database and
+supports tool calls. Otherwise it runs `codemem memory-tool <name>` in the
+session directory and the result ends with a note that the viewer was
+unavailable. A write (`memory_remember`, `memory_forget`) that times out or fails
+inside the viewer returns an error rather than retrying through the CLI,
+because the write may already have happened.
+
+If a `codemem` MCP server is still configured (`mcp.codemem` on OpenCode 1,
+`mcp.servers.codemem` on OpenCode 2) and not disabled, the plugin keeps the MCP
+tools and skips its own, logging and showing one notice. Remove the MCP entry
+to switch. The flag is off by default in this release.
+
 ## MCP tools exposed to agents
 
 The MCP server exposes memory retrieval and write tools such as `memory_search`,

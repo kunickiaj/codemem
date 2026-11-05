@@ -2,6 +2,8 @@ import { tool } from "@opencode-ai/plugin";
 import { createDelegationContext } from "../lib/delegation-context.js";
 
 import { createRuntimeHost, createRuntimeLocation } from "../lib/host-contract.js";
+import { convertObjectShape } from "../lib/memory-tool-schema.js";
+import { formatMemoryToolOutcome, isMemoryToolId, memoryToolId } from "../lib/memory-tools.js";
 import {
   __testUtils,
   buildInjectionToastMessage,
@@ -74,6 +76,50 @@ const createV1Tool = (definition) => {
   });
 };
 
+// OpenCode 1 tools return plain text and have no error flag, so a failed call
+// returns the same error payload text the MCP server would send.
+const createV1MemoryTool = (contract, execute) => tool({
+  description: contract.description,
+  args: convertObjectShape(tool.schema, contract.input, contract.name),
+  execute: async (args, context) => {
+    const outcome = await execute(contract.name, args, {
+      directory: context?.directory,
+      sessionID: context?.sessionID,
+      signal: context?.abort,
+    });
+    const { text, note } = formatMemoryToolOutcome(outcome);
+    return note ? `${text}\n${note}` : text;
+  },
+});
+
+const createV1MemoryTools = (memoryTools) => {
+  if (!memoryTools) return {};
+  return Object.fromEntries(
+    memoryTools.contracts.map((contract) => [
+      memoryToolId(contract.name),
+      createV1MemoryTool(contract, memoryTools.execute),
+    ]),
+  );
+};
+
+const isV1CodememMcpConfigured = async (client) => {
+  const response = await client.config.get();
+  if (!response?.data) throw new Error("OpenCode config unavailable");
+  const server = response.data.mcp?.codemem;
+  return Boolean(server) && server.enabled !== false;
+};
+
+/** Native memory tools to register, or null when off or a codemem MCP server already serves them. */
+const resolveV1MemoryTools = async (client, memoryTools) => {
+  if (!memoryTools) return null;
+  const register = await memoryTools.shouldRegister({
+    isCodememMcpConfigured: typeof client.config?.get === "function"
+      ? () => isV1CodememMcpConfigured(client)
+      : null,
+  });
+  return register ? memoryTools : null;
+};
+
 const dispatchV1Event = async (delegation, runtime, event) => {
   const translated = translateV1Event(event);
   if (event?.type === "session.deleted") {
@@ -128,9 +174,12 @@ const createOpenCodeV1Adapter = async ({ project, client, directory, worktree })
   });
   if (!runtime) return {};
 
-  const memoryTools = Object.fromEntries(
-    Object.entries(runtime.tools).map(([name, definition]) => [name, createV1Tool(definition)]),
-  );
+  const memoryTools = {
+    ...Object.fromEntries(
+      Object.entries(runtime.tools).map(([name, definition]) => [name, createV1Tool(definition)]),
+    ),
+    ...createV1MemoryTools(await resolveV1MemoryTools(client, runtime.memoryTools)),
+  };
 
   return {
     dispose: async () => {
@@ -156,6 +205,9 @@ const createOpenCodeV1Adapter = async ({ project, client, directory, worktree })
     ),
     event: ({ event }) => dispatchV1Event(delegation, runtime, event),
     "tool.execute.after": (input, output) => {
+      // Native memory tool output is retrieved memory; capturing it would distill it into new
+      // memories. With the flag off, MCP-provided codemem tools keep their existing capture path.
+      if (runtime.memoryTools && isMemoryToolId(input?.tool)) return;
       const translated = translateV1ToolResult(input, output);
       return runtime.handleToolResult(translated.input, translated.output);
     },
@@ -173,6 +225,7 @@ export default CodememPlugin;
 export const OpencodeMemPlugin = CodememPlugin;
 export { __testUtils, buildInjectionToastMessage };
 export const __v1AdapterTestUtils = {
+  createV1MemoryTools,
   createV1Tool,
   dispatchV1Event,
   extractV1HookSessionID,

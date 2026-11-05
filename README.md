@@ -459,6 +459,7 @@ Common overrides:
 | `CODEMEM_INJECT_TOKEN_BUDGET` | Positive approximate token cap for OpenCode's complete injected context (default `800`); unset, zero, negative, and invalid values use the default |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Host/port the plugin-managed viewer should start, probe, and restart |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
+| `CODEMEM_OPENCODE_NATIVE_TOOLS` | Experimental: `1` to have the OpenCode plugin register the codemem memory tools itself instead of relying on the MCP server (skipped while a `codemem` MCP server is configured); see [plugin reference](docs/plugin-reference.md#built-in-memory-tools-experimental-opt-in) |
 | `CODEMEM_MCP_HTTP_HOST`, `CODEMEM_MCP_HTTP_PORT` | Host/port for `codemem mcp http` |
 | `CODEMEM_MCP_HTTP_PUBLIC_URL` | Public `/mcp` URL advertised in MCP OAuth metadata |
 | `CODEMEM_MCP_OIDC_ISSUER_URL`, `CODEMEM_MCP_OIDC_CLIENT_ID`, `CODEMEM_MCP_OIDC_CLIENT_SECRET` | Upstream OIDC provider used before MCP OAuth code issuance |
