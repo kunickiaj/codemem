@@ -134,6 +134,9 @@ function applyChange(
 	if (change.value !== undefined) {
 		const appended = appendObjectProperty(raw, change);
 		if (appended !== undefined) return appended;
+	} else {
+		const removed = removeObjectProperty(raw, change.path);
+		if (removed !== undefined) return removed;
 	}
 	const options = format ? { formattingOptions } : {};
 	return applyEdits(raw, modify(raw, change.path, change.value, options));
@@ -185,6 +188,84 @@ function hasCommaToken(raw: string, start: number, end: number): boolean {
 		scanner.scan();
 		const tokenStart = scanner.getTokenOffset();
 		if (raw.slice(tokenStart, tokenStart + scanner.getTokenLength()) === ",") return true;
+	}
+	return false;
+}
+
+function findCommaOffset(raw: string, start: number, end: number): number | undefined {
+	const scanner = createScanner(raw);
+	scanner.setPosition(start);
+	while (scanner.getPosition() < end) {
+		scanner.scan();
+		if (scanner.getTokenLength() === 0) return undefined;
+		const tokenStart = scanner.getTokenOffset();
+		if (tokenStart >= end) return undefined;
+		if (raw[tokenStart] === ",") return tokenStart;
+	}
+	return undefined;
+}
+
+/** Cut [start, end), widening to the whole line when nothing else is on it. */
+function cutText(raw: string, start: number, end: number): string {
+	const lineStart = raw.lastIndexOf("\n", start - 1) + 1;
+	const lineEnd = raw.indexOf("\n", end);
+	const ownsLine =
+		raw.slice(lineStart, start).trim() === "" &&
+		lineEnd !== -1 &&
+		raw.slice(end, lineEnd).trim() === "";
+	const from = ownsLine ? lineStart : start;
+	const to = ownsLine ? lineEnd + 1 : end;
+	return applyEdits(raw, [{ offset: from, length: to - from, content: "" }]);
+}
+
+/**
+ * Remove an object property as a text cut. jsonc-parser's `modify` leaves a
+ * dangling comma (invalid JSONC) when the only property has a trailing comma,
+ * and its formatting option reflows sibling properties. This cuts the property,
+ * its comma, and its line when nothing else is on it, so siblings and comments
+ * keep their text. Returns undefined when the path is not an object property.
+ */
+function removeObjectProperty(raw: string, path: JSONPath): string | undefined {
+	const tree = parseTree(raw, [], { allowTrailingComma: true });
+	const parentNode = tree ? findNodeAtLocation(tree, path.slice(0, -1)) : undefined;
+	const siblings = parentNode?.type === "object" ? (parentNode.children ?? []) : [];
+	const index = siblings.findIndex((property) => property.children?.[0]?.value === path.at(-1));
+	const property = siblings[index];
+	if (!parentNode || !property) return undefined;
+
+	const propertyEnd = property.offset + property.length;
+	const boundary = siblings[index + 1]?.offset ?? parentNode.offset + parentNode.length - 1;
+	const trailingComma = findCommaOffset(raw, propertyEnd, boundary);
+	if (trailingComma !== undefined) return cutText(raw, property.offset, trailingComma + 1);
+
+	// Last property without a trailing comma: drop the comma that precedes it.
+	const previous = siblings[index - 1];
+	const leadingComma = previous
+		? findCommaOffset(raw, previous.offset + previous.length, property.offset)
+		: undefined;
+	if (leadingComma !== undefined) {
+		return applyEdits(raw, [
+			{ offset: leadingComma, length: propertyEnd - leadingComma, content: "" },
+		]);
+	}
+	return cutText(raw, property.offset, propertyEnd);
+}
+
+/** True when the JSONC value at `path` contains a line or block comment. */
+export function jsoncValueHasComments(raw: string, path: JSONPath): boolean {
+	const tree = parseTree(raw, [], { allowTrailingComma: true });
+	const node = tree ? findNodeAtLocation(tree, path) : undefined;
+	if (!node) return false;
+	const scanner = createScanner(raw);
+	scanner.setPosition(node.offset);
+	const end = node.offset + node.length;
+	while (scanner.getPosition() < end) {
+		scanner.scan();
+		const length = scanner.getTokenLength();
+		if (length === 0) return false;
+		const tokenStart = scanner.getTokenOffset();
+		const prefix = raw.slice(tokenStart, tokenStart + 2);
+		if (prefix === "//" || prefix === "/*") return true;
 	}
 	return false;
 }

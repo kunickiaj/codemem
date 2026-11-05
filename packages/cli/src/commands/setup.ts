@@ -5,7 +5,8 @@
  *
  * What it does:
  * 1. Adds "@codemem/opencode-plugin" to the plugin array in ~/.config/opencode/opencode.jsonc
- * 2. Adds/updates the MCP entry in ~/.config/opencode/opencode.jsonc
+ * 2. Removes the managed OpenCode MCP entry (the plugin serves memory tools);
+ *    --opencode-mcp stdio writes the per-project stdio entry instead
  * 3. For Claude Code: installs MCP config and guides marketplace plugin install
  * 4. For Codex: MCP + hooks via CODEX_HOME
  * 5. For pi: packages entry + observer derivation + optional MCP adapter surface
@@ -37,6 +38,7 @@ import {
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
+	jsoncValueHasComments,
 	loadJsoncConfig,
 	OPENCODE_PLUGIN_SPEC,
 	reconcileOpencodePluginConfig,
@@ -44,6 +46,14 @@ import {
 	writeJsonConfig,
 	writeJsonConfigWithBackup,
 } from "./setup-config.js";
+import {
+	buildOpencodeStdioMcpEntry,
+	isLegacyUvOpencodeCommand,
+	isSinglePackageNpxOpencodeCommand,
+	locateOpencodeMcpEntries,
+	removeManagedOpencodeMcp,
+	usesV2OpencodeMcpShape,
+} from "./setup-opencode-mcp.js";
 
 function opencodeConfigDir(): string {
 	return join(homedir(), ".config", "opencode");
@@ -108,35 +118,32 @@ function isExactStringArray(value: unknown, expected: string[]): boolean {
 	);
 }
 
-/** Detect and upgrade legacy uvx/uv or managed single-package MCP entries in OpenCode config. */
+/**
+ * Detect and upgrade legacy uvx/uv or managed single-package MCP entries in
+ * OpenCode config, in either the V1 (`mcp.codemem`) or V2
+ * (`mcp.servers.codemem`) shape. Used only by `--opencode-mcp stdio`.
+ */
 export function migrateLegacyOpencodeMcp(
 	config: Record<string, unknown>,
 	{ launcher }: { launcher?: ReturnType<typeof codememMcpLauncher> } = {},
 ): boolean {
-	const mcpConfig = config.mcp as Record<string, unknown> | undefined;
-	if (!mcpConfig || typeof mcpConfig !== "object") return false;
-	const entry = mcpConfig.codemem as Record<string, unknown> | undefined;
-	if (!entry || typeof entry !== "object") return false;
-
-	const command = entry.command;
-	const isLegacyUv =
-		(Array.isArray(command) &&
-			command.some((arg) => typeof arg === "string" && (arg === "uvx" || arg === "uv"))) ||
-		(typeof command === "string" && (command === "uvx" || command === "uv"));
-	const isManagedSinglePackageNpx =
-		isExactStringArray(command, ["npx", "-y", "codemem", "mcp"]) ||
-		isExactStringArray(command, ["npx", "codemem", "mcp"]);
-
-	if (isLegacyUv || isManagedSinglePackageNpx) {
+	let migrated = false;
+	for (const { container } of locateOpencodeMcpEntries(config)) {
+		const entry = container.codemem;
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const command = (entry as Record<string, unknown>).command;
+		if (!isLegacyUvOpencodeCommand(command) && !isSinglePackageNpxOpencodeCommand(command)) {
+			continue;
+		}
 		p.log.step("Upgrading managed MCP entry to the current npm launcher");
 		const resolvedLauncher = launcher ?? codememMcpLauncher();
-		mcpConfig.codemem = {
+		container.codemem = {
 			...entry,
 			command: [resolvedLauncher.command, ...resolvedLauncher.args],
 		};
-		return true;
+		migrated = true;
 	}
-	return false;
+	return migrated;
 }
 
 /** Detect and upgrade legacy uvx or managed single-package MCP entries in Claude settings. */
@@ -214,42 +221,52 @@ function installPlugin(force: boolean): { ok: boolean; wrote: boolean } {
 	}
 }
 
-function installMcp(
-	force: boolean,
-	{ createBackup = true }: { createBackup?: boolean } = {},
-): boolean {
-	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
-	let config: Record<string, unknown>;
+function loadOpencodeConfigOrLog(configPath: string): Record<string, unknown> | null {
 	try {
-		config = loadJsoncConfig(configPath);
+		return loadJsoncConfig(configPath);
 	} catch (err) {
 		p.log.error(
 			`Failed to parse ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
 		);
-		return false;
+		return null;
 	}
+}
 
-	let mcpConfig = config.mcp as Record<string, unknown> | undefined;
-	if (mcpConfig == null || typeof mcpConfig !== "object" || Array.isArray(mcpConfig)) {
-		mcpConfig = {};
-	}
+/** Container for a new stdio entry: `mcp.servers` when the file already uses it. */
+function opencodeStdioContainer(config: Record<string, unknown>): Record<string, unknown> {
+	const mcp =
+		config.mcp != null && typeof config.mcp === "object" && !Array.isArray(config.mcp)
+			? (config.mcp as Record<string, unknown>)
+			: {};
+	config.mcp = mcp;
+	if (!usesV2OpencodeMcpShape(config)) return mcp;
+	return mcp.servers as Record<string, unknown>;
+}
+
+/** `--opencode-mcp stdio`: write the per-project stdio MCP entry as setup used to. */
+function installStdioMcp(
+	force: boolean,
+	{ createBackup = true }: { createBackup?: boolean } = {},
+): boolean {
+	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
+	const config = loadOpencodeConfigOrLog(configPath);
+	if (config == null) return false;
 
 	// Auto-upgrade legacy uvx-based MCP entries.
 	const migrated = migrateLegacyOpencodeMcp(config);
+	const hasEntry = locateOpencodeMcpEntries(config).length > 0;
 
-	if ("codemem" in mcpConfig && !force && !migrated) {
+	if (hasEntry && !force && !migrated) {
 		p.log.info(`MCP entry already exists in ${configPath}`);
 		return true;
 	}
 
 	if (!migrated) {
-		const launcher = codememMcpLauncher();
-		mcpConfig.codemem = {
-			type: "local",
-			command: [launcher.command, ...launcher.args],
-			enabled: true,
-		};
-		config.mcp = mcpConfig;
+		const shape = usesV2OpencodeMcpShape(config) ? "v2" : "v1";
+		opencodeStdioContainer(config).codemem = buildOpencodeStdioMcpEntry(
+			shape,
+			codememMcpLauncher(),
+		);
 	}
 
 	try {
@@ -262,6 +279,55 @@ function installMcp(
 		return false;
 	}
 
+	return true;
+}
+
+function reportKeptOpencodeMcpEntries(
+	configPath: string,
+	kept: { label: string; reason: string }[],
+): void {
+	for (const { label, reason } of kept) {
+		p.log.warn(
+			`Left the codemem MCP entry ${label} in ${configPath} because ${reason}. The plugin now provides memory tools, so remove that entry unless you still need it.`,
+		);
+	}
+}
+
+/**
+ * Default OpenCode MCP step: remove the stdio entries setup used to write.
+ * Memory tools come from the plugin through the shared viewer instead.
+ */
+function removeOpencodeMcp({ createBackup = true }: { createBackup?: boolean } = {}): boolean {
+	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
+	const config = loadOpencodeConfigOrLog(configPath);
+	if (config == null) return false;
+
+	const raw = existsSync(configPath) ? readFileSync(configPath, "utf-8") : "{}";
+	const cleanup = removeManagedOpencodeMcp(config, {
+		canDropEmptyContainer: (path) => !jsoncValueHasComments(raw, path),
+	});
+	reportKeptOpencodeMcpEntries(configPath, cleanup.kept);
+	if (cleanup.removed.length === 0) {
+		if (cleanup.kept.length === 0) {
+			p.log.info("OpenCode memory tools come from the codemem plugin; no MCP entry needed");
+		}
+		return true;
+	}
+
+	try {
+		writeJsonConfig(configPath, cleanup.config, { createBackup });
+	} catch (err) {
+		p.log.error(
+			`Failed to write ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+	p.log.success(
+		`Removed the codemem MCP entry ${cleanup.removed.join(" and ")} from ${configPath} (backup: ${configPath}.codemem.bak)`,
+	);
+	p.log.info(
+		"Memory tools now come from the codemem plugin, so OpenCode no longer starts a codemem MCP process for each project. Use --opencode-mcp stdio to keep the old entry.",
+	);
 	return true;
 }
 
@@ -1318,7 +1384,10 @@ type SetupCommandOpts = {
 	piOnly?: boolean;
 	piMcp?: boolean;
 	piExtensionPath?: string;
+	opencodeMcp?: string;
 };
+
+const OPENCODE_MCP_MODES = ["stdio"] as const;
 
 function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolean): boolean {
 	if (!(opts.piOnly || (!onlyFlag && isPiDetected()))) return true;
@@ -1330,11 +1399,18 @@ function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolea
 	});
 }
 
-function installOpencodeSetup(force: boolean): boolean {
+function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
 	p.log.step("Installing OpenCode plugin...");
 	const pluginResult = installPlugin(force);
-	p.log.step("Installing OpenCode MCP config...");
-	return pluginResult.ok && installMcp(force, { createBackup: !pluginResult.wrote });
+	if (!pluginResult.ok) return false;
+	// The plugin write already backed up the original file; keep that backup.
+	const createBackup = !pluginResult.wrote;
+	if (opencodeMcp === "stdio") {
+		p.log.step("Installing OpenCode MCP config...");
+		return installStdioMcp(force, { createBackup });
+	}
+	p.log.step("Checking OpenCode MCP config...");
+	return removeOpencodeMcp({ createBackup });
 }
 
 function installClaudeSetup(force: boolean): boolean {
@@ -1355,7 +1431,7 @@ function installCodexSetup(force: boolean): boolean {
 function runSetupInstalls(opts: SetupCommandOpts, force: boolean): boolean {
 	const onlyFlag = Boolean(opts.opencodeOnly || opts.claudeOnly || opts.codexOnly || opts.piOnly);
 	let ok = true;
-	if (opts.opencodeOnly || !onlyFlag) ok = installOpencodeSetup(force) && ok;
+	if (opts.opencodeOnly || !onlyFlag) ok = installOpencodeSetup(force, opts.opencodeMcp) && ok;
 	if (opts.claudeOnly || !onlyFlag) ok = installClaudeSetup(force) && ok;
 	if (opts.codexOnly || (!onlyFlag && existsSync(codexConfigDir()))) {
 		ok = installCodexSetup(force) && ok;
@@ -1363,7 +1439,18 @@ function runSetupInstalls(opts: SetupCommandOpts, force: boolean): boolean {
 	return maybeInstallPi(opts, onlyFlag, force) && ok;
 }
 
+function isKnownOpencodeMcpMode(mode: string | undefined): boolean {
+	return mode === undefined || (OPENCODE_MCP_MODES as readonly string[]).includes(mode);
+}
+
 function runSetup(opts: SetupCommandOpts): void {
+	if (!isKnownOpencodeMcpMode(opts.opencodeMcp)) {
+		p.log.error(
+			`Unknown --opencode-mcp mode "${opts.opencodeMcp}". Supported: ${OPENCODE_MCP_MODES.join(", ")}`,
+		);
+		process.exitCode = 2;
+		return;
+	}
 	p.intro(`codemem setup v${VERSION}`);
 	if (runSetupInstalls(opts, opts.force ?? false)) {
 		p.outro("Setup complete — restart your editor to load the plugin");
@@ -1381,6 +1468,7 @@ export const setupCommand = new Command("setup")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
 	.option("--pi-only", "only install for pi")
+	.option("--opencode-mcp <mode>", "keep OpenCode's per-project MCP entry (stdio)")
 	.option("--pi-mcp", "opt into pi MCP adapter surface (requires pi-mcp-adapter)")
 	.option(
 		"--pi-extension-path <path>",

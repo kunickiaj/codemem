@@ -60,6 +60,12 @@ Older payloads without the key retain the legacy import-key behavior. Importing 
 
 Redacted imports preserve projects carried by readable memory rows; an explicit project remap wins. A session gets a project only when all its readable memories agree on one; otherwise each memory keeps its own project for retrieval and feed filtering, without copying the hidden session's project.
 
+### OpenCode setup
+
+`codemem setup --opencode-only` configures only OpenCode. It adds `@codemem/opencode-plugin` to the `plugin` list in `~/.config/opencode/opencode.json` or `opencode.jsonc`. The plugin provides the memory tools through the shared local viewer, so setup writes no `codemem mcp` entry and removes the one earlier versions wrote under `mcp.codemem` or `mcp.servers.codemem`, after saving the previous file with a `.codemem.bak` suffix. Entries with an `environment` block, a `cwd`, a custom command, `type: "remote"`, or other extra fields stay in place and are listed in the output.
+
+`--opencode-mcp stdio` keeps the per-project stdio entry instead: setup writes it when missing, using the `mcp.servers` shape if the file already has one, and upgrades old managed launchers. `stdio` is the only supported mode; any other value exits with status 2. See [OpenCode host support](plugin-reference.md#opencode-host-support-troubleshooting-and-rollback).
+
 ### Pi setup
 
 `codemem setup --pi-only` configures only Pi. A fresh setup adds the `@codemem/pi-extension` npm pin to Pi's `packages` list (honors `PI_CODING_AGENT_DIR`); an existing configured dev path may be retained. It defaults to native tools on a fresh setup. It preserves an existing `tools_mode`. `--pi-mcp` opts into the legacy third-party `pi-mcp-adapter` surface when that adapter is detected. It keeps an existing codemem MCP entry unless `--force` is supplied, and does not configure Pi's native MCP. `--pi-extension-path <path>` writes a local-path `packages` entry instead of the npm pin (dev). Requires Pi 1.1.0 or newer, below 2.0; upgrade an older host with `pi update`. See [Pi extension](plugin-reference.md#pi-extension).
