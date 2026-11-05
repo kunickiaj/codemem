@@ -238,7 +238,7 @@ denied, so applying them changes nothing for coordinator-only deployments.
 
 ### Optional relay host (off by default)
 
-The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays
+[Relay](relay.md) explains what relay does for users, its privacy limits, and how to turn it off. The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays
 off unless `CODEMEM_RELAY_ENABLED` is exactly `"true"`. While it is off, the coordinator answers
 relay upgrades and the relay quota route exactly as before, and no object is created. To turn it on, deploy with
 `main` set to `packages/cloudflare-coordinator-worker/src/worker.ts`, which exports `RelayRealm`,
