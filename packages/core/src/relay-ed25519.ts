@@ -32,6 +32,16 @@ export function parseRelayEd25519PublicKey(publicKey: string): ParsedRelayEd2551
 	return { rawKey: wire.slice(19), wireKey: wire };
 }
 
+/** Canonical `ssh-ed25519 <base64>` text without a comment, or null when the key does not parse. */
+export function canonicalRelayServiceKey(publicKey: string): string | null {
+	try {
+		const { wireKey } = parseRelayEd25519PublicKey(publicKey.trim());
+		return `ssh-ed25519 ${Buffer.from(wireKey).toString("base64")}`;
+	} catch {
+		return null;
+	}
+}
+
 function hasInvalidControl(value: string): boolean {
 	return Array.from(value).some((character) => {
 		const code = character.charCodeAt(0);

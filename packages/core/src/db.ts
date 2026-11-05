@@ -34,6 +34,7 @@ import {
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { expandUserPath } from "./observer-config.js";
+import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
 import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import {
 	canAutoBootstrapSchema,
@@ -1078,6 +1079,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureAlwaysOnSchemaCompatibility(db);
 	applyAdditiveSchemaCompatibility(db);
 	ensureSyncTransferActivitySchema(db);
+	ensureRelayServicePinSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);

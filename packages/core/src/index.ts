@@ -1446,6 +1446,7 @@ export {
 export type {
 	SyncDaemonOptions,
 	SyncDaemonPhase,
+	SyncDaemonReachability,
 	SyncDaemonTickCallback,
 	SyncDaemonTickContext,
 	SyncTickResult,
