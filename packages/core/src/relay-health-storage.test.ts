@@ -11,7 +11,12 @@ import {
 	metadataBindings,
 	metadataSeed,
 } from "./relay-admission-metadata-test-fixtures.js";
-import { d1RelayHealthPublisher, sqliteRelayHealthPublisher } from "./relay-health-storage.js";
+import {
+	aggregateRelayHealthAuthority,
+	d1RelayHealthPublisher,
+	ensureD1RelayHealthRows,
+	sqliteRelayHealthPublisher,
+} from "./relay-health-storage.js";
 
 let db: Database.Database;
 const namespace = { authorityId: METADATA_CONTEXT.authority, groupId: METADATA_CONTEXT.group };
@@ -63,7 +68,11 @@ class Statement implements D1PreparedStatementLike {
 			.all(...this.values) as T[];
 	}
 	execute() {
-		return { success: true, meta: { changes: db.prepare(this.sql).run(...this.values).changes } };
+		// better-sqlite3 binds repeated numbered parameters (?1) only by name, as D1 does by position.
+		const values = /\?\d/.test(this.sql)
+			? [Object.fromEntries(this.values.map((value, i) => [i + 1, value]))]
+			: this.values;
+		return { success: true, meta: { changes: db.prepare(this.sql).run(...values).changes } };
 	}
 	async run() {
 		return this.execute();
@@ -285,5 +294,120 @@ describe("D1 publication receipts and races", () => {
 		// Assert
 		expect(revision).toBeNull();
 		expect(f.prepare).not.toHaveBeenCalled();
+	});
+});
+
+function readinessRows() {
+	return db
+		.prepare(
+			"SELECT scope,group_id,revision,state,observed_at_ms FROM relay_admission_readiness ORDER BY scope,group_id",
+		)
+		.all();
+}
+function insertRealm(group: string, revision = 1) {
+	db.prepare(METADATA_REALM_INSERT).run({
+		1: namespace.authorityId,
+		2: group,
+		3: "enabled",
+		4: revision,
+	});
+}
+
+describe("D1 startup readiness rows", () => {
+	it("inserts tripped authority and realm rows for realms that exist", async () => {
+		// Arrange: policy, audience and realm, but no readiness rows.
+		for (const entry of metadataSeed({ omit: "authorityHealth" }))
+			db.prepare(entry.sql).run(Object.fromEntries(entry.values.map((value, i) => [i + 1, value])));
+		// Act
+		const ok = await ensureD1RelayHealthRows(d1Fixture().backend, namespace.authorityId, [
+			namespace.groupId,
+			"group-without-realm",
+		]);
+		// Assert
+		expect(ok).toBe(true);
+		expect(readinessRows()).toEqual([
+			{ scope: "authority", group_id: "", revision: 1, state: "tripped", observed_at_ms: null },
+			{
+				scope: "realm",
+				group_id: namespace.groupId,
+				revision: 1,
+				state: "tripped",
+				observed_at_ms: null,
+			},
+		]);
+	});
+
+	it("keeps existing rows and gives a new realm the current authority revision", async () => {
+		// Arrange
+		seed();
+		const publish = d1RelayHealthPublisher(d1Fixture().backend, namespace);
+		await publish({ state: "ready", observedAtMs: 130000 });
+		await publish({ state: "ready", observedAtMs: 131000 });
+		db.prepare("UPDATE relay_admission_authority_policy SET policy_revision = 2").run();
+		insertRealm("group-B", 2);
+		const before = readinessRows();
+		// Act
+		await ensureD1RelayHealthRows(d1Fixture().backend, namespace.authorityId, [
+			namespace.groupId,
+			"group-B",
+		]);
+		// Assert
+		expect(readinessRows()).toEqual([
+			...before,
+			{ scope: "realm", group_id: "group-B", revision: 3, state: "tripped", observed_at_ms: null },
+		]);
+	});
+
+	it("writes nothing without a policy and reports a failed batch", async () => {
+		// Arrange
+		const f = d1Fixture();
+		// Act
+		const empty = await ensureD1RelayHealthRows(f.backend, namespace.authorityId, ["group-A"]);
+		f.batch.mockRejectedValueOnce(new Error("d1 unavailable"));
+		const failed = await ensureD1RelayHealthRows(f.backend, namespace.authorityId, ["group-A"]);
+		// Assert
+		expect([empty, failed]).toEqual([true, false]);
+		expect(readinessRows()).toEqual([]);
+	});
+});
+
+describe("authority readiness across several realms", () => {
+	it("publishes the realm's own value and a separate authority value", async () => {
+		// Arrange
+		seed();
+		const publish = d1RelayHealthPublisher(d1Fixture().backend, namespace, {
+			authority: () => ({ state: "ready", observedAtMs: 140000 }),
+		});
+		// Act
+		const revision = await publish({ state: "tripped", observedAtMs: null });
+		// Assert
+		expect(revision).toBe(2);
+		expect(rows()).toEqual([
+			{ scope: "authority", revision: 2, state: "ready", observed_at_ms: 140000 },
+			{ scope: "realm", revision: 2, state: "tripped", observed_at_ms: null },
+		]);
+	});
+
+	it.each([
+		[[], { state: "tripped", observedAtMs: null }],
+		[
+			[
+				{ state: "tripped", observedAtMs: null },
+				{ state: "ready", observedAtMs: 100 },
+				{ state: "ready", observedAtMs: 200 },
+				{ state: "paused", observedAtMs: 300 },
+			],
+			{ state: "ready", observedAtMs: 200 },
+		],
+		[
+			[
+				{ state: "tripped", observedAtMs: 500 },
+				{ state: "paused", observedAtMs: null },
+			],
+			{ state: "paused", observedAtMs: null },
+		],
+	] as const)("aggregates %j to %j", (realms, expected) => {
+		// Act / Assert
+		expect(aggregateRelayHealthAuthority(realms)).toEqual(expected);
 	});
 });

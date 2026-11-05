@@ -97,6 +97,20 @@ export {
 	verifyOwnerEnrollmentAdmission,
 	verifyOwnerEnrollmentAdmissionV2,
 } from "../owner-enrollment-admission.js";
+// The Worker's relay health Durable Object owns the monitors and publishes readiness.
+export {
+	RelayHealthInstrumentation,
+	RelayHealthMonitor,
+	type RelayHealthServerSample,
+	type RelayHealthState,
+} from "../relay-health.js";
+export type { RelayHealthClockStamp } from "../relay-health-probe.js";
+export {
+	aggregateRelayHealthAuthority,
+	d1RelayHealthPublisher,
+	ensureD1RelayHealthRows,
+	type RelayHealthPublication,
+} from "../relay-health-storage.js";
 // The Worker's relay Durable Object keeps quota in its own SQLite storage.
 export {
 	createExclusiveWriterRelayQuota,

@@ -78,9 +78,45 @@ function changedOnce(raw: unknown): boolean {
 	return result.success === true && result.meta?.changes === 1;
 }
 
+const SEVERITY: Readonly<Record<RelayHealthPublication["state"], number>> = {
+	ready: 0,
+	paused: 1,
+	tripped: 2,
+};
+
+/**
+ * The authority value for several realms: the least severe realm state, and among
+ * equals the freshest observation. Ready when at least one realm is ready, with that
+ * realm's observation time. Admission still requires the checked realm's own row
+ * to be ready and fresh, so this never admits a realm that is not.
+ */
+export function aggregateRelayHealthAuthority(
+	realms: readonly RelayHealthPublication[],
+): RelayHealthPublication {
+	let best: RelayHealthPublication = { state: "tripped", observedAtMs: null };
+	for (const realm of realms) {
+		const severity = SEVERITY[realm.state] - SEVERITY[best.state];
+		const fresher = (realm.observedAtMs ?? -1) > (best.observedAtMs ?? -1);
+		if (severity < 0 || (severity === 0 && fresher))
+			best = { state: realm.state, observedAtMs: realm.observedAtMs };
+	}
+	return best;
+}
+
+export interface D1RelayHealthPublisherOptions {
+	/**
+	 * The authority row's value for a realm publication. Defaults to the realm's
+	 * own value. An owner of several realms passes an aggregate, so one realm's
+	 * state does not decide admission for the others. Every realm update still
+	 * bumps the authority revision, as the readiness triggers require.
+	 */
+	readonly authority?: (realm: RelayHealthPublication) => RelayHealthPublication;
+}
+
 export function d1RelayHealthPublisher(
 	db: D1DatabaseLike,
 	namespace: RelayHealthNamespace,
+	options: D1RelayHealthPublisherOptions = {},
 ): RelayHealthPublisher {
 	namespace = Object.freeze({ ...namespace });
 	return async (value) => {
@@ -90,10 +126,20 @@ export function d1RelayHealthPublisher(
 				.results;
 			if (!rows) return null;
 			const revision = captureRevision(rows, namespace.groupId);
-			const values = [revision, value.state, value.observedAtMs, namespace.authorityId];
+			const authority = options.authority?.(value) ?? value;
 			const receipts = await db.batch([
-				db.prepare(AUTHORITY).bind(...values),
-				db.prepare(REALM).bind(...values, namespace.groupId),
+				db
+					.prepare(AUTHORITY)
+					.bind(revision, authority.state, authority.observedAtMs, namespace.authorityId),
+				db
+					.prepare(REALM)
+					.bind(
+						revision,
+						value.state,
+						value.observedAtMs,
+						namespace.authorityId,
+						namespace.groupId,
+					),
 			]);
 			if (receipts.length !== 2 || !receipts.every(changedOnce)) return null;
 			return revision;
@@ -101,4 +147,42 @@ export function d1RelayHealthPublisher(
 			return null;
 		}
 	};
+}
+
+const AUTHORITY_ROW = `INSERT INTO relay_admission_readiness
+ (authority_id, scope, group_id, revision, state, observed_at_ms)
+ SELECT ?1, 'authority', '', 1, 'tripped', NULL
+ WHERE EXISTS (SELECT 1 FROM relay_admission_authority_policy WHERE authority_id = ?1)
+  AND NOT EXISTS (SELECT 1 FROM relay_admission_readiness
+   WHERE authority_id = ?1 AND scope = 'authority' AND group_id = '')`;
+// A new realm row takes the current authority revision, as the insert trigger requires.
+const REALM_ROW = `INSERT INTO relay_admission_readiness
+ (authority_id, scope, group_id, revision, state, observed_at_ms)
+ SELECT ?1, 'realm', ?2, ha.revision, 'tripped', NULL FROM relay_admission_readiness ha
+ WHERE ha.authority_id = ?1 AND ha.scope = 'authority' AND ha.group_id = ''
+  AND EXISTS (SELECT 1 FROM relay_admission_realms WHERE authority_id = ?1 AND group_id = ?2)
+  AND NOT EXISTS (SELECT 1 FROM relay_admission_readiness
+   WHERE authority_id = ?1 AND scope = 'realm' AND group_id = ?2)`;
+
+/**
+ * Inserts the tripped startup readiness rows a D1 publisher updates, for every
+ * group whose realm row exists. Existing rows are never changed, and a missing
+ * policy or realm row inserts nothing, so a later call can finish the job. Run it
+ * only from the publication owner, because it reads the authority revision.
+ */
+export async function ensureD1RelayHealthRows(
+	db: D1DatabaseLike,
+	authorityId: string,
+	groupIds: readonly string[],
+): Promise<boolean> {
+	try {
+		if (!db.batch) return false;
+		await db.batch([
+			db.prepare(AUTHORITY_ROW).bind(authorityId),
+			...groupIds.map((groupId) => db.prepare(REALM_ROW).bind(authorityId, groupId)),
+		]);
+		return true;
+	} catch {
+		return false;
+	}
 }

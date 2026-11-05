@@ -8,7 +8,11 @@ import {
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
 import { D1CoordinatorStore, type D1DatabaseLike } from "./d1-coordinator-store.js";
-import { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "./relay-health.js";
+import {
+	RelayHealthMonitor,
+	type RelayHealthRuntimeOptions,
+	type RelayHealthServerHook,
+} from "./relay-health.js";
 import { d1RelayHealthPublisher } from "./relay-health-storage.js";
 
 export interface CreateD1CoordinatorAppOptions {
@@ -20,6 +24,11 @@ export interface CreateD1CoordinatorAppOptions {
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionRuntimeOptions;
 	relayHealth?: RelayHealthRuntimeOptions;
+	/**
+	 * Instrumentation only, for a runtime whose monitor lives elsewhere, such as a
+	 * Worker that forwards samples to a Durable Object. Ignored when `relayHealth` is enabled.
+	 */
+	relayHealthInstrumentation?: RelayHealthServerHook;
 	recipientInviteCoordinatorId?: string;
 	browserAuth?:
 		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
@@ -35,7 +44,7 @@ export function createD1CoordinatorApp(
 		now: opts.now ?? (() => new Date().toISOString()),
 	};
 	return createCoordinatorApp({
-		relayHealth: createD1HealthMonitor(opts.relayHealth, db),
+		relayHealth: createD1HealthMonitor(opts.relayHealth, db) ?? opts.relayHealthInstrumentation,
 		storeFactory: () => new D1CoordinatorStore(db),
 		deviceRevocation: opts.deviceRevocation,
 		recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
