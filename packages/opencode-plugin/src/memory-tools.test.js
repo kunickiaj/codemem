@@ -378,6 +378,9 @@ describe("memory tool executor: unsettled viewer calls", () => {
 
 		expect(outcome.transport).toBe("cli");
 		expectCliCall(runCli, "memory_search", { query: "q" });
+		// Both transports carry the same call ID, so the ledger counts one attempt.
+		const [, init] = postCalls(fetchImpl)[0];
+		expect(JSON.parse(init.body).caller.request_id).toBe("call_1");
 	});
 });
 

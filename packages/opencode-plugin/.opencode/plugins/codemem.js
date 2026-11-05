@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { tool } from "@opencode-ai/plugin";
 import { createDelegationContext } from "../lib/delegation-context.js";
 
@@ -85,6 +86,9 @@ const createV1MemoryTool = (contract, execute) => tool({
     const outcome = await execute(contract.name, args, {
       directory: context?.directory,
       sessionID: context?.sessionID,
+      // OpenCode 1 supplies no call ID. One per execution lets the viewer and a
+      // CLI retry of this same call share a retrieval-ledger identity.
+      callID: randomUUID(),
       signal: context?.abort,
     });
     const { text, note } = formatMemoryToolOutcome(outcome);
