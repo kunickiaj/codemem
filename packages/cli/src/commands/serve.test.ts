@@ -21,6 +21,7 @@ import {
 	respondsLikeCodememViewer,
 	runServeCoordinatorMaintenance,
 	runServeInvocation,
+	serveRelayDaemonOptions,
 	sqliteVecFailureDiagnostics,
 	terminateTrustedMaintenanceWorker,
 	terminateTrustedViewerPid,
@@ -634,5 +635,31 @@ describe("serve command option resolution", () => {
 
 		expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
 		expect(killSpy).toHaveBeenCalled();
+	});
+});
+
+describe("serve relay wiring", () => {
+	const context = { db: {} as never, dbPath: "mem.sqlite", keysDir: "keys" };
+
+	it("passes the coordinator callback through unchanged without relay", () => {
+		const callback = vi.fn();
+		expect(serveRelayDaemonOptions(null, callback)).toEqual({
+			onAfterCoordinatorRefresh: callback,
+		});
+	});
+
+	it("adds the relay resolver and refreshes relay after every coordinator refresh", async () => {
+		const reachability = { forPeer: vi.fn(), clients: vi.fn(() => []) };
+		const relay = { reachability, refresh: vi.fn(async () => {}), close: vi.fn(async () => {}) };
+		const callback = vi.fn().mockRejectedValueOnce(new Error("maintenance failed"));
+		const options = serveRelayDaemonOptions(relay, callback);
+
+		await expect(options.onAfterCoordinatorRefresh(context)).rejects.toThrow("maintenance failed");
+		await options.onAfterCoordinatorRefresh(context);
+
+		expect(options.reachability).toBe(reachability);
+		expect(callback).toHaveBeenCalledWith(context);
+		expect(relay.refresh).toHaveBeenCalledTimes(2);
+		expect(relay.close).not.toHaveBeenCalled();
 	});
 });

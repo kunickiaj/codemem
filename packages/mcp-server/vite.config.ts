@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	resolve: {
 		alias: {
+			"@codemem/core/internal/relay-runtime": resolve(
+				import.meta.dirname,
+				"../core/src/internal/relay-runtime.ts",
+			),
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
 			"@codemem/memory-tools": resolve(import.meta.dirname, "../memory-tools/src/index.ts"),
 		},

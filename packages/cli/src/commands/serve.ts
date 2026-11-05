@@ -17,6 +17,7 @@ import {
 	resolveDbPath,
 	resolveKeyPaths,
 	runSyncDaemon,
+	type SyncDaemonTickCallback,
 	VERSION,
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
@@ -913,6 +914,102 @@ function announceViewerStartup(options: {
 	p.log.info(`Database: ${preparedDb}`);
 	p.log.step("Raw event sweeper started");
 }
+type ServeSyncRuntimeStatus = {
+	phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
+	detail: string | null;
+};
+
+type ServeRelay = Pick<
+	import("@codemem/server").ViewerRelayReachability,
+	"reachability" | "refresh" | "close"
+>;
+
+const logRelay = (message: string, level: "info" | "warn") =>
+	level === "warn" ? p.log.warn(message) : p.log.info(message);
+
+/**
+ * Relay additions to the sync daemon options. Without relay this returns the
+ * callback unchanged and no `reachability`, so sync runs exactly as before.
+ * With relay, groups re-resolve after every coordinator refresh, even a failed one.
+ */
+export function serveRelayDaemonOptions(
+	relay: ServeRelay | null,
+	onAfterCoordinatorRefresh: SyncDaemonTickCallback,
+): {
+	reachability?: ServeRelay["reachability"];
+	onAfterCoordinatorRefresh: SyncDaemonTickCallback;
+} {
+	if (!relay) return { onAfterCoordinatorRefresh };
+	return {
+		reachability: relay.reachability,
+		onAfterCoordinatorRefresh: async (context) => {
+			try {
+				await onAfterCoordinatorRefresh(context);
+			} finally {
+				await relay.refresh();
+			}
+		},
+	};
+}
+
+function applySyncPhase(
+	status: ServeSyncRuntimeStatus,
+	phase: "starting" | "running" | "stopping",
+): void {
+	if (phase === "running") {
+		status.phase = null;
+		status.detail = null;
+		return;
+	}
+	status.phase = phase;
+	status.detail =
+		phase === "starting" ? "Running initial sync in background" : "Stopping sync daemon";
+}
+
+function startServeSyncDaemon(options: {
+	invocation: ResolvedServeInvocation;
+	syncConfig: ReturnType<typeof readCoordinatorSyncConfig>;
+	store: MemoryStore;
+	signal: AbortSignal;
+	status: ServeSyncRuntimeStatus;
+	maintenance: ServeCoordinatorMaintenanceDependencies;
+	relay: ServeRelay | null;
+}): void {
+	const { syncConfig, store, signal, status, relay } = options;
+	status.phase = "starting";
+	status.detail = "Starting sync in background";
+	void relay?.refresh();
+	void runSyncDaemon({
+		dbPath: resolveDbPath(options.invocation.dbPath ?? undefined),
+		intervalS: syncConfig.syncIntervalS,
+		host: syncConfig.syncHost,
+		port: syncConfig.syncPort,
+		signal,
+		// Foreground mode: hand the daemon the same workspace-aware
+		// scanner the local writes use, so workspace `secret_scanner`
+		// rules apply to inbound peer payloads instead of the daemon
+		// silently falling back to the built-in default ruleset.
+		scanner: store.scanner,
+		...serveRelayDaemonOptions(relay, async () => {
+			await runServeCoordinatorMaintenance(store, options.maintenance);
+		}),
+		onPhaseChange: (phase) => applySyncPhase(status, phase),
+	})
+		.catch((err: unknown) => {
+			const msg = err instanceof Error ? err.message : String(err);
+			status.phase = "error";
+			status.detail = msg;
+			p.log.error(`Sync daemon failed: ${msg}`);
+		})
+		.finally(() => {
+			void relay?.close();
+			if (status.phase !== "error") {
+				status.phase = signal.aborted ? "stopping" : null;
+				status.detail = signal.aborted ? "Sync stopped" : null;
+			}
+		});
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -964,10 +1061,18 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	const syncConfig = readCoordinatorSyncConfig(config);
 	const syncEnabled = syncConfig.syncEnabled;
 	const accountLink = createViewerAccountLink(store, invocation, serverModule);
-	const syncRuntimeStatus: {
-		phase: "starting" | "running" | "stopping" | "error" | "disabled" | null;
-		detail: string | null;
-	} = {
+	// Null unless sync, a coordinator, and relay are all configured, so direct sync stays unchanged.
+	const relay = syncEnabled
+		? serverModule.createViewerRelayReachability({
+				store,
+				config,
+				// Same key directory as the daemon and the account link.
+				keysDir: process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
+				signal: syncAbort.signal,
+				log: logRelay,
+			})
+		: null;
+	const syncRuntimeStatus: ServeSyncRuntimeStatus = {
 		phase: syncEnabled ? "starting" : "disabled",
 		detail: syncEnabled ? "Waiting for viewer startup to finish" : "Sync is disabled",
 	};
@@ -1017,47 +1122,15 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 				const syncStartDelayMs = 3000;
 				p.log.step(`Sync daemon will start in background (${syncStartDelayMs / 1000}s delay)`);
 				setTimeout(() => {
-					syncRuntimeStatus.phase = "starting";
-					syncRuntimeStatus.detail = "Starting sync in background";
-					void runSyncDaemon({
-						dbPath: resolveDbPath(invocation.dbPath ?? undefined),
-						intervalS: syncConfig.syncIntervalS,
-						host: syncConfig.syncHost,
-						port: syncConfig.syncPort,
+					startServeSyncDaemon({
+						invocation,
+						syncConfig,
+						store,
 						signal: syncAbort.signal,
-						// Foreground mode: hand the daemon the same workspace-aware
-						// scanner the local writes use, so workspace `secret_scanner`
-						// rules apply to inbound peer payloads instead of the daemon
-						// silently falling back to the built-in default ruleset.
-						scanner: store.scanner,
-						onAfterCoordinatorRefresh: async () => {
-							await runServeCoordinatorMaintenance(store, coordinatorMaintenanceDependencies);
-						},
-						onPhaseChange: (phase) => {
-							if (phase === "running") {
-								syncRuntimeStatus.phase = null;
-								syncRuntimeStatus.detail = null;
-							} else {
-								syncRuntimeStatus.phase = phase;
-								syncRuntimeStatus.detail =
-									phase === "starting"
-										? "Running initial sync in background"
-										: "Stopping sync daemon";
-							}
-						},
-					})
-						.catch((err: unknown) => {
-							const msg = err instanceof Error ? err.message : String(err);
-							syncRuntimeStatus.phase = "error";
-							syncRuntimeStatus.detail = msg;
-							p.log.error(`Sync daemon failed: ${msg}`);
-						})
-						.finally(() => {
-							if (syncRuntimeStatus.phase !== "error") {
-								syncRuntimeStatus.phase = syncAbort.signal.aborted ? "stopping" : null;
-								syncRuntimeStatus.detail = syncAbort.signal.aborted ? "Sync stopped" : null;
-							}
-						});
+						status: syncRuntimeStatus,
+						maintenance: coordinatorMaintenanceDependencies,
+						relay,
+					});
 				}, syncStartDelayMs).unref();
 			}
 		},
@@ -1085,6 +1158,8 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 
 		try {
 			try {
+				// Skip the await without relay so shutdown timing stays as before.
+				if (relay) await relay.close();
 				await accountLink.close();
 				await stopMaintenanceWorkerProcess(maintenanceWorker, dbPath);
 			} finally {

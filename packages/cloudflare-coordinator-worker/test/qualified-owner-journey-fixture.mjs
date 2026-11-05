@@ -71,6 +71,9 @@ export { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from './coordinator-own
 			builder.onResolve({ filter: /^@codemem\/core\/internal\/cloudflare-coordinator$/ }, () => ({
 				path: join(coreDir, "src/internal/cloudflare-coordinator.ts"),
 			}));
+			builder.onResolve({ filter: /^@codemem\/core\/internal\/relay-runtime$/ }, () => ({
+				path: join(coreDir, "src/internal/relay-runtime.ts"),
+			}));
 			builder.onResolve({ filter: /^vitest$/ }, () => ({ path: "vitest", namespace: "fixture" }));
 			builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
 				contents: "export const vi = { fn: f => f };", loader: "js",

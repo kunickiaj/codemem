@@ -10,6 +10,10 @@ export default defineConfig({
 				import.meta.dirname,
 				"../core/src/recipient-policy-contract.ts",
 			),
+			"@codemem/core/internal/relay-runtime": resolve(
+				import.meta.dirname,
+				"../core/src/internal/relay-runtime.ts",
+			),
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
 		},
 		conditions: ["source"],

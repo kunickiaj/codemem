@@ -927,6 +927,12 @@ When selected history may already have replicated, all participating owner devic
 - `codemem sync doctor` diagnoses sync configuration issues (keys, config, peer reachability).
 - `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
 - `codemem sync attempts` shows recent sync attempt history per peer.
+- `codemem sync relay-keys` lists the relay service key pinned for each coordinator group. When a
+  coordinator advertises a different key, relay pauses for that group and sync stays direct until
+  you check the new key with the coordinator operator and run
+  `codemem sync approve-relay-key <group> --key <candidate>`. Set `sync_relay_enabled` to `false`
+  to turn relay off on a device, then restart `codemem serve`. The viewer reads the setting only at
+  startup.
 - A restored peer requires its SQLite database and original signing key together.
   If no matching key exists in `device.key` or the configured platform keychain,
   sync fails closed with a `device_identity_*` diagnostic instead of silently

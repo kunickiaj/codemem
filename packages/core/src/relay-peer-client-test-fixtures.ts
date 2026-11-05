@@ -80,6 +80,8 @@ export interface RelayClientTestOptions {
 	) => Promise<void>;
 	/** Routes every client socket through a keyless fault proxy in front of the runtime. */
 	readonly faultProxy?: { readonly rule?: RelayFaultRule };
+	/** Coordinator group the relay serves. Defaults to `group-A`. */
+	readonly groupId?: string;
 }
 
 async function admissionDatabase(
@@ -87,7 +89,10 @@ async function admissionDatabase(
 	deviceIds: DeviceIds,
 	namespace: Namespace,
 ): Promise<Database.Database> {
-	const template = await decisionFixture({ createdAt: Math.floor(Date.now() / 1000) });
+	const template = await decisionFixture({
+		createdAt: Math.floor(Date.now() / 1000),
+		groupId: namespace.groupId,
+	});
 	template.request.namespace = namespace;
 	template.rows = template.rows.map((row) => ({
 		...row,
@@ -156,8 +161,9 @@ function admissionHttp(db: Database.Database, namespace: Namespace) {
 }
 
 async function coordinatorFixture(http: Server, options: RelayClientTestOptions) {
+	const admissionUrl = `http://${await listen(http)}${admissionPath}`;
 	const coordinatorBase = createRelayCoordinatorClient({
-		url: `http://${await listen(http)}${admissionPath}`,
+		url: admissionUrl,
 		allowLoopbackHttp: true,
 	});
 	const checks: Parameters<RelayPeerClientOptions["coordinator"]["check"]>[0][] = [];
@@ -170,7 +176,7 @@ async function coordinatorFixture(http: Server, options: RelayClientTestOptions)
 			return coordinatorBase.check(request);
 		},
 	};
-	return { coordinator, checks, checkTimes };
+	return { coordinator, checks, checkTimes, admissionUrl };
 }
 
 function quotaFixture(namespace: Namespace) {
@@ -277,12 +283,12 @@ export async function relayClientFixture(
 	const host = proxy?.host ?? relayHost;
 	const namespace = {
 		authorityId: "a".repeat(64),
-		groupId: "group-A",
+		groupId: options.groupId ?? "group-A",
 		relayAudienceId: relayAudienceId(`wss://${host}`, service.keyId),
 	};
 	const db = await admissionDatabase(identities, deviceIds, namespace);
 	const http = admissionHttp(db, namespace);
-	const { coordinator, checks, checkTimes } = await coordinatorFixture(http, options);
+	const { coordinator, checks, checkTimes, admissionUrl } = await coordinatorFixture(http, options);
 	const { quotaDb, quota } = quotaFixture(namespace);
 	const runtime = runtimeFixture(socketServer, namespace, coordinator, quota, options);
 	const { clients, client } = clientFactory(
@@ -313,6 +319,9 @@ export async function relayClientFixture(
 		checkTimes,
 		namespace,
 		proxy,
+		url: `ws://${host}/v1/relay`,
+		admissionUrl,
+		servicePublicKey: service.publicKey,
 		async dispose() {
 			await Promise.all(clients.map((client) => client.close()));
 			await proxy?.close();

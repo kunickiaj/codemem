@@ -92,6 +92,12 @@ export {
 	FileRawEventInbox,
 	resolveRawEventInboxDirectory,
 } from "./raw-event-inbox.js";
+export {
+	createViewerRelayReachability,
+	type RelayLogLevel,
+	type ViewerRelayReachability,
+	type ViewerRelayReachabilityOptions,
+} from "./relay-reachability.js";
 export type {
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,

@@ -95,6 +95,7 @@ vi.mock("@codemem/server", () => ({
 	createAccountLinkRegistry: mocks.createRegistry,
 	createAccountRebindRunner: () => async () => ({ kind: "failed" }),
 	resumeAccountRebind: async () => null,
+	createViewerRelayReachability: () => null,
 	createAccountOwnerRecoveryService: mocks.createRecovery,
 	createViewerRawEventInbox: vi.fn(() => ({ inbox: { start: vi.fn() }, stop: vi.fn() })),
 	reconcileConfiguredCoordinatorEnrollment: vi.fn(),
