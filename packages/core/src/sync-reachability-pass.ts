@@ -208,7 +208,9 @@ async function selectedPass(
 		scanner: options.scanner,
 		limit: options.limit,
 		signal,
-		deadlineMs: deadline,
+		// Direct attempts to unreachable addresses can use most of the pass deadline.
+		// Relay gets its own lifetime, bounded only by an explicit caller deadline.
+		deadlineMs: reachability.deadlineMs,
 	});
 	recordRelaySuccess(db, peerDeviceId, scoped);
 	return relayResult(scoped, result);

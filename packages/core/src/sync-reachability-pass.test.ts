@@ -693,6 +693,26 @@ it("records one busy diagnostic independently of the in-progress public pass", a
 	).toEqual({ count: 2 });
 });
 
+it("gives relay its own lifetime when slow direct attempts used most of the pass deadline", async () => {
+	// Arrange: unreachable direct addresses take 40 of the pass's 60 seconds.
+	let now = 1_000;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const execute = vi.fn<RequestJsonExecutor>(async () => {
+		now += 40_000;
+		throw networkError();
+	});
+	// Act.
+	const result = await runReachableSyncPass(
+		db,
+		"peer",
+		addresses,
+		options(execute, approvedClient()),
+	);
+	// Assert: relay still starts, without the 20 seconds direct left behind as its deadline.
+	expect(result).toMatchObject({ transport: "relay" });
+	expect(scoped).toHaveBeenCalledWith(expect.objectContaining({ deadlineMs: undefined }));
+});
+
 it("does not start relay when the overall deadline expires during a network failure", async () => {
 	// Arrange.
 	let now = 1_000;

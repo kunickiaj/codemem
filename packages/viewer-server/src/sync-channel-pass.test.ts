@@ -787,6 +787,44 @@ it("fails an unsplittable oversized operation without sending it or advancing AC
 	expect(outboundAck(f)).toBeNull();
 });
 
+it("saves the outbound ACK after each confirmed push batch, so a later failure keeps earlier progress", async () => {
+	// Arrange: three ~600 KB operations push as three batches; the second POST fails unapplied.
+	const f = await fixture();
+	incremental(f);
+	for (const id of ["batch-a", "batch-b", "batch-c"]) f.seed("client", id, "x".repeat(600_000));
+	let postCount = 0;
+	let failSecond = true;
+	f.control.beforeDispatch = (request) => {
+		if (request.method === "POST" && failSecond && ++postCount === 2)
+			f.remote.store.db.exec("SAVEPOINT failed_batch");
+	};
+	f.control.afterDispatch = (request, response) => {
+		if (request.method !== "POST" || !failSecond || postCount !== 2) return response;
+		f.remote.store.db.exec("ROLLBACK TO failed_batch; RELEASE failed_batch");
+		return { status: 500, bodyBytes: bytes({ error: "internal_error" }) };
+	};
+	// Act
+	const failed = await syncScopedChannelOnce(f.options);
+	const ackAfterFailure = outboundAck(f);
+	failSecond = false;
+	const firstRetryPost = posts(f).length;
+	const retried = await syncScopedChannelOnce(f.options);
+	// Assert: the failed pass kept batch A, and the retry sent only B and C.
+	expect(failed.ok).toBe(false);
+	expect(ackAfterFailure).toContain("|batch-a-op");
+	expect(retried).toMatchObject({ ok: true, opsOut: 2 });
+	expect(
+		posts(f)
+			.slice(firstRetryPost)
+			.flatMap((request) =>
+				JSON.parse(Buffer.from(request.bodyBytes).toString()).ops.map(
+					(op: { op_id: string }) => op.op_id,
+				),
+			),
+	).toEqual(["batch-b-op", "batch-c-op"]);
+	expect(outboundAck(f)).toContain("|batch-c-op");
+});
+
 it("splits only after a completed authenticated 413 and uses fresh nonces for the smaller requests", async () => {
 	// Arrange: rollback the first dispatch so the controlled refusal applies no operations.
 	const f = await fixture();
