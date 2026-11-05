@@ -98,30 +98,41 @@ export class RelayHealth extends DurableObject<Record<string, never>> {
 	}
 
 	/**
-	 * Re-arms first, then probes. It never throws, so the platform's six retries
-	 * never stack on top of the cadence. With relay off or unconfigured it
-	 * returns without re-arming, which leaves no recurring alarm. A repeated
-	 * delivery within the gap skips its probe and keeps the original cadence.
+	 * Re-arms first, then probes. A storage failure before the next alarm is set
+	 * propagates, because the platform retries an alarm only when it throws, and
+	 * a swallowed failure would leave no alarm at all. After re-arming, probe and
+	 * publication failures are caught, so retries never stack on the cadence.
+	 * With relay off or unconfigured it returns without re-arming, which leaves no
+	 * recurring alarm. A repeated delivery within the gap, including a platform
+	 * retry after a scheduling failure, skips its probe and keeps the cadence.
 	 */
 	override async alarm(): Promise<void> {
 		const { config, db } = this;
 		if (!config || !db) return;
 		this.inAlarm = true;
 		try {
-			const now = Date.now();
-			const last = await this.ctx.storage.get<number>(CYCLE_KEY);
-			if (last !== undefined && now >= last && now - last < MIN_CYCLE_GAP_MS) {
-				await this.ctx.storage.setAlarm(last + RELAY_HEALTH_INTERVAL_MS);
-				return;
+			if (!(await this.scheduleNextCycle())) return;
+			try {
+				await this.runCycles(config, db);
+			} catch {
+				// A failed cycle has already tripped its monitor. The next alarm tries again.
 			}
-			await this.ctx.storage.put(CYCLE_KEY, now);
-			await this.ctx.storage.setAlarm(now + RELAY_HEALTH_INTERVAL_MS);
-			await this.runCycles(config, db);
-		} catch {
-			// A failed cycle has already tripped its monitor. The next alarm tries again.
 		} finally {
 			this.inAlarm = false;
 		}
+	}
+
+	/** Sets the next alarm. False when this delivery repeats a recent cycle. */
+	private async scheduleNextCycle(): Promise<boolean> {
+		const now = Date.now();
+		const last = await this.ctx.storage.get<number>(CYCLE_KEY);
+		if (last !== undefined && now >= last && now - last < MIN_CYCLE_GAP_MS) {
+			await this.ctx.storage.setAlarm(last + RELAY_HEALTH_INTERVAL_MS);
+			return false;
+		}
+		await this.ctx.storage.put(CYCLE_KEY, now);
+		await this.ctx.storage.setAlarm(now + RELAY_HEALTH_INTERVAL_MS);
+		return true;
 	}
 
 	/**
