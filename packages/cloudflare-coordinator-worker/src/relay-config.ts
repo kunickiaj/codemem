@@ -104,9 +104,13 @@ const SSH_ED25519_PREFIX = Uint8Array.from([
 	0, 0, 0, 11, 115, 115, 104, 45, 101, 100, 50, 53, 53, 49, 57, 0, 0, 0, 32,
 ]);
 
+/** The coordinator app serves relay info for enrolled devices at this exact path. */
+export const RELAY_INFO_PATH = "/v1/relay/info";
+
 /**
  * Imports the service key with WebCrypto. The key ID hashes the SSH wire form of
- * the public key, as relayEd25519KeyId does. Only a non-extractable copy is kept.
+ * the public key, as relayEd25519KeyId does, and `publicKey` is that wire form
+ * as SSH text. Only a non-extractable copy of the private key is kept.
  */
 export async function importRelayServiceSigner(pkcs8Base64: string) {
 	const der = decodeBase64(pkcs8Base64);
@@ -121,6 +125,7 @@ export async function importRelayServiceSigner(pkcs8Base64: string) {
 	const key = await crypto.subtle.importKey("pkcs8", der, algorithm, false, ["sign"]);
 	return Object.freeze({
 		keyId: relayBodyDigest(wire),
+		publicKey: `ssh-ed25519 ${btoa(String.fromCharCode(...wire))}`,
 		sign: async (bytes: Uint8Array) =>
 			new Uint8Array(await crypto.subtle.sign(algorithm, key, new Uint8Array(bytes))),
 	});

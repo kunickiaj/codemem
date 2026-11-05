@@ -55,6 +55,7 @@ import {
 	type CoordinatorRelayAdmissionOptions,
 	registerCoordinatorRelayAdmissionRoute,
 } from "./coordinator-relay-admission-route.js";
+import { type CoordinatorRelayInfo, relayInfoByGroup } from "./coordinator-relay-info.js";
 import { scopeAuthorizationResponse } from "./coordinator-scope-authorization-response.js";
 import type {
 	CoordinatorBootstrapGrantAuthorizationError,
@@ -709,6 +710,47 @@ async function scopeMemberResponse(
 	}
 }
 
+/**
+ * Relay info for a device-signed member of a served group. Every refusal after
+ * the group ID check matches `/v1/peers`: auth failures return the same status
+ * and error, and a group this coordinator's relay does not serve, including
+ * relay off, returns the 401 `unknown_device` a non-member gets.
+ */
+async function relayInfoResponse(
+	c: Context,
+	opts: CreateCoordinatorAppOptions,
+	relayInfo: ReadonlyMap<string, CoordinatorRelayInfo>,
+	rateLimit: ScopeReadRateLimit,
+): Promise<Response> {
+	c.header("Cache-Control", "no-store");
+	const groupId = (c.req.query("group_id") ?? "").trim();
+	if (!groupId) return c.json({ error: "group_id_required" }, 400);
+	const store = opts.storeFactory();
+	try {
+		const { response } = await authorizeScopeGroupMember(store, groupId, c, opts, rateLimit);
+		if (response) return response;
+		const info = relayInfo.get(groupId);
+		if (!info) return c.json({ error: "unknown_device" }, 401);
+		return c.json(info);
+	} finally {
+		await store.close();
+	}
+}
+
+/**
+ * GET /v1/scopes/:scope_id/members, then GET /v1/relay/info, which returns the
+ * relay service key and paths for a served group. Both share one rate limiter.
+ */
+function registerScopeMemberAndRelayInfoRoutes(
+	app: InstanceType<typeof Hono>,
+	opts: CreateCoordinatorAppOptions,
+	rateLimit: ScopeReadRateLimit,
+): void {
+	app.get("/v1/scopes/:scope_id/members", (c) => scopeMemberResponse(c, opts, rateLimit));
+	const relayInfo = relayInfoByGroup(opts.relayAdmission);
+	app.get("/v1/relay/info", (c) => relayInfoResponse(c, opts, relayInfo, rateLimit));
+}
+
 export function createCoordinatorApp(
 	opts?: CreateCoordinatorAppOptions,
 ): InstanceType<typeof Hono> {
@@ -1000,7 +1042,7 @@ export function createCoordinatorApp(
 	// GET /v1/scopes/:scope_id/members — list members of an authorized scope
 	// -----------------------------------------------------------------------
 
-	app.get("/v1/scopes/:scope_id/members", (c) => scopeMemberResponse(c, opts, rateLimitedResponse));
+	registerScopeMemberAndRelayInfoRoutes(app, opts, rateLimitedResponse);
 
 	// -----------------------------------------------------------------------
 	// GET /v1/reciprocal-approvals — list pending local approval state

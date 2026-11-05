@@ -14,24 +14,33 @@ export type RelayAdmissionOptions = NonNullable<CreateD1CoordinatorAppOptions["r
 export const RELAY_INGRESS_PUBLIC = "coordinator-public";
 export const RELAY_INGRESS_LOOPBACK = "relay-loopback";
 
-let cachedKeyId: { readonly serviceKey: string; readonly keyId: Promise<string> } | undefined;
+interface ServicePublicKey {
+	readonly keyId: string;
+	/** SSH text that `GET /v1/relay/info` advertises to enrolled devices. */
+	readonly text: string;
+}
 
-/** The service key ID only changes with the secret, so one import per isolate is enough. */
-function serviceKeyId(serviceKey: string): Promise<string> {
-	if (cachedKeyId?.serviceKey !== serviceKey) {
-		const keyId = importRelayServiceSigner(serviceKey).then((signer) => signer.keyId);
+let cachedKey: { readonly serviceKey: string; readonly key: Promise<ServicePublicKey> } | undefined;
+
+/** The service public key only changes with the secret, so one import per isolate is enough. */
+function servicePublicKey(serviceKey: string): Promise<ServicePublicKey> {
+	if (cachedKey?.serviceKey !== serviceKey) {
+		const key = importRelayServiceSigner(serviceKey).then((signer) => ({
+			keyId: signer.keyId,
+			text: signer.publicKey,
+		}));
 		// A failed import is retried on the next check.
-		keyId.catch(() => {
-			if (cachedKeyId?.keyId === keyId) cachedKeyId = undefined;
+		key.catch(() => {
+			if (cachedKey?.key === key) cachedKey = undefined;
 		});
-		cachedKeyId = { serviceKey, keyId };
+		cachedKey = { serviceKey, key };
 	}
-	return cachedKeyId.keyId;
+	return cachedKey.key;
 }
 
 /** The relay audience every configured realm shares: the coordinator host and service key. */
 export async function relayServiceAudienceId(config: RelayRealmConfig): Promise<string> {
-	return relayAudienceId(config.audienceOrigin, await serviceKeyId(config.serviceKey));
+	return relayAudienceId(config.audienceOrigin, (await servicePublicKey(config.serviceKey)).keyId);
 }
 
 /** One server-owned namespace per group. Every group shares the authority and relay audience. */
@@ -40,7 +49,8 @@ export async function relayAdmissionOptions(
 	groupIds: readonly string[],
 	ingressKey: string,
 ): Promise<RelayAdmissionOptions> {
-	const audience = await relayServiceAudienceId(config);
+	const key = await servicePublicKey(config.serviceKey);
+	const audience = relayAudienceId(config.audienceOrigin, key.keyId);
 	return {
 		namespaces: new Map(
 			groupIds.map((groupId) => [
@@ -50,13 +60,15 @@ export async function relayAdmissionOptions(
 		),
 		externalPathname: RELAY_ADMISSION_PATH,
 		ingressKey,
+		servicePublicKey: key.text,
 	};
 }
 
 /**
- * Admission options for the public coordinator route, or undefined to leave the
- * route off. The route serves every configured realm and selects the namespace
- * by the group ID in the device-signed packet body.
+ * Admission options for the public coordinator routes, or undefined to leave
+ * relay off. The admission route serves every configured realm and selects the
+ * namespace by the group ID in the device-signed packet body. The info route
+ * reads the same namespaces and the service public key.
  */
 export async function publicRelayAdmission(
 	env: Readonly<Record<string, unknown>>,
