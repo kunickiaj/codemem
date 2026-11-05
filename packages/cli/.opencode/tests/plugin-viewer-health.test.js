@@ -11,31 +11,31 @@ const response = ({ status = 200, body = { service: "codemem-viewer", ready: tru
   json: vi.fn().mockResolvedValue(body),
 });
 
-const createMonitor = ({ fetchFn, restartViewer = vi.fn().mockResolvedValue({ exitCode: 0 }), now } = {}) => {
+const createMonitor = ({ fetchFn, recoverViewer = vi.fn().mockResolvedValue({ exitCode: 0 }), now } = {}) => {
   const logLine = vi.fn().mockResolvedValue(undefined);
   const timeoutSignal = vi.fn(() => ({ bounded: true }));
   const monitor = __testUtils.createViewerHealthMonitor({
     viewerHealthUrl: HEALTH_URL,
     legacyStatusUrl: LEGACY_URL,
     isActive: () => true,
-    restartViewer,
+    recoverViewer,
     logLine,
     fetchFn,
     now,
     timeoutSignal,
   });
-  return { logLine, monitor, restartViewer, timeoutSignal };
+  return { logLine, monitor, recoverViewer, timeoutSignal };
 };
 
 describe("OpenCode viewer health monitor", () => {
   test.each([true, false])("treats ready=%s codemem viewer responses as live", async (ready) => {
     const fetchFn = vi.fn().mockResolvedValue(response({ body: { service: "codemem-viewer", ready } }));
-    const { monitor, restartViewer, timeoutSignal } = createMonitor({ fetchFn });
+    const { monitor, recoverViewer, timeoutSignal } = createMonitor({ fetchFn });
 
     await monitor.check();
 
     expect(monitor.state().consecutiveFailures).toBe(0);
-    expect(restartViewer).not.toHaveBeenCalled();
+    expect(recoverViewer).not.toHaveBeenCalled();
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(timeoutSignal).toHaveBeenCalledWith(5_000);
   });
@@ -105,39 +105,38 @@ describe("OpenCode viewer health monitor", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  test("restarts after three failures and enforces the five-minute cooldown", async () => {
+  test("recovers after two failures and enforces the five-minute cooldown", async () => {
     let nowMs = 5 * 60_000;
     const fetchFn = vi.fn().mockResolvedValue(response({ status: 500 }));
-    const restartViewer = vi.fn().mockResolvedValue({ exitCode: 1 });
-    const { monitor } = createMonitor({ fetchFn, restartViewer, now: () => nowMs });
+    const recoverViewer = vi.fn().mockResolvedValue({ exitCode: 1 });
+    const { monitor } = createMonitor({ fetchFn, recoverViewer, now: () => nowMs });
 
     await monitor.check();
+    expect(recoverViewer).not.toHaveBeenCalled();
     await monitor.check();
-    await monitor.check();
-    expect(restartViewer).toHaveBeenCalledTimes(1);
+    expect(recoverViewer).toHaveBeenCalledTimes(1);
 
     nowMs += 60_000;
     await monitor.check();
-    expect(restartViewer).toHaveBeenCalledTimes(1);
+    expect(recoverViewer).toHaveBeenCalledTimes(1);
 
     nowMs += 4 * 60_000;
     await monitor.check();
-    expect(restartViewer).toHaveBeenCalledTimes(2);
+    expect(recoverViewer).toHaveBeenCalledTimes(2);
   });
 
-  test("resets failures after a successful restart and logs recovery", async () => {
+  test("resets failures after a successful recovery start and logs it", async () => {
     const fetchFn = vi.fn().mockResolvedValue(response({ status: 500 }));
-    const restartViewer = vi.fn().mockResolvedValue({ exitCode: 0 });
-    const { logLine, monitor } = createMonitor({ fetchFn, now: () => 10 * 60_000, restartViewer });
+    const recoverViewer = vi.fn().mockResolvedValue({ exitCode: 0 });
+    const { logLine, monitor } = createMonitor({ fetchFn, now: () => 10 * 60_000, recoverViewer });
 
     await monitor.check();
     await monitor.check();
-    await monitor.check();
 
-    expect(restartViewer).toHaveBeenCalledTimes(1);
+    expect(recoverViewer).toHaveBeenCalledTimes(1);
     expect(monitor.state().consecutiveFailures).toBe(0);
     expect(logLine).toHaveBeenCalledWith(
-      "viewer.health restart succeeded (exit=0)"
+      "viewer.health start succeeded (exit=0)"
     );
 
     fetchFn.mockResolvedValue(response());
@@ -159,17 +158,17 @@ describe("OpenCode viewer health monitor", () => {
     expect(logLine).toHaveBeenCalledWith("viewer.health recovered after 1 failure(s)");
   });
 
-  test("does not restart when stopped while a probe was in flight", async () => {
-    const activeValues = [true, true, true, false];
+  test("does not recover when stopped while a probe was in flight", async () => {
+    const activeValues = [true, true, false];
     const isActive = vi.fn(() => activeValues.shift() ?? false);
     const fetchFn = vi.fn().mockResolvedValue(response({ status: 500 }));
-    const restartViewer = vi.fn();
+    const recoverViewer = vi.fn();
     const logLine = vi.fn().mockResolvedValue(undefined);
     const monitor = __testUtils.createViewerHealthMonitor({
       viewerHealthUrl: HEALTH_URL,
       legacyStatusUrl: LEGACY_URL,
       isActive,
-      restartViewer,
+      recoverViewer,
       logLine,
       fetchFn,
       now: () => 10 * 60_000,
@@ -178,9 +177,8 @@ describe("OpenCode viewer health monitor", () => {
 
     await monitor.check();
     await monitor.check();
-    await monitor.check();
 
-    expect(restartViewer).not.toHaveBeenCalled();
+    expect(recoverViewer).not.toHaveBeenCalled();
   });
 
   test("unrefs its interval and clears monitor state when stopped", () => {
@@ -191,7 +189,7 @@ describe("OpenCode viewer health monitor", () => {
       viewerHealthUrl: HEALTH_URL,
       legacyStatusUrl: LEGACY_URL,
       isActive: () => true,
-      restartViewer: vi.fn(),
+      recoverViewer: vi.fn(),
       logLine: vi.fn(),
       fetchFn: vi.fn(),
       setIntervalFn,

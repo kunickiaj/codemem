@@ -428,7 +428,7 @@ set -lx CODEMEM_VIEWER_HOST 127.0.0.1
 set -lx CODEMEM_VIEWER_PORT 38892
 ```
 
-The plugin now passes that explicit host/port through when it auto-starts, health-checks, stops, or restarts the viewer. Its liveness monitor requires a successful `GET /api/health` JSON response identifying `service: "codemem-viewer"`; `ready: false` still means the viewer process is live. For compatibility, only a `404` from the health route triggers one bounded probe of the legacy raw-event status endpoint. Raw-event ingest availability keeps its separate preflight behavior, now bounded by a 5-second timeout so a hung viewer socket cannot stall event delivery. Do not run multiple viewers against the same DB/runtime folder unless they intentionally share the same bind target; otherwise `viewer.pid` ownership becomes ambiguous.
+The plugin now passes that explicit host/port through when it auto-starts, health-checks, stops, or restarts the viewer. Every plugin instance with viewer auto-start enabled runs the liveness monitor, including instances that found a viewer already running. After two consecutive failed checks (one per minute), it runs `codemem serve start`, at most once every five minutes. `serve start` does nothing when the port is already open, so several instances recovering at once cannot stop each other's viewer. A viewer that holds the port but stops answering is not replaced; run `codemem serve restart` yourself. The liveness monitor requires a successful `GET /api/health` JSON response identifying `service: "codemem-viewer"`; `ready: false` still means the viewer process is live. For compatibility, only a `404` from the health route triggers one bounded probe of the legacy raw-event status endpoint. Raw-event ingest availability keeps its separate preflight behavior, now bounded by a 5-second timeout so a hung viewer socket cannot stall event delivery. Do not run multiple viewers against the same DB/runtime folder unless they intentionally share the same bind target; otherwise `viewer.pid` ownership becomes ambiguous.
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
@@ -759,7 +759,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_VIEWER` | Set to `0`, `false`, or `off` to disable the viewer entirely. |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Explicit host/port the plugin-managed viewer should start, probe, stop, and restart. Prompt retrieval accepts loopback hosts only. |
 | `CODEMEM_VIEWER_AUTO` | Set to `0`/`false`/`off` to disable auto-start (default on). |
-| `CODEMEM_VIEWER_AUTO_STOP` | Set to `0`/`false`/`off` to keep the viewer running after OpenCode exits (default on). |
+| `CODEMEM_VIEWER_AUTO_STOP` | Set to `1`/`true`/`yes` to stop a viewer this plugin instance started when its session is deleted, including one it started to replace a viewer that stopped responding (default off, because one viewer serves every OpenCode project). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` for `~/.codemem/plugin.log`; Claude hook failures are logged to this path by default). |
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |

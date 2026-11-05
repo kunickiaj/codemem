@@ -45,8 +45,10 @@ const COMPACTION_INJECTION_SKIP_TTL_MS = 30 * 1000;
 const MAX_WORKING_SET_PATH_CHARS = 400;
 const VIEWER_HEALTH_CHECK_INTERVAL_MS = 60_000;
 const VIEWER_HEALTH_TIMEOUT_MS = 5_000;
-const VIEWER_HEALTH_RESTART_THRESHOLD = 3;
-const VIEWER_HEALTH_RESTART_COOLDOWN_MS = 5 * 60_000;
+const VIEWER_HEALTH_RECOVERY_THRESHOLD = 2;
+// Every plugin instance probes the shared viewer, so the cooldown keeps one
+// instance from retrying recovery on every interval while the viewer boots.
+const VIEWER_HEALTH_RECOVERY_COOLDOWN_MS = 5 * 60_000;
 const RAW_EVENTS_STATUS_TIMEOUT_MS = 5_000;
 const DEFAULT_INJECT_TOKEN_BUDGET = 800;
 const DEFAULT_RETAINED_TOKEN_BUDGET = Infinity;
@@ -102,11 +104,28 @@ const envHasValue = (value, truthyValues) =>
 const envNotDisabled = (value) =>
   !DISABLED_VALUES.includes(normalizeEnvValue(value));
 
+/** `codemem serve start` prints this when a viewer already holds the port. */
+const viewerAlreadyRunning = (result) =>
+  /viewer already running/i.test(`${result?.stdout ?? ""}\n${result?.stderr ?? ""}`);
+
+/**
+ * Health recovery runs `serve start`, which exits without touching a viewer that
+ * already holds the port, so concurrent recoveries from several instances cannot
+ * stop each other's freshly started process the way `serve restart` would. The
+ * instance owns the viewer only if its start launched one: when another
+ * instance's viewer holds the port, `serve start` exits 0 and says so.
+ */
+const recoverViewerStart = async (started, onLaunched) => {
+  const result = await started;
+  if (result?.exitCode === 0 && !viewerAlreadyRunning(result)) onLaunched();
+  return result;
+};
+
 const createViewerHealthMonitor = ({
   viewerHealthUrl,
   legacyStatusUrl,
   isActive,
-  restartViewer,
+  recoverViewer,
   logLine,
   fetchFn = fetch,
   now = Date.now,
@@ -192,27 +211,27 @@ const createViewerHealthMonitor = ({
       `viewer.health check failed (${result.detail}, consecutive=${consecutiveFailures})`
     );
     if (
-      consecutiveFailures < VIEWER_HEALTH_RESTART_THRESHOLD ||
-      now() - lastRestartAttempt < VIEWER_HEALTH_RESTART_COOLDOWN_MS
+      consecutiveFailures < VIEWER_HEALTH_RECOVERY_THRESHOLD ||
+      now() - lastRestartAttempt < VIEWER_HEALTH_RECOVERY_COOLDOWN_MS
     ) {
       return;
     }
 
     // Re-check after the awaited probe: a stop requested while the probe was
-    // in flight must not be undone by a restart.
+    // in flight must not be undone by a recovery start.
     if (!isActive()) return;
 
     lastRestartAttempt = now();
-    await logLine(`viewer.health restarting viewer after ${consecutiveFailures} consecutive failures`);
+    await logLine(`viewer.health starting viewer after ${consecutiveFailures} consecutive failures`);
     try {
-      const restartResult = await restartViewer();
-      const restarted = restartResult?.exitCode === 0;
+      const startResult = await recoverViewer();
+      const started = startResult?.exitCode === 0;
       await logLine(
-        `viewer.health restart ${restarted ? "succeeded" : "failed"} (exit=${restartResult?.exitCode ?? "unknown"})`
+        `viewer.health start ${started ? "succeeded" : "failed"} (exit=${startResult?.exitCode ?? "unknown"})`
       );
-      if (restarted) consecutiveFailures = 0;
+      if (started) consecutiveFailures = 0;
     } catch (error) {
-      await logLine(`viewer.health restart error: ${String(error).slice(0, 200)}`);
+      await logLine(`viewer.health start error: ${String(error).slice(0, 200)}`);
     }
   };
 
@@ -2332,9 +2351,9 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   const viewerAutoStart = envNotDisabled(
     process.env.CODEMEM_VIEWER_AUTO || "1"
   );
-  const viewerAutoStop = envNotDisabled(
-    process.env.CODEMEM_VIEWER_AUTO_STOP || "1"
-  );
+  // Opt-in: the viewer is shared by every OpenCode project on this machine, so
+  // one session ending must not stop it for the others.
+  const viewerAutoStop = envHasValue(process.env.CODEMEM_VIEWER_AUTO_STOP, TRUTHY_VALUES);
   const viewerHost = process.env.CODEMEM_VIEWER_HOST || "127.0.0.1";
   const viewerPort = process.env.CODEMEM_VIEWER_PORT || "38888";
   const viewerDbPath = process.env.CODEMEM_DB || "";
@@ -2771,6 +2790,8 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       if (viewerStarted) logLine("viewer already started, skipping auto-start").catch(() => {});
       return;
     }
+    // Monitor the shared viewer whether or not this instance ends up spawning it.
+    watchViewerHealth();
     viewerStartInFlight = true;
     let existingViewer = false;
     try {
@@ -2802,7 +2823,6 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       child.once("spawn", () => {
         viewerStarted = true;
         viewerStartInFlight = false;
-        startHealthCheck();
       });
       child.on("error", (err) => {
         viewerStartInFlight = false;
@@ -3807,9 +3827,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   };
 
   const stopViewer = async () => {
-    if (!viewerEnabled || !viewerAutoStop || !viewerStarted) {
-      return;
-    }
+    if (!viewerEnabled || !viewerAutoStop || !viewerStarted) return;
     viewerStarted = false;
     stopHealthCheck();
     await logLine("viewer stop requested");
@@ -3819,12 +3837,16 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   const viewerHealthMonitor = createViewerHealthMonitor({
     viewerHealthUrl,
     legacyStatusUrl: rawEventsStatusUrl,
-    isActive: () => viewerStarted && viewerEnabled,
-    restartViewer: () => runCli(buildViewerCliArgs("restart")),
+    isActive: () => viewerEnabled && viewerAutoStart && viewerHealthMonitor.state().running,
+    recoverViewer: () =>
+      recoverViewerStart(runCli(buildViewerCliArgs("start")), () => { viewerStarted = true; }),
     logLine,
   });
   const startHealthCheck = viewerHealthMonitor.start;
   const stopHealthCheck = viewerHealthMonitor.stop;
+  const watchViewerHealth = () => {
+    if (runtimeActive) startHealthCheck();
+  };
 
   // Get version info (commit hash) for debugging
   let version = "unknown";
