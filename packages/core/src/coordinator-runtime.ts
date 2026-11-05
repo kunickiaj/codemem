@@ -486,6 +486,11 @@ export interface SharedManagedScopesQuery {
 	/** Null accepts every group under the coordinator. */
 	readonly peerGroupIds: string[] | null;
 	readonly peerPublicKey: string;
+	/**
+	 * Space kinds to consider. Defaults to managed Projects, which coordinator
+	 * peer trust requires. Relay also routes through coordinator team Spaces.
+	 */
+	readonly kinds?: readonly string[];
 }
 
 /**
@@ -498,6 +503,7 @@ export function sharedManagedScopes(
 	query: SharedManagedScopesQuery,
 ): { scopes: SharedManagedScope[]; indeterminate: boolean } {
 	const { localDeviceId, peerDeviceId, coordinatorId, peerGroupIds, peerPublicKey } = query;
+	const kinds = query.kinds?.length ? query.kinds : ["managed_project"];
 	const localPublicKey = db
 		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
 		.pluck()
@@ -513,11 +519,11 @@ export function sharedManagedScopes(
 			 WHERE local_member.device_id = ?
 			   AND peer_member.device_id = ?
 			   AND scope.status = 'active'
-			   AND scope.kind = 'managed_project'
+			   AND scope.kind IN (${kinds.map(() => "?").join(", ")})
 			   AND scope.authority_type = 'coordinator'
 			 ORDER BY scope.scope_id`,
 		)
-		.all(localDeviceId, peerDeviceId) as Array<{
+		.all(localDeviceId, peerDeviceId, ...kinds) as Array<{
 		scope_id: string;
 		coordinator_id: string | null;
 		group_id: string | null;
