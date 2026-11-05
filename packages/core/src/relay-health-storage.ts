@@ -39,6 +39,7 @@ function captureRevision(rows: unknown[], groupId: string): number {
 export function sqliteRelayHealthPublisher(
 	open: () => Pick<BetterSqliteCoordinatorStore, "db" | "close">,
 	namespace: RelayHealthNamespace,
+	options: D1RelayHealthPublisherOptions = {},
 ): RelayHealthPublisher {
 	namespace = Object.freeze({ ...namespace });
 	return async (value) => {
@@ -53,12 +54,19 @@ export function sqliteRelayHealthPublisher(
 						db.prepare(READ).all(namespace.authorityId, namespace.groupId),
 						namespace.groupId,
 					);
-					const values = [revision, value.state, value.observedAtMs, namespace.authorityId];
+					const realm = [revision, value.state, value.observedAtMs, namespace.authorityId];
+					const aggregate = options.authority?.(value) ?? value;
+					const authority = [
+						revision,
+						aggregate.state,
+						aggregate.observedAtMs,
+						namespace.authorityId,
+					];
 					// The fixed captured revision deliberately reaches the existing BEFORE
 					// UPDATE trigger on a race. A stale WHERE would silently update zero rows.
 					if (
-						db.prepare(AUTHORITY).run(...values).changes !== 1 ||
-						db.prepare(REALM).run(...values, namespace.groupId).changes !== 1
+						db.prepare(AUTHORITY).run(...authority).changes !== 1 ||
+						db.prepare(REALM).run(...realm, namespace.groupId).changes !== 1
 					)
 						throw new Error("relay_health_receipt_invalid");
 					return revision;
@@ -103,6 +111,7 @@ export function aggregateRelayHealthAuthority(
 	return best;
 }
 
+/** Options for the SQLite and D1 readiness publishers. */
 export interface D1RelayHealthPublisherOptions {
 	/**
 	 * The authority row's value for a realm publication. Defaults to the realm's

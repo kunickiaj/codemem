@@ -9,8 +9,16 @@ import {
 } from "./coordinator-api.js";
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
-import { RelayHealthMonitor, type RelayHealthRuntimeOptions } from "./relay-health.js";
-import { sqliteRelayHealthPublisher } from "./relay-health-storage.js";
+import {
+	RelayHealthMonitor,
+	type RelayHealthRuntimeOptions,
+	type RelayHealthServerHook,
+} from "./relay-health.js";
+import {
+	aggregateRelayHealthAuthority,
+	type RelayHealthPublication,
+	sqliteRelayHealthPublisher,
+} from "./relay-health-storage.js";
 import { verifySignature } from "./sync-auth.js";
 
 export interface CreateBetterSqliteCoordinatorAppOptions {
@@ -18,7 +26,12 @@ export interface CreateBetterSqliteCoordinatorAppOptions {
 	runtime?: CoordinatorRuntimeDeps;
 	deviceRevocation?: CoordinatorDeviceRevocationContext;
 	relayAdmission?: CoordinatorRelayAdmissionRuntimeOptions;
-	relayHealth?: RelayHealthRuntimeOptions;
+	/**
+	 * Health for one relay group, or a list with one entry per served group. Every
+	 * entry must share one authority. Each group gets its own monitor and realm
+	 * row, and the authority row carries the aggregate of every group.
+	 */
+	relayHealth?: RelayHealthRuntimeOptions | readonly RelayHealthRuntimeOptions[];
 }
 
 export function createBetterSqliteCoordinatorApp(
@@ -62,18 +75,48 @@ export function createBetterSqliteCoordinatorApp(
 	});
 }
 
+function healthGroups(
+	options: CreateBetterSqliteCoordinatorAppOptions["relayHealth"],
+): readonly RelayHealthRuntimeOptions[] {
+	if (!options) return [];
+	return Array.isArray(options) ? options : [options as RelayHealthRuntimeOptions];
+}
+
 function createSqliteHealthMonitor(
-	options: RelayHealthRuntimeOptions | undefined,
+	options: CreateBetterSqliteCoordinatorAppOptions["relayHealth"],
 	dbPath: string,
-): RelayHealthMonitor | undefined {
-	if (!options?.enabled) return undefined;
-	const monitor = new RelayHealthMonitor({
-		...options,
-		publish: sqliteRelayHealthPublisher(
-			() => new BetterSqliteCoordinatorStore(dbPath, { existingOnly: true }),
-			options,
-		),
-	});
-	options.onMonitor(monitor);
-	return monitor;
+): RelayHealthServerHook | undefined {
+	const groups = healthGroups(options).filter((group) => group.enabled);
+	if (groups.length === 0) return undefined;
+	if (new Set(groups.map((group) => group.authorityId)).size !== 1)
+		throw new Error("relay health groups must share one authority");
+	if (new Set(groups.map((group) => group.groupId)).size !== groups.length)
+		throw new Error("relay health groups must be distinct");
+	const open = () => new BetterSqliteCoordinatorStore(dbPath, { existingOnly: true });
+	const monitors = new Map<string, RelayHealthMonitor>();
+	// Every realm publication also bumps the authority row, which carries the
+	// aggregate of every group, so one group's trip never denies the others.
+	const authority = (groupId: string, value: RelayHealthPublication) =>
+		aggregateRelayHealthAuthority(
+			[...monitors].map(([other, monitor]) => (other === groupId ? value : monitor.snapshot())),
+		);
+	for (const group of groups) {
+		const publish = sqliteRelayHealthPublisher(open, group, {
+			authority: (value) => authority(group.groupId, value),
+		});
+		monitors.set(group.groupId, new RelayHealthMonitor({ ...group, publish }));
+	}
+	for (const group of groups) {
+		const monitor = monitors.get(group.groupId);
+		if (monitor) group.onMonitor(monitor);
+	}
+	const all = [...monitors.values()];
+	return {
+		verifiedGroupMember: (request, deviceId, groupId) => {
+			for (const monitor of all) monitor.verifiedGroupMember(request, deviceId, groupId);
+		},
+		install: (app) => {
+			for (const monitor of all) monitor.install(app);
+		},
+	};
 }
