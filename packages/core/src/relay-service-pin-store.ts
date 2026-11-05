@@ -79,7 +79,19 @@ export function readRelayServicePin(
 ): RelayServicePin | null {
 	ensureRelayServicePinSchema(db);
 	const row = readRow(db, coordinatorId, groupId);
-	if (!row) return null;
+	return row ? pinFromRow(row) : null;
+}
+
+/** Every stored pin, ordered by coordinator and group. */
+export function listRelayServicePins(db: Database): RelayServicePin[] {
+	ensureRelayServicePinSchema(db);
+	const rows = db
+		.prepare("SELECT * FROM sync_relay_service_pins ORDER BY coordinator_id, group_id")
+		.all() as PinRow[];
+	return rows.map(pinFromRow);
+}
+
+function pinFromRow(row: PinRow): RelayServicePin {
 	return {
 		coordinatorId: row.coordinator_id,
 		groupId: row.group_id,

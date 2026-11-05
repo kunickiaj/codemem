@@ -25,6 +25,8 @@ Run `codemem --help` for the current human-facing command list and append `--hel
 | | `codemem sync pair` | Advanced/legacy device pairing |
 | | `codemem sync once` | Run one immediate sync pass |
 | | `codemem sync doctor` | Diagnose sync configuration issues |
+| | `codemem sync relay-keys` | List relay service key pins and pending key changes |
+| | `codemem sync approve-relay-key <group> --key <candidate>` | Approve a changed relay service key |
 | | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
 | **Updates** | `codemem update install` | Install an eligible release from the installed channel |
 | | `codemem update check` | Check npm for a newer release on the installed channel (`--json` and `--refresh` supported) |
