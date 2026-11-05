@@ -58,6 +58,7 @@ describe("root command tree", () => {
 				"pi-hook-inject",
 				"pi-hook-ingest",
 				"enqueue-raw-event",
+				"memory-tool",
 			].sort(),
 		);
 		for (const hiddenName of hiddenNames) {
@@ -83,6 +84,7 @@ describe("root command tree", () => {
 			"pi-hook-inject",
 			"pi-hook-ingest",
 			"enqueue-raw-event",
+			"memory-tool",
 		]) {
 			expect(help).not.toMatch(new RegExp(`^\\s+${hiddenName}(?:\\s|$)`, "m"));
 		}

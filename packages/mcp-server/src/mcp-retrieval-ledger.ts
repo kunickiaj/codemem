@@ -96,7 +96,8 @@ function baseRequestIdentity(
 	context: ToolRegistrationContext,
 	input: McpRetrievalInput,
 ): string | null {
-	if (input.requestId == null) return null;
+	const requestId = context.retrievalLedgerRequestId ?? input.requestId;
+	if (requestId == null) return null;
 	const callContentDigest = createHash("sha256")
 		.update(
 			canonicalJson({
@@ -109,7 +110,7 @@ function baseRequestIdentity(
 		.update(
 			JSON.stringify([
 				input.sourceSessionId ?? context.retrievalLedgerScopeId,
-				input.requestId,
+				requestId,
 				callContentDigest,
 			]),
 		)
