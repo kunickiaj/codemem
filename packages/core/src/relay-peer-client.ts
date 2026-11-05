@@ -263,6 +263,7 @@ class Client implements RelayPeerClient {
 
 	async maintainRegistration(signal: AbortSignal, deadlineMs: number): Promise<void> {
 		this.validate();
+		this.failClosingSocket();
 		const deadline = Math.min(deadlineMs, performance.now() + 30_000);
 		if (!Number.isFinite(deadlineMs) || signal.aborted || deadline <= performance.now())
 			throw new RelayFailure("relay_expired", "Invalid relay setup lifetime");
@@ -555,6 +556,21 @@ class Client implements RelayPeerClient {
 		socket.terminate();
 	}
 
+	/**
+	 * A graceful close leaves the socket CLOSING, without an event, until the peer
+	 * ends TCP or closeTimeout passes. Fail it now, before a new route or
+	 * registration exists, so its later close event cannot end them.
+	 */
+	private failClosingSocket(): void {
+		const socket = this.socket;
+		if (
+			socket &&
+			socket.readyState !== WebSocket.CONNECTING &&
+			socket.readyState !== WebSocket.OPEN
+		)
+			this.failSocket(socket);
+	}
+
 	/** Ends every route and capacity waiter, including any created while a failed socket closes. */
 	private endRoutes(error: Error): void {
 		for (const route of this.routes.values()) route.raw.destroy(error);
@@ -783,6 +799,7 @@ class Client implements RelayPeerClient {
 		const deadline = Math.min(deadlineMs, performance.now() + 60_000);
 		this.validate(peer, pin);
 		parseRelayEd25519PublicKey(pin);
+		this.failClosingSocket();
 		if (this.hasRoute(peer, "source") || this.routes.size >= 4)
 			await this.capacity(peer, signal, deadline);
 		// Reserve before registration yields, so concurrent invocations cannot bypass pair capacity.
