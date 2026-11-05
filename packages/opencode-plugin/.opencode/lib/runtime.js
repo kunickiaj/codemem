@@ -5,6 +5,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, posix, resolve, win32 } from "node:path";
 import { createCachedCliRunner } from "./cached-cli-runner.js";
+import { runChildCommand } from "./child-command.js";
 import {
   isVersionAtLeast,
   parseBackendUpdatePolicy,
@@ -2835,78 +2836,9 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     }
   };
 
-  const runCommand = async (cmd, options = {}) => {
-    const {
-      env = process.env,
-      stdinText = null,
-      timeoutMs = commandTimeout,
-    } = options;
-    const [command, ...args] = cmd;
-    return new Promise((resolve) => {
-      const proc = nodeSpawn(command, args, {
-        cwd,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      // Guard stdio access: a hard spawn failure (ENOENT) can hand back null
-      // streams, and a synchronous null-deref here would reject the promise
-      // that callers await for a resolved { exitCode, stdout, stderr }.
-      if (proc.stdout) proc.stdout.on("data", (chunk) => { stdout += chunk; });
-      if (proc.stderr) proc.stderr.on("data", (chunk) => { stderr += chunk; });
-      // Absorb async stream errors (e.g. EPIPE when the child exits mid-write,
-      // or a spawn failure surfacing on a pipe). Without these handlers an
-      // unhandled stream "error" event would crash the host process. The
-      // child-level proc.once("error") below still resolves the promise.
-      for (const stream of [proc.stdin, proc.stdout, proc.stderr]) {
-        if (stream && typeof stream.on === "function") stream.on("error", () => {});
-      }
-      if (typeof stdinText === "string") {
-        try {
-          proc.stdin.write(stdinText);
-        } catch (stdinErr) {
-          try { proc.kill(); } catch { /* ignore */ }
-          resolve({ exitCode: 1, stdout: "", stderr: `stdin write failed: ${String(stdinErr)}` });
-          return;
-        }
-      }
-      try {
-        proc.stdin.end();
-      } catch (stdinErr) {
-        try { proc.kill(); } catch { /* ignore */ }
-        resolve({ exitCode: 1, stdout: "", stderr: `stdin close failed: ${String(stdinErr)}` });
-        return;
-      }
-      let timer = null;
-      let killTimer = null;
-      let timedOut = false;
-      let settled = false;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        if (killTimer) clearTimeout(killTimer);
-        resolve(result);
-      };
-      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
-        timer = setTimeout(() => {
-          timedOut = true;
-          try { proc.kill("SIGTERM"); } catch { /* ignore */ }
-          killTimer = setTimeout(() => {
-            try { proc.kill("SIGKILL"); } catch { /* ignore */ }
-          }, 5_000);
-          if (killTimer.unref) killTimer.unref();
-        }, timeoutMs);
-      }
-      proc.once("exit", (exitCode) => {
-        finish({ exitCode: timedOut ? null : exitCode, stdout, stderr: timedOut ? "timeout" : stderr });
-      });
-      proc.once("error", (err) => {
-        finish({ exitCode: 1, stdout: "", stderr: String(err) });
-      });
-    });
-  };
+  // Options may set cwd, env, signal, stdinText, and timeoutMs; see runChildCommand.
+  const runCommand = async (cmd, options = {}) =>
+    runChildCommand(cmd, options, { cwd, timeoutMs: commandTimeout });
 
   const runCli = (args, options = {}) => {
     const command = cliRunner.command(args);
