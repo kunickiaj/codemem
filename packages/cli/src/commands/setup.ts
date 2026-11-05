@@ -5,9 +5,8 @@
  *
  * What it does:
  * 1. Adds "@codemem/opencode-plugin" to the plugin array in ~/.config/opencode/opencode.jsonc
- * 2. Writes the per-project OpenCode stdio MCP entry (--opencode-mcp stdio). Removal
- *    of that entry for the plugin's built-in tools is implemented but not offered
- *    until a plugin release ships those tools.
+ * 2. Removes the managed OpenCode MCP entry (the plugin registers the memory tools);
+ *    --opencode-mcp stdio writes the per-project stdio entry instead
  * 3. For Claude Code: installs MCP config and guides marketplace plugin install
  * 4. For Codex: MCP + hooks via CODEX_HOME
  * 5. For pi: packages entry + observer derivation + optional MCP adapter surface
@@ -295,9 +294,9 @@ function reportKeptOpencodeMcpEntries(
 }
 
 /**
- * Remove the stdio entries setup wrote, for users of the plugin's built-in
- * memory tools (served through the shared viewer). Reached only through the
- * internal `native` mode, which the CLI accepts once the plugin ships those tools.
+ * Default OpenCode MCP step (`--opencode-mcp native`): remove the stdio entries
+ * setup wrote. The plugin registers the memory tools and serves them through the
+ * shared viewer instead.
  */
 function removeOpencodeMcp({ createBackup = true }: { createBackup?: boolean } = {}): boolean {
 	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
@@ -1389,13 +1388,11 @@ type SetupCommandOpts = {
 	opencodeMcp?: string;
 };
 
-// Modes the CLI accepts. `native` (remove the MCP entry) is implemented below
-// but is not offered until a plugin release registers the replacement memory
-// tools; without them, removing the entry leaves OpenCode with no memory tools.
-// The change that ships those tools adds it here and makes it the default.
-const OPENCODE_MCP_MODES = ["stdio"] as const;
-type OpencodeMcpMode = "stdio" | "native";
-const DEFAULT_OPENCODE_MCP_MODE: OpencodeMcpMode = "stdio";
+// `native` (the default) removes the MCP entry setup wrote, because the plugin
+// registers the memory tools itself; `stdio` keeps the per-project entry.
+const OPENCODE_MCP_MODES = ["native", "stdio"] as const;
+type OpencodeMcpMode = (typeof OPENCODE_MCP_MODES)[number];
+const DEFAULT_OPENCODE_MCP_MODE: OpencodeMcpMode = "native";
 
 function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolean): boolean {
 	if (!(opts.piOnly || (!onlyFlag && isPiDetected()))) return true;
@@ -1407,7 +1404,7 @@ function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolea
 	});
 }
 
-export function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
+function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
 	p.log.step("Installing OpenCode plugin...");
 	const pluginResult = installPlugin(force);
 	if (!pluginResult.ok) return false;
@@ -1478,7 +1475,7 @@ export const setupCommand = new Command("setup")
 	.option("--pi-only", "only install for pi")
 	.option(
 		"--opencode-mcp <mode>",
-		"OpenCode memory tools: stdio (per-project MCP entry, the default and only mode)",
+		"OpenCode memory tools: native (plugin tools, default; removes the MCP entry) or stdio (per-project MCP entry)",
 	)
 	.option("--pi-mcp", "opt into pi MCP adapter surface (requires pi-mcp-adapter)")
 	.option(

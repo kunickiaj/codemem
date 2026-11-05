@@ -14,8 +14,10 @@ import { isAbsolute } from "node:path";
 
 export const NATIVE_TOOLS_ENV = "CODEMEM_OPENCODE_NATIVE_TOOLS";
 // Experimental for one release; the setup/docs rollout step flips this default.
-const NATIVE_TOOLS_DEFAULT = false;
+// On by default; CODEMEM_OPENCODE_NATIVE_TOOLS=0 (or false/no/off) turns it off.
+const NATIVE_TOOLS_DEFAULT = true;
 const TRUTHY_VALUES = new Set(["1", "true", "yes"]);
+const FALSY_VALUES = new Set(["0", "false", "no", "off"]);
 
 export const MEMORY_TOOL_NAMESPACE = "codemem";
 export const MEMORY_TOOL_NAMESPACE_DESCRIPTION =
@@ -49,7 +51,8 @@ const isRecord = (value) => value != null && typeof value === "object" && !Array
 export const nativeMemoryToolsEnabled = (env = process.env) => {
   const raw = String(env[NATIVE_TOOLS_ENV] ?? "").trim().toLowerCase();
   if (!raw) return NATIVE_TOOLS_DEFAULT;
-  return TRUTHY_VALUES.has(raw);
+  if (TRUTHY_VALUES.has(raw)) return true;
+  return !FALSY_VALUES.has(raw) && NATIVE_TOOLS_DEFAULT;
 };
 
 export const memoryToolId = (name) => `${MEMORY_TOOL_NAMESPACE}_${name}`;
@@ -342,7 +345,7 @@ export const formatMemoryToolOutcome = (outcome) => {
 
 export const MCP_PREFERRED_MESSAGE =
   "codemem MCP server is configured, so codemem's built-in memory tools are off. "
-  + "Remove the codemem MCP server from your OpenCode config to switch to them, or keep it.";
+  + "Run `codemem setup` (or remove the codemem MCP server from your OpenCode config) to switch to them, or keep it.";
 const MCP_DETECTION_TIMEOUT_MS = 2_000;
 
 const withTimeout = (promise, timeoutMs) => {

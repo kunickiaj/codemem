@@ -55,7 +55,7 @@ function stubRuntimeEnv({ nativeTools }) {
 	vi.stubEnv("CODEMEM_BACKEND_UPDATE_POLICY", "off");
 	vi.stubEnv("CODEMEM_RUNNER", runner);
 	vi.stubEnv("CODEMEM_TEST_RECORD", record);
-	vi.stubEnv("CODEMEM_OPENCODE_NATIVE_TOOLS", nativeTools ? "1" : "");
+	vi.stubEnv("CODEMEM_OPENCODE_NATIVE_TOOLS", nativeTools ? "1" : "0");
 }
 
 function makeV1Client({ mcp = {}, configError } = {}) {

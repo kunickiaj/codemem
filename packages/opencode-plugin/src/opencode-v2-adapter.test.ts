@@ -1705,6 +1705,8 @@ async function makeRuntimeRecallFixture(
 		CODEMEM_INJECT_TOKEN_BUDGET: "800",
 		CODEMEM_INJECT_RETAINED_TOKEN_BUDGET: String(options.retainedTokenBudget ?? 0),
 		CODEMEM_INJECT_HTTP_MAX_TIME_S: "60",
+		// Recall coverage; native memory tools have their own adapter tests.
+		CODEMEM_OPENCODE_NATIVE_TOOLS: "0",
 	})) {
 		vi.stubEnv(name, value);
 	}
