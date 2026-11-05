@@ -11,7 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { codememMcpLauncher, migrateLegacyOpencodeMcp, setupCommand } from "./setup.js";
+import {
+	codememMcpLauncher,
+	installOpencodeSetup,
+	migrateLegacyOpencodeMcp,
+	setupCommand,
+} from "./setup.js";
 import { loadJsoncConfig } from "./setup-config.js";
 
 const NPX_LAUNCHER = codememMcpLauncher(false);
@@ -65,6 +70,14 @@ async function runSetup(...args: string[]): Promise<void> {
 	await setupCommand.parseAsync(["--opencode-only", ...args], { from: "user" });
 }
 
+/**
+ * The internal `native` mode (plugin install plus MCP entry removal). The CLI
+ * does not accept it until the plugin ships built-in memory tools.
+ */
+async function runNativeOpencodeSetup(): Promise<void> {
+	installOpencodeSetup(false, "native");
+}
+
 function writeConfig(raw: string): void {
 	writeFileSync(configPath, raw, "utf-8");
 }
@@ -79,17 +92,40 @@ function seed(config: Record<string, unknown>): string {
 	return raw;
 }
 
-describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
+describe("codemem setup (OpenCode) — default keeps the stdio MCP entry", () => {
+	// Removal waits for the plugin's built-in memory tools to be on by default;
+	// until then the MCP entry is OpenCode's only full memory-tool surface.
+	it("writes the stdio entry on a fresh config", async () => {
+		await runSetup();
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			codemem: { type: "local", command: NPX_COMMAND, enabled: true },
+		});
+	});
+
+	it("keeps an existing managed V2 entry", async () => {
+		seed({ mcp: { servers: { codemem: { type: "local", command: ["codemem", "mcp"] } } } });
+
+		await runSetup();
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			servers: { codemem: { type: "local", command: ["codemem", "mcp"] } },
+		});
+		expect(logs.success.join("\n")).not.toContain("Removed the codemem MCP entry");
+	});
+});
+
+describe("OpenCode native mode (internal) — removes managed MCP entries", () => {
 	it.each(MANAGED_COMMANDS)("removes a V1 mcp.codemem entry using %s", async (_name, command) => {
 		const original = seed({ mcp: { codemem: { type: "local", command, enabled: true } } });
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 		expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
 		expect(logs.success.join("\n")).toContain(`Removed the codemem MCP entry mcp.codemem`);
 		expect(logs.success.join("\n")).toContain(configPath);
-		expect(logs.info.join("\n")).toContain("Memory tools now come from the codemem plugin");
+		expect(logs.info.join("\n")).toContain("OpenCode no longer starts a codemem MCP process");
 		expect(process.exitCode).not.toBe(1);
 	});
 
@@ -98,7 +134,7 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 		async (_name, command) => {
 			const original = seed({ mcp: { servers: { codemem: { type: "local", command } } } });
 
-			await runSetup();
+			await runNativeOpencodeSetup();
 
 			expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 			expect(readFileSync(`${configPath}.codemem.bak`, "utf-8")).toBe(original);
@@ -111,7 +147,7 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 			mcp: { servers: { codemem: { type: "local", command: ["codemem", "mcp"], disabled: true } } },
 		});
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(loadJsoncConfig(configPath).mcp).toBeUndefined();
 	});
@@ -131,7 +167,7 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 }
 `);
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		const raw = readRaw();
 		expect(raw).toContain("// top comment");
@@ -155,7 +191,7 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 }
 `);
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(readRaw()).toContain("// memory server");
 		expect(loadJsoncConfig(configPath).mcp).toEqual({});
@@ -169,7 +205,7 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 		)}\n`;
 		writeConfig(original);
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 		// The first write of the run owns the backup, so it holds the original file.
@@ -179,24 +215,24 @@ describe("codemem setup (OpenCode) — removes managed MCP entries", () => {
 	it("is idempotent across repeated runs", async () => {
 		seed({ mcp: { codemem: { type: "local", command: ["codemem", "mcp"], enabled: true } } });
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 		const afterFirst = readRaw();
 		logs.success = [];
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(readRaw()).toBe(afterFirst);
 		expect(logs.success).toEqual([]);
-		expect(logs.info.join("\n")).toContain("no MCP entry needed");
+		expect(logs.info.join("\n")).toContain("No codemem MCP entry to remove");
 	});
 
 	it("writes nothing when there is no OpenCode config yet beyond the plugin", async () => {
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(loadJsoncConfig(configPath)).toEqual({ plugin: ["@codemem/opencode-plugin"] });
 	});
 });
 
-describe("codemem setup (OpenCode) — leaves customized entries alone", () => {
+describe("OpenCode native mode (internal) — leaves customized entries alone", () => {
 	const cases: [string, string, Record<string, unknown>, string][] = [
 		[
 			"environment",
@@ -213,6 +249,23 @@ describe("codemem setup (OpenCode) — leaves customized entries alone", () => {
 		],
 		["remote", "v2", { type: "remote", url: "https://example.com/mcp" }, "remote server"],
 		[
+			"pinned uvx launcher with extra arguments",
+			"v2",
+			{
+				type: "local",
+				command: [
+					"uvx",
+					"--from",
+					"codemem==0.20.0",
+					"codemem",
+					"mcp",
+					"--db-path",
+					"/custom/memory.sqlite",
+				],
+			},
+			"custom command",
+		],
+		[
 			"extra fields",
 			"v2",
 			{ type: "local", command: ["codemem", "mcp"], timeout: { startup: 1000 } },
@@ -224,7 +277,7 @@ describe("codemem setup (OpenCode) — leaves customized entries alone", () => {
 		const mcp = shape === "v2" ? { servers: { codemem: entry } } : { codemem: entry };
 		const original = seed({ mcp });
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(readRaw()).toBe(original);
 		expect(existsSync(`${configPath}.codemem.bak`)).toBe(false);
@@ -246,7 +299,7 @@ describe("codemem setup (OpenCode) — leaves customized entries alone", () => {
 			},
 		});
 
-		await runSetup();
+		await runNativeOpencodeSetup();
 
 		expect(loadJsoncConfig(configPath).mcp).toEqual({
 			servers: { codemem: { type: "local", command: ["codemem", "mcp"], environment: { A: "1" } } },
@@ -302,6 +355,15 @@ describe("codemem setup --opencode-mcp stdio", () => {
 		});
 	});
 
+	it("does not accept native until the plugin ships built-in memory tools", async () => {
+		const original = seed({ mcp: { codemem: { type: "local", command: ["codemem", "mcp"] } } });
+
+		await runSetup("--opencode-mcp", "native");
+
+		expect(process.exitCode).toBe(2);
+		expect(readRaw()).toBe(original);
+	});
+
 	it("rejects an unknown mode with a usage error and writes nothing", async () => {
 		const original = seed({});
 
@@ -314,6 +376,29 @@ describe("codemem setup --opencode-mcp stdio", () => {
 
 	it("declares --opencode-mcp", () => {
 		expect(setupCommand.options.map((o) => o.long)).toContain("--opencode-mcp");
+	});
+});
+
+describe("codemem setup (OpenCode) — default keeps customized uv launchers", () => {
+	const CUSTOM_UVX = [
+		"uvx",
+		"--from",
+		"codemem==0.20.0",
+		"codemem",
+		"mcp",
+		"--db-path",
+		"/custom/memory.sqlite",
+	];
+
+	it.each([
+		["v1", { codemem: { type: "local", command: CUSTOM_UVX, environment: { A: "1" } } }],
+		["v2", { servers: { codemem: { type: "local", command: CUSTOM_UVX, cwd: "~" } } }],
+	])("leaves a pinned uvx launcher with extra arguments unchanged (%s)", async (_shape, mcp) => {
+		const original = seed({ mcp });
+
+		await runSetup();
+
+		expect(readRaw()).toBe(original);
 	});
 });
 

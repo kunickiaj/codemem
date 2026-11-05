@@ -5,8 +5,9 @@
  *
  * What it does:
  * 1. Adds "@codemem/opencode-plugin" to the plugin array in ~/.config/opencode/opencode.jsonc
- * 2. Removes the managed OpenCode MCP entry (the plugin serves memory tools);
- *    --opencode-mcp stdio writes the per-project stdio entry instead
+ * 2. Writes the per-project OpenCode stdio MCP entry (--opencode-mcp stdio). Removal
+ *    of that entry for the plugin's built-in tools is implemented but not offered
+ *    until a plugin release ships those tools.
  * 3. For Claude Code: installs MCP config and guides marketplace plugin install
  * 4. For Codex: MCP + hooks via CODEX_HOME
  * 5. For pi: packages entry + observer derivation + optional MCP adapter surface
@@ -294,8 +295,9 @@ function reportKeptOpencodeMcpEntries(
 }
 
 /**
- * Default OpenCode MCP step: remove the stdio entries setup used to write.
- * Memory tools come from the plugin through the shared viewer instead.
+ * Remove the stdio entries setup wrote, for users of the plugin's built-in
+ * memory tools (served through the shared viewer). Reached only through the
+ * internal `native` mode, which the CLI accepts once the plugin ships those tools.
  */
 function removeOpencodeMcp({ createBackup = true }: { createBackup?: boolean } = {}): boolean {
 	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
@@ -309,7 +311,7 @@ function removeOpencodeMcp({ createBackup = true }: { createBackup?: boolean } =
 	reportKeptOpencodeMcpEntries(configPath, cleanup.kept);
 	if (cleanup.removed.length === 0) {
 		if (cleanup.kept.length === 0) {
-			p.log.info("OpenCode memory tools come from the codemem plugin; no MCP entry needed");
+			p.log.info("No codemem MCP entry to remove; the plugin's built-in memory tools are used");
 		}
 		return true;
 	}
@@ -326,7 +328,7 @@ function removeOpencodeMcp({ createBackup = true }: { createBackup?: boolean } =
 		`Removed the codemem MCP entry ${cleanup.removed.join(" and ")} from ${configPath} (backup: ${configPath}.codemem.bak)`,
 	);
 	p.log.info(
-		"Memory tools now come from the codemem plugin, so OpenCode no longer starts a codemem MCP process for each project. Use --opencode-mcp stdio to keep the old entry.",
+		"OpenCode no longer starts a codemem MCP process for each project; the codemem plugin provides the memory tools. Run setup with --opencode-mcp stdio to restore the entry.",
 	);
 	return true;
 }
@@ -1387,7 +1389,13 @@ type SetupCommandOpts = {
 	opencodeMcp?: string;
 };
 
+// Modes the CLI accepts. `native` (remove the MCP entry) is implemented below
+// but is not offered until a plugin release registers the replacement memory
+// tools; without them, removing the entry leaves OpenCode with no memory tools.
+// The change that ships those tools adds it here and makes it the default.
 const OPENCODE_MCP_MODES = ["stdio"] as const;
+type OpencodeMcpMode = "stdio" | "native";
+const DEFAULT_OPENCODE_MCP_MODE: OpencodeMcpMode = "stdio";
 
 function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolean): boolean {
 	if (!(opts.piOnly || (!onlyFlag && isPiDetected()))) return true;
@@ -1399,18 +1407,18 @@ function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolea
 	});
 }
 
-function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
+export function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
 	p.log.step("Installing OpenCode plugin...");
 	const pluginResult = installPlugin(force);
 	if (!pluginResult.ok) return false;
 	// The plugin write already backed up the original file; keep that backup.
 	const createBackup = !pluginResult.wrote;
-	if (opencodeMcp === "stdio") {
-		p.log.step("Installing OpenCode MCP config...");
-		return installStdioMcp(force, { createBackup });
+	if ((opencodeMcp ?? DEFAULT_OPENCODE_MCP_MODE) === "native") {
+		p.log.step("Checking OpenCode MCP config...");
+		return removeOpencodeMcp({ createBackup });
 	}
-	p.log.step("Checking OpenCode MCP config...");
-	return removeOpencodeMcp({ createBackup });
+	p.log.step("Installing OpenCode MCP config...");
+	return installStdioMcp(force, { createBackup });
 }
 
 function installClaudeSetup(force: boolean): boolean {
@@ -1468,7 +1476,10 @@ export const setupCommand = new Command("setup")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
 	.option("--pi-only", "only install for pi")
-	.option("--opencode-mcp <mode>", "keep OpenCode's per-project MCP entry (stdio)")
+	.option(
+		"--opencode-mcp <mode>",
+		"OpenCode memory tools: stdio (per-project MCP entry, the default and only mode)",
+	)
 	.option("--pi-mcp", "opt into pi MCP adapter surface (requires pi-mcp-adapter)")
 	.option(
 		"--pi-extension-path <path>",

@@ -1,9 +1,9 @@
 /**
  * OpenCode MCP entry handling for `codemem setup`.
  *
- * The OpenCode plugin serves memory tools through the shared viewer, so setup
- * no longer installs a per-project `codemem mcp` stdio entry by default. These
- * helpers recognize the entries setup used to write, in both config shapes:
+ * In native mode (offered once the plugin ships built-in memory tools), those
+ * tools replace the per-project `codemem mcp` stdio entry. These helpers recognize
+ * the entries setup wrote, in both config shapes:
  *
  * - V1: `mcp.codemem = { type: "local", command: [...], enabled: true }`
  * - V2: `mcp.servers.codemem = { type: "local", command: [...] }`
@@ -25,6 +25,8 @@ const MANAGED_COMMANDS: readonly (readonly string[])[] = [
 	["npx", "-y", "--package", "codemem", "--package", "@codemem/embeddings", "codemem", "mcp"],
 	["npx", "-y", "codemem", "mcp"],
 	["npx", "codemem", "mcp"],
+	// Python-era setup (opencode_integration_cmds.py).
+	["uvx", "codemem", "mcp"],
 ];
 
 /** Fields setup writes (V1 `enabled`, V2 `disabled`); any other field is user data. */
@@ -45,13 +47,13 @@ function isExactStringArray(value: unknown, expected: readonly string[]): boolea
 	);
 }
 
-/** Python-era uv/uvx launchers, matched as loosely as setup always has. */
+/**
+ * The uv launcher Python-era setup wrote (opencode_integration_cmds.py). Only
+ * this exact command is upgraded: a uvx command with a version pin or extra
+ * arguments such as `--db-path` is user data and is left alone.
+ */
 export function isLegacyUvOpencodeCommand(command: unknown): boolean {
-	if (typeof command === "string") return command === "uvx" || command === "uv";
-	return (
-		Array.isArray(command) &&
-		command.some((arg) => typeof arg === "string" && (arg === "uvx" || arg === "uv"))
-	);
+	return isExactStringArray(command, ["uvx", "codemem", "mcp"]);
 }
 
 /** Older single-package npx launchers that `--opencode-mcp stdio` upgrades in place. */
@@ -62,11 +64,13 @@ export function isSinglePackageNpxOpencodeCommand(command: unknown): boolean {
 	);
 }
 
+/**
+ * Exact commands setup has written, safe to delete. A command with a version
+ * pin or extra arguments (`--from codemem==0.20.0`, `--db-path ...`) is user
+ * data.
+ */
 export function isManagedOpencodeMcpCommand(command: unknown): boolean {
-	return (
-		isLegacyUvOpencodeCommand(command) ||
-		MANAGED_COMMANDS.some((expected) => isExactStringArray(command, expected))
-	);
+	return MANAGED_COMMANDS.some((expected) => isExactStringArray(command, expected));
 }
 
 /**
