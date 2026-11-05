@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	jsoncValueHasComments,
 	loadJsoncConfig,
 	reconcileOpencodePluginConfig,
 	resolveOpencodeConfigPath,
@@ -159,6 +160,63 @@ describe("writeJsonConfig", () => {
 		const updated = readFileSync(configPath, "utf-8");
 		expect(updated).toContain(`"custom": { "enabled": true }, ${rationale}\n`);
 		expect(updated).toContain(`${rationale}\n    "codemem":`);
+	});
+
+	it("removes an object's only property when it has a trailing comma", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    // keep me\n    "codemem": { "command": ["codemem", "mcp"] },\n  },\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: {} });
+
+		expect(readFileSync(configPath, "utf-8")).toBe('{\n  "mcp": {\n    // keep me\n  },\n}\n');
+	});
+
+	it("removes a property without reformatting its siblings", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.jsonc");
+		const other = '"other": { "type": "local", "command": ["x"] }';
+		writeFileSync(
+			configPath,
+			`{\n  "mcp": {\n    "codemem": { "command": ["codemem", "mcp"] },\n    ${other},\n  },\n}\n`,
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { other: { type: "local", command: ["x"] } } });
+
+		expect(readFileSync(configPath, "utf-8")).toBe(`{\n  "mcp": {\n    ${other},\n  },\n}\n`);
+	});
+
+	it("removes a last property that has no trailing comma", () => {
+		const dir = makeTempDir();
+		const configPath = join(dir, "opencode.json");
+		writeFileSync(
+			configPath,
+			'{\n  "mcp": {\n    "other": { "command": ["x"] },\n    "codemem": { "command": ["codemem", "mcp"] }\n  }\n}\n',
+			"utf-8",
+		);
+
+		writeJsonConfig(configPath, { mcp: { other: { command: ["x"] } } });
+
+		expect(readFileSync(configPath, "utf-8")).toBe(
+			'{\n  "mcp": {\n    "other": { "command": ["x"] }\n  }\n}\n',
+		);
+	});
+});
+
+describe("jsoncValueHasComments", () => {
+	const raw =
+		'{\n  "a": { "x": 1 },\n  "b": {\n    /* note */ "y": 2\n  },\n  "c": "// not a comment"\n}\n';
+
+	it("finds line and block comments only inside the target value", () => {
+		expect(jsoncValueHasComments(raw, ["a"])).toBe(false);
+		expect(jsoncValueHasComments(raw, ["b"])).toBe(true);
+		expect(jsoncValueHasComments(raw, ["c"])).toBe(false);
+		expect(jsoncValueHasComments(raw, ["missing"])).toBe(false);
 	});
 });
 

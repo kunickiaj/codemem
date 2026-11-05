@@ -69,7 +69,7 @@ and generate hooks stay isolated. Both the default message surface and legacy
 `CODEMEM_INJECT_SURFACE=system` surface work. See
 [OpenCode host support, troubleshooting, and rollback](docs/plugin-reference.md#opencode-host-support-troubleshooting-and-rollback).
 
-1. Install the OpenCode plugin and MCP config:
+1. Install the OpenCode plugin:
 
 ```text
 npx -y codemem setup --opencode-only
@@ -80,6 +80,8 @@ npx -y codemem setup --opencode-only
 `npx` uses a downloaded or cached package to configure the OpenCode host; it does not create a durable `codemem` CLI installation. The configured plugin manages backend execution independently on both hosts, so no global install is required for automatic capture and context injection.
 
 Setup writes the singular `plugin` key on purpose. OpenCode 1 requires that key, and OpenCode 2 translates it into its native `plugins` configuration, so one config entry works on both hosts. Keep one Codemem entry; if OpenCode loads Codemem twice for one project, the first registration wins and later copies skip their hooks with a warning.
+
+The plugin provides the memory tools through the shared local viewer, so OpenCode does not need a `codemem mcp` entry or a separate MCP process for each project. Setup removes the `codemem` MCP entry that earlier versions wrote (under `mcp` or `mcp.servers`) and first saves the previous config next to it with a `.codemem.bak` suffix. Entries you customized, such as ones with an `environment` block, a `cwd`, a custom command, or a remote URL, are left in place and listed in the setup output. To keep the per-project stdio entry, run `codemem setup --opencode-only --opencode-mcp stdio`.
 
 3. Verify:
 
@@ -129,7 +131,7 @@ For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
 
 An npm-capable manager, such as pnpm or mise's `npm:codemem` backend, can also provide the durable CLI. Ensure `codemem` is on your `PATH`, then run `codemem setup --opencode-only`. For a pnpm-global CLI, `codemem update check` reports the exact paired `pnpm add -g codemem@<version> @codemem/embeddings@<version>` command. Canonical pnpm virtual-store detection provides guidance but does not prove ownership. An explicit `codemem update install` re-checks the active package and global-root ownership with bounded, neutral-directory `pnpm root -g`, `pnpm bin -g`, and `pnpm list -g --depth 0 --json` calls before it mutates anything; it accepts pnpm 9–11's `<list-root>/node_modules` root and pnpm 12's `<list-root>` root only. It then installs exact matching packages with default and `@codemem` registry pins and verifies registered package state plus the specific pnpm-bin launcher. The updater never runs a build-approval command: pnpm 9 still runs install scripts by default, while newer pnpm releases apply their configured build-script policy. For a mise-managed CLI, `codemem update check` reports the exact global update command. An explicit `codemem update install` confirms from bounded `mise ls --json` output that the active tool source matches a global source under the user's home directory and that its install path owns the running entry. It writes the exact release into mise's primary global config, confirms the global configured version, and runs the configured tool through `mise exec` outside the invoking project rather than through a possibly stale or locally overridden `PATH` entry.
 
-Upgrade a durable CLI with the package manager that installed it, then rerun the corresponding setup command for an existing setup-managed integration. Setup replaces its old managed `npx -y codemem mcp` launcher and codemem MCP entries detected as UV/UVX-based so both packages share one runtime; other custom MCP commands remain unchanged. The host plugin is managed independently. Claude marketplace installs use the plugin's bundled MCP configuration and do not require a separate `setup --claude-only` step.
+Upgrade a durable CLI with the package manager that installed it, then rerun the corresponding setup command for an existing setup-managed integration. For Claude Code and Codex, setup replaces its old managed `npx -y codemem mcp` launcher and codemem MCP entries detected as UV/UVX-based so both packages share one runtime. For OpenCode, setup removes those managed entries because the plugin provides the memory tools. Custom MCP commands remain unchanged. The host plugin is managed independently. Claude marketplace installs use the plugin's bundled MCP configuration and do not require a separate `setup --claude-only` step.
 
 Generated MCP configurations use the global `codemem` binary when available. Otherwise, setup-managed `npx` launchers request both packages in one temporary environment. Restart the updated host and any `codemem serve` process after an installation change. An already-running Claude or Codex MCP host keeps lexical-only recall until it restarts; restarting `codemem serve` does not restart that child.
 
@@ -419,15 +421,13 @@ Candidate mining is deterministic, and by default an observer-model worthiness p
 
 ## MCP tools
 
-To give the LLM direct access to memory tools (search, timeline, pack, distill candidates, remember, forget):
+The memory tools (search, timeline, pack, distill candidates, remember, forget) give the LLM direct access to memory.
 
-```text
-codemem setup --opencode-only
-```
-
-This updates your OpenCode config to install the plugin and register the MCP server. Restart OpenCode to activate.
+In OpenCode, the plugin provides these tools through the shared local viewer, so `codemem setup --opencode-only` installs only the plugin. Restart OpenCode to activate. To run the stdio MCP server per project instead, for example so you can set `CODEMEM_DB` in the entry's `environment` block, run `codemem setup --opencode-only --opencode-mcp stdio`.
 
 Pi registers the same memory tools natively by default and does not need MCP. See [Pi extension](docs/plugin-reference.md#pi-extension).
+
+`codemem mcp` remains the stdio MCP server for Claude Desktop, Codex, and other MCP clients. Claude Code and Codex setup configure it for you.
 
 The standalone `codemem-mcp-ts` binary runs the same stdio server used by `codemem mcp`. Viewer autostart is on by default for both invocation paths; set `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` to disable. MCP autostart and the `serve start`/`stop`/`restart` lifecycle identify a running viewer through `GET /api/health` (service discriminator `codemem-viewer`), with one bounded `GET /api/stats` compatibility probe when an older viewer returns `404`.
 
