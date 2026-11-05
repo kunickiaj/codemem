@@ -142,3 +142,30 @@ pnpm run tsc
 ```
 
 The tests exercise local WebSocket, Noise, HTTP, scoped authorization, admission, quota, selector fallback, cancellation, and SQLite/D1 readiness paths. Stop after local acceptance.
+
+## Compare relay hosts end to end
+
+`relay:acceptance` runs one device-level acceptance sequence, unchanged, against each relay host:
+
+- `do`: the coordinator Worker bundle that `wrangler deploy` builds, in Miniflare with D1 and the `RelayRealm` and `RelayHealth` Durable Objects. Setup goes through the deployment guide's admin routes.
+- `node-cohosted`: a self-hosted SQLite coordinator with each realm's Node relay on the coordinator's own HTTP server.
+- `node-standalone`: the same coordinator with each realm's relay on its own listener, as a separate relay process behind the same hostname would run.
+
+```fish
+pnpm --filter @codemem/cloudflare-coordinator-worker relay:acceptance -- --host all
+```
+
+`--host` also takes a single host. Each host takes about 12 minutes, most of it the five healthy minutes before readiness turns ready. The run stays on loopback and uses no Cloudflare account. It generates a throwaway CA, a `127.0.0.1` certificate with the `openssl` on `PATH` (set `OPENSSL` to use another), and fresh device keys. A TLS front at `https://127.0.0.1:<port>` serves as the coordinator origin and passes each realm's relay upgrades through the keyless fault proxy. Evidence goes under `.tmp/relay-host-acceptance/`.
+
+Three device processes take part. Device A belongs to two teams. Device B is in team A only, and device C is in team B only. Each runs the relay client that `codemem serve` builds. The stages run in this order:
+
+1. Readiness: the authority row and both realm rows turn ready.
+2. Direct sync works with relay available.
+3. With B's direct listener down, a pass relays both pull and push, completes the outbound ACK, and leaves personal and local-only memories on A.
+4. A pass for a Space B is not a member of is refused over relay and changes nothing on B.
+5. C cannot register with team A's realm.
+6. Team B relays through its own realm, and team A's realm sees none of its frames.
+7. With B offline, the pass fails with `relay_rejected`, the cursor and ACK hold, and the realm holds no routes or queued bytes. Nothing reaches B when it reconnects until the next pass repairs it.
+8. Faults injected at the proxy give the same local reasons on every host: a dropped handshake gives `relay_unavailable`, truncated DATA gives `relay_frame_invalid`, a REJECTED substituted for ACCEPTED gives `relay_rejected`, and an OPEN lost on its way to the target gives `relay_expired`. A clean pass then converges.
+9. Neither realm records a traffic quota abort.
+10. The host's operator switch for team A's realm stops relay, and direct sync still works.
