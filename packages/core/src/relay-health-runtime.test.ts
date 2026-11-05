@@ -213,3 +213,116 @@ describe("relay health rate-limit isolation and default-off routes", () => {
 		});
 	});
 });
+
+describe("relay health for several groups through the SQLite coordinator factory", () => {
+	async function addGroupB() {
+		const store = new BetterSqliteCoordinatorStore(dbPath);
+		try {
+			await store.createGroup("group-b");
+			await store.createScope({
+				scopeId: "scope-b",
+				groupId: "group-b",
+				coordinatorId: "server-a",
+				label: "Health fixture B",
+				membershipEpoch: 3,
+			});
+			await store.enrollDevice("group-b", {
+				deviceId: "device-a",
+				publicKey: CANONICAL_PUBLIC_KEY,
+				fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+			});
+			await store.grantScopeMembership({
+				scopeId: "scope-b",
+				deviceId: "device-a",
+				effectId: "health-fixture-member-b",
+				membershipEpoch: 3,
+			});
+			store.db
+				.prepare("INSERT INTO relay_admission_realms VALUES (?, 'group-b', 'enabled', 1)")
+				.run(METADATA_CONTEXT.authority);
+			store.db
+				.prepare(
+					"INSERT INTO relay_admission_readiness VALUES (?, 'realm', 'group-b', 1, 'tripped', NULL)",
+				)
+				.run(METADATA_CONTEXT.authority);
+		} finally {
+			store.close();
+		}
+	}
+
+	function readiness() {
+		const store = new BetterSqliteCoordinatorStore(dbPath, { existingOnly: true });
+		try {
+			return Object.fromEntries(
+				(
+					store.db
+						.prepare("SELECT scope, group_id, state FROM relay_admission_readiness")
+						.all() as { scope: string; group_id: string; state: string }[]
+				).map((row) => [`${row.scope}:${row.group_id}`, row.state]),
+			);
+		} finally {
+			store.close();
+		}
+	}
+
+	it("keeps each group's realm row its own and the authority ready while any group is ready", async () => {
+		// Arrange: one monitor per group, sharing one authority.
+		await addGroupB();
+		const f = healthFixture();
+		vi.spyOn(Date, "now").mockImplementation(f.now);
+		vi.spyOn(performance, "now").mockImplementation(f.now);
+		const monitors = new Map<string, RelayHealthMonitor>();
+		const group = (groupId: string, syntheticScopeId: string) => ({
+			...f.options,
+			groupId,
+			syntheticScopeId,
+			enabled: true,
+			authorityId: METADATA_CONTEXT.authority,
+			onMonitor: (value: RelayHealthMonitor) => monitors.set(groupId, value),
+		});
+		const app = createBetterSqliteCoordinatorApp({
+			dbPath,
+			runtime: { now: () => new Date(f.now()).toISOString(), adminSecret: () => null },
+			relayHealth: [group("group-a", "scope-a"), group("group-b", "scope-b")],
+		});
+		f.fetcher.mockImplementation(async (url, init) => app.request(String(url), init));
+		const a = monitors.get("group-a");
+		const b = monitors.get("group-b");
+		if (!a || !b) throw new Error("missing configured monitors");
+		// Act: group A recovers; group B then publishes its first, tripped state.
+		for (let now = 120000; now <= 480000; now += 30000) {
+			f.setNow(now);
+			await a.runProbeCycle();
+		}
+		const afterA = readiness();
+		await b.runProbeCycle();
+		// Assert
+		expect(afterA).toEqual({
+			"authority:": "ready",
+			"realm:group-a": "ready",
+			"realm:group-b": "tripped",
+		});
+		expect(b.snapshot().state).toBe("tripped");
+		expect(readiness()).toEqual(afterA);
+	});
+
+	it("refuses groups that do not share one authority", () => {
+		const f = healthFixture();
+		const group = (groupId: string, authorityId: string) => ({
+			...f.options,
+			groupId,
+			enabled: true,
+			authorityId,
+			onMonitor: () => {},
+		});
+		expect(() =>
+			createBetterSqliteCoordinatorApp({
+				dbPath,
+				relayHealth: [
+					group("group-a", METADATA_CONTEXT.authority),
+					group("group-b", "b".repeat(64)),
+				],
+			}),
+		).toThrow("one authority");
+	});
+});
