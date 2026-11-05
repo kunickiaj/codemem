@@ -200,6 +200,11 @@ class Client implements RelayPeerClient {
 	private readonly localKeyId: string;
 	private socket?: WebSocket;
 	private socketClosed?: Deferred<void>;
+	/**
+	 * Sockets already failed. A terminated socket can still deliver queued messages
+	 * and its close event, and routes created for the next socket must survive both.
+	 */
+	private readonly failedSockets = new WeakSet<WebSocket>();
 	private opening?: Deferred<void>;
 	private setup?: Setup;
 	private connecting?: Promise<void>;
@@ -283,6 +288,9 @@ class Client implements RelayPeerClient {
 
 	private async openSocket(signal: AbortSignal, deadline: number): Promise<void> {
 		if (this.socket?.readyState === WebSocket.OPEN) return;
+		// A failed socket is terminated at once but clears only on its close event,
+		// so the next open waits for that within its own deadline instead of failing.
+		if (this.socket) await wait(this.socketClosed?.promise ?? Promise.resolve(), signal, deadline);
 		if (this.socket) throw new Error("Relay socket still closing");
 		const webSocketOptions: ClientOptions & {
 			maxFragments: number;
@@ -457,7 +465,7 @@ class Client implements RelayPeerClient {
 	}
 
 	private receive(socket: WebSocket, data: RawData, binary: boolean): void {
-		if (socket !== this.socket) return;
+		if (socket !== this.socket || this.failedSockets.has(socket)) return;
 		try {
 			this.validate();
 			let bytes: Uint8Array;
@@ -534,7 +542,8 @@ class Client implements RelayPeerClient {
 	}
 
 	private failSocket(socket: WebSocket, reason: RelayFailureReason = "relay_unavailable"): void {
-		if (this.socket !== socket) return;
+		if (this.socket !== socket || this.failedSockets.has(socket)) return;
+		this.failedSockets.add(socket);
 		this.registrationAbort?.abort();
 		this.registrationExpires = 0;
 		const error = new RelayFailure(reason, "Relay WebSocket disconnected");
@@ -542,10 +551,15 @@ class Client implements RelayPeerClient {
 		this.setup?.proof.reject(error);
 		this.setup?.challenge.reject(error);
 		this.setup?.registered.reject(error);
+		this.endRoutes(error);
+		socket.terminate();
+	}
+
+	/** Ends every route and capacity waiter, including any created while a failed socket closes. */
+	private endRoutes(error: Error): void {
 		for (const route of this.routes.values()) route.raw.destroy(error);
 		for (const waiter of this.waiters.values()) waiter.reject(error);
 		this.waiters.clear();
-		socket.terminate();
 	}
 
 	factory(peerDeviceId: string, currentPin: string): RelayPeerConnectionFactory {
@@ -947,7 +961,10 @@ class Client implements RelayPeerClient {
 		try {
 			this.validate();
 		} catch (error) {
-			if (this.socket) this.failSocket(this.socket, relayFailureReason(error, "relay_disabled"));
+			const reason = relayFailureReason(error, "relay_disabled");
+			if (this.socket) this.failSocket(this.socket, reason);
+			// failSocket does nothing for a socket that already failed, so end routes here too.
+			this.endRoutes(new RelayFailure(reason, "Relay client no longer trusted"));
 			return;
 		}
 		for (const route of this.routes.values()) {
@@ -966,6 +983,7 @@ class Client implements RelayPeerClient {
 		const completions = [...this.routes.values()].map((route) => route.raw.completion);
 		const socketClosed = this.socketClosed?.promise ?? Promise.resolve();
 		if (this.socket) this.failSocket(this.socket, "relay_disabled");
+		this.endRoutes(new RelayFailure("relay_disabled", "Relay client closed"));
 		await Promise.all([
 			Promise.allSettled([...completions, registration]),
 			wait(socketClosed, new AbortController().signal, performance.now() + 1500),

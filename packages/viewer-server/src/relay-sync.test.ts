@@ -1,82 +1,37 @@
-import { createPrivateKey, randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { applyReplicationOps } from "@codemem/core";
 import { serve } from "@hono/node-server";
 import { afterEach, expect, it, vi } from "vitest";
 import { decodeRelayCheckPacket } from "../../core/src/relay-admission-codec.js";
 import { encodeRelayControl } from "../../core/src/relay-control-codec.js";
-import type {
-	RelayFaultAction,
-	RelayFaultFrame,
-	RelayFaultRule,
-} from "../../core/src/relay-fault-proxy-test-fixtures.js";
 import {
 	observeRelayWrites,
-	type RelayClientTestOptions,
-	relayClientFixture,
 	relayDeadline,
 } from "../../core/src/relay-peer-client-test-fixtures.js";
 import { syncScopedChannelOnce } from "../../core/src/sync-channel-pass.js";
 import { getSyncChannelProgress } from "../../core/src/sync-channel-progress.js";
-import { loadPrivateKey } from "../../core/src/sync-identity.js";
 import { runSyncPass } from "../../core/src/sync-pass.js";
 import { getReplicationCursor, setReplicationCursor } from "../../core/src/sync-replication.js";
 import { readPeerSyncActivity } from "../../core/src/sync-transfer-activity.js";
 import { createSyncApp } from "./index.js";
-import { createSyncChannelDispatcher } from "./sync-channel-dispatch.js";
+import {
+	onSourceFrame,
+	relaySyncCleanups,
+	relaySyncFixture,
+	runRelaySyncCleanups,
+	seedOtherSpace,
+	titles,
+} from "./relay-sync-test-fixtures.js";
 import { ORIGIN, SCOPE } from "./sync-channel-dispatch-test-fixtures.js";
-import { passFixture } from "./sync-channel-pass-test-fixtures.js";
 
-const cleanups: (() => Promise<unknown>)[] = [];
+const cleanups = relaySyncCleanups;
 afterEach(async () => {
-	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	await runRelaySyncCleanups();
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 });
-function identity(keysDir: string, expectedPin: string) {
-	const key = loadPrivateKey(keysDir);
-	if (!key) throw new Error("Missing disposable identity");
-	return { key: createPrivateKey(key), expectedPin };
-}
-async function fixture(relayOptions: RelayClientTestOptions = {}) {
-	const stores = await passFixture();
-	cleanups.push(stores.cleanup);
-	const { remote } = stores;
-	const serverKeys = join(dirname(remote.peerKeysDir), "local-keys");
-	const relay = await relayClientFixture(
-		{
-			source: identity(remote.peerKeysDir, remote.peerPublicKey),
-			target: identity(serverKeys, remote.localPublicKey),
-		},
-		{ source: remote.peerDeviceId, target: remote.localDeviceId },
-		relayOptions,
-	);
-	cleanups.push(() => relay.dispose());
-	const dispatch = createSyncChannelDispatcher({ storeFactory: remote.storeFactory });
-	const control = { interruptPost: false };
-	const target = relay.client("target", {
-		onInbound: async (_connection, context) =>
-			context.serve({
-				origin: ORIGIN,
-				dispatch: async (request) => {
-					vi.stubEnv("CODEMEM_KEYS_DIR", serverKeys);
-					const response = await dispatch(request);
-					if (control.interruptPost && request.method === "POST") await source.close();
-					return response;
-				},
-			}),
-	});
-	const source = relay.client("source");
-	const original = source.factory(remote.localDeviceId, remote.localPublicKey);
-	const factory = {
-		open: vi.fn(original.open),
-		failureReason: original.failureReason,
-	};
-	const options = { ...stores.options, factory };
-	return { ...stores, relay, source, target, options, factory, control };
-}
+const fixture = relaySyncFixture;
 
 async function storeUnreachableAddress(f: Awaited<ReturnType<typeof fixture>>) {
 	const server = createServer();
@@ -128,41 +83,6 @@ async function ordinarySyncServer(f: Awaited<ReturnType<typeof fixture>>) {
 		.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ?")
 		.run(JSON.stringify([url]), f.remote.localDeviceId);
 	return { url, requests };
-}
-function titles(f: Awaited<ReturnType<typeof fixture>>, side: "client" | "remote") {
-	const store = side === "client" ? f.client : f.remote.store;
-	return store.db
-		.prepare("SELECT title FROM memory_items WHERE scope_id = ? ORDER BY title")
-		.pluck()
-		.all(SCOPE);
-}
-
-function seedOtherSpace(
-	f: Awaited<ReturnType<typeof fixture>>,
-	authored: ReturnType<typeof f.seed>,
-) {
-	const scope = f.client.db
-		.prepare("SELECT * FROM replication_scopes WHERE scope_id = ?")
-		.get(SCOPE) as Record<string, unknown>;
-	const columns = Object.keys(scope);
-	f.client.db
-		.prepare(
-			`INSERT INTO replication_scopes (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`,
-		)
-		.run(...Object.values({ ...scope, scope_id: "other-space" }));
-	const op = {
-		...authored,
-		op_id: "other-space-op",
-		entity_id: `memory-source-v1:${Buffer.from(f.remote.peerDeviceId).toString("base64url")}:${randomUUID()}`,
-		scope_id: "other-space",
-		payload_json: JSON.stringify({
-			...JSON.parse(authored.payload_json),
-			scope_id: "other-space",
-			title: "other-space-item",
-		}),
-	};
-	const result = applyReplicationOps(f.client.db, [op], f.remote.localDeviceId, f.client.scanner);
-	if (result.applied !== 1 || result.errors.length) throw new Error(JSON.stringify(result));
 }
 
 it("converges authorized Space pull/push through the actual relay and saves a completed outbound ACK", async () => {
@@ -289,20 +209,6 @@ it("leaves scoped progress and outbound ACK unchanged when the relay target is o
 	expect(titles(f, "remote")).toEqual([]);
 	expect(f.factory.open).toHaveBeenCalledTimes(1);
 }, 10000);
-
-/** Applies `action` to the nth frame toward the source socket that `matches` selects. */
-function onSourceFrame(
-	matches: (frame: RelayFaultFrame) => boolean,
-	nth: number,
-	action: RelayFaultAction,
-): RelayFaultRule {
-	let seen = 0;
-	return (frame) => {
-		// The target registers first, so the source owns proxy socket 1.
-		if (frame.socket !== 1 || frame.direction !== "toPeer" || !matches(frame)) return;
-		return seen++ === nth ? action : undefined;
-	};
-}
 
 it("holds the outbound ACK and records relay_rejected when the push route is rejected", async () => {
 	// Arrange: status and pull routes succeed, then the push route's ACCEPTED becomes REJECTED.
