@@ -19,8 +19,28 @@ export interface SyncReachabilityOptions {
 	readonly deadlineMs?: number;
 }
 
+export type SyncReachabilityMaintenance = Pick<
+	SyncReachabilityOptions,
+	"relay" | "signal" | "deadlineMs"
+>;
+
+/**
+ * Per-peer reachability for the sync daemon. The caller owns every relay
+ * client's lifecycle and must close the clients during shutdown.
+ */
+export interface SyncPeerReachabilityResolver {
+	/** This tick's relay route for one peer, or undefined for direct-only sync. */
+	forPeer(db: Database, peerDeviceId: string): SyncReachabilityOptions | undefined;
+	/** Relay clients whose registration the daemon maintains once per tick. */
+	clients(): readonly RelayPeerClient[];
+	/** Cancels maintenance and every pass this resolver selects. */
+	readonly signal?: AbortSignal;
+}
+
 /** Reuses the existing reconciliation tick. Maintenance failure never blocks direct sync. */
-export async function maintainSyncReachability(options: SyncReachabilityOptions): Promise<void> {
+export async function maintainSyncReachability(
+	options: SyncReachabilityMaintenance,
+): Promise<void> {
 	if (!isRelayPeerClient(options.relay)) return;
 	try {
 		await options.relay.maintainRegistration(

@@ -68,13 +68,34 @@ export interface CoordinatorSyncConfig {
 	syncCoordinatorAdminSecret: string;
 }
 
-export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
+function readRawSyncConfig(config?: ConfigRecord): ConfigRecord {
 	const raw = { ...(config ?? readCodememConfigFile()) } as ConfigRecord;
 	const envOverrides = getCodememEnvOverrides();
 	for (const key of Object.keys(envOverrides)) {
 		const value = process.env[envOverrides[key] as string];
 		if (value != null) raw[key] = value;
 	}
+	return raw;
+}
+
+/** Device-side relay settings. Relay runs automatically when the coordinator advertises it. */
+export interface RelayClientSettings {
+	/** `sync_relay_enabled`, default true. False opts this device out and skips every relay fetch. */
+	enabled: boolean;
+	/** `sync_relay_service_key`: explicit operator key that wins over the advertised key. */
+	serviceKey: string;
+}
+
+export function readRelayClientSettings(config?: ConfigRecord): RelayClientSettings {
+	const raw = readRawSyncConfig(config);
+	return {
+		enabled: parseBoolOr(raw.sync_relay_enabled, true),
+		serviceKey: clean(raw.sync_relay_service_key),
+	};
+}
+
+export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
+	const raw = readRawSyncConfig(config);
 	const syncCoordinatorGroup = clean(raw.sync_coordinator_group);
 	const syncCoordinatorGroups = parseStringList(raw.sync_coordinator_groups);
 	if (syncCoordinatorGroups.length === 0 && syncCoordinatorGroup) {

@@ -474,14 +474,30 @@ type SharedManagedScopeState =
 	| { state: "authorized"; groupId: string }
 	| { state: "not_authorized" | "indeterminate" };
 
-function sharedManagedScopeState(
+export interface SharedManagedScope {
+	readonly scopeId: string;
+	readonly groupId: string;
+}
+
+export interface SharedManagedScopesQuery {
+	readonly localDeviceId: string;
+	readonly peerDeviceId: string;
+	readonly coordinatorId: string;
+	/** Null accepts every group under the coordinator. */
+	readonly peerGroupIds: string[] | null;
+	readonly peerPublicKey: string;
+}
+
+/**
+ * Every active managed Space that both devices share under one coordinator,
+ * with fresh cached authorization for both keys, ordered by scope ID.
+ * `indeterminate` reports a shared Space whose authorization is only stale.
+ */
+export function sharedManagedScopes(
 	db: Database,
-	localDeviceId: string,
-	peerDeviceId: string,
-	coordinatorId: string,
-	peerGroupIds: string[] | null,
-	peerPublicKey: string,
-): SharedManagedScopeState {
+	query: SharedManagedScopesQuery,
+): { scopes: SharedManagedScope[]; indeterminate: boolean } {
+	const { localDeviceId, peerDeviceId, coordinatorId, peerGroupIds, peerPublicKey } = query;
 	const localPublicKey = db
 		.prepare("SELECT public_key FROM sync_device WHERE device_id = ?")
 		.pluck()
@@ -498,13 +514,15 @@ function sharedManagedScopeState(
 			   AND peer_member.device_id = ?
 			   AND scope.status = 'active'
 			   AND scope.kind = 'managed_project'
-			   AND scope.authority_type = 'coordinator'`,
+			   AND scope.authority_type = 'coordinator'
+			 ORDER BY scope.scope_id`,
 		)
 		.all(localDeviceId, peerDeviceId) as Array<{
 		scope_id: string;
 		coordinator_id: string | null;
 		group_id: string | null;
 	}>;
+	const scopes: SharedManagedScope[] = [];
 	let indeterminate = false;
 	for (const scope of candidateScopes) {
 		const scopeId = clean(scope.scope_id);
@@ -535,8 +553,30 @@ function sharedManagedScopeState(
 			indeterminate = true;
 			continue;
 		}
-		return { state: "authorized", groupId };
+		scopes.push({ scopeId, groupId });
 	}
+	return { scopes, indeterminate };
+}
+
+function sharedManagedScopeState(
+	db: Database,
+	localDeviceId: string,
+	peerDeviceId: string,
+	coordinatorId: string,
+	peerGroupIds: string[] | null,
+	peerPublicKey: string,
+): SharedManagedScopeState {
+	const { scopes, indeterminate } = sharedManagedScopes(db, {
+		localDeviceId,
+		peerDeviceId,
+		coordinatorId,
+		peerGroupIds,
+		peerPublicKey,
+	});
+	// Scopes are ordered by scope_id, so the group comes from the lowest authorized
+	// scope ID. Earlier code took the first row in unspecified SQLite order.
+	const [first] = scopes;
+	if (first) return { state: "authorized", groupId: first.groupId };
 	return { state: indeterminate ? "indeterminate" : "not_authorized" };
 }
 

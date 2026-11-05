@@ -18,21 +18,33 @@ import {
 
 import type { Database } from "./db.js";
 import { connect as connectDb, ensureAdditiveSchemaCompatibility, resolveDbPath } from "./db.js";
+import type { RelayPeerClient } from "./relay-peer-client.js";
 import * as schema from "./schema.js";
 import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { DeviceIdentityError, ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
-import type { SyncReachabilityOptions } from "./sync-reachability-pass.js";
+import type {
+	SyncPeerReachabilityResolver,
+	SyncReachabilityMaintenance,
+	SyncReachabilityOptions,
+} from "./sync-reachability-pass.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Relay integration for the daemon. A per-peer resolver selects each peer's
+ * route and lists the clients to maintain. A single options object is the
+ * legacy form and applies the same route to every peer.
+ */
+export type SyncDaemonReachability = SyncReachabilityOptions | SyncPeerReachabilityResolver;
+
 export interface SyncDaemonOptions {
-	/** Explicit programmatic relay integration. The caller owns the client lifecycle. */
-	reachability?: SyncReachabilityOptions;
+	/** Explicit programmatic relay integration. The caller owns every client's lifecycle. */
+	reachability?: SyncDaemonReachability;
 	host?: string;
 	port?: number;
 	intervalS?: number;
@@ -253,7 +265,7 @@ export async function syncDaemonTick(
 	stalePeers?: Set<string>,
 	scanner?: SecretScanner,
 	dbPath?: string,
-	reachability?: SyncReachabilityOptions,
+	reachability?: SyncDaemonReachability,
 ): Promise<SyncTickResult[]> {
 	const hasPinnedFingerprint = tableColumnExists(db, "sync_peers", "pinned_fingerprint");
 	const rows = db
@@ -273,6 +285,7 @@ export async function syncDaemonTick(
 	const opsLimit = readCoordinatorSyncConfig().syncOpsLimit;
 
 	syncPassPreflight(db);
+	const tickRoutes = tickReachability(reachability);
 
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {
@@ -299,7 +312,7 @@ export async function syncDaemonTick(
 			dbPath,
 			limit: opsLimit,
 			scanner,
-			reachability,
+			reachability: tickRoutes?.forPeer(db, peerDeviceId),
 		});
 		results.push({
 			ok: result.ok,
@@ -380,9 +393,11 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 
 		const timer = setInterval(runTick, intervalS * 1000);
 		setTimeout(runTick, 0).unref?.();
+		const stopMaintenance = startRelayMaintenanceTimer(daemonReachability(options));
 
 		const cleanup = () => {
 			clearInterval(timer);
+			stopMaintenance();
 			mdnsHandle?.close();
 			onPhaseChange?.("stopping");
 			resolve();
@@ -435,7 +450,7 @@ export async function runTickOnce(
 	keysDir?: string,
 	scanner?: SecretScanner,
 	onAfterCoordinatorRefresh?: SyncDaemonTickCallback,
-	reachability?: SyncReachabilityOptions,
+	reachability?: SyncDaemonReachability,
 ): Promise<void> {
 	const resolvedKeysDir = resolveSyncDaemonKeysDir(keysDir);
 	const db = connectDb(dbPath);
@@ -457,10 +472,7 @@ export async function runTickOnce(
 			callbackFailed = true;
 			reportSyncDaemonError(db, error, { prefix: "daemon tick callback failed" });
 		}
-		if (reachability && db.prepare("SELECT 1 FROM sync_peers LIMIT 1").get()) {
-			const { maintainSyncReachability } = await import("./sync-reachability-pass.js");
-			await maintainSyncReachability(reachability);
-		}
+		await maintainDaemonReachability(db, reachability);
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
 		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir, {
@@ -490,12 +502,126 @@ export async function runTickOnce(
 	}
 }
 
-function daemonReachability(options?: SyncDaemonOptions): SyncReachabilityOptions | undefined {
+function isPeerResolver(value: SyncDaemonReachability): value is SyncPeerReachabilityResolver {
+	return typeof (value as Partial<SyncPeerReachabilityResolver>).forPeer === "function";
+}
+
+function combinedSignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+	const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+	if (present.length <= 1) return present[0];
+	return AbortSignal.any(present);
+}
+
+interface TickReachability {
+	forPeer(db: Database, peerDeviceId: string): SyncReachabilityOptions | undefined;
+	maintenance(): SyncReachabilityMaintenance[];
+}
+
+function resolvePeerRoute(
+	input: SyncPeerReachabilityResolver,
+	db: Database,
+	peerDeviceId: string,
+): SyncReachabilityOptions | undefined {
+	try {
+		return input.forPeer(db, peerDeviceId);
+	} catch (error) {
+		// A resolver failure leaves this peer on direct sync rather than aborting the tick.
+		logSyncDaemonFailure({ message: "[codemem] relay route resolution failed:", error });
+		return undefined;
+	}
+}
+
+function resolverClients(input: SyncPeerReachabilityResolver): readonly RelayPeerClient[] {
+	try {
+		return input.clients();
+	} catch (error) {
+		logSyncDaemonFailure({ message: "[codemem] relay client listing failed:", error });
+		return [];
+	}
+}
+
+/** Adapts both option shapes to one per-peer form for a single tick. */
+function tickReachability(input?: SyncDaemonReachability): TickReachability | undefined {
+	if (!input) return undefined;
+	if (!isPeerResolver(input)) return { forPeer: () => input, maintenance: () => [input] };
+	return {
+		forPeer(db, peerDeviceId) {
+			const route = resolvePeerRoute(input, db, peerDeviceId);
+			if (!route) return undefined;
+			// A daemon tick starts a new pass. Absolute deadlines apply only to one-shot calls.
+			return {
+				...route,
+				signal: combinedSignal(input.signal, route.signal),
+				deadlineMs: undefined,
+			};
+		},
+		maintenance: () =>
+			[...new Set(resolverClients(input))].map((relay) => ({ relay, signal: input.signal })),
+	};
+}
+
+/**
+ * Maintenance at the start of each tick registers relay clients before peer
+ * sync. Each client's wait is capped at three seconds, and the clients are
+ * maintained concurrently. Renewal between ticks comes from the separate
+ * maintenance timer below, because a long tick delays the next one.
+ */
+async function maintainDaemonReachability(
+	db: Database,
+	reachability?: SyncDaemonReachability,
+): Promise<void> {
+	const targets = tickReachability(reachability)?.maintenance() ?? [];
+	if (targets.length === 0 || !db.prepare("SELECT 1 FROM sync_peers LIMIT 1").get()) return;
+	const { maintainSyncReachability } = await import("./sync-reachability-pass.js");
+	await Promise.all(targets.map((target) => maintainSyncReachability(target)));
+}
+
+export const RELAY_MAINTENANCE_INTERVAL_MS = 60_000;
+
+/**
+ * A registration lasts 900 s and the client renews it once less than 150 s
+ * remain. A scheduled tick is skipped while the previous one still runs, so
+ * tick maintenance alone can miss that window. This timer runs outside the
+ * serialized tick runner. Overlap with tick maintenance is safe because the
+ * client coalesces concurrent registration attempts.
+ */
+function startRelayMaintenanceTimer(reachability: SyncDaemonReachability | undefined): () => void {
+	if (!reachability) return () => {};
+	let running = false;
+	const maintain = async () => {
+		const targets = (tickReachability(reachability)?.maintenance() ?? []).filter(
+			(target) => target.relay !== undefined,
+		);
+		if (targets.length === 0) return;
+		const { maintainSyncReachability } = await import("./sync-reachability-pass.js");
+		await Promise.all(targets.map((target) => maintainSyncReachability(target)));
+	};
+	const timer = setInterval(() => {
+		if (running) return;
+		running = true;
+		void maintain()
+			.catch((error) => {
+				logSyncDaemonFailure({ message: "[codemem] relay maintenance failed:", error });
+			})
+			.finally(() => {
+				running = false;
+			});
+	}, RELAY_MAINTENANCE_INTERVAL_MS);
+	timer.unref?.();
+	return () => clearInterval(timer);
+}
+
+function daemonReachability(options?: SyncDaemonOptions): SyncDaemonReachability | undefined {
 	const reachability = options?.reachability;
 	if (!reachability) return undefined;
-	let signal = options?.signal ?? reachability.signal;
-	if (options?.signal && reachability.signal)
-		signal = AbortSignal.any([options.signal, reachability.signal]);
+	const signal = combinedSignal(options?.signal, reachability.signal);
+	if (isPeerResolver(reachability)) {
+		return {
+			forPeer: (db, peerDeviceId) => reachability.forPeer(db, peerDeviceId),
+			clients: () => reachability.clients(),
+			signal,
+		};
+	}
 	// A daemon tick starts a new pass. Absolute deadlines apply only to one-shot calls.
 	return { ...reachability, signal, deadlineMs: undefined };
 }

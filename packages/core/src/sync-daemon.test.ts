@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { columnExists, connect } from "./db.js";
+import type { RelayPeerClient } from "./relay-peer-client.js";
 import {
 	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
@@ -26,15 +27,17 @@ import { initTestSchema } from "./test-utils.js";
 
 const ORIGINAL_KEYS_DIR = process.env.CODEMEM_KEYS_DIR;
 
+async function resetReachabilityMocks(): Promise<void> {
+	vi.clearAllMocks();
+	const { coordinatorEnabled } = await import("./coordinator-runtime.js");
+	const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
+	vi.mocked(coordinatorEnabled).mockReturnValue(false);
+	vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
+	vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue(["local", "public-key"]);
+}
+
 describe("daemon reachability wiring", () => {
-	beforeEach(async () => {
-		vi.clearAllMocks();
-		const { coordinatorEnabled } = await import("./coordinator-runtime.js");
-		const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
-		vi.mocked(coordinatorEnabled).mockReturnValue(false);
-		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
-		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue(["local", "public-key"]);
-	});
+	beforeEach(resetReachabilityMocks);
 	afterEach(() => vi.restoreAllMocks());
 
 	it("maintains opt-in reachability before passing the same configuration to peer sync", async () => {
@@ -140,6 +143,155 @@ describe("daemon reachability wiring", () => {
 		// Assert.
 		expect(maintain).not.toHaveBeenCalled();
 		expect(runSyncPass).not.toHaveBeenCalled();
+	});
+});
+
+describe("per-peer daemon reachability", () => {
+	beforeEach(resetReachabilityMocks);
+	afterEach(() => vi.restoreAllMocks());
+
+	it("routes each peer through its group's client and maintains every client", async () => {
+		// Arrange: two groups with one client each, and a resolver that maps peers to groups.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const daemonAbort = new AbortController();
+		const callerAbort = new AbortController();
+		const cancelledBeforeDaemonStopped: boolean[] = [];
+		const maintain = vi
+			.spyOn(reachabilityPass, "maintainSyncReachability")
+			.mockImplementation(async (target) => {
+				callerAbort.abort();
+				cancelledBeforeDaemonStopped.push(
+					target.signal?.aborted === true && !daemonAbort.signal.aborted,
+				);
+			});
+		const clientA = { group: "a" } as unknown as RelayPeerClient;
+		const clientB = { group: "b" } as unknown as RelayPeerClient;
+		const routes = new Map([
+			["peer-a", { scopeId: "space-a", logicalOrigin: "https://peer.invalid", relay: clientA }],
+			["peer-b", { scopeId: "space-b", logicalOrigin: "https://peer.invalid", relay: clientB }],
+		]);
+		const resolver = {
+			forPeer: (_db: unknown, peer: string) => routes.get(peer),
+			clients: () => [clientA, clientB, clientA],
+			signal: callerAbort.signal,
+		};
+		// Act: the scheduled startup tick runs through the daemon's combined signal.
+		await runSyncDaemon({
+			dbPath: ":memory:",
+			signal: daemonAbort.signal,
+			reachability: resolver,
+			onAfterCoordinatorRefresh: ({ db }) => {
+				for (const peer of ["peer-a", "peer-b", "peer-direct"])
+					db.prepare(
+						"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES (?, 'pin', '2026-01-01')",
+					).run(peer);
+			},
+			onPhaseChange: (phase) => {
+				if (phase === "running") daemonAbort.abort();
+			},
+		});
+		// Assert: duplicate clients are maintained once, before any peer pass.
+		expect(maintain.mock.calls.map(([target]) => target.relay)).toEqual([clientA, clientB]);
+		const passes = vi.mocked(runSyncPass).mock.calls;
+		expect(
+			Object.fromEntries(passes.map(([, peer, options]) => [peer, options?.reachability])),
+		).toEqual({
+			"peer-a": expect.objectContaining({ scopeId: "space-a", relay: clientA }),
+			"peer-b": expect.objectContaining({ scopeId: "space-b", relay: clientB }),
+			"peer-direct": undefined,
+		});
+		// Caller cancellation reaches maintenance and every relay pass through a combined signal.
+		expect(cancelledBeforeDaemonStopped).toEqual([true, true]);
+		const passSignals = passes.flatMap(([, , options]) => options?.reachability?.signal ?? []);
+		expect(passSignals).toHaveLength(2);
+		for (const signal of passSignals) expect(signal).not.toBe(callerAbort.signal);
+		expect(maintain.mock.invocationCallOrder.at(-1)).toBeLessThan(
+			vi.mocked(runSyncPass).mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+});
+
+function insertPeers(...peers: string[]) {
+	return ({ db }: { db: InstanceType<typeof Database> }) => {
+		for (const peer of peers)
+			db.prepare(
+				"INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, created_at) VALUES (?, 'pin', '2026-01-01')",
+			).run(peer);
+	};
+}
+
+describe("relay daemon resilience", () => {
+	beforeEach(resetReachabilityMocks);
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it("renews relay registration on its own timer while a long tick runs", async () => {
+		// Arrange: the first peer pass hangs for longer than two tick intervals.
+		vi.useFakeTimers();
+		const { runSyncPass } = await import("./sync-pass.js");
+		let finishPass = () => {};
+		vi.mocked(runSyncPass).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishPass = () => resolve({ ok: true, opsIn: 0, opsOut: 0, addressErrors: [] });
+				}),
+		);
+		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+		const client = { name: "relay" } as unknown as RelayPeerClient;
+		const abort = new AbortController();
+		const daemon = runSyncDaemon({
+			dbPath: ":memory:",
+			intervalS: 120,
+			signal: abort.signal,
+			reachability: { forPeer: () => undefined, clients: () => [client] },
+			onAfterCoordinatorRefresh: insertPeers("peer"),
+		});
+		try {
+			// Act: start the tick, then let 240 s pass while it is still running.
+			await vi.advanceTimersByTimeAsync(0);
+			const tickMaintenance = maintain.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(240_000);
+			// Assert: scheduled ticks were skipped, but the timer maintained the client four times.
+			expect(tickMaintenance).toBe(1);
+			expect(runSyncPass).toHaveBeenCalledTimes(1);
+			expect(maintain).toHaveBeenCalledTimes(5);
+			for (const [target] of maintain.mock.calls) expect(target.relay).toBe(client);
+		} finally {
+			finishPass();
+			abort.abort();
+			await daemon;
+		}
+	});
+
+	it("keeps syncing other peers directly when the resolver throws", async () => {
+		// Arrange: route resolution fails for one peer and client listing fails outright.
+		const { runSyncPass } = await import("./sync-pass.js");
+		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const client = { name: "relay" } as unknown as RelayPeerClient;
+		const route = { scopeId: "space", logicalOrigin: "https://peer.invalid", relay: client };
+		// Act.
+		await runTickOnce(":memory:", undefined, undefined, insertPeers("peer-bad", "peer-good"), {
+			forPeer: (_db, peer) => {
+				if (peer === "peer-bad") throw new Error("resolver failed");
+				return route;
+			},
+			clients: () => {
+				throw new Error("listing failed");
+			},
+		});
+		// Assert.
+		const passes = vi.mocked(runSyncPass).mock.calls;
+		expect(
+			Object.fromEntries(passes.map(([, peer, options]) => [peer, options?.reachability])),
+		).toEqual({
+			"peer-bad": undefined,
+			"peer-good": expect.objectContaining({ scopeId: "space", relay: client }),
+		});
+		expect(maintain).not.toHaveBeenCalled();
+		expect(errors).toHaveBeenCalledTimes(2);
 	});
 });
 
