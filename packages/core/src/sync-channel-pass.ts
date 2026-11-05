@@ -243,14 +243,39 @@ async function fetchStatus(context: Context, execute: RequestJsonExecutor) {
 		"retained_floor_cursor",
 	] as const)
 		if (top[key] !== boundary[key]) throw new Error("channel status invalid");
-	return { scope, features: payload.sync_features };
+	return { scope, features: payload.sync_features, appliedCursor: appliedCursor(scope) };
 }
 
-function loadOutbound(context: Context, boundary: SyncChannelBoundary): ReplicationOp[] {
+/** The peer's pull cursor for this device, when it reports one in the right shape. */
+function appliedCursor(scope: Scope): string | null {
+	const value = (scope as { applied_cursor?: unknown }).applied_cursor;
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	const separator = trimmed.indexOf("|");
+	return separator > 0 && separator < trimmed.length - 1 ? trimmed : null;
+}
+
+/** Cursors order by `created_at` text, then op ID, the same order the push window uses. */
+function laterCursor(a: string | null, b: string | null): string | null {
+	if (!a) return b;
+	if (!b) return a;
+	const [aTime, aOp] = [a.slice(0, a.indexOf("|")), a.slice(a.indexOf("|") + 1)];
+	const [bTime, bOp] = [b.slice(0, b.indexOf("|")), b.slice(b.indexOf("|") + 1)];
+	if (aTime !== bTime) return aTime > bTime ? a : b;
+	return aOp >= bOp ? a : b;
+}
+
+function loadOutbound(
+	context: Context,
+	boundary: SyncChannelBoundary,
+	appliedByPeer: string | null,
+): ReplicationOp[] {
 	const progress = getSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId);
 	if (!hasCompletedSyncChannelBoundary(progress, boundary))
 		throw new Error("channel progress changed");
-	const cursor = progress?.last_acked_cursor ?? null;
+	// The peer may already hold ops this channel never sent, for example from
+	// direct sync before relay. Start after whichever position is later.
+	const cursor = laterCursor(progress?.last_acked_cursor ?? null, appliedByPeer);
 	const separator = cursor?.indexOf("|") ?? -1;
 	const timestamp = cursor?.slice(0, separator) ?? "";
 	const opId = cursor?.slice(separator + 1) ?? "";
@@ -345,9 +370,10 @@ async function pushOutbound(
 	execute: RequestJsonExecutor,
 	features: unknown,
 	boundary: SyncChannelBoundary,
+	appliedByPeer: string | null,
 ): Promise<number> {
 	checkAuthorization(context);
-	const window = loadOutbound(context, boundary);
+	const window = loadOutbound(context, boundary, appliedByPeer);
 	const [ops, cursor] = filterReplicationOpsForSyncWithStatus(
 		context.db,
 		window,
@@ -373,8 +399,12 @@ async function pushOutbound(
 		if (last) save(`${last.created_at}|${last.op_id}`);
 	}
 	checkAuthorization(context);
-	// The window cursor also covers ops filtered out after the last one sent.
-	if (cursor) save(cursor);
+	// The window cursor also covers ops filtered out after the last one sent. An
+	// empty window means the peer's reported position already covers everything.
+	const saved = getSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId);
+	const reached = laterCursor(laterCursor(cursor, appliedByPeer), saved?.last_acked_cursor ?? null);
+	// A peer whose reported position is behind the saved ACK changes nothing.
+	if (reached && reached !== saved?.last_acked_cursor) save(reached);
 	return ops.length;
 }
 
@@ -432,7 +462,13 @@ export async function syncScopedChannelOnce(
 			boundary: status.scope.sync_reset,
 		});
 		sending = true;
-		const opsOut = await pushOutbound(context, execute, status.features, status.scope.sync_reset);
+		const opsOut = await pushOutbound(
+			context,
+			execute,
+			status.features,
+			status.scope.sync_reset,
+			status.appliedCursor,
+		);
 		return { ...result, opsOut };
 	} catch {
 		if (sending)
