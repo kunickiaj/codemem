@@ -36,6 +36,11 @@ import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { fileContextRoutes } from "./routes/file-context.js";
 import { healthRoutes } from "./routes/health.js";
 import { memoryRoutes } from "./routes/memory.js";
+import {
+	MEMORY_TOOL_CALL_CAPABILITY,
+	type MemoryToolCallFn,
+	memoryToolCallRoutes,
+} from "./routes/memory-tool-call.js";
 import { memoryToolRoutes } from "./routes/memory-tools.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
@@ -98,6 +103,12 @@ export {
 	type ViewerRelayReachability,
 	type ViewerRelayReachabilityOptions,
 } from "./relay-reachability.js";
+export {
+	MEMORY_TOOL_CALL_CAPABILITY,
+	type MemoryToolCaller,
+	type MemoryToolCallFn,
+	memoryToolCallRoutes,
+} from "./routes/memory-tool-call.js";
 export type {
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,
@@ -170,6 +181,11 @@ export interface AppOptions {
 			ownerRecovery?: ReturnType<typeof createAccountOwnerRecoveryService>;
 		};
 	storeFactory?: () => MemoryStore;
+	/**
+	 * Runs memory tools for thin hosts. `codemem serve` supplies it; when absent
+	 * the route is not mounted and the profile does not advertise the capability.
+	 */
+	memoryToolCall?: MemoryToolCallFn;
 	syncChannelPeerPin?: (request: Request) => string | null;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
@@ -203,6 +219,21 @@ export interface AppOptions {
 			| null;
 		detail?: string | null;
 	} | null;
+}
+
+/**
+ * Prompt-pack transport plus, when `codemem serve` supplies a handler, the
+ * thin-host memory-tool route. The profile advertises the route only when it
+ * is mounted, so older clients and test apps see no capability.
+ */
+function registerThinHostRoutes(
+	app: Hono,
+	storeFactory: () => MemoryStore,
+	call: MemoryToolCallFn | undefined,
+): void {
+	if (call) app.route("/", memoryToolCallRoutes(storeFactory, call));
+	const capabilities = call ? [MEMORY_TOOL_CALL_CAPABILITY] : [];
+	app.route("/", packTransportRoutes(storeFactory, { capabilities }));
 }
 
 function registerStaticRoutes(app: Hono): void {
@@ -299,7 +330,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", memoryToolRoutes(storeFactory));
-	app.route("/", packTransportRoutes(storeFactory));
+	registerThinHostRoutes(app, storeFactory, opts?.memoryToolCall);
 	app.route("/", fileContextRoutes(storeFactory));
 	app.route(
 		"/",

@@ -10,6 +10,7 @@ export default defineConfig({
 			),
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
 			"@codemem/memory-tools": resolve(import.meta.dirname, "../memory-tools/src/index.ts"),
+			"@codemem/server": resolve(import.meta.dirname, "../viewer-server/src/index.ts"),
 		},
 		conditions: ["source"],
 	},

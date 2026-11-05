@@ -109,7 +109,7 @@ OpenCode server (one process)
                                                                     ▼
                          codemem serve (viewer, one per database)
                          ├─ MemoryStore (one connection)
-                         └─ /api/memory, /api/memories/*  ←── CLI fallback
+                         └─ POST /api/memory-tools/:name  ←── codemem memory-tool
                                                                when unreachable
 ```
 
@@ -206,58 +206,56 @@ plugin's `resolveProjectName` (OpenCode `project.name` first,
 A test covers a worktree whose OpenCode project name differs from its
 git-anchor basename.
 
-### Viewer route changes
+### Viewer route
 
-Route coverage today is 13 of 14 tools. Gaps and changes:
+*Revised during implementation (#2517 and the step 2 PR).* The per-route
+extensions planned here were replaced by one generic route that runs the
+real MCP tool handlers, so every gap below closes by construction:
 
-- **`memory_search` has no route that returns bodies.** Add one (or an
-  `include_body` flag on `/api/memories/search_index`) that returns the MCP
-  result shape.
-- **`GET /api/memory`** (backs `memory_recent`) accepts only `kind` and
-  `project` (`memory.ts:719-724`). Extend it to the full filter set.
-- **`POST /api/pack`** (backs `memory_pack`) has a strict schema with no
-  `compression_mode` (`pack.ts:141-150`). Add it. Tools call it without
-  `attempt`, because `attempt` metadata records automatic-recall rows meant
-  for prompt injection (`pack.ts:561-585`).
-- **`directory` on remember and distill.** Today `/api/memories/remember`
-  writes `sessions.cwd = process.cwd()` of the viewer (`memory-tools.ts:228,239`)
-  and distill reads `AGENTS.md` from the viewer's directory (`:278-303`).
-  Both routes change to: use `directory` when present; when absent, record
-  `cwd = null` and skip filesystem project context. The viewer stops
-  substituting its own cwd. The pi extension starts sending `directory`.
-- **Capability advertisement.** The viewer is a long-lived detached process
-  and the plugin updates on OpenCode restart, so a new plugin can reach an
-  old viewer that returns 200 and ignores `directory`, landing writes in the
-  viewer-starter's sharing scope. The viewer advertises
-  `capabilities: ["tool_directory", "retrieval_ledger"]` in
-  `/api/prompt-pack-profile`. The plugin requires `tool_directory` for
-  `remember` and `distill` and otherwise uses the CLI fallback, which runs in
-  the plugin's directory. `proveViewerTarget` today checks only database
-  path and identity (`pi tools.ts:296-306`).
-- **Retrieval ledger.** `RetrievalSurface` is a closed set of `mcp_*` values
-  plus `prompt_pack`, `file_context`, `evaluation_replay`
-  (`core/src/retrieval-ledger.ts:19-31`), validated on write. The client
-  sends `ledger: { surface: "mcp_<tool>", request_id, source_session_id }` on
-  exactly one request per tool call (so a composed call does not record
-  twice, and `memory_get` is not mislabeled as `expand`). Routes validate the
-  surface against the existing set and reuse the stateless identity logic
-  from `withMcpRetrieval`. `memory_pack` records `mcp_pack`. Without this,
-  `codemem stats` retrieval figures would drop to zero for OpenCode users.
-- Distill's fallback to the viewer process's `CODEMEM_PROJECT`
-  (`memory-tools.ts:702-705`) is removed along with the cwd default.
+```
+POST /api/memory-tools/:name
+{ "arguments": {...},
+  "caller": { "directory": "/abs/path", "env_project": null,
+              "session_id": "ses_...", "request_id": "call_..." },
+  "db_path": "...", "identity_target": {...} }
+→ 200 {"ok":true,"result":...} | {"ok":false,"error":...,"result"?}
+```
+
+- `codemem serve` supplies the handler (`callCodememToolLocally` from
+  `@codemem/mcp`), which builds a per-call MCP server over the viewer's store.
+  `@codemem/server` does not import `@codemem/mcp`; it only mounts the route
+  when the hook is present.
+- Results, input validation, filters, `compression_mode`, and the
+  `memory_search` body shape are identical to stdio MCP because the same
+  handlers run. The original per-route gaps (no body-returning search route,
+  partial filters on `/api/memory`, no `compression_mode` on pack) do not
+  apply. The existing `/api/memory*` routes are unchanged for the pi
+  extension and the UI.
+- **Caller context.** `caller.directory` (required, absolute) replaces
+  `process.cwd()` for the default read project, the write session's `cwd`
+  (and so sharing-scope resolution), and distill's AGENTS.md lookup.
+  `caller.env_project` replaces the viewer's own `CODEMEM_PROJECT`. The MCP
+  server gained a `cwd` option for this; stdio behavior is unchanged.
+- **Retrieval ledger.** Calls record the normal `mcp_*` surfaces.
+  `caller.session_id` becomes the ledger stream. `caller.request_id` (V2
+  `Tool.Context.id`) is the ledger request identity, so a retried delivery of
+  one call records once and distinct identical calls record separately; a
+  random ID is used when the host has none.
+- **Target and capability.** The `db_path`/`identity_target` pair is required
+  because the route can write. The viewer advertises
+  `capabilities: ["memory_tool_call"]` in `/api/prompt-pack-profile` only when
+  the route is mounted. A plugin that does not see it (an older viewer) uses
+  the CLI fallback for every tool, which avoids the version-skew problem where
+  an old viewer would ignore new fields.
 
 ### Fallback and lifecycle
 
-- When the viewer is unreachable the executor runs the equivalent `codemem`
-  CLI command, as the pi extension does. The fallback is slower (one process
-  per call) and loses ledger capture, and the tool result says so in a
-  trailing note so the user can see the viewer is down.
-- **Fallback coverage is not complete today.** pi's `memory_explain`,
-  `memory_timeline`, and `memory_expand` have no CLI path and return
-  "requires the codemem viewer server" (`tools.ts:474-479, 838-842, 873-877`).
-  Stdio MCP serves all three without a viewer. Step 1 adds `codemem explain`,
-  `codemem timeline`, and `codemem expand` (or `--json` modes on existing
-  commands) so Goal 4 holds for every tool.
+- When the viewer is unreachable or lacks the `memory_tool_call`
+  capability, the executor runs `codemem memory-tool <name>` with the tool
+  arguments on stdin and the caller's directory as cwd (#2517). It runs the
+  same in-process handlers, so results and ledger capture match the HTTP path
+  for all fourteen tools. It is slower (one process per call), and the tool
+  result notes that the viewer is down.
 - The plugin already auto-starts the viewer (`startViewer`) and the health
   check restarts it. Three changes are needed because the viewer becomes
   load-bearing for every project:
@@ -319,11 +317,11 @@ Route coverage today is 13 of 14 tools. Gaps and changes:
 | --- | --- | --- |
 | Tool definitions drift between MCP and plugin | Different behavior per host | Shared module plus parity test against MCP registrations |
 | Viewer down at first call | Slower CLI path, no ledger | Fallback plus trailing note; plugin auto-start already runs before first prompt |
-| Retrieval stats regress for OpenCode users | `codemem stats` undercounts | Ledger capture in routes ships in the same step as the switch |
+| Retrieval stats regress for OpenCode users | `codemem stats` undercounts | The viewer route and CLI fallback run the MCP handlers, which record the ledger |
 | Project label changes for users whose OpenCode project name differs from git basename | Scoped searches return different results | Rule pinned to the MCP behavior they have today; documented |
 | Leftover MCP entry after upgrade | Duplicate tools and the old process keeps running | Setup removes recognized entries; plugin warns on leftovers |
 | Plugin tool results captured as raw events | Retrieved memories re-distilled into new memories in a loop | Tool keys start with `codemem_memory_` on V1 and V2; capture-path exclusion if Code Mode reports a different name |
-| New plugin reaches an old viewer | Writes recorded under the viewer-starter's directory and sharing scope | Capability advertisement; plugin uses CLI fallback for remember/distill until the viewer is upgraded |
+| New plugin reaches an old viewer | Writes recorded under the viewer-starter's directory and sharing scope | The plugin requires the `memory_tool_call` capability and otherwise uses the CLI fallback for every tool |
 | Cancelled tool still runs the CLI fallback | A cancelled `memory_remember` writes anyway | Shared CLI runner honors the abort signal |
 | Many instances run the health check | Competing `restart` calls stop each other's viewer | Recovery uses `serve start`, which is a no-op when the port is open |
 
@@ -331,22 +329,20 @@ Route coverage today is 13 of 14 tools. Gaps and changes:
 
 Each step is independently shippable and within the ~1,000-line guideline.
 
-1. **Shared tool module.** Extract transport/fallback from the pi extension;
-   write tool bodies from the MCP contracts; add the missing CLI commands for
-   explain/timeline/expand; decide packaging. Parity test (names, schemas,
-   results) against the MCP server. pi adapter becomes thin. No OpenCode
-   change yet.
-2. **Viewer routes.** `memory_search` route; full filters on `/api/memory`;
-   `compression_mode` on pack; `directory` on remember/distill with
-   `cwd = null` when absent; capability advertisement; ledger capture with
-   client-supplied surface; `codemem status` reports embeddings state. Tests
-   for sharing-scope resolution from a supplied directory, for the absent
-   case, and for ledger rows per surface.
+1. **Shared tool module.** Contracts with an MCP parity test (#2503);
+   viewer transport, CLI runner, and project resolver (#2504); `codemem
+   memory-tool` fallback running the real handlers (#2517). Remaining: thin
+   pi adapter. No OpenCode change yet.
+2. **Viewer route.** `POST /api/memory-tools/:name` running the real handlers
+   with caller directory, env project, session, and call ID; `memory_tool_call`
+   capability. Tests for per-caller read scoping, write-session cwd, distill
+   AGENTS.md from the caller's repo, and ledger rows per call. Remaining:
+   `codemem status` reports embeddings state.
 3. **Viewer lifecycle.** Auto-stop default off; health check in every
-   instance using `serve start`; one-time embeddings toast.
+   instance using `serve start` (#2518). The embeddings toast moved to step 4.
 4. **OpenCode plugin tools.** V1 and V2 adapters register the shared tools
-   with call-time context and CLI fallback; duplicate-entry warning.
-   Behind `CODEMEM_OPENCODE_NATIVE_TOOLS=1` for one release so it can be
+   with call-time context and CLI fallback; duplicate-entry warning;
+   one-time toast when the viewer reports embeddings disabled. Behind `CODEMEM_OPENCODE_NATIVE_TOOLS=1` for one release so it can be
    dogfooded alongside the MCP entry.
 5. **Setup and docs.** Remove the managed entry, extend the migration
    matcher, add `--opencode-mcp stdio`, update `plugin-reference.md`,

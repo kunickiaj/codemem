@@ -5,8 +5,13 @@ function cleanProject(value: string | null | undefined): string | null {
 	return trimmed ? trimmed : null;
 }
 
-export function resolveDefaultProject(): string | null {
-	return cleanProject(process.env.CODEMEM_PROJECT) ?? resolveProject(process.cwd());
+/** Default read project: CODEMEM_PROJECT wins, then the Git-anchored name of the caller's directory. */
+export function resolveDefaultProject(
+	caller: { envProject?: string | null; cwd?: string } = {},
+): string | null {
+	const envProject =
+		caller.envProject !== undefined ? caller.envProject : process.env.CODEMEM_PROJECT;
+	return cleanProject(envProject) ?? resolveProject(caller.cwd ?? process.cwd());
 }
 
 export function resolveWriteProject(input: {
@@ -18,7 +23,9 @@ export function resolveWriteProject(input: {
 
 export function buildFilters(
 	raw: Record<string, unknown>,
-	defaultProject = resolveDefaultProject(),
+	// Required: callers pass the caller-scoped default (or null) so a shared
+	// process never falls back to its own working directory.
+	defaultProject: string | null,
 ): MemoryFilters | undefined {
 	const filters: MemoryFilters = {};
 	let hasAny = false;

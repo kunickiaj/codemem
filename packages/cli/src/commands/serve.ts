@@ -1010,6 +1010,27 @@ function startServeSyncDaemon(options: {
 		});
 }
 
+/**
+ * Runs a memory tool for a thin host through the same in-process MCP handlers
+ * as stdio and `codemem memory-tool`. Loaded lazily so viewer startup does not
+ * pull in the MCP SDK until a host actually calls a tool.
+ */
+export async function callMemoryToolForHost(
+	store: MemoryStore,
+	name: string,
+	args: Record<string, unknown>,
+	caller: {
+		cwd: string;
+		envProject: string | null;
+		sessionId?: string;
+		requestId?: string;
+		statelessLedger: true;
+	},
+): Promise<unknown> {
+	const { callCodememToolLocally } = await import("@codemem/mcp");
+	return callCodememToolLocally(store, name, args, caller);
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -1083,7 +1104,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		...rawEventProcessing.appOptions,
 		getSyncRuntimeStatus: () => syncRuntimeStatus,
 	};
-	const app = createApp(appOpts);
+	const app = createApp({ ...appOpts, memoryToolCall: callMemoryToolForHost });
 	const pidPath = pidFilePath(dbPath);
 	let maintenanceWorker: ChildProcess | null = null;
 

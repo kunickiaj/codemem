@@ -30,6 +30,19 @@ export interface LocalToolCallOptions {
 	 */
 	sessionId?: string;
 	/**
+	 * Caller's working directory. When set, it replaces `process.cwd()` for the
+	 * default read project, write-session cwd, and distill context, so a shared
+	 * process (the viewer) never acts in its own directory.
+	 */
+	cwd?: string;
+	/**
+	 * Caller's CODEMEM_PROJECT. `null` means the caller has none; `undefined`
+	 * falls back to this process's environment (CLI and stdio behavior).
+	 */
+	envProject?: string | null;
+	/** Stateless HTTP callers keep request-level retry dedupe in the ledger. */
+	statelessLedger?: boolean;
+	/**
 	 * The host's ID for this tool call. Together with `sessionId`, a retried
 	 * delivery of the same call records one ledger attempt and distinct calls
 	 * record separately. Without `sessionId` each call gets its own ledger
@@ -70,6 +83,9 @@ export async function callCodememToolLocally(
 	const server = createCodememMcpServer(store, {
 		retrievalLedgerRequestId: options.requestId?.trim() || randomUUID(),
 		...(options.sessionId ? { retrievalLedgerScopeId: options.sessionId } : {}),
+		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+		...(options.envProject !== undefined ? { envProject: options.envProject } : {}),
+		...(options.statelessLedger ? { retrievalLedgerIdentityMode: "stateless" as const } : {}),
 	});
 	const client = new Client({ name: "codemem-memory-tool", version: "1.0.0" });
 	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
