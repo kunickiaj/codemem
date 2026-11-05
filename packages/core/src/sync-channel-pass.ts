@@ -357,16 +357,24 @@ async function pushOutbound(
 			supportsReassignScope: supportsSyncFeature(features, "reassign_scope"),
 		},
 	);
-	const batches = planBatches(context.scopeId, ops);
-	for (const batch of batches) await pushBatch(context, execute, batch);
-	checkAuthorization(context);
-	if (cursor)
+	const save = (acked: string) =>
 		saveSyncChannelOutboundAck(context.db, {
 			peerDeviceId: context.peerDeviceId,
 			scopeId: context.scopeId,
 			boundary,
-			cursor,
+			cursor: acked,
 		});
+	// Each confirmed batch saves its own ACK, so a pass that runs out of time keeps
+	// what the peer already applied instead of resending the whole window next pass.
+	for (const batch of planBatches(context.scopeId, ops)) {
+		await pushBatch(context, execute, batch);
+		checkAuthorization(context);
+		const last = batch.at(-1);
+		if (last) save(`${last.created_at}|${last.op_id}`);
+	}
+	checkAuthorization(context);
+	// The window cursor also covers ops filtered out after the last one sent.
+	if (cursor) save(cursor);
 	return ops.length;
 }
 
