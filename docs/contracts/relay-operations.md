@@ -350,7 +350,9 @@ The Node host uses the socket's remote address. The Durable Object host uses
 A Worker in the same account that binds to the coordinator Worker or the realm
 namespace can set it. Such Workers are inside the operator's trust boundary, as
 for the RelayAdmission entrypoint's props.
-Each realm object keeps its own counters, and they reset when the object is
+Both hosts key IPv6 clients by their /64 prefix, because one subscriber usually
+holds a whole /64, and key IPv4 clients, including IPv4-mapped IPv6, by the full
+address. Each realm object keeps its own counters, and they reset when the object is
 evicted. Requests without that header, such as local development, share one
 bucket.
 Before verification, callers can also name a victim realm and consume that

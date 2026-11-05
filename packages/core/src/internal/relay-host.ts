@@ -3,6 +3,7 @@
 export {
 	RELAY_ADDRESS_PENDING_SOCKETS,
 	RelayAddressAllowances,
+	relayAddressKey,
 } from "../relay-address-allowance.js";
 export {
 	createRelayCoordinatorClient,

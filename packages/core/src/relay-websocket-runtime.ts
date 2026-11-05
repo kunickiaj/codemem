@@ -4,6 +4,7 @@ import WebSocket, { type ServerOptions, WebSocketServer } from "ws";
 import {
 	RELAY_ADDRESS_PENDING_SOCKETS,
 	RelayAddressAllowances,
+	relayAddressKey,
 } from "./relay-address-allowance.js";
 import type { RelayAdmissionBudgetStatus } from "./relay-admission-decision.js";
 import {
@@ -155,7 +156,9 @@ class RelayWebSocketRuntime {
 	private readonly upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
 		if (request.url !== this.path && !this.ownsServer) return;
 		// Addresses come from the actual TCP connection, never forwarding headers.
-		const address = request.socket.remoteAddress;
+		const remote = request.socket.remoteAddress;
+		// Pending counts and attempt allowances are per fairness key, not per raw address.
+		const address = remote ? relayAddressKey(remote) : remote;
 		if (
 			request.url !== this.path ||
 			request.method !== "GET" ||

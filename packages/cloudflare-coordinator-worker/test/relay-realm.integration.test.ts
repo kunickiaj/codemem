@@ -450,6 +450,15 @@ describe("RelayRealm upgrade fairness per client address", () => {
 		expect(await upgradeRows()).toEqual(before);
 	});
 
+	it("counts every address in one IPv6 /64 as one client", async () => {
+		const stub = await realmObject();
+		relayRealmTestState().addressNowMs = 1_000;
+		expect(await status(stub, "2001:db8:1:2::a")).toBe(101);
+		expect(await status(stub, "2001:db8:1:2::b")).toBe(101);
+		expect(await status(stub, "2001:db8:1:2::c")).toBe(429);
+		expect(await status(stub, "2001:db8:1:3::a")).toBe(101);
+	});
+
 	it("puts requests without CF-Connecting-IP in one shared bucket", async () => {
 		const stub = await realmObject();
 		relayRealmTestState().addressNowMs = 1_000;
