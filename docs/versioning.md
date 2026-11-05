@@ -20,7 +20,7 @@ GitHub release announcements remain separate. The release workflow uses GitHub's
 
 ## Release workflow
 
-Version bumps are prepared on a release branch and touch these files:
+Version bumps are prepared on `main`. A maintenance version bump is prepared through a PR into the matching `release/X.Y` branch and touches these files:
 
 - `packages/core/package.json` (`version`)
 - `packages/embeddings/package.json` (`version`)
@@ -83,10 +83,20 @@ pnpm run release:preflight-tag
 
 This verifies release tagging safety in two contexts:
 
-- local preflight: target commit must match `origin/main` HEAD, the current branch must be `main`, and the working tree must be clean
-- CI tag workflow: tagged commit must be reachable from `origin/main` (avoids false failures if `main` advances after tag push)
+- local preflight accepts a clean `main` checkout only when `HEAD` equals the freshly fetched `origin/main` HEAD. It also accepts a clean `release/X.Y` checkout only when `HEAD` equals the freshly fetched `origin/release/X.Y` HEAD and the package and tag versions share that `X.Y` series.
+- CI tag workflow accepts a tagged commit that is reachable from remote `main`, or from the exact remote branch `release/X.Y` matching the `RELEASE_TAG` major/minor series. The branch may have advanced since the tag was pushed. When `RELEASE_TAG` is supplied, its version must equal the core package version at the tagged commit.
 
-Tag only after the release PR has merged to `main` and you have verified that `HEAD` on `main` is the merged release commit. Release and feature branch tips fail preflight and must not be tagged directly.
+Cached remote-tracking refs do not authorize a missing remote branch. Feature branches, unmerged commits, stale branch heads, and release branches for another version series fail preflight. The maintenance branch name is exact: use `release/0.47`, not `release/0.47.0`.
+
+For a stable release, merge the release PR into `main`, verify that `HEAD` is the merged release commit, and then tag it. For a maintenance release, prepare aligned versions in a PR targeting the matching `release/X.Y` branch. After the PR passes CI and merges, update that branch locally, run preflight, and tag the merged commit.
+
+After a successful stable `vX.Y.0` publication, the workflow creates `release/X.Y` at the tagged commit when that branch is absent. It never moves an existing branch and does not create branches for patch or prerelease publications. This automation starts with the updated workflow. It does not apply retroactively to existing branches, including the separately created `release/0.47` branch.
+
+When a higher stable version is already tagged, an older maintenance release publishes under the npm tag `maintenance-X.Y` and is not marked Latest on GitHub. For example, after `v0.48.0` is tagged, `v0.47.4` publishes under `maintenance-0.47` so it does not move npm's `latest` backward. Install that maintenance version explicitly or use its series tag.
+
+Run stable releases one at a time across version series. Finish the newer stable release before tagging an older maintenance release so its workflow sees the newer tag when choosing an npm channel.
+
+Stable publication requires the tagged checkout to contain the history-aware dist-tag helper. A retry of an older stable tag without that helper stops before publishing packages. Prepare a new maintenance release with the updated tooling rather than moving an existing tag.
 
 ## Release discovery
 
