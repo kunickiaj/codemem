@@ -103,15 +103,23 @@ function provisionQuota(stub: DurableObjectStub, provision: string) {
 }
 type RealmStub = Awaited<ReturnType<typeof realmObject>>;
 
-function upgrade(stub: RealmStub, path = `/v1/relay/${realmId}`, init: RequestInit = {}) {
-	return stub.fetch(`https://coordinator.example.test${path}`, {
-		headers: { Upgrade: "websocket" },
-		...init,
-	});
+let nextAddress = 0;
+/** A fresh documentation-range client address, so tests that need no fairness never share one. */
+const freshAddress = () => `198.51.100.${(nextAddress++ % 250) + 1}`;
+
+function upgrade(
+	stub: RealmStub,
+	path = `/v1/relay/${realmId}`,
+	init: RequestInit = {},
+	address: string | null = freshAddress(),
+) {
+	const headers = new Headers({ Upgrade: "websocket" });
+	if (address !== null) headers.set("CF-Connecting-IP", address);
+	return stub.fetch(`https://coordinator.example.test${path}`, { headers, ...init });
 }
 
-async function connect(stub: RealmStub) {
-	const response = await upgrade(stub);
+async function connect(stub: RealmStub, address?: string) {
+	const response = await upgrade(stub, undefined, undefined, address);
 	const ws = response.webSocket;
 	if (response.status !== 101 || !ws) throw new Error(`Upgrade failed: ${response.status}`);
 	ws.accept();
@@ -143,8 +151,8 @@ async function connect(stub: RealmStub) {
 }
 type Peer = Awaited<ReturnType<typeof connect>>;
 
-async function register(stub: RealmStub, deviceId: string) {
-	const peer = await connect(stub);
+async function register(stub: RealmStub, deviceId: string, address?: string) {
+	const peer = await connect(stub, address);
 	const session = hex(16);
 	const startedAtMs = Date.now();
 	peer.send({ v: 1, type: "SERVICE_CHALLENGE", session, body: { audienceId } });
@@ -220,6 +228,7 @@ afterEach(() => {
 		limits: {},
 		admissions: [],
 		groups: undefined,
+		addressNowMs: undefined,
 	});
 });
 
@@ -340,6 +349,114 @@ describe("RelayRealm upgrade and registration", () => {
 			{ scope: "realm", rate: 60, burst: 8 },
 			{ scope: "service", rate: 60, burst: 8 },
 		]);
+	});
+});
+
+describe("RelayRealm upgrade fairness per client address", () => {
+	const A = "192.0.2.10";
+	const B = "192.0.2.20";
+	const status = async (stub: RealmStub, address: string | null) => {
+		const response = await upgrade(stub, undefined, undefined, address);
+		response.webSocket?.accept();
+		return response.status;
+	};
+
+	it("lets one address hold two unregistered sockets while another address still connects", async () => {
+		// Arrange: a clock that moves a minute per check keeps the attempt allowance full.
+		const stub = await realmObject();
+		const state = relayRealmTestState();
+		state.addressNowMs = 0;
+		const tick = () => {
+			state.addressNowMs = (state.addressNowMs ?? 0) + 60_000;
+		};
+		await connect(stub, A);
+		tick();
+		await connect(stub, A);
+		tick();
+		// Act
+		const third = await status(stub, A);
+		tick();
+		const other = await status(stub, B);
+		// Assert
+		expect(third).toBe(429);
+		expect(other).toBe(101);
+	});
+
+	it("frees an address's pending slot once its socket registers", async () => {
+		const stub = await realmObject();
+		const state = relayRealmTestState();
+		state.addressNowMs = 0;
+		await register(stub, "source", A);
+		state.addressNowMs = 60_000;
+		await connect(stub, A);
+		state.addressNowMs = 120_000;
+		// One registered and one pending socket leave room for a second pending one.
+		expect(await status(stub, A)).toBe(101);
+	});
+
+	it("allows an address a burst of two upgrades, then one every six seconds", async () => {
+		// Arrange: a frozen clock, and sockets that register so none stays pending.
+		const stub = await realmObject();
+		const state = relayRealmTestState();
+		state.addressNowMs = 1_000;
+		await register(stub, "source", A);
+		await register(stub, "target", A);
+		// Act
+		const denied = await status(stub, A);
+		const other = await status(stub, B);
+		state.addressNowMs = 7_000;
+		const refilled = await status(stub, A);
+		// Assert
+		expect(denied).toBe(429);
+		expect(other).toBe(101);
+		expect(refilled).toBe(101);
+	});
+
+	it("frees an address's pending slot as soon as the engine closes its socket", async () => {
+		// Arrange: two pending sockets from one address, then one breaks protocol.
+		const stub = await realmObject();
+		const state = relayRealmTestState();
+		state.addressNowMs = 0;
+		const broken = await connect(stub, A);
+		state.addressNowMs = 60_000;
+		await connect(stub, A);
+		state.addressNowMs = 120_000;
+		broken.ws.send("not a relay control");
+		await closedWith(broken, 1008);
+		// Act: the closed socket stays charged to engine limits until the peer confirms,
+		// but it no longer counts as pending for its address.
+		const next = await status(stub, A);
+		// Assert
+		expect(next).toBe(101);
+	});
+
+	it("spends no durable upgrade quota on an address refusal", async () => {
+		// Arrange: an address with no attempts left.
+		const stub = await realmObject();
+		relayRealmTestState().addressNowMs = 1_000;
+		await register(stub, "source", A);
+		await register(stub, "target", A);
+		const upgradeRows = () =>
+			runInDurableObject(stub, (_object, state) =>
+				state.storage.sql
+					.exec("SELECT scope, subject, balance, refilled_at_ms FROM relay_quota_buckets WHERE purpose = 'upgrade' ORDER BY scope, subject")
+					.toArray(),
+			);
+		const before = await upgradeRows();
+		// Act
+		const refused = await status(stub, A);
+		// Assert: the refusal left every upgrade bucket untouched.
+		expect(refused).toBe(429);
+		expect(await upgradeRows()).toEqual(before);
+	});
+
+	it("puts requests without CF-Connecting-IP in one shared bucket", async () => {
+		const stub = await realmObject();
+		relayRealmTestState().addressNowMs = 1_000;
+		expect(await status(stub, null)).toBe(101);
+		expect(await status(stub, null)).toBe(101);
+		expect(await status(stub, null)).toBe(429);
+		expect(await status(stub, A)).toBe(101);
 	});
 });
 

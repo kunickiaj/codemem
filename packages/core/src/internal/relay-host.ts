@@ -1,6 +1,10 @@
 // Host-neutral relay surface for non-Node hosts such as a Durable Object.
 // Keep `ws`, `node:http`, and the Node WebSocket runtime out of this graph.
 export {
+	RELAY_ADDRESS_PENDING_SOCKETS,
+	RelayAddressAllowances,
+} from "../relay-address-allowance.js";
+export {
 	createRelayCoordinatorClient,
 	type RelayCoordinatorClientOptions,
 } from "../relay-coordinator-client.js";

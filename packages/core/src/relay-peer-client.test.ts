@@ -475,8 +475,10 @@ describe("relay peer retired session capacity", () => {
 			expect(state.routes.size).toBe(0);
 			expect(state.retiredRoutes.size).toBe(0);
 			// Replenish the fixture's two-upgrade address burst without a real-time sleep.
-			const runtime = f.runtime as unknown as { addresses: Map<string, { tokens: number }> };
-			for (const allowance of runtime.addresses.values()) allowance.tokens = 1;
+			const runtime = f.runtime as unknown as {
+				addresses: { allowances: Map<string, { tokens: number }> };
+			};
+			for (const allowance of runtime.addresses.allowances.values()) allowance.tokens = 1;
 			await source.connect(new AbortController().signal, relayDeadline());
 			expect(state.socket).not.toBe(socket);
 			expect(state.socket.readyState).toBe(WebSocket.OPEN);

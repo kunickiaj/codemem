@@ -20,6 +20,8 @@ export interface RelayRealmTestState {
 	admissions: { pathname: string; kind: string; deviceHeader: string }[];
 	/** Overrides CODEMEM_RELAY_GROUPS, as a deploy that adds or removes groups would. */
 	groups?: string[];
+	/** Replaces the address allowance clock, in milliseconds. */
+	addressNowMs?: number;
 }
 export function relayRealmTestState(): RelayRealmTestState {
 	const scope = globalThis as { __relayRealmTest?: RelayRealmTestState };
@@ -102,6 +104,9 @@ export class RelayRealmTestObject extends RelayRealm {
 	}
 	protected override relayLimits(): Readonly<RelayServerLimits> {
 		return { ...RELAY_DURABLE_OBJECT_LIMITS, ...relayRealmTestState().limits };
+	}
+	protected override addressClockMs(): number {
+		return relayRealmTestState().addressNowMs ?? performance.now();
 	}
 }
 

@@ -48,6 +48,10 @@ export class RelaySocketAdapter implements RelayServerSocket {
 	bind(events: RelaySocketEvents): void {
 		this.events = events;
 	}
+	/** True until the engine sees the socket register. */
+	pending(): boolean {
+		return this.events?.pending() ?? false;
+	}
 	sendText(json: string, onWritten: (error?: Error) => void): void {
 		this.send(json, encoder.encode(json).byteLength, onWritten);
 	}

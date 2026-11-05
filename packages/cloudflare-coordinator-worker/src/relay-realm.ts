@@ -4,6 +4,8 @@ import {
 	createRelayServer,
 	initializeRelayQuotaSchema,
 	provisionLocalRelayQuota,
+	RELAY_ADDRESS_PENDING_SOCKETS,
+	RelayAddressAllowances,
 	type RelayCoordinatorClientOptions,
 	type RelayServerLimits,
 	type RelayServerSocket,
@@ -125,6 +127,15 @@ function closeQuietly(webSocket: WebSocket, code: number): void {
 	}
 }
 
+/**
+ * The client address Cloudflare's edge sets. Public clients cannot set it. A
+ * same-account Worker binding can, and is inside the operator trust boundary.
+ * Requests without it, such as local development, share one conservative bucket.
+ */
+function clientAddress(request: Request): string {
+	return request.headers.get("CF-Connecting-IP")?.trim() ?? "";
+}
+
 function isUpgrade(request: Request): boolean {
 	return request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket";
 }
@@ -143,6 +154,12 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 	private host: Promise<RealmHost | null> | null = null;
 	/** Set once the stored allotments fit this deploy's realm count. */
 	private quotaFitted = false;
+	/**
+	 * Per-address upgrade fairness, in memory only. Pending setups never survive
+	 * eviction, so neither does this, which the relay operations contract allows.
+	 */
+	private readonly allowances = new RelayAddressAllowances(() => this.addressClockMs());
+	private readonly socketAddresses = new WeakMap<WebSocket, string>();
 
 	constructor(ctx: DurableObjectState, env: Readonly<Record<string, unknown>>) {
 		// The base class keeps no env. Only the allowlisted snapshot survives this call.
@@ -186,9 +203,21 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 		const host = await this.ensureHost();
 		if (!host) return status(503);
 		if (host.realmId !== realmId) return status(404);
+		// The in-memory address check runs first, so a flood from one address spends no quota.
+		const address = clientAddress(request);
+		if (!this.admitAddress(host, address)) return status(429);
 		const reserved = await host.quota.reserveUpgrade(new AbortController().signal);
 		if (reserved !== "reserved") return status(reserved === "denied" ? 429 : 503);
-		return this.accept(host);
+		return this.accept(host, address);
+	}
+
+	/** At most two unregistered sockets per address, and the address's attempt allowance. */
+	private admitAddress(host: RealmHost, address: string): boolean {
+		let pending = 0;
+		for (const [ws, adapter] of host.sockets)
+			if (adapter.pending() && this.socketAddresses.get(ws) === address) pending++;
+		if (pending >= RELAY_ADDRESS_PENDING_SOCKETS) return false;
+		return this.allowances.take(address);
 	}
 
 	override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -214,12 +243,17 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 		return exports?.RelayAdmission?.({ props: { realmId } }) ?? null;
 	}
 
+	/** Monotonic clock for the address allowance. Tests replace it to skip the refill wait. */
+	protected addressClockMs(): number {
+		return performance.now();
+	}
+
 	/** Tests narrow these to reach limits within the quota bursts. Never raise them. */
 	protected relayLimits(): Readonly<RelayServerLimits> {
 		return RELAY_DURABLE_OBJECT_LIMITS;
 	}
 
-	private accept(host: RealmHost): Response {
+	private accept(host: RealmHost, address: string): Response {
 		const { 0: client, 1: server } = new WebSocketPair();
 		const adapter = new RelaySocketAdapter(server, () => host.sockets.delete(server));
 		const events = host.engine.adopt(adapter);
@@ -233,6 +267,7 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			return status(503);
 		}
 		host.sockets.set(server, adapter);
+		this.socketAddresses.set(server, address);
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
