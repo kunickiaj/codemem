@@ -365,6 +365,11 @@ The first call stores that realm's equal share of the service ceilings. Adding a
 deploy, and after it each provisioned realm lowers its stored allotments to the new, smaller share
 on its first event, so the total stays within each ceiling without another call. Allotments are
 never raised. Relay supports at most 8 groups per Worker, because each group's control share must keep two tokens for the challenge and registration that every connection sends back to back. With more groups, relay stays off.
+Each realm also limits upgrades per client address, using the `CF-Connecting-IP` header that
+Cloudflare sets: at most two sockets that have not registered yet, and ten upgrade attempts a
+minute with a burst of two. Excess upgrades get `429`. Devices behind one NAT share that
+allowance, so a third device connecting to the same group at the same moment retries a few
+seconds later.
 `"enabled":false` switches the realm off without a deploy: new upgrades are refused and open
 sockets close. Changing `CODEMEM_RELAY_ENABLED` needs a deploy. A realm object reads it when it
 starts, so after the deploy it refuses upgrades and closes each existing socket on that socket's

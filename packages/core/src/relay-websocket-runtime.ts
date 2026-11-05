@@ -1,7 +1,10 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { performance } from "node:perf_hooks";
 import type { Duplex } from "node:stream";
 import WebSocket, { type ServerOptions, WebSocketServer } from "ws";
+import {
+	RELAY_ADDRESS_PENDING_SOCKETS,
+	RelayAddressAllowances,
+} from "./relay-address-allowance.js";
 import type { RelayAdmissionBudgetStatus } from "./relay-admission-decision.js";
 import {
 	createRelayServer,
@@ -12,7 +15,6 @@ import {
 
 const MAX_MESSAGE_BYTES = 65_558;
 const MAX_CONTROL_BYTES = 4096;
-const MAX_ADDRESSES = 4096;
 
 export interface RelayWebSocketRuntimeOptions {
 	readonly relay: RelayServerOptions;
@@ -42,10 +44,6 @@ export interface RelayWebSocketRuntimeHandle {
 	close(): Promise<void>;
 }
 
-interface AddressAllowance {
-	tokens: number;
-	updated: number;
-}
 interface LiveSocket {
 	readonly webSocket: WebSocket;
 	readonly address: string;
@@ -79,7 +77,7 @@ class RelayWebSocketRuntime {
 	private readonly webSockets: WebSocketServer;
 	private readonly sockets = new Set<LiveSocket>();
 	private readonly pending = new Set<PendingUpgrade>();
-	private readonly addresses = new Map<string, AddressAllowance>();
+	private readonly addresses = new RelayAddressAllowances();
 	private readonly limits: { sockets: number; pendingSockets: number; writeBytes: number };
 	private enabled: boolean;
 	private readonly path: string;
@@ -193,21 +191,8 @@ class RelayWebSocketRuntime {
 		if (unregistered.length + this.pending.size >= this.limits.pendingSockets) return false;
 		const fromAddress = unregistered.filter((live) => live.address === address).length;
 		const pendingAddress = [...this.pending].filter((entry) => entry.address === address).length;
-		if (fromAddress + pendingAddress >= 2) return false;
-		const now = performance.now();
-		for (const [key, allowance] of this.addresses)
-			if (now - allowance.updated >= 60_000) this.addresses.delete(key);
-		let allowance = this.addresses.get(address);
-		if (!allowance) {
-			if (this.addresses.size >= MAX_ADDRESSES) return false;
-			allowance = { tokens: 2, updated: now };
-			this.addresses.set(address, allowance);
-		}
-		allowance.tokens = Math.min(2, allowance.tokens + (now - allowance.updated) / 6000);
-		allowance.updated = now;
-		if (allowance.tokens < 1) return false;
-		allowance.tokens -= 1;
-		return true;
+		if (fromAddress + pendingAddress >= RELAY_ADDRESS_PENDING_SOCKETS) return false;
+		return this.addresses.take(address);
 	}
 
 	private async authorizeUpgrade(

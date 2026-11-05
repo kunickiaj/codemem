@@ -345,6 +345,14 @@ finite 4,096-entry bound per host. They never persist or log addresses and never
 trust caller-supplied forwarding headers. They supplement hard service caps;
 they are not a distributed ceiling. NAT collisions and distributed floods can
 still deny relay availability. Direct/local fallback remains independent.
+The Node host uses the socket's remote address. The Durable Object host uses
+`CF-Connecting-IP`, which Cloudflare's edge sets and a client cannot supply.
+A Worker in the same account that binds to the coordinator Worker or the realm
+namespace can set it. Such Workers are inside the operator's trust boundary, as
+for the RelayAdmission entrypoint's props.
+Each realm object keeps its own counters, and they reset when the object is
+evicted. Requests without that header, such as local development, share one
+bucket.
 Before verification, callers can also name a victim realm and consume that
 admission-only ingress allowance. This may pause relay in that realm. The fallback
 accepts this availability risk and never borrows membership or presence capacity
