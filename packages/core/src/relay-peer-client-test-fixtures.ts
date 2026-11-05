@@ -82,13 +82,19 @@ export interface RelayClientTestOptions {
 	readonly faultProxy?: { readonly rule?: RelayFaultRule };
 	/** Coordinator group the relay serves. Defaults to `group-A`. */
 	readonly groupId?: string;
+	/** Per-exchange DATA cap, for example the Durable Object host's 2 MiB. */
+	readonly routeBytes?: number;
+	/** Refill rate for the device and relay-route admission budgets. Defaults to 1 per minute. */
+	readonly admissionRatePerMinute?: number;
 }
 
 async function admissionDatabase(
 	identities: Identities,
 	deviceIds: DeviceIds,
 	namespace: Namespace,
+	options: RelayClientTestOptions,
 ): Promise<Database.Database> {
+	const rate = options.admissionRatePerMinute ?? 1;
 	const template = await decisionFixture({
 		createdAt: Math.floor(Date.now() / 1000),
 		groupId: namespace.groupId,
@@ -116,12 +122,13 @@ async function admissionDatabase(
 				"INSERT INTO admission_budget_allocations(authority_id,pool,audience_id,group_id,rate_per_min,burst) VALUES (?1,?2,?3,?4,?5,?6)",
 			)
 			.run(bind([namespace.authorityId, pool, audience, group, rate, burst]));
-	allocate("authority", "", "", 4, 64);
-	allocate("device");
+	// The authority row must cover both relay audience parents.
+	allocate("authority", "", "", 4 * rate, 64);
+	allocate("device", "", "", rate);
 	allocate("device-registration", "", "", 1, 2);
 	for (const pool of ["relay-route", "relay-registration"]) {
-		allocate(pool, namespace.relayAudienceId);
-		allocate(pool, namespace.relayAudienceId, namespace.groupId);
+		allocate(pool, namespace.relayAudienceId, "", rate);
+		allocate(pool, namespace.relayAudienceId, namespace.groupId, rate);
 	}
 	return db;
 }
@@ -247,7 +254,7 @@ function runtimeFixture(
 			signer: testSigner(3),
 			coordinator,
 			quota,
-			limits: finiteLimits,
+			limits: { ...finiteLimits, routeBytes: options.routeBytes ?? finiteLimits.routeBytes },
 			clock: {
 				monotonicMs: options.monotonicMs ?? (() => performance.now()),
 				utcMs: () => Date.now(),
@@ -286,7 +293,7 @@ export async function relayClientFixture(
 		groupId: options.groupId ?? "group-A",
 		relayAudienceId: relayAudienceId(`wss://${host}`, service.keyId),
 	};
-	const db = await admissionDatabase(identities, deviceIds, namespace);
+	const db = await admissionDatabase(identities, deviceIds, namespace, options);
 	const http = admissionHttp(db, namespace);
 	const { coordinator, checks, checkTimes, admissionUrl } = await coordinatorFixture(http, options);
 	const { quotaDb, quota } = quotaFixture(namespace);

@@ -879,9 +879,11 @@ it.each(["empty", "populated"])(
 		// Assert: the final page and local-only rows must survive both bootstrap modes.
 		expect(result).toMatchObject({ ok: true, bootstrapped: true, opsIn: 2001 });
 		expect(ids(f, "client")).toHaveLength(state === "populated" ? 2002 : 2001);
+		// The server also stops a page at 1 MiB, so 2,001 items can take more than two pages.
 		const pages = f.requests.filter((request) => new URL(request.url).pathname === "/v1/snapshot");
-		expect(pages).toHaveLength(2);
-		expect(new URL(pages[1]?.url ?? ORIGIN).searchParams.get("page_token")).toBeTruthy();
+		expect(pages.length).toBeGreaterThanOrEqual(2);
+		for (const page of pages.slice(1))
+			expect(new URL(page.url).searchParams.get("page_token")).toBeTruthy();
 		assertSignedScope(f);
 	},
 );
