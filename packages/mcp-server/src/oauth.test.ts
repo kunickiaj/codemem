@@ -838,6 +838,58 @@ describe("MCP OAuth metadata and dynamic client registration", () => {
 	});
 });
 
+describe("Gemini hosted callback registration", () => {
+	it("accepts the exact Gemini hosted callback for public clients", () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+		const redirectUri = "https://oauth-redirect.googleusercontent.com/r/google-gemini";
+
+		const result = registerMcpOAuthClient(
+			{
+				redirect_uris: [redirectUri],
+				client_name: "Gemini",
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+
+		expect(result).toMatchObject({
+			status: 201,
+			body: { redirect_uris: [redirectUri], token_endpoint_auth_method: "none" },
+		});
+		if (result.status !== 201) throw new Error("expected successful registration");
+		expect(clientsStore.getClient(result.body.client_id)).toEqual(result.body);
+	});
+
+	// Keep the hosted callback exception limited to the approved URL.
+	it.each([
+		"http://oauth-redirect.googleusercontent.com/r/google-gemini",
+		"https://oauth-redirect.googleusercontent.com.evil.test/r/google-gemini",
+		"https://oauth-redirect.googleusercontent.com/r/other-project",
+		"https://oauth-redirect.googleusercontent.com/r/google-gemini/",
+		"https://oauth-redirect.googleusercontent.com/r/google-gemini/callback",
+		"https://oauth-redirect.googleusercontent.com/r/google-gemini?code=secret",
+		"https://oauth-redirect.googleusercontent.com/r/google-gemini#fragment",
+		"https://user:secret@oauth-redirect.googleusercontent.com/r/google-gemini",
+		"https://oauth-redirect-sandbox.googleusercontent.com/r/google-gemini",
+		"https://oauth-redirect.googleusercontent.com/a/google-gemini",
+	])("rejects Gemini callback variants: %s", (redirectUri) => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+
+		const result = registerMcpOAuthClient(
+			{
+				redirect_uris: [redirectUri],
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+
+		expect(result).toMatchObject({
+			status: 400,
+			body: { error: "invalid_client_metadata" },
+		});
+	});
+});
+
 function pkceS256(verifier: string): string {
 	return createHash("sha256").update(verifier).digest("base64url");
 }
