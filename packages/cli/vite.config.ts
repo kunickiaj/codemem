@@ -17,13 +17,19 @@ function executableOutput() {
 
 export default defineConfig({
 	resolve: {
-		alias: {
-			"@codemem/core/internal/relay-runtime": resolve(
-				import.meta.dirname,
-				"../core/src/internal/relay-runtime.ts",
-			),
-			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
-		},
+		alias: [
+			// Specific subpath first: string aliases also match `@codemem/core/...` prefixes.
+			{
+				find: "@codemem/core/internal/relay-runtime",
+				replacement: resolve(import.meta.dirname, "../core/src/internal/relay-runtime.ts"),
+			},
+			{ find: "@codemem/core", replacement: resolve(import.meta.dirname, "../core/src/index.ts") },
+			// Exact match only: `@codemem/mcp/stdio` and `/http` keep their own resolution.
+			{
+				find: /^@codemem\/mcp$/,
+				replacement: resolve(import.meta.dirname, "../mcp-server/src/index.ts"),
+			},
+		],
 		conditions: ["source"],
 	},
 	// CLI uses Vite SSR mode for build (--ssr flag in package.json build script).

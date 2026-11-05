@@ -29,6 +29,7 @@ import {
 	rememberMemoryCommand,
 	showMemoryCommand,
 } from "./commands/memory.js";
+import { memoryToolCommand } from "./commands/memory-tool.js";
 import { packCommand, promptPackLedgerCommand } from "./commands/pack.js";
 import { piHookIngestCommand } from "./commands/pi-hook-ingest.js";
 import { piHookInjectCommand } from "./commands/pi-hook-inject.js";
@@ -175,6 +176,8 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(piSessionSearchCommand);
 	program.addCommand(piImportSessionsCommand);
 	program.addCommand(promptPackLedgerCommand, { hidden: true });
+	// Thin-host fallback when the viewer is unreachable; see memory-tool.ts.
+	program.addCommand(memoryToolCommand, { hidden: true });
 	// Deprecated top-level aliases — use `memory show`, `memory forget`,
 	// `memory remember` instead. Hidden from --help and shell completion but
 	// still functional for backwards compat.

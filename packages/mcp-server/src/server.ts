@@ -29,6 +29,9 @@ export function createCodememMcpServer(
 		captureRetrievalLedger: options.captureRetrievalLedger !== false,
 		retrievalLedgerScopeId: options.retrievalLedgerScopeId ?? randomUUID(),
 		retrievalLedgerIdentityMode: options.retrievalLedgerIdentityMode ?? "session",
+		...(options.retrievalLedgerRequestId
+			? { retrievalLedgerRequestId: options.retrievalLedgerRequestId }
+			: {}),
 	};
 
 	registerSearchTools(server, context);
