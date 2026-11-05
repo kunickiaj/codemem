@@ -202,6 +202,31 @@ it("converges authorized Space pull/push through the actual relay and saves a co
 	expect(f.factory.open).toHaveBeenCalledTimes(3);
 }, 30000);
 
+it("converges large memories over a 2 MiB relay route because pull pages stop at 1 MiB", async () => {
+	// Arrange: the Durable Object host's per-exchange cap, and six ~400 KB memories that
+	// together exceed it, as an uncapped 500-op page would.
+	const f = await fixture({ routeBytes: 2 * 1024 * 1024, admissionRatePerMinute: 96 });
+	setReplicationCursor(
+		f.client.db,
+		f.remote.localDeviceId,
+		{ lastApplied: "2025-01-01T00:00:00Z|initial" },
+		SCOPE,
+	);
+	const large = Array.from({ length: 6 }, (_, i) => `large-${i}`);
+	const seeded = large.map((id) => f.seed("remote", id, "z".repeat(400_000)));
+	expect(Buffer.byteLength(JSON.stringify({ ops: seeded }))).toBeGreaterThan(2 * 1024 * 1024);
+	await f.target.connect(new AbortController().signal, relayDeadline());
+	// Act: one pull page per pass, as the daemon runs them.
+	const results = [];
+	for (let pass = 0; pass < 4 && titles(f, "client").length < large.length; pass++)
+		results.push(await syncScopedChannelOnce(f.options));
+	// Assert: every pass succeeded and the pages split, so no exchange hit the route cap.
+	expect(results.every((result) => result.ok)).toBe(true);
+	expect(results.length).toBeGreaterThan(1);
+	expect(titles(f, "client")).toEqual(large);
+	expect(f.factory.failureReason()).toBeUndefined();
+}, 120000);
+
 it("does not save an outbound ACK or retry after an interrupted POST response", async () => {
 	// Arrange: the remote applies the operation, but the physical relay disconnects before its reply.
 	const f = await fixture();

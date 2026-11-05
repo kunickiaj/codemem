@@ -78,9 +78,30 @@ export interface SyncResetRequired extends SyncResetBoundary {
 		| "unsupported_scope";
 }
 
+/**
+ * Serialized bytes of ops or snapshot items one pull page may carry. A relayed
+ * exchange on the Durable Object host carries at most 2 MiB, and real memory
+ * items average about 5 KB, so a 500-op or 2000-item page by count alone
+ * would not fit. This matches the push batch limit. A page always carries at
+ * least one entry, so a single larger entry still makes progress.
+ */
+export const SYNC_PAGE_MAX_BYTES = 1_048_576;
+
+/** Returns how many leading entries fit in `maxBytes` of JSON, at least one. */
+function entriesWithinBytes(entries: readonly unknown[], maxBytes: number): number {
+	let total = 0;
+	for (const [index, entry] of entries.entries()) {
+		total += Buffer.byteLength(JSON.stringify(entry)) + 1;
+		if (index > 0 && total > maxBytes) return index;
+	}
+	return entries.length;
+}
+
 interface LoadReplicationOpsForPeerBaseOptions {
 	since: string | null;
 	limit?: number;
+	/** Serialized size cap for the returned ops. Defaults to SYNC_PAGE_MAX_BYTES. */
+	maxBytes?: number;
 	generation?: number | null;
 	snapshotId?: string | null;
 	baselineCursor?: string | null;
@@ -112,6 +133,8 @@ export interface LoadMemorySnapshotPageForPeerOptions {
 	/** Direct-source reset lane; the HTTP caller must require its own local device ID. */
 	sourceDeviceId?: string;
 	limit?: number;
+	/** Serialized size cap for the returned items. Defaults to SYNC_PAGE_MAX_BYTES. */
+	maxBytes?: number;
 	pageToken?: string | null;
 	peerDeviceId?: string | null;
 	scopeId?: string | null;
@@ -1279,6 +1302,21 @@ export function loadReplicationOpsSince(
 	return [ops, nextCursor];
 }
 
+/**
+ * Trims a pull page to the byte cap. The next page starts after the last op
+ * returned, so ops filtered out after it are scanned and filtered again.
+ */
+function opsPageWithinBytes(
+	ops: ReplicationOp[],
+	nextCursor: string | null,
+	maxBytes = SYNC_PAGE_MAX_BYTES,
+): { ops: ReplicationOp[]; nextCursor: string | null } {
+	const kept = entriesWithinBytes(ops, maxBytes);
+	const last = ops[kept - 1];
+	if (kept === ops.length || !last) return { ops, nextCursor };
+	return { ops: ops.slice(0, kept), nextCursor: computeCursor(last.created_at, last.op_id) };
+}
+
 export function loadReplicationOpsForPeer(
 	db: Database,
 	options: LoadReplicationOpsForPeerOptions,
@@ -1342,12 +1380,8 @@ export function loadReplicationOpsForPeer(
 		const scopeId = cleanText(op.scope_id);
 		return Boolean(scopeId && scopeId !== DEFAULT_SYNC_SCOPE_ID);
 	});
-	return {
-		reset_required: false,
-		boundary,
-		ops: peerBoundaryOps,
-		nextCursor,
-	};
+	const page = opsPageWithinBytes(peerBoundaryOps, nextCursor, options.maxBytes);
+	return { reset_required: false, boundary, ...page };
 }
 
 function snapshotClockDeviceId(payload: MemoryPayload, row: MemoryItemRow): string {
@@ -1374,6 +1408,42 @@ function unretiredSnapshotPayload(
 	)
 		return null;
 	return payload;
+}
+
+type SnapshotRow = { memory: MemoryItemRow; sessionProject: string | null };
+
+/** The snapshot item for one memory row, or null when the peer may not receive it. */
+function snapshotItemForPeer(
+	db: Database,
+	row: SnapshotRow,
+	importKey: string,
+	options: LoadMemorySnapshotPageForPeerOptions,
+): SyncMemorySnapshotItem | null {
+	const payload = unretiredSnapshotPayload(db, row.memory, options.sourceDeviceId);
+	if (!payload) return null;
+	const record = payload as unknown as Record<string, unknown>;
+	const scope = { scope_id: row.memory.scope_id };
+	const peerDeviceId = options.peerDeviceId ?? null;
+	if (
+		(replicationOpRequiresPersonalScopeAuthorization(scope, record) ||
+			!syncVisibilityAllowed(record)) &&
+		!peerCanSyncPrivateOpByPersonalScopeGrant(db, scope, record, peerDeviceId)
+	)
+		return null;
+	if (!syncProjectAllowed(db, row.sessionProject, peerDeviceId)) return null;
+	// Include session project in the payload so targets can associate
+	// replicated memories with the correct project.
+	const payloadWithProject = { ...payload, project: row.sessionProject ?? null };
+	return {
+		entity_id: importKey,
+		op_type: row.memory.deleted_at || row.memory.active === 0 ? "delete" : "upsert",
+		payload_json: toJson(payloadWithProject),
+		clock_rev: Number(row.memory.rev ?? 0),
+		clock_updated_at: String(
+			row.memory.updated_at ?? row.memory.created_at ?? new Date().toISOString(),
+		),
+		clock_device_id: snapshotClockDeviceId(payload, row.memory),
+	};
 }
 
 export function loadMemorySnapshotPageForPeer(
@@ -1449,11 +1519,14 @@ export function loadMemorySnapshotPageForPeer(
 			.all();
 
 	const items: SyncMemorySnapshotItem[] = [];
+	const maxBytes = options.maxBytes ?? SYNC_PAGE_MAX_BYTES;
+	let pageBytes = 0;
 	let nextScanToken = pageToken;
 	let lastScannedToken: string | null = null;
 	let hasMore = false;
+	let full = false;
 
-	while (items.length < limit) {
+	while (items.length < limit && !full) {
 		const rows = rowsAfterToken(nextScanToken, scanBatchSize);
 		if (rows.length === 0) break;
 
@@ -1462,40 +1535,22 @@ export function loadMemorySnapshotPageForPeer(
 			if (!row) continue;
 			const importKey = String(row.memory.import_key ?? "").trim();
 			if (!importKey) continue;
+			// An earlier row is always on the page when this is used, so it is never null then.
+			const tokenBeforeRow: string | null = lastScannedToken;
 			lastScannedToken = makeSnapshotPageToken(importKey, Number(row.memory.id));
 			nextScanToken = { importKey, id: Number(row.memory.id) };
-			const payload = unretiredSnapshotPayload(db, row.memory, options.sourceDeviceId);
-			if (!payload) continue;
-			if (
-				(replicationOpRequiresPersonalScopeAuthorization(
-					{ scope_id: row.memory.scope_id },
-					payload as unknown as Record<string, unknown>,
-				) ||
-					!syncVisibilityAllowed(payload as unknown as Record<string, unknown>)) &&
-				!peerCanSyncPrivateOpByPersonalScopeGrant(
-					db,
-					{ scope_id: row.memory.scope_id },
-					payload as unknown as Record<string, unknown>,
-					options.peerDeviceId ?? null,
-				)
-			) {
-				continue;
+			const item = snapshotItemForPeer(db, row, importKey, options);
+			if (!item) continue;
+			const itemBytes = Buffer.byteLength(JSON.stringify(item)) + 1;
+			if (items.length > 0 && pageBytes + itemBytes > maxBytes) {
+				// This row goes on the next page, so the token stops before it.
+				lastScannedToken = tokenBeforeRow;
+				hasMore = true;
+				full = true;
+				break;
 			}
-			if (!syncProjectAllowed(db, row.sessionProject, options.peerDeviceId ?? null)) continue;
-			const clockDeviceId = snapshotClockDeviceId(payload, row.memory);
-			// Include session project in the payload so targets can associate
-			// replicated memories with the correct project.
-			const payloadWithProject = { ...payload, project: row.sessionProject ?? null };
-			items.push({
-				entity_id: importKey,
-				op_type: row.memory.deleted_at || row.memory.active === 0 ? "delete" : "upsert",
-				payload_json: toJson(payloadWithProject),
-				clock_rev: Number(row.memory.rev ?? 0),
-				clock_updated_at: String(
-					row.memory.updated_at ?? row.memory.created_at ?? new Date().toISOString(),
-				),
-				clock_device_id: clockDeviceId,
-			});
+			items.push(item);
+			pageBytes += itemBytes;
 
 			if (items.length >= limit) {
 				hasMore = index < rows.length - 1 || rowsAfterToken(nextScanToken, 1).length > 0;
@@ -1503,7 +1558,7 @@ export function loadMemorySnapshotPageForPeer(
 			}
 		}
 
-		if (items.length >= limit || rows.length < scanBatchSize) break;
+		if (full || items.length >= limit || rows.length < scanBatchSize) break;
 	}
 	return {
 		boundary,

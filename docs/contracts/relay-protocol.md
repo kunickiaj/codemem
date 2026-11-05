@@ -292,7 +292,16 @@ membership, operation, scope, and apply checks remain in the shared handlers.
 
 Clients normally request 500 ops, while servers cap pages at 1,000. The snapshot
 fetch helper defaults to 200, but current sync-pass bootstrap callers request
-2,000 with a 60-second timeout. The server permits at most 5,000. An authenticated
+2,000 with a 60-second timeout. The server permits at most 5,000.
+
+Servers also stop each ops page and snapshot page once its serialized entries
+reach 1 MiB (`SYNC_PAGE_MAX_BYTES`), the same limit as a push body. A page always
+carries at least one entry. The page's `next_cursor`, or its `next_page_token`
+with `has_more`, then points just after the last entry returned, so clients
+resume with their existing paging and need no change. The Durable Object relay
+carries at most 2 MiB per exchange, and real memories average about 5 KB, so
+500-op and 2,000-item pages would otherwise not fit. An entry larger than the
+exchange cap still fails on that host. An authenticated
 response-size error retries the same cursor, token, and reset boundary with
 `floor(limit / 2)`, down to one.
 Use the effective clamped page size for this calculation. Five thousand reaches
