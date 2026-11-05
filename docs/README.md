@@ -6,6 +6,7 @@
 - [Command reference](cli-reference.md): CLI groups, diagnostics, and compatibility commands.
 - [Plugin reference](plugin-reference.md): adapter behavior and environment controls.
 - [Sharing guide](sharing-guide.md): sharing Projects and adding devices.
+- [Relay](relay.md): syncing through the coordinator when devices can't reach each other, its privacy limits, and its status messages.
 - [Migration guide](rename-migration.md): this repository's former installation name.
 
 ## Architecture and contracts

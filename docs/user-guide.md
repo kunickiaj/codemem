@@ -932,7 +932,7 @@ When selected history may already have replicated, all participating owner devic
   you check the new key with the coordinator operator and run
   `codemem sync approve-relay-key <group> --key <candidate>`. Set `sync_relay_enabled` to `false`
   to turn relay off on a device, then restart `codemem serve`. The viewer reads the setting only at
-  startup.
+  startup. [Relay](relay.md) explains relay status lines and failure codes.
 - A restored peer requires its SQLite database and original signing key together.
   If no matching key exists in `device.key` or the configured platform keychain,
   sync fails closed with a `device_identity_*` diagnostic instead of silently
