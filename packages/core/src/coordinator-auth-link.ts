@@ -51,6 +51,14 @@ import {
 	type CoordinatorAuthLinkStore,
 } from "./coordinator-auth-link-contract.js";
 import {
+	AUTH_LINK_HEADLESS_MARKER,
+	AUTH_LINK_HEADLESS_MARKER_SQL,
+	type CoordinatorAuthLinkHeadlessApproval,
+	type CoordinatorAuthLinkHeadlessApprovalInput,
+	type CoordinatorAuthLinkHeadlessCreateInput,
+	type CoordinatorAuthLinkHeadlessFinalizeInput,
+} from "./coordinator-auth-link-headless.js";
+import {
 	type Captured,
 	capture,
 	captureAuthLinkConfig as captureConfig,
@@ -126,6 +134,11 @@ interface Attempt {
 	created_at_ms: number;
 	expires_at_ms: number;
 }
+interface StagedProfile {
+	display_name: string | null;
+	email: string | null;
+	email_verified: number | null;
+}
 /** Capture without invoking accessors; null denotes an omitted attested commitment. */
 export function captureAuthLinkBrowserStartHash(value: unknown): string | null | false {
 	if (!value || typeof value !== "object") return false;
@@ -194,6 +207,42 @@ function captureCreateInput(value: unknown):
 	};
 }
 type CreateInput = NonNullable<ReturnType<typeof captureCreateInput>>;
+/** Headless input has no loopback; the marker and user code hash fill the same columns. */
+function captureHeadlessCreateInput(value: unknown): CreateInput | null {
+	const i = capture(value, [
+		"attemptId",
+		"signer",
+		"runtimeVerifierHash",
+		"userCodeHash",
+		"authority",
+	]);
+	const authority = captureCreateAuthority(i?.authority);
+	const expectedIdentityId = captureExpectedIdentity(value);
+	if (
+		!i ||
+		!authority ||
+		expectedIdentityId === false ||
+		!isAuthControllerId(i.attemptId) ||
+		!isHash(i.runtimeVerifierHash) ||
+		!isHash(i.userCodeHash)
+	)
+		return null;
+	if (
+		expectedIdentityId !== null &&
+		authority.kind === "device_claim" &&
+		authority.identityId !== expectedIdentityId
+	)
+		return null;
+	return {
+		signer: i.signer,
+		attemptId: i.attemptId,
+		runtimeVerifierHash: i.runtimeVerifierHash,
+		loopbackRedirect: AUTH_LINK_HEADLESS_MARKER,
+		browserStartHash: i.userCodeHash,
+		authority,
+		expectedIdentityId,
+	};
+}
 function captureCreateAuthority(
 	value: unknown,
 ): CoordinatorAuthLinkCreateInput["authority"] | null {
@@ -291,6 +340,9 @@ function diagnose(
 	if (!isTerminal(row) && row.expires_at_ms <= now) return rejected("attempt_expired");
 	return rejected("attempt_unavailable");
 }
+// Mode predicates run inside each write so one mode can never advance the other's rows.
+const DESKTOP_MODE_SQL = `loopback_redirect <> ${AUTH_LINK_HEADLESS_MARKER_SQL}`;
+const HEADLESS_MODE_SQL = `loopback_redirect = ${AUTH_LINK_HEADLESS_MARKER_SQL}`;
 const LIVE_CONFIG =
 	"coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1 AND authority_kind = 'controller_attestation'";
 const CURRENT_CONFIG = "coordinator_id = ? AND issuer = ? AND auth_config_revision = ? AND ? = 1";
@@ -610,8 +662,20 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		input: CoordinatorAuthLinkCreateInput,
 		config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthLinkCreateResult> {
+		return this.createCaptured(captureCreateInput(input), config);
+	}
+	/** Same authority, admission and exact-retry rules as desktop create. */
+	async createHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessCreateInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkCreateResult> {
+		return this.createCaptured(captureHeadlessCreateInput(input), config);
+	}
+	private async createCaptured(
+		i: CreateInput | null,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkCreateResult> {
 		const c = captureConfig(config);
-		const i = captureCreateInput(input);
 		const s = captureSigner(i?.signer);
 		if (!c || !i || !s) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
@@ -930,7 +994,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const update = {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_start_hash IS NULL AND browser_transaction_hash IS NULL AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND r.browser_transaction_hash = ?)`,
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'browser_claimed', browser_transaction_hash = ?, claimed_at_ms = ? WHERE attempt_id = ? AND ${LIVE_CONFIG} AND expires_at_ms > ? AND state = 'pending' AND browser_start_hash IS NULL AND browser_transaction_hash IS NULL AND ${DESKTOP_MODE_SQL} AND NOT EXISTS (SELECT 1 FROM coordinator_auth_session_receipts r WHERE r.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND r.browser_transaction_hash = ?)`,
 			values: [
 				i.browserTransactionHash,
 				now,
@@ -1006,7 +1070,12 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		return {
 			kind: "applied",
 			status: result.status,
-			target: { identityId: row.identity_id, groupId: row.group_id, deviceId: row.device_id },
+			target: {
+				identityId: row.identity_id,
+				groupId: row.group_id,
+				deviceId: row.device_id,
+				fingerprint: row.fingerprint,
+			},
 		};
 	}
 	/** completionSecretHash must come from the trusted coordinator generator, not request nomination. */
@@ -1017,13 +1086,38 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const c = captureConfig(config);
 		const i = this.browserInput(input, ["completionSecretHash"]);
 		if (!c || !i || !isHash(i.completionSecretHash)) return rejected("invalid_input");
+		return this.confirmWith(i, c, {
+			sql: "?",
+			values: [i.completionSecretHash],
+			mode: DESKTOP_MODE_SQL,
+		});
+	}
+	/** The device already holds the runtime verifier, so it doubles as the completion proof. */
+	async confirmHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkResult> {
+		const c = captureConfig(config);
+		const i = this.browserInput(input);
+		if (!c || !i) return rejected("invalid_input");
+		return this.confirmWith(i, c, {
+			sql: "runtime_verifier_hash",
+			values: [],
+			mode: HEADLESS_MODE_SQL,
+		});
+	}
+	private async confirmWith(
+		i: CoordinatorAuthLinkClaimInput,
+		c: CoordinatorAuthLinkConfig,
+		completion: { sql: string; values: string[]; mode: string },
+	): Promise<CoordinatorAuthLinkResult> {
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const source = await this.source(i.attemptId, c, now);
 		return this.transition(i, c, now, {
-			sql: `UPDATE coordinator_auth_link_attempts SET state = 'confirmed', completion_secret_hash = ?, confirmed_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'oidc_verified' AND browser_transaction_hash = ? AND completion_secret_hash IS NULL AND ${source.sql}`,
+			sql: `UPDATE coordinator_auth_link_attempts SET state = 'confirmed', completion_secret_hash = ${completion.sql}, confirmed_at_ms = ? WHERE attempt_id = ? AND ${CURRENT_CONFIG} AND expires_at_ms > ? AND state = 'oidc_verified' AND browser_transaction_hash = ? AND completion_secret_hash IS NULL AND ${completion.mode} AND ${source.sql}`,
 			values: [
-				i.completionSecretHash,
+				...completion.values,
 				now,
 				i.attemptId,
 				...configValues(c),
@@ -1078,6 +1172,57 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		});
 		if (!row || !configMatches(row, c) || !requesterMatches(row, r)) return null;
 		return status(row, now);
+	}
+	/** The confirmed account for the signing device to approve; null for any other state or mode. */
+	async readHeadlessAuthLinkApproval(
+		input: CoordinatorAuthLinkHeadlessApprovalInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkHeadlessApproval | null> {
+		const c = captureConfig(config);
+		const i = capture(input, ["attemptId", "signer"]);
+		const s = captureSigner(i?.signer);
+		if (!c?.enabled || !i || !s || !isAuthControllerId(i.attemptId)) return null;
+		const now = authLinkNow(this.clock);
+		const source = await this.source(i.attemptId, c, now, { currentDevice: true });
+		const proof = requesterGuard({ kind: "device", signer: s });
+		const row = await this.first<Attempt>({
+			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
+ AND state = 'confirmed' AND expires_at_ms > ? AND ${HEADLESS_MODE_SQL} AND ${proof.sql} AND ${source.sql}`,
+			values: [i.attemptId, ...configValues(c), now, ...proof.values, ...source.values],
+		});
+		if (
+			!row ||
+			!configMatches(row, c) ||
+			!signerMatches(row, s) ||
+			row.state !== "confirmed" ||
+			row.loopback_redirect !== AUTH_LINK_HEADLESS_MARKER ||
+			row.account_subject === null
+		)
+			return null;
+		return { issuer: row.issuer, subject: row.account_subject, ...(await this.stagedProfile(row)) };
+	}
+	private async stagedProfile(row: Attempt) {
+		const profile = await this.first<StagedProfile>({
+			sql: `SELECT display_name, email, email_verified FROM coordinator_auth_link_profiles
+ WHERE coordinator_id = ? AND attempt_id = ? AND issuer = ? AND subject = ? AND auth_config_revision = ?
+ AND browser_transaction_hash = ? AND link_id IS NULL`,
+			values: [
+				row.coordinator_id,
+				row.attempt_id,
+				row.issuer,
+				row.account_subject,
+				row.auth_config_revision,
+				row.browser_transaction_hash,
+			],
+		});
+		let emailVerified: boolean | null = null;
+		if (profile?.email_verified === 1) emailVerified = true;
+		else if (profile?.email_verified === 0) emailVerified = false;
+		return {
+			displayName: profile?.display_name ?? null,
+			email: profile?.email ?? null,
+			emailVerified,
+		};
 	}
 	private async acknowledgeFailedAttempt(
 		row: Attempt,
@@ -1153,8 +1298,30 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		input: CoordinatorAuthLinkFinalizeInput,
 		config: CoordinatorAuthLinkConfig,
 	): Promise<CoordinatorAuthLinkResult> {
+		return this.finalizeWithMode(input, config, { kind: "desktop" });
+	}
+	/** Links only the account the device approved; any other verified account writes nothing. */
+	async finalizeHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkResult> {
 		const c = captureConfig(config);
-		const i = captureFinalize(input, c);
+		const approved = capture(capture(input, ["approvedAccount"])?.approvedAccount, [
+			"issuer",
+			"subject",
+		]);
+		const account = c && parseCoordinatorAccountReference(approved, { issuer: c.issuer });
+		if (!account?.ok) return rejected("invalid_input");
+		return this.finalizeWithMode(input, config, { kind: "headless", ...account.account });
+	}
+	private async finalizeWithMode(
+		input: CoordinatorAuthLinkFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+		mode: FinalizeMode,
+	): Promise<CoordinatorAuthLinkResult> {
+		const c = captureConfig(config);
+		const captured = captureFinalize(input, c);
+		const i: FinalizeRequest | null = captured && { ...captured, mode };
 		if (!c || !i) return rejected("invalid_input");
 		if (!c.enabled) return rejected("auth_config_changed");
 		if (
@@ -1167,11 +1334,15 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const linkId = globalThis.crypto.randomUUID();
 		const connections = await this.connectionSchema();
 		const row = await this.read(i.attemptId, c, { authority: "either" });
+		if (row && !finalizeModeMatches(row, mode)) return rejected("attempt_unavailable");
 		if (row?.authority_kind === "device_claim") return this.finalizeDevice(i, c, now, linkId, row);
 		const authority = await this.readAuthority(i.attemptId, c);
-		const requester = connections
-			? await connectionRequesterGuard(this.backend, i.identityId, i.signer, c, now)
-			: { sql: "1 = 1", values: [] };
+		const requester = andStatement(
+			connections
+				? await connectionRequesterGuard(this.backend, i.identityId, i.signer, c, now)
+				: { sql: "1 = 1", values: [] },
+			finalizeModeGuard(mode),
+		);
 		try {
 			await this.backend.batch([
 				...finalizeStatements(i, c, now, linkId, authority, connections, requester),
@@ -1186,14 +1357,14 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		return this.finalizeReceipt(i, c, now, linkId);
 	}
 	private async finalizeDevice(
-		i: CoordinatorAuthLinkFinalizeInput,
+		i: FinalizeRequest,
 		c: CoordinatorAuthLinkConfig,
 		now: number,
 		linkId: string,
 		row: Attempt,
 	): Promise<CoordinatorAuthLinkResult> {
 		if (!configMatches(row, c) || !finalizeMatches(row, i)) return diagnose(row, c, now);
-		const source = await this.source(i.attemptId, c, now, { currentDevice: true });
+		const source = await this.finalizeSource(i, c, now);
 		// Exact retries read retained evidence. The immutable proof must never be reinserted.
 		if (["finalized", "session_redeemed"].includes(row.state))
 			return this.deviceReceipt(i, c, now, linkId, source);
@@ -1227,13 +1398,15 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				return rejected("link_conflict");
 			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
-		return this.deviceReceipt(
-			i,
-			c,
-			now,
-			linkId,
-			await this.source(i.attemptId, c, now, { currentDevice: true }),
-		);
+		return this.deviceReceipt(i, c, now, linkId, await this.finalizeSource(i, c, now));
+	}
+	private async finalizeSource(
+		i: FinalizeRequest,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+	): Promise<AuthLinkStatement> {
+		const source = await this.source(i.attemptId, c, now, { currentDevice: true });
+		return andStatement(source, finalizeModeGuard(i.mode));
 	}
 	private async deviceReceipt(
 		i: CoordinatorAuthLinkFinalizeInput,
@@ -1343,6 +1516,27 @@ function deviceFinalizeStatements(
 			values,
 		},
 	];
+}
+type FinalizeMode = { kind: "desktop" } | { kind: "headless"; issuer: string; subject: string };
+type FinalizeRequest = CoordinatorAuthLinkFinalizeInput & { mode: FinalizeMode };
+function finalizeModeGuard(mode: FinalizeMode): AuthLinkStatement {
+	const t = "coordinator_auth_link_attempts";
+	if (mode.kind === "desktop") return { sql: `${t}.${DESKTOP_MODE_SQL}`, values: [] };
+	return {
+		sql: `${t}.${HEADLESS_MODE_SQL} AND ${t}.issuer = ? AND ${t}.account_subject = ?`,
+		values: [mode.issuer, mode.subject],
+	};
+}
+function finalizeModeMatches(row: Attempt, mode: FinalizeMode): boolean {
+	if (mode.kind === "desktop") return row.loopback_redirect !== AUTH_LINK_HEADLESS_MARKER;
+	return (
+		row.loopback_redirect === AUTH_LINK_HEADLESS_MARKER &&
+		row.issuer === mode.issuer &&
+		row.account_subject === mode.subject
+	);
+}
+function andStatement(a: AuthLinkStatement, b: AuthLinkStatement): AuthLinkStatement {
+	return { sql: `(${a.sql}) AND (${b.sql})`, values: [...a.values, ...b.values] };
 }
 function requesterGuard(r: CoordinatorAuthLinkRequester): AuthLinkStatement {
 	if (r.kind === "browser")

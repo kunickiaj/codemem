@@ -63,7 +63,12 @@ async function confirmedFlow({ store }: Fixture) {
 	expect(verified).toEqual({
 		kind: "applied",
 		status: { ...metadata, state: "oidc_verified" },
-		target: { identityId: reviewed.identityId, groupId: signer.groupId, deviceId: signer.deviceId },
+		target: {
+			identityId: reviewed.identityId,
+			groupId: signer.groupId,
+			deviceId: signer.deviceId,
+			fingerprint: signer.fingerprint,
+		},
 	});
 	expect(confirmed).toEqual({ kind: "applied", status: { ...metadata, state: "confirmed" } });
 	return { cfg: cfgMeta, input, metadata, enrollment };

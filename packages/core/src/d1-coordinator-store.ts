@@ -68,6 +68,12 @@ import type {
 	CoordinatorAuthLinkOptions,
 	CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
+import type {
+	CoordinatorAuthHeadlessBrowserStartInput,
+	CoordinatorAuthLinkHeadlessApprovalInput,
+	CoordinatorAuthLinkHeadlessCreateInput,
+	CoordinatorAuthLinkHeadlessFinalizeInput,
+} from "./coordinator-auth-link-headless.js";
 import {
 	assertCoordinatorAuthSchema,
 	CoordinatorAuthSchemaUpgradeRequiredError,
@@ -1210,6 +1216,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authBrowserTransactions.startAuthBrowserTransaction(input, config);
 	}
+	async startHeadlessAuthLinkBrowserTransaction(
+		input: CoordinatorAuthHeadlessBrowserStartInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.startHeadlessAuthLinkBrowserTransaction(input, config);
+	}
 	async consumeAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionConsumeInput,
 		config: CoordinatorAuthBrowserConfig,
@@ -1425,6 +1437,30 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authLinks.getAuthLinkAttemptStatus(attemptId, requester, config);
+	}
+	async createHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessCreateInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.createHeadlessAuthLinkAttempt(input, config);
+	}
+	async confirmHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.confirmHeadlessAuthLinkAttempt(input, config);
+	}
+	async readHeadlessAuthLinkApproval(
+		input: CoordinatorAuthLinkHeadlessApprovalInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.readHeadlessAuthLinkApproval(input, config);
+	}
+	async finalizeHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.finalizeHeadlessAuthLinkAttempt(input, config);
 	}
 
 	async close(): Promise<void> {
