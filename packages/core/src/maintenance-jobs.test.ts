@@ -8,6 +8,7 @@ import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
 	getMaintenanceJob,
+	isTransientSqliteBusy,
 	listMaintenanceJobs,
 	startMaintenanceJob,
 	updateMaintenanceJob,
@@ -276,5 +277,34 @@ describe("maintenance jobs", () => {
 		} finally {
 			verify.close();
 		}
+	});
+});
+
+describe("isTransientSqliteBusy", () => {
+	const withCode = (code: string, message = "boom") => Object.assign(new Error(message), { code });
+
+	it.each([
+		"SQLITE_BUSY",
+		"SQLITE_BUSY_SNAPSHOT",
+		"SQLITE_BUSY_TIMEOUT",
+		"SQLITE_LOCKED",
+		"SQLITE_LOCKED_SHAREDCACHE",
+	])("treats %s as a transient lock", (code) => {
+		expect(isTransientSqliteBusy(withCode(code))).toBe(true);
+	});
+
+	it.each(["database is locked", "database table is locked", "Database is busy"])(
+		"falls back to the message %s when there is no code",
+		(message) => {
+			expect(isTransientSqliteBusy(new Error(message))).toBe(true);
+		},
+	);
+
+	it.each([
+		["another SQLite code", withCode("SQLITE_CONSTRAINT")],
+		["an unrelated error", new Error("disk I/O error")],
+		["a non-error value", null],
+	])("rejects %s", (_name, error) => {
+		expect(isTransientSqliteBusy(error)).toBe(false);
 	});
 });

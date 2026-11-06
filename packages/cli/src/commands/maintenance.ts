@@ -62,6 +62,10 @@ export async function runMaintenanceWorkerCommand(opts: DbOpts & ConfigOpts): Pr
 	const dbPath = resolveDbPath(resolveDbOpt(opts));
 	if (opts.config) process.env.CODEMEM_CONFIG = opts.config;
 	process.env.CODEMEM_DB = dbPath;
+	// The viewer reads this process's stderr through a pipe. If the viewer dies
+	// first, writes fail with EPIPE; keep running, as the worker did when
+	// stderr went to /dev/null.
+	process.stderr.on("error", () => undefined);
 
 	const abort = new AbortController();
 	const runtime = startMaintenanceWorkerRuntime({
