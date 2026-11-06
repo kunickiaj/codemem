@@ -158,6 +158,28 @@ describe("headless link stops", () => {
 		expect(coordinator.routes()).toEqual(["create", "status", "cancel"]);
 	});
 
+	it("stops waiting for a prompt that ignores cancellation and still cancels", async () => {
+		// Arrange
+		const controller = new AbortController();
+		const coordinator = fakeCoordinator({
+			create: [created],
+			status: [polled("confirmed", APPROVAL)],
+			cancel: [cancelled],
+		});
+		// Act
+		const { result } = runHeadless(local, coordinator, {
+			signal: controller.signal,
+			// Never settles and never looks at the signal.
+			approve: () => {
+				queueMicrotask(() => controller.abort());
+				return new Promise<boolean>(() => {});
+			},
+		});
+		// Assert
+		expect(await errorCode(result)).toBe("link_stopped");
+		expect(coordinator.routes()).toEqual(["create", "status", "cancel"]);
+	});
+
 	it("reports unconfirmed cancellation when the cancel request fails", async () => {
 		// Arrange
 		const coordinator = fakeCoordinator({

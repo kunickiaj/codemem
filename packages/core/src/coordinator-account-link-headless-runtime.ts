@@ -205,16 +205,42 @@ async function askApproval(
 		session.signal,
 		AbortSignal.timeout(Math.max(1, expiresAtMs - Date.now())),
 	]);
-	let approved = false;
-	try {
-		approved = (await hooks.approve(approval, { expiresAtMs, signal })) === true;
-	} catch {
-		approved = false;
-	}
+	const approved = await raceApproval(
+		() => hooks.approve(approval, { expiresAtMs, signal }),
+		signal,
+	);
 	// A prompt that outlived the attempt or this run is a stop, not a decision.
 	if (signal.aborted) throw failure("link_stopped");
 	if (!approved) throw failure("link_declined");
 	await assertCurrentContext(session.options, session.signal);
+}
+
+/**
+ * Waits for the approval callback, but stops waiting when the signal aborts so
+ * a callback that ignores the signal cannot keep the run, and its cancel
+ * cleanup, pending. A late resolution or rejection stays handled.
+ */
+async function raceApproval(
+	approve: () => boolean | Promise<boolean>,
+	signal: AbortSignal,
+): Promise<boolean> {
+	if (signal.aborted) return false;
+	let onAbort = () => {};
+	try {
+		const aborted = new Promise<false>((resolve) => {
+			onAbort = () => resolve(false);
+			signal.addEventListener("abort", onAbort, { once: true });
+		});
+		const decision = Promise.resolve()
+			.then(approve)
+			.then(
+				(value) => value === true,
+				() => false,
+			);
+		return await Promise.race([decision, aborted]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
 }
 
 /** Polling cadence: slow_down on 429 (RFC 8628) and back off on transport failures. */
