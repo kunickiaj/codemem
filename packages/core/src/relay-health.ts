@@ -58,16 +58,36 @@ export interface RelayHealthState {
 	readonly revision: number | null;
 	readonly lastNow: number | null;
 	readonly publishedState: RelayHealthPublication["state"] | null;
+	readonly lastTrip?: RelayHealthTrip | null;
 }
 export interface RelayHealthSnapshot extends RelayHealthPublication {
 	readonly revision: number | null;
 	readonly validUntilMs: number | null;
 	readonly healthyWindows: number;
 	readonly samples: number;
+	/** The most recent trip, kept after recovery so operators can see what happened. */
+	readonly lastTrip: RelayHealthTrip | null;
 }
 export interface RelayHealthOptions extends RelayHealthProbeOptions {
 	readonly enabled: boolean;
 	readonly publish: RelayHealthPublisher;
+	/** Called with the trip reason each time the monitor trips, so hosts can log it. */
+	readonly onTrip?: (trip: RelayHealthTrip) => void;
+}
+/** Why the monitor last tripped, with the cohort window when a window caused it. */
+export interface RelayHealthTrip {
+	readonly reason:
+		| "window_bad"
+		| "sample_invalid"
+		| "late_failure"
+		| "publish_failed"
+		| "probe_cycle_failed"
+		| "stopped";
+	readonly cohort?: string;
+	readonly samples?: number;
+	readonly failures?: number;
+	readonly maxDurationMs?: number;
+	readonly atMs: number | null;
 }
 export interface RelayHealthRuntimeOptions extends Omit<RelayHealthOptions, "publish"> {
 	readonly authorityId: string;
@@ -242,6 +262,7 @@ export class RelayHealthMonitor {
 	private publicationRequested = false;
 	private publishedState: RelayHealthPublication["state"] | null = null;
 	private publishedObservedAtMs: number | null = null;
+	private lastTrip: RelayHealthTrip | null = null;
 
 	constructor(private readonly options: RelayHealthOptions) {
 		this.options = Object.freeze({ ...options });
@@ -280,9 +301,11 @@ export class RelayHealthMonitor {
 			window.successAt = null;
 		}
 	}
-	private trip(): void {
+	private trip(trip: Omit<RelayHealthTrip, "atMs">): void {
 		this.tripped = true;
 		this.healthyWindows = 0;
+		this.lastTrip = { ...trip, atMs: this.lastNow };
+		this.options.onTrip?.(this.lastTrip);
 	}
 	private window(endpoint: RelayHealthEndpoint, cohort: Cohort): RelayHealthWindow {
 		const window = this.windows.get(`${endpoint}:${cohort}`);
@@ -306,7 +329,14 @@ export class RelayHealthMonitor {
 		}
 		const bad = badPerformance(window);
 		window.badWindows = count >= 20 && bad ? window.badWindows + 1 : 0;
-		if (window.badWindows >= 2 || (count > 0 && count < 20 && bad)) this.trip();
+		if (window.badWindows >= 2 || (count > 0 && count < 20 && bad))
+			this.trip({
+				reason: "window_bad",
+				cohort: key,
+				samples: count,
+				failures: window.failures,
+				maxDurationMs: Math.max(...window.durations),
+			});
 		return healthy(window, end);
 	}
 	private advance(now: number): void {
@@ -353,13 +383,13 @@ export class RelayHealthMonitor {
 		const duration = observation.durationMs;
 		if (!Number.isFinite(duration) || duration < 0 || window.durations.length >= MAX_SAMPLES) {
 			this.fullWindow = false;
-			this.trip();
+			this.trip({ reason: "sample_invalid", samples: window.durations.length });
 			return;
 		}
 		const failure = observation.outcome === "failure" || duration > 3000;
 		// Delayed producer delivery must not count towards a newer recovery minute.
 		if (this.windowStart !== null && completedAt < this.windowStart) {
-			if (failure) this.trip();
+			if (failure) this.trip({ reason: "late_failure", maxDurationMs: duration });
 			else window.lastSuccessAt = Math.max(window.lastSuccessAt ?? 0, completedAt);
 			return;
 		}
@@ -439,6 +469,7 @@ export class RelayHealthMonitor {
 			validUntilMs: observedAtMs === null ? null : observedAtMs + FRESH_MS,
 			healthyWindows: this.healthyWindows,
 			samples: [...this.windows.values()].reduce((sum, window) => sum + window.durations.length, 0),
+			lastTrip: this.lastTrip,
 		};
 	}
 	private publish(): Promise<void> {
@@ -463,7 +494,7 @@ export class RelayHealthMonitor {
 					// A newer state can match the previous publication while this write is in flight.
 					if (this.snapshot().state !== snapshot.state) this.publicationRequested = true;
 				} catch {
-					this.trip();
+					this.trip({ reason: "publish_failed" });
 					this.revision = null;
 					this.publishedState = null;
 					this.publishedObservedAtMs = null;
@@ -528,6 +559,7 @@ export class RelayHealthMonitor {
 			revision: this.revision,
 			lastNow: this.lastNow,
 			publishedState: this.publishedState,
+			lastTrip: this.lastTrip,
 		};
 	}
 	/**
@@ -551,6 +583,7 @@ export class RelayHealthMonitor {
 		this.revision = value.revision;
 		this.lastNow = value.lastNow;
 		this.publishedState = value.publishedState;
+		this.lastTrip = value.lastTrip ?? null;
 		return true;
 	}
 	private withinGap(lastNow: number | null, maxGapMs: number): boolean {
@@ -566,7 +599,7 @@ export class RelayHealthMonitor {
 		if (!this.options.enabled || this.timer !== undefined) return;
 		this.scheduleMaintenance(30000);
 		void this.runProbeCycle().catch(() => {
-			this.trip();
+			this.trip({ reason: "probe_cycle_failed" });
 		});
 	}
 	private scheduleMaintenance(delayMs: number): void {
@@ -576,7 +609,7 @@ export class RelayHealthMonitor {
 			this.scheduleMaintenance(remaining > 0 ? remaining : 30000);
 			if (remaining <= 0)
 				void this.runProbeCycle().catch(() => {
-					this.trip();
+					this.trip({ reason: "probe_cycle_failed" });
 				});
 		}, Math.ceil(delayMs));
 		this.timer.unref?.();
@@ -586,7 +619,7 @@ export class RelayHealthMonitor {
 		clearTimeout(this.timer);
 		this.timer = undefined;
 		this.suspended = true;
-		this.trip();
+		this.trip({ reason: "stopped" });
 		this.invalidateClock();
 		this.cycleAbort?.abort();
 		await this.activeCycle;

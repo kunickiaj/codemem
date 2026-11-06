@@ -12,7 +12,8 @@ function setup(enabled = true) {
 	const publish = vi.fn(
 		async (_value: RelayHealthPublication): Promise<number | null> => ++revision,
 	);
-	const monitor = new RelayHealthMonitor({ ...f.options, enabled, publish });
+	const onTrip = vi.fn();
+	const monitor = new RelayHealthMonitor({ ...f.options, enabled, publish, onTrip });
 	const app = new Hono();
 	let device = "device-a";
 	let status = 200;
@@ -44,6 +45,7 @@ function setup(enabled = true) {
 		...f,
 		monitor,
 		publish,
+		onTrip,
 		setTime,
 		recover,
 		request,
@@ -619,5 +621,31 @@ describe("relay health maintenance ownership", () => {
 		// Assert
 		expect(f.fetcher).not.toHaveBeenCalled();
 		expect(f.monitor.snapshot()).toMatchObject({ samples: 0, state: "tripped" });
+	});
+});
+
+describe("relay health trip reasons", () => {
+	it("records why it tripped, including the window that caused it", async () => {
+		// Arrange
+		const f = setup();
+		await f.recover();
+		f.route({ device: "real-device", duration: 3001 });
+		// Act
+		await f.request();
+		f.setTime(540000);
+		const snapshot = f.monitor.snapshot();
+		// Assert: the snapshot and the host hook carry the cohort and sample detail.
+		expect(snapshot.lastTrip).toMatchObject({
+			reason: "window_bad",
+			cohort: "catalogue:real-client",
+			samples: 1,
+			failures: 1,
+			maxDurationMs: 3001,
+		});
+		expect(f.onTrip).toHaveBeenLastCalledWith(snapshot.lastTrip);
+		// The reason survives a state export and import.
+		const restored = new RelayHealthMonitor({ ...f.options, publish: async () => 1 });
+		expect(restored.importState(f.monitor.exportState())).toBe(true);
+		expect(restored.snapshot().lastTrip).toEqual(snapshot.lastTrip);
 	});
 });

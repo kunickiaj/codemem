@@ -132,6 +132,8 @@ The monitor probes the normal v2 catalogue and synthetic-scope member endpoints 
 
 The monitor starts tripped and needs five complete healthy windows before it publishes ready. Anonymous requests and expected rate-limit denials cannot trip its authenticated server cohorts. A failure pauses readiness while a minute has fewer than 20 samples. The completed window determines whether to trip or apply the high-volume thresholds. It aggregates durations and outcomes in memory, without request payloads. SQLite and D1 publishers atomically update existing readiness rows. They do not create tables, profiles, or positive quota budgets. Outside the Cloudflare admission route above, profile provisioning remains a local-fixture operation. Operators must separately approve positive profiles and the environment before activation.
 
+Each trip records its reason: a bad window with its cohort, sample count, failures and slowest completion; an invalid or late sample; a failed publication; a failed probe cycle; or an explicit stop. The monitor snapshot carries the most recent trip as `lastTrip`, which survives a Durable Object restore, and the Cloudflare host writes each trip to Workers Logs as a `relay_health_tripped` warning with the group ID. Search that message in the Observability page to see why a group stopped admitting.
+
 ## Verify local composition
 
 Run focused relay peer, reachability, health, scoped-channel, and relay integration tests, then type-check:
