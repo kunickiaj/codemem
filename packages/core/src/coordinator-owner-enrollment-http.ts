@@ -115,6 +115,14 @@ function page(content: string, cookies: string[] = []): Response {
 		headers,
 	);
 }
+/** Shown at the callback; the device's own replies stay the generic unavailable one. */
+function headlessLinkedPage(): Response {
+	return respond(
+		'<!doctype html><html lang="en"><meta charset="utf-8"><title>Enroll owner device</title><body><h1>Link this account from a browser first</h1><p>This account was linked from a device without a browser. Link it once from a computer with a browser before adding devices to it.</p></body></html>',
+		403,
+		{ "Content-Type": "text/html; charset=utf-8" },
+	);
+}
 function redirect(location: string, cookies: string[]): Response {
 	const headers = new Headers({ Location: location });
 	for (const cookie of cookies) headers.append("Set-Cookie", cookie);
@@ -302,7 +310,10 @@ async function dispatch(
 	if (path === CONFIRM_PATH) return confirmBrowser(request, api, clientKey, scope.publicOrigin);
 	if (path === callback) {
 		const result = await api.verifyCallback(request);
-		return result.kind === "verified" ? confirmationPage(result) : reject();
+		if (result.kind === "verified") return confirmationPage(result);
+		return result.kind === "rejected" && result.detail === "target_headless_linked"
+			? headlessLinkedPage()
+			: reject();
 	}
 	return reject(404);
 }

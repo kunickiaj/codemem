@@ -1,3 +1,5 @@
+import { NO_HEADLESS_TARGET_LINK_SQL } from "./coordinator-auth-headless-provenance.js";
+import { HEADLESS_LINK_PROVENANCE_TABLE } from "./coordinator-auth-headless-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import {
 	decodeCoordinatorAuthProof32,
@@ -251,6 +253,9 @@ async function guardStatement(
 	const all = [...checks];
 	if (await hasTable(backend, "coordinator_legacy_owner_resolutions"))
 		all.push(NO_OTHER_LEGACY_OWNER);
+	// Checked here as well as at verification, so a headless link written in between still refuses.
+	if (await hasTable(backend, HEADLESS_LINK_PROVENANCE_TABLE))
+		all.push({ sql: NO_HEADLESS_TARGET_LINK_SQL, values: [] });
 	return {
 		sql: `WITH rebind_guards AS MATERIALIZED (SELECT ${all
 			.map((guard, index) => `(${guard.sql}) AS g${index}`)

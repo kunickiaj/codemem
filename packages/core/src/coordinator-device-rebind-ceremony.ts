@@ -1,6 +1,11 @@
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import {
+	HEADLESS_PROVENANCE_PRESENT_SQL,
+	headlessLinkExistsSql,
+	isHeadlessLinkId,
+} from "./coordinator-auth-headless-provenance.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_CREATE_WINDOW_MS,
@@ -69,7 +74,20 @@ export type DeviceRebindRefusal =
 	| "account_not_linked"
 	| "already_this_identity"
 	| "daily_limit"
-	| "retry";
+	| "retry"
+	/** The account's active link came from a device without a browser. */
+	| "target_headless_linked";
+
+/**
+ * The refusal sent to the device. Devices released before headless linking
+ * know only the original reasons, so the headless block reaches them as
+ * `unavailable`; the browser page still explains it.
+ */
+export function deviceRebindWireRefusal(
+	reason: DeviceRebindRefusal,
+): Exclude<DeviceRebindRefusal, "target_headless_linked"> {
+	return reason === "target_headless_linked" ? "unavailable" : reason;
+}
 
 export interface DeviceRebindConfirmation {
 	attemptId: string;
@@ -604,13 +622,18 @@ async function persistVerified(
 		link_id: string;
 		identity_id: string;
 		authority_kind: "controller_attestation" | "device_claim";
+		headless_capable: number;
 	}>({
-		sql: `SELECT link_id, identity_id, authority_kind FROM coordinator_auth_account_links
+		sql: `SELECT link_id, identity_id, authority_kind, ${HEADLESS_PROVENANCE_PRESENT_SQL} AS headless_capable
+ FROM coordinator_auth_account_links
  WHERE coordinator_id = ? AND issuer = ? AND subject = ? AND revoked_at_ms IS NULL`,
 		values: [ctx.c.coordinatorId, account.issuer, account.subject],
 	});
 	if (!row) return refused("unavailable");
 	if (!link) return refused("account_not_linked");
+	// The write refuses a headless target itself, so success costs no extra read;
+	// only a refused write looks up why. The commit repeats the check atomically.
+	const headless = link.headless_capable === 1;
 	const time = ctx.deps.now();
 	const wrote = await ctx.deps.backend.run({
 		sql: `UPDATE ${ATTEMPT} AS a SET state = 'oidc_verified', account_subject = ?, target_identity_id = ?,
@@ -623,7 +646,7 @@ async function persistVerified(
   AND l.link_id = ? AND l.identity_id = ? AND l.issuer = a.issuer AND l.subject = ? AND l.revoked_at_ms IS NULL)
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE b.coordinator_id = a.coordinator_id
   AND b.browser_transaction_hash = a.browser_transaction_hash AND b.state = 'consumed' AND b.claim_token = ?)
- AND (? = a.current_identity_id OR ${CURRENT_UNLINKED_SQL})`,
+ AND (? = a.current_identity_id OR ${CURRENT_UNLINKED_SQL})${headless ? ` AND NOT ${headlessLinkExistsSql("a.coordinator_id")}` : ""}`,
 		values: [
 			account.subject,
 			link.identity_id,
@@ -637,8 +660,15 @@ async function persistVerified(
 			claimToken,
 			// A switch needs an unlinked current Identity; a self-bind's no-own-proof rule is in LIVE_SQL.
 			link.identity_id,
+			...(headless ? [link.link_id] : []),
 		],
 	});
+	if (
+		wrote !== 1 &&
+		headless &&
+		(await isHeadlessLinkId(ctx.deps.backend, ctx.c.coordinatorId, link.link_id))
+	)
+		return refused("target_headless_linked");
 	if (wrote !== 1) return refused(await currentRefusal(ctx, row, link.identity_id));
 	const verified = await readAttempt(ctx, attemptId);
 	if (verified?.state !== "oidc_verified" || verified.link_id !== link.link_id)
@@ -785,6 +815,11 @@ async function finalizeRefusal(
 		signature: input.signature,
 	});
 	if (!proof) return "unavailable";
+	if (
+		after.link_id &&
+		(await isHeadlessLinkId(ctx.deps.backend, ctx.c.coordinatorId, after.link_id))
+	)
+		return "target_headless_linked";
 	const recent = await ctx.deps.backend.first<{ n: number }>({
 		sql: `SELECT count(*) AS n FROM coordinator_device_rebind_audit_log
  WHERE coordinator_id = ? AND target_identity_id = ? AND created_at_ms > ?`,

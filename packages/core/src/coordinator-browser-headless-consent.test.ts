@@ -24,7 +24,7 @@ import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 const ORIGIN = "https://app.example.test";
 const WARNING =
-	"Only continue if you ran <code>codemem coordinator link-account --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.";
+	'Only continue if you ran <code class="command">codemem coordinator link-account --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.';
 const RETURN = "Return to your device's terminal to finish.";
 const databases: ReturnType<typeof setupStore>["db"][] = [];
 

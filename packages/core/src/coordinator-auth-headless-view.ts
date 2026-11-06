@@ -2,7 +2,6 @@ import {
 	AUTH_BROWSER_FORM_ACTIONS,
 	buildPage,
 	type CoordinatorAuthBrowserPage,
-	entityMarkup,
 	escapeHtml,
 	form,
 	profileMarkup,
@@ -84,6 +83,10 @@ function consentDeviceName(value: string | null): string | null {
 	}
 }
 
+function idMarkup(id: string, heading: string): string {
+	return `<dt>${escapeHtml(heading)}</dt><dd><code>${escapeHtml(id)}</code></dd>`;
+}
+
 export async function renderHeadlessConsentPage(
 	input: HeadlessConsentPageInput,
 ): Promise<CoordinatorAuthBrowserPage> {
@@ -93,9 +96,10 @@ export async function renderHeadlessConsentPage(
 	const fingerprint = formatShortKeyFingerprint(input.fingerprint);
 	const name = consentDeviceName(input.deviceName) ?? "Device";
 	// <bdi> keeps the name's text direction from reordering the ID beside it.
+	// No name is known for the Identity or Group, so each row shows only its ID.
 	const details =
-		entityMarkup({ id: input.identityId }, "Identity") +
-		entityMarkup({ id: input.groupId }, "Group") +
+		idMarkup(input.identityId, "Identity") +
+		idMarkup(input.groupId, "Group") +
 		`<dt>Device</dt><dd><bdi>${escapeHtml(name)}</bdi><br><code>${escapeHtml(input.deviceId)}</code></dd>`;
 	const keyCheck = `<section aria-label="Device key"><h2>Device key fingerprint</h2><p><code>${escapeHtml(fingerprint)}</code></p></section>`;
 	const options = { attemptId: input.attemptId };
@@ -107,7 +111,7 @@ export async function renderHeadlessConsentPage(
 		});
 	return buildPage(
 		"Link account to a device",
-		`<h1>Link account to a device</h1>${profileMarkup(projectAccountProfileView(input.profile, input.issuer))}<section aria-label="Link details"><h2>Link details</h2><dl>${details}</dl></section>${keyCheck}<p role="alert"><strong>Only continue if you ran <code>codemem coordinator link-account --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.</strong></p><div class="actions">${actions}</div>`,
+		`<h1>Link account to a device</h1>${profileMarkup(projectAccountProfileView(input.profile, input.issuer))}<section aria-label="Link details"><h2>Link details</h2><dl>${details}</dl></section>${keyCheck}<p role="alert"><strong>Only continue if you ran <code class="command">codemem coordinator link-account --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.</strong></p><div class="actions">${actions}</div>`,
 		input.issuer,
 		{ referrerPolicy: "same-origin" },
 	);
