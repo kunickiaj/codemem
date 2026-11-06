@@ -200,6 +200,115 @@ function memoryKeys(): string[] {
 	).map((row) => row.import_key);
 }
 
+it.each(["apply_failed", "scope_rejected"] as const)(
+	"retains unresolved scoped %s across consecutive aborted passes until scoped retry",
+	async (errorCode) => {
+		// Arrange: the previous pass left an initiated receive error for the scoped stream.
+		recordSyncTransferObservation(source, peerId, "receive", {
+			errorCode,
+			now: new Date(timestamp),
+		});
+		const push = vi.fn<(ops: ReplicationOp[]) => ReturnType<RequestJsonExecutor>>(async () => [
+			500,
+			{ error: "fixture_exchange_failure" },
+		]);
+		const base = executorFor(push, { scoped: true });
+		let scopedGets = 0;
+		const executor: RequestJsonExecutor = async (method, url, request) => {
+			if (method === "GET" && new URL(url).searchParams.get("scope_id") === scopeId) {
+				scopedGets++;
+			}
+			return base(method, url, request);
+		};
+
+		// Act: each default receive succeeds, but its POST aborts before the scoped GET.
+		const abortedPasses = [];
+		for (let pass = 0; pass < 2; pass++) {
+			const result = await runSync(executor);
+			abortedPasses.push({
+				ok: result.ok,
+				activity: readPeerSyncActivity(source, [peerId]).get(peerId),
+				scopedGets,
+			});
+		}
+		push.mockResolvedValue([200, { errors: [] }]);
+		const recovered = await runSync(executor);
+		const afterRecovery = readPeerSyncActivity(source, [peerId]).get(peerId);
+
+		// Assert: sibling success cannot resolve untried work, even across another pass.
+		for (const pass of abortedPasses) {
+			expect(pass.ok).toBe(false);
+			expect(pass.scopedGets).toBe(0);
+			expect.soft(pass.activity).toMatchObject({
+				receive: { errorCode },
+				send: { errorCode: "exchange_failed", lastSuccessAt: null },
+			});
+		}
+		expect(recovered.ok).toBe(true);
+		expect(scopedGets).toBe(1);
+		expect(afterRecovery).toMatchObject({
+			receive: { errorCode: null, lastSuccessAt: "2026-11-02T12:00:00.000Z" },
+			send: { errorCode: null, lastSuccessAt: "2026-11-02T12:00:00.000Z" },
+		});
+	},
+);
+
+it.each(["apply_failed", "scope_rejected"] as const)(
+	"retains unresolved scoped %s after a default-only reset snapshot until full retry",
+	async (errorCode) => {
+		// Arrange: the default stream needs a reset, but the unresolved error belongs to a scope.
+		recordSyncTransferObservation(source, peerId, "receive", {
+			errorCode,
+			now: new Date(timestamp),
+		});
+		const base = executorFor(async () => [200, { errors: [] }], { scoped: true });
+		let resetPending = true;
+		let scopedGets = 0;
+		let snapshots = 0;
+		const executor: RequestJsonExecutor = async (method, url, request) => {
+			const parsed = new URL(url);
+			if (method === "GET" && parsed.pathname === "/v1/snapshot") {
+				snapshots++;
+				resetPending = false;
+				return [200, { ...boundary, scope_id: null, items: [], has_more: false }];
+			}
+			if (method === "GET" && parsed.pathname === "/v1/ops") {
+				if (parsed.searchParams.get("scope_id") === scopeId) scopedGets++;
+				else if (resetPending) {
+					return [
+						409,
+						{ ...boundary, scope_id: null, reset_required: true, reason: "stale_cursor" },
+					];
+				}
+			}
+			const [status, payload] = await base(method, url, request);
+			if (parsed.pathname === "/v1/status" && payload) {
+				payload.sync_reset = { ...boundary, scope_id: null };
+			}
+			return [status, payload];
+		};
+
+		// Act: reset returns early without trying the scoped stream, then a normal pass retries it.
+		const reset = await runSync(executor);
+		const afterReset = readPeerSyncActivity(source, [peerId]).get(peerId)?.receive;
+		const scopedGetsAfterReset = scopedGets;
+		const retry = await runSync(executor);
+
+		// Assert: a default snapshot proves progress without resolving untried scoped work.
+		expect(reset.error).toBeUndefined();
+		expect(reset.ok).toBe(true);
+		expect(snapshots).toBe(1);
+		expect(scopedGetsAfterReset).toBe(0);
+		expect.soft(afterReset).toMatchObject({
+			errorCode,
+			lastSuccessAt: "2026-11-02T12:00:00.000Z",
+		});
+		expect(retry.ok).toBe(true);
+		expect(scopedGets).toBe(1);
+		expect(readPeerSyncActivity(source, [peerId]).get(peerId)?.receive.errorCode).toBeNull();
+	},
+);
+
 it.each([
 	{ failedStream: "default", reverseScopes: false },
 	{ failedStream: "default", reverseScopes: true },

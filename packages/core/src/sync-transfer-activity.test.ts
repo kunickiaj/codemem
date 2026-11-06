@@ -363,6 +363,97 @@ it.each(["scope_rejected", "apply_failed"] as const)(
 	},
 );
 
+it.each(["apply_failed", "scope_rejected", "exchange_failed"] as const)(
+	"preserves %s while recording partial success until ordinary success resolves it",
+	(errorCode) => {
+		// Arrange: an earlier failure remains unresolved when only one window succeeds.
+		recordSyncTransferObservation(db, peer, "receive", {
+			errorCode,
+			now: new Date("2026-11-02T10:00:00Z"),
+		});
+
+		// Act: partial success updates timestamps, and a later full success resolves the error.
+		recordSyncTransferObservation(db, peer, "receive", {
+			preserveError: true,
+			now: new Date("2026-11-02T11:00:00Z"),
+		});
+		const partial = activity().receive;
+		recordSyncTransferObservation(db, peer, "receive", {
+			now: new Date("2026-11-02T12:00:00Z"),
+		});
+
+		// Assert: preservation affects the error, not evidence that the window succeeded.
+		expect(partial).toMatchObject({
+			errorCode,
+			lastAttemptAt: "2026-11-02T11:00:00.000Z",
+			lastSuccessAt: "2026-11-02T11:00:00.000Z",
+		});
+		expect(activity().receive).toMatchObject({
+			errorCode: null,
+			lastAttemptAt: "2026-11-02T12:00:00.000Z",
+			lastSuccessAt: "2026-11-02T12:00:00.000Z",
+		});
+	},
+);
+
+it.each([
+	{ errorCode: "apply_failed", expected: "apply_failed" },
+	{ errorCode: "scope_rejected", expected: "scope_rejected" },
+	{ errorCode: "exchange_failed", expected: null },
+] as const)("single-scope success leaves $errorCode as $expected", ({ errorCode, expected }) => {
+	// Arrange: an earlier failure may belong to a scope this success did not retry.
+	recordSyncTransferObservation(db, peer, "receive", {
+		errorCode,
+		now: new Date("2026-11-02T10:00:00Z"),
+	});
+
+	// Act
+	recordSyncTransferObservation(db, peer, "receive", {
+		preserveScopedError: true,
+		now: new Date("2026-11-02T11:00:00Z"),
+	});
+
+	// Assert: success proves the transport, but cannot resolve another scope's error.
+	expect(activity().receive).toMatchObject({
+		errorCode: expected,
+		lastSuccessAt: "2026-11-02T11:00:00.000Z",
+	});
+});
+
+it.each(["apply_failed", "scope_rejected"] as const)(
+	"keeps %s priority over generic failure with preservation enabled",
+	(errorCode) => {
+		// Arrange: preservation must also work when no previous observation exists.
+		recordSyncTransferObservation(db, peer, "receive", {
+			preserveError: true,
+			now: new Date("2026-11-02T09:00:00Z"),
+		});
+		const initial = activity().receive;
+		recordSyncTransferObservation(db, peer, "receive", {
+			errorCode,
+			now: new Date("2026-11-02T10:00:00Z"),
+		});
+
+		// Act: preservation cannot replace a specific error with a generic exchange failure.
+		recordSyncTransferObservation(db, peer, "receive", {
+			errorCode: "exchange_failed",
+			preserveError: true,
+			now: new Date("2026-11-02T11:00:00Z"),
+		});
+
+		// Assert: a first success stays healthy, while later errors keep their existing priority.
+		expect(initial).toMatchObject({
+			errorCode: null,
+			lastSuccessAt: "2026-11-02T09:00:00.000Z",
+		});
+		expect(activity().receive).toMatchObject({
+			errorCode,
+			lastAttemptAt: "2026-11-02T11:00:00.000Z",
+			lastSuccessAt: "2026-11-02T09:00:00.000Z",
+		});
+	},
+);
+
 it("counts by local observation time and excludes expired and future receipts", () => {
 	const now = new Date("2026-11-02T12:00:00Z");
 	recordSyncTransferObservation(db, peer, "send", { now });

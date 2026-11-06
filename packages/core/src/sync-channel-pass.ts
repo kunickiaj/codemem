@@ -455,6 +455,10 @@ export async function syncScopedChannelOnce(
 				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
 		});
 		if (!result.ok) return failedResult(result, options.factory, "channel pull failed");
+		// One Space per pass proves the receive path works, but other scopes stay unretried.
+		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+			preserveScopedError: true,
+		});
 		checkAuthorization(context);
 		saveSyncChannelCompletedBoundary(context.db, {
 			peerDeviceId: context.peerDeviceId,

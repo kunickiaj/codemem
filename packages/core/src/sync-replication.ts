@@ -2888,6 +2888,7 @@ export interface ApplyReplicationOpsOptions extends LocalCreationContext {
 	activityPeerDeviceId?: string;
 	/** Keep incoming requests from resolving failures owned by local cursor retries. */
 	activitySource?: SyncTransferObservationSource;
+	activityOptions?: { preserveError?: boolean };
 	inboundScopeValidation?: InboundScopeValidationOptions | null;
 	keysDir?: string;
 }
@@ -3811,6 +3812,7 @@ export function applyReplicationOps(
 			if (result.rejected > 0) errorCode = "scope_rejected";
 			else if (result.errors.length > 0) errorCode = "apply_failed";
 			recordSyncTransferObservation(db, peer, "receive", {
+				...options.activityOptions,
 				errorCode,
 				source: options.activitySource,
 			});

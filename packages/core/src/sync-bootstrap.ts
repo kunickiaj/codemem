@@ -54,6 +54,11 @@ export interface BootstrapResult {
 	error?: string;
 }
 
+export interface BootstrapApplicationOptions {
+	activityOptions?: { preserveError?: boolean };
+	cursorPolicy?: "preserve";
+}
+
 interface ExistingSnapshotRow {
 	id: number;
 	rev: number | null;
@@ -454,6 +459,7 @@ export function applyBootstrapSnapshot(
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
 	scanner?: SecretScanner,
+	options?: BootstrapApplicationOptions,
 ): BootstrapResult {
 	const result = newBootstrapResult();
 	// Bootstrap items are peer-authored content. Run them through the same
@@ -529,7 +535,7 @@ export function applyBootstrapSnapshot(
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
 
-		finishSnapshotActivity(db, peerDeviceId, result);
+		finishSnapshotActivity(db, peerDeviceId, result, options);
 	}).immediate();
 
 	return result;
@@ -558,7 +564,7 @@ function advanceMergedSnapshotBoundary(
 	db: Database,
 	peerDeviceId: string,
 	resetInfo: SyncResetRequired,
-	options?: { cursorPolicy: "preserve" },
+	options?: BootstrapApplicationOptions,
 ): void {
 	if (options?.cursorPolicy === "preserve") return;
 	if (resetInfo.baseline_cursor || resetInfo.scope_id) {
@@ -605,7 +611,7 @@ export function mergeBootstrapSnapshot(
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
 	scanner?: SecretScanner,
-	options?: { cursorPolicy: "preserve" },
+	options?: BootstrapApplicationOptions,
 ): BootstrapResult {
 	const result = newBootstrapResult();
 	const activeScanner = scanner ?? new SecretScanner();
@@ -665,7 +671,7 @@ export function mergeBootstrapSnapshot(
 		advanceMergedSnapshotBoundary(db, peerDeviceId, resetInfo, options);
 
 		queueVectorBackfillForSyncBootstrap(db, { embeddableTotal: embeddableApplied });
-		finishSnapshotActivity(db, peerDeviceId, result);
+		finishSnapshotActivity(db, peerDeviceId, result, options);
 	}).immediate();
 
 	return result;
@@ -688,8 +694,13 @@ function recordSnapshotReceipt(
 	recordSyncTransferReceipts(db, peerDeviceId, "receive", [id], { kind: "snapshot" });
 }
 
-function finishSnapshotActivity(db: Database, peerDeviceId: string, result: BootstrapResult): void {
-	recordSyncTransferObservation(db, peerDeviceId, "receive");
+function finishSnapshotActivity(
+	db: Database,
+	peerDeviceId: string,
+	result: BootstrapResult,
+	options?: BootstrapApplicationOptions,
+): void {
+	recordSyncTransferObservation(db, peerDeviceId, "receive", options?.activityOptions);
 	result.ok = true;
 }
 
