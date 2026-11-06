@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.47.5] - 2026-11-06
+
+### Fixed
+
+- Gemini web can register as a remote MCP client. Gemini registers six account- and host-specific Google callbacks in one request, and the server rejected the whole registration because it accepted only `/r/google-gemini`. It now accepts the `/r/` and `/a/` `user_bound_custom-mcp-<account-id>-<host>` paths on `oauth-redirect.googleusercontent.com`, `oauth-redirect-sandbox.googleusercontent.com`, and `oauth-redirect-test.googleusercontent.com`. Other hosts, paths, ports, queries, and fragments remain rejected. ([#2549])
+
+**Upgrade notes:**
+
+- Restart the remote MCP server after upgrading. Public clients still register with `token_endpoint_auth_method=none`.
+
 ## [0.47.4] - 2026-11-05
 
 ### Fixed
@@ -329,3 +339,4 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2477]: https://github.com/kunickiaj/codemem/pull/2477
 [#2522]: https://github.com/kunickiaj/codemem/pull/2522
 [#2531]: https://github.com/kunickiaj/codemem/pull/2531
+[#2549]: https://github.com/kunickiaj/codemem/pull/2549
