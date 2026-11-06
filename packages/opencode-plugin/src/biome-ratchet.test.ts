@@ -710,9 +710,16 @@ describe("Biome diagnostic source comparison", () => {
 describe("pinned Biome report schema", () => {
 	it("accepts the actual reporter output from the pinned binary", () => {
 		const entrypoint = createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome");
+		// Reporter schema coverage needs a single-file rule, not project-wide import graph analysis.
 		const result = spawnSync(
 			process.execPath,
-			[entrypoint, "lint", "--reporter=json", "packages/opencode-plugin/src/lint-diagnostics.ts"],
+			[
+				entrypoint,
+				"lint",
+				"--only=correctness/noUnusedVariables",
+				"--reporter=json",
+				"packages/opencode-plugin/src/lint-diagnostics.ts",
+			],
 			{ cwd: path.resolve(import.meta.dirname, "../../.."), encoding: "utf8" },
 		);
 

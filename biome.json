@@ -45,6 +45,7 @@
 			},
 			"suspicious": {
 				"noExplicitAny": "error",
+				"noImportCycles": "error",
 				"noTemplateCurlyInString": "error"
 			}
 		}
