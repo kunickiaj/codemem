@@ -20,6 +20,7 @@ import {
 	type RemoveStatements,
 } from "./semantic/validated-vector-index-statements.js";
 import { resolveVectorLayout, type VectorLayout } from "./vector-layout.js";
+import { readVectorMetadataRows } from "./vector-metadata-rows.js";
 
 export interface VectorWriteBatch {
 	insert?: { model: string; rows: readonly VectorRowInput[]; expectedCount: number };
@@ -137,6 +138,18 @@ function prepareCatalogMutation(
 function collectDeleteRowIds(statements: WriteStatements, batch: VectorWriteBatch): Set<number> {
 	const ids = new Set(batch.deleteRowIds ?? []);
 	if (!batch.deleteMemoryIds?.length) return ids;
+	if (statements.layout?.kind === "v1") {
+		// v1 keeps validated_vector_rows identical to vec0 (see hasIndexedVectorMetadata),
+		// so (model, memory_id) index seeks replace a vec0 metadata scan. The
+		// reader falls back to vec0 if the row counts disagree.
+		const rows = readVectorMetadataRows(
+			statements.db,
+			{ memoryIds: batch.deleteMemoryIds },
+			"vector-delete-memory-rows",
+		);
+		for (const row of rows) ids.add(Number(row.rowid));
+		return ids;
+	}
 	statements.selectMemoryRows ??= statements.db.prepare(`SELECT rowid FROM memory_vectors
 		WHERE memory_id IN (SELECT value FROM json_each(?))`);
 	for (const row of statements.selectMemoryRows.all(JSON.stringify(batch.deleteMemoryIds)) as {

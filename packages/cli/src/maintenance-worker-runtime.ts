@@ -25,6 +25,7 @@ import {
 	SyncRetentionRunner,
 	VectorModelMigrationRunner,
 } from "@codemem/core";
+import { checkpointWalWithoutBlocking } from "./wal-checkpoint.js";
 
 export interface MaintenanceWorkerLogger {
 	step(message: string): void;
@@ -203,6 +204,11 @@ function createVectorMigrationRunner(
 		// bounded latency for not hammering a quiet DB every 5 seconds.
 		batchSize: 10,
 		idleIntervalMs: 60_000,
+		// Small batches keep each vector write transaction short, and metadata
+		// reads inside those transactions use the indexed table. While work
+		// remains, a tick keeps embedding batches for up to 5 seconds, then
+		// rests for the 5-second interval so slow hosts keep CPU for the viewer.
+		tickBudgetMs: 5_000,
 	});
 }
 
@@ -217,7 +223,7 @@ export function startMaintenanceWorkerRuntime(
 	const walCheckpointTimer = setInterval(
 		() => {
 			try {
-				store.db.pragma("wal_checkpoint(TRUNCATE)");
+				checkpointWalWithoutBlocking(store.db, logger);
 			} catch (error) {
 				logger.warn(
 					`WAL checkpoint failed: ${error instanceof Error ? error.message : String(error)}`,
