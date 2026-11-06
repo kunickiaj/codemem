@@ -11,6 +11,7 @@ import type {
 	RelayFaultFrame,
 	RelayFaultRule,
 } from "../../core/src/relay-fault-proxy-test-fixtures.js";
+import { simulatedRelayPairPacing } from "../../core/src/relay-pair-pacing-test-fixtures.js";
 import {
 	type RelayClientTestOptions,
 	relayClientFixture,
@@ -44,7 +45,7 @@ export async function relaySyncFixture(relayOptions: RelayClientTestOptions = {}
 			target: identity(serverKeys, remote.localPublicKey),
 		},
 		{ source: remote.peerDeviceId, target: remote.localDeviceId },
-		relayOptions,
+		{ simulatedPairPacing: simulatedRelayPairPacing(), ...relayOptions },
 	);
 	relaySyncCleanups.push(() => relay.dispose());
 	const dispatch = createSyncChannelDispatcher({ storeFactory: remote.storeFactory });

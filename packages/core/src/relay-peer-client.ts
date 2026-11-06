@@ -1,5 +1,6 @@
 import { createPublicKey, KeyObject, randomBytes, sign } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import type { OwnedPeerHttpConnection, PeerHttpConnectionFactory } from "./peer-http-client.js";
 import { type PeerHttpServerOptions, servePeerHttpConnection } from "./peer-http-server.js";
@@ -58,6 +59,16 @@ export interface RelayPeerContext {
 	serve(options: PeerHttpServerOptions): Promise<void>;
 }
 
+export interface RelayPairPacing {
+	readonly monotonicMs: () => number;
+	delay(milliseconds: number, signal: AbortSignal): Promise<void>;
+}
+
+const nativePairPacing: RelayPairPacing = {
+	monotonicMs: () => performance.now(),
+	delay: (milliseconds, signal) => delay(milliseconds, undefined, { signal }),
+};
+
 export interface RelayPeerClientOptions {
 	readonly enabled?: boolean;
 	readonly url: string;
@@ -72,6 +83,8 @@ export interface RelayPeerClientOptions {
 	readonly coordinator: RelayPeerCoordinator;
 	readonly resolvePeerPin: (peerDeviceId: string) => string | null;
 	readonly validateLocal: () => boolean;
+	/** Pair pacing only. Registration, proof freshness and route lifetimes use native clocks. */
+	readonly pairPacing?: RelayPairPacing;
 	readonly onInbound: (
 		connection: OwnedPeerHttpConnection,
 		context: RelayPeerContext,
@@ -198,6 +211,7 @@ class Client implements RelayPeerClient {
 	private readonly options: RelayPeerClientOptions;
 	private readonly url: string;
 	private readonly localKeyId: string;
+	private readonly pairPacing: RelayPairPacing;
 	private socket?: WebSocket;
 	private socketClosed?: Deferred<void>;
 	/**
@@ -220,6 +234,7 @@ class Client implements RelayPeerClient {
 
 	constructor(options: RelayPeerClientOptions) {
 		this.options = { ...options, localIdentity: { ...options.localIdentity } };
+		this.pairPacing = options.pairPacing ?? nativePairPacing;
 		this.url = endpoint(options);
 		this.localKeyId = keyId(options.localIdentity.expectedPin);
 		const key = options.localIdentity.key;
@@ -756,8 +771,15 @@ class Client implements RelayPeerClient {
 		route.timer.unref();
 	}
 
+	private pairNow(): number {
+		const now = this.pairPacing.monotonicMs();
+		if (!Number.isFinite(now))
+			throw new RelayFailure("relay_unavailable", "Invalid relay pair pacing clock");
+		return now;
+	}
+
 	private rememberOpen(peer: string): void {
-		const now = performance.now();
+		const now = this.pairNow();
 		for (const [id, deadline] of this.nextPairOpen)
 			if (deadline <= now) this.nextPairOpen.delete(id);
 		if (!this.nextPairOpen.has(peer) && this.nextPairOpen.size >= 128)
@@ -768,22 +790,21 @@ class Client implements RelayPeerClient {
 	}
 
 	private async pacePair(route: Route): Promise<void> {
-		let remaining = (this.nextPairOpen.get(route.peer) ?? 0) - performance.now();
+		let remaining = (this.nextPairOpen.get(route.peer) ?? 0) - this.pairNow();
 		while (remaining > 0) {
-			let timer: ReturnType<typeof setTimeout> | undefined;
+			const cancelDelay = new AbortController();
 			try {
+				// Keep native deadline/abort fences even when an injected delay ignores its signal.
 				await wait(
-					new Promise<void>((resolve) => {
-						timer = setTimeout(resolve, Math.ceil(remaining));
-					}),
+					this.pairPacing.delay(Math.ceil(remaining), cancelDelay.signal),
 					route.cancel.signal,
 					route.deadline,
 				);
 			} finally {
-				if (timer) clearTimeout(timer);
+				cancelDelay.abort();
 			}
 			this.validate(route.peer, route.pin);
-			remaining = (this.nextPairOpen.get(route.peer) ?? 0) - performance.now();
+			remaining = (this.nextPairOpen.get(route.peer) ?? 0) - this.pairNow();
 		}
 	}
 
