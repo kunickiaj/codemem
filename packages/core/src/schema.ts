@@ -606,6 +606,7 @@ export const rawEventFlushBatches = sqliteTable(
 		observer_error_code: text("observer_error_code"),
 		observer_error_message: text("observer_error_message"),
 		attempt_count: integer("attempt_count").notNull().default(0),
+		claim_generation: integer("claim_generation").notNull().default(0),
 		created_at: text("created_at").notNull(),
 		updated_at: text("updated_at").notNull(),
 	},
