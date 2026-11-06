@@ -41,6 +41,7 @@ import {
 	jsoncValueHasComments,
 	loadJsoncConfig,
 	OPENCODE_PLUGIN_SPEC,
+	pinnedOpencodePluginWithoutNativeTools,
 	reconcileOpencodePluginConfig,
 	resolveOpencodeConfigPath,
 	writeJsonConfig,
@@ -1404,13 +1405,29 @@ function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolea
 	});
 }
 
+/** Null when the config cannot be read; installPlugin already reported that. */
+function pinnedPluginWithoutNativeTools(): string | null {
+	try {
+		const config = loadJsoncConfig(resolveOpencodeConfigPath(opencodeConfigDir()));
+		return pinnedOpencodePluginWithoutNativeTools(config);
+	} catch {
+		return null;
+	}
+}
+
 function installOpencodeSetup(force: boolean, opencodeMcp: string | undefined): boolean {
 	p.log.step("Installing OpenCode plugin...");
 	const pluginResult = installPlugin(force);
 	if (!pluginResult.ok) return false;
 	// The plugin write already backed up the original file; keep that backup.
 	const createBackup = !pluginResult.wrote;
-	if ((opencodeMcp ?? DEFAULT_OPENCODE_MCP_MODE) === "native") {
+	const mode = opencodeMcp ?? DEFAULT_OPENCODE_MCP_MODE;
+	const olderPin = mode === "native" ? pinnedPluginWithoutNativeTools() : null;
+	if (olderPin) {
+		p.log.warn(
+			`The OpenCode config pins ${OPENCODE_PLUGIN_SPEC}@${olderPin}, which does not provide the memory tools itself, so setup keeps the codemem MCP entry. Run setup with --force to use the current plugin and drop the entry.`,
+		);
+	} else if (mode === "native") {
 		p.log.step("Checking OpenCode MCP config...");
 		return removeOpencodeMcp({ createBackup });
 	}

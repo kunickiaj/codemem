@@ -387,3 +387,68 @@ describe("migrateLegacyOpencodeMcp — V2 shape", () => {
 		});
 	});
 });
+
+describe("codemem setup (OpenCode) — pinned plugin without built-in memory tools", () => {
+	function seedPinned(pin: string, config: Record<string, unknown> = {}): void {
+		const raw = `${JSON.stringify({ plugin: [`@codemem/opencode-plugin@${pin}`], ...config }, null, 2)}\n`;
+		writeConfig(raw);
+	}
+	const managedEntry = { type: "local", command: ["codemem", "mcp"], enabled: true };
+
+	it.each([
+		"0.46.3",
+		"0.47.4",
+		"0.48.0-beta.1",
+		"^0.47.0",
+		"0.47",
+		"~0.47",
+		"0.47.x",
+		"<0.49.0",
+		"0",
+		"v0.47.4",
+		"v0.48.0-beta.1",
+		"v0.47",
+	])("keeps the MCP entry for a plugin pinned to %s", async (pin) => {
+		seedPinned(pin, { mcp: { codemem: managedEntry } });
+
+		await runSetup();
+
+		const config = loadJsoncConfig(configPath);
+		expect(config.plugin).toEqual([`@codemem/opencode-plugin@${pin}`]);
+		expect(config.mcp).toEqual({ codemem: expect.objectContaining({ type: "local" }) });
+		expect(logs.warn.join("\n")).toContain(`@codemem/opencode-plugin@${pin}`);
+		expect(logs.success.join("\n")).not.toContain("Removed the codemem MCP entry");
+	});
+
+	it("adds the MCP entry when an older pinned plugin has none", async () => {
+		seedPinned("0.46.3");
+
+		await runSetup();
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			codemem: expect.objectContaining({ type: "local" }),
+		});
+	});
+
+	it.each(["0.48.0", "1.0.0", "latest", "^0.48.0", ">=0.48.1", "v0.48.0"])(
+		"removes the MCP entry for a plugin pinned to %s",
+		async (pin) => {
+			seedPinned(pin, { mcp: { codemem: managedEntry } });
+
+			await runSetup();
+
+			expect(loadJsoncConfig(configPath).mcp).toBeUndefined();
+			expect(logs.warn).toEqual([]);
+		},
+	);
+
+	it("removes the entry after --force replaces an older pin", async () => {
+		seedPinned("0.46.3", { mcp: { codemem: managedEntry } });
+
+		await runSetup("--force");
+
+		const config = loadJsoncConfig(configPath);
+		expect(config.plugin).toEqual(["@codemem/opencode-plugin"]);
+		expect(config.mcp).toBeUndefined();
+	});
+});
