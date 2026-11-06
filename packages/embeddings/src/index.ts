@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export interface EmbeddingRuntimeRequest {
 	model: string;
 	revision?: string;
@@ -58,7 +61,23 @@ function configureRemoteModelAccess(env: HubEnvironment): void {
 	allowRemoteModelsBeforeOffline = undefined;
 }
 
+/**
+ * Directory for downloaded model files. Transformers.js defaults to a .cache
+ * directory inside its own package, which a global npm install leaves owned by
+ * root (unwritable for a non-root container user) and an upgrade replaces.
+ */
+export function resolveEmbeddingCacheDir(env: NodeJS.ProcessEnv = process.env): string {
+	const home = env.HOME?.trim() || homedir();
+	const configured = env.CODEMEM_EMBEDDING_CACHE_DIR?.trim();
+	if (!configured) return join(home, ".codemem", "models");
+	// Quoted Docker or systemd values reach the process without shell expansion.
+	if (configured === "~") return home;
+	if (configured.startsWith("~/")) return join(home, configured.slice(2));
+	return configured;
+}
+
 interface HubEnvironment {
+	cacheDir: string | null;
 	remoteHost: string;
 	remotePathTemplate: string;
 	allowRemoteModels: boolean;
@@ -158,6 +177,7 @@ export async function createEmbeddingRuntime({
 		throw new TypeError("A revision is required when creating a runtime for a custom model");
 	}
 	const { env, pipeline } = await import("@huggingface/transformers");
+	env.cacheDir = resolveEmbeddingCacheDir();
 	configureRemoteModelAccess(env);
 	const requestedRevision = configuredRevision || DEFAULT_REVISION;
 	let revision = requestedRevision;
