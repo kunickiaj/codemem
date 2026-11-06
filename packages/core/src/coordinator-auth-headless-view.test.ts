@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { COORDINATOR_AUTH_STYLE } from "./coordinator-auth-browser-style.js";
 import { renderHeadlessConsentPage } from "./coordinator-auth-headless-view.js";
 import { formatShortKeyFingerprint } from "./coordinator-auth-key-fingerprint.js";
 
@@ -48,5 +49,26 @@ describe("headless consent device name", () => {
 		expect(page.body).toMatch(
 			/<\/dl><\/section><section aria-label="Device key"><h2>Device key fingerprint<\/h2><p><code>SHA256:0123abcd\.\.\.89abcdef<\/code><\/p><\/section>/,
 		);
+	});
+});
+
+describe("headless consent link details", () => {
+	it("shows only the ID for the Identity and Group rows", async () => {
+		// Act
+		const page = await render("Build box");
+		// Assert
+		expect(page.body).toContain("<dt>Identity</dt><dd><code>identity-a</code></dd>");
+		expect(page.body).toContain("<dt>Group</dt><dd><code>group-a</code></dd>");
+	});
+
+	it("keeps the headless command on one line", async () => {
+		// Act
+		const page = await render("Build box");
+		// Assert
+		expect(page.body).toContain(
+			'<code class="command">codemem coordinator link-account --headless</code>',
+		);
+		// The page CSP allows only the hashed stylesheet, so the rule lives there.
+		expect(COORDINATOR_AUTH_STYLE).toContain("code.command{white-space:nowrap");
 	});
 });

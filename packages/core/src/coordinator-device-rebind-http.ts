@@ -7,6 +7,7 @@ import {
 	createDeviceRebindDeviceSteps,
 	type DeviceRebindResult,
 	type DeviceRebindSigner,
+	deviceRebindWireRefusal,
 } from "./coordinator-device-rebind-ceremony.js";
 import type { DeviceRebindReceipt } from "./coordinator-device-rebind-commit.js";
 import {
@@ -96,11 +97,15 @@ function receiptJson(receipt: DeviceRebindReceipt) {
  */
 function respond(c: Context, result: DeviceRebindResult | null, deps: Deps): Response {
 	if (!result || result.kind === "unknown") return unknownOutcome(c);
-	if (result.kind === "refused")
+	if (result.kind === "refused") {
+		const reason = deviceRebindWireRefusal(result.reason);
+		// Newer devices can read the specific cause; older ones act on `reason` alone.
+		const detail = reason === result.reason ? {} : { detail: result.reason };
 		return c.json(
-			{ error: "device_rebind_refused", reason: result.reason },
+			{ error: "device_rebind_refused", reason, ...detail },
 			result.reason === "retry" ? 409 : 403,
 		);
+	}
 	if (result.kind === "started")
 		return c.json({
 			attempt_id: result.attemptId,

@@ -5,9 +5,10 @@ import {
 	escapeHtml,
 } from "./coordinator-auth-browser-view.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
-import type {
-	DeviceRebindConfirmation,
-	DeviceRebindRefusal,
+import {
+	type DeviceRebindConfirmation,
+	type DeviceRebindRefusal,
+	deviceRebindWireRefusal,
 } from "./coordinator-device-rebind-ceremony.js";
 
 export const DEVICE_REBIND_BROWSER_PATHS = Object.freeze({
@@ -152,6 +153,10 @@ const REFUSAL_COPY: Record<DeviceRebindNotice, [string, string]> = {
 		"Too many switches today",
 		"This account’s Identity reached today’s limit for switching devices. Try again tomorrow.",
 	],
+	target_headless_linked: [
+		"Link this account from a browser first",
+		"This account was linked from a device without a browser. Link it once from a computer with a browser before moving other devices into it.",
+	],
 };
 
 /**
@@ -166,7 +171,7 @@ export function renderDeviceRebindReturnPage(input: {
 	const parsed = parseCoordinatorAuthLoopback(input.loopbackRedirect);
 	if (!parsed.ok) throw new Error("device_rebind_view_invalid_input");
 	const [title, body] = REFUSAL_COPY[input.reason];
-	const href = `${parsed.destination}?attempt_id=${encodeURIComponent(input.attemptId)}&refused=${input.reason}`;
+	const href = `${parsed.destination}?attempt_id=${encodeURIComponent(input.attemptId)}&refused=${deviceRebindWireRefusal(input.reason)}`;
 	return buildPage(
 		title,
 		`<h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p><p>Returning to Codemem on this computer.</p><div class="actions"><a class="link" href="${escapeHtml(href)}" referrerpolicy="no-referrer" rel="noreferrer">Return to Codemem</a></div>`,

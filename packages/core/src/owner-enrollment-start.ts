@@ -2,6 +2,11 @@ import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-t
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
+	HEADLESS_PROVENANCE_PRESENT_SQL,
+	headlessLinkExistsSql,
+	isHeadlessLinkId,
+} from "./coordinator-auth-headless-provenance.js";
+import {
 	type AuthLinkBackend,
 	type AuthLinkStatement,
 	authLinkNow,
@@ -98,7 +103,16 @@ export type OwnerEnrollmentReceipt = {
 	groups: string[];
 };
 export type OwnerEnrollmentStartResult =
-	| { kind: "rejected"; error: "owner_enrollment_unavailable" | "owner_enrollment_unknown" }
+	| {
+			kind: "rejected";
+			error: "owner_enrollment_unavailable" | "owner_enrollment_unknown";
+			/**
+			 * Why an otherwise eligible account was refused. In-process only: the
+			 * owner HTTP transport keeps its single unavailable reply for devices
+			 * and explains this cause on the browser page.
+			 */
+			detail?: "target_headless_linked";
+	  }
 	| { kind: "started"; attemptId: string; expiresAtMs: number }
 	| { kind: "browser_claimed"; authorizationUrl: string; setCookies: string[] }
 	| { kind: "verified"; confirmation: OwnerEnrollmentConfirmation; csrf: string }
@@ -154,6 +168,12 @@ type Context = {
 const unavailable: OwnerEnrollmentStartResult = Object.freeze({
 	kind: "rejected",
 	error: "owner_enrollment_unavailable",
+});
+/** The account's active link came from a device without a browser; it can't receive devices. */
+const headlessLinked: OwnerEnrollmentStartResult = Object.freeze({
+	kind: "rejected",
+	error: "owner_enrollment_unavailable",
+	detail: "target_headless_linked",
 });
 const OWNER_START_CLIENT_LIMIT = 20;
 const OWNER_MAX_ACTIVE_PER_COORDINATOR = 1000;
@@ -423,6 +443,7 @@ async function verifyCallback(
 	);
 	if (!verified.ok || verified.account.issuer !== context.c.issuer) return unavailable;
 	const row = await persistVerified(context, consumed, verified.account);
+	if (row === "target_headless_linked") return headlessLinked;
 	if (!row) return unavailable;
 	const confirmation = await confirmationView(row);
 	const csrf = await issueBrowserCsrfToken(
@@ -553,6 +574,8 @@ interface OwnerAccountLink {
 	created_at_ms: number;
 	authority_kind: string;
 	device_claim_id: string | null;
+	/** 1 when the headless provenance table exists; read with the link to save a statement. */
+	headless_capable?: number;
 }
 // Filter each Team before pinning; the winning update repeats this exact snapshot.
 const CALLBACK_GRANTS_SQL = `SELECT json_group_array(json_object('groupId',groupId,'revision',revision)) FROM
@@ -564,13 +587,14 @@ async function persistVerified(
 	context: Context,
 	consumed: ConsumedOwnerBrowser,
 	account: { issuer: string; subject: string },
-): Promise<OwnerAttempt | null> {
+): Promise<OwnerAttempt | null | "target_headless_linked"> {
 	const candidate = await context.backend.first<OwnerAccountLink>({
-		sql: `SELECT l.*,NULL AS owner_qualification_id FROM coordinator_auth_account_links l WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL`,
+		sql: `SELECT l.*,NULL AS owner_qualification_id,${HEADLESS_PROVENANCE_PRESENT_SQL} AS headless_capable FROM coordinator_auth_account_links l WHERE l.coordinator_id = ? AND l.issuer = ? AND l.subject = ? AND l.revoked_at_ms IS NULL`,
 		values: [context.c.coordinatorId, account.issuer, account.subject],
 	});
 	if (!candidate) return null;
-	const resolved = await callbackLinkAuthority(context, consumed.row, candidate);
+	const { headless_capable: headlessCapable, ...activeLink } = candidate;
+	const resolved = await callbackLinkAuthority(context, consumed.row, activeLink);
 	if (!resolved) return null;
 	const { link, authority } = resolved;
 	if (
@@ -583,11 +607,18 @@ async function persistVerified(
 		}))
 	)
 		return null;
-	const grants = await context.backend.first<{ rows: string }>({
-		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows FROM coordinator_owner_enrollment_attempts a
- WHERE ${ownerAttemptSql("browser_claimed")}`,
-		values: [link.identity_id, ...callbackAttemptValues(context, consumed.row, context.now())],
+	// The headless check rides on this existing read; the commit repeats it atomically.
+	const headless = headlessCapable === 1;
+	const grants = await context.backend.first<{ rows: string; headless?: number }>({
+		sql: `SELECT (${CALLBACK_GRANTS_SQL}) AS rows${headless ? `,${headlessLinkExistsSql("a.coordinator_id")} AS headless` : ""}
+ FROM coordinator_owner_enrollment_attempts a WHERE ${ownerAttemptSql("browser_claimed")}`,
+		values: [
+			link.identity_id,
+			...(headless ? [link.link_id] : []),
+			...callbackAttemptValues(context, consumed.row, context.now()),
+		],
 	});
+	if (grants?.headless === 1) return "target_headless_linked";
 	if (!grants || !readGrantPins(grants.rows)) return null;
 	const time = context.now();
 	const wrote = await context.backend.run(
@@ -932,7 +963,14 @@ async function finalize(
 		completionSecret: i.completionSecret,
 		signature: i.signature,
 	});
-	return readFinalOutcome(context, i, { committed });
+	const outcome = await readFinalOutcome(context, i, { committed });
+	if (
+		outcome.kind === "rejected" &&
+		row.link_id &&
+		(await isHeadlessLinkId(context.backend, context.c.coordinatorId, row.link_id))
+	)
+		return headlessLinked;
+	return outcome;
 }
 async function readFinalOutcome(
 	context: Context,

@@ -1,3 +1,5 @@
+import { NO_HEADLESS_TARGET_LINK_SQL } from "./coordinator-auth-headless-provenance.js";
+import { hasHeadlessLinkProvenance } from "./coordinator-auth-headless-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import {
 	ed25519KeyIdForRevocation,
@@ -159,9 +161,10 @@ export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): 
 	// UPDATE FROM keeps the full live-link proof separate from final pins and grants.
 	// Both stages still evaluate inside this one winning statement in the atomic batch.
 	// Scope the retained attempt before materialization, not just in the final UPDATE.
+	const headless = await headlessTargetGuard(backend);
 	update.sql = `${authority.with ? `${authority.with},` : "WITH"} owner_commit_links AS MATERIALIZED (
  SELECT a.coordinator_id,a.attempt_id FROM coordinator_owner_enrollment_attempts a
- WHERE a.coordinator_id=? AND a.attempt_id=? AND ${authority.active}) ${update.sql
+ WHERE a.coordinator_id=? AND a.attempt_id=? AND ${authority.active}${headless}) ${update.sql
 		.replace("loopback_redirect = NULL", "loopback_redirect = NULL FROM owner_commit_links p")
 		.replace(
 			OWNER_ACTIVE_LINK_SQL,
@@ -177,6 +180,15 @@ export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): 
 		...dependentWrites(winner, now, grants.length, consistency),
 	]);
 	return readCommittedOwnerEnrollment(backend, winner);
+}
+
+/**
+ * Headless-linked accounts never receive devices. The winning write checks the
+ * pinned link itself, so a link that gained provenance after verification
+ * still refuses. Empty on a coordinator without the provenance table.
+ */
+async function headlessTargetGuard(backend: AuthLinkBackend): Promise<string> {
+	return (await hasHeadlessLinkProvenance(backend)) ? ` AND ${NO_HEADLESS_TARGET_LINK_SQL}` : "";
 }
 
 /** Join the already materialized negative result rather than adding its SELECT

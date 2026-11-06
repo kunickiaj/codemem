@@ -1,4 +1,7 @@
-import { HEADLESS_LINK_PROVENANCE_TABLE as TABLE } from "./coordinator-auth-headless-schema.js";
+import {
+	hasHeadlessLinkProvenance,
+	HEADLESS_LINK_PROVENANCE_TABLE as TABLE,
+} from "./coordinator-auth-headless-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { AUTH_LINK_HEADLESS_MARKER_SQL } from "./coordinator-auth-link-headless.js";
 
@@ -78,4 +81,37 @@ export async function readHeadlessLinkProvenance(
 		attemptId: row.attempt_id,
 		createdAtMs: row.created_at_ms,
 	};
+}
+
+/**
+ * Whether this link was written by headless finalize. False on a coordinator
+ * without the provenance table: no link there can be headless.
+ */
+export async function isHeadlessLinkId(
+	backend: Pick<AuthLinkBackend, "first">,
+	coordinatorId: string,
+	linkId: string,
+): Promise<boolean> {
+	if (!(await hasHeadlessLinkProvenance(backend))) return false;
+	return (await readHeadlessLinkProvenance(backend, coordinatorId, linkId)) !== null;
+}
+
+/**
+ * Commit guard for rebind and owner enrollment on the attempt `a`: its target
+ * link has no headless provenance. Include only when the provenance table exists.
+ */
+export const NO_HEADLESS_TARGET_LINK_SQL = `NOT EXISTS (SELECT 1 FROM ${TABLE} p
+ WHERE p.coordinator_id = a.coordinator_id AND p.link_id = a.link_id)`;
+
+/**
+ * A column expression (1 or 0) for whether the provenance table exists. Callers
+ * add it to a read they already make, then reference the table only when it
+ * reported 1, so a coordinator without the table never sees a query naming it.
+ */
+export const HEADLESS_PROVENANCE_PRESENT_SQL = `EXISTS (SELECT 1 FROM sqlite_master
+ WHERE type = 'table' AND name = '${TABLE}')`;
+
+/** A column expression for whether link `?` of coordinator `coordinator` is headless. Table must exist. */
+export function headlessLinkExistsSql(coordinator: string): string {
+	return `EXISTS (SELECT 1 FROM ${TABLE} hp WHERE hp.coordinator_id = ${coordinator} AND hp.link_id = ?)`;
 }
