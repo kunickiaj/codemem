@@ -675,7 +675,9 @@ upgrade and semantic retrieval. A custom `CODEMEM_EMBEDDING_MODEL` requires
 `CODEMEM_EMBEDDING_REVISION`; mutable branches and tags resolve to their
 canonical commit before vectors are labeled. Set `CODEMEM_EMBEDDING_OFFLINE=1`
 with an explicit 40-character commit to load only cached model files without a
-Hub request. Changing the model or revision rebuilds vectors in the background;
+Hub request. Model files download to `~/.codemem/models`; set
+`CODEMEM_EMBEDDING_CACHE_DIR` to use another writable directory. Changing the
+model or revision rebuilds vectors in the background;
 semantic retrieval can fall back to keyword results while vectors are repaired.
 Use keyword-only mode if sqlite-vec cannot load.
 

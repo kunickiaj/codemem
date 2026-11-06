@@ -1223,6 +1223,16 @@ prompt content to an already-running viewer configured for online model access.
 `CODEMEM_EMBEDDING_REVISION` can also override the default model revision when
 an intentional rebuild is required.
 
+Downloaded model files are stored in `~/.codemem/models`, about 130 MB for the
+default model. Set `CODEMEM_EMBEDDING_CACHE_DIR` to use another directory. The
+directory must be writable by the user that runs Codemem. In a container, mount
+it as a volume so a rebuilt image does not download the model again. Earlier
+releases stored models inside the installed `@huggingface/transformers` package,
+so the first start after upgrading downloads the model once more. With
+`CODEMEM_EMBEDDING_OFFLINE=1` that download cannot happen. Before upgrading,
+copy the contents of the package's `.cache` directory into `~/.codemem/models`;
+both locations use the same file layout.
+
 The first v4 start rebuilds legacy default-model vectors once in the background.
 Measured-compatible legacy vectors continue serving semantic search until the
 new corpus is complete; other model or revision changes use FTS5 during the
