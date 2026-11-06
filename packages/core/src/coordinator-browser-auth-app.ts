@@ -159,6 +159,7 @@ const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
 	[DEVICE_REBIND_BROWSER_PATHS.start]: ["GET", "POST"],
 	[DEVICE_REBIND_BROWSER_PATHS.confirm]: ["POST"],
 	[HEADLESS_LINK_BROWSER_PATHS.code]: ["GET", "POST"],
+	[HEADLESS_LINK_BROWSER_PATHS.confirm]: ["POST"],
 };
 const OWNER_PATHS = [
 	"/auth/owner/start",
@@ -517,7 +518,7 @@ export async function createCoordinatorBrowserAuth(
 			...ownerRoutes(owner),
 			...change.routes,
 			...rebind.routes,
-			...createHeadlessAdapter(payload, store, limiter),
+			...createHeadlessAdapter(payload, store, limiter, link.handlers.confirmHeadless),
 		]);
 		return browserAuthReady(payload.settings.store, routes, { accountChanges: change.enabled });
 	} catch (error) {
@@ -637,14 +638,15 @@ function createRebindAdapter(
 type HeadlessHandlers = CoordinatorBrowserHeadlessLinkHandlers;
 
 /**
- * Headless code entry stays unreachable until both of its tables exist (absent
- * on a D1 database before migration 0043). Like rebind, each request checks
- * first and reports not found until then; only a ready composition is kept.
+ * Headless code entry stays unreachable unless both of its tables exist (absent
+ * on a D1 database before migration 0043). Each request checks first and
+ * reports not found without them; only the ready handlers are kept.
  */
 function createHeadlessAdapter(
 	payload: EnabledPayload,
 	store: CoordinatorBrowserAuthStore,
 	limiter: InMemoryRequestRateLimiter,
+	confirmHeadless: BrowserHandler,
 ): Route[] {
 	const read = storeMethod(store, "readHeadlessLinkBackend");
 	const start = storeMethod(store, "startHeadlessAuthLinkBrowserTransaction");
@@ -654,10 +656,12 @@ function createHeadlessAdapter(
 		readAuthBrowserTransactionActivity: store.readAuthBrowserTransactionActivity.bind(store),
 	} as CoordinatorBrowserHeadlessLinkStore;
 	let ready: HeadlessHandlers | undefined;
+	// Capability is rechecked on every request (one sqlite_master read); only the
+	// provider discovery and handler construction are cached.
 	const resolve = async (): Promise<HeadlessHandlers | null> => {
-		if (ready) return ready;
 		const limits = (await read()) as AuthLinkBackend | null;
 		if (!limits) return null;
+		if (ready) return ready;
 		const created = await createCoordinatorBrowserHeadlessLink({
 			config: payload.config,
 			csrfKey: payload.csrfKey,
@@ -680,8 +684,13 @@ function createHeadlessAdapter(
 			response: handlers ? await handlers.codeStart(request, key, address) : rebindNotFound(),
 		};
 	};
+	const confirm: BrowserHandler = async (request, key, address) => {
+		if (!(await resolve())) return { response: rebindNotFound() };
+		return confirmHeadless(request, key, address);
+	};
 	return [
 		{ path: HEADLESS_LINK_BROWSER_PATHS.code, get: page, post: submit, needsClientAddress: true },
+		{ path: HEADLESS_LINK_BROWSER_PATHS.confirm, post: confirm, needsClientAddress: true },
 	];
 }
 

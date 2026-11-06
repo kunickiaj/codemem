@@ -9,6 +9,13 @@ import {
 	renderAuthLinkCompletionHopPage,
 	renderAuthLinkConfirmPage,
 } from "./coordinator-auth-browser-view.js";
+import {
+	HEADLESS_LINK_BROWSER_PATHS,
+	renderHeadlessConfirmElsewherePage,
+	renderHeadlessConsentPage,
+	renderHeadlessReturnPage,
+} from "./coordinator-auth-headless-view.js";
+import type { AuthLinkOperations } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import type { CoordinatorBrowserAuthLinkCompletionInput } from "./coordinator-browser-auth-callback.js";
 import {
@@ -36,7 +43,10 @@ type LinkStore = Pick<
 		| "readAuthLinkCompletionDestination"
 		| "confirmAuthLinkAttempt"
 		| "failAuthLinkAttempt"
-	>;
+	> &
+	// Optional so desktop-only stores keep working; without them every attempt renders as desktop
+	// and the store's mode-bound writes still refuse headless rows.
+	Partial<Pick<AuthLinkOperations, "readAuthLinkBrowserMode" | "confirmHeadlessAuthLinkAttempt">>;
 export interface CoordinatorBrowserLinkInput {
 	config: CoordinatorAuthBrowserConfig;
 	csrfKey: BrowserCsrfKey;
@@ -70,6 +80,8 @@ export interface CoordinatorBrowserLinkHandlers {
 	completeLink: CoordinatorBrowserLinkCallback;
 	confirm(request: Request, clientKey: string): Promise<CoordinatorBrowserLinkResponse>;
 	cancel(request: Request, clientKey: string): Promise<CoordinatorBrowserLinkResponse>;
+	/** Approves a headless attempt; the device finishes the link from its terminal. */
+	confirmHeadless(request: Request, clientKey: string): Promise<CoordinatorBrowserLinkResponse>;
 }
 export type CoordinatorBrowserLinkResult =
 	| Readonly<{ ok: false; error: "browser_auth_disabled" }>
@@ -214,16 +226,48 @@ async function completeLink(
 			context.config,
 		);
 		if (recorded.kind !== "applied") return (await notice(403, "link_rejected")).response;
-		return await confirmationPage(
-			context,
-			input.attemptId,
-			cookie.secret,
-			input.verification.profile,
-			recorded.target,
-		);
+		const consent = { ...input, browserTransactionHash: transaction.browserTransactionHash };
+		return await consentPage(context, consent, cookie.secret, recorded.target);
 	} catch {
 		return (await notice(503, "internal_error")).response;
 	}
+}
+type Target = { identityId: string; deviceId: string; groupId: string; fingerprint: string };
+async function readMode(context: Context, attemptId: string, browserTransactionHash: string) {
+	if (!context.store.readAuthLinkBrowserMode) return { mode: "desktop" as const };
+	return context.store.readAuthLinkBrowserMode(
+		{ attemptId, browserTransactionHash },
+		context.config,
+	);
+}
+/** A headless attempt never renders the desktop consent, whose confirm would offer a session. */
+async function consentPage(
+	context: Context,
+	input: CoordinatorBrowserAuthLinkCompletionInput & { browserTransactionHash: string },
+	cookie: BrowserCookieSecret,
+	target: Target,
+): Promise<Response> {
+	const mode = await readMode(context, input.attemptId, input.browserTransactionHash);
+	if (!mode) return (await notice(403, "link_rejected")).response;
+	const profile = input.verification.ok ? input.verification.profile : undefined;
+	if (mode.mode === "desktop")
+		return confirmationPage(context, input.attemptId, cookie, profile, target);
+	const csrfToken = await issueBrowserCsrfToken(
+		context.csrfKey,
+		cookie,
+		"transaction",
+		context.scope,
+	);
+	return pageResponse(
+		await renderHeadlessConsentPage({
+			profile,
+			issuer: context.config.issuer,
+			...target,
+			deviceName: mode.deviceName,
+			attemptId: input.attemptId,
+			csrfToken,
+		}),
+	);
 }
 async function confirmationPage(
 	context: Context,
@@ -292,17 +336,43 @@ async function confirmAttempt(
 	// Retain the transaction cookie for later original-browser session redemption.
 	return result(response, "link_confirmed");
 }
+type PostAction = "confirmLink" | "cancelLink" | "confirmHeadless";
+const POST_PATHS: Readonly<Record<PostAction, string>> = Object.freeze({
+	confirmLink: AUTH_BROWSER_FORM_ACTIONS.confirmLink,
+	cancelLink: AUTH_BROWSER_FORM_ACTIONS.cancelLink,
+	confirmHeadless: HEADLESS_LINK_BROWSER_PATHS.confirm,
+});
+/** Each confirm route accepts only its own mode; cancel works for both. */
+async function confirmByMode(
+	context: Context,
+	action: Exclude<PostAction, "cancelLink">,
+	attemptId: string,
+	browserTransactionHash: string,
+): Promise<CoordinatorBrowserLinkResponse> {
+	const mode = await readMode(context, attemptId, browserTransactionHash);
+	if (!mode) return notice(403, "link_rejected");
+	if (action === "confirmLink" && mode.mode === "headless")
+		return result(pageResponse(await renderHeadlessConfirmElsewherePage(), 409), "link_rejected");
+	if (action === "confirmLink") return confirmAttempt(context, attemptId, browserTransactionHash);
+	const confirm = context.store.confirmHeadlessAuthLinkAttempt;
+	if (mode.mode !== "headless" || !confirm) return notice(403, "link_rejected");
+	// Render first: a rendering failure must not leave a confirmed attempt behind a 503.
+	const response = pageResponse(await renderHeadlessReturnPage());
+	const written = await confirm({ attemptId, browserTransactionHash }, context.config);
+	if (written.kind !== "applied") return notice(403, "link_rejected");
+	return result(response, "link_confirmed");
+}
 async function post(
 	context: Context,
 	request: Request,
 	clientKey: string,
-	action: "confirmLink" | "cancelLink",
+	action: PostAction,
 ): Promise<CoordinatorBrowserLinkResponse> {
 	try {
 		const snapshot = snapshotBrowserRequest(request);
 		if (snapshot.method !== "POST")
 			return await notice(405, "method_not_allowed", { Allow: "POST" });
-		if (snapshot.url !== `${context.scope.publicOrigin}${AUTH_BROWSER_FORM_ACTIONS[action]}`)
+		if (snapshot.url !== `${context.scope.publicOrigin}${POST_PATHS[action]}`)
 			return await notice(404, "not_found");
 		// The guard captures native headers in this same tick, before either caller awaits.
 		const pendingGuard = guardBrowserForm({
@@ -334,7 +404,12 @@ async function post(
 				transaction.browserTransactionHash,
 				"cancelled",
 			);
-		return await confirmAttempt(context, guard.attemptId, transaction.browserTransactionHash);
+		return await confirmByMode(
+			context,
+			action,
+			guard.attemptId,
+			transaction.browserTransactionHash,
+		);
 	} catch {
 		return await notice(503, "internal_error");
 	}
@@ -362,6 +437,8 @@ export function createCoordinatorBrowserLinkHandlers(
 		readAuthLinkCompletionDestination: receiver.readAuthLinkCompletionDestination.bind(receiver),
 		confirmAuthLinkAttempt: receiver.confirmAuthLinkAttempt.bind(receiver),
 		failAuthLinkAttempt: receiver.failAuthLinkAttempt.bind(receiver),
+		readAuthLinkBrowserMode: receiver.readAuthLinkBrowserMode?.bind(receiver),
+		confirmHeadlessAuthLinkAttempt: receiver.confirmHeadlessAuthLinkAttempt?.bind(receiver),
 	});
 	const scope = Object.freeze({ publicOrigin: new URL(config.redirectUri).origin, store: config });
 	const context: Context = Object.freeze({
@@ -380,6 +457,8 @@ export function createCoordinatorBrowserLinkHandlers(
 				post(context, request, clientKey, "confirmLink"),
 			cancel: (request: Request, clientKey: string) =>
 				post(context, request, clientKey, "cancelLink"),
+			confirmHeadless: (request: Request, clientKey: string) =>
+				post(context, request, clientKey, "confirmHeadless"),
 		}),
 	});
 }
