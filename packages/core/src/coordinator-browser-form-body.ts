@@ -6,7 +6,8 @@ export type BrowserFormAction =
 	| "transaction_attempt"
 	| "session_logout"
 	| "signin_start"
-	| "link_start";
+	| "link_start"
+	| "headless_code";
 type FormInvalid = Readonly<{ ok: false; error: "form_invalid" }>;
 type ReadResult =
 	| Readonly<{ ok: true; bytes: Uint8Array<ArrayBuffer> }>
@@ -17,7 +18,8 @@ type ParseResult =
 	| Readonly<{ ok: true; action: "session_logout"; csrf: string }>
 	| Readonly<{ ok: true; action: "signin_start"; csrf: string }>
 	| Readonly<{ ok: true; action: "link_start"; csrf: string; attemptId: string; startCode: string }>
-	| Readonly<{ ok: true; action: "transaction_attempt"; csrf: string; attemptId: string }>;
+	| Readonly<{ ok: true; action: "transaction_attempt"; csrf: string; attemptId: string }>
+	| Readonly<{ ok: true; action: "headless_code"; csrf: string; userCode: string }>;
 const FORM_INVALID: FormInvalid = Object.freeze({ ok: false, error: "form_invalid" });
 const BODY_TOO_LARGE = Object.freeze({ ok: false, error: "body_too_large" } as const);
 const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
@@ -131,7 +133,9 @@ function decodeFields(raw: string, action: BrowserFormAction): Readonly<Record<s
 		const attemptField =
 			key === "attempt_id" && (action === "transaction_attempt" || action === "link_start");
 		const startField = key === "start_code" && action === "link_start";
-		if (key !== "csrf" && !attemptField && !startField) {
+		// The typed code only; a client-supplied code hash or any other field is refused.
+		const codeField = key === "user_code" && action === "headless_code";
+		if (key !== "csrf" && !attemptField && !startField && !codeField) {
 			throw FORM_INVALID;
 		}
 		if (Object.hasOwn(fields, key)) throw FORM_INVALID;
@@ -147,7 +151,8 @@ export function parseBrowserFormBody(bytes: Uint8Array, action: BrowserFormActio
 			action !== "session_logout" &&
 			action !== "transaction_attempt" &&
 			action !== "signin_start" &&
-			action !== "link_start"
+			action !== "link_start" &&
+			action !== "headless_code"
 		)
 			return FORM_INVALID;
 		const fields = decodeFields(decodeRawBody(bytes), action);
@@ -156,6 +161,12 @@ export function parseBrowserFormBody(bytes: Uint8Array, action: BrowserFormActio
 		if (typeof csrf !== "string") return FORM_INVALID;
 		if (action === "session_logout" || action === "signin_start") {
 			return Object.freeze({ ok: true, action, csrf });
+		}
+		// Any typed text passes here; the route treats a malformed code like an unknown one.
+		if (action === "headless_code") {
+			const userCode = fields.user_code;
+			if (typeof userCode !== "string") return FORM_INVALID;
+			return Object.freeze({ ok: true, action, csrf, userCode });
 		}
 		const attemptId = fields.attempt_id;
 		if (!isAuthControllerId(attemptId)) return FORM_INVALID;

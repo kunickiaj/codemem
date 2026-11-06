@@ -255,6 +255,13 @@ function createBrowserAuthWorker(
 	};
 }
 
+type ReadyBrowserAuth = Extract<
+	NonNullable<CreateD1CoordinatorAppOptions["browserAuth"]>,
+	{ kind: "ready" }
+>;
+const cloudflareClientAddress: ReadyBrowserAuth["clientKey"] = (context) =>
+	context.req.raw.headers.get("CF-Connecting-IP")?.trim() || null;
+
 function browserRuntimeOptions(
 	result: CoordinatorBrowserAuthResult,
 ): CreateD1CoordinatorAppOptions["browserAuth"] {
@@ -262,7 +269,9 @@ function browserRuntimeOptions(
 		return {
 			kind: "ready",
 			auth: result.auth,
-			clientKey: (context) => context.req.raw.headers.get("CF-Connecting-IP")?.trim() || null,
+			clientKey: cloudflareClientAddress,
+			// Cloudflare sets CF-Connecting-IP at its edge and overwrites any client-sent value.
+			clientAddress: cloudflareClientAddress,
 		};
 	return {
 		kind: "unavailable",

@@ -10,6 +10,7 @@ import type {
 	CoordinatorAuthBrowserTransactionStore,
 } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { HEADLESS_LINK_BROWSER_PATHS } from "./coordinator-auth-headless-view.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import {
@@ -38,6 +39,11 @@ import {
 	admitBrowserFormSetup,
 	checkBrowserAuthRequestRate,
 } from "./coordinator-browser-form-guard.js";
+import {
+	type CoordinatorBrowserHeadlessLinkHandlers,
+	type CoordinatorBrowserHeadlessLinkStore,
+	createCoordinatorBrowserHeadlessLink,
+} from "./coordinator-browser-headless-link.js";
 import {
 	type CoordinatorBrowserLinkInput,
 	createCoordinatorBrowserLinkHandlers,
@@ -109,10 +115,22 @@ export type CoordinatorBrowserAuthStore = CoordinatorBrowserAccountInput["store"
 	CoordinatorBrowserSigninStartInput["store"] &
 	Partial<CoordinatorAuthBrowserTransactionPurposeStore & CoordinatorAuthSchemaStore>;
 export type CoordinatorBrowserAuthClientKey = (context: Context) => string | null;
+export interface CoordinatorBrowserAuthRegisterOptions {
+	/**
+	 * The client's network address as the platform verified it (CF-Connecting-IP
+	 * on Workers). Never derive it from X-Forwarded-For. Without it, headless
+	 * code entry is not mounted, because its durable limits key on this address.
+	 */
+	clientAddress?: CoordinatorBrowserAuthClientKey;
+}
 export interface CoordinatorBrowserAuth {
 	readonly storeConfig: Readonly<CoordinatorAuthBrowserConfig>;
 	readonly resolveAccountChanges?: typeof resolveAccountChanges;
-	register(app: Hono, clientKey: CoordinatorBrowserAuthClientKey): void;
+	register(
+		app: Hono,
+		clientKey: CoordinatorBrowserAuthClientKey,
+		options?: CoordinatorBrowserAuthRegisterOptions,
+	): void;
 }
 export type CoordinatorBrowserAuthResult =
 	| Readonly<{ ok: true; auth: CoordinatorBrowserAuth }>
@@ -140,6 +158,7 @@ const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
 	"/auth/account/change/confirm": ["POST"],
 	[DEVICE_REBIND_BROWSER_PATHS.start]: ["GET", "POST"],
 	[DEVICE_REBIND_BROWSER_PATHS.confirm]: ["POST"],
+	[HEADLESS_LINK_BROWSER_PATHS.code]: ["GET", "POST"],
 };
 const OWNER_PATHS = [
 	"/auth/owner/start",
@@ -322,13 +341,18 @@ function admitFormSetup(
 ): true | Response {
 	if (request.method !== "POST") return true;
 	const url = new URL(request.url);
-	let action: "session_logout" | "signin_start" | "link_start" | "transaction_attempt" =
-		"transaction_attempt";
+	let action:
+		| "session_logout"
+		| "signin_start"
+		| "link_start"
+		| "transaction_attempt"
+		| "headless_code" = "transaction_attempt";
 	if (url.pathname === "/auth/logout") action = "session_logout";
 	if (url.pathname === "/auth/sign-in") action = "signin_start";
 	if (url.pathname === "/auth/link/start") action = "link_start";
 	if (url.pathname === ACCOUNT_CHANGE_BROWSER_PATHS.start) action = "link_start";
 	if (url.pathname === DEVICE_REBIND_BROWSER_PATHS.start) action = "link_start";
+	if (url.pathname === HEADLESS_LINK_BROWSER_PATHS.code) action = "headless_code";
 	const failure = admitBrowserFormSetup({
 		request,
 		scope: payload.settings,
@@ -366,37 +390,48 @@ export function coordinatorBrowserAuthUnavailableResponse(): Response {
 type BrowserHandler = (
 	request: Request,
 	clientKey: string,
+	clientAddress: string | null,
 ) => Promise<Readonly<{ response: Response }>>;
-type Route = Readonly<{ path: string; get?: BrowserHandler; post?: BrowserHandler }>;
+type Route = Readonly<{
+	path: string;
+	get?: BrowserHandler;
+	post?: BrowserHandler;
+	needsClientAddress?: boolean;
+}>;
 function registerRoutes(
 	app: Hono,
 	routes: readonly Route[],
 	clientKey: CoordinatorBrowserAuthClientKey,
+	clientAddress: CoordinatorBrowserAuthClientKey | undefined,
 ): void {
 	for (const route of routes) {
+		if (route.needsClientAddress && !clientAddress) continue;
 		app.all(route.path, async (context) => {
 			try {
 				const request = context.req.raw;
 				let handler: BrowserHandler | undefined;
 				if (request.method === "GET") handler = route.get;
 				if (request.method === "POST") handler = route.post;
-				if (!handler)
-					return new Response("Method not allowed.", {
-						status: 405,
-						headers: {
-							Allow: [route.get && "GET", route.post && "POST"].filter(Boolean).join(", "),
-							"Cache-Control": "no-store",
-							"Referrer-Policy": "no-referrer",
-							"X-Content-Type-Options": "nosniff",
-							"Content-Type": "text/plain;charset=utf-8",
-						},
-					});
-				return (await handler(request, clientKey(context) ?? "")).response;
+				if (!handler) return methodNotAllowed(route);
+				const address = clientAddress?.(context) ?? null;
+				return (await handler(request, clientKey(context) ?? "", address)).response;
 			} catch {
 				return coordinatorBrowserAuthUnavailableResponse();
 			}
 		});
 	}
+}
+function methodNotAllowed(route: Route): Response {
+	return new Response("Method not allowed.", {
+		status: 405,
+		headers: {
+			Allow: [route.get && "GET", route.post && "POST"].filter(Boolean).join(", "),
+			"Cache-Control": "no-store",
+			"Referrer-Policy": "no-referrer",
+			"X-Content-Type-Options": "nosniff",
+			"Content-Type": "text/plain;charset=utf-8",
+		},
+	});
 }
 /** The purpose store is read only when a ceremony shares the `owner_enroll` purpose. */
 function createSharedCallback(
@@ -482,6 +517,7 @@ export async function createCoordinatorBrowserAuth(
 			...ownerRoutes(owner),
 			...change.routes,
 			...rebind.routes,
+			...createHeadlessAdapter(payload, store, limiter),
 		]);
 		return browserAuthReady(payload.settings.store, routes, { accountChanges: change.enabled });
 	} catch (error) {
@@ -598,6 +634,57 @@ function createRebindAdapter(
 	};
 }
 
+type HeadlessHandlers = CoordinatorBrowserHeadlessLinkHandlers;
+
+/**
+ * Headless code entry stays unreachable until both of its tables exist (absent
+ * on a D1 database before migration 0043). Like rebind, each request checks
+ * first and reports not found until then; only a ready composition is kept.
+ */
+function createHeadlessAdapter(
+	payload: EnabledPayload,
+	store: CoordinatorBrowserAuthStore,
+	limiter: InMemoryRequestRateLimiter,
+): Route[] {
+	const read = storeMethod(store, "readHeadlessLinkBackend");
+	const start = storeMethod(store, "startHeadlessAuthLinkBrowserTransaction");
+	if (!read || !start) return [];
+	const headlessStore = {
+		startHeadlessAuthLinkBrowserTransaction: start,
+		readAuthBrowserTransactionActivity: store.readAuthBrowserTransactionActivity.bind(store),
+	} as CoordinatorBrowserHeadlessLinkStore;
+	let ready: HeadlessHandlers | undefined;
+	const resolve = async (): Promise<HeadlessHandlers | null> => {
+		if (ready) return ready;
+		const limits = (await read()) as AuthLinkBackend | null;
+		if (!limits) return null;
+		const created = await createCoordinatorBrowserHeadlessLink({
+			config: payload.config,
+			csrfKey: payload.csrfKey,
+			oidcOptions: payload.oidcOptions,
+			store: headlessStore,
+			limits,
+			limiter,
+		});
+		if (!created.ok) return null;
+		ready ??= created.handlers;
+		return ready;
+	};
+	const page: BrowserHandler = async (request) => {
+		const handlers = await resolve();
+		return { response: handlers ? await handlers.codePage(request) : rebindNotFound() };
+	};
+	const submit: BrowserHandler = async (request, key, address) => {
+		const handlers = await resolve();
+		return {
+			response: handlers ? await handlers.codeStart(request, key, address) : rebindNotFound(),
+		};
+	};
+	return [
+		{ path: HEADLESS_LINK_BROWSER_PATHS.code, get: page, post: submit, needsClientAddress: true },
+	];
+}
+
 function rebindNotFound(): Response {
 	return new Response("Not found.", {
 		status: 404,
@@ -615,8 +702,11 @@ function browserAuthReady(
 		auth: Object.freeze({
 			storeConfig,
 			resolveAccountChanges: options.accountChanges ? resolveAccountChanges : undefined,
-			register: (app: Hono, clientKey: CoordinatorBrowserAuthClientKey) =>
-				registerRoutes(app, routes, clientKey),
+			register: (
+				app: Hono,
+				clientKey: CoordinatorBrowserAuthClientKey,
+				registerOptions: CoordinatorBrowserAuthRegisterOptions = {},
+			) => registerRoutes(app, routes, clientKey, registerOptions.clientAddress),
 		}),
 	});
 }

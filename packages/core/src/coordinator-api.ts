@@ -133,6 +133,8 @@ export type CoordinatorAppBrowserAuthOptions =
 			auth: CoordinatorBrowserAuth;
 			storeFactory: () => CoordinatorDeviceAuthLinkStore;
 			clientKey: CoordinatorBrowserAuthClientKey;
+			/** Platform-verified client address; see CoordinatorBrowserAuthRegisterOptions. */
+			clientAddress?: CoordinatorBrowserAuthClientKey;
 	  }
 	| { kind: "unavailable"; error?: typeof AUTH_SCHEMA_UPGRADE_REQUIRED };
 
@@ -262,7 +264,7 @@ function registerOptionalCoordinatorAuth(
 			config: ready.auth.storeConfig,
 			storeFactory: ready.storeFactory,
 		});
-		ready.auth.register(app, ready.clientKey);
+		ready.auth.register(app, ready.clientKey, { clientAddress: ready.clientAddress });
 	}
 }
 

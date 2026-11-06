@@ -184,6 +184,32 @@ export async function issueBrowserCsrfToken(
 	}
 }
 
+/**
+ * A separate HMAC key for another purpose, derived from the CSRF key so no new
+ * secret is needed. CSRF messages are JSON arrays, so a label that does not
+ * start with "[" can never sign the same bytes as a token. Rotating the CSRF
+ * key changes every derived key.
+ */
+export async function deriveBrowserCsrfSubkey(
+	key: BrowserCsrfKey,
+	label: string,
+): Promise<CryptoKey> {
+	const cryptoKey = keys.get(key);
+	if (!cryptoKey || !/^[a-z0-9][a-z0-9:-]{7,127}$/.test(label)) throw invalidInput();
+	const bytes = await globalThis.crypto.subtle.sign(
+		"HMAC",
+		cryptoKey,
+		new TextEncoder().encode(label),
+	);
+	return globalThis.crypto.subtle.importKey(
+		"raw",
+		bytes,
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["sign"],
+	);
+}
+
 /** Callers must also require a live store lookup before protecting an authenticated action. */
 export async function verifyBrowserCsrfToken(
 	key: BrowserCsrfKey,

@@ -5,10 +5,9 @@ import {
 	readConnectionSchemaState,
 } from "../../core/src/coordinator-account-connection-schema.js";
 import {
-	checkHeadlessCodeEntry,
 	HEADLESS_CODE_ENTRY_CLIENT_LIMIT,
 	HEADLESS_CODE_ENTRY_WINDOW_MS,
-	recordHeadlessCodeEntryFailure,
+	reserveHeadlessCodeEntry,
 } from "../../core/src/coordinator-auth-headless-code-limits.js";
 import {
 	HEADLESS_CODE_LIMITS_TABLE,
@@ -20,7 +19,11 @@ import { createD1AuthLinkBackend } from "../../core/src/d1-coordinator-store.js"
 
 const db = env.COORDINATOR_DB;
 const T0 = 1_800_000_000_000;
-const entry = (nowMs: number) => ({ coordinatorId: "native-headless", clientKey: "192.0.2.10", nowMs });
+const entry = (nowMs: number) => ({
+	coordinatorId: "native-headless",
+	clientKeyHash: "c".repeat(64),
+	nowMs,
+});
 
 async function readiness() {
 	return {
@@ -54,28 +57,36 @@ it("leaves existing auth readiness unchanged with or without the headless tables
 	}
 });
 
-it("counts concurrent failures from two native D1 backends against one window", async () => {
+it("allows exactly the client limit of concurrent entries from two native D1 backends", async () => {
 	// Arrange
 	const a = createD1AuthLinkBackend(db);
 	const b = createD1AuthLinkBackend(db);
-	const half = HEADLESS_CODE_ENTRY_CLIENT_LIMIT / 2;
-	// Act: every failure lands exactly at the boundary of a window that started earlier.
-	await recordHeadlessCodeEntryFailure(a, entry(T0 - HEADLESS_CODE_ENTRY_WINDOW_MS));
-	await Promise.all(
-		[...Array(half).fill(a), ...Array(half).fill(b)].map((backend) =>
-			recordHeadlessCodeEntryFailure(backend, entry(T0)),
-		),
-	);
+	const total = HEADLESS_CODE_ENTRY_CLIENT_LIMIT * 3;
+	await reserveHeadlessCodeEntry(a, entry(T0 - HEADLESS_CODE_ENTRY_WINDOW_MS));
+	let release = () => {};
+	const barrier = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	// Act: every entry starts together, exactly at the boundary of an earlier window.
+	const pending = Array.from({ length: total }, async (_, n) => {
+		await barrier;
+		return reserveHeadlessCodeEntry(n % 2 ? a : b, entry(T0));
+	});
+	release();
+	const decisions = await Promise.all(pending);
 	// Assert
+	expect(decisions.filter((decision) => decision.allowed)).toHaveLength(
+		HEADLESS_CODE_ENTRY_CLIENT_LIMIT,
+	);
+	expect(decisions.find((decision) => !decision.allowed)).toEqual({
+		allowed: false,
+		retryAfterMs: HEADLESS_CODE_ENTRY_WINDOW_MS,
+	});
 	const rows = await db
 		.prepare(`SELECT scope, window_start_ms, failures FROM ${HEADLESS_CODE_LIMITS_TABLE} ORDER BY scope`)
 		.all();
 	expect(rows.results).toEqual([
-		{ scope: "client", window_start_ms: T0, failures: HEADLESS_CODE_ENTRY_CLIENT_LIMIT },
+		{ scope: "client", window_start_ms: T0, failures: total },
 		{ scope: "coordinator", window_start_ms: T0, failures: HEADLESS_CODE_ENTRY_CLIENT_LIMIT },
 	]);
-	expect(await checkHeadlessCodeEntry(b, entry(T0 + 1))).toEqual({
-		allowed: false,
-		retryAfterMs: HEADLESS_CODE_ENTRY_WINDOW_MS - 1,
-	});
 });
