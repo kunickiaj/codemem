@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => {
 			vi.fn<
 				(
 					options: { fetch: unknown; hostname: string; port: number },
-					callback: (info: { address: string; port: number }) => void,
+					callback: (info: { address: string; port: number; family?: string }) => void,
 				) => unknown
 			>(),
 	};
@@ -301,7 +301,7 @@ describe("foreground account profile and listener wiring", () => {
 		expect(readFileSync).not.toHaveBeenCalled();
 		await shutdown();
 	});
-	it.each(["127.0.0.1", "0.0.0.0", "::"])(
+	it.each(["127.0.0.1", "127.0.0.2", "localhost", "::1", "0.0.0.0", "::"])(
 		"keeps %s and learns the actual ephemeral port only after listening",
 		async (host) => {
 			const input = invocation({ host, port: 0 }); // Arrange
@@ -320,6 +320,25 @@ describe("foreground account profile and listener wiring", () => {
 			await shutdown();
 		},
 	);
+	it("forwards the actual bound IP separately from the configured DNS name", async () => {
+		// Arrange: the mocked adapter resolves a custom name without DNS or a real socket.
+		await startForegroundViewer(invocation({ host: "viewer.example.test", port: 0 }));
+		const authority = options().app.viewerAuthority;
+		const onListen = mocks.serve.mock.calls[0]?.[1];
+		if (!authority || !onListen) throw new Error("Missing viewer authority listener wiring");
+		expect(authority.getListenerAddress()).toBeNull();
+
+		// Act
+		onListen({ address: "127.0.0.1", port: 49152, family: "IPv4" });
+
+		// Assert: discarding address here would misclassify this loopback listener as external.
+		expect(authority.getListenerAddress()).toEqual({
+			host: "viewer.example.test",
+			port: 49152,
+			address: "127.0.0.1",
+		});
+		await shutdown();
+	});
 });
 
 describe("foreground viewer PID ownership cleanup", () => {

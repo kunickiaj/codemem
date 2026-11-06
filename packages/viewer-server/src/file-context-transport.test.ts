@@ -31,6 +31,9 @@ beforeEach(() => {
 	vi.stubEnv("HOME", "/nonexistent/codemem-transport-test-home");
 });
 const { fixture, remember } = useLocalCaptureFixture();
+const LISTENER = { host: "127.0.0.1", port: 7441 };
+const AUTHORITY = `${LISTENER.host}:${LISTENER.port}`;
+const ORIGIN = `http://${AUTHORITY}`;
 const attemptId = "018f2db4-f9d3-7a22-8d18-000000000001";
 const payload = () => ({
 	action: "lookup",
@@ -55,7 +58,7 @@ function setup(options: { mounted?: boolean } = {}) {
 		app = createApp({
 			storeFactory: factory,
 			accountLink: {
-				getListenerAddress: () => ({ host: "127.0.0.1", port: 7441 }),
+				getListenerAddress: () => LISTENER,
 			},
 		});
 	}
@@ -66,9 +69,9 @@ function post(
 	body: unknown = payload(),
 	headers: Record<string, string> = {},
 ) {
-	return app.request("http://127.0.0.1:7441/api/file-context", {
+	return app.request(`${ORIGIN}/api/file-context`, {
 		method: "POST",
-		headers: { "Content-Type": "application/json", ...headers },
+		headers: { Host: AUTHORITY, "Content-Type": "application/json", ...headers },
 		body: typeof body === "string" ? body : JSON.stringify(body),
 	});
 }
@@ -182,7 +185,7 @@ describe("HTTP file-context target and middleware authorization", () => {
 		expect(factory).not.toHaveBeenCalled();
 		expect(attempts()).toEqual([]);
 	});
-	it.each([{}, { Origin: "http://127.0.0.1:7441" }])(
+	it.each([{}, { Origin: ORIGIN }])(
 		"accepts local/programmatic context %j without an account CSRF token",
 		async (headers) => {
 			// Arrange: the account middleware must not claim the file-context namespace.
@@ -201,9 +204,9 @@ describe("HTTP file-context target and middleware authorization", () => {
 		// Arrange
 		const { app, factory } = setup({ mounted: true });
 		// Act
-		const response = await app.request("http://127.0.0.1:7441/api/account/unknown", {
+		const response = await app.request(`${ORIGIN}/api/account/unknown`, {
 			method: "POST",
-			headers: { Host: "127.0.0.1:7441", Origin: "http://127.0.0.1:7441" },
+			headers: { Host: AUTHORITY, Origin: ORIGIN },
 		});
 		// Assert
 		expect(response.status).toBe(403);

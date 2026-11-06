@@ -1031,6 +1031,28 @@ export async function callMemoryToolForHost(
 	return callCodememToolLocally(store, name, args, caller);
 }
 
+function createBoundApp(
+	createApp: typeof import("@codemem/server").createApp,
+	options: Parameters<typeof createApp>[0],
+	listener: {
+		invocation: ResolvedServeInvocation;
+		accountLink: ReturnType<typeof createViewerAccountLink>;
+	},
+) {
+	let boundAddress: { host: string; port: number; address: string } | null = null;
+	return {
+		app: createApp({
+			...options,
+			viewerAuthority: { getListenerAddress: () => boundAddress },
+			memoryToolCall: callMemoryToolForHost,
+		}),
+		setBoundAddress: (info: { address: string; port: number }) => {
+			boundAddress = { host: listener.invocation.host, port: info.port, address: info.address };
+			listener.accountLink.setBoundPort(info.port);
+		},
+	};
+}
+
 export async function startForegroundViewer(invocation: ResolvedServeInvocation): Promise<void> {
 	const serverModule = await import("@codemem/server");
 	const { createApp, createSyncApp, closeStoreAsync, createViewerRawEventInbox, getStore } =
@@ -1104,7 +1126,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		...rawEventProcessing.appOptions,
 		getSyncRuntimeStatus: () => syncRuntimeStatus,
 	};
-	const app = createApp({ ...appOpts, memoryToolCall: callMemoryToolForHost });
+	const { app, setBoundAddress } = createBoundApp(createApp, appOpts, { invocation, accountLink });
 	const pidPath = pidFilePath(dbPath);
 	let maintenanceWorker: ChildProcess | null = null;
 
@@ -1136,7 +1158,7 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 	const server = serve(
 		{ fetch: app.fetch, hostname: invocation.host, port: invocation.port },
 		(info) => {
-			accountLink.setBoundPort(info.port);
+			setBoundAddress(info);
 			announceViewerStartup({ pidPath, invocation, preparedDb, info });
 			maintenanceWorker = startMaintenanceWorkerProcess(invocation);
 			if (syncEnabled) {
