@@ -236,6 +236,14 @@ empty policy, readiness, and admission budget tables that `POST /v1/relay/admiss
 They are generated from the core schema constants. With no rows, every relay admission check is
 denied, so applying them changes nothing for coordinator-only deployments.
 
+### Headless account linking storage (0043)
+
+Migration `0043_add_headless_account_linking.sql` adds two empty tables for linking a Google
+account to a device without a browser: failed code-entry counts per client and per coordinator,
+and a record of which links were made this way. It changes no existing table or row. Until both
+tables exist, headless linking stays off and every other sign-in and linking flow works as
+before. A self-hosted SQLite coordinator creates the tables when it opens.
+
 ### Optional relay host (off by default)
 
 [Relay](relay.md) explains what relay does for users, its privacy limits, and how to turn it off. The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays
