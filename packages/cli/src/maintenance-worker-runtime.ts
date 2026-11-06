@@ -189,6 +189,23 @@ export function createSequentialBackfillCoordinator(
 	};
 }
 
+function createVectorMigrationRunner(
+	dbPath: string,
+	signal: AbortSignal | undefined,
+): ManagedMaintenanceRunner {
+	return new VectorModelMigrationRunner({
+		dbPath,
+		signal,
+		// This worker cannot receive the viewer process's in-memory wake signal,
+		// so work queued just after an idle tick waits up to one idle interval
+		// before being noticed. Once a tick sees running/pending work it stays on
+		// the normal interval; only genuinely idle polling slows. This trades
+		// bounded latency for not hammering a quiet DB every 5 seconds.
+		batchSize: 10,
+		idleIntervalMs: 60_000,
+	});
+}
+
 export function startMaintenanceWorkerRuntime(
 	options: MaintenanceWorkerRuntimeOptions = {},
 ): ManagedMaintenanceRunner {
@@ -212,19 +229,7 @@ export function startMaintenanceWorkerRuntime(
 	walCheckpointTimer.unref();
 
 	if (!isEmbeddingDisabled()) {
-		runners.push(
-			new VectorModelMigrationRunner({
-				dbPath,
-				signal: options.signal,
-				// This worker cannot receive the viewer process's in-memory wake signal,
-				// so work queued just after an idle tick waits up to one idle interval
-				// before being noticed. Once a tick sees running/pending work it stays on
-				// the normal interval; only genuinely idle polling slows. This trades
-				// bounded latency for not hammering a quiet DB every 5 seconds.
-				batchSize: 10,
-				idleIntervalMs: 60_000,
-			}),
-		);
+		runners.push(createVectorMigrationRunner(dbPath, options.signal));
 	}
 
 	runners.push(

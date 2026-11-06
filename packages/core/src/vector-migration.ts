@@ -11,6 +11,7 @@ import {
 	completeMaintenanceJob,
 	failMaintenanceJob,
 	getMaintenanceJob,
+	isTransientSqliteBusy,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
@@ -39,6 +40,13 @@ export interface VectorModelMigrationOptions {
 	batchSize?: number;
 	intervalMs?: number;
 	idleIntervalMs?: number;
+	/**
+	 * Wall-clock budget for one tick. While work remains, the runner keeps
+	 * running batches on the same connection until this much time has passed.
+	 * Each batch still commits in its own short write transaction. 0 runs one
+	 * batch per tick.
+	 */
+	tickBudgetMs?: number;
 	dbPath?: string;
 	signal?: AbortSignal;
 }
@@ -46,6 +54,24 @@ export interface VectorModelMigrationOptions {
 // Runner uses this cadence after a tick that detected no work. A live
 // migration or queued sync work switches back to intervalMs automatically.
 const IDLE_INTERVAL_MS = 60_000;
+
+// Another connection held the write lock past busy_timeout. Retry soon with a
+// growing delay instead of treating lock contention as an idle database.
+const BUSY_RETRY_BASE_MS = 5_000;
+const BUSY_RETRY_MAX_MS = 30_000;
+// After this many locked ticks in a row (about 4 minutes), tell the UI why
+// catch-up is not moving.
+const BUSY_TICKS_BEFORE_LOCK_NOTICE = 10;
+const LOCK_WAIT_MESSAGE = "Waiting for the database lock";
+
+function busyRetryDelayMs(consecutiveBusyTicks: number): number {
+	const exponent = Math.max(0, consecutiveBusyTicks - 1);
+	return Math.min(BUSY_RETRY_MAX_MS, BUSY_RETRY_BASE_MS * 2 ** exponent);
+}
+
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
 
 // Module-level singleton so the queue writers can nudge the runner out of
 // its long idle cadence the moment new incremental/bootstrap work lands.
@@ -168,6 +194,17 @@ function pendingQueuedSyncCount(metadata: MigrationMetadata): number {
 	return (
 		metadataMemoryIds(metadata.pending_delete_memory_ids).length +
 		metadataMemoryIds(metadata.pending_upsert_memory_ids).length
+	);
+}
+
+/**
+ * Incremental sync jobs with queued changes drain a batch and return before the
+ * migration batch loop, so the pass never reaches cutover validation.
+ */
+function drainsQueuedSyncBeforeCutover(metadata: MigrationMetadata): boolean {
+	return (
+		(metadata.trigger ?? SYNC_INCREMENTAL_TRIGGER) === SYNC_INCREMENTAL_TRIGGER &&
+		pendingQueuedSyncCount(metadata) > 0
 	);
 }
 
@@ -1502,13 +1539,7 @@ export async function runVectorMigrationPass(
 		if (queuedSyncWork.completed) {
 			return;
 		}
-		const queuedSyncRemainingWork =
-			metadataMemoryIds(queuedSyncWork.metadata.pending_delete_memory_ids).length +
-			metadataMemoryIds(queuedSyncWork.metadata.pending_upsert_memory_ids).length;
-		if (
-			(queuedSyncWork.metadata.trigger ?? SYNC_INCREMENTAL_TRIGGER) === SYNC_INCREMENTAL_TRIGGER &&
-			queuedSyncRemainingWork > 0
-		) {
+		if (drainsQueuedSyncBeforeCutover(queuedSyncWork.metadata)) {
 			return;
 		}
 		existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
@@ -1711,16 +1742,47 @@ export async function runVectorMigrationPass(
 	}
 }
 
+function recordFailedMigrationJob(db: SqliteDatabase, error: unknown): void {
+	const metadata = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.metadata ?? {};
+	failMaintenanceJob(
+		db,
+		VECTOR_MODEL_MIGRATION_JOB,
+		error instanceof Error ? error.message : String(error),
+		{ metadata: { ...metadata, reconciliation_target_coverage_complete: undefined } },
+	);
+}
+
+/**
+ * Returns false only when the lock blocked the write, so the caller can try
+ * again later. A job that is no longer in flight keeps its own message.
+ */
+function writeLockWaitNotice(db: SqliteDatabase): boolean {
+	try {
+		db.transaction(() => {
+			const job = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+			if (job?.status !== "running" && job?.status !== "pending") return;
+			updateMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB, { message: LOCK_WAIT_MESSAGE });
+		}).immediate();
+		return true;
+	} catch (error) {
+		if (isTransientSqliteBusy(error)) return false;
+		throw error;
+	}
+}
+
 export class VectorModelMigrationRunner {
 	private readonly dbPath: string;
 	private readonly signal?: AbortSignal;
 	private readonly batchSize: number;
 	private readonly intervalMs: number;
 	private readonly idleIntervalMs: number;
+	private readonly tickBudgetMs: number;
 	private active = false;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private currentRun: Promise<void> | null = null;
 	private lastTickWasIdle = false;
+	private consecutiveBusyTicks = 0;
+	private lockNoticeWritten = false;
 
 	constructor(options: VectorModelMigrationOptions = {}) {
 		this.dbPath = resolveDbPath(options.dbPath);
@@ -1728,6 +1790,7 @@ export class VectorModelMigrationRunner {
 		this.batchSize = Math.max(1, options.batchSize ?? 50);
 		this.intervalMs = Math.max(1000, options.intervalMs ?? 5000);
 		this.idleIntervalMs = Math.max(1000, options.idleIntervalMs ?? IDLE_INTERVAL_MS);
+		this.tickBudgetMs = Math.max(0, options.tickBudgetMs ?? 0);
 	}
 
 	start(): void {
@@ -1774,11 +1837,15 @@ export class VectorModelMigrationRunner {
 				})
 				.finally(() => {
 					this.currentRun = null;
-					const next = this.lastTickWasIdle ? this.idleIntervalMs : this.intervalMs;
-					this.schedule(next);
+					this.schedule(this.nextDelayMs());
 				});
 		}, delayMs);
 		if (typeof this.timer === "object" && "unref" in this.timer) this.timer.unref();
+	}
+
+	private nextDelayMs(): number {
+		if (this.consecutiveBusyTicks > 0) return busyRetryDelayMs(this.consecutiveBusyTicks);
+		return this.lastTickWasIdle ? this.idleIntervalMs : this.intervalMs;
 	}
 
 	private async runOnce(): Promise<void> {
@@ -1787,29 +1854,89 @@ export class VectorModelMigrationRunner {
 		try {
 			db = connect(this.dbPath) as SqliteDatabase;
 			loadSqliteVec(db);
+			this.lastTickWasIdle = await this.runPassesWithinBudget(db);
+			this.consecutiveBusyTicks = 0;
+			this.lockNoticeWritten = false;
+		} catch (error) {
+			this.handleTickFailure(db, error);
+		} finally {
+			db?.close();
+		}
+	}
+
+	/**
+	 * Runs passes on one connection until the job goes idle, the runner stops,
+	 * or the tick budget is spent, and returns whether the last pass left the
+	 * job idle. Every pass commits its own short write transactions, and
+	 * inference runs outside them, so a longer tick does not lengthen any single
+	 * write transaction. It does run more of them per minute.
+	 */
+	private async runPassesWithinBudget(db: SqliteDatabase): Promise<boolean> {
+		const deadline = Date.now() + this.tickBudgetMs;
+		while (true) {
 			await runVectorMigrationPass(db, {
 				batchSize: this.batchSize,
 				signal: this.signal,
 				shouldStop: () => !this.active,
 			});
-			this.lastTickWasIdle = this.computeIdle(db);
-		} catch (error) {
-			if (db) {
-				const metadata = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB)?.metadata ?? {};
-				failMaintenanceJob(
-					db,
-					VECTOR_MODEL_MIGRATION_JOB,
-					error instanceof Error ? error.message : String(error),
-					{ metadata: { ...metadata, reconciliation_target_coverage_complete: undefined } },
-				);
+			const idle = this.computeIdle(db);
+			if (idle || !this.active || this.signal?.aborted || Date.now() >= deadline) return idle;
+			// No transaction is open here. Let shutdown and timers run between batches.
+			await yieldToEventLoop();
+		}
+	}
+
+	private handleTickFailure(db: SqliteDatabase | null, error: unknown): void {
+		if (isTransientSqliteBusy(error)) {
+			this.recordBusyTick(db, error);
+			return;
+		}
+		try {
+			if (db) recordFailedMigrationJob(db, error);
+		} catch (writeError) {
+			// The failure is still unrecorded; log it now and retry soon so it gets recorded.
+			if (isTransientSqliteBusy(writeError)) {
+				console.warn("Vector migration runner failed", error);
+				this.recordBusyTick(db, writeError);
+				return;
 			}
-			// Treat exceptions as idle — a thrown tick is not going to unthrow
-			// at 5s cadence. The failMaintenanceJob record captures the error;
-			// the next tick at IDLE_INTERVAL_MS will retry.
-			this.lastTickWasIdle = true;
-			console.warn("Vector migration runner failed", error);
-		} finally {
-			db?.close();
+			console.warn("Vector migration runner could not record its failure", writeError);
+		}
+		this.consecutiveBusyTicks = 0;
+		this.lockNoticeWritten = false;
+		// Treat exceptions as idle — a thrown tick is not going to unthrow
+		// at 5s cadence. The failMaintenanceJob record captures the error;
+		// the next tick at IDLE_INTERVAL_MS will retry.
+		this.lastTickWasIdle = true;
+		console.warn("Vector migration runner failed", error);
+	}
+
+	/**
+	 * Lock contention is transient, so the job keeps its status instead of
+	 * showing a failure, and the next tick runs well before the idle interval.
+	 */
+	private recordBusyTick(db: SqliteDatabase | null, error: unknown): void {
+		this.consecutiveBusyTicks += 1;
+		const retrySeconds = busyRetryDelayMs(this.consecutiveBusyTicks) / 1000;
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(
+			`Vector migration runner found the database locked (${message}); retrying in ${retrySeconds}s`,
+		);
+		this.noteLongLockWait(db);
+	}
+
+	/**
+	 * Best effort, once per locked streak: the write itself needs the lock, so an
+	 * attempt blocked by the lock is retried on the next locked tick.
+	 */
+	private noteLongLockWait(db: SqliteDatabase | null): void {
+		if (!db || this.lockNoticeWritten) return;
+		if (this.consecutiveBusyTicks < BUSY_TICKS_BEFORE_LOCK_NOTICE) return;
+		try {
+			this.lockNoticeWritten = writeLockWaitNotice(db);
+		} catch (error) {
+			console.warn("Vector migration runner could not record the lock wait", error);
+			this.lockNoticeWritten = true;
 		}
 	}
 
@@ -1826,8 +1953,11 @@ export class VectorModelMigrationRunner {
 			// progress.
 			const meta = (job.metadata ?? {}) as MigrationMetadata;
 			if (job.status === "running" || job.status === "pending") {
-				if (Number(meta.cutover_retry_count ?? 0) > 0) return true;
-				return false;
+				// A cutover retry slows the runner because each retry re-runs full
+				// validation scans. Queued incremental work drains before cutover,
+				// so a retry count left over from an earlier attempt must not slow it.
+				if (drainsQueuedSyncBeforeCutover(meta)) return false;
+				return Number(meta.cutover_retry_count ?? 0) > 0;
 			}
 			const queued =
 				metadataMemoryIds(meta.pending_upsert_memory_ids).length +

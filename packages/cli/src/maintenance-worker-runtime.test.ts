@@ -92,8 +92,12 @@ describe("maintenance worker runtime", () => {
 			?.batchSize;
 		const configuredIdleInterval = (vectorRunner as unknown as { idleIntervalMs: number } | null)
 			?.idleIntervalMs;
+		const configuredTickBudget = (vectorRunner as unknown as { tickBudgetMs: number } | null)
+			?.tickBudgetMs;
 		expect(configuredBatchSize).toBe(10);
 		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
+		// One batch per tick until metadata reads inside write transactions stop scanning vec0.
+		expect(configuredTickBudget).toBe(0);
 	});
 });
 

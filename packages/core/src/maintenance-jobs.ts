@@ -305,7 +305,8 @@ export function isTransientSqliteBusy(error: unknown): boolean {
 		typeof error === "object" && error != null
 			? String((error as { code?: unknown }).code ?? "")
 			: "";
-	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+	// Extended codes such as SQLITE_BUSY_SNAPSHOT and SQLITE_LOCKED_SHAREDCACHE are the same condition.
+	if (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED")) return true;
 	const message = error instanceof Error ? error.message : String(error);
-	return /database is (?:locked|busy)/i.test(message);
+	return /database (?:table )?is (?:locked|busy)/i.test(message);
 }

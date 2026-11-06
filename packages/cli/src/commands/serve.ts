@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import net from "node:net";
+import net, { type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import * as p from "@clack/prompts";
 import {
@@ -22,6 +22,7 @@ import {
 } from "@codemem/core";
 import type { ReconcileConfiguredCoordinatorEnrollmentResult } from "@codemem/server";
 import { Command, Option } from "commander";
+import { forwardChildStderr } from "../child-stderr-forward.js";
 import { helpStyle } from "../help-style.js";
 import { ObserverRuntimeController } from "../observer-runtime-controller.js";
 import {
@@ -443,6 +444,8 @@ export function buildMaintenanceWorkerArgs(
 	return args;
 }
 
+const MAINTENANCE_WORKER_LOG_PREFIX = "[maintenance-worker] ";
+
 function startMaintenanceWorkerProcess(invocation: ResolvedServeInvocation): ChildProcess | null {
 	const scriptPath = process.argv[1];
 	if (!scriptPath) {
@@ -452,13 +455,19 @@ function startMaintenanceWorkerProcess(invocation: ResolvedServeInvocation): Chi
 	const dbPath = resolveDbPath(invocation.dbPath ?? undefined);
 	const child = spawn(process.execPath, buildMaintenanceWorkerArgs(scriptPath, invocation), {
 		cwd: process.cwd(),
-		stdio: "ignore",
+		// Forward stderr so the worker's warnings and failures reach the viewer's logs.
+		stdio: ["ignore", "ignore", "pipe"],
 		env: {
 			...process.env,
 			CODEMEM_DB: dbPath,
 			...(invocation.configPath ? { CODEMEM_CONFIG: invocation.configPath } : {}),
 		},
 	});
+	if (child.stderr) {
+		forwardChildStderr(child.stderr, { prefix: MAINTENANCE_WORKER_LOG_PREFIX });
+		// Like child.unref(): the open pipe must not keep the viewer alive on its own.
+		(child.stderr as Partial<Socket>).unref?.();
+	}
 	child.unref();
 	if (child.pid) {
 		writeFileSync(
