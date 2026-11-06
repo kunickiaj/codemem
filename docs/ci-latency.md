@@ -1,8 +1,33 @@
 # CI latency evidence report
 
-**Investigation date:** 2026-10-25 UTC  
+**Original investigation:** 2026-10-25 UTC
+
+**Latest measurements:** 2026-11-06 PT
+
 **Bead:** `codemem-ahjzp`  
 **Scope:** Evidence and policy options for reducing CI latency without weakening required checks.
+
+## November 6 test-execution measurements
+
+The TypeScript Test job remains the critical path. These runs used the same CI workflow definition.
+
+| Run | Change | Selected files | Test step |
+| --- | --- | ---: | ---: |
+| 42243197799 | MCP filter forwarding | 122 / 952 | 218 s |
+| 42247526969 | Capture completion | 300 / 954 | 623 s |
+| 42245108458 | Claim generation schema | 510 / 953 | 803 s |
+| 42244006466 | Full main | 952, then one isolated file | 1,078 s |
+
+Installs took 3–5 seconds and builds took 15–19 seconds. PR selection included 104 files flagged for potentially untraced runtime inputs. Across main and capture runs, nine relay fault cases took about 207.5 seconds and ten relay sync cases about 81.2 seconds. File durations are not additive wall-time savings.
+
+Profiling on Node 24.22.2 traced almost all runtime in two representative cases to repeated six-second pair-pacing waits. With simulated pacing and budget refill clocks, the same local cases retained their assertions:
+
+| Case | Native pacing | Simulated pacing |
+| --- | ---: | ---: |
+| Substituted handshake and clean retry | 18.246 s | 0.225 s |
+| Authorized Space pull and push | 12.182 s | 0.229 s |
+
+Protocol fixtures opt into simulation. They advance client pacing, address allowance refill, and disposable relay/coordinator budget storage together. Concurrent waits accumulate in this simulation, so native-clock tests remain responsible for concurrent pacing and quota fairness. Authentication and nonce UTC, proof expiry, route lifetimes, and HTTP deadlines remain native. Production limits and dedicated native pacing tests are unchanged. Both complete protocol files passed locally in 6.009 and 1.292 seconds respectively. CI savings remain unmeasured until the changed suite runs there.
 
 ## Decision status
 

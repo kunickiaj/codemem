@@ -13,12 +13,17 @@ import {
 import { decisionFixture, decisionSeed } from "./relay-admission-decision-test-fixtures.js";
 import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "./relay-admission-metadata-schema.js";
 import { PARTICIPANT_TEST_SCHEMA_SQL } from "./relay-admission-participant-nonce-test-fixtures.js";
+import { relayAdmissionStorage } from "./relay-admission-storage-test-fixtures.js";
 import { createRelayCoordinatorClient } from "./relay-coordinator-client.js";
 import {
 	createRelayFaultProxy,
 	type RelayFaultProxy,
 	type RelayFaultRule,
 } from "./relay-fault-proxy-test-fixtures.js";
+import {
+	installSimulatedRelayBudgetClock,
+	type SimulatedRelayPairPacing,
+} from "./relay-pair-pacing-test-fixtures.js";
 import {
 	createRelayPeerClient,
 	type RelayPeerClient,
@@ -75,6 +80,8 @@ type DeviceIds = Record<"source" | "target", string>;
 type Namespace = RelayServerOptions["namespace"];
 export interface RelayClientTestOptions {
 	readonly monotonicMs?: () => number;
+	/** Opt in together: virtual client pacing and real quota SQL with simulated UTC. */
+	readonly simulatedPairPacing?: SimulatedRelayPairPacing;
 	readonly beforeCheck?: (
 		options: Parameters<RelayPeerClientOptions["coordinator"]["check"]>[0],
 	) => Promise<void>;
@@ -133,17 +140,19 @@ async function admissionDatabase(
 	return db;
 }
 
-function admissionHttp(db: Database.Database, namespace: Namespace) {
+function admissionHttp(
+	db: Database.Database,
+	namespace: Namespace,
+	options: RelayClientTestOptions,
+) {
 	const child = new Hono();
+	const storage = relayAdmissionStorage(db, options.simulatedPairPacing);
 	registerCoordinatorRelayAdmissionRoute(child, {
 		namespaces: relayAdmissionNamespaces(namespace),
 		externalPathname: admissionPath,
 		ingressKey: "disposable-test",
 		open: () => ({
-			database: {
-				query: async (sql, values) => db.prepare(sql).all(bind(values)),
-				insertReturning: async (sql, values) => db.prepare(sql).get(bind(values)) ?? null,
-			},
+			database: storage.database,
 			close() {},
 		}),
 	});
@@ -164,6 +173,7 @@ function admissionHttp(db: Database.Database, namespace: Namespace) {
 		outgoing.writeHead(response.status, Object.fromEntries(response.headers));
 		outgoing.end(Buffer.from(await response.arrayBuffer()));
 	});
+	http.once("close", () => storage.close());
 	return http;
 }
 
@@ -186,8 +196,10 @@ async function coordinatorFixture(http: Server, options: RelayClientTestOptions)
 	return { coordinator, checks, checkTimes, admissionUrl };
 }
 
-function quotaFixture(namespace: Namespace) {
+function quotaFixture(namespace: Namespace, options: RelayClientTestOptions) {
 	const quotaDb = new Database(":memory:");
+	if (options.simulatedPairPacing)
+		installSimulatedRelayBudgetClock(quotaDb, options.simulatedPairPacing);
 	initializeRelayQuotaSchema(quotaDb);
 	const realmId = relayRealmId(namespace.authorityId, namespace.groupId);
 	const control = { ratePerMinute: 120, burst: 16 },
@@ -222,6 +234,7 @@ function clientFactory(
 	const clients: RelayPeerClient[] = [];
 	function client(deviceId: "source" | "target", overrides: Partial<RelayPeerClientOptions> = {}) {
 		const options: RelayPeerClientOptions = {
+			enabled: true,
 			...base,
 			deviceId: deviceIds[deviceId],
 			localIdentity: identities[deviceId],
@@ -261,6 +274,7 @@ function runtimeFixture(
 			},
 		},
 		limits: runtimeLimits,
+		addressMonotonicMs: options.simulatedPairPacing?.pairPacing.monotonicMs,
 		reserveUpgrade: (signal) => quota.reserveUpgrade(signal),
 	});
 }
@@ -294,19 +308,19 @@ export async function relayClientFixture(
 		relayAudienceId: relayAudienceId(`wss://${host}`, service.keyId),
 	};
 	const db = await admissionDatabase(identities, deviceIds, namespace, options);
-	const http = admissionHttp(db, namespace);
+	const http = admissionHttp(db, namespace, options);
 	const { coordinator, checks, checkTimes, admissionUrl } = await coordinatorFixture(http, options);
-	const { quotaDb, quota } = quotaFixture(namespace);
+	const { quotaDb, quota } = quotaFixture(namespace, options);
 	const runtime = runtimeFixture(socketServer, namespace, coordinator, quota, options);
 	const { clients, client } = clientFactory(
 		{
-			enabled: true,
 			url: `ws://${host}/v1/relay`,
 			allowLoopbackWs: true,
 			servicePublicKey: service.publicKey,
 			...namespace,
 			externalPathname: admissionPath,
 			coordinator,
+			pairPacing: options.simulatedPairPacing?.pairPacing,
 			resolvePeerPin: () => null,
 			validateLocal: () => true,
 			onInbound: async (connection) => {

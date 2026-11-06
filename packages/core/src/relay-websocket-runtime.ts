@@ -24,6 +24,8 @@ export interface RelayWebSocketRuntimeOptions {
 	readonly server?: Server;
 	readonly path?: string;
 	readonly reserveUpgrade?: (signal: AbortSignal) => Promise<RelayAdmissionBudgetStatus>;
+	/** Address fairness budget only. Relay route, proof and registration lifetimes are unaffected. */
+	readonly addressMonotonicMs?: () => number;
 	readonly limits?: {
 		readonly sockets: number;
 		readonly pendingSockets: number;
@@ -78,11 +80,12 @@ class RelayWebSocketRuntime {
 	private readonly webSockets: WebSocketServer;
 	private readonly sockets = new Set<LiveSocket>();
 	private readonly pending = new Set<PendingUpgrade>();
-	private readonly addresses = new RelayAddressAllowances();
+	private readonly addresses: RelayAddressAllowances;
 	private readonly limits: { sockets: number; pendingSockets: number; writeBytes: number };
 	private enabled: boolean;
 	private readonly path: string;
 	constructor(private readonly options: RelayWebSocketRuntimeOptions) {
+		this.addresses = new RelayAddressAllowances(options.addressMonotonicMs);
 		this.path = options.path ?? "/v1/relay";
 		if (!/^\/[A-Za-z0-9/_-]+$/.test(this.path)) throw new Error("Invalid relay WebSocket path");
 		this.limits = {
