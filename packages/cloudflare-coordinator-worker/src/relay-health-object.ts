@@ -223,6 +223,8 @@ export class RelayHealth extends DurableObject<Record<string, never>> {
 				sign,
 				fetch,
 				publish: (value) => this.serialize(() => publish(value)),
+				// Workers Logs keeps this, so an operator can see why a group stopped admitting.
+				onTrip: (trip) => console.warn("relay_health_tripped", { groupId, ...trip }),
 			});
 			if (sameAuthority)
 				monitor.importState(await this.ctx.storage.get(stateKey(groupId)), {
