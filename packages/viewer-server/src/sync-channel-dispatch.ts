@@ -1,5 +1,5 @@
 import type { MemoryStore } from "@codemem/core";
-import { createSyncApp } from "./index.js";
+import { createSyncApp } from "./sync-app.js";
 
 export interface SyncChannelRequest {
 	readonly method: "GET" | "POST";
