@@ -51,6 +51,12 @@ export {
 	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
 } from "./coordinator-account-connection-schema.js";
 export type {
+	HeadlessLinkApproval,
+	HeadlessLinkCode,
+	LinkCoordinatorAccountHeadlessOptions,
+} from "./coordinator-account-link-headless-runtime.js";
+export { linkCoordinatorAccountHeadless } from "./coordinator-account-link-headless-runtime.js";
+export type {
 	CoordinatorAccountLinkReceiver,
 	CoordinatorAccountLinkReceiverOptions,
 } from "./coordinator-account-link-receiver.js";

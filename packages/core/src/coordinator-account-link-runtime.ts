@@ -72,7 +72,11 @@ type Failure =
 	| "identity_mismatch"
 	| "link_stopped"
 	| "cancellation_unconfirmed"
-	| "receiver_close_failed";
+	| "receiver_close_failed"
+	| "headless_unsupported"
+	| "user_code_conflict"
+	| "rate_limited"
+	| "link_declined";
 const MESSAGES: Record<Failure, string> = {
 	invalid_options: "Use a coordinator HTTPS origin and a literal loopback host.",
 	device_unavailable:
@@ -94,6 +98,11 @@ const MESSAGES: Record<Failure, string> = {
 		"Could not confirm cancellation; request will expire. Linking may already have finished if the final reply was lost.",
 	receiver_close_failed:
 		"Account-link receiver could not close. Linking may already have finished.",
+	headless_unsupported:
+		"This coordinator does not support headless linking. Ask its operator to apply migration 0043 and deploy.",
+	user_code_conflict: "Could not reserve a unique link code. Try again.",
+	rate_limited: "The coordinator is rate limiting account-link requests. Try again later.",
+	link_declined: "Linking was declined on this device. The link request was cancelled.",
 };
 const CHANGE_MESSAGES: Record<Failure, string> = {
 	...MESSAGES,
@@ -115,14 +124,23 @@ const CHANGE_MESSAGES: Record<Failure, string> = {
 };
 /** Only fixed public errors cross the runtime boundary; transport causes may contain proofs. */
 export class CoordinatorAccountLinkError extends Error {
-	constructor(readonly code: Failure) {
+	/** Only set for rate_limited: the coordinator's requested wait. */
+	readonly retryAfterMs?: number;
+	constructor(
+		readonly code: Failure,
+		options: { retryAfterMs?: number } = {},
+	) {
 		super(MESSAGES[code]);
+		if (options.retryAfterMs !== undefined) this.retryAfterMs = options.retryAfterMs;
 	}
 }
-function failure(code: Failure): CoordinatorAccountLinkError {
+export function failure(code: Failure): CoordinatorAccountLinkError {
 	return new CoordinatorAccountLinkError(code);
 }
-async function assertCurrentContext(options: AccountOptions, signal: AbortSignal): Promise<void> {
+export async function assertCurrentContext(
+	options: Pick<AccountOptions, "assertCurrentContext">,
+	signal: AbortSignal,
+): Promise<void> {
 	if (signal.aborted) throw failure("link_stopped");
 	const checkContext = options.assertCurrentContext;
 	if (!checkContext) return;
@@ -148,7 +166,9 @@ async function assertCurrentContext(options: AccountOptions, signal: AbortSignal
 	}
 	throw failure("context_changed");
 }
-function readDeviceWithKey(options: AccountOptions): CoordinatorDeviceLocalEvidence {
+export function readDeviceWithKey(
+	options: Pick<AccountOptions, "dbPath" | "keysDir">,
+): CoordinatorDeviceLocalEvidence {
 	try {
 		const device = readAccountLinkDevice(options.dbPath);
 		if (!loadPrivateKey(options.keysDir, undefined, device.deviceId))
@@ -158,7 +178,8 @@ function readDeviceWithKey(options: AccountOptions): CoordinatorDeviceLocalEvide
 		throw failure("device_unavailable");
 	}
 }
-interface Runtime {
+/** One account-link attempt; the desktop flow adds its loopback receiver. */
+export interface LinkSession {
 	options: AccountOptions;
 	intent: "link" | "refresh" | "disconnect";
 	authority?: CoordinatorAuthLinkAuthorityKind;
@@ -169,11 +190,13 @@ interface Runtime {
 	deadline: number;
 	expiresAtMs?: number;
 	signal: AbortSignal;
-	receiver: CoordinatorAccountLinkReceiver;
 	created: boolean;
 	succeeded: boolean;
 	stoppedState?: "failed" | "expired" | "cancelled";
 	finalizeRejected?: boolean;
+}
+interface Runtime extends LinkSession {
+	receiver: CoordinatorAccountLinkReceiver;
 }
 type Transport = Pick<
 	Runtime,
@@ -216,7 +239,7 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
 		reader.releaseLock();
 	}
 }
-type FailureCodes = Readonly<Record<number, Readonly<Record<string, Failure>>>>;
+export type FailureCodes = Readonly<Record<number, Readonly<Record<string, Failure>>>>;
 const CREATE_FAILURE_CODES: FailureCodes = {
 	403: { auth_link_review_required: "review_required" },
 };
@@ -281,7 +304,19 @@ async function rejectResponse(
 	await response.body?.cancel().catch(() => {});
 	throw failure("request_failed");
 }
-async function request(
+const MAX_RETRY_AFTER_MS = 600_000;
+/** Seconds from Retry-After, else from a JSON retry_after_s; null when neither is usable. */
+async function readRetryAfterMs(response: Response): Promise<number | null> {
+	const header = response.headers.get("Retry-After")?.trim() ?? "";
+	let seconds: unknown = /^\d{1,6}$/.test(header) ? Number(header) : undefined;
+	if (seconds === undefined) {
+		const data = await boundedJson(response).catch(() => null);
+		seconds = data?.retry_after_s;
+	}
+	if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds < 0) return null;
+	return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+}
+export async function request(
 	runtime: Transport,
 	options: {
 		method: "GET" | "POST";
@@ -289,6 +324,10 @@ async function request(
 		body?: Record<string, string>;
 		cancellation?: boolean;
 		failureCodes?: FailureCodes;
+		/** This POST may create an attempt that later needs cancellation. */
+		creates?: boolean;
+		/** Report 429 as rate_limited with the requested wait instead of request_failed. */
+		rateLimited?: boolean;
 	},
 ): Promise<Record<string, unknown>> {
 	const url = `${runtime.origin}${options.path}`;
@@ -298,7 +337,7 @@ async function request(
 	const signal = options.cancellation ? timeout : AbortSignal.any([timeout, runtime.signal]);
 	try {
 		// Once dispatched, a lost create reply may leave an attempt requiring cancellation.
-		if (options.method === "POST" && options.path === collectionPath(runtime))
+		if (options.creates || (options.method === "POST" && options.path === collectionPath(runtime)))
 			runtime.created = true;
 		const response = await (runtime.options.fetch ?? globalThis.fetch)(url, {
 			method: options.method,
@@ -307,6 +346,11 @@ async function request(
 			signal,
 			redirect: "manual",
 		});
+		if (response.status === 429 && options.rateLimited) {
+			const retryAfterMs = (await readRetryAfterMs(response)) ?? undefined;
+			await response.body?.cancel().catch(() => {});
+			throw new CoordinatorAccountLinkError("rate_limited", { retryAfterMs });
+		}
 		if (!response.ok) {
 			return await rejectResponse(runtime, response, options.failureCodes);
 		}
@@ -340,7 +384,7 @@ const CHANGE_STATES = new Set([
 	"failed",
 	"expired",
 ]);
-function readStatus(data: Record<string, unknown>, runtime: Runtime): RuntimeStatus {
+export function readStatus(data: Record<string, unknown>, runtime: LinkSession): RuntimeStatus {
 	const value = data.status;
 	if (!value || typeof value !== "object" || Array.isArray(value))
 		throw failure("invalid_response");
@@ -366,10 +410,10 @@ function readStatus(data: Record<string, unknown>, runtime: Runtime): RuntimeSta
 function collectionPath(runtime: Pick<Runtime, "intent">): string {
 	return runtime.intent === "link" ? "/v1/auth/link-attempts" : "/v1/auth/account-changes";
 }
-function attemptPath(runtime: Runtime): string {
+function attemptPath(runtime: LinkSession): string {
 	return `${collectionPath(runtime)}/${encodeURIComponent(runtime.attemptId)}`;
 }
-function attemptScope(runtime: Runtime): Record<string, string> {
+function attemptScope(runtime: LinkSession): Record<string, string> {
 	const scope: Record<string, string> = { group_id: runtime.options.groupId };
 	if (runtime.intent !== "link") {
 		if (!runtime.verifierHash) throw failure("invalid_response");
@@ -383,7 +427,7 @@ function statusPath(runtime: Runtime): string {
 		return `${attemptPath(runtime)}?group_id=${encodeURIComponent(runtime.options.groupId)}`;
 	return `${attemptPath(runtime)}?${new URLSearchParams(attemptScope(runtime))}`;
 }
-interface Pin {
+export interface Pin {
 	coordinatorId: string;
 	identityId: string;
 }
@@ -433,12 +477,12 @@ async function createAttempt(
 	runtime.deadline = Math.min(runtime.deadline, status.expiresAtMs + CLOCK_SKEW_MS);
 	return { coordinatorId: reply.coordinator_id, identityId: reply.identity_id };
 }
-async function finalize(
-	runtime: Runtime,
+export async function finalize(
+	runtime: LinkSession,
 	pin: Pin,
 	verifier: Uint8Array,
 	completion: string,
-	options: { requestNumber: number },
+	options: { requestNumber: number; headless?: { path: string; issuer: string; subject: string } },
 ): Promise<AccountResult> {
 	await assertCurrentContext(runtime.options, runtime.signal);
 	let failureCodes: FailureCodes | undefined = FINALIZE_FAILURE_CODES;
@@ -446,9 +490,14 @@ async function finalize(
 		// A later rejection cannot disprove an earlier possibly committed POST.
 		failureCodes = options.requestNumber === 1 ? CHANGE_FINALIZE_FAILURE_CODES : undefined;
 	}
+	const headless = options.headless;
+	const approved = headless && {
+		approved_issuer: headless.issuer,
+		approved_subject: headless.subject,
+	};
 	const reply = await request(runtime, {
 		method: "POST",
-		path: `${attemptPath(runtime)}/finalize`,
+		path: headless?.path ?? `${attemptPath(runtime)}/finalize`,
 		failureCodes,
 		body: {
 			purpose: runtime.intent === "link" ? AUTH_LINK_PURPOSE : AUTH_ACCOUNT_CHANGE_PURPOSE,
@@ -460,6 +509,7 @@ async function finalize(
 			fingerprint: runtime.device.fingerprint,
 			runtime_verifier: encodeCoordinatorAuthProof32(verifier),
 			completion,
+			...approved,
 		},
 	});
 	const status = readStatus(reply, runtime);
@@ -474,14 +524,14 @@ async function finalize(
 	runtime.succeeded = true;
 	return { ...pin, attemptId: runtime.attemptId, state: status.state };
 }
-function readyToFinalize(status: RuntimeStatus, finalRequests: number): boolean {
+export function readyToFinalize(status: RuntimeStatus, finalRequests: number): boolean {
 	if (status.state === "confirmed") return true;
 	return (
 		finalRequests > 0 &&
 		["finalized", "session_redeemed", "completed", "committing"].includes(status.state)
 	);
 }
-function retryFinalization(
+export function retryFinalization(
 	error: unknown,
 	finalRequests: number,
 	options: { intent: Runtime["intent"] },
@@ -542,7 +592,7 @@ function assertStatusEnvelope(reply: Record<string, unknown>, runtime: Runtime):
 	if (runtime.intent !== "link" && Object.keys(reply).length !== 1)
 		throw failure("invalid_response");
 }
-async function cancelAttempt(runtime: Runtime): Promise<void> {
+export async function cancelAttempt(runtime: LinkSession): Promise<void> {
 	try {
 		const reply = await request(runtime, {
 			method: "POST",
@@ -564,7 +614,7 @@ async function cancelAttempt(runtime: Runtime): Promise<void> {
 		throw failure("cancellation_unconfirmed");
 	}
 }
-function preserveRejection(runtime: Runtime, error: unknown): boolean {
+export function preserveRejection(runtime: LinkSession, error: unknown): boolean {
 	if (runtime.finalizeRejected) return true;
 	return (
 		error instanceof CoordinatorAccountLinkError &&
