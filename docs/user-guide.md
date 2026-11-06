@@ -129,11 +129,46 @@ codemem update check --json
 ## Viewer trust model
 
 - The viewer and its JSON APIs are designed for **localhost-only** use.
-- codemem currently relies on loopback-origin checks and local-process assumptions, not a real login/session auth layer.
+- codemem relies on listener-based Host validation, loopback-origin checks, and local-process assumptions. It does not provide general-purpose viewer authentication.
 - Binding the viewer to `0.0.0.0`, putting it behind a reverse proxy, or exposing it through a tunnel can make local APIs reachable in ways the current trust model was not built for.
 - Treat the viewer as a local tool. If you must expose it beyond loopback, add your own auth and network restrictions first.
 - This warning applies to the viewer HTTP service, not the separate sync/coordinator listeners documented elsewhere.
 - Viewer JavaScript and Lucide icons are bundled locally, so loading icons does not contact a CDN. Fonts may still load from Google Fonts.
+
+### Listener and embedding behavior
+
+For a loopback listener started by `codemem serve`, every viewer request must have
+a `Host` matching its request URL and the actual listening port, including when
+`--port 0` chooses an available port. This check runs before preflight and route
+handlers, including for requests without an `Origin` from CLI or hook callers.
+Missing, malformed, unexpected, or wrong-port authorities receive `403`.
+Forwarding headers do not override the listener or request authority.
+
+The allowed names follow the configured listener. `127.0.0.1` accepts that address
+and `localhost`, `::1` accepts `[::1]` and `localhost`, and `localhost` accepts all
+three. Other addresses in `127.0.0.0/8` and IPv4-mapped loopback IPv6 addresses
+accept their canonical address and `localhost`. Supported numeric listener
+shorthand such as `127.1` is canonicalized to `127.0.0.1`. Raw shorthand in a
+request's `Host` is rejected. Account routes retain their stricter listener,
+same-origin, and CSRF requirements.
+
+The CLI uses the actual bound IP to decide whether the listener is loopback,
+even when the configured hostname is a custom DNS name. When that name binds to
+loopback, allowed names include the configured name, the actual IP, and
+`localhost`. A configured `localhost` keeps its IPv4 and IPv6 aliases.
+
+Explicit non-loopback binds, including `0.0.0.0` and `::`, retain their existing
+behavior and require authentication and network restrictions outside the viewer.
+The loopback Host check does not make external exposure safe. Embedders calling
+`createApp` can supply `viewerAuthority.getListenerAddress` with the trusted
+configured `host`, actual bound `port`, and optional actual bound IP `address`.
+When supplied, `address` determines loopback classification and must be a valid
+IP address. Callbacks without it retain classification by configured host.
+The app otherwise uses
+`accountLink.getListenerAddress` when present. A configured callback that is
+unavailable, throws, or returns an invalid listener causes requests to receive
+`403`. Without either callback, the embedder owns authority validation at its
+HTTP boundary.
 
 ## Check local operational status
 

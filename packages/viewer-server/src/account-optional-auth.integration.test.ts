@@ -18,7 +18,9 @@ import { createApp, createSyncApp } from "./index.js";
 // Complements the UI/real-HTTP synthetic E2E: exercise actual application mounting,
 // persistent memory writes/reads, and device-signed direct-sync routes together.
 // No Google identity, coordinator request, default profile, or network is needed.
-const ORIGIN = "http://127.0.0.1:7441";
+const LISTENER = { host: "127.0.0.1", port: 7441 };
+const AUTHORITY = `${LISTENER.host}:${LISTENER.port}`;
+const ORIGIN = `http://${AUTHORITY}`;
 const blockedStates = ["review_required", "conflict", "revoked", "unavailable"] as const;
 type BlockedState = (typeof blockedStates)[number];
 const closeResources: (() => void | Promise<void>)[] = [];
@@ -150,7 +152,7 @@ function fixture(state: BlockedState) {
 	const app = createApp({
 		storeFactory: () => store,
 		accountLink: {
-			getListenerAddress: () => ({ host: "127.0.0.1", port: 7441 }),
+			getListenerAddress: () => LISTENER,
 			readContext,
 			readRemoteStatus,
 			registry,
@@ -162,12 +164,12 @@ function fixture(state: BlockedState) {
 
 async function accountHeaders(app: ReturnType<typeof createApp>) {
 	const session = await app.request(`${ORIGIN}/api/account/session`, {
-		headers: { Host: "127.0.0.1:7441", Origin: ORIGIN },
+		headers: { Host: AUTHORITY, Origin: ORIGIN },
 	});
 	expect(session.status).toBe(200);
 	const { csrfToken } = await session.json();
 	return {
-		Host: "127.0.0.1:7441",
+		Host: AUTHORITY,
 		Origin: ORIGIN,
 		"X-Codemem-Account-Csrf": csrfToken,
 		"Content-Type": "application/json",
@@ -180,7 +182,7 @@ describe("Google account state never gates unrelated application routes", () => 
 		async (state) => {
 			// Arrange: mount the full production app and confirm its account routes are blocked.
 			const f = fixture(state);
-			const shell = await f.app.request("/");
+			const shell = await f.app.request(`${ORIGIN}/`, { headers: { Host: AUTHORITY } });
 			expect(shell.status).toBe(200);
 			expect(shell.headers.get("content-type")).toContain("text/html");
 			const headers = await accountHeaders(f.app);
@@ -204,9 +206,9 @@ describe("Google account state never gates unrelated application routes", () => 
 			const accountReads = f.readRemoteStatus.mock.calls.length;
 			const profileReads = f.readContext.mock.calls.length;
 			// Act: normal capture requires neither an account token nor an account cookie.
-			const saved = await f.app.request("/api/memories/remember", {
+			const saved = await f.app.request(`${ORIGIN}/api/memories/remember`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: { Host: AUTHORITY, "Content-Type": "application/json" },
 				body: JSON.stringify({
 					kind: "decision",
 					title: "Synthetic capture",
@@ -219,13 +221,15 @@ describe("Google account state never gates unrelated application routes", () => 
 			vi.mocked(fetch).mockImplementation(async (input, init) => {
 				if (typeof input !== "string" || !input.startsWith("/api/observations?"))
 					throw new Error("Unexpected network request");
-				return f.app.request(input, init);
+				const headers = new Headers(init?.headers);
+				headers.set("Host", AUTHORITY);
+				return f.app.request(`${ORIGIN}${input}`, { ...init, headers });
 			});
 			const page = await loadMemoriesPage("synthetic-project");
 			const unrelatedProject = await loadMemoriesPage("absent-synthetic-project");
-			const invalid = await f.app.request("/api/memories/remember", {
+			const invalid = await f.app.request(`${ORIGIN}/api/memories/remember`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: { Host: AUTHORITY, "Content-Type": "application/json" },
 				body: JSON.stringify({ kind: "decision", title: "", body: "Invalid capture" }),
 			});
 			// Assert: actual stored content is returned through the production UI API client.

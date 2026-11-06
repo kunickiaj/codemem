@@ -54,6 +54,7 @@ import {
 import { updateStatusRoutes } from "./routes/update-status.js";
 import { getStore } from "./shared-store.js";
 import { createSyncApp as createPeerSyncApp, type SyncAppOptions } from "./sync-app.js";
+import { type ViewerAuthorityOptions, viewerAuthorityGuard } from "./viewer-authority.js";
 
 export type {
 	AccountContext,
@@ -139,6 +140,7 @@ export type {
 	LegacyTeamSetupViewV1,
 } from "./routes/team-setup.js";
 export { closeStore, closeStoreAsync, getStore } from "./shared-store.js";
+export type { ViewerAuthorityOptions } from "./viewer-authority.js";
 export { VERSION };
 
 /**
@@ -146,6 +148,13 @@ export { VERSION };
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
 export interface AppOptions extends SyncAppOptions {
+	/**
+	 * Trusted listener context for loopback Host validation. Defaults to accountLink's
+	 * callback, which the CLI always supplies with the actual bound port. Without
+	 * either callback, embedding callers own authority validation. External binds
+	 * retain their existing requirement for authentication outside this app.
+	 */
+	viewerAuthority?: ViewerAuthorityOptions;
 	accountLink?: AccountLinkOptions &
 		AccountStatusOptions & {
 			ownerRecovery?: ReturnType<typeof createAccountOwnerRecoveryService>;
@@ -245,10 +254,12 @@ function registerConfigRoutes(
 	);
 }
 
-function registerAccountRoutes(app: Hono, options?: AppOptions["accountLink"]): void {
-	if (!options) return;
-	const account = createAccountGuard(options);
-	app.use("*", account.middleware);
+function registerViewerBoundary(app: Hono, opts?: AppOptions): void {
+	const options = opts?.accountLink;
+	const account = options ? createAccountGuard(options) : null;
+	if (account) app.use("*", account.middleware);
+	app.use("*", viewerAuthorityGuard(opts?.viewerAuthority ?? options));
+	if (!options || !account) return;
 	app.route("/", account.routes);
 	if (options.ownerRecovery) app.route("/", accountOwnerRecoveryRoutes(options.ownerRecovery));
 	if (options.readContext)
@@ -271,7 +282,7 @@ export function createApp(opts?: AppOptions) {
 	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
 	let invalidateTeamSetupSummary = () => {};
 	const app = new Hono();
-	registerAccountRoutes(app, opts?.accountLink);
+	registerViewerBoundary(app, opts);
 
 	// CORS / origin guard
 	app.use("*", preflightHandler());
