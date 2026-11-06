@@ -50,6 +50,13 @@ only the authenticated peer's own ops. The client's push starts after the later
 of that cursor and its own saved acknowledgement, so a peer that already pulled
 the ops directly is not sent them again. An absent or malformed value changes
 nothing, and the saved acknowledgement never moves backwards.
+
+The direct legacy push reads the same `authorized_scopes` entries. For each
+scope it drops ops at or before the later of the peer's `applied_cursor` and
+the relay channel's saved acknowledgement for that scope, when that
+acknowledgement still belongs to the peer's current reset boundary. A device
+that returns to direct sync after relaying therefore does not resend what the
+relay already delivered.
 Snapshot uses the same explicit scope authorization before loading any page,
 and preserves the existing generation, snapshot ID and page-token checks.
 
