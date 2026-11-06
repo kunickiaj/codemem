@@ -94,9 +94,9 @@ async function relayAppOptions(
 
 function createLegacyCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
+	deviceLimiter = createInMemoryRequestRateLimiter(),
 ) {
 	const qualificationLimiter = createInMemoryRequestRateLimiter();
-	const deviceLimiter = createInMemoryRequestRateLimiter();
 	return {
 		async fetch(
 			request: Request,
@@ -121,6 +121,7 @@ function createLegacyCloudflareCoordinatorWorker(
 				adminSecret: coordinatorAdminSecret(env, opts),
 				now: opts.now,
 				requestVerifier: verifyCloudflareCoordinatorRequest,
+				requestRateLimit: { limiter: deviceLimiter },
 				recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
 				...(await relayAppOptions(request, env, ctx)),
 			});
@@ -272,11 +273,18 @@ function browserRuntimeOptions(
 export function createCloudflareCoordinatorWorker(
 	opts: CreateCloudflareCoordinatorWorkerOptions = {},
 ) {
-	if (!opts.browserAuth) return createLegacyCloudflareCoordinatorWorker(opts);
+	return createCloudflareCoordinatorWorkerRuntime(opts);
+}
+
+function createCloudflareCoordinatorWorkerRuntime(
+	opts: CreateCloudflareCoordinatorWorkerOptions,
+	deviceLimiter?: ReturnType<typeof createInMemoryRequestRateLimiter>,
+) {
+	if (!opts.browserAuth) return createLegacyCloudflareCoordinatorWorker(opts, deviceLimiter);
 	const snapshot = captureCoordinatorBrowserAuthOptions(opts.browserAuth);
 	if (snapshot.kind === "disabled") {
 		return {
-			...createLegacyCloudflareCoordinatorWorker(opts),
+			...createLegacyCloudflareCoordinatorWorker(opts, deviceLimiter),
 			scheduled(
 				_controller: ScheduledController,
 				env: CloudflareCoordinatorEnv,
@@ -467,7 +475,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		// Removing or disabling config after capture is drift, not an initial legacy rollout.
 		if (pin.bindings && !sameBindings(pin.bindings, bindings)) return null;
 		const settings = captureCloudflareBrowserAuthEnv(env);
-		if (settings.kind === "disabled") return disabledWorker(settings);
+		if (settings.kind === "disabled") return disabledWorker(settings, deviceLimiter);
 		if (settings.kind === "invalid") return null;
 		if (completed) return completed;
 		const db = env.COORDINATOR_DB;
@@ -499,7 +507,7 @@ export function createConfiguredCloudflareCoordinatorWorker() {
 		): void {
 			const settings = captureCloudflareBrowserAuthEnv(env);
 			if (settings.kind === "disabled") {
-				runWorkerScheduled(disabledWorker(settings), controller, env, ctx);
+				runWorkerScheduled(disabledWorker(settings, deviceLimiter), controller, env, ctx);
 				return;
 			}
 			ctx.waitUntil(
@@ -565,12 +573,16 @@ function runWorkerScheduled(
 
 function disabledWorker(
 	settings: Extract<ReturnType<typeof captureCloudflareBrowserAuthEnv>, { kind: "disabled" }>,
+	deviceLimiter: ReturnType<typeof createInMemoryRequestRateLimiter>,
 ) {
-	return createCloudflareCoordinatorWorker({
-		browserAuth: { config: { enabled: false, coordinatorId: settings.coordinatorId } },
-		recipientInviteCoordinatorId:
-			typeof settings.coordinatorId === "string" ? settings.coordinatorId : undefined,
-	});
+	return createCloudflareCoordinatorWorkerRuntime(
+		{
+			browserAuth: { config: { enabled: false, coordinatorId: settings.coordinatorId } },
+			recipientInviteCoordinatorId:
+				typeof settings.coordinatorId === "string" ? settings.coordinatorId : undefined,
+		},
+		deviceLimiter,
+	);
 }
 
 export default createConfiguredCloudflareCoordinatorWorker();

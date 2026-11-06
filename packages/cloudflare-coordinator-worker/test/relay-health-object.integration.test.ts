@@ -5,7 +5,7 @@ import {
 	runInDurableObject,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import {
 	encodeRelayAdmissionBody,
@@ -22,12 +22,17 @@ import { decodeRelayControl, type RelayControl } from "../../core/src/relay-cont
 import { relayEd25519KeyId } from "../../core/src/relay-ed25519.js";
 import type { RelayHealthState } from "../../core/src/relay-health.js";
 import { relayAudienceId, relayRealmId } from "../../core/src/relay-service-proof.js";
-import worker, { type CloudflareCoordinatorEnv } from "../src/index.js";
+import type { CloudflareCoordinatorEnv } from "../src/index.js";
 import { captureRelayEnv, RELAY_ADMISSION_PATH, readRelayConfig } from "../src/relay-config.js";
 import { RELAY_HEALTH_OBJECT_NAME } from "../src/relay-health-config.js";
 import type { RelayHealthContext } from "../src/relay-health-link.js";
 import { RELAY_ADMISSION_ADMIN_PATH, RELAY_QUOTA_ADMIN_PATH } from "../src/relay-route.js";
-import { relayHealthTestState, relayHealthWorkerEnv } from "./relay-health-do-object.js";
+import {
+	relayHealthCoordinatorWorker,
+	relayHealthTestState,
+	relayHealthWorkerEnv,
+	resetRelayHealthCoordinatorWorker,
+} from "./relay-health-do-object.js";
 
 // Local miniflare D1 and Durable Objects only. The tests below run in order and
 // share one health object and this file's D1, as one deployment would.
@@ -66,6 +71,20 @@ const [probe, source, target] = (await Promise.all([deviceKey(), deviceKey(), de
 	DeviceKey,
 ];
 const state = relayHealthTestState();
+const probeStatuses: number[] = [];
+state.onProbeResponse = (status) => probeStatuses.push(status);
+beforeEach(() => {
+	// Cases share durable D1/health state, but not an isolate's ephemeral quota.
+	// Direct requests and loopback probes retain the same limiter throughout each case.
+	resetRelayHealthCoordinatorWorker();
+	probeStatuses.length = 0;
+});
+afterEach(() => {
+	expect(probeStatuses).not.toContain(429);
+});
+afterAll(() => {
+	state.onProbeResponse = undefined;
+});
 // Set before any health object is constructed, because it reads env once.
 state.settings = {
 	CODEMEM_RELAY_HEALTH_PROBE_DEVICE: PROBE,
@@ -78,7 +97,8 @@ state.settings = {
 };
 const stub = env.RELAY_HEALTH_TEST.get(env.RELAY_HEALTH_TEST.idFromName(RELAY_HEALTH_OBJECT_NAME));
 const workerEnv = () => relayHealthWorkerEnv(env) as unknown as CloudflareCoordinatorEnv;
-const send = (request: Request, ctx?: RelayHealthContext) => worker.fetch(request, workerEnv(), ctx);
+const send = (request: Request, ctx?: RelayHealthContext) =>
+	relayHealthCoordinatorWorker().fetch(request, workerEnv(), ctx);
 
 function adminRequest(path: string, body: unknown) {
 	return new Request(`${base}${path}`, {

@@ -1,7 +1,18 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { RelayHealthClockStamp } from "@codemem/core/internal/cloudflare-coordinator";
-import worker from "../src/index.js";
+import { createConfiguredCloudflareCoordinatorWorker } from "../src/index.js";
 import { RelayHealth } from "../src/relay-health-object.js";
+
+let coordinatorWorker = createConfiguredCloudflareCoordinatorWorker();
+
+export function relayHealthCoordinatorWorker() {
+	return coordinatorWorker;
+}
+
+/** Retain durable health state while starting a new ephemeral coordinator isolate. */
+export function resetRelayHealthCoordinatorWorker() {
+	coordinatorWorker = createConfiguredCloudflareCoordinatorWorker();
+}
 
 /**
  * Shared between the test file and the objects, which run in one isolate. The
@@ -20,6 +31,8 @@ export interface RelayHealthTestState {
 	failGroup?: string;
 	/** Runs before the loopback serves a probe request. */
 	onProbe?: (url: URL) => Promise<void>;
+	/** Observes only the loopback response status, without retaining signed requests. */
+	onProbeResponse?: (status: number) => void;
 	/** Holds forwarded samples until resolved. */
 	sampleGate?: Promise<void>;
 	samples: number;
@@ -60,7 +73,13 @@ export class RelayCoordinatorEnabledTest extends WorkerEntrypoint<Record<string,
 		await state.onProbe?.(url);
 		if (state.failProbe || url.searchParams.get("group_id") === state.failGroup)
 			return new Response(null, { status: 503 });
-		return worker.fetch(request, relayHealthWorkerEnv(this.env), this.ctx);
+		const response = await relayHealthCoordinatorWorker().fetch(
+			request,
+			relayHealthWorkerEnv(this.env),
+			this.ctx,
+		);
+		state.onProbeResponse?.(response.status);
+		return response;
 	}
 }
 

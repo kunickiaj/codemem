@@ -520,6 +520,44 @@ it.each([
 	expect(await independent.json()).toEqual({ error: "missing_headers" });
 });
 
+it.each(["missing config", "disabled config", "standalone legacy factory"] as const)(
+	"retains the device API limiter from cold start with %s",
+	async (mode) => {
+		// Arrange: no request may configure browser auth before the anonymous API traffic.
+		const env = environment();
+		delete env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG;
+		delete env.CODEMEM_COORDINATOR_OIDC_CLIENT_SECRET;
+		delete env.CODEMEM_COORDINATOR_BROWSER_CSRF_KEY;
+		if (mode === "disabled config")
+			env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({ enabled: false });
+		let worker = createConfiguredCloudflareCoordinatorWorker();
+		if (mode === "standalone legacy factory") worker = createCloudflareCoordinatorWorker();
+		const presence = () =>
+			request("/v1/presence", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ group_id: "fixture-group", addresses: [] }),
+			});
+		// Act: sequential requests must share a bucket without any configured warmup.
+		const statuses: number[] = [];
+		for (let attempt = 0; attempt < 10; attempt++)
+			statuses.push((await worker.fetch(presence(), env)).status);
+		const limited = await worker.fetch(presence(), env);
+		const independent = await worker.fetch(
+			request("/v1/reciprocal-approvals?group_id=fixture-group"),
+			env,
+		);
+		// Assert: requests reach signature checks until quota exhaustion, with route isolation.
+		expect(statuses).toEqual(Array(10).fill(401));
+		expect(limited.status).toBe(429);
+		expect(await limited.json()).toMatchObject({ error: "rate_limited" });
+		expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+		expect(independent.status).toBe(401);
+		expect(await independent.json()).toEqual({ error: "missing_headers" });
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	},
+);
+
 it("mounts sign-in from bindings and preserves its CSRF key across independent workers", async () => {
 	// Arrange: a browser form from one isolate must work in another with the same bindings.
 	const env = environment();
