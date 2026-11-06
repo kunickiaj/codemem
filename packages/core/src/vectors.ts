@@ -275,14 +275,20 @@ export function findMemoryIdsWithCompleteActiveVectorCoverage(
 		)
 		.all(...ids) as MemoryTextRow[];
 	if (memories.length === 0) return ids;
-	const incompleteIds = withVectorMetadataSnapshot(db, (metadata) => {
-		const selectHash = prepareSnapshotHashQuery(metadata);
-		return new Set(
-			memories
-				.filter((memory) => !memoryHasSnapshotCoverage(selectHash, memory, model))
-				.map((memory) => memory.id),
-		);
-	});
+	// The coverage query reads only these memories' rows for this model, so the
+	// snapshot copies only those instead of the whole vector catalog.
+	const incompleteIds = withVectorMetadataSnapshot(
+		db,
+		(metadata) => {
+			const selectHash = prepareSnapshotHashQuery(metadata);
+			return new Set(
+				memories
+					.filter((memory) => !memoryHasSnapshotCoverage(selectHash, memory, model))
+					.map((memory) => memory.id),
+			);
+		},
+		{ memoryIds: memories.map((memory) => memory.id), model },
+	);
 	// Missing or inactive memories have no active coverage work and must not
 	// remain queued forever. Their deletion work is tracked separately.
 	return ids.filter((memoryId) => !incompleteIds.has(memoryId));

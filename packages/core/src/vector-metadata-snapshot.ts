@@ -1,40 +1,20 @@
 import SqliteDatabase from "better-sqlite3";
 import type { Database } from "./db.js";
+import { readVectorMetadataRows, type VectorMetadataFilter } from "./vector-metadata-rows.js";
 
-type VectorMetadataSnapshotOptions = { memoryIds?: readonly number[]; model?: string };
+type VectorMetadataSnapshotOptions = VectorMetadataFilter;
 
 function copyVectorMetadata(
 	db: Database,
 	metadata: Database,
-	{ memoryIds, model }: VectorMetadataSnapshotOptions,
+	options: VectorMetadataSnapshotOptions,
 ): void {
-	if (memoryIds?.length === 0) return;
-	// Restrict copied rows to this batch; vec0 may still scan memory IDs.
-	// A JSON ID list uses one binding even when callers exceed SQLite's bind limit.
-	const conditions =
-		memoryIds === undefined ? [] : ["memory_id IN (SELECT value FROM json_each(?))"];
-	const params = memoryIds === undefined ? [] : [JSON.stringify(memoryIds)];
-	if (model !== undefined) {
-		conditions.push("model = ?");
-		params.push(model);
-	}
-	const where = conditions.length === 0 ? "" : `WHERE ${conditions.join(" AND ")}`;
-	const rows = db
-		.prepare(
-			`SELECT rowid, memory_id, model, content_hash FROM memory_vectors
-		 ${where} /* vector-metadata-snapshot */`,
-		)
-		.safeIntegers();
+	if (options.memoryIds?.length === 0) return;
 	const insert = metadata.prepare(
 		"INSERT INTO vector_metadata(rowid, memory_id, model, content_hash) VALUES (?, ?, ?, ?)",
 	);
 	metadata.transaction(() => {
-		for (const row of rows.iterate(...params) as Iterable<{
-			rowid: bigint;
-			memory_id: bigint | null;
-			model: string | null;
-			content_hash: string | null;
-		}>) {
+		for (const row of readVectorMetadataRows(db, options, "vector-metadata-snapshot")) {
 			if (
 				!Number.isSafeInteger(Number(row.rowid)) ||
 				(row.memory_id !== null && !Number.isSafeInteger(Number(row.memory_id)))
@@ -47,7 +27,8 @@ function copyVectorMetadata(
 }
 
 /**
- * Stream vec0 metadata once into an indexed, disposable SQLite database.
+ * Stream vector metadata once into an indexed, disposable SQLite database.
+ * v1 layouts read the indexed mirror table; legacy layouts scan vec0.
  *
  * A separate temporary database avoids changing the source connection's
  * temp_store (which would destroy callers' TEMP tables). Its pager can spill

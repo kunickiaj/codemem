@@ -253,8 +253,9 @@ describe("vector metadata maintenance batches", () => {
 			2,
 		);
 		expect(prepareCount(observed, /DELETE FROM memory_vectors WHERE rowid/)).toBe(1);
+		// Queue coverage copies only the queued memories; whole-corpus coverage copies everything.
 		expect(observed.sourceReads.map((sql) => sql.includes("json_each"))).toEqual([
-			false,
+			true,
 			false,
 			true,
 			true,

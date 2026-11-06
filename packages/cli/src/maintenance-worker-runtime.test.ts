@@ -96,8 +96,8 @@ describe("maintenance worker runtime", () => {
 			?.tickBudgetMs;
 		expect(configuredBatchSize).toBe(10);
 		expect(configuredIdleInterval).toBeGreaterThanOrEqual(60_000);
-		// One batch per tick until metadata reads inside write transactions stop scanning vec0.
-		expect(configuredTickBudget).toBe(0);
+		// Several short batches per tick, each with its own write transaction.
+		expect(configuredTickBudget).toBe(5_000);
 	});
 });
 
