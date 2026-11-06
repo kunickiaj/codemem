@@ -12,9 +12,29 @@ export const SYNC_CAPABILITY_HEADER = "X-Codemem-Sync-Capability";
 
 export const SYNC_FEATURES_HEADER = "X-Codemem-Sync-Features";
 export const SYNC_AUTHORIZATION_REFRESH_HEADER = "X-Codemem-Refresh-Authorization";
-export const SYNC_FEATURES = ["reassign_scope", "memory_scope_retirement_v1"] as const;
+export const SYNC_FEATURES = [
+	"reassign_scope",
+	"memory_scope_retirement_v1",
+	"relay",
+	"relay_aware",
+] as const;
 // Retirement is recognized but not advertised until snapshot and admission gates are complete.
-export const LOCAL_SYNC_FEATURES: readonly SyncFeature[] = ["reassign_scope"];
+// `relay_aware` marks a build that reports `relay` truthfully, so a peer can tell "this device
+// runs no relay client" from "this device predates the `relay` feature". `relay` itself is
+// advertised only by a viewer that runs a relay client; see `setLocalSyncFeature`.
+export const LOCAL_SYNC_FEATURES: SyncFeature[] = ["reassign_scope", "relay_aware"];
+
+/**
+ * Turn a locally advertised feature on or off for this process. The viewer calls
+ * this for `relay` once it knows whether it runs a relay client, before any peer
+ * exchange, so status replies and outbound headers describe this device truthfully.
+ */
+export function setLocalSyncFeature(feature: SyncFeature, enabled: boolean): void {
+	const index = LOCAL_SYNC_FEATURES.indexOf(feature);
+	if (enabled && index < 0) LOCAL_SYNC_FEATURES.push(feature);
+	if (!enabled && index >= 0) LOCAL_SYNC_FEATURES.splice(index, 1);
+	LOCAL_SYNC_FEATURES.sort();
+}
 
 export type SyncCapability = (typeof SYNC_CAPABILITIES)[number];
 export type SyncFeature = (typeof SYNC_FEATURES)[number];

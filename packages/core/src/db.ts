@@ -772,6 +772,10 @@ function ensureSyncPeerRuntimeVersionColumns(db: DatabaseType): void {
 	if (!tableExists(db, "sync_peers")) return;
 	addColumnIfMissing(db, "sync_peers", "runtime_version", "TEXT");
 	addColumnIfMissing(db, "sync_peers", "runtime_version_observed_at", "TEXT");
+	addColumnIfMissing(db, "sync_peers", "sync_features_json", "TEXT");
+	addColumnIfMissing(db, "sync_peers", "sync_features_observed_at", "TEXT");
+	addColumnIfMissing(db, "sync_peers", "relay_retry_after", "TEXT");
+	addColumnIfMissing(db, "sync_peers", "relay_rejections", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /** Add the structured sync-attempt failure category without a schema-version bump. */
