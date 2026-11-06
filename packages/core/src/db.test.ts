@@ -829,45 +829,30 @@ describe("ensureAdditiveSchemaCompatibility", () => {
 	});
 
 	it("treats duplicate-column races as benign when column now exists", () => {
-		let racedColumnVisible = false;
+		// Arrange: keep schema validation real and simulate only the concurrent ALTER.
+		db.close();
+		db = connect(join(tmpDir, "test.sqlite"));
+		db.pragma("user_version = 6");
+		db.exec("ALTER TABLE raw_event_flush_batches DROP COLUMN error_message");
 		let alterAttempts = 0;
-
-		const fakeDb = {
-			// Legacy user_version so the additive shim runs (does not short-circuit).
-			pragma() {
-				return 0;
-			},
-			transaction(callback: () => void) {
-				return { immediate: callback };
-			},
-			prepare(query: string) {
-				return {
-					get(...args: unknown[]) {
-						if (query.includes("sqlite_master")) {
-							return { ok: 1 };
-						}
-						if (query.includes("pragma_table_info")) {
-							const requestedColumn = String(args[1] ?? "");
-							if (requestedColumn === "error_message") {
-								return racedColumnVisible ? { ok: 1 } : undefined;
-							}
-							return { ok: 1 };
-						}
-						return undefined;
-					},
-				};
-			},
-			exec(sqlText: string) {
-				if (sqlText.includes("ADD COLUMN error_message")) {
-					alterAttempts += 1;
-					racedColumnVisible = true;
-					throw new Error("duplicate column name: error_message");
-				}
-			},
-		} as unknown as Database;
-
-		expect(() => ensureAdditiveSchemaCompatibility(fakeDb)).not.toThrow();
-		expect(alterAttempts).toBe(1);
+		const exec = db.exec.bind(db);
+		const race = vi.spyOn(db, "exec").mockImplementation((sqlText: string) => {
+			if (sqlText === "ALTER TABLE raw_event_flush_batches ADD COLUMN error_message TEXT") {
+				alterAttempts += 1;
+				// Another opener added the column after the existence check.
+				exec(sqlText);
+				throw new Error("duplicate column name: error_message");
+			}
+			return exec(sqlText);
+		});
+		try {
+			// Act / Assert: the duplicate is benign only because the column now exists.
+			expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
+			expect(alterAttempts).toBe(1);
+			expect(columnExists(db, "raw_event_flush_batches", "error_message")).toBe(true);
+		} finally {
+			race.mockRestore();
+		}
 	});
 
 	it("is a no-op when raw_event_flush_batches does not exist", () => {
