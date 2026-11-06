@@ -29,6 +29,14 @@ import {
 import type { IngestPayload, SessionContext } from "./ingest-types.js";
 import { ObserverAuthError, ObserverClient } from "./observer-client.js";
 import { ObserverOutputError, ObserverOutputTransportError } from "./observer-output.js";
+import {
+	claimRawEventFlush,
+	completeRawEventFlush,
+	finalizeFailedRawEventFlush,
+	getRawEventFlushBatchSnapshot,
+	ownsRawEventFlushClaim,
+	type RawEventFlushClaim,
+} from "./raw-event-flush-claim.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import type { MemoryStore } from "./store.js";
 
@@ -206,13 +214,13 @@ function normalizedFlushErrorType(
 	return type;
 }
 
-function handleFlushFailure(
+function recordFlushFailure(
 	store: MemoryStore,
 	ingestOpts: IngestOptions,
 	batchId: number,
 	isLegacyRediagnosis: boolean,
 	exc: unknown,
-): never {
+): unknown {
 	if (exc instanceof ScopeWriteAuthorityError) {
 		store.releaseRawEventFlushBatchAfterAuthError(batchId, {
 			code: "scope_authority",
@@ -222,14 +230,14 @@ function handleFlushFailure(
 			authSource: null,
 			authType: null,
 		});
-		throw exc;
+		return exc;
 	}
 	const observerFailureStatus = rawEventObserverStatusFromError(exc);
 	const err = exc instanceof Error ? exc : new Error(String(exc));
 	const status = observerFailureStatus ?? ingestOpts.observer?.getStatus?.();
 	const provider = status?.provider as string | undefined;
 	const authError = releaseBatchForAuthFailure(store, batchId, err, status ?? null);
-	if (authError) throw authError;
+	if (authError) return authError;
 	store.recordRawEventFlushBatchFailure(batchId, {
 		message: truncateErrorMessage(summarizeFlushFailure(err, provider)),
 		errorType: normalizedFlushErrorType(
@@ -246,7 +254,24 @@ function handleFlushFailure(
 		observerErrorCode: status?.lastError?.code ?? null,
 		observerErrorMessage: truncateErrorMessage(status?.lastError?.message ?? "", 400) || null,
 	});
-	throw exc;
+	return exc;
+}
+
+function handleFlushFailure(
+	store: MemoryStore,
+	ingestOpts: IngestOptions,
+	claim: RawEventFlushClaim,
+	isLegacyRediagnosis: boolean,
+	exc: unknown,
+): never {
+	// Throw after the transaction commits so failure and admission-release writes survive.
+	const error = store.db
+		.transaction(() => {
+			if (!ownsRawEventFlushClaim(store, claim)) return exc;
+			return recordFlushFailure(store, ingestOpts, claim.batchId, isLegacyRediagnosis, exc);
+		})
+		.immediate();
+	throw error;
 }
 
 function isTerminalNoOutputMicrobatch(
@@ -480,10 +505,34 @@ function completeContextOnlyBatch(
 	},
 ): { flushed: number; updatedState: number } | null {
 	if (source !== "opencode" || !isDelegatedBriefOnlyBatch(events)) return null;
-	if (!store.claimRawEventFlushBatch(batchId)) return { flushed: 0, updatedState: 0 };
-	store.updateRawEventFlushBatchStatus(batchId, "completed");
-	store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+	const claim = claimRawEventFlush(store, batchId);
+	if (!claim) return { flushed: 0, updatedState: 0 };
+	store.db
+		.transaction(() => {
+			completeRawEventFlush(store, { claim, source, streamId: opencodeSessionId, lastEventSeq });
+		})
+		.immediate();
 	return { flushed: events.length, updatedState: 1 };
+}
+
+function rawEventSequenceRange(
+	events: Record<string, unknown>[],
+): { startEventSeq: number; lastEventSeq: number } | null {
+	const eventSeqs: number[] = [];
+	for (const event of events) {
+		if (event.event_seq == null) continue;
+		const seq = Number(event.event_seq);
+		if (Number.isFinite(seq)) eventSeqs.push(seq);
+	}
+	const firstEventSeq = eventSeqs[0];
+	if (firstEventSeq == null) return null;
+	let startEventSeq = firstEventSeq;
+	let lastEventSeq = firstEventSeq;
+	for (const seq of eventSeqs.slice(1)) {
+		if (seq < startEventSeq) startEventSeq = seq;
+		if (seq > lastEventSeq) lastEventSeq = seq;
+	}
+	return { startEventSeq, lastEventSeq };
 }
 
 /**
@@ -522,42 +571,27 @@ export async function flushRawEvents(
 		return { flushed: 0, updatedState: 0 };
 	}
 
-	// Extract event sequence range
-	const eventSeqs: number[] = [];
-	for (const e of events) {
-		const seq = e.event_seq;
-		if (seq == null) continue;
-		const num = Number(seq);
-		if (Number.isFinite(num)) eventSeqs.push(num);
-	}
-	if (eventSeqs.length === 0) {
-		return { flushed: 0, updatedState: 0 };
-	}
-
-	const firstEventSeq = eventSeqs[0];
-	if (firstEventSeq == null) {
-		return { flushed: 0, updatedState: 0 };
-	}
-	const restEventSeqs = eventSeqs.slice(1);
-	let startEventSeq = firstEventSeq;
-	let lastEventSeq = firstEventSeq;
-	for (const v of restEventSeqs) {
-		if (v < startEventSeq) startEventSeq = v;
-		if (v > lastEventSeq) lastEventSeq = v;
-	}
-	if (lastEventSeq < startEventSeq) {
-		return { flushed: 0, updatedState: 0 };
-	}
+	const range = rawEventSequenceRange(events);
+	if (!range) return { flushed: 0, updatedState: 0 };
+	const { startEventSeq, lastEventSeq } = range;
 
 	// Get or create flush batch (idempotency guard)
-	const { batchId, status, attemptCount, errorType, observerErrorCode, observerErrorMessage } =
-		store.getOrCreateRawEventFlushBatch(
-			opencodeSessionId,
-			source,
-			startEventSeq,
-			lastEventSeq,
-			EXTRACTOR_VERSION,
-		);
+	const {
+		batchId,
+		status,
+		attemptCount,
+		errorType,
+		observerErrorCode,
+		observerErrorMessage,
+		snapshot,
+	} = getRawEventFlushBatchSnapshot(
+		store,
+		opencodeSessionId,
+		source,
+		startEventSeq,
+		lastEventSeq,
+		EXTRACTOR_VERSION,
+	);
 
 	// If already completed, just advance flush state
 	if (status === "completed") {
@@ -591,8 +625,12 @@ export async function flushRawEvents(
 				observerErrorCode,
 				observerErrorMessage,
 			});
-			store.updateRawEventFlushBatchStatus(batchId, completedNoOp ? "completed" : "gave_up");
-			store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+			const finalized = finalizeFailedRawEventFlush(
+				store,
+				{ claim: snapshot, source, streamId: opencodeSessionId, lastEventSeq },
+				completedNoOp ? "completed" : "gave_up",
+			);
+			if (!finalized) return { flushed: 0, updatedState: 0 };
 			return { flushed: completedNoOp ? events.length : 0, updatedState: 1 };
 		}
 		// Legacy builds stored this pre-observer outcome as a generic Error. Fall
@@ -601,9 +639,11 @@ export async function flushRawEvents(
 	}
 
 	// Claim the batch (atomic lock)
-	if (!store.claimRawEventFlushBatch(batchId)) {
+	const claim = claimRawEventFlush(store, batchId);
+	if (!claim) {
 		return { flushed: 0, updatedState: 0 };
 	}
+	const rawFlushPersistence = { claim, source, streamId: opencodeSessionId, lastEventSeq };
 
 	const sessionContext = buildFlushSessionContext(events, {
 		opencodeSessionId,
@@ -614,8 +654,7 @@ export async function flushRawEvents(
 	});
 
 	if (isTerminalLowSignalSession(events, sessionContext)) {
-		store.updateRawEventFlushBatchStatus(batchId, "completed");
-		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+		store.db.transaction(() => completeRawEventFlush(store, rawFlushPersistence)).immediate();
 		return { flushed: events.length, updatedState: 1 };
 	}
 
@@ -630,13 +669,14 @@ export async function flushRawEvents(
 
 	// Run ingest pipeline
 	try {
-		await ingest(payload, store, observerForRawEvents(events, ingestOpts, source));
+		await ingest(payload, store, {
+			...observerForRawEvents(events, ingestOpts, source),
+			rawFlushPersistence,
+		});
 	} catch (exc) {
-		handleFlushFailure(store, ingestOpts, batchId, isLegacyRediagnosis, exc);
+		handleFlushFailure(store, ingestOpts, claim, isLegacyRediagnosis, exc);
 	}
 
-	// Success — mark batch completed and advance flush state
-	store.updateRawEventFlushBatchStatus(batchId, "completed");
-	store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
+	// Ingest committed completion and the cursor together with content and usage.
 	return { flushed: events.length, updatedState: 1 };
 }

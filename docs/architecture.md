@@ -51,6 +51,12 @@ flowchart LR
 9. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
 10. The viewer, MCP server, and CLI all read from the same SQLite database.
 
+### Raw-event batch ownership
+
+Each successful flush claim advances a durable `claim_generation`, independently of its attempt count and wall-clock timestamp. Admission failures can refund attempts without reusing ownership. In one immediate SQLite transaction, the current worker verifies the batch ID, generation, and status, then commits memories, observer usage, batch completion, and cursor progress together. Intentional skips commit usage and completion together. Superseded workers can record actual observer cost, tagged as superseded with zero observations and no summary, but cannot publish memories or progress. A session-cleanup failure after commit leaves the batch completed on retry. This protection applies to workers claiming the same batch. Overlapping ranges require stream-level coordination.
+
+After upgrading, restart every process that can directly flush raw events before relying on generation fencing. Older binaries can open the additive schema but do not check claim generations. Recognized writable databases receive the column automatically. Read-only and unrecognized databases remain unchanged.
+
 ## Adapter support matrix and rollout
 
 Support tiers describe operational expectations for each adapter path:

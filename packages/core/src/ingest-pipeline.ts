@@ -70,6 +70,13 @@ import {
 import { resolveProject } from "./project.js";
 import { normalizeProjectLabel } from "./project-label.js";
 import { resolveAdjacentDelegatedContext } from "./raw-event-context.js";
+import {
+	completeRawEventFlush,
+	ownsRawEventFlushClaim,
+	type RawEventFlushClaim,
+	type RawEventFlushPersistence,
+	requireRawEventFlushClaim,
+} from "./raw-event-flush-claim.js";
 import * as schema from "./schema.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import { classifySessionForInjection, shouldSuppressSummaryOnlyOutput } from "./session-policy.js";
@@ -270,6 +277,8 @@ function normalizeEventsForToolExtraction(
 // ---------------------------------------------------------------------------
 
 export interface IngestOptions {
+	/** Internal raw-event claim whose completion commits with content and usage. */
+	rawFlushPersistence?: RawEventFlushPersistence;
 	/** Observer LLM client. */
 	observer: ObserverClient;
 	/** Optional hook to create a routed observer during tests or controlled integrations. */
@@ -350,15 +359,17 @@ function observerStatusForFailure(observer: ObserverClient, error: unknown) {
 function recordObserverFailureUsage(
 	error: ObserverOutputError | ObserverOutputTransportError,
 	status: ReturnType<ObserverClient["getStatus"]>,
-	usageContext: { store: MemoryStore; sessionId: number; project: string | null },
+	usageContext: {
+		store: MemoryStore;
+		sessionId: number;
+		project: string | null;
+		rawFlushPersistence?: RawEventFlushPersistence;
+	},
 ): void {
 	const usage = error.telemetry.totalUsage;
 	try {
-		recordObserverUsage(
-			usageContext.store,
-			usageContext.sessionId,
-			normalizedObserverTokenCounts(usage, status.provider),
-			{
+		const writeUsage = () => {
+			const metadata = {
 				project: usageContext.project,
 				token_usage: observerTokenUsageMetadata(
 					usage,
@@ -372,8 +383,25 @@ function recordObserverFailureUsage(
 				observer_output_repair_attempted: error.diagnostics.repairAttempted,
 				observer_output_total_elapsed_ms: error.telemetry.totalElapsedMs,
 				observer_output_total_usage: usage,
-			},
-		);
+			};
+			recordObserverUsage(
+				usageContext.store,
+				usageContext.sessionId,
+				normalizedObserverTokenCounts(usage, status.provider),
+				usageContext.rawFlushPersistence
+					? unpersistedRawFlushUsageMetadata(
+							usageContext.store,
+							usageContext.rawFlushPersistence,
+							metadata,
+						)
+					: metadata,
+			);
+		};
+		if (usageContext.rawFlushPersistence) {
+			usageContext.store.db.transaction(writeUsage).immediate();
+		} else {
+			writeUsage();
+		}
 	} catch {
 		// Failure telemetry is best-effort and must not replace the observer cause.
 	}
@@ -384,7 +412,12 @@ async function observeRawEventOutput(
 	system: string,
 	user: string,
 	capability: ReturnType<typeof resolveObserverOutputCapability>,
-	usageContext: { store: MemoryStore; sessionId: number; project: string | null },
+	usageContext: {
+		store: MemoryStore;
+		sessionId: number;
+		project: string | null;
+		rawFlushPersistence?: RawEventFlushPersistence;
+	},
 ): Promise<Awaited<ReturnType<typeof observeAndNormalizeObserverOutput>>> {
 	try {
 		return await observeAndNormalizeObserverOutput(observer, system, user, capability);
@@ -465,6 +498,8 @@ interface IngestSessionStage {
 	storeSummary: boolean;
 	storeTyped: boolean;
 	historicalRecovery: IngestOptions["historicalRecovery"];
+	rawFlushPersistence: IngestOptions["rawFlushPersistence"];
+	completedFlushClaim?: RawEventFlushClaim;
 }
 
 interface PreparedIngestStage {
@@ -650,6 +685,7 @@ function createIngestSession(
 		storeSummary,
 		storeTyped,
 		historicalRecovery: options.historicalRecovery,
+		rawFlushPersistence: options.rawFlushPersistence,
 	};
 }
 
@@ -837,6 +873,7 @@ async function runObserverInference(
 		store,
 		sessionId: stage.sessionId,
 		project: stage.project,
+		rawFlushPersistence: stage.rawFlushPersistence,
 	});
 	options.historicalRecovery?.onObserverInferenceComplete?.();
 	return {
@@ -1351,7 +1388,9 @@ function persistIngestPlan(
 	usageRecord: ObserverUsageRecord,
 ): Array<{ memoryId: number; title: string; bodyText: string }> {
 	const createdMemories: CreatedMemory[] = [];
-	store.db.transaction(() => {
+	const persist = store.db.transaction(() => {
+		if (stage.rawFlushPersistence)
+			requireRawEventFlushClaim(store, stage.rawFlushPersistence.claim);
 		store.assertSessionScopeWritable(stage.sessionId);
 		for (const [index, memory] of plan.memories.entries()) {
 			let supersededIds: number[] = [];
@@ -1390,7 +1429,10 @@ function persistIngestPlan(
 			plan.observerTokenCounts,
 			plan.observerCallMetadata,
 		);
-	})();
+		if (stage.rawFlushPersistence) return completeRawEventFlush(store, stage.rawFlushPersistence);
+	});
+	const completedClaim = stage.rawFlushPersistence ? persist.immediate() : persist();
+	stage.completedFlushClaim = completedClaim;
 	usageRecord.recorded = true;
 	return store.committedVectorInputs(createdMemories);
 }
@@ -1414,7 +1456,79 @@ function endIngestSession(
 	metadata: Record<string, unknown> = {},
 ): void {
 	if (stage.historicalRecovery) return;
+	const rawFlushPersistence = stage.rawFlushPersistence;
+	if (rawFlushPersistence) {
+		store.db
+			.transaction(() => {
+				const claim = stage.completedFlushClaim ?? rawFlushPersistence.claim;
+				const status = stage.completedFlushClaim ? "completed" : "claimed";
+				if (!ownsRawEventFlushClaim(store, claim, status)) return;
+				endSession(store, stage.sessionId, stage.events.length, stage.sessionContext, metadata);
+			})
+			.immediate();
+		return;
+	}
 	endSession(store, stage.sessionId, stage.events.length, stage.sessionContext, metadata);
+}
+
+function persistSkippedIngest(
+	store: MemoryStore,
+	stage: IngestSessionStage,
+	usageRecord: ObserverUsageRecord,
+): void {
+	if (!stage.rawFlushPersistence) {
+		recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
+		return;
+	}
+	const context = stage.rawFlushPersistence;
+	stage.completedFlushClaim = store.db
+		.transaction(() => {
+			requireRawEventFlushClaim(store, context.claim);
+			store.assertSessionScopeWritable(stage.sessionId);
+			recordObserverUsage(store, stage.sessionId, usageRecord.tokens, usageRecord.metadata);
+			return completeRawEventFlush(store, context);
+		})
+		.immediate();
+	usageRecord.recorded = true;
+}
+
+/** Call inside the usage transaction. Cost accounting never grants a stale worker write ownership. */
+function unpersistedRawFlushUsageMetadata(
+	store: MemoryStore,
+	context: RawEventFlushPersistence,
+	metadata: Record<string, unknown>,
+): Record<string, unknown> {
+	const { historical_recovery_batch_id: _receipt, ...failureMetadata } = metadata;
+	return {
+		...failureMetadata,
+		observation_count: 0,
+		has_summary: false,
+		raw_event_flush_outcome: ownsRawEventFlushClaim(store, context.claim) ? "failed" : "superseded",
+	};
+}
+
+function recordFailedRawFlushUsage(
+	store: MemoryStore,
+	stage: IngestSessionStage,
+	usageRecord: ObserverUsageRecord,
+): void {
+	const context = stage.rawFlushPersistence;
+	if (!context || usageRecord.recorded) return;
+	try {
+		store.db
+			.transaction(() => {
+				recordObserverUsage(
+					store,
+					stage.sessionId,
+					usageRecord.tokens,
+					unpersistedRawFlushUsageMetadata(store, context, usageRecord.metadata),
+				);
+			})
+			.immediate();
+		usageRecord.recorded = true;
+	} catch {
+		// Failure telemetry is best-effort and must not replace the ingest cause.
+	}
 }
 
 function handleUnprocessableInput(
@@ -1492,7 +1606,7 @@ async function processIngestSession(
 		const persistence = buildIngestPersistencePlan(stage, prepared, inference);
 		usageRecord.metadata = persistence.plan.observerCallMetadata;
 		if (persistence.action === "skip") {
-			recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
+			persistSkippedIngest(store, stage, usageRecord);
 			endIngestSession(store, stage, persistence.plan.sessionMetadata);
 			return;
 		}
@@ -1500,6 +1614,10 @@ async function processIngestSession(
 		await storeVectorInputs(store, vectorWriteInputs);
 		endIngestSession(store, stage, persistence.plan.sessionMetadata);
 	} catch (error) {
+		if (stage.rawFlushPersistence) {
+			recordFailedRawFlushUsage(store, stage, usageRecord);
+			throw error;
+		}
 		if (stage.historicalRecovery && !usageRecord.recorded) {
 			delete usageRecord.metadata.historical_recovery_batch_id;
 		}
@@ -1531,10 +1649,24 @@ export async function ingest(
 	store: MemoryStore,
 	options: IngestOptions,
 ): Promise<void> {
-	const stage = createIngestSession(payload, store, options);
-	if (!stage) return;
+	const createSession = () => {
+		if (options.rawFlushPersistence)
+			requireRawEventFlushClaim(store, options.rawFlushPersistence.claim);
+		return createIngestSession(payload, store, options);
+	};
+	const stage = options.rawFlushPersistence
+		? store.db.transaction(createSession).immediate()
+		: createSession();
+	if (!stage) {
+		if (options.rawFlushPersistence) throw new Error("Raw-event ingest requires a nonempty batch");
+		return;
+	}
 	try {
 		await processIngestSession(store, stage, options);
+		// A raw flush may return successfully only after its durable completion commits.
+		if (stage.rawFlushPersistence && !stage.completedFlushClaim) {
+			throw new Error("Raw-event ingest returned without committing batch completion");
+		}
 	} catch (err) {
 		if (err instanceof ScopeWriteAuthorityError && retainDeniedIngestSession(stage)) throw err;
 		try {
