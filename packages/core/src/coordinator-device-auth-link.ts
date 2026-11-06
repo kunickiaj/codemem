@@ -9,6 +9,8 @@ import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_PURPOSE,
+	type CoordinatorAuthLinkCreateInput,
+	type CoordinatorAuthLinkFinalizeInput,
 	type CoordinatorAuthLinkRejected,
 	type CoordinatorAuthLinkSigner,
 	type CoordinatorAuthLinkStore,
@@ -63,7 +65,7 @@ interface SignedRequest {
 	timestamp: string | null;
 	nonce: string | null;
 }
-interface DeviceAuthLinkDeps extends CoordinatorDeviceAuthLinkOptions {
+export interface DeviceAuthLinkDeps extends CoordinatorDeviceAuthLinkOptions {
 	authorizeRequest: (
 		store: CoordinatorDeviceAuthLinkStore,
 		request: SignedRequest,
@@ -77,7 +79,7 @@ interface DeviceAuthLinkDeps extends CoordinatorDeviceAuthLinkOptions {
 		options: { authenticated: boolean },
 	) => Response | null;
 }
-interface DeviceAuthLinkApp {
+export interface DeviceAuthLinkApp {
 	get(path: string, handler: (c: Context) => Promise<Response>): unknown;
 	post(path: string, handler: (c: Context) => Promise<Response>): unknown;
 }
@@ -106,7 +108,7 @@ function receiptFromData(data: Record<string, unknown>) {
 		resolutionEvidenceDigest: data.resolution_evidence_digest,
 	});
 }
-const FIELDS = {
+export const FIELDS = {
 	create: [
 		"group_id",
 		"identity_id",
@@ -130,7 +132,7 @@ const FIELDS = {
 	cancel: ["group_id"],
 } as const;
 
-function exactStrings<T extends string>(
+export function exactStrings<T extends string>(
 	data: Record<string, unknown> | null,
 	fields: readonly T[],
 ): data is Record<T, string> {
@@ -140,7 +142,7 @@ function exactStrings<T extends string>(
 		fields.every((field) => Object.hasOwn(data, field) && typeof data[field] === "string")
 	);
 }
-function isHash(value: unknown): value is string {
+export function isHash(value: unknown): value is string {
 	return typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 }
 function validInput(
@@ -161,8 +163,16 @@ function validInput(
 		);
 	}
 	if (action !== "finalize") return true;
+	return exactStrings(data, FIELDS.finalize) && validFinalizeFields(data, attemptId, config);
+}
+
+/** The finalize fields shared by the desktop and headless finalize routes. */
+export function validFinalizeFields(
+	data: Record<string, unknown>,
+	attemptId: string,
+	config: CoordinatorAuthBrowserConfig,
+): boolean {
 	return (
-		exactStrings(data, FIELDS.finalize) &&
 		data.purpose === AUTH_LINK_PURPOSE &&
 		data.coordinator_id === config.coordinatorId &&
 		data.attempt_id === attemptId &&
@@ -173,7 +183,7 @@ function validInput(
 		decodeCoordinatorAuthProof32(data.completion) !== null
 	);
 }
-function rejectedResponse(
+export function rejectedResponse(
 	c: Context,
 	result: CoordinatorAuthLinkRejected,
 	options: { reviewRequired?: boolean } = {},
@@ -255,20 +265,8 @@ async function createDeviceAttempt(
 	config: CoordinatorAuthBrowserConfig,
 ): Promise<Response> {
 	if (!exactStrings(data, FIELDS.create)) return c.json({ error: "auth_link_invalid_input" }, 400);
-	if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
-	const current = await store.readAccountLinkStatus(signer, config, {
-		identityId: data.identity_id,
-	});
-	if (
-		(current.state !== "unlinked" && current.state !== "linked") ||
-		current.identityId !== data.identity_id ||
-		current.authority !== data.authority
-	)
-		return c.json({ error: "auth_link_review_required" }, 403);
-	const authority =
-		current.authority === "device_claim"
-			? { kind: "device_claim" as const, identityId: data.identity_id }
-			: { kind: "controller_attestation" as const };
+	const authority = await resolveCreateAuthority(c, store, data, signer, config);
+	if (authority instanceof Response) return authority;
 	const result = await store.createAuthLinkAttempt(
 		{
 			authority,
@@ -281,20 +279,48 @@ async function createDeviceAttempt(
 		},
 		config,
 	);
-	if (result.kind === "rejected") {
-		if (result.error === "attempt_unavailable")
-			return c.json({ error: "auth_link_review_required" }, 403);
-		return rejectedResponse(c, result, { reviewRequired: true });
-	}
+	if (result.kind === "rejected") return createRejectedResponse(c, result);
 	return c.json(
 		{
 			status: result.status,
 			identity_id: result.identityId,
-			authority: current.authority,
+			authority: authority.kind,
 			coordinator_id: config.coordinatorId,
 		},
 		result.kind === "created" ? 201 : 200,
 	);
+}
+
+export function createRejectedResponse(c: Context, result: CoordinatorAuthLinkRejected): Response {
+	if (result.error === "attempt_unavailable")
+		return c.json({ error: "auth_link_review_required" }, 403);
+	return rejectedResponse(c, result, { reviewRequired: true });
+}
+
+/**
+ * The signer's current account-link status must name the requested Identity
+ * and authority; create never trusts the client's choice of either.
+ */
+export async function resolveCreateAuthority(
+	c: Context,
+	store: CoordinatorDeviceAuthLinkStore,
+	data: { identity_id: string; authority: string },
+	signer: CoordinatorAuthLinkSigner,
+	config: CoordinatorAuthBrowserConfig,
+): Promise<CoordinatorAuthLinkCreateInput["authority"] | Response> {
+	if (!store.readAccountLinkStatus) return c.json({ error: "auth_link_unavailable" }, 503);
+	const current = await store.readAccountLinkStatus(signer, config, {
+		identityId: data.identity_id,
+	});
+	if (
+		(current.state !== "unlinked" && current.state !== "linked") ||
+		current.identityId !== data.identity_id ||
+		current.authority !== data.authority
+	)
+		return c.json({ error: "auth_link_review_required" }, 403);
+	return current.authority === "device_claim"
+		? { kind: "device_claim", identityId: data.identity_id }
+		: { kind: "controller_attestation" };
 }
 
 async function cancelDeviceAttempt(
@@ -329,28 +355,35 @@ async function finalizeDeviceAttempt(
 	signer: CoordinatorAuthLinkSigner,
 	config: CoordinatorAuthBrowserConfig,
 ): Promise<Response> {
-	const runtimeVerifier = decodeCoordinatorAuthProof32(data.runtime_verifier);
-	const completion = decodeCoordinatorAuthProof32(data.completion);
-	if (!runtimeVerifier || !completion) return c.json({ error: "auth_link_invalid_input" }, 400);
-	const runtimeVerifierHash = await hashCoordinatorAuthProofBytes32(runtimeVerifier);
-	const completionSecretHash = await hashCoordinatorAuthProofBytes32(completion);
-	const result = await store.finalizeAuthLinkAttempt(
-		{
-			purpose: AUTH_LINK_PURPOSE,
-			coordinatorId: config.coordinatorId,
-			attemptId,
-			groupId: data.group_id,
-			identityId: data.identity_id,
-			deviceId: data.device_id,
-			fingerprint: data.fingerprint,
-			runtimeVerifierHash,
-			completionSecretHash,
-			signer,
-		},
-		config,
-	);
+	const input = await finalizeInput(data, attemptId, signer, config);
+	if (!input) return c.json({ error: "auth_link_invalid_input" }, 400);
+	const result = await store.finalizeAuthLinkAttempt(input, config);
 	if (result.kind === "rejected") return rejectedResponse(c, result, { reviewRequired: true });
 	return c.json({ status: result.status });
+}
+
+/** Hashes the device's proofs; the raw proofs never reach storage. */
+export async function finalizeInput(
+	data: Record<(typeof FIELDS.finalize)[number], string>,
+	attemptId: string,
+	signer: CoordinatorAuthLinkSigner,
+	config: CoordinatorAuthBrowserConfig,
+): Promise<CoordinatorAuthLinkFinalizeInput | null> {
+	const runtimeVerifier = decodeCoordinatorAuthProof32(data.runtime_verifier);
+	const completion = decodeCoordinatorAuthProof32(data.completion);
+	if (!runtimeVerifier || !completion) return null;
+	return {
+		purpose: AUTH_LINK_PURPOSE,
+		coordinatorId: config.coordinatorId,
+		attemptId,
+		groupId: data.group_id,
+		identityId: data.identity_id,
+		deviceId: data.device_id,
+		fingerprint: data.fingerprint,
+		runtimeVerifierHash: await hashCoordinatorAuthProofBytes32(runtimeVerifier),
+		completionSecretHash: await hashCoordinatorAuthProofBytes32(completion),
+		signer,
+	};
 }
 
 function readAccountStatusInput(
@@ -433,62 +466,114 @@ function validDeviceInput(
 	return isAuthControllerId(attemptId) && validInput(action, data, attemptId, config);
 }
 
-async function handleDeviceRequest(
+function handleDeviceRequest(
 	c: Context,
 	action: Action,
 	deps: DeviceAuthLinkDeps,
 ): Promise<Response> {
+	return runSignedDeviceRequest(c, deps, {
+		label: action,
+		read: async () => {
+			const input = await readDeviceInput(c, action, c.req.url, deps);
+			if (input instanceof Response) return input;
+			const attemptId =
+				action === "create" ? input.data.attempt_id : (c.req.param("attemptId") ?? "");
+			if (!validDeviceInput(action, input.data, attemptId, deps.config))
+				return c.json({ error: "auth_link_invalid_input" }, 400);
+			return { raw: input.raw, data: input.data, attemptId: String(attemptId) };
+		},
+		apply: (store, signer, input) =>
+			applyDeviceAction(c, action, store, input.data, input.attemptId, signer, deps.config),
+	});
+}
+
+export type SignedDeviceInput = {
+	raw: Uint8Array;
+	data: Record<string, unknown> & { group_id: string };
+	attemptId: string;
+};
+export interface SignedDeviceRoute {
+	/** Names the route in the unauthenticated rate-limit key. */
+	label: string;
+	/** Runs before input is read; a response here ends the request (for example, not found). */
+	gate?: (store: CoordinatorDeviceAuthLinkStore) => Promise<Response | null>;
+	read: () => Promise<SignedDeviceInput | Response>;
+	apply: (
+		store: CoordinatorDeviceAuthLinkStore,
+		signer: CoordinatorAuthLinkSigner,
+		input: SignedDeviceInput,
+	) => Promise<Response>;
+}
+
+/**
+ * Verifies the device signature over the exact body, applies the device rate
+ * limits and the auth schema check, then hands the verified signer to the route.
+ */
+export async function runSignedDeviceRequest(
+	c: Context,
+	deps: DeviceAuthLinkDeps,
+	route: SignedDeviceRoute,
+): Promise<Response> {
 	c.header("Cache-Control", "no-store");
-	const { config, storeFactory, authorizeRequest, rateLimitedResponse, authErrorStatus } = deps;
 	let store: CoordinatorDeviceAuthLinkStore | undefined;
 	try {
 		try {
-			const request = {
-				method: c.req.method,
-				url: c.req.url,
-				deviceId: c.req.header("X-Opencode-Device") ?? null,
-				signature: c.req.header("X-Opencode-Signature") ?? null,
-				timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
-				nonce: c.req.header("X-Opencode-Nonce") ?? null,
-			};
-			const pathAttemptId = c.req.param("attemptId") ?? "";
-			const input = await readDeviceInput(c, action, request.url, deps);
-			if (input instanceof Response) return input;
-			const { raw, data } = input;
-			const attemptId = action === "create" ? data.attempt_id : pathAttemptId;
-			if (!validDeviceInput(action, data, attemptId, config))
-				return c.json({ error: "auth_link_invalid_input" }, 400);
-			store = storeFactory();
-			const auth = await authorizeRequest(store, {
-				...request,
-				groupId: data.group_id,
-				body: raw,
-			});
-			if (!auth.ok || !auth.enrollment) {
-				return (
-					rateLimitedResponse(c, `link:${action}`, { authenticated: false }) ??
-					c.json({ error: "auth_link_unavailable" }, authErrorStatus(auth.error))
-				);
+			if (route.gate) {
+				store = deps.storeFactory();
+				const denied = await route.gate(store);
+				if (denied) return denied;
 			}
-			const enrollment = auth.enrollment;
-			const limited = rateLimitedResponse(c, `${config.coordinatorId}:${enrollment.device_id}`, {
-				authenticated: true,
-			});
-			if (limited) return limited;
+			const input = await route.read();
+			if (input instanceof Response) return input;
+			store ??= deps.storeFactory();
+			const signer = await authorizeSigner(c, deps, store, input, route.label);
+			if (signer instanceof Response) return signer;
 			await assertConfiguredAuthSchema(store);
-			const signer = {
-				groupId: enrollment.group_id,
-				deviceId: enrollment.device_id,
-				publicKey: enrollment.public_key,
-				fingerprint: enrollment.fingerprint,
-			};
-			return await applyDeviceAction(c, action, store, data, String(attemptId), signer, config);
+			return await route.apply(store, signer, input);
 		} finally {
 			await store?.close();
 		}
 	} catch (error) {
 		return deviceAuthFailure(c, error);
 	}
+}
+
+async function authorizeSigner(
+	c: Context,
+	deps: DeviceAuthLinkDeps,
+	store: CoordinatorDeviceAuthLinkStore,
+	input: SignedDeviceInput,
+	label: string,
+): Promise<CoordinatorAuthLinkSigner | Response> {
+	const auth = await deps.authorizeRequest(store, {
+		method: c.req.method,
+		url: c.req.url,
+		deviceId: c.req.header("X-Opencode-Device") ?? null,
+		signature: c.req.header("X-Opencode-Signature") ?? null,
+		timestamp: c.req.header("X-Opencode-Timestamp") ?? null,
+		nonce: c.req.header("X-Opencode-Nonce") ?? null,
+		groupId: input.data.group_id,
+		body: input.raw,
+	});
+	if (!auth.ok || !auth.enrollment) {
+		return (
+			deps.rateLimitedResponse(c, `link:${label}`, { authenticated: false }) ??
+			c.json({ error: "auth_link_unavailable" }, deps.authErrorStatus(auth.error))
+		);
+	}
+	const enrollment = auth.enrollment;
+	const limited = deps.rateLimitedResponse(
+		c,
+		`${deps.config.coordinatorId}:${enrollment.device_id}`,
+		{ authenticated: true },
+	);
+	if (limited) return limited;
+	return {
+		groupId: enrollment.group_id,
+		deviceId: enrollment.device_id,
+		publicKey: enrollment.public_key,
+		fingerprint: enrollment.fingerprint,
+	};
 }
 
 function deviceAuthFailure(c: Context, error: unknown): Response {

@@ -216,7 +216,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 				});
 			},
 		);
-		test("OIDC target names the device key fingerprint", async ({ fixture: f }) => {
+		test("OIDC target names the device key fingerprint and marks the headless mode", async ({
+			fixture: f,
+		}) => {
 			// Arrange
 			await authorizeFor(f, "controller_attestation");
 			const input = await headlessCreate();
@@ -243,6 +245,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 					groupId: input.signer.groupId,
 					deviceId: input.signer.deviceId,
 					fingerprint: input.signer.fingerprint,
+					headless: true,
 				},
 			});
 		});

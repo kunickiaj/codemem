@@ -2,6 +2,7 @@ import type {
 	CoordinatorAuthBrowserTransactionRejected,
 	CoordinatorAuthBrowserTransactionStartResult,
 } from "./coordinator-auth-browser-transaction-contract.js";
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import type {
 	CoordinatorAuthLinkCreateInput,
 	CoordinatorAuthLinkFinalizeInput,
@@ -30,10 +31,6 @@ export interface CoordinatorAuthLinkHeadlessApproval {
 	email: string | null;
 	emailVerified: boolean | null;
 }
-/** Which ceremony a browser-bound attempt belongs to; headless consent also names the device. */
-export type CoordinatorAuthLinkBrowserMode =
-	| { mode: "desktop" }
-	| { mode: "headless"; deviceName: string | null };
 export interface CoordinatorAuthHeadlessBrowserStartInput {
 	userCodeHash: string;
 	stateHash: string;
@@ -124,4 +121,21 @@ export async function deriveHeadlessUserCodeStartBytes(
 /** Stored as browser_start_hash, using the same hash desktop applies to its start code bytes. */
 export async function hashHeadlessUserCode(normalizedCode: string): Promise<string> {
 	return hashCoordinatorAuthProofBytes32(await deriveHeadlessUserCodeStartBytes(normalizedCode));
+}
+
+/**
+ * True when another attempt already stores this code hash. A create that fails
+ * for this reason can succeed with a fresh code; any other conflict cannot.
+ * The unique index covers every retained attempt, whatever its state.
+ */
+export async function isHeadlessUserCodeHeldByAnotherAttempt(
+	backend: Pick<AuthLinkBackend, "first">,
+	input: { coordinatorId: string; userCodeHash: string; attemptId: string },
+): Promise<boolean> {
+	const row = await backend.first<{ held: number }>({
+		sql: `SELECT 1 AS held FROM coordinator_auth_link_attempts
+ WHERE coordinator_id = ? AND browser_start_hash = ? AND attempt_id <> ? LIMIT 1`,
+		values: [input.coordinatorId, input.userCodeHash, input.attemptId],
+	});
+	return row?.held === 1;
 }

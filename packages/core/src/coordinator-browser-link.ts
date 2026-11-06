@@ -46,7 +46,14 @@ type LinkStore = Pick<
 	> &
 	// Optional so desktop-only stores keep working; without them every attempt renders as desktop
 	// and the store's mode-bound writes still refuse headless rows.
-	Partial<Pick<AuthLinkOperations, "readAuthLinkBrowserMode" | "confirmHeadlessAuthLinkAttempt">>;
+	Partial<
+		Pick<
+			AuthLinkOperations,
+			| "getAuthLinkBrowserAttemptStatus"
+			| "readHeadlessAuthLinkDeviceName"
+			| "confirmHeadlessAuthLinkAttempt"
+		>
+	>;
 export interface CoordinatorBrowserLinkInput {
 	config: CoordinatorAuthBrowserConfig;
 	csrfKey: BrowserCsrfKey;
@@ -232,26 +239,31 @@ async function completeLink(
 		return (await notice(503, "internal_error")).response;
 	}
 }
-type Target = { identityId: string; deviceId: string; groupId: string; fingerprint: string };
-async function readMode(context: Context, attemptId: string, browserTransactionHash: string) {
-	if (!context.store.readAuthLinkBrowserMode) return { mode: "desktop" as const };
-	return context.store.readAuthLinkBrowserMode(
-		{ attemptId, browserTransactionHash },
-		context.config,
-	);
-}
-/** A headless attempt never renders the desktop consent, whose confirm would offer a session. */
+type Target = {
+	identityId: string;
+	deviceId: string;
+	groupId: string;
+	fingerprint: string;
+	headless?: true;
+};
+/**
+ * A headless attempt never renders the desktop consent, whose confirm would offer a session.
+ * The mode comes from the OIDC write's own row read; only headless pays for the device name.
+ */
 async function consentPage(
 	context: Context,
 	input: CoordinatorBrowserAuthLinkCompletionInput & { browserTransactionHash: string },
 	cookie: BrowserCookieSecret,
 	target: Target,
 ): Promise<Response> {
-	const mode = await readMode(context, input.attemptId, input.browserTransactionHash);
-	if (!mode) return (await notice(403, "link_rejected")).response;
 	const profile = input.verification.ok ? input.verification.profile : undefined;
-	if (mode.mode === "desktop")
-		return confirmationPage(context, input.attemptId, cookie, profile, target);
+	const { headless, ...entities } = target;
+	if (!headless) return confirmationPage(context, input.attemptId, cookie, profile, entities);
+	const deviceName =
+		(await context.store.readHeadlessAuthLinkDeviceName?.(
+			{ attemptId: input.attemptId, browserTransactionHash: input.browserTransactionHash },
+			context.config,
+		)) ?? null;
 	const csrfToken = await issueBrowserCsrfToken(
 		context.csrfKey,
 		cookie,
@@ -262,8 +274,8 @@ async function consentPage(
 		await renderHeadlessConsentPage({
 			profile,
 			issuer: context.config.issuer,
-			...target,
-			deviceName: mode.deviceName,
+			...entities,
+			deviceName,
 			attemptId: input.attemptId,
 			csrfToken,
 		}),
@@ -310,7 +322,7 @@ async function confirmAttempt(
 		{ attemptId, browserTransactionHash },
 		context.config,
 	);
-	if (!destination) return notice(403, "link_rejected");
+	if (!destination) return refuseUnconfirmable(context, attemptId, browserTransactionHash);
 	const bytes = globalThis.crypto.getRandomValues(new Uint8Array(32));
 	const completionSecret = btoa(String.fromCharCode(...bytes))
 		.replaceAll("+", "-")
@@ -342,20 +354,33 @@ const POST_PATHS: Readonly<Record<PostAction, string>> = Object.freeze({
 	cancelLink: AUTH_BROWSER_FORM_ACTIONS.cancelLink,
 	confirmHeadless: HEADLESS_LINK_BROWSER_PATHS.confirm,
 });
-/** Each confirm route accepts only its own mode; cancel works for both. */
+/**
+ * A headless attempt has no desktop destination, so desktop confirm reaches
+ * here; only that refusal reads the mode, to say where to approve instead.
+ */
+async function refuseUnconfirmable(
+	context: Context,
+	attemptId: string,
+	browserTransactionHash: string,
+): Promise<CoordinatorBrowserLinkResponse> {
+	const read = await context.store.getAuthLinkBrowserAttemptStatus?.(
+		{ attemptId, browserTransactionHash },
+		context.config,
+	);
+	if (read?.headless && read.status.state === "oidc_verified")
+		return result(pageResponse(await renderHeadlessConfirmElsewherePage(), 409), "link_rejected");
+	return notice(403, "link_rejected");
+}
+/** Each confirm route accepts only its own mode; the store refuses the other. Cancel works for both. */
 async function confirmByMode(
 	context: Context,
 	action: Exclude<PostAction, "cancelLink">,
 	attemptId: string,
 	browserTransactionHash: string,
 ): Promise<CoordinatorBrowserLinkResponse> {
-	const mode = await readMode(context, attemptId, browserTransactionHash);
-	if (!mode) return notice(403, "link_rejected");
-	if (action === "confirmLink" && mode.mode === "headless")
-		return result(pageResponse(await renderHeadlessConfirmElsewherePage(), 409), "link_rejected");
 	if (action === "confirmLink") return confirmAttempt(context, attemptId, browserTransactionHash);
 	const confirm = context.store.confirmHeadlessAuthLinkAttempt;
-	if (mode.mode !== "headless" || !confirm) return notice(403, "link_rejected");
+	if (!confirm) return notice(403, "link_rejected");
 	// Render first: a rendering failure must not leave a confirmed attempt behind a 503.
 	const response = pageResponse(await renderHeadlessReturnPage());
 	const written = await confirm({ attemptId, browserTransactionHash }, context.config);
@@ -437,7 +462,8 @@ export function createCoordinatorBrowserLinkHandlers(
 		readAuthLinkCompletionDestination: receiver.readAuthLinkCompletionDestination.bind(receiver),
 		confirmAuthLinkAttempt: receiver.confirmAuthLinkAttempt.bind(receiver),
 		failAuthLinkAttempt: receiver.failAuthLinkAttempt.bind(receiver),
-		readAuthLinkBrowserMode: receiver.readAuthLinkBrowserMode?.bind(receiver),
+		getAuthLinkBrowserAttemptStatus: receiver.getAuthLinkBrowserAttemptStatus?.bind(receiver),
+		readHeadlessAuthLinkDeviceName: receiver.readHeadlessAuthLinkDeviceName?.bind(receiver),
 		confirmHeadlessAuthLinkAttempt: receiver.confirmHeadlessAuthLinkAttempt?.bind(receiver),
 	});
 	const scope = Object.freeze({ publicOrigin: new URL(config.redirectUri).origin, store: config });

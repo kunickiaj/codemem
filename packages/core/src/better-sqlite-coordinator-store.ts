@@ -1324,11 +1324,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authLinks.confirmHeadlessAuthLinkAttempt(input, config);
 	}
-	async readAuthLinkBrowserMode(
+	async getAuthLinkBrowserAttemptStatus(
 		input: CoordinatorAuthLinkClaimInput,
 		config: CoordinatorAuthLinkConfig,
 	) {
-		return this.authLinks.readAuthLinkBrowserMode(input, config);
+		return this.authLinks.getAuthLinkBrowserAttemptStatus(input, config);
+	}
+	async readHeadlessAuthLinkDeviceName(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.readHeadlessAuthLinkDeviceName(input, config);
 	}
 	async readHeadlessAuthLinkApproval(
 		input: CoordinatorAuthLinkHeadlessApprovalInput,

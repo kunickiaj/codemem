@@ -29,6 +29,10 @@ import {
 	registerCoordinatorDeviceAuthLinkRoutes,
 } from "./coordinator-device-auth-link.js";
 import {
+	HEADLESS_LINK_ATTEMPTS_PATH,
+	registerCoordinatorDeviceHeadlessLinkRoutes,
+} from "./coordinator-device-headless-link.js";
+import {
 	DEVICE_REBIND_ATTEMPTS_PATH,
 	registerCoordinatorDeviceRebindRoutes,
 } from "./coordinator-device-rebind-http.js";
@@ -224,6 +228,8 @@ function registerOptionalCoordinatorAuth(
 			"/auth/*",
 			"/v1/auth/link-attempts",
 			"/v1/auth/link-attempts/*",
+			HEADLESS_LINK_ATTEMPTS_PATH,
+			`${HEADLESS_LINK_ATTEMPTS_PATH}/*`,
 			"/v1/auth/account-changes",
 			"/v1/auth/account-changes/*",
 			"/v1/auth/owner-config",
@@ -252,20 +258,23 @@ function registerOptionalCoordinatorAuth(
 			adminSecret: () => opts.runtime.adminSecret(),
 		});
 	}
-	if (ready?.kind === "ready") {
-		registerCoordinatorAccountLinkStatusRoute(app, {
-			...deps,
-			config: ready.auth.storeConfig,
-			storeFactory: ready.storeFactory,
-		});
-		// Only with the browser half; a legacy link option has no rebind pages.
-		registerCoordinatorDeviceRebindRoutes(app, {
-			...deps,
-			config: ready.auth.storeConfig,
-			storeFactory: ready.storeFactory,
-		});
-		ready.auth.register(app, ready.clientKey, { clientAddress: ready.clientAddress });
-	}
+	if (ready?.kind === "ready") registerBrowserHalfRoutes(app, ready, deps);
+}
+
+/** Device routes that only work with the browser pages, then the pages themselves. */
+function registerBrowserHalfRoutes(
+	app: Hono,
+	ready: Extract<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>,
+	deps: Parameters<typeof registerOptionalCoordinatorAuth>[2],
+): void {
+	const browserDeps = { ...deps, config: ready.auth.storeConfig, storeFactory: ready.storeFactory };
+	registerCoordinatorAccountLinkStatusRoute(app, browserDeps);
+	// A legacy link option has no rebind or headless code-entry pages.
+	registerCoordinatorDeviceRebindRoutes(app, browserDeps);
+	// Code entry is mounted only with a verified client address; without that page,
+	// a device could create attempts that no browser can ever claim.
+	if (ready.clientAddress) registerCoordinatorDeviceHeadlessLinkRoutes(app, browserDeps);
+	ready.auth.register(app, ready.clientKey, { clientAddress: ready.clientAddress });
 }
 
 export interface CoordinatorVerifyRequestInput {
