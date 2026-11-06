@@ -32,6 +32,10 @@ import {
 	type SyncCapability,
 	supportsSyncFeature,
 } from "./sync-capability.js";
+import {
+	getSyncChannelProgress,
+	hasCompletedSyncChannelBoundary,
+} from "./sync-channel-progress.js";
 import { recordPeerSuccess } from "./sync-discovery.js";
 import {
 	categorizeSyncFailure,
@@ -568,6 +572,17 @@ interface PeerAuthorizedScope {
 		baseline_cursor: string | null;
 		retained_floor_cursor: string | null;
 	};
+	/** The peer's pull cursor for this device's ops in the scope, when it reports one. */
+	applied_cursor: string | null;
+}
+
+/** A reported `created_at|op_id` pull cursor, or null when absent or malformed. */
+function asAppliedCursor(value: unknown): string | null {
+	const cursor = asOptionalCursor(value);
+	if (!cursor) return null;
+	// Both parts must be present: a bare separator would sort after every real cursor.
+	const separator = cursor.indexOf("|");
+	return separator > 0 && separator < cursor.length - 1 ? cursor : null;
 }
 
 /**
@@ -597,6 +612,7 @@ function parseAuthorizedScopes(value: unknown): PeerAuthorizedScope[] {
 		if (!snapshotId) continue;
 		entries.push({
 			scope_id: scopeId,
+			applied_cursor: asAppliedCursor(record.applied_cursor),
 			label: typeof record.label === "string" ? record.label : undefined,
 			authority_type: typeof record.authority_type === "string" ? record.authority_type : undefined,
 			membership_epoch:
@@ -1772,6 +1788,40 @@ async function applyPulledDefaultOps(
 	return { applied, lastApplied: inboundCursor };
 }
 
+/**
+ * Drop scoped ops the peer already holds, so a path switch does not resend them.
+ *
+ * The relay channel acknowledges per scope in `sync_channel_progress`, while
+ * this legacy push tracks one interleaved cursor. A scope's position is the
+ * later of the channel ACK, when its boundary still matches the peer's current
+ * one, and the pull cursor the peer reports in status. Ops at or before that
+ * position were already applied there. Legacy peers report no scopes, so
+ * nothing is dropped for them.
+ */
+function withoutOpsPeerAlreadyHolds(
+	context: SyncExchangeContext,
+	peer: NegotiatedPeerExchange,
+	ops: ReplicationOp[],
+): ReplicationOp[] {
+	const held = new Map<string, string>();
+	for (const scope of parseAuthorizedScopes(peer.statusPayload.authorized_scopes)) {
+		const progress = getSyncChannelProgress(context.db, context.peerDeviceId, scope.scope_id);
+		const acked = hasCompletedSyncChannelBoundary(progress, scope.sync_reset)
+			? (progress?.last_acked_cursor ?? null)
+			: null;
+		const position = [acked, scope.applied_cursor]
+			.filter((cursor): cursor is string => cursor !== null)
+			.sort()
+			.at(-1);
+		if (position) held.set(scope.scope_id, position);
+	}
+	if (held.size === 0) return ops;
+	return ops.filter((op) => {
+		const position = op.scope_id ? held.get(op.scope_id) : undefined;
+		return position === undefined || `${op.created_at}|${op.op_id}` > position;
+	});
+}
+
 interface PushedDefaultOps {
 	outboundOps: ReplicationOp[];
 	skippedOutbound: FilterReplicationSkipped | null | undefined;
@@ -1790,7 +1840,7 @@ async function pushDefaultScope(
 		context.deviceId,
 		context.limit,
 	);
-	const [outboundOps, filteredOutboundCursor, skippedOutbound] =
+	const [allowedOps, filteredOutboundCursor, skippedOutbound] =
 		filterReplicationOpsForSyncWithStatus(context.db, outboundWindow, context.peerDeviceId, {
 			localDeviceId: context.deviceId,
 			supportsReassignScope: supportsSyncFeature(
@@ -1798,6 +1848,7 @@ async function pushDefaultScope(
 				"reassign_scope",
 			),
 		});
+	const outboundOps = withoutOpsPeerAlreadyHolds(context, peer, allowedOps);
 	const postUrl = `${peer.baseUrl}/v1/ops`;
 	// An idle sender still verifies the signed POST path without claiming any transfer.
 	const batches = outboundOps.length > 0 ? chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES) : [[]];
