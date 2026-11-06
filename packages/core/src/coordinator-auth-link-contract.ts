@@ -68,7 +68,8 @@ export type CoordinatorAuthLinkOidcResult =
 	| {
 			kind: "applied";
 			status: CoordinatorAuthLinkStatus;
-			target: { identityId: string; groupId: string; deviceId: string };
+			/** fingerprint names the device key for consent; desktop pages need not render it. */
+			target: { identityId: string; groupId: string; deviceId: string; fingerprint: string };
 	  }
 	| CoordinatorAuthLinkRejected;
 export interface CoordinatorAuthLinkCreateInput {

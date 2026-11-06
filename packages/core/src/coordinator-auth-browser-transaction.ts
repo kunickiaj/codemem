@@ -38,6 +38,11 @@ import {
 	captureAuthLinkBrowserStartHash,
 } from "./coordinator-auth-link.js";
 import {
+	AUTH_LINK_HEADLESS_MARKER_SQL,
+	type CoordinatorAuthHeadlessBrowserStartInput,
+	type CoordinatorAuthHeadlessBrowserStartResult,
+} from "./coordinator-auth-link-headless.js";
+import {
 	captureAuthLinkBrowserSource,
 	captureAuthLinkSource,
 } from "./coordinator-auth-link-source.js";
@@ -158,6 +163,38 @@ function captureStart(value: unknown): CoordinatorAuthBrowserTransactionStartInp
 	} catch {
 		return null;
 	}
+}
+function captureHeadlessStart(value: unknown): CoordinatorAuthHeadlessBrowserStartInput | null {
+	const i = capture(value, ["userCodeHash", "stateHash", "binderHash", "nonce", "pkceVerifier"]);
+	if (
+		!i ||
+		!isHash(i.userCodeHash) ||
+		!isHash(i.stateHash) ||
+		!isHash(i.binderHash) ||
+		!isMaterial(i.nonce) ||
+		!isMaterial(i.pkceVerifier)
+	)
+		return null;
+	return {
+		userCodeHash: i.userCodeHash,
+		stateHash: i.stateHash,
+		binderHash: i.binderHash,
+		nonce: i.nonce,
+		pkceVerifier: i.pkceVerifier,
+	};
+}
+type LinkMode = "desktop" | "headless";
+/** Both the transaction insert and the attempt claim must name the attempt's mode. */
+function withLinkMode(
+	source: AuthLinkStatement,
+	alias: "a" | "coordinator_auth_link_attempts",
+	mode: LinkMode,
+): AuthLinkStatement {
+	const operator = mode === "headless" ? "=" : "<>";
+	return {
+		sql: `(${source.sql}) AND ${alias}.loopback_redirect ${operator} ${AUTH_LINK_HEADLESS_MARKER_SQL}`,
+		values: source.values,
+	};
 }
 function maintenanceLimit(
 	value: unknown,
@@ -358,7 +395,7 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		if (!c.enabled) return rejected("auth_config_changed");
 		const now = authLinkNow(this.clock);
 		const hash = transactionHash();
-		if (i.purpose === "link") return this.startLink(i, c, now, hash);
+		if (i.purpose === "link") return this.startLink(i, c, now, hash, "desktop");
 		try {
 			await orderedBrowserStart(
 				this.backend,
@@ -468,14 +505,42 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			],
 		});
 	}
+	/** The user code hash selects one pending headless attempt; desktop attempts never match. */
+	async startHeadlessAuthLinkBrowserTransaction(
+		input: CoordinatorAuthHeadlessBrowserStartInput,
+		config: CoordinatorAuthBrowserConfig,
+	): Promise<CoordinatorAuthHeadlessBrowserStartResult> {
+		const c = captureConfig(config);
+		const i = captureHeadlessStart(input);
+		if (!c || !i) return rejected("invalid_input");
+		if (!c.enabled) return rejected("auth_config_changed");
+		const now = authLinkNow(this.clock);
+		const hash = transactionHash();
+		const attempt = await this.first<{ attempt_id: string }>({
+			sql: `SELECT attempt_id FROM coordinator_auth_link_attempts WHERE coordinator_id = ? AND browser_start_hash = ?
+ AND loopback_redirect = ${AUTH_LINK_HEADLESS_MARKER_SQL} AND state = 'pending' AND expires_at_ms > ?`,
+			values: [c.coordinatorId, i.userCodeHash, now],
+		});
+		if (!attempt || !isAuthControllerId(attempt.attempt_id)) return rejected("attempt_unavailable");
+		const { userCodeHash, ...materials } = i;
+		const link = {
+			...materials,
+			purpose: "link" as const,
+			attemptId: attempt.attempt_id,
+			browserStartHash: userCodeHash,
+		};
+		const started = await this.startLink(link, c, now, hash, "headless");
+		if (started.kind !== "started") return started;
+		return { ...started, attemptId: attempt.attempt_id };
+	}
 	private async startLink(
 		i: CoordinatorAuthBrowserTransactionStartInput & { purpose: "link" },
 		c: CoordinatorAuthBrowserConfig,
 		now: number,
 		hash: string,
+		mode: LinkMode,
 	): Promise<CoordinatorAuthBrowserTransactionStartResult> {
-		const source = await this.source(i.attemptId, c, now);
-		const claimSource = await this.source(i.attemptId, c, now, "coordinator_auth_link_attempts");
+		const { source, claimSource } = await this.linkSources(i.attemptId, c, now, mode);
 		const insert: AuthLinkStatement = {
 			sql: `INSERT INTO ${TABLE} (${COLUMNS}) SELECT a.coordinator_id, ?, 'link', a.attempt_id, ?, ?, a.issuer,
  a.auth_config_revision, ?, 'pending', ?, ?, ?, a.expires_at_ms, NULL, NULL FROM coordinator_auth_link_attempts a
@@ -540,6 +605,18 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 		const failure = await this.persistLinkStart([insert, claim, assertion], c.coordinatorId, hash);
 		if (failure) return failure;
 		return this.startLinkReceipt(i, c, now, hash);
+	}
+	private async linkSources(
+		attemptId: string,
+		c: CoordinatorAuthBrowserConfig,
+		now: number,
+		mode: LinkMode,
+	): Promise<{ source: AuthLinkStatement; claimSource: AuthLinkStatement }> {
+		const table = "coordinator_auth_link_attempts";
+		return {
+			source: withLinkMode(await this.source(attemptId, c, now), "a", mode),
+			claimSource: withLinkMode(await this.source(attemptId, c, now, table), table, mode),
+		};
 	}
 	private async persistLinkStart(
 		statements: AuthLinkStatement[],

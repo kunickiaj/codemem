@@ -136,6 +136,7 @@ async function prepareConfirmed(f: Fixture) {
 	expect(await f.store.recordAuthLinkOidcVerified({ ...f.browser, account: f.account }, f.cfg))
 		.toEqual({ kind: "applied", status: publicStatus(f, "oidc_verified"), target: {
 			identityId: f.review.identityId, groupId: f.signer.groupId, deviceId: f.signer.deviceId,
+			fingerprint: f.signer.fingerprint,
 		} });
 	expect(await f.store.confirmAuthLinkAttempt(f.confirm, f.cfg)).toEqual({
 		kind: "applied", status: publicStatus(f, "confirmed"),
@@ -209,6 +210,7 @@ it("lets only the winning browser advance and freezes provider and completion co
 	}
 	expect(oidc).toEqual({ kind: "applied", status: publicStatus(f, "oidc_verified"), target: {
 		identityId: f.review.identityId, groupId: f.signer.groupId, deviceId: f.signer.deviceId,
+		fingerprint: f.signer.fingerprint,
 	} });
 	expect(confirmed).toEqual({ kind: "applied", status: publicStatus(f, "confirmed") });
 	expect(status).toEqual(publicStatus(f, "confirmed"));

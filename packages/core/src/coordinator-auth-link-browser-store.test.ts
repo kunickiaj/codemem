@@ -48,7 +48,12 @@ function registerBrowserTests(test: Test) {
 		expect(verified).toEqual({
 			kind: "applied",
 			status: status("oidc_verified"),
-			target: { identityId: "identity-a", groupId: signer.groupId, deviceId: signer.deviceId },
+			target: {
+				identityId: "identity-a",
+				groupId: signer.groupId,
+				deviceId: signer.deviceId,
+				fingerprint: signer.fingerprint,
+			},
 		});
 		expectRejected(replay, "attempt_unavailable");
 		expect(rows(f, TABLES[0])[0].account_subject).toBe(input.account.subject);

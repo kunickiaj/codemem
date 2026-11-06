@@ -15,6 +15,7 @@ import {
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkConfig } from "./coordinator-auth-link-contract.js";
+import { AUTH_LINK_HEADLESS_MARKER_SQL } from "./coordinator-auth-link-headless.js";
 import { authAccountLinkProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import {
@@ -194,6 +195,8 @@ export function authSessionLinkMatchSql(options: { connections: boolean }): stri
 }
 export const AUTH_SESSION_LINK_MATCH_SQL = authSessionLinkMatchSql({ connections: false });
 export const AUTH_SESSION_LIVE_GUARD_SQL = `s.coordinator_id = ? AND s.credential_hash = ? AND s.issuer = ? AND s.auth_config_revision = ? AND s.revoked_at_ms IS NULL AND l.revoked_at_ms IS NULL AND s.expires_at_ms > ? AND s.created_at_ms <= ?`;
+// Headless finalize hands no browser a session: the browser never proved device possession.
+const DESKTOP_ATTEMPT_SQL = `t.loopback_redirect <> ${AUTH_LINK_HEADLESS_MARKER_SQL}`;
 const RECEIPT_COLUMNS = `coordinator_id, browser_transaction_hash, source, attempt_id, link_id, session_id, auth_config_revision, created_at_ms`;
 function redeemReceiptSelectSql(options: { connections: boolean }) {
 	const ACCOUNT_PROVENANCE = authAccountLinkProvenanceSql("l", options);
@@ -206,7 +209,7 @@ function redeemReceiptSelectSql(options: { connections: boolean }) {
  AND ${ACCOUNT_PROVENANCE}
  WHERE t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ?
  AND t.state = 'finalized' AND t.issuer = ? AND t.auth_config_revision = ? AND l.revoked_at_ms IS NULL
- AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms`;
+ AND ${DESKTOP_ATTEMPT_SQL} AND ? >= t.finalized_at_ms AND ? < t.finalized_at_ms + 120000 AND ? < t.expires_at_ms`;
 }
 const BOUND_LINK_BROWSER_GUARD_SQL = `b.coordinator_id = t.coordinator_id
  AND b.browser_transaction_hash = t.browser_transaction_hash AND b.attempt_id = t.attempt_id
@@ -231,7 +234,7 @@ function connectedPreserveCompletionSql(): string {
  ON (l.coordinator_id=t.coordinator_id AND l.link_id=t.link_id AND l.attempt_id=t.attempt_id)
  AND (l.identity_id=t.identity_id AND l.issuer=t.issuer AND l.subject=t.account_subject AND l.auth_config_revision=t.auth_config_revision AND l.authority_kind=t.authority_kind AND l.revoked_at_ms IS NULL)
  WHERE (t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ? AND t.issuer = ? AND t.auth_config_revision = ? AND t.state = 'finalized')
- AND (t.created_at_ms <= ? AND t.finalized_at_ms <= ? AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?)
+ AND ${DESKTOP_ATTEMPT_SQL} AND (t.created_at_ms <= ? AND t.finalized_at_ms <= ? AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?)
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE ${boundBrowserGuard({ connections: true })})),
  live_existing_session AS MATERIALIZED (SELECT 1 FROM coordinator_auth_sessions s JOIN completion_links l ON ${SESSION_LINK_IDENTITY_SQL} WHERE (${AUTH_SESSION_LIVE_GUARD_SQL}) AND (${CONNECTION_NOT_REVOKED_SQL}))
  UPDATE coordinator_auth_link_attempts AS t SET state='session_redeemed' WHERE t.state='finalized'
@@ -244,7 +247,7 @@ function preserveCompletionSql(options: { connections: boolean }) {
 		LINK_MATCH = authSessionLinkMatchSql(options);
 	return `UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'
  WHERE (t.coordinator_id = ? AND t.attempt_id = ? AND t.browser_transaction_hash = ? AND t.issuer = ? AND t.auth_config_revision = ? AND t.state = 'finalized')
- AND (t.created_at_ms <= ? AND t.finalized_at_ms <= ? AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?)
+ AND ${DESKTOP_ATTEMPT_SQL} AND (t.created_at_ms <= ? AND t.finalized_at_ms <= ? AND ? < t.finalized_at_ms + 120000 AND t.expires_at_ms > ?)
  AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l
  WHERE (l.coordinator_id = t.coordinator_id AND l.link_id = t.link_id AND l.attempt_id = t.attempt_id)
  AND (l.identity_id = t.identity_id AND l.issuer = t.issuer AND l.subject = t.account_subject)
@@ -287,7 +290,7 @@ function redeemConsumeSql(options: { connections: boolean }) {
 	const ACCOUNT_PROVENANCE = authAccountLinkProvenanceSql("l", options);
 	return `UPDATE coordinator_auth_link_attempts SET state = 'session_redeemed'
  WHERE coordinator_id = ? AND attempt_id = ? AND browser_transaction_hash = ? AND state = 'finalized'
- AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = coordinator_auth_link_attempts.coordinator_id
+ AND loopback_redirect <> ${AUTH_LINK_HEADLESS_MARKER_SQL} AND EXISTS (SELECT 1 FROM coordinator_auth_account_links l WHERE l.coordinator_id = coordinator_auth_link_attempts.coordinator_id
  AND l.link_id = coordinator_auth_link_attempts.link_id AND l.attempt_id = coordinator_auth_link_attempts.attempt_id
  AND l.authority_kind = coordinator_auth_link_attempts.authority_kind AND l.revoked_at_ms IS NULL AND ${ACCOUNT_PROVENANCE})
  AND EXISTS (SELECT 1 FROM coordinator_auth_sessions s WHERE s.coordinator_id = coordinator_auth_link_attempts.coordinator_id AND s.session_id = ? AND s.browser_transaction_hash = coordinator_auth_link_attempts.browser_transaction_hash)`;

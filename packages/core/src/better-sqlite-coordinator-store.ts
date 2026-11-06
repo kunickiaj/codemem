@@ -1,3 +1,9 @@
+import type {
+	CoordinatorAuthHeadlessBrowserStartInput,
+	CoordinatorAuthLinkHeadlessApprovalInput,
+	CoordinatorAuthLinkHeadlessCreateInput,
+	CoordinatorAuthLinkHeadlessFinalizeInput,
+} from "./coordinator-auth-link-headless.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -1078,6 +1084,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		return this.authBrowserTransactions.startAuthBrowserTransaction(input, config);
 	}
+	async startHeadlessAuthLinkBrowserTransaction(
+		input: CoordinatorAuthHeadlessBrowserStartInput,
+		config: CoordinatorAuthBrowserConfig,
+	) {
+		return this.authBrowserTransactions.startHeadlessAuthLinkBrowserTransaction(input, config);
+	}
 	async consumeAuthBrowserTransaction(
 		input: CoordinatorAuthBrowserTransactionConsumeInput,
 		config: CoordinatorAuthBrowserConfig,
@@ -1289,6 +1301,30 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		config: CoordinatorAuthLinkConfig,
 	) {
 		return this.authLinks.getAuthLinkAttemptStatus(attemptId, requester, config);
+	}
+	async createHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessCreateInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.createHeadlessAuthLinkAttempt(input, config);
+	}
+	async confirmHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.confirmHeadlessAuthLinkAttempt(input, config);
+	}
+	async readHeadlessAuthLinkApproval(
+		input: CoordinatorAuthLinkHeadlessApprovalInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.readHeadlessAuthLinkApproval(input, config);
+	}
+	async finalizeHeadlessAuthLinkAttempt(
+		input: CoordinatorAuthLinkHeadlessFinalizeInput,
+		config: CoordinatorAuthLinkConfig,
+	) {
+		return this.authLinks.finalizeHeadlessAuthLinkAttempt(input, config);
 	}
 
 	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
