@@ -27,6 +27,16 @@ export const MCP_OAUTH_SERVICE_DOCUMENTATION_URL = "https://github.com/kunickiaj
 const CLAUDE_HOSTED_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 const CHATGPT_LEGACY_HOSTED_CALLBACK = "https://chatgpt.com/connector_platform_oauth_redirect";
 const GEMINI_HOSTED_CALLBACK = "https://oauth-redirect.googleusercontent.com/r/google-gemini";
+// Gemini web registers one callback per Google account and MCP host on each of
+// Google's redirect hosts, for example
+// /r/user_bound_custom-mcp-<account-id>-<mcp_host_with_underscores>.
+const GEMINI_USER_BOUND_CALLBACK_HOSTS = new Set([
+	"oauth-redirect.googleusercontent.com",
+	"oauth-redirect-sandbox.googleusercontent.com",
+	"oauth-redirect-test.googleusercontent.com",
+]);
+const GEMINI_USER_BOUND_CALLBACK_PATH =
+	/^\/[ar]\/user_bound_custom-mcp-\d{1,32}-[A-Za-z0-9_-]{1,253}$/;
 const LOCAL_CALLBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const SUPPORTED_GRANT_TYPES = new Set(["authorization_code", "refresh_token"]);
 const SUPPORTED_RESPONSE_TYPES = new Set(["code"]);
@@ -1086,7 +1096,17 @@ function isSupportedHostedConnectorRedirectUrl(url: URL): boolean {
 	if (url.href === CLAUDE_HOSTED_CALLBACK) return true;
 	if (url.href === CHATGPT_LEGACY_HOSTED_CALLBACK) return true;
 	if (url.href === GEMINI_HOSTED_CALLBACK) return true;
+	if (isGeminiUserBoundCallbackUrl(url)) return true;
 	return url.protocol === "https:" && url.hostname === "chatgpt.com" && isChatGptConnectorPath(url);
+}
+
+function isGeminiUserBoundCallbackUrl(url: URL): boolean {
+	return (
+		url.protocol === "https:" &&
+		url.port === "" &&
+		GEMINI_USER_BOUND_CALLBACK_HOSTS.has(url.hostname) &&
+		GEMINI_USER_BOUND_CALLBACK_PATH.test(url.pathname)
+	);
 }
 
 function isChatGptConnectorPath(url: URL): boolean {
