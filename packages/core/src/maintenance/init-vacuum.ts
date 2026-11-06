@@ -2,7 +2,13 @@
  */
 
 import { statSync } from "node:fs";
-import { assertSchemaReady, connect, getSchemaVersion, resolveDbPath } from "../db.js";
+import {
+	assertSchemaReady,
+	connect,
+	ensureAdditiveSchemaCompatibility,
+	getSchemaVersion,
+	resolveDbPath,
+} from "../db.js";
 import { ensureMaintenanceJobsSchema } from "../maintenance-jobs.js";
 import { applyRawEventRelinkPlanWithDb } from "./relink.js";
 import { withDb } from "./with-db.js";
@@ -18,6 +24,7 @@ export function initDatabase(dbPath?: string): { path: string; sizeBytes: number
 			);
 		}
 		assertSchemaReady(db);
+		ensureAdditiveSchemaCompatibility(db);
 		ensureMaintenanceJobsSchema(db);
 		applyRawEventRelinkPlanWithDb(db);
 		const stats = statSync(resolvedPath);

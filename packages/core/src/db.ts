@@ -33,6 +33,7 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
@@ -1083,18 +1084,46 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 }
 
 export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
+	// Older runtimes could mark compatibility after reference-table creation failed.
+	ensureMemoryReferenceSchema(db);
 	ensureAlwaysOnSchemaCompatibility(db);
-	applyAdditiveSchemaCompatibility(db);
+	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
+	applyAdditiveSchemaCompatibility(db, { compatAlreadyApplied });
 	ensureSyncTransferActivitySchema(db);
 	ensureRelayServicePinSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
 	ensureUsageEventsAggregateIndex(db);
+	if (!compatAlreadyApplied) {
+		promoteLegacySchemaVersion(db);
+		markSchemaCompatApplied(db);
+	}
 }
 
-function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
-	const compatAlreadyApplied = schemaCompatAlreadyApplied(db);
+function promoteLegacySchemaVersion(db: DatabaseType): void {
+	const recipientPolicyTablesReady = [
+		"coordinator_enrollment_reconciliation_issues",
+		"policy_teams",
+		"policy_team_memberships",
+		"policy_team_device_decisions",
+		"identity_devices",
+		"project_recipients",
+		"recipient_managed_project_projections",
+		"recipient_policy_authority_states",
+		"recipient_policy_reconciliation_steps",
+		"recipient_policy_deny_overlays",
+	].every((table) => tableExists(db, table));
+	const currentVersion = getSchemaVersion(db);
+	if (recipientPolicyTablesReady && currentVersion > 0 && currentVersion < SCHEMA_VERSION) {
+		db.pragma(`user_version = ${SCHEMA_VERSION}`);
+	}
+}
+
+function applyAdditiveSchemaCompatibility(
+	db: DatabaseType,
+	{ compatAlreadyApplied }: { compatAlreadyApplied: boolean },
+): void {
 	if (!compatAlreadyApplied) {
 		// IMPORTANT: any NEW DDL added to this gated block REQUIRES bumping
 		// SCHEMA_VERSION. The "already applied" marker keys on SCHEMA_VERSION, so
@@ -1749,31 +1778,6 @@ function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
 			// Keep compatibility shim fail-open for optional additive scope metadata.
 		}
 
-		// Junction tables for structured file/concept references on memories.
-		// Added in schema v7; existing v6 databases need these created additively.
-		try {
-			db.exec(`
-			CREATE TABLE IF NOT EXISTS memory_file_refs (
-				memory_id INTEGER NOT NULL,
-				file_path TEXT NOT NULL,
-				relation TEXT NOT NULL CHECK(relation IN ('read', 'modified')),
-				PRIMARY KEY (memory_id, file_path, relation),
-				FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
-			);
-			CREATE INDEX IF NOT EXISTS idx_memory_file_refs_path ON memory_file_refs(file_path);
-
-			CREATE TABLE IF NOT EXISTS memory_concept_refs (
-				memory_id INTEGER NOT NULL,
-				concept TEXT NOT NULL,
-				PRIMARY KEY (memory_id, concept),
-				FOREIGN KEY (memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
-			);
-			CREATE INDEX IF NOT EXISTS idx_memory_concept_refs_concept ON memory_concept_refs(concept);
-		`);
-		} catch {
-			// Keep compatibility shim fail-open for optional additive tables.
-		}
-
 		// Multi-team coordinator groups (v1) — additive columns + preferences table.
 		// Existing databases acquire these so peer enrollment can record the group
 		// it came from, and so per-group scope templates can be stored locally.
@@ -1877,23 +1881,6 @@ function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
 				}
 			}
 		}
-
-		const recipientPolicyTablesReady = [
-			"coordinator_enrollment_reconciliation_issues",
-			"policy_teams",
-			"policy_team_memberships",
-			"policy_team_device_decisions",
-			"identity_devices",
-			"project_recipients",
-			"recipient_managed_project_projections",
-			"recipient_policy_authority_states",
-			"recipient_policy_reconciliation_steps",
-			"recipient_policy_deny_overlays",
-		].every((table) => tableExists(db, table));
-		const currentVersion = getSchemaVersion(db);
-		if (recipientPolicyTablesReady && currentVersion > 0 && currentVersion < SCHEMA_VERSION) {
-			db.pragma(`user_version = ${SCHEMA_VERSION}`);
-		}
 	}
 	// Run after the gated legacy-column repair so one open can both add
 	// observer_provider and install its partial diagnostic indexes. This remains
@@ -1905,7 +1892,6 @@ function applyAdditiveSchemaCompatibility(db: DatabaseType): void {
 	// Reinstall outside the compatibility marker so a missing or stale security
 	// trigger self-heals before any authorization reader can use the connection.
 	ensureIdentityDeviceAssignmentVersionTriggers(db);
-	if (!compatAlreadyApplied) markSchemaCompatApplied(db);
 	try {
 		repairShareOperationEffectIdIndex(db);
 	} catch {
