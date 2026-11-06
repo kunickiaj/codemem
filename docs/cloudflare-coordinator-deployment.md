@@ -242,7 +242,9 @@ Migration `0043_add_headless_account_linking.sql` adds two empty tables for link
 account to a device without a browser: code-entry counts per client and per coordinator,
 and a record of which links were made this way. It changes no existing table or row. Until both
 tables exist, headless linking stays off and every other sign-in and linking flow works as
-before. A self-hosted SQLite coordinator creates the tables when it opens.
+before. A self-hosted SQLite coordinator creates the tables when it opens. Once the tables exist,
+devices can run `codemem coordinator link-account <group> --headless`; a coordinator without them
+answers that command's requests with 404, and the CLI asks the user to contact you.
 
 The code-entry page at `/auth/link/device` counts every submitted code, including ones that
 work, and allows 10 per client address and 200 per coordinator in each 15-minute window. Over
