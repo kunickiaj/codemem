@@ -13,10 +13,11 @@ import { join } from "node:path";
 import type {
 	DeviceIdentityCoordinatorEvidence,
 	GetUpdateStatusOptions,
+	MemoryStore,
 	ObserverClient,
 	UpdateStatus,
 } from "@codemem/core";
-import { MemoryStore, type RawEventSweeper, resolveDbPath, VERSION } from "@codemem/core";
+import { type RawEventSweeper, VERSION } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js";
@@ -24,10 +25,6 @@ import type { createAccountOwnerRecoveryService } from "./account/owner-recovery
 import type { AccountStatusOptions } from "./account/status.js";
 import { originGuard, preflightHandler } from "./middleware.js";
 import type { RawEventInbox } from "./raw-event-inbox.js";
-import {
-	createInMemoryRequestRateLimiter,
-	type InMemoryRequestRateLimiter,
-} from "./request-rate-limit.js";
 import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
@@ -46,7 +43,7 @@ import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
-import { type SyncRoutesOptions, syncProtocolRoutes, syncRoutes } from "./routes/sync.js";
+import { type SyncRoutesOptions, syncRoutes } from "./routes/sync.js";
 import { type ViewerTargetStore, viewerTargetQueryGuard } from "./routes/target-validation.js";
 import {
 	type LegacyTeamCompletionDependencies,
@@ -55,6 +52,8 @@ import {
 	teamSetupRoutes,
 } from "./routes/team-setup.js";
 import { updateStatusRoutes } from "./routes/update-status.js";
+import { getStore } from "./shared-store.js";
+import { createSyncApp as createPeerSyncApp, type SyncAppOptions } from "./sync-app.js";
 
 export type {
 	AccountContext,
@@ -139,54 +138,23 @@ export type {
 	LegacyTeamSetupViewerAccessDeltaV1,
 	LegacyTeamSetupViewV1,
 } from "./routes/team-setup.js";
+export { closeStore, closeStoreAsync, getStore } from "./shared-store.js";
 export { VERSION };
-
-/** Shared store instance — SQLite WAL mode handles concurrent reads safely. */
-let sharedStore: MemoryStore | null = null;
-let sharedStoreClosePromise: Promise<void> | null = null;
-
-/** Get (or create) the shared store instance. Exported so the sweeper can share it. */
-export function getStore(): MemoryStore {
-	if (!sharedStore) {
-		sharedStore = new MemoryStore(resolveDbPath());
-	}
-	return sharedStore;
-}
-
-/** Close a synchronous-only shared store. Async pack owners use closeStoreAsync(). */
-export function closeStore(): void {
-	sharedStore?.close();
-	sharedStore = null;
-}
-
-/** Drain semantic work before closing SQLite and releasing the shared store. */
-export function closeStoreAsync(): Promise<void> {
-	if (sharedStoreClosePromise) return sharedStoreClosePromise;
-	if (!sharedStore) return Promise.resolve();
-	const store = sharedStore;
-	sharedStoreClosePromise = store.closeAsync().then(() => {
-		if (sharedStore === store) sharedStore = null;
-		sharedStoreClosePromise = null;
-	});
-	return sharedStoreClosePromise;
-}
 
 /**
  * Create the Hono app with all viewer routes.
  * Exported for testing — pass a custom store factory to inject test DBs.
  */
-export interface AppOptions {
+export interface AppOptions extends SyncAppOptions {
 	accountLink?: AccountLinkOptions &
 		AccountStatusOptions & {
 			ownerRecovery?: ReturnType<typeof createAccountOwnerRecoveryService>;
 		};
-	storeFactory?: () => MemoryStore;
 	/**
 	 * Runs memory tools for thin hosts. `codemem serve` supplies it; when absent
 	 * the route is not mounted and the profile does not advertise the capability.
 	 */
 	memoryToolCall?: MemoryToolCallFn;
-	syncChannelPeerPin?: (request: Request) => string | null;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
 	sweeper?: RawEventSweeper | null;
@@ -200,13 +168,6 @@ export interface AppOptions {
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
-	syncRequestRateLimit?: {
-		limiter?: InMemoryRequestRateLimiter;
-		readLimit?: number;
-		mutationLimit?: number;
-		unauthenticatedReadLimit?: number;
-		unauthenticatedMutationLimit?: number;
-	};
 	getSyncRuntimeStatus?: () => {
 		phase:
 			| "starting"
@@ -370,47 +331,9 @@ export function createApp(opts?: AppOptions) {
 	return app;
 }
 
-/**
- * Create the Hono app for peer-to-peer sync protocol routes only.
- *
- * This app is bound to a separate network-accessible listener
- * (default 0.0.0.0:7337) so remote peers can reach the sync
- * endpoints without exposing the viewer UI or local API routes.
- *
- * No CORS/origin guard is applied — sync requests are authenticated
- * via cryptographic signature verification instead.
- */
+/** Preserve the public server options while transport adapters use the narrower factory. */
 export function createSyncApp(opts?: AppOptions) {
-	const storeFactory = opts?.storeFactory ?? getStore;
-	const requestRateLimit = opts?.syncRequestRateLimit ?? {};
-	const rateLimiter = requestRateLimit.limiter ?? createInMemoryRequestRateLimiter();
-	const readLimit = Math.max(1, Math.trunc(requestRateLimit.readLimit ?? 120));
-	const mutationLimit = Math.max(1, Math.trunc(requestRateLimit.mutationLimit ?? 30));
-	const app = new Hono();
-	app.route(
-		"/",
-		syncProtocolRoutes(storeFactory, {
-			syncChannelPeerPin: opts?.syncChannelPeerPin,
-			routeRateLimit: {
-				limiter: rateLimiter,
-				readLimit,
-				mutationLimit,
-				unauthenticatedReadLimit: Math.max(
-					1,
-					Math.trunc(requestRateLimit.unauthenticatedReadLimit ?? Math.min(20, readLimit)),
-				),
-				unauthenticatedMutationLimit: Math.max(
-					1,
-					Math.trunc(requestRateLimit.unauthenticatedMutationLimit ?? Math.min(10, mutationLimit)),
-				),
-			},
-		}),
-	);
-
-	// Catch-all — return generic 404 to avoid fingerprinting the server.
-	app.all("*", (c) => c.json({ error: "not found" }, 404));
-
-	return app;
+	return createPeerSyncApp(opts);
 }
 
 // No auto-start — the CLI's `serve` command owns server startup.
