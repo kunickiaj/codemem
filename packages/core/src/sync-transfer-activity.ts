@@ -56,6 +56,13 @@ export function recordSyncTransferObservation(
 	direction: SyncTransferDirection,
 	options: {
 		errorCode?: SyncTransferErrorCode;
+		/** A successful window cannot resolve an error until the full exchange completes. */
+		preserveError?: boolean;
+		/**
+		 * A single-scope success can resolve a generic exchange failure, but not an
+		 * apply or scope error that may belong to another, unretried scope.
+		 */
+		preserveScopedError?: boolean;
 		now?: Date;
 		source?: SyncTransferObservationSource;
 	} = {},
@@ -71,6 +78,9 @@ export function recordSyncTransferObservation(
 		last_attempt_at = excluded.last_attempt_at,
 		last_success_at = COALESCE(excluded.last_success_at, last_success_at),
 		error_code = CASE
+			WHEN excluded.error_code IS NULL AND ? = 1 THEN error_code
+			WHEN excluded.error_code IS NULL AND ? = 1 AND error_code IN ('apply_failed', 'scope_rejected')
+			THEN error_code
 			WHEN excluded.error_code = 'exchange_failed' AND error_code IN ('apply_failed', 'scope_rejected')
 			THEN error_code ELSE excluded.error_code END
 	`).run(
@@ -81,6 +91,8 @@ export function recordSyncTransferObservation(
 		now,
 		options.errorCode ? null : now,
 		options.errorCode ?? null,
+		options.preserveError ? 1 : 0,
+		options.preserveScopedError ? 1 : 0,
 	);
 }
 

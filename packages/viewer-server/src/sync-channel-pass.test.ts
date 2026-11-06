@@ -223,6 +223,30 @@ it("clears a prior initiated receive error after a real empty incremental pull",
 	});
 });
 
+it.each(["apply_failed", "scope_rejected"] as const)(
+	"keeps a prior scoped %s after a successful single-Space pull",
+	async (errorCode) => {
+		// Arrange: the error may belong to another Space that this pass does not retry.
+		const f = await fixture();
+		incremental(f);
+		const peerId = f.remote.localDeviceId;
+		recordSyncTransferObservation(f.client.db, peerId, "receive", {
+			source: "initiated",
+			errorCode,
+		});
+
+		// Act
+		const result = await syncScopedChannelOnce(f.options);
+
+		// Assert: the pull succeeds and records success without resolving the scoped error.
+		expect(result).toMatchObject({ ok: true, opsIn: 0, bootstrapped: false });
+		expect(readPeerSyncActivity(f.client.db, [peerId]).get(peerId)?.receive).toMatchObject({
+			errorCode,
+			lastSuccessAt: expect.any(String),
+		});
+	},
+);
+
 it("clears a prior initiated send error and counts acknowledged unique operations after a real POST", async () => {
 	// Arrange: a successful receive must not resolve this independently seeded send error.
 	const f = await fixture();

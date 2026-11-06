@@ -64,7 +64,7 @@ import {
 	recordSyncTransferReceipts,
 	type SyncTransferErrorCode,
 } from "./sync-transfer-activity.js";
-import type { ReplicationOp, SyncResetRequired } from "./types.js";
+import type { ReplicationOp, SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { queueVectorBackfillForIncrementalSync } from "./vector-migration.js";
 import { bestEffortMaintainVectorsForSyncFallback } from "./vectors.js";
 
@@ -100,6 +100,9 @@ const BOOTSTRAP_PAGE_SIZE = 2000;
  * substantially bigger and slower to assemble on the serving peer.
  */
 const BOOTSTRAP_REQUEST_TIMEOUT_S = 60;
+
+// Initiated windows share one observation. Only the final receive result resolves errors.
+const RECEIVE_WINDOW_OPTIONS = { activityOptions: { preserveError: true } };
 
 /** Current sync protocol version expected from peers. */
 const EXPECTED_SYNC_PROTOCOL_VERSION = "2";
@@ -824,6 +827,40 @@ function mergedReceiveVectorWork(
 	};
 }
 
+function mergeScopeSnapshot(
+	db: Database,
+	peerDeviceId: string,
+	items: SyncMemorySnapshotItem[],
+	resetInfo: SyncResetRequired,
+	scanner: SecretScanner | undefined,
+) {
+	return mergeBootstrapSnapshot(
+		db,
+		peerDeviceId,
+		items,
+		resetInfo,
+		scanner,
+		RECEIVE_WINDOW_OPTIONS,
+	);
+}
+
+function applyScopeSnapshot(
+	db: Database,
+	peerDeviceId: string,
+	items: SyncMemorySnapshotItem[],
+	resetInfo: SyncResetRequired,
+	scanner: SecretScanner | undefined,
+) {
+	return applyBootstrapSnapshot(
+		db,
+		peerDeviceId,
+		items,
+		resetInfo,
+		scanner,
+		RECEIVE_WINDOW_OPTIONS,
+	);
+}
+
 interface ScopedPeerPullOptions {
 	peerDeviceId: string;
 	baseUrl: string;
@@ -954,7 +991,7 @@ async function syncOneScope(
 			};
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
 			options.validateCurrentAuthorization?.();
-			const mergeResult = mergeBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const mergeResult = mergeScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!mergeResult.ok) {
 				const error = "scoped merge bootstrap apply failed";
 				return {
@@ -1028,7 +1065,7 @@ async function syncOneScope(
 					bootstrapped: true,
 				};
 			}
-			const bootstrapResult = applyBootstrapSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const bootstrapResult = applyScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
 			if (!bootstrapResult.ok) {
 				const error = "bootstrap apply failed";
 				return {
@@ -1303,7 +1340,12 @@ export function syncPassPreflight(db: Database): void {
 type PeerResetBoundary = NonNullable<ReturnType<typeof parsePeerResetBoundary>>;
 
 function scopedInboundOptions(peerDeviceId: string, keysDir: string | undefined) {
-	return { activityPeerDeviceId: peerDeviceId, inboundScopeValidation: { peerDeviceId }, keysDir };
+	return {
+		...RECEIVE_WINDOW_OPTIONS,
+		activityPeerDeviceId: peerDeviceId,
+		inboundScopeValidation: { peerDeviceId },
+		keysDir,
+	};
 }
 
 interface SyncExchangeContext {
@@ -1463,6 +1505,7 @@ async function finishInitialBootstrap(
 		items,
 		resetInfo,
 		context.scanner,
+		RECEIVE_WINDOW_OPTIONS,
 	);
 	if (!bootstrap.ok) throw new Error("initial bootstrap apply failed");
 	const scoped =
@@ -1670,6 +1713,7 @@ async function performResetBootstrap(
 			items,
 			resetRequired,
 			context.scanner,
+			RECEIVE_WINDOW_OPTIONS,
 		);
 		if (!bootstrapResult.ok) throw new Error("bootstrap apply failed");
 		recordPeerSuccess(context.db, context.peerDeviceId, peer.baseUrl);
@@ -1763,6 +1807,7 @@ async function applyPulledDefaultOps(
 			? { peerDeviceId: context.peerDeviceId, enabled: false }
 			: { peerDeviceId: context.peerDeviceId };
 	const applied = applyReplicationOps(context.db, pulled.ops, context.deviceId, context.scanner, {
+		...RECEIVE_WINDOW_OPTIONS,
 		activityPeerDeviceId: context.peerDeviceId,
 		inboundScopeValidation,
 		keysDir: context.keysDir,
@@ -1990,13 +2035,17 @@ function recordReceiveResult<
 		failureCategory?: SyncFailureCategory;
 		receiveFailureCode?: SyncTransferErrorCode;
 	},
->(context: SyncExchangeContext, result: T): T {
-	if (!result.ok)
-		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
-			errorCode:
-				result.receiveFailureCode ??
-				(result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed"),
-		});
+>(context: SyncExchangeContext, result: T, options: { preserveError?: boolean } = {}): T {
+	let errorCode: SyncTransferErrorCode | undefined;
+	if (!result.ok) {
+		errorCode =
+			result.receiveFailureCode ??
+			(result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed");
+	}
+	recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+		...options,
+		errorCode,
+	});
 	return result;
 }
 
@@ -2027,7 +2076,8 @@ async function syncAddress(
 		}
 		const pulled = await pullDefaultScope(context, peer, cursors.lastApplied);
 		if (pulled.kind === "result") {
-			recordReceiveResult(context, pulled.result);
+			// Reset recovery checks only the default scope, not the remaining receive scopes.
+			recordReceiveResult(context, pulled.result, RECEIVE_WINDOW_OPTIONS.activityOptions);
 			return { kind: "success", result: pulled.result };
 		}
 		const applied = await applyPulledDefaultOps(context, peer, pulled, cursors.lastApplied);
