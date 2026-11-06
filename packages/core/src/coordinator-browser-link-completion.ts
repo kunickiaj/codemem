@@ -35,7 +35,7 @@ type CompletionStore = Pick<
 		| "preserveAuthLinkSessionCompletion"
 	> &
 	// Optional for desktop-only stores; the session SQL refuses headless attempts regardless.
-	Partial<Pick<AuthLinkOperations, "readAuthLinkBrowserMode">>;
+	Partial<Pick<AuthLinkOperations, "getAuthLinkBrowserAttemptStatus">>;
 export interface CoordinatorBrowserLinkCompletionInput {
 	config?: CoordinatorAuthBrowserConfig;
 	csrfKey: BrowserCsrfKey;
@@ -135,17 +135,21 @@ async function boundStatus(context: Context, attemptId: string, binderHash: stri
 	);
 	if (resolved === null) return null;
 	const browserTransactionHash = resolved.browserTransactionHash;
+	const input = { attemptId, browserTransactionHash };
+	// One row read gives both status and mode. A store without it is treated as
+	// desktop; its session SQL still refuses headless attempts.
+	if (context.store.getAuthLinkBrowserAttemptStatus) {
+		const read = await context.store.getAuthLinkBrowserAttemptStatus(input, context.config);
+		if (read === null) return null;
+		return { browserTransactionHash, state: read.status.state, headless: read.headless };
+	}
 	const status = await context.store.getAuthLinkAttemptStatus(
 		attemptId,
 		{ kind: "browser", browserTransactionHash },
 		context.config,
 	);
 	if (status === null) return null;
-	const mode = await context.store.readAuthLinkBrowserMode?.(
-		{ attemptId, browserTransactionHash },
-		context.config,
-	);
-	return { browserTransactionHash, state: status.state, headless: mode?.mode === "headless" };
+	return { browserTransactionHash, state: status.state, headless: false };
 }
 async function page(
 	context: Context,
@@ -320,7 +324,7 @@ export function createCoordinatorBrowserLinkCompletionHandlers(
 		preserveAuthLinkSessionCompletion: receiver.preserveAuthLinkSessionCompletion.bind(receiver),
 		redeemAuthLinkSessionWithBrowserTransaction:
 			receiver.redeemAuthLinkSessionWithBrowserTransaction.bind(receiver),
-		readAuthLinkBrowserMode: receiver.readAuthLinkBrowserMode?.bind(receiver),
+		getAuthLinkBrowserAttemptStatus: receiver.getAuthLinkBrowserAttemptStatus?.bind(receiver),
 	});
 	const publicOrigin = new URL(config.redirectUri).origin;
 	const context: Context = Object.freeze({
