@@ -888,6 +888,74 @@ describe("Gemini hosted callback registration", () => {
 			body: { error: "invalid_client_metadata" },
 		});
 	});
+
+	// Shape captured from a live Gemini web registration; the account ID and host are synthetic.
+	const geminiUserBoundSuffix = "user_bound_custom-mcp-123456789012345678901-mcp_example_test";
+	const geminiWebRedirectUris = [
+		"oauth-redirect-sandbox.googleusercontent.com",
+		"oauth-redirect-test.googleusercontent.com",
+		"oauth-redirect.googleusercontent.com",
+	].flatMap((host) =>
+		["r", "a"].map((prefix) => `https://${host}/${prefix}/${geminiUserBoundSuffix}`),
+	);
+
+	it("accepts the full set of user-bound callbacks that Gemini web registers", () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+
+		const result = registerMcpOAuthClient(
+			{
+				client_name: "Google",
+				redirect_uris: geminiWebRedirectUris,
+				response_types: ["code"],
+				grant_types: ["authorization_code", "refresh_token"],
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+
+		expect(result).toMatchObject({
+			status: 201,
+			body: { redirect_uris: geminiWebRedirectUris, token_endpoint_auth_method: "none" },
+		});
+	});
+
+	it.each([
+		`http://oauth-redirect.googleusercontent.com/r/${geminiUserBoundSuffix}`,
+		`https://oauth-redirect.googleusercontent.com:8443/r/${geminiUserBoundSuffix}`,
+		`https://oauth-redirect.googleusercontent.com.evil.test/r/${geminiUserBoundSuffix}`,
+		`https://evil.googleusercontent.com/r/${geminiUserBoundSuffix}`,
+		`https://oauth-redirect.googleusercontent.com/x/${geminiUserBoundSuffix}`,
+		`https://oauth-redirect.googleusercontent.com/r/${geminiUserBoundSuffix}/`,
+		`https://oauth-redirect.googleusercontent.com/r/${geminiUserBoundSuffix}/extra`,
+		`https://oauth-redirect.googleusercontent.com/r/${geminiUserBoundSuffix}?code=secret`,
+		`https://oauth-redirect.googleusercontent.com/r/${geminiUserBoundSuffix}#fragment`,
+		"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-account-mcp_example_test",
+		"https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-123456789012345678901-",
+		"https://oauth-redirect.googleusercontent.com/r/user_bound_other-123456789012345678901-mcp_example_test",
+	])("rejects user-bound Gemini callback variants: %s", (redirectUri) => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+
+		const result = registerMcpOAuthClient(
+			{ redirect_uris: [redirectUri], token_endpoint_auth_method: "none" },
+			clientsStore,
+		);
+
+		expect(result).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+	});
+
+	it("rejects a Gemini registration when any callback is unsupported", () => {
+		const clientsStore = createInMemoryOAuthClientsStore();
+
+		const result = registerMcpOAuthClient(
+			{
+				redirect_uris: [...geminiWebRedirectUris, "https://evil.test/callback"],
+				token_endpoint_auth_method: "none",
+			},
+			clientsStore,
+		);
+
+		expect(result).toMatchObject({ status: 400, body: { error: "invalid_client_metadata" } });
+	});
 });
 
 function pkceS256(verifier: string): string {
