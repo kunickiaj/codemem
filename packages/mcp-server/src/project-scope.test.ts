@@ -1,4 +1,25 @@
+import { MEMORY_FILTER_FIELD_TYPES } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const forwardedFilterFields = Object.entries(MEMORY_FILTER_FIELD_TYPES).filter(
+	([key]) => key !== "project",
+);
+
+const filterValues = {
+	string: "requested-value",
+	"string-array": ["requested-value", "another-value"],
+	int: 2,
+	number: 0.3,
+	"boolean-or-string": true,
+};
+
+const emptyFilterValues = {
+	string: "",
+	"string-array": [],
+	int: 0,
+	number: 0,
+	"boolean-or-string": false,
+};
 
 describe("project-scope helpers", () => {
 	afterEach(() => {
@@ -99,5 +120,77 @@ describe("project-scope helpers", () => {
 		expect(resolveWriteProject({ project: "   ", envProject: "   " })).toBeNull();
 		expect(resolveWriteProject({ project: "explicit" })).toBe("explicit");
 		expect(resolveWriteProject({ envProject: "env-value" })).toBe("env-value");
+	});
+});
+
+describe("buildFilters shared catalog regression coverage", () => {
+	// Generate coverage from core so new filters, especially exclusions, cannot be omitted silently.
+	it.each(forwardedFilterFields)("forwards catalog filter %s unchanged", async (key, fieldType) => {
+		const { buildFilters } = await import("./project-scope.js");
+		const value = filterValues[fieldType];
+		const raw = { [key]: value };
+
+		const filters = buildFilters(raw, null);
+
+		expect(filters).toEqual(raw);
+		expect(filters?.[key as keyof NonNullable<typeof filters>]).toBe(value);
+	});
+
+	it.each(forwardedFilterFields)(
+		"preserves empty or falsy catalog filter %s",
+		async (key, fieldType) => {
+			const { buildFilters } = await import("./project-scope.js");
+			const raw = { [key]: emptyFilterValues[fieldType] };
+
+			const filters = buildFilters(raw, null);
+
+			expect(filters).toEqual(raw);
+		},
+	);
+
+	it.each(forwardedFilterFields)("omits null and undefined catalog filter %s", async (key) => {
+		const { buildFilters } = await import("./project-scope.js");
+
+		const nullFilters = buildFilters({ [key]: null }, null);
+		const undefinedFilters = buildFilters({ [key]: undefined }, null);
+
+		expect(nullFilters).toBeUndefined();
+		expect(undefinedFilters).toBeUndefined();
+	});
+
+	it.each([
+		{ project: "  explicit  ", defaultProject: "  default  ", expected: { project: "explicit" } },
+		{ project: "", defaultProject: "  default  ", expected: { project: "default" } },
+		{ project: "   ", defaultProject: "default", expected: { project: "default" } },
+		{ project: null, defaultProject: "default", expected: { project: "default" } },
+		{ project: undefined, defaultProject: "default", expected: { project: "default" } },
+		{ project: 42, defaultProject: "default", expected: { project: "default" } },
+		{ project: "explicit", defaultProject: null, expected: { project: "explicit" } },
+		{ project: null, defaultProject: null, expected: undefined },
+		{ project: "   ", defaultProject: "   ", expected: undefined },
+	])("resolves project separately from catalog passthrough: %j", async (testCase) => {
+		const { buildFilters } = await import("./project-scope.js");
+		const { project, defaultProject, expected } = testCase;
+
+		const filters = buildFilters({ project }, defaultProject);
+
+		expect(filters).toEqual(expected);
+	});
+
+	it.each([
+		{ raw: { unknown_filter: ["ignored"] }, defaultProject: null, expected: undefined },
+		{ raw: {}, defaultProject: null, expected: undefined },
+		{
+			raw: { unknown_filter: ["ignored"], kind: "decision" },
+			defaultProject: "default",
+			expected: { kind: "decision", project: "default" },
+		},
+	])("ignores unknown keys without changing supported filters: %j", async (testCase) => {
+		const { buildFilters } = await import("./project-scope.js");
+		const { raw, defaultProject, expected } = testCase;
+
+		const filters = buildFilters(raw, defaultProject);
+
+		expect(filters).toEqual(expected);
 	});
 });
