@@ -36,11 +36,11 @@ import {
 	getRawEventFlushBatchSnapshot,
 	ownsRawEventFlushClaim,
 	type RawEventFlushClaim,
+	repairCompletedRawEventFlush,
 } from "./raw-event-flush-claim.js";
+import { LIVE_RAW_EVENT_EXTRACTOR } from "./raw-event-flush-cursor.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import type { MemoryStore } from "./store.js";
-
-const EXTRACTOR_VERSION = "raw_events_v1";
 
 /** Max flush attempts before a batch is permanently abandoned.
  *  Override via CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS. */
@@ -474,7 +474,7 @@ export function buildFlushSessionContext(
 		batch_id: batchId,
 		start_event_seq: startEventSeq,
 		end_event_seq: lastEventSeq,
-		extractor_version: EXTRACTOR_VERSION,
+		extractor_version: LIVE_RAW_EVENT_EXTRACTOR,
 	};
 	return context;
 }
@@ -505,14 +505,26 @@ function completeContextOnlyBatch(
 	},
 ): { flushed: number; updatedState: number } | null {
 	if (source !== "opencode" || !isDelegatedBriefOnlyBatch(events)) return null;
-	const claim = claimRawEventFlush(store, batchId);
-	if (!claim) return { flushed: 0, updatedState: 0 };
-	store.db
+	return finishWithoutIngest(
+		store,
+		{ source, streamId: opencodeSessionId, batchId, lastEventSeq },
+		events.length,
+	);
+}
+
+function finishWithoutIngest(
+	store: MemoryStore,
+	context: { source: string; streamId: string; batchId: number; lastEventSeq: number },
+	eventCount: number,
+): { flushed: number; updatedState: number } {
+	return store.db
 		.transaction(() => {
-			completeRawEventFlush(store, { claim, source, streamId: opencodeSessionId, lastEventSeq });
+			const claim = claimRawEventFlush(store, context.batchId);
+			if (!claim) return { flushed: 0, updatedState: 0 };
+			completeRawEventFlush(store, { ...context, claim });
+			return { flushed: eventCount, updatedState: 1 };
 		})
 		.immediate();
-	return { flushed: events.length, updatedState: 1 };
 }
 
 function rawEventSequenceRange(
@@ -535,6 +547,35 @@ function rawEventSequenceRange(
 	return { startEventSeq, lastEventSeq };
 }
 
+function finalizeExhaustedBatch(
+	store: MemoryStore,
+	events: Record<string, unknown>[],
+	batch: NonNullable<ReturnType<typeof getRawEventFlushBatchSnapshot>>,
+	stream: { source: string; streamId: string; lastEventSeq: number },
+): { result: { flushed: number; updatedState: number } | null; isLegacyRediagnosis: boolean } {
+	const maxAttempts = Number.parseInt(process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS ?? "", 10);
+	const effectiveMax =
+		Number.isFinite(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_MAX_FLUSH_ATTEMPTS;
+	if (batch.attemptCount < effectiveMax || !["failed", "error"].includes(batch.status)) {
+		return { result: null, isLegacyRediagnosis: false };
+	}
+	// Legacy generic failures get one diagnosis before permanent finalization.
+	if (shouldRediagnoseLegacyNoOutputMicrobatch(events, batch.errorType)) {
+		return { result: null, isLegacyRediagnosis: true };
+	}
+	const completedNoOp = isTerminalNoOutputMicrobatch(events, batch);
+	const finalized = finalizeFailedRawEventFlush(
+		store,
+		{ claim: batch.snapshot, ...stream },
+		completedNoOp ? "completed" : "gave_up",
+	);
+	if (!finalized) return { result: { flushed: 0, updatedState: 0 }, isLegacyRediagnosis: false };
+	return {
+		result: { flushed: completedNoOp ? events.length : 0, updatedState: 1 },
+		isLegacyRediagnosis: false,
+	};
+}
+
 /**
  * Flush raw events for a single session through the ingest pipeline.
  *
@@ -552,7 +593,8 @@ export async function flushRawEvents(
 	opts: FlushRawEventsOptions,
 ): Promise<{ flushed: number; updatedState: number }> {
 	let { source = "opencode", cwd, project, startedAt } = opts;
-	const { opencodeSessionId, maxEvents, throughEventSeq } = opts;
+	const { maxEvents, throughEventSeq } = opts;
+	const opencodeSessionId = opts.opencodeSessionId.trim();
 
 	source = (source ?? "").trim().toLowerCase() || "opencode";
 
@@ -576,27 +618,26 @@ export async function flushRawEvents(
 	const { startEventSeq, lastEventSeq } = range;
 
 	// Get or create flush batch (idempotency guard)
-	const {
-		batchId,
-		status,
-		attemptCount,
-		errorType,
-		observerErrorCode,
-		observerErrorMessage,
-		snapshot,
-	} = getRawEventFlushBatchSnapshot(
+	const batch = getRawEventFlushBatchSnapshot(
 		store,
 		opencodeSessionId,
 		source,
 		startEventSeq,
 		lastEventSeq,
-		EXTRACTOR_VERSION,
+		LIVE_RAW_EVENT_EXTRACTOR,
 	);
+	if (!batch) return { flushed: 0, updatedState: 0 };
+	const { batchId, status, snapshot } = batch;
 
 	// If already completed, just advance flush state
 	if (status === "completed") {
-		store.updateRawEventFlushState(opencodeSessionId, lastEventSeq, source);
-		return { flushed: 0, updatedState: 1 };
+		const repaired = repairCompletedRawEventFlush(store, {
+			claim: snapshot,
+			source,
+			streamId: opencodeSessionId,
+			lastEventSeq,
+		});
+		return { flushed: 0, updatedState: repaired ? 1 : 0 };
 	}
 	const contextOnly = completeContextOnlyBatch(store, events, {
 		source,
@@ -606,44 +647,12 @@ export async function flushRawEvents(
 	});
 	if (contextOnly) return contextOnly;
 
-	// Give up after too many failed attempts — mark batch as permanently failed
-	// and advance the cursor so the pipeline isn't blocked forever.
-	// Only trigger from terminal failure states; if another worker has the batch
-	// claimed/running, fall through to the claim step which will correctly bail.
-	const maxAttempts = Number.parseInt(process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS ?? "", 10);
-	const effectiveMax =
-		Number.isFinite(maxAttempts) && maxAttempts > 0 ? maxAttempts : DEFAULT_MAX_FLUSH_ATTEMPTS;
-	let isLegacyRediagnosis = false;
-	if (attemptCount >= effectiveMax && (status === "failed" || status === "error")) {
-		const shouldRediagnoseLegacyFailure = shouldRediagnoseLegacyNoOutputMicrobatch(
-			events,
-			errorType,
-		);
-		if (!shouldRediagnoseLegacyFailure) {
-			const completedNoOp = isTerminalNoOutputMicrobatch(events, {
-				errorType,
-				observerErrorCode,
-				observerErrorMessage,
-			});
-			const finalized = finalizeFailedRawEventFlush(
-				store,
-				{ claim: snapshot, source, streamId: opencodeSessionId, lastEventSeq },
-				completedNoOp ? "completed" : "gave_up",
-			);
-			if (!finalized) return { flushed: 0, updatedState: 0 };
-			return { flushed: completedNoOp ? events.length : 0, updatedState: 1 };
-		}
-		// Legacy builds stored this pre-observer outcome as a generic Error. Fall
-		// through exactly once to replace it with the stable reason used below.
-		isLegacyRediagnosis = true;
-	}
-
-	// Claim the batch (atomic lock)
-	const claim = claimRawEventFlush(store, batchId);
-	if (!claim) {
-		return { flushed: 0, updatedState: 0 };
-	}
-	const rawFlushPersistence = { claim, source, streamId: opencodeSessionId, lastEventSeq };
+	const { result, isLegacyRediagnosis } = finalizeExhaustedBatch(store, events, batch, {
+		source,
+		streamId: opencodeSessionId,
+		lastEventSeq,
+	});
+	if (result) return result;
 
 	const sessionContext = buildFlushSessionContext(events, {
 		opencodeSessionId,
@@ -654,9 +663,21 @@ export async function flushRawEvents(
 	});
 
 	if (isTerminalLowSignalSession(events, sessionContext)) {
-		store.db.transaction(() => completeRawEventFlush(store, rawFlushPersistence)).immediate();
-		return { flushed: events.length, updatedState: 1 };
+		return finishWithoutIngest(
+			store,
+			{
+				source,
+				streamId: opencodeSessionId,
+				batchId,
+				lastEventSeq,
+			},
+			events.length,
+		);
 	}
+	// Recheck stream ownership and prefix after the snapshot, before any observer work.
+	const claim = claimRawEventFlush(store, batchId);
+	if (!claim) return { flushed: 0, updatedState: 0 };
+	const rawFlushPersistence = { claim, source, streamId: opencodeSessionId, lastEventSeq };
 
 	// Build ingest payload
 	const payload: IngestPayload = {

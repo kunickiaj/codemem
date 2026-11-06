@@ -22,6 +22,7 @@ import { ObserverAuthError } from "./observer-client.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { recoverOneMissingAuthWindow } from "./raw-event-auth-recovery.js";
 import { flushRawEvents } from "./raw-event-flush.js";
+import { rawEventStuckBatchMs } from "./raw-event-flush-claim.js";
 import type { MemoryStore } from "./store.js";
 
 const MS_PER_DAY = 86_400_000;
@@ -129,10 +130,6 @@ export class RawEventSweeper {
 
 	private debounceMs(): number {
 		return envInt("CODEMEM_RAW_EVENTS_DEBOUNCE_MS", 60_000);
-	}
-
-	private stuckBatchMs(): number {
-		return envInt("CODEMEM_RAW_EVENTS_STUCK_BATCH_MS", 300_000);
 	}
 
 	// -----------------------------------------------------------------------
@@ -613,7 +610,7 @@ export class RawEventSweeper {
 		this.purgeExpiredRawEvents();
 
 		// Mark stuck batches as error
-		const stuckMs = this.stuckBatchMs();
+		const stuckMs = rawEventStuckBatchMs();
 		if (stuckMs > 0) {
 			const cutoff = new Date(nowMs - stuckMs).toISOString();
 			this.store.markStuckRawEventBatchesAsError(cutoff, 100);
