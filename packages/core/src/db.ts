@@ -34,6 +34,7 @@ import {
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { expandUserPath } from "./observer-config.js";
+import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
 import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import {
@@ -222,6 +223,7 @@ export function connect(dbPath: string = DEFAULT_DB_PATH): DatabaseType {
 
 		ensureSchemaBootstrapped(db);
 		if (!configureWal) return db;
+		ensureRawEventFlushClaimSchema(db);
 
 		// In-memory databases cannot use WAL (SQLite reports "memory") and have
 		// no cross-process readers, so skip the pragma and its warning.
@@ -1038,6 +1040,7 @@ function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
 }
 
 function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
+	ensureRawEventFlushClaimSchema(db);
 	ensureVectorCorpusEpoch(db);
 	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
 		try {

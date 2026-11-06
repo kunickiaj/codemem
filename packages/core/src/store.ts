@@ -2867,6 +2867,7 @@ export class MemoryStore {
 	/**
 	 * Attempt to claim a flush batch for processing.
 	 * Returns true if successfully claimed, false if already claimed/completed.
+	 * Generation advances independently of attempts so admission refunds cannot recreate ownership.
 	 * Port of claim_raw_event_flush_batch().
 	 */
 	claimRawEventFlushBatch(
@@ -2879,6 +2880,7 @@ export class MemoryStore {
 			.set({
 				status: "claimed",
 				updated_at: now,
+				claim_generation: sql`${schema.rawEventFlushBatches.claim_generation} + 1`,
 				...(countAttempt
 					? { attempt_count: sql`${schema.rawEventFlushBatches.attempt_count} + 1` }
 					: {}),
@@ -2887,6 +2889,10 @@ export class MemoryStore {
 				and(
 					eq(schema.rawEventFlushBatches.id, batchId),
 					inArray(schema.rawEventFlushBatches.status, ["pending", "failed", "started", "error"]),
+					// Never wrap or lose integer precision, even for attempt-neutral claims.
+					sql`typeof(${schema.rawEventFlushBatches.claim_generation}) = 'integer'
+						AND ${schema.rawEventFlushBatches.claim_generation} >= 0
+						AND ${schema.rawEventFlushBatches.claim_generation} < ${Number.MAX_SAFE_INTEGER}`,
 				),
 			)
 			.returning({ id: schema.rawEventFlushBatches.id })
