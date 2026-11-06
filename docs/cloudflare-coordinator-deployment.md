@@ -239,10 +239,17 @@ denied, so applying them changes nothing for coordinator-only deployments.
 ### Headless account linking storage (0043)
 
 Migration `0043_add_headless_account_linking.sql` adds two empty tables for linking a Google
-account to a device without a browser: failed code-entry counts per client and per coordinator,
+account to a device without a browser: code-entry counts per client and per coordinator,
 and a record of which links were made this way. It changes no existing table or row. Until both
 tables exist, headless linking stays off and every other sign-in and linking flow works as
 before. A self-hosted SQLite coordinator creates the tables when it opens.
+
+The code-entry page at `/auth/link/device` counts every submitted code, including ones that
+work, and allows 10 per client address and 200 per coordinator in each 15-minute window. Over
+either limit it answers 429 with `Retry-After`. The Worker identifies a client only by
+`CF-Connecting-IP` and stores an HMAC of that address, keyed from
+`CODEMEM_COORDINATOR_BROWSER_CSRF_KEY`. Rotating that key starts every client window over. A
+host that cannot supply a platform-verified client address does not serve the page.
 
 ### Optional relay host (off by default)
 
