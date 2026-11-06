@@ -96,10 +96,12 @@ const expectCliCall = (runCli, name, args) => {
 };
 
 describe("native memory tool flag", () => {
-	it("is off unless CODEMEM_OPENCODE_NATIVE_TOOLS is truthy", () => {
-		expect(nativeMemoryToolsEnabled({})).toBe(false);
-		expect(nativeMemoryToolsEnabled({ CODEMEM_OPENCODE_NATIVE_TOOLS: "0" })).toBe(false);
-		expect(nativeMemoryToolsEnabled({ CODEMEM_OPENCODE_NATIVE_TOOLS: "no" })).toBe(false);
+	it("is on unless CODEMEM_OPENCODE_NATIVE_TOOLS turns it off", () => {
+		expect(nativeMemoryToolsEnabled({})).toBe(true);
+		expect(nativeMemoryToolsEnabled({ CODEMEM_OPENCODE_NATIVE_TOOLS: "" })).toBe(true);
+		for (const value of ["0", "false", "NO", "off"]) {
+			expect(nativeMemoryToolsEnabled({ CODEMEM_OPENCODE_NATIVE_TOOLS: value })).toBe(false);
+		}
 		for (const value of ["1", "true", "YES"]) {
 			expect(nativeMemoryToolsEnabled({ CODEMEM_OPENCODE_NATIVE_TOOLS: value })).toBe(true);
 		}

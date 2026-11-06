@@ -39,6 +39,14 @@ Host support at a glance:
 
 Install on either host with `codemem setup --opencode-only` (or `npx -y codemem setup --opencode-only`). Setup writes the singular `plugin` key on purpose: OpenCode 1 requires it, and OpenCode 2 translates it into its native `plugins` configuration, so one entry serves both hosts. The manual `mem-status`, `mem-recent`, and `mem-stats` tools keep their hyphenated IDs on both hosts.
 
+The plugin provides the memory tools through the shared local viewer, so setup does not write a `codemem mcp` entry for OpenCode:
+
+- Setup removes the `codemem` entry that earlier versions wrote, in either config shape: OpenCode 1's `mcp.codemem` or OpenCode 2's `mcp.servers.codemem`. It removes only entries whose command is one setup wrote (`codemem mcp`, an `npx` launcher for `codemem mcp`, or a UV/UVX launcher) and that carry no other fields beyond `type: "local"` and `enabled` or `disabled`. The previous file is saved with a `.codemem.bak` suffix before the write. An `mcp` or `mcp.servers` object that the removal leaves empty is deleted too, unless it contains comments.
+- Setup leaves an entry in place and names it in the output when the entry has an `environment` block, a `cwd`, a custom command, `type: "remote"`, or any other field. Remove it yourself unless you still need it.
+- `codemem setup --opencode-only --opencode-mcp stdio` keeps the per-project stdio entry: it writes the entry when none exists, in the `mcp.servers` shape if the file already uses it, and upgrades old UV/UVX or single-package `npx` launchers.
+
+`codemem mcp` remains the MCP server for Claude Desktop, Codex, and other MCP clients.
+
 Troubleshooting:
 
 - **No automatic recall on OpenCode 2.** Recall runs through `session.context` and requires a non-empty, non-whitespace latest user-message ID. When the ID is missing or blank, that turn skips recall rather than guessing identity; capture and the manual tools continue. Retries and tool continuations replay retained context and do not retrieve again, so a repeated turn without new context is expected.
@@ -438,11 +446,11 @@ These are plugin tools callable by the agent/runtime, not user-facing slash
 commands. OpenCode 2 registers the same hyphenated IDs through `tool.transform`
 with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 
-### Built-in memory tools (experimental, opt-in)
+### Built-in memory tools
 
-Set `CODEMEM_OPENCODE_NATIVE_TOOLS=1` (or `true`/`yes`) to have the plugin
-register the 14 codemem memory tools itself, so OpenCode no longer needs a
-`codemem mcp` process per project. The tools have the same names, inputs, and
+The plugin registers the 14 codemem memory tools itself, so OpenCode no longer
+needs a `codemem mcp` process per project. Set `CODEMEM_OPENCODE_NATIVE_TOOLS=0`
+(or `false`/`no`/`off`) to turn them off. The tools have the same names, inputs, and
 JSON results as the MCP tools, with `codemem_memory_` IDs on both hosts
 (`codemem_memory_search`, `codemem_memory_remember`, and so on). On OpenCode 2
 they live in the `codemem` namespace with Code Mode enabled, so Code Mode
@@ -460,8 +468,9 @@ ID the plugin generates for that call.
 
 If a `codemem` MCP server is still configured (`mcp.codemem` on OpenCode 1,
 `mcp.servers.codemem` on OpenCode 2) and not disabled, the plugin keeps the MCP
-tools and skips its own, logging and showing one notice. Remove the MCP entry
-to switch. The flag is off by default in this release.
+tools and skips its own, logging and showing one notice. Remove the MCP entry,
+or run `codemem setup`, to switch. Removing or disabling the entry later brings
+the built-in tools back without a restart.
 
 ## MCP tools exposed to agents
 

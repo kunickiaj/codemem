@@ -1,8 +1,8 @@
 /**
  * OpenCode MCP entry handling for `codemem setup`.
  *
- * In native mode (offered once the plugin ships built-in memory tools), those
- * tools replace the per-project `codemem mcp` stdio entry. These helpers recognize
+ * In native mode (the default), the plugin's built-in memory tools replace the
+ * per-project `codemem mcp` stdio entry. These helpers recognize
  * the entries setup wrote, in both config shapes:
  *
  * - V1: `mcp.codemem = { type: "local", command: [...], enabled: true }`

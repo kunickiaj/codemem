@@ -1193,6 +1193,28 @@ This source workflow has not yet been validated end-to-end against a live coordi
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
 
+### OpenCode MCP entry
+
+In OpenCode, the codemem plugin provides the memory tools through the shared
+local viewer, so OpenCode does not start a `codemem mcp` process for each
+project. `codemem setup` removes the `codemem` MCP entry that earlier versions
+wrote, from `mcp.codemem` or `mcp.servers.codemem`, and saves the previous
+config with a `.codemem.bak` suffix. The output names the file it changed.
+
+If the output says it left an entry in place, that entry has settings setup did
+not write, such as an `environment` block, a `cwd`, a custom command, or a remote
+URL. Remove it from the OpenCode config unless you still need it.
+
+To keep the per-project stdio server, for example so you can set `CODEMEM_DB`
+in the entry's `environment` block, run:
+
+```text
+codemem setup --opencode-only --opencode-mcp stdio
+```
+
+`codemem mcp` remains the MCP server for Claude Desktop, Codex, and other MCP
+clients.
+
 ### Semantic runtime unavailable
 
 Codemem installs its matching optional embedding runtime by default and falls
@@ -1212,10 +1234,13 @@ npm install -g codemem
 
 For an existing setup-managed installation, upgrade `codemem` with the package
 manager that originally installed it, then rerun its setup command. The scoped
-`--opencode-only` and `--codex-only` forms work too. Setup replaces the old
-managed `npx -y codemem mcp` launcher and codemem MCP entries detected as
-UV/UVX-based so both packages resolve in one runtime. Other custom MCP commands
-remain unchanged. Claude marketplace installs bundle MCP configuration and need
+`--opencode-only` and `--codex-only` forms work too. For Claude Code and Codex,
+setup replaces the old managed `npx -y codemem mcp` launcher and codemem MCP
+entries detected as UV/UVX-based so both packages resolve in one runtime. For
+OpenCode, setup removes those managed entries instead, because the plugin
+provides the memory tools through the shared viewer (see
+[OpenCode MCP entry](#opencode-mcp-entry)). Other custom MCP commands remain
+unchanged. Claude marketplace installs bundle MCP configuration and need
 no separate setup command.
 
 For a smaller keyword-only install, use `npm install -g codemem --omit=optional`

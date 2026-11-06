@@ -46,6 +46,57 @@ export function reconcileOpencodePluginConfig(
 	};
 }
 
+// First plugin release that registers the memory tools itself by default.
+const OPENCODE_NATIVE_TOOLS_SINCE = [0, 48, 0] as const;
+
+/**
+ * The version pin on the codemem plugin entry, unless that pin is known to
+ * include the plugin's built-in memory tools. Setup keeps the per-project MCP
+ * entry for any returned pin: a configured MCP server takes precedence over the
+ * built-in tools, so keeping it is safe, while removing it for an older plugin
+ * would leave OpenCode without memory tools.
+ *
+ * Known to include the tools: no pin, a dist-tag such as `@latest`, an exact
+ * version of 0.48.0 or later, or a `^`, `~` or `>=` range whose full lower bound
+ * is 0.48.0 or later. Every other pin, including partial ones such as `0.47`,
+ * `~0.47` or `0.47.x`, is treated as possibly older.
+ */
+export function pinnedOpencodePluginWithoutNativeTools(
+	config: Record<string, unknown>,
+): string | null {
+	const plugins: unknown[] = Array.isArray(config.plugin) ? config.plugin : [];
+	for (const entry of plugins) {
+		if (typeof entry !== "string" || !entry.startsWith(`${OPENCODE_PLUGIN_SPEC}@`)) continue;
+		const pin = entry.slice(OPENCODE_PLUGIN_SPEC.length + 1).trim();
+		if (!pinIncludesNativeTools(pin)) return pin;
+	}
+	return null;
+}
+
+const DIST_TAG = /^[A-Za-z][\w.-]*$/;
+const LOWER_BOUNDED_VERSION = /^(?:\^|~|>=|=|v)?\s*(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/;
+
+function pinIncludesNativeTools(pin: string): boolean {
+	if (pin === "") return true;
+	// Versions first: a tag pattern would also match a `v0.47.4` pin.
+	const match = LOWER_BOUNDED_VERSION.exec(pin);
+	if (match) {
+		const version = [Number(match[1]), Number(match[2]), Number(match[3])];
+		// A prerelease of the first native release may predate the change.
+		return !comparesBelowNativeTools(version, { prerelease: Boolean(match[4]) });
+	}
+	// Anything starting with v and a digit is a version npm would parse, never a tag.
+	return DIST_TAG.test(pin) && !/^v\d/i.test(pin);
+}
+
+function comparesBelowNativeTools(version: number[], { prerelease }: { prerelease: boolean }) {
+	for (const [index, floor] of OPENCODE_NATIVE_TOOLS_SINCE.entries()) {
+		const part = version[index] ?? 0;
+		if (part !== floor) return part < floor;
+	}
+	return prerelease;
+}
+
 export function resolveOpencodeConfigPath(configDir: string): string {
 	const jsonPath = join(configDir, "opencode.json");
 	if (existsSync(jsonPath)) return jsonPath;

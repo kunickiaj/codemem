@@ -746,6 +746,9 @@ const receiver = await startReceiver(profile);
 const address = receiver.server.address();
 assert(address && typeof address === "object", "Packed receiver did not bind a port");
 process.env.CODEMEM_RAW_EVENTS = "1";
+// This probe's fake host has no tool namespace API, and the built-in memory tools
+// are on by default. native-memory-tools-host-smoke.mjs covers those tools.
+process.env.CODEMEM_OPENCODE_NATIVE_TOOLS = "0";
 process.env.CODEMEM_VIEWER_HOST = "127.0.0.1";
 process.env.CODEMEM_VIEWER_PORT = String(address.port);
 
