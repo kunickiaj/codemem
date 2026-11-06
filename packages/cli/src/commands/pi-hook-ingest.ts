@@ -11,11 +11,13 @@
  *   echo '{"piEvent":"session_start","sessionId":"...","cwd":"..."}' \
  *     | codemem pi-hook-ingest
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	buildPiFlushSignalFromEvent,
 	buildRawEventEnvelopeFromPiEvent,
 	connect,
+	DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
 	ensureSchemaBootstrapped,
 	flushRawEvents,
 	ingestRawEvents,
@@ -34,6 +36,7 @@ import {
 	hasSpooledPiHookPayload,
 	PiHookLockBusyError,
 	piHookLockTtlSeconds,
+	piHookSpoolDir,
 	recoverStalePiHookTmpSpool,
 	removeSpooledPiHookPayload,
 	shouldForcePiBoundaryFlush,
@@ -57,6 +60,7 @@ type IngestOpts = { host: string; port: string | number } & DbOpts;
 type BoundaryFlush = (
 	payload: Record<string, unknown>,
 	dbPath: string,
+	receipt?: string,
 ) => Promise<boolean | undefined> | boolean | undefined;
 type IngestDeps = {
 	httpIngest?: typeof tryHttpIngest;
@@ -176,12 +180,13 @@ export function directEnqueuePiHook(
 /**
  * Best-effort boundary flush for session_before_compact / session_shutdown.
  * Always passes source "pi" — never relies on a helper default.
- * Returns false when observer/store/extraction fail so a recovered-boundary
- * retry can keep the spool; live hook callers stay fail-open and ignore it.
+ * Returns false until the captured boundary is complete, retaining the receipt
+ * for the next invocation. Each attempt extracts at most one batch.
  */
 async function flushBoundaryRawEvents(
 	payload: Record<string, unknown>,
 	dbPath: string,
+	receipt?: string,
 ): Promise<boolean> {
 	const envelope = buildRawEventEnvelopeFromPiEvent(payload);
 	const signal = buildPiFlushSignalFromEvent(payload);
@@ -215,6 +220,7 @@ async function flushBoundaryRawEvents(
 	}
 
 	try {
+		const throughEventSeq = capturePiBoundaryCeiling(store, sessionId, payload, receipt);
 		await flushRawEvents(
 			store,
 			{ observer },
@@ -224,10 +230,11 @@ async function flushBoundaryRawEvents(
 				cwd,
 				project,
 				startedAt,
-				maxEvents: null,
+				maxEvents: DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
+				throughEventSeq,
 			},
 		);
-		return true;
+		return isPiBoundaryComplete(store, sessionId, throughEventSeq);
 	} catch (err) {
 		logHookEvent(
 			`codemem pi-hook-ingest boundary flush raw events failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -236,6 +243,51 @@ async function flushBoundaryRawEvents(
 	} finally {
 		store.close();
 	}
+}
+
+const BOUNDARY_CEILING_FIELD = "_codememBoundaryThroughEventSeq";
+
+function isPiBoundaryComplete(
+	store: MemoryStore,
+	sessionId: string,
+	throughEventSeq: number,
+): boolean {
+	const cursor = store.rawEventFlushState(sessionId, "pi");
+	return (
+		cursor >= throughEventSeq ||
+		store.rawEventsSinceBySeq(sessionId, "pi", cursor, 1, throughEventSeq).length === 0
+	);
+}
+
+function capturePiBoundaryCeiling(
+	store: MemoryStore,
+	sessionId: string,
+	payload: Record<string, unknown>,
+	receipt?: string,
+): number {
+	const saved = payload[BOUNDARY_CEILING_FIELD];
+	if (typeof saved === "number" && Number.isSafeInteger(saved) && saved >= -1) return saved;
+	const ceiling = Number(store.rawEventSessionMeta(sessionId, "pi").last_received_event_seq ?? -1);
+	if (!Number.isSafeInteger(ceiling) || ceiling < -1) {
+		throw new Error("invalid Pi boundary event sequence");
+	}
+	if (receipt) {
+		// Keep the original target across retries so new arrivals cannot prolong
+		// this receipt forever. Persist it before any observer work starts.
+		const dir = piHookSpoolDir();
+		const temporary = join(dir, `.hook-tmp-boundary-${receipt}.tmp`);
+		try {
+			writeFileSync(temporary, JSON.stringify({ ...payload, [BOUNDARY_CEILING_FIELD]: ceiling }));
+			renameSync(temporary, join(dir, receipt));
+		} finally {
+			try {
+				unlinkSync(temporary);
+			} catch {
+				// The successful rename already removed the temporary file.
+			}
+		}
+	}
+	return ceiling;
 }
 
 type DirectFallback = { ok: true; result: { inserted: number; skipped: number } } | { ok: false };
@@ -247,6 +299,7 @@ type PiIngestRuntime = {
 	httpIngest: typeof tryHttpIngest;
 	directIngest: typeof directEnqueuePiHook;
 	boundaryFlush: BoundaryFlush;
+	boundaryFlushAttempted: boolean;
 	withLock: IngestLock;
 	getDbPath: () => string;
 	httpPayload: (payload: Record<string, unknown>) => Record<string, unknown>;
@@ -277,11 +330,16 @@ function tryDirectFallback(
 async function writeAndFlushBoundary(
 	runtime: PiIngestRuntime,
 	payload: Record<string, unknown>,
+	receipt: string,
 ): Promise<DirectFallback> {
+	if (runtime.boundaryFlushAttempted) return { ok: false };
 	const direct = tryDirectFallback(runtime, payload);
 	if (!direct.ok) return direct;
+	// Every receipt in this invocation shares one local extraction allowance.
+	// Queued HTTP acknowledgments can still transfer later receipts to the Viewer.
+	runtime.boundaryFlushAttempted = true;
 	try {
-		const flushed = await runtime.boundaryFlush(payload, runtime.getDbPath());
+		const flushed = await runtime.boundaryFlush(payload, runtime.getDbPath(), receipt);
 		if (flushed === false) {
 			logHookEvent("codemem pi-hook-ingest boundary flush failed; keeping spooled payload");
 			return { ok: false };
@@ -317,6 +375,7 @@ function createPiIngestRuntime(
 		httpIngest: deps.httpIngest ?? tryHttpIngest,
 		directIngest: deps.directIngest ?? directEnqueuePiHook,
 		boundaryFlush: deps.boundaryFlush ?? flushBoundaryRawEvents,
+		boundaryFlushAttempted: false,
 		withLock: deps.withLock ?? withPiHookIngestLock,
 		getDbPath,
 		httpPayload: (queued) => targetedPiPayload(queued, getDbPath),
@@ -340,6 +399,7 @@ function spoolPiPayloadOrThrow(payload: Record<string, unknown>): IngestResult {
 async function deliverQueuedPiHook(
 	runtime: PiIngestRuntime,
 	queuedPayload: Record<string, unknown>,
+	receipt: string,
 ): Promise<{
 	accepted: boolean;
 	httpResult: HttpIngestResult;
@@ -355,7 +415,7 @@ async function deliverQueuedPiHook(
 		return { accepted: true, httpResult: result, directResult: null };
 	}
 	if (!boundaryRequested) return { accepted: false, httpResult: result, directResult: null };
-	const boundary = await writeAndFlushBoundary(runtime, queuedPayload);
+	const boundary = await writeAndFlushBoundary(runtime, queuedPayload, receipt);
 	if (!boundary.ok) return { accepted: false, httpResult: result, directResult: null };
 	return {
 		accepted: true,
@@ -368,7 +428,7 @@ async function ingestPiBoundaryDirect(
 	runtime: PiIngestRuntime,
 	receipt: string,
 ): Promise<IngestResult> {
-	const boundary = await writeAndFlushBoundary(runtime, runtime.payload);
+	const boundary = await writeAndFlushBoundary(runtime, runtime.payload, receipt);
 	if (!boundary.ok) return { inserted: 0, skipped: 0, via: "spool" };
 	removeSpooledPiHookPayload(receipt);
 	return { ...boundary.result, via: "direct" };
@@ -392,7 +452,7 @@ async function drainPiBacklog(
 		await runtime.withLock(async () => {
 			recoverStalePiHookTmpSpool(piHookLockTtlSeconds());
 			await drainPiHookSpool(async (queuedPayload, receipt) => {
-				const delivery = await deliverQueuedPiHook(runtime, queuedPayload);
+				const delivery = await deliverQueuedPiHook(runtime, queuedPayload, receipt);
 				if (receipt === currentReceipt) {
 					currentResult = delivery.httpResult;
 					currentAccepted = delivery.accepted;
@@ -444,7 +504,10 @@ export async function ingestPiHookPayload(
 	opts: IngestOpts,
 	deps: IngestDeps = {},
 ): Promise<IngestResult> {
-	const stablePayload = stabilizePiBoundaryPayload(payload);
+	// Only recovered receipts may carry a previously captured ceiling. A live
+	// caller cannot choose a ceiling that skips its pending extraction work.
+	const { [BOUNDARY_CEILING_FIELD]: _ignoredCeiling, ...livePayload } = payload;
+	const stablePayload = stabilizePiBoundaryPayload(livePayload);
 	const runtime = createPiIngestRuntime(stablePayload, opts, deps);
 	const boundaryRequested = shouldForcePiBoundaryFlush(stablePayload);
 	if (hasPiHookSpooledEntries()) {

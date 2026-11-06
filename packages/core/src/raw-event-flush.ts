@@ -42,6 +42,9 @@ import { LIVE_RAW_EVENT_EXTRACTOR } from "./raw-event-flush-cursor.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import type { MemoryStore } from "./store.js";
 
+/** Default batch size shared by background workers and CLI fallback extraction. */
+export const DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS = 100;
+
 /** Max flush attempts before a batch is permanently abandoned.
  *  Override via CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS. */
 const DEFAULT_MAX_FLUSH_ATTEMPTS = 5;
