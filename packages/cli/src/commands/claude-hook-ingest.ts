@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import {
 	buildRawEventEnvelopeFromHook,
 	connect,
+	DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
 	ensureSchemaBootstrapped,
 	flushRawEvents,
 	ingestRawEvents,
@@ -243,9 +244,8 @@ export function directEnqueue(
 /**
  * Best-effort boundary flush: write the payload through to the local
  * store (so the just-fired SessionEnd / Stop event is durable in
- * raw_events) and then run a synchronous flushRawEvents pass so that
- * the latest memories are extracted before the hook process exits and
- * the user closes their terminal.
+ * raw_events) and then extract at most one batch before the hook exits.
+ * Any remaining events stay durable for the Viewer or a later invocation.
  *
  * Any failure here \u2014 observer construction, store I/O, flush errors,
  * or simply running without observer credentials \u2014 is logged to
@@ -289,7 +289,7 @@ async function flushBoundaryRawEvents(
 				cwd: envelope.cwd ?? null,
 				project: envelope.project ?? null,
 				startedAt: envelope.started_at ?? null,
-				maxEvents: null,
+				maxEvents: DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
 			},
 		);
 	} catch (err) {

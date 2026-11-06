@@ -14,6 +14,7 @@
 
 import * as p from "@clack/prompts";
 import {
+	DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
 	flushRawEvents,
 	importPiSessions,
 	MemoryStore,
@@ -105,32 +106,67 @@ export async function flushImportedPiSessions(
 			extraction.pendingSessions = piPendingSessions(store).length;
 			return extraction;
 		}
-		// Snapshot the Pi backlog so failed attempts cannot hide later sessions.
-		for (const streamId of piPendingSessions(store)) {
+		// Capture every ceiling before extraction, including streams processed later.
+		const backlog = piPendingSessions(store).map((streamId) => ({
+			streamId,
+			throughEventSeq: Number(store.rawEventSessionMeta(streamId, "pi").last_received_event_seq),
+			initialCursor: store.rawEventFlushState(streamId, "pi"),
+		}));
+		for (const stream of backlog) {
 			try {
-				const result = await flushRawEvents(
-					store,
-					{ observer: resolved },
-					{
-						opencodeSessionId: streamId,
-						source: "pi",
-						cwd: null,
-						project: null,
-						startedAt: null,
-						// One-shot full drain, mirroring the boundary flush pattern.
-						maxEvents: null,
-					},
-				);
-				extraction.flushedEvents += result.flushed;
+				await drainImportedPiStream(store, resolved, stream, extraction);
 			} catch (err) {
 				extraction.failedSessions++;
-				extraction.error ??= `session ${streamId}: ${err instanceof Error ? err.message : String(err)}`;
+				extraction.error ??= `session ${stream.streamId}: ${err instanceof Error ? err.message : String(err)}`;
 			}
 		}
 		extraction.pendingSessions = piPendingSessions(store).length;
 		return extraction;
 	} finally {
 		store.close();
+	}
+}
+
+async function drainImportedPiStream(
+	store: MemoryStore,
+	observer: ObserverClient,
+	stream: { streamId: string; throughEventSeq: number; initialCursor: number },
+	extraction: PiImportExtractionResult,
+): Promise<void> {
+	const { streamId, throughEventSeq, initialCursor } = stream;
+	const maxAttempts = Math.max(0, throughEventSeq - initialCursor);
+	if (
+		!Number.isSafeInteger(throughEventSeq) ||
+		!Number.isSafeInteger(initialCursor) ||
+		!Number.isSafeInteger(maxAttempts) ||
+		throughEventSeq < -1 ||
+		initialCursor < -1
+	) {
+		throw new Error("invalid Pi import event sequence");
+	}
+	// Host-generation splits can produce batches smaller than 100. Each
+	// progressing iteration advances at least one integer sequence, so the
+	// captured sequence span bounds attempts even when every batch has one event.
+	let cursor = initialCursor;
+	for (let attempt = 0; attempt < maxAttempts && cursor < throughEventSeq; attempt++) {
+		const result = await flushRawEvents(
+			store,
+			{ observer },
+			{
+				opencodeSessionId: streamId,
+				source: "pi",
+				cwd: null,
+				project: null,
+				startedAt: null,
+				maxEvents: DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
+				throughEventSeq,
+			},
+		);
+		extraction.flushedEvents += result.flushed;
+		const nextCursor = store.rawEventFlushState(streamId, "pi");
+		if (!Number.isSafeInteger(nextCursor)) throw new Error("invalid Pi import flush cursor");
+		if (nextCursor <= cursor) break;
+		cursor = nextCursor;
 	}
 }
 

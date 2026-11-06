@@ -21,7 +21,7 @@ import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { recoverOneMissingAuthWindow } from "./raw-event-auth-recovery.js";
-import { flushRawEvents } from "./raw-event-flush.js";
+import { DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS, flushRawEvents } from "./raw-event-flush.js";
 import { rawEventStuckBatchMs } from "./raw-event-flush-claim.js";
 import type { MemoryStore } from "./store.js";
 
@@ -105,7 +105,10 @@ export class RawEventSweeper {
 	}
 
 	private workerMaxEvents(): number | null {
-		const parsed = envInt("CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS", 100);
+		const parsed = envInt(
+			"CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS",
+			DEFAULT_RAW_EVENT_FLUSH_MAX_EVENTS,
+		);
 		return parsed <= 0 ? null : parsed;
 	}
 
