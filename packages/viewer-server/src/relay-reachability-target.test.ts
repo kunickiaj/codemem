@@ -15,7 +15,7 @@ import {
 } from "../../core/src/relay-peer-client-test-fixtures.js";
 import { testSigner } from "../../core/src/relay-server-test-fixtures.js";
 import { relayAudienceId } from "../../core/src/relay-service-proof.js";
-import { runSyncPass } from "../../core/src/sync-pass.js";
+import { runSyncPass } from "../../core/src/sync-orchestration.js";
 import { createViewerRelayReachability } from "./relay-reachability.js";
 import {
 	COORDINATOR,

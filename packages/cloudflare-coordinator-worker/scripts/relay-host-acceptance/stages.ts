@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { getSyncChannelProgress } from "../../../core/src/sync-channel-progress.js";
-import { runSyncPass } from "../../../core/src/sync-pass.js";
+import { runSyncPass } from "../../../core/src/sync-orchestration.js";
 import { emit, type Fixture, GROUPS, type RelayHostUnderTest } from "./common.js";
 import { core, createViewerRelayReachability, relayConfig, seedMemory, type Store, titles } from "./device.js";
 import type { Front } from "./front.js";

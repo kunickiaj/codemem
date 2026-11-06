@@ -24,7 +24,8 @@ import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
 import { DeviceIdentityError, ensureDeviceIdentity } from "./sync-identity.js";
-import { runSyncPass, shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
+import { runSyncPass } from "./sync-orchestration.js";
+import { shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
 import type {
 	SyncPeerReachabilityResolver,
 	SyncReachabilityMaintenance,

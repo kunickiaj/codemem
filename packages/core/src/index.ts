@@ -1499,6 +1499,7 @@ export {
 	storePrivateKeyKeychain,
 	validateExistingKeypair,
 } from "./sync-identity.js";
+export { runSyncPass } from "./sync-orchestration.js";
 export type {
 	SyncAttemptFailureCategory,
 	SyncFailureCategory,
@@ -1510,7 +1511,6 @@ export {
 	cursorAdvances,
 	isConnectivityError,
 	peerBackoffSeconds,
-	runSyncPass,
 	shouldSkipOfflinePeer,
 	syncOnce,
 	syncPassPreflight,

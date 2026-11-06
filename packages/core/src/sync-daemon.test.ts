@@ -21,6 +21,7 @@ import {
 } from "./sync-daemon.js";
 import * as syncIdentity from "./sync-identity.js";
 import { ensureDeviceIdentity, resolveKeyPaths } from "./sync-identity.js";
+import { runSyncPass } from "./sync-orchestration.js";
 import * as reachabilityPass from "./sync-reachability-pass.js";
 
 import { initTestSchema } from "./test-utils.js";
@@ -42,7 +43,6 @@ describe("daemon reachability wiring", () => {
 
 	it("maintains opt-in reachability before passing the same configuration to peer sync", async () => {
 		// Arrange: the existing tick callback seeds a peer in an in-memory database.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const reachability = {
 			scopeId: "space",
 			logicalOrigin: "https://peer.invalid",
@@ -75,7 +75,6 @@ describe("daemon reachability wiring", () => {
 
 	it("does not invoke relay maintenance for a default daemon tick", async () => {
 		// Arrange.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
 		// Act.
 		await runTickOnce(":memory:", undefined, undefined, ({ db }) => {
@@ -133,7 +132,6 @@ describe("daemon reachability wiring", () => {
 
 	it("does not maintain an opted-in relay when no peers are configured", async () => {
 		// Arrange: a fresh in-memory store has no sync peers.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
 		// Act.
 		await runTickOnce(":memory:", undefined, undefined, undefined, {
@@ -152,7 +150,6 @@ describe("per-peer daemon reachability", () => {
 
 	it("routes each peer through its group's client and maintains every client", async () => {
 		// Arrange: two groups with one client each, and a resolver that maps peers to groups.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const daemonAbort = new AbortController();
 		const callerAbort = new AbortController();
 		const cancelledBeforeDaemonStopped: boolean[] = [];
@@ -230,7 +227,6 @@ describe("relay daemon resilience", () => {
 	it("renews relay registration on its own timer while a long tick runs", async () => {
 		// Arrange: the first peer pass hangs for longer than two tick intervals.
 		vi.useFakeTimers();
-		const { runSyncPass } = await import("./sync-pass.js");
 		let finishPass = () => {};
 		vi.mocked(runSyncPass).mockImplementationOnce(
 			() =>
@@ -267,7 +263,6 @@ describe("relay daemon resilience", () => {
 
 	it("keeps syncing other peers directly when the resolver throws", async () => {
 		// Arrange: route resolution fails for one peer and client listing fails outright.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const maintain = vi.spyOn(reachabilityPass, "maintainSyncReachability").mockResolvedValue();
 		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 		const client = { name: "relay" } as unknown as RelayPeerClient;
@@ -299,7 +294,7 @@ it("starts each daemon tick without reusing an expired absolute pass deadline", 
 	// Arrange: virtual scheduling runs the existing startup and periodic tick.
 	vi.useFakeTimers();
 	vi.clearAllMocks();
-	const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+	const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
 	const { coordinatorEnabled } = await import("./coordinator-runtime.js");
 	vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
 	vi.mocked(coordinatorEnabled).mockReturnValue(false);
@@ -363,10 +358,13 @@ vi.mock("./scope-membership-cache.js", () => ({
 	}),
 }));
 
-// Mock sync-pass to avoid needing real keys/network
+// Mock orchestration and preflight to avoid needing real keys/network
+vi.mock("./sync-orchestration.js", () => ({
+	runSyncPass: vi.fn().mockResolvedValue({ ok: true, opsIn: 0, opsOut: 0, addressErrors: [] }),
+}));
+
 vi.mock("./sync-pass.js", () => ({
 	syncPassPreflight: vi.fn(),
-	runSyncPass: vi.fn().mockResolvedValue({ ok: true, opsIn: 0, opsOut: 0, addressErrors: [] }),
 	shouldSkipOfflinePeer: vi.fn().mockReturnValue(false),
 }));
 
@@ -434,7 +432,7 @@ describe("syncDaemonTick", () => {
 	});
 
 	it("skips peers with expired coordinator presence", async () => {
-		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
 		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
 		const now = new Date().toISOString();
 		db.prepare(
@@ -455,7 +453,7 @@ describe("syncDaemonTick", () => {
 	});
 
 	it("skips only the matching stale pinned coordinator identity", async () => {
-		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
 		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
 		const now = new Date().toISOString();
 		db.prepare(
@@ -476,7 +474,7 @@ describe("syncDaemonTick", () => {
 	});
 
 	it("syncs all peers when stalePeers set is empty", async () => {
-		const { runSyncPass, shouldSkipOfflinePeer } = await import("./sync-pass.js");
+		const { shouldSkipOfflinePeer } = await import("./sync-pass.js");
 		vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
 		const now = new Date().toISOString();
 		db.prepare(
@@ -490,7 +488,6 @@ describe("syncDaemonTick", () => {
 	});
 
 	it("threads syncOpsLimit from coordinator config into runSyncPass", async () => {
-		const { runSyncPass } = await import("./sync-pass.js");
 		const { readCoordinatorSyncConfig } = await import("./coordinator-runtime.js");
 		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
 			syncOpsLimit: 750,
@@ -518,7 +515,6 @@ describe("syncDaemonTick", () => {
 		// "[codemem] sync apply running without explicit scanner" when no
 		// scanner is supplied; serve.ts now passes store.scanner through
 		// runSyncDaemon → runTickOnce → syncDaemonTick → runSyncPass.
-		const { runSyncPass } = await import("./sync-pass.js");
 		const now = new Date().toISOString();
 		db.prepare(
 			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
@@ -779,7 +775,6 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 	});
 
 	it("threads CODEMEM_KEYS_DIR through one-off ticks when keysDir is omitted", async () => {
-		const { runSyncPass } = await import("./sync-pass.js");
 		const tempDir = mkdtempSync(join(tmpdir(), "codemem-sync-daemon-env-keys-"));
 		const keysDir = join(tempDir, "keys");
 		process.env.CODEMEM_KEYS_DIR = keysDir;
@@ -875,7 +870,6 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 			registerCoordinatorPresence,
 		} = await import("./coordinator-runtime.js");
 		const { refreshConfiguredScopeMembershipCache } = await import("./scope-membership-cache.js");
-		const { runSyncPass } = await import("./sync-pass.js");
 		const order: string[] = [];
 		vi.mocked(coordinatorEnabled).mockReturnValue(true);
 		vi.mocked(registerCoordinatorPresence).mockImplementation(async () => {
@@ -930,7 +924,6 @@ describe("refreshCoordinatorPresenceForDaemon", () => {
 
 	it("records maintenance failure and continues normal peer sync", async () => {
 		const { coordinatorEnabled } = await import("./coordinator-runtime.js");
-		const { runSyncPass } = await import("./sync-pass.js");
 		vi.mocked(coordinatorEnabled).mockReturnValue(false);
 		vi.mocked(runSyncPass).mockResolvedValue({
 			ok: true,

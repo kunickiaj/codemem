@@ -12,7 +12,7 @@ import {
 	relayDeadline,
 } from "../../core/src/relay-peer-client-test-fixtures.js";
 import { refreshTestScopeRows } from "../../core/src/scope-membership-cache-test-fixtures.js";
-import { runSyncPass } from "../../core/src/sync-pass.js";
+import { runSyncPass } from "../../core/src/sync-orchestration.js";
 import { createViewerRelayReachability } from "./relay-reachability.js";
 import {
 	COORDINATOR,
