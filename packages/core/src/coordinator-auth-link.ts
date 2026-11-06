@@ -55,6 +55,7 @@ import {
 import {
 	AUTH_LINK_HEADLESS_MARKER,
 	AUTH_LINK_HEADLESS_MARKER_SQL,
+	type CoordinatorAuthLinkBrowserMode,
 	type CoordinatorAuthLinkHeadlessApproval,
 	type CoordinatorAuthLinkHeadlessApprovalInput,
 	type CoordinatorAuthLinkHeadlessCreateInput,
@@ -1174,6 +1175,29 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		});
 		if (!row || !configMatches(row, c) || !requesterMatches(row, r)) return null;
 		return status(row, now);
+	}
+	/**
+	 * The attempt's mode for the browser transaction that holds it, so browser
+	 * pages pick the right consent; null when that transaction holds no attempt.
+	 * Mode-bound writes still refuse the other mode on their own.
+	 */
+	async readAuthLinkBrowserMode(
+		input: CoordinatorAuthLinkClaimInput,
+		config: CoordinatorAuthLinkConfig,
+	): Promise<CoordinatorAuthLinkBrowserMode | null> {
+		const c = captureConfig(config);
+		const i = this.browserInput(input);
+		if (!c?.enabled || !i) return null;
+		const row = await this.first<{ loopback_redirect: string; display_name: string | null }>({
+			sql: `SELECT a.loopback_redirect, d.display_name FROM coordinator_auth_link_attempts a
+ LEFT JOIN enrolled_devices d ON d.group_id = a.group_id AND d.device_id = a.device_id
+ WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.browser_transaction_hash = ?`,
+			values: [c.coordinatorId, i.attemptId, i.browserTransactionHash],
+		});
+		if (!row) return null;
+		if (row.loopback_redirect !== AUTH_LINK_HEADLESS_MARKER) return { mode: "desktop" };
+		const name = typeof row.display_name === "string" ? row.display_name.trim() : "";
+		return { mode: "headless", deviceName: name || null };
 	}
 	/** The confirmed account for the signing device to approve; null for any other state or mode. */
 	async readHeadlessAuthLinkApproval(

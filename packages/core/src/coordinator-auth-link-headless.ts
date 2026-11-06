@@ -30,6 +30,10 @@ export interface CoordinatorAuthLinkHeadlessApproval {
 	email: string | null;
 	emailVerified: boolean | null;
 }
+/** Which ceremony a browser-bound attempt belongs to; headless consent also names the device. */
+export type CoordinatorAuthLinkBrowserMode =
+	| { mode: "desktop" }
+	| { mode: "headless"; deviceName: string | null };
 export interface CoordinatorAuthHeadlessBrowserStartInput {
 	userCodeHash: string;
 	stateHash: string;

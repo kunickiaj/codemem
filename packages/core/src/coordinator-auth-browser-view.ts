@@ -277,7 +277,7 @@ function capture(input: unknown): {
 	}
 }
 
-function profileMarkup(profile: CoordinatorAccountProfileView): string {
+export function profileMarkup(profile: CoordinatorAccountProfileView): string {
 	let image = "";
 	if (profile.pictureUrl)
 		image = `<img src="${escapeHtml(profile.pictureUrl)}" alt="" referrerpolicy="no-referrer" loading="lazy" decoding="async">`;
@@ -287,11 +287,11 @@ function profileMarkup(profile: CoordinatorAccountProfileView): string {
 	return `<section class="profile" aria-label="Account profile"><span class="avatar"><span class="initials" aria-hidden="true">${escapeHtml(profile.initials)}</span>${image}</span><div class="profile-text"><h2>${escapeHtml(profile.title)}</h2>${details}</div></section>`;
 }
 
-function entityMarkup(value: CoordinatorAuthBrowserEntity, heading: string): string {
+export function entityMarkup(value: CoordinatorAuthBrowserEntity, heading: string): string {
 	return `<dt>${escapeHtml(heading)}</dt><dd>${escapeHtml(value.label ?? heading)}<br><code>${escapeHtml(value.id)}</code></dd>`;
 }
 
-function form(
+export function form(
 	action: string,
 	csrf: string,
 	label: string,

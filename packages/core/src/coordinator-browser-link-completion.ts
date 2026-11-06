@@ -9,6 +9,8 @@ import {
 	renderAuthLinkCompletionPage,
 } from "./coordinator-auth-browser-view.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import { renderHeadlessReturnPage } from "./coordinator-auth-headless-view.js";
+import type { AuthLinkOperations } from "./coordinator-auth-link.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import type { CoordinatorAuthSessionStore } from "./coordinator-auth-session-contract.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
@@ -31,7 +33,9 @@ type CompletionStore = Pick<
 		| "readAuthSession"
 		| "redeemAuthLinkSessionWithBrowserTransaction"
 		| "preserveAuthLinkSessionCompletion"
-	>;
+	> &
+	// Optional for desktop-only stores; the session SQL refuses headless attempts regardless.
+	Partial<Pick<AuthLinkOperations, "readAuthLinkBrowserMode">>;
 export interface CoordinatorBrowserLinkCompletionInput {
 	config?: CoordinatorAuthBrowserConfig;
 	csrfKey: BrowserCsrfKey;
@@ -115,6 +119,7 @@ async function notice(
 		);
 	}
 }
+const HEADLESS_APPROVED_STATES = new Set(["confirmed", "finalized", "session_redeemed"]);
 function pageAttempt(url: URL): string | null {
 	const entries = [...url.searchParams];
 	const entry = entries[0];
@@ -136,7 +141,11 @@ async function boundStatus(context: Context, attemptId: string, binderHash: stri
 		context.config,
 	);
 	if (status === null) return null;
-	return { browserTransactionHash, state: status.state };
+	const mode = await context.store.readAuthLinkBrowserMode?.(
+		{ attemptId, browserTransactionHash },
+		context.config,
+	);
+	return { browserTransactionHash, state: status.state, headless: mode?.mode === "headless" };
 }
 async function page(
 	context: Context,
@@ -160,6 +169,13 @@ async function page(
 		const cookie = await readBrowserCookie(snapshot.cookie, "transaction");
 		if (cookie.kind !== "present") return await notice(403, "cookie_invalid");
 		const status = await boundStatus(context, attemptId, cookie.cookieHash);
+		// A headless link finishes on the device; this browser never gets a session for it.
+		// Before approval it gets the same refusal desktop shows for unconfirmed attempts.
+		if (status?.headless) {
+			if (!HEADLESS_APPROVED_STATES.has(status.state))
+				return await notice(403, "completion_rejected");
+			return result(pageResponse(await renderHeadlessReturnPage()), "waiting");
+		}
 		if (status?.state === "confirmed")
 			return result(
 				pageResponse(await renderAuthLinkCompletionPage({ attemptId, state: "waiting" })),
@@ -270,7 +286,8 @@ async function complete(
 			return await notice(403, "cookie_invalid");
 		const status = await boundStatus(context, guard.attemptId, guard.cookieHash);
 		// Even preserving an existing session requires independent device-finalized proof.
-		if (status?.state !== "finalized") return await notice(403, "completion_rejected");
+		if (status?.state !== "finalized" || status.headless)
+			return await notice(403, "completion_rejected");
 		return await finishSession(
 			context,
 			snapshot.cookie,
@@ -303,6 +320,7 @@ export function createCoordinatorBrowserLinkCompletionHandlers(
 		preserveAuthLinkSessionCompletion: receiver.preserveAuthLinkSessionCompletion.bind(receiver),
 		redeemAuthLinkSessionWithBrowserTransaction:
 			receiver.redeemAuthLinkSessionWithBrowserTransaction.bind(receiver),
+		readAuthLinkBrowserMode: receiver.readAuthLinkBrowserMode?.bind(receiver),
 	});
 	const publicOrigin = new URL(config.redirectUri).origin;
 	const context: Context = Object.freeze({

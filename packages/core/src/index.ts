@@ -148,6 +148,7 @@ export type {
 	CoordinatorControllerReviewStore,
 } from "./coordinator-auth-controller-review-route.js";
 export { registerCoordinatorAuthControllerReviewRoutes } from "./coordinator-auth-controller-review-route.js";
+export { formatShortKeyFingerprint } from "./coordinator-auth-key-fingerprint.js";
 export {
 	AUTH_LINK_AUTHORITY_CUTOVER_SQL,
 	AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS,

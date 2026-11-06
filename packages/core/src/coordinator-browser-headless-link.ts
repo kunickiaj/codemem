@@ -189,6 +189,13 @@ async function startWithCode(
 	} catch {
 		return notice(503);
 	}
+	// Build the page and cookies before the single-use claim: a rendering failure afterwards
+	// would spend the code without giving this browser its transaction cookie.
+	const response = pageResponse(
+		await renderAuthSigninContinuePage({ authorizationUrl: authorization.authorizationUrl }),
+	);
+	response.headers.append("Set-Cookie", reissueStartCookieAsTransaction(start.secret));
+	response.headers.append("Set-Cookie", clearBrowserCookie("start"));
 	const started = await context.store.startHeadlessAuthLinkBrowserTransaction(
 		{
 			userCodeHash,
@@ -199,12 +206,8 @@ async function startWithCode(
 		},
 		context.storeConfig,
 	);
+	// Released only after the claim commits.
 	if (started.kind !== "started") return null;
-	const response = pageResponse(
-		await renderAuthSigninContinuePage({ authorizationUrl: authorization.authorizationUrl }),
-	);
-	response.headers.append("Set-Cookie", reissueStartCookieAsTransaction(start.secret));
-	response.headers.append("Set-Cookie", clearBrowserCookie("start"));
 	return response;
 }
 
