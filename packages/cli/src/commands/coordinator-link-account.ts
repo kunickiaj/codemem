@@ -4,6 +4,7 @@ import {
 	CoordinatorAccountLinkError,
 	type CoordinatorAccountLinkStatusRead,
 	linkCoordinatorAccount,
+	linkCoordinatorAccountHeadless,
 	normalizeCoordinatorAccountLinkOrigin,
 	readAccountLinkDevice,
 	readCodememConfigFile,
@@ -12,7 +13,7 @@ import {
 	readCoordinatorSyncConfig,
 	resolveDbPath,
 } from "@codemem/core";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import {
 	addConfigOption,
@@ -21,6 +22,11 @@ import {
 	emitJsonError,
 	resolveDbOpt,
 } from "../shared-options.js";
+import {
+	confirmHeadlessApproval,
+	showHeadlessCode,
+	showHeadlessState,
+} from "./coordinator-link-account-headless.js";
 
 interface Options {
 	db?: string;
@@ -29,6 +35,7 @@ interface Options {
 	json?: boolean;
 	coordinator?: string;
 	loopbackHost: string;
+	headless?: boolean;
 }
 function reportLinkFailure(error: unknown, coordinatorOrigin: string | null): void {
 	const message =
@@ -54,6 +61,15 @@ function showPrivateBrowserLink(privateUrl: string): void {
 	);
 	p.log.message(privateUrl, { output: process.stderr });
 }
+function requireHeadlessTerminal(): boolean {
+	if (process.stdin.isTTY && process.stderr.isTTY) return true;
+	p.log.error(
+		"Headless linking asks for confirmation in this terminal. Run it interactively, for example with `docker exec -it <container> codemem coordinator link-account <group> --headless`.",
+		{ output: process.stderr },
+	);
+	process.exitCode = 2;
+	return false;
+}
 function requireInteractive(options: Options): boolean {
 	if (options.json) {
 		emitJsonError(
@@ -63,6 +79,7 @@ function requireInteractive(options: Options): boolean {
 		);
 		return false;
 	}
+	if (options.headless) return requireHeadlessTerminal();
 	if (!process.stderr.isTTY) {
 		p.log.error(
 			"Account linking requires a terminal. Run this command interactively and keep the browser link private.",
@@ -136,6 +153,49 @@ function eligibleStatus(remote: CoordinatorAccountLinkStatusRead, identityId: st
 	if (status.identityId !== identityId) throw new CoordinatorAccountLinkError("identity_mismatch");
 	return status;
 }
+/** Starts the desktop or headless flow once the Identity is eligible. */
+async function startLink(
+	options: Options,
+	context: {
+		group: string;
+		selected: NonNullable<ReturnType<typeof readLinkConfiguration>>;
+		profile: ReturnType<typeof readLinkProfile>;
+		status: ReturnType<typeof eligibleStatus>;
+		signal: AbortSignal;
+	},
+): Promise<void> {
+	const { profile, status } = context;
+	const snapshot = JSON.stringify(profile);
+	const request = {
+		...profile,
+		groupId: context.group,
+		coordinatorUrl: context.selected.coordinatorUrl,
+		expectedAuthority: status.authority,
+		expectedCoordinatorId: status.coordinatorId,
+		assertCurrentContext: () => profileMatches(options, snapshot),
+		signal: context.signal,
+	};
+	if (options.headless) {
+		await linkCoordinatorAccountHeadless({
+			...request,
+			onCode: showHeadlessCode,
+			onState: showHeadlessState,
+			approve: (approval, prompt) =>
+				confirmHeadlessApproval(profile.expectedIdentityId, approval, prompt),
+		});
+		p.log.success("Linked.", { output: process.stderr });
+		return;
+	}
+	const result = await linkCoordinatorAccount({
+		...request,
+		loopbackHost: context.selected.loopbackHost,
+		onBrowserStart: showPrivateBrowserLink,
+	});
+	p.log.success(
+		`Coordinator account linked to coordinator Identity ${result.identityId}. Your local Identity has not changed.`,
+		{ output: process.stderr },
+	);
+}
 async function linkAccount(group: string, options: Options): Promise<void> {
 	if (!requireInteractive(options)) return;
 	const controller = new AbortController();
@@ -170,22 +230,7 @@ async function linkAccount(group: string, options: Options): Promise<void> {
 			});
 			return;
 		}
-		const snapshot = JSON.stringify(profile);
-		const result = await linkCoordinatorAccount({
-			...profile,
-			groupId: group,
-			coordinatorUrl,
-			expectedAuthority: status.authority,
-			expectedCoordinatorId: status.coordinatorId,
-			assertCurrentContext: () => profileMatches(options, snapshot),
-			loopbackHost: selected.loopbackHost,
-			signal: controller.signal,
-			onBrowserStart: showPrivateBrowserLink,
-		});
-		p.log.success(
-			`Coordinator account linked to coordinator Identity ${result.identityId}. Your local Identity has not changed.`,
-			{ output: process.stderr },
-		);
+		await startLink(options, { group, selected, profile, status, signal: controller.signal });
 	} catch (error) {
 		reportLinkFailure(error, coordinatorOrigin);
 		process.exitCode = 1;
@@ -200,7 +245,13 @@ export function buildCoordinatorLinkAccountCommand(): Command {
 		.description("Link a coordinator account to your existing Identity")
 		.argument("<group>", "group id")
 		.option("-u, --coordinator <url>", "coordinator HTTPS origin (defaults to saved config)")
-		.option("-l, --loopback-host <host>", "literal loopback host", "127.0.0.1");
+		.option("-l, --loopback-host <host>", "literal loopback host", "127.0.0.1")
+		.addOption(
+			new Option(
+				"-H, --headless",
+				"link from a device without a browser: enter a code on another computer",
+			).conflicts("loopbackHost"),
+		);
 	addDbOption(command);
 	addConfigOption(command);
 	addJsonOption(command);

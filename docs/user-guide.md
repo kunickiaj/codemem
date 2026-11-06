@@ -480,7 +480,7 @@ To link an account:
 
 The card starts Google sign-in only when you choose **Link Google account**. Do not paste a private sign-in link into another browser or computer.
 
-The Viewer and browser must run on the same computer. Account linking requires the Viewer to bind to `localhost`, `127.0.0.1`, or `::1`; wildcard bindings do not expose the account API. An SSH tunnel can show Viewer status on another computer, but its loopback callback reaches that other computer, so linking is unsupported there. Do not copy private sign-in links or use an SSH workaround.
+The Viewer and browser must run on the same computer. Account linking requires the Viewer to bind to `localhost`, `127.0.0.1`, or `::1`; wildcard bindings do not expose the account API. An SSH tunnel can show Viewer status on another computer, but its loopback callback reaches that other computer, so Viewer linking does not work there. Do not copy private sign-in links. To link a device that has no browser, such as a server reached over SSH or a NAS container, use [headless linking](#link-a-device-without-a-browser) instead.
 
 The coordinator must support the signed account-status endpoint and have Google browser authentication enabled. A self-hosted operator performs any required coordinator upgrade and deployment separately; this client flow does not change coordinator schema. An older coordinator that returns unsupported is not asking for Google; the card cannot start linking against it. An unavailable or unknown status does not mean the Identity is unlinked—check status again.
 
@@ -507,6 +507,38 @@ Use **Cancel linking** to ask to stop an in-progress request. Status updates con
 If the Viewer configuration changes during an attempt, **Cancel previous link** requests cancellation for the original Identity; it does not attach that attempt to the newly displayed Identity. Transient status failures retry until the attempt's deadline without reopening sign-in. After that deadline, use the available cancellation and status controls to check the outcome.
 
 Returning to the tab or refreshing resumes an in-progress operation. Restarting the Viewer loses its in-memory operation, but **Check status** still reads the signed coordinator result. The linking request has a ten-minute deadline. Local capture, reading, and direct sync continue without Google, and this optional link does not add a required-auth policy.
+
+### Link a device without a browser
+
+A device with no browser, such as a NAS, a Docker container, or a server you reach over SSH, can link its existing Identity with a short code that you enter on any other computer. The coordinator must have migration 0043 applied; otherwise the command reports that the coordinator does not support headless linking and that its operator needs to apply migration 0043 and deploy.
+
+Run the command in an interactive terminal on that device. In a container, use `docker exec -it` so the command can prompt you:
+
+```fish
+docker exec -it <container> codemem coordinator link-account <group> --headless
+```
+
+On a host you reach over SSH, run `codemem coordinator link-account <group> --headless` in the SSH session. The command refuses to run without a terminal on both stdin and stderr, and it does not support `--json`. `--headless` cannot be combined with `--loopback-host`, and the command never switches to headless mode by itself.
+
+The terminal shows:
+
+```text
+On any computer, open https://coordinator.example.com/auth/link/device and enter code:  BCDF-GHJK
+This device: <device-id>  ·  key SHA256:1a2b3c4d...5e6f7a8b
+The code expires at 3:42 PM PST.
+```
+
+In the browser, enter the code and sign in with Google. The browser then shows the Google account, the Identity and group the link applies to, and the device key fingerprint. Continue only if you started the command yourself within the last ten minutes and the fingerprint matches the terminal. The browser gets no Codemem session from this flow. It tells you to return to the terminal.
+
+Back on the device, the terminal names the account that approved the link, for example `Approved in the browser by ada@example.com (verified by Google)`, and asks `Link Identity <id> to this Google account? (y/N)`. If Google shared no email, the terminal shows the account's display name, or "an account with no email", and you must type `link` to continue. Any other answer, Ctrl-C, or reaching the code's expiry cancels the request. The command prints `Linked.` when the coordinator confirms the link.
+
+While it waits, the command polls the coordinator no more often than the coordinator asks, slows down when the coordinator rate-limits it, and backs off when the network fails. The same Identity checks as the desktop command apply: an Identity that is already linked is left alone, and conflicts, revoked links, and required reviews stop the command with the usual messages.
+
+A Google account linked this way cannot be used to move another device into its Identity with **Sign in with Google**, or to enroll a new device as its owner. The browser says "Link this account from a browser first." This limits the damage if someone tricks a person into approving their device's code.
+
+If you linked your own device this way and later want to move or enroll devices into that Identity, link the account once from a browser. On a device that already runs as that Identity and has a browser, disconnect the account (**Unlink Google account** in the Viewer), then choose **Link Google account** on that same desktop. Refreshing the profile keeps the headless link and does not clear the block.
+
+If you approved a code that you did not start yourself, your Google account is now linked to someone else's Identity. Do not use that account to sign in or move devices, and contact your coordinator operator. You cannot unlink it yourself, because only a device in that other Identity can disconnect it, and the coordinator does not let the same Google account link to a different Identity later. Moving the account to another Identity has no self-service path.
 
 ### Sign in with Google on a device
 
