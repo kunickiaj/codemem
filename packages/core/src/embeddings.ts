@@ -234,6 +234,22 @@ let _clientRequest: Required<EmbeddingRuntimeRequest> | undefined;
 let _clientGeneration = 0;
 let _runtimeWarningEmitted = false;
 let _runtimeStatus: EmbeddingRuntimeStatus = { state: "uninitialized" };
+// A failed runtime load can be transient, for example while another process is
+// still downloading the model. Long-running processes retry with backoff
+// instead of keeping semantic search off until restart.
+const RUNTIME_RETRY_BASE_MS = 30_000;
+const RUNTIME_RETRY_MAX_MS = 10 * 60_000;
+let _runtimeRetry: { failures: number; notBefore: number } | undefined;
+
+function scheduleRuntimeRetry(): void {
+	const failures = (_runtimeRetry?.failures ?? 0) + 1;
+	const delay = Math.min(RUNTIME_RETRY_BASE_MS * 2 ** (failures - 1), RUNTIME_RETRY_MAX_MS);
+	_runtimeRetry = { failures, notBefore: Date.now() + delay };
+}
+
+function isRuntimeRetryDue(): boolean {
+	return _runtimeRetry !== undefined && Date.now() >= _runtimeRetry.notBefore;
+}
 
 const defaultEmbeddingRuntimeFactory: EmbeddingRuntimeFactory = async (request) => {
 	const { createEmbeddingRuntime } = await import("@codemem/embeddings");
@@ -254,6 +270,7 @@ export function _resetEmbeddingClient(): void {
 	_clientRequest = undefined;
 	_clientGeneration++;
 	_runtimeStatus = { state: "uninitialized" };
+	_runtimeRetry = undefined;
 }
 
 /** Override the embedding runtime factory (for tests). */
@@ -309,6 +326,9 @@ function recordEmbeddingRuntimeClient(client: EmbeddingClient | null): void {
 	_client = client;
 	if (client) {
 		_runtimeStatus = { state: "ready" };
+		if (_runtimeRetry)
+			console.warn("Semantic search is available after the embedding runtime loaded.");
+		_runtimeRetry = undefined;
 		return;
 	}
 	_runtimeStatus = { state: "unavailable", reason: "no_client" };
@@ -332,10 +352,13 @@ async function createEmbeddingClient(
 		// A stale creation failure must not force current-generation waiters to null.
 		if (generation !== _clientGeneration) return getEmbeddingClient();
 		_client = null;
+		const missingPackage = isMissingEmbeddingRuntimePackage(error);
 		_runtimeStatus = {
 			state: "unavailable",
-			reason: isMissingEmbeddingRuntimePackage(error) ? "missing_package" : "initialization_failed",
+			reason: missingPackage ? "missing_package" : "initialization_failed",
 		};
+		// Installing the package requires a restart, so only load failures retry.
+		if (!missingPackage) scheduleRuntimeRetry();
 		warnEmbeddingRuntimeUnavailable(error);
 		return null;
 	} finally {
@@ -546,6 +569,7 @@ export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
 	const request = { model, revision };
 	const requestMatches =
 		_clientRequest?.model === request.model && _clientRequest.revision === request.revision;
+	if (_client === null && requestMatches && isRuntimeRetryDue()) _client = undefined;
 	if (_client !== undefined && requestMatches) return _client;
 	if (_clientPromise && requestMatches) return _clientPromise;
 	if (_client !== undefined || _clientPromise) {
@@ -553,6 +577,8 @@ export async function getEmbeddingClient(): Promise<EmbeddingClient | null> {
 		_client = undefined;
 		_clientPromise = undefined;
 	}
+	// A different model or revision starts with a fresh retry schedule.
+	if (!requestMatches) _runtimeRetry = undefined;
 	_clientRequest = request;
 	const generation = _clientGeneration;
 	_clientPromise = createEmbeddingClient(model, revision, generation);
