@@ -2,9 +2,37 @@
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-06
+
+### Added
+
+- **Relay sync.** When two devices cannot reach each other directly, sync goes through an encrypted relay hosted by the coordinator. Each pass tries a direct connection first and uses the relay only when that fails. Sync returns to direct on its own once the direct path works again. The relay sees only ciphertext and frame sizes, and it stores nothing: a peer that is offline is unreachable until it comes back. Relay is on for every device whose coordinator offers it. To turn it off on one device, set `sync_relay_enabled: false` (or `CODEMEM_SYNC_RELAY_ENABLED=0`) and restart `codemem serve`. Self-hosted Cloudflare coordinators enable it per group; see [Relay](docs/relay.md). ([#2480], [#2482], [#2483], [#2484], [#2485], [#2487], [#2492], [#2494], [#2498], [#2500], [#2502], [#2505], [#2506], [#2507], [#2508], [#2510], [#2512], [#2513], [#2515], [#2520], [#2523], [#2529], [#2532], [#2535], [#2536], [#2543], [#2544], [#2545], [#2546], [#2547], [#2557])
+- `codemem sync relay-keys` lists and approves the relay service key that each coordinator advertises. ([#2514])
+- **Headless account linking.** `codemem coordinator link-account <group> --headless` links a device with no browser, such as a container or a server reached over SSH, to a Google account. The terminal shows a URL and code, waits while someone approves in a browser, then asks for confirmation before linking. Devices cannot be moved or enrolled into a headless-linked account. See [Link a device without a browser](docs/user-guide.md#link-a-device-without-a-browser). ([#2572], [#2574], [#2575])
+- **OpenCode memory tools in the plugin.** The OpenCode plugin can register `codemem_memory_*` tools itself, behind a flag, so a thin host no longer needs the per-project MCP entry. Once the tools are on, setup stops installing that entry. ([#2503], [#2504], [#2517], [#2521], [#2524], [#2527], [#2533])
+- The Viewer's sync activity shows send health and receive health separately, with the evidence behind each. ([#2475], [#2476], [#2477], [#2481])
+
 ### Changed
 
-- **Breaking:** `@codemem/pi-extension` now declares Pi `>=1.1.0 <2`; upgrade an older host with `pi update` before installing. Native tools remain the setup default (15 `memory_*` tools), and the explicit `native` / `mcp-adapter` modes are unchanged. See [Pi host compatibility](docs/versioning.md#pi-host-compatibility).
+- **Breaking:** `@codemem/pi-extension` now declares Pi `>=1.1.0 <2`; upgrade an older host with `pi update` before installing. Native tools remain the setup default (15 `memory_*` tools), and the explicit `native` / `mcp-adapter` modes are unchanged. See [Pi host compatibility](docs/versioning.md#pi-host-compatibility). ([#2438])
+- Sync pull and snapshot pages are capped at 1 MiB so they fit through the relay route. ([#2520])
+- The shared Viewer keeps running, and every OpenCode project that uses it checks its health. ([#2518])
+- Downloaded embedding models are stored in `~/.codemem/models`. A model load that fails is retried. ([#2561], [#2562])
+
+### Fixed
+
+- Hosted Gemini OAuth callbacks are accepted, including web user-bound ones. ([#2519], [#2548])
+- Raw-event capture serializes flush claims per stream and persists their generations, so concurrent flushes no longer lose or duplicate work. ([#2555], [#2556], [#2565], [#2567])
+- Sync keeps a receive failure visible until every scope has been checked. ([#2573])
+- Vector catch-up maintenance keeps moving and reports worker errors. ([#2576])
+- Maintenance releases can be cut from an isolated release line. ([#2530])
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent host after upgrading packages so the new backend loads.
+- Self-hosted Cloudflare coordinators must apply migration `0043` before deploying this Worker; headless linking needs it. Coordinators that want relay must also apply `0041` and `0042`, set the relay secrets, deploy, and then run the relay admission setup for each group. A coordinator that skips the relay steps keeps working and its devices stay on direct sync. See [the deployment guide](docs/cloudflare-coordinator-deployment.md).
+- Relay works between two devices on 0.48. A 0.48 device syncs directly with 0.47 peers and does not try to relay to them.
+- Coordinator-assisted NAT traversal (hole punching) is not in this release.
 
 ## [0.47.3] - 2026-10-28
 
@@ -232,7 +260,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.47.3...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.48.0...HEAD
+[0.48.0]: https://github.com/kunickiaj/codemem/compare/v0.47.3...v0.48.0
 [0.47.3]: https://github.com/kunickiaj/codemem/compare/v0.47.2...v0.47.3
 [0.47.2]: https://github.com/kunickiaj/codemem/compare/v0.47.1...v0.47.2
 [0.47.1]: https://github.com/kunickiaj/codemem/compare/v0.47.0...v0.47.1
@@ -243,6 +272,65 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [0.46.2]: https://github.com/kunickiaj/codemem/compare/v0.46.1...v0.46.2
 [0.46.1]: https://github.com/kunickiaj/codemem/compare/v0.46.0...v0.46.1
 [0.46.0]: https://github.com/kunickiaj/codemem/compare/v0.45.0...v0.46.0
+[#2438]: https://github.com/kunickiaj/codemem/pull/2438
+[#2475]: https://github.com/kunickiaj/codemem/pull/2475
+[#2476]: https://github.com/kunickiaj/codemem/pull/2476
+[#2477]: https://github.com/kunickiaj/codemem/pull/2477
+[#2480]: https://github.com/kunickiaj/codemem/pull/2480
+[#2481]: https://github.com/kunickiaj/codemem/pull/2481
+[#2482]: https://github.com/kunickiaj/codemem/pull/2482
+[#2483]: https://github.com/kunickiaj/codemem/pull/2483
+[#2484]: https://github.com/kunickiaj/codemem/pull/2484
+[#2485]: https://github.com/kunickiaj/codemem/pull/2485
+[#2487]: https://github.com/kunickiaj/codemem/pull/2487
+[#2492]: https://github.com/kunickiaj/codemem/pull/2492
+[#2494]: https://github.com/kunickiaj/codemem/pull/2494
+[#2498]: https://github.com/kunickiaj/codemem/pull/2498
+[#2500]: https://github.com/kunickiaj/codemem/pull/2500
+[#2502]: https://github.com/kunickiaj/codemem/pull/2502
+[#2503]: https://github.com/kunickiaj/codemem/pull/2503
+[#2504]: https://github.com/kunickiaj/codemem/pull/2504
+[#2505]: https://github.com/kunickiaj/codemem/pull/2505
+[#2506]: https://github.com/kunickiaj/codemem/pull/2506
+[#2507]: https://github.com/kunickiaj/codemem/pull/2507
+[#2508]: https://github.com/kunickiaj/codemem/pull/2508
+[#2510]: https://github.com/kunickiaj/codemem/pull/2510
+[#2512]: https://github.com/kunickiaj/codemem/pull/2512
+[#2513]: https://github.com/kunickiaj/codemem/pull/2513
+[#2514]: https://github.com/kunickiaj/codemem/pull/2514
+[#2515]: https://github.com/kunickiaj/codemem/pull/2515
+[#2517]: https://github.com/kunickiaj/codemem/pull/2517
+[#2518]: https://github.com/kunickiaj/codemem/pull/2518
+[#2519]: https://github.com/kunickiaj/codemem/pull/2519
+[#2520]: https://github.com/kunickiaj/codemem/pull/2520
+[#2521]: https://github.com/kunickiaj/codemem/pull/2521
+[#2523]: https://github.com/kunickiaj/codemem/pull/2523
+[#2524]: https://github.com/kunickiaj/codemem/pull/2524
+[#2527]: https://github.com/kunickiaj/codemem/pull/2527
+[#2529]: https://github.com/kunickiaj/codemem/pull/2529
+[#2530]: https://github.com/kunickiaj/codemem/pull/2530
+[#2532]: https://github.com/kunickiaj/codemem/pull/2532
+[#2533]: https://github.com/kunickiaj/codemem/pull/2533
+[#2535]: https://github.com/kunickiaj/codemem/pull/2535
+[#2536]: https://github.com/kunickiaj/codemem/pull/2536
+[#2543]: https://github.com/kunickiaj/codemem/pull/2543
+[#2544]: https://github.com/kunickiaj/codemem/pull/2544
+[#2545]: https://github.com/kunickiaj/codemem/pull/2545
+[#2546]: https://github.com/kunickiaj/codemem/pull/2546
+[#2547]: https://github.com/kunickiaj/codemem/pull/2547
+[#2548]: https://github.com/kunickiaj/codemem/pull/2548
+[#2555]: https://github.com/kunickiaj/codemem/pull/2555
+[#2556]: https://github.com/kunickiaj/codemem/pull/2556
+[#2557]: https://github.com/kunickiaj/codemem/pull/2557
+[#2561]: https://github.com/kunickiaj/codemem/pull/2561
+[#2562]: https://github.com/kunickiaj/codemem/pull/2562
+[#2565]: https://github.com/kunickiaj/codemem/pull/2565
+[#2567]: https://github.com/kunickiaj/codemem/pull/2567
+[#2572]: https://github.com/kunickiaj/codemem/pull/2572
+[#2573]: https://github.com/kunickiaj/codemem/pull/2573
+[#2574]: https://github.com/kunickiaj/codemem/pull/2574
+[#2575]: https://github.com/kunickiaj/codemem/pull/2575
+[#2576]: https://github.com/kunickiaj/codemem/pull/2576
 [#1746]: https://github.com/kunickiaj/codemem/pull/1746
 [#1770]: https://github.com/kunickiaj/codemem/pull/1770
 [#1773]: https://github.com/kunickiaj/codemem/pull/1773
