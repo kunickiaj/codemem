@@ -18,6 +18,8 @@ import {
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
 	captureDeviceClaimEligibility,
 } from "./coordinator-auth-device-claim-eligibility.js";
+import { headlessLinkProvenanceStatement } from "./coordinator-auth-headless-provenance.js";
+import { hasHeadlessLinkProvenance } from "./coordinator-auth-headless-schema.js";
 import { readAuthLinkAttemptAuthority } from "./coordinator-auth-link-authority.js";
 import {
 	AUTH_LINK_ATTEMPT_TTL_MS,
@@ -1312,6 +1314,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		]);
 		const account = c && parseCoordinatorAccountReference(approved, { issuer: c.issuer });
 		if (!account?.ok) return rejected("invalid_input");
+		// Fail closed: a headless link is never written without its provenance row.
+		if (!(await hasHeadlessLinkProvenance(this.backend))) return rejected("attempt_unavailable");
 		return this.finalizeWithMode(input, config, { kind: "headless", ...account.account });
 	}
 	private async finalizeWithMode(
@@ -1349,6 +1353,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				...(connections ? connectionSuccessorStatements(c.coordinatorId, i.attemptId, linkId) : []),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
 				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),
+				...provenanceStatements(i, c, linkId),
 			]);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("link_conflict");
@@ -1389,6 +1394,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				...(connections ? connectionSuccessorStatements(c.coordinatorId, i.attemptId, linkId) : []),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
 				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),
+				...provenanceStatements(i, c, linkId),
 			]);
 		} catch (error) {
 			if (
@@ -1519,6 +1525,15 @@ function deviceFinalizeStatements(
 }
 type FinalizeMode = { kind: "desktop" } | { kind: "headless"; issuer: string; subject: string };
 type FinalizeRequest = CoordinatorAuthLinkFinalizeInput & { mode: FinalizeMode };
+/** Written in the winning finalize batch, so a headless link and its provenance commit together. */
+function provenanceStatements(
+	i: FinalizeRequest,
+	c: CoordinatorAuthLinkConfig,
+	linkId: string,
+): AuthLinkStatement[] {
+	if (i.mode.kind !== "headless") return [];
+	return [headlessLinkProvenanceStatement(c.coordinatorId, i.attemptId, linkId)];
+}
 function finalizeModeGuard(mode: FinalizeMode): AuthLinkStatement {
 	const t = "coordinator_auth_link_attempts";
 	if (mode.kind === "desktop") return { sql: `${t}.${DESKTOP_MODE_SQL}`, values: [] };

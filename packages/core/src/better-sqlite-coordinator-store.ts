@@ -82,6 +82,10 @@ import {
 import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import {
+	HEADLESS_LINK_SCHEMA_SQL,
+	readHeadlessLinkBackend,
+} from "./coordinator-auth-headless-schema.js";
+import {
 	type AuthLinkBackend,
 	AuthLinkOperations,
 	type AuthLinkStatement,
@@ -669,6 +673,8 @@ function initializeSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
 	initializeDeviceLedgerSchemas(db);
 	initializeOptionalAuthSchema(db);
+	// Additive headless-link tables; independent of the optional auth schema state.
+	db.exec(HEADLESS_LINK_SCHEMA_SQL);
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS groups (
 			group_id TEXT PRIMARY KEY,
@@ -1050,6 +1056,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	/** ADR 0005 Section 8 rebind storage; null before its tables exist. */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
 		return readDeviceRebindBackend(this.schemaBackend);
+	}
+	/** Headless account-linking storage; null unless both of its tables exist. */
+	readHeadlessLinkBackend(): Promise<AuthLinkBackend | null> {
+		return readHeadlessLinkBackend(this.schemaBackend);
 	}
 	/** Explicit capability: legacy V2 remains usable without enabling management. */
 	async getAccountChanges(): Promise<AccountChangeOperations> {

@@ -70,6 +70,7 @@ it("classifies every repository migration without replaying auth or excluded own
 		"0037_add_legacy_owner_resolutions.sql",
 		"0038_add_device_rebind.sql",
 		"0040_allow_device_self_bind.sql",
+		"0043_add_headless_account_linking.sql",
 	];
 	const excludedRelayAdmission = [
 		"0041_add_relay_admission_metadata.sql",

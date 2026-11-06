@@ -51,6 +51,7 @@ import {
 	captureControllerHistory,
 } from "./coordinator-auth-controller-history.js";
 import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
+import { readHeadlessLinkBackend } from "./coordinator-auth-headless-schema.js";
 import {
 	type AuthLinkBackend,
 	AuthLinkOperations,
@@ -1183,6 +1184,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	 */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
 		return readDeviceRebindBackend(createRawD1AuthLinkBackend(this.db));
+	}
+	/** Headless account-linking storage; null before migration 0043. */
+	readHeadlessLinkBackend(): Promise<AuthLinkBackend | null> {
+		return readHeadlessLinkBackend(createRawD1AuthLinkBackend(this.db));
 	}
 	async getAccountChanges(): Promise<AccountChangeOperations> {
 		await this.accountChangeBackend.first({ sql: "SELECT 1", values: [] });
