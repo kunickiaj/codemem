@@ -12,7 +12,8 @@ import {
 } from "./sync-channel-progress.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
-import { consecutiveConnectivityFailures, runSyncPass, type SyncPassOptions } from "./sync-pass.js";
+import { runSyncPass } from "./sync-orchestration.js";
+import { consecutiveConnectivityFailures, type SyncPassOptions } from "./sync-pass.js";
 import {
 	maintainSyncReachability,
 	runReachableSyncPass,

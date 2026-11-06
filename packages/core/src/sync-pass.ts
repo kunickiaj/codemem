@@ -377,7 +377,7 @@ function reconcileReceivedRowsForExchange(
 /**
  * Record a sync attempt in the sync_attempts table.
  */
-function recordSyncAttempt(
+export function recordSyncAttempt(
 	db: Database,
 	peerDeviceId: string,
 	options: {
@@ -2226,57 +2226,6 @@ export async function syncOnce(
 	const prepared = prepareSyncExchange(db, peerDeviceId, options);
 	if (prepared.kind === "result") return prepared.result;
 	return tryPeerAddresses(prepared.context, prepared.cursors, addresses);
-}
-
-// ---------------------------------------------------------------------------
-// High-level entry point
-// ---------------------------------------------------------------------------
-
-/**
- * Run a sync pass with a peer, resolving addresses from the database.
- *
- * Loads peer addresses from the sync_peers table and delegates to syncOnce.
- */
-export async function runSyncPass(
-	db: Database,
-	peerDeviceId: string,
-	options?: SyncPassOptions,
-): Promise<SyncResult> {
-	// Load stored addresses for this peer
-	const d = drizzle(db, { schema });
-	const row = d
-		.select({ addresses_json: schema.syncPeers.addresses_json })
-		.from(schema.syncPeers)
-		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-		.get();
-
-	let addresses: string[] = [];
-	if (row?.addresses_json) {
-		try {
-			const parsed = JSON.parse(row.addresses_json);
-			if (Array.isArray(parsed)) {
-				addresses = parsed.filter((a): a is string => typeof a === "string");
-			}
-		} catch {
-			// Malformed JSON — proceed with empty addresses
-		}
-	}
-
-	if (!options?.reachability) return syncOnce(db, peerDeviceId, addresses, options);
-	const { runReachableSyncPass } = await import("./sync-reachability-pass.js");
-	let directRecord: Parameters<typeof recordSyncAttempt>[2] | undefined;
-	const result = await runReachableSyncPass(db, peerDeviceId, addresses, {
-		...options,
-		attemptRecorder: (_db, _peer, record) => {
-			directRecord = record;
-		},
-	});
-	const inheritsDirect =
-		result.transport === "direct" ||
-		(result.transport === "wait" && result.error === directRecord?.error);
-	const record = inheritsDirect && directRecord ? directRecord : result;
-	recordSyncAttempt(db, peerDeviceId, record);
-	return result;
 }
 
 // ---------------------------------------------------------------------------

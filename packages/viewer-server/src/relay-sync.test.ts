@@ -11,7 +11,7 @@ import {
 } from "../../core/src/relay-peer-client-test-fixtures.js";
 import { syncScopedChannelOnce } from "../../core/src/sync-channel-pass.js";
 import { getSyncChannelProgress } from "../../core/src/sync-channel-progress.js";
-import { runSyncPass } from "../../core/src/sync-pass.js";
+import { runSyncPass } from "../../core/src/sync-orchestration.js";
 import { getReplicationCursor, setReplicationCursor } from "../../core/src/sync-replication.js";
 import { readPeerSyncActivity } from "../../core/src/sync-transfer-activity.js";
 import { createSyncApp } from "./index.js";

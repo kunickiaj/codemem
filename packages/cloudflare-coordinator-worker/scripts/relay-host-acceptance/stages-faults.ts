@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { encodeRelayControl } from "../../../core/src/relay-control-codec.js";
 import type { RelayFaultFrame, RelayFaultRule } from "../../../core/src/relay-fault-proxy-test-fixtures.js";
-import { runSyncPass } from "../../../core/src/sync-pass.js";
+import { runSyncPass } from "../../../core/src/sync-orchestration.js";
 import { emit, GROUPS } from "./common.js";
 import { seedMemory, titles } from "./device.js";
 import { newRelay, pass, refreshAll, type StageContext, summary } from "./stages.js";
