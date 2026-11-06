@@ -1441,6 +1441,7 @@ export {
 	SYNC_CAPABILITY_HEADER,
 	SYNC_FEATURES,
 	SYNC_FEATURES_HEADER,
+	setLocalSyncFeature,
 	supportsSyncFeature,
 } from "./sync-capability.js";
 export type {

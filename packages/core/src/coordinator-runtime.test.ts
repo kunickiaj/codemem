@@ -1146,7 +1146,7 @@ describe("coordinatorStatusSnapshot", () => {
 			expect(lastPresenceAddresses).toEqual(["http://new.example.test:7337"]);
 			expect(lastPresenceCapabilities).toEqual({
 				sync_capability: "scoped",
-				sync_features: ["reassign_scope"],
+				sync_features: ["reassign_scope", "relay_aware"],
 			});
 			expect(fetchCount).toBeGreaterThan(secondFetchCount);
 			expect(presenceFetchCount).toBeGreaterThan(changedAdvertisePresenceFetchCount);

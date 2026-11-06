@@ -26,6 +26,7 @@ import {
 	LOCAL_SYNC_FEATURES,
 	negotiateSyncCapability,
 	normalizeSyncCapability,
+	normalizeSyncFeatures,
 	SYNC_AUTHORIZATION_REFRESH_HEADER,
 	SYNC_CAPABILITY_HEADER,
 	SYNC_FEATURES_HEADER,
@@ -119,6 +120,8 @@ export type SyncAttemptFailureCategory = SyncFailureCategory | "compatibility";
 export interface SyncResult {
 	ok: boolean;
 	transport?: "direct" | "traversal" | "relay" | "wait";
+	/** Why a `wait` result skipped relay on purpose. The direct attempt record stands alone. */
+	relaySkipped?: "relay_peer_unsupported" | "relay_backoff";
 	error?: string;
 	failureCategory?: SyncFailureCategory;
 	receiveFailureCode?: SyncTransferErrorCode;
@@ -329,12 +332,25 @@ function persistPeerRuntimeVersion(
 		matchingDevice && isStableReleaseVersion(statusPayload.runtime_version)
 			? statusPayload.runtime_version
 			: null;
+	// A status reply without the field is an older peer: store an empty list, which
+	// is a known answer, so relay fallback can tell "no relay" from "never seen".
+	const features = matchingDevice
+		? JSON.stringify(normalizeSyncFeatures(statusPayload.sync_features))
+		: null;
 	try {
 		db.prepare(
 			`UPDATE sync_peers
-			 SET runtime_version = ?, runtime_version_observed_at = ?
+			 SET runtime_version = ?, runtime_version_observed_at = ?,
+			     sync_features_json = COALESCE(?, sync_features_json),
+			     sync_features_observed_at = COALESCE(?, sync_features_observed_at)
 			 WHERE peer_device_id = ?`,
-		).run(runtimeVersion, runtimeVersion ? new Date().toISOString() : null, peerDeviceId);
+		).run(
+			runtimeVersion,
+			runtimeVersion ? new Date().toISOString() : null,
+			features,
+			features === null ? null : new Date().toISOString(),
+			peerDeviceId,
+		);
 	} catch {
 		// Informational metadata must never affect sync availability or trust.
 	}

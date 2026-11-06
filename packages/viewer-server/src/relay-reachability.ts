@@ -6,6 +6,7 @@ import {
 	type MemoryStore,
 	type RequestJsonExecutor,
 	readCoordinatorSyncConfig,
+	setLocalSyncFeature,
 } from "@codemem/core";
 import {
 	createRelayCoordinatorClient,
@@ -381,6 +382,8 @@ export function createViewerRelayReachability(
 	options: ViewerRelayReachabilityOptions,
 ): ViewerRelayReachability | null {
 	const targets = relayTargets(options);
+	// Peers that see this device only over direct sync learn whether relay can reach it.
+	setLocalSyncFeature("relay", targets !== null);
 	if (!targets) return null;
 	const resolved = { ...options, keysDir: resolveKeysDir(options.keysDir) };
 	const resolve =
