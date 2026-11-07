@@ -1040,6 +1040,24 @@ export async function callMemoryToolForHost(
 	return callCodememToolLocally(store, name, args, caller);
 }
 
+function foregroundAppOptions(
+	store: MemoryStore,
+	rawEventOptions: ReturnType<typeof startRawEventProcessing>["appOptions"],
+	options: {
+		accountLink: ReturnType<typeof createViewerAccountLink>;
+		relay: ServeRelay | null;
+		syncRuntimeStatus: ServeSyncRuntimeStatus;
+	},
+) {
+	return {
+		accountLink: options.accountLink.options,
+		storeFactory: () => store,
+		syncReachability: options.relay?.reachability,
+		...rawEventOptions,
+		getSyncRuntimeStatus: () => options.syncRuntimeStatus,
+	};
+}
+
 function createBoundApp(
 	createApp: typeof import("@codemem/server").createApp,
 	options: Parameters<typeof createApp>[0],
@@ -1129,12 +1147,11 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		detail: syncEnabled ? "Waiting for viewer startup to finish" : "Sync is disabled",
 	};
 
-	const appOpts = {
-		accountLink: accountLink.options,
-		storeFactory: () => store,
-		...rawEventProcessing.appOptions,
-		getSyncRuntimeStatus: () => syncRuntimeStatus,
-	};
+	const appOpts = foregroundAppOptions(store, rawEventProcessing.appOptions, {
+		accountLink,
+		relay,
+		syncRuntimeStatus,
+	});
 	const { app, setBoundAddress } = createBoundApp(createApp, appOpts, { invocation, accountLink });
 	const pidPath = pidFilePath(dbPath);
 	let maintenanceWorker: ChildProcess | null = null;

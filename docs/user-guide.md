@@ -748,6 +748,8 @@ An idle check can succeed with zero operations. Codemem retains operation and sn
 
 A receive error for one Space stays visible until a later sync pass checks every Space shared with that peer. A pass that stops early, such as after a failed send or a sync reset, does not clear it. A relay pass checks one Space at a time, so it clears connection errors but leaves apply and scope errors until a direct sync completes. A peer that you only reach through relay therefore keeps showing an apply or scope error even after relay retries that Space successfully.
 
+Failed connection probes do not replace the last completed result while sync tries other addresses or relay. If those attempts also fail, the completed pass reports the failure. **Sync now** uses the Viewer's existing relay connection when one is available, just like background sync.
+
 Sync starts as **Not verified** after an upgrade until Codemem observes the direction. Older history can also be unknown, so Devices leaves its time and counters unavailable instead of treating them as zero. A successful exchange with one peer does not hide another peer that is unknown, stale, or needs attention. An unpaired device does not show zeroes as though it had synced. If the status refresh fails, Devices hides stale counts and disables manual sync until a successful refresh. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
 
 | Sync check | Meaning | What to do |

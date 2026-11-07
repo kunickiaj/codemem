@@ -419,6 +419,17 @@ function failedResult(
 	return { ...result, ok: false, error: `${error}: ${reason}`, relayFailureReason: reason };
 }
 
+function failedPullResult(
+	options: ScopedChannelSyncOptions,
+	result: SyncScopeResult,
+): SyncScopeResult {
+	const errorCode =
+		result.receiveFailureCode ??
+		(result.failureCategory === "scope" ? "scope_rejected" : "exchange_failed");
+	recordSyncTransferObservation(options.db, options.peerDeviceId, "receive", { errorCode });
+	return failedResult(result, options.factory, "channel pull failed");
+}
+
 /** Internal, opt-in scoped exchange. Never discovers addresses or refreshes authorization. */
 export async function syncScopedChannelOnce(
 	options: ScopedChannelSyncOptions,
@@ -454,7 +465,7 @@ export async function syncScopedChannelOnce(
 			invalidateCompletedBoundary: () =>
 				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
 		});
-		if (!result.ok) return failedResult(result, options.factory, "channel pull failed");
+		if (!result.ok) return failedPullResult(options, result);
 		// One Space per pass proves the receive path works, but other scopes stay unretried.
 		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
 			preserveScopedError: true,
@@ -475,10 +486,9 @@ export async function syncScopedChannelOnce(
 		);
 		return { ...result, opsOut };
 	} catch {
-		if (sending)
-			recordSyncTransferObservation(options.db, options.peerDeviceId, "send", {
-				errorCode: "exchange_failed",
-			});
+		recordSyncTransferObservation(options.db, options.peerDeviceId, sending ? "send" : "receive", {
+			errorCode: "exchange_failed",
+		});
 		return failedResult(result, options.factory, "scoped channel exchange failed");
 	}
 }

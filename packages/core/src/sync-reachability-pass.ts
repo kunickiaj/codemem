@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import type { Database } from "./db.js";
 import { isRelayPeerClient, type RelayPeerClient } from "./relay-peer-client.js";
+import { isStableReleaseVersion } from "./release-discovery.js";
 import { supportsSyncFeature } from "./sync-capability.js";
 import { syncScopedChannelOnce } from "./sync-channel-pass.js";
 import { type RequestJsonExecutor, requestJson } from "./sync-http-client.js";
@@ -10,6 +11,7 @@ import {
 	type SyncScopeResult,
 	syncOnce,
 } from "./sync-pass.js";
+import { recordSyncTransferObservation } from "./sync-transfer-activity.js";
 
 export interface SyncReachabilityOptions {
 	/** One explicitly authorized Space for relay fallback. Direct sync retains its existing scope behavior. */
@@ -188,6 +190,7 @@ async function selectedPass(
 		...options,
 		requestExecutor: direct.request,
 		attemptRecorder: options.attemptRecorder ?? (() => {}),
+		deferConnectionFailure: true,
 	});
 	if (result.ok || direct.committedOrigin !== null || direct.terminal)
 		return { ...result, transport: "direct" };
@@ -196,7 +199,10 @@ async function selectedPass(
 	// The traversal engine has no approved runtime capability. No RTC networking starts here.
 	if (!reachability.relay) return { ...result, transport: "wait" };
 	if (!isRelayPeerClient(reachability.relay))
-		return failure("wait", "Relay transport is unavailable");
+		return {
+			...failure("wait", "Relay transport is unavailable"),
+			receiveFailureCode: result.receiveFailureCode,
+		};
 	requireActive(signal, deadline);
 	return relayPass(db, peerDeviceId, peer.public_key, options, reachability, signal, result);
 }
@@ -211,7 +217,10 @@ async function relayPass(
 	direct: SyncResult,
 ): Promise<SyncResult> {
 	if (!isRelayPeerClient(reachability.relay))
-		return failure("wait", "Relay transport is unavailable");
+		return {
+			...failure("wait", "Relay transport is unavailable"),
+			receiveFailureCode: direct.receiveFailureCode,
+		};
 	// A skipped relay is a wait, so the pass records only the direct attempt, as it
 	// does when no relay is configured.
 	const skip = relaySkipReason(db, peerDeviceId);
@@ -245,15 +254,17 @@ const RELAY_UNSUPPORTED_TTL_MS = 24 * 60 * 60_000;
  * A peer that last advertised `relay_aware` without `relay` over direct sync runs
  * no relay client, so the realm has no route for it. That observation expires after
  * a day, because the peer may turn relay on while direct sync is unavailable. A peer
- * without `relay_aware` predates the feature and may still relay, so it is treated as
- * unknown. A peer that recently
+ * without `relay_aware` may still relay on an early build, unless a recent stable
+ * version identifies it as pre-0.48. Unknown or expired versions remain eligible.
+ * A peer that recently
  * sent REJECTED is retried on a growing schedule, since REJECTED carries no
  * reason and most often means the peer is offline or not on relay.
  */
 function relaySkipReason(db: Database, peerDeviceId: string): SyncResult["relaySkipped"] | null {
 	const row = db
 		.prepare(
-			`SELECT sync_features_json, sync_features_observed_at, relay_retry_after
+			`SELECT sync_features_json, sync_features_observed_at, relay_retry_after,
+			runtime_version, runtime_version_observed_at
 			FROM sync_peers WHERE peer_device_id = ?`,
 		)
 		.get(peerDeviceId) as
@@ -261,21 +272,38 @@ function relaySkipReason(db: Database, peerDeviceId: string): SyncResult["relayS
 				sync_features_json: string | null;
 				sync_features_observed_at: string | null;
 				relay_retry_after: string | null;
+				runtime_version: string | null;
+				runtime_version_observed_at: string | null;
 		  }
 		| undefined;
 	if (!row) return null;
 	const features = row.sync_features_json === null ? null : parseJson(row.sync_features_json);
 	const observedAt = Date.parse(row.sync_features_observed_at ?? "");
+	const age = Date.now() - observedAt;
 	if (
 		features !== null &&
-		Date.now() - observedAt < RELAY_UNSUPPORTED_TTL_MS &&
+		age >= 0 &&
+		age < RELAY_UNSUPPORTED_TTL_MS &&
 		supportsSyncFeature(features, "relay_aware") &&
 		!supportsSyncFeature(features, "relay")
 	)
 		return "relay_peer_unsupported";
+	if (!supportsSyncFeature(features, "relay") && recentlyObservedLegacyPeer(row))
+		return "relay_peer_unsupported";
 	if (row.relay_retry_after && row.relay_retry_after > new Date().toISOString())
 		return "relay_backoff";
 	return null;
+}
+
+function recentlyObservedLegacyPeer(peer: {
+	runtime_version: string | null;
+	runtime_version_observed_at: string | null;
+}): boolean {
+	if (!isStableReleaseVersion(peer.runtime_version)) return false;
+	const age = Date.now() - Date.parse(peer.runtime_version_observed_at ?? "");
+	if (!(age >= 0 && age < RELAY_UNSUPPORTED_TTL_MS)) return false;
+	const parts = peer.runtime_version.split(".");
+	return Number(parts[0]) === 0 && Number(parts[1]) < 48;
 }
 
 function parseJson(text: string): unknown {
@@ -340,7 +368,13 @@ export async function runReachableSyncPass(
 	if (active.has(peerDeviceId)) return failure("wait", "Peer sync is already in progress");
 	active.add(peerDeviceId);
 	try {
-		return await selectedPass(db, peerDeviceId, addresses, options, reachability);
+		const result = await selectedPass(db, peerDeviceId, addresses, options, reachability);
+		if (!result.ok && result.transport !== "relay" && result.receiveFailureCode) {
+			recordSyncTransferObservation(db, peerDeviceId, "receive", {
+				errorCode: result.receiveFailureCode,
+			});
+		}
+		return result;
 	} catch {
 		return failure("wait", "Sync pass cancelled or failed");
 	} finally {

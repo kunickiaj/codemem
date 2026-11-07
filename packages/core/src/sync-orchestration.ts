@@ -43,6 +43,9 @@ export async function runSyncPass(
 			directRecord = record;
 		},
 	});
+	// Waiting for an existing pass is not a failed exchange with this peer.
+	if (result.transport === "wait" && result.error === "Peer sync is already in progress")
+		return result;
 	const inheritsDirect =
 		result.transport === "direct" ||
 		(result.transport === "wait" && result.error === directRecord?.error);
