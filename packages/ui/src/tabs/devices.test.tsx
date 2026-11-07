@@ -7,7 +7,9 @@ import type {
 	RecipientPolicyIntentGraphV1,
 	RecipientPolicyReconciliationStatusV1,
 } from "../lib/api/sync";
+import * as syncApi from "../lib/api/sync";
 import { DeviceIdentityBindingApiError } from "../lib/api/sync";
+import { formatTimestamp } from "../lib/format";
 import { state } from "../lib/state";
 import { closeActionMenu, openActionMenu } from "../menu-test-utils";
 import { deviceIdentitySetupError, mountDevices, projectDevices } from "./devices";
@@ -97,6 +99,16 @@ function inventory(items: DeviceIdentityInventoryV1["items"]): DeviceIdentityInv
 		coordinatorEvidence: { availability: "available", safeErrorCode: null },
 		truncated: false,
 	};
+}
+
+function intentWithAlternateIdentity(): RecipientPolicyIntentGraphV1 {
+	const graph = intent();
+	graph.identities.push({
+		...graph.identities[0],
+		identityId: "alternate-owner",
+		displayName: "Other owner",
+	});
+	return graph;
 }
 
 function inventoryItem(
@@ -196,6 +208,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	const element = document.getElementById("mount");
 	if (element) act(() => render(null, element));
 	document.body.innerHTML = "";
@@ -249,7 +262,9 @@ describe("Devices sync health", () => {
 			expect(document.activeElement).toBe(row?.querySelector(".feed-menu-trigger")),
 		);
 	});
+});
 
+describe("Devices sync availability", () => {
 	it("does not offer peer sync for this device, unpaired devices, or unavailable status", () => {
 		const onSyncDevice = vi.fn();
 		const graph = intent({
@@ -284,7 +299,9 @@ describe("Devices sync health", () => {
 		expect(
 			document.getElementById("device-identity-card-device-address-fingerprint-secret"),
 		).toBeNull();
-		expect(unpaired?.querySelector(".sync-health-state")?.textContent).toContain("Not paired here");
+		expect(unpaired?.querySelector(".sync-health-state")?.textContent).toContain(
+			"No sync connection",
+		);
 		expect(document.querySelectorAll('[aria-label="Sync Work Laptop"]')).toHaveLength(0);
 		expect(document.querySelectorAll('[aria-label="Sync Tablet"]')).toHaveLength(0);
 		mount(intent(), reconciliation(), {
@@ -352,7 +369,7 @@ describe("Devices peer state presentation", () => {
 		};
 	}
 
-	it("keeps peer attention visible beside its name when both directions succeeded", () => {
+	it("names a failed latest attempt while preserving both historical direction successes", () => {
 		// Arrange: the peer-level result contains evidence that direction results cannot override.
 		const peer = peerEvidence();
 		// Act
@@ -361,10 +378,53 @@ describe("Devices peer state presentation", () => {
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
 		const name = row?.querySelector(".devices-table-device");
 		expect(name?.textContent).toContain("Work Laptop");
-		expect(name?.querySelector(".sync-health-state")?.textContent).toContain("Needs attention");
+		expect(name?.querySelector(".sync-health-state")?.textContent).toContain(
+			"Sync: Attempt failed",
+		);
 		expect(name?.querySelector(".sync-health-state")?.closest("details")).toBeNull();
 		expect(row?.querySelectorAll(".device-sync-direction[data-state='succeeded']")).toHaveLength(2);
-		expect(row?.textContent).not.toMatch(/caught up|up to date/i);
+		const attemptFailure = row?.querySelector(".device-sync-health > .sync-health-state");
+		expect(attemptFailure?.textContent).toBe("!Latest sync attempt failed");
+		expect(attemptFailure?.closest("details")).toBeNull();
+		expect(attemptFailure?.querySelector("[title], time")).toBeNull();
+		expect(
+			[...(row?.querySelectorAll(".device-sync-freshness") ?? [])].map((node) =>
+				node.getAttribute("title"),
+			),
+		).toEqual(
+			Array(2).fill(`Last success: ${formatTimestamp(peer.syncHealth.send.last_success_at)}`),
+		);
+		expect(row?.querySelector(".device-sync-directions")?.textContent).not.toMatch(
+			/caught up|up to date/i,
+		);
+	});
+
+	it.each([
+		{ send: true, receive: false, label: "Send failed" },
+		{ send: false, receive: true, label: "Receive failed" },
+		{ send: true, receive: true, label: "Send and receive failed" },
+	])("names the failing direction beside the device: $label", ({ send, receive, label }) => {
+		// Arrange: the name must identify failure without opening diagnostics.
+		const peer = peerEvidence();
+		const syncHealth = {
+			...peer.syncHealth,
+			send: {
+				...peer.syncHealth.send,
+				state: send ? ("needs_attention" as const) : ("succeeded" as const),
+			},
+			receive: {
+				...peer.syncHealth.receive,
+				state: receive ? ("needs_attention" as const) : ("succeeded" as const),
+			},
+		};
+		// Act
+		mount(intent(), reconciliation(), { peerSyncMetadata: [{ ...peer, syncHealth }] });
+		// Assert
+		const status = document.querySelector(".devices-table-device .sync-health-state");
+		expect(status?.textContent).toContain(`Sync: ${label}`);
+		expect(status?.closest("details")).toBeNull();
+		expect(status?.textContent).not.toContain("Exchange succeeded");
+		expect(document.body.textContent).not.toContain("Latest sync attempt failed");
 	});
 
 	it.each(["syncStatusUnavailable", "refreshError", "peerUnavailable"] as const)(
@@ -394,7 +454,9 @@ describe("Devices peer state presentation", () => {
 					(node) => node.textContent,
 				),
 			).toEqual(["No verified success", "No verified success"]);
-			expect(row()?.textContent).not.toMatch(/\bOK\b|Exchange succeeded|caught up|up to date/i);
+			expect(row()?.querySelector(".device-sync-directions")?.textContent).not.toMatch(
+				/\bOK\b|Exchange succeeded|caught up|up to date/i,
+			);
 		},
 	);
 });
@@ -491,7 +553,7 @@ describe("Devices sync progress", () => {
 			syncMenu.querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]')?.click(),
 		);
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Syncing this device…",
+			"Syncing Work Laptop…",
 		);
 		syncMenu = openActionMenu(row() ?? document);
 		expect(
@@ -603,9 +665,12 @@ describe("Device pairing entry point", () => {
 			onNavigate,
 		});
 
-		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices 1");
+		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices · 1");
 		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
-			"This deviceOwned by Adam & CoThis device",
+			"Work LaptopOwned by Adam & Co",
+		);
+		expect(document.querySelector(".devices-local-row")?.textContent).toContain(
+			"Sync results describe exchanges with Work Laptop.",
 		);
 		expect(document.body.textContent).not.toContain("your identity");
 		expect(document.body.textContent).toContain("No other devices");
@@ -886,11 +951,8 @@ describe("Devices reconciliation focus", function devicesReconciliationFocusTest
 		const attention = document.querySelector<HTMLElement>(
 			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
 		);
-		expect(attention?.textContent).toContain(
-			"1 coordinator enrollment could not be safely reconciled",
-		);
-		expect(attention?.textContent).toContain("No ownership was inferred");
-		expect(attention?.textContent).toContain("No device on this page can be corrected from here");
+		expect(attention?.textContent).toContain("1 setup issue needs review.");
+		expect(attention?.querySelector("button")?.textContent).toBe("View setup issues");
 		expect(attention?.textContent).not.toContain("Advanced diagnostics");
 		expect(attention?.textContent).not.toMatch(/fingerprint|group[_ -]?id|coordinator[_ -]?id/i);
 	});
@@ -904,24 +966,31 @@ describe("Devices reconciliation focus", function devicesReconciliationFocusTest
 		const attention = document.querySelector<HTMLElement>(
 			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
 		);
-		expect(attention?.textContent).toContain(
-			"1 coordinator enrollment could not be safely reconciled",
-		);
-		expect(attention?.textContent).toContain("No ownership was inferred");
+		expect(attention?.textContent).toContain("1 setup issue needs review.");
+		expect(attention?.querySelector("button")?.textContent).toBe("View setup issues");
 	});
 
-	it("points coordinator reconciliation attention at rendered setup recovery", () => {
+	it("offers enrollment review without fetching issue details before activation", () => {
+		// Arrange
+		const onNavigate = vi.fn();
+		const loadSyncStatus = vi
+			.spyOn(syncApi, "loadSyncStatus")
+			.mockRejectedValue(new Error("Unexpected API call"));
+		// Act
 		mount(intent(), reconciliation(), {
 			coordinatorEnrollmentIssueCount: 1,
 			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
+			onNavigate,
 		});
 
 		const attention = document.querySelector<HTMLElement>(
 			'[aria-labelledby="devices-coordinator-reconciliation-heading"]',
 		);
-		expect(attention?.textContent).toContain(
-			"Review the affected device setup or pairing state here",
-		);
+		// Assert
+		expect(attention?.textContent).toContain("1 setup issue needs review.");
+		expect(attention?.querySelector("button")?.textContent).toBe("View setup issues");
+		expect(loadSyncStatus).not.toHaveBeenCalled();
+		expect(onNavigate).not.toHaveBeenCalled();
 	});
 });
 
@@ -981,7 +1050,7 @@ describe("Device row focus restoration across inventory refresh", () => {
 	});
 
 	it("keeps an open rebind form open when Change Identity is chosen again", async () => {
-		mount(intent(), reconciliation(), {
+		mount(intentWithAlternateIdentity(), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("canonical-alias", "Work Laptop", "configured", {
 					evidenceDeviceIds: ["canonical-alias", "device-address-fingerprint-secret"],
@@ -1113,7 +1182,7 @@ it("restores focus from Details after its device is removed", () => {
 	document.body.insertAdjacentHTML("beforeend", '<button id="tabBtn-devices">Devices</button>');
 	mount(intent(), reconciliation(), { onNavigate: vi.fn() });
 	const details = [...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
-		(button) => button.textContent === "Details",
+		(button) => button.textContent === "Device details",
 	);
 	expect(details).toBeDefined();
 	details?.focus();
@@ -1640,6 +1709,27 @@ describe("Device rename menu", () => {
 });
 
 describe("Device naming", () => {
+	it.each(["none", "pending", "merged"] as const)(
+		"omits reassignment controls when alternate Identity is %s",
+		(status) => {
+			// Arrange: an unusable target must not expose an empty form or menu item.
+			const graph = intentWithAlternateIdentity();
+			if (status === "none") graph.identities.pop();
+			else graph.identities[1] = { ...graph.identities[1], status };
+			// Act
+			mount(graph, reconciliation(), {
+				inventory: inventory([
+					inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
+				]),
+			});
+			const menu = openActionMenu();
+			// Assert
+			expect(menu.textContent).not.toContain("Change Identity");
+			expect(document.querySelector(".device-identity-rebind")).toBeNull();
+			expect(document.querySelector(".device-identity-rebind select")).toBeNull();
+		},
+	);
+
 	it("renames a configured device separately from Identity reassignment", async () => {
 		const onNavigate = vi.fn();
 		const renameDevice = vi.fn().mockResolvedValue(undefined);
@@ -1679,16 +1769,13 @@ describe("Device naming", () => {
 		expect(onNavigate).not.toHaveBeenCalled();
 		const details = [
 			...openActionMenu().querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
-		].find((button) => button.textContent === "Details");
+		].find((button) => button.textContent === "Device details");
 		act(() => details?.click());
 		const changeIdentity = [...openActionMenu().querySelectorAll<HTMLButtonElement>("button")].find(
 			(button) => button.textContent === "Change Identity…",
 		);
-		act(() => changeIdentity?.click());
-		await vi.waitFor(() =>
-			expect(document.body.textContent).toContain("No other active Identity is available"),
-		);
-		expect(document.body.textContent).toContain("it does not rename it");
+		expect(changeIdentity).toBeUndefined();
+		expect(document.querySelector(".device-identity-rebind")).toBeNull();
 	});
 });
 
@@ -1761,7 +1848,7 @@ describe("Device identity grouping", () => {
 		expect(devicesSection.querySelector(":scope > .recipient-policy-sharing-header")?.tagName).toBe(
 			"DIV",
 		);
-		expect(document.querySelector("h2")?.textContent).toBe("Devices 1");
+		expect(document.querySelector("h2")?.textContent).toBe("Devices · 1");
 		expect(document.querySelector(".devices-identity-header")?.textContent).toContain(
 			"Adam & Co · 1 device",
 		);
@@ -1776,7 +1863,7 @@ describe("Device identity grouping", () => {
 		expect(detailsRow?.hidden).toBe(true);
 		const detailsButton = [
 			...openActionMenu(table).querySelectorAll<HTMLButtonElement>("button"),
-		].find((button) => button.textContent === "Details");
+		].find((button) => button.textContent === "Device details");
 		expect(detailsButton?.getAttribute("aria-expanded")).toBe("false");
 		expect(detailsButton?.getAttribute("aria-controls")).toBe(detailsRow?.id);
 		act(() => {
@@ -1785,7 +1872,7 @@ describe("Device identity grouping", () => {
 		expect(detailsRow?.hidden).toBe(false);
 		const reopenedDetailsButton = [
 			...openActionMenu(table).querySelectorAll<HTMLButtonElement>("button"),
-		].find((button) => button.textContent === "Details");
+		].find((button) => button.textContent === "Device details");
 		expect(reopenedDetailsButton?.getAttribute("aria-expanded")).toBe("true");
 		expect(detailsRow?.textContent).toContain("API — Up to date");
 		expect(onNavigate).not.toHaveBeenCalled();
@@ -1803,7 +1890,7 @@ describe("Device identity grouping", () => {
 			inventory: inventory([inventoryItem("setup-device", "Setup device", "setup_required")]),
 		});
 
-		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices 1");
+		expect(document.querySelector("#devices-heading")?.textContent).toBe("Devices · 1");
 		expect(document.body.textContent).toContain("Setup device");
 	});
 });
@@ -1918,7 +2005,7 @@ describe("Device refresh states", () => {
 	});
 
 	it("disables Identity mutations while showing stale cards after a refresh failure", () => {
-		mount(intent(), reconciliation(), {
+		mount(intentWithAlternateIdentity(), reconciliation(), {
 			inventory: inventory([
 				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
 			]),
@@ -2041,7 +2128,9 @@ describe("Device safe rendering", () => {
 		);
 		expect(document.querySelector(".devices-table-availability")?.textContent).toBe("Available");
 		expect(text).toContain("Setup required");
-		expect(text).toContain("Pair this device first");
+		expect(text).toContain(
+			"To assign an Identity, pair Tablet with this device. Manual pairing requires access to both devices.",
+		);
 		expect(text).toContain("Device evidence conflicts");
 		expect(document.querySelectorAll(".device-identity-setup-card select")).toHaveLength(1);
 		for (const label of ["Review this device", "Pair Tablet", "Open Advanced review"]) {
@@ -2257,7 +2346,7 @@ describe("Device inventory gates", () => {
 				(button) => button.textContent === "Review this device",
 			)?.disabled,
 		).toBe(true);
-		mount(intent(), reconciliation(), {
+		mount(intentWithAlternateIdentity(), reconciliation(), {
 			inventory: {
 				...inventory([
 					inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured"),
@@ -2782,9 +2871,7 @@ describe("Device reassignment review", () => {
 				) as HTMLButtonElement
 			).click(),
 		);
-		expect(document.body.textContent).toContain(
-			"Suggested current Identity (unconfirmed): Adam & Co",
-		);
+		expect(document.body.textContent).toContain("Current Identity: Adam & Co");
 		const select = document.querySelector<HTMLSelectElement>(".device-identity-rebind select");
 		if (!select) throw new Error("rebind select missing");
 		expect(select.className).toBe("native-select");

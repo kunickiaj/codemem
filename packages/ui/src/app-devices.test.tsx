@@ -153,6 +153,15 @@ const intent = {
 			status: "active" as const,
 			mergedIntoIdentityId: null,
 		},
+		{
+			version: 1 as const,
+			identityId: "alternate-owner",
+			displayName: "Other owner",
+			kind: "personal" as const,
+			verification: "local" as const,
+			status: "active" as const,
+			mergedIntoIdentityId: null,
+		},
 	],
 	teams: [],
 	teamMemberships: [],
@@ -539,9 +548,7 @@ describe("Devices app integration", () => {
 		expect(panel?.textContent).toContain("Work Laptop");
 		expect(panel?.textContent).toContain("Available");
 		expect(panel?.textContent).toContain("Needs attention");
-		expect(panel?.textContent).toContain(
-			"2 coordinator enrollments could not be safely reconciled",
-		);
+		expect(panel?.textContent).toContain("2 setup issues need review.");
 		expect(mocks.loadRecipientPolicyIntent).toHaveBeenCalledOnce();
 		expect(mocks.loadRecipientPolicyReconciliationStatus).toHaveBeenCalledOnce();
 		expect(mocks.loadSyncData).toHaveBeenCalledOnce();
@@ -1315,6 +1322,9 @@ describe("Devices app pairing and refresh", () => {
 		expect(window.location.hash).toBe("#devices");
 		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
 			"Copy pairing command",
+		);
+		expect(document.getElementById("devices-pairing-panel")?.textContent).toContain(
+			"Pairing laptop",
 		);
 	});
 
