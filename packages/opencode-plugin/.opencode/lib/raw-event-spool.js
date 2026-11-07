@@ -76,8 +76,23 @@ const readRegularSpoolFile = async (path, { makePrivate = false } = {}) => {
 };
 
 const requireMatchingIdentity = (serialized, filename) => {
-  const eventId = requireEventId(JSON.parse(serialized));
-  if (spoolFilename(eventId) !== filename) throw conflictingEntry();
+  let envelope;
+  try {
+    envelope = JSON.parse(serialized);
+  } catch (error) {
+    error.spoolConflict = { branch: "rejected_identity", reason: "invalid_json" };
+    throw error;
+  }
+  let eventId;
+  try {
+    eventId = requireEventId(envelope);
+  } catch (error) {
+    error.spoolConflict = { branch: "rejected_identity", reason: "invalid_shape" };
+    throw error;
+  }
+  if (spoolFilename(eventId) !== filename) {
+    throw conflictingEntry({ branch: "rejected_identity", reason: "identity_mismatch" });
+  }
 };
 
 const rejectedMetadata = (name, entry, bytes) => ({
@@ -97,25 +112,71 @@ const requireEventId = (envelope) => {
   return eventId;
 };
 
+// Only literal paths from this schema may enter diagnostics. Payload values and
+// unknown property names remain private even when retained JSON is malformed.
+const CONFLICT_FIELDS = {
+  started_at: true,
+  host_generation: true,
+  capture_context: true,
+  session_stream_id: true,
+  session_id: true,
+  stream_id: true,
+  opencode_session_id: true,
+  cwd: true,
+  project: true,
+  source: true,
+  event_type: true,
+  payload: { timestamp: true, _adapter: { ts: true }, _raw_spooled: true, args: true },
+};
+
+const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+const changedConflictFields = (existing, incoming, schema = CONFLICT_FIELDS, prefix = "") => {
+  const fields = [];
+  let other = false;
+  const left = { ...existing };
+  const right = { ...incoming };
+  for (const [key, child] of Object.entries(schema)) {
+    const path = `${prefix}${key}`;
+    const differs = Object.hasOwn(left, key) !== Object.hasOwn(right, key)
+      || !isDeepStrictEqual(left[key], right[key]);
+    if (differs && child === true) fields.push(path);
+    else if (differs && isRecord(left[key]) && isRecord(right[key])) {
+      const nested = changedConflictFields(left[key], right[key], child, `${path}.`);
+      fields.push(...nested.fields);
+      other ||= nested.other;
+    } else if (differs) {
+      fields.push(path);
+      other = true;
+    }
+    delete left[key];
+    delete right[key];
+  }
+  return { fields, other: other || !isDeepStrictEqual(left, right) };
+};
+
 /** Delivery timestamps can change when the same host event is captured again. */
-const sameEventApartFromDeliveryTime = (existingBytes, incomingBytes) => {
-  if (existingBytes === incomingBytes) return true;
+const compareEventApartFromDeliveryTime = (existingBytes, incomingBytes) => {
+  if (existingBytes === incomingBytes) return null;
   try {
     const existing = JSON.parse(existingBytes);
     const incoming = JSON.parse(incomingBytes);
-    if (!existing || typeof existing !== "object" || Array.isArray(existing)) return false;
-    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return false;
+    if (!isRecord(existing) || !isRecord(incoming)) return { reason: "invalid_shape" };
     const withoutDeliveryTime = ({ ts_wall_ms: _wall, ts_mono_ms: _mono, ...event }) => event;
-    return isDeepStrictEqual(withoutDeliveryTime(existing), withoutDeliveryTime(incoming));
+    const left = withoutDeliveryTime(existing);
+    const right = withoutDeliveryTime(incoming);
+    if (isDeepStrictEqual(left, right)) return null;
+    return { reason: "field_mismatch", ...changedConflictFields(left, right) };
   } catch {
     // Malformed retained data is not proof that the new event is already durable.
-    return false;
+    return { reason: "invalid_json" };
   }
 };
 
-const conflictingEntry = () => {
+const conflictingEntry = (diagnostic) => {
   const error = new Error("raw event spool entry conflicts with existing event_id");
   error.code = RAW_EVENT_SPOOL_CONFLICT_CODE;
+  if (diagnostic) error.spoolConflict = diagnostic;
   return error;
 };
 
@@ -171,7 +232,8 @@ const readExistingEntry = async (directory, destination, bytes, eventId) => {
   try {
     return await atSpoolStage("existing_entry", async () => {
       const existing = await readFile(destination, "utf8");
-      if (!sameEventApartFromDeliveryTime(existing, bytes)) throw conflictingEntry();
+      const mismatch = compareEventApartFromDeliveryTime(existing, bytes);
+      if (mismatch) throw conflictingEntry({ branch: "active_comparison", ...mismatch });
       await chmod(destination, 0o600);
       await syncDirectory(directory);
       return { eventId, serialized: existing };
@@ -198,7 +260,8 @@ const readMatchingRejectedEntry = async (directory, eventId, bytes) => {
   for (const [status, reason] of rejectedReasons) {
     const entry = await readRejectedEntry(directory, rejectedFilename(eventId, status, reason), eventId);
     if (!entry) continue;
-    if (!sameEventApartFromDeliveryTime(entry.serialized, bytes)) throw conflictingEntry();
+    const mismatch = compareEventApartFromDeliveryTime(entry.serialized, bytes);
+    if (mismatch) throw conflictingEntry({ branch: "rejected_comparison", ...mismatch });
     existing = { eventId, serialized: entry.serialized };
   }
   if (existing) await syncDirectory(directory);
@@ -226,7 +289,8 @@ const publishSpoolEntry = async (temporary, destination, bytes) => {
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
         const existing = await readFile(destination, "utf8");
-        if (!sameEventApartFromDeliveryTime(existing, bytes)) throw conflictingEntry();
+        const mismatch = compareEventApartFromDeliveryTime(existing, bytes);
+        if (mismatch) throw conflictingEntry({ branch: "publish_comparison", ...mismatch });
         await chmod(destination, 0o600);
       }
       await chmod(destination, 0o600);
