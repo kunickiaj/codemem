@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildAdapterNormalizers } from "../../../scripts/build-adapter-normalizers.mjs";
+import { smokeCaptureInspection } from "./packed-capture-inspection-smoke.mjs";
 import { smokeTeamRecovery } from "./packed-team-recovery-smoke.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
@@ -742,6 +743,7 @@ try {
 		);
 	}
 
+	smokeCaptureInspection(installDir, tempDir, { runtimeEnv });
 	await smokeTeamRecovery(installDir, tempDir, { runtimeEnv });
 
 	const semanticInstallDir = join(tempDir, "semantic-install");
