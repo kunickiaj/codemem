@@ -20,6 +20,8 @@ const DEFAULT_DRAIN_LIMIT = 20;
 const DEFAULT_MAX_ENTRIES = 2000;
 const MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES = 16 * 1024 * 1024;
 const INSPECTION_READ_CHUNK_BYTES = 64 * 1024;
+const REJECTED_LOCK_RECORD_MAX_BYTES = 1024;
+const REJECTED_LOCK_PURPOSE = "rejected-raw-event-v1";
 const RAW_EVENT_SPOOL_FULL_CODE = "raw_event_spool_full";
 const RAW_EVENT_SPOOL_CONFLICT_CODE = "raw_event_spool_conflict";
 const SPOOL_DIRECTORY_NAME = "opencode-raw-event-spool";
@@ -340,8 +342,30 @@ const retainRejectedRawEventSpoolEntryUnlocked = async ({ eventId, status, reaso
 };
 
 const retainRejectedRawEventSpoolEntry = async (options) =>
-  serializeSpoolMutation(resolveSpoolDirectory(options?.homeDir), () =>
-    retainRejectedRawEventSpoolEntryUnlocked(options));
+  serializeSpoolMutation(resolveSpoolDirectory(options?.homeDir), async () => {
+    const digest = spoolFilename(requireEventId({ event_id: options.eventId })).slice(0, -5);
+    const lock = await acquireRejectedSpoolLock(resolveSpoolDirectory(options.homeDir), digest);
+    let outcome;
+    try {
+      outcome = { retained: await retainRejectedRawEventSpoolEntryUnlocked(options) };
+    } catch (error) {
+      outcome = { error };
+    }
+    try {
+      await releaseRejectedSpoolLock(lock);
+    } catch {
+      if ("retained" in outcome) return { ...outcome.retained, lock: "release_failed" };
+      try {
+        Object.defineProperty(outcome.error, "lock", {
+          value: "release_failed", enumerable: true, configurable: true, writable: true,
+        });
+      } catch {
+        // Preserve the primary failure even when it is frozen or is a thrown primitive.
+      }
+    }
+    if ("error" in outcome) throw outcome.error;
+    return outcome.retained;
+  });
 
 class RawEventSpoolInspectionError extends Error {
   constructor(code, message) {
@@ -382,12 +406,13 @@ const openRejectedEntryForInspection = async (path) => {
   }
 };
 
-const readWithinInspectionLimit = async (handle, maxBytes) => {
+const readWithinInspectionLimit = async (handle, maxBytes, { position = null } = {}) => {
   const chunks = [];
   let total = 0;
   while (total <= maxBytes) {
     const buffer = Buffer.alloc(Math.min(INSPECTION_READ_CHUNK_BYTES, maxBytes + 1 - total));
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+    const offset = position === null ? null : position + total;
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
     if (bytesRead === 0) return Buffer.concat(chunks, total);
     total += bytesRead;
     if (total > maxBytes) return null;
@@ -443,6 +468,218 @@ const inspectRejectedRawEventSpoolEntry = async ({
     throw inspectionFailure();
   } finally {
     await handle?.close().catch(() => {});
+  }
+};
+
+const sameFileSnapshot = (actual, expected) => actual.isFile()
+  && !actual.isSymbolicLink()
+  && actual.dev === expected.dev && actual.ino === expected.ino
+  && actual.size === expected.size
+  && actual.mtimeMs === expected.mtimeMs && actual.ctimeMs === expected.ctimeMs;
+
+const rejectedLockError = (code) => new RawEventSpoolInspectionError(
+  code, "Retained event lock is unavailable. Stop capture before repairing its lock.",
+);
+
+const classifyExistingRejectedLock = async (path, digest) => {
+  let handle;
+  try {
+    handle = await openRejectedEntryForInspection(path);
+    const before = await handle.stat();
+    if (before.size > REJECTED_LOCK_RECORD_MAX_BYTES) throw rejectedLockError("lock_repair_required");
+    const bytes = await readWithinInspectionLimit(handle, REJECTED_LOCK_RECORD_MAX_BYTES);
+    if (!bytes || !isUtf8(bytes) || !sameFileSnapshot(await handle.stat(), before)
+      || !sameFileSnapshot(await lstat(path), before)) throw rejectedLockError("lock_repair_required");
+    const record = JSON.parse(bytes.toString("utf8"));
+    if (!record || Object.keys(record).sort().join() !== "digest,pid,purpose,token,version"
+      || record.purpose !== REJECTED_LOCK_PURPOSE || record.version !== 1 || record.digest !== digest
+      || !Number.isSafeInteger(record.pid) || record.pid <= 0
+      || typeof record.token !== "string"
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(record.token)) {
+      throw rejectedLockError("lock_repair_required");
+    }
+    try {
+      process.kill(record.pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return "lock_repair_required";
+    }
+    return "lock_busy";
+  } catch {
+    return "lock_repair_required";
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+};
+
+const acquireRejectedSpoolLock = async (directory, digest) => {
+  await requirePrivateSpoolDirectory(directory);
+  const path = join(directory, `.rejected-${digest}.lock`);
+  let handle;
+  try {
+    handle = await open(path, "wx+", 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") throw rejectedLockError(await classifyExistingRejectedLock(path, digest));
+    throw rejectedLockError("lock_failed");
+  }
+  try {
+    const serialized = JSON.stringify({
+      purpose: REJECTED_LOCK_PURPOSE, version: 1, digest, pid: process.pid, token: randomUUID(),
+    });
+    await handle.writeFile(serialized, { encoding: "utf8" });
+    await handle.sync();
+    const details = await handle.stat();
+    requireInspectionRegularFile(details);
+    await requirePrivateSpoolDirectory(directory);
+    if (!sameFileSnapshot(await lstat(path), details)) throw rejectedLockError("lock_repair_required");
+    return { directory, path, handle, serialized, details };
+  } catch {
+    // An incomplete or unverifiable named lock needs manual repair, never age-based removal.
+    await handle.close().catch(() => {});
+    throw rejectedLockError("lock_repair_required");
+  }
+};
+
+const assertRejectedSpoolLock = async (lock) => {
+  await requirePrivateSpoolDirectory(lock.directory);
+  const bytes = await readWithinInspectionLimit(lock.handle, REJECTED_LOCK_RECORD_MAX_BYTES, { position: 0 });
+  if (!bytes || bytes.toString("utf8") !== lock.serialized
+    || !sameFileSnapshot(await lock.handle.stat(), lock.details)
+    || !sameFileSnapshot(await lstat(lock.path), lock.details)) {
+    throw rejectedLockError("lock_release_failed");
+  }
+};
+
+const releaseRejectedSpoolLock = async (lock) => {
+  try {
+    await assertRejectedSpoolLock(lock);
+    await rm(lock.path);
+    await syncDirectory(lock.directory);
+  } catch {
+    throw rejectedLockError("lock_release_failed");
+  } finally {
+    await lock.handle.close().catch(() => {});
+  }
+};
+
+const deliveryAcknowledgement = async (deliver, serialized) => {
+  let result;
+  try {
+    result = await deliver({ serialized });
+  } catch {
+    return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "delivery_failed" };
+  }
+  try {
+    const isRecord = result && typeof result === "object" && !Array.isArray(result);
+    const keys = isRecord ? Reflect.ownKeys(result).sort().join() : "";
+    const acknowledged = isRecord ? Object.getOwnPropertyDescriptor(result, "acknowledged")?.value : undefined;
+    const acknowledgement = isRecord ? Object.getOwnPropertyDescriptor(result, "acknowledgement")?.value : undefined;
+    if (result === false || (keys === "acknowledged" && acknowledged === false)) {
+      return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "delivery_rejected" };
+    }
+    if (keys === "acknowledged,acknowledgement" && acknowledged === true
+      && ["queued", "ingested"].includes(acknowledgement)) {
+      return { delivery: "accepted", acknowledgement };
+    }
+  } catch {
+    // An exception while inspecting the result does not confirm delivery.
+  }
+  return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "invalid_acknowledgement" };
+};
+
+const removeRecoveredSnapshot = async (snapshot, lock) => {
+  let current;
+  try {
+    await requirePrivateSpoolDirectory(snapshot.directory);
+    current = await openRejectedEntryForInspection(snapshot.path);
+    if (!sameFileSnapshot(await snapshot.handle.stat(), snapshot.details)
+      || !sameFileSnapshot(await current.stat(), snapshot.details)) return "changed";
+    const bytes = await readWithinInspectionLimit(current, MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES);
+    if (!bytes?.equals(Buffer.from(snapshot.serialized, "utf8"))
+      || createHash("sha256").update(bytes).digest("hex") !== snapshot.digest
+      || !sameFileSnapshot(await current.stat(), snapshot.details)
+      || !sameFileSnapshot(await lstat(snapshot.path), snapshot.details)) return "changed";
+  } catch (error) {
+    if (error instanceof RawEventSpoolInspectionError || ["ENOENT", "ELOOP"].includes(error?.code)) return "changed";
+    return "failed";
+  } finally {
+    await current?.close().catch(() => {});
+  }
+  try {
+    await assertRejectedSpoolLock(lock);
+    if (!sameFileSnapshot(await lstat(snapshot.path), snapshot.details)) return "changed";
+    await rm(snapshot.path);
+  } catch {
+    return "failed";
+  }
+  try {
+    await syncDirectory(snapshot.directory);
+    return "removed";
+  } catch {
+    return "uncertain";
+  }
+};
+
+const deliverRejectedSnapshot = async ({ directory, receipt, entry, deliver }, lock) => {
+  let handle;
+  try {
+    const path = join(directory, receipt);
+    handle = await openRejectedEntryForInspection(path);
+    const details = await handle.stat();
+    const inspection = await inspectOpenedRejectedEntry(handle, receipt, entry, MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES);
+    if (inspection.validation !== "valid") {
+      return { delivery: "not_attempted", cleanup: "not_attempted", reason: inspection.validation };
+    }
+    if (!sameFileSnapshot(await handle.stat(), details) || !sameFileSnapshot(await lstat(path), details)) {
+      return { delivery: "not_attempted", cleanup: "not_attempted", reason: "changed_during_read" };
+    }
+    const snapshot = { directory, path, handle, details, serialized: inspection.serialized,
+      digest: createHash("sha256").update(inspection.serialized, "utf8").digest("hex") };
+    const delivery = await deliveryAcknowledgement(deliver, snapshot.serialized);
+    if (delivery.delivery !== "accepted") return delivery;
+    return { ...delivery, cleanup: await removeRecoveredSnapshot(snapshot, lock) };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+};
+
+const recoveryFailure = (error) => {
+  const safeCodes = ["lock_busy", "lock_repair_required", "lock_failed", "unsafe_entry"];
+  let reason = "inspection_failed";
+  if (error instanceof RawEventSpoolInspectionError && safeCodes.includes(error.code)) reason = error.code;
+  if (error?.code === "ENOENT") reason = "receipt_not_found";
+  return { delivery: "not_attempted", cleanup: "not_attempted", reason };
+};
+
+const recoverRejectedEntryUnlocked = async (options) => {
+  let lock;
+  let result;
+  try {
+    lock = await acquireRejectedSpoolLock(options.directory, options.entry.digest);
+    result = await deliverRejectedSnapshot(options, lock);
+  } catch (error) {
+    result = recoveryFailure(error);
+  }
+  if (!lock) return { ...result, lock: "not_acquired" };
+  try {
+    await releaseRejectedSpoolLock(lock);
+    return { ...result, lock: "released" };
+  } catch {
+    return { ...result, lock: "release_failed" };
+  }
+};
+
+const recoverRejectedRawEventSpoolEntry = async ({ receipt, homeDir = homedir(), deliver } = {}) => {
+  const entry = typeof receipt === "string" ? parseRejectedFilename(receipt) : null;
+  if (!entry || typeof deliver !== "function") {
+    return { delivery: "not_attempted", cleanup: "not_attempted", lock: "not_acquired",
+      reason: entry ? "invalid_delivery" : "invalid_receipt" };
+  }
+  try {
+    const directory = resolveSpoolDirectory(homeDir);
+    return await serializeSpoolMutation(directory, () =>
+      recoverRejectedEntryUnlocked({ directory, receipt, entry, deliver }));
+  } catch (error) {
+    return { ...recoveryFailure(error), lock: "not_acquired" };
   }
 };
 
@@ -572,6 +809,7 @@ export {
   RAW_EVENT_SPOOL_CONFLICT_CODE,
   RAW_EVENT_SPOOL_FULL_CODE,
   RawEventSpoolInspectionError,
+  recoverRejectedRawEventSpoolEntry,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
   retainRejectedRawEventSpoolEntry,
