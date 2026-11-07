@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import type { OwnedPeerHttpConnection, PeerHttpConnectionFactory } from "./peer-http-client.js";
+import { PeerHttpExchangeError, type PeerHttpExchangeErrorCode } from "./peer-http-policy.js";
 import { type PeerHttpServerOptions, servePeerHttpConnection } from "./peer-http-server.js";
 import {
 	decodeRelayCheckPacket,
@@ -24,6 +25,7 @@ import { parseRelayEd25519PublicKey } from "./relay-ed25519.js";
 import {
 	asRelayFailure,
 	createRelayFailureRecorder,
+	RELAY_FAILURE_REASONS,
 	RelayFailure,
 	type RelayFailureReason,
 	relayFailureReason,
@@ -89,6 +91,14 @@ export interface RelayPeerClientOptions {
 		connection: OwnedPeerHttpConnection,
 		context: RelayPeerContext,
 	) => Promise<void>;
+	/** Local diagnostics only. Never includes peer, route, key, payload, or raw error text. */
+	readonly onInboundFailure?: (failure: RelayInboundFailure) => void;
+}
+
+export interface RelayInboundFailure {
+	readonly stage: "admission" | "handshake" | "http";
+	readonly reason: RelayFailureReason;
+	readonly httpCode?: PeerHttpExchangeErrorCode;
 }
 
 export interface RelayPeerCoordinator {
@@ -137,6 +147,7 @@ interface Route {
 	active: boolean;
 	opened: boolean;
 	acceptedAtMs: number;
+	inboundStage?: RelayInboundFailure["stage"];
 }
 
 function deferred<T>(): Deferred<T> {
@@ -931,13 +942,42 @@ class Client implements RelayPeerClient {
 				new AbortController().signal,
 				performance.now() + 60_000,
 			);
+			route.inboundStage = "admission";
 			void this.acceptIncoming(route, message.body.checks[1], body.messageADigest).catch(
-				(error: unknown) => route.raw.destroy(relayPeerError(error)),
+				(error: unknown) => {
+					this.reportInboundFailure(error, route);
+					route.raw.destroy(relayPeerError(error));
+				},
 			);
-		} catch {
+		} catch (error) {
+			this.reportInboundFailure(error);
 			void this.send({ v: 1, type: "REJECTED", session: message.session, body: {} }).catch(
 				() => {},
 			);
+		}
+	}
+
+	private reportInboundFailure(error: unknown, route?: Route): void {
+		const stage = route?.inboundStage ?? "admission";
+		// Route cleanup can cancel the waiter before the HTTP handler rejects.
+		const originalError = route?.raw.errored ?? error;
+		let fallback: RelayFailureReason = "relay_admission_failed";
+		if (stage === "handshake") fallback = "relay_handshake_failed";
+		if (stage === "http") fallback = "relay_record_invalid";
+		const candidate = route?.raw.failureReason ?? relayFailureReason(originalError, fallback);
+		const reason = RELAY_FAILURE_REASONS.includes(candidate) ? candidate : fallback;
+		let httpCode: PeerHttpExchangeErrorCode | undefined;
+		if (
+			originalError instanceof PeerHttpExchangeError &&
+			["framing", "response_too_large", "deadline", "cancelled", "transport", "cleanup"].includes(
+				originalError.code,
+			)
+		)
+			httpCode = originalError.code;
+		try {
+			this.options.onInboundFailure?.({ stage, reason, ...(httpCode ? { httpCode } : {}) });
+		} catch {
+			// Diagnostics must not interrupt rejection, transport disposal, or socket cleanup.
 		}
 	}
 
@@ -956,6 +996,7 @@ class Client implements RelayPeerClient {
 		if (!proof) throw new Error("Relay source admission signature invalid");
 		await this.check(packet, route.peer, route);
 		this.validate(route.peer, route.pin);
+		route.inboundStage = "handshake";
 		route.active = true;
 		const acceptedAtMs = performance.now();
 		await this.send({ v: 1, type: "ACCEPTED", session: route.id, body: {} });
@@ -968,6 +1009,7 @@ class Client implements RelayPeerClient {
 		this.validate(route.peer, route.pin);
 		const connection = ownRelayPeerConnection(route.raw, secured.duplex);
 		try {
+			route.inboundStage = "http";
 			const context: RelayPeerContext = {
 				peerDeviceId: route.peer,
 				peerPin: route.pin,

@@ -8,7 +8,9 @@ import {
 } from "@codemem/core/internal/relay-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
+import * as peerHttpServer from "../../core/src/peer-http-server.js";
 import { relayRealmPath } from "../../core/src/relay-client-config.js";
+import { RELAY_FAILURE_REASONS } from "../../core/src/relay-failure-reason.js";
 import {
 	relayClientFixture,
 	relayDeadline,
@@ -98,7 +100,32 @@ async function targetDevice() {
 			},
 		});
 	const sockets = () => relay.runtime.counters().sockets;
-	return { f, relay, device, control, log, register, syncFromSource, sockets };
+	return { f, relay, device, control, log, register, source, syncFromSource, sockets };
+}
+
+type TargetDevice = Awaited<ReturnType<typeof targetDevice>>;
+
+const targetDiagnostics = (t: TargetDevice) =>
+	t.f.remote.store.db
+		.prepare(
+			"SELECT peer_device_id, ok, ops_in, ops_out, error, failure_category FROM sync_attempts WHERE peer_device_id = ''",
+		)
+		.all();
+
+const targetPeers = (t: TargetDevice) =>
+	t.f.remote.store.db.prepare("SELECT * FROM sync_peers ORDER BY peer_device_id").all();
+
+async function sendMalformedTargetRequest(t: TargetDevice) {
+	const owner = await t.source
+		.factory(t.f.remote.localDeviceId, t.f.remote.localPublicKey)
+		.open({ signal: new AbortController().signal, deadlineMs: relayDeadline() });
+	// Valid Noise carries deliberately invalid HTTP. No external service is contacted.
+	owner.duplex.end(
+		Buffer.from(
+			`GET /private-request-marker HTTP/1.1\r\nHost: private-host.invalid\r\nX-Private-Peer: ${t.f.remote.peerDeviceId}\r\nX-Private-Key: ${t.f.remote.peerPublicKey.replaceAll(/\s/g, "")}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`,
+		),
+	);
+	return owner.completion;
 }
 
 const remoteTitles = (f: Awaited<ReturnType<typeof passFixture>>) =>
@@ -118,6 +145,7 @@ describe("viewer relay reachability as the relay target", () => {
 		// Assert: Noise used the env key, the peer pin matched, and the scoped dispatcher applied the op.
 		expect(result).toMatchObject({ ok: true, transport: "relay", opsOut: 1 });
 		expect(remoteTitles(t.f)).toEqual(["inbound-relay-item"]);
+		expect(targetDiagnostics(t)).toEqual([]);
 	}, 60000);
 
 	it("keeps the same client and socket when one info fetch fails", async () => {
@@ -200,6 +228,105 @@ describe("viewer relay reachability as the relay target", () => {
 		expect(rebuilt).toBeDefined();
 		expect(rebuilt).not.toBe(client);
 	}, 30000);
+});
+
+describe("viewer relay target diagnostics", () => {
+	it("persists an identifier-free HTTP framing code without changing real peer health", async () => {
+		// Arrange: preserve existing health so an inbound failure cannot overwrite or clear it.
+		const served = vi.spyOn(peerHttpServer, "servePeerHttpConnection");
+		const t = await targetDevice();
+		await t.register();
+		t.f.remote.store.db
+			.prepare("UPDATE sync_peers SET last_error = ?, last_sync_at = ?")
+			.run("existing peer failure", "2026-01-01T00:00:00.000Z");
+		const peers = targetPeers(t);
+		// Act: send actual malformed HTTP through authenticated Noise to the viewer's own server.
+		await expect(sendMalformedTargetRequest(t)).rejects.toThrow();
+		// Assert: the synthetic empty peer key keeps this diagnostic separate from peer health.
+		expect(served).toHaveBeenCalledTimes(1);
+		await expect(served.mock.results[0]?.value).rejects.toMatchObject({ code: "framing" });
+		await vi.waitFor(() => expect(targetDiagnostics(t)).toHaveLength(1));
+		const [attempt] = targetDiagnostics(t) as { error: string }[];
+		expect(RELAY_FAILURE_REASONS).toContain(attempt?.error.match(/reason=(\S+)/)?.[1]);
+		expect(targetPeers(t)).toEqual(peers);
+		expect(t.log).toHaveBeenCalledWith(`[codemem] ${attempt?.error}`, "warn");
+		for (const marker of [
+			t.f.remote.peerDeviceId,
+			t.f.remote.localDeviceId,
+			t.f.remote.peerPublicKey,
+			t.f.remote.localPublicKey,
+			"private-request-marker",
+			"private-host.invalid",
+		])
+			expect(attempt?.error).not.toContain(marker);
+		await vi.waitFor(() => expect(t.relay.runtime.counters().routes).toBe(0));
+		expect(attempt).toEqual({
+			peer_device_id: "",
+			ok: 0,
+			ops_in: 0,
+			ops_out: 0,
+			error: expect.stringMatching(
+				/^relay_target_failure stage=http reason=relay_[a-z_]+ http=framing$/,
+			),
+			failure_category: "connectivity",
+		});
+	}, 10000);
+
+	it("persists admission rejection without an HTTP code or changes to real peer health", async () => {
+		// Arrange: the source remains enrolled, but the target no longer trusts its stored pin.
+		const t = await targetDevice();
+		await t.register();
+		t.f.remote.store.db
+			.prepare("UPDATE sync_peers SET pinned_fingerprint = NULL, last_error = ?")
+			.run("existing peer failure");
+		const peers = targetPeers(t);
+		// Act.
+		const opening = t.source
+			.factory(t.f.remote.localDeviceId, t.f.remote.localPublicKey)
+			.open({ signal: new AbortController().signal, deadlineMs: relayDeadline() });
+		// Assert.
+		await expect(opening).rejects.toThrow();
+		await vi.waitFor(() => expect(targetDiagnostics(t)).toHaveLength(1));
+		expect(targetDiagnostics(t)).toEqual([
+			{
+				peer_device_id: "",
+				ok: 0,
+				ops_in: 0,
+				ops_out: 0,
+				error: "relay_target_failure stage=admission reason=relay_admission_failed",
+				failure_category: "connectivity",
+			},
+		]);
+		expect(targetPeers(t)).toEqual(peers);
+		await vi.waitFor(() => expect(t.relay.runtime.counters().routes).toBe(0));
+	}, 10000);
+});
+
+describe("viewer relay target diagnostic persistence failure", () => {
+	it("logs only a fixed persistence warning and still cleans up the failed exchange", async () => {
+		// Arrange: fail only the synthetic insert with a private database error.
+		const t = await targetDevice();
+		await t.register();
+		t.f.remote.store.db.exec(`
+			CREATE TRIGGER reject_target_diagnostic BEFORE INSERT ON sync_attempts
+			WHEN NEW.peer_device_id = ''
+			BEGIN SELECT RAISE(ABORT, 'private database error marker'); END;
+		`);
+		const peers = targetPeers(t);
+		// Act.
+		await expect(sendMalformedTargetRequest(t)).rejects.toThrow();
+		// Assert: persistence failure cannot replace the diagnostic with raw exception text.
+		await vi.waitFor(() =>
+			expect(t.log).toHaveBeenCalledWith(
+				"[codemem] relay target diagnostic could not be persisted",
+				"warn",
+			),
+		);
+		expect(JSON.stringify(t.log.mock.calls)).not.toContain("private database error marker");
+		expect(targetDiagnostics(t)).toEqual([]);
+		expect(targetPeers(t)).toEqual(peers);
+		await vi.waitFor(() => expect(t.relay.runtime.counters().routes).toBe(0));
+	}, 10000);
 });
 
 describe("viewer relay reachability key directory", () => {
