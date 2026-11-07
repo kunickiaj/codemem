@@ -371,22 +371,31 @@ export function queueVectorBackfillForSyncBootstrap(
 		typeof options.embeddableTotal === "number" && options.embeddableTotal >= 0
 			? options.embeddableTotal
 			: null;
-	const metadata: MigrationMetadata = {
-		last_cursor_id: 0,
-		processed_embeddable: 0,
-		trigger: SYNC_BOOTSTRAP_TRIGGER,
-	};
-	if (embeddableTotal != null) {
-		metadata.embeddable_total = embeddableTotal;
-	}
-	startMaintenanceJob(db, {
-		kind: VECTOR_MODEL_MIGRATION_JOB,
-		title: "Re-indexing memories",
-		status: "pending",
-		message: "Queued vector catch-up for synced bootstrap data",
-		progressTotal: embeddableTotal,
-		metadata,
-	});
+	db.transaction(() => {
+		const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+		const existingMetadata = (existingJob?.metadata ?? {}) as MigrationMetadata;
+		const metadata: MigrationMetadata = {
+			last_cursor_id: 0,
+			processed_embeddable: 0,
+			trigger: SYNC_BOOTSTRAP_TRIGGER,
+			pending_upsert_memory_ids: metadataMemoryIds(existingMetadata.pending_upsert_memory_ids),
+			pending_delete_memory_ids: metadataMemoryIds(existingMetadata.pending_delete_memory_ids),
+			// Bootstrap resets the scan, not the queued work. Retain its revision so
+			// later enqueues cannot reuse a revision observed by an in-flight drain.
+			queue_revision: existingMetadata.queue_revision,
+		};
+		if (embeddableTotal != null) {
+			metadata.embeddable_total = embeddableTotal;
+		}
+		startMaintenanceJob(db, {
+			kind: VECTOR_MODEL_MIGRATION_JOB,
+			title: "Re-indexing memories",
+			status: "pending",
+			message: "Queued vector catch-up for synced bootstrap data",
+			progressTotal: embeddableTotal,
+			metadata,
+		});
+	}).immediate();
 	wakeActiveVectorMigrationRunner();
 }
 
