@@ -67,11 +67,69 @@ type MemoryTextRow = {
 type PendingChunk = { text: string; chunkIndex: number; contentHash: string };
 type PendingMemory = {
 	memoryId: number;
+	source: VectorSourceRow;
 	chunks: PendingChunk[];
 	vectors: Float32Array[];
 };
 
-type BackfillMemoryRow = MemoryTextRow & { snapshot_seq: number };
+type VectorSourceRow = MemoryTextRow & {
+	import_key: string | null;
+	session_id: number;
+	created_at: string;
+	origin_device_id: string | null;
+	rev: number | null;
+	updated_at: string;
+	active: number | null;
+	deleted_at: string | null;
+};
+
+type BackfillMemoryRow = VectorSourceRow & { snapshot_seq: number };
+
+const VECTOR_SOURCE_COLUMNS = `id, title, body_text, import_key, session_id, created_at,
+	origin_device_id, rev, updated_at, active, deleted_at`;
+const QUALIFIED_VECTOR_SOURCE_COLUMNS = VECTOR_SOURCE_COLUMNS.split(",")
+	.map((column) => `memory_items.${column.trim()}`)
+	.join(", ");
+
+function readVectorSource(db: Database, memoryId: number): VectorSourceRow | undefined {
+	if (!Number.isInteger(memoryId)) return undefined;
+	return db
+		.prepare(`SELECT ${VECTOR_SOURCE_COLUMNS} FROM memory_items WHERE id = ?`)
+		.get(memoryId) as VectorSourceRow | undefined;
+}
+
+function currentVectorSourceHashes(
+	saved: VectorSourceRow,
+	current: VectorSourceRow | undefined,
+): string[] {
+	// Text equality alone cannot distinguish reuse of a deleted memory's numeric ID.
+	if (
+		!current ||
+		current.import_key !== saved.import_key ||
+		current.session_id !== saved.session_id ||
+		current.created_at !== saved.created_at ||
+		current.origin_device_id !== saved.origin_device_id ||
+		current.rev !== saved.rev ||
+		current.updated_at !== saved.updated_at ||
+		current.active !== saved.active ||
+		current.deleted_at !== saved.deleted_at
+	) {
+		return [];
+	}
+	// Redaction can change text without advancing the revision or update timestamp.
+	return chunkHashes(memoryText(current.title, current.body_text));
+}
+
+function pendingBackfillMemory(source: VectorSourceRow, chunks: PendingChunk[]): PendingMemory {
+	return { memoryId: source.id, source, chunks, vectors: [] };
+}
+
+function assertVectorMemoryId(memoryId: number): void {
+	if (!Number.isFinite(memoryId))
+		throw new TypeError(`Expected finite integer, received ${String(memoryId)}`);
+	if (!Number.isInteger(memoryId))
+		throw new TypeError(`Expected integer, received ${String(memoryId)}`);
+}
 
 function createBackfillCandidateSnapshot(
 	db: Database,
@@ -1435,14 +1493,14 @@ export async function storeVectors(
 	options: { signal?: AbortSignal } = {},
 ): Promise<void> {
 	if (options.signal?.aborted) return;
+	// Capture before client initialization yields, so ID reuse during that wait is visible.
+	const source = readVectorSource(db, memoryId);
 	const client = await getEmbeddingClient();
 	if (options.signal?.aborted) return;
 	if (!client) return;
 	assertEmbeddingClientIdentity(client);
-	if (!Number.isFinite(memoryId))
-		throw new TypeError(`Expected finite integer, received ${String(memoryId)}`);
-	if (!Number.isInteger(memoryId))
-		throw new TypeError(`Expected integer, received ${String(memoryId)}`);
+	assertVectorMemoryId(memoryId);
+	if (!source) return;
 
 	const text = `${title}\n${bodyText}`.trim();
 	const chunks = chunkText(text);
@@ -1457,14 +1515,17 @@ export async function storeVectors(
 	const persistVectors = db.transaction(
 		(entries: Array<{ vector: Float32Array; chunkIndex: number; contentHash: string }>) => {
 			if (options.signal?.aborted) return;
-			// Inference yields; a retirement may have deleted the source meanwhile.
-			if (!db.prepare("SELECT 1 FROM memory_items WHERE id=?").get(memoryId)) return;
+			const hashes = currentVectorSourceHashes(source, readVectorSource(db, memoryId));
+			const currentEntries = entries.filter(
+				(entry) => hashes[entry.chunkIndex] === entry.contentHash,
+			);
+			if (currentEntries.length === 0) return;
 			ensureVectorWriteModel(db, model);
 			prepareVectorWrites(db)({
 				insert: {
 					model,
-					rows: entries.map((entry) => ({ ...entry, memoryId })),
-					expectedCount: chunks.length,
+					rows: currentEntries.map((entry) => ({ ...entry, memoryId })),
+					expectedCount: currentEntries.length,
 				},
 			});
 			persistVectorIdentity(db, client, model);
@@ -1521,7 +1582,7 @@ function collectCompletedBackfillRows(
 	model: string,
 ) {
 	const selectHash = prepareSnapshotHashQuery(metadata);
-	const sourceExists = db.prepare("SELECT 1 FROM memory_items WHERE id=?");
+	const selectSource = db.prepare(`SELECT ${VECTOR_SOURCE_COLUMNS} FROM memory_items WHERE id = ?`);
 	const entries: Array<{
 		memoryId: number;
 		vector: Float32Array;
@@ -1529,8 +1590,10 @@ function collectCompletedBackfillRows(
 		contentHash: string;
 	}> = [];
 	for (const memory of completed) {
-		if (!sourceExists.get(memory.memoryId)) continue;
+		const current = selectSource.get(memory.memoryId) as VectorSourceRow | undefined;
+		const hashes = currentVectorSourceHashes(memory.source, current);
 		for (const [index, chunk] of memory.chunks.entries()) {
+			if (hashes[chunk.chunkIndex] !== chunk.contentHash) continue;
 			if (selectHash.get(memory.memoryId, model, chunk.contentHash)) continue;
 			entries.push({
 				vector: memory.vectors[index] as Float32Array,
@@ -1650,7 +1713,7 @@ export async function backfillVectors(
 	try {
 		const selectPage = db.prepare(
 			`SELECT candidates.seq AS snapshot_seq,
-			        memory_items.id, memory_items.title, memory_items.body_text
+			        ${QUALIFIED_VECTOR_SOURCE_COLUMNS}
 			 FROM ${candidateTable} AS candidates
 			 JOIN memory_items ON memory_items.id = candidates.memory_id
 			 WHERE candidates.seq > ?
@@ -1720,7 +1783,7 @@ export async function backfillVectors(
 					pendingChunks.push({ text, chunkIndex, contentHash });
 				}
 				if (pendingChunks.length === 0) continue;
-				const memory: PendingMemory = { memoryId: row.id, chunks: pendingChunks, vectors: [] };
+				const memory = pendingBackfillMemory(row, pendingChunks);
 				for (const chunk of pendingChunks) {
 					batch.push({ memory, chunk });
 					if (batch.length < BACKFILL_INFERENCE_BATCH_SIZE) continue;
