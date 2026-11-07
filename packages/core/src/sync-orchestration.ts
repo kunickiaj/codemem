@@ -47,6 +47,6 @@ export async function runSyncPass(
 		result.transport === "direct" ||
 		(result.transport === "wait" && result.error === directRecord?.error);
 	const record = inheritsDirect && directRecord ? directRecord : result;
-	recordSyncAttempt(db, peerDeviceId, record);
+	recordSyncAttempt(db, peerDeviceId, { ...record, transport: result.transport });
 	return result;
 }

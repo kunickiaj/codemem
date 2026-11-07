@@ -350,6 +350,20 @@ describe("recordSyncAttempt", () => {
 			.get("peer-1") as { failure_category: string | null };
 		expect(attempt.failure_category).toBe("other");
 	});
+
+	it.each(["direct", "relay", undefined] as const)(
+		"persists explicit or unknown transport: %s",
+		(transport) => {
+			// Arrange: direct callers may open a database before additive compatibility runs.
+			db.exec("ALTER TABLE sync_attempts DROP COLUMN transport");
+			// Act.
+			recordSyncAttempt(db, "peer-1", { ok: true, transport });
+			// Assert: omitted historical transport must not become direct by default.
+			expect(db.prepare("SELECT ok, transport FROM sync_attempts").all()).toEqual([
+				{ ok: 1, transport: transport ?? null },
+			]);
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------

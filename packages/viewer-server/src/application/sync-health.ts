@@ -26,12 +26,31 @@ export interface PeerSyncHealth {
 	state: "exchange_succeeded" | "not_verified" | "stale" | "needs_attention";
 	send: DirectionSyncHealth;
 	receive: DirectionSyncHealth;
+	/** Latest successful locally initiated sync, independent of inbound activity. */
+	last_successful_connection?: { transport: "direct" | "relay" | null; at: string | null };
 }
 
 interface LatestAttempt {
 	peer_device_id: string;
 	ok: number;
 	finished_at: string | null;
+}
+
+interface SuccessfulConnection {
+	peer_device_id: string;
+	transport: string | null;
+	finished_at: string | null;
+}
+
+function readLastSuccessfulConnections(store: MemoryStore): Map<string, SuccessfulConnection> {
+	// Include successes without transport so older recorded routes cannot hide newer unknowns.
+	const rows = store.db.prepare(`
+		SELECT p.peer_device_id, a.transport, a.finished_at FROM sync_peers p
+		JOIN sync_attempts a ON a.id = (
+			SELECT id FROM sync_attempts WHERE peer_device_id = p.peer_device_id AND ok <> 0
+			ORDER BY started_at DESC, id DESC LIMIT 1
+		)`);
+	return new Map((rows.all() as SuccessfulConnection[]).map((row) => [row.peer_device_id, row]));
 }
 
 function timestamp(value: string | null): number | null {
@@ -121,11 +140,22 @@ export function readPeerSyncHealth(
 	for (const row of latest.all() as LatestAttempt[]) {
 		if (!row.ok && row.finished_at) failed.set(row.peer_device_id, row.finished_at);
 	}
+	const connections = readLastSuccessfulConnections(store);
 	return new Map(
-		peerIds.map((id) => [
-			id,
-			peerSyncHealth(activity.get(id), { now, staleAfterMs, failedAt: failed.get(id) }),
-		]),
+		peerIds.map((id) => {
+			const connection = connections.get(id);
+			const transport = connection?.transport;
+			return [
+				id,
+				{
+					...peerSyncHealth(activity.get(id), { now, staleAfterMs, failedAt: failed.get(id) }),
+					last_successful_connection: {
+						transport: transport === "direct" || transport === "relay" ? transport : null,
+						at: connection?.finished_at ?? null,
+					},
+				},
+			];
+		}),
 	);
 }
 
