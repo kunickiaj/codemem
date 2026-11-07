@@ -137,6 +137,10 @@ New memories, active imports, and ownership-recovery copies record vector repair
 
 Local creation preserves an existing migration's status and diagnostics when recording repair intent. Failed migrations continue retrying on the maintenance worker's existing cadence. Cancelled full migrations stay stopped while local repair IDs drain. New sync work retains its existing incremental-repair behavior after cancellation. The queue currently stores pending IDs individually, so prolonged disabled mode grows the metadata that each enqueue reads and rewrites.
 
+Title and body redactions record repair intent in the same per-memory transaction as the content and reference updates. Metadata-only changes and dry runs do not enqueue repair. This bookkeeping works without loading the vector extension or an inference runtime.
+
+Inline and backfill vector writes capture the memory's source identity before inference and recheck it inside the write transaction. Each accepted chunk must also match the current text at its original chunk index. Obsolete results are discarded. Metadata-only edits that advance the revision or update timestamp also discard in-flight results, even when the text still matches. Pending repair IDs remain queued until coverage is complete, allowing a later retry. A replacement that copies every persisted identity field cannot be distinguished without an additional generation marker. These checks prevent late inference from restoring obsolete rows, but suppression of existing stale rows during pending repair is separate work.
+
 Each vector row carries a canonical identity for model repository, revision,
 runtime generation, fp32 dtype, mean pooling, L2 normalization, and dimensions.
 The default label is about 154 bytes, roughly 130 bytes more than the former
