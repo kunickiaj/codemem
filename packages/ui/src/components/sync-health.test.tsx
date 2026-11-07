@@ -23,6 +23,15 @@ const success: SyncDirectionHealth = {
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	// jsdom has no layout observer. Keep the real tooltip events and timers.
+	vi.stubGlobal(
+		"ResizeObserver",
+		class {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		},
+	);
 	vi.setSystemTime(new Date("2026-11-02T18:05:00Z"));
 	document.body.innerHTML = '<div id="mount"></div>';
 });
@@ -30,6 +39,7 @@ afterEach(() => {
 	act(() => render(null, document.body.firstElementChild as HTMLElement));
 	document.body.innerHTML = "";
 	vi.useRealTimers();
+	vi.unstubAllGlobals();
 });
 
 function draw(health?: PeerSyncHealth | null) {
@@ -51,6 +61,26 @@ function definitions(root: ParentNode | null) {
 	);
 }
 
+function term(label: string): HTMLButtonElement {
+	const button = document.querySelector<HTMLButtonElement>(`[aria-label="About ${label}"]`);
+	if (!button) throw new Error(`Missing sync term: ${label}`);
+	return button;
+}
+
+function hover(target: HTMLElement) {
+	const event = new MouseEvent("pointermove", { bubbles: true });
+	Object.defineProperty(event, "pointerType", { value: "mouse" });
+	act(() => {
+		target.dispatchEvent(event);
+	});
+}
+
+function advanceTime(ms: number) {
+	act(() => {
+		vi.advanceTimersByTime(ms);
+	});
+}
+
 describe("directional sync evidence", () => {
 	it("shows inbound-only applied operations without inventing acknowledged sends", () => {
 		// Arrange: inbound requests prove receiving independently of initiated exchanges.
@@ -60,14 +90,26 @@ describe("directional sync evidence", () => {
 			receive: { ...success, operations_24h: 7 },
 		};
 		// Act
-		const text = draw(health);
+		draw(health);
 		// Assert
-		expect(text).toContain("Sent: Not verified");
-		expect(text).toContain("Acknowledged operations in 24 hours: Not verified");
-		expect(text).toContain("Received: OK");
-		expect(text).toContain("Applied operations in 24 hours: 7");
+		expect(
+			document.querySelectorAll(".device-sync-direction .sync-health-state")[0]?.textContent,
+		).toContain("Not verified");
+		expect(
+			definitions(document.querySelectorAll(".device-sync-direction-details")[0] ?? null)[
+				"Acknowledged operations (24h)"
+			],
+		).toBe("Not recorded");
+		expect(
+			document.querySelectorAll(".device-sync-direction .sync-health-state")[1]?.textContent,
+		).toContain("Exchange succeeded");
+		expect(
+			definitions(document.querySelectorAll(".device-sync-direction-details")[1] ?? null)[
+				"Applied operations (24h)"
+			],
+		).toBe("7");
 		expect(definitions(document.querySelector(".device-sync-direction-details"))).toMatchObject({
-			"Queued for sync": "Unknown",
+			"Acknowledged operations (24h)": "Not recorded",
 		});
 	});
 
@@ -75,18 +117,19 @@ describe("directional sync evidence", () => {
 		// Arrange / Act
 		const text = draw(health);
 		// Assert
-		expect(text).toContain("Sent: Not verified");
-		expect(text).toContain("Received: Not verified");
-		expect(text).not.toContain("operations in 24 hours: 0");
-		expect(text).not.toContain("0 pending");
 		expect(
-			[...document.querySelectorAll(".device-sync-metric-value strong > [aria-hidden]")].map(
+			[...document.querySelectorAll(".device-sync-direction .sync-health-state")].map(
 				(node) => node.textContent,
 			),
-		).toEqual(["—", "—"]);
+		).toEqual(["•Not verified", "•Not verified"]);
+		expect(text).not.toMatch(/No operations sent|No operations received|\b0 operations/);
+		expect(text).not.toContain("0 pending");
+		expect(
+			[...document.querySelectorAll(".device-sync-activity")].map((node) => node.textContent),
+		).toEqual(["Operations not recorded · Last 24h", "Operations not recorded · Last 24h"]);
 	});
 
-	it("distinguishes observed zero activity and pending backlog from unknown backlog", () => {
+	it("distinguishes observed zero activity from absent evidence without inventing a queue", () => {
 		// Arrange
 		const health: PeerSyncHealth = {
 			state: "exchange_succeeded",
@@ -96,23 +139,25 @@ describe("directional sync evidence", () => {
 		// Act
 		const text = draw(health);
 		// Assert
-		expect(text).toContain("Acknowledged operations in 24 hours: 0");
-		expect(text).toContain("Applied operations in 24 hours: 0");
+		expect(text).toContain("No operations sent · Last 24h");
+		expect(text).toContain("No operations received · Last 24h");
 		const details = document.querySelectorAll(".device-sync-direction-details");
-		expect(definitions(details[0] ?? null)["Queued for sync"]).toBe("0 pending");
-		expect(definitions(details[1] ?? null)["Queued for sync"]).toBe("Unknown");
-		expect(document.querySelector("details")?.textContent).toContain(
-			"Acknowledgment does not confirm remote import",
+		expect(definitions(details[0] ?? null)["Acknowledged operations (24h)"]).toBe("0");
+		expect(definitions(details[1] ?? null)["Applied operations (24h)"]).toBe("0");
+		expect(text).not.toMatch(/Unknown|pending|Queued for sync/);
+		expect(document.querySelector("details")?.textContent).not.toContain(
+			"Remote import is not confirmed.",
 		);
 		expect(
-			[...document.querySelectorAll(".device-sync-metric-value strong > [aria-hidden]")].map(
+			[...document.querySelectorAll(".device-sync-direction .sync-health-state")].map(
 				(node) => node.textContent,
 			),
-		).toEqual(["0", "0"]);
+		).toEqual(["•Exchange succeeded", "•Exchange succeeded"]);
 	});
 
 	it.each([
 		["transfer_failed", "Transfer failed. Check the device connection and retry sync."],
+		["snapshot_failed", "Snapshot sync failed. Review sync diagnostics, then retry sync."],
 		[
 			"apply_failed",
 			"Received operations could not be applied. Review sync diagnostics, then retry.",
@@ -132,18 +177,97 @@ describe("directional sync evidence", () => {
 		// Act
 		const text = draw(health);
 		// Assert
-		expect(text).toContain("Received: Needs attention");
+		expect(
+			document.querySelectorAll(".device-sync-direction .sync-health-state")[1]?.textContent,
+		).toContain("Receive failed");
 		if (copy) expect(document.querySelector("details")?.textContent).toContain(copy);
 		expect(text).not.toContain(reason);
-		const failure = document.querySelector(".device-sync-failure");
+		const failure = document.querySelectorAll(".device-sync-direction .sync-health-state")[1];
 		expect(document.querySelector("details")?.open).toBe(false);
 		expect(failure?.closest("details")).toBeNull();
 		expect(failure?.textContent).toMatch(/failed|rejected/i);
 	});
 });
 
+describe("zero-activity failures", () => {
+	it.each(["send", "receive"] as const)(
+		"keeps %s failure visible even when activity is zero",
+		(direction) => {
+			// Arrange: zero operations describe activity, not successful replication.
+			const health: PeerSyncHealth = {
+				state: "needs_attention",
+				send: success,
+				receive: success,
+				[direction]: { ...success, state: "needs_attention", reason_code: "snapshot_failed" },
+			};
+			// Act
+			draw(health);
+			// Assert
+			const metric =
+				document.querySelectorAll(".device-sync-direction")[direction === "send" ? 0 : 1];
+			expect(metric?.querySelector(".sync-health-state")?.textContent).toContain(
+				`${direction === "send" ? "Send" : "Receive"} failed`,
+			);
+			expect(metric?.querySelector(".device-sync-activity")?.textContent).toContain(
+				"No operations",
+			);
+			expect(metric?.textContent).not.toContain("Exchange succeeded");
+			expect(document.querySelector("details")?.textContent).toContain("Snapshot sync failed.");
+		},
+	);
+});
+
+describe("latest attempt failure with historical directional success", () => {
+	it.each([success.last_success_at, null])(
+		"names the failed attempt without inventing its time (%s)",
+		(last_success_at) => {
+			// Arrange: aggregate failure has no new directional attempt or success timestamp.
+			const historical = { ...success, last_success_at, last_attempt_at: last_success_at };
+			const health: PeerSyncHealth = {
+				state: "needs_attention",
+				send: historical,
+				receive: historical,
+			};
+			// Act
+			draw(health);
+			// Assert
+			const failure = document.querySelector(".device-sync-health > .sync-health-state");
+			expect(failure?.textContent).toBe("!Latest sync attempt failed");
+			expect(failure?.closest("details")).toBeNull();
+			expect(failure?.querySelector("[title], time")).toBeNull();
+			expect(document.querySelector("details")?.open).toBe(false);
+			expect(
+				[...document.querySelectorAll(".device-sync-direction .sync-health-state")].map(
+					(node) => node.textContent,
+				),
+			).toEqual(["•Exchange succeeded", "•Exchange succeeded"]);
+			for (const direction of document.querySelectorAll(".device-sync-direction-details")) {
+				expect(definitions(direction)).toMatchObject({
+					"Last success": last_success_at ? formatTimestamp(last_success_at) : "Not verified",
+					"Last attempt": last_success_at ? formatTimestamp(last_success_at) : "Not verified",
+				});
+			}
+		},
+	);
+
+	it("removes the aggregate failure after recovery without changing historical success", () => {
+		// Arrange
+		draw({ state: "needs_attention", send: success, receive: success });
+		// Act
+		draw({ state: "exchange_succeeded", send: success, receive: success });
+		// Assert
+		expect(document.body.textContent).not.toContain("Latest sync attempt failed");
+		expect(
+			document.querySelectorAll(".device-sync-direction[data-state='succeeded']"),
+		).toHaveLength(2);
+		expect(
+			definitions(document.querySelector(".device-sync-direction-details"))["Last success"],
+		).toBe(formatTimestamp(success.last_success_at));
+	});
+});
+
 describe("snapshot and attempt evidence", () => {
-	it("keeps count definitions, tracking coverage and unknown values inside the disclosure", () => {
+	it("keeps compact values in the disclosure without mounting inline definitions", () => {
 		// Arrange
 		const health: PeerSyncHealth = {
 			state: "not_verified",
@@ -154,32 +278,32 @@ describe("snapshot and attempt evidence", () => {
 		draw(health);
 		// Assert: diagnostics remain available without presenting them as verified activity.
 		const disclosure = document.querySelector("details");
-		expect(disclosure?.textContent).toContain(
-			"Sent shows unique operations acknowledged by the peer",
+		expect(disclosure?.textContent).not.toMatch(
+			/Count definitions|Unique operations|Tracking began|Incoming connections|caught up/,
 		);
-		expect(disclosure?.textContent).toContain("Received shows unique operations applied here");
-		expect(disclosure?.textContent).toContain("last 24 hours since tracking began");
-		expect(disclosure?.textContent).toContain("Snapshot entries are counted separately");
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
 		const directions = disclosure?.querySelectorAll(".device-sync-direction-details");
 		expect(definitions(directions?.[0] ?? null)).toMatchObject({
-			"Tracking began": "Not verified",
-			"Snapshot entries (24h)": "Not verified",
+			"Snapshot entries (24h)": "Not recorded",
 			"Last attempt": "Not verified",
 			"Last success": "Not verified",
 		});
-		expect(definitions(directions?.[1] ?? null)["Tracking began"]).toBe(
-			formatTimestamp(health.receive.observed_since),
-		);
+		expect(definitions(directions?.[1] ?? null)).toMatchObject({
+			"Applied operations (24h)": "0",
+			"Snapshot entries (24h)": "2",
+			"Last success": formatTimestamp(success.last_success_at),
+		});
 	});
 
 	it.each(["send", "receive"] as const)(
 		"preserves each %s state as text outside closed details",
 		(direction) => {
 			// Arrange: the opposite direction cannot supply this direction's status.
+			const label = direction === "send" ? "Send" : "Receive";
 			const states = [
-				["succeeded", "OK · 5m ago"],
-				["stale", "Stale · 5m ago"],
-				["needs_attention", "Needs attention"],
+				["succeeded", "Exchange succeeded"],
+				["stale", "Stale"],
+				["needs_attention", `${label} failed`],
 				["not_verified", "Not verified"],
 			] as const;
 			for (const [state, copy] of states) {
@@ -194,18 +318,23 @@ describe("snapshot and attempt evidence", () => {
 				// Assert
 				const metrics = document.querySelectorAll(".device-sync-direction");
 				const metric = metrics[direction === "send" ? 0 : 1];
-				expect(metric?.textContent).toContain(direction === "send" ? "Sent" : "Received");
-				expect(metric?.querySelector(".device-sync-metric-heading")?.textContent).toContain(
-					"Last 24h",
+				expect(metric?.textContent).toContain(label);
+				expect(metric?.querySelector(".device-sync-metric-heading")?.textContent).toContain(label);
+				expect(metric?.querySelector(".sync-health-state")?.textContent).toContain(copy);
+				expect(metric?.querySelector(".device-sync-freshness")?.textContent).toBe(
+					"Last success 5m ago",
 				);
-				expect(metric?.querySelector(".device-sync-freshness")?.textContent).toBe(copy);
 				expect(metric?.closest("details")).toBeNull();
 				expect(metrics[direction === "send" ? 1 : 0]?.textContent).toContain("Not verified");
-				expect(document.body.textContent).not.toMatch(/caught up|up to date/i);
+				expect(document.querySelector(".device-sync-directions")?.textContent).not.toMatch(
+					/caught up|up to date/i,
+				);
 			}
 		},
 	);
+});
 
+describe("disclosure refresh and exact evidence", () => {
 	it.each([false, true])(
 		"preserves user disclosure state and focus through refresh (open=%s)",
 		(open) => {
@@ -227,9 +356,9 @@ describe("snapshot and attempt evidence", () => {
 			expect(document.querySelector("details")).toBe(details);
 			expect(details.open).toBe(open);
 			expect(document.activeElement).toBe(summary);
-			expect(document.querySelector(".device-sync-failure")?.textContent).toContain(
-				"Exchange failed",
-			);
+			expect(
+				document.querySelectorAll(".device-sync-direction .sync-health-state")[1]?.textContent,
+			).toContain("Receive failed");
 		},
 	);
 
@@ -243,13 +372,15 @@ describe("snapshot and attempt evidence", () => {
 		// Act
 		const text = draw(health);
 		// Assert
-		expect(text).toContain("Applied operations in 24 hours: 3");
+		expect(document.querySelectorAll(".device-sync-activity")[1]?.textContent).toBe(
+			"3 operations · Last 24h",
+		);
 		expect(
 			definitions(document.querySelectorAll(".device-sync-direction-details")[1] ?? null)[
 				"Snapshot entries (24h)"
 			],
 		).toBe(String(snapshots));
-		expect(text).not.toContain("Applied operations in 24 hours: 15");
+		expect(text).not.toContain("15 operations · Last 24h");
 	});
 
 	it.each(["succeeded", "needs_attention"] as const)(
@@ -269,6 +400,210 @@ describe("snapshot and attempt evidence", () => {
 				"Last attempt": formatTimestamp(success.last_attempt_at),
 				"Last success": formatTimestamp(success.last_success_at),
 			});
+		},
+	);
+});
+
+describe("sync term hover help", () => {
+	it("opens a term definition on activation without toggling the native disclosure", () => {
+		// Arrange
+		draw({ state: "exchange_succeeded", send: success, receive: success });
+		const details = document.querySelector("details") as HTMLDetailsElement;
+		details.open = true;
+		const trigger = term("Acknowledged operations (24h)");
+		// Act
+		act(() => trigger.click());
+		advanceTime(1000);
+		// Assert
+		const tooltip = document.querySelector('[role="tooltip"]');
+		expect(tooltip?.textContent).toContain("Remote import is not confirmed.");
+		expect(trigger.getAttribute("aria-describedby")).toBe(tooltip?.id);
+		expect(details.open).toBe(true);
+		expect(trigger.type).toBe("button");
+	});
+
+	it("delays definitions for 700ms and dismisses them with Escape", () => {
+		// Arrange: opening details must not open its explanations.
+		draw({ state: "exchange_succeeded", send: success, receive: success });
+		const details = document.querySelector("details") as HTMLDetailsElement;
+		details.open = true;
+		const trigger = term("Acknowledged operations (24h)");
+		// Act
+		hover(trigger);
+		advanceTime(699);
+		// Assert: transient hover leaves the compact disclosure unchanged.
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(trigger.hasAttribute("aria-describedby")).toBe(false);
+		// Act
+		advanceTime(1);
+		advanceTime(1000);
+		// Assert: the explanation remains available after opening effects.
+		const tooltip = document.querySelector('[role="tooltip"]');
+		expect(tooltip?.textContent).toContain("Remote import is not confirmed.");
+		expect(trigger.getAttribute("aria-describedby")).toBe(tooltip?.id);
+		expect(details.contains(tooltip)).toBe(false);
+		expect(details.textContent).not.toContain("Unique operations");
+		// Act
+		act(() => {
+			trigger.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+		});
+		advanceTime(1000);
+		// Assert
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(trigger.hasAttribute("aria-describedby")).toBe(false);
+		expect(details.open).toBe(true);
+	});
+
+	it("does not open a definition after the pointer leaves before the delay", () => {
+		// Arrange
+		draw({ state: "exchange_succeeded", send: success, receive: success });
+		const trigger = term("Last successful connection");
+		// Act
+		hover(trigger);
+		advanceTime(699);
+		act(() => {
+			trigger.dispatchEvent(new MouseEvent("pointerleave", { bubbles: true }));
+		});
+		advanceTime(1000);
+		// Assert
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(trigger.hasAttribute("aria-describedby")).toBe(false);
+	});
+});
+
+describe("sync term keyboard help", () => {
+	it.each([
+		[
+			"Acknowledged operations (24h)",
+			"Unique operations acknowledged by the paired device. Remote import is not confirmed.",
+		],
+		["Applied operations (24h)", "Unique operations applied on this device."],
+		["Snapshot entries (24h)", "Snapshot entries are counted separately from operations."],
+		["Last success", "A successful exchange can transfer zero operations."],
+		["Last successful connection", "Incoming connections are not recorded."],
+	])("exposes the %s explanation through keyboard focus", (label, description) => {
+		// Arrange
+		draw({ state: "exchange_succeeded", send: success, receive: success });
+		const details = document.querySelector("details") as HTMLDetailsElement;
+		details.open = true;
+		const trigger = term(label);
+		// Act
+		act(() => trigger.focus());
+		advanceTime(1000);
+		// Assert
+		const tooltip = document.querySelector('[role="tooltip"]');
+		expect(tooltip?.textContent).toContain(description);
+		expect(trigger.getAttribute("aria-describedby")).toBe(tooltip?.id);
+		expect(document.activeElement).toBe(trigger);
+		// Act
+		act(() => {
+			trigger.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+		});
+		advanceTime(1000);
+		// Assert: dismissal must not move focus or collapse the native disclosure.
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(document.activeElement).toBe(trigger);
+		expect(details.open).toBe(true);
+	});
+
+	it.each([null, "2026-11-01T18:00:00Z"])(
+		"exposes recorded tracking start without inventing a timestamp (%s)",
+		(observed_since) => {
+			// Arrange
+			draw({ state: "exchange_succeeded", send: success, receive: { ...success, observed_since } });
+			const details = document.querySelector("details") as HTMLDetailsElement;
+			details.open = true;
+			// Act
+			act(() => term("Applied operations (24h)").focus());
+			// Assert
+			const text = document.querySelector('[role="tooltip"]')?.textContent;
+			expect(text).toContain("Counts cover the last 24 hours since tracking began.");
+			expect(text).toContain("Zero does not confirm that devices are caught up.");
+			if (observed_since)
+				expect(text).toContain(`Tracking began ${formatTimestamp(observed_since)}.`);
+			else expect(text).not.toContain("Tracking began");
+			expect(details.textContent).not.toContain("Tracking began");
+		},
+	);
+});
+
+describe("last successful connection", () => {
+	it.each(["direct", "relay"] as const)(
+		"renders recorded %s transport independently of direction state",
+		(transport) => {
+			// Arrange: a later failure does not invalidate a recorded successful connection.
+			const health: PeerSyncHealth = {
+				state: "needs_attention",
+				send: { ...unknown, state: "needs_attention" },
+				receive: success,
+				last_successful_connection: { transport, at: success.last_success_at },
+			};
+			// Act
+			draw(health);
+			// Assert
+			const connection = document.querySelector(".device-sync-connection");
+			expect(connection?.querySelector("strong")?.textContent).toBe(
+				transport === "direct" ? "Direct" : "Relay",
+			);
+			expect(connection?.textContent).toContain("Last successful connection");
+			expect(connection?.textContent).toContain("5m ago");
+			expect(connection?.querySelector("[title]")?.getAttribute("title")).toBe(
+				formatTimestamp(success.last_success_at),
+			);
+			expect(connection?.closest("details")).toBeNull();
+			expect(document.querySelector("details")?.textContent).not.toContain("Incoming connections");
+		},
+	);
+
+	it.each([
+		{ label: "legacy payload", connection: undefined, expected: "Not recorded" },
+		{
+			label: "unknown transport",
+			connection: { transport: null, at: success.last_success_at },
+			expected: "Not recorded",
+		},
+		{
+			label: "transport without time",
+			connection: { transport: "direct" as const, at: null },
+			expected: "Direct",
+		},
+	])("does not invent connection evidence for $label", ({ connection, expected }) => {
+		// Arrange
+		const health: PeerSyncHealth = {
+			state: "exchange_succeeded",
+			send: success,
+			receive: success,
+			last_successful_connection: connection,
+		};
+		// Act
+		draw(health);
+		// Assert
+		const summary = document.querySelector(".device-sync-connection");
+		expect(summary?.querySelector("strong")?.textContent).toBe(expected);
+		expect(summary?.querySelector("[title]")).toBeNull();
+		expect(summary?.textContent).not.toContain("ago");
+	});
+
+	it.each([undefined, null])(
+		"clears retained transport when health becomes unavailable (%s)",
+		(health) => {
+			// Arrange
+			draw({
+				state: "exchange_succeeded",
+				send: success,
+				receive: success,
+				last_successful_connection: { transport: "relay", at: success.last_success_at },
+			});
+			// Act
+			draw(health);
+			// Assert
+			const summary = document.querySelector(".device-sync-connection");
+			expect(summary?.querySelector("strong")?.textContent).toBe("Not verified");
+			expect(summary?.textContent).not.toMatch(/Relay|Direct|ago/);
 		},
 	);
 });

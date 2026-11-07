@@ -203,9 +203,9 @@ afterEach(() => {
 });
 
 function syncSuccessValues(sync: Element | null | undefined) {
-	return [...(sync?.querySelectorAll("details dd:first-of-type") ?? [])].map(
-		(node) => node.textContent,
-	);
+	return [...(sync?.querySelectorAll("details dd:first-of-type") ?? [])]
+		.slice(0, 2)
+		.map((node) => node.textContent);
 }
 
 describe("Devices sync health", () => {
@@ -231,8 +231,11 @@ describe("Devices sync health", () => {
 		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
 		const sync = row?.querySelector(".devices-table-sync");
 		// Legacy contact and counters do not prove directional replication.
-		expect(sync?.textContent).toContain("Sent: Not verified");
-		expect(sync?.textContent).toContain("Received: Not verified");
+		expect(
+			[...(sync?.querySelectorAll(".device-sync-direction .sync-health-state") ?? [])].map(
+				(node) => node.textContent,
+			),
+		).toEqual(["•Not verified", "•Not verified"]);
 		expect(syncSuccessValues(sync)).toEqual(["Not verified", "Not verified"]);
 		expect(sync?.textContent).not.toContain("received 7 · sent 3");
 		const action = [
@@ -390,8 +393,8 @@ describe("Devices peer state presentation", () => {
 				[...(row()?.querySelectorAll(".device-sync-freshness") ?? [])].map(
 					(node) => node.textContent,
 				),
-			).toEqual(["Not verified", "Not verified"]);
-			expect(row()?.textContent).not.toMatch(/\bOK\b|caught up|up to date/i);
+			).toEqual(["No verified success", "No verified success"]);
+			expect(row()?.textContent).not.toMatch(/\bOK\b|Exchange succeeded|caught up|up to date/i);
 		},
 	);
 });
