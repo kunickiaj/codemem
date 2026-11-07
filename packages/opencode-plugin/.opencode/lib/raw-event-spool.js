@@ -1,7 +1,10 @@
+import { isUtf8 } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   chmod,
   link,
+  lstat,
   mkdir,
   open,
   readdir,
@@ -27,6 +30,58 @@ const spoolFilename = (eventId) => {
   const digest = createHash("sha256").update(String(eventId)).digest("hex");
   return `${digest}.json`;
 };
+
+const rejectedReasons = new Map([[400, "invalid_payload"], [413, "payload_too_large"]]);
+const rejectedFilename = (eventId, status, reason) =>
+  `rejected-${spoolFilename(eventId).slice(0, -5)}-${status}-${reason}.json`;
+
+const parseRejectedFilename = (name) => {
+  const match = /^rejected-([a-f0-9]{64})-(400|413)-(invalid_payload|payload_too_large)\.json$/.exec(name);
+  if (!match) return null;
+  const status = Number(match[2]);
+  if (rejectedReasons.get(status) !== match[3]) return null;
+  return { digest: match[1], status, reason: match[3] };
+};
+
+const requirePrivateSpoolDirectory = async (directory) => {
+  for (const path of [dirname(directory), directory]) {
+    const details = await lstat(path);
+    if (!details.isDirectory() || details.isSymbolicLink()) {
+      throw new Error("raw event spool requires a real directory");
+    }
+  }
+};
+
+// Open without following links, then inspect the opened inode before reading it.
+const readRegularSpoolFile = async (path, { makePrivate = false } = {}) => {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const details = await handle.stat();
+    if (!details.isFile()) throw new Error("raw event spool requires a regular file");
+    const bytes = await handle.readFile();
+    if (!isUtf8(bytes)) throw new Error("raw event spool requires UTF-8 JSON");
+    const serialized = bytes.toString("utf8");
+    if (makePrivate) {
+      await handle.chmod(0o600);
+      await handle.sync();
+    }
+    return { serialized, details };
+  } finally {
+    await handle.close();
+  }
+};
+
+const requireMatchingIdentity = (serialized, filename) => {
+  const eventId = requireEventId(JSON.parse(serialized));
+  if (spoolFilename(eventId) !== filename) throw conflictingEntry();
+};
+
+const rejectedMetadata = (name, entry, bytes) => ({
+  receipt: name,
+  bytes,
+  status: entry.status,
+  reason: entry.reason,
+});
 
 const requireEventId = (envelope) => {
   const eventId = typeof envelope?.event_id === "string"
@@ -123,6 +178,29 @@ const readExistingEntry = async (directory, destination, bytes, eventId) => {
   }
 };
 
+const readRejectedEntry = async (directory, name, eventId) => {
+  try {
+    const entry = await readRegularSpoolFile(join(directory, name), { makePrivate: true });
+    requireMatchingIdentity(entry.serialized, spoolFilename(eventId));
+    return entry;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+};
+
+const readMatchingRejectedEntry = async (directory, eventId, bytes) => {
+  let existing = null;
+  for (const [status, reason] of rejectedReasons) {
+    const entry = await readRejectedEntry(directory, rejectedFilename(eventId, status, reason), eventId);
+    if (!entry) continue;
+    if (!sameEventApartFromDeliveryTime(entry.serialized, bytes)) throw conflictingEntry();
+    existing = { eventId, serialized: entry.serialized };
+  }
+  if (existing) await syncDirectory(directory);
+  return existing;
+};
+
 const requireSpoolCapacity = async (directory, maxEntries) =>
   atSpoolStage("capacity", async () => {
     const directoryEntries = await readdir(directory, { withFileTypes: true });
@@ -174,7 +252,9 @@ const writeRawEventSpoolEntryUnlocked = async ({
 
   await atSpoolStage("directory", () => ensurePrivateDirectory(directory));
   const existing = await readExistingEntry(directory, destination, bytes, eventId);
-  if (existing) return existing;
+  const rejected = await atSpoolStage("existing_entry", () =>
+    readMatchingRejectedEntry(directory, eventId, bytes));
+  if (rejected || existing) return rejected || existing;
   await requireSpoolCapacity(directory, normalizedMaxEntries);
   await publishSpoolEntry(temporary, destination, bytes);
   await atSpoolStage("directory_sync", () => syncDirectory(directory));
@@ -182,11 +262,10 @@ const writeRawEventSpoolEntryUnlocked = async ({
   return { eventId, serialized: bytes };
 };
 
-const writeRawEventSpoolEntry = async (options) => {
-  const directory = resolveSpoolDirectory(options?.homeDir);
+const serializeSpoolMutation = (directory, action) => {
   const previousWrite = spoolWritesInFlight.get(directory);
   const writePromise = (previousWrite ? previousWrite.catch(() => {}) : Promise.resolve())
-    .then(() => writeRawEventSpoolEntryUnlocked(options));
+    .then(action);
   const trackedWrite = writePromise.finally(() => {
     if (spoolWritesInFlight.get(directory) === trackedWrite) {
       spoolWritesInFlight.delete(directory);
@@ -196,12 +275,124 @@ const writeRawEventSpoolEntry = async (options) => {
   return trackedWrite;
 };
 
+const writeRawEventSpoolEntry = async (options) =>
+  serializeSpoolMutation(resolveSpoolDirectory(options?.homeDir), () =>
+    writeRawEventSpoolEntryUnlocked(options));
+
+const requireSameInode = async (path, expected) => {
+  const actual = await lstat(path);
+  if (!actual.isFile() || actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    throw conflictingEntry();
+  }
+};
+
+const publishRejectedEntry = async (directory, source, destination, active) => {
+  await requireSameInode(source, active.details);
+  try {
+    await link(source, destination);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  const retained = await readRegularSpoolFile(destination, { makePrivate: true });
+  if (retained.serialized !== active.serialized) {
+    throw conflictingEntry();
+  }
+  // Both names must survive a crash before removing the active name.
+  await atSpoolStage("rejected_directory_sync", () => syncDirectory(directory));
+  await requireSameInode(destination, retained.details);
+  await requireSameInode(source, active.details);
+  await atSpoolStage("rejected_unlink", () => rm(source));
+  await atSpoolStage("rejected_final_sync", () => syncDirectory(directory));
+  return retained;
+};
+
+const retainRejectedRawEventSpoolEntryUnlocked = async ({ eventId, status, reason, homeDir }) => {
+  const normalizedEventId = requireEventId({ event_id: eventId });
+  if (!rejectedReasons.has(status) || rejectedReasons.get(status) !== reason) {
+    throw new Error("unsupported raw event rejection");
+  }
+  const directory = resolveSpoolDirectory(homeDir);
+  await requirePrivateSpoolDirectory(directory);
+  await chmod(directory, 0o700);
+  const name = rejectedFilename(normalizedEventId, status, reason);
+  const source = join(directory, spoolFilename(normalizedEventId));
+  let active;
+  try {
+    active = await readRegularSpoolFile(source, { makePrivate: true });
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    const retained = await readRejectedEntry(directory, name, normalizedEventId);
+    if (!retained) throw error;
+    await syncDirectory(directory);
+    return rejectedMetadata(name, { status, reason }, retained.details.size);
+  }
+  requireMatchingIdentity(active.serialized, spoolFilename(normalizedEventId));
+  for (const [otherStatus, otherReason] of rejectedReasons) {
+    if (otherStatus === status) continue;
+    const other = await readRejectedEntry(directory,
+      rejectedFilename(normalizedEventId, otherStatus, otherReason), normalizedEventId);
+    if (other) throw conflictingEntry();
+  }
+  const retained = await publishRejectedEntry(directory, source, join(directory, name), active);
+  return rejectedMetadata(name, { status, reason }, retained.details.size);
+};
+
+const retainRejectedRawEventSpoolEntry = async (options) =>
+  serializeSpoolMutation(resolveSpoolDirectory(options?.homeDir), () =>
+    retainRejectedRawEventSpoolEntryUnlocked(options));
+
+const listRejectedRawEventSpoolEntries = async ({ homeDir = homedir() } = {}) => {
+  const directory = resolveSpoolDirectory(homeDir);
+  let names;
+  try {
+    await requirePrivateSpoolDirectory(directory);
+    names = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const entries = [];
+  for (const candidate of names) {
+    const entry = parseRejectedFilename(candidate.name);
+    if (!candidate.isFile() || !entry) continue;
+    try {
+      const retained = await readRegularSpoolFile(join(directory, candidate.name));
+      requireMatchingIdentity(retained.serialized, `${entry.digest}.json`);
+      entries.push(rejectedMetadata(candidate.name, entry, retained.details.size));
+    } catch {
+      // Invalid or concurrently removed files expose no payload or filesystem details.
+    }
+  }
+  return entries.sort((left, right) => left.receipt.localeCompare(right.receipt));
+};
+
 const removeRawEventSpoolEntry = async ({ eventId, homeDir = homedir() }) => {
   const normalizedEventId = requireEventId({ event_id: eventId });
   await rm(
     join(resolveSpoolDirectory(homeDir), spoolFilename(normalizedEventId)),
     { force: true },
   );
+};
+
+const findActiveSpoolCandidates = async (directory, directoryEntries) => {
+  const candidates = [];
+  for (const directoryEntry of directoryEntries) {
+    if (parseRejectedFilename(directoryEntry.name)) continue;
+    if (!directoryEntry.isFile() || !directoryEntry.name.endsWith(".json")) {
+      continue;
+    }
+    const path = join(directory, directoryEntry.name);
+    try {
+      const details = await stat(path);
+      candidates.push({ path, mtimeMs: details.mtimeMs, name: directoryEntry.name });
+    } catch {
+      // A concurrently removed entry needs no recovery attempt.
+    }
+  }
+  candidates.sort(
+    (left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name),
+  );
+  return candidates;
 };
 
 const loadRawEventSpoolEntries = async ({
@@ -219,22 +410,7 @@ const loadRawEventSpoolEntries = async ({
     throw error;
   }
 
-  const candidates = [];
-  for (const directoryEntry of directoryEntries) {
-    if (!directoryEntry.isFile() || !directoryEntry.name.endsWith(".json")) {
-      continue;
-    }
-    const path = join(directory, directoryEntry.name);
-    try {
-      const details = await stat(path);
-      candidates.push({ path, mtimeMs: details.mtimeMs, name: directoryEntry.name });
-    } catch {
-      // A concurrently removed entry needs no recovery attempt.
-    }
-  }
-  candidates.sort(
-    (left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name),
-  );
+  const candidates = await findActiveSpoolCandidates(directory, directoryEntries);
 
   const entries = [];
   let corruptCount = 0;
@@ -265,10 +441,12 @@ const loadRawEventSpoolEntries = async ({
 export {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
+  listRejectedRawEventSpoolEntries,
   loadRawEventSpoolEntries,
   RAW_EVENT_SPOOL_CONFLICT_CODE,
   RAW_EVENT_SPOOL_FULL_CODE,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
+  retainRejectedRawEventSpoolEntry,
   writeRawEventSpoolEntry,
 };
