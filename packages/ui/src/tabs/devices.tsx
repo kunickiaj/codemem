@@ -1,5 +1,6 @@
 import { type RefObject, render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
+import { DeviceEnrollmentIssues } from "../components/device-enrollment-issues";
 import { LoadingCardList } from "../components/LoadingCardList";
 import { ActionMenu, type MenuAction } from "../components/primitives/action-menu";
 import { Chip } from "../components/primitives/chip";
@@ -106,6 +107,23 @@ function currentDeviceInventory(options: DevicesRendererOptions) {
 
 function directLocalDeviceId(options: DevicesRendererOptions): string | undefined {
 	return options.localDeviceId || options.inventory?.items.find((item) => item.isLocal)?.deviceId;
+}
+
+function localDeviceName(options: DevicesRendererOptions): string {
+	const deviceId = directLocalDeviceId(options);
+	return (
+		options.inventory?.items.find((item) => item.evidenceDeviceIds.includes(deviceId ?? ""))
+			?.displayName ?? "this device"
+	);
+}
+
+function hasAlternativeIdentity(intent: RecipientPolicyIntentGraphV1, identityId: string | null) {
+	return intent.identities.some(
+		(identity) =>
+			identity.status === "active" &&
+			identity.mergedIntoIdentityId === null &&
+			identity.identityId !== identityId,
+	);
 }
 
 export interface DeviceProjectProjection {
@@ -519,25 +537,30 @@ function setDeviceCommitStatus(message: string): void {
 
 function SetupRecoveryAction({
 	item,
-	onNavigate,
+	options,
 	onOpenPairing,
 }: {
 	item: DeviceIdentityInventoryItemV1;
-	onNavigate?: (target: DevicesNavigationTarget) => void;
+	options: DevicesRendererOptions;
 	onOpenPairing: PairingEntryHandler;
 }) {
 	if (item.state === "pairing_required") {
 		return (
 			<>
-				<p>Pair this device first. Pairing establishes trust but does not choose its Identity.</p>
+				<p>
+					To assign an Identity, pair {item.displayName} with {localDeviceName(options)}. Manual
+					pairing requires access to both devices.
+				</p>
 				<div className="device-identity-card-actions">
 					<button
 						aria-label={`Pair ${item.displayName}`}
 						className="settings-button"
-						onClick={(event) => onOpenPairing(event.currentTarget)}
+						onClick={(event) =>
+							onOpenPairing(event.currentTarget, { deviceName: item.displayName })
+						}
 						type="button"
 					>
-						Pair a device
+						Set up manual pairing
 					</button>
 				</div>
 			</>
@@ -551,7 +574,7 @@ function SetupRecoveryAction({
 				<button
 					aria-label={`Open Advanced review for ${item.displayName}`}
 					className="settings-button"
-					onClick={() => onNavigate?.("advanced_sync")}
+					onClick={() => options.onNavigate?.("advanced_sync")}
 					type="button"
 				>
 					Open Advanced review
@@ -873,7 +896,7 @@ function SetupWorkflow({
 								) : (
 									<SetupRecoveryAction
 										item={item}
-										onNavigate={options.onNavigate}
+										options={options}
 										onOpenPairing={onOpenPairing}
 									/>
 								)}
@@ -993,7 +1016,12 @@ function RebindGuidance({ hasAlternative }: { hasAlternative: boolean }) {
 	);
 }
 
-function ConfiguredRebind({
+function ConfiguredRebind(props: ConfiguredRebindProps) {
+	if (!hasAlternativeIdentity(props.intent, props.item.identityId)) return null;
+	return <ConfiguredRebindForm {...props} />;
+}
+
+function ConfiguredRebindForm({
 	controlKey,
 	intent,
 	inventory,
@@ -1139,9 +1167,9 @@ function ConfiguredRebind({
 			{gate.recovery ? <p className="small">{gate.recovery}</p> : null}
 			{open ? (
 				<fieldset>
-					<legend>Reassign this configured device</legend>
+					<legend>Change device Identity</legend>
 					<p>
-						<strong>Suggested current Identity (unconfirmed):</strong> {previousIdentity}
+						<strong>Current Identity:</strong> {previousIdentity}
 					</p>
 					<RebindGuidance hasAlternative={identities.length > 0} />
 					<label htmlFor={`configured-rebind-${controlKey}`}>Target Identity</label>
@@ -1318,6 +1346,7 @@ function deviceNavigationMenuAction(
 
 function DeviceRowMenu({
 	device,
+	canReassign,
 	inventoryItem,
 	onDetails,
 	detailsId,
@@ -1329,6 +1358,7 @@ function DeviceRowMenu({
 	options,
 }: {
 	device: DeviceProjection;
+	canReassign: boolean;
 	inventoryItem?: DeviceIdentityInventoryItemV1;
 	onDetails: () => void;
 	detailsId: string;
@@ -1343,14 +1373,19 @@ function DeviceRowMenu({
 	const actions: MenuAction[] = [
 		...deviceSyncMenuAction({ device, options, busy: syncBusy, onSelect: onSync }),
 		...deviceNavigationMenuAction(device, options),
-		{ ariaControls: detailsId, ariaExpanded: detailsOpen, label: "Details", onSelect: onDetails },
+		{
+			ariaControls: detailsId,
+			ariaExpanded: detailsOpen,
+			label: "Device details",
+			onSelect: onDetails,
+		},
 		{
 			// The form cannot accept input while the device list is unavailable.
 			disabled: options.inventoryUnavailable === true || options.refreshError === true,
 			label: "Rename device…",
 			onSelect: onRename,
 		},
-		...(inventoryItem
+		...(inventoryItem && canReassign
 			? [
 					{
 						disabled: rebindBlocked,
@@ -1436,8 +1471,14 @@ function syncHealthLabel(
 	const peer = device.syncPeer;
 	if (isLocal) return "This device";
 	if (statusUnavailable) return "Not verified";
-	if (!peer) return "Not paired here";
+	if (!peer) return "No sync connection";
 	if (!peer.paired) return "Pairing required";
+	const sendFailed = peer.syncHealth?.send.state === "needs_attention";
+	const receiveFailed = peer.syncHealth?.receive.state === "needs_attention";
+	if (sendFailed && receiveFailed) return "Send and receive failed";
+	if (sendFailed) return "Send failed";
+	if (receiveFailed) return "Receive failed";
+	if (peer.syncHealth?.state === "needs_attention") return "Attempt failed";
 	return evidenceLabel(peer.syncHealth);
 }
 
@@ -1470,12 +1511,14 @@ function DeviceNameSyncState({
 
 function DeviceSyncCell({
 	device,
+	localName,
 	isLocal,
 	statusUnavailable,
 	feedback,
 	busy,
 }: {
 	device: DeviceProjection;
+	localName: string;
 	isLocal: boolean;
 	statusUnavailable: boolean;
 	feedback: DeviceSyncFeedback | null;
@@ -1487,11 +1530,19 @@ function DeviceSyncCell({
 		<td className="devices-table-sync" data-label="Sync">
 			{busy ? (
 				<span aria-live="polite" className="small">
-					Syncing this device…
+					Syncing {device.displayName}…
 				</span>
 			) : null}
 			{!isLocal && peer?.paired ? (
 				<DirectionalSyncHealth health={showCounts ? peer.syncHealth : null} />
+			) : null}
+			{!isLocal && !peer ? (
+				<span className="small">No sync connection recorded on {localName}.</span>
+			) : null}
+			{!isLocal && peer && !peer.paired ? (
+				<span className="small">
+					{device.displayName} has no confirmed pairing on {localName}.
+				</span>
 			) : null}
 			{feedback ? (
 				<span aria-live="polite" className="small" data-tone={feedback.tone} role="status">
@@ -1548,6 +1599,7 @@ function DeviceRowStatusCells({
 			</td>
 			<DeviceSyncCell
 				device={device}
+				localName={localDeviceName(options)}
 				isLocal={directLocalDeviceId(options) === device.deviceId}
 				statusUnavailable={deviceSyncStatusUnavailable(device, options)}
 				feedback={feedback}
@@ -1658,6 +1710,7 @@ function DeviceTableRow({
 				<td>
 					<DeviceRowMenu
 						device={device}
+						canReassign={hasAlternativeIdentity(intent, device.identityId)}
 						detailsId={detailsId}
 						detailsOpen={detailsOpen}
 						inventoryItem={inventoryItem}
@@ -1925,8 +1978,11 @@ function ThisDeviceRow({
 		<div className="devices-local-row">
 			<PresencePip aria-label="This device online" state="online" />
 			<div className="devices-local-copy">
-				<strong>This device</strong>
+				<strong>{localDevice?.displayName ?? localBinding?.displayName ?? "This device"}</strong>
 				<span className="small">{ownershipLabel}</span>
+				<span className="small">
+					Sync results describe exchanges with {localDeviceName(options)}.
+				</span>
 			</div>
 			<Chip tone="actor-badge local" variant="badge">
 				This device
@@ -1935,7 +1991,10 @@ function ThisDeviceRow({
 	);
 }
 
-type PairingEntryHandler = (trigger: HTMLElement, showExplanation?: boolean) => void;
+type PairingEntryHandler = (
+	trigger: HTMLElement,
+	options?: { showExplanation?: boolean; deviceName?: string },
+) => void;
 
 function restorePairingControls(
 	panel: HTMLElement,
@@ -2019,7 +2078,7 @@ function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandl
 				</button>
 				<button
 					className="settings-button"
-					onClick={(event) => onOpenPairing(event.currentTarget, true)}
+					onClick={(event) => onOpenPairing(event.currentTarget, { showExplanation: true })}
 					type="button"
 				>
 					How pairing works
@@ -2032,9 +2091,11 @@ function DevicesEmptyState({ onOpenPairing }: { onOpenPairing: PairingEntryHandl
 function PairingPanel({
 	onClose,
 	showExplanation,
+	deviceName,
 }: {
 	onClose: () => void;
 	showExplanation: boolean;
+	deviceName?: string;
 }) {
 	const headingRef = useRef<HTMLHeadingElement>(null);
 	useEffect(() => headingRef.current?.focus(), []);
@@ -2046,7 +2107,7 @@ function PairingPanel({
 		>
 			<div className="devices-pairing-header">
 				<h3 id="devices-pairing-heading" ref={headingRef} tabIndex={-1}>
-					Pair a device
+					{deviceName ? `Pair ${deviceName}` : "Pair a device"}
 				</h3>
 				<button className="settings-button" onClick={onClose} type="button">
 					Close
@@ -2056,7 +2117,7 @@ function PairingPanel({
 				<p>Generate a pairing payload on the device you want to connect, then accept it here.</p>
 			) : null}
 			<p className="small">
-				On the other device, run <code>codemem sync enable</code>, then{" "}
+				On {deviceName ?? "the other device"}, run <code>codemem sync enable</code>, then{" "}
 				<code>codemem serve restart</code> before generating the payload below. Both devices need
 				sync enabled to exchange memories.
 			</p>
@@ -2144,6 +2205,23 @@ function ConfiguredFallbackInventory({
 	);
 }
 
+function CoordinatorEnrollmentAttention({ options }: { options: DevicesRendererOptions }) {
+	const count = options.coordinatorEnrollmentIssueCount ?? 0;
+	if (count === 0) return null;
+	return (
+		<aside
+			aria-labelledby="devices-coordinator-reconciliation-heading"
+			className="peer-card peer-card--padded recipient-policy-sharing-attention"
+		>
+			<h3 id="devices-coordinator-reconciliation-heading">Coordinator setup issues</h3>
+			<p>
+				{count.toLocaleString()} setup issue{count === 1 ? " needs" : "s need"} review.
+			</p>
+			<DeviceEnrollmentIssues inventory={options.inventory} onNavigate={options.onNavigate} />
+		</aside>
+	);
+}
+
 function DevicesView({
 	intent,
 	onOpenPairing,
@@ -2204,26 +2282,7 @@ function DevicesView({
 			options={options}
 		/>
 	) : null;
-	const coordinatorAttention =
-		(options.coordinatorEnrollmentIssueCount ?? 0) > 0 ? (
-			<aside
-				aria-labelledby="devices-coordinator-reconciliation-heading"
-				className="peer-card peer-card--padded recipient-policy-sharing-attention"
-			>
-				<h3 id="devices-coordinator-reconciliation-heading">Coordinator setup needs attention</h3>
-				<p>
-					{options.coordinatorEnrollmentIssueCount?.toLocaleString()} coordinator enrollment
-					{options.coordinatorEnrollmentIssueCount === 1 ? " could" : "s could"} not be safely
-					reconciled with device Identity setup.
-				</p>
-				<p className="small">
-					No ownership was inferred.{" "}
-					{setupItems.length > 0
-						? "Review the affected device setup or pairing state here, then retry after coordinator data is corrected."
-						: "No device on this page can be corrected from here. Retry after coordinator data is corrected."}
-				</p>
-			</aside>
-		) : null;
+	const coordinatorAttention = <CoordinatorEnrollmentAttention options={options} />;
 	const inventoryWorkflow = options.inventory ? (
 		<>
 			{options.inventory.truncated ? (
@@ -2308,6 +2367,31 @@ function DevicesSyncSummary({ options }: { options: DevicesRendererOptions }) {
 	return <SyncHealthSummary health={state.lastSyncStatus?.sync_health} unavailable={unavailable} />;
 }
 
+function useDevicePairing() {
+	const [pairingOpen, setPairingOpen] = useState(false);
+	const [showPairingExplanation, setShowPairingExplanation] = useState(false);
+	const [pairingDeviceName, setPairingDeviceName] = useState<string>();
+	const pairingTrigger = useRef<HTMLElement | null>(null);
+	const openPairing: PairingEntryHandler = (trigger, pairingOptions = {}) => {
+		pairingTrigger.current = trigger;
+		setShowPairingExplanation(pairingOptions.showExplanation ?? false);
+		setPairingDeviceName(pairingOptions.deviceName);
+		setPairingOpen(true);
+	};
+	const closePairing = () => {
+		setPairingOpen(false);
+		queueMicrotask(() => pairingTrigger.current?.focus());
+	};
+	const panel = pairingOpen ? (
+		<PairingPanel
+			onClose={closePairing}
+			showExplanation={showPairingExplanation}
+			deviceName={pairingDeviceName}
+		/>
+	) : null;
+	return { open: pairingOpen, onOpen: openPairing, panel };
+}
+
 function DevicesRoot({
 	intent,
 	options,
@@ -2335,18 +2419,7 @@ function DevicesRoot({
 		deviceIdentityAttentionItems(options.inventory).length +
 		configuredFallbackCount;
 	const showDeviceCount = !options.loading && !options.loadError;
-	const [pairingOpen, setPairingOpen] = useState(false);
-	const [showPairingExplanation, setShowPairingExplanation] = useState(false);
-	const pairingTrigger = useRef<HTMLElement | null>(null);
-	const openPairing: PairingEntryHandler = (trigger, showExplanation = false) => {
-		pairingTrigger.current = trigger;
-		setShowPairingExplanation(showExplanation);
-		setPairingOpen(true);
-	};
-	const closePairing = () => {
-		setPairingOpen(false);
-		queueMicrotask(() => pairingTrigger.current?.focus());
-	};
+	const pairing = useDevicePairing();
 	return (
 		<section
 			aria-labelledby="devices-heading"
@@ -2356,26 +2429,24 @@ function DevicesRoot({
 				<h2 id="devices-heading" tabIndex={-1}>
 					Devices{" "}
 					{showDeviceCount ? (
-						<span className="devices-heading-count">{visibleDeviceCount}</span>
+						<span className="devices-heading-count">· {visibleDeviceCount}</span>
 					) : null}
 				</h2>
 				<button
 					aria-controls="devices-pairing-panel"
-					aria-expanded={pairingOpen}
+					aria-expanded={pairing.open}
 					className="settings-save"
-					onClick={(event) => openPairing(event.currentTarget)}
+					onClick={(event) => pairing.onOpen(event.currentTarget)}
 					type="button"
 				>
 					Pair a device
 				</button>
 			</div>
-			{pairingOpen ? (
-				<PairingPanel onClose={closePairing} showExplanation={showPairingExplanation} />
-			) : null}
+			{pairing.panel}
 			<DevicesSyncSummary options={options} />
 			<DevicesView
 				intent={intent}
-				onOpenPairing={openPairing}
+				onOpenPairing={pairing.onOpen}
 				options={options}
 				projection={projection}
 			/>
