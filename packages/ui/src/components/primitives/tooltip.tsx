@@ -18,6 +18,8 @@ interface TooltipProps {
 	asChild?: boolean;
 	/** Disable the tooltip entirely — useful when the hint is already visible. */
 	disabled?: boolean;
+	/** Open help on activation as well as hover/focus, including touch input. */
+	openOnClick?: boolean;
 }
 
 interface TooltipProviderProps {
@@ -66,6 +68,7 @@ export function Tooltip({
 	sideOffset = 6,
 	asChild = true,
 	disabled = false,
+	openOnClick = false,
 }: TooltipProps) {
 	// Controlled state keeps Radix's opening event ahead of content mounting in Preact.
 	const [open, setOpen] = useState(false);
@@ -75,7 +78,19 @@ export function Tooltip({
 	if (disabled) return <>{children}</>;
 	return (
 		<TooltipPrimitive.Root open={open} onOpenChange={setOpen}>
-			<TooltipPrimitive.Trigger asChild={asChild}>{children}</TooltipPrimitive.Trigger>
+			<TooltipPrimitive.Trigger
+				asChild={asChild}
+				onClick={
+					openOnClick
+						? (event) => {
+								event.preventDefault();
+								setOpen(true);
+							}
+						: undefined
+				}
+			>
+				{children}
+			</TooltipPrimitive.Trigger>
 			<TooltipPrimitive.Portal>
 				<TooltipPrimitive.Content
 					align={align}

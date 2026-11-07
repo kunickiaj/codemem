@@ -2162,23 +2162,27 @@
       .sync-health-kpis dd { margin: var(--sp-1) 0 0; color: var(--text-primary); font-size: calc(var(--font-size-3xl) * 1.4); font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; line-height: 1.2; }
       .sync-health-coverage { display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); padding: var(--sp-1) var(--sp-5); border-top: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary); font-size: var(--font-size-xs); line-height: 1.5; }
       .devices-table-sync { display: grid; gap: var(--sp-2); font-size: var(--font-size-sm); }
+      .device-sync-connection { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); margin-bottom: var(--sp-2); color: var(--text-secondary); font-size: var(--font-size-xs); }
+      .device-sync-connection strong { color: var(--text-primary); font-weight: var(--font-weight-medium); }
+      .device-sync-term { padding: 0; min-height: 24px; border: 0; background: none; color: inherit; font: inherit; text-align: left; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+      .device-sync-term:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+      .device-enrollment-issues ul { display: grid; gap: var(--sp-3); list-style: none; margin: var(--sp-3) 0; padding: 0; }
+      .device-enrollment-issues li { border-top: 1px solid var(--border); padding-top: var(--sp-3); }
+      .device-enrollment-issues p { margin: var(--sp-1) 0; }
+      .device-enrollment-issues dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--sp-1) var(--sp-3); }
+      .device-enrollment-issues dd { margin: 0; overflow-wrap: anywhere; }
       .device-sync-directions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
       .device-sync-direction { min-width: 0; display: grid; align-content: start; gap: var(--sp-1); }
       .device-sync-direction + .device-sync-direction { border-inline-start: 1px solid var(--border); padding-inline-start: var(--sp-4); }
-      .device-sync-metric-heading { display: flex; justify-content: space-between; gap: var(--sp-2); color: var(--text-secondary); font-size: var(--font-size-sm); line-height: 1.25; }
-      .device-sync-metric-heading > :last-child { color: var(--text-secondary); font-size: var(--font-size-xs); }
-      .device-sync-metric-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); }
-      .device-sync-metric-value > strong { color: var(--text-primary); font-size: calc(var(--font-size-3xl) * 1.4); font-weight: var(--font-weight-semibold); font-variant-numeric: tabular-nums; line-height: 1.15; }
+      .device-sync-metric-heading { color: var(--text-secondary); font-size: var(--font-size-sm); line-height: 1.25; }
+      .device-sync-direction > .sync-health-state { font-size: var(--font-size-sm); line-height: 1.4; }
+      .device-sync-activity { color: var(--text-secondary); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; line-height: 1.4; }
       .device-sync-freshness { color: var(--text-secondary); font-size: var(--font-size-xs); line-height: 1.4; }
-      .device-sync-direction[data-state="needs_attention"] .device-sync-freshness, .device-sync-failure { color: var(--status-attention); }
-      .device-sync-direction[data-state="stale"] .device-sync-freshness { color: var(--text-secondary); }
-      .device-sync-failure { margin: 0; font-size: var(--font-size-sm); line-height: 1.4; }
       .device-sync-details { margin-top: 0; }
       .device-sync-details > summary { width: fit-content; min-height: 24px; color: var(--text-secondary); cursor: pointer; font-size: var(--font-size-xs); line-height: 24px; border-radius: 2px; }
       .device-sync-details > summary:hover { color: var(--accent); }
       .device-sync-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
       .device-sync-details-content { margin-top: var(--sp-2); padding: var(--sp-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-secondary); font-size: var(--font-size-sm); line-height: 1.5; overflow-wrap: anywhere; }
-      .device-sync-details-content p { margin: 0 0 var(--sp-3); }
       .device-sync-direction-details + .device-sync-direction-details { border-top: 1px solid var(--border); margin-top: var(--sp-3); padding-top: var(--sp-3); }
       .device-sync-direction-details h4 { margin: 0 0 var(--sp-2); color: var(--text-primary); font-size: var(--font-size-sm); font-weight: var(--font-weight-semibold); }
       .device-sync-direction-details dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: var(--sp-1) var(--sp-3); margin: 0 0 var(--sp-2); }
@@ -2193,6 +2197,14 @@
         .sync-health-kpis > div:first-child { border-inline-start: 0; padding-inline-start: 0; }
         .sync-health-coverage { padding-inline: var(--sp-4); }
         .device-sync-details > summary { min-height: 44px; line-height: 44px; }
+      }
+      @media (max-width: 400px) {
+        .device-sync-direction-details dl { grid-template-columns: 1fr; }
+        .device-sync-direction-details dd { margin-bottom: var(--sp-2); }
+      }
+      @media (max-width: 360px) {
+        .device-sync-directions { grid-template-columns: 1fr; gap: var(--sp-3); }
+        .device-sync-direction + .device-sync-direction { border-inline-start: 0; padding-inline-start: 0; border-top: 1px solid var(--border); padding-top: var(--sp-3); }
       }
       .devices-table-details { border-top: 1px solid var(--border); background: var(--surface-2); }
       .devices-table-details > td { display: grid; gap: var(--sp-3); padding: var(--sp-4) var(--sp-6); }

@@ -1053,7 +1053,7 @@ describe("Devices app sync health", () => {
 		});
 		const row = document.getElementById("device-identity-card-device-private");
 		expect(row?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Acknowledged operations in 24 hours: Not verified",
+			"Acknowledged operations (24h)Not recorded",
 		);
 		expect(row?.querySelector(".devices-table-sync")?.textContent).not.toContain("received 4");
 		const action = workMenu().querySelector<HTMLButtonElement>('[aria-label="Sync Work Laptop"]');
@@ -1146,10 +1146,18 @@ describe("Devices sync evidence refresh", () => {
 		const text = document
 			.getElementById("device-identity-card-device-private")
 			?.querySelector(".devices-table-sync")?.textContent;
-		expect(text).toContain("Sent: Not verified");
-		expect(text).toContain("Acknowledged operations in 24 hours: Not verified");
-		expect(text).toContain("Received: OK");
-		expect(text).toContain("Applied operations in 24 hours: 4");
+		expect(
+			document.querySelector(
+				"#device-identity-card-device-private .device-sync-direction .sync-health-state",
+			)?.textContent,
+		).toContain("Not verified");
+		expect(text).toContain("Acknowledged operations (24h)Not recorded");
+		expect(
+			document.querySelectorAll(
+				"#device-identity-card-device-private .device-sync-direction .sync-health-state",
+			)[1]?.textContent,
+		).toContain("Exchange succeeded");
+		expect(text).toContain("Applied operations (24h)4");
 		expect(text).not.toContain("99");
 		expect(
 			[...document.querySelectorAll("#tab-devices .sync-health-kpis dd")].map(
@@ -1208,7 +1216,7 @@ describe("Devices sync evidence outage", () => {
 		});
 		const row = () => document.getElementById("device-identity-card-device-private");
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain(
-			"Applied operations in 24 hours: 3",
+			"Applied operations (24h)3",
 		);
 		mocks.loadSyncData.mockResolvedValueOnce(false);
 		await act(async () => {
@@ -1216,7 +1224,7 @@ describe("Devices sync evidence outage", () => {
 		});
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).toContain("Not verified");
 		expect(row()?.querySelector(".devices-table-sync")?.textContent).not.toContain(
-			"Applied (24h): 3",
+			"Applied operations (24h)3",
 		);
 		expect(document.getElementById("tab-devices")?.textContent).not.toContain("OK");
 		expect(

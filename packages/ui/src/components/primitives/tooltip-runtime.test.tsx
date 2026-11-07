@@ -235,3 +235,102 @@ describe("Tooltip real Radix lifecycle", () => {
 		expectLinkedTooltip(button("hint"), "Toggleable hint");
 	});
 });
+
+describe("Tooltip activation help", () => {
+	it.each([
+		{ mode: "default", openOnClick: undefined, opens: false },
+		{ mode: "explicitly disabled", openOnClick: false, opens: false },
+		{ mode: "opted in", openOnClick: true, opens: true },
+	])("opens on touch-like activation only when $mode", ({ openOnClick, opens }) => {
+		// Arrange: touch pointer movement must not be mistaken for delayed mouse hover.
+		renderTooltips(
+			<Tooltip label="Activation hint" openOnClick={openOnClick}>
+				<button id="hint" type="button">
+					Hint
+				</button>
+			</Tooltip>,
+		);
+		const trigger = button("hint");
+		// Act
+		for (const type of ["pointermove", "pointerdown", "pointerup"]) {
+			const event = new MouseEvent(type, { bubbles: true });
+			Object.defineProperty(event, "pointerType", { value: "touch" });
+			act(() => {
+				trigger.dispatchEvent(event);
+			});
+		}
+		advanceEffects();
+		// Assert
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		// Act
+		act(() => trigger.click());
+		advanceEffects();
+		// Assert: an opted-in tap must survive the opening event and pending effects.
+		const tooltip = document.querySelector('[role="tooltip"]');
+		expect(tooltip !== null).toBe(opens);
+		if (opens) expect(tooltip?.textContent).toBe("Activation hint");
+		expect(trigger.hasAttribute("aria-describedby")).toBe(opens);
+	});
+
+	it.each(["Escape", "outside pointer"])("dismisses activated help with %s", (method) => {
+		// Arrange
+		renderTooltips(
+			<Tooltip label="Activation hint" openOnClick>
+				<button id="hint" type="button">
+					Hint
+				</button>
+			</Tooltip>,
+		);
+		const trigger = button("hint");
+		act(() => trigger.click());
+		advanceEffects();
+		expect(document.querySelector('[role="tooltip"]')?.textContent).toBe("Activation hint");
+		// Act
+		act(() => {
+			if (method === "Escape")
+				trigger.dispatchEvent(
+					new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+				);
+			else document.body.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+		});
+		advanceEffects();
+		// Assert
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(trigger.hasAttribute("aria-describedby")).toBe(false);
+	});
+
+	it("keeps opted-in help open after activating a focused trigger", () => {
+		// Arrange: keyboard users can activate a term after focus already opened help.
+		renderTooltips(
+			<Tooltip label="Activation hint" openOnClick>
+				<button id="hint" type="button">
+					Hint
+				</button>
+			</Tooltip>,
+		);
+		const trigger = button("hint");
+		focus(trigger);
+		// Act
+		act(() => trigger.click());
+		advanceEffects();
+		// Assert
+		expectLinkedTooltip(trigger, "Activation hint");
+	});
+
+	it("does not open disabled help even when activation is opted in", () => {
+		// Arrange
+		renderTooltips(
+			<Tooltip label="Disabled hint" openOnClick disabled>
+				<button id="hint" type="button">
+					Hint
+				</button>
+			</Tooltip>,
+		);
+		// Act
+		act(() => button("hint").click());
+		advanceEffects();
+		// Assert
+		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+		expect(button("hint").hasAttribute("aria-describedby")).toBe(false);
+	});
+});

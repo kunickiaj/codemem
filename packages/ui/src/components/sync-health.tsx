@@ -1,12 +1,16 @@
 import { formatRelativeTime, formatTimestamp } from "../lib/format";
 import {
+	hasSyncAttemptFailure,
 	type OverallSyncHealth,
 	type PeerSyncHealth,
 	type SyncDirectionHealth,
+	syncDirectionActivity,
+	syncDirectionLabel,
 	syncHealthLabel,
 	syncHealthReason,
 	syncHealthSummary,
 } from "../lib/sync-health";
+import { Tooltip, TooltipProvider } from "./primitives/tooltip";
 
 export function SyncHealthState({ label, state }: { label: string; state?: string }) {
 	const symbol = state === "needs_attention" ? "!" : "•";
@@ -89,83 +93,79 @@ export function SyncHealthSummary({
 	);
 }
 
-function directionFreshness(direction?: SyncDirectionHealth): string {
-	if (!direction || direction.state === "not_verified") return "Not verified";
-	const freshness = direction.last_success_at
-		? formatRelativeTime(direction.last_success_at)
-		: "No verified success";
-	if (direction.state === "needs_attention") return "Needs attention";
-	if (direction.state === "stale") return `Stale · ${freshness}`;
-	return `OK · ${freshness}`;
-}
-
 function directionFailure(direction?: SyncDirectionHealth): string | null {
 	if (direction?.state !== "needs_attention") return null;
-	const reasons: Record<string, string> = {
-		transfer_failed: "Transfer failed. Check connection and retry.",
-		apply_failed: "Apply failed. Review sync diagnostics.",
-		scope_rejected: "Access rejected. Review shared-space access.",
-	};
-	return reasons[direction.reason_code ?? ""] ?? "Exchange failed. Review sync diagnostics.";
+	return syncHealthReason(direction.reason_code) ?? "Review sync diagnostics, then retry sync.";
 }
 
 function DirectionMetric({
 	label,
 	direction,
 }: {
-	label: "Sent" | "Received";
+	label: "Send" | "Receive";
 	direction?: SyncDirectionHealth;
 }) {
-	const method = label === "Sent" ? "Acknowledged" : "Applied";
-	const failure = directionFailure(direction);
 	return (
 		<div className="device-sync-direction" data-state={direction?.state ?? "not_verified"}>
-			<div className="device-sync-metric-heading">
-				<span>{label}</span>
-				<span>Last 24h</span>
-			</div>
-			<div
-				className="device-sync-metric-value"
-				title={`${method} unique operations in the last 24 hours since tracking began. Snapshot entries counted separately.`}
+			<div className="device-sync-metric-heading">{label}</div>
+			<SyncHealthState label={syncDirectionLabel(label, direction)} state={direction?.state} />
+			<span
+				className="device-sync-freshness"
+				title={
+					direction?.last_success_at
+						? `Last success: ${formatTimestamp(direction.last_success_at)}`
+						: undefined
+				}
 			>
-				<strong>
-					<span aria-hidden="true">{direction?.operations_24h?.toLocaleString() ?? "—"}</span>
-					<span className="sr-only">
-						{method} operations in 24 hours: {direction?.operations_24h ?? "Not verified"}
-					</span>
-				</strong>
-				<span
-					className="device-sync-freshness"
-					title={
-						direction?.last_success_at
-							? `Last success: ${formatTimestamp(direction.last_success_at)}`
-							: undefined
-					}
-				>
-					{directionFreshness(direction)}
-				</span>
-			</div>
-			{failure ? <p className="device-sync-failure">{failure}</p> : null}
+				{direction?.last_success_at
+					? `Last success ${formatRelativeTime(direction.last_success_at)}`
+					: "No verified success"}
+			</span>
+			<span className="device-sync-activity">{syncDirectionActivity(label, direction)}</span>
 		</div>
 	);
+}
+
+function SyncTerm({ label, description }: { label: string; description: string }) {
+	return (
+		<Tooltip label={description} openOnClick>
+			<button className="device-sync-term" type="button" aria-label={`About ${label}`}>
+				{label}
+			</button>
+		</Tooltip>
+	);
+}
+
+function countDefinition(label: "Send" | "Receive", direction?: SyncDirectionHealth): string {
+	const meaning =
+		label === "Send"
+			? "Unique operations acknowledged by the paired device. Remote import is not confirmed."
+			: "Unique operations applied on this device.";
+	const start = direction?.observed_since
+		? ` Tracking began ${formatTimestamp(direction.observed_since)}.`
+		: "";
+	return `${meaning} Counts cover the last 24 hours since tracking began. Zero does not confirm that devices are caught up.${start}`;
 }
 
 function DirectionDetails({
 	label,
 	direction,
 }: {
-	label: "Sent" | "Received";
+	label: "Send" | "Receive";
 	direction?: SyncDirectionHealth;
 }) {
-	const reason = syncHealthReason(direction?.reason_code);
-	const method = label === "Sent" ? "Acknowledged" : "Applied";
+	const reason = directionFailure(direction) ?? syncHealthReason(direction?.reason_code);
+	const method = label === "Send" ? "Acknowledged operations (24h)" : "Applied operations (24h)";
 	return (
 		<div className="device-sync-direction-details">
-			<h4>
-				{label}: {syncHealthLabel(direction)}
-			</h4>
+			<h4>{label}</h4>
 			<dl>
-				<dt>Last success</dt>
+				<dt>
+					<SyncTerm
+						label="Last success"
+						description="Last successful exchange. A successful exchange can transfer zero operations."
+					/>
+				</dt>
 				<dd>
 					{direction?.last_success_at ? formatTimestamp(direction.last_success_at) : "Not verified"}
 				</dd>
@@ -173,45 +173,64 @@ function DirectionDetails({
 				<dd>
 					{direction?.last_attempt_at ? formatTimestamp(direction.last_attempt_at) : "Not verified"}
 				</dd>
-				<dt>{method} (24h)</dt>
-				<dd>{direction?.operations_24h?.toLocaleString() ?? "Not verified"}</dd>
-				<dt>Snapshot entries (24h)</dt>
-				<dd>{direction?.snapshot_items_24h?.toLocaleString() ?? "Not verified"}</dd>
-				<dt>Tracking began</dt>
-				<dd>
-					{direction?.observed_since ? formatTimestamp(direction.observed_since) : "Not verified"}
-				</dd>
-				<dt>Queued for sync</dt>
-				<dd>
-					{direction?.pending_count == null
-						? "Unknown"
-						: `${direction.pending_count.toLocaleString()} pending`}
-				</dd>
+				<dt>
+					<SyncTerm label={method} description={countDefinition(label, direction)} />
+				</dt>
+				<dd>{direction?.operations_24h?.toLocaleString() ?? "Not recorded"}</dd>
+				<dt>
+					<SyncTerm
+						label="Snapshot entries (24h)"
+						description="Entries transferred in snapshots during the last 24 hours. Snapshot entries are counted separately from operations."
+					/>
+				</dt>
+				<dd>{direction?.snapshot_items_24h?.toLocaleString() ?? "Not recorded"}</dd>
+				{reason ? <dt>Failure</dt> : null}
+				{reason ? <dd>{reason}</dd> : null}
 			</dl>
-			{reason ? <p>{reason}</p> : null}
+		</div>
+	);
+}
+
+function ConnectionSummary({ health }: { health?: PeerSyncHealth | null }) {
+	const connection = health?.last_successful_connection;
+	let label = "Not recorded";
+	if (!health) label = "Not verified";
+	if (connection?.transport === "direct") label = "Direct";
+	if (connection?.transport === "relay") label = "Relay";
+	return (
+		<div className="device-sync-connection">
+			<SyncTerm
+				label="Last successful connection"
+				description="Connection used by the latest successful sync started from this device. Incoming connections are not recorded."
+			/>
+			<strong>{label}</strong>
+			{connection?.transport && connection.at ? (
+				<span title={formatTimestamp(connection.at)}>{formatRelativeTime(connection.at)}</span>
+			) : null}
 		</div>
 	);
 }
 
 export function DirectionalSyncHealth({ health }: { health?: PeerSyncHealth | null }) {
 	return (
-		<div className="device-sync-health">
-			<div className="device-sync-directions">
-				<DirectionMetric label="Sent" direction={health?.send} />
-				<DirectionMetric label="Received" direction={health?.receive} />
-			</div>
-			<details className="device-sync-details">
-				<summary>Sync details</summary>
-				<div className="device-sync-details-content">
-					<p>
-						Sent shows unique operations acknowledged by the peer. Acknowledgment does not confirm
-						remote import. Received shows unique operations applied here. Counts cover the last 24
-						hours since tracking began. Snapshot entries are counted separately.
-					</p>
-					<DirectionDetails label="Sent" direction={health?.send} />
-					<DirectionDetails label="Received" direction={health?.receive} />
+		<TooltipProvider delayDuration={700}>
+			<div className="device-sync-health">
+				<ConnectionSummary health={health} />
+				{hasSyncAttemptFailure(health) ? (
+					<SyncHealthState label="Latest sync attempt failed" state="needs_attention" />
+				) : null}
+				<div className="device-sync-directions">
+					<DirectionMetric label="Send" direction={health?.send} />
+					<DirectionMetric label="Receive" direction={health?.receive} />
 				</div>
-			</details>
-		</div>
+				<details className="device-sync-details">
+					<summary>Sync details</summary>
+					<div className="device-sync-details-content">
+						<DirectionDetails label="Send" direction={health?.send} />
+						<DirectionDetails label="Receive" direction={health?.receive} />
+					</div>
+				</details>
+			</div>
+		</TooltipProvider>
 	);
 }

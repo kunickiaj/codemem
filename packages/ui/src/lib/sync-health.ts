@@ -15,6 +15,10 @@ export interface PeerSyncHealth {
 	state: "exchange_succeeded" | "not_verified" | "stale" | "needs_attention";
 	send: SyncDirectionHealth;
 	receive: SyncDirectionHealth;
+	last_successful_connection?: {
+		transport: "direct" | "relay" | null;
+		at: string | null;
+	};
 }
 
 export interface OverallSyncHealth {
@@ -44,9 +48,42 @@ export function syncHealthReason(code: string | null | undefined): string | null
 		return "Transfer failed. Check the device connection and retry sync.";
 	if (code === "apply_failed")
 		return "Received operations could not be applied. Review sync diagnostics, then retry.";
+	if (code === "snapshot_failed")
+		return "Snapshot sync failed. Review sync diagnostics, then retry sync.";
 	if (code === "scope_rejected")
 		return "Received operations were rejected. Review shared-space access and sync diagnostics.";
 	return null;
+}
+
+export function syncDirectionLabel(
+	label: "Send" | "Receive",
+	direction?: SyncDirectionHealth,
+): string {
+	if (direction?.state === "succeeded") return "Exchange succeeded";
+	if (direction?.state === "needs_attention") return `${label} failed`;
+	return syncHealthLabel(direction);
+}
+
+export function hasSyncAttemptFailure(health?: PeerSyncHealth | null): boolean {
+	return (
+		health?.state === "needs_attention" &&
+		health.send.state !== "needs_attention" &&
+		health.receive.state !== "needs_attention"
+	);
+}
+
+export function syncDirectionActivity(
+	label: "Send" | "Receive",
+	direction?: SyncDirectionHealth,
+): string {
+	const count = direction?.operations_24h;
+	if (count == null) return "Operations not recorded · Last 24h";
+	if (count === 0) {
+		const action = label === "Send" ? "sent" : "received";
+		return `No operations ${action} · Last 24h`;
+	}
+	const noun = count === 1 ? "operation" : "operations";
+	return `${count.toLocaleString()} ${noun} · Last 24h`;
 }
 
 export function syncHealthSummary(health?: OverallSyncHealth | null): string {
