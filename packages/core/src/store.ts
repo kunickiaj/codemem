@@ -118,6 +118,7 @@ import type {
 	TimelineItemResponse,
 	UsageEventRow,
 } from "./types.js";
+import { queueVectorBackfill } from "./vector-backfill-queue.js";
 import { configuredVectorIndexModel, VectorIndexMaintenance } from "./vector-index-maintenance.js";
 import { ensureVectorIndexReady } from "./vector-index-upgrade.js";
 import { vectorStoreExists } from "./vector-layout.js";
@@ -1142,8 +1143,9 @@ export class MemoryStore {
 
 	/**
 	 * Require current authority before dedup or insert. Caller-owned transactions must
-	 * collect identities and enqueueCommittedVectorWrites after committing, unless
-	 * CODEMEM_EMBEDDING_DISABLED intentionally suppresses vectors. No text is collected.
+	 * collect identities and enqueueCommittedVectorWrites after committing for immediate
+	 * inference. Durable repair intent is recorded with content even when inference is disabled.
+	 * No text is collected.
 	 */
 	rememberForUser(
 		sessionId: number,
@@ -1455,6 +1457,7 @@ export class MemoryStore {
 		options: { replicate?: boolean },
 	): void {
 		this.recordNewMemoryProvenance(memoryId, metadata);
+		queueVectorBackfill(this.db, { upsertMemoryIds: [memoryId], deleteMemoryIds: [] });
 		if (options.replicate === false) return;
 		try {
 			recordReplicationOp(this.db, { memoryId, opType: "upsert", deviceId: this.deviceId });
