@@ -36,6 +36,52 @@ export function inspectRejectedRawEventSpoolEntry(options: {
 	homeDir?: string;
 	maxBytes?: number;
 }): Promise<RejectedRawEventInspection>;
+export type RejectedRawEventAcknowledgement = {
+	acknowledged: true;
+	acknowledgement: "queued" | "ingested";
+};
+export type RejectedRawEventDeliveryResult =
+	| RejectedRawEventAcknowledgement
+	| { acknowledged: false }
+	| false;
+export type RejectedRawEventRecoveryResult = {
+	lock: "not_acquired" | "released" | "release_failed";
+} & (
+	| {
+			delivery: "not_attempted";
+			cleanup: "not_attempted";
+			reason:
+				| "invalid_receipt"
+				| "invalid_delivery"
+				| "receipt_not_found"
+				| "inspection_failed"
+				| "unsafe_entry"
+				| "invalid"
+				| "read_limit_exceeded"
+				| "changed_during_read"
+				| "lock_busy"
+				| "lock_repair_required"
+				| "lock_failed";
+	  }
+	| {
+			delivery: "unacknowledged";
+			cleanup: "not_attempted";
+			reason: "delivery_failed" | "delivery_rejected" | "invalid_acknowledgement";
+	  }
+	| {
+			delivery: "accepted";
+			acknowledgement: "queued" | "ingested";
+			cleanup: "changed" | "failed" | "removed" | "uncertain";
+	  }
+);
+export function recoverRejectedRawEventSpoolEntry(options: {
+	receipt: string;
+	homeDir?: string;
+	/** Runs under the directory serializer. Must not await another mutation in the same spool. */
+	deliver: (entry: {
+		serialized: string;
+	}) => RejectedRawEventDeliveryResult | Promise<RejectedRawEventDeliveryResult>;
+}): Promise<RejectedRawEventRecoveryResult>;
 export function writeRawEventSpoolEntry(options: {
 	envelope: Record<string, unknown>;
 	serialized?: string;
@@ -47,7 +93,7 @@ export function retainRejectedRawEventSpoolEntry(options: {
 	status: 400 | 413;
 	reason: "invalid_payload" | "payload_too_large";
 	homeDir?: string;
-}): Promise<RejectedRawEventMetadata>;
+}): Promise<RejectedRawEventMetadata & { lock?: "release_failed" }>;
 export function removeRawEventSpoolEntry(options: {
 	eventId: string;
 	homeDir?: string;

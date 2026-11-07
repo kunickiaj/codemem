@@ -615,6 +615,14 @@ Stream contract:
 - `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
 - If OpenCode reports that a raw event was not saved for retry after a Viewer timeout, keep the client running until delivery recovers. The plugin records a content-free `raw_events.spool.failure` line in the local Codemem plugin log with a failure stage and allowlisted code (`conflict`, `full`, or a filesystem errno). If that log cannot be written, the same safe category goes to the host log. This distinguishes an existing-entry conflict from a directory, write, or sync error without logging the event ID or transcript. The warning alone does not prove which event was lost; inspect the retained spool and Viewer status before restarting the client.
 
+### Selected-entry recovery storage
+
+The internal recovery API validates one retained entry and passes its original bytes to a delivery callback. The callback must validate acceptance before returning a supported `queued` or `ingested` acknowledgement. The storage API itself sends no HTTP requests. After acknowledgement it rechecks the opened file, current path, metadata, hash, and exact bytes before removing only the selected retained name. Active aliases remain untouched. Results distinguish accepted delivery, changed or failed cleanup, uncertain directory durability, and lock-release failure. Successful retention can likewise report a lock-release warning separately from its durable result. If retention fails, its original error takes precedence over a later release failure.
+
+Retention and recovery share a private lock per event digest. A live or uncertain owner reports busy. A newly starting owner can briefly leave an incomplete record, so retry a repair-required result once before attempting repair. Stopped owners, persistent incomplete records, and unverifiable locks require manual repair, without automatic age-based removal. A crash can leave a lock behind. Stop capture and all recovery processes, make a private backup of the spool, and verify that no operation owns the lock before removing only that lock. Never remove retained `.json` entries to clear a lock. If ownership remains uncertain, leave the files intact.
+
+The delivery callback runs under the spool's mutation serializer and must not await another mutation in that same spool. Coordination covers participating Codemem processes. An unrelated writer can still replace a path between the final identity check and removal. The operator HTTP retry command and automatic queue advancement remain separate changes.
+
 ### Delegated brief capture (OpenCode 1)
 
 A verified task brief is context for later work, not evidence of human approval or a new discovery.
