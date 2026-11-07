@@ -534,6 +534,7 @@ export class RawEventSweeper {
 					project: null,
 					startedAt: null,
 					maxEvents,
+					allowOversizedRetry: true,
 				});
 				drained.add(key);
 			} catch (error) {
@@ -564,6 +565,7 @@ export class RawEventSweeper {
 					project: null,
 					startedAt: null,
 					maxEvents,
+					allowOversizedRetry: true,
 				});
 			} catch (error) {
 				if (this.handleSessionFlushError(error, streamId, "active")) return false;

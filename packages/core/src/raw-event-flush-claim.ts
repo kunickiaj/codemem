@@ -5,6 +5,7 @@ import {
 	type RawEventFlushRange,
 	readLiveRawEventFlushRange,
 } from "./raw-event-flush-cursor.js";
+import { isV2Event } from "./raw-event-host-generation.js";
 import type { MemoryStore } from "./store.js";
 
 export function rawEventStuckBatchMs(): number {
@@ -79,6 +80,63 @@ export function readRawEventFlushClaim(store: MemoryStore, batchId: number): Raw
 	return { batchId, generation: row.claim_generation, attemptCount: row.attempt_count };
 }
 
+function isSingleHostGenerationRange(store: MemoryStore, range: RawEventFlushRange): boolean {
+	const scanSize = 100;
+	let afterEventSeq = range.startEventSeq - 1;
+	let generation: boolean | null = null;
+	while (true) {
+		const events = store.rawEventsSinceBySeq(
+			range.streamId,
+			range.source,
+			afterEventSeq,
+			scanSize,
+			range.lastEventSeq,
+		);
+		for (const event of events) {
+			const eventGeneration = isV2Event(event);
+			if (generation !== null && generation !== eventGeneration) return false;
+			generation = eventGeneration;
+			afterEventSeq = Number(event.event_seq);
+		}
+		if (events.length < scanSize) return true;
+	}
+}
+
+/** Read-only planning hint. Admission rechecks this choice under its write lock. */
+export function readPreferredRawEventFlushRange(
+	store: MemoryStore,
+	stream: { source: string; streamId: string },
+): RawEventFlushRange | null {
+	const cursor = store.rawEventFlushState(stream.streamId, stream.source);
+	const rows = store.db
+		.prepare(`SELECT b.start_event_seq, b.end_event_seq
+		FROM raw_event_flush_batches b
+		WHERE b.source = ? AND b.stream_id = ? AND b.extractor_version = ?
+		AND b.status IN ('pending', 'failed', 'started', 'error', 'claimed', 'running')
+		AND b.start_event_seq > ? AND b.end_event_seq >= b.start_event_seq
+		AND EXISTS (SELECT 1 FROM raw_events retained
+			WHERE retained.source = b.source AND retained.stream_id = b.stream_id
+			AND retained.event_seq >= b.start_event_seq AND retained.event_seq <= b.end_event_seq)
+		AND NOT EXISTS (SELECT 1 FROM raw_events e
+			WHERE e.source = b.source AND e.stream_id = b.stream_id
+			AND e.event_seq > ? AND e.event_seq < b.start_event_seq)
+		ORDER BY b.start_event_seq, b.end_event_seq, b.id`)
+		.iterate(stream.source, stream.streamId, LIVE_RAW_EVENT_EXTRACTOR, cursor, cursor) as Iterable<{
+		start_event_seq: number;
+		end_event_seq: number;
+	}>;
+	for (const row of rows) {
+		const range = {
+			...stream,
+			startEventSeq: row.start_event_seq,
+			lastEventSeq: row.end_event_seq,
+		};
+		// Legacy mixed-host identities must use normal partitioning. Valid retries retain their budget.
+		if (isSingleHostGenerationRange(store, range)) return range;
+	}
+	return null;
+}
+
 export function getRawEventFlushBatchSnapshot(
 	store: MemoryStore,
 	...args: Parameters<MemoryStore["getOrCreateRawEventFlushBatch"]>
@@ -91,6 +149,12 @@ export function getRawEventFlushBatchSnapshot(
 			const range = { source, streamId, startEventSeq, lastEventSeq };
 			if (extractor !== LIVE_RAW_EVENT_EXTRACTOR) return null;
 			if (hasActiveRawEventFlush(store, range) || !isRawEventFlushPrefix(store, range)) return null;
+			const preferred = readPreferredRawEventFlushRange(store, range);
+			if (
+				preferred &&
+				(preferred.startEventSeq !== startEventSeq || preferred.lastEventSeq !== lastEventSeq)
+			)
+				return null;
 			const batch = store.getOrCreateRawEventFlushBatch(...args);
 			return { ...batch, snapshot: readRawEventFlushClaim(store, batch.batchId) };
 		})
