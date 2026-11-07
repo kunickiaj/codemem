@@ -4,10 +4,12 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createPeerHttpExecutor } from "./peer-http-client.js";
+import { PeerHttpExchangeError, type PeerHttpExchangeErrorCode } from "./peer-http-policy.js";
 import type { PeerHttpServerRequest } from "./peer-http-server.js";
 import { decodeRelayCheckPacket } from "./relay-admission-codec.js";
 import { decodeRelayDataFrame, encodeRelayDataFrame } from "./relay-data-frame.js";
-import type { RelayPeerClientOptions } from "./relay-peer-client.js";
+import { RELAY_FAILURE_REASONS, RelayFailure } from "./relay-failure-reason.js";
+import type { RelayInboundFailure, RelayPeerClientOptions } from "./relay-peer-client.js";
 import {
 	disposableIdentity,
 	relayClientFixture,
@@ -132,6 +134,181 @@ describe("actual relay peer HTTP exchange", () => {
 			expect(f.runtime.counters().sockets).toBe(0);
 		},
 	);
+});
+
+describe("relay inbound diagnostics", () => {
+	it("does not report successful inbound HTTP or an unrelated source failure", async () => {
+		// Arrange: both callbacks observe only failures on their own inbound routes.
+		const f = await fixture();
+		const targetFailure = vi.fn();
+		const sourceFailure = vi.fn();
+		const target = f.client("target", {
+			onInboundFailure: targetFailure,
+			onInbound: async (_connection, context) =>
+				context.serve({
+					origin: "https://peer.invalid",
+					dispatch: async () => ({ status: 200, bodyBytes: Buffer.from("{}") }),
+				}),
+		});
+		const source = f.client("source", { onInboundFailure: sourceFailure });
+		await target.connect(new AbortController().signal, relayDeadline());
+		// Act.
+		const result = await createPeerHttpExecutor({
+			factory: source.factory("target", f.identities.target.expectedPin),
+		})("GET", "https://peer.invalid/success");
+		await source.close();
+		await expect(
+			source.factory("target", f.identities.target.expectedPin).open({
+				signal: new AbortController().signal,
+				deadlineMs: relayDeadline(),
+			}),
+		).rejects.toThrow();
+		// Assert.
+		expect(result).toEqual([200, {}]);
+		expect(targetFailure).not.toHaveBeenCalled();
+		expect(sourceFailure).not.toHaveBeenCalled();
+	});
+
+	it.each(["unknown-peer", "coordinator-error", "unknown-reason"])(
+		"reports only admission and an allowlisted reason for %s despite a throwing callback",
+		async (fault) => {
+			// Arrange: exercise rejection before route creation and asynchronous admission failure.
+			const raw = "private coordinator error source";
+			const f = await fixture({
+				beforeCheck: async ({ packet }) => {
+					const decoded = decodeRelayCheckPacket(packet);
+					if (decoded.kind !== "admission" || decoded.value.role !== "responder") return;
+					if (fault === "unknown-reason") throw new RelayFailure(raw as never, raw);
+					throw new Error(raw);
+				},
+			});
+			const onInbound = vi.fn();
+			const onInboundFailure = vi.fn(() => {
+				throw new Error("diagnostic callback failed");
+			});
+			const target = f.client("target", {
+				onInbound,
+				onInboundFailure,
+				...(fault === "unknown-peer" ? { resolvePeerPin: () => null } : {}),
+			});
+			const sourceFailure = vi.fn();
+			const source = f.client("source", { onInboundFailure: sourceFailure });
+			await target.connect(new AbortController().signal, relayDeadline());
+			// Act.
+			const result = createPeerHttpExecutor({
+				factory: source.factory("target", f.identities.target.expectedPin),
+			})("GET", "https://peer.invalid/private-request");
+			// Assert: callback errors cannot prevent REJECTED/CLOSE or route cleanup.
+			await expect(result).rejects.toThrow();
+			await vi.waitFor(() => expect(f.runtime.counters().routes).toBe(0));
+			expect(onInboundFailure.mock.calls).toEqual([
+				[{ stage: "admission", reason: "relay_admission_failed" }],
+			]);
+			expect(onInbound).not.toHaveBeenCalled();
+			expect(sourceFailure).not.toHaveBeenCalled();
+		},
+		10000,
+	);
+});
+
+describe("relay inbound diagnostics after admission", () => {
+	it("reports a corrupt Noise opening as handshake failure and cleans up when the callback throws", async () => {
+		// Arrange: change authenticated opening bytes after admission, without knowing Noise keys.
+		const f = await fixture({
+			faultProxy: {
+				rule: (frame) => {
+					if (frame.kind !== "data" || frame.direction !== "toPeer" || frame.socket !== 0) return;
+					return {
+						type: "substitute",
+						bytes: (bytes) => {
+							const last = bytes.length - 1;
+							bytes[last] = (bytes[last] ?? 0) ^ 1;
+							return bytes;
+						},
+					};
+				},
+			},
+		});
+		const onInbound = vi.fn();
+		const onInboundFailure = vi.fn(() => {
+			throw new Error("diagnostic callback failed");
+		});
+		const target = f.client("target", { onInbound, onInboundFailure });
+		const source = f.client("source");
+		await target.connect(new AbortController().signal, relayDeadline());
+		// Act.
+		const result = source.factory("target", f.identities.target.expectedPin).open({
+			signal: new AbortController().signal,
+			deadlineMs: relayDeadline(),
+		});
+		// Assert: no peer, session, key, or error object is exposed.
+		await expect(result).rejects.toThrow();
+		await vi.waitFor(() => expect(f.runtime.counters().routes).toBe(0));
+		expect(onInboundFailure.mock.calls).toEqual([
+			[{ stage: "handshake", reason: "relay_handshake_failed" }],
+		]);
+		expect(onInbound).not.toHaveBeenCalled();
+	}, 10000);
+
+	it.each([
+		"framing",
+		"response_too_large",
+		"deadline",
+		"cancelled",
+		"transport",
+		"cleanup",
+		"private-unrecognized-code",
+		"raw-error",
+		"relay_peer_revoked",
+	] as const)("includes only an allowlisted HTTP code for %s", async (code) => {
+		// Arrange: callback failure must not alter disposal of an authenticated inbound connection.
+		const f = await fixture();
+		const onInboundFailure = vi.fn<(failure: RelayInboundFailure) => void>(() => {
+			throw new Error("diagnostic callback failed");
+		});
+		let completion: Promise<void> | undefined;
+		let session = "";
+		const target = f.client("target", {
+			onInboundFailure,
+			onInbound: async (connection, context) => {
+				completion = connection.completion;
+				session = context.sessionId;
+				const raw = `private HTTP error ${session} ${context.peerPin} ${context.peerDeviceId}`;
+				if (code === "raw-error") throw new Error(raw);
+				if (code === "relay_peer_revoked") throw new RelayFailure(code, raw);
+				const error = new PeerHttpExchangeError(code as PeerHttpExchangeErrorCode);
+				error.message = raw;
+				throw error;
+			},
+		});
+		const source = f.client("source");
+		await target.connect(new AbortController().signal, relayDeadline());
+		// Act.
+		const result = createPeerHttpExecutor({
+			factory: source.factory("target", f.identities.target.expectedPin),
+		})("GET", "https://peer.invalid/private-request");
+		// Assert: terminal cleanup still completes, and payloads contain only diagnostic enums.
+		await expect(result).rejects.toThrow();
+		await vi.waitFor(() => expect(onInboundFailure).toHaveBeenCalledTimes(1));
+		await expect(completion).rejects.toThrow();
+		await vi.waitFor(() => expect(f.runtime.counters().routes).toBe(0));
+		const [failure] = onInboundFailure.mock.calls[0] ?? [];
+		if (!failure) throw new Error("Missing inbound failure callback");
+		const hasHttpCode = !["private-unrecognized-code", "raw-error", "relay_peer_revoked"].includes(
+			code,
+		);
+		expect(failure).toEqual({
+			stage: "http",
+			reason: expect.stringMatching(/^relay_/),
+			...(hasHttpCode ? { httpCode: code } : {}),
+		});
+		expect(RELAY_FAILURE_REASONS).toContain(failure.reason);
+		if (code === "relay_peer_revoked") expect(failure.reason).toBe(code);
+		if (code === "deadline" || code === "cancelled") expect(failure.reason).toBe("relay_expired");
+		const serialized = JSON.stringify(failure);
+		for (const secret of [session, f.identities.source.expectedPin, "source", "private"])
+			expect(serialized).not.toContain(secret);
+	});
 });
 
 describe("relay peer graceful socket close", () => {

@@ -6,6 +6,7 @@ import {
 	type MemoryStore,
 	type RequestJsonExecutor,
 	readCoordinatorSyncConfig,
+	recordSyncAttempt,
 	setLocalSyncFeature,
 } from "@codemem/core";
 import {
@@ -147,6 +148,22 @@ function buildClient(deps: Deps, config: RelayGroupClientConfig): RelayPeerClien
 		}),
 		resolvePeerPin: (peerDeviceId) => pinnedPeerKey(db, peerDeviceId),
 		validateLocal: () => sameDevice(readLocalDevice(db), device),
+		onInboundFailure: (failure) => {
+			const http = failure.httpCode ? ` http=${failure.httpCode}` : "";
+			const diagnostic = `relay_target_failure stage=${failure.stage} reason=${failure.reason}${http}`;
+			try {
+				// An empty peer key keeps this identifier-free diagnostic out of individual peer health.
+				// Do not update a real peer's last_error for an independent inbound exchange.
+				recordSyncAttempt(db, "", {
+					ok: false,
+					error: diagnostic,
+					failureCategory: "connectivity",
+				});
+			} catch {
+				options.log?.("[codemem] relay target diagnostic could not be persisted", "warn");
+			}
+			options.log?.(`[codemem] ${diagnostic}`, "warn");
+		},
 		onInbound: (_connection, context) =>
 			context.serve({ origin: RELAY_LOGICAL_ORIGIN, dispatch: deps.dispatch }),
 	});
