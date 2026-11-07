@@ -785,6 +785,12 @@ export function ensureSyncAttemptFailureCategoryColumn(db: DatabaseType): void {
 	addColumnIfMissing(db, "sync_attempts", "failure_category", "TEXT");
 }
 
+/** Preserve unknown historical transport without changing the schema version. */
+export function ensureSyncAttemptTransportColumn(db: DatabaseType): void {
+	if (!tableExists(db, "sync_attempts")) return;
+	addColumnIfMissing(db, "sync_attempts", "transport", "TEXT");
+}
+
 /** Persist a direct-peer signature version only when it advances the peer's observed maximum. */
 export function recordHighestObservedDirectSignatureVersion(
 	db: DatabaseType,
@@ -1073,6 +1079,7 @@ function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	// columns, so the schema_compat_state gate cannot prove they exist.
 	ensureSyncPeerRuntimeVersionColumns(db);
 	ensureSyncAttemptFailureCategoryColumn(db);
+	ensureSyncAttemptTransportColumn(db);
 	ensureRawEventCaptureContextSchema(db);
 	ensureSyncPeerSignatureStateSchema(db);
 	ensureDeviceIdentityBindingAuditSchema(db);

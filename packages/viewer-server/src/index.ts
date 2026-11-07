@@ -177,6 +177,7 @@ export interface AppOptions extends SyncAppOptions {
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
+	syncReachability?: SyncRoutesOptions["syncReachability"];
 	getSyncRuntimeStatus?: () => {
 		phase:
 			| "starting"
@@ -279,7 +280,6 @@ export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
 	const getObserver = opts?.getObserver ?? (() => opts?.observer ?? null);
-	const getSyncRuntimeStatus = opts?.getSyncRuntimeStatus ?? (() => null);
 	let invalidateTeamSetupSummary = () => {};
 	const app = new Hono();
 	registerViewerBoundary(app, opts);
@@ -316,7 +316,8 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	app.route(
 		"/",
-		syncRoutes(storeFactory, getSyncRuntimeStatus, {
+		syncRoutes(storeFactory, opts?.getSyncRuntimeStatus, {
+			syncReachability: opts?.syncReachability,
 			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
 			onRecipientPolicyTeamRenamed: () => invalidateTeamSetupSummary(),
 			readCoordinatorConfig: opts?.readCoordinatorConfig,

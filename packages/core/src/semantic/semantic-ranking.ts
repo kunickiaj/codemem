@@ -1,12 +1,16 @@
 /** Exact semantic ranking inside a caller-owned, validated read snapshot. */
-import { type Database, tableExists } from "../db.js";
+import type { Database } from "../db.js";
 import { DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL } from "../embeddings.js";
-import type { MaintenanceJobSnapshot, MaintenanceJobStatus } from "../maintenance-jobs.js";
+import type { MaintenanceJobSnapshot } from "../maintenance-jobs.js";
 import {
 	buildAuthorizedSemanticMemoryIdsQuery,
+	pendingVectorFreshness,
 	resolveSemanticSearchModelFromCatalog,
 	semanticResult,
 } from "../semantic-query.js";
+
+export { readModelJob } from "../semantic-query.js";
+
 import type { MemoryFilters } from "../types.js";
 import { resolveVectorLayout } from "../vector-layout.js";
 import type { SemanticSearchResult, SemanticSearchScopeContext } from "../vectors.js";
@@ -89,31 +93,6 @@ export function inspectBytes(bytes: Buffer): Rejection | null {
 	return vectorRejection(vector);
 }
 
-function readModelMetadata(json: string | null): Record<string, unknown> | null {
-	try {
-		const value: unknown = JSON.parse(json ?? "null");
-		if (value && typeof value === "object" && !Array.isArray(value)) {
-			return value as Record<string, unknown>;
-		}
-	} catch {
-		return null;
-	}
-	return null;
-}
-
-export function readModelJob(
-	db: Database,
-): Pick<MaintenanceJobSnapshot, "status" | "metadata"> | null {
-	if (!tableExists(db, "maintenance_jobs")) return null;
-	const row = db
-		.prepare("SELECT status, metadata_json FROM maintenance_jobs WHERE kind = ?")
-		.get("vector_model_migration") as
-		| { status: MaintenanceJobStatus; metadata_json: string | null }
-		| undefined;
-	if (!row) return null;
-	return { status: row.status, metadata: readModelMetadata(row.metadata_json) };
-}
-
 export function resolveCatalogModels(
 	currentModel: string,
 	catalog: Array<string | null>,
@@ -136,21 +115,23 @@ function candidateScope(
 	request: RankingRequest,
 	options: { acceptedIds: string | null; indexedRows?: boolean },
 ): CandidateScope {
+	const context = { ...request.context, visibleScopeIds: undefined, scopeVisibilityDb: db };
 	const authorized = buildAuthorizedSemanticMemoryIdsQuery(
 		request.filters,
-		{ ...request.context, visibleScopeIds: undefined, scopeVisibilityDb: db },
+		context,
 		request.summarySessionId,
 	);
+	const freshness = pendingVectorFreshness(db, request.filters, context, request.summarySessionId);
 	const rowidSource = options.indexedRows ? "validated_vector_rows" : "memory_vectors";
 	const layout = resolveVectorLayout(db);
 	if (layout.kind === "absent") throw new Error("vector_table_required");
 	const vectorTable = layout.physicalName;
-	const validitySql = options.indexedRows ? "AND audit_state='valid'" : "";
+	const validitySql = `${options.indexedRows ? "AND audit_state='valid'" : ""} ${freshness.sql}`;
 	if (options.acceptedIds === null) {
 		return {
 			...authorized,
 			acceptedSql: validitySql,
-			acceptedParams: [],
+			acceptedParams: freshness.params,
 			rowidSource,
 			vectorTable,
 		};
@@ -158,7 +139,7 @@ function candidateScope(
 	return {
 		...authorized,
 		acceptedSql: `${validitySql} AND rowid IN (SELECT value FROM json_each(?))`,
-		acceptedParams: [options.acceptedIds],
+		acceptedParams: [...freshness.params, options.acceptedIds],
 		rowidSource,
 		vectorTable,
 	};

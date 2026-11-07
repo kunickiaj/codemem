@@ -748,6 +748,8 @@ An idle check can succeed with zero operations. Codemem retains operation and sn
 
 A receive error for one Space stays visible until a later sync pass checks every Space shared with that peer. A pass that stops early, such as after a failed send or a sync reset, does not clear it. A relay pass checks one Space at a time, so it clears connection errors but leaves apply and scope errors until a direct sync completes. A peer that you only reach through relay therefore keeps showing an apply or scope error even after relay retries that Space successfully.
 
+Failed connection probes do not replace the last completed result while sync tries other addresses or relay. If those attempts also fail, the completed pass reports the failure. **Sync now** uses the Viewer's existing relay connection when one is available, just like background sync.
+
 Sync starts as **Not verified** after an upgrade until Codemem observes the direction. Older history can also be unknown, so Devices leaves its time and counters unavailable instead of treating them as zero. A successful exchange with one peer does not hide another peer that is unknown, stale, or needs attention. An unpaired device does not show zeroes as though it had synced. If the status refresh fails, Devices hides stale counts and disables manual sync until a successful refresh. Choose **Sync this device** from the paired device's action menu to run one pass for that device only; it does not sync every peer. The result reports partial or failed delivery, and **Advanced → Sync** still has detailed peer diagnostics.
 
 | Sync check | Meaning | What to do |
@@ -1192,6 +1194,12 @@ This source workflow has not yet been validated end-to-end against a live coordi
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
+
+### Inspect retained rejected events
+
+Use `codemem capture list-rejected --json` to list retained OpenCode rejection metadata without reading private event text. Copy a receipt into `codemem capture show-rejected '<receipt>' --json` to validate that file and inspect its metadata. The commands work without a running Viewer or database connection and do not modify retained files.
+
+Without `--json`, inspection prints a short metadata summary. Add `--raw` only when you intend to reveal private event text. That option always returns JSON with the original serialized text as an escaped string. Entries larger than 16 MiB remain listed but report `read_limit_exceeded` when inspected. Malformed entries report `invalid`. If a file changes during inspection, the result is `changed_during_read`. Rerun the command for a stable snapshot. Inspection never removes the file. Automatic rejection classification and an explicit retry command are still pending.
 
 ### Semantic runtime unavailable
 

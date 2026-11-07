@@ -366,11 +366,19 @@ it.each([
 
 		// Assert: disabled expiry and future timestamps retain the original owner and no loser row.
 		expect(result).toEqual(
-			admitted ? { flushed: 3, updatedState: 1 } : { flushed: 0, updatedState: 0 },
+			admitted ? { flushed: 2, updatedState: 1 } : { flushed: 0, updatedState: 0 },
 		);
 		expect(observe).toHaveBeenCalledTimes(Number(admitted));
-		expect(batches(first)).toHaveLength(admitted ? 2 : 1);
-		expect(first.rawEventFlushState(sessionId)).toBe(admitted ? 2 : -1);
+		expect(batches(first)).toEqual([
+			{ start_event_seq: 0, end_event_seq: 1, status: admitted ? "completed" : "claimed" },
+		]);
+		expect(first.rawEventFlushState(sessionId)).toBe(admitted ? 1 : -1);
+		if (admitted) {
+			const continuation = await flushRawEvents(second, ingestOptions(observe), flushOptions);
+			expect(continuation).toEqual({ flushed: 1, updatedState: 1 });
+			expect(first.rawEventFlushState(sessionId)).toBe(2);
+			expect(observe).toHaveBeenCalledTimes(2);
+		}
 	},
 );
 

@@ -16,6 +16,8 @@ This page covers what relay does and doesn't do, how to turn it on and off, and 
 
 Each sync pass with a peer tries the peer's direct addresses first. Relay is used only when every direct address fails, the coordinator offers relay for the group that owns a Space both devices share, and the device trusts that coordinator's relay key. A peer that shares no coordinator-managed Space with you syncs directly or not at all.
 
+The Viewer's **Sync now** action uses the same relay fallback as background sync. A recent direct check that identifies a pre-0.48 peer without relay support keeps that peer on direct sync. That observation expires after 24 hours so an upgraded peer can be tried again even if its direct addresses remain unreachable. Peers whose version is unknown can still be tried through relay.
+
 Relay doesn't replace an always-on device. These three situations look similar but behave differently:
 
 | Situation | What happens |
@@ -64,10 +66,13 @@ When a relayed pass fails, `codemem sync attempts` shows an error ending in a re
 | `relay_unavailable` | This device couldn't reach or register with the relay. | Check that the coordinator is reachable. The operator may have turned relay off for the group. |
 | `relay_admission_failed` | The coordinator didn't approve this device for relay, or couldn't be reached. | Check that the device is still enrolled in the group. Right after an operator turns relay on, approvals fail for about six minutes while relay health warms up. |
 | `relay_expired` | The relayed sync ran out of time. | Retry. If it keeps happening, tell the operator. |
+| `relay_aborted` | The other device or the relay ended an exchange without reporting its original cause. | Check diagnostics on the receiving device and ask the coordinator operator to check the same time window. |
 | `relay_frame_invalid`, `relay_handshake_failed`, `relay_record_invalid` | Something changed the traffic between the devices and the relay. | Report it to the coordinator operator. |
 | `relay_peer_revoked` | The other device's key changed since the pass started. | Pair the device again if the change is expected. |
 
 A pass makes several exchanges in order: status, then pull, then push in batches. A failed exchange never moves a cursor or marks memories as delivered, so the next pass sends whatever it didn't. Exchanges that finished earlier in the same pass keep their progress. For example, a pass that pulled successfully and then failed while pushing keeps the memories it pulled. The [relay runtime reference](relay-runtime.md#relay-failure-reasons) lists every code.
+
+The receiving device records inbound relay failures in its local sync attempt history as `relay_target_failure stage=<stage> reason=<code>`, with an optional `http=<code>`. Enable diagnostics to see these entries. The stage identifies admission, handshake, or HTTP handling. Entries contain no peer identifiers or raw error messages, so compare timestamps with the sending device's failed attempt. These diagnostic entries do not change an individual device's sync health.
 
 ## Operators
 

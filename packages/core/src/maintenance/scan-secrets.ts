@@ -23,6 +23,7 @@
 import type { Database } from "../db.js";
 import { normalizeConcept } from "../ref-populate.js";
 import { mergeDetections, type ScanDetection, SecretScanner } from "../secret-scanner.js";
+import { queueVectorBackfill } from "../vector-backfill-queue.js";
 
 export interface ScanSecretsRetroactiveOptions {
 	/** Max rows to scan in this run. Omit (or pass null/0) for "everything". */
@@ -214,6 +215,20 @@ function asStringArray(json: string | null): string[] | null {
 	}
 }
 
+/** Accept the row update only after its embedding-source repair intent is persisted. */
+function finishRedactionUpdate(
+	db: Database,
+	memoryId: number,
+	update: { changes: number },
+	embeddingSources: readonly { changed: boolean }[],
+): boolean {
+	if (update.changes === 0) return false;
+	if (update.changes === 1 && embeddingSources.some((source) => source.changed)) {
+		queueVectorBackfill(db, { upsertMemoryIds: [memoryId], deleteMemoryIds: [] });
+	}
+	return true;
+}
+
 export function scanSecretsRetroactive(
 	db: Database,
 	opts: ScanSecretsRetroactiveOptions = {},
@@ -362,7 +377,7 @@ export function scanSecretsRetroactive(
 				row.id,
 				row.rev,
 			);
-			if (result.changes === 0) return false;
+			if (!finishRedactionUpdate(db, row.id, result, [titleResult, bodyResult])) return false;
 			// Junction tables derive from concepts and files_read/files_modified
 			// and index the raw strings. If we redacted any of those columns,
 			// the junction tables still hold the unredacted form and act as a

@@ -9,6 +9,7 @@ import {
 import { populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
 import type { MemoryStore } from "./store.js";
+import { queueVectorBackfill } from "./vector-backfill-queue.js";
 
 export class MemoryOwnershipRecoveryError extends Error {
 	constructor(
@@ -319,6 +320,10 @@ export function commitMemoryOwnershipRecovery(store: MemoryStore, value: unknown
 			if (current.preview.reviewedDigest !== reviewedDigest) fail("ownership_preview_stale", 409);
 			const now = new Date().toISOString();
 			const copies = current.rows.map((row) => copyRow(store, row, operationId, now));
+			queueVectorBackfill(store.db, {
+				upsertMemoryIds: copies.map((copy) => copy.recoveredMemoryId),
+				deleteMemoryIds: [],
+			});
 			const result: RecoveryResult = {
 				version: 1,
 				status: "recovered",

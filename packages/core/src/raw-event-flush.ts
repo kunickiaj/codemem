@@ -36,9 +36,11 @@ import {
 	getRawEventFlushBatchSnapshot,
 	ownsRawEventFlushClaim,
 	type RawEventFlushClaim,
+	readPreferredRawEventFlushRange,
 	repairCompletedRawEventFlush,
 } from "./raw-event-flush-claim.js";
 import { LIVE_RAW_EVENT_EXTRACTOR } from "./raw-event-flush-cursor.js";
+import { isV2Event, oneHostGeneration } from "./raw-event-host-generation.js";
 import { ScopeWriteAuthorityError } from "./scope-write-authority-error.js";
 import type { MemoryStore } from "./store.js";
 
@@ -52,17 +54,7 @@ const TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS = 2;
 const LEGACY_REDIAGNOSIS_FAILED_ERROR_TYPE = "RawEventLegacyFailure:rediagnosis_failed";
 const OBSERVER_CALL_ERROR_TYPE = "RawEventObserverCallError";
 
-function isV2Event(event: Record<string, unknown>): boolean {
-	return event.codemem_host_generation === "v2";
-}
-
-/** Keep a host upgrade from mixing V1 and V2 credentials in one flush range. */
-export function oneHostGeneration(events: Record<string, unknown>[]): Record<string, unknown>[] {
-	if (events.length === 0) return events;
-	const generation = isV2Event(events[0] ?? {});
-	const transition = events.findIndex((event) => isV2Event(event) !== generation);
-	return transition > 0 ? events.slice(0, transition) : events;
-}
+export { oneHostGeneration } from "./raw-event-host-generation.js";
 
 function hasImplicitObserverAuth(options: IngestOptions, explicitRuntime: boolean): boolean {
 	const status = options.observer.getStatus();
@@ -490,6 +482,8 @@ export interface FlushRawEventsOptions {
 	startedAt?: string | null;
 	maxEvents?: number | null;
 	throughEventSeq?: number | null;
+	/** Periodic background recovery only: retain oversized legacy retry identities. */
+	allowOversizedRetry?: boolean;
 }
 
 function completeContextOnlyBatch(
@@ -579,6 +573,33 @@ function finalizeExhaustedBatch(
 	};
 }
 
+function planRawEventFlush(store: MemoryStore, opts: FlushRawEventsOptions & { source: string }) {
+	const { opencodeSessionId: streamId, source, maxEvents, throughEventSeq } = opts;
+	const preferred = readPreferredRawEventFlushRange(store, { source, streamId });
+	if (preferred) {
+		if (throughEventSeq != null && preferred.lastEventSeq > throughEventSeq) return null;
+		const enforceLimit = maxEvents != null && maxEvents > 0 && !opts.allowOversizedRetry;
+		// One extra row detects an oversized retry without loading the entire legacy range.
+		const events = store.rawEventsSinceBySeq(
+			streamId,
+			source,
+			preferred.startEventSeq - 1,
+			enforceLimit ? maxEvents + 1 : null,
+			preferred.lastEventSeq,
+		);
+		if (events.length === 0 || (enforceLimit && events.length > maxEvents)) return null;
+		// Never truncate a legacy mixed-host range and then commit its full endpoint.
+		if (oneHostGeneration(events).length !== events.length) return null;
+		return { events, range: preferred };
+	}
+	const cursor = store.rawEventFlushState(streamId, source);
+	const events = oneHostGeneration(
+		store.rawEventsSinceBySeq(streamId, source, cursor, maxEvents, throughEventSeq),
+	);
+	const range = rawEventSequenceRange(events);
+	return range ? { events, range } : null;
+}
+
 /**
  * Flush raw events for a single session through the ingest pipeline.
  *
@@ -596,7 +617,6 @@ export async function flushRawEvents(
 	opts: FlushRawEventsOptions,
 ): Promise<{ flushed: number; updatedState: number }> {
 	let { source = "opencode", cwd, project, startedAt } = opts;
-	const { maxEvents, throughEventSeq } = opts;
 	const opencodeSessionId = opts.opencodeSessionId.trim();
 
 	source = (source ?? "").trim().toLowerCase() || "opencode";
@@ -607,17 +627,9 @@ export async function flushRawEvents(
 	if (project == null) project = (meta.project as string) ?? null;
 	if (startedAt == null) startedAt = (meta.started_at as string) ?? null;
 
-	// Read unflushed events
-	const lastFlushed = store.rawEventFlushState(opencodeSessionId, source);
-	const events = oneHostGeneration(
-		store.rawEventsSinceBySeq(opencodeSessionId, source, lastFlushed, maxEvents, throughEventSeq),
-	);
-	if (events.length === 0) {
-		return { flushed: 0, updatedState: 0 };
-	}
-
-	const range = rawEventSequenceRange(events);
-	if (!range) return { flushed: 0, updatedState: 0 };
+	const plan = planRawEventFlush(store, { ...opts, source, opencodeSessionId });
+	if (!plan) return { flushed: 0, updatedState: 0 };
+	const { events, range } = plan;
 	const { startEventSeq, lastEventSeq } = range;
 
 	// Get or create flush batch (idempotency guard)

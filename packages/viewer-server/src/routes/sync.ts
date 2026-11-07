@@ -192,6 +192,7 @@ import {
 	wakeRecipientPoliciesForIdentities,
 	wakeRecipientPoliciesForProjectIdentities,
 } from "@codemem/core";
+import type { SyncPeerReachabilityResolver } from "@codemem/core/internal/relay-runtime";
 import {
 	type AdvancePendingProjectSharesResult,
 	type AdvanceProjectShareOperationResult,
@@ -222,6 +223,7 @@ type StoreFactory = () => MemoryStore;
 export type DeviceIdentityCoordinatorEvidenceLoader =
 	() => Promise<DeviceIdentityCoordinatorEvidence>;
 export interface SyncRoutesOptions {
+	syncReachability?: SyncPeerReachabilityResolver;
 	loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader;
 	onRecipientPolicyTeamRenamed?: () => void;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
@@ -231,6 +233,44 @@ type SafeSkippedSyncDetail = Pick<
 	FilterReplicationSkipped,
 	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
 >;
+
+function manualSyncReachability(
+	resolver: SyncPeerReachabilityResolver | undefined,
+	store: MemoryStore,
+	peerId: string,
+) {
+	let route: ReturnType<SyncPeerReachabilityResolver["forPeer"]>;
+	try {
+		route = resolver?.forPeer(store.db, peerId);
+	} catch {
+		// Match daemon retries: unavailable relay routing must not block direct sync.
+		return undefined;
+	}
+	if (!route) return undefined;
+	const signals = [resolver?.signal, route.signal].filter(
+		(signal): signal is AbortSignal => signal !== undefined,
+	);
+	return {
+		...route,
+		signal: signals.length > 0 ? AbortSignal.any(signals) : undefined,
+		// Manual retries start a fresh pass, just like daemon ticks.
+		deadlineMs: undefined,
+	};
+}
+
+function runManualSyncPass(
+	store: MemoryStore,
+	peerId: string,
+	resolver: SyncPeerReachabilityResolver | undefined,
+) {
+	// Match the daemon's signing keys, including a configured CODEMEM_KEYS_DIR.
+	return runSyncPass(store.db, peerId, {
+		keysDir: syncKeysDir(),
+		dbPath: store.dbPath,
+		scanner: store.scanner,
+		reachability: manualSyncReachability(resolver, store, peerId),
+	});
+}
 
 function safeSkippedSyncDetail(
 	detail: FilterReplicationSkipped | null | undefined,
@@ -6307,14 +6347,7 @@ export function syncRoutes(
 		}
 		const items = [] as Array<Record<string, unknown>>;
 		for (const peerId of peerIds) {
-			// keysDir must match the sync daemon's key material — omitting it made
-			// this route sign with a different device key whenever CODEMEM_KEYS_DIR
-			// was set, so manual sync runs failed peer auth while daemon syncs worked.
-			const result = await runSyncPass(store.db, peerId, {
-				keysDir: syncKeysDir(),
-				dbPath: store.dbPath,
-				scanner: store.scanner,
-			});
+			const result = await runManualSyncPass(store, peerId, options.syncReachability);
 			items.push({
 				peer_device_id: peerId,
 				...result,

@@ -13,12 +13,13 @@ import {
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import * as syncIdentity from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
-import { consecutiveConnectivityFailures, type SyncPassOptions } from "./sync-pass.js";
+import { consecutiveConnectivityFailures, type SyncPassOptions, syncOnce } from "./sync-pass.js";
 import {
 	maintainSyncReachability,
 	runReachableSyncPass,
 	type SyncReachabilityOptions,
 } from "./sync-reachability-pass.js";
+import { readPeerSyncActivity, recordSyncTransferObservation } from "./sync-transfer-activity.js";
 import { initTestSchema } from "./test-utils.js";
 
 const addresses = ["http://127.0.0.1:19001", "http://127.0.0.1:19002"];
@@ -470,6 +471,34 @@ it("rejects a structural relay substitute without invoking its factory", async (
 	expect(scoped).not.toHaveBeenCalled();
 });
 
+it("records the final direct receive failure when an invalid relay cannot replace it", async () => {
+	// Arrange: a real direct probe fails before the structural relay is rejected.
+	const factory = vi.fn();
+	const relay = { factory } as unknown as RelayPeerClient;
+	const execute = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+	// Act.
+	const result = await runReachableSyncPass(
+		db,
+		"peer",
+		addresses.slice(0, 1),
+		options(execute, relay),
+	);
+	// Assert: rejecting the substitute must not discard the direct failure observation.
+	expect(result).toMatchObject({
+		ok: false,
+		transport: "wait",
+		error: "Relay transport is unavailable",
+	});
+	expect(execute).toHaveBeenCalledTimes(1);
+	expect(factory).not.toHaveBeenCalled();
+	expect(scoped).not.toHaveBeenCalled();
+	expect(readPeerSyncActivity(db, ["peer"]).get("peer")?.receive).toMatchObject({
+		errorCode: "exchange_failed",
+		lastAttemptAt: expect.any(String),
+		lastSuccessAt: null,
+	});
+});
+
 it.each(["cancelled", "expired"])(
 	"does not start requests for a caller already %s",
 	async (mode) => {
@@ -597,6 +626,10 @@ it("records one final attempt per unreachable tick and counts backoff by tick", 
 		db.prepare("SELECT count(*) AS count FROM sync_attempts WHERE peer_device_id = 'peer'").get(),
 	).toEqual({ count: 2 });
 	expect(consecutiveConnectivityFailures(db, "peer")).toBe(2);
+	expect(db.prepare("SELECT transport FROM sync_attempts ORDER BY id").all()).toEqual([
+		{ transport: null },
+		{ transport: null },
+	]);
 });
 
 it("records only the selected relay result after direct probing fails", async () => {
@@ -611,10 +644,150 @@ it("records only the selected relay result after direct probing fails", async ()
 	expect(result).toMatchObject({ ok: true, transport: "relay" });
 	expect(
 		db
-			.prepare("SELECT ok, ops_in, ops_out, error FROM sync_attempts WHERE peer_device_id = 'peer'")
+			.prepare(
+				"SELECT ok, ops_in, ops_out, error, transport FROM sync_attempts WHERE peer_device_id = 'peer'",
+			)
 			.all(),
-	).toEqual([{ ok: 1, ops_in: 0, ops_out: 0, error: null }]);
+	).toEqual([{ ok: 1, ops_in: 0, ops_out: 0, error: null, transport: "relay" }]);
 });
+
+it("records relay failure diagnostics without inheriting the failed direct probe transport", async () => {
+	// Arrange: syncOnce records a direct diagnostic before relay is selected.
+	db.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = 'peer'").run(
+		JSON.stringify(addresses),
+	);
+	const execute = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+	scoped.mockResolvedValue({
+		ok: false,
+		scope_id: "space",
+		opsIn: 0,
+		opsOut: 0,
+		bootstrapped: false,
+		error: "relay exchange failed",
+	});
+	// Act.
+	const result = await runSyncPass(db, "peer", options(execute, approvedClient()));
+	// Assert: final route and diagnostics both describe the selected relay attempt.
+	expect(result).toMatchObject({ ok: false, transport: "relay", error: "relay exchange failed" });
+	expect(db.prepare("SELECT ok, error, transport FROM sync_attempts").all()).toEqual([
+		{ ok: 0, error: "relay exchange failed", transport: "relay" },
+	]);
+});
+
+it.each([true, false])(
+	"does not publish a failed first address while the second address is pending (success: %s)",
+	async (succeeds) => {
+		// Arrange: the real direct pass pauses at its second status request.
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const exchange = successfulExchange();
+		const execute = vi.fn<RequestJsonExecutor>(async (method, url, request) => {
+			if (new URL(url).origin === addresses[0]) throw networkError();
+			if (new URL(url).pathname === "/v1/status") {
+				entered.resolve();
+				await release.promise;
+				if (!succeeds) throw networkError();
+			}
+			return exchange(method, url, request);
+		});
+		// Act: read activity before releasing the remaining address.
+		const pending = runReachableSyncPass(db, "peer", addresses, options(execute));
+		await entered.promise;
+		const during = readPeerSyncActivity(db, ["peer"]).get("peer");
+		release.resolve();
+		const result = await pending;
+		const after = readPeerSyncActivity(db, ["peer"]).get("peer");
+		// Assert: only the final selected outcome can report a failure.
+		expect.soft(during?.receive).toMatchObject({ errorCode: null, lastAttemptAt: null });
+		expect(result).toMatchObject({ ok: succeeds, transport: succeeds ? "direct" : "wait" });
+		expect(after?.receive.errorCode).toBe(succeeds ? null : "exchange_failed");
+	},
+);
+
+it.each([true, false])(
+	"does not publish direct failures while relay fallback is pending (success: %s)",
+	async (succeeds) => {
+		// Arrange: model the scoped channel's successful and pre-pull failed observations.
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		scoped.mockImplementationOnce(async () => {
+			entered.resolve();
+			await release.promise;
+			if (succeeds) {
+				recordSyncTransferObservation(db, "peer", "receive", { preserveScopedError: true });
+				recordSyncTransferObservation(db, "peer", "send");
+			} else {
+				recordSyncTransferObservation(db, "peer", "receive", { errorCode: "exchange_failed" });
+			}
+			return {
+				ok: succeeds,
+				scope_id: "space",
+				opsIn: 0,
+				opsOut: 0,
+				bootstrapped: false,
+				...(succeeds ? {} : { error: "scoped channel exchange failed: relay_rejected" }),
+			};
+		});
+		const execute = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+		// Act: the relay has started, but has not returned a selected outcome.
+		const pending = runReachableSyncPass(db, "peer", addresses, options(execute, approvedClient()));
+		await entered.promise;
+		const during = readPeerSyncActivity(db, ["peer"]).get("peer");
+		release.resolve();
+		const result = await pending;
+		const after = readPeerSyncActivity(db, ["peer"]).get("peer");
+		// Assert: a final relay failure must still leave the peer's failed receive visible.
+		expect.soft(during?.receive).toMatchObject({ errorCode: null, lastAttemptAt: null });
+		expect(result).toMatchObject({ ok: succeeds, transport: "relay" });
+		expect(after?.receive.errorCode).toBe(succeeds ? null : "exchange_failed");
+	},
+);
+
+it("retains final negotiation failures when reachability is disabled", async () => {
+	// Arrange: direct-only callers must still publish a final failed receive.
+	const requestExecutor = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", addresses, { requestExecutor });
+	// Assert.
+	expect(result.ok).toBe(false);
+	expect(result.transport).toBeUndefined();
+	expect(readPeerSyncActivity(db, ["peer"]).get("peer")?.receive).toMatchObject({
+		errorCode: "exchange_failed",
+		lastAttemptAt: expect.any(String),
+		lastSuccessAt: null,
+	});
+});
+
+it.each([
+	{ errorCode: "exchange_failed", source: "initiated", expected: null },
+	{ errorCode: "apply_failed", source: "initiated", expected: "apply_failed" },
+	{ errorCode: "scope_rejected", source: "initiated", expected: "scope_rejected" },
+	{ errorCode: "exchange_failed", source: "inbound", expected: "exchange_failed" },
+	{ errorCode: "apply_failed", source: "inbound", expected: "apply_failed" },
+	{ errorCode: "scope_rejected", source: "inbound", expected: "scope_rejected" },
+] as const)(
+	"relay success preserves $source $errorCode according to source and scope",
+	async ({ errorCode, source, expected }) => {
+		// Arrange: scoped success can resolve only a generic initiated receive failure.
+		recordSyncTransferObservation(db, "peer", "receive", { errorCode, source });
+		scoped.mockImplementationOnce(async () => {
+			recordSyncTransferObservation(db, "peer", "receive", { preserveScopedError: true });
+			recordSyncTransferObservation(db, "peer", "send");
+			return { ok: true, scope_id: "space", opsIn: 0, opsOut: 0, bootstrapped: false };
+		});
+		const execute = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+		// Act.
+		const result = await runReachableSyncPass(
+			db,
+			"peer",
+			addresses,
+			options(execute, approvedClient()),
+		);
+		// Assert: the aggregate activity must retain errors from unretried scopes or inbound work.
+		expect(result).toMatchObject({ ok: true, transport: "relay" });
+		expect(readPeerSyncActivity(db, ["peer"]).get("peer")?.receive.errorCode).toBe(expected);
+	},
+);
 
 it("records one diagnostic when the public selector rejects invalid configuration", async () => {
 	// Arrange.
@@ -638,9 +811,44 @@ it("records one successful attempt for a selected direct pass", async () => {
 	const result = await runSyncPass(db, "peer", options(successfulExchange()));
 	// Assert.
 	expect(result).toMatchObject({ ok: true, transport: "direct" });
-	expect(db.prepare("SELECT ok FROM sync_attempts WHERE peer_device_id = 'peer'").all()).toEqual([
-		{ ok: 1 },
+	expect(
+		db.prepare("SELECT ok, transport FROM sync_attempts WHERE peer_device_id = 'peer'").all(),
+	).toEqual([{ ok: 1, transport: "direct" }]);
+});
+
+it.each([true, false])("records direct transport for a bootstrap with success=%s", async (ok) => {
+	// Arrange: no cursor selects bootstrap, with every HTTP request replaced.
+	db.prepare("DELETE FROM replication_cursors WHERE peer_device_id = 'peer'").run();
+	const execute = vi.fn<RequestJsonExecutor>(async (_method, url) => {
+		if (new URL(url).pathname === "/v1/status") return [200, status];
+		if (!ok) return [500, { error: "snapshot unavailable" }];
+		return [200, { ...boundary, items: [], has_more: false, next_page_token: null }];
+	});
+	// Act: syncOnce must also record transport without the outer reachability selector.
+	const result = await syncOnce(db, "peer", addresses, { requestExecutor: execute });
+	// Assert.
+	expect(result.ok).toBe(ok);
+	expect(db.prepare("SELECT ok, transport FROM sync_attempts").all()).toEqual([
+		{ ok: Number(ok), transport: "direct" },
 	]);
+});
+
+it("retains direct capability diagnostics and transport when a committed exchange fails", async () => {
+	// Arrange: status commits direct sync before the pull fails.
+	db.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = 'peer'").run(
+		JSON.stringify(addresses),
+	);
+	const execute = vi.fn<RequestJsonExecutor>(async (_method, url) => {
+		if (new URL(url).pathname === "/v1/status") return [200, status];
+		throw networkError();
+	});
+	// Act.
+	const result = await runSyncPass(db, "peer", options(execute, approvedClient()));
+	// Assert: the directRecord diagnostic path must retain the selected route.
+	expect(result).toMatchObject({ ok: false, transport: "direct" });
+	expect(db.prepare("SELECT ok, transport, peer_sync_capability FROM sync_attempts").all()).toEqual(
+		[{ ok: 0, transport: "direct", peer_sync_capability: "enforcing" }],
+	);
 });
 
 it("still enforces an explicit caller deadline after direct status commits", async () => {
@@ -665,34 +873,49 @@ it("still enforces an explicit caller deadline after direct status commits", asy
 	expect(scoped).not.toHaveBeenCalled();
 });
 
-it("records one busy diagnostic independently of the in-progress public pass", async () => {
-	// Arrange.
-	db.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = 'peer'").run(
-		JSON.stringify(addresses),
-	);
-	const entered = Promise.withResolvers<void>();
-	const release = Promise.withResolvers<void>();
-	const execute = vi.fn<RequestJsonExecutor>(async () => {
-		entered.resolve();
-		await release.promise;
-		throw networkError();
-	});
-	const pending = runSyncPass(db, "peer", options(execute));
-	await entered.promise;
-	// Act.
-	const busy = await runSyncPass(db, "peer", options(successfulExchange()));
-	const busyRows = db
-		.prepare("SELECT ok, error FROM sync_attempts WHERE peer_device_id = 'peer'")
-		.all();
-	release.resolve();
-	await pending;
-	// Assert.
-	expect(busy).toMatchObject({ ok: false, error: "Peer sync is already in progress" });
-	expect(busyRows).toEqual([{ ok: 0, error: busy.error }]);
-	expect(
-		db.prepare("SELECT count(*) AS count FROM sync_attempts WHERE peer_device_id = 'peer'").get(),
-	).toEqual({ count: 2 });
-});
+it.each([true, false])(
+	"does not record a concurrent wait while the active pass finishes (success: %s)",
+	async (succeeds) => {
+		// Arrange: defer the active pass at the network boundary instead of using timers.
+		db.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = 'peer'").run(
+			JSON.stringify(addresses),
+		);
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const exchange = successfulExchange();
+		const execute = vi.fn<RequestJsonExecutor>(async (method, url, request) => {
+			if (new URL(url).pathname === "/v1/status") {
+				entered.resolve();
+				await release.promise;
+				if (!succeeds) throw networkError();
+			}
+			return exchange(method, url, request);
+		});
+		const pending = runSyncPass(db, "peer", options(execute));
+		await entered.promise;
+		// Act.
+		const overlappingExchange = successfulExchange();
+		const busy = await runSyncPass(db, "peer", options(overlappingExchange));
+		const busyRows = db
+			.prepare("SELECT ok, error FROM sync_attempts WHERE peer_device_id = 'peer'")
+			.all();
+		release.resolve();
+		const first = await pending;
+		// Assert: only the pass that actually ran may affect attempts or connectivity backoff.
+		expect(busy).toMatchObject({
+			ok: false,
+			transport: "wait",
+			error: "Peer sync is already in progress",
+		});
+		expect(overlappingExchange).not.toHaveBeenCalled();
+		expect(busyRows).toEqual([]);
+		expect(first.ok).toBe(succeeds);
+		expect(
+			db.prepare("SELECT ok, error FROM sync_attempts WHERE peer_device_id = 'peer'").all(),
+		).toEqual([{ ok: succeeds ? 1 : 0, error: first.error ?? null }]);
+		expect(consecutiveConnectivityFailures(db, "peer")).toBe(succeeds ? 0 : 1);
+	},
+);
 
 it("gives relay its own lifetime when slow direct attempts used most of the pass deadline", async () => {
 	// Arrange: unreachable direct addresses take 40 of the pass's 60 seconds.

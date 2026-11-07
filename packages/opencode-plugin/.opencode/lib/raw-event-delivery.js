@@ -100,6 +100,33 @@ const warnSpoolPersistenceFailure = async (state, sessionID, reason) => {
 
 const SPOOL_STAGES = new Set(["directory", "existing_entry", "capacity", "temporary_write", "publish", "directory_sync"]);
 const SPOOL_ERRNOS = new Set(["EACCES", "EPERM", "ENOSPC", "EROFS", "ENOTDIR", "EEXIST", "EIO", "EINVAL", "EMFILE", "ENFILE"]);
+const SPOOL_CONFLICT_BRANCHES = ["active_comparison", "rejected_comparison", "rejected_identity", "publish_comparison"];
+const SPOOL_CONFLICT_REASONS = ["invalid_json", "invalid_shape", "field_mismatch", "identity_mismatch"];
+const SPOOL_CONFLICT_FIELDS = [
+  "started_at", "host_generation", "capture_context", "session_stream_id", "session_id",
+  "stream_id", "opencode_session_id", "cwd", "project", "source", "event_type",
+  "payload", "payload.timestamp", "payload._adapter", "payload._adapter.ts", "payload._raw_spooled", "payload.args",
+];
+
+const spoolConflictDiagnostic = (error) => {
+  try {
+    const diagnostic = error?.spoolConflict;
+    // Rebuild from literals at the logging boundary, including for foreign errors.
+    const branch = SPOOL_CONFLICT_BRANCHES.find((value) => value === diagnostic?.branch);
+    const reason = SPOOL_CONFLICT_REASONS.find((value) => value === diagnostic?.reason);
+    if (!branch || !reason) return "";
+    const fields = diagnostic.fields;
+    const changed = Array.isArray(fields)
+      ? SPOOL_CONFLICT_FIELDS.filter((field) => fields.includes(field))
+      : [];
+    let suffix = ` branch=${branch} reason=${reason}`;
+    if (changed.length) suffix += ` fields=${changed.join(",")}`;
+    if (diagnostic.other === true) suffix += " other=true";
+    return suffix;
+  } catch {
+    return "";
+  }
+};
 
 const spoolFailureDiagnostic = (error) => {
   const stage = SPOOL_STAGES.has(error?.spoolStage) ? error.spoolStage : "unknown";
@@ -107,7 +134,8 @@ const spoolFailureDiagnostic = (error) => {
   if (error?.code === RAW_EVENT_SPOOL_CONFLICT_CODE) code = "conflict";
   else if (error?.code === RAW_EVENT_SPOOL_FULL_CODE) code = "full";
   else if (SPOOL_ERRNOS.has(error?.code)) code = error.code;
-  return `raw_events.spool.failure stage=${stage} code=${code} category=persistence`;
+  return `raw_events.spool.failure stage=${stage} code=${code} category=persistence`
+    + spoolConflictDiagnostic(error);
 };
 
 const persistSafeSpoolDiagnostic = async (state, line) => {

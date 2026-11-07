@@ -10,7 +10,7 @@ import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
-import { ensureAdditiveSchemaCompatibility } from "./db.js";
+import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
@@ -184,6 +184,8 @@ export interface SyncPassOptions {
 	requestExecutor?: RequestJsonExecutor;
 	/** @internal A selected pass defers address-level diagnostics to its final result. */
 	attemptRecorder?: typeof recordSyncAttempt;
+	/** @internal Transport selection records exhausted connection probes only after fallback. */
+	deferConnectionFailure?: boolean;
 	reachability?: import("./sync-reachability-pass.js").SyncReachabilityOptions;
 	limit?: number;
 	keysDir?: string;
@@ -406,8 +408,10 @@ export function recordSyncAttempt(
 		error?: string;
 		failureCategory?: SyncAttemptFailureCategory;
 		capabilities?: SyncCapabilityDiagnostics;
+		transport?: SyncResult["transport"];
 	},
 ): void {
+	ensureSyncAttemptTransportColumn(db);
 	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
 	const capabilities = options.capabilities ?? defaultCapabilityDiagnostics();
@@ -424,6 +428,8 @@ export function recordSyncAttempt(
 			peer_sync_capability: capabilities.peer,
 			negotiated_sync_capability: capabilities.negotiated,
 			failure_category: options.ok ? null : (options.failureCategory ?? "other"),
+			transport:
+				options.transport === "direct" || options.transport === "relay" ? options.transport : null,
 		})
 		.run();
 }
@@ -1351,6 +1357,7 @@ function scopedInboundOptions(peerDeviceId: string, keysDir: string | undefined)
 interface SyncExchangeContext {
 	requestExecutor: RequestJsonExecutor;
 	recordAttempt: typeof recordSyncAttempt;
+	deferConnectionFailure: boolean;
 	db: Database;
 	peerDeviceId: string;
 	deviceId: string;
@@ -2027,6 +2034,7 @@ type SyncAddressOutcome =
 			kind: "failure";
 			error: unknown;
 			capabilities: SyncCapabilityDiagnostics | undefined;
+			negotiationFailed?: boolean;
 	  };
 
 function recordReceiveResult<
@@ -2058,13 +2066,11 @@ async function syncAddress(
 	try {
 		peer = await negotiatePeerExchange(context, baseUrl);
 	} catch (error) {
-		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
-			errorCode: "exchange_failed",
-		});
 		return {
 			kind: "failure",
 			error,
 			capabilities: error instanceof PeerNegotiationError ? error.capabilities : undefined,
+			negotiationFailed: true,
 		};
 	}
 	let direction: "send" | "receive" = "receive";
@@ -2187,7 +2193,12 @@ function prepareSyncExchange(
 		kind: "ready",
 		context: {
 			requestExecutor: options?.requestExecutor ?? requestJson,
-			recordAttempt: options?.attemptRecorder ?? recordSyncAttempt,
+			recordAttempt: (attemptDb, peerId, attempt) => {
+				const record = options?.attemptRecorder ?? recordSyncAttempt;
+				// This exchange dials a peer directly. Relay selection happens outside syncOnce.
+				record(attemptDb, peerId, { ...attempt, transport: "direct" });
+			},
+			deferConnectionFailure: options?.deferConnectionFailure ?? false,
 			db,
 			peerDeviceId,
 			deviceId,
@@ -2240,6 +2251,7 @@ async function tryPeerAddresses(
 ): Promise<SyncResult> {
 	const addressErrors: Array<{ address: string; error: string }> = [];
 	let attemptedAny = false;
+	let negotiated = false;
 	let capabilities: SyncCapabilityDiagnostics | undefined;
 	// A protocol mismatch is only reported after the pinned fingerprint
 	// matched, so the peer was reachable and trusted but incompatible.
@@ -2253,6 +2265,7 @@ async function tryPeerAddresses(
 		attemptedAny = true;
 		const exchange = await syncAddress(context, baseUrl, cursors);
 		if (exchange.kind === "success") return exchange.result;
+		if (!exchange.negotiationFailed) negotiated = true;
 		if (exchange.capabilities) capabilities = exchange.capabilities;
 		if (exchange.error instanceof PeerNegotiationError && exchange.error.protocolMismatch) {
 			protocolMismatch = true;
@@ -2263,7 +2276,7 @@ async function tryPeerAddresses(
 				: "unknown";
 		addressErrors.push({ address: baseUrl, error: detail });
 	}
-	return failedAddressResult(
+	const result = failedAddressResult(
 		context.db,
 		context.peerDeviceId,
 		addressErrors,
@@ -2271,6 +2284,22 @@ async function tryPeerAddresses(
 		capabilities,
 		{ protocolMismatch, recordAttempt: context.recordAttempt },
 	);
+	return recordExhaustedConnectionFailure(context, result, { attemptedAny, negotiated });
+}
+
+function recordExhaustedConnectionFailure(
+	context: SyncExchangeContext,
+	result: SyncResult,
+	options: { attemptedAny: boolean; negotiated: boolean },
+): SyncResult {
+	if (!options.attemptedAny || options.negotiated) return result;
+	result.receiveFailureCode = "exchange_failed";
+	if (!context.deferConnectionFailure) {
+		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+			errorCode: "exchange_failed",
+		});
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------
