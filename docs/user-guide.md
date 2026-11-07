@@ -1193,6 +1193,12 @@ This source workflow has not yet been validated end-to-end against a live coordi
 - Check `~/.codemem/plugin.log` for plugin errors.
 - Sync errors: `codemem sync status` shows the last error per peer.
 
+### Inspect retained rejected events
+
+Use `codemem capture list-rejected --json` to list retained OpenCode rejection metadata without reading private event text. Copy a receipt into `codemem capture show-rejected '<receipt>' --json` to validate that file and inspect its metadata. The commands work without a running Viewer or database connection and do not modify retained files.
+
+Without `--json`, inspection prints a short metadata summary. Add `--raw` only when you intend to reveal private event text. That option always returns JSON with the original serialized text as an escaped string. Entries larger than 16 MiB remain listed but report `read_limit_exceeded` when inspected. Malformed entries report `invalid`. If a file changes during inspection, the result is `changed_during_read`. Rerun the command for a stable snapshot. Inspection never removes the file. Automatic rejection classification and an explicit retry command are still pending.
+
 ### Semantic runtime unavailable
 
 Codemem installs its matching optional embedding runtime by default and falls

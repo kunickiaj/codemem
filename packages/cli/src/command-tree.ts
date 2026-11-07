@@ -8,6 +8,7 @@
  */
 
 import { Command } from "commander";
+import { captureCommand } from "./commands/capture.js";
 import { claudeHookFileContextCommand } from "./commands/claude-hook-file-context.js";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
 import { claudeHookInjectCommand } from "./commands/claude-hook-inject.js";
@@ -47,6 +48,7 @@ import { versionCommand } from "./commands/version.js";
 import { helpStyle } from "./help-style.js";
 
 export const ROOT_COMPLETION_COMMANDS = [
+	"capture",
 	"config",
 	"coordinator",
 	"db",
@@ -147,6 +149,7 @@ function registerMemoryGroupWrappers(): void {
 export function registerRootCommands(program: Command): Command {
 	registerMemoryGroupWrappers();
 
+	program.addCommand(captureCommand);
 	program.addCommand(serveCommand);
 	program.addCommand(configCommand);
 	program.addCommand(coordinatorCommand);

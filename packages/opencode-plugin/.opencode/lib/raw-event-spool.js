@@ -18,6 +18,8 @@ import { isDeepStrictEqual } from "node:util";
 
 const DEFAULT_DRAIN_LIMIT = 20;
 const DEFAULT_MAX_ENTRIES = 2000;
+const MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES = 16 * 1024 * 1024;
+const INSPECTION_READ_CHUNK_BYTES = 64 * 1024;
 const RAW_EVENT_SPOOL_FULL_CODE = "raw_event_spool_full";
 const RAW_EVENT_SPOOL_CONFLICT_CODE = "raw_event_spool_conflict";
 const SPOOL_DIRECTORY_NAME = "opencode-raw-event-spool";
@@ -341,7 +343,110 @@ const retainRejectedRawEventSpoolEntry = async (options) =>
   serializeSpoolMutation(resolveSpoolDirectory(options?.homeDir), () =>
     retainRejectedRawEventSpoolEntryUnlocked(options));
 
-const listRejectedRawEventSpoolEntries = async ({ homeDir = homedir() } = {}) => {
+class RawEventSpoolInspectionError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = "RawEventSpoolInspectionError";
+    this.code = code;
+  }
+}
+
+const inspectionFailure = () => new RawEventSpoolInspectionError(
+  "inspection_failed", "Could not inspect retained events. Files were left untouched.",
+);
+
+const requireInspectionRegularFile = (details) => {
+  if (!details.isFile() || details.isSymbolicLink()) {
+    throw new RawEventSpoolInspectionError("unsafe_entry", "Receipt must name a regular file.");
+  }
+};
+
+const openRejectedEntryForInspection = async (path) => {
+  const expected = await lstat(path);
+  requireInspectionRegularFile(expected);
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  const handle = await open(path, flags);
+  try {
+    // lstat also rejects links where O_NOFOLLOW is unavailable. Check both the
+    // opened file and its current name before reading any private bytes.
+    for (const actual of [await handle.stat(), await lstat(path)]) {
+      requireInspectionRegularFile(actual);
+      if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+        throw new RawEventSpoolInspectionError("unsafe_entry", "Receipt changed while opening. Retry inspection.");
+      }
+    }
+    return handle;
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+};
+
+const readWithinInspectionLimit = async (handle, maxBytes) => {
+  const chunks = [];
+  let total = 0;
+  while (total <= maxBytes) {
+    const buffer = Buffer.alloc(Math.min(INSPECTION_READ_CHUNK_BYTES, maxBytes + 1 - total));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+    if (bytesRead === 0) return Buffer.concat(chunks, total);
+    total += bytesRead;
+    if (total > maxBytes) return null;
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+  return null;
+};
+
+const inspectOpenedRejectedEntry = async (handle, receipt, entry, maxBytes) => {
+  const before = await handle.stat();
+  requireInspectionRegularFile(before);
+  const metadata = rejectedMetadata(receipt, entry, before.size);
+  if (before.size > maxBytes) return { ...metadata, validation: "read_limit_exceeded" };
+  const bytes = await readWithinInspectionLimit(handle, maxBytes);
+  const after = await handle.stat();
+  if (!bytes || after.size > maxBytes) {
+    return { ...metadata, bytes: after.size, validation: "read_limit_exceeded" };
+  }
+  if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+    return { ...metadata, validation: "changed_during_read" };
+  }
+  try {
+    if (!isUtf8(bytes)) return { ...metadata, validation: "invalid" };
+    const serialized = bytes.toString("utf8");
+    requireMatchingIdentity(serialized, `${entry.digest}.json`);
+    return { ...metadata, validation: "valid", serialized };
+  } catch {
+    return { ...metadata, validation: "invalid" };
+  }
+};
+
+const inspectRejectedRawEventSpoolEntry = async ({
+  receipt, homeDir = homedir(), maxBytes = MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES,
+}) => {
+  const entry = typeof receipt === "string" ? parseRejectedFilename(receipt) : null;
+  if (!entry) {
+    throw new RawEventSpoolInspectionError("invalid_receipt", "Use a receipt from capture list-rejected.");
+  }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES) {
+    throw new RawEventSpoolInspectionError("invalid_limit", "Inspection limit must be between 1 byte and 16 MiB.");
+  }
+  let handle;
+  try {
+    const directory = resolveSpoolDirectory(homeDir);
+    await requirePrivateSpoolDirectory(directory);
+    handle = await openRejectedEntryForInspection(join(directory, receipt));
+    return await inspectOpenedRejectedEntry(handle, receipt, entry, maxBytes);
+  } catch (error) {
+    if (error instanceof RawEventSpoolInspectionError) throw error;
+    if (error?.code === "ENOENT") {
+      throw new RawEventSpoolInspectionError("receipt_not_found", "Retained receipt was not found. Run capture list-rejected again.");
+    }
+    throw inspectionFailure();
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+};
+
+const listRejectedEntries = async ({ homeDir, validation }) => {
   const directory = resolveSpoolDirectory(homeDir);
   let names;
   try {
@@ -356,6 +461,13 @@ const listRejectedRawEventSpoolEntries = async ({ homeDir = homedir() } = {}) =>
     const entry = parseRejectedFilename(candidate.name);
     if (!candidate.isFile() || !entry) continue;
     try {
+      if (validation === "metadata") {
+        const details = await lstat(join(directory, candidate.name));
+        if (details.isFile()) {
+          entries.push({ ...rejectedMetadata(candidate.name, entry, details.size), validation: "not_checked" });
+        }
+        continue;
+      }
       const retained = await readRegularSpoolFile(join(directory, candidate.name));
       requireMatchingIdentity(retained.serialized, `${entry.digest}.json`);
       entries.push(rejectedMetadata(candidate.name, entry, retained.details.size));
@@ -364,6 +476,18 @@ const listRejectedRawEventSpoolEntries = async ({ homeDir = homedir() } = {}) =>
     }
   }
   return entries.sort((left, right) => left.receipt.localeCompare(right.receipt));
+};
+
+const listRejectedRawEventSpoolEntries = async ({ homeDir = homedir(), validation = "payload" } = {}) => {
+  if (!["metadata", "payload"].includes(validation)) {
+    throw new RawEventSpoolInspectionError("invalid_validation", "Unsupported inspection mode.");
+  }
+  try {
+    return await listRejectedEntries({ homeDir, validation });
+  } catch (error) {
+    if (validation === "payload") throw error;
+    throw inspectionFailure();
+  }
 };
 
 const removeRawEventSpoolEntry = async ({ eventId, homeDir = homedir() }) => {
@@ -441,10 +565,13 @@ const loadRawEventSpoolEntries = async ({
 export {
   DEFAULT_DRAIN_LIMIT,
   DEFAULT_MAX_ENTRIES,
+  inspectRejectedRawEventSpoolEntry,
   listRejectedRawEventSpoolEntries,
   loadRawEventSpoolEntries,
+  MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES,
   RAW_EVENT_SPOOL_CONFLICT_CODE,
   RAW_EVENT_SPOOL_FULL_CODE,
+  RawEventSpoolInspectionError,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
   retainRejectedRawEventSpoolEntry,
