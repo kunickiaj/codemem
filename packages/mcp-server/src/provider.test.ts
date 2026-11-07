@@ -1,8 +1,8 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import { InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/server-legacy/auth";
+import { InvalidGrantError } from "@modelcontextprotocol/server-legacy/auth";
 import type { Response } from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OAuthAccessTokenStore, OAuthAuthorizationCodeStore } from "./oauth.js";

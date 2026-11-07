@@ -7,8 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { MemoryStore } from "@codemem/core";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport, ProtocolError } from "@modelcontextprotocol/client";
 import { createCodememMcpServer } from "./server.js";
 
 /**
@@ -92,12 +91,18 @@ export async function callCodememToolLocally(
 	try {
 		await server.connect(serverTransport);
 		await client.connect(clientTransport);
-		const response = await client.callTool({ name, arguments: args }, undefined, {
-			timeout: LOCAL_TOOL_CALL_TIMEOUT_MS,
-		});
+		const response = await client.callTool(
+			{ name, arguments: args },
+			{
+				timeout: LOCAL_TOOL_CALL_TIMEOUT_MS,
+			},
+		);
 		const value = response.structuredContent ?? parseTextContent(response.content);
 		if (response.isError) return { ok: false, error: errorMessage(value), result: value };
 		return { ok: true, result: value };
+	} catch (error) {
+		if (error instanceof ProtocolError) return { ok: false, error: error.message };
+		throw error;
 	} finally {
 		await client.close();
 		await server.close();

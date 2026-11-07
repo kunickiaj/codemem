@@ -42,6 +42,19 @@ Run `codemem --help` for the current human-facing command list and append `--hel
 
 Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `pi-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` remain hidden top-level aliases. Deprecated `export-memories` and `import-memories` warn on stderr; use `codemem memory export` and `codemem memory import` instead.
 
+### MCP protocol compatibility
+
+Starting in 0.49, both `codemem mcp` and `codemem mcp http` support MCP
+2026-07-28 discovery and legacy `initialize` clients. Clients choose the
+protocol. Existing stdio commands and HTTP endpoint URLs stay the same.
+Calling an unknown tool returns a JSON-RPC error with code `-32602` rather
+than a tool execution result. See the [MCP result contract](plugin-reference.md#mcp-result-and-annotation-contract).
+
+Protocol support alone does not make cross-project pooling safe. Codemem
+still needs each caller's directory to scope searches, assign write-session
+paths, and read project context. Keep OpenCode pooling disabled until that
+caller-context integration is available.
+
 ### Memory export visibility
 
 Exports include only memories readable under the device's current Sharing domain authority and exclude sessions with no exportable memories. If any memory in a session is inaccessible, including inactive or deleted history, exports omit that session's prompts, summaries, and metadata and retain only a numeric ID, an opaque stable session key, and a redaction marker so readable memories can still be imported. Project, date, and activity filters do not reduce authority for otherwise readable session records.

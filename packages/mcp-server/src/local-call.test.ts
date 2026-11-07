@@ -51,6 +51,11 @@ async function rememberSentinel(): Promise<number> {
 }
 
 describe("callCodememToolLocally", () => {
+	it("represents an unknown-tool protocol error in the local failure envelope", async () => {
+		const outcome = await callCodememToolLocally(store, "no_such_tool", {});
+		expect(outcome).toEqual({ ok: false, error: "Tool no_such_tool not found" });
+		expect((await callCodememToolLocally(store, "memory_schema", {})).ok).toBe(true);
+	});
 	it("returns the structured MCP result for a successful call", async () => {
 		const id = await rememberSentinel();
 

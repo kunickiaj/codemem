@@ -1,4 +1,4 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { errorContent, jsonContent } from "../content.js";
 import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
@@ -42,7 +42,7 @@ function registerGetTool(server: McpServer, context: ToolRegistrationContext): v
 		{
 			description:
 				"Fetch one memory by exact ID. Does not inherit the default project; optional filters constrain the lookup, and a mismatch returns not_found.",
-			inputSchema: getInputSchema,
+			inputSchema: z.object(getInputSchema),
 			outputSchema: toolOutputSchemas.memory_get,
 			annotations: toolAnnotations.memory_get,
 		},
@@ -57,9 +57,9 @@ function registerGetTool(server: McpServer, context: ToolRegistrationContext): v
 					toolArguments: args,
 					limit: 1,
 					resolveFilters: () => buildFilters(args, null),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const item = getMemoryForMcp(context.store, args.memory_id, filters);
@@ -78,7 +78,7 @@ function registerGetObservationsTool(server: McpServer, context: ToolRegistratio
 		{
 			description:
 				"Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
-			inputSchema: getObservationsInputSchema,
+			inputSchema: z.object(getObservationsInputSchema),
 			outputSchema: toolOutputSchemas.memory_get_observations,
 			annotations: toolAnnotations.memory_get_observations,
 		},
@@ -91,9 +91,9 @@ function registerGetObservationsTool(server: McpServer, context: ToolRegistratio
 					toolArguments: args,
 					limit: args.ids.length,
 					resolveFilters: () => buildFilters(args, null),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const items = getManyForMcp(context.store, args.ids, filters);
@@ -109,7 +109,7 @@ function registerRememberTool(server: McpServer, context: ToolRegistrationContex
 		"memory_remember",
 		{
 			description: "Create a new memory. Use for milestones, decisions, and notable facts.",
-			inputSchema: rememberInputSchema,
+			inputSchema: z.object(rememberInputSchema),
 			outputSchema: toolOutputSchemas.memory_remember,
 			annotations: toolAnnotations.memory_remember,
 		},
@@ -142,7 +142,7 @@ function registerForgetTool(server: McpServer, context: ToolRegistrationContext)
 		{
 			description:
 				"Soft-delete a memory by exact ID so it no longer appears in normal retrieval; this is not secure erasure. Does not inherit the default project; optional filters must match or the tool returns not_found.",
-			inputSchema: forgetInputSchema,
+			inputSchema: z.object(forgetInputSchema),
 			outputSchema: toolOutputSchemas.memory_forget,
 			annotations: toolAnnotations.memory_forget,
 		},

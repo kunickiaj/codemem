@@ -11,7 +11,7 @@ import {
 	resolveProject,
 	resolveProjectRoot,
 } from "@codemem/core";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { errorContent, jsonContent } from "../content.js";
 import { buildFilters } from "../project-scope.js";
@@ -115,7 +115,7 @@ export function registerDistillTools(server: McpServer, context: ToolRegistratio
 		{
 			description:
 				"Mine recurring memories into reviewable context candidates. Reads project/user context files without modifying them and can call the optional observer when judge=true.",
-			inputSchema: distillInputSchema,
+			inputSchema: z.object(distillInputSchema),
 			outputSchema: toolOutputSchemas.memory_distill_candidates,
 			annotations: toolAnnotations.memory_distill_candidates,
 		},

@@ -175,7 +175,6 @@ it("negotiates legacy stdio through the source CLI, lists tools, calls one, and 
 
 it.each([
 	{ label: "invalid arguments", name: "memory_get", arguments: { memory_id: "invalid" } },
-	{ label: "unknown tool", name: "no_such_tool", arguments: {} },
 	{ label: "missing memory", name: "memory_get", arguments: { memory_id: 999_999 } },
 ])(
 	"returns a text tool error for $label and keeps the stdio session usable",
@@ -215,3 +214,20 @@ it.each([
 	},
 	30_000,
 );
+
+it("returns the SDK2 unknown-tool protocol error and keeps the legacy session usable", async () => {
+	const fixture = startFixture();
+	try {
+		await fixture.initialize();
+		const failed = await fixture.request("tools/call", { name: "no_such_tool", arguments: {} });
+		const recovered = await fixture.request("tools/call", { name: "memory_schema", arguments: {} });
+		expect(failed.result).toBeUndefined();
+		expect(failed.error).toEqual({ code: -32602, message: "Tool no_such_tool not found" });
+		expect(recovered.error).toBeUndefined();
+		expect(recovered.result?.structuredContent).toHaveProperty("kinds");
+		expect(await fixture.closeInput()).toEqual({ code: 0, signal: null });
+		expect(fixture.protocolFailures).toEqual([]);
+	} finally {
+		await fixture.dispose();
+	}
+}, 30_000);

@@ -1,4 +1,5 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import { jsonContent } from "../content.js";
 import { toolAnnotations, toolOutputSchemas } from "../tool-contracts.js";
 
@@ -94,7 +95,7 @@ export function registerLearnTools(server: McpServer): void {
 		"memory_learn",
 		{
 			description: "Learn how to use codemem memory tools. Call this first if unfamiliar.",
-			inputSchema: {},
+			inputSchema: z.object({}),
 			outputSchema: toolOutputSchemas.memory_learn,
 			annotations: toolAnnotations.memory_learn,
 		},

@@ -1,5 +1,5 @@
 import { createPublicKey, randomUUID, verify } from "node:crypto";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
+import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/server-legacy/auth";
 import {
 	type McpOAuthErrorResult,
 	type McpOAuthRedirectResult,

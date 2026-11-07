@@ -33,7 +33,11 @@
 	},
 	"dependencies": {
 		"@codemem/core": "workspace:^",
-		"@modelcontextprotocol/sdk": "^1.32.0",
+		"@modelcontextprotocol/client": "2.4.0",
+		"@modelcontextprotocol/core": "2.4.0",
+		"@modelcontextprotocol/node": "2.1.2",
+		"@modelcontextprotocol/server": "2.4.0",
+		"@modelcontextprotocol/server-legacy": "2.4.0",
 		"express": "^5.2.1",
 		"express-rate-limit": "^8.7.0",
 		"zod": "catalog:"

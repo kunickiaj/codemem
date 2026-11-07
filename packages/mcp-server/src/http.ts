@@ -13,13 +13,13 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 import { MemoryStore, resolveDbPath } from "@codemem/core";
-import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, type McpServer } from "@modelcontextprotocol/server";
 import {
 	getOAuthProtectedResourceMetadataUrl,
 	mcpAuthRouter,
-} from "@modelcontextprotocol/sdk/server/auth/router.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+	requireBearerAuth,
+} from "@modelcontextprotocol/server-legacy/auth";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import {
@@ -439,20 +439,7 @@ export async function startCodememMcpHttpServer(
 				requestBody: req.body,
 				now: options.retrievalLedgerNow?.() ?? Date.now(),
 			});
-			const mcpServer = createCodememMcpServer(store, {
-				retrievalLedgerScopeId,
-				retrievalLedgerIdentityMode: "stateless",
-			});
-			const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-			const activeRequest = { mcpServer };
-			activeRequests.add(activeRequest);
-			try {
-				await mcpServer.connect(transport);
-				await transport.handleRequest(req, res, req.body);
-			} finally {
-				activeRequests.delete(activeRequest);
-				await mcpServer.close();
-			}
+			await serveMcpHttpRequest(req, res, { store, retrievalLedgerScopeId, activeRequests });
 		},
 		handleMcpJsonBodyError,
 	);
@@ -475,6 +462,40 @@ export async function startCodememMcpHttpServer(
 		url: `http://${formatHostForUrl(host)}:${getBoundPort(server)}/mcp`,
 		close,
 	};
+}
+
+async function serveMcpHttpRequest(
+	req: Request,
+	res: Response,
+	options: {
+		store: MemoryStore;
+		retrievalLedgerScopeId: string;
+		activeRequests: Set<ActiveRequest>;
+	},
+): Promise<void> {
+	const requestServers: ActiveRequest[] = [];
+	const handler = createMcpHandler(
+		() => {
+			const mcpServer = createCodememMcpServer(options.store, {
+				retrievalLedgerScopeId: options.retrievalLedgerScopeId,
+				retrievalLedgerIdentityMode: "stateless",
+			});
+			const activeRequest = { mcpServer };
+			requestServers.push(activeRequest);
+			options.activeRequests.add(activeRequest);
+			return mcpServer;
+		},
+		{ legacy: "stateless" },
+	);
+	try {
+		await toNodeHandler(handler)(req, res, req.body);
+	} finally {
+		await handler.close();
+		for (const activeRequest of requestServers) {
+			options.activeRequests.delete(activeRequest);
+			await activeRequest.mcpServer.close();
+		}
+	}
 }
 
 async function closeMcpHttpServer(

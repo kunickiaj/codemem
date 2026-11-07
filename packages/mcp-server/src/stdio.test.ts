@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
 		connect: vi.fn(),
 	},
 	viewer: vi.fn(),
+	serve: vi.fn(),
+	create: vi.fn(),
+	transport: { onclose: undefined as (() => void) | undefined },
 }));
 
 vi.mock("@codemem/core", () => ({
@@ -17,10 +20,18 @@ vi.mock("@codemem/core", () => ({
 		db = mocks.store.db;
 	},
 }));
-vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
-	StdioServerTransport: class {},
+vi.mock("@modelcontextprotocol/server/stdio", () => ({
+	serveStdio: mocks.serve,
+	StdioServerTransport: class {
+		get onclose() {
+			return mocks.transport.onclose;
+		}
+		set onclose(callback: (() => void) | undefined) {
+			mocks.transport.onclose = callback;
+		}
+	},
 }));
-vi.mock("./server.js", () => ({ createCodememMcpServer: () => mocks.server }));
+vi.mock("./server.js", () => ({ createCodememMcpServer: mocks.create }));
 vi.mock("./stdio-viewer.js", () => ({ ensureViewer: mocks.viewer }));
 
 type Callback = (error?: Error) => void;
@@ -30,6 +41,7 @@ let drain: ReturnType<typeof Promise.withResolvers<void>>;
 let stop: ReturnType<typeof Promise.withResolvers<void>>;
 let entered: ReturnType<typeof Promise.withResolvers<void>>;
 let exited: ReturnType<typeof Promise.withResolvers<number | undefined>>;
+let reportError: (error: Error) => void;
 
 beforeEach(() => {
 	vi.resetModules();
@@ -43,11 +55,18 @@ beforeEach(() => {
 	entered = Promise.withResolvers<void>();
 	exited = Promise.withResolvers<number | undefined>();
 	mocks.server.server.onclose = undefined;
+	mocks.transport.onclose = undefined;
+	mocks.create.mockReturnValue(mocks.server);
+	mocks.serve.mockImplementation((factory, options) => {
+		factory();
+		reportError = options.onerror;
+		return mocks.server;
+	});
 	mocks.viewer.mockResolvedValue(undefined);
 	mocks.server.connect.mockResolvedValue(undefined);
 	mocks.server.close.mockImplementation(async () => {
-		// Protocol close may synchronously invoke its callback again during shutdown.
-		mocks.server.server.onclose?.();
+		// Closing the SDK handle may synchronously close its transport during shutdown.
+		mocks.transport.onclose?.();
 	});
 	mocks.store.closeAsync.mockImplementation(() => {
 		entered.resolve();
@@ -94,13 +113,13 @@ afterEach(async () => {
 
 async function start(): Promise<void> {
 	await import("./stdio.js");
-	expect(mocks.server.connect).toHaveBeenCalledOnce();
+	expect(mocks.serve).toHaveBeenCalledOnce();
 }
 
 function trigger(source: "end" | "onclose" | "SIGTERM" | "SIGINT" | "error"): void {
 	if (source === "onclose") {
-		expect(mocks.server.server.onclose).toBeTypeOf("function");
-		mocks.server.server.onclose?.();
+		expect(mocks.transport.onclose).toBeTypeOf("function");
+		mocks.transport.onclose?.();
 		return;
 	}
 	const handler = stdin.get(source) ?? signals.get(source);
@@ -108,7 +127,16 @@ function trigger(source: "end" | "onclose" | "SIGTERM" | "SIGINT" | "error"): vo
 	handler?.(source === "error" ? new Error("stdin failed") : undefined);
 }
 
-it.each(["end", "onclose", "SIGTERM"] as const)(
+it("does not close the shared store when a discovery probe instance is discarded", async () => {
+	await start();
+	const factory = mocks.serve.mock.calls[0]?.[0] as () => typeof mocks.server;
+	await factory().close();
+	expect(mocks.create).toHaveBeenCalledTimes(2);
+	expect(mocks.store.closeAsync).not.toHaveBeenCalled();
+	expect(process.exit).not.toHaveBeenCalled();
+});
+
+it.each(["end", "error", "onclose", "SIGTERM"] as const)(
 	"forces exit after 30 seconds of pending store drain following %s without closing SQLite",
 	async (source) => {
 		// Arrange
@@ -145,7 +173,7 @@ it("drains once across concurrent signals and recursive protocol close, clears i
 	stop = Promise.withResolvers<void>();
 	mocks.server.close.mockImplementation(async () => {
 		order.push("server");
-		mocks.server.server.onclose?.();
+		mocks.transport.onclose?.();
 		stopping.resolve();
 		await stop.promise;
 	});
@@ -215,13 +243,16 @@ it("exits with failure when store cleanup rejects and clears the forced-exit dea
 	expect(vi.getTimerCount()).toBe(0);
 });
 
-it("preserves the startup failure after closing the server and asynchronously draining the store", async () => {
+it("reports SDK parsing errors without terminating a usable connection", async () => {
 	// Arrange
 	const failure = new Error("transport startup failed");
-	mocks.server.connect.mockRejectedValue(failure);
 
 	// Act
 	await start();
+	reportError(failure);
+	expect(mocks.store.closeAsync).not.toHaveBeenCalled();
+	expect(process.exit).not.toHaveBeenCalled();
+	trigger("end");
 	await entered.promise;
 	expect(process.exit).not.toHaveBeenCalled();
 	drain.resolve();
@@ -229,12 +260,24 @@ it("preserves the startup failure after closing the server and asynchronously dr
 	await vi.advanceTimersByTimeAsync(60_000);
 
 	// Assert
-	expect(console.error).toHaveBeenCalledExactlyOnceWith(
-		"codemem MCP server failed to start:",
-		failure,
-	);
-	expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+	expect(console.error).toHaveBeenCalledExactlyOnceWith("codemem MCP server failed:", failure);
+	expect(process.exit).toHaveBeenCalledExactlyOnceWith(0);
 	expect(mocks.server.close).toHaveBeenCalledOnce();
 	expect(mocks.store.closeAsync).toHaveBeenCalledOnce();
 	expect(vi.getTimerCount()).toBe(0);
+});
+
+it("drains the store and exits with failure when the SDK serving entry throws at startup", async () => {
+	const failure = new Error("startup failed");
+	mocks.serve.mockImplementation(() => {
+		throw failure;
+	});
+	await start();
+	await entered.promise;
+	drain.resolve();
+	await exited.promise;
+	expect(console.error).toHaveBeenCalledWith("codemem MCP server failed to start:", failure);
+	expect(process.exit).toHaveBeenCalledExactlyOnceWith(1);
+	expect(mocks.server.close).not.toHaveBeenCalled();
+	expect(mocks.store.closeAsync).toHaveBeenCalledOnce();
 });

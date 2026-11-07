@@ -1,5 +1,5 @@
 import type { MemoryResult, PackRenderOptions } from "@codemem/core";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
 import { buildFilters } from "../project-scope.js";
@@ -80,7 +80,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 		{
 			description:
 				"Keyword-search memories when you know exact terms or identifiers. Returns full body text for each match; use memory_search_index when you only need compact candidates.",
-			inputSchema: searchInputSchema,
+			inputSchema: z.object(searchInputSchema),
 			outputSchema: toolOutputSchemas.memory_search,
 			annotations: toolAnnotations.memory_search,
 		},
@@ -94,9 +94,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					query: args.query,
 					limit: args.limit,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const items = store.search(args.query, args.limit, filters);
@@ -126,7 +126,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 		{
 			description:
 				"Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
-			inputSchema: searchIndexInputSchema,
+			inputSchema: z.object(searchIndexInputSchema),
 			outputSchema: toolOutputSchemas.memory_search_index,
 			annotations: toolAnnotations.memory_search_index,
 		},
@@ -140,9 +140,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					query: args.query,
 					limit: args.limit,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const items = store.search(args.query, args.limit, filters);
@@ -170,7 +170,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 		"memory_explain",
 		{
 			description: "Explain search results with detailed scoring breakdown.",
-			inputSchema: explainInputSchema,
+			inputSchema: z.object(explainInputSchema),
 			outputSchema: toolOutputSchemas.memory_explain,
 			annotations: toolAnnotations.memory_explain,
 		},
@@ -184,9 +184,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					query: args.query,
 					limit: args.limit,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const result = store.explain(args.query ?? null, args.ids ?? null, args.limit, filters, {
@@ -210,7 +210,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 		"memory_recent",
 		{
 			description: "Return recent memories, newest first.",
-			inputSchema: recentInputSchema,
+			inputSchema: z.object(recentInputSchema),
 			outputSchema: toolOutputSchemas.memory_recent,
 			annotations: toolAnnotations.memory_recent,
 		},
@@ -223,9 +223,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					toolArguments: args,
 					limit: args.limit,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const items = store.recent(args.limit, filters);
@@ -240,7 +240,7 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 		{
 			description:
 				"Build a formatted context block for a concept or task using keyword and semantic search when embeddings are available, with automatic keyword-only fallback. Use for conceptually relevant context; use memory_search or memory_search_index for exact identifiers.",
-			inputSchema: packInputSchema,
+			inputSchema: z.object(packInputSchema),
 			outputSchema: toolOutputSchemas.memory_pack,
 			annotations: toolAnnotations.memory_pack,
 		},
@@ -254,9 +254,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 					query: args.context,
 					limit: args.limit ?? null,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				async (filters) => {
 					const result = await store.buildMemoryPackAsync(
@@ -266,9 +266,9 @@ export function registerSearchTools(server: McpServer, context: ToolRegistration
 						filters,
 						packRenderOptions(args),
 						undefined,
-						{ signal: extra?.signal },
+						{ signal: extra?.mcpReq.signal },
 					);
-					extra?.signal?.throwIfAborted();
+					extra?.mcpReq.signal.throwIfAborted();
 					// Renderer spans and fingerprints belong to automatic recall, not model context.
 					const { rendered_items: _renderedItems, ...value } = result;
 					return { value, memoryIds: result.item_ids, filters };
