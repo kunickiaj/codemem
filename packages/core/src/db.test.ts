@@ -2049,6 +2049,27 @@ describe("sync_attempts.failure_category compatibility", () => {
 		);
 		exec.mockRestore();
 	});
+
+	it("repairs a missing nullable transport column despite a current compatibility marker", () => {
+		// Arrange: the marker predates transport without a schema-version change.
+		ensureAdditiveSchemaCompatibility(db);
+		expect(
+			db.prepare("SELECT applied_schema_version FROM schema_compat_state WHERE id = 1").get(),
+		).toEqual({ applied_schema_version: SCHEMA_VERSION });
+		db.exec("ALTER TABLE sync_attempts DROP COLUMN transport");
+		db.prepare(`INSERT INTO sync_attempts(peer_device_id, started_at, finished_at, ok, ops_in, ops_out)
+			VALUES ('legacy-peer', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1, 0, 0)`).run();
+		db.close();
+		// Act: reopen through the normal additive compatibility path.
+		db = connect(join(tmpDir, "test.sqlite"));
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+		// Assert: repair is repeatable and historical transport remains unknown.
+		expect(columnInfo(db, "sync_attempts", "transport")).toEqual({ is_not_null: 0 });
+		expect(
+			db.prepare("SELECT transport FROM sync_attempts WHERE peer_device_id = 'legacy-peer'").get(),
+		).toEqual({ transport: null });
+	});
 });
 
 describe("ensurePlannerStats", () => {

@@ -10,7 +10,7 @@ import { and, desc, eq, gt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
-import { ensureAdditiveSchemaCompatibility } from "./db.js";
+import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
@@ -406,8 +406,10 @@ export function recordSyncAttempt(
 		error?: string;
 		failureCategory?: SyncAttemptFailureCategory;
 		capabilities?: SyncCapabilityDiagnostics;
+		transport?: SyncResult["transport"];
 	},
 ): void {
+	ensureSyncAttemptTransportColumn(db);
 	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
 	const capabilities = options.capabilities ?? defaultCapabilityDiagnostics();
@@ -424,6 +426,8 @@ export function recordSyncAttempt(
 			peer_sync_capability: capabilities.peer,
 			negotiated_sync_capability: capabilities.negotiated,
 			failure_category: options.ok ? null : (options.failureCategory ?? "other"),
+			transport:
+				options.transport === "direct" || options.transport === "relay" ? options.transport : null,
 		})
 		.run();
 }
@@ -2187,7 +2191,11 @@ function prepareSyncExchange(
 		kind: "ready",
 		context: {
 			requestExecutor: options?.requestExecutor ?? requestJson,
-			recordAttempt: options?.attemptRecorder ?? recordSyncAttempt,
+			recordAttempt: (attemptDb, peerId, attempt) => {
+				const record = options?.attemptRecorder ?? recordSyncAttempt;
+				// This exchange dials a peer directly. Relay selection happens outside syncOnce.
+				record(attemptDb, peerId, { ...attempt, transport: "direct" });
+			},
 			db,
 			peerDeviceId,
 			deviceId,

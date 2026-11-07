@@ -15,7 +15,11 @@ import {
 	normalizeAddress,
 } from "./address-utils.js";
 import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
-import { type Database, ensureSyncAttemptFailureCategoryColumn } from "./db.js";
+import {
+	type Database,
+	ensureSyncAttemptFailureCategoryColumn,
+	ensureSyncAttemptTransportColumn,
+} from "./db.js";
 import * as schema from "./schema.js";
 import type { SyncAttemptFailureCategory } from "./sync-pass.js";
 import { loadManualPeerAddresses, loadPeerAddresses } from "./sync-peer-addresses.js";
@@ -69,10 +73,12 @@ export function recordSyncAttempt(
 		opsOut?: number;
 		error?: string;
 		failureCategory?: SyncAttemptFailureCategory;
+		transport?: "direct" | "relay";
 	},
 ): void {
 	// Exported for direct callers whose connect() skips the additive schema pass.
 	ensureSyncAttemptFailureCategoryColumn(db);
+	ensureSyncAttemptTransportColumn(db);
 	const d = drizzle(db, { schema });
 	const now = new Date().toISOString();
 	d.insert(schema.syncAttempts)
@@ -85,6 +91,7 @@ export function recordSyncAttempt(
 			ops_out: options.opsOut ?? 0,
 			error: options.error ?? null,
 			failure_category: options.ok ? null : (options.failureCategory ?? "other"),
+			transport: options.transport ?? null,
 		})
 		.run();
 

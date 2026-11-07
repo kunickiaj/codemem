@@ -818,6 +818,7 @@ export const syncAttempts = sqliteTable(
 		peer_sync_capability: text("peer_sync_capability"),
 		negotiated_sync_capability: text("negotiated_sync_capability"),
 		failure_category: text("failure_category"),
+		transport: text("transport"),
 	},
 	(table) => [
 		index("idx_sync_attempts_peer_started").on(table.peer_device_id, table.started_at),

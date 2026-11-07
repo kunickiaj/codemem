@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { MemoryStore } from "@codemem/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type DirectionEvidence,
 	directionSyncHealth,
 	overallSyncHealth,
 	peerSyncHealth,
+	readPeerSyncHealth,
 } from "./sync-health.js";
+
+vi.mock("@codemem/core", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@codemem/core")>()),
+	readCoordinatorSyncConfig: vi.fn(() => ({ syncIntervalS: 120 })),
+}));
 
 const now = Date.parse("2026-11-02T12:00:00.000Z");
 const recent = "2026-11-02T11:59:00.000Z";
@@ -20,6 +27,116 @@ const successful: DirectionEvidence = {
 	operations24h: 0,
 	errorCode: null,
 };
+
+describe("readPeerSyncHealth last successful connection", () => {
+	let store: MemoryStore;
+	const older = "2026-11-02T11:58:00.000Z";
+
+	beforeEach(() => {
+		vi.spyOn(Date, "now").mockReturnValue(now);
+		store = new MemoryStore(":memory:");
+		store.db
+			.prepare("INSERT INTO sync_peers(peer_device_id, created_at) VALUES ('peer', ?)")
+			.run(older);
+	});
+
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	function attempt(id: number, at: string, transport: string | null, ok = 1) {
+		store.db
+			.prepare(`INSERT INTO sync_attempts
+			(id, peer_device_id, started_at, finished_at, ok, transport, ops_in, ops_out)
+			VALUES (?, 'peer', ?, ?, ?, ?, 0, 0)`)
+			.run(id, at, at, ok, transport);
+	}
+
+	it.each(["direct", "relay"])("returns the latest successful %s connection", (transport) => {
+		// Arrange: the route can change between successful local attempts.
+		attempt(1, older, transport === "direct" ? "relay" : "direct");
+		attempt(2, recent, transport);
+		// Act.
+		const health = readPeerSyncHealth(store, ["peer"]);
+		// Assert.
+		expect(health.get("peer")?.last_successful_connection).toEqual({ transport, at: recent });
+	});
+
+	it.each(["direct", "relay"])(
+		"does not backfill an older %s route over a newer unknown success",
+		(transport) => {
+			// Arrange: legacy successes must retain their unknown route.
+			attempt(1, older, transport);
+			attempt(2, recent, null);
+			// Act.
+			const health = readPeerSyncHealth(store, ["peer"]);
+			// Assert.
+			expect(health.get("peer")?.last_successful_connection).toEqual({
+				transport: null,
+				at: recent,
+			});
+		},
+	);
+
+	it.each(["direct", "relay"])(
+		"preserves the last %s success after a newer failed attempt",
+		(transport) => {
+			// Arrange.
+			attempt(1, older, transport);
+			attempt(2, recent, transport === "direct" ? "relay" : "direct", 0);
+			// Act.
+			const health = readPeerSyncHealth(store, ["peer"]);
+			// Assert.
+			expect(health.get("peer")?.last_successful_connection).toEqual({ transport, at: older });
+		},
+	);
+
+	it.each(["relay", null])(
+		"selects the last-started success even if an older attempt finishes later: %s",
+		(transport) => {
+			// Arrange: completion order and IDs must not override initiation order.
+			const finishedAt = "2026-11-02T11:59:15.000Z";
+			attempt(20, older, "direct");
+			attempt(10, recent, transport);
+			store.db
+				.prepare("UPDATE sync_attempts SET finished_at = ? WHERE id = 20")
+				.run("2026-11-02T11:59:45.000Z");
+			store.db.prepare("UPDATE sync_attempts SET finished_at = ? WHERE id = 10").run(finishedAt);
+			// Act.
+			const health = readPeerSyncHealth(store, ["peer"]);
+			// Assert: the selected attempt supplies its own completion time, including unknown routes.
+			expect(health.get("peer")?.last_successful_connection).toEqual({ transport, at: finishedAt });
+		},
+	);
+
+	it.each(["relay", null])(
+		"breaks equal success timestamps by descending attempt ID: %s",
+		(transport) => {
+			// Arrange: insertion order differs from ID order.
+			attempt(20, recent, transport);
+			attempt(10, recent, "direct");
+			// Act.
+			const health = readPeerSyncHealth(store, ["peer"]);
+			// Assert.
+			expect(health.get("peer")?.last_successful_connection).toEqual({ transport, at: recent });
+		},
+	);
+
+	it("does not infer a local connection from inbound contact or failed attempts", () => {
+		// Arrange: peer contact alone does not prove a locally initiated success.
+		store.db
+			.prepare("UPDATE sync_peers SET last_seen_at = ?, last_sync_at = ?")
+			.run(recent, recent);
+		attempt(1, recent, "direct", 0);
+		// Act.
+		const health = readPeerSyncHealth(store, ["peer", "unknown-peer"]);
+		// Assert.
+		for (const id of ["peer", "unknown-peer"]) {
+			expect(health.get(id)?.last_successful_connection).toEqual({ transport: null, at: null });
+		}
+	});
+});
 
 describe("directionSyncHealth", () => {
 	it.each([undefined, empty])("preserves unknown counts without an observation: %j", (evidence) => {
