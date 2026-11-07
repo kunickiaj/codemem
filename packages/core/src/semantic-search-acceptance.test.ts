@@ -23,10 +23,18 @@ vi.mock("./embeddings.js", async (importOriginal) => ({
 	resolveEmbeddingClientVectorIdentityLabel: vi.fn(),
 }));
 
-const { fixture, enroll, remember, rememberScoped, row } = useLocalCaptureFixture();
+const { fixture, enroll, rememberScoped, row } = useLocalCaptureFixture();
 const legacyModel = "Xenova/bge-small-en-v1.5";
 const currentModel = embeddings.DEFAULT_EMBEDDING_VECTOR_IDENTITY_LABEL;
 const queryVector = new Float32Array(384);
+
+// Three real paragraphs preserve the mixed-chunk ranking cases without fictional positions.
+function sourceBody(label: string): string {
+	return Array.from(
+		{ length: 3 },
+		(_, index) => `${label} paragraph ${index}. ${"Synthetic fixture detail. ".repeat(30)}`,
+	).join("\n\n");
+}
 
 beforeEach(() => {
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected test network request"));
@@ -44,11 +52,20 @@ beforeEach(() => {
 function vector(id: number, value: number, model = currentModel, chunkIndex = 0): void {
 	const embedding = new Float32Array(384);
 	embedding[0] = value;
+	const memory = fixture.store.db
+		.prepare("SELECT title, body_text FROM memory_items WHERE id=?")
+		.get(id) as { title: string; body_text: string } | undefined;
+	let contentHash = `orphan-${id}-${chunkIndex}`;
+	if (memory) {
+		const chunk = embeddings.chunkText(`${memory.title}\n${memory.body_text}`.trim())[chunkIndex];
+		if (chunk === undefined) throw new Error(`fixture source chunk ${chunkIndex} absent for ${id}`);
+		contentHash = embeddings.hashText(chunk);
+	}
 	fixture.store.db
 		.prepare(`INSERT INTO memory_vectors
 		(embedding, memory_id, chunk_index, content_hash, model)
 		VALUES (?, CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ?)`)
-		.run(embeddings.serializeFloat32(embedding), id, chunkIndex, `${id}-${chunkIndex}`, model);
+		.run(embeddings.serializeFloat32(embedding), id, chunkIndex, contentHash, model);
 }
 
 function replica(scope: string | null, sessionId = fixture.sessionId): number {
@@ -57,9 +74,10 @@ function replica(scope: string | null, sessionId = fixture.sessionId): number {
 			.prepare(`INSERT INTO memory_items
 		(session_id, kind, title, body_text, confidence, tags_text, active,
 		 created_at, updated_at, metadata_json, scope_id, origin_device_id, import_key)
-		VALUES (?, 'discovery', 'Replica', 'Full body', 0.6, 'tag', 1,
+		VALUES (?, 'discovery', 'Replica', ?, 0.6, 'tag', 1,
 		 '2026-01-01', '2026-01-02', '{}', ?, 'peer', ?)`)
-			.run(sessionId, scope, `replica-${scope}-${sessionId}-${rowCount()}`).lastInsertRowid,
+			.run(sessionId, sourceBody("Full body"), scope, `replica-${scope}-${sessionId}-${rowCount()}`)
+			.lastInsertRowid,
 	);
 }
 
@@ -158,7 +176,13 @@ async function visibilityCorpus() {
 		scopeIds: [scopeId],
 	});
 	const ids = {
-		local: remember("Unmanaged and creation-proof overlap"),
+		local: fixture.store.remember(
+			fixture.sessionId,
+			"discovery",
+			"Unmanaged and creation-proof overlap",
+			sourceBody("Unmanaged and creation-proof overlap body"),
+			0.8,
+		),
 		creation: rememberScoped("Immutable managed creation"),
 		managed: replica(scopeId),
 		hidden: replica("unknown-scope"),
@@ -397,7 +421,28 @@ function assertPrefilterBytecode(ops: Opcode[]) {
 		cid: number;
 	}[];
 	const columnId = (name: string) => columns.find((column) => column.name === name)?.cid;
-	const embedding = ops.find((op) => op.opcode === "VColumn" && op.p2 === columnId("embedding"));
+	const distance = ops.find(
+		(op) => op.opcode === "Function" && op.p4?.startsWith("vec_distance_l2("),
+	);
+	expect(distance).toBeDefined();
+	// json_each also exposes low-numbered columns. Only the vec0 cursor has model and memory metadata.
+	const embedding = ops.find(
+		(op) =>
+			op.opcode === "VColumn" &&
+			op.p2 === columnId("embedding") &&
+			ops.some(
+				(metadata) =>
+					metadata.opcode === "VColumn" &&
+					metadata.p1 === op.p1 &&
+					metadata.p2 === columnId("model"),
+			) &&
+			ops.some(
+				(metadata) =>
+					metadata.opcode === "VColumn" &&
+					metadata.p1 === op.p1 &&
+					metadata.p2 === columnId("memory_id"),
+			),
+	);
 	expect(embedding).toBeDefined();
 	if (!embedding) throw new Error("missing embedding VColumn");
 	const vectorLoop = ops.find((op) => op.opcode === "VNext" && op.p1 === embedding.p1);
@@ -419,16 +464,24 @@ function assertPrefilterBytecode(ops: Opcode[]) {
 				op.p2 === vectorLoop?.addr,
 		),
 	).toBe(true);
-	const seek = beforeEmbedding.find((op) => op.opcode === "SeekGE" && op.p3 === memory?.p3);
+	// Freshness checks may reuse the metadata register. Follow the final memory-id read before SeekGE.
+	const seek = beforeEmbedding.find((op) => {
+		if (op.opcode !== "SeekGE") return false;
+		const source = beforeEmbedding.findLast(
+			(read) =>
+				read.addr < op.addr &&
+				read.opcode === "VColumn" &&
+				read.p1 === embedding.p1 &&
+				read.p3 === op.p3,
+		);
+		return source?.p2 === columnId("memory_id");
+	});
 	expect(seek).toBeDefined();
 	expect(
 		beforeEmbedding.some(
 			(op) => op.opcode === "IdxGT" && op.p1 === seek?.p1 && op.p2 === vectorLoop?.addr,
 		),
 	).toBe(true);
-	const distance = ops.find(
-		(op) => op.opcode === "Function" && op.p4?.startsWith("vec_distance_l2("),
-	);
 	expect(distance?.addr).toBeGreaterThan(embedding.addr);
 }
 

@@ -35,8 +35,10 @@ import {
 	startMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { projectColumnClause } from "./project.js";
+import { snapshot } from "./semantic/validated-vector-index-state.js";
 import {
 	buildAuthorizedSemanticMemoryIdsQuery,
+	pendingVectorFreshness,
 	resolveSemanticSearchModelFromCatalog,
 	semanticResult,
 } from "./semantic-query.js";
@@ -1888,8 +1890,37 @@ export function rankSemanticEmbedding(
 	summarySessionId?: number | null,
 ): SemanticSearchResult[] {
 	if (searchModels.length === 0) return [];
+	return snapshot(db, () =>
+		rankSemanticEmbeddingSnapshot(
+			db,
+			queryEmbedding,
+			searchModels,
+			limit,
+			filters,
+			context,
+			summarySessionId,
+		),
+	);
+}
+
+function rankSemanticEmbeddingSnapshot(
+	db: Database,
+	queryEmbedding: Buffer,
+	searchModels: string[],
+	limit: number,
+	filters: MemoryFilters | null,
+	context: SemanticSearchScopeContext,
+	summarySessionId?: number | null,
+): SemanticSearchResult[] {
 	const effectiveLimit = clampSemanticLimit(limit);
 	const authorizedIds = buildAuthorizedSemanticMemoryIdsQuery(filters, context, summarySessionId);
+	const freshness = pendingVectorFreshness(
+		db,
+		filters,
+		context,
+		summarySessionId,
+		"memory_vectors.",
+	);
 	const modelPlaceholders = searchModels.map(() => "?").join(", ");
 
 	// Scope predicates must apply before vector ranking. sqlite-vec's MATCH/k
@@ -1907,6 +1938,7 @@ export function rankSemanticEmbedding(
 			FROM memory_vectors
 			JOIN authorized_ids ON authorized_ids.id = memory_vectors.memory_id
 			WHERE memory_vectors.model IN (${modelPlaceholders})
+			${freshness.sql}
 			GROUP BY memory_vectors.memory_id
 			ORDER BY distance ASC
 			LIMIT ?
@@ -1922,6 +1954,7 @@ export function rankSemanticEmbedding(
 		...authorizedIds.params,
 		queryEmbedding,
 		...searchModels,
+		...freshness.params,
 		effectiveLimit,
 	) as Array<Record<string, unknown>>;
 

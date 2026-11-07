@@ -5,7 +5,12 @@ import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../coordinator-ed25519-key-id-test-fixtures.js";
 import { connect, type Database } from "../db.js";
-import { type EmbeddingClient, resolveEmbeddingClientVectorIdentityLabel } from "../embeddings.js";
+import {
+	chunkText,
+	type EmbeddingClient,
+	hashText,
+	resolveEmbeddingClientVectorIdentityLabel,
+} from "../embeddings.js";
 import { ensureVectorSchema } from "../schema-bootstrap.js";
 import { MemoryStore } from "../store.js";
 import { initTestSchema } from "../test-utils.js";
@@ -74,6 +79,12 @@ export function seedVector(
 	options: { model?: string; mode?: "append" | "replace-memory-model" } = {},
 ) {
 	const model = options.model ?? resolveEmbeddingClientVectorIdentityLabel(client);
+	const memory = db.prepare("SELECT title, body_text FROM memory_items WHERE id=?").get(id) as {
+		title: string;
+		body_text: string;
+	};
+	const text = chunkText(`${memory.title}\n${memory.body_text}`.trim())[chunk];
+	if (text === undefined) throw new Error(`fixture source chunk ${chunk} absent for ${id}`);
 	writeValidatedBatch(db, {
 		writerVersion: 1,
 		expectedModel: model,
@@ -84,7 +95,7 @@ export function seedVector(
 			{
 				memoryId: id,
 				chunkIndex: chunk,
-				contentHash: `fixture-${id}-${chunk}`,
+				contentHash: hashText(text),
 				vector: unitVector(first),
 			},
 		],
@@ -187,7 +198,7 @@ function seedMemories(f: Fixture, options: { seedVectors: boolean }) {
 			session,
 			"discovery",
 			"Independent concept",
-			"A separate stored lesson",
+			chunkedSourceBody("A separate stored lesson"),
 			0.9,
 		),
 		keyword: f.store.remember(
@@ -197,7 +208,13 @@ function seedMemories(f: Fixture, options: { seedVectors: boolean }) {
 			"Worker sentinel keyword lesson",
 			0.8,
 		),
-		hidden: f.store.remember(session, "discovery", "Hidden nearest", "Hidden stored lesson", 0.9),
+		hidden: f.store.remember(
+			session,
+			"discovery",
+			"Hidden nearest",
+			chunkedSourceBody("Hidden stored lesson"),
+			0.9,
+		),
 	};
 	f.store.db
 		.prepare(
@@ -209,6 +226,14 @@ function seedMemories(f: Fixture, options: { seedVectors: boolean }) {
 	seedVector(f.store.db, f.ids.semantic, f.client, 0.1, 1);
 	seedVector(f.store.db, f.ids.keyword, f.client, 0.5);
 	seedVector(f.store.db, f.ids.hidden, f.client, 1);
+}
+
+// Distinct paragraphs make semantic chunk 1 and later hidden model probes real source positions.
+function chunkedSourceBody(label: string): string {
+	return Array.from(
+		{ length: 3 },
+		(_, index) => `${label} paragraph ${index}. ${"Synthetic fixture detail. ".repeat(30)}`,
+	).join("\n\n");
 }
 
 /** Pause delivery after actual worker SQL completes, without sleeps or CPU work. */

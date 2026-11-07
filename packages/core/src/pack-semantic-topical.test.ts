@@ -21,11 +21,19 @@ const vector = new Float32Array(384).fill(0.1);
 
 function rememberVector(title: string, body: string, sessionId = session) {
 	const id = store.remember(sessionId, "decision", title, body, 0.9);
+	const row = store.db
+		.prepare("SELECT title, body_text FROM memory_items WHERE id = ?")
+		.get(id) as {
+		title: string;
+		body_text: string;
+	};
+	const chunk = embeddings.chunkText(`${row.title}\n${row.body_text}`.trim())[0];
+	if (chunk === undefined) throw new Error("fixture chunk absent");
 	store.db
 		.prepare(
 			"INSERT INTO memory_vectors(embedding, memory_id, chunk_index, content_hash, model) VALUES (?, ?, 0, ?, 'synthetic-model')",
 		)
-		.run(embeddings.serializeFloat32(vector), BigInt(id), `synthetic-${id}`);
+		.run(embeddings.serializeFloat32(vector), BigInt(id), embeddings.hashText(chunk));
 	return id;
 }
 
