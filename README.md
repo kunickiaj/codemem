@@ -318,7 +318,7 @@ The spool storage API can retain rejected entries outside active delivery while 
 
 Internal selected-entry recovery coordinates with retention through an ownership-checked lock and removes a retained copy only after a recognized acknowledgement and an unchanged-file check. The HTTP retry command is still pending.
 
-When a retry spool write fails, the local plugin log also records a safe failure stage and category (for example, an existing-entry conflict versus a filesystem error) without recording the event ID or content. This diagnostic does not change retry behavior; keep OpenCode running if it warns an event remains only in memory.
+When a retry spool write fails, the local plugin log also records a safe failure stage and category (for example, an existing-entry conflict versus a filesystem error) without recording the event ID or content. Conflict diagnostics identify the comparison branch and reason, plus changed field names from a fixed allowlist. Other differences produce only `other=true`. This diagnostic does not change retry behavior; keep OpenCode running if it warns an event remains only in memory.
 
 OpenCode pack and ledger HTTP failures also write structured `inject.transport` diagnostics to `~/.codemem/plugin.log`, even when debug logging is off. They distinguish disabled transport, backoff, profile mismatches, confirmed local deadlines, response failures, and malformed data, with elapsed milliseconds and the selected fallback runner category. Logs omit request content, errors, addresses, paths, identifiers, and tokens; fixed-size counters saturate, and each runtime writes at most one entry per 30 seconds without queuing log writes. Runner selection and fallback behavior are unchanged.
 
