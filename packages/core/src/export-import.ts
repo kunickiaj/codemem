@@ -24,6 +24,7 @@ import {
 	remappedSessionKey,
 } from "./session-export-identity.js";
 import { loadRuntimeSigningPublicKey } from "./sync-identity.js";
+import { queueVectorBackfill } from "./vector-backfill-queue.js";
 
 type JsonObject = Record<string, unknown>;
 type MemoryInsert = typeof schema.memoryItems.$inferInsert;
@@ -873,7 +874,12 @@ function validateImportScopes(
 	}
 }
 
-function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: string): number {
+function insertMemory(
+	db: Database,
+	d: DrizzleDb,
+	row: JsonObject,
+	deviceId: string,
+): { id: number; active: number; deletedAt: string | null } {
 	const now = nowIso();
 	const parsedActive = row.active == null ? 1 : Number(row.active);
 	const active = Number.isFinite(parsedActive) ? parsedActive : 1;
@@ -922,7 +928,7 @@ function insertMemory(db: Database, d: DrizzleDb, row: JsonObject, deviceId: str
 		.all();
 	const id = rows[0]?.id;
 	if (id == null) throw new Error("memory insert returned no id");
-	return id;
+	return { id, active, deletedAt };
 }
 
 function insertSummary(d: DrizzleDb, row: JsonObject): number {
@@ -1140,6 +1146,7 @@ function importMappedMemories(
 	const { db, d, sessionMapping, opts, authorizeContext } = context;
 	const { deviceId, sessionsById, prompts } = context;
 	let importedMemories = 0;
+	const vectorMemoryIds: number[] = [];
 	for (const memory of memories) {
 		const oldSessionId = Number(memory.session_id);
 		const newSessionId = sessionMapping.get(oldSessionId);
@@ -1165,7 +1172,7 @@ function importMappedMemories(
 			continue;
 		}
 		preparePlaceholderMemory(db, oldSessionId, newSessionId, opts, authorizeContext);
-		insertMemory(
+		const inserted = insertMemory(
 			db,
 			d,
 			{
@@ -1178,8 +1185,10 @@ function importMappedMemories(
 			},
 			deviceId,
 		);
+		if (inserted.active === 1 && inserted.deletedAt == null) vectorMemoryIds.push(inserted.id);
 		importedMemories += 1;
 	}
+	queueVectorBackfill(db, { upsertMemoryIds: vectorMemoryIds, deleteMemoryIds: [] });
 	return importedMemories;
 }
 

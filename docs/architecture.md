@@ -133,6 +133,10 @@ It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-
 
 The `codemem` package installs its matching optional `@codemem/embeddings` runtime by default. When available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Processes started with `CODEMEM_EMBEDDING_DISABLED=1` use lexical retrieval without loading Transformers or ONNX Runtime. An install made with `--omit=optional` also omits sqlite-vec's platform package and therefore requires this flag.
 
+New memories, active imports, and ownership-recovery copies record vector repair intent in the same SQLite transaction as their content. Queue failures prevent that transaction from committing, and rollbacks remove both content and intent. Post-commit inference still runs immediately where supported. Failed or cancelled inference leaves persisted work for the maintenance worker after restart. Disabling embeddings suppresses inference while preserving repair intent. Local creation waits for the worker's periodic check, normally on a 60-second idle cadence, without adding a new wake mechanism.
+
+Local creation preserves an existing migration's status and diagnostics when recording repair intent. Failed migrations continue retrying on the maintenance worker's existing cadence. Cancelled full migrations stay stopped while local repair IDs drain. New sync work retains its existing incremental-repair behavior after cancellation. The queue currently stores pending IDs individually, so prolonged disabled mode grows the metadata that each enqueue reads and rewrites.
+
 Each vector row carries a canonical identity for model repository, revision,
 runtime generation, fp32 dtype, mean pooling, L2 normalization, and dimensions.
 The default label is about 154 bytes, roughly 130 bytes more than the former
