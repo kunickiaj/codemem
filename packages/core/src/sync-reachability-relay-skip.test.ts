@@ -60,7 +60,7 @@ function options(
 }
 
 /** Direct sync succeeds once, with the peer advertising the given features. */
-function directExchange(features: string[] | undefined) {
+function directExchange(features: string[] | undefined, runtimeVersion?: string) {
 	return vi.fn<RequestJsonExecutor>(async (method, url) => {
 		if (new URL(url).pathname === "/v1/status")
 			return [
@@ -71,6 +71,7 @@ function directExchange(features: string[] | undefined) {
 					protocol_version: "2",
 					sync_capability: "enforcing",
 					sync_reset: boundary,
+					...(runtimeVersion ? { runtime_version: runtimeVersion } : {}),
 					...(features ? { sync_features: features } : {}),
 				},
 			];
@@ -199,6 +200,77 @@ it("still relays to a peer that predates the relay feature advertisement", async
 	// Act
 	const result = await runReachableSyncPass(db, "peer", [], options(unreachable, relay));
 	// Assert
+	expect(result).toMatchObject({ ok: true, transport: "relay" });
+	expect(scoped).toHaveBeenCalledOnce();
+});
+
+it.each(["0.47.4", "0.46.3"])(
+	"skips a recently observed stable %s peer without relay features",
+	async (version) => {
+		// Arrange: learn the runtime version from the real authenticated direct exchange.
+		const relay = approvedClient();
+		await runReachableSyncPass(
+			db,
+			"peer",
+			["http://127.0.0.1:19001"],
+			options(directExchange(["reassign_scope"], version), relay),
+		);
+		const unreachable = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+		// Act.
+		const result = await runReachableSyncPass(
+			db,
+			"peer",
+			["http://127.0.0.1:19001"],
+			options(unreachable, relay),
+		);
+		// Assert.
+		expect(result).toMatchObject({
+			ok: false,
+			transport: "wait",
+			relaySkipped: "relay_peer_unsupported",
+		});
+		expect(scoped).not.toHaveBeenCalled();
+	},
+);
+
+it.each([
+	{ label: "relay-capable version", version: "0.48.0", features: ["reassign_scope"] },
+	{ label: "old version advertising relay", version: "0.47.4", features: ["relay"] },
+	{ label: "unknown version", version: undefined, features: ["reassign_scope"] },
+])("still relays after observing $label", async ({ version, features }) => {
+	// Arrange: advertised support takes precedence over a version inference.
+	const relay = approvedClient();
+	await runReachableSyncPass(
+		db,
+		"peer",
+		["http://127.0.0.1:19001"],
+		options(directExchange(features, version), relay),
+	);
+	const unreachable = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", [], options(unreachable, relay));
+	// Assert.
+	expect(result).toMatchObject({ ok: true, transport: "relay" });
+	expect(scoped).toHaveBeenCalledOnce();
+});
+
+it.each([
+	{ label: "expired", now: "2026-11-07T12:00:01Z" },
+	{ label: "future", now: "2026-11-06T11:59:59Z" },
+])("does not suppress relay using an $label old-version observation", async ({ now }) => {
+	// Arrange: a known old version only supports suppression with a recent, non-future timestamp.
+	const relay = approvedClient();
+	await runReachableSyncPass(
+		db,
+		"peer",
+		["http://127.0.0.1:19001"],
+		options(directExchange(["reassign_scope"], "0.47.4"), relay),
+	);
+	vi.setSystemTime(new Date(now));
+	const unreachable = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
+	// Act.
+	const result = await runReachableSyncPass(db, "peer", [], options(unreachable, relay));
+	// Assert.
 	expect(result).toMatchObject({ ok: true, transport: "relay" });
 	expect(scoped).toHaveBeenCalledOnce();
 });

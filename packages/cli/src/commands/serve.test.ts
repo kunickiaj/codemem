@@ -1,7 +1,10 @@
+import * as fs from "node:fs";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as core from "@codemem/core";
 import { MemoryStore } from "@codemem/core";
+import * as server from "@codemem/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildForegroundRunnerArgs,
@@ -23,6 +26,7 @@ import {
 	runServeInvocation,
 	serveRelayDaemonOptions,
 	sqliteVecFailureDiagnostics,
+	startForegroundViewer,
 	terminateTrustedMaintenanceWorker,
 	terminateTrustedViewerPid,
 } from "./serve.js";
@@ -32,6 +36,10 @@ import {
 	resolveStartServeInvocation,
 	resolveStopRestartInvocation,
 } from "./serve-invocation.js";
+
+vi.mock("node:fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:fs")>()),
+}));
 
 describe("serve command option resolution", () => {
 	afterEach(() => {
@@ -640,6 +648,70 @@ describe("serve command option resolution", () => {
 
 describe("serve relay wiring", () => {
 	const context = { db: {} as never, dbPath: "mem.sqlite", keysDir: "keys" };
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+	});
+
+	it.each(["available", "unavailable"] as const)(
+		"passes the same resolver to the viewer when relay is %s",
+		async (availability) => {
+			// Arrange: stop at app construction before any listener or daemon starts.
+			const reachability = { forPeer: vi.fn(), clients: vi.fn(() => []) };
+			const relay = {
+				reachability,
+				refresh: vi.fn(async () => {}),
+				close: vi.fn(async () => {}),
+				status: vi.fn(() => new Map()),
+			};
+			const store = {
+				dbPath: "/fixture/manual-sync.sqlite",
+				hasCurrentIdentity: () => false,
+				onIdentityChanged: vi.fn(() => vi.fn()),
+			};
+			vi.stubEnv("CODEMEM_DB", store.dbPath);
+			vi.spyOn(fs, "existsSync").mockReturnValue(false);
+			vi.spyOn(core, "initDatabase").mockReturnValue({ path: store.dbPath } as never);
+			vi.spyOn(core, "readCodememConfigFile").mockReturnValue({ sync_enabled: true });
+			vi.spyOn(core, "readCoordinatorSyncConfig").mockReturnValue({ syncEnabled: true } as never);
+			vi.spyOn(core, "ObserverClient").mockImplementation(class {} as never);
+			vi.spyOn(core, "RawEventSweeper").mockImplementation(
+				class {
+					start = vi.fn();
+				} as never,
+			);
+			vi.spyOn(server, "getStore").mockReturnValue(store as never);
+			vi.spyOn(server, "createViewerRawEventInbox").mockReturnValue({
+				inbox: { start: vi.fn() },
+			} as never);
+			vi.spyOn(server, "createAccountContextReader").mockReturnValue(vi.fn());
+			vi.spyOn(server, "createAccountLinkRegistry").mockReturnValue({} as never);
+			vi.spyOn(server, "createAccountRebindRunner").mockReturnValue(vi.fn());
+			vi.spyOn(server, "resumeAccountRebind").mockResolvedValue(null);
+			vi.spyOn(server, "createAccountOwnerRecoveryService").mockReturnValue(undefined as never);
+			const createRelay = vi
+				.spyOn(server, "createViewerRelayReachability")
+				.mockReturnValue(availability === "available" ? relay : null);
+			const stop = new Error("app options captured");
+			const createApp = vi.spyOn(server, "createApp").mockImplementation(() => {
+				throw stop;
+			});
+
+			// Act.
+			await expect(
+				startForegroundViewer(
+					resolveLegacyServeInvocation({ dbPath: store.dbPath, host: "127.0.0.1", port: "38888" }),
+				),
+			).rejects.toBe(stop);
+
+			// Assert: production startup shares the resolver, including direct-only startup.
+			expect(createRelay).toHaveBeenCalledOnce();
+			expect(createApp).toHaveBeenCalledOnce();
+			expect(createApp.mock.calls[0]?.[0]?.syncReachability).toBe(
+				availability === "available" ? reachability : undefined,
+			);
+		},
+	);
 
 	it("passes the coordinator callback through unchanged without relay", () => {
 		const callback = vi.fn();
