@@ -3518,18 +3518,19 @@ export class MemoryStore {
 	 * Port of raw_event_backlog_totals().
 	 */
 	rawEventBacklogTotals(): { pending: number; sessions: number } {
+		// Materialize one indexed maximum seek per stream instead of scanning all events.
 		const row = this.d.get<{ sessions: number | null; pending: number | null }>(sql`
-			WITH max_events AS (
-				SELECT source, stream_id, MAX(event_seq) AS max_seq
-				FROM raw_events
-				GROUP BY source, stream_id
+			WITH per_session AS MATERIALIZED (
+				SELECT s.last_flushed_event_seq,
+					(SELECT MAX(e.event_seq) FROM raw_events e
+					 WHERE e.source = s.source AND e.stream_id = s.stream_id) AS max_seq
+				FROM raw_event_sessions s
 			)
 			SELECT
 				COUNT(1) AS sessions,
-				SUM(e.max_seq - s.last_flushed_event_seq) AS pending
-			FROM raw_event_sessions s
-			JOIN max_events e ON e.source = s.source AND e.stream_id = s.stream_id
-			WHERE e.max_seq > s.last_flushed_event_seq
+				COALESCE(SUM(max_seq - last_flushed_event_seq), 0) AS pending
+			FROM per_session
+			WHERE max_seq > last_flushed_event_seq
 		`);
 		if (!row) return { sessions: 0, pending: 0 };
 		return {
