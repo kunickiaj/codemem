@@ -2,6 +2,7 @@
  * Memory routes — observations, summaries, sessions, projects, pack, artifacts.
  */
 
+import { createHash } from "node:crypto";
 import type { MemoryFilters, MemoryStore } from "@codemem/core";
 import {
 	buildFilterBranchesWithContext,
@@ -14,6 +15,11 @@ import {
 	schema,
 	summaryLikeSqlPredicate,
 } from "@codemem/core";
+import {
+	type FeedContextResponse,
+	feedFullContextText,
+	projectFeedItem,
+} from "@codemem/core/feed-contract";
 import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
@@ -414,29 +420,28 @@ function countVisibleArtifactRows(store: MemoryStore, project?: string | null): 
 	return Number(row?.total ?? 0);
 }
 
-function queryMemoryPage(
-	store: MemoryStore,
-	options: {
-		limit: number;
-		offset: number;
-		project?: string;
-		scope?: "mine" | "theirs";
-		q?: string;
-		classification: "observation" | "summary";
-	},
-): Record<string, unknown>[] {
+type MemoryReadOptions = {
+	project?: string;
+	scope?: "mine" | "theirs";
+	q?: string;
+	classification?: "observation" | "summary";
+};
+
+function buildMemoryReadQuery(store: MemoryStore, options: MemoryReadOptions) {
 	ensureMemorySearchFunctions(store);
 	const filters: MemoryFilters = {};
 	if (options.project) filters.project = options.project;
 	if (options.scope) filters.ownership_scope = options.scope;
 
 	const filterResult = buildViewerMemoryFilters(store, filters);
-	const summaryPredicate = summaryLikeSqlPredicate();
-	const clauses = [
-		"memory_items.active = 1",
-		options.classification === "summary" ? summaryPredicate : `NOT ${summaryPredicate}`,
-		...filterResult.clauses,
-	];
+	const clauses = ["memory_items.active = 1"];
+	if (options.classification) {
+		const summaryPredicate = summaryLikeSqlPredicate();
+		clauses.push(
+			options.classification === "summary" ? summaryPredicate : `NOT ${summaryPredicate}`,
+		);
+	}
+	clauses.push(...filterResult.clauses);
 	const params: unknown[] = [...filterResult.params];
 	if (options.q) {
 		const search = memorySearchSql(options.q);
@@ -447,7 +452,18 @@ function queryMemoryPage(
 	const from = filterResult.joinSessions
 		? "memory_items JOIN sessions ON sessions.id = memory_items.session_id"
 		: "memory_items";
+	return { from, where, params };
+}
 
+function queryMemoryPage(
+	store: MemoryStore,
+	options: MemoryReadOptions & {
+		limit: number;
+		offset: number;
+		classification: "observation" | "summary";
+	},
+): Record<string, unknown>[] {
+	const { from, where, params } = buildMemoryReadQuery(store, options);
 	const rows = store.db
 		.prepare(
 			`SELECT memory_items.* FROM ${from}
@@ -459,6 +475,96 @@ function queryMemoryPage(
 
 	const ownedBySelf = store.buildOwnershipPredicate();
 	return rows.map((row) => serializeMemoryRow(ownedBySelf, row));
+}
+
+function handleMemoryListRequest(
+	c: Context,
+	getStore: StoreFactory,
+	options: { classification: "observation" | "summary"; defaultLimit: number },
+) {
+	const store = getStore();
+	const limit = Math.max(1, queryInt(c.req.query("limit"), options.defaultLimit));
+	const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
+	const project = c.req.query("project") || undefined;
+	const scope = normalizeScope(c.req.query("scope"));
+	const q = normalizeMemorySearchQuery(c.req.query("q"));
+	const items = queryMemoryPage(store, {
+		limit,
+		offset,
+		project,
+		scope,
+		q,
+		classification: options.classification,
+	});
+	const hasMore = items.length > limit;
+	const result = hasMore ? items.slice(0, limit) : items;
+	attachSessionFields(store, result);
+	attachResolvedIdentityFields(store, result);
+	return c.json({
+		items: c.req.query("view") === "feed" ? feedResponseItems(result, q) : result,
+		pagination: {
+			limit,
+			offset,
+			next_offset: hasMore ? offset + result.length : null,
+			has_more: hasMore,
+		},
+	});
+}
+
+function fullContextRevision(context: string): string {
+	// The revision detects changed text. Every context read still checks current access.
+	return createHash("sha256").update(context).digest("hex");
+}
+
+function feedResponseItems(items: Record<string, unknown>[], query?: string) {
+	return items.map((item) => {
+		const context = feedFullContextText(item);
+		return projectFeedItem({
+			item,
+			query,
+			contextRevision: context === null ? "" : fullContextRevision(context),
+		});
+	});
+}
+
+function queryMemoryContextItem(
+	store: MemoryStore,
+	id: number,
+	options: MemoryReadOptions,
+): Record<string, unknown> | null {
+	const { from, where, params } = buildMemoryReadQuery(store, options);
+	const row = store.db
+		.prepare(`SELECT memory_items.* FROM ${from} WHERE ${where} AND memory_items.id = ?`)
+		.get(...params, id) as Record<string, unknown> | undefined;
+	if (!row) return null;
+	return serializeMemoryRow(store.buildOwnershipPredicate(), row);
+}
+
+function handleMemoryContextRequest(c: Context, getStore: StoreFactory) {
+	c.header("Cache-Control", "no-store");
+	const rawId = c.req.param("id") ?? "";
+	const id = Number(rawId);
+	if (!/^[1-9][0-9]*$/.test(rawId) || !Number.isSafeInteger(id)) {
+		return c.json({ error: "id must be a positive safe integer" }, 400);
+	}
+	const classification = c.req.query("classification");
+	if (
+		classification !== undefined &&
+		classification !== "observation" &&
+		classification !== "summary"
+	) {
+		return c.json({ error: "classification must be observation or summary" }, 400);
+	}
+	const item = queryMemoryContextItem(getStore(), id, {
+		project: c.req.query("project") || undefined,
+		scope: normalizeScope(c.req.query("scope")),
+		q: normalizeMemorySearchQuery(c.req.query("q")),
+		classification,
+	});
+	const context = item ? feedFullContextText(item) : null;
+	if (context === null) return c.json({ error: "memory not found" }, 404);
+	const response: FeedContextResponse = { id, revision: fullContextRevision(context), context };
+	return c.json(response);
 }
 
 async function handleLegacyPackRequest(c: Context, getStore: StoreFactory) {
@@ -558,72 +664,14 @@ export function memoryRoutes(getStore: StoreFactory) {
 		return c.redirect(`/api/observations${search}`, 301);
 	});
 
-	app.get("/api/observations", (c) => {
-		const store = getStore();
-		{
-			const limit = Math.max(1, queryInt(c.req.query("limit"), 20));
-			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
-			const project = c.req.query("project") || undefined;
-			const scope = normalizeScope(c.req.query("scope"));
-			const q = normalizeMemorySearchQuery(c.req.query("q"));
-			const items = queryMemoryPage(store, {
-				limit,
-				offset,
-				project,
-				scope,
-				q,
-				classification: "observation",
-			});
-			const hasMore = items.length > limit;
-			const result = hasMore ? items.slice(0, limit) : items;
-			const asRecords = result as unknown as Record<string, unknown>[];
-			attachSessionFields(store, asRecords);
-			attachResolvedIdentityFields(store, asRecords);
-			return c.json({
-				items: asRecords,
-				pagination: {
-					limit,
-					offset,
-					next_offset: hasMore ? offset + result.length : null,
-					has_more: hasMore,
-				},
-			});
-		}
-	});
+	app.get("/api/observations", (c) =>
+		handleMemoryListRequest(c, getStore, { classification: "observation", defaultLimit: 20 }),
+	);
 
 	// GET /api/summaries
-	app.get("/api/summaries", (c) => {
-		const store = getStore();
-		{
-			const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
-			const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
-			const project = c.req.query("project") || undefined;
-			const scope = normalizeScope(c.req.query("scope"));
-			const q = normalizeMemorySearchQuery(c.req.query("q"));
-			const items = queryMemoryPage(store, {
-				limit,
-				offset,
-				project,
-				scope,
-				q,
-				classification: "summary",
-			});
-			const hasMore = items.length > limit;
-			const result = hasMore ? items.slice(0, limit) : items;
-			const asRecords = result as unknown as Record<string, unknown>[];
-			attachSessionFields(store, asRecords);
-			attachResolvedIdentityFields(store, asRecords);
-			return c.json({
-				items: asRecords,
-				pagination: {
-					limit,
-					offset,
-					next_offset: hasMore ? offset + result.length : null,
-					has_more: hasMore,
-				},
-			});
-		}
-	});
+	app.get("/api/summaries", (c) =>
+		handleMemoryListRequest(c, getStore, { classification: "summary", defaultLimit: 50 }),
+	);
 
 	// GET /api/session (aggregate counts)
 	app.get("/api/session", (c) => {
@@ -711,6 +759,8 @@ export function memoryRoutes(getStore: StoreFactory) {
 		);
 		return c.json(trace);
 	});
+
+	app.get("/api/memory/:id/context", (c) => handleMemoryContextRequest(c, getStore));
 
 	// GET /api/memory
 	app.get("/api/memory", (c) => {

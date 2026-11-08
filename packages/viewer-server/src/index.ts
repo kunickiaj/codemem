@@ -276,6 +276,20 @@ function registerViewerBoundary(app: Hono, opts?: AppOptions): void {
 		);
 }
 
+function registerViewerTargetGuards(options: { app: Hono; storeFactory: () => MemoryStore }): void {
+	const { app, storeFactory } = options;
+	// Targeted clients re-send the target on every operation. Untargeted clients
+	// retain the same routes without an additional database or identity query.
+	const viewerTargetGuard = viewerTargetQueryGuard(storeFactory);
+	app.use("/api/memories/*", viewerTargetGuard);
+	app.use("/api/memory", viewerTargetGuard);
+	app.use("/api/memory/:id/context", (c, next) => {
+		c.header("Cache-Control", "no-store");
+		return viewerTargetGuard(c, next);
+	});
+	app.use("/api/pi/sessions/search", viewerTargetGuard);
+}
+
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
@@ -288,13 +302,7 @@ export function createApp(opts?: AppOptions) {
 	app.use("*", preflightHandler());
 	app.use("*", originGuard({ unsafeGetPathPrefixes: [TEAM_SETUP_ROUTE_PREFIX] }));
 
-	// Optional db_path / identity_target query guard — targeted clients (pi native tools)
-	// re-send the target on every operation so a mismatch rejects before the handler runs.
-	// Clients that omit targets (UI, MCP, curl) are unaffected.
-	const viewerTargetGuard = viewerTargetQueryGuard(storeFactory);
-	app.use("/api/memories/*", viewerTargetGuard);
-	app.use("/api/memory", viewerTargetGuard);
-	app.use("/api/pi/sessions/search", viewerTargetGuard);
+	registerViewerTargetGuards({ app, storeFactory });
 
 	// API routes
 	app.route("/", healthRoutes(storeFactory));

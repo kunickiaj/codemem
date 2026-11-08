@@ -20,6 +20,10 @@ export default defineConfig({
 		alias: [
 			// Specific subpath first: string aliases also match `@codemem/core/...` prefixes.
 			{
+				find: "@codemem/core/feed-contract",
+				replacement: resolve(import.meta.dirname, "../core/src/feed-contract.ts"),
+			},
+			{
 				find: "@codemem/core/internal/relay-runtime",
 				replacement: resolve(import.meta.dirname, "../core/src/internal/relay-runtime.ts"),
 			},
