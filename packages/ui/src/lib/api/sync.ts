@@ -22,6 +22,7 @@ import {
 } from "@codemem/core/recipient-policy-contract";
 import type { ReadRequestOptions } from "../read-request";
 import { fetchJson, payloadError, readJsonPayload } from "./internal";
+import { requestSyncStatus } from "./sync-status-request";
 import type { AcceptDiscoveredPeerResult, ImportInviteResult, SyncRunResponse } from "./types";
 
 export type {
@@ -227,7 +228,7 @@ export async function loadSyncStatus(
 	if (project) params.set("project", project);
 	if (options?.includeJoinRequests) params.set("includeJoinRequests", "1");
 	const suffix = params.size ? `?${params.toString()}` : "";
-	return fetchJson(`/api/sync/status${suffix}`, { signal: options?.signal });
+	return requestSyncStatus(`/api/sync/status${suffix}`, { signal: options?.signal });
 }
 
 export async function importCoordinatorInvite(

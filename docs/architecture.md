@@ -525,6 +525,28 @@ query path and can retry installation on a later writable open. The index uses
 built-in JSON functions so older clients can maintain it. Its one-time build,
 storage, and per-event write costs trade against repeated dashboard scans.
 
+## Viewer sync-status reads
+
+Sync-status counts use a partial index of active memories with nonblank text and
+a covering index over replication operation type, device ID, and creation time.
+The queries preserve exact counts while avoiding memory text reads and full
+operation-log scans. SQLite maintains both indexes as rows change, including
+changes made by older clients.
+
+Bootstrap and additive compatibility install missing indexes on writable
+databases. Building them takes a write lock and can extend the first startup
+after an upgrade on a large database. Other processes can exceed their five-second
+write timeout during this build and fail with `SQLITE_BUSY`. Stop other codemem
+processes before the first writable startup after upgrading, then restart them
+after index installation completes. Later opens only check for index presence.
+Read-only connections skip installation. Locked, query-only, or partial legacy
+databases retain the original queries and retry on a later writable check.
+
+The UI shares concurrent sync-status requests with identical parameters. Each
+caller can cancel independently, and cancelling every caller aborts the shared
+request. Joining callers use the existing request's deadline. Completed responses
+are not retained for subsequent refreshes.
+
 ## Design tradeoffs
 
 codemem is built for **episodic memory** — remembering what happened across coding sessions: what was tried, changed, decided, and learned. It's good at:

@@ -10,6 +10,7 @@ import {
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
+import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
 import { TEST_SCHEMA_BASE_DDL } from "./test-schema.generated.js";
 import { ensureUsageEventsAggregateIndex } from "./usage-aggregate-index.js";
 import { ensureVectorCorpusEpoch } from "./vector-corpus-epoch.js";
@@ -895,6 +896,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureMemoryOwnershipSchemas(db);
 		ensureMemoryAggregateIndex(db);
 		ensureUsageEventsAggregateIndex(db);
+		ensureSyncStatusIndexes(db);
 		ensureVectorCorpusEpoch(db);
 		assertBootstrapTablesCreated(db);
 		db.pragma(`user_version = ${SCHEMA_VERSION}`);
