@@ -7,6 +7,7 @@ export default defineConfig({
 		lib: {
 			entry: {
 				index: resolve(import.meta.dirname, "src/index.ts"),
+				"feed-contract": resolve(import.meta.dirname, "src/feed-contract.ts"),
 				"semantic-worker-entry": resolve(
 					import.meta.dirname,
 					"src/semantic/semantic-worker-entry.ts",
