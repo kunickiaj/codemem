@@ -213,7 +213,23 @@ function didRequiredSyncSurfacesRefresh(input: {
 	return !input.requiresDeviceIdentityInventory || !input.deviceIdentityInventoryLoadError;
 }
 
+function readCachedSyncAuxiliaryData() {
+	return {
+		actorsPayload: { items: state.lastSyncActors },
+		coordinatorAdminStatus: state.lastSyncCoordinatorAdminStatus,
+		deviceIdentityInventory: state.lastDeviceIdentityInventory,
+		shareOperations: state.lastShareOperations,
+		actorLoadError: false,
+		coordinatorAdminLoadError: false,
+		deviceIdentityInventoryLoadError: state.deviceIdentityInventoryLoadError,
+		shareOperationsLoadError: state.shareOperationsLoadError,
+		duplicatePersonDecisions: readDuplicatePersonDecisions(),
+	};
+}
+
 async function loadSyncAuxiliaryData(options: Required<SyncDataLoadOptions>) {
+	if (options.requiredSurface !== "all") return readCachedSyncAuxiliaryData();
+
 	const duplicatePersonDecisions = readDuplicatePersonDecisions();
 	let actorsPayload: SyncActorListResponseLike | null = null;
 	let coordinatorAdminStatus: Record<string, unknown> | null = null;

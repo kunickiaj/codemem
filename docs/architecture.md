@@ -512,6 +512,15 @@ Rate limiting is applied at the unauthenticated bucket level **before** grant ve
 
 ## Viewer Health reads
 
+Health and Devices sync refreshes load primary sync status without requesting
+Advanced-only actor, coordinator-admin, or share-operation data. They retain the
+last auxiliary data and the stored inventory and share-operation error flags.
+Advanced refreshes still load those resources.
+
+The observer backlog summary looks up each stream's latest stored event through
+the sequence index, then subtracts its flushed sequence number. It does not count
+retained event rows, so retention and sequence gaps keep their existing meaning.
+
 Global classified usage totals use a partial covering index over public usage
 events, token counters, session IDs, and the JSON token-source expression. This
 avoids fetching and repeatedly decoding event metadata on each Health load.
