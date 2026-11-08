@@ -209,18 +209,15 @@ export function discoverKnownRepositoryIdentity(
 		: null;
 }
 
-export function repositoryIdentitiesByWorkspace(
-	db: Database,
-	options: { knownRepositoryIdentities?: Iterable<string | null | undefined> } = {},
-): Map<string, string> {
-	const recorded = recordedRepositoryIdentityEvidence(db);
-	const identities = recorded.byWorkspace;
-	const known = new Set(recorded.known);
-	for (const identity of options.knownRepositoryIdentities ?? []) {
-		const normalized = normalizeIdentity(cleanProjectIdentity(identity));
-		if (normalized) known.add(normalized);
-	}
-	const rows = db
+/** Recorded evidence shared only for the lifetime of one inventory request. */
+export interface RepositoryIdentitySnapshot {
+	readonly recordedByWorkspace: ReadonlyMap<string, ReadonlySet<string>>;
+	readonly workspaces: readonly { readonly cwd: string }[];
+}
+
+export function readRepositoryIdentitySnapshot(db: Database): RepositoryIdentitySnapshot {
+	const recordedByWorkspace = recordedRepositoryIdentitySetsByWorkspace(db);
+	const workspaces = db
 		.prepare(
 			`SELECT DISTINCT cwd
 			 FROM sessions
@@ -228,9 +225,33 @@ export function repositoryIdentitiesByWorkspace(
 			 ORDER BY cwd`,
 		)
 		.all() as Array<{ cwd: string }>;
-	for (const row of rows) {
+	return { recordedByWorkspace, workspaces };
+}
+
+export function repositoryIdentitiesByWorkspace(
+	db: Database,
+	options: {
+		knownRepositoryIdentities?: Iterable<string | null | undefined>;
+		repositoryIdentitySnapshot?: RepositoryIdentitySnapshot;
+	} = {},
+): Map<string, string> {
+	const snapshot = options.repositoryIdentitySnapshot ?? readRepositoryIdentitySnapshot(db);
+	// Each consumer may mutate its map or supply different identities for discovery.
+	const identities = new Map<string, string>();
+	const recordedWorkspaces = new Set<string>();
+	recordedWorkspacesByIdentityMap.set(identities, recordedWorkspaces);
+	addUnambiguousRecordedEvidence(identities, recordedWorkspaces, snapshot.recordedByWorkspace);
+	const known = new Set<string>();
+	for (const recorded of snapshot.recordedByWorkspace.values()) {
+		for (const identity of recorded) known.add(identity);
+	}
+	for (const identity of options.knownRepositoryIdentities ?? []) {
+		const normalized = normalizeIdentity(cleanProjectIdentity(identity));
+		if (normalized) known.add(normalized);
+	}
+	for (const row of snapshot.workspaces) {
 		const cwd = normalizeIdentity(row.cwd);
-		if (!cwd || identities.has(cwd) || recorded.recordedWorkspaces.has(cwd)) continue;
+		if (!cwd || identities.has(cwd) || recordedWorkspaces.has(cwd)) continue;
 		const repositoryIdentity = discoverKnownRepositoryIdentity(row.cwd, known);
 		if (repositoryIdentity) identities.set(cwd, repositoryIdentity);
 	}
@@ -580,9 +601,10 @@ export function hasConflictingRepositoryMappings(
 export function withRepositoryMappingAliases<T extends ScopeMapping>(
 	db: Database,
 	mappings: T[],
+	options: { repositoryIdentitySnapshot?: RepositoryIdentitySnapshot } = {},
 ): T[] {
 	if (mappings.length === 0) return mappings;
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db, options);
 	return withRepositoryMappingAliasesFromIdentities(mappings, repositoryIdentities, {
 		discoverFilesystem: true,
 	});

@@ -2063,6 +2063,9 @@ describe("Projects cached recipient presentation", () => {
 			.mockResolvedValueOnce(inventoryPage([later], { offset: 250, total: 251 }));
 
 		initProjectsTab(() => {});
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "filtered";
+		search.dispatchEvent(new Event("input"));
 		await loadProjectsData();
 
 		expect(projectSharing.renderProjectShareFlow).toHaveBeenCalledWith(
@@ -2120,6 +2123,9 @@ describe("Projects cached recipient presentation", () => {
 		});
 
 		initProjectsTab(() => {});
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "filtered";
+		search.dispatchEvent(new Event("input"));
 		const olderLoad = loadProjectsData();
 		await loadProjectsData();
 		resolveOldFiltered(
@@ -2168,8 +2174,6 @@ describe("Projects cached recipient presentation", () => {
 		const newer = project({ display_project: "new filtered", workspace_identity: "new-filtered" });
 		vi.mocked(api.loadProjectScopeInventory)
 			.mockResolvedValueOnce(inventoryPage([old]))
-			.mockResolvedValueOnce(inventoryPage([old]))
-			.mockResolvedValueOnce(inventoryPage([newer]))
 			.mockResolvedValueOnce(inventoryPage([newer]));
 
 		initProjectsTab(() => {});
@@ -2210,7 +2214,7 @@ describe("Projects cached recipient presentation", () => {
 			.mockResolvedValue(inventory);
 
 		const olderLoad = loadProjectsData();
-		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(1));
 		const newerLoad = loadProjectsData();
 
 		await expect(newerLoad).resolves.toBe(true);
@@ -2225,12 +2229,11 @@ describe("Projects cached recipient presentation", () => {
 			.mockImplementationOnce(
 				() => new Promise<ProjectScopeInventoryResult>((resolve) => (resolveOlder = resolve)),
 			)
-			.mockResolvedValueOnce(inventory)
 			.mockRejectedValueOnce(new Error("newer load failed"))
 			.mockResolvedValue(inventory);
 
 		const olderLoad = loadProjectsData();
-		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(1));
 		const newerLoad = loadProjectsData();
 
 		await expect(newerLoad).resolves.toBe(false);
@@ -3983,6 +3986,214 @@ describe("Projects inventory controller filter snapshots", () => {
 
 		expect(document.body.textContent).toContain("new result");
 		expect(document.body.textContent).not.toContain("old result");
+	});
+});
+
+function setupRequestReuseTest(): void {
+	initProjectsTab(() => {});
+	// Reset navigation left by other controller tests without starting a request.
+	document.getElementById("projectsSearch")?.dispatchEvent(new Event("input"));
+}
+
+describe("Projects inventory request reuse", () => {
+	beforeEach(setupRequestReuseTest);
+
+	it("uses one default page for visible rows and sharing choices per refresh", async () => {
+		// Arrange.
+		const first = project();
+		const next = project({ display_project: "updated", memory_count: 7 });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(inventoryPage([first]))
+			.mockResolvedValueOnce(inventoryPage([next]));
+
+		// Act.
+		await loadProjectsData();
+		const firstRefreshRequests = vi.mocked(api.loadProjectScopeInventory).mock.calls.length;
+		await loadProjectsData();
+
+		// Assert: successful responses are reused only inside their own refresh.
+		expect(firstRefreshRequests).toBe(1);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(getProjectsInventoryController().getViewModel().pagination.total).toBe(1);
+		expect(document.body.textContent).toContain("updated");
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[next],
+			{ inventoryError: false },
+		);
+	});
+
+	it("fetches each unfiltered page once when sharing choices span multiple pages", async () => {
+		// Arrange.
+		const later = project({ display_project: "later", workspace_identity: "git:later" });
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) =>
+			(input.offset ?? 0) === 0
+				? inventoryPage([project()], { has_more: true, total: 251 })
+				: inventoryPage([later], { offset: 250, total: 251 }),
+		);
+
+		// Act.
+		await loadProjectsData();
+
+		// Assert.
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(
+			vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input?.offset),
+		).toEqual([0, 250]);
+		expect(getProjectsInventoryController().getViewModel().pagination).toEqual({
+			hasMore: true,
+			limit: 250,
+			offset: 0,
+			total: 251,
+		});
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), later],
+			{ inventoryError: false },
+		);
+	});
+
+	it("keeps overlapping unfiltered refreshes separate and ignores the older shared page", async () => {
+		// Arrange.
+		let resolveOlder!: (page: ProjectScopeInventoryResult) => void;
+		const newer = project({ display_project: "newer", workspace_identity: "git:newer" });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveOlder = resolve;
+					}),
+			)
+			.mockResolvedValue(inventoryPage([newer]));
+
+		// Act.
+		const olderLoad = loadProjectsData();
+		const newerResult = await loadProjectsData();
+		resolveOlder(inventoryPage([project({ display_project: "older" })]));
+		await olderLoad;
+
+		// Assert: a shared promise belongs to one refresh generation only.
+		expect(newerResult).toBe(true);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(document.body.textContent).toContain("newer");
+		expect(document.body.textContent).not.toContain("older");
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[newer],
+			{ inventoryError: false },
+		);
+	});
+
+	it("reuses a later visible page when the sharing scan reaches its offset", async () => {
+		// Arrange.
+		const later = project({ display_project: "later", workspace_identity: "git:later" });
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) =>
+			(input.offset ?? 0) === 0
+				? inventoryPage([project()], { has_more: true, total: 251 })
+				: inventoryPage([later], { offset: 250, total: 251 }),
+		);
+		await loadProjectsData();
+		document.getElementById("projectsNextPage")?.click();
+		vi.mocked(api.loadProjectScopeInventory).mockClear();
+
+		// Act.
+		await loadProjectsData();
+
+		// Assert.
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(
+			vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input?.offset),
+		).toEqual([250, 0]);
+		expect(getProjectsInventoryController().getViewModel().pagination).toEqual({
+			hasMore: false,
+			limit: 250,
+			offset: 250,
+			total: 251,
+		});
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), later],
+			{ inventoryError: false },
+		);
+	});
+});
+
+describe("Projects inventory request reuse boundaries", () => {
+	beforeEach(setupRequestReuseTest);
+
+	it.each(["query", "status"])(
+		"does not share a %s-filtered visible page with the unfiltered scan",
+		async (filter) => {
+			// Arrange.
+			const filtered = project({ display_project: "filtered", workspace_identity: "git:filtered" });
+			const search = document.getElementById("projectsSearch") as HTMLInputElement;
+			const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+			if (filter === "query") search.value = "filtered";
+			else status.value = "needs_attention";
+			vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) =>
+				inventoryPage(input.q || input.status ? [filtered] : [project()], { total: 1 }),
+			);
+
+			// Act.
+			await loadProjectsData();
+
+			// Assert.
+			expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+			expect(document.body.textContent).toContain("filtered");
+			expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+				document.getElementById("projectShareFlowMount"),
+				[project()],
+				{ inventoryError: false },
+			);
+		},
+	);
+
+	it("retries a failed shared page on the next refresh", async () => {
+		// Arrange.
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockRejectedValueOnce(new Error("inventory unavailable"))
+			.mockResolvedValue(inventoryPage([project()]));
+
+		// Act.
+		const failed = await loadProjectsData();
+		const retried = await loadProjectsData();
+
+		// Assert.
+		expect(failed).toBe(false);
+		expect(retried).toBe(true);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project()],
+			{ inventoryError: false },
+		);
+	});
+
+	it("does not reuse an aborted page in a new refresh", async () => {
+		// Arrange.
+		const controller = new AbortController();
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockImplementationOnce(
+				(input = {}) =>
+					new Promise((_, reject) => {
+						input.signal?.addEventListener("abort", () => reject(input.signal?.reason), {
+							once: true,
+						});
+					}),
+			)
+			.mockResolvedValue(inventoryPage([project()]));
+
+		// Act.
+		const canceled = loadProjectsData({ signal: controller.signal });
+		controller.abort(new DOMException("Refresh canceled", "AbortError"));
+		const canceledResult = await canceled;
+		const refreshed = await loadProjectsData();
+
+		// Assert.
+		expect(canceledResult).toBe(false);
+		expect(refreshed).toBe(true);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(api.loadProjectScopeInventory).mock.calls[1]?.[0]?.signal).toBeUndefined();
 	});
 });
 

@@ -29,6 +29,7 @@ import type {
 	RecipientPolicyReviewResolveRequestV1,
 	RecipientReviewedIntentV1,
 	ReplicationOp,
+	RepositoryIdentitySnapshot,
 	SemanticIndexDiagnostics,
 	ShareOperationLifecycleStepInput,
 	ShareOperationPlan,
@@ -151,6 +152,7 @@ import {
 	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
+	readRepositoryIdentitySnapshot,
 	reassignProjectScopeInventoryProject,
 	recipientInviteAuthoritativeIdentityId,
 	recipientReviewedIntentDigest,
@@ -5516,6 +5518,7 @@ async function deleteProjectScopeMappingRoute(c: Context, store: MemoryStore) {
 function projectSharingByRepository(
 	store: MemoryStore,
 	operations: Awaited<ReturnType<typeof shareOperationReadModels>>,
+	repositoryIdentitySnapshot?: RepositoryIdentitySnapshot,
 ): Map<string, Array<Record<string, unknown>>> {
 	const operationById = new Map(operations.map((operation) => [operation.operation_id, operation]));
 	const sharingByProject = new Map<string, Array<Record<string, unknown>>>();
@@ -5523,6 +5526,7 @@ function projectSharingByRepository(
 		.prepare("SELECT workspace_identity, project_pattern FROM project_scope_mappings")
 		.all() as Array<{ workspace_identity: string | null; project_pattern: string }>;
 	const repositoryIdentities = repositoryIdentitiesByWorkspace(store.db, {
+		repositoryIdentitySnapshot,
 		knownRepositoryIdentities: mappings.flatMap((mapping) => [
 			mapping.workspace_identity,
 			mapping.project_pattern,
@@ -5849,6 +5853,28 @@ function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	app.post("/api/sync/peers/identity", preflight);
 	app.post("/api/sync/actors/merge", preflight);
 	return app;
+}
+
+async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
+	const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
+	const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
+	const repositoryIdentitySnapshot = readRepositoryIdentitySnapshot(store.db);
+	const inventory = listProjectScopeInventory(store.db, {
+		repositoryIdentitySnapshot,
+		identitySource: c.req.query("identity_source"),
+		limit,
+		offset,
+		query: c.req.query("q"),
+		scopeId: c.req.query("scope_id"),
+		status: c.req.query("status"),
+	});
+	const operations = await shareOperationReadModels(store, undefined, false);
+	const sharingByProject = projectSharingByRepository(
+		store,
+		operations,
+		repositoryIdentitySnapshot,
+	);
+	return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
 }
 
 export function syncRoutes(
@@ -6716,22 +6742,7 @@ export function syncRoutes(
 		return c.json(result, result.results.some((item) => item.status !== "applied") ? 207 : 200);
 	});
 
-	app.get("/api/sync/projects", async (c) => {
-		const store = getStore();
-		const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
-		const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
-		const inventory = listProjectScopeInventory(store.db, {
-			identitySource: c.req.query("identity_source"),
-			limit,
-			offset,
-			query: c.req.query("q"),
-			scopeId: c.req.query("scope_id"),
-			status: c.req.query("status"),
-		});
-		const operations = await shareOperationReadModels(store, undefined, false);
-		const sharingByProject = projectSharingByRepository(store, operations);
-		return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
-	});
+	app.get("/api/sync/projects", (c) => projectScopeInventoryRoute(c, getStore()));
 
 	app.post("/api/sync/projects/reassign-project", async (c) => {
 		const store = getStore();

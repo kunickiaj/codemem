@@ -176,6 +176,8 @@ export function ensureScopeBackfillScopes(
 	db: SqliteDatabase,
 	now = new Date().toISOString(),
 ): number {
+	// Inventory reads must not wait for a writer when the system scopes already exist.
+	if (countMissingRequiredScopes(db) === 0) return 0;
 	const insert = db.prepare(
 		`INSERT OR IGNORE INTO replication_scopes(
 			scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
