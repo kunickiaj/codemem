@@ -93,6 +93,14 @@ export interface RelayPeerClientOptions {
 	) => Promise<void>;
 	/** Local diagnostics only. Never includes peer, route, key, payload, or raw error text. */
 	readonly onInboundFailure?: (failure: RelayInboundFailure) => void;
+	/** Local diagnostics with an ephemeral session for correlation with relay decisions. */
+	readonly onRouteFailure?: (event: RelayRouteFailure) => void | Promise<void>;
+}
+
+export interface RelayRouteFailure {
+	readonly sessionId: string;
+	readonly side: "source" | "target";
+	readonly reason: RelayFailureReason;
 }
 
 export interface RelayInboundFailure {
@@ -695,7 +703,10 @@ class Client implements RelayPeerClient {
 					signal.removeEventListener("abort", abort);
 					if (!clean) cancel.abort();
 				}),
-			onFailure,
+			onFailure: (reason) => {
+				onFailure?.(reason);
+				this.reportRouteFailure(id, side, reason);
+			},
 		});
 		const route: Route = {
 			id,
@@ -715,6 +726,26 @@ class Client implements RelayPeerClient {
 		route.timer.unref();
 		this.routes.set(id, route);
 		return route;
+	}
+
+	private reportRouteFailure(
+		sessionId: string,
+		side: Route["side"],
+		reason: RelayFailureReason,
+	): void {
+		if (
+			sessionId.length !== 32 ||
+			!/^[0-9a-f]{32}$/u.test(sessionId) ||
+			!RELAY_FAILURE_REASONS.includes(reason)
+		)
+			return;
+		try {
+			void Promise.resolve(this.options.onRouteFailure?.({ sessionId, side, reason })).catch(
+				() => {},
+			);
+		} catch {
+			// A diagnostic reporter must not interrupt transport failure recording or cleanup.
+		}
 	}
 
 	private sendRouteMessage(

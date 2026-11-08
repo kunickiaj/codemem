@@ -148,6 +148,20 @@ function buildClient(deps: Deps, config: RelayGroupClientConfig): RelayPeerClien
 		}),
 		resolvePeerPin: (peerDeviceId) => pinnedPeerKey(db, peerDeviceId),
 		validateLocal: () => sameDevice(readLocalDevice(db), device),
+		onRouteFailure: ({ sessionId, side, reason }) => {
+			const diagnostic = `relay_route_failure side=${side} session=${sessionId} reason=${reason}`;
+			try {
+				// An empty peer key records route correlation without changing individual peer health.
+				recordSyncAttempt(db, "", {
+					ok: false,
+					error: diagnostic,
+					failureCategory: "connectivity",
+				});
+			} catch {
+				options.log?.("[codemem] relay route diagnostic could not be persisted", "warn");
+			}
+			options.log?.(`[codemem] ${diagnostic}`, "warn");
+		},
 		onInboundFailure: (failure) => {
 			const http = failure.httpCode ? ` http=${failure.httpCode}` : "";
 			const diagnostic = `relay_target_failure stage=${failure.stage} reason=${failure.reason}${http}`;

@@ -22,6 +22,7 @@ import {
 	type RelayRealmConfig,
 	readRelayConfig,
 } from "./relay-config.js";
+import { logRelayDecision } from "./relay-decision-logger.js";
 import {
 	createDurableObjectRelayQuota,
 	durableObjectRelayQuotaDatabase,
@@ -349,6 +350,7 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			}),
 			quota,
 			signer,
+			onDiagnostic: logRelayDecision,
 			clock: { monotonicMs: () => performance.now(), utcMs: () => Date.now() },
 			random: (bytes) => crypto.getRandomValues(new Uint8Array(bytes)),
 			onRegistration: (socket, snapshot) => adapterOf(socket).storeSnapshot(snapshot),

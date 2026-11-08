@@ -31,6 +31,10 @@ export {
 	type RelaySocketEvents,
 } from "../relay-server.js";
 export {
+	type RelayServerDiagnostic,
+	sanitizeRelayServerDiagnostic,
+} from "../relay-server-diagnostics.js";
+export {
 	RELAY_RESTORE_GUARD_MS,
 	type RelayRegistrationSnapshot,
 } from "../relay-server-restore.js";

@@ -491,14 +491,27 @@ describe("RelayRealm forwarding", () => {
 
 	it("rejects an OPEN whose target is offline", async () => {
 		// Arrange
-		const stub = await realmObject();
-		const { peer } = await register(stub, "source");
-		const session = hex(16);
-		// Act
-		peer.send(openMessage("source", "target", session));
-		// Assert
-		await peer.next("REJECTED", session);
-		expect(peer.closeCode).toBeNull();
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const stub = await realmObject();
+			const { peer } = await register(stub, "source");
+			const session = hex(16);
+			// Act
+			peer.send(openMessage("source", "target", session));
+			// Assert: exercise the actual Durable Object host's diagnostic callback.
+			await peer.next("REJECTED", session);
+			expect(peer.closeCode).toBeNull();
+			expect(log.mock.calls).toContainEqual([
+				JSON.stringify({
+					event: "codemem.relay.decision",
+					decision: "route_rejected",
+					route_id: session,
+					reason: "target_registration_absent",
+				}),
+			]);
+		} finally {
+			log.mockRestore();
+		}
 	});
 
 	it("aborts a route at the 2 MiB route byte cap", async () => {

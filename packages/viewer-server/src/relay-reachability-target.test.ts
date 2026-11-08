@@ -108,7 +108,7 @@ type TargetDevice = Awaited<ReturnType<typeof targetDevice>>;
 const targetDiagnostics = (t: TargetDevice) =>
 	t.f.remote.store.db
 		.prepare(
-			"SELECT peer_device_id, ok, ops_in, ops_out, error, failure_category FROM sync_attempts WHERE peer_device_id = ''",
+			"SELECT peer_device_id, ok, ops_in, ops_out, error, failure_category FROM sync_attempts WHERE peer_device_id = '' AND error LIKE 'relay_target_failure%'",
 		)
 		.all();
 

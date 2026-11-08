@@ -134,6 +134,22 @@ The first failure in a pass decides the code. A CLOSE, a duplicate frame, or a s
 
 A failure seen at the target reaches the source as `relay_aborted`, because the target can only send CLOSE abort. A source-side pass that fails without a route failure, such as a scope authorization denial, keeps the generic error without a code.
 
+## Temporary route decision capture
+
+This diagnostic branch adds an optional `createRelayServer({ onDiagnostic })` callback. The callback receives only an event, a validated 32-character hexadecimal session ID, and an optional allowlisted reason. Callback failures do not change relay decisions. The normal wire protocol remains unchanged.
+
+The Worker in this branch writes application events with `event: "codemem.relay.decision"`, `decision`, `route_id`, and an optional `reason`. Events cover opening, forwarding, acceptance, rejection, and closure. Forwarding and acceptance describe engine transitions. Use transfer receipts to verify completed sync. DATA frames do not produce individual events.
+
+A `duplicate_session` event rejects the additional OPEN. The original route keeps its own lifecycle.
+
+Rejection reasons distinguish admission-check failure, absent or invalid target registration, key mismatch, target rejection, duplicate or parallel routes, and capacity or quota limits. `admission_check_failed` includes denial, unavailable checks, and invalid replies because the existing check cannot distinguish them. An expired registration that has already been removed appears as absent.
+
+The matching diagnostic viewer records `relay_route_failure side=<source|target> session=<id> reason=<code>` in private logs and local attempt history. These entries use an empty peer key and do not change individual peer health. Match their `session` to the Worker's `route_id`, then compare timestamps and existing HTTP-stage diagnostics.
+
+The same failed exchange can produce both a per-peer attempt row and a route diagnostic row. Filter diagnostic prefixes when counting sync attempts.
+
+Keep invocation logging disabled. These application events exclude device and group identifiers, addresses, headers, admission packets, keys, payloads, and raw exception messages. Deployment and runtime switches require separate approval. Use an approved relay-only test arrangement and confirm `transport=relay`; this branch does not force transport selection. Do not merge temporary capture code into main as part of the investigation.
+
 ## Relay health
 
 Pass `relayHealth` factory options, including its namespace and probe identity, to a coordinator runtime. The SQLite coordinator runtime also takes a list with one entry per served group, all for one authority. Each group gets its own monitor and realm row, and the authority row carries the aggregate of every group, as on Workers, so one group's trip never denies the others. Each entry's `onMonitor` receives that group's monitor. When `enabled` is true, the runtime constructs a stopped `RelayHealthMonitor` and passes it to `onMonitor`. The owner controls `start()` and `stop()`. `stop()` returns false if storage has not confirmed the final pause. Use the independent relay switch when traffic must stop immediately.

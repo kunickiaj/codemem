@@ -14,6 +14,10 @@ import {
 } from "./relay-control-codec.js";
 import { decodeRelayDataFrame } from "./relay-data-frame.js";
 import {
+	type RelayServerDiagnostic,
+	sanitizeRelayServerDiagnostic,
+} from "./relay-server-diagnostics.js";
+import {
 	RELAY_RENEW_AFTER_MS,
 	type RelayRegistrationSnapshot,
 	readRelayRegistrationSnapshot,
@@ -86,6 +90,8 @@ export interface RelayServerOptions {
 	readonly clock?: { monotonicMs(): number; utcMs(): number };
 	/** Returns `bytes` cryptographically random bytes. Defaults to crypto.getRandomValues. */
 	readonly random?: (bytes: number) => Uint8Array;
+	/** Optional best-effort diagnostics. Hook failures never affect relay decisions. */
+	readonly onDiagnostic?: (event: RelayServerDiagnostic) => void | Promise<void>;
 	/**
 	 * Runs after a registration is verified and before REGISTERED is sent, so a hibernating
 	 * host can store the snapshot with the socket. A null snapshot means there is no restorable
@@ -229,6 +235,38 @@ class RelayServerEngine {
 	}
 	private utc(): number {
 		return this.options.clock?.utcMs() ?? Date.now();
+	}
+	private diagnostic(
+		event: RelayServerDiagnostic["event"],
+		sessionId: string,
+		reason?: RelayServerDiagnostic["reason"],
+	): void {
+		const hook = this.options.onDiagnostic;
+		if (!hook) return;
+		try {
+			const safe = sanitizeRelayServerDiagnostic({ event, sessionId, reason });
+			if (safe) void Promise.resolve(hook(safe)).catch(() => {});
+		} catch {
+			// Diagnostics cannot change wire replies or route lifetime.
+		}
+	}
+	private diagnosticLiveRoute(event: RelayServerDiagnostic["event"], route: Route): void {
+		if (!route.closed) this.diagnostic(event, route.id);
+	}
+	private diagnosticRemovedRoute(
+		route: Route,
+		mode: "abort" | "reject" | "clean",
+		reason?: RelayServerDiagnostic["reason"],
+	): void {
+		if (mode === "reject") {
+			this.diagnostic("route_rejected", route.id, reason);
+			return;
+		}
+		this.diagnostic(
+			"route_closed",
+			route.id,
+			reason ?? (mode === "clean" ? "route_completed" : "route_aborted"),
+		);
 	}
 	counters() {
 		return {
@@ -554,6 +592,7 @@ class RelayServerEngine {
 			case "OPEN":
 				// Busy OPENs remain denials, but their replies spend control quota first.
 				this.reject(connection, message.session);
+				this.diagnostic("route_rejected", message.session, "control_busy");
 				return;
 			case "SERVICE_CHALLENGE":
 				await this.service(connection, message);
@@ -741,25 +780,23 @@ class RelayServerEngine {
 	private reserveRoute(
 		connection: Connection,
 		message: Extract<RelayControl, { type: "OPEN" }>,
-	): Route | null {
+	): { route: Route; reason?: never } | { route: null; reason: RelayServerDiagnostic["reason"] } {
 		const source = this.registered(connection);
 		const check = decodeRelayCheckPacket(message.body.checks[0]);
-		if (
-			!source ||
-			check.kind !== "admission" ||
-			!this.contextMatches(check.value) ||
-			source.deviceId !== check.value.sourceDeviceId ||
-			source.keyId !== check.value.sourceKeyId ||
-			this.routes.has(message.session) ||
-			this.routes.size >= this.limits.routes
-		)
-			return null;
+		if (!source) return { route: null, reason: "source_registration_unavailable" };
+		if (check.kind !== "admission" || !this.contextMatches(check.value))
+			return { route: null, reason: "admission_context_invalid" };
+		if (source.deviceId !== check.value.sourceDeviceId || source.keyId !== check.value.sourceKeyId)
+			return { route: null, reason: "source_binding_mismatch" };
+		if (this.routes.has(message.session)) return { route: null, reason: "duplicate_session" };
+		if (this.routes.size >= this.limits.routes) return { route: null, reason: "route_capacity" };
 		const context = check.value;
 		for (const device of [context.sourceDeviceId, context.targetDeviceId]) {
 			const count = [...this.routes.values()].filter((route) =>
 				[route.context.sourceDeviceId, route.context.targetDeviceId].includes(device),
 			).length;
-			if (count >= this.limits.deviceRoutes) return null;
+			if (count >= this.limits.deviceRoutes)
+				return { route: null, reason: "device_route_capacity" };
 		}
 		if (
 			[...this.routes.values()].some(
@@ -768,7 +805,7 @@ class RelayServerEngine {
 					route.context.targetDeviceId === context.targetDeviceId,
 			)
 		)
-			return null;
+			return { route: null, reason: "parallel_route" };
 		const direction = (sender: Connection): Direction => ({
 			sender,
 			credit: 0,
@@ -794,14 +831,16 @@ class RelayServerEngine {
 		};
 		this.routes.set(route.id, route);
 		this.armRoute(route);
-		return route;
+		return { route };
 	}
 	private async open(
 		connection: Connection,
 		message: Extract<RelayControl, { type: "OPEN" }>,
 	): Promise<void> {
-		const route = this.reserveRoute(connection, message);
+		const reservation = this.reserveRoute(connection, message);
+		const { route } = reservation;
 		connection.controlPending = true;
+		if (route) this.diagnostic("route_opened", route.id);
 		try {
 			if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
 				this.disconnect(connection);
@@ -809,6 +848,7 @@ class RelayServerEngine {
 			}
 			if (!route) {
 				this.reject(connection, message.session);
+				this.diagnostic("route_rejected", message.session, reservation.reason);
 				return;
 			}
 			if (
@@ -820,7 +860,7 @@ class RelayServerEngine {
 					route.context.targetDeviceId,
 				))
 			) {
-				this.removeRoute(route, "reject");
+				this.removeRoute(route, "reject", "open_quota_rejected");
 				return;
 			}
 		} finally {
@@ -836,8 +876,13 @@ class RelayServerEngine {
 		route: Route,
 	): Promise<void> {
 		const grant = await this.check(connection, message.body.checks[0], route.cancel.signal);
-		if (!grant || !this.routeLive(route) || !this.registered(connection)) {
-			this.removeRoute(route, "reject");
+		if (!grant) {
+			this.removeRoute(route, "reject", "admission_check_failed");
+			return;
+		}
+		if (!this.routeLive(route)) return;
+		if (!this.registered(connection)) {
+			this.removeRoute(route, "reject", "source_registration_lost");
 			return;
 		}
 		route.expires = Math.min(route.expires, grant.expires);
@@ -851,18 +896,23 @@ class RelayServerEngine {
 			!registration ||
 			registration.keyId !== route.context.targetKeyId
 		) {
-			this.removeRoute(route, "reject");
+			let reason: RelayServerDiagnostic["reason"] = "target_key_mismatch";
+			if (!target) reason = "target_registration_absent";
+			else if (target === connection) reason = "target_is_source";
+			else if (!registration) reason = "target_registration_expired_or_invalid";
+			this.removeRoute(route, "reject", reason);
 			return;
 		}
 		route.target = target;
 		route.directions[1].sender = target;
 		this.armRoute(route);
 		this.send(target, message);
+		this.diagnosticLiveRoute("route_forwarded", route);
 	}
 	private routeLive(route: Route): boolean {
 		if (route.closed) return false;
 		if (this.now() >= route.expires) {
-			this.removeRoute(route, route.accepted ? "abort" : "reject");
+			this.removeRoute(route, route.accepted ? "abort" : "reject", "route_expired");
 			return false;
 		}
 		return true;
@@ -907,13 +957,18 @@ class RelayServerEngine {
 			return;
 		}
 		if (message.type === "REJECTED") {
-			this.removeRoute(route, "reject");
+			this.removeRoute(route, "reject", "target_rejected");
 			return;
 		}
 		route.accepted = true;
 		this.send(route.source, { v: 1, type: "ACCEPTED", session: route.id, body: {} });
+		this.diagnosticLiveRoute("route_accepted", route);
 	}
-	private removeRoute(route: Route, mode: "abort" | "reject" | "clean"): void {
+	private removeRoute(
+		route: Route,
+		mode: "abort" | "reject" | "clean",
+		reason?: RelayServerDiagnostic["reason"],
+	): void {
 		if (route.closed) return;
 		route.closed = true;
 		this.routes.delete(route.id);
@@ -935,6 +990,7 @@ class RelayServerEngine {
 						body: { mode: "abort" },
 					});
 		this.updatePressure();
+		this.diagnosticRemovedRoute(route, mode, reason);
 	}
 	private binary(connection: Connection, bytes: Uint8Array): void {
 		if (!this.live(connection)) return;
