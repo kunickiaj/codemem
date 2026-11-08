@@ -2,12 +2,15 @@ import type { Database } from "./db.js";
 import {
 	getMaintenanceJob,
 	type MaintenanceJobSnapshot,
+	type StartMaintenanceJobInput,
 	startMaintenanceJob,
 	updateMaintenanceJob,
 } from "./maintenance-jobs.js";
 
 export const VECTOR_MODEL_MIGRATION_JOB = "vector_model_migration";
 export const SYNC_INCREMENTAL_TRIGGER = "sync_incremental";
+
+export class VectorMigrationJobGenerationError extends RangeError {}
 
 export interface VectorBackfillWork {
 	upsertMemoryIds: readonly number[];
@@ -24,9 +27,39 @@ export type VectorBackfillQueueMetadata = {
 	pending_upsert_memory_ids?: number[];
 	pending_delete_memory_ids?: number[];
 	queue_revision?: number;
+	job_generation?: number;
 	/** Local repair may drain queued IDs without resuming a cancelled migration. */
 	local_repair_preserves_migration_state?: boolean;
 };
+
+/** Replacement identity is allocated with the write, including inside an outer transaction. */
+export function startVectorMigrationJob(
+	db: Database,
+	input: Omit<StartMaintenanceJobInput, "kind">,
+): MaintenanceJobSnapshot {
+	return db
+		.transaction(() => {
+			const existingJob = getMaintenanceJob(db, VECTOR_MODEL_MIGRATION_JOB);
+			const storedGeneration = existingJob?.metadata?.job_generation;
+			const generation = storedGeneration === undefined ? 0 : storedGeneration;
+			if (
+				typeof generation !== "number" ||
+				!Number.isSafeInteger(generation) ||
+				generation < 0 ||
+				generation === Number.MAX_SAFE_INTEGER
+			) {
+				throw new VectorMigrationJobGenerationError(
+					"Vector migration job generation is invalid or exhausted",
+				);
+			}
+			return startMaintenanceJob(db, {
+				...input,
+				kind: VECTOR_MODEL_MIGRATION_JOB,
+				metadata: { ...input.metadata, job_generation: generation + 1 },
+			});
+		})
+		.immediate();
+}
 
 function uniquePositiveIds(memoryIds: readonly number[]): number[] {
 	return [
@@ -137,8 +170,7 @@ export function queueVectorBackfill(
 			metadataMemoryIds(metadata.pending_delete_memory_ids).length;
 
 		if (!existingJob || existingJob.status === "completed" || existingJob.status === "cancelled") {
-			startMaintenanceJob(db, {
-				kind: VECTOR_MODEL_MIGRATION_JOB,
+			startVectorMigrationJob(db, {
 				title: "Re-indexing memories",
 				status: "pending",
 				message,
