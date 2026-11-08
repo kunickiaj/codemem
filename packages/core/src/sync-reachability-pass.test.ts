@@ -1,4 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -120,6 +123,7 @@ it("never maintains a structural relay substitute or an omitted client", async (
 });
 
 const databases: Database.Database[] = [];
+const directories: string[] = [];
 let db: Database.Database;
 let scoped: ReturnType<typeof vi.spyOn<typeof channelPass, "syncScopedChannelOnce">>;
 
@@ -169,6 +173,109 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 	for (const value of databases.splice(0)) value.close();
+	for (const directory of directories.splice(0))
+		rmSync(directory, { recursive: true, force: true });
+});
+
+async function sharedFileConnections() {
+	const directory = mkdtempSync(join(tmpdir(), "codemem-peer-admission-"));
+	directories.push(directory);
+	const path = join(directory, "sync.sqlite");
+	await db.backup(path);
+	const first = new Database(path);
+	const second = new Database(path);
+	databases.push(first, second);
+	return { first, second };
+}
+
+it.each(["success", "failure", "cancellation"] as const)(
+	"owns shared relay admission across connections until direct %s finishes",
+	async (outcome) => {
+		// Arrange: both handles open the same SQLite file, and both callers share one real client.
+		const { first, second } = await sharedFileConnections();
+		const relay = approvedClient();
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const controller = new AbortController();
+		const exchange = successfulExchange();
+		const execute = vi.fn<RequestJsonExecutor>(async (method, url, request) => {
+			entered.resolve();
+			await release.promise;
+			if (outcome === "failure") throw new Error("terminal probe failure");
+			return exchange(method, url, request);
+		});
+		const opts = options(execute, relay);
+		opts.reachability = { ...opts.reachability, signal: controller.signal };
+		const pending = runReachableSyncPass(first, "peer", addresses, opts);
+		await entered.promise;
+		const competing = successfulExchange();
+		let busy: Awaited<ReturnType<typeof runReachableSyncPass>>;
+		let otherPeer: Awaited<ReturnType<typeof runReachableSyncPass>>;
+		let stillBusy: Awaited<ReturnType<typeof runReachableSyncPass>>;
+		try {
+			// Act: a rejected contender must not release the original caller's ownership.
+			busy = await runReachableSyncPass(second, "peer", addresses, options(competing, relay));
+			otherPeer = await runReachableSyncPass(
+				second,
+				"other-peer",
+				addresses,
+				options(successfulExchange(), relay),
+			);
+			stillBusy = await runReachableSyncPass(second, "peer", addresses, options(competing, relay));
+		} finally {
+			if (outcome === "cancellation") controller.abort();
+			release.resolve();
+		}
+		const completed = await pending;
+		const retry = await runReachableSyncPass(
+			second,
+			"peer",
+			addresses,
+			options(successfulExchange(), relay),
+		);
+		// Assert: ownership covers direct work too, and every terminal outcome releases it.
+		for (const result of [busy, stillBusy])
+			expect(result).toMatchObject({
+				ok: false,
+				transport: "wait",
+				error: "Peer sync is already in progress",
+			});
+		expect(competing).not.toHaveBeenCalled();
+		expect(otherPeer).toMatchObject({ ok: true, transport: "direct" });
+		expect(completed.ok).toBe(outcome === "success");
+		expect(retry).toMatchObject({ ok: true, transport: "direct" });
+	},
+);
+
+it("retains same-connection admission when callers provide distinct real relay clients", async () => {
+	// Arrange: relay ownership supplements the existing database ownership.
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const exchange = successfulExchange();
+	const execute = vi.fn<RequestJsonExecutor>(async (method, url, request) => {
+		entered.resolve();
+		await release.promise;
+		return exchange(method, url, request);
+	});
+	const pending = runReachableSyncPass(db, "peer", addresses, options(execute, approvedClient()));
+	await entered.promise;
+	const competing = successfulExchange();
+	let busy: Awaited<ReturnType<typeof runReachableSyncPass>>;
+	try {
+		// Act.
+		busy = await runReachableSyncPass(db, "peer", addresses, options(competing, approvedClient()));
+	} finally {
+		release.resolve();
+	}
+	const completed = await pending;
+	// Assert: switching relay instances cannot bypass the database's active peer.
+	expect(busy).toMatchObject({
+		ok: false,
+		transport: "wait",
+		error: "Peer sync is already in progress",
+	});
+	expect(competing).not.toHaveBeenCalled();
+	expect(completed).toMatchObject({ ok: true, transport: "direct" });
 });
 
 it("completes direct sync before considering an approved relay", async () => {

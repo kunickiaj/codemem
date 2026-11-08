@@ -56,6 +56,7 @@ export async function maintainSyncReachability(
 }
 
 const activePeers = new WeakMap<Database, Set<string>>();
+const activeRelayPeers = new WeakMap<RelayPeerClient, Set<string>>();
 const NETWORK_CODES = new Set([
 	"ECONNREFUSED",
 	"ECONNRESET",
@@ -365,8 +366,20 @@ export async function runReachableSyncPass(
 		active = new Set();
 		activePeers.set(db, active);
 	}
-	if (active.has(peerDeviceId)) return failure("wait", "Peer sync is already in progress");
+	let relayActive: Set<string> | undefined;
+	if (isRelayPeerClient(reachability.relay)) {
+		relayActive = activeRelayPeers.get(reachability.relay);
+		if (!relayActive) {
+			relayActive = new Set();
+			activeRelayPeers.set(reachability.relay, relayActive);
+		}
+	}
+	if (active.has(peerDeviceId) || relayActive?.has(peerDeviceId))
+		return failure("wait", "Peer sync is already in progress");
+	// Manual and daemon passes can share a relay client through separate DB handles.
+	// Acquire both before direct work so fallback never competes with an admitted pass.
 	active.add(peerDeviceId);
+	relayActive?.add(peerDeviceId);
 	try {
 		const result = await selectedPass(db, peerDeviceId, addresses, options, reachability);
 		if (!result.ok && result.transport !== "relay" && result.receiveFailureCode) {
@@ -379,5 +392,6 @@ export async function runReachableSyncPass(
 		return failure("wait", "Sync pass cancelled or failed");
 	} finally {
 		active.delete(peerDeviceId);
+		relayActive?.delete(peerDeviceId);
 	}
 }
