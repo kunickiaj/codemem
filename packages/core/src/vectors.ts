@@ -400,9 +400,30 @@ export function countIncompleteActiveMemoryVectorCoverage(
 	model: string,
 	options: { metadata?: Database } = {},
 ): number {
+	let incomplete = 0;
+	visitIncompleteActiveMemoryIds(db, model, () => incomplete++, options);
+	return incomplete;
+}
+
+/** Internal repair candidates, using the same current-hash coverage check as cutover. */
+export function findIncompleteActiveMemoryIds(
+	db: Database,
+	model: string,
+	options: { metadata?: Database } = {},
+): number[] {
+	const ids: number[] = [];
+	visitIncompleteActiveMemoryIds(db, model, (id) => ids.push(id), options);
+	return ids;
+}
+
+function visitIncompleteActiveMemoryIds(
+	db: Database,
+	model: string,
+	visit: (id: number) => void,
+	options: { metadata?: Database },
+): void {
 	const batchSize = 250;
 	let afterId = 0;
-	let incomplete = 0;
 	let metadata: Database | null = options.metadata ?? null;
 	let selectHash: SnapshotQuery | null = null;
 	// Keep cursor pages on the rowid range; the active/created index requires a sort per page.
@@ -424,11 +445,10 @@ export function countIncompleteActiveMemoryVectorCoverage(
 			metadata ??= createVectorMetadataSnapshot(db);
 			selectHash ??= prepareSnapshotHashQuery(metadata);
 			for (const memory of memories) {
-				if (!memoryHasSnapshotCoverage(selectHash, memory, model)) incomplete++;
+				if (!memoryHasSnapshotCoverage(selectHash, memory, model)) visit(memory.id);
 			}
 			afterId = memories.at(-1)?.id ?? afterId;
 		}
-		return incomplete;
 	} finally {
 		if (!options.metadata) metadata?.close();
 	}
@@ -477,7 +497,13 @@ type CatalogVectorRow = {
 	content_hash: string | null;
 };
 
-function catalogPruneCandidates(db: Database, rows: CatalogVectorRow[]): CatalogVectorRow[] {
+type CatalogPruneOptions = { signal?: AbortSignal; pruneScope?: "all" | "active-only" };
+
+function catalogPruneCandidates(
+	db: Database,
+	rows: CatalogVectorRow[],
+	options: CatalogPruneOptions,
+): CatalogVectorRow[] {
 	const expectedByMemory = new Map<number | null, Set<string> | null>();
 	const selectMemory = db.prepare("SELECT title, body_text, active FROM memory_items WHERE id = ?");
 	return rows.filter((row) => {
@@ -491,7 +517,9 @@ function catalogPruneCandidates(db: Database, rows: CatalogVectorRow[]): Catalog
 					: null;
 			expectedByMemory.set(row.memory_id, expected);
 		}
-		return !expectedByMemory.get(row.memory_id)?.has(row.content_hash ?? "");
+		const expected = expectedByMemory.get(row.memory_id);
+		if (options.pruneScope === "active-only" && expected == null) return false;
+		return !expected?.has(row.content_hash ?? "");
 	});
 }
 
@@ -499,8 +527,9 @@ function deleteCatalogPruneCandidates(
 	db: Database,
 	rows: CatalogVectorRow[],
 	model: string,
-	signal?: AbortSignal,
+	options: CatalogPruneOptions,
 ): number[] {
+	const { signal } = options;
 	const selectCurrent = db.prepare(
 		"SELECT rowid, memory_id, model, content_hash FROM memory_vectors WHERE rowid = ?",
 	);
@@ -515,7 +544,7 @@ function deleteCatalogPruneCandidates(
 				return sameCatalogVectorRow(row, current);
 			});
 			if (signal?.aborted) return [];
-			const obsolete = catalogPruneCandidates(db, currentRows);
+			const obsolete = catalogPruneCandidates(db, currentRows, options);
 			const coverage = findMemoryIdsWithCurrentTargetCoverage(
 				db,
 				obsolete.flatMap((row) => (row.memory_id === null ? [] : [row.memory_id])),
@@ -548,7 +577,7 @@ export function pruneObsoleteTargetVectorsFromCatalog(
 	db: Database,
 	model: string,
 	metadata: Database,
-	options: { signal?: AbortSignal } = {},
+	options: CatalogPruneOptions = {},
 ): number {
 	const selectPage = metadata.prepare(
 		"SELECT rowid, memory_id, model, content_hash FROM vector_metadata WHERE model = ? AND (? IS NULL OR rowid > ?) ORDER BY rowid LIMIT 250",
@@ -559,11 +588,9 @@ export function pruneObsoleteTargetVectorsFromCatalog(
 	while (!options.signal?.aborted) {
 		const rows = selectPage.all(model, cursor, cursor) as CatalogVectorRow[];
 		if (rows.length === 0) break;
-		const obsolete = catalogPruneCandidates(db, rows);
+		const obsolete = catalogPruneCandidates(db, rows, options);
 		const deletedIds =
-			obsolete.length === 0
-				? []
-				: deleteCatalogPruneCandidates(db, obsolete, model, options.signal);
+			obsolete.length === 0 ? [] : deleteCatalogPruneCandidates(db, obsolete, model, options);
 		metadata.transaction(() => {
 			for (const rowid of deletedIds) forgetRow.run(rowid);
 		})();
