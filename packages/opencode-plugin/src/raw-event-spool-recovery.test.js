@@ -232,6 +232,77 @@ test.each(["queued", "ingested"])(
 	},
 );
 
+test.each(["queued", "ingested"])(
+	"keeps a %s receipt and its active alias on request",
+	async (acknowledgement) => {
+		// Arrange: the active alias shares the receipt inode.
+		const active = join(directory, `${digest}.json`);
+		await link(target, active);
+		const before = await stat(target);
+		const deliver = vi.fn(async () => ack(acknowledgement));
+		// Act
+		const result = await recover(deliver, { keepReceipt: true });
+		// Assert
+		expect(result).toEqual({
+			delivery: "accepted",
+			acknowledgement,
+			cleanup: "kept",
+			lock: "released",
+		});
+		expect(deliver).toHaveBeenCalledExactlyOnceWith({ serialized });
+		expect(await stat(target)).toMatchObject({ ino: before.ino, mode: before.mode });
+		expect(await stat(active)).toMatchObject({ ino: before.ino, mode: before.mode });
+		expect(await readFile(target, "utf8")).toBe(serialized);
+		expect(await readFile(active, "utf8")).toBe(serialized);
+		expect((await readdir(directory)).sort()).toEqual([receipt, `${digest}.json`].sort());
+		safe(result);
+	},
+);
+
+test("keepReceipt cannot turn a non-ACK into accepted delivery", async () => {
+	// Arrange
+	const deliver = vi.fn(async () => ({ acknowledged: true, acknowledgement: "unknown" }));
+	// Act
+	const result = await recover(deliver, { keepReceipt: true });
+	// Assert
+	expect(result).toMatchObject({
+		delivery: "unacknowledged",
+		cleanup: "not_attempted",
+		lock: "released",
+	});
+	expect(await readFile(target, "utf8")).toBe(serialized);
+	expect(await readdir(directory)).toEqual([receipt]);
+	safe(result);
+});
+
+test.each(["snapshot", "lock"])(
+	"keepReceipt still rejects a changed %s after ACK",
+	async (change) => {
+		// Arrange: inject changes after the initial validation, while delivery owns the lock.
+		const deliver = vi.fn(async () => {
+			if (change === "snapshot") await chmod(target, 0o640);
+			else {
+				const lock = await currentLock();
+				await rename(lock.path, `${lock.path}.original`);
+				await writeFile(lock.path, lock.bytes, { mode: 0o600 });
+			}
+			return ack();
+		});
+		// Act
+		const result = await recover(deliver, { keepReceipt: true });
+		// Assert
+		expect(result).toEqual({
+			delivery: "accepted",
+			acknowledgement: "queued",
+			cleanup: change === "snapshot" ? "changed" : "failed",
+			lock: change === "snapshot" ? "released" : "release_failed",
+		});
+		expect(deliver).toHaveBeenCalledTimes(1);
+		expect(await readFile(target, "utf8")).toBe(serialized);
+		safe(result);
+	},
+);
+
 test.each([
 	false,
 	undefined,

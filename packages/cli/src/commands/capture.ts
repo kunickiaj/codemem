@@ -139,9 +139,13 @@ showRejectedCommand.action(runShowRejected);
 
 export async function runRetryRejected(
 	receipt: string,
-	opts: DbOpts & JsonOpts & { yes?: boolean },
+	opts: DbOpts & JsonOpts & { yes?: boolean; keepReceipt?: boolean },
 ): Promise<void> {
-	const result = await retryRejectedEvent(receipt, { dbPath: resolveDbOpt(opts), yes: opts.yes });
+	const result = await retryRejectedEvent(receipt, {
+		dbPath: resolveDbOpt(opts),
+		yes: opts.yes,
+		keepReceipt: opts.keepReceipt,
+	});
 	if (!result.ok) process.exitCode = result.exitCode;
 	if (opts.json) {
 		process.stdout.write(`${safeJson(result)}\n`);
@@ -149,6 +153,12 @@ export async function runRetryRejected(
 	}
 	if (!result.ok) {
 		process.stderr.write(`${result.message}\n`);
+		return;
+	}
+	if (result.recovery.cleanup === "kept") {
+		process.stdout.write(
+			"The current viewer acknowledged the event. The retained receipt was kept at your request. Acknowledgement does not verify stored content.\n",
+		);
 		return;
 	}
 	process.stdout.write(
@@ -161,6 +171,7 @@ const retryRejectedCommand = new Command("recover-rejected")
 	.description("Retry one retained rejection against the explicit current target")
 	.argument("<receipt>", "receipt from list-rejected")
 	.option("-y, --yes", "confirm delivery to the current database and runtime identity")
+	.option("--keep-receipt", "keep the same receipt after the viewer acknowledges the event")
 	.addHelpText(
 		"after",
 		"\nRequires --db-path and -y. Original target provenance is unknown.\nUses current viewer profile and identity. Never falls back to CLI or SQLite.",
