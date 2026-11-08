@@ -196,6 +196,7 @@ describe("bootstrap scheduling starts fresh migration state", () => {
 			progress: { current: 0, total: 6 },
 		});
 		expect(job?.metadata).toEqual({
+			job_generation: expect.any(Number),
 			pending_upsert_memory_ids: [101, 102],
 			pending_delete_memory_ids: [103],
 			queue_revision: job?.metadata?.queue_revision,

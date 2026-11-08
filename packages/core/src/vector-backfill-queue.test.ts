@@ -158,6 +158,7 @@ it("does not carry obsolete metadata from a completed job without pending cleanu
 
 	// Assert
 	expect(job()?.metadata).toEqual({
+		job_generation: 1,
 		pending_upsert_memory_ids: [1],
 		pending_delete_memory_ids: [],
 		queue_revision: 1,
@@ -208,6 +209,7 @@ it.each(["failed", "cancelled"] as const)(
 		expect(job()?.metadata?.local_repair_preserves_migration_state).toBeUndefined();
 		if (status === "cancelled") {
 			expect(job()?.metadata).toEqual({
+				job_generation: 1,
 				cleanup_pending: true,
 				target_model: "synthetic-target",
 				requested_model: "synthetic-request",
