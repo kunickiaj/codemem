@@ -97,7 +97,7 @@ export type VectorCutoverValidation = {
 export function prepareVectorCutoverValidation(
 	db: Database,
 	model: string,
-	options: { signal?: AbortSignal; phase?: "cleanup-" } = {},
+	options: { signal?: AbortSignal; phase?: "cleanup-"; pruneScope?: "all" | "active-only" } = {},
 ): VectorCutoverValidation {
 	const phase = options.phase ?? "";
 	const before = readFence(db, `${phase}prune-start`);

@@ -147,6 +147,8 @@ Inline and backfill vector writes capture the memory's source identity before in
 
 While a memory has pending repair intent, inline and worker semantic searches accept only its rows whose chunk index and content hash match the current title and body. Fresh matching rows remain searchable. Authorization restricts which pending memories supply text for hashing, and the check shares the ranking query's read snapshot. Both ranking paths exclude stale rows before calculating distance. Invalid queue metadata yields no semantic candidates rather than skipping the freshness check.
 
+Catalog pruning offers an `active-only` scope that retains vectors for inactive or missing memories. It rechecks that the memory is active and has complete current-hash coverage inside the delete transaction. Active memories with blank text require no hashes, so their target-model rows are obsolete. Existing migration callers use the default `all` scope. Coverage helpers can either count incomplete active memories or return their IDs using the same checks.
+
 Each vector row carries a canonical identity for model repository, revision,
 runtime generation, fp32 dtype, mean pooling, L2 normalization, and dimensions.
 The default label is about 154 bytes, roughly 130 bytes more than the former
