@@ -903,15 +903,18 @@ function refreshProjectCoordinatorGroupNamesInBackground(
 
 async function loadAllProjectShareChoices(
 	options: { signal?: AbortSignal } = {},
+	sharedPage?: { offset: number; promise: ReturnType<typeof loadProjectInventoryPage> },
 ): Promise<ProjectScopeInventoryProject[]> {
 	const projects = new Map<string, ProjectScopeInventoryProject>();
 	let offset = 0;
 	while (true) {
-		const page = await api.loadProjectScopeInventory({
-			limit: 250,
-			offset,
-			signal: options.signal,
-		});
+		const page = await (sharedPage?.offset === offset
+			? sharedPage.promise
+			: api.loadProjectScopeInventory({
+					limit: lastLimit,
+					offset,
+					signal: options.signal,
+				}));
 		for (const project of page.projects) projects.set(project.workspace_identity, project);
 		if (!page.has_more) break;
 		offset += page.limit;
@@ -1111,11 +1114,17 @@ async function loadProjectsResources(
 	options: ProjectsDataLoadOptions,
 	filters: ProjectInventoryFilters,
 ) {
+	const visiblePagePromise = loadProjectInventoryPage(options, filters);
+	// Share only an identical unfiltered request within this load and its abort signal.
+	const sharedPage =
+		!filters.query && !filters.status
+			? { offset: filters.offset, promise: visiblePagePromise }
+			: undefined;
 	const [result, settings, shareInventory, recipientPolicyReview, intentResult] = await Promise.all(
 		[
-			loadProjectInventoryPage(options, filters),
+			visiblePagePromise,
 			api.loadSharingDomainSettings(options),
-			loadAllProjectShareChoices(options)
+			loadAllProjectShareChoices(options, sharedPage)
 				.then((projects): ProjectShareInventoryLoadResult => ({ ok: true, projects }))
 				.catch((): ProjectShareInventoryLoadResult => ({ ok: false, projects: [] })),
 			api
