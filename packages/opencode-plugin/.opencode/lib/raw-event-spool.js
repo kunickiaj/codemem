@@ -650,7 +650,7 @@ const deliveryAcknowledgement = async (deliver, serialized) => {
   return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "invalid_acknowledgement" };
 };
 
-const removeRecoveredSnapshot = async (snapshot, lock) => {
+const finishRecoveredSnapshot = async (snapshot, lock, { keepReceipt }) => {
   let current;
   try {
     await requirePrivateSpoolDirectory(snapshot.directory);
@@ -671,6 +671,7 @@ const removeRecoveredSnapshot = async (snapshot, lock) => {
   try {
     await assertRejectedSpoolLock(lock);
     if (!sameFileSnapshot(await lstat(snapshot.path), snapshot.details)) return "changed";
+    if (keepReceipt === true) return "kept";
     await rm(snapshot.path);
   } catch {
     return "failed";
@@ -683,7 +684,7 @@ const removeRecoveredSnapshot = async (snapshot, lock) => {
   }
 };
 
-const deliverRejectedSnapshot = async ({ directory, receipt, entry, deliver }, lock) => {
+const deliverRejectedSnapshot = async ({ directory, receipt, entry, deliver, keepReceipt }, lock) => {
   let handle;
   try {
     const path = join(directory, receipt);
@@ -700,7 +701,7 @@ const deliverRejectedSnapshot = async ({ directory, receipt, entry, deliver }, l
       digest: createHash("sha256").update(inspection.serialized, "utf8").digest("hex") };
     const delivery = await deliveryAcknowledgement(deliver, snapshot.serialized);
     if (delivery.delivery !== "accepted") return delivery;
-    return { ...delivery, cleanup: await removeRecoveredSnapshot(snapshot, lock) };
+    return { ...delivery, cleanup: await finishRecoveredSnapshot(snapshot, lock, { keepReceipt }) };
   } finally {
     await handle?.close().catch(() => {});
   }
@@ -732,7 +733,7 @@ const recoverRejectedEntryUnlocked = async (options) => {
   }
 };
 
-const recoverRejectedRawEventSpoolEntry = async ({ receipt, homeDir = homedir(), deliver } = {}) => {
+const recoverRejectedRawEventSpoolEntry = async ({ receipt, homeDir = homedir(), deliver, keepReceipt } = {}) => {
   const entry = typeof receipt === "string" ? parseRejectedFilename(receipt) : null;
   if (!entry || typeof deliver !== "function") {
     return { delivery: "not_attempted", cleanup: "not_attempted", lock: "not_acquired",
@@ -741,7 +742,7 @@ const recoverRejectedRawEventSpoolEntry = async ({ receipt, homeDir = homedir(),
   try {
     const directory = resolveSpoolDirectory(homeDir);
     return await serializeSpoolMutation(directory, () =>
-      recoverRejectedEntryUnlocked({ directory, receipt, entry, deliver }));
+      recoverRejectedEntryUnlocked({ directory, receipt, entry, deliver, keepReceipt }));
   } catch (error) {
     return { ...recoveryFailure(error), lock: "not_acquired" };
   }

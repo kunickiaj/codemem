@@ -71,12 +71,13 @@ export type RejectedRawEventRecoveryResult = {
 	| {
 			delivery: "accepted";
 			acknowledgement: "queued" | "ingested";
-			cleanup: "changed" | "failed" | "removed" | "uncertain";
+			cleanup: "changed" | "failed" | "removed" | "kept" | "uncertain";
 	  }
 );
 export function recoverRejectedRawEventSpoolEntry(options: {
 	receipt: string;
 	homeDir?: string;
+	keepReceipt?: boolean;
 	/** Runs under the directory serializer. Must not await another mutation in the same spool. */
 	deliver: (entry: {
 		serialized: string;

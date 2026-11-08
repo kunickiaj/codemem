@@ -1211,7 +1211,7 @@ The original delivery target is unknown. `--db-path` selects the current databas
 
 The receipt is removed only after the Viewer returns a recognized queued or ingested acknowledgement and the retained file is unchanged. Timeouts, unrecognized responses, and ambiguous outcomes leave it retained because the Viewer may already have accepted the event. If the command reports that delivery was acknowledged but cleanup needs inspection, inspect the receipt and recovery status. Do not retry blindly. Automatic rejection classification and queue advancement remain pending.
 
-The Viewer treats an existing event ID as a duplicate without comparing content. If you suspect that different content reused an ID, preserve a private copy before recovery. A duplicate acknowledgement can remove the retained receipt even when its content differs from the stored event.
+The Viewer treats an existing event ID as a duplicate without comparing content. If you suspect that different content reused an ID, add `--keep-receipt` to retain the original file after acknowledged delivery. The command reports success and `cleanup: "kept"` rather than removing the receipt. This option still requires `--db-path` and `-y`, and kept receipts count toward the spool capacity limit. Without it, a duplicate acknowledgement can remove the retained receipt even when its content differs from the stored event.
 
 ### Semantic runtime unavailable
 

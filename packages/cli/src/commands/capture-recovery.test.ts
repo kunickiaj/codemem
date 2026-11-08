@@ -4,7 +4,9 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	rename,
 	rm,
+	stat,
 	symlink,
 	truncate,
 	writeFile,
@@ -168,6 +170,126 @@ async function run(args = argumentsForRecovery()) {
 function posts() {
 	return fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
 }
+
+it.each([
+	[202, { accepted: 1, queued: 1 }, "queued"],
+	[200, { inserted: 1, skipped: 0, received: 1 }, "ingested"],
+	[200, { inserted: 0, skipped: 1, received: 1 }, "ingested"],
+])(
+	"keeps an acknowledged HTTP %i receipt on request: %j",
+	async (httpStatus, body, acknowledgement) => {
+		// Arrange: keep the original inode, permissions, and whitespace as evidence.
+		postResponse = () => Response.json(body, { status: httpStatus });
+		const before = await stat(join(directory, receipt));
+		// Act
+		const code = await run([...argumentsForRecovery(), "--keep-receipt"]);
+		// Assert
+		expect(code).toBe(0);
+		expect(posts()).toHaveLength(1);
+		const output = vi
+			.mocked(process.stdout.write)
+			.mock.calls.map(([value]) => String(value))
+			.join("");
+		expect(JSON.parse(output)).toMatchObject({
+			ok: true,
+			recovery: { delivery: "accepted", acknowledgement, cleanup: "kept", lock: "released" },
+		});
+		expect(await stat(join(directory, receipt))).toMatchObject({
+			ino: before.ino,
+			mode: before.mode,
+		});
+		await expectRetained();
+	},
+);
+
+it("explains that a successfully recovered receipt was retained at the user's request", async () => {
+	// Arrange
+	const args = argumentsForRecovery().filter((arg) => arg !== "--json");
+	// Act
+	const code = await run([...args, "--keep-receipt"]);
+	// Assert
+	expect(code).toBe(0);
+	const output = JSON.stringify([
+		...vi.mocked(process.stdout.write).mock.calls,
+		...vi.mocked(console.log).mock.calls,
+	]);
+	expect(output).toMatch(/retain.*request|kept.*request/i);
+	expect(output).toContain("Acknowledgement does not verify stored content.");
+	await expectRetained();
+});
+
+it("reports incomplete recovery when keep-receipt loses lock ownership after ACK", async () => {
+	// Arrange: swap the lock inode while returning a valid delivery ACK.
+	const original = fetchMock.getMockImplementation();
+	if (!original) throw new Error("missing fake fetch implementation");
+	let replacementPath = "";
+	let replacementBytes = Buffer.alloc(0);
+	fetchMock.mockImplementation(async (input, init) => {
+		const response = await original(input, init);
+		if (init?.method === "POST") {
+			const lock = (await readdir(directory)).find((name) => name.endsWith(".lock"));
+			if (!lock) throw new Error("expected recovery lock");
+			replacementPath = join(directory, lock);
+			replacementBytes = await readFile(replacementPath);
+			await rename(replacementPath, `${replacementPath}.original`);
+			await writeFile(replacementPath, replacementBytes, { mode: 0o600 });
+		}
+		return response;
+	});
+	// Act
+	const code = await run([...argumentsForRecovery(), "--keep-receipt"]);
+	// Assert: ownership fails before the keep decision, and cannot report success.
+	expect(code).toBe(1);
+	expect(posts()).toHaveLength(1);
+	const output = vi
+		.mocked(process.stdout.write)
+		.mock.calls.map(([value]) => String(value))
+		.join("");
+	expect(JSON.parse(output)).toMatchObject({
+		ok: false,
+		error: "retry_incomplete",
+		recovery: {
+			delivery: "accepted",
+			acknowledgement: "queued",
+			cleanup: "failed",
+			lock: "release_failed",
+		},
+	});
+	expect(await readFile(join(directory, receipt), "utf8")).toBe(serialized);
+	expect(await readFile(replacementPath)).toEqual(replacementBytes);
+});
+
+it.each(["confirmation", "non-ACK", "changed snapshot"])(
+	"keep-receipt does not bypass %s failure",
+	async (failure) => {
+		// Arrange
+		const args = [...argumentsForRecovery(), "--keep-receipt"];
+		if (failure === "confirmation") args.splice(args.indexOf("-y"), 1);
+		if (failure === "non-ACK")
+			postResponse = () => Response.json({ accepted: 0, queued: 0 }, { status: 202 });
+		services.changedRead = failure === "changed snapshot";
+		// Act
+		const code = await run(args);
+		// Assert
+		expect(code).toBe(failure === "confirmation" ? 2 : 1);
+		expect(posts()).toHaveLength(failure === "non-ACK" ? 1 : 0);
+		await expectRetained();
+	},
+);
+
+it("advertises keep-receipt as an optional recovery flag", () => {
+	// Arrange
+	const root = registerRootCommands(new Command("codemem"));
+	const capture = root.commands.find((command) => command.name() === "capture");
+	const recovery = capture?.commands.find((command) => command.name() === "recover-rejected");
+	// Act
+	const help = recovery?.helpInformation();
+	// Assert
+	expect(help).toContain("--keep-receipt");
+	expect(recovery?.options.find((option) => option.long === "--keep-receipt")?.required).toBe(
+		false,
+	);
+});
 
 function firstPost() {
 	const request = posts()[0];

@@ -326,7 +326,7 @@ The retained event's original target provenance is unknown. `--db-path` and `-y`
 
 Recovery coordinates with retention through an ownership-checked lock. A timeout, an unrecognized response, or another ambiguous result retains the receipt because the Viewer may have accepted it. If delivery was acknowledged but cleanup needs inspection, inspect the receipt and recovery status. Do not retry blindly.
 
-The Viewer acknowledges duplicate event IDs without comparing their content. If you suspect different content reused an ID, preserve a private copy before recovery because a duplicate acknowledgement can remove the retained receipt.
+The Viewer acknowledges duplicate event IDs without comparing their content. If you suspect different content reused an ID, add `--keep-receipt` to preserve the original receipt after acknowledged delivery. The command reports success with `cleanup: "kept"`. Kept receipts still count toward the spool capacity limit. Without this option, a duplicate acknowledgement can remove the retained receipt.
 
 When a retry spool write fails, the local plugin log also records a safe failure stage and category (for example, an existing-entry conflict versus a filesystem error) without recording the event ID or content. Conflict diagnostics identify the comparison branch and reason, plus changed field names from a fixed allowlist. Other differences produce only `other=true`. This diagnostic does not change retry behavior; keep OpenCode running if it warns an event remains only in memory.
 

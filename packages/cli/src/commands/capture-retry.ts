@@ -19,6 +19,7 @@ import { viewerBaseUrl } from "./viewer-http-target.js";
 export interface RetryRejectedEventOptions {
 	dbPath?: string;
 	yes?: boolean;
+	keepReceipt?: boolean;
 }
 
 export interface RetryRejectedEventDeps {
@@ -187,13 +188,14 @@ function checkedBatchBody(serialized: string, target: RetryTarget, maxBytes: num
 
 async function recoverWithHttp(
 	receipt: string,
-	context: { baseUrl: string; target: RetryTarget; maxBytes: number },
+	context: { baseUrl: string; target: RetryTarget; maxBytes: number; keepReceipt?: boolean },
 	deps: RetryRejectedEventDeps,
 ): Promise<RetryRejectedEventResult> {
 	let failure: RetryError | undefined;
 	const recovery = await recoverRejectedRawEventSpoolEntry({
 		receipt,
 		homeDir: deps.homeDir,
+		keepReceipt: context.keepReceipt,
 		deliver: async ({ serialized }) => {
 			try {
 				const body = checkedBatchBody(serialized, context.target, context.maxBytes);
@@ -215,7 +217,7 @@ async function recoverWithHttp(
 	});
 	if (
 		recovery.delivery === "accepted" &&
-		recovery.cleanup === "removed" &&
+		(recovery.cleanup === "removed" || recovery.cleanup === "kept") &&
 		recovery.lock === "released"
 	) {
 		return { ok: true, recovery };
@@ -278,7 +280,11 @@ export async function retryRejectedEvent(
 		};
 		const maxBytes = await preflightRetry(baseUrl, target, deps.fetchImpl ?? fetch);
 		checkedBatchBody(entry.serialized, target, maxBytes);
-		return await recoverWithHttp(receipt, { baseUrl, target, maxBytes }, deps);
+		return await recoverWithHttp(
+			receipt,
+			{ baseUrl, target, maxBytes, keepReceipt: opts.keepReceipt },
+			deps,
+		);
 	} catch (error) {
 		if (error instanceof RetryError) {
 			return { ok: false, error: error.code, message: error.message, exitCode: error.exitCode };
