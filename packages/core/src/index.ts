@@ -1239,6 +1239,8 @@ export { findByConcept, findByFile } from "./ref-queries.js";
 export * from "./release-discovery.js";
 export {
 	canonicalRepositoryProjectIdentity,
+	type RepositoryIdentitySnapshot,
+	readRepositoryIdentitySnapshot,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 } from "./repository-mapping-aliases.js";

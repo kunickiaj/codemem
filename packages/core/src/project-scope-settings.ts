@@ -7,6 +7,8 @@ import {
 	hasConflictingRepositoryMappings,
 	hasRecordedRepositoryWorkspace,
 	normalizeRepositoryWorkspaceIdentity,
+	type RepositoryIdentitySnapshot,
+	readRepositoryIdentitySnapshot,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
 	withRepositoryMappingAliases,
@@ -125,6 +127,7 @@ export interface ProjectScopeInventoryWorktree {
 }
 
 export interface ProjectScopeInventoryOptions {
+	repositoryIdentitySnapshot?: RepositoryIdentitySnapshot;
 	identitySource?: string | null;
 	limit?: number;
 	offset?: number;
@@ -262,9 +265,11 @@ function repositoryIdentitiesByCwd(
 	db: Database,
 	_rows: ProjectScopeCandidateRow[],
 	mappings: ProjectScopeSettingsMapping[] = [],
+	repositoryIdentitySnapshot?: RepositoryIdentitySnapshot,
 ): Map<string, string> {
 	return repositoryIdentitiesByWorkspace(db, {
 		knownRepositoryIdentities: knownRepositoryIdentitiesForMappings(mappings),
+		repositoryIdentitySnapshot,
 	});
 }
 
@@ -2023,10 +2028,16 @@ function buildProjectScopeInventory(
 	rows: ProjectScopeCandidateRow[],
 	mappings: ProjectScopeSettingsMapping[],
 	scopes: SharingDomainSettingsScope[],
+	repositoryIdentitySnapshot: RepositoryIdentitySnapshot,
 ): BuiltProjectScopeInventory {
 	const byIdentity = new Map<string, ProjectScopeInventoryProject>();
 	const inventory: ProjectScopeInventoryProject[] = [];
-	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(db, rows, mappings);
+	const repositoryIdentityByCwd = repositoryIdentitiesByCwd(
+		db,
+		rows,
+		mappings,
+		repositoryIdentitySnapshot,
+	);
 	const conflictsByRepository = new Map<string, boolean>();
 	for (const row of rows) {
 		const identifiedRow = identifyRepositoryRow(row, repositoryIdentityByCwd);
@@ -2072,6 +2083,15 @@ function buildProjectScopeInventory(
 	return { byIdentity, inventory };
 }
 
+function inventoryRepositoryContext(db: Database, options: ProjectScopeInventoryOptions) {
+	const repositoryIdentitySnapshot =
+		options.repositoryIdentitySnapshot ?? readRepositoryIdentitySnapshot(db);
+	const mappings = withRepositoryMappingAliases(db, listProjectScopeSettingsMappings(db), {
+		repositoryIdentitySnapshot,
+	});
+	return { snapshot: repositoryIdentitySnapshot, mappings };
+}
+
 export function listProjectScopeInventory(
 	db: Database,
 	options: ProjectScopeInventoryOptions = {},
@@ -2079,7 +2099,7 @@ export function listProjectScopeInventory(
 	ensureScopeBackfillScopes(db);
 	const limit = Math.max(1, Math.min(options.limit ?? 50, 250));
 	const offset = Math.max(0, options.offset ?? 0);
-	const mappings = withRepositoryMappingAliases(db, listProjectScopeSettingsMappings(db));
+	const { snapshot, mappings } = inventoryRepositoryContext(db, options);
 	const scopes = listSharingDomainSettingsScopes(db);
 	const rows = listLocalProjectScopeInventoryRows(db);
 	const bootstrapRows = listPeerReceivedProjectScopeInventoryRows(db);
@@ -2088,12 +2108,14 @@ export function listProjectScopeInventory(
 		[...rows, ...bootstrapRows],
 		mappings,
 		scopes,
+		snapshot,
 	);
 
 	const repositoryIdentityByWorkspace = repositoryIdentitiesByCwd(
 		db,
 		[...rows, ...bootstrapRows],
 		mappings,
+		snapshot,
 	);
 	appendMappingOnlyProjects(mappings, byIdentity, inventory, repositoryIdentityByWorkspace);
 
