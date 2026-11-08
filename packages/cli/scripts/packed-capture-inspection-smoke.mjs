@@ -85,5 +85,14 @@ export function smokeCaptureInspection(installDir, isolatedRoot, { runtimeEnv })
 	const invalid = invoke(["show-rejected", "../packed-private-payload", "--raw", "--json"], 2);
 	assert.deepEqual(invalid.value, { error: "invalid_receipt", message: "Use a receipt from capture list-rejected." });
 	assert.doesNotMatch(invalid.text, /packed-private-|\.\.\//u);
+	for (const flags of [[], ["--db-path", env.CODEMEM_DB]]) {
+		const denied = invoke(["recover-rejected", receipt, "--json", ...flags], 2);
+		assert.equal(denied.value.ok, false);
+		assert.equal(denied.value.error, "usage_error");
+		assert.match(denied.value.message, /--db-path/u);
+		assert.match(denied.value.message, /current target/u);
+		assert.match(denied.value.message, /-y/u);
+		assert.doesNotMatch(denied.text, /packed-private-|"(?:event_id|session_id|payload|raw|serialized|path)"/u);
+	}
 	process.stdout.write("Packed capture inspection: metadata, escaped raw output, safe errors, and unchanged files passed\n");
 }

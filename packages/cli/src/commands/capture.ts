@@ -6,7 +6,14 @@ import {
 	type RejectedRawEventMetadata,
 } from "../../../opencode-plugin/.opencode/lib/raw-event-spool.js";
 import { helpStyle } from "../help-style.js";
-import { addJsonOption, type JsonOpts } from "../shared-options.js";
+import {
+	addDbOption,
+	addJsonOption,
+	type DbOpts,
+	type JsonOpts,
+	resolveDbOpt,
+} from "../shared-options.js";
+import { retryRejectedEvent } from "./capture-retry.js";
 
 // Keep the on-disk format explicit so native capture can add its own reader later.
 const rejectedEventFormat = {
@@ -110,7 +117,7 @@ export async function runShowRejected(
 
 export const captureCommand = new Command("capture")
 	.configureHelp(helpStyle)
-	.description("Inspect retained capture events");
+	.description("Inspect and explicitly retry retained capture events");
 
 const listRejectedCommand = new Command("list-rejected")
 	.configureHelp(helpStyle)
@@ -130,4 +137,39 @@ const showRejectedCommand = new Command("show-rejected")
 addJsonOption(showRejectedCommand);
 showRejectedCommand.action(runShowRejected);
 
-captureCommand.addCommand(listRejectedCommand).addCommand(showRejectedCommand);
+export async function runRetryRejected(
+	receipt: string,
+	opts: DbOpts & JsonOpts & { yes?: boolean },
+): Promise<void> {
+	const result = await retryRejectedEvent(receipt, { dbPath: resolveDbOpt(opts), yes: opts.yes });
+	if (!result.ok) process.exitCode = result.exitCode;
+	if (opts.json) {
+		process.stdout.write(`${safeJson(result)}\n`);
+		return;
+	}
+	if (!result.ok) {
+		process.stderr.write(`${result.message}\n`);
+		return;
+	}
+	process.stdout.write(
+		"The current viewer acknowledged the event. The retained receipt was removed.\n",
+	);
+}
+
+const retryRejectedCommand = new Command("recover-rejected")
+	.configureHelp(helpStyle)
+	.description("Retry one retained rejection against the explicit current target")
+	.argument("<receipt>", "receipt from list-rejected")
+	.option("-y, --yes", "confirm delivery to the current database and runtime identity")
+	.addHelpText(
+		"after",
+		"\nRequires --db-path and -y. Original target provenance is unknown.\nUses current viewer profile and identity. Never falls back to CLI or SQLite.",
+	);
+addDbOption(retryRejectedCommand);
+addJsonOption(retryRejectedCommand);
+retryRejectedCommand.action(runRetryRejected);
+
+captureCommand
+	.addCommand(listRejectedCommand)
+	.addCommand(showRejectedCommand)
+	.addCommand(retryRejectedCommand);

@@ -16,6 +16,7 @@ import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { normalizePromptText } from "./claude-hook-session-state.js";
+import { viewerBaseUrl } from "./viewer-http-target.js";
 
 type InjectResult = {
 	continue: true;
@@ -64,7 +65,6 @@ type InjectionOutcome = {
 const HOOK_EVENT_NAME = "UserPromptSubmit" as const;
 const EMPTY_PACK: CodexPackResult = { packText: "", items: 0, packTokens: 0 };
 const DEFAULT_MAX_CHARS = 16000;
-const DEFAULT_VIEWER_PORT = 38888;
 // Codex records UserPromptSubmit additionalContext as an unmarked developer
 // message. Frame the pack explicitly so the model treats memory text as
 // reference data, not ambient instructions or a generic markdown fragment.
@@ -114,37 +114,6 @@ function canonicalJson(value: unknown): string {
 			.join(",")}}`;
 	}
 	return JSON.stringify(value);
-}
-
-function viewerBaseUrl(env: NodeJS.ProcessEnv): string | null {
-	const configuredHost = env.CODEMEM_VIEWER_HOST?.trim() || "127.0.0.1";
-	const host = configuredHost.toLowerCase().replace(/^\[(.*)\]$/, "$1");
-	const ipv4 = host.split(".");
-	const isIpv4Loopback =
-		ipv4.length === 4 &&
-		ipv4[0] === "127" &&
-		ipv4.every(
-			(part) => /^\d+$/.test(part) && String(Number(part)) === part && Number(part) <= 255,
-		);
-	const urlHost =
-		host === "localhost" || isIpv4Loopback
-			? host
-			: host === "::1" || host === "0:0:0:0:0:0:0:1"
-				? "[::1]"
-				: null;
-	if (!urlHost) return null;
-
-	const portText = env.CODEMEM_VIEWER_PORT?.trim() || String(DEFAULT_VIEWER_PORT);
-	const port = Number(portText);
-	const safePort =
-		/^\d+$/.test(portText) &&
-		Number.isSafeInteger(port) &&
-		port >= 1 &&
-		port <= 65535 &&
-		String(port) === portText
-			? port
-			: DEFAULT_VIEWER_PORT;
-	return `http://${urlHost}:${safePort}`;
 }
 
 async function responseJson(response: Response): Promise<unknown> {
