@@ -438,9 +438,21 @@ importers:
       '@codemem/core':
         specifier: workspace:^
         version: link:../core
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.32.0
-        version: 1.32.1(supports-color@10.2.2)(zod@4.6.6)
+      '@modelcontextprotocol/client':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@modelcontextprotocol/core':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@modelcontextprotocol/node':
+        specifier: 2.1.2
+        version: 2.1.2(@modelcontextprotocol/server@2.4.0)
+      '@modelcontextprotocol/server':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@modelcontextprotocol/server-legacy':
+        specifier: 2.4.0
+        version: 2.4.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
       express:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@10.2.2)
@@ -1565,6 +1577,12 @@ packages:
     peerDependencies:
       hono: ^4
 
+  '@hono/node-server@2.1.6':
+    resolution: {integrity: sha512-p/KH9MnfNcsm3sR6x4lNgm5j+QN4Et8srKredl9DZfXiyZ1UQ3aQ2YVpFLbqktYN5JI+DB+VZFKM2PqE5hLKjQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      hono: ^4 || ^5.0.0-0
+
   '@huggingface/jinja@0.5.9':
     resolution: {integrity: sha512-uWTG+l3VJRsl7EXxYizuL3P+cCPoc3cRqbWWRcQN0FhejRfbdq0RNhCmbY/YDtnTcz9icdLYuLDjsnz4d8JMuw==}
     engines: {node: '>=18'}
@@ -1788,6 +1806,20 @@ packages:
   '@libp2p/utils@7.4.5':
     resolution: {integrity: sha512-R8657U2WD9tBtVrISa4gnMu0rkIZUQA8quT+RqIsxNQy4OzBYhXmnKr1zSC/xqnez0XrORpI3EaUwjVPgtcWBQ==}
 
+  '@modelcontextprotocol/client@2.4.0':
+    resolution: {integrity: sha512-LgrD2OphHuG12vfKFKz6SOnq7bKHQmhGJIAYdD+MZBn2npHEyry6uD8zvktodtl5CQM85MO0anUyD9JwmUmxww==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/core@2.4.0':
+    resolution: {integrity: sha512-z8QBKqdfXLPzkLQuG4xp8hrVEMm1PZ1IgxMN2sMbJiFiAKOWXnAzogXn2W4aqIBlP1ea6U5yiqVquvUNM1Cj6Q==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/node@2.1.2':
+    resolution: {integrity: sha512-IIcIqBpr6NCQQs5DgJTgvbSOAw+3iaR/uquqg+e0nXCdudfjPg/80x0TseUnQx14AUAtE4fsJCEpJKPyb6WPVA==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.4.0
+
   '@modelcontextprotocol/sdk@1.32.1':
     resolution: {integrity: sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==}
     engines: {node: '>=18'}
@@ -1797,6 +1829,20 @@ packages:
     peerDependenciesMeta:
       '@cfworker/json-schema':
         optional: true
+
+  '@modelcontextprotocol/server-legacy@2.4.0':
+    resolution: {integrity: sha512-xWq1YTZiLZltEXp/NJhsW7IvpuowrapEFuriAz3a86CIwMnt7+r8EaG/7xtWi7aqLzhtplOJJffUE5YIcUT+Aw==}
+    engines: {node: '>=20'}
+    deprecated: This package is a frozen copy of v1's SSE transport and OAuth Authorization Server helpers for migration purposes only. Use StreamableHTTP from @modelcontextprotocol/server and a dedicated OAuth server in production. Will not receive new features.
+    peerDependencies:
+      express: ^4.18.0 || ^5.0.0
+    peerDependenciesMeta:
+      express:
+        optional: true
+
+  '@modelcontextprotocol/server@2.4.0':
+    resolution: {integrity: sha512-rgR9yxSaAJ+bcsi/XroT/S2AfPiIWloXAnrdfYSCms9ivVju0ishu/wW0J21Ho6+ZOR1r7RyeRbjiRuF87ix5Q==}
+    engines: {node: '>=20'}
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4':
     resolution: {integrity: sha512-LCkGo6JDfaBhgST7UpPWgNgLINpcpabaHfyz5OBx75nUYxBsaEPxjnyNjWpeb/xBup/682QnBfRBy2/LvPutZQ==}
@@ -6306,8 +6352,13 @@ snapshots:
   '@hono/node-server@1.19.17(hono@4.13.5)':
     dependencies:
       hono: 4.13.5
+    optional: true
 
   '@hono/node-server@2.1.1(hono@4.13.5)':
+    dependencies:
+      hono: 4.13.5
+
+  '@hono/node-server@2.1.6(hono@4.13.5)':
     dependencies:
       hono: 4.13.5
 
@@ -6550,6 +6601,26 @@ snapshots:
       uint8arraylist: 3.0.2
       uint8arrays: 6.1.1
 
+  '@modelcontextprotocol/client@2.4.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.4.0
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.0
+      jose: 6.2.12
+      pkce-challenge: 5.0.1
+      zod: 4.6.6
+
+  '@modelcontextprotocol/core@2.4.0':
+    dependencies:
+      zod: 4.6.6
+
+  '@modelcontextprotocol/node@2.1.2(@modelcontextprotocol/server@2.4.0)':
+    dependencies:
+      '@hono/node-server': 2.1.6(hono@4.13.5)
+      '@modelcontextprotocol/server': 2.4.0
+      hono: 4.13.5
+
   '@modelcontextprotocol/sdk@1.32.1(supports-color@10.2.2)(zod@4.6.6)':
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.5)
@@ -6571,6 +6642,26 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.6.6)
     transitivePeerDependencies:
       - supports-color
+    optional: true
+
+  '@modelcontextprotocol/server-legacy@2.4.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)':
+    dependencies:
+      '@modelcontextprotocol/core': 2.4.0
+      content-type: 1.0.5
+      cors: 2.8.6
+      express-rate-limit: 8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 4.6.6
+    optionalDependencies:
+      express: 5.2.1(supports-color@10.2.2)
+    transitivePeerDependencies:
+      - supports-color
+
+  '@modelcontextprotocol/server@2.4.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.4.0
+      zod: 4.6.6
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4':
     optional: true
@@ -7802,6 +7893,7 @@ snapshots:
   ajv-formats@3.0.1:
     dependencies:
       ajv: 8.20.0
+    optional: true
 
   ajv@8.20.0:
     dependencies:
@@ -7809,6 +7901,7 @@ snapshots:
       fast-uri: 3.1.7
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
+    optional: true
 
   ansi-escapes@7.3.0:
     dependencies:
@@ -8327,7 +8420,8 @@ snapshots:
     dependencies:
       fast-string-truncated-width: 3.0.3
 
-  fast-uri@3.1.7: {}
+  fast-uri@3.1.7:
+    optional: true
 
   fast-wrap-ansi@0.2.2:
     dependencies:
@@ -8710,9 +8804,11 @@ snapshots:
       '@babel/runtime': 7.29.7
       ts-algebra: 2.0.0
 
-  json-schema-traverse@1.0.0: {}
+  json-schema-traverse@1.0.0:
+    optional: true
 
-  json-schema-typed@8.0.2: {}
+  json-schema-typed@8.0.2:
+    optional: true
 
   json-schema@0.4.0: {}
 
@@ -10047,6 +10143,7 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@4.6.6):
     dependencies:
       zod: 4.6.6
+    optional: true
 
   zod@4.1.8: {}
 

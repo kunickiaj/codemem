@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type MemoryStore, VERSION } from "@codemem/core";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { resolveDefaultProject } from "./project-scope.js";
 import type { CodememMcpServerOptions, ToolRegistrationContext } from "./tool-context.js";
 import { registerDistillTools } from "./tools/distill.js";

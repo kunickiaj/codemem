@@ -1,4 +1,5 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import { jsonContent } from "../content.js";
 import { MEMORY_KINDS } from "../memory-kinds.js";
 import { filterNames } from "../schemas.js";
@@ -9,7 +10,7 @@ export function registerSchemaTools(server: McpServer): void {
 		"memory_schema",
 		{
 			description: "Return the memory schema — kinds, fields, and available filters.",
-			inputSchema: {},
+			inputSchema: z.object({}),
 			outputSchema: toolOutputSchemas.memory_schema,
 			annotations: toolAnnotations.memory_schema,
 		},

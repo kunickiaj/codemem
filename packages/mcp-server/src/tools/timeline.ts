@@ -1,5 +1,5 @@
 import { dedupeOrderedIds, type MemoryItemResponse, projectMatchesFilter } from "@codemem/core";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { withMcpRetrieval } from "../mcp-retrieval-ledger.js";
 import { getManyForMcp } from "../memory-access.js";
@@ -34,7 +34,7 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 		"memory_timeline",
 		{
 			description: "Get a chronological window of memories around an anchor (by ID or query).",
-			inputSchema: timelineInputSchema,
+			inputSchema: z.object(timelineInputSchema),
 			outputSchema: toolOutputSchemas.memory_timeline,
 			annotations: toolAnnotations.memory_timeline,
 		},
@@ -48,9 +48,9 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 					query: args.query,
 					limit: args.depth_before + args.depth_after + 1,
 					resolveFilters: () => buildFilters(args, defaultProject()),
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const items = store.timeline(
@@ -70,7 +70,7 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 		"memory_expand",
 		{
 			description: "Fetch memories by ID with surrounding timeline context.",
-			inputSchema: expandInputSchema,
+			inputSchema: z.object(expandInputSchema),
 			outputSchema: toolOutputSchemas.memory_expand,
 			annotations: toolAnnotations.memory_expand,
 		},
@@ -89,9 +89,9 @@ export function registerTimelineTools(server: McpServer, context: ToolRegistrati
 							args.project !== undefined && !args.project.trim() ? null : defaultProject();
 						return buildFilters(args, filterDefaultProject);
 					},
-					requestId: extra?.requestId,
+					requestId: extra?.mcpReq.id,
 					sourceSessionId: extra?.sessionId,
-					invocationIdentity: extra?.signal,
+					invocationIdentity: extra?.mcpReq.signal,
 				},
 				(filters) => {
 					const resolvedProject = filters?.project ?? null;

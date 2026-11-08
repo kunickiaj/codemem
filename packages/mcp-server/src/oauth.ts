@@ -3,21 +3,27 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
-import { InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type { OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import { createOAuthMetadata } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import {
-	type OAuthClientInformationFull,
-	type OAuthClientMetadata,
 	OAuthClientMetadataSchema,
-	type OAuthErrorResponse,
-	type OAuthMetadata,
-	type OAuthProtectedResourceMetadata,
 	OAuthProtectedResourceMetadataSchema,
-	type OAuthTokens,
 	OAuthTokensSchema,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/core";
+import type {
+	OAuthClientInformationFull,
+	OAuthClientMetadata,
+	OAuthErrorResponse,
+	OAuthMetadata,
+	OAuthProtectedResourceMetadata,
+	OAuthTokens,
+} from "@modelcontextprotocol/server";
+import type {
+	OAuthRegisteredClientsStore,
+	OAuthServerProvider,
+} from "@modelcontextprotocol/server-legacy/auth";
+import {
+	createOAuthMetadata,
+	InvalidClientMetadataError,
+} from "@modelcontextprotocol/server-legacy/auth";
 
 export const MCP_OAUTH_PUBLIC_URL_ENV = "CODEMEM_MCP_HTTP_PUBLIC_URL";
 export const MCP_OAUTH_RESOURCE_NAME = "codemem MCP";
@@ -1242,6 +1248,7 @@ function createMetadataOnlyProvider(
 ): OAuthServerProvider {
 	return {
 		clientsStore,
+		authorizationResponseIssParameterSupported: false,
 		async authorize() {
 			throw new Error("OAuth authorize is not implemented yet");
 		},

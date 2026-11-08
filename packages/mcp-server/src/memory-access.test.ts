@@ -38,11 +38,31 @@ function requestExtra(requestId: string | number, sessionId?: string) {
 }
 
 function getTool(server: ReturnType<typeof createCodememMcpServer>, name: string): RegisteredTool {
-	const registry = (server as unknown as { _registeredTools: Record<string, RegisteredTool> })
+	type SdkTool = {
+		handler: (
+			args: Record<string, unknown>,
+			context?: {
+				mcpReq: { id: string | number; signal: AbortSignal };
+				sessionId?: string;
+			},
+		) => ReturnType<RegisteredTool["handler"]>;
+	};
+	const registry = (server as unknown as { _registeredTools: Record<string, SdkTool> })
 		._registeredTools;
 	const tool = registry[name];
 	if (!tool) throw new Error(`MCP tool not registered: ${name}`);
-	return tool;
+	return {
+		handler: (args, extra) =>
+			tool.handler(
+				args,
+				extra
+					? {
+							mcpReq: { id: extra.requestId, signal: extra.signal ?? new AbortController().signal },
+							sessionId: extra.sessionId,
+						}
+					: undefined,
+			),
+	};
 }
 
 function parseToolJson(result: { content: Array<{ type: string; text: string }> }): unknown {

@@ -8,7 +8,11 @@
  */
 
 import { MemoryStore, resolveDbPath } from "@codemem/core";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import {
+	type StdioServerHandle,
+	StdioServerTransport,
+	serveStdio,
+} from "@modelcontextprotocol/server/stdio";
 import { createCodememMcpServer } from "./server.js";
 import { ensureViewer } from "./stdio-viewer.js";
 
@@ -38,12 +42,10 @@ function createStdioShutdown(close: () => Promise<void>) {
 async function main() {
 	const dbPath = resolveDbPath();
 	const store = new MemoryStore(dbPath);
-	let server: ReturnType<typeof createCodememMcpServer> | undefined;
+	let server: StdioServerHandle | undefined;
 	let closePromise: Promise<void> | undefined;
-	let closing = false;
 	const close = () => {
 		if (closePromise) return closePromise;
-		closing = true;
 		closePromise = (async () => {
 			try {
 				// Stop dispatch and cancel active MCP request signals before draining the store.
@@ -60,18 +62,26 @@ async function main() {
 		// Auto-start viewer in background (belt and suspenders with any hook-based start)
 		ensureViewer().catch(() => {});
 
-		server = createCodememMcpServer(store);
-		const transport = new StdioServerTransport();
-		server.server.onclose = () => {
-			if (!closing) void shutdown(0);
-		};
-
 		process.on("SIGINT", () => void shutdown(0));
 		process.on("SIGTERM", () => void shutdown(0));
 		process.stdin.once("end", () => void shutdown(0));
 		process.stdin.once("error", () => void shutdown(1));
 
-		await server.connect(transport);
+		// The SDK may discard a discovery probe and create a legacy server. Only
+		// the connection owner closes the shared store, never an individual instance.
+		const transport = new StdioServerTransport();
+		server = serveStdio(() => createCodememMcpServer(store), {
+			legacy: "serve",
+			transport,
+			onerror: (error) => {
+				console.error("codemem MCP server failed:", error);
+			},
+		});
+		const sdkOnClose = transport.onclose;
+		transport.onclose = () => {
+			sdkOnClose?.();
+			void shutdown(0);
+		};
 	} catch (err) {
 		// Preserve the startup error and exit code after transport and store cleanup.
 		console.error("codemem MCP server failed to start:", err);

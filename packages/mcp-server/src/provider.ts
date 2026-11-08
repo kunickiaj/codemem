@@ -1,4 +1,16 @@
-import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
+import { OAuthTokensSchema } from "@modelcontextprotocol/core";
+import type {
+	OAuthClientInformationFull,
+	OAuthErrorResponse,
+	OAuthTokenRevocationRequest,
+	OAuthTokens,
+} from "@modelcontextprotocol/server";
+import type {
+	AuthInfo,
+	AuthorizationParams,
+	OAuthRegisteredClientsStore,
+	OAuthServerProvider,
+} from "@modelcontextprotocol/server-legacy/auth";
 import {
 	AccessDeniedError,
 	InvalidClientError,
@@ -8,19 +20,7 @@ import {
 	ServerError,
 	TemporarilyUnavailableError,
 	UnsupportedResponseTypeError,
-} from "@modelcontextprotocol/sdk/server/auth/errors.js";
-import type {
-	AuthorizationParams,
-	OAuthServerProvider,
-} from "@modelcontextprotocol/sdk/server/auth/provider.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import {
-	type OAuthClientInformationFull,
-	type OAuthErrorResponse,
-	type OAuthTokenRevocationRequest,
-	type OAuthTokens,
-	OAuthTokensSchema,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+} from "@modelcontextprotocol/server-legacy/auth";
 import type { Response } from "express";
 import {
 	createInMemoryOAuthRefreshTokenStore,
@@ -46,7 +46,7 @@ export interface MemoryOAuthServerProviderOptions {
 
 /**
  * MemoryOAuthServerProvider adapts codemem's existing in-memory stores to the
- * `@modelcontextprotocol/sdk` `OAuthServerProvider` contract so the SDK's
+ * `@modelcontextprotocol/server-legacy/auth` `OAuthServerProvider` contract so the SDK's
  * `mcpAuthRouter` and `requireBearerAuth` middleware can drive the OAuth
  * lifecycle. This class is the boundary between SDK-handled HTTP and
  * codemem-owned storage / upstream-OIDC bridging.
@@ -65,6 +65,9 @@ export interface MemoryOAuthServerProviderOptions {
  *   replayed tokens revoke the whole grant.
  */
 export class MemoryOAuthServerProvider implements OAuthServerProvider {
+	// Our OIDC callback issues the final redirect from a separate response, so
+	// the SDK authorize-route wrapper cannot add RFC 9207's iss parameter.
+	readonly authorizationResponseIssParameterSupported = false;
 	readonly #clientsStore: OAuthRegisteredClientsStore;
 	readonly #codeStore: OAuthAuthorizationCodeStore;
 	readonly #tokenStore: OAuthAccessTokenStore;

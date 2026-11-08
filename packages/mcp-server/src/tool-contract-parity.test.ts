@@ -6,8 +6,7 @@
 
 import type { MemoryStore } from "@codemem/core";
 import { listMemoryToolContracts, MEMORY_TOOL_NAMES } from "@codemem/memory-tools";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createCodememMcpServer } from "./server.js";
 
