@@ -322,7 +322,9 @@ After inspection, retry one selected receipt against an explicit current target:
 codemem capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
 ```
 
-The retained event's original target provenance is unknown. `--db-path` and `-y` confirm delivery to the current database and runtime identity. The command verifies the loopback Viewer profile, database, runtime identity, and advertised ingest size before it sends the retained bytes in one HTTP request. It does not follow redirects or fall back to SQLite. It removes the receipt only after a recognized queued or ingested acknowledgement and an unchanged-file check. Use `--json` for machine-readable output. Automatic rejection classification and queue advancement remain pending.
+The retained event's original target provenance is unknown. `--db-path` and `-y` confirm delivery to the current database and runtime identity. The command verifies the loopback Viewer profile, database, runtime identity, and advertised ingest size before it sends the retained bytes in one HTTP request. It does not follow redirects or fall back to SQLite. It removes the receipt only after a recognized queued or ingested acknowledgement and an unchanged-file check. Use `--json` for machine-readable output.
+
+OpenCode automatically retains events rejected with a known payload-validation response or a verified oversized-request response. It preserves their saved bytes outside active retries so later healthy events can proceed. Each drain still processes at most 20 entries, so healthy events behind a full rejected batch wait for the next drain. Other failures keep their existing retry behavior. Retained receipts count toward the same spool capacity limit and require explicit operator recovery. If retention fails, automatic queue advancement is not guaranteed.
 
 Recovery coordinates with retention through an ownership-checked lock. A timeout, an unrecognized response, or another ambiguous result retains the receipt because the Viewer may have accepted it. If delivery was acknowledged but cleanup needs inspection, inspect the receipt and recovery status. Do not retry blindly.
 
