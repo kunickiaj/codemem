@@ -314,9 +314,19 @@ PL->>OC: inject codemem context
 Raw-event degradation logs identify the Viewer stage and safe cause without exposing endpoints, paths, payloads, or subprocess output. Successfully spooled events do not show a user-facing warning; persistence failures and capacity exhaustion still do.
 If the same raw event is captured again with only delivery-time timestamps changed, OpenCode reuses its existing durable spool entry; a genuinely different event with the same ID still fails rather than overwriting saved data. Keep OpenCode running after a memory-only warning until the event is delivered or saved for retry.
 
-The spool storage API can retain rejected entries outside active delivery while preserving their exact bytes. These entries count toward the same capacity limit. Inspect their metadata with `codemem capture list-rejected --json` and `codemem capture show-rejected '<receipt>' --json`. Explicit `--raw` includes private event text as an escaped JSON string, limited to 16 MiB. Automatic rejection classification and operator retry remain pending.
+The spool storage API can retain rejected entries outside active delivery while preserving their exact bytes. These entries count toward the same capacity limit. Inspect their metadata with `codemem capture list-rejected --json` and `codemem capture show-rejected '<receipt>' --json`. Explicit `--raw` includes private event text as an escaped JSON string, limited to 16 MiB.
 
-Internal selected-entry recovery coordinates with retention through an ownership-checked lock and removes a retained copy only after a recognized acknowledgement and an unchanged-file check. The HTTP retry command is still pending.
+After inspection, retry one selected receipt against an explicit current target:
+
+```fish
+codemem capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
+```
+
+The retained event's original target provenance is unknown. `--db-path` and `-y` confirm delivery to the current database and runtime identity. The command verifies the loopback Viewer profile, database, runtime identity, and advertised ingest size before it sends the retained bytes in one HTTP request. It does not follow redirects or fall back to SQLite. It removes the receipt only after a recognized queued or ingested acknowledgement and an unchanged-file check. Use `--json` for machine-readable output. Automatic rejection classification and queue advancement remain pending.
+
+Recovery coordinates with retention through an ownership-checked lock. A timeout, an unrecognized response, or another ambiguous result retains the receipt because the Viewer may have accepted it. If delivery was acknowledged but cleanup needs inspection, inspect the receipt and recovery status. Do not retry blindly.
+
+The Viewer acknowledges duplicate event IDs without comparing their content. If you suspect different content reused an ID, preserve a private copy before recovery because a duplicate acknowledgement can remove the retained receipt.
 
 When a retry spool write fails, the local plugin log also records a safe failure stage and category (for example, an existing-entry conflict versus a filesystem error) without recording the event ID or content. Conflict diagnostics identify the comparison branch and reason, plus changed field names from a fixed allowlist. Other differences produce only `other=true`. This diagnostic does not change retry behavior; keep OpenCode running if it warns an event remains only in memory.
 

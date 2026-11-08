@@ -1199,7 +1199,19 @@ This source workflow has not yet been validated end-to-end against a live coordi
 
 Use `codemem capture list-rejected --json` to list retained OpenCode rejection metadata without reading private event text. Copy a receipt into `codemem capture show-rejected '<receipt>' --json` to validate that file and inspect its metadata. The commands work without a running Viewer or database connection and do not modify retained files.
 
-Without `--json`, inspection prints a short metadata summary. Add `--raw` only when you intend to reveal private event text. That option always returns JSON with the original serialized text as an escaped string. Entries larger than 16 MiB remain listed but report `read_limit_exceeded` when inspected. Malformed entries report `invalid`. If a file changes during inspection, the result is `changed_during_read`. Rerun the command for a stable snapshot. Inspection never removes the file. Automatic rejection classification and an explicit retry command are still pending.
+Without `--json`, inspection prints a short metadata summary. Add `--raw` only when you intend to reveal private event text. That option always returns JSON with the original serialized text as an escaped string. Entries larger than 16 MiB remain listed but report `read_limit_exceeded` when inspected. Malformed entries report `invalid`. If a file changes during inspection, the result is `changed_during_read`. Rerun the command for a stable snapshot. Inspection never removes the file.
+
+After inspecting a valid entry, retry that selected receipt only when you intend to deliver it to the current database and runtime identity:
+
+```fish
+codemem capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
+```
+
+The original delivery target is unknown. `--db-path` selects the current database, and `-y` confirms that choice. Before sending, the command verifies the loopback Viewer's protocol, database, runtime identity, and advertised ingest size. It sends the exact retained event bytes in one wrapped HTTP request, rejects redirects, and does not use a SQLite fallback. Add `--json` for machine-readable output.
+
+The receipt is removed only after the Viewer returns a recognized queued or ingested acknowledgement and the retained file is unchanged. Timeouts, unrecognized responses, and ambiguous outcomes leave it retained because the Viewer may already have accepted the event. If the command reports that delivery was acknowledged but cleanup needs inspection, inspect the receipt and recovery status. Do not retry blindly. Automatic rejection classification and queue advancement remain pending.
+
+The Viewer treats an existing event ID as a duplicate without comparing content. If you suspect that different content reused an ID, preserve a private copy before recovery. A duplicate acknowledgement can remove the retained receipt even when its content differs from the stored event.
 
 ### Semantic runtime unavailable
 
