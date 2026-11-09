@@ -6,8 +6,12 @@
 export interface PaginatedResponse<T = unknown> {
 	items: T[];
 	pagination?: {
+		paging?: "cursor" | "offset";
+		limit?: number;
+		offset?: number | null;
 		has_more?: boolean;
-		next_offset?: number;
+		next_offset?: number | null;
+		next_cursor?: string | null;
 	};
 }
 
