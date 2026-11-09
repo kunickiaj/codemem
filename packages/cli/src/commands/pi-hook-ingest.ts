@@ -32,6 +32,10 @@ import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "..
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
 import {
+	retainNativeHookRejection,
+	retainNativeHookRejectionWithLock,
+} from "./native-hook-terminal-retention.js";
+import {
 	drainPiHookSpool,
 	hasPiHookSpooledEntries,
 	hasSpooledPiHookPayload,
@@ -301,6 +305,9 @@ function capturePiBoundaryCeiling(
 }
 
 type DirectFallback = { ok: true; result: { inserted: number; skipped: number } } | { ok: false };
+type PiBoundaryResult =
+	| { ok: true; boundaryState: "complete"; result: { inserted: number; skipped: number } }
+	| { ok: false; boundaryState: "pending" };
 
 type PiIngestRuntime = {
 	payload: Record<string, unknown>;
@@ -341,10 +348,10 @@ async function writeAndFlushBoundary(
 	runtime: PiIngestRuntime,
 	payload: Record<string, unknown>,
 	receipt: string,
-): Promise<DirectFallback> {
-	if (runtime.boundaryFlushAttempted) return { ok: false };
+): Promise<PiBoundaryResult> {
+	if (runtime.boundaryFlushAttempted) return { ok: false, boundaryState: "pending" };
 	const direct = tryDirectFallback(runtime, payload);
-	if (!direct.ok) return direct;
+	if (!direct.ok) return { ok: false, boundaryState: "pending" };
 	// Every receipt in this invocation shares one local extraction allowance.
 	// Queued HTTP acknowledgments can still transfer later receipts to the Viewer.
 	runtime.boundaryFlushAttempted = true;
@@ -352,14 +359,14 @@ async function writeAndFlushBoundary(
 		const flushed = await runtime.boundaryFlush(payload, runtime.getDbPath(), receipt);
 		if (flushed === false) {
 			logHookEvent("codemem pi-hook-ingest boundary flush failed; keeping spooled payload");
-			return { ok: false };
+			return { ok: false, boundaryState: "pending" };
 		}
-		return direct;
+		return { ...direct, boundaryState: "complete" };
 	} catch (err) {
 		logHookEvent(
 			`codemem pi-hook-ingest boundary flush failed; keeping spooled payload: ${err instanceof Error ? err.message : String(err)}`,
 		);
-		return { ok: false };
+		return { ok: false, boundaryState: "pending" };
 	}
 }
 
@@ -412,6 +419,7 @@ async function deliverQueuedPiHook(
 	receipt: string,
 ): Promise<{
 	accepted: boolean;
+	boundaryState: "not_required" | "complete" | "pending";
 	httpResult: HttpIngestResult;
 	directResult: { inserted: number; skipped: number } | null;
 }> {
@@ -422,13 +430,31 @@ async function deliverQueuedPiHook(
 	);
 	const boundaryRequested = shouldForcePiBoundaryFlush(queuedPayload);
 	if (result.ok && (result.queued !== undefined || !boundaryRequested)) {
-		return { accepted: true, httpResult: result, directResult: null };
+		return {
+			accepted: true,
+			boundaryState: "not_required",
+			httpResult: result,
+			directResult: null,
+		};
 	}
-	if (!boundaryRequested) return { accepted: false, httpResult: result, directResult: null };
+	if (!boundaryRequested)
+		return {
+			accepted: false,
+			boundaryState: "not_required",
+			httpResult: result,
+			directResult: null,
+		};
 	const boundary = await writeAndFlushBoundary(runtime, queuedPayload, receipt);
-	if (!boundary.ok) return { accepted: false, httpResult: result, directResult: null };
+	if (!boundary.ok)
+		return {
+			accepted: false,
+			boundaryState: boundary.boundaryState,
+			httpResult: result,
+			directResult: null,
+		};
 	return {
 		accepted: true,
+		boundaryState: boundary.boundaryState,
 		httpResult: result,
 		directResult: result.ok ? null : boundary.result,
 	};
@@ -446,6 +472,8 @@ async function ingestPiBoundaryDirect(
 
 type PiBacklogDrain = {
 	currentHandled: boolean;
+	currentAccepted: boolean;
+	currentRetentionAttempted: boolean;
 	currentResult: HttpIngestResult | null;
 	boundaryResult: IngestResult | null;
 };
@@ -457,22 +485,44 @@ async function drainPiBacklog(
 	let currentResult: HttpIngestResult | null = null;
 	let currentAccepted = false;
 	let currentHandled = false;
+	let currentRetentionAttempted = false;
 	let boundaryResult: IngestResult | null = null;
 	try {
 		await runtime.withLock(async () => {
 			recoverStalePiHookTmpSpool(piHookLockTtlSeconds());
-			await drainPiHookSpool(async (queuedPayload, receipt) => {
-				const delivery = await deliverQueuedPiHook(runtime, queuedPayload, receipt);
-				if (receipt === currentReceipt) {
-					currentResult = delivery.httpResult;
-					currentAccepted = delivery.accepted;
-					if (delivery.directResult) {
-						boundaryResult = { ...delivery.directResult, via: "direct" };
+			await drainPiHookSpool(
+				async (queuedPayload, receipt) => {
+					const delivery = await deliverQueuedPiHook(runtime, queuedPayload, receipt);
+					if (receipt === currentReceipt) {
+						currentResult = delivery.httpResult;
+						currentAccepted = delivery.accepted;
+						if (delivery.directResult) {
+							boundaryResult = { ...delivery.directResult, via: "direct" };
+						}
 					}
-				}
-				return delivery.accepted;
-			});
-			currentHandled = currentAccepted || !hasSpooledPiHookPayload(currentReceipt);
+					if (delivery.accepted) return true;
+					// A saved ceiling or pending local boundary obligation must stay on the ordinary retry path.
+					if (
+						delivery.boundaryState === "pending" ||
+						Object.hasOwn(queuedPayload, BOUNDARY_CEILING_FIELD)
+					)
+						return false;
+					return delivery.httpResult.failureOutcome || false;
+				},
+				{
+					retainTerminal: ({ receipt, rejection }) => {
+						if (receipt === currentReceipt) currentRetentionAttempted = true;
+						return retainNativeHookRejection({
+							provider: "pi",
+							dir: piHookSpoolDir(),
+							receipt,
+							rejection,
+						});
+					},
+				},
+			);
+			currentHandled =
+				currentRetentionAttempted || currentAccepted || !hasSpooledPiHookPayload(currentReceipt);
 		});
 	} catch (error) {
 		if (!(error instanceof PiHookLockBusyError)) {
@@ -481,7 +531,13 @@ async function drainPiBacklog(
 			);
 		}
 	}
-	return { currentHandled, currentResult, boundaryResult };
+	return {
+		currentHandled,
+		currentAccepted,
+		currentRetentionAttempted,
+		currentResult,
+		boundaryResult,
+	};
 }
 
 async function processStandaloneBoundaryReceipt(
@@ -508,6 +564,37 @@ async function retainAndProcessBoundary(runtime: PiIngestRuntime): Promise<Inges
 	return await processStandaloneBoundaryReceipt(runtime, receipt);
 }
 
+async function ingestPiWithoutBacklog(
+	runtime: PiIngestRuntime,
+	boundaryRequested: boolean,
+): Promise<IngestResult> {
+	const httpResult = await runtime.httpIngest(
+		runtime.httpPayload(runtime.payload),
+		runtime.opts.host,
+		runtime.port,
+	);
+	if (httpResult.ok) {
+		if (boundaryRequested && httpResult.queued === undefined) {
+			const boundary = await retainAndProcessBoundary(runtime);
+			if (boundary.via !== "direct") return boundary;
+		}
+		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
+	}
+	if (boundaryRequested) return await retainAndProcessBoundary(runtime);
+	const rejection = httpResult.failureOutcome;
+	if (!rejection) return spoolPiPayloadOrThrow(runtime.payload);
+	const receipt = spoolPiHookPayloadWithReceipt(runtime.payload);
+	if (receipt === null) throw new Error("pi-hook-ingest: HTTP and spool failed");
+	await retainNativeHookRejectionWithLock({
+		provider: "pi",
+		dir: piHookSpoolDir(),
+		receipt,
+		rejection,
+		withLock: runtime.withLock,
+	});
+	return { inserted: 0, skipped: 0, via: "spool" };
+}
+
 /** Ingest one Pi event through the Viewer queue or local spool. */
 export async function ingestPiHookPayload(
 	payload: Record<string, unknown>,
@@ -526,8 +613,9 @@ export async function ingestPiHookPayload(
 			throw new Error("pi-hook-ingest: failed to spool current payload before backlog recovery");
 		}
 		const recovery = await drainPiBacklog(runtime, receipt);
+		if (recovery.currentRetentionAttempted) return { inserted: 0, skipped: 0, via: "spool" };
 		if (recovery.boundaryResult !== null) return recovery.boundaryResult;
-		if (recovery.currentResult?.ok) {
+		if (recovery.currentAccepted && recovery.currentResult?.ok) {
 			return {
 				inserted: recovery.currentResult.inserted,
 				skipped: recovery.currentResult.skipped,
@@ -538,19 +626,7 @@ export async function ingestPiHookPayload(
 		return { inserted: 0, skipped: 0, via: "spool" };
 	}
 
-	const httpResult = await runtime.httpIngest(
-		runtime.httpPayload(stablePayload),
-		opts.host,
-		runtime.port,
-	);
-	if (httpResult.ok) {
-		if (boundaryRequested && httpResult.queued === undefined) {
-			await retainAndProcessBoundary(runtime);
-		}
-		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
-	}
-	if (!boundaryRequested) return spoolPiPayloadOrThrow(stablePayload);
-	return await retainAndProcessBoundary(runtime);
+	return await ingestPiWithoutBacklog(runtime, boundaryRequested);
 }
 
 const piHookCmd = new Command("pi-hook-ingest")

@@ -1283,11 +1283,13 @@ Recovery uses the provider's HTTP route after checking the Viewer profile, curre
 
 Pi receipts with a saved extraction cutoff cannot be recovered through the current HTTP API. Recovery reports `pi_boundary_snapshot_unsupported`, sends no POST, and leaves the file untouched. Other Pi boundary receipts require a durable queued acknowledgement. A synchronous response cannot confirm completion of that boundary work. Existing native boundary retries are unchanged.
 
-Native hook delivery does not yet retain rejections automatically. Inspection shows retained receipts, not the active native hook backlog. Native hook storage has no entry limit equivalent to OpenCode's spool limit.
+Native hook delivery automatically retains receipts after the exact HTTP 400 `invalid session id` response, or HTTP 413 `payload too large` with a positive safe-integer `max_bytes` smaller than the complete outgoing UTF-8 body. Unknown responses, redirects, authentication and target errors, throttling, and transport or server failures remain retryable. Confirmed retention preserves the original bytes and allows later healthy queue entries to proceed. Retained entries do not count as accepted ingestion and require explicit recovery. A changed target or increased body limit may make an oversized receipt recoverable.
+
+Claude preserves the local fallback for the boundary event being ingested now. Older queued Claude boundaries can be retained after a terminal rejection. Explicit recovery sends their boundary-flush header, so recover these receipts to resume that work. Pi keeps receipts with any saved extraction cutoff or pending boundary work in the active retry queue. A native skip response does not authorize cleanup. Inspection shows retained receipts, not the active native hook backlog. Native hook storage has no entry limit equivalent to OpenCode's spool limit.
 
 Native inspection refuses group- or other-writable spool directories and files. Spools created with umask `002` may therefore require a permission review before inspection works. Review ownership and remove group or other write access where appropriate before retrying. The commands never change permissions. Symlinks in the spool directory or its immediate parent are also refused, so use a physical directory path.
 
-Native retention and recovery have not been validated on Windows. Filesystems that cannot synchronize directories cause these operations to fail rather than use a copy-or-delete fallback. Automatic native retention remains disabled while these compatibility limits are assessed.
+Native retention and recovery have not been validated on Windows. Filesystems that cannot synchronize directories cause these operations to fail rather than use a copy-or-delete fallback. Automatic retention preserves ordinary retry behavior and reports a warning when directory permissions or filesystem support prevent safe retention. A failure after publishing a retained copy can leave saved bytes outside active selection. Inspect the retained receipts before attempting recovery, especially when a warning reports uncertain lock release.
 
 ### Semantic runtime unavailable
 
