@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 function forbidServices(home, cli) {
 	const marker = join(home, "unexpected-service-access");
@@ -47,9 +48,10 @@ export function smokeCaptureInspection(installDir, isolatedRoot, { runtimeEnv })
 	writeFileSync(path, serialized, { mode: 0o600 });
 	const before = statSync(path);
 	const { preload, marker } = forbidServices(home, cli);
-	const invoke = (args, status = 0, { textOnly = false } = {}) => {
+	const invoke = (args, status = 0, { textOnly = false, recoveryPreload } = {}) => {
 		// Act: execute the installed entrypoint with its actual argv and isolated environment.
-		const result = spawnSync(process.execPath, ["--import", preload, cli, "capture", ...args], {
+		const imports = recoveryPreload ? ["--import", recoveryPreload] : [];
+		const result = spawnSync(process.execPath, ["--import", preload, ...imports, cli, "capture", ...args], {
 			cwd: installDir, env, encoding: "utf8",
 		});
 		// Assert after every command, including error cases.
@@ -126,5 +128,69 @@ export function smokeCaptureInspection(installDir, isolatedRoot, { runtimeEnv })
 		for (const field of ["dev", "ino", "mode", "mtimeMs", "size"]) assert.equal(after[field], nativeBefore[field]);
 		assert.deepEqual(readdirSync(nativeDir), [nativeReceipt]);
 	}
-	process.stdout.write("Packed capture inspection: OpenCode and native metadata, escaped raw output, safe errors, and unchanged files passed\n");
+	// Arrange: replace only fetch with a narrow in-process viewer. Socket and SQLite bans remain active.
+	const recoveryPreload = join(home, "native-recovery.mjs");
+	const requests = join(home, "native-recovery-requests");
+	env.CODEMEM_EMBEDDING_DISABLED = env.CODEMEM_EMBEDDING_OFFLINE = "1";
+	env.CODEMEM_VIEWER_HOST = "127.0.0.1";
+	env.CODEMEM_VIEWER_PORT = "38888";
+	writeFileSync(recoveryPreload, `
+import ${JSON.stringify(pathToFileURL(preload).href)};
+import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
+import { buildViewerIdentityTarget } from ${JSON.stringify(pathToFileURL(join(installDir, "node_modules/@codemem/core/dist/index.js")).href)};
+const forbidden = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+  const url = new URL(String(input));
+  if (url.origin !== "http://127.0.0.1:38888") return forbidden();
+  appendFileSync(${JSON.stringify(requests)}, url.pathname + "\\n");
+  assert.equal(init.redirect, "error");
+  assert(init.signal instanceof AbortSignal);
+  if (url.pathname === "/api/prompt-pack-profile" && !init.method)
+    return Response.json({ service: "codemem-viewer", protocol_version: 1, min_supported_protocol_version: 1,
+      db_path: process.env.CODEMEM_DB, identity_target: buildViewerIdentityTarget() });
+  if (url.pathname === "/api/raw-events/status" && !init.method)
+    return Response.json({ ingest: { available: true, max_body_bytes: 1048576 } });
+  if (url.pathname !== "/api/claude-hooks" || init.method !== "POST") return forbidden();
+  const body = JSON.parse(init.body);
+  assert.equal(body.db_path, process.env.CODEMEM_DB);
+  assert.deepEqual(body.identity_target, buildViewerIdentityTarget());
+  assert.equal(body.session_id, "packed-private-native");
+  assert.equal(typeof body.prompt, "string");
+  assert.equal(Object.hasOwn(body, "events"), false);
+  return Response.json({ accepted: 1, queued: 1 }, { status: 202 });
+};
+`, { mode: 0o600 });
+	// Act: use the installed CLI and retain the acknowledged receipt explicitly.
+	const recoveryArgs = ["recover-rejected", nativeReceipt, ...nativeFlags, "--db-path", env.CODEMEM_DB, "-y", "--json"];
+	const kept = invoke([...recoveryArgs, "--keep-receipt"], 0, { recoveryPreload });
+	// Assert: accepted delivery cannot modify evidence when retention was requested.
+	assert.equal(kept.value.ok, true);
+	assert.deepEqual(kept.value.recovery, { delivery: "accepted", acknowledgement: "queued", cleanup: "kept", lock: "released" });
+	assert.equal(readFileSync(nativePath, "utf8"), nativeText);
+	for (const field of ["dev", "ino", "mode", "mtimeMs", "size"]) assert.equal(statSync(nativePath)[field], nativeBefore[field]);
+	assert.deepEqual(readFileSync(requests, "utf8").trim().split("\n"), ["/api/prompt-pack-profile", "/api/raw-events/status", "/api/claude-hooks"]);
+	assert.doesNotMatch(kept.text, /packed-private-|"(?:session_id|payload|raw|serialized|path)"/u);
+	// Arrange: any saved Pi cutoff is unsupported, including null, without consulting a viewer.
+	env.CODEMEM_PI_HOOK_SPOOL_DIR = nativeDir;
+	const piText = JSON.stringify({ piEvent: "session_shutdown", sessionId: "packed-private-native", _codememBoundaryThroughEventSeq: null });
+	writeFileSync(nativePath, piText);
+	const piBefore = statSync(nativePath);
+	const requestsBefore = readFileSync(requests, "utf8");
+	// Act
+	const unsupported = invoke(["recover-rejected", nativeReceipt, "--format", "native-hook-v1", "--provider", "pi", "--db-path", env.CODEMEM_DB, "-y", "--json"], 1, { recoveryPreload });
+	// Assert
+	assert.equal(unsupported.value.ok, false);
+	assert.equal(unsupported.value.error, "pi_boundary_snapshot_unsupported");
+	assert.equal(readFileSync(requests, "utf8"), requestsBefore);
+	assert.equal(readFileSync(nativePath, "utf8"), piText);
+	for (const field of ["dev", "ino", "mode", "mtimeMs", "size"]) assert.equal(statSync(nativePath)[field], piBefore[field]);
+	// Act: ordinary recovery removes only the acknowledged native receipt by default.
+	writeFileSync(nativePath, nativeText);
+	const removed = invoke(recoveryArgs, 0, { recoveryPreload });
+	// Assert
+	assert.equal(removed.value.ok, true);
+	assert.deepEqual(removed.value.recovery, { delivery: "accepted", acknowledgement: "queued", cleanup: "removed", lock: "released" });
+	assert.deepEqual(readdirSync(nativeDir), []);
+	process.stdout.write("Packed capture: inspection, queued native recovery, retained bytes, and unsupported Pi cutoff passed\n");
 }

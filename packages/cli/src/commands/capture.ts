@@ -13,6 +13,7 @@ import {
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
+import { retryNativeHookReceipt } from "./capture-native-retry.js";
 import { retryRejectedEvent } from "./capture-retry.js";
 import {
 	inspectNativeHookRejectedReceipt,
@@ -27,15 +28,14 @@ const rejectedEventFormat = {
 } as const;
 
 type InspectionOpts = JsonOpts & { format?: string; provider?: string };
+const formatUsageMessage =
+	"Use --format native-hook-v1 with --provider claude, codex, or pi. OpenCode format does not accept --provider.";
 function selectInspectionFormat(opts: InspectionOpts) {
 	const format = opts.format ?? rejectedEventFormat.name;
 	if (format === rejectedEventFormat.name && opts.provider === undefined)
 		return rejectedEventFormat;
 	if (format !== "native-hook-v1" || !["claude", "codex", "pi"].includes(opts.provider ?? "")) {
-		throw new RawEventSpoolInspectionError(
-			"usage_error",
-			"Use --format native-hook-v1 with --provider claude, codex, or pi. OpenCode format does not accept --provider.",
-		);
+		throw new RawEventSpoolInspectionError("usage_error", formatUsageMessage);
 	}
 	const provider = opts.provider as NativeHookProvider;
 	return {
@@ -172,33 +172,60 @@ addJsonOption(showRejectedCommand);
 addInspectionOptions(showRejectedCommand);
 showRejectedCommand.action(runShowRejected);
 
-export async function runRetryRejected(
-	receipt: string,
-	opts: DbOpts & JsonOpts & { yes?: boolean; keepReceipt?: boolean },
-): Promise<void> {
-	const result = await retryRejectedEvent(receipt, {
-		dbPath: resolveDbOpt(opts),
-		yes: opts.yes,
-		keepReceipt: opts.keepReceipt,
-	});
-	if (!result.ok) process.exitCode = result.exitCode;
+function reportRecoveryError(error: unknown, opts: JsonOpts): void {
+	const usageError = error instanceof RawEventSpoolInspectionError && error.code === "usage_error";
+	const result = {
+		ok: false,
+		error: usageError ? "usage_error" : "retry_failed",
+		message: usageError
+			? formatUsageMessage
+			: "Retry could not finish. Inspect the retained receipt before retrying.",
+		exitCode: usageError ? 2 : 1,
+	};
+	process.exitCode = result.exitCode;
 	if (opts.json) {
 		process.stdout.write(`${safeJson(result)}\n`);
 		return;
 	}
-	if (!result.ok) {
-		process.stderr.write(`${result.message}\n`);
-		return;
-	}
-	if (result.recovery.cleanup === "kept") {
+	process.stderr.write(`${result.message}\n`);
+}
+
+export async function runRetryRejected(
+	receipt: string,
+	opts: DbOpts & InspectionOpts & { yes?: boolean; keepReceipt?: boolean },
+): Promise<void> {
+	try {
+		const selected = selectInspectionFormat(opts);
+		const retryOpts = {
+			dbPath: resolveDbOpt(opts),
+			yes: opts.yes,
+			keepReceipt: opts.keepReceipt,
+		};
+		const result =
+			"provider" in selected
+				? await retryNativeHookReceipt(receipt, { ...retryOpts, provider: selected.provider })
+				: await retryRejectedEvent(receipt, retryOpts);
+		if (!result.ok) process.exitCode = result.exitCode;
+		if (opts.json) {
+			process.stdout.write(`${safeJson(result)}\n`);
+			return;
+		}
+		if (!result.ok) {
+			process.stderr.write(`${result.message}\n`);
+			return;
+		}
+		if (result.recovery.cleanup === "kept") {
+			process.stdout.write(
+				"The current viewer acknowledged the event. The retained receipt was kept at your request. Acknowledgement does not verify stored content.\n",
+			);
+			return;
+		}
 		process.stdout.write(
-			"The current viewer acknowledged the event. The retained receipt was kept at your request. Acknowledgement does not verify stored content.\n",
+			"The current viewer acknowledged the event. The retained receipt was removed.\n",
 		);
-		return;
+	} catch (error) {
+		reportRecoveryError(error, opts);
 	}
-	process.stdout.write(
-		"The current viewer acknowledged the event. The retained receipt was removed.\n",
-	);
 }
 
 const retryRejectedCommand = new Command("recover-rejected")
@@ -213,6 +240,7 @@ const retryRejectedCommand = new Command("recover-rejected")
 	);
 addDbOption(retryRejectedCommand);
 addJsonOption(retryRejectedCommand);
+addInspectionOptions(retryRejectedCommand);
 retryRejectedCommand.action(runRetryRejected);
 
 captureCommand

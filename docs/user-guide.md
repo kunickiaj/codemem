@@ -1224,11 +1224,21 @@ codemem capture show-rejected '<receipt>' --format native-hook-v1 --provider cla
 
 Replace `claude` with `codex` or `pi` as needed. Listing reads metadata only. Showing a receipt validates its saved JSON within the 16 MiB inspection limit, and only `--raw` includes the saved text as an escaped JSON string. Inspection uses the provider's existing spool directory and overrides, makes no HTTP or SQLite calls, and refuses unsafe or symlinked paths without changing permissions. Native retained files end in `.retained`, so older CLIs do not replay them as active `.json` entries.
 
-Native hook delivery does not yet retain rejections automatically, and `recover-rejected` does not yet support the native format. The inspection commands show retained receipts, not the active native hook backlog. Native hook storage has no entry limit equivalent to OpenCode's spool limit.
+To recover a supported native receipt, select its format and provider and confirm the current database:
+
+```fish
+codemem capture recover-rejected '<receipt>' --format native-hook-v1 --provider claude --db-path '~/.codemem/mem.sqlite' -y
+```
+
+Recovery uses the provider's HTTP route after checking the Viewer profile, current database, runtime identity, and complete request size. It rejects redirects and has no SQLite fallback. Add `--keep-receipt` to preserve the file after a recognized acknowledgement. Duplicate or no-op skip responses leave the receipt intact because they do not confirm native capture.
+
+Pi receipts with a saved extraction cutoff cannot be recovered through the current HTTP API. Recovery reports `pi_boundary_snapshot_unsupported`, sends no POST, and leaves the file untouched. Other Pi boundary receipts require a durable queued acknowledgement. A synchronous response cannot confirm completion of that boundary work. Existing native boundary retries are unchanged.
+
+Native hook delivery does not yet retain rejections automatically. Inspection shows retained receipts, not the active native hook backlog. Native hook storage has no entry limit equivalent to OpenCode's spool limit.
 
 Native inspection refuses group- or other-writable spool directories and files. Spools created with umask `002` may therefore require a permission review before inspection works. Review ownership and remove group or other write access where appropriate before retrying. The commands never change permissions. Symlinks in the spool directory or its immediate parent are also refused, so use a physical directory path.
 
-Native retention has not been validated on Windows. Filesystems that cannot synchronize directories cause retention to fail rather than use a copy-or-delete fallback. Automatic native retention remains disabled while these compatibility limits are assessed.
+Native retention and recovery have not been validated on Windows. Filesystems that cannot synchronize directories cause these operations to fail rather than use a copy-or-delete fallback. Automatic native retention remains disabled while these compatibility limits are assessed.
 
 ### Semantic runtime unavailable
 
