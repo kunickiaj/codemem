@@ -37,6 +37,7 @@ import {
 	recoverStaleTmpSpool,
 	removeSpooledPayload,
 	shouldForceBoundaryFlush,
+	spoolDir,
 	spoolPayload,
 	spoolPayloadWithReceipt,
 	withClaudeHookIngestLock,
@@ -44,6 +45,10 @@ import {
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
 import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
+import {
+	retainNativeHookRejection,
+	retainNativeHookRejectionWithLock,
+} from "./native-hook-terminal-retention.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "direct" | "spool";
@@ -394,7 +399,22 @@ type ClaudeBacklogDrain = {
 	lastResult: HttpIngestResult | null;
 	currentResult: HttpIngestResult | null;
 	boundaryResult: IngestResult | null;
+	currentRetentionAttempted: boolean;
 };
+
+async function deliverQueuedClaudeHook(
+	runtime: ClaudeIngestRuntime,
+	queuedPayload: Record<string, unknown>,
+): Promise<HttpIngestResult> {
+	const result = await runtime.httpIngest(
+		runtime.httpPayload(queuedPayload),
+		runtime.opts.host,
+		runtime.port,
+		{ flushBoundary: shouldForceBoundaryFlush(queuedPayload) },
+	);
+	if (!result.ok) logHttpFailure(result);
+	return result;
+}
 
 async function drainClaudeBacklog(
 	runtime: ClaudeIngestRuntime,
@@ -407,28 +427,48 @@ async function drainClaudeBacklog(
 	let currentHandled = false;
 	let drained = false;
 	let boundaryResult: IngestResult | null = null;
+	let currentRetentionAttempted = false;
 	try {
 		await runtime.withLock(async () => {
 			recoverStaleTmpSpool(lockTtlSeconds());
-			await drainSpool(async (queuedPayload, receipt) => {
-				lastResult = await runtime.httpIngest(
-					runtime.httpPayload(queuedPayload),
-					runtime.opts.host,
-					runtime.port,
-					{ flushBoundary: shouldForceBoundaryFlush(queuedPayload) },
-				);
-				if (receipt === currentReceipt) currentResult = lastResult;
-				if (!lastResult.ok) logHttpFailure(lastResult);
-				return lastResult.ok;
-			});
+			await drainSpool(
+				async (queuedPayload, receipt) => {
+					lastResult = await deliverQueuedClaudeHook(runtime, queuedPayload);
+					if (receipt === currentReceipt) currentResult = lastResult;
+					// The current boundary still has its existing post-drain direct fallback.
+					if (receipt === currentReceipt && boundaryRequested) return lastResult.ok;
+					return lastResult.ok || lastResult.failureOutcome || false;
+				},
+				{
+					retainTerminal: ({ receipt, rejection }) => {
+						if (receipt === currentReceipt) currentRetentionAttempted = true;
+						return retainNativeHookRejection({
+							provider: "claude",
+							dir: spoolDir(),
+							receipt,
+							rejection,
+						});
+					},
+				},
+			);
 			drained = !hasSpooledEntries();
-			currentHandled = currentResult?.ok === true || !hasSpooledPayload(currentReceipt);
+			currentHandled =
+				currentRetentionAttempted ||
+				currentResult?.ok === true ||
+				!hasSpooledPayload(currentReceipt);
 			if (!currentHandled && boundaryRequested) {
 				boundaryResult = await ingestClaudeBoundaryDirect(runtime, currentReceipt);
 			}
 		});
 		logHookEvent(`codemem claude-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
-		return { drained, currentHandled, lastResult, currentResult, boundaryResult };
+		return {
+			drained,
+			currentHandled,
+			lastResult,
+			currentResult,
+			boundaryResult,
+			currentRetentionAttempted,
+		};
 	} catch (error) {
 		const cause = error instanceof LockBusyError ? "lock_busy" : errorName(error);
 		logHookEvent(
@@ -440,6 +480,7 @@ async function drainClaudeBacklog(
 			lastResult,
 			currentResult,
 			boundaryResult: null,
+			currentRetentionAttempted,
 		};
 	}
 }
@@ -475,6 +516,26 @@ async function ingestClaudeBoundaryFallback(runtime: ClaudeIngestRuntime): Promi
 		);
 		return await ingestClaudeBoundaryDirect(runtime, null);
 	}
+}
+
+async function spoolClaudeHttpFailure(
+	runtime: ClaudeIngestRuntime,
+	httpResult: HttpIngestResult,
+): Promise<IngestResult> {
+	const rejection = httpResult.failureOutcome;
+	if (!rejection) {
+		return spoolClaudePayloadOrThrow(runtime.payload, "claude-hook-ingest: HTTP and spool failed");
+	}
+	const receipt = spoolPayloadWithReceipt(runtime.payload);
+	if (receipt === null) throw new Error("claude-hook-ingest: HTTP and spool failed");
+	await retainNativeHookRejectionWithLock({
+		provider: "claude",
+		dir: spoolDir(),
+		receipt,
+		rejection,
+		withLock: runtime.withLock,
+	});
+	return { inserted: 0, skipped: 0, via: "spool" };
 }
 
 /**
@@ -538,9 +599,7 @@ export async function ingestClaudeHookPayload(
 	}
 	logHttpFailure(httpResult);
 
-	if (!boundaryRequested) {
-		return spoolClaudePayloadOrThrow(payload, "claude-hook-ingest: HTTP and spool failed");
-	}
+	if (!boundaryRequested) return await spoolClaudeHttpFailure(runtime, httpResult);
 	return await ingestClaudeBoundaryFallback(runtime);
 }
 

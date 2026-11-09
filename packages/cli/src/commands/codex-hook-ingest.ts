@@ -21,6 +21,7 @@ import { logHookEvent } from "./claude-hook-plugin-log.js";
 import {
 	CodexHookLockBusyError,
 	codexHookLockTtlSeconds,
+	codexHookSpoolDir,
 	drainCodexHookSpool,
 	hasCodexHookSpooledEntries,
 	recoverStaleCodexHookTmpSpool,
@@ -29,6 +30,10 @@ import {
 	withCodexHookIngestLock,
 } from "./codex-hook-ingest-spool.js";
 import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
+import {
+	retainNativeHookRejection,
+	retainNativeHookRejectionWithLock,
+} from "./native-hook-terminal-retention.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "spool";
@@ -270,6 +275,55 @@ function spoolCurrentCodexPayload(payload: Record<string, unknown>): string {
 	return receipt;
 }
 
+async function drainCodexBacklog(
+	currentReceipt: string,
+	deliver: (payload: Record<string, unknown>) => Promise<HttpIngestResult>,
+): Promise<{
+	drained: boolean;
+	lastResult: HttpIngestResult | null;
+	currentRetentionAttempted: boolean;
+}> {
+	const startedAt = Date.now();
+	let lastResult: HttpIngestResult | null = null;
+	let currentRetentionAttempted = false;
+	try {
+		await withCodexHookIngestLock(async () => {
+			recoverStaleCodexHookTmpSpool(codexHookLockTtlSeconds());
+			await drainCodexHookSpool(
+				async (queuedPayload) => {
+					lastResult = await deliver(queuedPayload);
+					if (!lastResult.ok) logHttpFailure(lastResult);
+					return lastResult.ok || lastResult.failureOutcome || false;
+				},
+				{
+					retainTerminal: ({ receipt, rejection }) => {
+						if (receipt === currentReceipt) currentRetentionAttempted = true;
+						return retainNativeHookRejection({
+							provider: "codex",
+							dir: codexHookSpoolDir(),
+							receipt,
+							rejection,
+						});
+					},
+				},
+			);
+		});
+		logHookEvent(`codemem codex-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
+		return { drained: !hasCodexHookSpooledEntries(), lastResult, currentRetentionAttempted };
+	} catch (err) {
+		if (err instanceof CodexHookLockBusyError) {
+			logHookEvent(
+				`codemem codex-hook-ingest spool drain deferred cause=lock_busy elapsed_ms=${elapsedSince(startedAt)}`,
+			);
+			return { drained: false, lastResult, currentRetentionAttempted };
+		}
+		logHookEvent(
+			`codemem codex-hook-ingest backlog drain failed cause=${err instanceof Error ? err.name : "unknown"} elapsed_ms=${elapsedSince(startedAt)}`,
+		);
+		return { drained: false, lastResult, currentRetentionAttempted };
+	}
+}
+
 export async function ingestCodexHookPayload(
 	payload: Record<string, unknown>,
 	opts: IngestOpts,
@@ -288,41 +342,12 @@ export async function ingestCodexHookPayload(
 		...queuedPayload,
 		...rawEventTarget(getDbPath()),
 	});
-	const drainBacklogIfPresent = async (): Promise<{
-		drained: boolean;
-		lastResult: HttpIngestResult | null;
-	}> => {
-		const startedAt = Date.now();
-		let lastResult: HttpIngestResult | null = null;
-		try {
-			await withCodexHookIngestLock(async () => {
-				recoverStaleCodexHookTmpSpool(codexHookLockTtlSeconds());
-				await drainCodexHookSpool(async (queuedPayload) => {
-					lastResult = await httpIngest(httpPayload(queuedPayload), opts.host, port);
-					if (!lastResult.ok) logHttpFailure(lastResult);
-					return lastResult.ok;
-				});
-			});
-			logHookEvent(`codemem codex-hook-ingest spool drain elapsed_ms=${elapsedSince(startedAt)}`);
-			return { drained: !hasCodexHookSpooledEntries(), lastResult };
-		} catch (err) {
-			if (err instanceof CodexHookLockBusyError) {
-				logHookEvent(
-					`codemem codex-hook-ingest spool drain deferred cause=lock_busy elapsed_ms=${elapsedSince(startedAt)}`,
-				);
-				return { drained: false, lastResult };
-			}
-			logHookEvent(
-				`codemem codex-hook-ingest backlog drain failed cause=${err instanceof Error ? err.name : "unknown"} elapsed_ms=${elapsedSince(startedAt)}`,
-			);
-			return { drained: false, lastResult };
-		}
-	};
-
 	if (hasCodexHookSpooledEntries()) {
-		spoolCurrentCodexPayload(ingestPayload);
-		const recovery = await drainBacklogIfPresent();
-		if (recovery.drained && recovery.lastResult?.ok) {
+		const receipt = spoolCurrentCodexPayload(ingestPayload);
+		const recovery = await drainCodexBacklog(receipt, (queued) =>
+			httpIngest(httpPayload(queued), opts.host, port),
+		);
+		if (!recovery.currentRetentionAttempted && recovery.drained && recovery.lastResult?.ok) {
 			return {
 				inserted: recovery.lastResult.inserted,
 				skipped: recovery.lastResult.skipped,
@@ -337,6 +362,19 @@ export async function ingestCodexHookPayload(
 		return { inserted: httpResult.inserted, skipped: httpResult.skipped, via: "http" };
 	}
 	logHttpFailure(httpResult);
+	const rejection = httpResult.failureOutcome;
+	if (rejection) {
+		const receipt = spoolCodexHookPayloadWithReceipt(ingestPayload);
+		if (receipt === null) throw new Error("codex-hook-ingest: HTTP and spool failed");
+		await retainNativeHookRejectionWithLock({
+			provider: "codex",
+			dir: codexHookSpoolDir(),
+			receipt,
+			rejection,
+			withLock: withCodexHookIngestLock,
+		});
+		return { inserted: 0, skipped: 0, via: "spool" };
+	}
 	if (spoolCodexHookPayload(ingestPayload)) {
 		return { inserted: 0, skipped: 0, via: "spool" };
 	}

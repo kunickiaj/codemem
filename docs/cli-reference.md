@@ -118,7 +118,13 @@ the provider's HTTP route without redirects or a SQLite fallback. It requires
 `--db-path` and `-y` and supports `--keep-receipt`. Native skip responses leave the
 receipt intact. Pi receipts with saved extraction cutoffs are rejected before POST,
 and other Pi boundary receipts require a durable queued acknowledgement.
-Automatic native retention is not enabled yet.
+Native delivery creates retained receipts for exact invalid-session rejections and
+verified oversized requests. Claude preserves the local fallback for the current
+boundary event. Older queued Claude boundaries can be retained, and explicit
+recovery requests their boundary flush. Pi keeps saved cutoffs and pending boundary
+work in the active retry queue.
+Successful retention permits later queue entries to proceed. Retention failures
+stop draining and require inspection. Retained receipts require explicit recovery.
 
 ### Get context for a task
 

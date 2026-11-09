@@ -154,7 +154,7 @@ it.each([
 });
 
 it.each([400, 413])(
-	"Pi public ingest preserves ordinary spool fallback for HTTP %s without activation",
+	"Pi public ingest retains terminal HTTP %s rejection without reporting delivery",
 	async (status) => {
 		// Arrange: Pi's HTTP helper remains private. Exercise its real request through the public entrypoint.
 		const dir = mkdtempSync(join(tmpdir(), "codemem-pi-http-outcome-"));
@@ -179,7 +179,7 @@ it.each([400, 413])(
 				{ host: "127.0.0.1", port: 38888 },
 				{ resolveDb: () => join(dir, "test.sqlite"), directIngest },
 			);
-			// Assert: no automatic retainer or direct fallback was introduced for ordinary events.
+			// Assert: retention preserves the ordinary payload without direct fallback or delivery credit.
 			expect(result).toEqual({ inserted: 0, skipped: 0, via: "spool" });
 			expect(directIngest).not.toHaveBeenCalled();
 			const init = capturedRequest(fetchImpl.mock.calls);
@@ -190,10 +190,14 @@ it.each([400, 413])(
 				db_path: join(dir, "test.sqlite"),
 				identity_target: expect.any(Object),
 			});
-			const receipts = readdirSync(dir).filter((name) => name.endsWith(".json"));
+			const files = readdirSync(dir);
+			expect(files.filter((name) => name.endsWith(".json"))).toEqual([]);
+			const receipts = files.filter((name) => name.endsWith(".retained"));
 			expect(receipts).toHaveLength(1);
 			const receipt = receipts[0];
-			if (receipt === undefined) throw new Error("expected the ordinary spool receipt");
+			if (receipt === undefined) throw new Error("expected the retained rejection receipt");
+			const reason = status === 400 ? "invalid_payload" : "payload_too_large";
+			expect(receipt).toMatch(new RegExp(`^rejected-${status}-${reason}-.*\\.retained$`));
 			expect(JSON.parse(readFileSync(join(dir, receipt), "utf8"))).toEqual(live);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
