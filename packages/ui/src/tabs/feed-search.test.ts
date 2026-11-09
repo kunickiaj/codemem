@@ -57,6 +57,14 @@ function shortPage(
 
 type FeedPageOptions = { limit?: number; offset?: number; scope?: string; q?: string };
 
+function expectedFeedPageOptions(options: {
+	limit: number;
+	offset: number;
+	q: string | undefined;
+}) {
+	return { ...options, scope: "all", view: "feed" as const };
+}
+
 describe("Feed disclosure persistence", () => {
 	afterEach(() => {
 		state.itemExpandState.delete("change:7");
@@ -228,18 +236,14 @@ describe("Feed global search controller", () => {
 		expect(apiMocks.loadMemoriesPage).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(1);
 
-		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 20,
-			offset: 0,
-			scope: "all",
-			q: "new query",
-		});
-		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 50,
-			offset: 0,
-			scope: "all",
-			q: "new query",
-		});
+		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 20, offset: 0, q: "new query" }),
+		);
+		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 50, offset: 0, q: "new query" }),
+		);
 		expect(state.lastFeedItems).toMatchObject([{ id: 2 }]);
 
 		resolveOldObservations(page(1));
@@ -249,18 +253,14 @@ describe("Feed global search controller", () => {
 
 		updateFeedQuery("");
 		await vi.advanceTimersByTimeAsync(FEED_QUERY_DEBOUNCE_MS);
-		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 20,
-			offset: 0,
-			scope: "all",
-			q: undefined,
-		});
-		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 50,
-			offset: 0,
-			scope: "all",
-			q: undefined,
-		});
+		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 20, offset: 0, q: undefined }),
+		);
+		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 50, offset: 0, q: undefined }),
+		);
 	});
 
 	it("rejects an older primary response superseded in the same feed context", async () => {
@@ -344,18 +344,14 @@ describe("Feed global search controller", () => {
 
 		await vi.advanceTimersByTimeAsync(FEED_QUERY_DEBOUNCE_MS);
 		await __feedSearchTestHooks.loadMoreFeedPage();
-		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 20,
-			offset: 20,
-			scope: "all",
-			q: "new pagination",
-		});
-		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith("codemem", {
-			limit: 50,
-			offset: 50,
-			scope: "all",
-			q: "new pagination",
-		});
+		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 20, offset: 20, q: "new pagination" }),
+		);
+		expect(apiMocks.loadSummariesPage).toHaveBeenLastCalledWith(
+			"codemem",
+			expectedFeedPageOptions({ limit: 50, offset: 50, q: "new pagination" }),
+		);
 		expect(__feedSearchTestHooks.pagination()).toMatchObject({
 			observationOffset: 21,
 			summaryOffset: 50,

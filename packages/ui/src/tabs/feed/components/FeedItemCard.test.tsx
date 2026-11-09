@@ -7,10 +7,15 @@ import { FeedItemCard } from "./FeedItemCard";
 
 const noticeMock = vi.hoisted(() => vi.fn());
 const updateVisibilityMock = vi.hoisted(() => vi.fn());
+const forgetMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../../lib/notice", () => ({ showGlobalNotice: noticeMock }));
 vi.mock("../../../lib/api", () => ({
 	updateMemoryVisibility: updateVisibilityMock,
+	forgetMemory: forgetMock,
+}));
+vi.mock("../../sync/sync-dialogs", () => ({
+	openSyncConfirmDialog: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../../../components/primitives/tooltip", () => ({
@@ -56,7 +61,8 @@ vi.mock("../../../components/primitives/radix-select", () => ({
 		),
 }));
 vi.mock("./FeedItemMenu", () => ({
-	FeedItemMenu: () => h("button", { className: "feed-menu-trigger", type: "button" }, "Menu"),
+	FeedItemMenu: ({ onForget }: { onForget: () => void }) =>
+		h("button", { className: "feed-menu-trigger", type: "button", onClick: onForget }, "Menu"),
 }));
 
 let mount: HTMLDivElement;
@@ -68,6 +74,8 @@ beforeEach(() => {
 	noticeMock.mockReset();
 	updateVisibilityMock.mockReset();
 	updateVisibilityMock.mockResolvedValue({});
+	forgetMock.mockReset();
+	forgetMock.mockResolvedValue({});
 	mount = document.createElement("div");
 	document.body.appendChild(mount);
 });
@@ -77,7 +85,13 @@ afterEach(() => {
 	mount.remove();
 });
 
-function renderCard(item: FeedItem): void {
+function renderCard(
+	item: FeedItem,
+	callbacks: {
+		onReload?: () => Promise<void>;
+		onContextReload?: () => Promise<void>;
+	} = {},
+): void {
 	act(() => {
 		render(
 			h(FeedItemCard, {
@@ -86,6 +100,7 @@ function renderCard(item: FeedItem): void {
 				onRemove: () => {},
 				onReplace: () => {},
 				onViewRefresh: () => {},
+				...callbacks,
 			}),
 			mount,
 		);
@@ -116,6 +131,39 @@ function disclosureButton(): HTMLButtonElement {
 	if (!button) throw new Error("Expected explicit memory disclosure");
 	return button;
 }
+
+it.each([false, true])(
+	"keeps forget mutations on routine reload and reports refresh failure: %s",
+	async (fails) => {
+		// Arrange
+		const onReload = vi.fn().mockResolvedValue(undefined);
+		if (fails) onReload.mockRejectedValue(new Error("Private refresh detail"));
+		const onContextReload = vi.fn().mockResolvedValue(undefined);
+		renderCard(observation(), { onReload, onContextReload });
+		const forget = mount.querySelector<HTMLButtonElement>(".feed-menu-trigger");
+		if (!forget) throw new Error("Expected forget control");
+		// Act
+		await act(async () => {
+			forget.click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		// Assert: context recovery must not change routine mutation refresh behavior.
+		expect(forgetMock).toHaveBeenCalledWith(1234);
+		expect(onReload).toHaveBeenCalledTimes(1);
+		expect(onContextReload).not.toHaveBeenCalled();
+		if (fails) {
+			expect(noticeMock).toHaveBeenLastCalledWith(
+				"The change was applied, but the feed could not refresh. Refresh to try again.",
+				"warning",
+			);
+		} else {
+			expect(noticeMock).toHaveBeenLastCalledWith(
+				"Memory forgotten and removed from the active feed.",
+			);
+		}
+	},
+);
 
 describe("FeedItemCard pack-faithful content", () => {
 	it("shows observation key points first with the full narrative in a closed disclosure", () => {

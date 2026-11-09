@@ -47,6 +47,10 @@ let feedLoadError = "";
 
 export const FEED_QUERY_DEBOUNCE_MS = 250;
 
+function feedPageOptions(limit: number): { limit: number; view: "feed" } {
+	return { limit, view: "feed" };
+}
+
 import { ensureFeedRenderBoundary, renderIntoFeedMount } from "./feed/data/mount";
 
 function resetPagination(project: string) {
@@ -133,7 +137,7 @@ async function loadMoreFeedPage() {
 		const [observations, summaries] = await Promise.all([
 			observationHasMore
 				? api.loadMemoriesPage(requestProject, {
-						limit: OBSERVATION_PAGE_SIZE,
+						...feedPageOptions(OBSERVATION_PAGE_SIZE),
 						offset: startObservationOffset,
 						scope: state.feedScopeFilter,
 						q: requestQuery || undefined,
@@ -144,7 +148,7 @@ async function loadMoreFeedPage() {
 					}),
 			summaryHasMore
 				? api.loadSummariesPage(requestProject, {
-						limit: SUMMARY_PAGE_SIZE,
+						...feedPageOptions(SUMMARY_PAGE_SIZE),
 						offset: startSummaryOffset,
 						scope: state.feedScopeFilter,
 						q: requestQuery || undefined,
@@ -220,7 +224,7 @@ const feedOps: FeedViewOps = {
 	replaceFeedItem,
 	removeFeedItem,
 	updateFeedView: (force?: boolean) => updateFeedView(force),
-	loadFeedData: () => loadFeedData(),
+	loadFeedData: (options) => loadFeedData(options),
 	updateFeedQuery: (query: string) => updateFeedQuery(query),
 	hasMorePages,
 };
@@ -341,12 +345,24 @@ function ownsPrimaryFeedLoad(requestGeneration: number, requestId: number): bool
 	);
 }
 
-export async function loadFeedData(options: ReadRequestOptions = {}) {
+function shouldRestartFeedPagination(
+	project: string,
+	query: string,
+	options: { restart?: boolean },
+): boolean {
+	return Boolean(
+		options.restart ||
+			project !== lastFeedProject ||
+			state.feedScopeFilter !== lastFeedScope ||
+			query !== lastFeedQuery,
+	);
+}
+
+export async function loadFeedData(options: ReadRequestOptions & { restart?: boolean } = {}) {
 	const project = state.currentProject || "";
-	const scopeChanged = state.feedScopeFilter !== lastFeedScope;
 	const query = state.feedQuery.trim();
 	const queryChanged = query !== lastFeedQuery;
-	if (project !== lastFeedProject || scopeChanged || queryChanged) {
+	if (shouldRestartFeedPagination(project, query, options)) {
 		resetPagination(project);
 		renderFeedLoadingState(queryChanged ? "Searching memories…" : undefined);
 	}
@@ -369,14 +385,14 @@ export async function loadFeedData(options: ReadRequestOptions = {}) {
 
 		const [observations, summaries] = await Promise.all([
 			api.loadMemoriesPage(project, {
-				limit: observationsLimit,
+				...feedPageOptions(observationsLimit),
 				offset: 0,
 				scope: state.feedScopeFilter,
 				q: query || undefined,
 				signal: options.signal,
 			}),
 			api.loadSummariesPage(project, {
-				limit: summariesLimit,
+				...feedPageOptions(summariesLimit),
 				offset: 0,
 				scope: state.feedScopeFilter,
 				q: query || undefined,

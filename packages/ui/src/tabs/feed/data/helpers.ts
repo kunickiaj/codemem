@@ -1,6 +1,7 @@
 /* Pure helper functions for the Feed tab — no rendering, no state mutation.
  */
 
+import { feedProjectionInfo } from "@codemem/core/feed-contract";
 import { normalize, parseJsonArray } from "../../../lib/format";
 import { humanPresentationLabel } from "../../../lib/identity-presentation";
 import { state } from "../../../lib/state";
@@ -51,6 +52,8 @@ export function sentenceFacts(text: string, limit = 6): string[] {
 }
 
 export function isLowSignalObservation(item: FeedItem): boolean {
+	const projection = feedProjectionInfo(item);
+	if (projection) return projection.low_signal;
 	const title = normalize(item.title);
 	const body = normalize(item.body_text);
 	if (!title && !body) return true;

@@ -25,6 +25,7 @@ import {
 } from "../data/helpers";
 import type { FeedItem } from "../types";
 import { FeedItemMenu } from "./FeedItemMenu";
+import { FullContext } from "./FullContext";
 import { ProvenanceChip } from "./ProvenanceChip";
 import { TagChip } from "./TagChip";
 
@@ -34,11 +35,13 @@ export interface FeedItemCardProps {
 	onRemove: (memoryId: number) => void;
 	onViewRefresh: () => void;
 	onReload: () => Promise<void>;
+	onContextReload?: () => Promise<void>;
 }
 
 function renderedSearchText(node: Node): string {
 	if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
 	if (!(node instanceof Element)) return "";
+	if (node.hasAttribute("data-feed-context-status")) return "";
 	if (node.matches("details:not([open])")) return node.querySelector("summary")?.textContent ?? "";
 	const text = Array.from(node.childNodes, renderedSearchText).join("");
 	// Keep inline words intact, but never join text across rendered blocks or breaks.
@@ -56,17 +59,24 @@ function useRenderedSearchMatch(cardRef: { current: HTMLElement | null }) {
 	const [visible, setVisible] = useState(false);
 	useLayoutEffect(() => {
 		const query = normalizeFeedQuery(state.feedQuery);
+		if (!query) {
+			setVisible(false);
+			return;
+		}
 		const body = cardRef.current?.querySelector(".feed-detail");
 		const update = () => {
 			const text = body ? renderedSearchText(body) : "";
 			setVisible(Boolean(query && text.toLowerCase().includes(query)));
 		};
 		update();
+		const observer = new MutationObserver(update);
+		if (body) observer.observe(body, { childList: true, subtree: true, characterData: true });
 		const disclosures = body?.querySelectorAll(".feed-observation-context");
 		disclosures?.forEach((disclosure) => {
 			disclosure.addEventListener("toggle", update);
 		});
 		return () => {
+			observer.disconnect();
 			disclosures?.forEach((disclosure) => {
 				disclosure.removeEventListener("toggle", update);
 			});
@@ -248,6 +258,21 @@ type MoveProjectInput = {
 	title: string;
 };
 
+async function refreshAfterMutation(input: {
+	onReload: () => Promise<void>;
+	onViewRefresh: () => void;
+}): Promise<void> {
+	try {
+		await input.onReload();
+		input.onViewRefresh();
+	} catch {
+		showGlobalNotice(
+			"The change was applied, but the feed could not refresh. Refresh to try again.",
+			"warning",
+		);
+	}
+}
+
 async function moveMemoryProject(input: MoveProjectInput): Promise<void> {
 	const nextProject = await openSyncInputDialog({
 		title: "Assign to project",
@@ -276,8 +301,7 @@ async function moveMemoryProject(input: MoveProjectInput): Promise<void> {
 				? `Moved ${count} memories from this session to "${result.project}".`
 				: `Moved to "${result.project}".`,
 		);
-		await input.onReload();
-		input.onViewRefresh();
+		await refreshAfterMutation(input);
 	} catch (error) {
 		showGlobalNotice(error instanceof Error ? error.message : "Failed to move memory.", "warning");
 	} finally {
@@ -310,8 +334,8 @@ async function forgetMemory(input: ForgetMemoryInput): Promise<void> {
 		await api.forgetMemory(input.memoryId);
 		input.onRemove(input.memoryId);
 		input.onViewRefresh();
-		await input.onReload();
 		showGlobalNotice("Memory forgotten and removed from the active feed.");
+		await refreshAfterMutation(input);
 	} catch (error) {
 		showGlobalNotice(
 			error instanceof Error ? error.message : "Failed to forget memory.",
@@ -383,6 +407,7 @@ type FeedCardRenderInput = {
 	model: ReturnType<typeof buildFeedCardViewModel>;
 	movingProject: boolean;
 	onForget: () => Promise<void>;
+	onContextReload: () => Promise<void>;
 	onMoveProject: () => Promise<void>;
 	onSaveVisibility: (visibility: "private" | "shared") => Promise<void>;
 	onToggleDetail: () => void;
@@ -498,17 +523,14 @@ function renderFeedCardContent(input: FeedCardRenderInput) {
 			Fragment,
 			null,
 			renderFeedFacts(facts, "Key points", "feed-pack-facts feed-observation-points"),
-			context
-				? h(
-						"details",
-						{ className: "feed-observation-context" },
-						h(
-							"summary",
-							{ "aria-label": `Full context for ${input.model.displayTitle}` },
-							"Full context",
-						),
-						renderNarrativeContent(context, "feed-body narrative"),
-					)
+			context || input.model.projection?.full_context
+				? h(FullContext, {
+						id: input.details.memoryId,
+						inline: context,
+						revision: input.model.projection?.full_context?.revision,
+						title: input.model.displayTitle,
+						onReload: input.onContextReload,
+					})
 				: null,
 		);
 	}
@@ -703,6 +725,7 @@ export function FeedItemCard({
 	onRemove,
 	onViewRefresh,
 	onReload,
+	onContextReload = onReload,
 }: FeedItemCardProps) {
 	const model = buildFeedCardViewModel(item);
 	const metadata = mergeMetadata(item.metadata_json);
@@ -740,6 +763,7 @@ export function FeedItemCard({
 		model,
 		movingProject: actions.movingProject,
 		onForget: actions.forget,
+		onContextReload,
 		onMoveProject: actions.moveProject,
 		onSaveVisibility: actions.saveVisibility,
 		onToggleDetail: toggleDetail,

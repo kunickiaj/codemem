@@ -1,3 +1,4 @@
+import { type FeedProjectionInfo, feedProjectionInfo } from "@codemem/core/feed-contract";
 import { escapeHtml } from "../../../lib/dom";
 import { normalize, parseJsonArray } from "../../../lib/format";
 import type { FeedItem } from "../types";
@@ -12,6 +13,7 @@ export interface FeedCardContent {
 }
 
 export interface FeedCardViewModel {
+	projection?: FeedProjectionInfo | null;
 	content: FeedCardContent;
 	displayKind: string;
 	displayTitle: string;
@@ -78,6 +80,7 @@ export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
 	const content = buildPackContent(normalizedItem);
 
 	return {
+		projection: feedProjectionInfo(item),
 		content: content.content,
 		displayKind: canonicalKind(item, metadata),
 		displayTitle: displayTitle || "(untitled)",
@@ -90,12 +93,14 @@ export function buildFeedCardViewModel(item: FeedItem): FeedCardViewModel {
 }
 
 export function normalizeFeedQuery(query: string): string {
-	return query.trim().toLowerCase().slice(0, 256);
+	return query.trim().toLowerCase().slice(0, 256).trim();
 }
 
 export function feedItemMatchesQuery(item: FeedItem, query: string): boolean {
 	const normalizedQuery = normalizeFeedQuery(query);
 	if (!normalizedQuery) return false;
+	const projection = feedProjectionInfo(item);
+	if (projection) return projection.query === normalizedQuery && projection.matches_query;
 	const memoryId = Number(item.id || item.memory_id || 0);
 	// The API accepts only canonical positive integer queries for ID matching.
 	if (Number.isSafeInteger(memoryId) && memoryId > 0 && normalizedQuery === String(memoryId)) {
@@ -165,6 +170,9 @@ export function hiddenSearchMatch(
 	const trimmedQuery = normalizeFeedQuery(query);
 	if (!trimmedQuery) return null;
 	if (includesQuery(model.displayTitle, trimmedQuery)) return null;
+	if (model.projection) {
+		return model.projection.query === trimmedQuery ? model.projection.search_match : null;
+	}
 	if (includesQuery(model.content.searchText, trimmedQuery)) {
 		return {
 			excerpt: excerptAroundMatch(model.content.searchText, trimmedQuery),
