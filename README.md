@@ -735,6 +735,8 @@ Contributor-only lint feedback covers Biome-included source files, including UI 
 
 The repository lint ratchet matches include globs without regex backtracking, so repeated wildcards cannot trigger exponential matching work.
 
+For method-based warning identities inside named, zero-argument `create*Command(): Command` function declarations, the matcher includes the factory name so unrelated handlers do not share one identity.
+
 </details>
 
 ## Documentation

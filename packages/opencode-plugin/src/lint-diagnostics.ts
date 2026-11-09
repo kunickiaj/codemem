@@ -1,3 +1,5 @@
+import { parse } from "@babel/parser";
+
 const MEASURED_CATEGORIES = new Set([
 	"lint/complexity/noExcessiveCognitiveComplexity",
 	"lint/complexity/noExcessiveLinesPerFunction",
@@ -281,6 +283,89 @@ function nearestScopeIdentity(lines: string[], prefix: string): string | undefin
 	return undefined;
 }
 
+function isCommandReturnType(value: unknown): boolean {
+	if (!isRecord(value) || value.type !== "TSTypeAnnotation") return false;
+	const annotation = value.typeAnnotation;
+	if (
+		!isRecord(annotation) ||
+		annotation.type !== "TSTypeReference" ||
+		annotation.typeArguments != null
+	) {
+		return false;
+	}
+	const name = annotation.typeName;
+	return isRecord(name) && name.type === "Identifier" && name.name === "Command";
+}
+
+function commandFactoryName(node: UnknownRecord, offset: number): string | undefined {
+	if (
+		node.type !== "FunctionDeclaration" ||
+		!isRecord(node.id) ||
+		typeof node.id.name !== "string" ||
+		!/^create[\w$]*Command$/u.test(node.id.name) ||
+		!Array.isArray(node.params) ||
+		node.params.length !== 0 ||
+		node.generator ||
+		node.typeParameters != null ||
+		!isCommandReturnType(node.returnType) ||
+		!isRecord(node.body) ||
+		typeof node.body.start !== "number" ||
+		node.body.start >= offset
+	) {
+		return undefined;
+	}
+	return node.id.name;
+}
+
+function enclosingCommandFactory(value: unknown, offset: number): string | undefined {
+	if (Array.isArray(value)) {
+		for (const child of value) {
+			const name = enclosingCommandFactory(child, offset);
+			if (name) return name;
+		}
+		return undefined;
+	}
+	if (
+		!isRecord(value) ||
+		typeof value.type !== "string" ||
+		typeof value.start !== "number" ||
+		typeof value.end !== "number" ||
+		value.start >= offset ||
+		value.end <= offset
+	) {
+		return undefined;
+	}
+	for (const child of Object.values(value)) {
+		const name = enclosingCommandFactory(child, offset);
+		if (name) return name;
+	}
+	return commandFactoryName(value, offset);
+}
+
+function parseScopeSource(
+	source: string,
+	options: { jsx: boolean },
+): ReturnType<typeof parse> | undefined {
+	try {
+		const ast = parse(source, {
+			sourceType: "unambiguous",
+			plugins: options.jsx ? ["typescript", "jsx"] : ["typescript"],
+			errorRecovery: true,
+		});
+		return ast.errors?.length ? undefined : ast;
+	} catch {
+		// Invalid source retains the existing unqualified identity rather than guessing ownership.
+		return undefined;
+	}
+}
+
+/** Parse ownership so regex, division, and template braces cannot change factory boundaries. */
+function commandFactoryAtLine(source: string, lineEnd: number): string | undefined {
+	// Without a file extension, try TS first so generic arrows and angle assertions remain valid.
+	const ast = parseScopeSource(source, { jsx: false }) ?? parseScopeSource(source, { jsx: true });
+	return ast ? enclosingCommandFactory(ast, lineEnd) : undefined;
+}
+
 export function getScopeIdentity(
 	sourceCode: string | undefined,
 	line: number | undefined,
@@ -298,7 +383,10 @@ export function getScopeIdentity(
 	if (route) precedingLines = sourceCode.slice(route.start, lineEnd).split("\n");
 	const className = classNameAtLine(sourceCode, line);
 	const prefix = route?.identity ?? className;
-	return nearestScopeIdentity(precedingLines, prefix);
+	const identity = nearestScopeIdentity(precedingLines, prefix);
+	if (route || !identity?.includes(":method:")) return identity;
+	const factory = commandFactoryAtLine(sourceCode, lineEnd);
+	return factory ? `${identity}:factory:${factory}` : identity;
 }
 
 export function parseMeasuredValue(category: string, text: string): number | undefined {
