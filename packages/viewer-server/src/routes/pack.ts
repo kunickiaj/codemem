@@ -4,6 +4,7 @@ import type {
 	AutomaticRecallWriteOutcome,
 	MemoryFilters,
 	MemoryStore,
+	PackArtifacts,
 	PackRenderOptions,
 	PromptPackAttemptMetadata,
 	RetrievalLedgerDeliveryOutcome,
@@ -23,6 +24,14 @@ import {
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import * as z from "zod";
+import {
+	createPromptPackRequestTiming,
+	measurePromptPackAsync,
+	measurePromptPackSync,
+	PROMPT_PACK_TIMING_HEADER,
+	type PromptPackRequestTiming,
+	type PromptPackTimingOptions,
+} from "../prompt-pack-timings.js";
 import { currentIdentityTarget, validateViewerTarget } from "./target-validation.js";
 
 type StoreFactory = () => MemoryStore;
@@ -301,7 +310,11 @@ function packRenderOptions(value: PackRequestPayload): PackRenderOptions | undef
 	};
 }
 
-function packRequestArgs(request: ValidatedPackRequest, signal: AbortSignal) {
+function packRequestArgs(
+	request: ValidatedPackRequest,
+	signal: AbortSignal,
+	timing?: PromptPackRequestTiming,
+) {
 	return [
 		request.context,
 		request.limit,
@@ -309,7 +322,7 @@ function packRequestArgs(request: ValidatedPackRequest, signal: AbortSignal) {
 		request.filters,
 		request.renderOptions,
 		request.automaticContext,
-		{ signal },
+		timing ? { signal, onTiming: timing.onTiming } : { signal },
 	] as const;
 }
 
@@ -545,68 +558,30 @@ function handleProfileRequest(c: Context, getStore: StoreFactory, capabilities: 
 
 export function packTransportRoutes(
 	getStore: StoreFactory,
-	options: { capabilities?: readonly string[] } = {},
+	options: { capabilities?: readonly string[]; timings?: PromptPackTimingOptions } = {},
 ) {
 	const app = new Hono();
 	const capabilities = options.capabilities ?? [];
+	const timingOptions = {
+		...options.timings,
+		enabled: options.timings?.enabled ?? process.env.CODEMEM_TRACE_PROMPT_PACK === "1",
+	};
 
 	app.get("/api/prompt-pack-profile", (c) => handleProfileRequest(c, getStore, capabilities));
 
 	app.post("/api/pack", async (c) => {
-		const parsed = await c.req.json().catch(() => INVALID_JSON);
-		if (parsed === INVALID_JSON) return c.json(invalidRequest("invalid json body"), 400);
-		const request = validatePackRequest(parsed);
-		if (typeof request === "string") {
-			if (request.startsWith("request body contains unsupported field:"))
-				return c.json(viewerContractUnsupported(), 409);
-			return c.json(invalidRequest(request), 400);
-		}
+		const timing = createPromptPackRequestTiming(
+			c.req.header(PROMPT_PACK_TIMING_HEADER),
+			c.req.raw.signal,
+			timingOptions,
+		);
+		let status: number | undefined;
 		try {
-			const store = getStore();
-			const target = validateViewerTarget(store, parsed, { requireCurrentIdentity: true });
-			if (!target.ok) return c.json(target.body, target.status);
-			if (!request.attempt) return await handleUntracedPackRequest(c, store, request);
-			const artifacts = await store.buildMemoryPackWithTraceAsync(
-				...packRequestArgs(request, c.req.raw.signal),
-			);
-			c.req.raw.signal.throwIfAborted();
-			let ledgerArtifactFingerprint: string | undefined;
-			try {
-				ledgerArtifactFingerprint = promptPackArtifactFingerprint(
-					store.db,
-					request.context,
-					request.filters,
-					artifacts,
-				);
-			} catch {
-				// Fingerprinting is instrumentation and must not block pack delivery.
-			}
-			let ledgerOutcome: RetrievalLedgerWriteOutcome | undefined;
-			try {
-				ledgerOutcome = recordPromptPackArtifacts(
-					store.db,
-					attemptMetadata(request.attempt),
-					request.context,
-					request.filters,
-					artifacts,
-				);
-			} catch {
-				// Ledger instrumentation is best-effort and must not block pack delivery.
-			}
-			return c.json({
-				...artifacts.response,
-				...(ledgerArtifactFingerprint
-					? { ledger_artifact_fingerprint: ledgerArtifactFingerprint }
-					: {}),
-				...(ledgerOutcome?.ok === false && ledgerOutcome.reason === "idempotency_conflict"
-					? { ledger_outcome: ledgerOutcome }
-					: {}),
-			});
-		} catch {
-			return c.json(
-				{ error: { code: "pack_failed", message: "memory pack could not be built" } },
-				500,
-			);
+			const response = await handlePackRequest(c, getStore, timing);
+			status = response.status;
+			return response;
+		} finally {
+			timing?.finish(status);
 		}
 	});
 
@@ -615,12 +590,98 @@ export function packTransportRoutes(
 	return app;
 }
 
+async function handlePackRequest(
+	c: Context,
+	getStore: StoreFactory,
+	timing?: PromptPackRequestTiming,
+) {
+	const parsed = await measurePromptPackAsync(timing, "request_body", () =>
+		c.req.json().catch(() => INVALID_JSON),
+	);
+	if (parsed === INVALID_JSON) return c.json(invalidRequest("invalid json body"), 400);
+	const request = measurePromptPackSync(timing, "request_validation", () =>
+		validatePackRequest(parsed),
+	);
+	if (typeof request === "string") {
+		if (request.startsWith("request body contains unsupported field:"))
+			return c.json(viewerContractUnsupported(), 409);
+		return c.json(invalidRequest(request), 400);
+	}
+	try {
+		const { store, target } = measurePromptPackSync(timing, "request_validation", () => {
+			const store = getStore();
+			return {
+				store,
+				target: validateViewerTarget(store, parsed, { requireCurrentIdentity: true }),
+			};
+		});
+		if (!target.ok) return c.json(target.body, target.status);
+		if (!request.attempt) return await handleUntracedPackRequest(c, store, request, timing);
+		const artifacts = await measurePromptPackAsync(timing, "pack_build", () =>
+			store.buildMemoryPackWithTraceAsync(...packRequestArgs(request, c.req.raw.signal, timing)),
+		);
+		c.req.raw.signal.throwIfAborted();
+		const ledger = packLedgerFields(store, request, artifacts, timing);
+		return measurePromptPackSync(timing, "response_encode", () =>
+			c.json({ ...artifacts.response, ...ledger }),
+		);
+	} catch {
+		return c.json(
+			{ error: { code: "pack_failed", message: "memory pack could not be built" } },
+			500,
+		);
+	}
+}
+
+function packLedgerFields(
+	store: MemoryStore,
+	request: ValidatedPackRequest,
+	artifacts: PackArtifacts,
+	timing?: PromptPackRequestTiming,
+) {
+	if (!request.attempt) return {};
+	let ledgerArtifactFingerprint: string | undefined;
+	try {
+		ledgerArtifactFingerprint = measurePromptPackSync(timing, "artifact_fingerprint", () =>
+			promptPackArtifactFingerprint(store.db, request.context, request.filters, artifacts),
+		);
+	} catch {
+		// Fingerprinting is instrumentation and must not block pack delivery.
+	}
+	let ledgerOutcome: RetrievalLedgerWriteOutcome | undefined;
+	const attempt = request.attempt;
+	try {
+		ledgerOutcome = measurePromptPackSync(timing, "ledger_write", () =>
+			recordPromptPackArtifacts(
+				store.db,
+				attemptMetadata(attempt),
+				request.context,
+				request.filters,
+				artifacts,
+			),
+		);
+	} catch {
+		// Ledger instrumentation is best-effort and must not block pack delivery.
+	}
+	return {
+		...(ledgerArtifactFingerprint
+			? { ledger_artifact_fingerprint: ledgerArtifactFingerprint }
+			: {}),
+		...(ledgerOutcome?.ok === false && ledgerOutcome.reason === "idempotency_conflict"
+			? { ledger_outcome: ledgerOutcome }
+			: {}),
+	};
+}
+
 async function handleUntracedPackRequest(
 	c: Context,
 	store: MemoryStore,
 	request: ValidatedPackRequest,
+	timing?: PromptPackRequestTiming,
 ) {
-	const pack = await store.buildMemoryPackAsync(...packRequestArgs(request, c.req.raw.signal));
+	const pack = await measurePromptPackAsync(timing, "pack_build", () =>
+		store.buildMemoryPackAsync(...packRequestArgs(request, c.req.raw.signal, timing)),
+	);
 	c.req.raw.signal.throwIfAborted();
-	return c.json(pack);
+	return measurePromptPackSync(timing, "response_encode", () => c.json(pack));
 }

@@ -24,6 +24,7 @@ import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js"
 import type { createAccountOwnerRecoveryService } from "./account/owner-recovery-service.js";
 import type { AccountStatusOptions } from "./account/status.js";
 import { originGuard, preflightHandler } from "./middleware.js";
+import type { PromptPackTimingOptions } from "./prompt-pack-timings.js";
 import type { RawEventInbox } from "./raw-event-inbox.js";
 import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
@@ -91,6 +92,7 @@ export {
 	advancePendingProjectSharesOperation,
 	reconcileRecipientPolicyProjectsOperation,
 } from "./application/coordinator-maintenance.js";
+export type { PromptPackTimingOptions, PromptPackTimingReport } from "./prompt-pack-timings.js";
 export type { RawEventInbox, RawEventInboxEntry, RawEventInboxStatus } from "./raw-event-inbox.js";
 export {
 	createViewerRawEventInbox,
@@ -164,6 +166,8 @@ export interface AppOptions extends SyncAppOptions {
 	 * the route is not mounted and the profile does not advertise the capability.
 	 */
 	memoryToolCall?: MemoryToolCallFn;
+	/** Optional content-free prompt timings. The environment opt-in applies when omitted. */
+	promptPackTimings?: PromptPackTimingOptions;
 	rawEventInbox?: RawEventInbox | null;
 	rawEventTarget?: ViewerTargetStore;
 	sweeper?: RawEventSweeper | null;
@@ -201,10 +205,11 @@ function registerThinHostRoutes(
 	app: Hono,
 	storeFactory: () => MemoryStore,
 	call: MemoryToolCallFn | undefined,
+	timings?: PromptPackTimingOptions,
 ): void {
 	if (call) app.route("/", memoryToolCallRoutes(storeFactory, call));
 	const capabilities = call ? [MEMORY_TOOL_CALL_CAPABILITY] : [];
-	app.route("/", packTransportRoutes(storeFactory, { capabilities }));
+	app.route("/", packTransportRoutes(storeFactory, { capabilities, timings }));
 }
 
 function registerStaticRoutes(app: Hono): void {
@@ -310,7 +315,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", statsRoutes(storeFactory));
 	app.route("/", memoryRoutes(storeFactory));
 	app.route("/", memoryToolRoutes(storeFactory));
-	registerThinHostRoutes(app, storeFactory, opts?.memoryToolCall);
+	registerThinHostRoutes(app, storeFactory, opts?.memoryToolCall, opts?.promptPackTimings);
 	app.route("/", fileContextRoutes(storeFactory));
 	app.route(
 		"/",
