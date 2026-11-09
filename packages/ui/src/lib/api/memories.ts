@@ -4,8 +4,46 @@
  * by the Inspector. */
 
 import type { FeedContextResponse } from "@codemem/core/feed-contract";
+import { fetchFeedCursorPage, validateFeedPagination } from "./feed-request";
 import { buildProjectParams, fetchJson, payloadError, readJsonPayload } from "./internal";
 import type { PackTrace, PaginatedResponse } from "./types";
+
+type FeedPageOptions = {
+	limit?: number;
+	offset?: number;
+	scope?: string;
+	q?: string;
+	signal?: AbortSignal;
+	view?: "feed";
+	paging?: "cursor";
+	cursor?: string;
+};
+
+async function loadFeedPage(
+	endpoint: string,
+	project: string,
+	options?: FeedPageOptions,
+): Promise<PaginatedResponse> {
+	const query = buildProjectParams(
+		project,
+		options?.limit,
+		options?.paging === "cursor" ? undefined : options?.offset,
+		options?.scope,
+		options?.q,
+	);
+	const params = new URLSearchParams(query);
+	if (options?.view === "feed") params.set("view", "feed");
+	if (options?.paging === "cursor") {
+		params.set("paging", "cursor");
+		if (options.cursor !== undefined) params.set("cursor", options.cursor);
+		return fetchFeedCursorPage(`${endpoint}?${params}`, { signal: options.signal });
+	}
+	return validateFeedPagination(
+		await fetchJson<PaginatedResponse>(`${endpoint}?${params}`, {
+			signal: options?.signal,
+		}),
+	);
+}
 
 export async function loadMemories(project: string): Promise<PaginatedResponse> {
 	return loadMemoriesPage(project);
@@ -13,26 +51,9 @@ export async function loadMemories(project: string): Promise<PaginatedResponse> 
 
 export async function loadMemoriesPage(
 	project: string,
-	options?: {
-		limit?: number;
-		offset?: number;
-		scope?: string;
-		q?: string;
-		signal?: AbortSignal;
-		view?: "feed";
-	},
+	options?: FeedPageOptions,
 ): Promise<PaginatedResponse> {
-	const query = buildProjectParams(
-		project,
-		options?.limit,
-		options?.offset,
-		options?.scope,
-		options?.q,
-	);
-	const view = options?.view === "feed" ? "&view=feed" : "";
-	return fetchJson<PaginatedResponse>(`/api/observations?${query}${view}`, {
-		signal: options?.signal,
-	});
+	return loadFeedPage("/api/observations", project, options);
 }
 
 export async function updateMemoryVisibility(
@@ -84,26 +105,9 @@ export async function loadSummaries(project: string): Promise<PaginatedResponse>
 
 export async function loadSummariesPage(
 	project: string,
-	options?: {
-		limit?: number;
-		offset?: number;
-		scope?: string;
-		q?: string;
-		signal?: AbortSignal;
-		view?: "feed";
-	},
+	options?: FeedPageOptions,
 ): Promise<PaginatedResponse> {
-	const query = buildProjectParams(
-		project,
-		options?.limit,
-		options?.offset,
-		options?.scope,
-		options?.q,
-	);
-	const view = options?.view === "feed" ? "&view=feed" : "";
-	return fetchJson<PaginatedResponse>(`/api/summaries?${query}${view}`, {
-		signal: options?.signal,
-	});
+	return loadFeedPage("/api/summaries", project, options);
 }
 
 export async function loadMemoryContext(options: {
