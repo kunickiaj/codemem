@@ -94,5 +94,37 @@ export function smokeCaptureInspection(installDir, isolatedRoot, { runtimeEnv })
 		assert.match(denied.value.message, /-y/u);
 		assert.doesNotMatch(denied.text, /packed-private-|"(?:event_id|session_id|payload|raw|serialized|path)"/u);
 	}
-	process.stdout.write("Packed capture inspection: metadata, escaped raw output, safe errors, and unchanged files passed\n");
+	// Arrange: native receipts use the provider's configured directory and writer basename.
+	const nativeDir = join(home, "native-spool");
+	mkdirSync(nativeDir, { mode: 0o700 });
+	env.CODEMEM_CLAUDE_HOOK_SPOOL_DIR = nativeDir;
+	const nativeReceipt = "rejected-400-invalid_payload-hook-1730000000-123-1234.json.retained";
+	const nativePath = join(nativeDir, nativeReceipt);
+	const nativeText = ` ${JSON.stringify({ session_id: "packed-private-native", prompt: "packed-private-payload café\u001b\n\u0085\u202e" }, null, 2)}\n`;
+	writeFileSync(nativePath, nativeText, { mode: 0o600 });
+	const nativeBefore = statSync(nativePath);
+	const nativeFlags = ["--format", "native-hook-v1", "--provider", "claude"];
+	const nativeMetadata = { receipt: nativeReceipt, bytes: Buffer.byteLength(nativeText), status: 400, reason: "invalid_payload" };
+	const nativeShown = { format: "native-hook-v1", provider: "claude", ...nativeMetadata, validation: "valid" };
+	for (const action of ["list", "show", "raw", "invalid"]) {
+		// Act: retain the same service-denying preload and OpenCode preservation assertions.
+		let args = ["show-rejected", nativeReceipt, ...nativeFlags, "--json"];
+		if (action === "list") args = ["list-rejected", ...nativeFlags, "--json"];
+		if (action === "raw") args.push("--raw");
+		if (action === "invalid") args = ["show-rejected", "../packed-private-native", ...nativeFlags, "--raw"];
+		const result = invoke(args, action === "invalid" ? 2 : 0);
+		// Assert: native inspection neither discloses metadata payloads nor modifies either spool.
+		if (action === "list") assert.deepEqual(result.value, { format: "native-hook-v1", provider: "claude", entries: [{ ...nativeMetadata, validation: "not_checked" }] });
+		if (action === "show") assert.deepEqual(result.value, nativeShown);
+		if (action === "raw") {
+			assert.deepEqual(result.value, { ...nativeShown, raw: nativeText });
+			assert.doesNotMatch(result.text.trimEnd(), /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/u);
+		} else assert.doesNotMatch(result.text, /packed-private-|"(?:session_id|payload|raw|serialized|path)"/u);
+		if (action === "invalid") assert.equal(result.value.error, "invalid_receipt");
+		assert.equal(readFileSync(nativePath, "utf8"), nativeText);
+		const after = statSync(nativePath);
+		for (const field of ["dev", "ino", "mode", "mtimeMs", "size"]) assert.equal(after[field], nativeBefore[field]);
+		assert.deepEqual(readdirSync(nativeDir), [nativeReceipt]);
+	}
+	process.stdout.write("Packed capture inspection: OpenCode and native metadata, escaped raw output, safe errors, and unchanged files passed\n");
 }

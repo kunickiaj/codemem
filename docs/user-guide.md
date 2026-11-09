@@ -1215,6 +1215,21 @@ OpenCode creates retained receipts automatically only for known payload-validati
 
 The Viewer treats an existing event ID as a duplicate without comparing content. If you suspect that different content reused an ID, add `--keep-receipt` to retain the original file after acknowledged delivery. The command reports success and `cleanup: "kept"` rather than removing the receipt. This option still requires `--db-path` and `-y`, and kept receipts count toward the spool capacity limit. Without it, a duplicate acknowledgement can remove the retained receipt even when its content differs from the stored event.
 
+Native Claude, Codex, and Pi hook receipts have their own format. Select it and the provider explicitly:
+
+```fish
+codemem capture list-rejected --format native-hook-v1 --provider claude --json
+codemem capture show-rejected '<receipt>' --format native-hook-v1 --provider claude --raw
+```
+
+Replace `claude` with `codex` or `pi` as needed. Listing reads metadata only. Showing a receipt validates its saved JSON within the 16 MiB inspection limit, and only `--raw` includes the saved text as an escaped JSON string. Inspection uses the provider's existing spool directory and overrides, makes no HTTP or SQLite calls, and refuses unsafe or symlinked paths without changing permissions. Native retained files end in `.retained`, so older CLIs do not replay them as active `.json` entries.
+
+Native hook delivery does not yet retain rejections automatically, and `recover-rejected` does not yet support the native format. The inspection commands show retained receipts, not the active native hook backlog. Native hook storage has no entry limit equivalent to OpenCode's spool limit.
+
+Native inspection refuses group- or other-writable spool directories and files. Spools created with umask `002` may therefore require a permission review before inspection works. Review ownership and remove group or other write access where appropriate before retrying. The commands never change permissions. Symlinks in the spool directory or its immediate parent are also refused, so use a physical directory path.
+
+Native retention has not been validated on Windows. Filesystems that cannot synchronize directories cause retention to fail rather than use a copy-or-delete fallback. Automatic native retention remains disabled while these compatibility limits are assessed.
+
 ### Semantic runtime unavailable
 
 Codemem installs its matching optional embedding runtime by default and falls
