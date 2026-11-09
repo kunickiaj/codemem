@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from "vitest";
 import type { DiagnosticEvent } from "../../lib/api/diagnostics";
 import { diagnosticsDrawerReducer, initialDiagnosticsDrawerState } from "./state";

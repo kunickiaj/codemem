@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from "vitest";
 import type { ProjectScopeInventoryProject } from "../../lib/api/sync";
 import type { ProjectsInventoryViewModel } from "../projects-inventory-model";
