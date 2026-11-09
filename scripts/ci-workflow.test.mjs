@@ -71,12 +71,14 @@ function runCiScript(failPhase) {
 		for (const key of Object.keys(env)) {
 			if (key.toLowerCase() === "path") delete env[key];
 		}
-		const result = spawnSync(rootPackage.scripts["test:ci"], {
-			shell: true,
+		const result = spawnSync(process.execPath, ["scripts/ci-changed-tests.mjs", "test:ci"], {
+			cwd: new URL("../", import.meta.url),
 			encoding: "utf8",
 			env: {
 				...env,
 				PATH: `${directory}${delimiter}${process.env.PATH}`,
+				CI_FORCE_FULL: "1",
+				CI_TEST_BASE: "",
 				CI_CONTRACT_LOG: log,
 				CI_CONTRACT_FAIL_PHASE: String(failPhase),
 			},
@@ -134,6 +136,19 @@ function getJob(workflow, jobId) {
 	);
 	assert.ok(match, `expected ${jobId} job`);
 	return match[0];
+}
+
+function runTestGate(env) {
+	const job = getJob(ciWorkflow, "ts-test");
+	const gate = job.match(/node --input-type=module <<'NODE'\n([\s\S]*?)^ {10}NODE$/m);
+	assert.ok(gate, "expected an executable required-test gate");
+	const process = { env, exitCode: 0 };
+	const errors = [];
+	new Script(gate[1]).runInNewContext({
+		process,
+		console: { error: (message) => errors.push(message) },
+	});
+	return { status: process.exitCode, errors };
 }
 
 function getMatrixScenarios(job) {
@@ -278,7 +293,7 @@ describe("normal CI workflow source contract", () => {
 
 	for (const [id, command] of [
 		[
-			"ts-test",
+			"ts-test-common",
 			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci",
 		],
 		["worker-test", "node ../../scripts/ci-changed-tests.mjs test:worker"],
@@ -326,13 +341,11 @@ describe("CI test scheduling contract", () => {
 			scripts["test:ci"],
 			/testTimeout|passWithNoTests|--testNamePattern|--no-file-parallelism/u,
 		);
-		// The only project filter excludes the Worker source tests, which the
-		// Worker job runs through test:node (pinned below).
-		assert.deepEqual(scripts["test:ci"].match(/--project \S+/gu), [
-			'--project "!cloudflare-coordinator-worker"',
-		]);
 		assert.match(getJob(ciWorkflow, "ts-test"), /^ {4}name: TypeScript Test$/m);
-		assert.doesNotMatch(getJob(ciWorkflow, "ts-test"), /^ {4}(?:if|continue-on-error):/m);
+		assert.doesNotMatch(
+			getJob(ciWorkflow, "ts-test-common"),
+			/^ {4}(?:if|needs|continue-on-error):/m,
+		);
 	});
 
 	for (const { name, failPhase, status, calls } of [
@@ -362,6 +375,140 @@ describe("CI test scheduling contract", () => {
 			const result = runCiScript(failure);
 			// Assert: exact arguments also reject an extra forwarding separator or skipped cases.
 			assert.deepEqual(result, { status, calls });
+		});
+	}
+});
+
+const fullCondition =
+	"github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')";
+const affectedCondition =
+	"github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci:full')";
+
+it("preserves complete parallel and isolated suite coverage through reusable aliases", () => {
+	// Arrange
+	const scripts = rootPackage.scripts;
+	// Act
+	const parallel = scripts["test:ci:parallel"];
+	const isolated = scripts["test:ci:isolated"];
+	// Assert: exact commands reject extra exclusions, changed deadlines, or lost isolation.
+	assert.equal(scripts["test:ci"], "pnpm run test:ci:parallel && pnpm run test:ci:isolated");
+	assert.equal(
+		parallel,
+		'pnpm exec vitest run --exclude "**/coordinator-legacy-completion-owner-proof.test.ts" --project "!cloudflare-coordinator-worker"',
+	);
+	assert.equal(isolated, `pnpm exec vitest run ${heavyTest} --maxWorkers=1`);
+});
+
+describe("full CI sharding contract", () => {
+	it("keeps affected PR tests on one runner and runs full auxiliary checks and the proof once", () => {
+		// Arrange
+		const common = getJob(ciWorkflow, "ts-test-common");
+		const affectedCommand =
+			"node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci";
+		const fullCommand =
+			"pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test:ci:isolated";
+		// Act
+		const steps = common.split(/^ {6}- /m);
+		const affected = steps.find((step) => step.includes(`run: ${affectedCommand}\n`));
+		const full = steps.find((step) => step.includes(`run: ${fullCommand}\n`));
+		const commands = [...common.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
+		// Assert: complementary conditions prevent duplicate auxiliary or owner-proof execution.
+		assert.ok(affected);
+		assert.ok(full);
+		assert.ok(affected.includes(`        if: ${affectedCondition}\n`));
+		assert.ok(full.includes(`        if: ${fullCondition}\n`));
+		assert.deepEqual(
+			commands.filter((command) => command.includes("test:")),
+			[affectedCommand, fullCommand],
+		);
+		assert.doesNotMatch(common, /matrix:|--shard|test:ci:parallel|continue-on-error/u);
+		assert.doesNotMatch(full, /CI_TEST_BASE|ci-changed-tests/u);
+	});
+
+	it("runs only the parallel alias on two independent full-run shards", () => {
+		// Arrange
+		const shards = getJob(ciWorkflow, "ts-test-shards");
+		// Act
+		const commands = [...shards.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1]);
+		const testCommands = commands.filter((command) => command.includes("test:"));
+		// Assert: native workspace sharding keeps the proof and Worker project out via the alias.
+		assert.ok(shards.includes(`    if: ${fullCondition}\n`));
+		assert.match(shards, /^ {6}fail-fast: false$/m);
+		assert.match(shards, /^ {8}shard: \[1, 2\]$/m);
+		assert.deepEqual(testCommands, [
+			`pnpm run test:ci:parallel --shard=${githubExpressionOpen} matrix.shard }}/2`,
+		]);
+		assert.match(shards, /fetch-depth: 0/u);
+		assert.match(shards, /pnpm install --frozen-lockfile/u);
+		assert.ok(commands.includes("pnpm run build"));
+		assert.ok(commands.indexOf("pnpm run build") < commands.indexOf(testCommands[0]));
+		assert.doesNotMatch(shards, /^ {4}needs:|continue-on-error|ci-changed-tests|--maxWorkers/u);
+	});
+});
+
+describe("required TypeScript Test gate", () => {
+	it("always evaluates the stable required check against both job results", () => {
+		// Arrange
+		const gate = getJob(ciWorkflow, "ts-test");
+		// Act
+		const resultVariables = [...gate.matchAll(/^ {10}(\w+): (.+)$/gm)].map((match) =>
+			match.slice(1),
+		);
+		// Assert: the check cannot succeed merely because a dependency was skipped or cancelled.
+		assert.match(gate, /^ {4}name: TypeScript Test$/m);
+		assert.match(gate, /^ {4}needs: \[ts-test-common, ts-test-shards\]$/m);
+		assert.match(gate, /^ {4}if: always\(\)$/m);
+		assert.deepEqual(resultVariables, [
+			["FULL_RUN", `${githubExpressionOpen} ${fullCondition} }}`],
+			["COMMON_RESULT", `${githubExpressionOpen} needs.ts-test-common.result }}`],
+			["SHARDS_RESULT", `${githubExpressionOpen} needs.ts-test-shards.result }}`],
+		]);
+		assert.doesNotMatch(gate, /continue-on-error/u);
+	});
+
+	for (const [mode, shardResult] of [
+		["true", "success"],
+		["false", "skipped"],
+	]) {
+		it(`accepts successful common tests and expected shards for FULL_RUN=${mode}`, () => {
+			// Arrange
+			const env = { FULL_RUN: mode, COMMON_RESULT: "success", SHARDS_RESULT: shardResult };
+			// Act
+			const result = runTestGate(env);
+			// Assert
+			assert.deepEqual(result, { status: 0, errors: [] });
+		});
+
+		for (const variable of ["COMMON_RESULT", "SHARDS_RESULT"]) {
+			const expected = variable === "COMMON_RESULT" ? "success" : shardResult;
+			for (const value of ["success", "failure", "cancelled", "skipped", "", undefined]) {
+				if (value === expected) continue;
+				it(`rejects ${variable}=${String(value)} for FULL_RUN=${mode}`, () => {
+					// Arrange: undefined represents a missing environment entry.
+					const env = { FULL_RUN: mode, COMMON_RESULT: "success", SHARDS_RESULT: shardResult };
+					if (value === undefined) delete env[variable];
+					else env[variable] = value;
+					// Act
+					const result = runTestGate(env);
+					// Assert
+					assert.equal(result.status, 1);
+					assert.equal(result.errors.length, 1);
+					assert.match(result.errors[0], /TypeScript Test failed/u);
+				});
+			}
+		}
+	}
+
+	for (const mode of ["", undefined, "TRUE", "1", "invalid"]) {
+		it(`rejects invalid FULL_RUN=${String(mode)} even with otherwise passing results`, () => {
+			// Arrange
+			const env = { COMMON_RESULT: "success", SHARDS_RESULT: "skipped" };
+			if (mode !== undefined) env.FULL_RUN = mode;
+			// Act
+			const result = runTestGate(env);
+			// Assert
+			assert.equal(result.status, 1);
+			assert.equal(result.errors.length, 1);
 		});
 	}
 });
