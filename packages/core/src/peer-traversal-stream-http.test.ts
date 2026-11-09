@@ -220,7 +220,8 @@ describe("native HTTP over Noise over traversal without network sockets", () => 
 			await flush();
 			exchange.close();
 			// Assert
-			expect(received).toEqual(body);
+			expect(received.byteLength).toBe(body.byteLength);
+			expect(received.equals(body)).toBe(true);
 			expect(exchange.state()).toEqual({ headers: true, complete: true });
 			expect(exchange.connect).toHaveBeenCalledTimes(1);
 			expect(exchange.lookup).not.toHaveBeenCalled();

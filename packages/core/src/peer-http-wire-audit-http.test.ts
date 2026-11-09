@@ -253,11 +253,13 @@ describe("native HTTP framing audit over real Noise and traversal", () => {
 		"completes an exact %i-byte body and causal clean shutdown",
 		async (size) => {
 			const body = size === 2 ? undefined : Buffer.alloc(size, 37);
+			const expectedBody = body ?? Buffer.from("{}");
 
 			const result = await exchange({ body });
 
 			expect(result.realNoise).toBe(true);
-			expect(result.received).toEqual(body ?? Buffer.from("{}"));
+			expect(result.received.byteLength).toBe(expectedBody.byteLength);
+			expect(result.received.equals(expectedBody)).toBe(true);
 			expect(result.parserComplete).toBe(true);
 			expect(result.parserEnd).toBe(true);
 			expect(result.stateAtParserEnd).toBe("body");
