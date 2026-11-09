@@ -1,6 +1,6 @@
-# Start the viewer at login
+# Start the local service at login
 
-These templates run the viewer and sync workers together with `codemem serve start --foreground`. They are examples to customize, not files to install unchanged. The service names retain `sync` for compatibility.
+These templates run the viewer and sync workers together with `codemem serve start --foreground`. The checked-in templates retain that supported compatibility entrypoint. Its canonical equivalent is `codemem service start --foreground`. They are examples to customize, not files to install unchanged. The service names retain `sync` for compatibility.
 
 ## Before installing a template
 

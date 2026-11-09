@@ -31,7 +31,7 @@ If you configure plugins manually, replace `@kunickiaj/codemem` with `@codemem/o
 
 ```text
 codemem stats
-codemem db raw-events-status
+codemem diagnostics capture status
 ```
 
 ## Database migration

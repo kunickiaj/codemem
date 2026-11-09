@@ -13,13 +13,13 @@ covers macOS x64/arm64, Linux x64/arm64 (glibc 2.34+ or musl), and Windows x64.
 
 On Linux, skip the unused ONNX Runtime GPU provider download:
 
-```bash
+```text
 env ONNXRUNTIME_NODE_INSTALL=skip npm install -g codemem
 ```
 
 On Apple silicon macOS and Windows:
 
-```bash
+```text
 npm install -g codemem
 ```
 
@@ -33,22 +33,30 @@ Intel x64 Macs have no ONNX Runtime 1.24.3 artifact and remain on FTS5 retrieval
 
 Or run without installing:
 
-```bash
-npx -y codemem stats
+```text
+npx -y codemem memory stats
 ```
 
 ## Quick commands
 
-```bash
+```text
 codemem --help
 codemem setup --opencode-only
 codemem setup --pi-only
-codemem stats
-codemem search "query"
-codemem distill --limit 10
-codemem serve start
+codemem memory stats
+codemem memory search "query"
+codemem memory context "investigate the retry regression"
+codemem memory context trace "investigate the retry regression"
+codemem memory distill --limit 10
+codemem service start
 codemem mcp
 ```
+
+`memory context <task>` prints prompt-ready memory text. Add `--json` for the
+structured pack response and its metrics. It supports the pack retrieval and
+rendering flags, including `--compact` and `--compression-mode`. `memory pack`
+remains available as a hidden compatibility entrypoint for installed integrations
+and Pi callers.
 
 ## Documentation
 
