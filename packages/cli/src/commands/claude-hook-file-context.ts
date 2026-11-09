@@ -225,62 +225,66 @@ export async function buildClaudeFileContext(
 	);
 }
 
-const claudeHookFileContextCmd = new Command("claude-hook-file-context")
-	.configureHelp(helpStyle)
-	.description(
-		"Return Claude PreToolUse:Read additionalContext from per-file observation timeline",
-	);
+export function createClaudeHookFileContextCommand(): Command {
+	const claudeHookFileContextCmd = new Command("claude-hook-file-context")
+		.configureHelp(helpStyle)
+		.description(
+			"Return Claude PreToolUse:Read additionalContext from per-file observation timeline",
+		);
 
-addDbOption(claudeHookFileContextCmd);
-claudeHookFileContextCmd.addOption(new Option("--transport-profile").hideHelp());
-claudeHookFileContextCmd.addOption(new Option("--transport").hideHelp());
+	addDbOption(claudeHookFileContextCmd);
+	claudeHookFileContextCmd.addOption(new Option("--transport-profile").hideHelp());
+	claudeHookFileContextCmd.addOption(new Option("--transport").hideHelp());
 
-export const claudeHookFileContextCommand = claudeHookFileContextCmd.action(
-	async (opts: FileContextOpts) => {
-		if (opts.transportProfile) {
-			process.stdout.write(`${JSON.stringify(FILE_CONTEXT_TRANSPORT_PROFILE)}\n`);
-			return;
-		}
-		let raw = "";
-		for await (const chunk of process.stdin) {
-			raw += String(chunk);
-			if (opts.transport && Buffer.byteLength(raw) > FILE_CONTEXT_TRANSPORT_MAX_BYTES) {
-				emitError({ error: "parse_error", message: "transport payload too large" });
-				process.exitCode = 1;
-				return;
-			}
-		}
-		const trimmed = raw.trim();
-		if (!trimmed) {
-			if (opts.transport) {
-				process.stdout.write(
-					`${JSON.stringify({ error: "parse_error", message: "transport request required" })}\n`,
-				);
-				process.exitCode = 1;
-				return;
-			}
-			emitJson(continueResult());
-			return;
-		}
+	return claudeHookFileContextCmd.action(claudeHookFileContextAction);
+}
 
-		let payload: Record<string, unknown>;
-		try {
-			const parsed = JSON.parse(trimmed) as unknown;
-			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				emitError({ error: "parse_error", message: "payload must be a JSON object" });
-				process.exitCode = 1;
-				return;
-			}
-			payload = parsed as Record<string, unknown>;
-		} catch {
-			emitError({ error: "parse_error", message: "invalid JSON" });
+export const claudeHookFileContextCommand = createClaudeHookFileContextCommand();
+
+async function claudeHookFileContextAction(opts: FileContextOpts): Promise<void> {
+	if (opts.transportProfile) {
+		process.stdout.write(`${JSON.stringify(FILE_CONTEXT_TRANSPORT_PROFILE)}\n`);
+		return;
+	}
+	let raw = "";
+	for await (const chunk of process.stdin) {
+		raw += String(chunk);
+		if (opts.transport && Buffer.byteLength(raw) > FILE_CONTEXT_TRANSPORT_MAX_BYTES) {
+			emitError({ error: "parse_error", message: "transport payload too large" });
 			process.exitCode = 1;
 			return;
 		}
+	}
+	const trimmed = raw.trim();
+	if (!trimmed) {
+		if (opts.transport) {
+			process.stdout.write(
+				`${JSON.stringify({ error: "parse_error", message: "transport request required" })}\n`,
+			);
+			process.exitCode = 1;
+			return;
+		}
+		emitJson(continueResult());
+		return;
+	}
 
-		await emitFileContext(payload, opts);
-	},
-);
+	let payload: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			emitError({ error: "parse_error", message: "payload must be a JSON object" });
+			process.exitCode = 1;
+			return;
+		}
+		payload = parsed as Record<string, unknown>;
+	} catch {
+		emitError({ error: "parse_error", message: "invalid JSON" });
+		process.exitCode = 1;
+		return;
+	}
+
+	await emitFileContext(payload, opts);
+}
 
 async function emitFileContext(payload: Record<string, unknown>, opts: FileContextOpts) {
 	try {
