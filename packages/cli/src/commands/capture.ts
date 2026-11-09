@@ -14,13 +14,37 @@ import {
 	resolveDbOpt,
 } from "../shared-options.js";
 import { retryRejectedEvent } from "./capture-retry.js";
+import {
+	inspectNativeHookRejectedReceipt,
+	listNativeHookRejectedReceipts,
+	type NativeHookProvider,
+} from "./native-hook-retained-spool.js";
 
-// Keep the on-disk format explicit so native capture can add its own reader later.
 const rejectedEventFormat = {
 	name: "opencode-raw-event-v1",
 	list: () => listRejectedRawEventSpoolEntries({ validation: "metadata" }),
 	inspect: (receipt: string) => inspectRejectedRawEventSpoolEntry({ receipt }),
 } as const;
+
+type InspectionOpts = JsonOpts & { format?: string; provider?: string };
+function selectInspectionFormat(opts: InspectionOpts) {
+	const format = opts.format ?? rejectedEventFormat.name;
+	if (format === rejectedEventFormat.name && opts.provider === undefined)
+		return rejectedEventFormat;
+	if (format !== "native-hook-v1" || !["claude", "codex", "pi"].includes(opts.provider ?? "")) {
+		throw new RawEventSpoolInspectionError(
+			"usage_error",
+			"Use --format native-hook-v1 with --provider claude, codex, or pi. OpenCode format does not accept --provider.",
+		);
+	}
+	const provider = opts.provider as NativeHookProvider;
+	return {
+		name: "native-hook-v1",
+		provider,
+		list: () => listNativeHookRejectedReceipts({ provider }),
+		inspect: (receipt: string) => inspectNativeHookRejectedReceipt({ provider, receipt }),
+	};
+}
 
 function safeJson(value: unknown): string {
 	return JSON.stringify(value).replace(
@@ -36,7 +60,7 @@ function reportInspectionError(error: unknown, opts: JsonOpts): void {
 		code = error.code;
 		message = error.message;
 	}
-	process.exitCode = code === "invalid_receipt" ? 2 : 1;
+	process.exitCode = code === "invalid_receipt" || code === "usage_error" ? 2 : 1;
 	if (opts.json) {
 		process.stdout.write(`${safeJson({ error: code, message })}\n`);
 		return;
@@ -60,11 +84,13 @@ function rawUnavailableMessage(validation: string): string {
 	return "Raw event text failed validation. The file was left untouched.";
 }
 
-export async function runListRejected(opts: JsonOpts): Promise<void> {
+export async function runListRejected(opts: InspectionOpts): Promise<void> {
 	try {
-		const entries = await rejectedEventFormat.list();
+		const selected = selectInspectionFormat(opts);
+		const entries = await selected.list();
 		if (opts.json) {
-			process.stdout.write(`${safeJson({ format: rejectedEventFormat.name, entries })}\n`);
+			const provider = "provider" in selected ? { provider: selected.provider } : {};
+			process.stdout.write(`${safeJson({ format: selected.name, ...provider, entries })}\n`);
 			return;
 		}
 		if (!entries.length) {
@@ -81,14 +107,16 @@ export async function runListRejected(opts: JsonOpts): Promise<void> {
 
 export async function runShowRejected(
 	receipt: string,
-	opts: JsonOpts & { raw?: boolean },
+	opts: InspectionOpts & { raw?: boolean },
 ): Promise<void> {
 	try {
-		const entry = await rejectedEventFormat.inspect(receipt);
+		const selected = selectInspectionFormat(opts);
+		const entry = await selected.inspect(receipt);
 		// Never pass the helper's serialized content into default output.
 		const { receipt: name, bytes, status, reason, validation } = entry;
 		const result = {
-			format: rejectedEventFormat.name,
+			format: selected.name,
+			...("provider" in selected ? { provider: selected.provider } : {}),
 			receipt: name,
 			bytes,
 			status,
@@ -121,13 +149,19 @@ export const captureCommand = new Command("capture")
 
 const listRejectedCommand = new Command("list-rejected")
 	.configureHelp(helpStyle)
-	.description("List retained OpenCode rejections without reading payloads");
+	.description("List retained rejections without reading payloads");
+function addInspectionOptions(command: Command): void {
+	command
+		.option("--format <format>", "opencode-raw-event-v1 or native-hook-v1", "opencode-raw-event-v1")
+		.option("--provider <provider>", "native format only: claude, codex, or pi");
+}
+addInspectionOptions(listRejectedCommand);
 addJsonOption(listRejectedCommand);
 listRejectedCommand.action(runListRejected);
 
 const showRejectedCommand = new Command("show-rejected")
 	.configureHelp(helpStyle)
-	.description("Inspect one retained OpenCode rejection without modifying it")
+	.description("Inspect one retained rejection without modifying it")
 	.argument("<receipt>", "receipt from list-rejected")
 	.option("-r, --raw", "include private text as a JSON string (always output JSON)")
 	.addHelpText(
@@ -135,6 +169,7 @@ const showRejectedCommand = new Command("show-rejected")
 		"\n--raw also emits errors as JSON. If the file changes, retry inspection.\nFiles remain untouched.",
 	);
 addJsonOption(showRejectedCommand);
+addInspectionOptions(showRejectedCommand);
 showRejectedCommand.action(runShowRejected);
 
 export async function runRetryRejected(
