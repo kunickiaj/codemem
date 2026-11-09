@@ -23,6 +23,13 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
+import {
+	type HookDeliveryOutcome,
+	normalizeHookDeliveryOutcome,
+	type SpoolHandlerResult,
+} from "./hook-delivery-outcome.js";
+
+export type { HookDeliveryOutcome, SpoolHandlerResult } from "./hook-delivery-outcome.js";
 
 const LOCK_ACQUIRE_BACKOFF_MS = 50;
 
@@ -41,7 +48,7 @@ type LockConfig = {
 export type SpoolHandler = (
 	payload: Record<string, unknown>,
 	receipt: string,
-) => Promise<boolean> | boolean;
+) => Promise<SpoolHandlerResult> | SpoolHandlerResult;
 
 export type SpoolDrainResult = {
 	processed: number;
@@ -425,10 +432,9 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 	/**
 	 * Process every queued payload in the spool directory in lexicographic
 	 * order (which approximates oldest-first because filenames embed the
-	 * second-precision creation timestamp). The handler returns true to
-	 * indicate the payload has been durably accepted; only then is the
-	 * spool entry deleted. Failed entries are left on disk for the next
-	 * drain attempt.
+	 * second-precision creation timestamp). Only explicit acceptance permits
+	 * deletion. Terminal outcomes also stop the drain and preserve the entry
+	 * until retained-rejection storage is available.
 	 */
 	async function drainSpool(handler: SpoolHandler): Promise<SpoolDrainResult> {
 		const dir = spoolDir();
@@ -483,14 +489,15 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 				continue;
 			}
 
-			let ok = false;
+			let outcome: HookDeliveryOutcome = { outcome: "retryable" };
 			try {
-				ok = await handler(parsed as Record<string, unknown>, name);
+				const delivery = await handler(parsed as Record<string, unknown>, name);
+				outcome = normalizeHookDeliveryOutcome(delivery);
 			} catch {
-				ok = false;
+				// Handler or normalization failures must preserve the queued payload.
 			}
 
-			if (ok) {
+			if (outcome.outcome === "accepted") {
 				try {
 					unlinkSync(path);
 					result.processed++;
