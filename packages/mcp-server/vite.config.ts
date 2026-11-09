@@ -4,6 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	resolve: {
 		alias: {
+			"@codemem/core/feed-contract": resolve(import.meta.dirname, "../core/src/feed-contract.ts"),
 			"@codemem/core/internal/relay-runtime": resolve(
 				import.meta.dirname,
 				"../core/src/internal/relay-runtime.ts",

@@ -556,6 +556,30 @@ caller can cancel independently, and cancelling every caller aborts the shared
 request. Joining callers use the existing request's deadline. Completed responses
 are not retained for subsequent refreshes.
 
+## Feed list projection and Full context
+
+`/api/observations` and `/api/summaries` accept `view=feed` for a versioned,
+allowlisted list shape. Omitting it keeps the existing full-row response and
+offset pagination. The projection retains all currently visible summary text,
+key points, legacy body text, tags, files, and provenance. It omits duplicate
+legacy text, unused metadata, and text already hidden under an observation's
+closed Full context disclosure. Low-signal and query-match evidence are derived
+before that text is omitted, preserving current substring search behavior.
+
+`GET /api/memory/:id/context` reads that hidden text when requested. It applies
+the same current active-row and read filters as the list, with optional project,
+ownership scope, classification, and query narrowing. Missing, inactive,
+unreadable, or context-free rows and rows outside those filters return the same
+404 response. Target mismatches return 409 through the existing `db_path` and
+`identity_target` guard.
+The text revision identifies content changes. Read eligibility is checked
+independently on every request, and context responses use `Cache-Control: no-store`.
+The existing `/api/memory` endpoint remains a recent-list endpoint.
+
+Projection reduces response bytes and client parsing. SQLite can still need
+body and metadata columns to evaluate classification, search, and authored-history
+read rules.
+
 ## Design tradeoffs
 
 codemem is built for **episodic memory** — remembering what happened across coding sessions: what was tried, changed, decided, and learned. It's good at:
