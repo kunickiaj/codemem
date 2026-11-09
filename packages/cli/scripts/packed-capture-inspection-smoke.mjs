@@ -51,7 +51,7 @@ export function smokeCaptureInspection(installDir, isolatedRoot, { runtimeEnv })
 	const invoke = (args, status = 0, { textOnly = false, recoveryPreload } = {}) => {
 		// Act: execute the installed entrypoint with its actual argv and isolated environment.
 		const imports = recoveryPreload ? ["--import", recoveryPreload] : [];
-		const result = spawnSync(process.execPath, ["--import", preload, ...imports, cli, "capture", ...args], {
+		const result = spawnSync(process.execPath, ["--import", preload, ...imports, cli, "diagnostics", "capture", ...args], {
 			cwd: installDir, env, encoding: "utf8",
 		});
 		// Assert after every command, including error cases.

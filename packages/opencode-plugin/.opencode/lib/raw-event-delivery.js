@@ -342,7 +342,7 @@ const armViewerBackoff = (state, error, timing) => {
 
 const warnRejectedEntry = async (state, { rejection, outcome, sessionID }) => {
   const messages = {
-    retained: "codemem retained a rejected raw event; inspect it with codemem capture list-rejected",
+    retained: "codemem retained a rejected raw event; inspect it with codemem diagnostics capture list-rejected",
     retain_failed: "codemem could not retain a rejected raw event outside retries; inspect saved events before retrying",
     lock_release_failed: "codemem could not release a rejected-event lock; stop capture and inspect saved events before repairing the lock",
   };

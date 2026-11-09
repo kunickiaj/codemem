@@ -1,8 +1,5 @@
 /**
- * Memory management CLI commands — show, forget, remember, inject.
- *
- * Ports codemem/commands/memory_cmds.py (show_cmd, forget_cmd, remember_cmd).
- * Inject is deprecated in favor of `codemem pack`.
+ * Memory operations and diagnostic command factories.
  */
 
 import * as p from "@clack/prompts";
@@ -48,12 +45,17 @@ import {
 	addDbOption,
 	addJsonOption,
 	type DbOpts,
-	emitDeprecationWarning,
 	emitJsonError,
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
-import { buildPackRequestOptions, collectWorkingSetFile } from "./pack-shared.js";
+import { createDistillCommand } from "./distill.js";
+import { createExportMemoriesCommand } from "./export-memories.js";
+import { createImportMemoriesCommand } from "./import-memories.js";
+import { createContextCommand, createPackCommand } from "./pack.js";
+import { createRecentCommand } from "./recent.js";
+import { createSearchCommand } from "./search.js";
+import { createStatsCommand } from "./stats.js";
 
 /** Parse a strict positive integer, rejecting prefixes like "12abc". */
 function parseStrictPositiveId(value: string): number | null {
@@ -253,7 +255,7 @@ async function rememberMemoryAction(opts: RememberMemoryOptions): Promise<void> 
 function createShowMemoryCommand(): Command {
 	const cmd = new Command("show")
 		.configureHelp(helpStyle)
-		.description("Show a memory item")
+		.description("Show a memory")
 		.argument("<id>", "memory ID");
 	addDbOption(cmd);
 	addJsonOption(cmd);
@@ -264,7 +266,7 @@ function createShowMemoryCommand(): Command {
 function createForgetMemoryCommand(): Command {
 	const cmd = new Command("forget")
 		.configureHelp(helpStyle)
-		.description("Deactivate a memory item")
+		.description("Deactivate a memory")
 		.argument("<id>", "memory ID");
 	addDbOption(cmd);
 	addJsonOption(cmd);
@@ -275,7 +277,7 @@ function createForgetMemoryCommand(): Command {
 function createRememberMemoryCommand(): Command {
 	const cmd = new Command("remember")
 		.configureHelp(helpStyle)
-		.description("Manually add a memory item")
+		.description("Store a memory")
 		.requiredOption("-k, --kind <kind>", "memory kind (discovery, decision, feature, bugfix, etc.)")
 		.requiredOption("-t, --title <title>", "memory title")
 		.requiredOption("-b, --body <body>", "memory body text")
@@ -288,58 +290,129 @@ function createRememberMemoryCommand(): Command {
 	return cmd;
 }
 
-function createInjectMemoryCommand(): Command {
-	const cmd = new Command("inject")
-		.configureHelp(helpStyle)
-		.description("Build raw memory context text for manual prompt injection")
-		.argument("<context>", "context string to search for")
-		.option("-n, --limit <n>", "max items", "10")
-		.option("--budget <tokens>", "token budget")
-		.option("--token-budget <tokens>", "token budget")
-		.option(
-			"--working-set-file <path>",
-			"recently modified file path used as ranking hint",
-			collectWorkingSetFile,
-			[],
-		)
-		.option("--project <project>", "project identifier (defaults to git repo root)")
-		.option("--all-projects", "search across all projects")
-		.allowUnknownOption(true)
-		.allowExcessArguments(true);
-	addDbOption(cmd);
-	cmd.action(
-		async (
-			context: string,
-			opts: DbOpts & {
-				limit?: string;
-				budget?: string;
-				tokenBudget?: string;
-				workingSetFile?: string[];
-				project?: string;
-				allProjects?: boolean;
-			},
-		) => {
-			emitDeprecationWarning("codemem memory inject", "codemem pack");
-			const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-			try {
-				const { limit, budget, filters } = buildPackRequestOptions(opts, {
-					envProject: process.env.CODEMEM_PROJECT,
-				});
-				const pack = await store.buildMemoryPackAsync(context, limit, budget, filters);
-				console.log(pack.pack_text ?? "");
-			} finally {
-				await store.closeAsync();
-			}
-		},
+type MemoryRoleReport = ReturnType<typeof getMemoryRoleReport>;
+type MemoryRoleComparison = ReturnType<typeof compareMemoryRoleReports>;
+
+interface MemoryRoleOptions extends JsonOpts {
+	project?: string;
+	allProjects?: boolean;
+	probe?: string[];
+	scenario?: string[];
+	inactive?: boolean;
+}
+
+function resolveMemoryRoleReportInput(opts: MemoryRoleOptions) {
+	const project =
+		opts.allProjects === true
+			? null
+			: opts.project?.trim() ||
+				process.env.CODEMEM_PROJECT?.trim() ||
+				resolveProject(process.cwd(), null);
+	const invalidScenario = (opts.scenario ?? []).find(
+		(id) => getInjectionEvalScenarioPack(id) == null,
 	);
-	return cmd;
+	if (invalidScenario) {
+		throw new Error(`Unknown eval scenario pack: ${invalidScenario}`);
+	}
+	const probes = [...(opts.probe ?? []), ...getInjectionEvalScenarioPrompts(opts.scenario ?? [])];
+	return {
+		project,
+		allProjects: opts.allProjects === true,
+		includeInactive: opts.inactive === true,
+		probes,
+	};
+}
+
+function renderMemoryRoleSummary(result: MemoryRoleReport): void {
+	p.intro("codemem diagnostics memory roles");
+	p.log.info(
+		[
+			`Memories: ${result.totals.memories}`,
+			`Active: ${result.totals.active}`,
+			`Sessions: ${result.totals.sessions}`,
+		].join("\n"),
+	);
+	p.log.info("Counts by role:");
+	for (const [role, count] of Object.entries(result.counts_by_role)) {
+		p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
+	}
+	p.log.info("Counts by mapping:");
+	p.log.message(`  mapped      ${result.counts_by_mapping.mapped}`);
+	p.log.message(`  unmapped    ${result.counts_by_mapping.unmapped}`);
+	p.log.info("Summary lineages:");
+	p.log.message(`  session_summary         ${result.summary_lineages.session_summary}`);
+	p.log.message(`  legacy_metadata_summary ${result.summary_lineages.legacy_metadata_summary}`);
+	p.log.message(`  summary_mapped          ${result.summary_mapping.mapped}`);
+	p.log.message(`  summary_unmapped        ${result.summary_mapping.unmapped}`);
+	p.log.info("Project quality:");
+	for (const [bucket, count] of Object.entries(result.project_quality)) {
+		p.log.message(`  ${bucket.padEnd(12)} ${String(count)}`);
+	}
+	p.log.info("Session classes:");
+	for (const [bucket, count] of Object.entries(result.session_class_buckets)) {
+		p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+	}
+	p.log.info("Summary dispositions:");
+	for (const [bucket, count] of Object.entries(result.summary_disposition_buckets)) {
+		p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+	}
+}
+
+function renderMemoryRoleProbe(probe: MemoryRoleReport["probe_results"][number]): void {
+	p.log.message(`  query: ${probe.query}`);
+	if (probe.scenario_id) {
+		p.log.message(
+			`    scenario: ${probe.scenario_id} (${probe.scenario_category ?? "unknown"})${probe.scenario_title ? ` — ${probe.scenario_title}` : ""}`,
+		);
+	}
+	p.log.message(`    mode: ${probe.mode}`);
+	p.log.message(
+		`    top roles: durable=${probe.top_role_counts.durable} recap=${probe.top_role_counts.recap} ephemeral=${probe.top_role_counts.ephemeral} general=${probe.top_role_counts.general}`,
+	);
+	p.log.message(
+		`    top mapping: mapped=${probe.top_mapping_counts.mapped} unmapped=${probe.top_mapping_counts.unmapped}`,
+	);
+	p.log.message(
+		`    burden: recap_share=${probe.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.top_burden.recap_unmapped_share.toFixed(2)}`,
+	);
+	if (probe.simulated_demoted_unmapped_recap) {
+		p.log.message(
+			`    simulated demote-unmapped-recap burden: recap_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_unmapped_share.toFixed(2)}`,
+		);
+	}
+	if (probe.simulated_demoted_unmapped_recap_and_ephemeral) {
+		p.log.message(
+			`    simulated demote-unmapped-recap+ephemeral burden: recap_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_unmapped_share.toFixed(2)}`,
+		);
+	}
+	if (probe.scenario_score) {
+		p.log.message(
+			`    scenario score: mode_match=${probe.scenario_score.mode_match ? "yes" : "no"} top1_primary=${probe.scenario_score.primary_in_top1 ? "yes" : "no"} top3_primary=${probe.scenario_score.primary_in_top3_count} top1_anti=${probe.scenario_score.anti_signal_in_top1 ? "yes" : "no"} primary=${probe.scenario_score.primary_match_count} anti=${probe.scenario_score.anti_signal_count} recap=${probe.scenario_score.recap_count} unmapped_recap=${probe.scenario_score.unmapped_recap_count} chatter=${probe.scenario_score.administrative_chatter_count} net=${probe.scenario_score.score}`,
+		);
+	}
+	for (const item of probe.items.slice(0, 5)) {
+		p.log.message(
+			`    [${item.id}] (${item.kind}/${item.role}/${item.mapping}/${item.session_class}/${item.summary_disposition}) ${item.title} — ${item.role_reason}`,
+		);
+	}
+}
+
+function renderMemoryRoleReport(result: MemoryRoleReport): void {
+	renderMemoryRoleSummary(result);
+	if (result.probe_results.length > 0) {
+		p.log.info("Probe results:");
+		for (const probe of result.probe_results) {
+			renderMemoryRoleProbe(probe);
+		}
+	}
+	p.outro("done");
 }
 
 function createMemoryRoleReportCommand(): Command {
 	const cmd = new Command("role-report")
 		.configureHelp(helpStyle)
-		.description("Analyze inferred memory roles in a DB snapshot")
-		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.description("Report memory roles")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
 		.option("--all-projects", "analyze across all projects")
 		.option(
 			"--probe <query>",
@@ -356,144 +429,114 @@ function createMemoryRoleReportCommand(): Command {
 		.option("--inactive", "include inactive memories");
 	addDbOption(cmd);
 	addJsonOption(cmd);
-	cmd.action(
-		(
-			opts: DbOpts &
-				JsonOpts & {
-					project?: string;
-					allProjects?: boolean;
-					probe?: string[];
-					scenario?: string[];
-					inactive?: boolean;
-				},
-		) => {
-			try {
-				const project =
-					opts.allProjects === true
-						? null
-						: opts.project?.trim() ||
-							process.env.CODEMEM_PROJECT?.trim() ||
-							resolveProject(process.cwd(), null);
-				const invalidScenario = (opts.scenario ?? []).find(
-					(id) => getInjectionEvalScenarioPack(id) == null,
-				);
-				if (invalidScenario) {
-					throw new Error(`Unknown eval scenario pack: ${invalidScenario}`);
-				}
-				const probes = [
-					...(opts.probe ?? []),
-					...getInjectionEvalScenarioPrompts(opts.scenario ?? []),
-				];
-				const result = getMemoryRoleReport(resolveDbOpt(opts), {
-					project,
-					allProjects: opts.allProjects === true,
-					includeInactive: opts.inactive === true,
-					probes,
-				});
+	cmd.action((opts: DbOpts & MemoryRoleOptions) => {
+		try {
+			const input = resolveMemoryRoleReportInput(opts);
+			const result = getMemoryRoleReport(resolveDbOpt(opts), input);
 
-				if (opts.json) {
-					console.log(JSON.stringify(result, null, 2));
-					return;
-				}
-
-				p.intro("codemem memory role-report");
-				p.log.info(
-					[
-						`Memories: ${result.totals.memories}`,
-						`Active: ${result.totals.active}`,
-						`Sessions: ${result.totals.sessions}`,
-					].join("\n"),
-				);
-				p.log.info("Counts by role:");
-				for (const [role, count] of Object.entries(result.counts_by_role)) {
-					p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
-				}
-				p.log.info("Counts by mapping:");
-				p.log.message(`  mapped      ${result.counts_by_mapping.mapped}`);
-				p.log.message(`  unmapped    ${result.counts_by_mapping.unmapped}`);
-				p.log.info("Summary lineages:");
-				p.log.message(`  session_summary         ${result.summary_lineages.session_summary}`);
-				p.log.message(
-					`  legacy_metadata_summary ${result.summary_lineages.legacy_metadata_summary}`,
-				);
-				p.log.message(`  summary_mapped          ${result.summary_mapping.mapped}`);
-				p.log.message(`  summary_unmapped        ${result.summary_mapping.unmapped}`);
-				p.log.info("Project quality:");
-				for (const [bucket, count] of Object.entries(result.project_quality)) {
-					p.log.message(`  ${bucket.padEnd(12)} ${String(count)}`);
-				}
-				p.log.info("Session classes:");
-				for (const [bucket, count] of Object.entries(result.session_class_buckets)) {
-					p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
-				}
-				p.log.info("Summary dispositions:");
-				for (const [bucket, count] of Object.entries(result.summary_disposition_buckets)) {
-					p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
-				}
-				if (result.probe_results.length > 0) {
-					p.log.info("Probe results:");
-					for (const probe of result.probe_results) {
-						p.log.message(`  query: ${probe.query}`);
-						if (probe.scenario_id) {
-							p.log.message(
-								`    scenario: ${probe.scenario_id} (${probe.scenario_category ?? "unknown"})${probe.scenario_title ? ` — ${probe.scenario_title}` : ""}`,
-							);
-						}
-						p.log.message(`    mode: ${probe.mode}`);
-						p.log.message(
-							`    top roles: durable=${probe.top_role_counts.durable} recap=${probe.top_role_counts.recap} ephemeral=${probe.top_role_counts.ephemeral} general=${probe.top_role_counts.general}`,
-						);
-						p.log.message(
-							`    top mapping: mapped=${probe.top_mapping_counts.mapped} unmapped=${probe.top_mapping_counts.unmapped}`,
-						);
-						p.log.message(
-							`    burden: recap_share=${probe.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.top_burden.recap_unmapped_share.toFixed(2)}`,
-						);
-						if (probe.simulated_demoted_unmapped_recap) {
-							p.log.message(
-								`    simulated demote-unmapped-recap burden: recap_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap.top_burden.recap_unmapped_share.toFixed(2)}`,
-							);
-						}
-						if (probe.simulated_demoted_unmapped_recap_and_ephemeral) {
-							p.log.message(
-								`    simulated demote-unmapped-recap+ephemeral burden: recap_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_share.toFixed(2)} unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.simulated_demoted_unmapped_recap_and_ephemeral.top_burden.recap_unmapped_share.toFixed(2)}`,
-							);
-						}
-						if (probe.scenario_score) {
-							p.log.message(
-								`    scenario score: mode_match=${probe.scenario_score.mode_match ? "yes" : "no"} top1_primary=${probe.scenario_score.primary_in_top1 ? "yes" : "no"} top3_primary=${probe.scenario_score.primary_in_top3_count} top1_anti=${probe.scenario_score.anti_signal_in_top1 ? "yes" : "no"} primary=${probe.scenario_score.primary_match_count} anti=${probe.scenario_score.anti_signal_count} recap=${probe.scenario_score.recap_count} unmapped_recap=${probe.scenario_score.unmapped_recap_count} chatter=${probe.scenario_score.administrative_chatter_count} net=${probe.scenario_score.score}`,
-							);
-						}
-						for (const item of probe.items.slice(0, 5)) {
-							p.log.message(
-								`    [${item.id}] (${item.kind}/${item.role}/${item.mapping}/${item.session_class}/${item.summary_disposition}) ${item.title} — ${item.role_reason}`,
-							);
-						}
-					}
-				}
-				p.outro("done");
-			} catch (error) {
-				const message = error instanceof Error ? error.message : "Role report failed";
-				if (opts.json) {
-					emitJsonError("role_report_failed", message);
-				} else {
-					p.log.error(message);
-					process.exitCode = 1;
-				}
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
 				return;
 			}
-		},
-	);
+
+			renderMemoryRoleReport(result);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Role report failed";
+			if (opts.json) {
+				emitJsonError("role_report_failed", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
+		}
+	});
 	return cmd;
+}
+
+function renderMemoryRoleComparisonSummary(result: MemoryRoleComparison): void {
+	p.intro("codemem diagnostics memory compare");
+	p.log.info(
+		[
+			`Baseline sessions: ${result.baseline.totals.sessions}`,
+			`Candidate sessions: ${result.candidate.totals.sessions}`,
+			`Delta sessions: ${result.delta.totals.sessions}`,
+			`Mapped delta: ${result.delta.counts_by_mapping.mapped}`,
+			`Unmapped delta: ${result.delta.counts_by_mapping.unmapped}`,
+			`Summary mapped delta: ${result.delta.summary_mapping.mapped}`,
+			`Summary unmapped delta: ${result.delta.summary_mapping.unmapped}`,
+		].join("\n"),
+	);
+	p.log.info("Role deltas:");
+	for (const [role, count] of Object.entries(result.delta.counts_by_role)) {
+		p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
+	}
+	p.log.info("Session class deltas:");
+	for (const [bucket, count] of Object.entries(result.delta.session_class_buckets)) {
+		p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+	}
+	p.log.info("Summary disposition deltas:");
+	for (const [bucket, count] of Object.entries(result.delta.summary_disposition_buckets)) {
+		p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
+	}
+}
+
+function renderMemoryRoleScenarioDelta(
+	delta: NonNullable<MemoryRoleComparison["probe_comparisons"][number]["delta_scenario_score"]>,
+): void {
+	p.log.message(
+		`    scenario delta: mode_match=${delta.mode_match ?? "-"} top1_primary=${delta.primary_in_top1 ?? "-"} top3_primary=${delta.primary_in_top3_count ?? "-"} top1_anti=${delta.anti_signal_in_top1 ?? "-"} primary=${delta.primary_match_count ?? "-"} anti=${delta.anti_signal_count ?? "-"} recap=${delta.recap_count ?? "-"} unmapped_recap=${delta.unmapped_recap_count ?? "-"} chatter=${delta.administrative_chatter_count ?? "-"} net=${delta.score ?? "-"}`,
+	);
+}
+
+function renderMemoryRoleProbeComparison(
+	probe: MemoryRoleComparison["probe_comparisons"][number],
+): void {
+	p.log.message(`  query: ${probe.query}`);
+	p.log.message(
+		`    modes: baseline=${probe.baseline_mode ?? "-"} candidate=${probe.candidate_mode ?? "-"}`,
+	);
+	p.log.message(
+		`    overlap: shared_top_keys=${probe.shared_item_keys.length} baseline_top=${probe.baseline_item_ids.slice(0, 5).join(",") || "-"} candidate_top=${probe.candidate_item_ids.slice(0, 5).join(",") || "-"}`,
+	);
+	if (probe.delta_top_burden) {
+		p.log.message(
+			`    burden delta: recap_share=${probe.delta_top_burden.recap_share.toFixed(2)} unmapped_share=${probe.delta_top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.delta_top_burden.recap_unmapped_share.toFixed(2)}`,
+		);
+	}
+	if (probe.delta_top_mapping_counts) {
+		p.log.message(
+			`    mapping delta: mapped=${probe.delta_top_mapping_counts.mapped} unmapped=${probe.delta_top_mapping_counts.unmapped}`,
+		);
+	}
+	if (probe.baseline_scenario_score || probe.candidate_scenario_score) {
+		p.log.message(
+			`    scenario scores: baseline=${probe.baseline_scenario_score?.score ?? "-"} candidate=${probe.candidate_scenario_score?.score ?? "-"}`,
+		);
+	}
+	if (probe.delta_scenario_score) {
+		renderMemoryRoleScenarioDelta(probe.delta_scenario_score);
+	}
+}
+
+function renderMemoryRoleComparison(result: MemoryRoleComparison): void {
+	renderMemoryRoleComparisonSummary(result);
+	if (result.probe_comparisons.length > 0) {
+		p.log.info("Probe comparisons:");
+		for (const probe of result.probe_comparisons) {
+			renderMemoryRoleProbeComparison(probe);
+		}
+	}
+	p.outro("done");
 }
 
 function createMemoryRoleCompareCommand(): Command {
 	const cmd = new Command("role-compare")
 		.configureHelp(helpStyle)
-		.description("Compare inferred memory-role and probe metrics across two DB snapshots")
+		.description("Compare memory quality across databases")
 		.argument("<baseline_db>", "baseline sqlite database path")
 		.argument("<candidate_db>", "candidate sqlite database path")
-		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
 		.option("--all-projects", "analyze across all projects")
 		.option(
 			"--probe <query>",
@@ -509,124 +552,66 @@ function createMemoryRoleCompareCommand(): Command {
 		)
 		.option("--inactive", "include inactive memories");
 	addJsonOption(cmd);
-	cmd.action(
-		(
-			baselineDb: string,
-			candidateDb: string,
-			opts: JsonOpts & {
-				project?: string;
-				allProjects?: boolean;
-				probe?: string[];
-				scenario?: string[];
-				inactive?: boolean;
-			},
-		) => {
-			try {
-				const project =
-					opts.allProjects === true
-						? null
-						: opts.project?.trim() ||
-							process.env.CODEMEM_PROJECT?.trim() ||
-							resolveProject(process.cwd(), null);
-				const invalidScenario = (opts.scenario ?? []).find(
-					(id) => getInjectionEvalScenarioPack(id) == null,
-				);
-				if (invalidScenario) {
-					throw new Error(`Unknown eval scenario pack: ${invalidScenario}`);
-				}
-				const probes = [
-					...(opts.probe ?? []),
-					...getInjectionEvalScenarioPrompts(opts.scenario ?? []),
-				];
-				const result = compareMemoryRoleReports(baselineDb, candidateDb, {
-					project,
-					allProjects: opts.allProjects === true,
-					includeInactive: opts.inactive === true,
-					probes,
-				});
+	cmd.action((baselineDb: string, candidateDb: string, opts: MemoryRoleOptions) => {
+		try {
+			const input = resolveMemoryRoleReportInput(opts);
+			const result = compareMemoryRoleReports(baselineDb, candidateDb, input);
 
-				if (opts.json) {
-					console.log(JSON.stringify(result, null, 2));
-					return;
-				}
-
-				p.intro("codemem memory role-compare");
-				p.log.info(
-					[
-						`Baseline sessions: ${result.baseline.totals.sessions}`,
-						`Candidate sessions: ${result.candidate.totals.sessions}`,
-						`Delta sessions: ${result.delta.totals.sessions}`,
-						`Mapped delta: ${result.delta.counts_by_mapping.mapped}`,
-						`Unmapped delta: ${result.delta.counts_by_mapping.unmapped}`,
-						`Summary mapped delta: ${result.delta.summary_mapping.mapped}`,
-						`Summary unmapped delta: ${result.delta.summary_mapping.unmapped}`,
-					].join("\n"),
-				);
-				p.log.info("Role deltas:");
-				for (const [role, count] of Object.entries(result.delta.counts_by_role)) {
-					p.log.message(`  ${role.padEnd(10)} ${String(count)}`);
-				}
-				p.log.info("Session class deltas:");
-				for (const [bucket, count] of Object.entries(result.delta.session_class_buckets)) {
-					p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
-				}
-				p.log.info("Summary disposition deltas:");
-				for (const [bucket, count] of Object.entries(result.delta.summary_disposition_buckets)) {
-					p.log.message(`  ${bucket.padEnd(20)} ${String(count)}`);
-				}
-				if (result.probe_comparisons.length > 0) {
-					p.log.info("Probe comparisons:");
-					for (const probe of result.probe_comparisons) {
-						p.log.message(`  query: ${probe.query}`);
-						p.log.message(
-							`    modes: baseline=${probe.baseline_mode ?? "-"} candidate=${probe.candidate_mode ?? "-"}`,
-						);
-						p.log.message(
-							`    overlap: shared_top_keys=${probe.shared_item_keys.length} baseline_top=${probe.baseline_item_ids.slice(0, 5).join(",") || "-"} candidate_top=${probe.candidate_item_ids.slice(0, 5).join(",") || "-"}`,
-						);
-						if (probe.delta_top_burden) {
-							p.log.message(
-								`    burden delta: recap_share=${probe.delta_top_burden.recap_share.toFixed(2)} unmapped_share=${probe.delta_top_burden.unmapped_share.toFixed(2)} recap_unmapped_share=${probe.delta_top_burden.recap_unmapped_share.toFixed(2)}`,
-							);
-						}
-						if (probe.delta_top_mapping_counts) {
-							p.log.message(
-								`    mapping delta: mapped=${probe.delta_top_mapping_counts.mapped} unmapped=${probe.delta_top_mapping_counts.unmapped}`,
-							);
-						}
-						if (probe.baseline_scenario_score || probe.candidate_scenario_score) {
-							p.log.message(
-								`    scenario scores: baseline=${probe.baseline_scenario_score?.score ?? "-"} candidate=${probe.candidate_scenario_score?.score ?? "-"}`,
-							);
-						}
-						if (probe.delta_scenario_score) {
-							p.log.message(
-								`    scenario delta: mode_match=${probe.delta_scenario_score.mode_match ?? "-"} top1_primary=${probe.delta_scenario_score.primary_in_top1 ?? "-"} top3_primary=${probe.delta_scenario_score.primary_in_top3_count ?? "-"} top1_anti=${probe.delta_scenario_score.anti_signal_in_top1 ?? "-"} primary=${probe.delta_scenario_score.primary_match_count ?? "-"} anti=${probe.delta_scenario_score.anti_signal_count ?? "-"} recap=${probe.delta_scenario_score.recap_count ?? "-"} unmapped_recap=${probe.delta_scenario_score.unmapped_recap_count ?? "-"} chatter=${probe.delta_scenario_score.administrative_chatter_count ?? "-"} net=${probe.delta_scenario_score.score ?? "-"}`,
-							);
-						}
-					}
-				}
-				p.outro("done");
-			} catch (error) {
-				const message = error instanceof Error ? error.message : "Role compare failed";
-				if (opts.json) {
-					emitJsonError("role_compare_failed", message);
-				} else {
-					p.log.error(message);
-					process.exitCode = 1;
-				}
+			if (opts.json) {
+				console.log(JSON.stringify(result, null, 2));
 				return;
 			}
-		},
-	);
+
+			renderMemoryRoleComparison(result);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Role compare failed";
+			if (opts.json) {
+				emitJsonError("role_compare_failed", message);
+			} else {
+				p.log.error(message);
+				process.exitCode = 1;
+			}
+			return;
+		}
+	});
 	return cmd;
+}
+
+function renderMemoryArtifactReport(result: ReturnType<typeof getMemoryArtifactReport>): void {
+	p.intro("codemem diagnostics memory artifacts");
+	p.log.info(
+		[
+			`Memories: ${result.totals.memories}`,
+			`Active: ${result.totals.active}`,
+			`Sessions: ${result.totals.sessions}`,
+		].join("\n"),
+	);
+	p.log.info("Counts by artifact:");
+	for (const [artifact, count] of Object.entries(result.counts_by_artifact)) {
+		p.log.message(`  ${artifact.padEnd(16)} ${String(count)}`);
+	}
+	p.log.info("Counts by action:");
+	for (const [action, count] of Object.entries(result.counts_by_action)) {
+		p.log.message(`  ${action.padEnd(14)} ${String(count)}`);
+	}
+	const topReasons = Object.entries(result.counts_by_reason)
+		.sort(([, a], [, b]) => b - a)
+		.slice(0, 10);
+	if (topReasons.length > 0) {
+		p.log.info("Top reasons:");
+		for (const [reason, count] of topReasons) {
+			p.log.message(`  ${reason.padEnd(36)} ${String(count)}`);
+		}
+	}
+	p.log.info(`High-confidence telemetry: ${result.high_confidence_telemetry.total}`);
+	p.outro("done");
 }
 
 function createMemoryArtifactReportCommand(): Command {
 	const cmd = new Command("artifact-report")
 		.configureHelp(helpStyle)
-		.description("Analyze legacy memory artifacts in a DB snapshot without mutating rows")
-		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.description("Report legacy memory artifacts without changing data")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
 		.option("--all-projects", "analyze across all projects")
 		.option("--inactive", "include inactive memories");
 	addDbOption(cmd);
@@ -658,33 +643,7 @@ function createMemoryArtifactReportCommand(): Command {
 					return;
 				}
 
-				p.intro("codemem memory artifact-report");
-				p.log.info(
-					[
-						`Memories: ${result.totals.memories}`,
-						`Active: ${result.totals.active}`,
-						`Sessions: ${result.totals.sessions}`,
-					].join("\n"),
-				);
-				p.log.info("Counts by artifact:");
-				for (const [artifact, count] of Object.entries(result.counts_by_artifact)) {
-					p.log.message(`  ${artifact.padEnd(16)} ${String(count)}`);
-				}
-				p.log.info("Counts by action:");
-				for (const [action, count] of Object.entries(result.counts_by_action)) {
-					p.log.message(`  ${action.padEnd(14)} ${String(count)}`);
-				}
-				const topReasons = Object.entries(result.counts_by_reason)
-					.sort(([, a], [, b]) => b - a)
-					.slice(0, 10);
-				if (topReasons.length > 0) {
-					p.log.info("Top reasons:");
-					for (const [reason, count] of topReasons) {
-						p.log.message(`  ${reason.padEnd(36)} ${String(count)}`);
-					}
-				}
-				p.log.info(`High-confidence telemetry: ${result.high_confidence_telemetry.total}`);
-				p.outro("done");
+				renderMemoryArtifactReport(result);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "Artifact report failed";
 				if (opts.json) {
@@ -703,7 +662,7 @@ function createMemoryArtifactReportCommand(): Command {
 function createMemoryExtractionReportCommand(): Command {
 	const cmd = new Command("extraction-report")
 		.configureHelp(helpStyle)
-		.description("Score extracted memories for a session against a built-in extraction eval rubric")
+		.description("Score extracted memories against a scenario")
 		.option("--session-id <id>", "session ID to evaluate")
 		.option("--batch-id <id>", "raw-event flush batch ID to evaluate")
 		.requiredOption("--scenario <id>", "built-in extraction eval scenario ID")
@@ -759,7 +718,7 @@ function createMemoryExtractionReportCommand(): Command {
 					return;
 				}
 
-				p.intro("codemem memory extraction-report");
+				p.intro("codemem diagnostics extraction report");
 				p.log.info(
 					[
 						`Scenario: ${result.scenario.id} — ${result.scenario.title}`,
@@ -811,9 +770,7 @@ function createMemoryExtractionReportCommand(): Command {
 function createMemoryExtractionReplayCommand(): Command {
 	const cmd = new Command("extraction-replay")
 		.configureHelp(helpStyle)
-		.description(
-			"Re-run the observer on a historical flush batch without persisting, then score the fresh output",
-		)
+		.description("Replay and score extraction without saving memories")
 		.requiredOption("--batch-id <id>", "raw-event flush batch ID to replay")
 		.option(
 			"--transcript-budget <chars>",
@@ -943,7 +900,7 @@ function createMemoryExtractionReplayCommand(): Command {
 					return;
 				}
 
-				p.intro("codemem memory extraction-replay");
+				p.intro("codemem diagnostics extraction replay");
 				p.log.info(
 					[
 						`Scenario: ${result.scenario.id} — ${result.scenario.title}`,
@@ -1362,9 +1319,7 @@ function cliObserverProviderOverride(
 function createMemoryExtractionBenchmarkCommand(): Command {
 	const cmd = new Command("extraction-benchmark")
 		.configureHelp(helpStyle)
-		.description(
-			"Run the formal extraction replay benchmark set and print a cost/quality scoreboard",
-		)
+		.description("Benchmark extraction cost and quality")
 		.requiredOption("--benchmark <id>", "benchmark profile id")
 		.option("--observer-provider <provider>", "override observer provider for this benchmark run")
 		.option("--observer-model <model>", "override observer model for this benchmark run")
@@ -1957,7 +1912,7 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 					return;
 				}
 
-				p.intro("codemem memory extraction-benchmark");
+				p.intro("codemem diagnostics extraction benchmark");
 				p.log.info(
 					[
 						`Benchmark: ${benchmark.id} — ${benchmark.title}`,
@@ -2037,8 +1992,8 @@ function createMemoryExtractionBenchmarkCommand(): Command {
 function createMemoryRelinkReportCommand(): Command {
 	const cmd = new Command("relink-report")
 		.configureHelp(helpStyle)
-		.description("Analyze dry-run raw-event session relinking and compaction opportunities")
-		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.description("Report session relinking opportunities without changing data")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
 		.option("--all-projects", "analyze across all projects")
 		.option("--limit <n>", "max groups to print", "25");
 	addDbOption(cmd);
@@ -2070,7 +2025,7 @@ function createMemoryRelinkReportCommand(): Command {
 				return;
 			}
 
-			p.intro("codemem memory relink-report");
+			p.intro("codemem diagnostics memory relink");
 			p.log.info(
 				[
 					`Recoverable sessions: ${result.totals.recoverable_sessions}`,
@@ -2097,8 +2052,8 @@ function createMemoryRelinkReportCommand(): Command {
 function createMemoryRelinkPlanCommand(): Command {
 	const cmd = new Command("relink-plan")
 		.configureHelp(helpStyle)
-		.description("Emit dry-run raw-event relink remediation actions")
-		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.description("Plan session relinking without changing data")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
 		.option("--all-projects", "analyze across all projects")
 		.option("--limit <n>", "max groups to include", "25");
 	addDbOption(cmd);
@@ -2130,7 +2085,7 @@ function createMemoryRelinkPlanCommand(): Command {
 				return;
 			}
 
-			p.intro("codemem memory relink-plan");
+			p.intro("codemem diagnostics memory relink-plan");
 			p.log.info(
 				[
 					`Groups: ${result.totals.groups}`,
@@ -2164,19 +2119,43 @@ export const showMemoryCommand = createShowMemoryCommand();
 export const forgetMemoryCommand = createForgetMemoryCommand();
 export const rememberMemoryCommand = createRememberMemoryCommand();
 
-export const memoryCommand = new Command("memory")
-	.configureHelp(helpStyle)
-	.description("Memory item management");
+export function createMemoryCommand(): Command {
+	// Stop at the child command so context trace receives its own flags.
+	return new Command("memory")
+		.enablePositionalOptions()
+		.configureHelp(helpStyle)
+		.description("Manage memories and build task context")
+		.addCommand(createRecentCommand().name("list"))
+		.addCommand(createSearchCommand())
+		.addCommand(createShowMemoryCommand())
+		.addCommand(createRememberMemoryCommand())
+		.addCommand(createForgetMemoryCommand())
+		.addCommand(createContextCommand())
+		.addCommand(createPackCommand(), { hidden: true })
+		.addCommand(createDistillCommand())
+		.addCommand(createStatsCommand())
+		.addCommand(createExportMemoriesCommand().name("export"))
+		.addCommand(createImportMemoriesCommand().name("import"));
+}
 
-memoryCommand.addCommand(createShowMemoryCommand());
-memoryCommand.addCommand(createForgetMemoryCommand());
-memoryCommand.addCommand(createRememberMemoryCommand());
-memoryCommand.addCommand(createInjectMemoryCommand());
-memoryCommand.addCommand(createMemoryRoleReportCommand());
-memoryCommand.addCommand(createMemoryRoleCompareCommand());
-memoryCommand.addCommand(createMemoryArtifactReportCommand());
-memoryCommand.addCommand(createMemoryExtractionReportCommand());
-memoryCommand.addCommand(createMemoryExtractionReplayCommand());
-memoryCommand.addCommand(createMemoryExtractionBenchmarkCommand());
-memoryCommand.addCommand(createMemoryRelinkReportCommand());
-memoryCommand.addCommand(createMemoryRelinkPlanCommand());
+export function createMemoryDiagnosticsCommand(): Command {
+	return new Command("memory")
+		.configureHelp(helpStyle)
+		.description("Inspect memory quality and session links")
+		.addCommand(createMemoryRoleReportCommand().name("roles"))
+		.addCommand(createMemoryRoleCompareCommand().name("compare"))
+		.addCommand(createMemoryArtifactReportCommand().name("artifacts"))
+		.addCommand(createMemoryRelinkReportCommand().name("relink"))
+		.addCommand(createMemoryRelinkPlanCommand());
+}
+
+export function createExtractionDiagnosticsCommand(): Command {
+	return new Command("extraction")
+		.configureHelp(helpStyle)
+		.description("Evaluate memory extraction")
+		.addCommand(createMemoryExtractionReportCommand().name("report"))
+		.addCommand(createMemoryExtractionReplayCommand().name("replay"))
+		.addCommand(createMemoryExtractionBenchmarkCommand().name("benchmark"));
+}
+
+export const memoryCommand = createMemoryCommand();

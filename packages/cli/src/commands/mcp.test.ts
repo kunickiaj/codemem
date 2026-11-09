@@ -26,14 +26,14 @@ describe("mcp command", () => {
 
 	it("keeps stdio mode as the default command", () => {
 		expect(mcpCommand.name()).toBe("mcp");
-		expect(mcpCommand.summary()).toBe("Start the MCP stdio server");
+		expect(mcpCommand.summary()).toBe("Run an MCP server");
 	});
 
 	it("exposes HTTP mode with host, port, and database options", () => {
 		const httpCommand = mcpCommand.commands.find((command) => command.name() === "http");
 
 		expect(httpCommand).toBeDefined();
-		expect(httpCommand?.description()).toBe("Start the MCP Streamable HTTP server");
+		expect(httpCommand?.description()).toBe("Run an MCP server over Streamable HTTP");
 		expect(httpCommand?.options.map((option) => option.long).toSorted()).toEqual([
 			"--db",
 			"--db-path",

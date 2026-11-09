@@ -57,8 +57,8 @@ export function addViewerHostOptions(
 	cmd: Command,
 	defaults: { host?: string; port?: string } = {},
 ): Command {
-	cmd.option("--host <host>", "viewer host", defaults.host ?? "127.0.0.1");
-	cmd.option("--port <port>", "viewer port", defaults.port ?? "38888");
+	cmd.option("--host <host>", "local service host", defaults.host ?? "127.0.0.1");
+	cmd.option("--port <port>", "local service port", defaults.port ?? "38888");
 	return cmd;
 }
 

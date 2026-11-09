@@ -31,7 +31,7 @@
 - The viewer server throws if `packages/viewer-server/static/index.html` is missing. If you change UI or viewer assets, run `pnpm build` or at least `pnpm --filter @codemem/ui build`.
 - `packages/viewer-server/static/` is generated and ignored. Do not hand-edit it. UI build stages `packages/ui/static/` there alongside the built `app.js` bundle.
 - Plugin smoke tests rely on nested `.opencode` runtime deps. CI installs `@opencode-ai/plugin` inside `packages/cli/.opencode` and `packages/opencode-plugin/.opencode` before running smoke tests.
-- CLI work should follow `docs/cli-design-conventions.md`: max 2 nesting levels, noun-based groups, shared `--db-path` / `--config` / `--json` helpers, and no uncaught throws from command handlers.
+- CLI work should follow `docs/cli-design-conventions.md`: noun-based groups, normally 2 action levels with a third for specialist resources, shared `--db-path` / `--config` / `--json` helpers, and no uncaught throws from command handlers.
 - The repo is TS-first; trust `package.json`, package scripts, and CI over older migration-era docs/checklists.
 - `.github/PULL_REQUEST_TEMPLATE.md` is TS-first now; use `pnpm run tsc`, `pnpm run lint`, and `pnpm run test` for normal changes.
 

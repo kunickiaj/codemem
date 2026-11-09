@@ -231,7 +231,7 @@ export function renderSyncStatus() {
 	} else if (daemonState === "rebootstrapping") {
 		actions.push({
 			label: "Sync is rebuilding state in the background.",
-			command: "codemem sync status",
+			command: "codemem sync peers",
 		});
 	} else if (syncError || pingError || daemonState === "error") {
 		actions.push({

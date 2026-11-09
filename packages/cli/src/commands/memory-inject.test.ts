@@ -1,3 +1,4 @@
+import * as p from "@clack/prompts";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +25,7 @@ vi.mock("@codemem/core", async (importOriginal) => {
 	};
 });
 
-import { memoryCommand } from "./memory.js";
+import { registerRootCommands } from "../command-tree.js";
 
 beforeEach(() => vi.stubEnv("CODEMEM_PROJECT", ""));
 afterEach(() => {
@@ -41,8 +42,8 @@ afterEach(() => {
 async function parseInjectCommand(args: string[]): Promise<void> {
 	const root = new Command("codemem");
 	root.enablePositionalOptions();
-	root.addCommand(memoryCommand);
-	await root.parseAsync(["memory", "inject", ...args], { from: "user" });
+	registerRootCommands(root);
+	await root.parseAsync(["memory", "context", ...args], { from: "user" });
 }
 
 function deferred() {
@@ -53,7 +54,7 @@ function deferred() {
 	return { promise, resolve };
 }
 
-describe("memory inject command", () => {
+describe("memory context command", () => {
 	it("prints raw pack text and forwards project and working-set flags", async () => {
 		buildMemoryPackAsync.mockResolvedValue({ pack_text: "RAW PACK BODY" });
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -71,14 +72,18 @@ describe("memory inject command", () => {
 			"/tmp/codemem-test.sqlite",
 		]);
 
-		expect(buildMemoryPackAsync).toHaveBeenCalledWith("continue viewer health work", 10, 90, {
-			project: "codemem",
-			working_set_paths: ["packages/ui/src/app.ts"],
-		});
-		expect(logSpy).toHaveBeenLastCalledWith("RAW PACK BODY");
-		expect(errorSpy).toHaveBeenCalledWith(
-			"Warning: 'codemem memory inject' is deprecated, use 'codemem pack' instead.",
+		expect(buildMemoryPackAsync).toHaveBeenCalledWith(
+			"continue viewer health work",
+			10,
+			90,
+			{
+				project: "codemem",
+				working_set_paths: ["packages/ui/src/app.ts"],
+			},
+			undefined,
 		);
+		expect(logSpy).toHaveBeenLastCalledWith("RAW PACK BODY");
+		expect(errorSpy).not.toHaveBeenCalled();
 		expect(storePaths.at(-1)).toBe("/tmp/codemem-test.sqlite");
 		expect(closeStoreAsync).toHaveBeenCalledTimes(1);
 		expect(closeStore).not.toHaveBeenCalled();
@@ -101,6 +106,7 @@ describe("memory inject command", () => {
 			10,
 			undefined,
 			{ working_set_paths: ["packages/ui/src/app.ts"] },
+			undefined,
 		);
 		expect(logSpy).toHaveBeenLastCalledWith("");
 		expect(closeStoreAsync).toHaveBeenCalledTimes(1);
@@ -120,20 +126,26 @@ describe("memory inject command", () => {
 	});
 
 	it("closes the store when inject pack generation fails", async () => {
+		// Arrange: default context output is prompt text, so errors belong on stderr.
 		buildMemoryPackAsync.mockRejectedValue(new Error("inject failed"));
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const clackError = vi.spyOn(p.log, "error").mockImplementation(() => {});
 
-		await parseInjectCommand(["continue viewer health work"]).catch(() => {});
+		// Act
+		await parseInjectCommand(["continue viewer health work"]);
 
-		expect(errorSpy).toHaveBeenCalledWith(
-			"Warning: 'codemem memory inject' is deprecated, use 'codemem pack' instead.",
-		);
+		// Assert
+		expect(errorSpy).toHaveBeenCalledWith("inject failed");
+		expect(logSpy).not.toHaveBeenCalled();
+		expect(clackError).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
 		expect(closeStoreAsync).toHaveBeenCalledTimes(1);
 		expect(closeStore).not.toHaveBeenCalled();
 	});
 });
 
-describe("memory inject asynchronous store shutdown", () => {
+describe("memory context asynchronous store shutdown", () => {
 	it.each(["success", "failure"] as const)(
 		"awaits store shutdown after pack %s",
 		async (outcome) => {
@@ -142,8 +154,9 @@ describe("memory inject asynchronous store shutdown", () => {
 			const failure = new Error("fixture pack failure");
 			if (outcome === "failure") buildMemoryPackAsync.mockRejectedValueOnce(failure);
 			else buildMemoryPackAsync.mockResolvedValueOnce({ pack_text: "DRAIN PACK" });
-			vi.spyOn(console, "log").mockImplementation(() => {});
-			vi.spyOn(console, "error").mockImplementation(() => {});
+			const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+			const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+			const clackError = vi.spyOn(p.log, "error").mockImplementation(() => {});
 			const closeEntered = deferred();
 			const closeRelease = deferred();
 			closeStoreAsync.mockImplementation(() => {
@@ -170,10 +183,19 @@ describe("memory inject asynchronous store shutdown", () => {
 
 			// Assert
 			expect(completedBeforeClose).toBe(0);
-			expect(result).toEqual({ error: outcome === "failure" ? failure : null });
+			expect(result).toEqual({ error: null });
+			expect(process.exitCode).toBe(outcome === "failure" ? 1 : 0);
 			expect(closeStoreAsync).toHaveBeenCalledTimes(1);
 			expect(closeStore).not.toHaveBeenCalled();
 			expect(finished).toHaveBeenCalledTimes(1);
+			expect(clackError).not.toHaveBeenCalled();
+			if (outcome === "failure") {
+				expect(stdout).not.toHaveBeenCalled();
+				expect(stderr).toHaveBeenCalledExactlyOnceWith("fixture pack failure");
+			} else {
+				expect(stdout).toHaveBeenCalledExactlyOnceWith("DRAIN PACK");
+				expect(stderr).not.toHaveBeenCalled();
+			}
 		},
 	);
 });

@@ -5,71 +5,60 @@ import * as p from "@clack/prompts";
 import { exportMemories, resolveDbPath } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
-import {
-	addDbOption,
-	type DbOpts,
-	emitDeprecationWarning,
-	resolveDbOpt,
-} from "../shared-options.js";
-import { invokedAsTopLevelAlias } from "../top-level-alias.js";
+import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 
 function expandUserPath(value: string): string {
 	return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
 }
 
-const cmd = new Command("export-memories")
-	.configureHelp(helpStyle)
-	.description("Export memories to a JSON file for sharing or backup")
-	.argument("<output>", "output file path (use '-' for stdout)")
-	.option("--project <project>", "filter by project (defaults to git repo root)")
-	.option("--all-projects", "export all projects")
-	.option("--include-inactive", "include deactivated memories")
-	.option("--since <iso>", "only export memories created after this ISO timestamp");
+export function createExportMemoriesCommand(): Command {
+	const cmd = new Command("export-memories")
+		.configureHelp(helpStyle)
+		.description("Export memories to a JSON file")
+		.argument("<output>", "output file path (use '-' for stdout)")
+		.option("--project <project>", "filter by project (defaults to git repo root)")
+		.option("--all-projects", "export all projects")
+		.option("--include-inactive", "include deactivated memories")
+		.option("--since <iso>", "only export memories created after this ISO timestamp");
 
-addDbOption(cmd);
+	addDbOption(cmd);
+	return cmd.action(exportMemoriesAction);
+}
 
-cmd.action(
-	(
-		output: string,
-		opts: DbOpts & {
-			project?: string;
-			allProjects?: boolean;
-			includeInactive?: boolean;
-			since?: string;
-		},
-	) => {
-		// Keep visible for this first warned release; hide the alias in a later release.
-		// Suppressed for stdout export: `-` streams machine-readable JSON, so
-		// stderr stays clean for piped automation.
-		if (output !== "-" && invokedAsTopLevelAlias("export-memories")) {
-			emitDeprecationWarning("codemem export-memories", "codemem memory export");
-		}
-		const payload = exportMemories({
-			dbPath: resolveDbPath(resolveDbOpt(opts)),
-			project: opts.project,
-			allProjects: opts.allProjects,
-			includeInactive: opts.includeInactive,
-			since: opts.since,
-		});
-		const text = `${JSON.stringify(payload, null, 2)}\n`;
-		if (output === "-") {
-			process.stdout.write(text);
-			return;
-		}
-		const outputPath = expandUserPath(output);
-		writeFileSync(outputPath, text, "utf8");
-		p.intro("codemem export-memories");
-		p.log.success(
-			[
-				`Output:    ${outputPath}`,
-				`Sessions:  ${payload.sessions.length.toLocaleString()}`,
-				`Memories:  ${payload.memory_items.length.toLocaleString()}`,
-				`Summaries: ${payload.session_summaries.length.toLocaleString()}`,
-				`Prompts:   ${payload.user_prompts.length.toLocaleString()}`,
-			].join("\n"),
-		);
-		p.outro("done");
+const exportMemoriesAction = (
+	output: string,
+	opts: DbOpts & {
+		project?: string;
+		allProjects?: boolean;
+		includeInactive?: boolean;
+		since?: string;
 	},
-);
+) => {
+	const payload = exportMemories({
+		dbPath: resolveDbPath(resolveDbOpt(opts)),
+		project: opts.project,
+		allProjects: opts.allProjects,
+		includeInactive: opts.includeInactive,
+		since: opts.since,
+	});
+	const text = `${JSON.stringify(payload, null, 2)}\n`;
+	if (output === "-") {
+		process.stdout.write(text);
+		return;
+	}
+	const outputPath = expandUserPath(output);
+	writeFileSync(outputPath, text, "utf8");
+	p.intro("codemem memory export");
+	p.log.success(
+		[
+			`Output:    ${outputPath}`,
+			`Sessions:  ${payload.sessions.length.toLocaleString()}`,
+			`Memories:  ${payload.memory_items.length.toLocaleString()}`,
+			`Summaries: ${payload.session_summaries.length.toLocaleString()}`,
+			`Prompts:   ${payload.user_prompts.length.toLocaleString()}`,
+		].join("\n"),
+	);
+	p.outro("done");
+};
 
-export const exportMemoriesCommand = cmd;
+export const exportMemoriesCommand = createExportMemoriesCommand();

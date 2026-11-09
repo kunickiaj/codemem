@@ -1,6 +1,12 @@
 import { Readable } from "node:stream";
+import * as p from "@clack/prompts";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@clack/prompts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@clack/prompts")>();
+	return { ...actual, intro: vi.fn(), outro: vi.fn(), note: vi.fn() };
+});
 
 const buildMemoryPackAsync = vi.fn();
 const buildMemoryPackWithTraceAsync = vi.fn(async (...args: unknown[]) => {
@@ -78,6 +84,7 @@ vi.mock("@codemem/core", async (importOriginal) => {
 	};
 });
 
+import { registerRootCommands } from "../command-tree.js";
 import { packCommand, parseInternalLedgerPayload, renderPackTrace } from "./pack.js";
 
 beforeEach(() => vi.stubEnv("CODEMEM_PROJECT", ""));
@@ -102,6 +109,294 @@ async function parsePackCommand(args: string[]): Promise<void> {
 	root.addCommand(packCommand);
 	await root.parseAsync(["pack", ...args], { from: "user" });
 }
+
+async function parseMemoryCommand(
+	name: "context" | "pack",
+	args: string[],
+	inherited: string[] = [],
+) {
+	const root = registerRootCommands(new Command("codemem").enablePositionalOptions());
+	await root.parseAsync(["memory", ...inherited, name, ...args], { from: "user" });
+}
+
+function packFixture(packText = "## Summary\n[101] (decision) Keep Search") {
+	return {
+		items: packText ? [{ id: 101, kind: "decision", title: "Keep Search", subtitle: null }] : [],
+		metrics: {
+			total_items: packText ? 1 : 0,
+			pack_tokens: packText ? 42 : 0,
+			fallback_used: false,
+			sources: { fts: packText ? 1 : 0, semantic: 0, fuzzy: 0 },
+		},
+		pack_text: packText,
+	};
+}
+
+describe("public context and compatibility pack contracts", () => {
+	it.each(["body", "empty"])("prints only raw context text for %s results", async (kind) => {
+		// Arrange: context output must be safe to insert directly into a prompt.
+		const result = packFixture(kind === "body" ? "RAW\nPACK" : "");
+		buildMemoryPackAsync.mockResolvedValue(result);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		const wrappers = [
+			vi.mocked(p.intro).mockClear(),
+			vi.mocked(p.outro).mockClear(),
+			vi.mocked(p.note).mockClear(),
+			...(["info", "warn", "step", "error"] as const).map((method) =>
+				vi.spyOn(p.log, method).mockImplementation(() => {}),
+			),
+		];
+		// Act
+		await parseMemoryCommand("context", ["task"]);
+		// Assert
+		expect(log.mock.calls).toEqual([[result.pack_text]]);
+		for (const wrapper of wrappers) expect(wrapper).not.toHaveBeenCalled();
+	});
+
+	it.each(["body", "empty"])(
+		"preserves exact JSON across all retrieval entrypoints for %s results",
+		async (kind) => {
+			// Arrange
+			const result = packFixture(kind === "body" ? undefined : "");
+			buildMemoryPackAsync.mockResolvedValue(result);
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+			// Act
+			await parsePackCommand(["task", "--json"]);
+			await parseMemoryCommand("pack", ["task", "--json"]);
+			await parseMemoryCommand("context", ["task", "--json"]);
+			// Assert: equality rejects added envelopes, trace fields, or renamed metrics.
+			expect(log.mock.calls.map(([output]) => JSON.parse(String(output)))).toEqual([
+				result,
+				result,
+				result,
+			]);
+		},
+	);
+
+	it("honors database and JSON options plus the complete context request", async () => {
+		// Arrange
+		buildMemoryPackAsync.mockResolvedValue(packFixture());
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", [
+			"task",
+			"--project",
+			"fixture",
+			"--limit",
+			"3",
+			"--token-budget",
+			"80",
+			"--working-set-file",
+			"src/a.ts",
+			"--working-set-file",
+			"src/b.ts",
+			"--compact",
+			"--compact-detail",
+			"2",
+			"--compression-mode",
+			"ids",
+			"--db-path",
+			"fixture.sqlite",
+			"--json",
+		]);
+		// Assert
+		expect(storePaths).toEqual(["fixture.sqlite"]);
+		expect(buildMemoryPackAsync).toHaveBeenCalledExactlyOnceWith(
+			"task",
+			3,
+			80,
+			{ project: "fixture", working_set_paths: ["src/a.ts", "src/b.ts"] },
+			{ compact: true, compactDetailCount: 2, compressionMode: "ids" },
+		);
+		expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual(packFixture());
+	});
+});
+
+describe("context errors and trace routing", () => {
+	it("keeps invalid plain context requests off stdout", async () => {
+		// Arrange
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const clackError = vi.spyOn(p.log, "error").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", ["task", "--limit", "0"]);
+		// Assert
+		expect(stdout).not.toHaveBeenCalled();
+		expect(stderr).toHaveBeenCalledExactlyOnceWith("limit must be a positive integer");
+		expect(clackError).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(2);
+		expect(buildMemoryPackAsync).not.toHaveBeenCalled();
+	});
+
+	it("keeps plain context trace failures off stdout", async () => {
+		// Arrange
+		buildMemoryPackTraceAsync.mockRejectedValue(new Error("trace failure"));
+		const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+		const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const clackError = vi.spyOn(p.log, "error").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", ["trace", "task"]);
+		// Assert
+		expect(stdout).not.toHaveBeenCalled();
+		expect(stderr).toHaveBeenCalledExactlyOnceWith("trace failure");
+		expect(clackError).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(1);
+		expect(closeStoreAsync).toHaveBeenCalledOnce();
+	});
+
+	it.each(["context", "pack"] as const)(
+		"returns structured errors and closes %s after retrieval failure",
+		async (name) => {
+			// Arrange
+			buildMemoryPackAsync.mockRejectedValue(new Error("fixture failure"));
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+			// Act
+			await parseMemoryCommand(name, ["task", "--json"]);
+			// Assert
+			expect(log.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([
+				{ error: "pack_failed", message: "fixture failure" },
+			]);
+			expect(process.exitCode).toBe(1);
+			expect(closeStoreAsync).toHaveBeenCalledOnce();
+			expect(closeStore).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		["--limit", "0"],
+		["--compression-mode", "invalid"],
+	])("rejects invalid context option %s before retrieval", async (flag, value) => {
+		// Arrange
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", ["task", "--json", flag, value]);
+		// Assert
+		expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({ error: "usage_error" });
+		expect(process.exitCode).toBe(2);
+		expect(buildMemoryPackAsync).not.toHaveBeenCalled();
+	});
+
+	it("routes context trace through parsed child options with the unchanged JSON shape", async () => {
+		// Arrange
+		const trace = { version: 1, inputs: { query: "task" }, output: { pack_text: "trace body" } };
+		buildMemoryPackTraceAsync.mockResolvedValue(trace);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", [
+			"trace",
+			"task",
+			"--json",
+			"--db-path",
+			"trace.sqlite",
+			"--all-projects",
+			"--limit",
+			"2",
+			"--token-budget",
+			"60",
+			"--working-set-file",
+			"src/trace.ts",
+			"--compression-mode",
+			"compact",
+		]);
+		// Assert
+		expect(buildMemoryPackTraceAsync).toHaveBeenCalledExactlyOnceWith(
+			"task",
+			2,
+			60,
+			{ working_set_paths: ["src/trace.ts"] },
+			{ compressionMode: "compact" },
+		);
+		expect(buildMemoryPackAsync).not.toHaveBeenCalled();
+		expect(log.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([trace]);
+		expect(storePaths).toEqual(["trace.sqlite"]);
+		expect(closeStoreAsync).toHaveBeenCalledOnce();
+	});
+
+	it("reports context trace failures without escaping the command boundary", async () => {
+		// Arrange
+		buildMemoryPackTraceAsync.mockRejectedValue(new Error("trace failure"));
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		// Act
+		await parseMemoryCommand("context", ["trace", "task", "--json"]);
+		// Assert
+		expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({
+			error: "pack_trace_failed",
+			message: "trace failure",
+		});
+		expect(process.exitCode).toBe(1);
+		expect(closeStoreAsync).toHaveBeenCalledOnce();
+	});
+});
+
+describe("hidden pack compatibility", () => {
+	it.each([
+		{ route: "root", kind: "body" },
+		{ route: "root", kind: "empty" },
+		{ route: "memory", kind: "body" },
+		{ route: "memory", kind: "empty" },
+	])("keeps the $route pack human report for $kind results", async ({ route, kind }) => {
+		// Arrange
+		const result = packFixture(kind === "body" ? undefined : "");
+		buildMemoryPackAsync.mockResolvedValue(result);
+		const intro = vi.mocked(p.intro).mockClear();
+		const outro = vi.mocked(p.outro).mockClear();
+		const note = vi.mocked(p.note).mockClear();
+		const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
+		vi.spyOn(p.log, "info").mockImplementation(() => {});
+		vi.spyOn(p.log, "step").mockImplementation(() => {});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		// Act
+		if (route === "root") await parsePackCommand(["task"]);
+		else await parseMemoryCommand("pack", ["task"]);
+		// Assert
+		expect(intro).toHaveBeenCalledWith('Memory pack for "task"');
+		expect(outro).toHaveBeenCalledWith("done");
+		expect(log).not.toHaveBeenCalled();
+		if (kind === "body") expect(note).toHaveBeenCalledWith(result.pack_text, "Memory context");
+		else {
+			expect(warn).toHaveBeenCalledWith("No relevant memories found.");
+			expect(note).not.toHaveBeenCalled();
+		}
+	});
+
+	it.each(["valid", "malformed"])(
+		"keeps hidden memory pack instrumentation for %s metadata",
+		async (metadata) => {
+			// Arrange
+			const result = packFixture();
+			buildMemoryPackAsync.mockResolvedValue(result);
+			vi.spyOn(process, "stdin", "get").mockReturnValue(
+				Readable.from([
+					metadata === "valid"
+						? JSON.stringify({
+								attempt_id: "018f2db4-f9d3-7a22-8d18-000000000001",
+								source: "opencode",
+								source_session_id: "session-fixture",
+							})
+						: "not-json",
+				]) as unknown as typeof process.stdin,
+			);
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+			// Act
+			await parseMemoryCommand("pack", ["task", "--json", "--internal-ledger", "--all-projects"]);
+			// Assert
+			expect(buildMemoryPackWithTraceAsync).toHaveBeenCalledExactlyOnceWith(
+				"task",
+				10,
+				undefined,
+				{},
+				undefined,
+				metadata === "valid" ? { source: "opencode", hostSessionId: "session-fixture" } : null,
+			);
+			expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toEqual({
+				...result,
+				ledger_artifact_fingerprint: "a".repeat(64),
+			});
+			expect(recordPromptPackArtifacts).toHaveBeenCalledTimes(metadata === "valid" ? 1 : 0);
+			expect(process.exitCode).toBe(0);
+		},
+	);
+});
 
 function deferred() {
 	let resolve!: () => void;

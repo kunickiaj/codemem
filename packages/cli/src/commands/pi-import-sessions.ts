@@ -1,15 +1,15 @@
 /**
- * codemem pi-import-sessions — backfill pi agent session history (design D3/D4).
+ * codemem session import — backfill Pi agent session history.
  *
  * Thin wrapper over core importPiSessions: walks every session JSONL file under
  * <pi-agent-dir>/sessions (project subdirs included, PI_CODING_AGENT_DIR honored).
  *
- * Extraction is opt-in (--extract, off by default): it runs the observer model over
+ * Immediate extraction is opt-in (--extract, off by default): it runs the observer model over
  * the imported history, which costs tokens proportional to backlog size. With
  * --extract the STANDARD flush path (flushRawEvents — the same function the
  * raw-event sweeper calls each tick) runs over the imported pi sessions; there is
  * no bespoke extraction pipeline. Without it, imported events are stored searchable
- * and the running viewer's sweeper picks them up like any other backlog.
+ * and a running service may process them later like any other backlog.
  */
 
 import * as p from "@clack/prompts";
@@ -35,7 +35,7 @@ import {
 } from "../shared-options.js";
 
 const EXTRACT_COST_NOTE =
-	"also extract memories (runs the observer model over imported history — LLM cost scales with backlog; default: off, imported events stay searchable)";
+	"extract immediately (runs the observer model; cost scales with imported history)";
 
 interface PiImportOpts extends DbOpts, JsonOpts {
 	extract?: boolean;
@@ -206,15 +206,22 @@ function logProgress(progress: PiImportProgress): void {
 	}
 }
 
-const cmd = new Command("pi-import-sessions")
-	.configureHelp(helpStyle)
-	.description("Import pi agent session history into the searchable store")
-	.option("--extract", EXTRACT_COST_NOTE);
+export function createPiImportSessionsCommand(): Command {
+	const cmd = new Command("pi-import-sessions")
+		.configureHelp(helpStyle)
+		.description("Import Pi session history")
+		.option("--extract", EXTRACT_COST_NOTE)
+		.addHelpText(
+			"after",
+			"\nImports stay searchable without --extract. A running service may later process them with the observer model, which can incur model costs.",
+		);
 
-addDbOption(cmd);
-addJsonOption(cmd);
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	return cmd.action(piImportSessionsAction);
+}
 
-export const piImportSessionsCommand = cmd.action(async (opts: PiImportOpts) => {
+const piImportSessionsAction = async (opts: PiImportOpts) => {
 	try {
 		const deps: PiImportDeps = opts.json ? {} : { onProgress: logProgress };
 		const result = await runPiImportSessions(opts, deps);
@@ -255,4 +262,6 @@ export const piImportSessionsCommand = cmd.action(async (opts: PiImportOpts) => 
 			process.exitCode = 1;
 		}
 	}
-});
+};
+
+export const piImportSessionsCommand = createPiImportSessionsCommand();

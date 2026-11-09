@@ -10,7 +10,6 @@ import {
 	loadPublicKey,
 	MemoryStore,
 	resolveKeyPaths,
-	startMaintenanceJob,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
@@ -510,45 +509,6 @@ describe("formatSyncAttempt", () => {
 		}
 	});
 
-	it("reports semantic-index diagnostics in sync status json output", async () => {
-		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-diagnostics-test-"));
-		const dbPath = join(tmpDbDir, "mem.sqlite");
-		const configPath = join(tmpDbDir, "config.json");
-		writeFileSync(configPath, JSON.stringify({ sync_enabled: true }, null, 2));
-		const rawDb = connect(dbPath);
-		initTestSchema(rawDb);
-		rawDb.close();
-		const store = new MemoryStore(dbPath);
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		try {
-			startMaintenanceJob(store.db, {
-				kind: "vector_model_migration",
-				title: "Re-indexing memories",
-				status: "pending",
-				message: "Queued vector catch-up for synced bootstrap data",
-				progressTotal: 4,
-				metadata: { processed_embeddable: 1, embeddable_total: 4 },
-			});
-
-			await syncCommand.parseAsync(
-				["status", "--db-path", dbPath, "--config", configPath, "--json"],
-				{ from: "user" },
-			);
-
-			expect(logSpy).toHaveBeenCalledTimes(1);
-			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Record<string, unknown>;
-			expect(payload.semantic_index).toMatchObject({
-				state: "pending",
-				pending_memory_count: 3,
-				maintenance_job: { status: "pending" },
-			});
-		} finally {
-			logSpy.mockRestore();
-			store.close();
-			rmSync(tmpDbDir, { recursive: true, force: true });
-		}
-	});
-
 	it("signs bootstrap status and snapshot requests for the selected peer", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-bootstrap-auth-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
@@ -630,14 +590,13 @@ describe("formatSyncAttempt", () => {
 	});
 });
 
-describe("sync status scope progress", () => {
-	it("reports per-Space sync progress in sync status output", async () => {
+describe("sync peers scope progress", () => {
+	it("reports received and pending scopes while preserving peer fields", async () => {
+		// Arrange: one authorized scope has a cursor and one is still pending.
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-status-scopes-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
-		const configPath = join(tmpDbDir, "config.json");
 		const keysDir = join(tmpDbDir, "keys");
 		const previousKeysDir = process.env.CODEMEM_KEYS_DIR;
-		writeFileSync(configPath, JSON.stringify({ sync_enabled: true }, null, 2));
 		const rawDb = connect(dbPath);
 		initTestSchema(rawDb);
 		rawDb.close();
@@ -648,25 +607,32 @@ describe("sync status scope progress", () => {
 			const now = "2026-01-01T00:00:00.000Z";
 			await seedScopeStatusFixture(store, now, keysDir);
 			store.db
+				.prepare("UPDATE sync_peers SET addresses_json = ? WHERE peer_device_id = ?")
+				.run('["http://127.0.0.1:7337"]', "peer-device");
+			store.db
 				.prepare(
 					`INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
 					 VALUES (?, ?, ?, ?, ?)`,
 				)
 				.run("peer-device", "work", "2026-01-01T00:00:01Z|op", null, now);
 
-			await syncCommand.parseAsync(
-				["status", "--db-path", dbPath, "--config", configPath, "--json"],
-				{
-					from: "user",
-				},
-			);
+			// Act: read scope diagnostics from the peer listing.
+			await syncCommand.parseAsync(["peers", "--db-path", dbPath, "--json"], {
+				from: "user",
+			});
 
-			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
-				peers?: Array<{
-					scopes?: Array<{ label: string; scope_id: string; bootstrapped: boolean }>;
-				}>;
-			};
-			expect(payload.peers?.[0]?.scopes).toEqual(
+			// Assert: retain the existing peer identity and add scope progress.
+			const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Array<{
+				peer_device_id: string;
+				scopes: Array<{ label: string; scope_id: string; bootstrapped: boolean }>;
+			}>;
+			expect(payload[0]).toMatchObject({
+				peer_device_id: "peer-device",
+				name: "Work laptop",
+				addresses: '["http://127.0.0.1:7337"]',
+			});
+			expect(payload[0]).not.toHaveProperty("public_key");
+			expect(payload[0]?.scopes).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({ label: "Work", scope_id: "work", bootstrapped: true }),
 					expect.objectContaining({
@@ -680,7 +646,7 @@ describe("sync status scope progress", () => {
 			logSpy.mockClear();
 			const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 			try {
-				await syncCommand.parseAsync(["status", "--db-path", dbPath, "--config", configPath], {
+				await syncCommand.parseAsync(["peers", "--db-path", dbPath], {
 					from: "user",
 				});
 
@@ -737,15 +703,13 @@ describe("sync doctor identity diagnostics", () => {
 	});
 });
 
-describe("sync status actual runtime signer diagnostics", () => {
+describe("sync peers actual runtime signer diagnostics", () => {
 	it.each(signingContexts)(
 		"reports only authorized received scopes with %s, without writes",
 		async (context) => {
 			// Arrange: real v1 proof and cursors alone must not authorize a missing/wrong signer.
 			const root = mkdtempSync(join(tmpdir(), "sync-status-signer-test-"));
 			const dbPath = join(root, "mem.sqlite");
-			const configPath = join(root, "config.json");
-			writeFileSync(configPath, JSON.stringify({ sync_enabled: true }));
 			const rawDb = connect(dbPath);
 			initTestSchema(rawDb);
 			rawDb.close();
@@ -768,24 +732,19 @@ describe("sync status actual runtime signer diagnostics", () => {
 				const beforeVersion = store.db.pragma("data_version", { simple: true });
 
 				// Act: exercise the public command, including its separate store connection.
-				await syncCommand.parseAsync(
-					["status", "--db-path", dbPath, "--config", configPath, "--json"],
-					{ from: "user" },
-				);
-				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as {
-					peers: Array<{
-						device_id: string;
-						scopes: Array<{ scope_id: string; bootstrapped: boolean }>;
-					}>;
-				};
+				await syncCommand.parseAsync(["peers", "--db-path", dbPath, "--json"], { from: "user" });
+				const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Array<{
+					peer_device_id: string;
+					scopes: Array<{ scope_id: string; bootstrapped: boolean }>;
+				}>;
 
 				// Assert: no false received claim, manual overlap/direct peer controls remain intact.
 				expect(
-					payload.peers
-						.find((peer) => peer.device_id === "peer-device")
+					payload
+						.find((peer) => peer.peer_device_id === "peer-device")
 						?.scopes.map(({ scope_id, bootstrapped }) => ({ scope_id, bootstrapped })),
 				).toEqual(expectedDiagnosticScopes(context));
-				expect(payload.peers.find((peer) => peer.device_id === "direct-peer")).toMatchObject({
+				expect(payload.find((peer) => peer.peer_device_id === "direct-peer")).toMatchObject({
 					scopes: [],
 				});
 				expect(diagnosticDatabaseSnapshot(store.db)).toEqual(beforeDb);

@@ -42,10 +42,13 @@ vi.mock("@codemem/core", async (importOriginal) => {
 });
 
 import { ContextOnlyReplayError } from "@codemem/core";
-import { memoryCommand } from "./memory.js";
+import { createExtractionDiagnosticsCommand } from "./memory.js";
 
 function command(name: string) {
-	const selected = memoryCommand.commands.find((candidate) => candidate.name() === name);
+	const canonical = name.replace("extraction-", "");
+	const selected = createExtractionDiagnosticsCommand().commands.find(
+		(candidate) => candidate.name() === canonical,
+	);
 	if (!selected) throw new Error(`expected ${name} command`);
 	return selected;
 }

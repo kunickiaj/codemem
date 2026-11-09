@@ -10,8 +10,8 @@ The CLI serves three audiences with different priorities:
 
 | Audience | Primary concern | Example invocation |
 |----------|----------------|-------------------|
-| **Interactive user** | Discoverability, friendly output, helpful errors | `codemem search "auth flow"` |
-| **Automation / scripts** | Stable JSON contracts, exit codes, no prompts | `codemem stats --json` |
+| **Interactive user** | Discoverability, friendly output, helpful errors | `codemem memory search "auth flow"` |
+| **Automation / scripts** | Stable JSON contracts, exit codes, no prompts | `codemem memory stats --json` |
 | **Adapter / runtime plumbing** | Speed, minimal output, stdin/stdout pipes | `codemem claude-hook-ingest < event.json` |
 
 When conventions conflict between audiences, prefer the automation caller.
@@ -22,8 +22,8 @@ not the other way around.
 
 ### Nesting depth
 
-- Maximum two levels of subcommands: `codemem <group> <action>`.
-- Three levels (e.g., `codemem sync coordinator list-devices`) is the hard ceiling and should be avoided for new commands. Existing three-level commands may stay until a migration replaces them.
+- Normally use two levels of subcommands: `codemem <group> <action>`.
+- Three levels are allowed when a specialist resource group needs them, such as `codemem maintenance memory prune`. Do not add a fourth level.
 - If a group would need a fourth level, promote the inner group to the top level instead.
 
 ### When to create a subcommand group
@@ -38,15 +38,15 @@ Do **not** create a group for:
 
 ### Grouping by concern
 
-- **User-facing data operations** belong under their noun group: `memory show`, `memory export`, `memory import`, `db prune-memories`.
+- **User-facing data operations** belong under their noun group: `memory show`, `memory export`, `memory import`, `maintenance memory prune`.
 - **Operator/admin surfaces** that expose a distinct trust boundary or deployment concern belong in their own top-level group (e.g., `coordinator` for coordinator admin, not nested under `sync`).
-- **Lifecycle/service management** belongs under the service noun: `serve start`, `serve stop`.
+- **Lifecycle/service management** belongs under the service noun: `service start`, `service stop`.
 - **Plumbing/adapter commands** that are called by other programs (not humans) may stay top-level with clear naming. Adapter-only commands such as `claude-hook-*`, `codex-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger` remain registered for packaged and stale-client compatibility but stay hidden from help and shell completion. User-configured entrypoints such as `mcp` remain visible.
 
 ### Naming
 
-- Subcommand groups are **nouns**: `memory`, `sync`, `db`, `config`, `coordinator`.
-- Actions are **verbs** or **verb-noun**: `search`, `show`, `enable`, `list-devices`, `prune-memories`.
+- Subcommand groups are **nouns**: `memory`, `session`, `sync`, `maintenance`, `diagnostics`, `config`, `coordinator`.
+- Actions are **verbs** or **verb-noun**: `search`, `show`, `enable`, `list`, `prune`.
 - Prefer grouping related actions under their noun rather than top-level `verb-noun` compounds. If `export` and `import` both operate on memories, they belong under `memory export` and `memory import`, not as standalone `export-memories` / `import-memories`.
 - Avoid abbreviations in command names. Flags may abbreviate (`--db` not `--database`) when the short form is universally understood.
 
@@ -56,12 +56,12 @@ Do **not** create a group for:
 
 Use a positional argument when **all** of these are true:
 1. It is the **primary noun** the command acts on (the "what").
-2. There is **exactly one** required positional, or at most two when the pair is unambiguous (e.g., `rename-project <old> <new>`).
+2. There is **exactly one** required positional, or at most two when the pair is unambiguous (e.g., `maintenance project rename <old> <new>`).
 3. The meaning is **obvious from context** without reading `--help`.
 
 Good positional arguments:
 ```
-codemem search <query>
+codemem memory search <query>
 codemem memory show <id>
 codemem coordinator list-devices <group>
 codemem memory import <file>
@@ -77,9 +77,9 @@ Use a flag when **any** of these are true:
 
 Good flags:
 ```
-codemem search <query> --limit 10 --json
+codemem memory search <query> --limit 10 --json
 codemem sync enable --host 0.0.0.0 --port 7337
-codemem serve start --config /path/to/config.json
+codemem service start --config /path/to/config.json
 ```
 
 ### Required flags
@@ -138,7 +138,7 @@ When a command controls a specific service, use an explicit prefix:
 
 | Service | Flags |
 |---------|-------|
-| Viewer/serve | `--host`, `--port` (default meaning; this is the primary service) |
+| Viewer/service | `--host`, `--port` (default meaning; this is the primary service) |
 | Sync listener | `--sync-host`, `--sync-port` |
 | Coordinator | `--coordinator-host`, `--coordinator-port` |
 
@@ -186,7 +186,7 @@ The following command classes do **not** need `--json`:
 
 | Class | Reason | Examples |
 |-------|--------|---------|
-| **Lifecycle commands** | Side-effect only; success/failure is the exit code | `serve start`, `serve stop`, `serve restart` |
+| **Lifecycle commands** | Side-effect only; success/failure is the exit code | `service start`, `service stop`, `service restart` |
 | **Stdin/stdout plumbing** | Already a structured pipe; adding `--json` would conflict with the transport | `claude-hook-ingest`, `enqueue-raw-event`, `mcp` |
 | **Interactive setup** | Prompts are the primary UI; not intended for scripting | `setup` |
 
@@ -219,42 +219,41 @@ Commands that consume stdin (e.g., `claude-hook-ingest`, `enqueue-raw-event`):
 
 ## Lifecycle commands
 
-The viewer is the long-running runtime. Lifecycle management belongs under `serve`:
+The local service is the long-running runtime. It runs the viewer, sync, raw-event
+ingestion, and maintenance. Canonical lifecycle management belongs under `service`:
 
 ```
-codemem serve start         # background by default
-codemem serve stop
-codemem serve restart
-codemem serve start -f      # foreground; -f / --foreground
+codemem service start         # background by default
+codemem service stop
+codemem service restart       # background after restart
+codemem service start -f      # foreground; -f / --foreground
+codemem service status        # same report as codemem status
 ```
 
-- Bare `codemem serve` (no action argument) runs in the **foreground**. This is the simple
-  "I want to see what's happening" invocation. It is equivalent to `codemem serve start --foreground`.
-- `codemem serve start` (with explicit action) runs in the **background** by default,
-  which is the normal production/daemon mode.
-- No legacy flags (`--stop`, `--restart`, `--background`). Use explicit action arguments.
-- `sync start|stop|restart` should not exist as separate commands; they are lifecycle aliases for `serve` and create confusion about what process is being managed.
+- `codemem service start` runs in the background by default. `-f` or `--foreground`
+  keeps it attached to the terminal.
+- `codemem service restart` restarts the local service in the background.
+- `codemem service status` and top-level `codemem status` return the same local
+  operational report.
+- `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations
+  continue to work, and bare `codemem serve` runs in the foreground.
+- `sync start|stop|restart` should not exist as separate commands. The viewer and
+  sync runtime share the `service` lifecycle.
 
 ## Backwards compatibility
 
-### Deprecation process
+### Command migrations
 
-1. **Add** the new canonical command alongside the old one.
-2. **Warn** on stderr when the old form is used: `Warning: 'codemem sync start' is deprecated, use 'codemem serve start'`.
-3. **Hide** the old command from `--help` and shell completion after one release.
-4. **Remove** the old command after at least two releases or one major version, whichever is longer.
-5. **Never** silently change the behavior of an existing command name. If the semantics change, it needs a new name.
-
-### Compatibility aliases
-
-When a command is renamed or moved (e.g., `sync coordinator list-devices` → `coordinator list-devices`):
-- Add a hidden compatibility alias at the old path that delegates to the new implementation.
-- The alias must preserve the exact same behavior, arguments, flags, and output contract.
-- The alias emits a deprecation warning on stderr, then runs the canonical command.
-- Aliases do not appear in `--help` or shell completion.
-- Aliases follow the same removal timeline as deprecated commands (2+ releases or 1 major version).
+Human-facing commands may be renamed or removed when product callers have been
+updated. Update the documentation, help, and shell completion in the same change.
+Keep an alias only when a persisted integration needs it or a migration calls for
+one. `codemem serve` is an explicit temporary exception: existing invocations
+remain supported, and bare `codemem serve` remains foreground.
 
 ### Automation stability promise
+
+These guarantees apply while a command remains supported. Command removals,
+including commands with `--json`, follow the migration policy above.
 
 - Any command with `--json` output is an automation contract. Its JSON shape may gain new fields but must not remove or rename existing fields without a major version bump.
 - Positional argument order must not change.
@@ -278,7 +277,7 @@ When a command is renamed or moved (e.g., `sync coordinator list-devices` → `c
 
 Before adding a new command, answer:
 1. **Who is the primary audience?** (interactive / automation / adapter)
-2. **What is the primary noun?** → That's your positional argument.
+  2. **What is the primary noun?** → That is your positional argument.
 3. **What group does it belong to?** → If none, is it frequent enough for top-level?
 4. **Does it need `--json`?** → Yes unless it falls in an exempt class (lifecycle, plumbing, interactive setup).
 5. **What existing shared flags does it need?** → Use the option builders, don't copy-paste.

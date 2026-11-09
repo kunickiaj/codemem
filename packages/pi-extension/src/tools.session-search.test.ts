@@ -117,7 +117,9 @@ describe("memory_session_search registration", () => {
 		// D6: bounded output via description only — no promptSnippet/promptGuidelines.
 		expect(Object.hasOwn(tools.memory_session_search, "promptSnippet")).toBe(false);
 		expect(Object.hasOwn(tools.memory_session_search, "promptGuidelines")).toBe(false);
-		expect(tools.memory_session_search.description).toContain("pi-import-sessions");
+		// Backfill guidance must use the canonical import command exposed by the CLI.
+		expect(tools.memory_session_search.description).toContain("`codemem session import`");
+		expect(tools.memory_session_search.description).not.toContain("pi-import-sessions");
 	});
 });
 

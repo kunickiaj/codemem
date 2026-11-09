@@ -16,6 +16,11 @@ import {
 import { retryNativeHookReceipt } from "./capture-native-retry.js";
 import { retryRejectedEvent } from "./capture-retry.js";
 import {
+	createCaptureCheckCommand,
+	createCaptureRetryCommand,
+	createCaptureStatusCommand,
+} from "./db.js";
+import {
 	inspectNativeHookRejectedReceipt,
 	listNativeHookRejectedReceipts,
 	type NativeHookProvider,
@@ -143,34 +148,11 @@ export async function runShowRejected(
 	}
 }
 
-export const captureCommand = new Command("capture")
-	.configureHelp(helpStyle)
-	.description("Inspect and explicitly retry retained capture events");
-
-const listRejectedCommand = new Command("list-rejected")
-	.configureHelp(helpStyle)
-	.description("List retained rejections without reading payloads");
 function addInspectionOptions(command: Command): void {
 	command
 		.option("--format <format>", "opencode-raw-event-v1 or native-hook-v1", "opencode-raw-event-v1")
 		.option("--provider <provider>", "native format only: claude, codex, or pi");
 }
-addInspectionOptions(listRejectedCommand);
-addJsonOption(listRejectedCommand);
-listRejectedCommand.action(runListRejected);
-
-const showRejectedCommand = new Command("show-rejected")
-	.configureHelp(helpStyle)
-	.description("Inspect one retained rejection without modifying it")
-	.argument("<receipt>", "receipt from list-rejected")
-	.option("-r, --raw", "include private text as a JSON string (always output JSON)")
-	.addHelpText(
-		"after",
-		"\n--raw also emits errors as JSON. If the file changes, retry inspection.\nFiles remain untouched.",
-	);
-addJsonOption(showRejectedCommand);
-addInspectionOptions(showRejectedCommand);
-showRejectedCommand.action(runShowRejected);
 
 function reportRecoveryError(error: unknown, opts: JsonOpts): void {
 	const usageError = error instanceof RawEventSpoolInspectionError && error.code === "usage_error";
@@ -228,22 +210,51 @@ export async function runRetryRejected(
 	}
 }
 
-const retryRejectedCommand = new Command("recover-rejected")
-	.configureHelp(helpStyle)
-	.description("Retry one retained rejection against the explicit current target")
-	.argument("<receipt>", "receipt from list-rejected")
-	.option("-y, --yes", "confirm delivery to the current database and runtime identity")
-	.option("--keep-receipt", "keep the same receipt after the viewer acknowledges the event")
-	.addHelpText(
-		"after",
-		"\nRequires --db-path and -y. Original target provenance is unknown.\nUses current viewer profile and identity. Never falls back to CLI or SQLite.",
-	);
-addDbOption(retryRejectedCommand);
-addJsonOption(retryRejectedCommand);
-addInspectionOptions(retryRejectedCommand);
-retryRejectedCommand.action(runRetryRejected);
+export function createCaptureDiagnosticsCommand(): Command {
+	const captureCommand = new Command("capture")
+		.configureHelp(helpStyle)
+		.description("Inspect and explicitly retry retained capture events");
 
-captureCommand
-	.addCommand(listRejectedCommand)
-	.addCommand(showRejectedCommand)
-	.addCommand(retryRejectedCommand);
+	const listRejectedCommand = new Command("list-rejected")
+		.configureHelp(helpStyle)
+		.description("List retained rejections without reading payloads");
+	addInspectionOptions(listRejectedCommand);
+	addJsonOption(listRejectedCommand);
+	listRejectedCommand.action(runListRejected);
+
+	const showRejectedCommand = new Command("show-rejected")
+		.configureHelp(helpStyle)
+		.description("Inspect one retained rejection without modifying it")
+		.argument("<receipt>", "receipt from list-rejected")
+		.option("-r, --raw", "include private text as a JSON string (always output JSON)")
+		.addHelpText(
+			"after",
+			"\n--raw also emits errors as JSON. If the file changes, retry inspection.\nFiles remain untouched.",
+		);
+	addJsonOption(showRejectedCommand);
+	addInspectionOptions(showRejectedCommand);
+	showRejectedCommand.action(runShowRejected);
+
+	const retryRejectedCommand = new Command("recover-rejected")
+		.configureHelp(helpStyle)
+		.description("Retry one retained rejection against the explicit current target")
+		.argument("<receipt>", "receipt from list-rejected")
+		.option("-y, --yes", "confirm delivery to the current database and runtime identity")
+		.option("--keep-receipt", "keep the same receipt after the viewer acknowledges the event")
+		.addHelpText(
+			"after",
+			"\nRequires --db-path and -y. Original target provenance is unknown.\nUses current viewer profile and identity. Never falls back to CLI or SQLite.",
+		);
+	addDbOption(retryRejectedCommand);
+	addJsonOption(retryRejectedCommand);
+	addInspectionOptions(retryRejectedCommand);
+	retryRejectedCommand.action(runRetryRejected);
+
+	return captureCommand
+		.addCommand(listRejectedCommand)
+		.addCommand(showRejectedCommand)
+		.addCommand(retryRejectedCommand)
+		.addCommand(createCaptureStatusCommand())
+		.addCommand(createCaptureRetryCommand())
+		.addCommand(createCaptureCheckCommand());
+}

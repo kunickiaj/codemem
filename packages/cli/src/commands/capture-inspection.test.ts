@@ -105,7 +105,7 @@ afterEach(async () => {
 
 async function run(args: string[], options = { textOnly: false }) {
 	const command = registerRootCommands(new Command("codemem")).exitOverride();
-	await command.parseAsync(["capture", ...args], { from: "user" });
+	await command.parseAsync(["diagnostics", "capture", ...args], { from: "user" });
 	const calls = vi.mocked(process.stdout.write).mock.calls;
 	expect(calls).toHaveLength(1);
 	const text = String(calls[0]?.[0]);

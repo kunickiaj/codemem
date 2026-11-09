@@ -68,7 +68,7 @@ afterEach(async () => {
 
 async function run(args: string[]) {
 	const command = registerRootCommands(new Command("codemem")).exitOverride();
-	await command.parseAsync(["capture", ...args], { from: "user" });
+	await command.parseAsync(["diagnostics", "capture", ...args], { from: "user" });
 	return vi
 		.mocked(process.stdout.write)
 		.mock.calls.map(([text]) => String(text))

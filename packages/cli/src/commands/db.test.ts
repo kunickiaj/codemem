@@ -1,14 +1,105 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as p from "@clack/prompts";
 import { initDatabase, MemoryStore } from "@codemem/core";
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
-import { dbCommand } from "./db.js";
 
-describe("db command", () => {
+vi.mock("@clack/prompts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@clack/prompts")>();
+	return { ...actual, intro: vi.fn(), outro: vi.fn() };
+});
+
+import { registerRootCommands } from "../command-tree.js";
+import { maintenanceCommand } from "./maintenance.js";
+
+const database = maintenanceCommand.commands.find((command) => command.name() === "database");
+const memory = maintenanceCommand.commands.find((command) => command.name() === "memory");
+const backfills = maintenanceCommand.commands.find((command) => command.name() === "backfill");
+
+describe("maintenance project repair behavior", () => {
+	it.each([
+		{ action: "rename", apply: false },
+		{ action: "rename", apply: true },
+		{ action: "normalize", apply: false },
+		{ action: "normalize", apply: true },
+	])("$action preserves dry-run/apply semantics (apply=$apply)", async ({ action, apply }) => {
+		// Arrange: use local SQLite only and compare both affected tables with unrelated rows.
+		const directory = mkdtempSync(join(tmpdir(), "codemem-project-repair-"));
+		const dbPath = join(directory, "test.sqlite");
+		initDatabase(dbPath);
+		const store = new MemoryStore(dbPath);
+		const projects = ["old_name%", "/checkout/old_name%", "other", "/checkout/oldXnameY", null];
+		const startedAt = "2026-01-01T00:00:00.000Z";
+		for (const [index, project] of projects.entries()) {
+			store.db
+				.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+				.run(startedAt, project);
+			store.recordRawEvent({
+				opencodeSessionId: `project-${index}`,
+				eventId: `event-${index}`,
+				eventType: "user_prompt",
+				payload: { type: "user_prompt", prompt_text: "fixture" },
+				tsWallMs: 1_767_225_600_000,
+			});
+			store.db
+				.prepare("UPDATE raw_event_sessions SET project = ? WHERE opencode_session_id = ?")
+				.run(project, `project-${index}`);
+		}
+		const snapshot = () => ({
+			sessions: store.db
+				.prepare("SELECT id, started_at, project FROM sessions ORDER BY id")
+				.all() as Array<{ id: number; started_at: string; project: string | null }>,
+			raw: store.db
+				.prepare(
+					"SELECT opencode_session_id, project FROM raw_event_sessions ORDER BY opencode_session_id",
+				)
+				.all() as Array<{ opencode_session_id: string; project: string | null }>,
+		});
+		const before = snapshot();
+		const intro = vi.mocked(p.intro).mockClear();
+		const outro = vi.mocked(p.outro).mockClear();
+		const info = vi.spyOn(p.log, "info").mockImplementation(() => {});
+		const message = vi.spyOn(p.log, "message").mockImplementation(() => {});
+		try {
+			// Act: parse the public path so command registration is exercised too.
+			const program = registerRootCommands(new Command("codemem").enablePositionalOptions());
+			const args = ["maintenance", "project", action];
+			if (action === "rename") args.push("old_name%", "new-name");
+			args.push("--db-path", dbPath);
+			if (apply) args.push("--apply");
+			await program.parseAsync(args, { from: "user" });
+			const after = snapshot();
+			// Assert: wildcard characters in rename inputs are literal, and default runs never write.
+			const expectedProjects = projects.map((project) => {
+				if (!apply || project === null) return project;
+				if (action === "normalize") return project.split("/").at(-1);
+				return project === "old_name%" || project === "/checkout/old_name%" ? "new-name" : project;
+			});
+			expect(after).toEqual({
+				sessions: before.sessions.map((row, index) => ({
+					...row,
+					project: expectedProjects[index],
+				})),
+				raw: before.raw.map((row, index) => ({ ...row, project: expectedProjects[index] })),
+			});
+			expect(intro).toHaveBeenCalledWith(`codemem maintenance project ${action}`);
+			expect(outro).toHaveBeenCalledWith(apply ? "done" : "Pass --apply to execute");
+		} finally {
+			store.close();
+			intro.mockRestore();
+			outro.mockRestore();
+			info.mockRestore();
+			message.mockRestore();
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("public maintenance commands", () => {
 	it("registers backfill-tags maintenance subcommand", () => {
-		const backfill = dbCommand.commands.find((command) => command.name() === "backfill-tags");
+		const backfill = backfills?.commands.find((command) => command.name() === "tags");
 		expect(backfill).toBeDefined();
 		const longs = backfill?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--db");
@@ -22,33 +113,25 @@ describe("db command", () => {
 		expect(longs).toContain("--json");
 	});
 
-	it("registers prune-observations and prune-memories subcommands", () => {
-		const pruneObs = dbCommand.commands.find((command) => command.name() === "prune-observations");
-		const pruneMem = dbCommand.commands.find((command) => command.name() === "prune-memories");
-		expect(pruneObs).toBeDefined();
-		expect(pruneMem).toBeDefined();
-
-		const pruneObsLongs = pruneObs?.options.map((option) => option.long) ?? [];
-		expect(pruneObsLongs).toContain("--limit");
-		expect(pruneObsLongs).toContain("--dry-run");
-		expect(pruneObsLongs).toContain("--json");
-
+	it("registers memory prune with repeatable and CSV kind options", () => {
+		// Arrange
+		const pruneMem = memory?.commands.find((command) => command.name() === "prune");
+		// Act
 		const pruneMemLongs = pruneMem?.options.map((option) => option.long) ?? [];
+		// Assert
+		expect(pruneMem).toBeDefined();
 		expect(pruneMemLongs).toContain("--limit");
+		expect(pruneMemLongs).toContain("--kind");
 		expect(pruneMemLongs).toContain("--kinds");
 		expect(pruneMemLongs).toContain("--dry-run");
 		expect(pruneMemLongs).toContain("--json");
 	});
 
 	it("registers dedup-memories, backfill-dedup-keys, backfill-narrative, and ai-backfill-structured subcommands", () => {
-		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
-		const dedupKeys = dbCommand.commands.find(
-			(command) => command.name() === "backfill-dedup-keys",
-		);
-		const narrative = dbCommand.commands.find((command) => command.name() === "backfill-narrative");
-		const aiStructured = dbCommand.commands.find(
-			(command) => command.name() === "ai-backfill-structured",
-		);
+		const dedup = memory?.commands.find((command) => command.name() === "deduplicate");
+		const dedupKeys = backfills?.commands.find((command) => command.name() === "dedup-keys");
+		const narrative = backfills?.commands.find((command) => command.name() === "narrative");
+		const aiStructured = backfills?.commands.find((command) => command.name() === "structured");
 		expect(dedup).toBeDefined();
 		expect(dedupKeys).toBeDefined();
 		expect(narrative).toBeDefined();
@@ -79,7 +162,7 @@ describe("db command", () => {
 	});
 
 	it("registers prune-raw-events subcommand with age-based options", () => {
-		const pruneRaw = dbCommand.commands.find((command) => command.name() === "prune-raw-events");
+		const pruneRaw = database?.commands.find((command) => command.name() === "prune-events");
 		expect(pruneRaw).toBeDefined();
 		const longs = pruneRaw?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--db-path");
@@ -114,7 +197,7 @@ describe("db command", () => {
 	}
 
 	it("prune-raw-events --dry-run deletes nothing", async () => {
-		const pruneRaw = dbCommand.commands.find((command) => command.name() === "prune-raw-events");
+		const pruneRaw = database?.commands.find((command) => command.name() === "prune-events");
 		expect(pruneRaw).toBeDefined();
 		if (!pruneRaw) throw new Error("expected prune-raw-events command");
 
@@ -128,7 +211,7 @@ describe("db command", () => {
 		expect(countRawEvents(dbPath)).toBe(2);
 
 		await pruneRaw.parseAsync(
-			["node", "prune-raw-events", "--db-path", dbPath, "--max-age-days", "1", "--dry-run"],
+			["node", "prune-events", "--db-path", dbPath, "--max-age-days", "1", "--dry-run"],
 			{ from: "node" },
 		);
 
@@ -136,7 +219,7 @@ describe("db command", () => {
 	});
 
 	it("prune-raw-events deletes events older than the cutoff and keeps newer ones", async () => {
-		const pruneRaw = dbCommand.commands.find((command) => command.name() === "prune-raw-events");
+		const pruneRaw = database?.commands.find((command) => command.name() === "prune-events");
 		expect(pruneRaw).toBeDefined();
 		if (!pruneRaw) throw new Error("expected prune-raw-events command");
 
@@ -152,7 +235,7 @@ describe("db command", () => {
 		expect(countRawEvents(dbPath)).toBe(3);
 
 		await pruneRaw.parseAsync(
-			["node", "prune-raw-events", "--db-path", dbPath, "--max-age-days", "1"],
+			["node", "prune-events", "--db-path", dbPath, "--max-age-days", "1"],
 			{ from: "node" },
 		);
 
@@ -170,7 +253,7 @@ describe("db command", () => {
 	});
 
 	it("prune-raw-events rejects invalid --max-age-days and deletes nothing", async () => {
-		const pruneRaw = dbCommand.commands.find((command) => command.name() === "prune-raw-events");
+		const pruneRaw = database?.commands.find((command) => command.name() === "prune-events");
 		expect(pruneRaw).toBeDefined();
 		if (!pruneRaw) throw new Error("expected prune-raw-events command");
 
@@ -190,7 +273,7 @@ describe("db command", () => {
 			for (const bad of ["foo", "0", "1foo", "1.5", "-1", ""]) {
 				process.exitCode = undefined;
 				await pruneRaw.parseAsync(
-					["node", "prune-raw-events", "--db-path", dbPath, "--max-age-days", bad],
+					["node", "prune-events", "--db-path", dbPath, "--max-age-days", bad],
 					{ from: "node" },
 				);
 				expect(process.exitCode).toBe(1);
@@ -203,7 +286,7 @@ describe("db command", () => {
 	});
 
 	it("prune-raw-events reports a clean error (no uncaught throw) on an unreadable DB", async () => {
-		const pruneRaw = dbCommand.commands.find((command) => command.name() === "prune-raw-events");
+		const pruneRaw = database?.commands.find((command) => command.name() === "prune-events");
 		expect(pruneRaw).toBeDefined();
 		if (!pruneRaw) throw new Error("expected prune-raw-events command");
 
@@ -217,7 +300,7 @@ describe("db command", () => {
 		try {
 			await expect(
 				pruneRaw.parseAsync(
-					["node", "prune-raw-events", "--db-path", badDbPath, "--max-age-days", "30"],
+					["node", "prune-events", "--db-path", badDbPath, "--max-age-days", "30"],
 					{ from: "node" },
 				),
 			).resolves.toBeDefined();
@@ -229,7 +312,7 @@ describe("db command", () => {
 	});
 
 	it("rejects invalid dedup window input", async () => {
-		const dedup = dbCommand.commands.find((command) => command.name() === "dedup-memories");
+		const dedup = memory?.commands.find((command) => command.name() === "deduplicate");
 		expect(dedup).toBeDefined();
 		if (!dedup) throw new Error("expected dedup-memories command");
 
@@ -239,7 +322,7 @@ describe("db command", () => {
 		const originalExitCode = process.exitCode;
 		process.exitCode = undefined;
 		try {
-			await dedup.parseAsync(["node", "dedup-memories", "--db-path", dbPath, "--window", "foo"], {
+			await dedup.parseAsync(["node", "deduplicate", "--db-path", dbPath, "--window", "foo"], {
 				from: "node",
 			});
 			expect(process.exitCode).toBe(1);
@@ -283,9 +366,7 @@ describe("db command", () => {
 	}
 
 	it("prune-replication-ops deletes old ops across ALL scopes, not just the default", async () => {
-		const pruneRepl = dbCommand.commands.find(
-			(command) => command.name() === "prune-replication-ops",
-		);
+		const pruneRepl = database?.commands.find((command) => command.name() === "prune-history");
 		expect(pruneRepl).toBeDefined();
 		if (!pruneRepl) throw new Error("expected prune-replication-ops command");
 
@@ -309,7 +390,7 @@ describe("db command", () => {
 		expect(before.get("legacy-shared-review")).toBe(2);
 
 		await pruneRepl.parseAsync(
-			["node", "prune-replication-ops", "--db-path", dbPath, "--max-age-days", "30"],
+			["node", "prune-history", "--db-path", dbPath, "--max-age-days", "30"],
 			{ from: "node" },
 		);
 
@@ -321,9 +402,7 @@ describe("db command", () => {
 	});
 
 	it("prune-replication-ops --dry-run deletes nothing across all scopes", async () => {
-		const pruneRepl = dbCommand.commands.find(
-			(command) => command.name() === "prune-replication-ops",
-		);
+		const pruneRepl = database?.commands.find((command) => command.name() === "prune-history");
 		expect(pruneRepl).toBeDefined();
 		if (!pruneRepl) throw new Error("expected prune-replication-ops command");
 
@@ -337,7 +416,7 @@ describe("db command", () => {
 		store.close();
 
 		await pruneRepl.parseAsync(
-			["node", "prune-replication-ops", "--db-path", dbPath, "--max-age-days", "30", "--dry-run"],
+			["node", "prune-history", "--db-path", dbPath, "--max-age-days", "30", "--dry-run"],
 			{ from: "node" },
 		);
 

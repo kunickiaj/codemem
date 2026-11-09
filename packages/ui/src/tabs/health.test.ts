@@ -280,7 +280,7 @@ it.each([0, 0.5])("counts tag coverage %s with active memories as an issue", (co
 	expect(document.getElementById("healthMeta")?.textContent).toContain("1 issue");
 	expect(document.getElementById("healthMeta")?.textContent).toContain("low tag coverage");
 	expect(document.getElementById("healthActions")?.textContent).toContain(
-		"backfill-tags --dry-run",
+		"maintenance backfill tags --dry-run",
 	);
 });
 

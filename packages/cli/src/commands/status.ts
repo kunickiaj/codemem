@@ -198,7 +198,7 @@ function projectSync(
 		attention.push({
 			code: "sync_degraded",
 			severity: "warning",
-			message: "Sync has recent peer failures; run `codemem sync status`",
+			message: "Sync has recent peer failures; run `codemem sync peers` or `codemem sync doctor`",
 		});
 		return "degraded";
 	}
@@ -230,7 +230,7 @@ function addRuntimeAttention(
 		attention.push({
 			code: "viewer_stopped",
 			severity: "warning",
-			message: "Viewer is stopped; run `codemem serve start` if needed",
+			message: "Service is stopped; run `codemem service start` if needed",
 		});
 		return;
 	}
@@ -311,14 +311,14 @@ function projectDatabaseSubsystems(
 		attention.push({
 			code: "raw_events_failing",
 			severity: "error",
-			message: "Raw-event ingestion exhausted retries recently; run `codemem db raw-events-gate`",
+			message: "Event retries failed recently. Run `codemem diagnostics capture check`",
 		});
 	} else if (pending > 0) {
 		rawState = "backlogged";
 		attention.push({
 			code: "raw_events_backlogged",
 			severity: "warning",
-			message: `${pending} raw events pending; run \`codemem db raw-events-status\``,
+			message: `${pending} captured events pending. Run \`codemem diagnostics capture status\``,
 		});
 	}
 
@@ -329,14 +329,14 @@ function projectDatabaseSubsystems(
 		attention.push({
 			code: "observer_failed",
 			severity: "error",
-			message: "Observer exhausted retries recently; run `codemem db raw-events-gate`",
+			message: "Observer exhausted retries recently. Run `codemem diagnostics capture check`",
 		});
 	} else if (configuredObserver && snapshot.observer.backoff_batches > 0) {
 		observerState = "backoff";
 		attention.push({
 			code: "observer_backoff",
 			severity: "warning",
-			message: "Observer has retryable failures; run `codemem db raw-events-status`",
+			message: "Observer has retryable failures. Run `codemem diagnostics capture status`",
 		});
 	}
 	return {
@@ -415,9 +415,9 @@ export async function collectStatusReport(
 
 export function renderStatusReport(report: OperationalStatusReport): string {
 	const lines = [
-		`codemem status ${report.ok ? "OK" : "ATTENTION"}`,
+		`codemem service status ${report.ok ? "OK" : "ATTENTION"}`,
 		`Database:       ${report.database.state}`,
-		`Viewer:         ${report.runtime.viewer}${report.runtime.pid ? ` (pid ${report.runtime.pid})` : ""}`,
+		`Service:        ${report.runtime.viewer}${report.runtime.pid ? ` (pid ${report.runtime.pid})` : ""}`,
 		`Sync:           ${report.sync.state}`,
 		`Maintenance:    ${report.maintenance.state}`,
 		`Semantic index: ${report.semantic_index.state}`,
@@ -439,7 +439,7 @@ export function createStatusCommand(overrides: Partial<StatusDependencies> = {})
 	const deps: StatusDependencies = { ...defaultDependencies, ...overrides };
 	const command = new Command("status")
 		.configureHelp(helpStyle)
-		.description("Show local operational status")
+		.description("Show service health")
 		.allowUnknownOption(true)
 		.allowExcessArguments(true);
 	addDbOption(command);

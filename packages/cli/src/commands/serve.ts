@@ -76,7 +76,7 @@ function warnIfViewerExposed(host: string, port: number): void {
 
 export function isLikelyViewerCommand(command: string): boolean {
 	const lowered = command.toLowerCase();
-	if (!/\bserve\s+start\b/.test(lowered)) return false;
+	if (!/\b(?:serve|service)\s+start\b/.test(lowered)) return false;
 	return (
 		lowered.includes("codemem") ||
 		lowered.includes("packages/cli/dist/index.js") ||
@@ -1380,7 +1380,7 @@ export async function runServeInvocation(
 
 const serveCmd = new Command("serve")
 	.configureHelp(helpStyle)
-	.description("Run or manage the viewer")
+	.description("Run the local service (compatibility entrypoint; see service)")
 	.argument("[action]", "lifecycle action (start|stop|restart)");
 
 addDbOption(serveCmd);

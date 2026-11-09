@@ -358,7 +358,7 @@ function renderHumanStatus(status: Awaited<ReturnType<typeof getUpdateStatus>>):
 }
 
 const checkCommand = addJsonOption(
-	new Command("check").description("Check for a newer codemem release on the installed channel"),
+	new Command("check").description("Check for updates on the installed channel"),
 )
 	.addOption(new Option("-r, --refresh", "bypass the six-hour release cache"))
 	.configureHelp(helpStyle)
@@ -1120,13 +1120,13 @@ async function installUpdate(options: UpdateInstallOptions): Promise<void> {
 }
 
 const installCommand = addJsonOption(
-	new Command("install").description("Install an eligible codemem update on the installed channel"),
+	new Command("install").description("Install an update on the installed channel"),
 )
 	.configureHelp(helpStyle)
 	.action(installUpdate);
 
 export const updateCommand = new Command("update")
-	.description("Inspect and manage codemem updates")
+	.description("Check for and install updates")
 	.enablePositionalOptions()
 	.configureHelp(helpStyle)
 	.addCommand(checkCommand)

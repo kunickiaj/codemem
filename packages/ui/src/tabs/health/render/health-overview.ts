@@ -509,13 +509,13 @@ function primaryRecommendations(signals: OverviewSignals): HealthAction[] {
 		return [
 			{
 				label: "Pipeline needs attention. Check queue health first.",
-				command: "codemem db raw-events-status",
+				command: "codemem diagnostics capture status",
 				action: (trigger) => openDiagnosticsDrawer({ subsystem: "capture", trigger }),
 				actionLabel: "View diagnostics",
 			},
 			{
 				label: `Then retry failed batches for impacted sessions (${formatAgentClientList()}).`,
-				command: "codemem db raw-events-retry",
+				command: "codemem diagnostics capture retry",
 			},
 		];
 	}
@@ -611,7 +611,7 @@ function buildRecommendations(signals: OverviewSignals): HealthAction[] {
 	if (signals.hasLowTagCoverage && recommendations.length < 2) {
 		recommendations.push({
 			label: "Tag coverage is low. Preview backfill impact.",
-			command: "codemem db backfill-tags --dry-run",
+			command: "codemem maintenance backfill tags --dry-run",
 		});
 	}
 	const backfillIncomplete = signals.scopeBackfillJob?.status !== "completed";

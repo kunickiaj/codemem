@@ -4,8 +4,8 @@ import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 
 const mcpCmd = new Command("mcp")
 	.configureHelp(helpStyle)
-	.description("Start an MCP server")
-	.summary("Start the MCP stdio server");
+	.description("Run an MCP server")
+	.summary("Run an MCP server");
 
 addDbOption(mcpCmd);
 
@@ -18,7 +18,7 @@ interface McpHttpOpts extends DbOpts {
 
 const mcpHttpCmd = new Command("http")
 	.configureHelp(helpStyle)
-	.description("Start the MCP Streamable HTTP server")
+	.description("Run an MCP server over Streamable HTTP")
 	.option("--host <host>", "HTTP host")
 	.option("--port <port>", "HTTP port")
 	.option("--public-url <url>", "public MCP URL used in OAuth metadata")

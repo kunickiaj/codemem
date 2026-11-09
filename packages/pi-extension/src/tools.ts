@@ -1342,7 +1342,7 @@ function registerMemorySessionSearch(
 				"max 20) and a no-match query returns an explicit empty result, never an " +
 				"error. Empty results usually mean the index only covers sessions captured " +
 				"since codemem was installed — backfill pre-install history with " +
-				"`codemem pi-import-sessions`.",
+				"`codemem session import`.",
 			parameters: Type.Object({
 				query: Type.String({ description: "Free-text search over stored pi session text" }),
 				project: Type.Optional(

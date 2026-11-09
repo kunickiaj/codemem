@@ -45,9 +45,23 @@ describe("cli smoke", () => {
 
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("persistent memory for AI coding agents");
-		expect(result.stdout).toContain("serve");
-		expect(result.stdout).toContain("search");
-		expect(result.stdout).toContain("embed");
+		for (const name of [
+			"memory",
+			"session",
+			"service",
+			"status",
+			"sync",
+			"coordinator",
+			"maintenance",
+			"diagnostics",
+			"config",
+			"setup",
+			"update",
+			"mcp",
+		]) {
+			expect(result.stdout).toMatch(new RegExp(`^\\s+${name}(?:\\s|$)`, "m"));
+		}
+		expect(result.stdout).not.toMatch(/^\s+(?:serve|search|embed)(?:\s|$)/m);
 		expect(result.stdout).toContain("--install-completion");
 		expect(result.stdout).toContain("--show-completion");
 	});

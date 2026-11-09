@@ -442,6 +442,14 @@ test.each(["retain-failed", "retained-lock-release", "failed-lock-release"])(
 		const outcomes = logs.hostLog.mock.calls.map(([entry]) => entry.extra?.outcome);
 		expect(outcomes).toContain(retained ? "retained" : "retain_failed");
 		if (!retained) expect(outcomes).not.toContain("retained");
+		// Retained-event warnings must point operators to the current diagnostics command.
+		const retainedWarning = expect.objectContaining({
+			level: "warn",
+			message:
+				"codemem retained a rejected raw event; inspect it with codemem diagnostics capture list-rejected",
+		});
+		if (retained) expect(logs.hostLog).toHaveBeenCalledWith(retainedWarning);
+		else expect(logs.hostLog).not.toHaveBeenCalledWith(retainedWarning);
 		expectPrivateLogs(logs, home);
 	},
 );

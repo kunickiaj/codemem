@@ -104,19 +104,19 @@ function runWorkspaceConfigCommand(
 
 export const configCommand = new Command("config")
 	.configureHelp(helpStyle)
-	.description("Manage codemem configuration");
+	.description("Manage configuration");
 
 const workspaceCmd = new Command("workspace")
 	.configureHelp(helpStyle)
-	.description("Create or update workspace-scoped codemem config")
+	.description("Update workspace configuration")
 	.argument("[workspace-id]", "workspace identifier")
-	.option("--enable-sync", "set sync_enabled=true")
-	.option("--disable-sync", "set sync_enabled=false")
-	.option("--sync-host <host>", "set sync_host")
-	.option("--sync-port <port>", "set sync_port")
-	.option("--sync-interval-s <seconds>", "set sync_interval_s")
-	.option("--coordinator-url <url>", "set sync_coordinator_url")
-	.option("--coordinator-group <group>", "set sync_coordinator_group");
+	.option("--enable-sync", "enable sync for this workspace")
+	.option("--disable-sync", "disable sync for this workspace")
+	.option("--sync-host <host>", "sync listener host")
+	.option("--sync-port <port>", "sync listener port")
+	.option("--sync-interval-s <seconds>", "seconds between sync passes")
+	.option("--coordinator-url <url>", "coordinator URL for discovery")
+	.option("--coordinator-group <group>", "coordinator group ID");
 
 // Hidden backwards-compat alias for --workspace-id <id>
 workspaceCmd.addOption(
@@ -197,7 +197,7 @@ function formatWhereHuman(result: ConfigResolutionResult): string {
 
 const whereCmd = new Command("where")
 	.configureHelp(helpStyle)
-	.description("show resolved config file path");
+	.description("Show the configuration file path");
 
 addConfigOption(whereCmd);
 addJsonOption(whereCmd);
