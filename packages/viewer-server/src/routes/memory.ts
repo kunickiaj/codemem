@@ -23,6 +23,12 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
+import {
+	decodeFeedCursor,
+	type FeedCursorPosition,
+	feedCursorFilterKey,
+	tryEncodeFeedCursor,
+} from "../feed-cursor.js";
 import { queryInt } from "../helpers.js";
 
 type StoreFactory = () => MemoryStore;
@@ -459,22 +465,94 @@ function queryMemoryPage(
 	store: MemoryStore,
 	options: MemoryReadOptions & {
 		limit: number;
-		offset: number;
+		paging: MemoryPaging;
 		classification: "observation" | "summary";
 	},
 ): Record<string, unknown>[] {
-	const { from, where, params } = buildMemoryReadQuery(store, options);
+	const query = buildMemoryReadQuery(store, options);
+	const { from, params } = query;
+	let where = query.where;
+	let limitClause = "LIMIT ?";
+	if (options.paging.mode === "cursor" && options.paging.position) {
+		where += " AND (memory_items.created_at, memory_items.id) < (?, ?)";
+		params.push(options.paging.position.created_at, options.paging.position.id);
+	}
+	params.push(options.limit + 1);
+	if (options.paging.mode === "offset") {
+		limitClause += " OFFSET ?";
+		params.push(options.paging.offset);
+	}
 	const rows = store.db
 		.prepare(
 			`SELECT memory_items.* FROM ${from}
 			 WHERE ${where}
 			 ORDER BY memory_items.created_at DESC, memory_items.id DESC
-			 LIMIT ? OFFSET ?`,
+			 ${limitClause}`,
 		)
-		.all(...params, options.limit + 1, options.offset) as Record<string, unknown>[];
+		.all(...params) as Record<string, unknown>[];
 
 	const ownedBySelf = store.buildOwnershipPredicate();
 	return rows.map((row) => serializeMemoryRow(ownedBySelf, row));
+}
+
+type MemoryPaging =
+	| { mode: "offset"; offset: number }
+	| { mode: "cursor"; filter: string; position: FeedCursorPosition | null };
+
+function parseMemoryPaging(
+	c: Context,
+	store: MemoryStore,
+	options: MemoryReadOptions & { classification: "observation" | "summary" },
+): MemoryPaging | null {
+	if (c.req.query("paging") !== "cursor") {
+		return { mode: "offset", offset: Math.max(0, queryInt(c.req.query("offset"), 0)) } as const;
+	}
+	const offset = c.req.query("offset");
+	if (offset !== undefined && offset !== "0") return null;
+	const filter = feedCursorFilterKey({
+		...options,
+		actorId: store.actorId,
+		dbPath: store.dbPath,
+	});
+	const cursor = c.req.query("cursor");
+	if (cursor === undefined) return { mode: "cursor", filter, position: null } as const;
+	const position = decodeFeedCursor({ cursor, filter });
+	if (!position) return null;
+	return { mode: "cursor", filter, position } as const;
+}
+
+function memoryPagePagination(options: {
+	paging: MemoryPaging;
+	limit: number;
+	hasMore: boolean;
+	items: Record<string, unknown>[];
+}) {
+	const { paging, limit, hasMore, items } = options;
+	if (paging.mode === "offset") {
+		return {
+			limit,
+			offset: paging.offset,
+			next_offset: hasMore ? paging.offset + items.length : null,
+			has_more: hasMore,
+		};
+	}
+	const last = items.at(-1);
+	const nextCursor =
+		hasMore && last
+			? tryEncodeFeedCursor({
+					position: { created_at: last.created_at as string, id: last.id as number },
+					filter: paging.filter,
+				})
+			: null;
+	if (hasMore && nextCursor === null) return null;
+	return {
+		limit,
+		offset: null,
+		next_offset: null,
+		has_more: hasMore,
+		paging: "cursor" as const,
+		next_cursor: nextCursor,
+	};
 }
 
 function handleMemoryListRequest(
@@ -482,32 +560,28 @@ function handleMemoryListRequest(
 	getStore: StoreFactory,
 	options: { classification: "observation" | "summary"; defaultLimit: number },
 ) {
+	if (c.req.query("paging") === "cursor") c.header("Cache-Control", "no-store");
 	const store = getStore();
 	const limit = Math.max(1, queryInt(c.req.query("limit"), options.defaultLimit));
-	const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
-	const project = c.req.query("project") || undefined;
-	const scope = normalizeScope(c.req.query("scope"));
 	const q = normalizeMemorySearchQuery(c.req.query("q"));
-	const items = queryMemoryPage(store, {
-		limit,
-		offset,
-		project,
-		scope,
+	const readOptions = {
+		project: c.req.query("project") || undefined,
+		scope: normalizeScope(c.req.query("scope")),
 		q,
 		classification: options.classification,
-	});
+	};
+	const paging = parseMemoryPaging(c, store, readOptions);
+	if (!paging) return c.json({ error: "invalid_cursor" }, 400);
+	const items = queryMemoryPage(store, { ...readOptions, limit, paging });
 	const hasMore = items.length > limit;
 	const result = hasMore ? items.slice(0, limit) : items;
+	const pagination = memoryPagePagination({ paging, limit, hasMore, items: result });
+	if (pagination === null) return c.json({ error: "cursor_unavailable" }, 409);
 	attachSessionFields(store, result);
 	attachResolvedIdentityFields(store, result);
 	return c.json({
 		items: c.req.query("view") === "feed" ? feedResponseItems(result, q) : result,
-		pagination: {
-			limit,
-			offset,
-			next_offset: hasMore ? offset + result.length : null,
-			has_more: hasMore,
-		},
+		pagination,
 	});
 }
 
