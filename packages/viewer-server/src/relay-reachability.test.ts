@@ -7,6 +7,7 @@ import {
 } from "@codemem/core/internal/relay-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
+import { simulatedRelayPairPacing } from "../../core/src/relay-pair-pacing-test-fixtures.js";
 import {
 	relayClientFixture,
 	relayDeadline,
@@ -93,13 +94,14 @@ type Remote = Awaited<ReturnType<typeof passFixture>>["remote"] & { serverKeysDi
 /** A real loopback relay for one team, with that team's server registered as the target. */
 async function teamRelay(device: Remote, server: Remote, groupId: string) {
 	const serverKeys = server.serverKeysDir ?? join(server.peerKeysDir, "..", "local-keys");
+	const clock = simulatedRelayPairPacing();
 	const relay = await relayClientFixture(
 		{
 			source: identity(device.peerKeysDir, device.peerPublicKey),
 			target: identity(serverKeys, server.localPublicKey),
 		},
 		{ source: device.peerDeviceId, target: server.localDeviceId },
-		{ groupId },
+		{ groupId, simulatedPairPacing: clock },
 	);
 	cleanups.push(() => relay.dispose());
 	const dispatch = createSyncChannelDispatcher({ storeFactory: server.storeFactory });
@@ -114,7 +116,7 @@ async function teamRelay(device: Remote, server: Remote, groupId: string) {
 			}),
 	});
 	await target.connect(new AbortController().signal, relayDeadline());
-	return relay;
+	return { ...relay, pairPacing: clock.pairPacing };
 }
 
 type TeamRelay = Awaited<ReturnType<typeof teamRelay>>;
@@ -142,6 +144,9 @@ async function twoTeams() {
 		config: settings,
 		allowLoopback: true,
 		resolveGroup: resolver(relays),
+		pairPacingByGroup: new Map(
+			Object.entries(relays).map(([groupId, relay]) => [groupId, relay.pairPacing]),
+		),
 		log,
 	});
 	if (!relay) throw new Error("Relay reachability not configured");
@@ -165,12 +170,15 @@ describe("viewer relay reachability", () => {
 	it("relays each team's peer through that team's client when direct sync fails", async () => {
 		// Arrange.
 		const f = await twoTeams();
+		const delayA = vi.spyOn(f.relays["team-a"].pairPacing, "delay");
+		const delayB = vi.spyOn(f.relays["team-b"].pairPacing, "delay");
 		f.a.seed("remote", "team-a-item");
 		await f.relay.refresh();
 		const before = { a: sourceChecks(f.relays["team-a"]), b: sourceChecks(f.relays["team-b"]) };
 		// Act.
 		const teamA = await f.sync(f.peers["team-a"]);
 		const afterA = sourceChecks(f.relays["team-b"]);
+		const teamBDelaysAfterA = delayB.mock.calls.length;
 		const teamB = await f.sync(f.peers["team-b"]);
 		// Assert: each peer's route uses its own group's client and relay.
 		expect(f.relay.reachability.forPeer(f.a.client.db, f.peers["team-a"])?.scopeId).toBe(SCOPE);
@@ -183,6 +191,10 @@ describe("viewer relay reachability", () => {
 		expect(sourceChecks(f.relays["team-a"])).toBeGreaterThan(before.a);
 		expect(sourceChecks(f.relays["team-b"])).toBeGreaterThan(afterA);
 		expect(f.relay.reachability.clients()).toHaveLength(2);
+		// Viewer-owned source clients use only their group's scheduler for repeated opens.
+		expect(delayA).toHaveBeenCalledWith(6000, expect.any(AbortSignal));
+		expect(teamBDelaysAfterA).toBe(0);
+		expect(delayB).toHaveBeenCalledWith(6000, expect.any(AbortSignal));
 	}, 60000);
 
 	it("keeps a paused group direct-only until refresh picks up an approval, then closes every client", async () => {
