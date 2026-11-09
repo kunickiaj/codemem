@@ -7,7 +7,7 @@ import { createServer as httpsServer } from "node:https";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { resolve } from "node:path";
-import type { BrowserContext } from "@playwright/test";
+import { type BrowserContext, test as base } from "@playwright/test";
 import preact from "@preact/preset-vite";
 import { build } from "vite";
 import { BetterSqliteCoordinatorStore } from "../../core/src/better-sqlite-coordinator-store";
@@ -572,3 +572,17 @@ export async function fixture(browser: BrowserContext) {
 		throw error;
 	}
 }
+
+export type AccountFixture = Awaited<ReturnType<typeof fixture>>;
+
+export const test = base.extend<{ account: AccountFixture }>({
+	account: async ({ page }, use) => {
+		const account = await fixture(page.context());
+		try {
+			await use(account);
+		} finally {
+			await account.close();
+		}
+	},
+});
+export { expect } from "@playwright/test";
