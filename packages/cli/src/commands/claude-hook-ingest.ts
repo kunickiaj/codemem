@@ -43,6 +43,7 @@ import {
 } from "./claude-hook-ingest-spool.js";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
 import { trackHookSessionState } from "./claude-hook-session-state.js";
+import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "direct" | "spool";
@@ -73,6 +74,7 @@ type HttpIngestResult = {
 	cause?: "timeout" | "connection" | "http_status" | "malformed_response";
 	status?: number;
 	elapsedMs?: number;
+	failureOutcome?: ReturnType<typeof classifyNativeHookHttpFailure>;
 };
 
 type HttpIngestOptions = { flushBoundary?: boolean };
@@ -171,17 +173,24 @@ export async function tryHttpIngest(
 	const timeout = setTimeout(() => controller.abort(), 5000);
 	const startedAt = Date.now();
 	try {
+		const requestBody = JSON.stringify(payload);
 		const res = await fetch(url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
 				...(options.flushBoundary ? { "X-Codemem-Boundary-Flush": "1" } : {}),
 			},
-			body: JSON.stringify(payload),
+			body: requestBody,
 			signal: controller.signal,
 		});
 		if (!res.ok) {
 			const body = await res.json().catch(() => null);
+			const failureOutcome = classifyNativeHookHttpFailure({
+				status: res.status,
+				responseBody: body,
+				outgoingBytes: Buffer.byteLength(requestBody, "utf8"),
+				redirected: res.redirected,
+			});
 			return {
 				ok: false,
 				inserted: 0,
@@ -190,6 +199,7 @@ export async function tryHttpIngest(
 				cause: "http_status",
 				status: res.status,
 				elapsedMs: elapsedSince(startedAt),
+				...(failureOutcome ? { failureOutcome } : {}),
 			};
 		}
 

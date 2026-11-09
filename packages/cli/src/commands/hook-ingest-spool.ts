@@ -55,6 +55,48 @@ export type SpoolDrainResult = {
 	failed: number;
 };
 
+export type SpoolDrainOptions = {
+	retainTerminal?: (entry: {
+		receipt: string;
+		rejection: Extract<HookDeliveryOutcome, { outcome: "terminal" }>;
+	}) => boolean | Promise<boolean>;
+};
+
+async function deliverSpooledPayload(
+	handler: SpoolHandler,
+	payload: Record<string, unknown>,
+	receipt: string,
+): Promise<HookDeliveryOutcome> {
+	try {
+		return normalizeHookDeliveryOutcome(await handler(payload, receipt));
+	} catch {
+		// Handler or normalization failures must preserve the queued payload.
+		return { outcome: "retryable" };
+	}
+}
+
+async function retainTerminalOutcome(
+	outcome: HookDeliveryOutcome,
+	receipt: string,
+	options: SpoolDrainOptions,
+): Promise<boolean> {
+	if (outcome.outcome !== "terminal") return false;
+	try {
+		return (await options.retainTerminal?.({ receipt, rejection: outcome })) === true;
+	} catch {
+		return false;
+	}
+}
+
+function removeAcceptedSpoolEntry(path: string): boolean {
+	try {
+		unlinkSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export type HookIngestSpoolConfig = {
 	/** Log prefix, e.g. "codemem claude-hook-ingest". */
 	logPrefix: string;
@@ -79,7 +121,7 @@ export type HookIngestSpool = {
 	withLock: <T>(fn: () => Promise<T> | T) => Promise<T>;
 	spoolPayload: (payload: Record<string, unknown>) => boolean;
 	recoverStaleTmpSpool: (ttlSeconds: number) => void;
-	drainSpool: (handler: SpoolHandler) => Promise<SpoolDrainResult>;
+	drainSpool: (handler: SpoolHandler, options?: SpoolDrainOptions) => Promise<SpoolDrainResult>;
 };
 
 /**
@@ -433,10 +475,13 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 	 * Process every queued payload in the spool directory in lexicographic
 	 * order (which approximates oldest-first because filenames embed the
 	 * second-precision creation timestamp). Only explicit acceptance permits
-	 * deletion. Terminal outcomes also stop the drain and preserve the entry
-	 * until retained-rejection storage is available.
+	 * deletion. Terminal outcomes stop the drain unless the caller explicitly
+	 * confirms successful retention through its callback.
 	 */
-	async function drainSpool(handler: SpoolHandler): Promise<SpoolDrainResult> {
+	async function drainSpool(
+		handler: SpoolHandler,
+		options: SpoolDrainOptions = {},
+	): Promise<SpoolDrainResult> {
 		const dir = spoolDir();
 		try {
 			mkdirSync(dir, { recursive: true });
@@ -489,26 +534,15 @@ export function createHookIngestSpool(cfg: HookIngestSpoolConfig): HookIngestSpo
 				continue;
 			}
 
-			let outcome: HookDeliveryOutcome = { outcome: "retryable" };
-			try {
-				const delivery = await handler(parsed as Record<string, unknown>, name);
-				outcome = normalizeHookDeliveryOutcome(delivery);
-			} catch {
-				// Handler or normalization failures must preserve the queued payload.
-			}
+			const outcome = await deliverSpooledPayload(handler, parsed as Record<string, unknown>, name);
 
-			if (outcome.outcome === "accepted") {
-				try {
-					unlinkSync(path);
-					result.processed++;
-				} catch {
-					// best-effort
-				}
-			} else {
-				logHookEvent(`${cfg.logPrefix} failed processing spooled payload`);
+			if (outcome.outcome !== "accepted") {
 				result.failed++;
+				if (await retainTerminalOutcome(outcome, name, options)) continue;
+				logHookEvent(`${cfg.logPrefix} failed processing spooled payload`);
 				break;
 			}
+			if (removeAcceptedSpoolEntry(path)) result.processed++;
 		}
 		return result;
 	}
