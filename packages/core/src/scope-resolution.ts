@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { Database } from "better-sqlite3";
 import { cleanProjectIdentity } from "./project-identity.js";
-import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
+import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import { matchesWildcard } from "./wildcard-match.js";
 import {
 	type CanonicalWorkspaceIdentity,
