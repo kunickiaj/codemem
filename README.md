@@ -131,6 +131,8 @@ An npm-capable manager, such as pnpm or mise's `npm:codemem` backend, can also p
 
 Upgrade a durable CLI with the package manager that installed it, then rerun the corresponding setup command for an existing setup-managed integration. Setup replaces its old managed `npx -y codemem mcp` launcher and codemem MCP entries detected as UV/UVX-based so both packages share one runtime; other custom MCP commands remain unchanged. The host plugin is managed independently. Claude marketplace installs use the plugin's bundled MCP configuration and do not require a separate `setup --claude-only` step.
 
+Upgrade the Codemem CLI and the OpenCode plugin or Pi extension together. These integrations call grouped CLI commands that older CLIs do not implement. Restart the host after updating.
+
 Generated MCP configurations use the global `codemem` binary when available. Otherwise, setup-managed `npx` launchers request both packages in one temporary environment. Restart the updated host and the local service with `codemem service restart` after an installation change. An already-running Claude or Codex MCP host keeps lexical-only recall until it restarts; restarting the local service does not restart that child.
 
 The semantic runtime is pinned to CPU inference on every platform. ONNX Runtime 1.24.3 does not ship a macOS x64 binary, so Intel Macs continue with FTS5 keyword retrieval when semantic runtime initialization fails.

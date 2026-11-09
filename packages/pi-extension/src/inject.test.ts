@@ -22,12 +22,14 @@ function makeExecSpy(queue: QueuedResponse[]) {
 		calls.push([...args]);
 		const next = queue.shift();
 		if (next instanceof Error) throw next;
-		if (args[0] === "pack") return { stdout: next ?? "", stderr: "" };
+		if (args[0] === "memory" && args[1] === "pack") return { stdout: next ?? "", stderr: "" };
 		if (args[0] === "pi-hook-inject") return { stdout: next ?? "", stderr: "" };
 		return { stdout: "", stderr: "" };
 	};
 	const fetchCount = () =>
-		calls.filter((args) => args[0] === "pack" || args[0] === "pi-hook-inject").length;
+		calls.filter(
+			(args) => (args[0] === "memory" && args[1] === "pack") || args[0] === "pi-hook-inject",
+		).length;
 	return { calls, execImpl, fetchCount };
 }
 

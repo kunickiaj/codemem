@@ -1024,7 +1024,7 @@ describe("memory_search git-root project", () => {
 			expect(searchTool).toBeDefined();
 			await searchTool?.execute("tc-scope-1", { query: "recall" }, ctx.signal);
 
-			const searchCall = cliArgs.find((args) => args[0] === "search");
+			const searchCall = cliArgs.find((args) => args[0] === "memory" && args[1] === "search");
 			expect(searchCall).toBeDefined();
 			expect(searchCall).toContain("--project");
 			const projectIndex = searchCall?.indexOf("--project") ?? -1;

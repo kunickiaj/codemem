@@ -314,7 +314,7 @@ export class PiCodememClient {
 
 		// CLI pack --json carries renderer item spans for injection dedup.
 		try {
-			const args = ["pack", query, "--json", "-n", String(this.config.injectLimit)];
+			const args = ["memory", "pack", query, "--json", "-n", String(this.config.injectLimit)];
 			if (this.project) args.push("--project", this.project);
 			args.push("--token-budget", String(tokenBudget));
 			const { stdout } = await this.execCodemem(args, {

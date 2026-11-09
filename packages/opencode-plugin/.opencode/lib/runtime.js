@@ -311,8 +311,9 @@ const hashPromptPackQuery = (query) =>
 
 const redactPackCommand = (runner, runnerArgs, packArgs) => {
   const safePackArgs = [...packArgs];
-  if (safePackArgs[0] === "pack" && safePackArgs.length > 1) {
-    safePackArgs[1] = "[query-redacted]";
+  const queryIndex = safePackArgs[0] === "memory" ? 2 : 1;
+  if (safePackArgs[queryIndex - 1] === "pack" && safePackArgs.length > queryIndex) {
+    safePackArgs[queryIndex] = "[query-redacted]";
   }
   for (let index = 0; index < safePackArgs.length - 1; index += 1) {
     if (safePackArgs[index] === "--working-set-file") {
@@ -722,7 +723,7 @@ const buildPackArgs = ({ query, filesModified, injectLimit, injectTokenBudget, i
     .slice(-8)
     .map((value) => String(value || "").trim())
     .filter(Boolean);
-  const args = ["pack", query, "--json"];
+  const args = ["memory", "pack", query, "--json"];
   if (internalLedger) {
     args.push("--internal-ledger");
   }
@@ -2303,8 +2304,8 @@ const createCliStatusTools = ({ runCli, viewerUrlHost, viewerPort, logPath }) =>
     description: "Show codemem stats and recent entries",
     args: {},
     async execute() {
-      const stats = await runCli(["stats"]);
-      const recent = await runCli(["recent", "--limit", "5"]);
+      const stats = await runCli(["memory", "stats"]);
+      const recent = await runCli(["memory", "list", "--limit", "5"]);
       const lines = [
         `viewer: http://${viewerUrlHost}:${viewerPort}`,
         `log: ${logPath || "disabled"}`,
@@ -2328,7 +2329,7 @@ const createCliStatusTools = ({ runCli, viewerUrlHost, viewerPort, logPath }) =>
       // Number.isFinite accepts floats and negatives; coerce to a positive
       // integer (default 5) before forwarding to the CLI.
       const safeLimit = String(parsePositiveInt(limit, 5));
-      const recent = await runCli(["recent", "--limit", safeLimit]);
+      const recent = await runCli(["memory", "list", "--limit", safeLimit]);
       if (recent.exitCode === 0) {
         return recent.stdout.trim() || "No recent memories.";
       }
@@ -2340,7 +2341,7 @@ const createCliStatusTools = ({ runCli, viewerUrlHost, viewerPort, logPath }) =>
     description: "Show codemem stats",
     args: {},
     async execute() {
-      const stats = await runCli(["stats"]);
+      const stats = await runCli(["memory", "stats"]);
       if (stats.exitCode === 0) {
         return stats.stdout.trim() || "No stats yet.";
       }
@@ -3191,7 +3192,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       return;
     }
 
-    const versionResult = await runCli(["version"]);
+    const versionResult = await runCli(["--version"]);
     if (versionResult?.exitCode !== 0) {
       await logLine(
         `compat.version_check_failed exit=${versionResult?.exitCode ?? "unknown"} stderr=${
@@ -3280,7 +3281,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
           )}`
         );
 
-        const refreshedResult = await runCli(["version"]);
+        const refreshedResult = await runCli(["--version"]);
         const refreshedVersion = (refreshedResult?.stdout || "").trim();
         if (
           refreshedResult?.exitCode === 0
@@ -3353,7 +3354,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         await logLine(`release.auto_update_start cmd=${autoPlan.commandText}`);
         const installation = await installCliUpdate(autoPlan.command);
         if (installation?.exitCode === 0) {
-          const verification = await runCli(["version"]);
+          const verification = await runCli(["--version"]);
           const installedVersion = (verification?.stdout || "").trim();
           if (verification?.exitCode !== 0 || installedVersion !== notification.latestVersion) {
             await logLine(

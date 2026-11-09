@@ -149,6 +149,7 @@ describe("buildPackArgs", () => {
     });
 
     expect(args).toEqual([
+      "memory",
       "pack",
       "fix auth",
       "--json",
@@ -181,7 +182,7 @@ describe("buildPackArgs", () => {
       injectTokenBudget: null,
     });
 
-    expect(args).toEqual(["pack", "recent work", "--json"]);
+    expect(args).toEqual(["memory", "pack", "recent work", "--json"]);
   });
 
   test("adds the hidden ledger transport only for internal callers", () => {

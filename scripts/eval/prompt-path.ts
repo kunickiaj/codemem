@@ -153,7 +153,9 @@ function runnerSource(): string {
 	return `import { appendFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
-const kind = args[0] === "pack" ? "pack" : args[0] === "prompt-pack-ledger" ? "ledger" : "other";
+let kind = "other";
+if (args[0] === "pack" || (args[0] === "memory" && args[1] === "pack")) kind = "pack";
+else if (args[0] === "prompt-pack-ledger") kind = "ledger";
 appendFileSync(process.env.CODEMEM_BENCH_COUNTER, "start " + kind + "\\n");
 const input = readFileSync(0);
 const result = spawnSync("pnpm", ["exec", "tsx", "--conditions", "source", process.env.CODEMEM_BENCH_CLI, ...args], {
@@ -575,7 +577,7 @@ async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
 		viewer = startViewer(root, healthyPort, env);
 		await waitForViewer(healthyPort, viewer);
 
-		const cliArgs = ["pack", `${PROMPT} ${PROJECT}`, "--json"];
+		const cliArgs = ["memory", "pack", `${PROMPT} ${PROJECT}`, "--json"];
 		const runDirect = async () => {
 			try {
 				const result = await runCommand(process.execPath, [paths.runner, ...cliArgs], {

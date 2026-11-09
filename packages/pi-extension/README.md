@@ -11,6 +11,10 @@ npm i -g codemem
 codemem setup --pi-only
 ```
 
+Update the CLI and Pi extension together, then rerun setup and restart Pi. The
+extension's CLI fallback uses the grouped `memory` and `session` commands. An older
+CLI may not support those paths if the extension is upgraded separately.
+
 Restart Pi after setup. `codemem setup --pi-only` configures only Pi. A fresh setup adds `npm:@codemem/pi-extension@<version>` to `settings.json` `packages` (`PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`); an existing configured dev path may be retained. Useful flags:
 
 | Flag | Purpose |
@@ -34,7 +38,7 @@ Build first so `dist/index.js` exists (`pnpm --filter @codemem/pi-extension buil
 ## What it does
 
 - **Ingest** — ordinary session events (`session_start`, user/assistant messages, tool calls/results) prefer `POST /api/pi-hooks` (`source: "pi"`), with `codemem pi-hook-ingest` CLI fallback (spool on failure). Boundary events (`session_before_compact`, `session_shutdown`) always attempt the CLI path so a flush can run; failure is fail-open.
-- **Injection** — on pi's `context` event, appends a `## codemem memories` block to the latest user message of the **request copy** (never the system prompt, never the saved session). Older user messages replay the exact bytes already injected for them, and a new pack is fetched only for the latest undecided message, so the provider's prefix cache stays stable. Already-shown items are cut from new packs when the pack response carries renderer spans. A contract-valid HTTP or `pack --json` response, including a zero-item pack, ends that fetch; `{}` and error-shaped bodies fall through. Those span-bearing successes log `inject.pack.ok source=pi` to the plugin log, the same line `pi-hook-inject` writes when it is the fallback. Decisions live in memory: a restart fetches again.
+- **Injection** — on pi's `context` event, appends a `## codemem memories` block to the latest user message of the **request copy** (never the system prompt, never the saved session). Older user messages replay the exact bytes already injected for them, and a new pack is fetched only for the latest undecided message, so the provider's prefix cache stays stable. Already-shown items are cut from new packs when the pack response carries renderer spans. A contract-valid HTTP or `memory pack --json` response, including a zero-item pack, ends that fetch; `{}` and error-shaped bodies fall through. Those span-bearing successes log `inject.pack.ok source=pi` to the plugin log, the same line `pi-hook-inject` writes when it is the fallback. Decisions live in memory: a restart fetches again.
 - **File context** — after a successful built-in `read`, related memories may be appended to that tool result. Failed reads and other tools are skipped.
 - **Tools** — registers the 15 `memory_*` tools natively (HTTP preferred, CLI fallback), including `memory_session_search` over stored Pi session text. Every HTTP operation first proves the viewer is target-aware (`GET /api/prompt-pack-profile` must report this process's `db_path` + `identity_target`) and re-sends the target on the query, so a foreign or stale older viewer on the port is never trusted (409 or unproven → targeted CLI path). Non-idempotent `memory_remember` does NOT CLI-replay on ambiguous HTTP failures (timeout/5xx/reset after send). No `pi-mcp-adapter` needed. Skipped when `pi.tools_mode` is `mcp-adapter`.
 - **Compaction** — `session_before_compact` attempts a flush only and never returns a custom summary. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual`. Failed compaction, `agent_settled`, manual compaction, and a later user message clear that skip. A threshold compact skips only if that same guard matches.

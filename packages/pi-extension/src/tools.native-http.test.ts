@@ -179,7 +179,7 @@ describe("memory_pack falls back to CLI when the viewer proves a different db", 
 			cwd,
 			execImpl: async (args) => {
 				cliArgs.push([...args]);
-				if (args[0] === "pack") {
+				if (args[0] === "memory" && args[1] === "pack") {
 					return { stdout: JSON.stringify({ pack_text: "local process db" }), stderr: "" };
 				}
 				return { stdout: "{}", stderr: "" };
@@ -192,7 +192,7 @@ describe("memory_pack falls back to CLI when the viewer proves a different db", 
 		expect(packPosts).not.toContain("GET");
 		expect(JSON.stringify(toolJson(result))).toContain("local process db");
 		expect(JSON.stringify(toolJson(result))).not.toContain("wrong viewer memories");
-		expect(cliArgs.some((args) => args[0] === "pack")).toBe(true);
+		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "pack")).toBe(true);
 	});
 });
 
@@ -274,7 +274,7 @@ describe("falls back to CLI on 409 for pack/get reads and remember/forget writes
 			cwd,
 			execImpl: async (args) => {
 				cliArgs.push([...args]);
-				if (args[0] === "pack")
+				if (args.slice(0, 2).join(" ") === "memory pack")
 					return { stdout: JSON.stringify({ pack_text: "cli pack" }), stderr: "" };
 				if (args[0] === "memory" && args[1] === "show") {
 					return {
@@ -302,7 +302,7 @@ describe("falls back to CLI on 409 for pack/get reads and remember/forget writes
 		);
 		await tools.memory_forget.execute("t4", { memory_id: 3 }, undefined);
 
-		expect(cliArgs.some((args) => args[0] === "pack")).toBe(true);
+		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "pack")).toBe(true);
 		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "show")).toBe(true);
 		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "remember")).toBe(true);
 		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "forget")).toBe(true);
@@ -394,7 +394,7 @@ describe("falls back to CLI when an older viewer 2xx's while ignoring the target
 		const client = new PiCodememClient(onlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
 				cliArgs.push([...args]);
-				if (args[0] === "search") {
+				if (args[0] === "memory" && args[1] === "search") {
 					return { stdout: JSON.stringify({ items: [{ id: 5, title: "local" }] }), stderr: "" };
 				}
 				if (args[0] === "memory" && args[1] === "remember") {
@@ -414,7 +414,7 @@ describe("falls back to CLI when an older viewer 2xx's while ignoring the target
 
 		expect(JSON.stringify(toolJson(search))).toContain("local");
 		expect(JSON.stringify(toolJson(search))).not.toContain("stale");
-		expect(cliArgs.some((args) => args[0] === "search")).toBe(true);
+		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "search")).toBe(true);
 		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "remember")).toBe(true);
 		expect(toolJson(remember)).toEqual({ id: 12 });
 	});
@@ -428,7 +428,8 @@ describe("does zero fetch and uses CLI when viewerEnabled is false", () => {
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
 				cliArgs.push([...args]);
-				if (args[0] === "pack") return { stdout: JSON.stringify({ pack_text: "cli" }), stderr: "" };
+				if (args[0] === "memory" && args[1] === "pack")
+					return { stdout: JSON.stringify({ pack_text: "cli" }), stderr: "" };
 				if (args[0] === "memory" && args[1] === "remember") {
 					return { stdout: JSON.stringify({ id: 4 }), stderr: "" };
 				}
@@ -445,7 +446,7 @@ describe("does zero fetch and uses CLI when viewerEnabled is false", () => {
 		);
 
 		expect(fetchMock).not.toHaveBeenCalled();
-		expect(cliArgs.some((args) => args[0] === "pack")).toBe(true);
+		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "pack")).toBe(true);
 		expect(cliArgs.some((args) => args[0] === "memory" && args[1] === "remember")).toBe(true);
 	});
 });

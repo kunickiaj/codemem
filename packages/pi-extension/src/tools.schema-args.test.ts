@@ -59,6 +59,48 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
+describe("native tools use canonical CLI paths", () => {
+	const cases = [
+		{ tool: "memory_search", params: { query: "auth" }, path: ["memory", "search"] },
+		{ tool: "memory_search_index", params: { query: "auth" }, path: ["memory", "search"] },
+		{ tool: "memory_recent", params: {}, path: ["memory", "list"] },
+		{ tool: "memory_pack", params: { context: "auth" }, path: ["memory", "pack"] },
+		{ tool: "memory_distill_candidates", params: {}, path: ["memory", "distill"] },
+	];
+
+	it.each(cases)("$tool invokes $path", async ({ tool, params, path }) => {
+		// Arrange: generic fake output must not hide an obsolete command path.
+		const execImpl = vi.fn(async (_args: string[]) => ({ stdout: "{}", stderr: "" }));
+		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), { execImpl });
+		// Act
+		const result = await installTools(client)[tool].execute("canonical", params, undefined);
+		// Assert
+		expect(execImpl).toHaveBeenCalledTimes(1);
+		expect(execImpl.mock.calls[0]?.[0].slice(0, 2)).toEqual(path);
+		expect(result.details.isError).toBeUndefined();
+	});
+
+	it.each(cases)(
+		"$tool reports CLI failure without retrying an alias",
+		async ({ tool, params, path }) => {
+			// Arrange
+			const calls: string[][] = [];
+			const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
+				execImpl: async (args) => {
+					calls.push([...args]);
+					throw new Error("CLI unavailable");
+				},
+			});
+			// Act
+			const result = await installTools(client)[tool].execute("canonical", params, undefined);
+			// Assert
+			expect(calls).toHaveLength(1);
+			expect(calls[0].slice(0, 2)).toEqual(path);
+			expect(result.details.isError).toBe(true);
+		},
+	);
+});
+
 describe("memory_pack schema keeps project and drops kind", () => {
 	it("memory_pack schema keeps project and drops kind", () => {
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
@@ -125,7 +167,8 @@ describe("memory_pack forwards project on HTTP and CLI", () => {
 			{ context: "auth", project: "codemem" },
 			undefined,
 		);
-		const packArgs = cliArgs.find((args) => args[0] === "pack") ?? [];
+		const packArgs = cliArgs.find((args) => args[0] === "memory" && args[1] === "pack") ?? [];
+		expect(packArgs.slice(0, 3)).toEqual(["memory", "pack", "auth"]);
 		expect(packArgs).toContain("--project");
 		expect(packArgs).toContain("codemem");
 	});

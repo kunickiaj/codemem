@@ -145,8 +145,8 @@ test.each([PIN, PIN.replace(/\d+$/u, (value) => String(Number(value) + 1))])(
 		expect([stats, recent]).toEqual(["ok", "ok"]);
 		expect(mocks.execFile).toHaveBeenCalledTimes(1);
 		expect(mocks.spawn.mock.calls.map(([command, args]) => [command, args])).toEqual([
-			[realpathSync(process.execPath), [entry, "stats"]],
-			[realpathSync(process.execPath), [entry, "recent", "--limit", "2"]],
+			[realpathSync(process.execPath), [entry, "memory", "stats"]],
+			[realpathSync(process.execPath), [entry, "memory", "list", "--limit", "2"]],
 		]);
 	},
 );
@@ -200,8 +200,8 @@ test.each([false, true])(
 		expect([stats, recent]).toEqual(["ok", "ok"]);
 		expect(mocks.execSync).toHaveBeenCalledWith("codemem --version", expect.any(Object));
 		expect(mocks.spawn.mock.calls.map(([command, args]) => [command, args])).toEqual([
-			["codemem", ["stats"]],
-			["codemem", ["recent", "--limit", "2"]],
+			["codemem", ["memory", "stats"]],
+			["codemem", ["memory", "list", "--limit", "2"]],
 		]);
 		expect(mocks.execFile.mock.calls.map(([command, args]) => [command, args.slice(1)])).toEqual([
 			["node", ["--selected"]],
@@ -223,7 +223,7 @@ test.each([0, 1])(
 				return processResult({ exitCode });
 			}
 			if (command !== "codemem") return processResult({ exitCode: 1 });
-			if (args.includes("version")) return processResult({ stdout: installed ? newer : PIN });
+			if (args.includes("--version")) return processResult({ stdout: installed ? newer : PIN });
 			return processResult({
 				stdout: JSON.stringify({
 					latest_version: newer,
@@ -245,13 +245,13 @@ test.each([0, 1])(
 		// Assert
 		expect(
 			mocks.spawn.mock.calls
-				.filter(([, args]) => args.includes("version"))
+				.filter(([, args]) => args.includes("--version"))
 				.map(([command, args]) => [command, args]),
-		).toEqual(Array.from({ length: exitCode === 0 ? 2 : 1 }, () => ["codemem", ["version"]]));
+		).toEqual(Array.from({ length: exitCode === 0 ? 2 : 1 }, () => ["codemem", ["--version"]]));
 		expect(mocks.execFile.mock.calls.map(([command, args]) => [command, args.slice(1)])).toEqual(
 			Array.from({ length: exitCode === 0 ? 2 : 1 }, () => ["node", ["--selected"]]),
 		);
-		expect(mocks.spawn.mock.calls.at(-1).slice(0, 2)).toEqual(["codemem", ["stats"]]);
+		expect(mocks.spawn.mock.calls.at(-1).slice(0, 2)).toEqual(["codemem", ["memory", "stats"]]);
 	},
 );
 
@@ -314,7 +314,10 @@ test.each([
 		// Act
 		await runtime.tools["mem-stats"].execute();
 		// Assert
-		expect(mocks.spawn.mock.calls[0].slice(0, 2)).toEqual([command, [...prefix, "stats"]]);
+		expect(mocks.spawn.mock.calls[0].slice(0, 2)).toEqual([
+			command,
+			[...prefix, "memory", "stats"],
+		]);
 		expect(mocks.execFile).not.toHaveBeenCalled();
 	},
 );
@@ -343,7 +346,7 @@ test.each([0, 1])(
 					}),
 				});
 			if (command === "npm") return processResult({ exitCode });
-			if (args.includes("version")) return processResult({ stdout: newer });
+			if (args.includes("--version")) return processResult({ stdout: newer });
 			return processResult();
 		});
 		await createRuntime();
