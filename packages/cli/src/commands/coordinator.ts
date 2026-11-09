@@ -5,10 +5,8 @@
  * per cli-design-conventions.md (operator/admin surfaces belong in their own group).
  *
  * buildCoordinatorCommand() is a factory that creates a fresh command tree.
- * This allows both the canonical top-level `coordinator` and the deprecated
- * `sync coordinator` alias to have independent Commander instances (Commander
- * re-parents commands on addCommand, so sharing instances between two parents
- * is not possible).
+ * Each tree owns its resource groups and actions. Commander re-parents commands
+ * on addCommand, so instances cannot be shared between parents.
  */
 
 import { readFileSync } from "node:fs";
@@ -84,7 +82,7 @@ function parseOptionalInteger(value: string | undefined, name: string): number |
 function formatImportInviteError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	const recipientInviteReviewGuidance =
-		"Review this invitation with `codemem coordinator import-invite <invite> --review`, then accept with --reviewed-onboarding-digest <digest> using the same profile and device name. You can also review and accept through the Viewer with `codemem serve`.";
+		"Review this invitation with codemem coordinator invitation accept <invite> --review, then accept with --reviewed-onboarding-digest <digest> using the same profile and device name. You can also review and accept through the Viewer with codemem service start.";
 	switch (message) {
 		case "invite_already_bound":
 			return "This invite was already used. Ask the sender for a new one.";
@@ -112,7 +110,7 @@ function formatImportInviteError(error: unknown): string {
 		case "reviewed_onboarding_stale":
 			return recipientInviteReviewGuidance;
 		case "invite_review_profile_required":
-			return "Invite review needs an initialized device and matching keys. Run `codemem sync pair --payload-only` with the intended --db-path, --config, and CODEMEM_KEYS_DIR first, then review that profile with --keys-dir.";
+			return "Invite review needs an initialized device and matching keys. Run codemem sync pair --payload-only with the intended --db-path, --config, and CODEMEM_KEYS_DIR first, then review that profile with --keys-dir.";
 		case "recipient_invite_review_required":
 			return "Only Team/add-device recipient invitations need --review. Import this legacy invitation without --review.";
 		case "invite_inspection_transport_failed":
@@ -187,30 +185,71 @@ function printInviteReview(
  * Build a fresh coordinator command tree. Each call returns independent
  * Commander instances so the tree can be mounted under multiple parents.
  */
-function createCoordinatorCommandRoot(): Command {
-	const cmd = new Command("coordinator")
-		.configureHelp(helpStyle)
-		.description("Manage coordinator invites, join requests, and relay server");
-	cmd.addCommand(buildCoordinatorLinkAccountCommand());
-	cmd.addCommand(buildCoordinatorEnrollOwnerCommand());
-	cmd.addCommand(buildCoordinatorReviewDeviceOwnerCommand());
-	cmd.addCommand(buildCoordinatorQualifyOwnerCommand());
-	cmd.addCommand(buildCoordinatorGrantIdentityGroupCommand());
-	cmd.addCommand(buildCoordinatorRevokeDeviceCommand());
-	cmd.addCommand(buildCoordinatorDiagnoseTeamSetupCommand());
-	cmd.addCommand(buildCoordinatorAuthSchemaCommand());
-	cmd.addCommand(buildCoordinatorAccountSchemaCommand());
-	return cmd;
+function coordinatorResource(name: string, description: string): Command {
+	return new Command(name).configureHelp(helpStyle).description(description);
+}
+
+function createCoordinatorResources() {
+	const cmd = coordinatorResource("coordinator", "Manage coordinator accounts and access");
+	const account = coordinatorResource("account", "Link accounts to existing Identities");
+	account.addCommand(buildCoordinatorLinkAccountCommand());
+	const owner = coordinatorResource("owner", "Manage device ownership")
+		.addCommand(buildCoordinatorEnrollOwnerCommand())
+		.addCommand(buildCoordinatorReviewDeviceOwnerCommand())
+		.addCommand(buildCoordinatorQualifyOwnerCommand());
+	const group = coordinatorResource("group", "Manage coordinator groups and enrollment grants");
+	group.addCommand(buildCoordinatorGrantIdentityGroupCommand());
+	const device = coordinatorResource(
+		"device",
+		"Manage device enrollment and revocation",
+	).addCommand(buildCoordinatorRevokeDeviceCommand());
+	const domain = coordinatorResource("domain", "Manage Sharing domains and device access");
+	const invitation = coordinatorResource(
+		"invitation",
+		"Create, review, and accept coordinator invitations",
+	);
+	const request = coordinatorResource(
+		"request",
+		"List, approve, and deny coordinator join requests",
+	);
+	const grant = coordinatorResource("grant", "List and revoke bootstrap grants");
+	const schema = coordinatorResource(
+		"schema",
+		"Diagnose Team setup and upgrade coordinator schemas",
+	)
+		.addCommand(buildCoordinatorDiagnoseTeamSetupCommand())
+		.addCommand(buildCoordinatorAuthSchemaCommand())
+		.addCommand(buildCoordinatorAccountSchemaCommand());
+	cmd.addCommand(account);
+	cmd.addCommand(owner);
+	cmd.addCommand(group);
+	cmd.addCommand(device);
+	cmd.addCommand(domain);
+	cmd.addCommand(invitation);
+	cmd.addCommand(request);
+	cmd.addCommand(grant);
+	cmd.addCommand(schema);
+	return { cmd, group, device, domain, invitation, request, grant };
+}
+
+function registerCoordinatorCompatibilityAliases(cmd: Command): void {
+	// Older deployed coordinators include these spellings in consent pages and
+	// schema-upgrade errors. Keep those instructions usable during upgrades.
+	cmd.addCommand(buildCoordinatorLinkAccountCommand().name("link-account"), { hidden: true });
+	cmd.addCommand(buildCoordinatorAuthSchemaCommand().name("upgrade-auth-schema"), { hidden: true });
+	cmd.addCommand(buildCoordinatorAccountSchemaCommand().name("upgrade-account-schema"), {
+		hidden: true,
+	});
 }
 
 export function buildCoordinatorCommand(): Command {
-	const cmd = createCoordinatorCommandRoot();
+	const { cmd, group, device, domain, invitation, request, grant } = createCoordinatorResources();
 
 	// ---- group-create ----
 
-	const groupCreateCmd = new Command("group-create")
+	const groupCreateCmd = new Command("create")
 		.configureHelp(helpStyle)
-		.description("Create a coordinator group in the local store")
+		.description("Create a local coordinator group")
 		.argument("<group>", "group id")
 		.option("--name <name>", "display name override");
 	addDbOption(groupCreateCmd);
@@ -230,7 +269,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(group, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator group-create");
+				p.intro("codemem coordinator group create");
 				p.log.success(`Group ready: ${groupId.trim()}`);
 				p.outro(String(group.display_name ?? group.group_id ?? groupId.trim()));
 			} catch (err) {
@@ -243,13 +282,13 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(groupCreateCmd);
+	group.addCommand(groupCreateCmd);
 
 	// ---- list-groups ----
 
-	const listGroupsCmd = new Command("list-groups")
+	const listGroupsCmd = new Command("list")
 		.configureHelp(helpStyle)
-		.description("List coordinator groups from the local store");
+		.description("List local coordinator groups");
 	addDbOption(listGroupsCmd);
 	addJsonOption(listGroupsCmd);
 	listGroupsCmd.action(async (opts: { db?: string; dbPath?: string; json?: boolean }) => {
@@ -259,7 +298,7 @@ export function buildCoordinatorCommand(): Command {
 				console.log(JSON.stringify(groups, null, 2));
 				return;
 			}
-			p.intro("codemem coordinator list-groups");
+			p.intro("codemem coordinator group list");
 			if (groups.length === 0) {
 				p.outro("No coordinator groups found");
 				return;
@@ -279,11 +318,11 @@ export function buildCoordinatorCommand(): Command {
 			process.exitCode = 1;
 		}
 	});
-	cmd.addCommand(listGroupsCmd);
+	group.addCommand(listGroupsCmd);
 
 	// ---- enroll-device ----
 
-	const enrollDeviceCmd = new Command("enroll-device")
+	const enrollDeviceCmd = new Command("enroll")
 		.configureHelp(helpStyle)
 		.description("Enroll a device in a local coordinator group")
 		.argument("<group>", "group id")
@@ -345,7 +384,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(enrollment, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator enroll-device");
+				p.intro("codemem coordinator device enroll");
 				p.log.success(`Enrolled ${deviceId.trim()} in ${groupId.trim()}`);
 				p.outro(String(enrollment.display_name ?? enrollment.device_id ?? deviceId.trim()));
 			} catch (err) {
@@ -358,11 +397,11 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(enrollDeviceCmd);
+	device.addCommand(enrollDeviceCmd);
 
 	// ---- list-devices ----
 
-	const listDevicesCmd = new Command("list-devices")
+	const listDevicesCmd = new Command("list")
 		.configureHelp(helpStyle)
 		.description("List enrolled devices in a local coordinator group")
 		.argument("<group>", "group id")
@@ -384,7 +423,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(rows, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator list-devices");
+				p.intro("codemem coordinator device list");
 				if (rows.length === 0) {
 					p.outro(`No enrolled devices for ${groupId.trim()}`);
 					return;
@@ -406,11 +445,11 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(listDevicesCmd);
+	device.addCommand(listDevicesCmd);
 
 	// ---- list-scopes ----
 
-	const listScopesCmd = new Command("list-scopes")
+	const listScopesCmd = new Command("list")
 		.configureHelp(helpStyle)
 		.description("List coordinator Sharing domains for a group")
 		.argument("<group>", "group id")
@@ -443,7 +482,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(rows, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator list-scopes");
+				p.intro("codemem coordinator domain list");
 				if (rows.length === 0) {
 					p.outro(`No Sharing domains for ${groupId.trim()}`);
 					return;
@@ -464,15 +503,15 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(listScopesCmd);
+	domain.addCommand(listScopesCmd);
 
 	// ---- create-scope ----
 
-	const createScopeCmd = new Command("create-scope")
+	const createScopeCmd = new Command("create")
 		.configureHelp(helpStyle)
 		.description("Create a coordinator Sharing domain")
 		.argument("<group>", "group id")
-		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<scope-id>", "Sharing domain ID")
 		.requiredOption("--label <label>", "Sharing domain label")
 		.option("--kind <kind>", "Sharing domain kind")
 		.option("--authority-type <type>", "authority type")
@@ -522,7 +561,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(scope, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator create-scope");
+				p.intro("codemem coordinator domain create");
 				p.log.success(`Sharing domain ready: ${scope.scope_id}`);
 				p.outro(scope.label);
 			} catch (err) {
@@ -535,15 +574,15 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(createScopeCmd);
+	domain.addCommand(createScopeCmd);
 
 	// ---- update-scope ----
 
-	const updateScopeCmd = new Command("update-scope")
+	const updateScopeCmd = new Command("update")
 		.configureHelp(helpStyle)
 		.description("Update coordinator Sharing domain metadata")
 		.argument("<group>", "group id")
-		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<scope-id>", "Sharing domain ID")
 		.option("--label <label>", "Sharing domain label")
 		.option("--kind <kind>", "Sharing domain kind")
 		.option("--authority-type <type>", "authority type")
@@ -602,7 +641,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(scope, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator update-scope");
+				p.intro("codemem coordinator domain update");
 				p.log.success(`Updated Sharing domain: ${scope.scope_id}`);
 				p.outro(scope.label);
 			} catch (err) {
@@ -615,15 +654,15 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(updateScopeCmd);
+	domain.addCommand(updateScopeCmd);
 
 	// ---- list-scope-members ----
 
-	const listScopeMembersCmd = new Command("list-scope-members")
+	const listScopeMembersCmd = new Command("members")
 		.configureHelp(helpStyle)
 		.description("List explicit members of a Sharing domain")
 		.argument("<group>", "group id")
-		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<scope-id>", "Sharing domain ID")
 		.option("--include-revoked", "include revoked memberships")
 		.option("--remote-url <url>", "remote coordinator URL override")
 		.option("--admin-secret <secret>", "remote coordinator admin secret override");
@@ -655,7 +694,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(rows, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator list-scope-members");
+				p.intro("codemem coordinator domain members");
 				if (rows.length === 0) {
 					p.outro(`No members for Sharing domain ${scopeId.trim()}`);
 					return;
@@ -679,15 +718,15 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(listScopeMembersCmd);
+	domain.addCommand(listScopeMembersCmd);
 
 	// ---- grant-scope-member ----
 
-	const grantScopeMemberCmd = new Command("grant-scope-member")
+	const grantScopeMemberCmd = new Command("grant")
 		.configureHelp(helpStyle)
 		.description("Grant a device explicit access to a Sharing domain")
 		.argument("<group>", "group id")
-		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<scope-id>", "Sharing domain ID")
 		.argument("<device-id>", "device id")
 		.requiredOption("--effect-id <id>", "deterministic mutation effect id")
 		.option("--role <role>", "membership role")
@@ -731,7 +770,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(membership, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator grant-scope-member");
+				p.intro("codemem coordinator domain grant");
 				p.log.success(`Granted ${deviceId.trim()} to Sharing domain ${scopeId.trim()}`);
 				p.outro(membership.role);
 			} catch (err) {
@@ -747,15 +786,15 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(grantScopeMemberCmd);
+	domain.addCommand(grantScopeMemberCmd);
 
 	// ---- revoke-scope-member ----
 
-	const revokeScopeMemberCmd = new Command("revoke-scope-member")
+	const revokeScopeMemberCmd = new Command("revoke")
 		.configureHelp(helpStyle)
 		.description("Revoke a device from a Sharing domain")
 		.argument("<group>", "group id")
-		.argument("<scope-id>", "Sharing domain scope_id")
+		.argument("<scope-id>", "Sharing domain ID")
 		.argument("<device-id>", "device id")
 		.requiredOption("--effect-id <id>", "deterministic mutation effect id")
 		.option("--membership-epoch <epoch>", "membership epoch")
@@ -811,7 +850,7 @@ export function buildCoordinatorCommand(): Command {
 					);
 					return;
 				}
-				p.intro("codemem coordinator revoke-scope-member");
+				p.intro("codemem coordinator domain revoke");
 				p.log.success(`Revoked ${deviceId.trim()} from Sharing domain ${scopeId.trim()}`);
 				p.outro("revoked");
 			} catch (err) {
@@ -827,11 +866,11 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(revokeScopeMemberCmd);
+	domain.addCommand(revokeScopeMemberCmd);
 
 	// ---- rename-device ----
 
-	const renameDeviceCmd = new Command("rename-device")
+	const renameDeviceCmd = new Command("rename")
 		.configureHelp(helpStyle)
 		.description("Rename an enrolled device in the local coordinator store")
 		.argument("<group>", "group id")
@@ -865,7 +904,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(result, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator rename-device");
+				p.intro("codemem coordinator device rename");
 				p.log.success(`Renamed ${deviceId.trim()} in ${groupId.trim()}`);
 				p.outro(String(result.display_name ?? result.device_id ?? deviceId.trim()));
 			} catch (err) {
@@ -878,13 +917,13 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(renameDeviceCmd);
+	device.addCommand(renameDeviceCmd);
 
 	// ---- disable-device ----
 
-	const disableDeviceCmd = new Command("disable-device")
+	const disableDeviceCmd = new Command("disable")
 		.configureHelp(helpStyle)
-		.description("Disable an enrolled device in the local coordinator store")
+		.description("Disable a device enrollment in one local coordinator group")
 		.argument("<group>", "group id")
 		.argument("<device-id>", "device id");
 	addDbOption(disableDeviceCmd);
@@ -920,7 +959,7 @@ export function buildCoordinatorCommand(): Command {
 					);
 					return;
 				}
-				p.intro("codemem coordinator disable-device");
+				p.intro("codemem coordinator device disable");
 				p.log.success(`Disabled ${deviceId.trim()} in ${groupId.trim()}`);
 				p.outro("disabled");
 			} catch (err) {
@@ -933,13 +972,13 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(disableDeviceCmd);
+	device.addCommand(disableDeviceCmd);
 
 	// ---- remove-device ----
 
-	const removeDeviceCmd = new Command("remove-device")
+	const removeDeviceCmd = new Command("remove")
 		.configureHelp(helpStyle)
-		.description("Remove an enrolled device from the local coordinator store")
+		.description("Remove a device enrollment from one local coordinator group")
 		.argument("<group>", "group id")
 		.argument("<device-id>", "device id");
 	addDbOption(removeDeviceCmd);
@@ -975,7 +1014,7 @@ export function buildCoordinatorCommand(): Command {
 					);
 					return;
 				}
-				p.intro("codemem coordinator remove-device");
+				p.intro("codemem coordinator device remove");
 				p.log.success(`Removed ${deviceId.trim()} from ${groupId.trim()}`);
 				p.outro("removed");
 			} catch (err) {
@@ -988,7 +1027,7 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(removeDeviceCmd);
+	device.addCommand(removeDeviceCmd);
 
 	// ---- serve (coordinator relay) ----
 
@@ -1057,7 +1096,7 @@ export function buildCoordinatorCommand(): Command {
 
 	// ---- list-bootstrap-grants ----
 
-	const listBootstrapGrantsCmd = new Command("list-bootstrap-grants")
+	const listBootstrapGrantsCmd = new Command("list")
 		.configureHelp(helpStyle)
 		.description("List bootstrap grants for a coordinator group")
 		.argument("<group>", "group id")
@@ -1087,7 +1126,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(rows, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator list-bootstrap-grants");
+				p.intro("codemem coordinator grant list");
 				if (rows.length === 0) {
 					p.outro(`No bootstrap grants for ${groupId.trim()}`);
 					return;
@@ -1111,11 +1150,11 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(listBootstrapGrantsCmd);
+	grant.addCommand(listBootstrapGrantsCmd);
 
 	// ---- revoke-bootstrap-grant ----
 
-	const revokeBootstrapGrantCmd = new Command("revoke-bootstrap-grant")
+	const revokeBootstrapGrantCmd = new Command("revoke")
 		.configureHelp(helpStyle)
 		.description("Revoke a bootstrap grant")
 		.argument("<grant-id>", "bootstrap grant id")
@@ -1154,7 +1193,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify({ ok: true, grant_id: grantId.trim() }, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator revoke-bootstrap-grant");
+				p.intro("codemem coordinator grant revoke");
 				p.log.success(`Revoked ${grantId.trim()}`);
 				p.outro("revoked");
 			} catch (err) {
@@ -1167,18 +1206,18 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(revokeBootstrapGrantCmd);
+	grant.addCommand(revokeBootstrapGrantCmd);
 
 	// ---- create-invite ----
 
-	const createInviteCmd = new Command("create-invite")
+	const createInviteCmd = new Command("create")
 		.configureHelp(helpStyle)
-		.description("Create a coordinator team invite")
+		.description("Create a coordinator group invitation")
 		.argument("[group]", "group id")
 		.option("--group <group>", "group id")
 		.option("--coordinator-url <url>", "coordinator URL override")
 		.option("--policy <policy>", "invite policy", "auto_admit")
-		.option("--ttl-hours <hours>", "invite TTL hours", "24")
+		.option("--ttl-hours <hours>", "invitation lifetime in hours", "24")
 		.option("--remote-url <url>", "remote coordinator URL override")
 		.option("--admin-secret <secret>", "remote coordinator admin secret override");
 	addDbOption(createInviteCmd);
@@ -1215,7 +1254,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(result, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator create-invite");
+				p.intro("codemem coordinator invitation create");
 				p.log.success(`Invite created for ${groupId}`);
 				if (typeof result.link === "string") p.log.message(`- link: ${result.link}`);
 				if (typeof result.encoded === "string") p.log.message(`- invite: ${result.encoded}`);
@@ -1233,13 +1272,13 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(createInviteCmd);
+	invitation.addCommand(createInviteCmd);
 
 	// ---- import-invite ----
 
-	const importInviteCmd = new Command("import-invite")
+	const importInviteCmd = new Command("accept")
 		.configureHelp(helpStyle)
-		.description("Import a coordinator invite")
+		.description("Accept a coordinator invitation or review recipient access")
 		.argument("<invite>", "invite value or link")
 		.option("-R, --recipient-name <name>", "recipient Identity display name")
 		.option("-N, --device-name <name>", "device display name")
@@ -1263,8 +1302,8 @@ export function buildCoordinatorCommand(): Command {
 				console.log(JSON.stringify(result, null, 2));
 				return;
 			}
-			p.intro("codemem coordinator import-invite");
-			p.log.success(`Invite imported for ${result.group_id}`);
+			p.intro("codemem coordinator invitation accept");
+			p.log.success(`Invitation accepted for ${result.group_id}`);
 			p.log.message(`- coordinator: ${result.coordinator_url}`);
 			p.log.message(`- status: ${result.status}`);
 			p.outro("Coordinator config updated");
@@ -1278,11 +1317,11 @@ export function buildCoordinatorCommand(): Command {
 			process.exitCode = 1;
 		}
 	});
-	cmd.addCommand(importInviteCmd);
+	invitation.addCommand(importInviteCmd);
 
 	// ---- list-join-requests ----
 
-	const listJoinRequestsCmd = new Command("list-join-requests")
+	const listJoinRequestsCmd = new Command("list")
 		.configureHelp(helpStyle)
 		.description("List pending coordinator join requests")
 		.argument("[group]", "group id")
@@ -1315,7 +1354,7 @@ export function buildCoordinatorCommand(): Command {
 					console.log(JSON.stringify(rows, null, 2));
 					return;
 				}
-				p.intro("codemem coordinator list-join-requests");
+				p.intro("codemem coordinator request list");
 				if (rows.length === 0) {
 					p.outro(`No pending join requests for ${groupId}`);
 					return;
@@ -1338,14 +1377,11 @@ export function buildCoordinatorCommand(): Command {
 			}
 		},
 	);
-	cmd.addCommand(listJoinRequestsCmd);
+	request.addCommand(listJoinRequestsCmd);
 
 	// ---- approve-join-request / deny-join-request ----
 
-	function addReviewJoinRequestCommand(
-		name: "approve-join-request" | "deny-join-request",
-		approve: boolean,
-	) {
+	function addReviewJoinRequestCommand(name: "approve" | "deny", approve: boolean) {
 		const reviewCmd = new Command(name)
 			.configureHelp(helpStyle)
 			.description(`${approve ? "Approve" : "Deny"} a coordinator join request`)
@@ -1390,7 +1426,7 @@ export function buildCoordinatorCommand(): Command {
 						console.log(JSON.stringify(request, null, 2));
 						return;
 					}
-					p.intro(`codemem coordinator ${name}`);
+					p.intro(`codemem coordinator request ${name}`);
 					p.log.success(`${approve ? "Approved" : "Denied"} join request ${requestId.trim()}`);
 					p.outro(String(request.status ?? "updated"));
 				} catch (err) {
@@ -1403,11 +1439,13 @@ export function buildCoordinatorCommand(): Command {
 				}
 			},
 		);
-		cmd.addCommand(reviewCmd);
+		request.addCommand(reviewCmd);
 	}
 
-	addReviewJoinRequestCommand("approve-join-request", true);
-	addReviewJoinRequestCommand("deny-join-request", false);
+	addReviewJoinRequestCommand("approve", true);
+	addReviewJoinRequestCommand("deny", false);
+
+	registerCoordinatorCompatibilityAliases(cmd);
 
 	return cmd;
 }

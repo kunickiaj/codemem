@@ -296,21 +296,21 @@ async function confirmReview(
 function showLinkFollowUp(group: string): void {
 	if (group.includes("\\")) {
 		p.log.info(
-			`Next, run codemem coordinator link-account with group ID ${JSON.stringify(group)}. Quote the ID for your shell.`,
+			`Next, run codemem coordinator account link with group ID ${JSON.stringify(group)}. Quote the ID for your shell.`,
 			{ output: process.stderr },
 		);
 		return;
 	}
 	const quotedGroup = `'${group.replaceAll("'", "'\\''")}'`;
 	p.log.info(
-		`Next, link your Google account separately: codemem coordinator link-account ${quotedGroup}`,
+		`Next, link your Google account separately: codemem coordinator account link ${quotedGroup}`,
 		{ output: process.stderr },
 	);
 }
 function showTargetedLinkFollowUp(options: Options): boolean {
 	if (!options.coordinator && !options.config && !resolveDbOpt(options)) return false;
 	p.log.info(
-		"Next, link your Google account separately with codemem coordinator link-account for this group. Reuse the same --coordinator, --config, and --db-path options from this review.",
+		"Next, link your Google account separately with codemem coordinator account link for this group. Reuse the same --coordinator, --config, and --db-path options from this review.",
 		{ output: process.stderr },
 	);
 	return true;
@@ -514,7 +514,7 @@ async function reviewDeviceOwner(group: string, options: Options): Promise<void>
 	}
 }
 export function buildCoordinatorReviewDeviceOwnerCommand(): Command {
-	const command = new Command("review-device-owner")
+	const command = new Command("review")
 		.configureHelp(helpStyle)
 		.description("Preview and confirm the owner of your existing device")
 		.argument("<group>", "group id")

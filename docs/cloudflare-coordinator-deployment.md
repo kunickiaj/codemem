@@ -145,7 +145,7 @@ Malformed relevant history returns `needs_review` with `legacy_history_invalid`
 instead of permitting confirmation. Historical labels do not themselves grant
 account authority or Team access.
 
-For the grant endpoint, the maintained operator wrapper is `codemem coordinator grant-identity-group <attestation-id>`.
+For the grant endpoint, the maintained operator wrapper is `codemem coordinator group grant-identity <attestation-id>`.
 Use the stored `controller-v1:` reference returned by confirmed `review-device-owner`, with the same coordinator
 configured in the existing operator configuration. The wrapper keeps the admin credential out of arguments and
 output, refuses redirects, and defaults confirmation to **No**. `--json` and noninteractive calls send no request.
@@ -155,7 +155,7 @@ profile. See the [first-owner bootstrap recipe](user-guide.md#first-owner-bootst
 Use the maintained CLI in three steps:
 
 1. **Pause capture, then review and prepare.** Stop this profile's capture plugin, viewer, and sync daemon until the
-   command reports `Verified coordinator Identity`. Run `codemem coordinator enroll-owner <group> --prepare --config <path>
+   command reports `Verified coordinator Identity`. Run `codemem coordinator owner enroll <group> --prepare --config <path>
    --db-path <path> --keys-dir <path>`. It prints the current identity, device, public key, own and foreign memory counts,
    the review digest, and the private request-file path. It writes
    `capability-request.json` in owner-enrollment state beside the database by default; use
@@ -243,7 +243,7 @@ account to a device without a browser: code-entry counts per client and per coor
 and a record of which links were made this way. It changes no existing table or row. Until both
 tables exist, headless linking stays off and every other sign-in and linking flow works as
 before. A self-hosted SQLite coordinator creates the tables when it opens. Once the tables exist,
-devices can run `codemem coordinator link-account <group> --headless`; a coordinator without them
+devices can run `codemem coordinator account link <group> --headless`; a coordinator without them
 answers that command's requests with 404, and the CLI asks the user to contact you.
 
 The code-entry page at `/auth/link/device` counts every submitted code, including ones that
@@ -280,7 +280,7 @@ devices. It uses the same device-signed authorization as `/v1/peers`, and it ret
 public key derived from `CODEMEM_RELAY_SERVICE_KEY` as `ssh-ed25519` text, the group's
 `/v1/relay/<realmId>` path, and `/v1/relay/admission-check`. A group outside
 `CODEMEM_RELAY_GROUPS`, and every group while relay is off, gets the same `401 unknown_device` that
-`/v1/peers` gives a non-member. A device running `codemem serve` with this coordinator and group
+`/v1/peers` gives a non-member. A device running the local service with this coordinator and group
 configured fetches the route, pins the key on first fetch for each coordinator and group, and
 pauses relay when the key changes until its user approves the new key with
 `codemem sync approve-relay-key`. Rotating the service key secret therefore pauses relay on every
@@ -542,20 +542,20 @@ not identity or permission evidence. No coordinator browser session is required 
 The current V2 extension adds profile refresh and explicit unlink/reconnect support without changing normal V2 linking. It is not the legacy authority cutover and it is not the deferred V3 generation migration. For an existing intact V2 database, pause auth writers, drain pending attempts, back up the database, obtain approval, and use the local CLI only for a local SQLite coordinator:
 
 ```fish
-codemem coordinator upgrade-account-schema --db-path PATH
+codemem coordinator schema upgrade-account --db-path PATH
 ```
 
 The command does not pause writers, create a backup, or apply itself by default. Its D1 export opens no database:
 
 ```fish
-codemem coordinator upgrade-account-schema --export-sql --json
+codemem coordinator schema upgrade-account --export-sql --json
 ```
 
 It returns `{ "statements": [...], "applied": false }`. Plain output warns that the whole statement array must run in **one atomic D1 binding batch**; do not add `BEGIN`/`COMMIT`, split it into chunks, or treat Wrangler `execute` or migrations as a safe apply path here. Remote query and batch limits are not verified by this export.
 
 The default export installs the extension on V2 without account management (45 statements).
 For the intact prior 38-statement extension, export the nine-statement device-only
-unlink delta instead with `codemem coordinator upgrade-account-schema --export-sql --device-unlink --json`.
+unlink delta instead with `codemem coordinator schema upgrade-account --export-sql --device-unlink --json`.
 The delta adds one receipt table and its guards and replaces the archive guard;
 it does not rebuild tables or change existing rows. The local SQLite command detects
 either supported starting schema. Both exports reject partial or unknown schemas
@@ -576,12 +576,12 @@ Existing sessions remain valid until unlink or administrator revocation, but old
 The explicit `--owner-resolution` mode adds only the reviewed 0037 receipt table,
 indexes and immutability triggers. It requires the **current account-management
 schema** first; for an older supported SQLite coordinator, use the normal
-`upgrade-account-schema` command before this mode. Pause auth writers, drain pending
+`schema upgrade-account` command before this mode. Pause auth writers, drain pending
 attempts, back up the coordinator database and obtain separate approval before applying:
 
 ```fish
-codemem coordinator upgrade-account-schema --owner-resolution --db-path 'coordinator.sqlite'
-codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
+codemem coordinator schema upgrade-account --owner-resolution --db-path 'coordinator.sqlite'
+codemem coordinator schema upgrade-account --owner-resolution --export-sql --json
 ```
 
 Local installation accepts only an explicitly selected existing regular SQLite file,

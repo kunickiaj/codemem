@@ -191,7 +191,6 @@ function coordinatorCommand(
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
 			...args,
 			"--db-path",
@@ -205,9 +204,9 @@ function coordinatorCommand(
 }
 
 function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["roster"]): void {
-	coordinatorCommand(ctx, ["group-create", GROUP_ALPHA, "--name", "Legacy Alpha"], "04-create-alpha");
-	coordinatorCommand(ctx, ["group-create", GROUP_BETA, "--name", "Legacy Beta"], "05-create-beta");
-	coordinatorCommand(ctx, ["group-create", GROUP_GAMMA, "--name", "Legacy Gamma"], "06-create-gamma");
+	coordinatorCommand(ctx, ["group", "create", GROUP_ALPHA, "--name", "Legacy Alpha"], "04-create-alpha");
+	coordinatorCommand(ctx, ["group", "create", GROUP_BETA, "--name", "Legacy Beta"], "05-create-beta");
+	coordinatorCommand(ctx, ["group", "create", GROUP_GAMMA, "--name", "Legacy Gamma"], "06-create-gamma");
 	for (const [groupId, scopeId, label] of [
 		[GROUP_ALPHA, "scope-legacy-alpha", "Legacy Alpha"],
 		[GROUP_BETA, "scope-legacy-beta", "Legacy Beta"],
@@ -215,7 +214,7 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 		coordinatorCommand(
 			ctx,
 			[
-				"create-scope",
+				"domain", "create",
 				groupId,
 				scopeId,
 				"--label",
@@ -246,7 +245,7 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 			coordinatorCommand(
 				ctx,
 				[
-					"enroll-device",
+					"device", "enroll",
 					groupId,
 					device.deviceId,
 					"--fingerprint",
@@ -263,7 +262,7 @@ function createCoordinatorRoster(ctx: ScenarioContext, roster: FixtureSummary["r
 	coordinatorCommand(
 		ctx,
 		[
-			"enroll-device",
+			"device", "enroll",
 			GROUP_GAMMA,
 			roster.shared.deviceId,
 			"--fingerprint",
@@ -301,7 +300,7 @@ function startServer(
 			"env",
 			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
 			...CLI_PREFIX,
-			"serve",
+			"service",
 			"start",
 			"--foreground",
 			"--db-path",

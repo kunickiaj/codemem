@@ -290,12 +290,12 @@ it.each([
 	);
 	expect(mocks.log.success).toHaveBeenCalledOnce();
 	expect(mocks.log.info).toHaveBeenLastCalledWith(
-		expect.stringContaining(`link-account ${quotedGroup}`),
+		expect.stringContaining(`account link ${quotedGroup}`),
 		{ output: process.stderr },
 	);
 	// A literal round trip guards against shell evaluation of group IDs.
 	const output = String(mocks.log.info.mock.lastCall?.[0]);
-	const extractedQuotedArg = output.split("link-account ")[1];
+	const extractedQuotedArg = output.split("account link ")[1];
 	expect(extractedQuotedArg).toBe(quotedGroup);
 	if (process.platform !== "win32") {
 		expect(
@@ -359,7 +359,7 @@ it.each([
 			{ output: process.stderr },
 		);
 		expect(JSON.stringify(mocks.log.info.mock.calls)).not.toMatch(
-			/Controller attestation reference:|link-account|controller-v1:|review-v1:/,
+			/Controller attestation reference:|account link|controller-v1:|review-v1:/,
 		);
 	},
 );
@@ -562,15 +562,15 @@ it.each([
 	}
 	expect(mocks.log.success).toHaveBeenCalledOnce();
 	const followUp = String(mocks.log.info.mock.calls.at(-1)?.[0]);
-	expect(followUp).toContain("codemem coordinator link-account");
+	expect(followUp).toContain("codemem coordinator account link");
 	if (args.length) {
 		expect(followUp).toContain("Reuse the same --coordinator, --config, and --db-path");
-		expect(followUp).not.toContain("link-account 'group-a'");
+		expect(followUp).not.toContain("account link 'group-a'");
 		expect(followUp).not.toContain("fixture.sqlite");
 		expect(followUp).not.toContain("fixture.json");
 		expect(followUp).not.toContain("https://override.example.test");
 	} else {
-		expect(followUp).toContain("link-account 'group-a'");
+		expect(followUp).toContain("account link 'group-a'");
 		expect(followUp).not.toContain("Reuse the same");
 	}
 });
@@ -585,9 +585,9 @@ it.each(["team\\owner", "team\\\\owner", "team\\'owner"])(
 		expect(mocks.log.success).toHaveBeenCalledOnce();
 		const output = String(mocks.log.info.mock.lastCall?.[0]);
 		expect(output).toBe(
-			`Next, run codemem coordinator link-account with group ID ${JSON.stringify(groupId)}. Quote the ID for your shell.`,
+			`Next, run codemem coordinator account link with group ID ${JSON.stringify(groupId)}. Quote the ID for your shell.`,
 		);
-		expect(output).not.toContain("link-account '");
+		expect(output).not.toContain("account link '");
 	},
 );
 

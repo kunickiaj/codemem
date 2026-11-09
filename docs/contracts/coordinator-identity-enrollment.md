@@ -409,7 +409,7 @@ requires an issued, nonrevoked qualification, canonical ledger storage, the comp
 connection-history schema and explicit migration 0036 owner-attempt authority pins.
 The configured Worker mounts an authenticated
 [preview/issue route](coordinator-identity-group-grants.md#owner-qualification-api)
-for `codemem coordinator qualify-owner` only with valid browser authentication
+for `codemem coordinator owner qualify` only with valid browser authentication
 and owner enrollment enabled. Default Workers and local serving cannot issue
 qualifications. Neither the route nor CLI installs storage or automatically
 rebuilds owner attempts. This source stack includes qualified owner consumption,

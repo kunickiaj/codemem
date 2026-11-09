@@ -74,38 +74,27 @@ describe("coordinator command parity", () => {
 	it("registers coordinator parity subcommands", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		expect(coordinator).toBeDefined();
-		expect(coordinator?.commands.map((command) => command.name())).toEqual([
-			"link-account",
-			"enroll-owner",
-			"review-device-owner",
-			"qualify-owner",
-			"grant-identity-group",
-			"revoke-device",
-			"diagnose-team-setup",
-			"upgrade-auth-schema",
-			"upgrade-account-schema",
-			"group-create",
-			"list-groups",
-			"enroll-device",
-			"list-devices",
-			"list-scopes",
-			"create-scope",
-			"update-scope",
-			"list-scope-members",
-			"grant-scope-member",
-			"revoke-scope-member",
-			"rename-device",
-			"disable-device",
-			"remove-device",
-			"serve",
-			"list-bootstrap-grants",
-			"revoke-bootstrap-grant",
-			"create-invite",
-			"import-invite",
-			"list-join-requests",
-			"approve-join-request",
-			"deny-join-request",
-		]);
+		expect(
+			coordinator
+				?.createHelp()
+				.visibleCommands(coordinator)
+				.map((command) => command.name())
+				.filter((name) => name !== "help")
+				.sort(),
+		).toEqual(
+			[
+				"account",
+				"owner",
+				"group",
+				"device",
+				"schema",
+				"domain",
+				"serve",
+				"grant",
+				"invitation",
+				"request",
+			].sort(),
+		);
 	});
 });
 
@@ -256,25 +245,22 @@ describe("formatSyncAttempt", () => {
 	it("documents the coordinator command surface in help output", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		const help = coordinator?.helpInformation() ?? "";
-		expect(help).toContain("group-create");
-		expect(help).toContain("list-groups");
-		expect(help).toContain("enroll-device");
-		expect(help).toContain("list-devices");
-		expect(help).toContain("list-scopes");
-		expect(help).toContain("create-scope");
-		expect(help).toContain("update-scope");
-		expect(help).toContain("list-scope-members");
-		expect(help).toContain("grant-scope-member");
-		expect(help).toContain("revoke-scope-member");
-		expect(help).toContain("rename-device");
-		expect(help).toContain("disable-device");
-		expect(help).toContain("remove-device");
-		expect(help).toContain("serve");
-		expect(help).toContain("create-invite");
-		expect(help).toContain("import-invite");
-		expect(help).toContain("list-join-requests");
-		expect(help).toContain("approve-join-request");
-		expect(help).toContain("deny-join-request");
+		for (const name of [
+			"account",
+			"owner",
+			"group",
+			"device",
+			"schema",
+			"domain",
+			"serve",
+			"grant",
+			"invitation",
+			"request",
+		]) {
+			expect(help).toMatch(new RegExp(`^\\s+${name}(?:\\s|$)`, "m"));
+		}
+		expect(help).not.toContain("group-create");
+		expect(help).not.toContain("import-invite");
 	});
 
 	it("manages Sharing domains through coordinator CLI JSON commands", async () => {
@@ -286,12 +272,13 @@ describe("formatSyncAttempt", () => {
 		try {
 			const devicePublicKey = "test-public-key-device-a";
 			await buildCoordinatorCommand().parseAsync(
-				["group-create", "team-a", "--db-path", dbPath, "--json"],
+				["group", "create", "team-a", "--db-path", dbPath, "--json"],
 				{ from: "user" },
 			);
 			await buildCoordinatorCommand().parseAsync(
 				[
-					"enroll-device",
+					"device",
+					"enroll",
 					"team-a",
 					"device-a",
 					"--fingerprint",
@@ -307,7 +294,8 @@ describe("formatSyncAttempt", () => {
 			logSpy.mockClear();
 			await buildCoordinatorCommand().parseAsync(
 				[
-					"create-scope",
+					"domain",
+					"create",
 					"team-a",
 					"scope-acme",
 					"--label",
@@ -322,7 +310,8 @@ describe("formatSyncAttempt", () => {
 			);
 			await buildCoordinatorCommand().parseAsync(
 				[
-					"grant-scope-member",
+					"domain",
+					"grant",
 					"team-a",
 					"scope-acme",
 					"device-a",
@@ -337,7 +326,7 @@ describe("formatSyncAttempt", () => {
 				{ from: "user" },
 			);
 			await buildCoordinatorCommand().parseAsync(
-				["list-scope-members", "team-a", "scope-acme", "--db-path", dbPath, "--json"],
+				["domain", "members", "team-a", "scope-acme", "--db-path", dbPath, "--json"],
 				{ from: "user" },
 			);
 
@@ -369,12 +358,13 @@ describe("formatSyncAttempt", () => {
 		process.exitCode = undefined;
 		try {
 			await buildCoordinatorCommand().parseAsync(
-				["group-create", "team-a", "--db-path", dbPath, "--json"],
+				["group", "create", "team-a", "--db-path", dbPath, "--json"],
 				{ from: "user" },
 			);
 			await buildCoordinatorCommand().parseAsync(
 				[
-					"grant-scope-member",
+					"domain",
+					"grant",
 					"team-a",
 					"missing-scope",
 					"device-a",
@@ -416,12 +406,12 @@ describe("formatSyncAttempt", () => {
 
 	it("allows positional group ids for create-invite and list-join-requests", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
-		const createInvite = coordinator?.commands.find(
-			(command) => command.name() === "create-invite",
-		);
-		const listRequests = coordinator?.commands.find(
-			(command) => command.name() === "list-join-requests",
-		);
+		const createInvite = coordinator?.commands
+			.find((command) => command.name() === "invitation")
+			?.commands.find((command) => command.name() === "create");
+		const listRequests = coordinator?.commands
+			.find((command) => command.name() === "request")
+			?.commands.find((command) => command.name() === "list");
 		expect(createInvite?.registeredArguments[0]?.required).toBe(false);
 		expect(listRequests?.registeredArguments[0]?.required).toBe(false);
 		expect(createInvite?.helpInformation()).toContain("[group]");

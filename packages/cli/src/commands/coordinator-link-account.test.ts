@@ -96,12 +96,21 @@ it("canonical and legacy trees own distinct link-account instances", async () =>
 		.addCommand(canonical)
 		.addCommand(new Command("sync").addCommand(legacy));
 	// Act
-	await root.parseAsync(["coordinator", "link-account", "group-a", "--db-path", "fixture.sqlite"], {
-		from: "user",
-	});
+	await root.parseAsync(
+		["coordinator", "account", "link", "group-a", "--db-path", "fixture.sqlite"],
+		{
+			from: "user",
+		},
+	);
 	// Assert
-	expect(canonical.commands.find((cmd) => cmd.name() === "link-account")).not.toBe(
-		legacy.commands.find((cmd) => cmd.name() === "link-account"),
+	expect(
+		canonical.commands
+			.find((cmd) => cmd.name() === "account")
+			?.commands.find((cmd) => cmd.name() === "link"),
+	).not.toBe(
+		legacy.commands
+			.find((cmd) => cmd.name() === "account")
+			?.commands.find((cmd) => cmd.name() === "link"),
 	);
 	expect(mocks.linkCoordinatorAccount).toHaveBeenCalledWith(
 		expect.objectContaining({

@@ -24,7 +24,7 @@ Use the controls below only when you operate a coordinator, diagnose compatibili
 npm install -g codemem
 
 # Create a coordinator group
-codemem coordinator group-create my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator group create my-team --db-path ~/.codemem/coordinator.sqlite
 
 # Set an admin secret (required for creating invites via the API)
 set -x CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET (openssl rand -base64 32)
@@ -56,45 +56,45 @@ codemem coordinator serve [OPTIONS]
 
 ```fish
 # Create a group
-codemem coordinator group-create <group-id> --db-path <path>
+codemem coordinator group create <group-id> --db-path <path>
 
 # List groups
-codemem coordinator list-groups --db-path <path>
+codemem coordinator group list --db-path <path>
 
 # Enroll a device directly (admin)
-codemem coordinator enroll-device <group-id> <device-id> \
+codemem coordinator device enroll <group-id> <device-id> \
   --fingerprint <fingerprint> --public-key-file <path> --db-path <path>
 
 # List enrolled devices
-codemem coordinator list-devices <group-id> --db-path <path>
+codemem coordinator device list <group-id> --db-path <path>
 
 # Rename, disable, or remove a device
-codemem coordinator rename-device <group-id> <device-id> --name "work-laptop" --db-path <path>
-codemem coordinator disable-device <group-id> <device-id> --db-path <path>
-codemem coordinator remove-device <group-id> <device-id> --db-path <path>
+codemem coordinator device rename <group-id> <device-id> --name "work-laptop" --db-path <path>
+codemem coordinator device disable <group-id> <device-id> --db-path <path>
+codemem coordinator device remove <group-id> <device-id> --db-path <path>
 
 # Invite / join-request commands
-codemem coordinator create-invite <group-id> --db-path <path>
-codemem coordinator list-join-requests <group-id> --db-path <path>
-codemem coordinator approve-join-request <request-id> --db-path <path>
-codemem coordinator deny-join-request <request-id> --db-path <path>
+codemem coordinator invitation create <group-id> --db-path <path>
+codemem coordinator request list <group-id> --db-path <path>
+codemem coordinator request approve <request-id> --db-path <path>
+codemem coordinator request deny <request-id> --db-path <path>
 ```
 
 ### Invite and join flow
 
 ```fish
 # Create an invite (admin)
-codemem coordinator create-invite <group-id> --db-path <path>
+codemem coordinator invitation create <group-id> --db-path <path>
 
 # Import an invite (teammate)
-codemem coordinator import-invite <encoded-invite>
+codemem coordinator invitation accept <encoded-invite>
 
 # List pending join requests (admin)
-codemem coordinator list-join-requests <group-id> --db-path <path>
+codemem coordinator request list <group-id> --db-path <path>
 
 # Approve or deny (admin)
-codemem coordinator approve-join-request <request-id> --db-path <path>
-codemem coordinator deny-join-request <request-id> --db-path <path>
+codemem coordinator request approve <request-id> --db-path <path>
+codemem coordinator request deny <request-id> --db-path <path>
 ```
 
 ## Container deployment
@@ -125,7 +125,7 @@ docker run -d --name coordinator -p 7347:7347 -v coordinator-data:/data codemem-
 Initialize the group from the host:
 
 ```fish
-docker exec coordinator codemem coordinator group-create my-team --db-path /data/coordinator.sqlite
+docker exec coordinator codemem coordinator group create my-team --db-path /data/coordinator.sqlite
 ```
 
 ## Exposing the coordinator
@@ -211,7 +211,7 @@ Joining the coordinator Team enrolls the device for coordinator-backed discovery
 The admin can enroll a teammate's device directly from the local coordinator machine:
 
 ```fish
-codemem coordinator enroll-device my-team <device-id> \
+codemem coordinator device enroll my-team <device-id> \
   --fingerprint <fingerprint> --public-key-file <path> \
   --db-path ~/.codemem/coordinator.sqlite
 ```
@@ -221,13 +221,13 @@ codemem coordinator enroll-device my-team <device-id> \
 The admin creates an invite and shares it:
 
 ```fish
-codemem coordinator create-invite my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation create my-team --db-path ~/.codemem/coordinator.sqlite
 ```
 
 This outputs an encoded invite string. Share it with the teammate, who imports it:
 
 ```fish
-codemem coordinator import-invite <encoded-invite>
+codemem coordinator invitation accept <encoded-invite>
 ```
 
 Or paste the invite in the viewer UI under **Advanced → Team sync → Join team**.
@@ -258,7 +258,7 @@ peer-to-peer sync remains the data path.
 **Coordinator not reachable**: verify the `--coordinator-host` binding. Use `0.0.0.0` to listen on all interfaces. Check firewall
 rules and that the tunnel/funnel is active.
 
-**Device not enrolled**: run `codemem coordinator list-devices <group> --db-path <path>` to confirm enrollment.
+**Device not enrolled**: run `codemem coordinator device list <group> --db-path <path>` to confirm enrollment.
 Use the invite flow for self-service enrollment.
 
 **Presence not refreshing**: check that the client's `sync_coordinator_url` matches the coordinator's reachable address

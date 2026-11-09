@@ -182,7 +182,7 @@ it("advertises the explicit mode on the existing leaf without adding a deeper co
 	// Act
 	const help = command.helpInformation();
 	// Assert
-	expect(command.name()).toBe("upgrade-account-schema");
+	expect(command.name()).toBe("upgrade-account");
 	expect(command.commands).toEqual([]);
 	expect(help).toContain("--owner-resolution");
 	expect(help).toContain("--db-path");

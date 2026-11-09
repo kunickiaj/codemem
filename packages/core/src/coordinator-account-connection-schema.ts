@@ -24,7 +24,7 @@ import {
 
 export const AUTH_SCHEMA_UPGRADE_REQUIRED = "coordinator_auth_schema_upgrade_required";
 export const AUTH_SCHEMA_UPGRADE_MESSAGE =
-	"Coordinator authentication needs a schema upgrade. Pause auth writers and back up the coordinator database. For the legacy authority upgrade, run codemem coordinator upgrade-auth-schema --db-path <coordinator.sqlite>. D1 operators must review and apply outstanding auth migrations before deploying the upgraded Worker. A coordinator already using device-claim auth needs only outstanding additive migrations, including 0033; do not replay its authority-table cutover. Optional account management on an intact V2 database requires codemem coordinator upgrade-account-schema --db-path <coordinator.sqlite>; normal V2 linking does not require this extension. Device-signed sync remains available.";
+	"Coordinator authentication needs a schema upgrade. Pause auth writers and back up the coordinator database. For the legacy authority upgrade, run codemem coordinator schema upgrade-auth --db-path <coordinator.sqlite>. D1 operators must review and apply outstanding auth migrations before deploying the upgraded Worker. A coordinator already using device-claim auth needs only outstanding additive migrations, including 0033; do not replay its authority-table cutover. Optional account management on an intact V2 database requires codemem coordinator schema upgrade-account --db-path <coordinator.sqlite>; normal V2 linking does not require this extension. Device-signed sync remains available.";
 export class CoordinatorAuthSchemaUpgradeRequiredError extends Error {
 	constructor() {
 		super(AUTH_SCHEMA_UPGRADE_MESSAGE);

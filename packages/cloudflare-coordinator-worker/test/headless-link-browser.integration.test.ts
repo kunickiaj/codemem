@@ -161,7 +161,7 @@ it("links a headless attempt from code entry through Google to device approval",
 	expect(consent).toContain("Build box");
 	expect(consent).toContain(f.review.groupId);
 	expect(consent).toContain(formatShortKeyFingerprint(f.review.fingerprint));
-	expect(consent).toContain("codemem coordinator link-account --headless");
+	expect(consent).toContain("codemem coordinator account link --headless");
 	expect(consent).not.toContain('action="/auth/link/confirm"');
 	expect(approve.attempt_id).toBe(ATTEMPT);
 	expect(desktop.status).toBe(409);

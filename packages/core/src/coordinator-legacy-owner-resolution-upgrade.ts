@@ -7,7 +7,7 @@ import { readLegacyOwnerResolutionSchemaState } from "./coordinator-legacy-owner
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "./coordinator-legacy-owner-resolution-schema.js";
 
 const accountPrerequisite =
-	"Current coordinator account schema required. Inspect the database and run codemem coordinator upgrade-account-schema --db-path '<coordinator.sqlite>' before installing owner-resolution storage.";
+	"Current coordinator account schema required. Inspect the database and run codemem coordinator schema upgrade-account --db-path '<coordinator.sqlite>' before installing owner-resolution storage.";
 
 const fileSelectionError =
 	"Select an existing regular coordinator SQLite file, not a symlink or URI, in a protected operator-owned folder. Stop writers and inspect file and parent ownership/permissions before retrying.";

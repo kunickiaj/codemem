@@ -296,7 +296,7 @@ function showResult(
 	);
 }
 export function buildCoordinatorEnrollOwnerCommand(): Command {
-	const command = new Command("enroll-owner")
+	const command = new Command("enroll")
 		.configureHelp(helpStyle)
 		.description("Review and enroll this existing profile's device owner")
 		.argument("<group>", "group id")

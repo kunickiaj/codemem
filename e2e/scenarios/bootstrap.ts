@@ -31,7 +31,7 @@ function startSyncServer(ctx: ScenarioContext, service: string, artifactName: st
 			"env",
 			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
 			...CLI_PREFIX,
-			"serve",
+			"service",
 			"start",
 			"--foreground",
 			"--db-path",
@@ -181,7 +181,7 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 
 	const groupCreate = ctx.compose.exec(
 		"coordinator",
-		[...CLI_PREFIX, "sync", "coordinator", "group-create", GROUP_ID, "--db-path", "/data/coordinator.sqlite"],
+		[...CLI_PREFIX, "coordinator", "group", "create", GROUP_ID, "--db-path", "/data/coordinator.sqlite"],
 		"07-group-create",
 		120_000,
 	);
@@ -192,9 +192,8 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"enroll-device",
+			"device", "enroll",
 			GROUP_ID,
 			peerAIdentity.device_id,
 			"--fingerprint",
@@ -212,7 +211,7 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 
 	const inviteResult = ctx.compose.exec(
 		"peer-a",
-		[...CLI_PREFIX, "sync", "coordinator", "create-invite", GROUP_ID, "--policy", "approval_required", "--json"],
+		[...CLI_PREFIX, "coordinator", "invitation", "create", GROUP_ID, "--policy", "approval_required", "--json"],
 		"10-create-invite",
 		120_000,
 	);
@@ -223,9 +222,8 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		"peer-c",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"import-invite",
+			"invitation", "accept",
 			invitePayload.encoded,
 			"--db-path",
 			"/data/mem.sqlite",
@@ -250,7 +248,7 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 
 	const joinRequestsResult = ctx.compose.exec(
 		"coordinator",
-		[...CLI_PREFIX, "sync", "coordinator", "list-join-requests", GROUP_ID, "--db-path", "/data/coordinator.sqlite", "--json"],
+		[...CLI_PREFIX, "coordinator", "request", "list", GROUP_ID, "--db-path", "/data/coordinator.sqlite", "--json"],
 		"13-list-join-requests",
 		120_000,
 	);
@@ -262,9 +260,8 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"approve-join-request",
+			"request", "approve",
 			joinRequests[0]?.request_id ?? "",
 			"--db-path",
 			"/data/coordinator.sqlite",

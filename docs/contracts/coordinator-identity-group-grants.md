@@ -118,7 +118,7 @@ unavailable schema/configuration 503; rejected evidence 409 (`invalid_input`,
 write returns 503 `qualification_outcome_unknown`, never a rollback claim. No
 automatic retry or revoked-row reactivation occurs. Responses are no-store.
 
-The CLI `coordinator qualify-owner <attestation-id>` uses saved operator config,
+The CLI `coordinator owner qualify <attestation-id>` uses saved operator config,
 performs a network preview, validates references and digest before prompting,
 and defaults confirmation to No. JSON/noninteractive calls never submit the digest.
 This permission and a separately reviewed transport-group grant are both distinct

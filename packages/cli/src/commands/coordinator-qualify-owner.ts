@@ -194,7 +194,7 @@ async function qualifyOwner(attestationId: string, options: Options): Promise<vo
 	}
 }
 export function buildCoordinatorQualifyOwnerCommand(): Command {
-	const command = new Command("qualify-owner")
+	const command = new Command("qualify")
 		.configureHelp(helpStyle)
 		.description("Preview and confirm linked-account device enrollment permission")
 		.argument("<attestation-id>", "controller-v1 reference from a real operator review");

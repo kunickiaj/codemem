@@ -29,7 +29,7 @@ stop_viewer() {
 	host="$2"
 	port="$3"
 	if [ -f "$db_path" ]; then
-		pnpm --dir "$repo_root" exec tsx --conditions source packages/cli/src/index.ts serve stop --db-path "$db_path" --host "$host" --port "$port" >/dev/null 2>&1 || true
+		pnpm --dir "$repo_root" exec tsx --conditions source packages/cli/src/index.ts service stop --db-path "$db_path" --host "$host" --port "$port" >/dev/null 2>&1 || true
 	fi
 }
 
@@ -79,7 +79,7 @@ CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET="$ADMIN_SECRET" pnpm --dir "$repo_root" ex
 COORDINATOR_PID=$!
 wait_for_http "http://127.0.0.1:$COORDINATOR_PORT/"
 
-codemem coordinator group-create "$GROUP_ID" --db-path "$COORDINATOR_DB" > "$PROOF_ROOT/group-create.txt" 2>&1
+codemem coordinator group create "$GROUP_ID" --db-path "$COORDINATOR_DB" > "$PROOF_ROOT/group-create.txt" 2>&1
 
 CODEMEM_REPO_ROOT="$repo_root" \
 CODEMEM_WORKSPACE_SELECTOR="local-host-workspace" \
@@ -101,8 +101,8 @@ SEED_DEVICE_ID=$(read_json_field "$SEED_IDENTITY" device_id)
 SEED_FINGERPRINT=$(read_json_field "$SEED_IDENTITY" fingerprint)
 SEED_PUBLIC_KEY=$(read_json_field "$SEED_IDENTITY" public_key)
 
-codemem coordinator enroll-device "$GROUP_ID" "$SEED_DEVICE_ID" --fingerprint "$SEED_FINGERPRINT" --public-key "$SEED_PUBLIC_KEY" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/enroll-seed.json"
-codemem coordinator create-invite "$GROUP_ID" --policy auto_admit --coordinator-url "http://127.0.0.1:$COORDINATOR_PORT" --remote-url "http://127.0.0.1:$COORDINATOR_PORT" --admin-secret "$ADMIN_SECRET" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/create-invite.json"
+codemem coordinator device enroll "$GROUP_ID" "$SEED_DEVICE_ID" --fingerprint "$SEED_FINGERPRINT" --public-key "$SEED_PUBLIC_KEY" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/enroll-seed.json"
+codemem coordinator invitation create "$GROUP_ID" --policy auto_admit --coordinator-url "http://127.0.0.1:$COORDINATOR_PORT" --remote-url "http://127.0.0.1:$COORDINATOR_PORT" --admin-secret "$ADMIN_SECRET" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/create-invite.json"
 
 INVITE=$(python3 - <<'PY' "$PROOF_ROOT/create-invite.json"
 import json, sys
@@ -164,7 +164,7 @@ CODEMEM_SEED_PEER_ADDRESS="127.0.0.1:$SEED_SYNC_PORT" \
 CODEMEM_BOOTSTRAP_PHASE="finish-bootstrap" \
 sh "$script_dir/workspace-codemem-bootstrap-local.sh" > "$WORKER_FINISH_SUMMARY"
 CODEMEM_KEYS_DIR="$WORKER_ROOT/keys" pnpm --dir "$repo_root" exec tsx --conditions source packages/cli/src/index.ts sync once --db-path "$WORKER_ROOT/mem.sqlite" > "$PROOF_ROOT/worker-sync-once.txt" 2>&1
-pnpm --dir "$repo_root" exec tsx --conditions source packages/cli/src/index.ts search "$MARKER_TITLE" --db-path "$WORKER_ROOT/mem.sqlite" --all-projects --json > "$PROOF_ROOT/worker-search.json"
+pnpm --dir "$repo_root" exec tsx --conditions source packages/cli/src/index.ts memory search "$MARKER_TITLE" --db-path "$WORKER_ROOT/mem.sqlite" --all-projects --json > "$PROOF_ROOT/worker-search.json"
 
 python3 - "$PROOF_ROOT" "$SEED_IDENTITY" "$WORKER_IDENTITY" "$GROUP_ID" "$COORDINATOR_PORT" "$ADMIN_SECRET" "$PROOF_ROOT/worker-sync-once.txt" "$PROOF_ROOT/worker-search.json" "$WORKER_FINISH_SUMMARY" > "$PROOF_ROOT/proof-summary.json" <<'PY'
 import json, sys, urllib.request

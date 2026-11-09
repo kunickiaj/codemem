@@ -118,8 +118,8 @@ Coordinator group enrollment is not enough. Grant the anchor peer to each
 Sharing domain explicitly:
 
 ```fish
-codemem coordinator grant-scope-member team-alpha acme-work <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator grant-scope-member team-alpha oss-codemem <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain grant team-alpha acme-work <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain grant team-alpha oss-codemem <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
 Effect ids make membership mutations deterministic and idempotent; use a stable unique value for each intended mutation.
@@ -127,13 +127,13 @@ Effect ids make membership mutations deterministic and idempotent; use a stable 
 Review grants regularly:
 
 ```fish
-codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
 ```
 
 Revoke a domain when the anchor peer should stop receiving future data for it:
 
 ```fish
-codemem coordinator revoke-scope-member team-alpha acme-work <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain revoke team-alpha acme-work <anchor-device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
 Revocation is forward-looking. Rotate or destroy the anchor peer's local storage

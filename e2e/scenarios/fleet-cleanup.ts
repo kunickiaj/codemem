@@ -141,7 +141,7 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 	for (const swarm of spec.swarms) {
 		const groupCreate = ctx.compose.exec(
 			coordinatorService,
-			[...CLI_PREFIX, "sync", "coordinator", "group-create", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite"],
+			[...CLI_PREFIX, "coordinator", "group", "create", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite"],
 			`07-group-create-${swarm.id}`,
 			120_000,
 		);
@@ -150,9 +150,8 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 			coordinatorService,
 			[
 				...CLI_PREFIX,
-				"sync",
 				"coordinator",
-				"enroll-device",
+				"device", "enroll",
 				swarm.coordinator_group,
 				seedIdentity.device_id,
 				"--fingerprint",
@@ -170,7 +169,7 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 
 		const inviteResult = ctx.compose.exec(
 			seedService,
-			[...CLI_PREFIX, "sync", "coordinator", "create-invite", swarm.coordinator_group, "--policy", "approval_required", "--json"],
+			[...CLI_PREFIX, "coordinator", "invitation", "create", swarm.coordinator_group, "--policy", "approval_required", "--json"],
 			`09-create-invite-${swarm.id}`,
 			120_000,
 		);
@@ -199,9 +198,8 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 				service,
 				[
 					...CLI_PREFIX,
-					"sync",
 					"coordinator",
-					"import-invite",
+					"invitation", "accept",
 					invitePayload.encoded,
 					"--db-path",
 					"/data/mem.sqlite",
@@ -224,7 +222,7 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 			assertStatus(enableWorker.status, 0, `failed to enable worker ${worker.id}`);
 			const joinRequestsResult = ctx.compose.exec(
 				coordinatorService,
-				[...CLI_PREFIX, "sync", "coordinator", "list-join-requests", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite", "--json"],
+				[...CLI_PREFIX, "coordinator", "request", "list", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite", "--json"],
 				`14-list-join-requests-${worker.id}`,
 				120_000,
 			);
@@ -236,9 +234,8 @@ export async function runFleetCleanupScenario(ctx: ScenarioContext): Promise<voi
 				coordinatorService,
 				[
 					...CLI_PREFIX,
-					"sync",
 					"coordinator",
-					"approve-join-request",
+					"request", "approve",
 					requestId,
 					"--db-path",
 					"/data/coordinator.sqlite",

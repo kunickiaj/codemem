@@ -86,7 +86,7 @@ export async function runFleetSmokeScenario(ctx: ScenarioContext): Promise<void>
 
 	await waitFor(
 		async () => {
-			const result = ctx.compose.exec(seedService, [...CLI_PREFIX, "version"], "03-seed-version-check", 30_000);
+			const result = ctx.compose.exec(seedService, [...CLI_PREFIX, "--version"], "03-seed-version-check", 30_000);
 			assertStatus(result.status, 0, "seed peer codemem version check failed");
 		},
 		{ description: "seed peer CLI readiness", timeoutMs: 120_000, intervalMs: 2_000 },
@@ -102,9 +102,8 @@ export async function runFleetSmokeScenario(ctx: ScenarioContext): Promise<void>
 			coordinatorService,
 			[
 				...CLI_PREFIX,
-				"sync",
 				"coordinator",
-				"group-create",
+				"group", "create",
 				swarm.coordinator_group,
 				"--db-path",
 				"/data/coordinator.sqlite",
@@ -125,7 +124,7 @@ export async function runFleetSmokeScenario(ctx: ScenarioContext): Promise<void>
 			assert(service, `worker '${worker.id}' is missing compose service`);
 			await waitFor(
 				async () => {
-					const result = ctx.compose.exec(service, [...CLI_PREFIX, "version"], `05-${worker.id}-version-check`, 30_000);
+					const result = ctx.compose.exec(service, [...CLI_PREFIX, "--version"], `05-${worker.id}-version-check`, 30_000);
 					assertStatus(result.status, 0, `worker ${worker.id} codemem version check failed`);
 				},
 				{ description: `${worker.id} CLI readiness`, timeoutMs: 120_000, intervalMs: 2_000 },

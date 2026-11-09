@@ -85,29 +85,29 @@ still works as a compatibility alias but is hidden from help and shell completio
 Current shipped local coordinator CLI surface:
 
 ```fish
-codemem coordinator group-create team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-groups --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator enroll-device team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-devices team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-scopes team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator update-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator grant-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator revoke-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator rename-device team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator disable-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator remove-device team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-bootstrap-grants team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator revoke-bootstrap-grant <grant-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator group create team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator group list --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device enroll team-alpha <device-id> --fingerprint <fingerprint> --public-key-file ~/.codemem/keys/device.key.pub --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device list team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain list team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain create team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain update team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain grant team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain revoke team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device rename team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device disable team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device remove team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant list team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator grant revoke <grant-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --coordinator-host 0.0.0.0 --coordinator-port 7347
-codemem coordinator create-invite team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator import-invite <invite>
-codemem coordinator import-invite '<recipient-invite>' --review --json
-codemem coordinator import-invite '<recipient-invite>' --reviewed-onboarding-digest '<digest>' --json
-codemem coordinator list-join-requests team-alpha --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator approve-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator deny-join-request <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation create team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation accept <invite>
+codemem coordinator invitation accept '<recipient-invite>' --review --json
+codemem coordinator invitation accept '<recipient-invite>' --reviewed-onboarding-digest '<digest>' --json
+codemem coordinator request list team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator request approve <request-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator request deny <request-id> --db-path ~/.codemem/coordinator.sqlite
 ```
 
 This keeps the primary deployment path inside the main `codemem` artifact and reuses the current TypeScript sync
@@ -133,7 +133,7 @@ The review below is a separate administrator workflow for legacy ownership or en
 For that operator review, run this on the existing device:
 
 ```fish
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com"
+codemem coordinator owner review team-alpha --coordinator "https://coord.example.com"
 ```
 
 The command opens the existing device memory database read-only and previews the
@@ -177,8 +177,8 @@ database, not the coordinator's server database.
 Run the interactive link command from a terminal on the device being linked. It resolves the current configuration or environment Identity and readiness automatically:
 
 ```fish
-codemem coordinator link-account team-alpha --coordinator "https://coord.example.com"
-codemem coordinator link-account team-alpha --coordinator "https://coord.example.com" --loopback-host "::1"
+codemem coordinator account link team-alpha --coordinator "https://coord.example.com"
+codemem coordinator account link team-alpha --coordinator "https://coord.example.com" --loopback-host "::1"
 ```
 
 `--config` selects the saved coordinator configuration, and `--db-path` selects the **device's memory database**, not the coordinator database used by admin commands. `CODEMEM_KEYS_DIR` selects existing device keys when configured. The command never creates keys, enrolls a device, adopts another Identity, or changes Project access. Remote coordinators require HTTPS; literal HTTP loopback origins are allowed only for local development.
@@ -254,9 +254,9 @@ possibly one personal domain per actor-owned device set.
 Minimal flow:
 
 ```fish
-codemem coordinator create-scope team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator grant-scope-member team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
-codemem coordinator list-scope-members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain create team-alpha acme-work --label "Acme Work" --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain grant team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator domain members team-alpha acme-work --db-path ~/.codemem/coordinator.sqlite
 ```
 
 Operational rules:

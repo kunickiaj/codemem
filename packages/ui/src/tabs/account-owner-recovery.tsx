@@ -663,7 +663,7 @@ function BlockedHelp({ preview }: { preview: RecoveryPreview }) {
 					A coordinator without owner-resolution storage needs a schema upgrade. Inspect the SQL
 					with{" "}
 					<code>
-						codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
+						codemem coordinator schema upgrade-account --owner-resolution --export-sql --json
 					</code>
 					. The export applies nothing. Back up the coordinator and pause auth writers before
 					applying an upgrade.

@@ -127,7 +127,7 @@ async function diagnoseTeamSetup(group: string | undefined, options: Options): P
 			console.log(JSON.stringify({ coordinator_id: target.coordinatorId, groups: diagnoses }));
 			return;
 		}
-		p.intro("codemem coordinator diagnose-team-setup");
+		p.intro("codemem coordinator schema diagnose-team");
 		for (const diagnosis of diagnoses) printDiagnosis(diagnosis);
 		p.outro("Dry run only: no changes were made.");
 	} catch (error) {
@@ -142,11 +142,9 @@ async function diagnoseTeamSetup(group: string | undefined, options: Options): P
 }
 
 export function buildCoordinatorDiagnoseTeamSetupCommand(): Command {
-	const command = new Command("diagnose-team-setup")
+	const command = new Command("diagnose-team")
 		.configureHelp(helpStyle)
-		.description(
-			"Dry-run the coordinator's legacy Team setup completion against this database and report which check fails",
-		)
+		.description("Check legacy Team setup completion against this database without changes")
 		.argument("[group]", "coordinator group ID (default: configured groups)");
 	addDbOption(command);
 	addConfigOption(command);

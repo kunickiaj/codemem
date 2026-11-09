@@ -71,7 +71,7 @@ function upgrade(options: Options): void {
 }
 
 export function buildCoordinatorAuthSchemaCommand(): Command {
-	const command = new Command("upgrade-auth-schema")
+	const command = new Command("upgrade-auth")
 		.configureHelp(helpStyle)
 		.description("Upgrade local coordinator auth or export reviewed D1 SQL")
 		.option("-e, --export-sql", "print D1 cutover SQL without opening a database");
@@ -164,15 +164,13 @@ function accountUpgradeSuccess(options: Options): string {
 }
 function accountUpgradeFailure(options: Options, error: unknown): string {
 	if (options.ownerResolution)
-		return "Owner-resolution storage requires the current account schema: first use upgrade-account-schema without --owner-resolution. Partial, unsupported or colliding receipt schemas cannot be repaired by this command. Check file access and writer locks.";
+		return "Owner-resolution storage requires the current account schema: first use codemem coordinator schema upgrade-account without --owner-resolution. Partial, unsupported or colliding receipt schemas cannot be repaired by this command. Check file access and writer locks.";
 	return error instanceof Error ? error.message : "Coordinator account schema upgrade failed.";
 }
 export function buildCoordinatorAccountSchemaCommand(): Command {
-	const command = new Command("upgrade-account-schema")
+	const command = new Command("upgrade-account")
 		.configureHelp(helpStyle)
-		.description(
-			"Explicitly install optional coordinator account management on an existing V2 database",
-		)
+		.description("Install optional account management on an existing V2 database")
 		.option(
 			"-o, --owner-resolution",
 			"install inert owner-resolution receipt storage (requires current account schema)",

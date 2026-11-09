@@ -240,7 +240,7 @@ require_var CODEMEM_SEED_PEER_ADDRESS "$CODEMEM_SEED_PEER_ADDRESS"
 if [ "$CODEMEM_BOOTSTRAP_PHASE" != "finish-bootstrap" ]; then
 	require_var CODEMEM_INVITE "$CODEMEM_INVITE"
 	write_status joining "Importing coordinator invite and checking admission result."
-	codemem coordinator import-invite "$CODEMEM_INVITE" --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" --config "$CODEMEM_CONFIG" --json >"$CODEMEM_ARTIFACTS_DIR/import-invite.json" 2>&1
+	codemem coordinator invitation accept "$CODEMEM_INVITE" --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" --config "$CODEMEM_CONFIG" --json >"$CODEMEM_ARTIFACTS_DIR/import-invite.json" 2>&1
 
 	invite_status=$(
 		python3 - <<'PY'
