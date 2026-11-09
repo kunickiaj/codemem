@@ -43,13 +43,18 @@ function formatUsageEvent(
 	return `  ${parts.join(", ")}`;
 }
 
-const statsCmd = new Command("stats")
-	.configureHelp(helpStyle)
-	.description("Show database statistics");
+export function createStatsCommand(): Command {
+	const statsCmd = new Command("stats")
+		.configureHelp(helpStyle)
+		.description("Show memory and storage statistics");
 
-addDbOption(statsCmd);
-addJsonOption(statsCmd);
-statsCmd.addOption(new Option("-a, --attribution", "show local retrieval attribution diagnostics"));
+	addDbOption(statsCmd);
+	addJsonOption(statsCmd);
+	statsCmd.addOption(
+		new Option("-a, --attribution", "show local retrieval attribution diagnostics"),
+	);
+	return statsCmd.action(statsAction);
+}
 
 function renderAttributionDiagnostics(
 	report: ReturnType<typeof getAttributionDiagnostics>,
@@ -77,71 +82,71 @@ function renderAttributionDiagnostics(
 	].join("\n");
 }
 
-export const statsCommand = statsCmd.action(
-	(opts: DbOpts & JsonOpts & { attribution?: boolean }) => {
-		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-		try {
-			if (opts.attribution) {
-				const report = getAttributionDiagnostics(store.db);
-				console.log(
-					opts.json ? JSON.stringify(report, null, 2) : renderAttributionDiagnostics(report),
-				);
-				return;
-			}
-			const result = store.stats();
-			if (opts.json) {
-				// lgtm[js/clear-text-logging] This is intentional CLI stdout for `--json`, not an application log.
-				console.log(JSON.stringify(result, null, 2));
-				return;
-			}
+const statsAction = (opts: DbOpts & JsonOpts & { attribution?: boolean }) => {
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+	try {
+		if (opts.attribution) {
+			const report = getAttributionDiagnostics(store.db);
+			console.log(
+				opts.json ? JSON.stringify(report, null, 2) : renderAttributionDiagnostics(report),
+			);
+			return;
+		}
+		const result = store.stats();
+		if (opts.json) {
+			// lgtm[js/clear-text-logging] This is intentional CLI stdout for `--json`, not an application log.
+			console.log(JSON.stringify(result, null, 2));
+			return;
+		}
 
-			const db = result.database;
-			const sizeMb = (db.size_bytes / 1_048_576).toFixed(1);
+		const db = result.database;
+		const sizeMb = (db.size_bytes / 1_048_576).toFixed(1);
 
-			p.intro("codemem stats");
+		p.intro("codemem memory stats");
 
-			p.log.info([`Path:        ${db.path}`, `Size:        ${sizeMb} MB`].join("\n"));
+		p.log.info([`Path:        ${db.path}`, `Size:        ${sizeMb} MB`].join("\n"));
 
-			p.log.success(
-				[
-					`Sessions:    ${db.sessions.toLocaleString()}`,
-					`Memories:    ${db.active_memory_items.toLocaleString()} active / ${db.memory_items.toLocaleString()} total`,
-					`Tags:        ${db.tags_filled.toLocaleString()} filled (${fmtPct(db.tags_coverage)} of active)`,
-					`Artifacts:   ${db.artifacts.toLocaleString()}`,
-					`Vectors:     ${db.vector_rows.toLocaleString()} (${fmtPct(db.vector_coverage)} coverage)`,
-					`Raw events:  ${db.raw_events.toLocaleString()}`,
-				].join("\n"),
+		p.log.success(
+			[
+				`Sessions:    ${db.sessions.toLocaleString()}`,
+				`Memories:    ${db.active_memory_items.toLocaleString()} active / ${db.memory_items.toLocaleString()} total`,
+				`Tags:        ${db.tags_filled.toLocaleString()} filled (${fmtPct(db.tags_coverage)} of active)`,
+				`Artifacts:   ${db.artifacts.toLocaleString()}`,
+				`Vectors:     ${db.vector_rows.toLocaleString()} (${fmtPct(db.vector_coverage)} coverage)`,
+				`Raw events:  ${db.raw_events.toLocaleString()}`,
+			].join("\n"),
+		);
+
+		if (result.usage.events.length > 0) {
+			const provenanceByEvent = new Map(
+				result.usage.provenance.events.map((event) => [event.event, event]),
+			);
+			const lines = result.usage.events.map((event) =>
+				formatUsageEvent(event, provenanceByEvent.get(event.event)),
 			);
 
-			if (result.usage.events.length > 0) {
-				const provenanceByEvent = new Map(
-					result.usage.provenance.events.map((event) => [event.event, event]),
-				);
-				const lines = result.usage.events.map((event) =>
-					formatUsageEvent(event, provenanceByEvent.get(event.event)),
-				);
+			const t = result.usage.totals;
+			lines.push("");
+			lines.push(
+				`  Total: ${t.events.toLocaleString()} events, read ${fmtTokens(t.tokens_read)} tokens, est. saved ${fmtTokens(t.tokens_saved)} tokens`,
+			);
 
-				const t = result.usage.totals;
-				lines.push("");
-				lines.push(
-					`  Total: ${t.events.toLocaleString()} events, read ${fmtTokens(t.tokens_read)} tokens, est. saved ${fmtTokens(t.tokens_saved)} tokens`,
-				);
-
-				p.log.step(`Usage\n${lines.join("\n")}`);
-			}
-
-			p.outro("done");
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Stats failed";
-			if (opts.json) {
-				emitJsonError("stats_failed", message);
-			} else {
-				p.log.error(message);
-				process.exitCode = 1;
-			}
-			return;
-		} finally {
-			store.close();
+			p.log.step(`Usage\n${lines.join("\n")}`);
 		}
-	},
-);
+
+		p.outro("done");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Stats failed";
+		if (opts.json) {
+			emitJsonError("stats_failed", message);
+		} else {
+			p.log.error(message);
+			process.exitCode = 1;
+		}
+		return;
+	} finally {
+		store.close();
+	}
+};
+
+export const statsCommand = createStatsCommand();

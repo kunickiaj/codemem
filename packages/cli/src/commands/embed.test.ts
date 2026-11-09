@@ -24,7 +24,7 @@ describe("embed command", () => {
 
 	it("documents embed backfill behavior in help output", () => {
 		const help = embedCommand.helpInformation();
-		expect(help).toContain("Backfill semantic embeddings");
+		expect(help).toContain("Index memories for semantic search");
 		expect(help).toContain("--all-projects");
 		expect(help).toContain("--dry-run");
 	});
