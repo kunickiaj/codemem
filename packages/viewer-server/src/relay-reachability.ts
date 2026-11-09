@@ -17,6 +17,7 @@ import {
 	type RelayGroupClientConfig,
 	type RelayGroupResolution,
 	type RelayPeerClient,
+	type RelayPeerClientOptions,
 	readRelayClientSettings,
 	readRelayServicePin,
 	relayCoordinatorEndpoint,
@@ -40,6 +41,8 @@ export interface ViewerRelayReachabilityOptions {
 	readonly resolveGroup?: (db: Database, groupId: string) => Promise<RelayGroupResolution>;
 	/** Test seam for the `/v1/relay/info` request. */
 	readonly request?: RequestJsonExecutor;
+	/** Test seam for per-group pair pacing. Omitted groups and all other clocks stay native. */
+	readonly pairPacingByGroup?: ReadonlyMap<string, RelayPeerClientOptions["pairPacing"]>;
 	/** Disposable loopback fixtures only: allows `ws://` relay and `http://` admission on loopback. */
 	readonly allowLoopback?: boolean;
 }
@@ -140,6 +143,7 @@ function buildClient(deps: Deps, config: RelayGroupClientConfig): RelayPeerClien
 		localIdentity: { key: deps.key, expectedPin: device.publicKey },
 		authorityId: config.authorityId,
 		groupId: config.groupId,
+		pairPacing: options.pairPacingByGroup?.get(config.groupId),
 		relayAudienceId: config.relayAudienceId,
 		externalPathname: config.externalPathname,
 		coordinator: createRelayCoordinatorClient({
