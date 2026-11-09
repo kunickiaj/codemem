@@ -9,6 +9,11 @@
 			"import": "./dist/index.js",
 			"types": "./dist/index.d.ts"
 		},
+		"./feed-contract": {
+			"source": "./src/feed-contract.ts",
+			"import": "./dist/feed-contract.js",
+			"types": "./dist/feed-contract.d.ts"
+		},
 		"./recipient-policy-contract": {
 			"source": "./src/recipient-policy-contract.ts",
 			"import": "./dist/recipient-policy-contract.js",
@@ -35,7 +40,7 @@
 	],
 	"scripts": {
 		"clean": "rm -rf dist tsconfig.tsbuildinfo",
-		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts && test -f dist/recipient-policy-contract.d.ts && test -f dist/internal/cloudflare-coordinator.d.ts && test -f dist/semantic-worker-entry.js",
+		"build": "pnpm exec vite build && rm -f tsconfig.tsbuildinfo && pnpm exec tsc --build && test -f dist/index.d.ts && test -f dist/feed-contract.d.ts && test -f dist/recipient-policy-contract.d.ts && test -f dist/internal/cloudflare-coordinator.d.ts && test -f dist/semantic-worker-entry.js",
 		"typecheck": "pnpm exec tsc --noEmit",
 		"generate:test-schema": "pnpm exec tsx scripts/generate-test-schema.ts"
 	},

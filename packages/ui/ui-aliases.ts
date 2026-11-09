@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 export const uiAliases = {
+	"@codemem/core/feed-contract": resolve(import.meta.dirname, "../core/src/feed-contract.ts"),
 	"@codemem/core/recipient-policy-contract": resolve(
 		import.meta.dirname,
 		"../core/src/recipient-policy-contract.ts",
