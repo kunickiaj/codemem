@@ -32,60 +32,68 @@ export function resolveEmbedProjectScope(
 	return resolveProject(cwd, null);
 }
 
-const embedCmd = new Command("embed")
-	.configureHelp(helpStyle)
-	.description("Backfill semantic embeddings")
-	.option("--limit <n>", "max memories to check")
-	.option("--since <iso>", "only memories created at/after this ISO timestamp")
-	.option("--project <project>", "project identifier (defaults to git repo root)")
-	.option("--all-projects", "embed across all projects")
-	.option("--inactive", "include inactive memories")
-	.option("--dry-run", "preview work without writing vectors");
+export function createEmbeddingsCommand(name = "embeddings"): Command {
+	const embedCmd = new Command(name)
+		.configureHelp(helpStyle)
+		.description("Index memories for semantic search")
+		.addHelpText(
+			"after",
+			"\nThe configured embedding provider may receive memory text and charge API costs.",
+		)
+		.option("--limit <n>", "max memories to check")
+		.option("--since <iso>", "only memories created at/after this ISO timestamp")
+		.option("--project <project>", "project identifier (defaults to git repo root)")
+		.option("--all-projects", "embed across all projects")
+		.option("--inactive", "include inactive memories")
+		.option("--dry-run", "preview work without writing vectors");
 
-addDbOption(embedCmd);
-addJsonOption(embedCmd);
+	addDbOption(embedCmd);
+	addJsonOption(embedCmd);
 
-export const embedCommand = embedCmd.action(
-	async (
-		opts: DbOpts &
-			JsonOpts & {
-				limit?: string;
-				since?: string;
-				project?: string;
-				allProjects?: boolean;
-				inactive?: boolean;
-				dryRun?: boolean;
-			},
-	) => {
-		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-		try {
-			const limit = parseOptionalPositiveInt(opts.limit);
-			const project = resolveEmbedProjectScope(process.cwd(), opts.project, opts.allProjects);
+	return embedCmd.action(
+		async (
+			opts: DbOpts &
+				JsonOpts & {
+					limit?: string;
+					since?: string;
+					project?: string;
+					allProjects?: boolean;
+					inactive?: boolean;
+					dryRun?: boolean;
+				},
+		) => {
+			const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+			try {
+				const limit = parseOptionalPositiveInt(opts.limit);
+				const project = resolveEmbedProjectScope(process.cwd(), opts.project, opts.allProjects);
 
-			const result = await backfillVectors(store.db, {
-				limit,
-				since: opts.since ?? null,
-				project,
-				activeOnly: !opts.inactive,
-				dryRun: opts.dryRun === true,
-			});
+				const result = await backfillVectors(store.db, {
+					limit,
+					since: opts.since ?? null,
+					project,
+					activeOnly: !opts.inactive,
+					dryRun: opts.dryRun === true,
+				});
 
-			if (opts.json) {
-				console.log(JSON.stringify(result, null, 2));
-				return;
+				if (opts.json) {
+					console.log(JSON.stringify(result, null, 2));
+					return;
+				}
+
+				const action = opts.dryRun ? "Would embed" : "Embedded";
+				p.intro("codemem maintenance embeddings");
+				p.log.success(
+					`${action} ${result.embedded} vectors (${result.inserted} inserted, ${result.skipped} skipped)`,
+				);
+				p.outro(`Checked ${result.checked} memories`);
+			} catch (error) {
+				p.log.error(error instanceof Error ? error.message : String(error));
+				process.exitCode = 1;
+			} finally {
+				store.close();
 			}
+		},
+	);
+}
 
-			const action = opts.dryRun ? "Would embed" : "Embedded";
-			p.intro("codemem embed");
-			p.log.success(
-				`${action} ${result.embedded} vectors (${result.inserted} inserted, ${result.skipped} skipped)`,
-			);
-			p.outro(`Checked ${result.checked} memories`);
-		} catch (error) {
-			p.log.error(error instanceof Error ? error.message : String(error));
-			process.exitCode = 1;
-		} finally {
-			store.close();
-		}
-	},
-);
+export const embedCommand = createEmbeddingsCommand("embed");

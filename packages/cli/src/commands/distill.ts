@@ -390,7 +390,7 @@ async function distillAction(opts: DistillCommandOptions): Promise<void> {
 			console.log(JSON.stringify(result, null, 2));
 			return;
 		}
-		p.intro("codemem distill");
+		p.intro("codemem memory distill");
 		console.log(renderDistillReport(result, opts.explain ?? false));
 		if (result.metadata.judged) {
 			p.log.info(
@@ -416,28 +416,31 @@ async function distillAction(opts: DistillCommandOptions): Promise<void> {
 	}
 }
 
-const cmd = new Command("distill")
-	.configureHelp(helpStyle)
-	.description("Mine recurring memories into reviewable context candidates")
-	.option("-p, --project <project>", "project identifier (defaults to git repo root)")
-	.option("-A, --all-projects", "mine memories across all projects")
-	.option("-k, --kind <kind>", "memory kind to mine (repeat or comma-separate)", collectKind, [])
-	.option("-m, --min-recurrence <n>", "minimum member count per candidate", "2")
-	.option("-l, --limit <n>", "max candidates", "10")
-	.option("-e, --explain", "include evidence snippets in human output")
-	.option("--include-documented", "include candidates already represented in context files")
-	.option(
-		"--no-judge",
-		"skip the observer-model worthiness judgment that drops routine-activity clusters",
-	)
-	.option("-D, --draft", "draft an AGENTS.md rule for the top candidate and show the diff")
-	.option(
-		"--apply",
-		"write the drafted rule to the target file (implies --draft; prompts to confirm; with --json applies immediately without prompting)",
-	);
+export function createDistillCommand(): Command {
+	const cmd = new Command("distill")
+		.configureHelp(helpStyle)
+		.description("Find recurring lessons in memories")
+		.option("-p, --project <project>", "project name or path (defaults to git repo root)")
+		.option("-A, --all-projects", "mine memories across all projects")
+		.option("-k, --kind <kind>", "memory kind to mine (repeat or comma-separate)", collectKind, [])
+		.option("-m, --min-recurrence <n>", "minimum member count per candidate", "2")
+		.option("-l, --limit <n>", "max candidates", "10")
+		.option("-e, --explain", "include evidence snippets in human output")
+		.option("--include-documented", "include candidates already represented in context files")
+		.option(
+			"--no-judge",
+			"skip the observer-model worthiness judgment that drops routine-activity clusters",
+		)
+		.option("-D, --draft", "draft an AGENTS.md rule for the top candidate and show the diff")
+		.option(
+			"--apply",
+			"write the drafted rule to the target file (implies --draft; prompts to confirm; with --json applies immediately without prompting)",
+		);
 
-addDbOption(cmd);
-addJsonOption(cmd);
-cmd.action(distillAction);
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	cmd.action(distillAction);
+	return cmd;
+}
 
-export const distillCommand = cmd;
+export const distillCommand = createDistillCommand();

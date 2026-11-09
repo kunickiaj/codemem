@@ -11,79 +11,80 @@ import {
 	resolveDbOpt,
 } from "../shared-options.js";
 
-const searchCmd = new Command("search")
-	.configureHelp(helpStyle)
-	.description("Search memories by query")
-	.argument("<query>", "search query")
-	.option("-n, --limit <n>", "max results", "5")
-	.option("--project <project>", "project identifier (defaults to git repo root)")
-	.option("--all-projects", "search across all projects")
-	.option("--kind <kind>", "filter by memory kind");
+export function createSearchCommand(): Command {
+	const searchCmd = new Command("search")
+		.configureHelp(helpStyle)
+		.description("Search memories")
+		.argument("<query>", "search query")
+		.option("-n, --limit <n>", "max results", "5")
+		.option("--project <project>", "project name or path (defaults to git repo root)")
+		.option("--all-projects", "search across all projects")
+		.option("--kind <kind>", "filter by memory kind");
 
-addDbOption(searchCmd);
-addJsonOption(searchCmd);
+	addDbOption(searchCmd);
+	addJsonOption(searchCmd);
+	return searchCmd.action(searchAction);
+}
 
-export const searchCommand = searchCmd.action(
-	(
-		query: string,
-		opts: DbOpts &
-			JsonOpts & {
-				limit: string;
-				project?: string;
-				allProjects?: boolean;
-				kind?: string;
-			},
-	) => {
-		const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-		try {
-			const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 5);
-			const filters: { kind?: string; project?: string } = {};
-			if (opts.kind) filters.kind = opts.kind;
-			if (!opts.allProjects) {
-				const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
-				const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
-				if (project) filters.project = project;
-			}
-			const results = store.search(query, limit, filters);
-
-			if (opts.json) {
-				console.log(JSON.stringify(results, null, 2));
-				return;
-			}
-
-			if (results.length === 0) {
-				p.log.warn("No results found.");
-				return;
-			}
-
-			p.intro(`${results.length} result(s) for "${query}"`);
-
-			for (const item of results) {
-				const score = item.score.toFixed(3);
-				const age = timeSince(item.created_at);
-				const preview =
-					item.body_text.length > 120 ? `${item.body_text.slice(0, 120)}…` : item.body_text;
-
-				p.log.message(
-					[`#${item.id}  ${item.kind}  ${age}  [${score}]`, item.title, preview].join("\n"),
-				);
-			}
-
-			p.outro("done");
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Search failed";
-			if (opts.json) {
-				emitJsonError("search_failed", message);
-			} else {
-				p.log.error(message);
-				process.exitCode = 1;
-			}
-			return;
-		} finally {
-			store.close();
+const searchAction = (
+	query: string,
+	opts: DbOpts &
+		JsonOpts & {
+			limit: string;
+			project?: string;
+			allProjects?: boolean;
+			kind?: string;
+		},
+) => {
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+	try {
+		const limit = Math.max(1, Number.parseInt(opts.limit, 10) || 5);
+		const filters: { kind?: string; project?: string } = {};
+		if (opts.kind) filters.kind = opts.kind;
+		if (!opts.allProjects) {
+			const defaultProject = process.env.CODEMEM_PROJECT?.trim() || null;
+			const project = defaultProject || resolveProject(process.cwd(), opts.project ?? null);
+			if (project) filters.project = project;
 		}
-	},
-);
+		const results = store.search(query, limit, filters);
+
+		if (opts.json) {
+			console.log(JSON.stringify(results, null, 2));
+			return;
+		}
+
+		if (results.length === 0) {
+			p.log.warn("No results found.");
+			return;
+		}
+
+		p.intro(`${results.length} result(s) for "${query}"`);
+
+		for (const item of results) {
+			const score = item.score.toFixed(3);
+			const age = timeSince(item.created_at);
+			const preview =
+				item.body_text.length > 120 ? `${item.body_text.slice(0, 120)}…` : item.body_text;
+
+			p.log.message(
+				[`#${item.id}  ${item.kind}  ${age}  [${score}]`, item.title, preview].join("\n"),
+			);
+		}
+
+		p.outro("done");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "Search failed";
+		if (opts.json) {
+			emitJsonError("search_failed", message);
+		} else {
+			p.log.error(message);
+			process.exitCode = 1;
+		}
+		return;
+	} finally {
+		store.close();
+	}
+};
 
 function timeSince(isoDate: string): string {
 	const ms = Date.now() - new Date(isoDate).getTime();
@@ -94,3 +95,5 @@ function timeSince(isoDate: string): string {
 	const months = Math.floor(days / 30);
 	return `${months}mo ago`;
 }
+
+export const searchCommand = createSearchCommand();
