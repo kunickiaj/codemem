@@ -191,12 +191,16 @@ const persistSafeSpoolDiagnostic = async (state, line) => {
 
 const persistForRetry = async (state, { body, serialized, payload, sessionID }) => {
   try {
-    await writeRawEventSpoolEntry({
+    const stored = await writeRawEventSpoolEntry({
       envelope: body,
       serialized,
       homeDir: state.options.spoolHome,
       maxEntries: state.options.spoolMaxEntries,
     });
+    if (typeof stored?.serialized === "string" && stored.serialized !== serialized
+      && payload && typeof payload === "object") {
+      state.envelopes.set(payload, { body: JSON.parse(stored.serialized), serialized: stored.serialized });
+    }
     state.spoolPersistenceFailureNoted = null;
     if (payload && typeof payload === "object") payload._raw_spooled = true;
     return true;
@@ -536,6 +540,11 @@ const handleViewerFailure = async (state, input, error, timing) => {
   if (error?.rawEventTerminalRejection) {
     const durable = await persistForRetry(state, input);
     if (durable) {
+      const canonical = input.payload && typeof input.payload === "object"
+        ? state.envelopes.get(input.payload) : null;
+      // A size rejection proves only the posted copy was too large. Retry changed saved bytes first.
+      if (error.rawEventTerminalRejection.status === 413
+        && canonical && canonical.serialized !== input.serialized) return durable;
       await retainRejectedEntry(state, {
         eventId: input.body.event_id,
         rejection: error.rawEventTerminalRejection,
