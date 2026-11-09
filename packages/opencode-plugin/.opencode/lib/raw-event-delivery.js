@@ -9,10 +9,54 @@ import {
   RAW_EVENT_SPOOL_FULL_CODE,
   removeRawEventSpoolEntry,
   resolveSpoolDirectory,
+  retainRejectedRawEventSpoolEntry,
   writeRawEventSpoolEntry,
 } from "./raw-event-spool.js";
 
 const rawEventSpoolDrainsInFlight = new Map();
+
+// Mirror the Viewer's explicit validation responses without importing server code.
+const TERMINAL_VALIDATION_MESSAGES = new Set([
+  "source must be string",
+  "source is required",
+  "source must use 1-64 letters, digits, dots, underscores, or hyphens",
+  "session_stream_id must be string",
+  "session_id must be string",
+  "stream_id must be string",
+  "opencode_session_id must be string",
+  "conflicting session id fields",
+  "invalid session id",
+  "event source conflicts with request source",
+  "session id required",
+  "event_type must be string",
+  "event_type required",
+  "event_type has invalid syntax",
+  "event_id must be string",
+  "event_id required",
+  "event_id has invalid syntax",
+  "event_seq must be int",
+  "ts_wall_ms must be number",
+  "ts_mono_ms must be number",
+  "payload must be an object",
+  "cwd must be string",
+  "project must be string",
+  "started_at must be string",
+  "events must be a list",
+  "event must be an object",
+]);
+
+export const classifyRawEventTerminalRejection = ({ status, responseBody, outgoingBytes }) => {
+  if (!responseBody || typeof responseBody !== "object" || Array.isArray(responseBody)) return null;
+  if (status === 400 && TERMINAL_VALIDATION_MESSAGES.has(responseBody.error)) {
+    return { status: 400, reason: "invalid_payload" };
+  }
+  if (status === 413 && responseBody.error === "payload too large"
+    && Number.isFinite(responseBody.max_bytes) && responseBody.max_bytes > 0
+    && Number.isFinite(outgoingBytes) && outgoingBytes > responseBody.max_bytes) {
+    return { status: 413, reason: "payload_too_large" };
+  }
+  return null;
+};
 
 export const classifyRawEventTransportCause = (error) => {
   const diagnostic = [
@@ -49,6 +93,7 @@ const createDeliveryState = (options) => ({
   latestViewerFailure: null,
   lastToastAtBySession: new Map(),
   options,
+  retainedPayloads: new WeakSet(),
   spoolDirectory: resolveSpoolDirectory(options.spoolHome),
   spoolCorruptionNoted: false,
   spoolLoadFailureNoted: false,
@@ -295,6 +340,48 @@ const armViewerBackoff = (state, error, timing) => {
   return viewerFailure;
 };
 
+const warnRejectedEntry = async (state, { rejection, outcome, sessionID }) => {
+  const messages = {
+    retained: "codemem retained a rejected raw event; inspect it with codemem capture list-rejected",
+    retain_failed: "codemem could not retain a rejected raw event outside retries; inspect saved events before retrying",
+    lock_release_failed: "codemem could not release a rejected-event lock; stop capture and inspect saved events before repairing the lock",
+  };
+  const message = messages[outcome];
+  await state.options.logLine(
+    `raw_events.spool.${outcome} status=${rejection.status} reason=${rejection.reason}`
+  );
+  await bestEffortHostLog(state, {
+    service: "codemem",
+    level: outcome === "retained" ? "warn" : "error",
+    message,
+    extra: { category: "rejection", status: rejection.status, reason: rejection.reason, outcome },
+  });
+  if (!state.options.hostNotify || !shouldToast(state, sessionID, `rejection:${outcome}`)) return;
+  await bestEffortNotify(state, { message, variant: outcome === "retained" ? "warning" : "error" });
+};
+
+const retainRejectedEntry = async (state, { eventId, rejection, sessionID, payload }) => {
+  let retained;
+  try {
+    retained = await retainRejectedRawEventSpoolEntry({
+      eventId,
+      ...rejection,
+      homeDir: state.options.spoolHome,
+    });
+  } catch (error) {
+    await warnRejectedEntry(state, { rejection, sessionID, outcome: "retain_failed" });
+    if (error?.lock === "release_failed") {
+      await warnRejectedEntry(state, { rejection, sessionID, outcome: "lock_release_failed" });
+    }
+    return;
+  }
+  if (payload && typeof payload === "object") state.retainedPayloads.add(payload);
+  await warnRejectedEntry(state, { rejection, sessionID, outcome: "retained" });
+  if (retained.lock === "release_failed") {
+    await warnRejectedEntry(state, { rejection, sessionID, outcome: "lock_release_failed" });
+  }
+};
+
 const drainLoadedEntries = async (state, loaded) => {
   if (loaded.corruptCount > 0) {
     await state.options.logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
@@ -308,6 +395,10 @@ const drainLoadedEntries = async (state, loaded) => {
       await postToViewer(state, entry.envelope);
       await removeFromSpool(state, { eventId: entry.eventId });
     } catch (error) {
+      if (error?.rawEventTerminalRejection) {
+        await retainRejectedEntry(state, { eventId: entry.eventId, rejection: error.rawEventTerminalRejection });
+        continue;
+      }
       await state.options.logLine("raw_events.spool.drain_deferred category=fallback");
       const status = error?.rawEventFailure?.status;
       if (!Number.isInteger(status) || status >= 500 || status === 409) {
@@ -409,6 +500,7 @@ const checkViewerAvailability = async (state, now) => {
 
 const postToViewer = async (state, body) => {
   const options = state.options;
+  const outgoing = JSON.stringify({ ...body, db_path: options.promptPackDbPath, identity_target: options.identityTarget });
   const response = await fetch(options.rawEventsUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -416,7 +508,7 @@ const postToViewer = async (state, body) => {
       state.abortController.signal,
       AbortSignal.timeout(options.rawEventsStatusTimeoutMs),
     ]),
-    body: JSON.stringify({ ...body, db_path: options.promptPackDbPath, identity_target: options.identityTarget }),
+    body: outgoing,
   });
   if (response.ok) return response;
   let responseBody = null;
@@ -426,6 +518,11 @@ const postToViewer = async (state, body) => {
     // Generic connection guidance remains the safe fallback.
   }
   const error = new Error(`raw-events post failed (${response.status})`);
+  error.rawEventTerminalRejection = classifyRawEventTerminalRejection({
+    status: response.status,
+    responseBody,
+    outgoingBytes: Buffer.byteLength(outgoing, "utf8"),
+  });
   error.rawEventFailureCategory = options.classifyViewerFailure(responseBody);
   error.rawEventFailure = {
     stage: "post",
@@ -436,6 +533,18 @@ const postToViewer = async (state, body) => {
 };
 
 const handleViewerFailure = async (state, input, error, timing) => {
+  if (error?.rawEventTerminalRejection) {
+    const durable = await persistForRetry(state, input);
+    if (durable) {
+      await retainRejectedEntry(state, {
+        eventId: input.body.event_id,
+        rejection: error.rawEventTerminalRejection,
+        sessionID: input.sessionID,
+        payload: input.payload,
+      });
+    }
+    return durable;
+  }
   if (!state.options.isActive()) return persistForRetry(state, input);
   const category = error?.rawEventFailureCategory || "connection";
   const viewerFailure = armViewerBackoff(state, error, timing);
@@ -461,6 +570,7 @@ const deliver = async (state, { sessionID, type, payload }) => {
   if (!state.options.enabled) return true;
   if (!sessionID || !type) return false;
   if (payload?._raw_enqueued) return true;
+  if (payload && typeof payload === "object" && state.retainedPayloads.has(payload)) return true;
   const now = Date.now();
   const envelope = cachedEnvelope(state, sessionID, type, payload, now);
   const input = { ...envelope, payload, sessionID };
