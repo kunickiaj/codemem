@@ -75,7 +75,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
 | OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.24` and `@opencode/plugin@2.0.24` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| pi extension | Supported | Minimum host 1.1.0 (below 2.0). Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 15 native `memory_*` tools including `memory_session_search` (MCP remains at 14); session search on CLI, viewer REST, and the native tool plus explicit `codemem pi-import-sessions` history backfill; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
+| pi extension | Supported | Minimum host 1.1.0 (below 2.0). Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 15 native `memory_*` tools including `memory_session_search` (MCP remains at 14); session search on CLI, viewer REST, and the native tool plus explicit `codemem session import` history backfill; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -110,7 +110,7 @@ ORDER BY (score * 1.5 + recency) DESC
 
 where `recency = 1.0 / (1.0 + (days_ago / 7.0))`.
 
-This is the baseline search path used by `codemem search`, MCP `memory_search`, and as input to pack construction.
+This is the baseline search path used by `codemem memory search`, MCP `memory_search`, and as input to pack construction.
 
 Contributor-aware retrieval layers on top of this baseline without changing the storage model:
 
@@ -131,7 +131,7 @@ It does not currently gate sync or retrieval. See `docs/plans/2026-03-08-shared-
 
 ### Semantic search (sqlite-vec)
 
-The `codemem` package installs its matching optional `@codemem/embeddings` runtime by default. When available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem embed`. Processes started with `CODEMEM_EMBEDDING_DISABLED=1` use lexical retrieval without loading Transformers or ONNX Runtime. An install made with `--omit=optional` also omits sqlite-vec's platform package and therefore requires this flag.
+The `codemem` package installs its matching optional `@codemem/embeddings` runtime by default. When available, `memory_vectors` (a `vec0` virtual table from sqlite-vec) stores 384-dimensional float vectors keyed by `memory_id`. Vectors are written automatically when memories are created, or backfilled with `codemem maintenance embeddings`. Processes started with `CODEMEM_EMBEDDING_DISABLED=1` use lexical retrieval without loading Transformers or ONNX Runtime. An install made with `--omit=optional` also omits sqlite-vec's platform package and therefore requires this flag.
 
 New memories, active imports, and ownership-recovery copies record vector repair intent in the same SQLite transaction as their content. Queue failures prevent that transaction from committing, and rollbacks remove both content and intent. Post-commit inference still runs immediately where supported. Failed or cancelled inference leaves persisted work for the maintenance worker after restart. Disabling embeddings suppresses inference while preserving repair intent. Local creation waits for the worker's periodic check, normally on a 60-second idle cadence, without adding a new wake mechanism.
 
@@ -213,7 +213,7 @@ fused_score = 1 / (60 + keyword_rank) + 1 / (60 + semantic_rank)
 
 Ranks start at one; a missing channel contributes zero. Recency, kind, ownership, trust, and path preferences break exact fused-score ties, followed by memory ID. Public raw scores retain their existing meaning. Later section allocation, deduplication, and budgeting can change final pack membership; see [Pack candidate ranking](pack-ranking.md) for the maintained contract.
 
-**Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem search`, MCP `memory_search`) use FTS5 scoring with recency weighting, actor/workspace filters, and personal-first ranking bias, but don't merge semantic results.
+**Scope note:** Hybrid merge/re-rank only runs in the pack-building path. Direct search endpoints (`codemem memory search`, MCP `memory_search`) use FTS5 scoring with recency weighting, actor/workspace filters, and personal-first ranking bias, but don't merge semantic results.
 
 ```mermaid
 flowchart TD
@@ -333,7 +333,7 @@ Defaults are 8 items, 800 approximate pack tokens, and 16000 characters. Without
 
 Decisions clear on `session_start`. Ingest cursors are separate `codemem.cursor` metadata via `appendEntry`. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual`. Failed compaction, `agent_settled`, and a later user message clear that skip. Manual and non-retry threshold compactions do not arm that skip; normal cached-decision behavior still applies.
 
-Pack transport is profile-proof, then `POST /api/pack`, then `codemem pack --json`, then `pi-hook-inject`. The HTTP pack attempt times out at 2 seconds. `@codemem/core` is not loaded in the Pi process.
+Pack transport is profile-proof, then `POST /api/pack`, then `codemem memory pack --json`, then `pi-hook-inject`. The HTTP pack attempt times out at 2 seconds. `@codemem/core` is not loaded in the Pi process.
 
 ## Observer pipeline
 
@@ -462,9 +462,9 @@ at short caps. Serialized responses are capped at 50,000 characters, including J
 query echoes. The `query` echo preserves the original input when it fits the response budget,
 otherwise it becomes a bounded prefix. Aggregate `truncated` is true when matching input, the
 echo, results, or the recency scan are shortened. The response shape is the shared contract across
-the CLI (`codemem pi-session-search`), the viewer REST route, and the pi-extension native tool.
+the CLI (`codemem session search`), the viewer REST route, and the pi-extension native tool.
 
-Both primitives are exposed on the CLI. `codemem pi-import-sessions` walks
+Both primitives are exposed on the CLI. `codemem session import` walks
 `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`), streaming per-file progress;
 `--extract` (off by default, observer-model cost scales with backlog) drains pending Pi sessions
 through the standard `flushRawEvents` sweeper path so extracted memories carry Pi attribution.
@@ -472,7 +472,7 @@ The command takes a source-filtered, uncapped snapshot and attempts each Pi stre
 so unrelated backlog or failed attempts cannot starve later sessions. Import JSON adds extraction
 counts and errors to the existing flat summary; incomplete extraction exits with code 1.
 Without it, the command stores searchable events without running extraction; a running viewer's
-sweeper can still pick them up like any other backlog. `codemem pi-session-search <query>` queries
+sweeper can still pick them up like any other backlog. `codemem session search <query>` queries
 the same `searchPiSessions` primitive and prints a `Found N results` listing with attributed
 snippet lines, or the exact shared response object with `--json`.
 Human search output warns about a truncated matching query for both empty and nonempty results.

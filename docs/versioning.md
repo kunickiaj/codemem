@@ -127,7 +127,7 @@ execute the exact reported `mise use -g` command without a shell, inherited envi
 public default and `@codemem` registries; Linux also sets `ONNXRUNTIME_NODE_INSTALL=skip`. This writes
 the exact release into the primary global config, so a declaration may move from user `conf.d` or `~/.config/mise.toml` to
 `config.toml`. Mise verification re-reads bounded global state, requires an exact target `version` or
-`requested_version` value, and runs `mise exec -- codemem version` outside the invoking project;
+`requested_version` value, and runs `mise exec -- codemem --version` outside the invoking project;
 npm-global verification uses the active CLI.
 For pnpm-global installations, the explicit installer uses bounded, no-shell `pnpm root -g`,
 `pnpm bin -g`, and `pnpm list -g --depth 0 --json` calls from a neutral directory immediately

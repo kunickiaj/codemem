@@ -91,7 +91,7 @@ CODEMEM_SYNC_ADVERTISE=http://your-nas-tailnet-name:7337
 
 `CODEMEM_SYNC_ADVERTISE` should be reachable from your other peers. With Tailscale on
 the NAS host, use the NAS MagicDNS name or 100.x Tailnet IP. The Compose file publishes
-host port `7337` to the viewer container because `codemem serve` owns the sync listener.
+host port `7337` to the viewer container because the local service owns the sync listener.
 
 The Compose example passes `CODEMEM_SYNC_ENABLED` from `environment.example` into the
 viewer container. Keep it set to `1` so sync starts automatically after the container has
@@ -99,7 +99,7 @@ coordinator config and a trusted peer. After importing a team invite, restart th
 so the long-running viewer process picks up the updated config:
 
 ```fish
-docker exec -it codemem-viewer codemem coordinator import-invite '<invite>'
+docker exec -it codemem-viewer codemem coordinator invitation accept '<invite>'
 docker restart codemem-viewer codemem-mcp
 ```
 

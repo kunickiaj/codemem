@@ -53,7 +53,7 @@ before opening a PR.
 | Pack usefulness evals (recall / task / continuation / working-set ranking) | `pnpm exec vitest run packages/core/src/pack.eval.test.ts` |
 | OpenCode adapter prompt-time injection (transform, cache, toast, failure paths) | `pnpm --filter codemem run test:plugin` |
 | Claude hook context injection (PreToolUse / UserPromptSubmit) | `pnpm exec vitest run packages/core/src/claude-hooks.test.ts` |
-| CLI manual injection contract (`codemem pack`, `codemem memory inject`) | `pnpm exec vitest run packages/cli/src/commands/pack.test.ts packages/cli/src/commands/memory-inject.test.ts` |
+| CLI context output and pack compatibility contracts | `pnpm exec vitest run packages/cli/src/commands/pack.test.ts packages/cli/src/commands/memory-inject.test.ts` |
 | Pi extension injection and lifecycle | `pnpm exec vitest run packages/pi-extension/src/inject.test.ts packages/pi-extension/src/index.test.ts` |
 | Pi setup and core hook mapping | `pnpm exec vitest run packages/cli/src/commands/setup-pi.test.ts packages/core/src/pi-hooks.test.ts` |
 
@@ -75,7 +75,7 @@ pnpm --filter @codemem/ui build
 - Then restart the viewer if needed:
 
 ```text
-pnpm run codemem serve restart
+pnpm run codemem service restart
 ```
 
 ## Repository lint feedback

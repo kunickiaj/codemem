@@ -115,7 +115,7 @@ These constraints are deliberate: partner v1 is product-light precisely so it ca
 ## Operator checklist for cutover to partner v1
 
 - [ ] Both sides have a passing [Phase 1 validation checklist](./remote-mcp-oauth.md#validation-checklist) run on their own host.
-- [ ] `codemem sync status` shows the partner peer as paired and healthy on both sides.
+- [ ] `codemem sync peers` shows the partner peer as paired and healthy on both sides.
 - [ ] A shared Sharing domain exists and is granted in both directions.
 - [ ] A test memory written into the shared domain on host A appears on host B after `codemem sync once`.
 - [ ] A test memory removed from the shared domain stops replicating new writes (existing copies remain — see revocation note above).

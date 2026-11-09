@@ -7,7 +7,7 @@ This page covers what relay does and doesn't do, how to turn it on and off, and 
 ## What relay is
 
 - **Optional.** A coordinator serves relay only after its operator turns it on. A device uses relay automatically when its coordinator offers it, and you can turn that off on any device. Without relay, sync works exactly as before.
-- **Live only.** Both devices must be online and running `codemem serve`. The relay holds no copy of anything, so when the other device is offline the sync attempt fails and nothing waits in a queue. The next pass, two minutes later by default, tries again.
+- **Live only.** Both devices must be online with the local service running. The relay holds no copy of anything, so when the other device is offline the sync attempt fails and nothing waits in a queue. The next pass, two minutes later by default, tries again.
 - **End-to-end encrypted.** The two devices authenticate each other with the keys they pinned when they paired, and encrypt everything between them. The relay forwards ciphertext. It sees which enrolled devices are talking, in which coordinator group, when, and how many bytes they send. It doesn't see memory content, titles, or which Space a sync is for.
 - **Not in charge of access.** The coordinator decides who may connect: every relayed sync needs separate approval for the sending device, the relay, and the receiving device, based on current group enrollment. The receiving device then checks Space membership itself, as it does for direct sync. A relay can refuse traffic, but it can't let anyone in.
 - **Not a sharing grant.** A device relays only for Spaces that it and the other device already share through the coordinator. Relay never adds a Space, a peer, or a member.
@@ -28,7 +28,7 @@ Relay doesn't replace an always-on device. These three situations look similar b
 
 ## Devices
 
-Relay needs `sync_enabled`, `sync_coordinator_url` set to an `https://` origin with no path, and at least one group in `sync_coordinator_groups`. With those set, `codemem serve` checks each group with the coordinator after every coordinator refresh. You don't need any relay setting.
+Relay needs `sync_enabled`, `sync_coordinator_url` set to an `https://` origin with no path, and at least one group in `sync_coordinator_groups`. With those set, the local service checks each group with the coordinator after every coordinator refresh. You don't need any relay setting.
 
 The first time a device sees a group's relay key, it pins that key. If the coordinator later offers a different key, relay pauses for that group and sync stays direct until you approve the new key:
 
@@ -41,17 +41,17 @@ Check the new key with your coordinator operator before you approve it. A key ch
 
 To skip trusting the first key a device sees, set `sync_relay_service_key` (or `CODEMEM_SYNC_RELAY_SERVICE_KEY`) to the key your operator gives you. The device then pins that key and ignores the one the coordinator offers.
 
-To turn relay off on a device, set `sync_relay_enabled` to `false` (or `CODEMEM_SYNC_RELAY_ENABLED=0`) and restart `codemem serve`. The viewer reads the setting only when it starts.
+To turn relay off on a device, set `sync_relay_enabled` to `false` (or `CODEMEM_SYNC_RELAY_ENABLED=0`) and run `codemem service restart`. The service reads the setting only when it starts.
 
 ## Status and troubleshooting
 
-`codemem serve` logs each group's relay state once when it changes:
+The local service logs each group's relay state once when it changes:
 
 | Log line | Meaning | What to do |
 | --- | --- | --- |
 | `relay for group <group>: ready` | Relay is available for this group. | Nothing. |
 | `paused: the relay service key changed` | The coordinator offers a different key than the one this device pinned. | Confirm the key with the operator, then run `codemem sync approve-relay-key`. |
-| `disabled: relay_opt_out` | `sync_relay_enabled` is `false` on this device. | Set it to `true` and restart `codemem serve` if you want relay. |
+| `disabled: relay_opt_out` | `sync_relay_enabled` is `false` on this device. | Set it to `true` and run `codemem service restart` if you want relay. |
 | `disabled: info_unavailable` | The coordinator didn't offer relay for this group. Relay may be off, this group may not be configured, or the coordinator may be unreachable. | Nothing, if your coordinator doesn't run relay. Otherwise ask the operator. |
 | `disabled: info_invalid` | The coordinator's relay reply didn't match this coordinator and group. | Ask the operator. Sync stays direct. |
 | `disabled: service_key_invalid` | `sync_relay_service_key` on this device isn't an `ssh-ed25519` key. | Fix or remove the setting. |
@@ -62,7 +62,7 @@ When a relayed pass fails, `codemem sync attempts` shows an error ending in a re
 
 | Code | Usual cause | What to do |
 | --- | --- | --- |
-| `relay_rejected` | The other device isn't connected to the relay, or the coordinator didn't approve the route. | Make sure the other device is online with `codemem serve` running. The next pass retries. |
+| `relay_rejected` | The other device isn't connected to the relay, or the coordinator didn't approve the route. | Make sure the other device is online with the local service running. The next pass retries. |
 | `relay_unavailable` | This device couldn't reach or register with the relay. | Check that the coordinator is reachable. The operator may have turned relay off for the group. |
 | `relay_admission_failed` | The coordinator didn't approve this device for relay, or couldn't be reached. | Check that the device is still enrolled in the group. Right after an operator turns relay on, approvals fail for about six minutes while relay health warms up. |
 | `relay_expired` | The relayed sync ran out of time. | Retry. If it keeps happening, tell the operator. |
@@ -90,7 +90,7 @@ Admission approvals start only after relay health has seen five healthy minutes,
 | One group, Cloudflare | `POST /v1/admin/relay/quota` with `"enabled": false` for the group's realm | Immediately. Open connections close. |
 | Every group, Cloudflare | Set `CODEMEM_RELAY_ENABLED` to anything other than `"true"` and deploy | After the deploy. Each connection closes on its next event. |
 | One group, self-hosted | Call `disable()` on that group's relay runtime | Immediately. |
-| One device | `sync_relay_enabled: false`, then restart `codemem serve` | After the restart. |
+| One device | `sync_relay_enabled: false`, then run `codemem service restart` | After the restart. |
 
 Turning relay off never affects direct sync or the coordinator's other routes.
 
