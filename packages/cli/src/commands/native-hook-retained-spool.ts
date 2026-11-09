@@ -18,6 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import {
 	MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES,
 	RawEventSpoolInspectionError,
+	type RejectedRawEventDeliveryResult,
 	type RejectedRawEventInspection,
 	type RejectedRawEventMetadata,
 } from "../../../opencode-plugin/.opencode/lib/raw-event-spool.js";
@@ -34,6 +35,235 @@ const posix = process.platform !== "win32";
 const lockPurpose = "native-hook-receipt";
 function isOriginalName(name: string): boolean {
 	return originalPattern.exec(name)?.[0] === name;
+}
+
+type NativeHookRecoveryState =
+	| {
+			delivery: "not_attempted";
+			cleanup: "not_attempted";
+			reason:
+				| "invalid_receipt"
+				| "invalid_provider"
+				| "invalid_delivery"
+				| "receipt_not_found"
+				| "inspection_failed"
+				| "unsafe_directory"
+				| "unsafe_entry"
+				| "invalid"
+				| "read_limit_exceeded"
+				| "changed_during_read"
+				| "lock_busy"
+				| "lock_repair_required"
+				| "lock_failed";
+	  }
+	| {
+			delivery: "unacknowledged";
+			cleanup: "not_attempted";
+			reason: "delivery_failed" | "delivery_rejected" | "invalid_acknowledgement";
+	  }
+	| {
+			delivery: "accepted";
+			acknowledgement: "queued" | "ingested";
+			cleanup: "changed" | "failed" | "removed" | "kept" | "uncertain";
+	  };
+export type NativeHookRecoveryResult = NativeHookRecoveryState & {
+	lock: "not_acquired" | "released" | "release_failed";
+};
+type NativeHookDelivery = (entry: {
+	serialized: string;
+}) => RejectedRawEventDeliveryResult | Promise<RejectedRawEventDeliveryResult>;
+type NativeHookSnapshot = {
+	dir: string;
+	dirFd: number;
+	path: string;
+	fd: number;
+	details: Stats;
+	serialized: string;
+	lock: ReturnType<typeof acquireLock>;
+};
+
+function nativeRecoveryFailure(
+	error: unknown,
+): Extract<NativeHookRecoveryState, { delivery: "not_attempted" }> {
+	const safeCodes = [
+		"invalid_receipt",
+		"invalid_provider",
+		"invalid_delivery",
+		"unsafe_directory",
+		"unsafe_entry",
+		"changed_during_read",
+		"lock_busy",
+		"lock_repair_required",
+		"lock_failed",
+	] as const;
+	let reason: Extract<NativeHookRecoveryState, { delivery: "not_attempted" }>["reason"] =
+		"inspection_failed";
+	if (hasCode(error, "ENOENT")) reason = "receipt_not_found";
+	if (error instanceof RawEventSpoolInspectionError) {
+		const code = safeCodes.find((candidate) => candidate === error.code);
+		if (code) reason = code;
+	}
+	return { delivery: "not_attempted", cleanup: "not_attempted", reason };
+}
+
+async function nativeDeliveryAcknowledgement(
+	deliver: NativeHookDelivery,
+	serialized: string,
+): Promise<
+	| Extract<NativeHookRecoveryState, { delivery: "unacknowledged" }>
+	| Omit<Extract<NativeHookRecoveryState, { delivery: "accepted" }>, "cleanup">
+> {
+	let result: unknown;
+	try {
+		result = await deliver({ serialized });
+	} catch {
+		return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "delivery_failed" };
+	}
+	try {
+		const record = result && typeof result === "object" && !Array.isArray(result) ? result : null;
+		const keys = record ? Reflect.ownKeys(record).sort().join() : "";
+		const acknowledged: unknown = record
+			? Object.getOwnPropertyDescriptor(record, "acknowledged")?.value
+			: undefined;
+		const acknowledgement: unknown = record
+			? Object.getOwnPropertyDescriptor(record, "acknowledgement")?.value
+			: undefined;
+		if (result === false || (keys === "acknowledged" && acknowledged === false))
+			return { delivery: "unacknowledged", cleanup: "not_attempted", reason: "delivery_rejected" };
+		if (
+			keys === "acknowledged,acknowledgement" &&
+			acknowledged === true &&
+			(acknowledgement === "queued" || acknowledgement === "ingested")
+		)
+			return { delivery: "accepted", acknowledgement };
+	} catch {
+		/* Unverifiable acknowledgements never authorize removal. */
+	}
+	return {
+		delivery: "unacknowledged",
+		cleanup: "not_attempted",
+		reason: "invalid_acknowledgement",
+	};
+}
+
+function assertNativeRecoverySnapshot(snapshot: NativeHookSnapshot): void {
+	const { dir, dirFd, path, fd, details, serialized, lock } = snapshot;
+	if (!sameInode(requireSafeSpoolDirectory(dir), fstatSync(dirFd))) fail("unsafe_directory");
+	assertLock(lock);
+	for (const current of [fstatSync(fd), lstatSync(path)]) {
+		requireFile(current);
+		if (!sameSnapshot(details, current)) fail("changed_during_read");
+	}
+	const bytes = readLimited(fd, MAX_REJECTED_RAW_EVENT_INSPECTION_BYTES);
+	if (
+		!bytes?.equals(Buffer.from(serialized, "utf8")) ||
+		!sameSnapshot(details, fstatSync(fd)) ||
+		!sameSnapshot(details, lstatSync(path))
+	)
+		fail("changed_during_read");
+	if (!sameInode(requireSafeSpoolDirectory(dir), fstatSync(dirFd))) fail("unsafe_directory");
+	assertLock(lock);
+}
+
+function finishNativeRecovery(
+	snapshot: NativeHookSnapshot,
+	keepReceipt?: boolean,
+): Extract<NativeHookRecoveryState, { delivery: "accepted" }>["cleanup"] {
+	try {
+		assertNativeRecoverySnapshot(snapshot);
+	} catch (error) {
+		if (
+			error instanceof RawEventSpoolInspectionError ||
+			hasCode(error, "ENOENT") ||
+			hasCode(error, "ELOOP")
+		)
+			return "changed";
+		return "failed";
+	}
+	if (keepReceipt === true) return "kept";
+	try {
+		unlinkSync(snapshot.path);
+	} catch {
+		return "failed";
+	}
+	try {
+		fsyncSync(snapshot.dirFd);
+		return "removed";
+	} catch {
+		return "uncertain";
+	}
+}
+
+async function deliverNativeRecovery(
+	snapshot: Omit<NativeHookSnapshot, "fd" | "details" | "serialized">,
+	metadata: Omit<RejectedRawEventMetadata, "bytes">,
+	deliver: NativeHookDelivery,
+	keepReceipt?: boolean,
+): Promise<NativeHookRecoveryState> {
+	const fd = openFile(snapshot.path);
+	try {
+		const details = fstatSync(fd);
+		const inspection = inspectOpened(fd, snapshot.path, metadata);
+		if (inspection.validation !== "valid")
+			return { delivery: "not_attempted", cleanup: "not_attempted", reason: inspection.validation };
+		const opened = { ...snapshot, fd, details, serialized: inspection.serialized };
+		assertNativeRecoverySnapshot(opened);
+		const delivery = await nativeDeliveryAcknowledgement(deliver, inspection.serialized);
+		if (delivery.delivery !== "accepted") return delivery;
+		return { ...delivery, cleanup: finishNativeRecovery(opened, keepReceipt) };
+	} finally {
+		closeNativeRecoveryFd(fd);
+	}
+}
+
+function closeNativeRecoveryFd(fd: number): void {
+	try {
+		closeSync(fd);
+	} catch {
+		/* Closing must not replace delivery or cleanup results. */
+	}
+}
+
+export async function recoverNativeHookReceipt({
+	provider,
+	receipt,
+	deliver,
+	keepReceipt,
+}: {
+	provider: NativeHookProvider;
+	receipt: string;
+	deliver: NativeHookDelivery;
+	keepReceipt?: boolean;
+}): Promise<NativeHookRecoveryResult> {
+	let dirFd: number | undefined;
+	let lock: ReturnType<typeof acquireLock> | undefined;
+	let result: NativeHookRecoveryState;
+	try {
+		const metadata = parseReceipt(receipt);
+		if (typeof deliver !== "function") fail("invalid_delivery");
+		const dir = providerDirectory(provider);
+		const directory = requireSafeSpoolDirectory(dir);
+		dirFd = openSync(dir, flags | (constants.O_DIRECTORY ?? 0));
+		if (!sameInode(directory, fstatSync(dirFd))) fail("unsafe_directory");
+		const original = receipt.slice(
+			`rejected-${metadata.status}-${metadata.reason}-`.length,
+			-".retained".length,
+		);
+		lock = acquireLock(dir, original, dirFd);
+		result = await deliverNativeRecovery(
+			{ dir, dirFd, path: join(dir, receipt), lock },
+			metadata,
+			deliver,
+			keepReceipt,
+		);
+	} catch (error) {
+		result = nativeRecoveryFailure(error);
+	}
+	let lockStatus: NativeHookRecoveryResult["lock"] = "not_acquired";
+	if (lock && dirFd !== undefined)
+		lockStatus = releaseLock(lock, dirFd) ? "released" : "release_failed";
+	if (dirFd !== undefined) closeNativeRecoveryFd(dirFd);
+	return { ...result, lock: lockStatus };
 }
 
 function inspectionError(code: string): RawEventSpoolInspectionError {
