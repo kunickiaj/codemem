@@ -261,7 +261,7 @@ describe("memory_session_search viewer-unreachable fallback", () => {
 
 			expect(toolJson(result)).toEqual(FIXTURE_RESPONSE);
 			expect(cliArgs).toHaveLength(1);
-			expect(cliArgs[0][0]).toBe("pi-session-search");
+			expect(cliArgs[0].slice(0, 2)).toEqual(["session", "search"]);
 			expect(cliArgs[0]).toContain("--json");
 			expect(cliArgs[0].slice(-2)).toEqual(["--", query]);
 			expect(

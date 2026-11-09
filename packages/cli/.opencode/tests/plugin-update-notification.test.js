@@ -137,7 +137,7 @@ function installSpawnResult(status = availableStatus) {
 		if (args?.includes("update") && args?.includes("check")) {
 			return makeProcess({ stdout: JSON.stringify(status) });
 		}
-		if (args?.includes("version")) {
+		if (args?.includes("--version")) {
 			return makeProcess({
 				stdout: `${installed ? status.latest_version : status.current_version}\n`,
 			});
@@ -152,7 +152,7 @@ function installCompatibilityAutoUpdateSpawnResult({ startViewer = false } = {})
 		if (startViewer && args?.includes("serve") && args?.includes("start")) {
 			return makeProcess({ emitSpawn: true });
 		}
-		if (args?.includes("version")) {
+		if (args?.includes("--version")) {
 			versionCallCount += 1;
 			return makeProcess({
 				stdout: versionCallCount === 1 ? "0.40.2\n" : `${availableStatus.latest_version}\n`,
@@ -317,7 +317,7 @@ describe("OpenCode startup release notifications", () => {
 			if (args?.includes("update") && args?.includes("check")) {
 				return makeProcess({ stdout: JSON.stringify(status) });
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
+			if (args?.includes("--version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -382,7 +382,7 @@ describe("OpenCode startup release notifications", () => {
 
 		// Assert
 		const args = spawnMock.mock.calls.map((call) => call[1]);
-		expect(args.some((value) => value?.includes("version"))).toBe(true);
+		expect(args.some((value) => value?.includes("--version"))).toBe(true);
 		expect(args.some((value) => value?.includes("update"))).toBe(false);
 		expect(showToast).not.toHaveBeenCalled();
 	});
@@ -438,7 +438,7 @@ describe("OpenCode startup release notifications", () => {
 					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
+			if (args?.includes("--version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -483,7 +483,7 @@ describe("OpenCode startup release notifications", () => {
 					stdout: JSON.stringify({ ...availableStatus, auto_update_eligible: true }),
 				});
 			}
-			if (args?.includes("version")) {
+			if (args?.includes("--version")) {
 				return makeProcess({
 					stdout: `${installed ? availableStatus.latest_version : currentStatus.current_version}\n`,
 				});
@@ -800,7 +800,7 @@ describe("OpenCode startup release notifications", () => {
 					exitCode,
 				});
 			}
-			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
+			if (args?.includes("--version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 		const showToast = vi.fn().mockResolvedValue(undefined);
@@ -822,7 +822,7 @@ describe("OpenCode startup release notifications", () => {
 		// Arrange
 		spawnMock.mockImplementation((_command, args) => {
 			if (args?.includes("update") && args?.includes("check")) return makeProcess({ settle: false });
-			if (args?.includes("version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
+			if (args?.includes("--version")) return makeProcess({ stdout: `${currentStatus.current_version}\n` });
 			return makeProcess();
 		});
 

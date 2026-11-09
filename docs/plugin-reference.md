@@ -8,6 +8,8 @@ See the [Settings guide](user-guide.md#settings-modal) for connection modes, mod
 
 ## Running OpenCode with the plugin
 
+This plugin's CLI calls require the grouped command tree. Update the CLI and plugin together, then restart OpenCode. An older CLI without these command paths cannot serve the plugin's CLI calls or fallbacks.
+
 One `@codemem/opencode-plugin` package serves OpenCode 1.18.29+ through its
 `server()` entrypoint and OpenCode 2 through its `setup()` entrypoint. OpenCode 2
 support is validated against the exact stable `@opencode/cli@2.0.24` and
@@ -328,6 +330,8 @@ Hooks loaded from the user config layer require a one-time trust approval in Cod
 - **A model rejects injected context** (for example "the conversation must end with a user message"): disable prompt-time injection with `CODEMEM_INJECT_CONTEXT=0`. Capture/ingest keeps working and recall is still available through the MCP tools.
 
 ## Pi extension
+
+The extension's CLI calls require grouped commands such as `memory list` and `session search`. Upgrade the CLI and extension together, then restart Pi.
 
 Pi support is the `@codemem/pi-extension` package. Supported host: Pi 1.1.0 or newer, below 2.0; upgrade an older host with `pi update` first ([Pi host compatibility](versioning.md#pi-host-compatibility)). Install the durable CLI (on Linux, set `ONNXRUNTIME_NODE_INSTALL=skip` before the first install; see the README), then:
 

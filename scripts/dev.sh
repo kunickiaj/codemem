@@ -29,7 +29,7 @@ else
 fi
 
 # Preflight: the viewer guards ~/.codemem from concurrent managers. If
-# another viewer (e.g. a globally-installed `codemem serve start`) is
+# another viewer (e.g. a globally-installed `codemem service start`) is
 # already running against that runtime folder, dev mode using the same
 # default db will fail immediately. Warn up front.
 if [ -z "$db_path" ] && [ -f "$HOME/.codemem/viewer.pid" ]; then
@@ -59,10 +59,10 @@ export CODEMEM_DEV_VITE_PORT="$vite_port"
 
 if [ -n "$db_path" ]; then
   pnpm exec tsx --watch --conditions source packages/cli/src/index.ts \
-    serve start --foreground --host 127.0.0.1 --port "$viewer_port" --db-path "$db_path" &
+    service start --foreground --host 127.0.0.1 --port "$viewer_port" --db-path "$db_path" &
 else
   pnpm exec tsx --watch --conditions source packages/cli/src/index.ts \
-    serve start --foreground --host 127.0.0.1 --port "$viewer_port" &
+    service start --foreground --host 127.0.0.1 --port "$viewer_port" &
 fi
 viewer_pid=$!
 

@@ -222,7 +222,7 @@ describe("fetchPackText preformatted flag", () => {
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
 				if (args[0] === "pi-hook-inject") throw new Error("inject missing");
-				if (args[0] === "pack") {
+				if (args[0] === "memory" && args[1] === "pack") {
 					return {
 						stdout: JSON.stringify({
 							pack_text: "json pack text",
@@ -292,7 +292,7 @@ describe("fetchPackText span-bearing responses", () => {
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
 				if (args[0] === "pi-hook-inject") throw new Error("inject missing");
-				if (args[0] === "pack") {
+				if (args[0] === "memory" && args[1] === "pack") {
 					return {
 						stdout: JSON.stringify({
 							pack_text: "json spanned pack",
@@ -323,7 +323,7 @@ describe("fetchPackText span-bearing responses", () => {
 		);
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
-				if (args[0] === "pack") throw new Error("pack missing");
+				if (args[0] === "memory" && args[1] === "pack") throw new Error("pack missing");
 				if (args[0] === "pi-hook-inject") {
 					return { stdout: "## codemem memories\n\nplain block", stderr: "" };
 				}
@@ -348,7 +348,7 @@ describe("fetchPackText span-bearing responses", () => {
 		);
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
-				if (args[0] === "pack") {
+				if (args[0] === "memory" && args[1] === "pack") {
 					return {
 						stdout: JSON.stringify({
 							pack_text: "spanned text",
@@ -506,8 +506,9 @@ describe("pack contract", () => {
 			const commands: string[] = [];
 			const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 				execImpl: async (args) => {
-					commands.push(args[0] ?? "");
-					if (args[0] === "pack") return { stdout: item.stdout, stderr: "" };
+					commands.push(args.slice(0, 2).join(" "));
+					if (args[0] === "memory" && args[1] === "pack")
+						return { stdout: item.stdout, stderr: "" };
 					return { stdout: "## codemem memories\n\ncli fallback", stderr: "" };
 				},
 			});
@@ -518,7 +519,7 @@ describe("pack contract", () => {
 				expect(commands).toContain("pi-hook-inject");
 				expect(result.preformatted).toBe(true);
 			} else {
-				expect(commands).toEqual(["pack"]);
+				expect(commands).toEqual(["memory pack"]);
 				expect(result.preformatted).toBe(false);
 				expect(result.text).toBe(zeroItemText);
 				expect(result.itemCount).toBe(0);
@@ -548,7 +549,7 @@ describe("pi inject metrics", () => {
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			project: "codemem",
 			execImpl: async (args) => {
-				if (args[0] !== "pack") throw new Error("inject should not run");
+				if (args[0] !== "memory" || args[1] !== "pack") throw new Error("inject should not run");
 				return {
 					stdout: JSON.stringify({
 						pack_text: "json pack text",
@@ -575,7 +576,7 @@ describe("pi inject metrics", () => {
 		vi.stubEnv("CODEMEM_PLUGIN_LOG_PATH", hookOnly);
 		const fallback = new PiCodememClient(offlineConfig, createViewerRuntime(), {
 			execImpl: async (args) => {
-				if (args[0] === "pack") throw new Error("pack missing");
+				if (args[0] === "memory" && args[1] === "pack") throw new Error("pack missing");
 				return { stdout: "## codemem memories\n\nplain block", stderr: "" };
 			},
 		});

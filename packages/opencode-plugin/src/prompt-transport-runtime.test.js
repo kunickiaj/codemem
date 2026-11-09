@@ -87,6 +87,26 @@ function commands(name) {
 	return io.spawn.mock.calls.filter(([, args]) => args.includes(name));
 }
 
+it("builds canonical pack arguments without changing the query", () => {
+	// Arrange
+	const options = { query, filesModified: [], injectLimit: 5, injectTokenBudget: 800 };
+	// Act
+	const args = __testUtils.buildPackArgs(options);
+	// Assert
+	expect(args.slice(0, 4)).toEqual(["memory", "pack", query, "--json"]);
+});
+
+it("redacts the canonical pack query in diagnostics without changing execution arguments", () => {
+	// Arrange
+	const args = ["memory", "pack", query, "--json"];
+	// Act
+	const command = __testUtils.redactPackCommand("node", ["/fixture/cli.js"], args);
+	// Assert
+	expect(command).toContain("memory pack [query-redacted] --json");
+	expect(command).not.toContain(query);
+	expect(args).toEqual(["memory", "pack", query, "--json"]);
+});
+
 beforeEach(() => {
 	clock = 0;
 	signals = [];
@@ -180,7 +200,16 @@ it("records disabled transport without network I/O and preserves the custom fall
 	});
 	expect(commands("pack")[0].slice(0, 2)).toEqual([
 		"/fixture/custom-runner",
-		["/fixture/cli.js", "pack", "fixture", "--json", "--internal-ledger", "--token-budget", "795"],
+		[
+			"/fixture/cli.js",
+			"memory",
+			"pack",
+			"fixture",
+			"--json",
+			"--internal-ledger",
+			"--token-budget",
+			"795",
+		],
 	]);
 	expect(commands("pack")).toHaveLength(1);
 });

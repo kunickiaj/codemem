@@ -33,6 +33,18 @@ let directory: string;
 let compileCacheDirectory: string;
 beforeAll(() => {
 	compileCacheDirectory = mkdtempSync(join(tmpdir(), "codemem-cli-transport-compile-cache-"));
+	const home = mkdtempSync(join(tmpdir(), "codemem-cli-transport-warmup-"));
+	try {
+		// Compile the real entrypoint before case budgets, without sharing case state.
+		const result = child(["--help"], "", { home });
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(result.stdout).toContain("claude-hook-file-context");
+		expect(readdirSync(home)).toEqual([]);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 });
 afterAll(() => {
 	rmSync(compileCacheDirectory, { recursive: true, force: true });
@@ -72,21 +84,21 @@ const payload = () => ({
 function run(body = payload()) {
 	return runClaudeFileContextTransport(body, { dbPath: join(directory, "memory.sqlite") });
 }
-function child(args: string[], input = "") {
+function child(args: string[], input = "", { home = directory }: { home?: string } = {}) {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (!key.startsWith("CODEMEM_")) env[key] = value;
 	}
 	Object.assign(env, {
-		HOME: directory,
-		XDG_CONFIG_HOME: join(directory, "config"),
-		CODEMEM_CONFIG: join(directory, "config.json"),
-		CODEMEM_DB: join(directory, "memory.sqlite"),
-		CODEMEM_KEYS_DIR: join(directory, "keys"),
+		HOME: home,
+		XDG_CONFIG_HOME: join(home, "config"),
+		CODEMEM_CONFIG: join(home, "config.json"),
+		CODEMEM_DB: join(home, "memory.sqlite"),
+		CODEMEM_KEYS_DIR: join(home, "keys"),
 		CODEMEM_SYNC_KEY_STORE: "file",
 		CODEMEM_EMBEDDING_DISABLED: "1",
 		CODEMEM_EMBEDDING_OFFLINE: "1",
-		CODEMEM_PLUGIN_LOG_PATH: join(directory, "plugin.log"),
+		CODEMEM_PLUGIN_LOG_PATH: join(home, "plugin.log"),
 		NODE_COMPILE_CACHE: compileCacheDirectory,
 	});
 	// Keep explicit cache opt-outs. Direct child coverage needs uncached source positions.

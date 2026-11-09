@@ -254,7 +254,7 @@ function compactIndexItems(parsed: unknown): unknown[] {
 }
 
 function distillCliArgs(params: Record<string, unknown>, body: Record<string, unknown>): string[] {
-	const args = ["distill", "--json"];
+	const args = ["memory", "distill", "--json"];
 	if (params.limit != null) args.push("-l", String(params.limit));
 	if (params.min_recurrence != null) args.push("-m", String(params.min_recurrence));
 	if (typeof params.kind === "string" && params.kind) args.push("-k", params.kind);
@@ -408,7 +408,7 @@ async function executeMemorySearch(
 			signal,
 			() => searchMemoriesHttp(client, query, limit, project, kind, signal),
 			async () => {
-				const args = ["search", query, "--json", "-n", String(limit)];
+				const args = ["memory", "search", query, "--json", "-n", String(limit)];
 				if (project) args.push("--project", project);
 				if (kind) args.push("--kind", kind);
 				const { stdout } = await client.execCodemem(args, { signal });
@@ -441,7 +441,7 @@ async function executeMemorySearchIndex(
 				return jsonResult(res.data);
 			},
 			async () => {
-				const args = ["search", query, "--json", "-n", String(limit)];
+				const args = ["memory", "search", query, "--json", "-n", String(limit)];
 				if (project) args.push("--project", project);
 				if (kind) args.push("--kind", kind);
 				const { stdout } = await client.execCodemem(args, { signal });
@@ -474,7 +474,7 @@ async function executeMemoryExplain(
 			async () => {
 				// No dedicated CLI twin — surface a clear degraded message.
 				return errorResult(
-					"memory_explain requires the codemem viewer server (HTTP). Start it with `codemem serve start`.",
+					"memory_explain requires the local service. Run `codemem service start`.",
 				);
 			},
 		);
@@ -503,7 +503,7 @@ async function executeMemoryRecent(
 				return jsonResult(res.data);
 			},
 			async () => {
-				const args = ["recent", "--json", "--limit", String(limit)];
+				const args = ["memory", "list", "--json", "--limit", String(limit)];
 				if (project) args.push("--project", project);
 				if (kind) args.push("--kind", kind);
 				const { stdout } = await client.execCodemem(args, { signal });
@@ -550,7 +550,7 @@ async function executeMemoryPack(
 				}
 			},
 			async () => {
-				const args = ["pack", context, "--json"];
+				const args = ["memory", "pack", context, "--json"];
 				if (limit != null) args.push("-n", String(limit));
 				if (project) args.push("--project", project);
 				const { stdout } = await client.execCodemem(args, { signal });
@@ -837,7 +837,7 @@ async function executeMemoryTimeline(
 			},
 			async () => {
 				return errorResult(
-					"memory_timeline requires the codemem viewer server (HTTP). Start it with `codemem serve start`.",
+					"memory_timeline requires the local service. Run `codemem service start`.",
 				);
 			},
 		);
@@ -872,7 +872,7 @@ async function executeMemoryExpand(
 			},
 			async () => {
 				return errorResult(
-					"memory_expand requires the codemem viewer server (HTTP). Start it with `codemem serve start`.",
+					"memory_expand requires the local service. Run `codemem service start`.",
 				);
 			},
 		);
@@ -1308,12 +1308,12 @@ async function executeMemorySessionSearch(
 }
 
 /**
- * CLI fallback args: codemem pi-session-search <query> --json plus optional
+ * CLI fallback args: codemem session search <query> --json plus optional
  * filters. Mirrors the HTTP query-param mapping (bounds are clamped core-side
  * and by the CLI command itself).
  */
 function sessionSearchCliArgs(params: Record<string, unknown>): string[] {
-	const args = ["pi-session-search", "--json"];
+	const args = ["session", "search", "--json"];
 	if (params.limit != null) args.push("--limit", String(Number(params.limit)));
 	if (params.snippet_chars != null)
 		args.push("--snippet-chars", String(Number(params.snippet_chars)));
