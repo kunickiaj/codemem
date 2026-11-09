@@ -10,7 +10,7 @@ import {
 	healthData,
 	state,
 } from "../../lib/state";
-import { updateFeedView } from "../feed";
+import { loadFeedData, updateFeedView } from "../feed";
 import { renderAutomaticRecall } from "./components";
 import { renderHealthOverview } from "./render/health-overview";
 import { renderSessionSummary } from "./render/session-summary";
@@ -70,7 +70,13 @@ export async function refreshViewerStatus(options: ReadRequestOptions = {}) {
 		syncNowButton.disabled =
 			state.viewerActorId === null || syncNowButton.getAttribute("aria-busy") === "true";
 	}
-	if (previousActorId !== state.viewerActorId) updateFeedView(true);
+	if (previousActorId === state.viewerActorId) return;
+	if (previousActorId !== null && state.activeTab === "feed") {
+		// Feed reports its own read error. The status read still succeeded for other tabs.
+		await loadFeedData({ restart: true, signal: options.signal }).catch(() => undefined);
+		return;
+	}
+	updateFeedView(true);
 }
 
 export async function loadHealthData(options: ReadRequestOptions = {}) {

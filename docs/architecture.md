@@ -598,6 +598,19 @@ unchanged for the next page. Cursor responses include `paging: "cursor"`,
 on the last page, and `offset` and `next_offset` are always `null` in this mode.
 Requests without `paging=cursor` retain the existing offset response.
 
+The Feed starts both streams in cursor mode and tracks observations and summaries
+separately. A first-page refresh keeps each stream's older-page continuation,
+including whether that stream is exhausted. Changing the project, ownership
+scope, or search query discards that progress, as does an explicit restart.
+Resolving the viewer identity on startup keeps the initial page and progress.
+Switching between known viewer identities restarts the active Feed immediately.
+Failed reads keep the last continuation and show a retry action.
+
+If an older server returns offset pagination, the Feed continues with offsets.
+If a cursor request returns `409` with `cursor_unavailable`, the Feed restarts both
+streams from the first page in offset mode. Other errors use the normal retry
+state. Cursor values remain opaque to the browser.
+
 Continuation uses the stored `(created_at, id)` pair in descending order. It
 preserves timestamp text exactly, including numeric time-zone offsets, and works
 after the anchor row is deleted. New rows ahead of the cursor appear on a fresh
