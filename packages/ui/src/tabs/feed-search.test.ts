@@ -62,7 +62,12 @@ function expectedFeedPageOptions(options: {
 	offset: number;
 	q: string | undefined;
 }) {
-	return { ...options, scope: "all", view: "feed" as const };
+	const result = { ...options, scope: "all", view: "feed" as const };
+	if (options.offset === 0) {
+		const { offset: _offset, ...initial } = result;
+		return { ...initial, paging: "cursor" as const };
+	}
+	return result;
 }
 
 describe("Feed disclosure persistence", () => {
@@ -448,7 +453,7 @@ describe("Feed global search controller", () => {
 		expect(apiMocks.loadSummariesPage).toHaveBeenCalledTimes(1);
 		expect(apiMocks.loadMemoriesPage).toHaveBeenLastCalledWith(
 			"codemem",
-			expect.objectContaining({ offset: 0 }),
+			expect.objectContaining({ paging: "cursor", view: "feed" }),
 		);
 
 		resolveObservations(page(1));
@@ -511,8 +516,8 @@ describe("Feed global search controller", () => {
 			"Feed unavailable. Refresh and try again.",
 		);
 		expect(__feedSearchTestHooks.pagination()).toMatchObject({
-			observationHasMore: false,
-			summaryHasMore: false,
+			observationHasMore: true,
+			summaryHasMore: true,
 		});
 		expect(apiMocks.loadMemoriesPage).toHaveBeenCalledTimes(1);
 		expect(apiMocks.loadSummariesPage).toHaveBeenCalledTimes(1);

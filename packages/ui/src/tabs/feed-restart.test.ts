@@ -68,11 +68,15 @@ it.each([false, true])(
 		// Assert: restart discards the stale older card and resets pagination progress.
 		expect(api.loadMemoriesPage).toHaveBeenLastCalledWith(
 			"garden",
-			expect.objectContaining({ offset: 0, view: "feed" }),
+			expect.objectContaining(
+				restart ? { paging: "cursor", view: "feed" } : { offset: 0, view: "feed" },
+			),
 		);
 		expect(api.loadSummariesPage).toHaveBeenLastCalledWith(
 			"garden",
-			expect.objectContaining({ offset: 0, view: "feed" }),
+			expect.objectContaining(
+				restart ? { paging: "cursor", view: "feed" } : { offset: 0, view: "feed" },
+			),
 		);
 		expect(state.lastFeedItems.map((item) => item.id)).toEqual(restart ? [1] : [1, 2]);
 		expect(state.lastFeedFilteredCount).toBe(restart ? 0 : 9);
