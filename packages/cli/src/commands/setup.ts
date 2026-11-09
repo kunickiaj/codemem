@@ -1371,7 +1371,7 @@ export function installPi(options: InstallPiOptions = {}): boolean {
 		// D3: import is explicit, never automatic during setup — unbounded latency
 		// on large histories; the hint keeps backfill opt-in.
 		p.log.info(
-			"  - Pre-install pi session history is not imported automatically; backfill it with: codemem pi-import-sessions",
+			"  - Pi history from before installation is not imported automatically. Run: codemem session import",
 		);
 	}
 
@@ -1470,20 +1470,17 @@ function runSetup(opts: SetupCommandOpts): void {
 
 export const setupCommand = new Command("setup")
 	.configureHelp(helpStyle)
-	.description("Install codemem plugin + MCP config for OpenCode, Claude Code, Codex, and pi")
+	.description("Install agent integrations")
 	.option("--force", "overwrite existing installations")
 	.option("--opencode-only", "only install for OpenCode")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
 	.option("--pi-only", "only install for pi")
-	.option(
-		"--opencode-mcp <mode>",
-		"OpenCode memory tools: stdio (per-project MCP entry, the default and only mode)",
-	)
-	.option("--pi-mcp", "opt into pi MCP adapter surface (requires pi-mcp-adapter)")
+	.option("--opencode-mcp <mode>", "OpenCode MCP transport (stdio only)")
+	.option("--pi-mcp", "install the Pi MCP adapter (requires pi-mcp-adapter)")
 	.option(
 		"--pi-extension-path <path>",
-		"dev: write a local path packages entry instead of the npm pin",
+		"use a local Pi extension directory instead of the published package",
 	)
 	.action((opts: SetupCommandOpts) => {
 		runSetup(opts);

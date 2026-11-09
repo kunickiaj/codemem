@@ -7,8 +7,7 @@
  * until `registerRootCommands` is called.
  */
 
-import { Command } from "commander";
-import { captureCommand } from "./commands/capture.js";
+import type { Command } from "commander";
 import { claudeHookFileContextCommand } from "./commands/claude-hook-file-context.js";
 import { claudeHookIngestCommand } from "./commands/claude-hook-ingest.js";
 import { claudeHookInjectCommand } from "./commands/claude-hook-inject.js";
@@ -16,144 +15,71 @@ import { codexHookIngestCommand } from "./commands/codex-hook-ingest.js";
 import { codexHookInjectCommand } from "./commands/codex-hook-inject.js";
 import { configCommand } from "./commands/config.js";
 import { coordinatorCommand } from "./commands/coordinator.js";
-import { dbCommand } from "./commands/db.js";
+import { diagnosticsCommand } from "./commands/diagnostics.js";
 import { distillCommand } from "./commands/distill.js";
-import { embedCommand } from "./commands/embed.js";
 import { enqueueRawEventCommand } from "./commands/enqueue-raw-event.js";
-import { exportMemoriesCommand } from "./commands/export-memories.js";
-import { importMemoriesCommand } from "./commands/import-memories.js";
 import { maintenanceCommand } from "./commands/maintenance.js";
 import { mcpCommand } from "./commands/mcp.js";
-import {
-	forgetMemoryCommand,
-	memoryCommand,
-	rememberMemoryCommand,
-	showMemoryCommand,
-} from "./commands/memory.js";
+import { memoryCommand } from "./commands/memory.js";
 import { memoryToolCommand } from "./commands/memory-tool.js";
 import { packCommand, promptPackLedgerCommand } from "./commands/pack.js";
 import { piHookIngestCommand } from "./commands/pi-hook-ingest.js";
 import { piHookInjectCommand } from "./commands/pi-hook-inject.js";
-import { piImportSessionsCommand } from "./commands/pi-import-sessions.js";
 import { piSessionSearchCommand } from "./commands/pi-session-search.js";
 import { recentCommand } from "./commands/recent.js";
 import { searchCommand } from "./commands/search.js";
 import { serveCommand } from "./commands/serve.js";
+import { serviceCommand } from "./commands/service.js";
+import { sessionCommand } from "./commands/session.js";
 import { setupCommand } from "./commands/setup.js";
 import { statsCommand } from "./commands/stats.js";
 import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
 import { updateCommand } from "./commands/update.js";
 import { versionCommand } from "./commands/version.js";
-import { helpStyle } from "./help-style.js";
+
+const publicCommands = [
+	memoryCommand,
+	sessionCommand,
+	serviceCommand,
+	statusCommand,
+	syncCommand,
+	coordinatorCommand,
+	maintenanceCommand,
+	diagnosticsCommand,
+	configCommand,
+	setupCommand,
+	updateCommand,
+	mcpCommand,
+];
 
 export const ROOT_COMPLETION_COMMANDS = [
-	"capture",
-	"config",
-	"coordinator",
-	"db",
-	"distill",
-	"embed",
-	"export-memories",
-	"import-memories",
-	"maintenance",
-	"mcp",
-	"memory",
-	"pack",
-	"pi-import-sessions",
-	"pi-session-search",
-	"recent",
-	"search",
-	"serve",
-	"setup",
-	"stats",
-	"status",
-	"sync",
-	"update",
-	"version",
+	...publicCommands.map((command) => command.name()),
 	"help",
 	"--help",
 	"--version",
-] as const;
+];
 
 /** Completion entries that are not registered Commander commands. */
 export const COMPLETION_ONLY_TOKENS = ["--help", "--version"] as const;
 
-function registerMemoryGroupWrappers(): void {
-	// Idempotence guard: module singletons must not accumulate duplicate
-	// subcommands if the tree is assembled more than once (e.g. in tests).
-	if (memoryCommand.commands.some((command) => command.name() === "export")) return;
-
-	// Per cli-design-conventions.md, export/import belong under their noun
-	// group. The top-level export-memories/import-memories remain as warned
-	// compatibility aliases.
-	//
-	// Slice the forwarded argv tail starting from the `memory <sub>` token pair
-	// rather than the first raw occurrence of the subcommand name. Anchoring on
-	// the `memory` group token first guarantees the subcommand token we slice
-	// from is the actual subcommand position, so a positional argument that
-	// happens to be literally "export" or "import" cannot shift the tail.
-	const forwardedTail = (subcommand: "export" | "import"): string[] => {
-		const argv = process.argv.slice(2);
-		const groupIdx = argv.indexOf("memory");
-		const searchFrom = groupIdx >= 0 ? groupIdx + 1 : 0;
-		const subIdx = argv.indexOf(subcommand, searchFrom);
-		return subIdx >= 0 ? argv.slice(subIdx + 1) : [];
-	};
-
-	const memExport = new Command("export")
-		.description("Export memories to a JSON file for sharing or backup")
-		.argument("<output>", "output file path (use '-' for stdout)")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.option("--project <project>", "filter by project")
-		.option("--all-projects", "export all projects")
-		.option("--include-inactive", "include deactivated memories")
-		.option("--since <iso>", "only export memories created after this ISO timestamp")
-		.configureHelp(helpStyle)
-		.allowUnknownOption(true)
-		.allowExcessArguments(true)
-		.action(async () => {
-			// Forward to the original command by re-parsing the raw argv tail.
-			// `memory export <args>` → `export-memories <args>`
-			await exportMemoriesCommand.parseAsync([
-				"node",
-				"export-memories",
-				...forwardedTail("export"),
-			]);
-		});
-
-	const memImport = new Command("import")
-		.description("Import memories from an exported JSON file")
-		.argument("<inputFile>", "input JSON file (use '-' for stdin)")
-		.option("--db <path>", "database path")
-		.option("--db-path <path>", "database path")
-		.option("--remap-project <path>", "remap all projects to this path on import")
-		.option("--dry-run", "preview import without writing")
-		.configureHelp(helpStyle)
-		.allowUnknownOption(true)
-		.allowExcessArguments(true)
-		.action(async () => {
-			await importMemoriesCommand.parseAsync([
-				"node",
-				"import-memories",
-				...forwardedTail("import"),
-			]);
-		});
-
-	memoryCommand.addCommand(memExport);
-	memoryCommand.addCommand(memImport);
-}
-
 /** Register every root command (visible and hidden) on the given program. */
 export function registerRootCommands(program: Command): Command {
-	registerMemoryGroupWrappers();
-
-	program.addCommand(captureCommand);
-	program.addCommand(serveCommand);
-	program.addCommand(configCommand);
-	program.addCommand(coordinatorCommand);
-	program.addCommand(mcpCommand);
+	for (const command of publicCommands) program.addCommand(command);
+	// Persisted launchers and previously installed integrations still call these
+	// entrypoints. New callers use the public groups above.
+	for (const command of [
+		serveCommand,
+		packCommand,
+		recentCommand,
+		searchCommand,
+		statsCommand,
+		distillCommand,
+		piSessionSearchCommand,
+		versionCommand,
+	]) {
+		program.addCommand(command, { hidden: true });
+	}
 	// Adapter plumbing remains executable for packaged and stale-client
 	// compatibility, but it is not part of the human-facing command surface.
 	program.addCommand(claudeHookInjectCommand, { hidden: true });
@@ -163,35 +89,9 @@ export function registerRootCommands(program: Command): Command {
 	program.addCommand(codexHookIngestCommand, { hidden: true });
 	program.addCommand(piHookInjectCommand, { hidden: true });
 	program.addCommand(piHookIngestCommand, { hidden: true });
-	program.addCommand(dbCommand);
-	program.addCommand(distillCommand);
-	// Warned compatibility aliases — visible for their first warned release;
-	// hide from help and completion in a later release (see export-memories.ts).
-	program.addCommand(exportMemoriesCommand);
-	program.addCommand(importMemoriesCommand);
-	program.addCommand(statsCommand);
-	program.addCommand(statusCommand);
-	program.addCommand(maintenanceCommand);
-	program.addCommand(embedCommand);
-	program.addCommand(recentCommand);
-	program.addCommand(searchCommand);
-	program.addCommand(packCommand);
-	program.addCommand(piSessionSearchCommand);
-	program.addCommand(piImportSessionsCommand);
 	program.addCommand(promptPackLedgerCommand, { hidden: true });
 	// Thin-host fallback when the viewer is unreachable; see memory-tool.ts.
 	program.addCommand(memoryToolCommand, { hidden: true });
-	// Deprecated top-level aliases — use `memory show`, `memory forget`,
-	// `memory remember` instead. Hidden from --help and shell completion but
-	// still functional for backwards compat.
-	program.addCommand(showMemoryCommand, { hidden: true });
-	program.addCommand(forgetMemoryCommand, { hidden: true });
-	program.addCommand(rememberMemoryCommand, { hidden: true });
-	program.addCommand(memoryCommand);
-	program.addCommand(syncCommand);
-	program.addCommand(setupCommand);
 	program.addCommand(enqueueRawEventCommand, { hidden: true });
-	program.addCommand(updateCommand);
-	program.addCommand(versionCommand);
 	return program;
 }

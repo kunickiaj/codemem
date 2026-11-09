@@ -201,7 +201,7 @@ if "sync_coordinator_admin_secret" in payload:
 print(json.dumps(payload, indent=2))
 PY
 
-codemem db init --db-path "$CODEMEM_DB" >"$CODEMEM_ARTIFACTS_DIR/db-init.txt" 2>&1
+codemem maintenance database init --db-path "$CODEMEM_DB" >"$CODEMEM_ARTIFACTS_DIR/db-init.txt" 2>&1
 codemem sync enable --db-path "$CODEMEM_DB" --host "$CODEMEM_SYNC_HOST" --port "$CODEMEM_SYNC_PORT" --interval "$CODEMEM_SYNC_INTERVAL_S" >"$CODEMEM_ARTIFACTS_DIR/sync-enable.txt" 2>&1
 pnpm --dir "$CODEMEM_REPO_ROOT" exec tsx --conditions source scripts/workspace/read-peer-identity.ts --db-path "$CODEMEM_DB" --keys-dir "$CODEMEM_KEYS_DIR" >"$identity_file"
 
@@ -214,7 +214,7 @@ print("<!doctype html><title>codemem workspace bootstrap</title>")
 PY
 	fi
 	export CODEMEM_VIEWER_STATIC_DIR
-	env CODEMEM_VIEWER_STATIC_DIR="$CODEMEM_VIEWER_STATIC_DIR" CODEMEM_DB="$CODEMEM_DB" CODEMEM_CONFIG="$CODEMEM_CONFIG" CODEMEM_KEYS_DIR="$CODEMEM_KEYS_DIR" CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET="$CODEMEM_COORDINATOR_ADMIN_SECRET" pnpm --dir "$CODEMEM_REPO_ROOT" exec tsx --conditions source packages/cli/src/index.ts serve start --db-path "$CODEMEM_DB" --host "$CODEMEM_VIEWER_HOST" --port "$CODEMEM_VIEWER_PORT" >"$CODEMEM_ARTIFACTS_DIR/viewer-start.txt" 2>&1
+	env CODEMEM_VIEWER_STATIC_DIR="$CODEMEM_VIEWER_STATIC_DIR" CODEMEM_DB="$CODEMEM_DB" CODEMEM_CONFIG="$CODEMEM_CONFIG" CODEMEM_KEYS_DIR="$CODEMEM_KEYS_DIR" CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET="$CODEMEM_COORDINATOR_ADMIN_SECRET" pnpm --dir "$CODEMEM_REPO_ROOT" exec tsx --conditions source packages/cli/src/index.ts service start --db-path "$CODEMEM_DB" --host "$CODEMEM_VIEWER_HOST" --port "$CODEMEM_VIEWER_PORT" >"$CODEMEM_ARTIFACTS_DIR/viewer-start.txt" 2>&1
 	wait_for_http "http://$CODEMEM_VIEWER_HOST:$CODEMEM_VIEWER_PORT/"
 fi
 

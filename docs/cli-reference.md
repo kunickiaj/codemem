@@ -1,46 +1,168 @@
 # Command reference
 
-Run `codemem --help` for the current human-facing command list and append `--help` to a group or command for its options. See the [User guide](user-guide.md#check-local-operational-status) for diagnosing local state and [CLI conventions](cli-design-conventions.md) when adding commands.
+Run `codemem --help` for the human-facing command list and append `--help` to a group or command for its options. See the [User guide](user-guide.md#check-local-operational-status) for local diagnosis and [CLI conventions](cli-design-conventions.md) when adding commands.
 
-| Group | Command | Description |
-|-------|---------|-------------|
-| **Core** | `codemem status` | Local operational roll-up (`--json` supported) |
-| | `codemem stats` | Database statistics |
-| | `codemem stats --attribution` | Local retrieval-attribution diagnostics (`--json` supported) |
-| | `codemem recent` | Recent memories |
-| | `codemem search <query>` | Search memories |
-| | `codemem pack <context>` | Build a context-aware memory pack |
-| | `codemem pack trace <context>` | Inspect retrieval and pack assembly for a manual query |
-| | `codemem distill` | Mine recurring memories into reviewable context candidates |
-| | `codemem embed` | Backfill semantic embeddings |
-| **Memory** | `codemem memory show <id>` | Print a memory item as JSON |
-| | `codemem memory forget <id>` | Deactivate a memory item |
-| | `codemem memory remember` | Manually add a memory |
-| | `codemem memory inject <context>` | Raw pack text for prompt injection |
-| | `codemem memory export <output>` | Export memories by project |
-| | `codemem memory import <file>` | Import memories (idempotent) |
-| **Viewer** | `codemem serve [start\|stop\|restart]` | Launch / manage the web viewer |
-| **Sync** | `codemem sync enable\|disable` | Enable or disable peer-to-peer sync |
-| | `codemem sync status` | Device info and peer health |
-| | `codemem sync pair` | Advanced/legacy device pairing |
-| | `codemem sync once` | Run one immediate sync pass |
-| | `codemem sync doctor` | Diagnose sync configuration issues |
-| | `codemem sync relay-keys` | List relay service key pins and pending key changes |
-| | `codemem sync approve-relay-key <group> --key <candidate>` | Approve a changed relay service key |
-| | `codemem sync bootstrap` | Bootstrap sync from a peer snapshot |
-| **Updates** | `codemem update install` | Install an eligible release from the installed channel |
-| | `codemem update check` | Check npm for a newer release on the installed channel (`--json` and `--refresh` supported) |
-| **Coordinator** | `codemem coordinator` | Self-hosted coordinator admin (groups, devices, invites) |
-| **Database** | `codemem db prune-memories` | Deactivate low-signal memories (`--dry-run` to preview) |
-| | `codemem db prune-observations` | Deactivate low-signal observations |
-| | `codemem db backfill-tags` | Populate missing `tags_text` values |
-| | `codemem db raw-events-status` | Show raw-event queue status |
-| **Config** | `codemem config` | View or update configuration |
-| | `codemem setup` | Interactive first-run setup |
-| **Plumbing** | `codemem mcp` | MCP stdio server; best-effort starts the local viewer unless `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` is set |
-| | `codemem mcp http` | Local Streamable HTTP MCP server (`POST /mcp`, loopback-only by default) |
+## Command tree
 
-Adapter plumbing commands (`claude-hook-*`, `codex-hook-*`, `pi-hook-*`, `enqueue-raw-event`, and `prompt-pack-ledger`) remain executable for packaged-plugin and stale-client compatibility but are hidden from help and shell completion. `show`, `forget`, and `remember` remain hidden top-level aliases. Deprecated `export-memories` and `import-memories` warn on stderr; use `codemem memory export` and `codemem memory import` instead.
+The visible roots are `memory`, `session`, `service`, `status`, `sync`,
+`coordinator`, `maintenance`, `diagnostics`, `config`, `setup`, `update`, and
+`mcp`. `status` is an alias for `service status`.
+
+| Group | Commands | Purpose |
+|---|---|---|
+| `memory` | `list`, `search <query>`, `context <task>`, `context trace <task>`, `stats`, `distill`, `show <id>`, `forget <id>`, `remember`, `export <output>`, `import <file>` | Browse, retrieve, create, and transfer memories. |
+| `session` | `import`, `search <query>` | Import and search Pi session history. |
+| `service` | `start`, `stop`, `restart`, `status` | Run and inspect the local viewer, sync, ingestion, and maintenance service. |
+| `status` | — | Alias for `service status`. |
+| `sync` | `enable`, `disable`, `peers`, `peers remove`, `pair`, `once`, `attempts`, `doctor`, `relay-keys`, `approve-relay-key`, `bootstrap`, `connect` | Configure and diagnose peer-to-peer sync. |
+| `coordinator` | `link-account`, `enroll-owner`, `review-device-owner`, `qualify-owner`, `grant-identity-group`, `revoke-device`, `diagnose-team-setup`, `upgrade-auth-schema`, `upgrade-account-schema`, `group-create`, `list-groups`, `enroll-device`, `list-devices`, `list-scopes`, `create-scope`, `update-scope`, `list-scope-members`, `grant-scope-member`, `revoke-scope-member`, `rename-device`, `disable-device`, `remove-device`, `list-bootstrap-grants`, `revoke-bootstrap-grant`, `create-invite`, `import-invite`, `list-join-requests`, `approve-join-request`, `deny-join-request`, `serve` | Administer a self-hosted coordinator. |
+| `maintenance` | `database init`, `vacuum`, `stats`, `prune-events`, `prune-history`; `memory prune`, `deduplicate`, `redact-secrets`; `project rename <old> <new>`, `normalize`; `embeddings`; `backfill tags`, `dedup-keys`, `narrative`, `structured`; `status` | Run storage, memory, embedding, project, and backfill maintenance. |
+| `diagnostics` | `memory roles`, `compare`, `artifacts`, `relink`, `relink-plan`; `extraction report`, `replay`, `benchmark`; `capture status`, `retry`, `check`, `list-rejected`, `show-rejected`, `recover-rejected` | Inspect retrieval, extraction, and capture state. |
+| `config` | `workspace`, `where` | Update workspace configuration or show the configuration file path. |
+| `setup` | — | Run first-time integration setup. |
+| `update` | `check`, `install` | Check for or install an eligible release. |
+| `mcp` | `http` | Start the stdio server or local Streamable HTTP MCP server. |
+
+`memory forget` and `maintenance memory prune` deactivate rows. They do not delete
+the stored record. Operations that delete rows identify that consequence in their
+own help text. `memory distill`, `maintenance embeddings`, extraction benchmarks,
+and other observer-backed operations can consume configured model usage or incur
+model costs.
+
+### Prune memories
+
+`maintenance memory prune` deactivates low-signal memories. Without `--dry-run`,
+it changes stored memory state. Its default kinds preserve the previous
+`db prune-memories` selection: `observation`, `discovery`, `change`, `feature`,
+`bugfix`, `refactor`, `decision`, `note`, `entities`, and `session_summary`.
+
+Use repeatable `--kind <kind>` or comma-separated `--kinds <csv>` to replace that
+default selection. If both flags are supplied, their kinds are combined.
+
+```text
+codemem maintenance memory prune --kind discovery --dry-run
+codemem maintenance memory prune --kinds discovery,decision --dry-run
+```
+
+### Command migration
+
+| Previous command | Use now |
+|---|---|
+| `sync status` | `service status` for overall health, `sync peers` for peer details |
+| `recent` | `memory list` |
+| `search <query>` | `memory search <query>` |
+| `pack <context>` | `memory context <task>` |
+| `pack trace <context>` | `memory context trace <task>` |
+| `stats` | `memory stats` |
+| `distill` | `memory distill` |
+| `memory inject <context>` | `memory context <task>` |
+| `embed` | `maintenance embeddings` |
+| `pi-import-sessions` | `session import` |
+| `pi-session-search <query>` | `session search <query>` |
+| `db init\|vacuum` | `maintenance database init\|vacuum` |
+| `db size-report` | `maintenance database stats` |
+| `db prune-raw-events\|prune-replication-ops` | `maintenance database prune-events\|prune-history` |
+| `db raw-events-status\|retry\|gate` | `diagnostics capture status\|retry\|check` |
+| `capture list-rejected\|show-rejected\|recover-rejected` | `diagnostics capture list-rejected\|show-rejected\|recover-rejected` |
+| `db prune-memories` | `maintenance memory prune` |
+| `db prune-observations` | `maintenance memory prune --kinds observation,bugfix,feature,refactor,change,discovery,decision,exploration` |
+| `memory pack <context>` | `memory context <task>` |
+| `memory pack trace <context>` | `memory context trace <task>` |
+| `db dedup-memories\|scan-secrets` | `maintenance memory deduplicate\|redact-secrets` |
+| `db rename-project <old> <new>` | `maintenance project rename <old> <new>` |
+| `db normalize-projects` | `maintenance project normalize` |
+| `db backfill-tags\|dedup-keys\|narrative\|ai-backfill-structured` | `maintenance backfill tags\|dedup-keys\|narrative\|structured` |
+| `export-memories\|import-memories` | `memory export\|import` |
+
+When replacing `sync status --json`, use `service status --json` for overall
+health and `sync peers --json` for peer progress. These reports have different
+JSON shapes from the removed sync-status report.
+
+`memory pack`, root `pack`, and root `pack trace` remain executable compatibility
+entrypoints for installed integrations and Pi callers. They are hidden from help and
+shell completion. They keep report-style terminal output and the existing JSON
+response schema.
+Use `memory context` in user-facing instructions. Other root-level compatibility
+aliases, adapter plumbing commands, and integration-only commands follow the same
+hidden-registration rule. `--version` reports the installed CLI version.
+
+### Inspect and recover rejected capture events
+
+Use `diagnostics capture` to inspect retained rejected OpenCode events. Listing reads
+metadata without loading private event text. `--raw` includes the saved text as an
+escaped JSON string.
+
+```text
+codemem diagnostics capture list-rejected --json
+codemem diagnostics capture show-rejected '<receipt>' --json
+codemem diagnostics capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
+```
+
+The original target is unknown. `--db-path` selects the current database and runtime
+identity, and `-y` confirms that target. Recovery sends the retained bytes to the
+loopback Viewer and removes the receipt only after a recognized acknowledgement and
+an unchanged-file check. A duplicate acknowledgement does not compare stored event
+content. Add `--keep-receipt` when an event ID might refer to different content.
+
+Native Claude, Codex, and Pi receipts use the `native-hook-v1` format:
+
+```text
+codemem diagnostics capture list-rejected --format native-hook-v1 --provider claude --json
+codemem diagnostics capture show-rejected '<receipt>' --format native-hook-v1 --provider claude --raw
+codemem diagnostics capture recover-rejected '<receipt>' --format native-hook-v1 --provider claude --db-path '~/.codemem/mem.sqlite' -y
+```
+
+Replace `claude` with `codex` or `pi`. Native inspection reads retained receipts,
+not the active hook backlog. Recovery verifies the current Viewer target and uses
+the provider's HTTP route without redirects or a SQLite fallback. It requires
+`--db-path` and `-y` and supports `--keep-receipt`. Native skip responses leave the
+receipt intact. Pi receipts with saved extraction cutoffs are rejected before POST,
+and other Pi boundary receipts require a durable queued acknowledgement.
+Automatic native retention is not enabled yet.
+
+### Get context for a task
+
+`memory context <task>` is the public manual-retrieval command. It writes the
+selected memory text to standard output, ready to add to a prompt. `--json` writes
+the structured pack response instead, including its selection and size metrics.
+
+```text
+codemem memory context "Investigate the retry regression"
+codemem memory context "Investigate the retry regression" --compact
+codemem memory context "Investigate the retry regression" --compression-mode compact
+codemem memory context "Investigate the retry regression" --json
+```
+
+`context` accepts the pack retrieval and rendering flags, including project scope,
+working-set hints, limits, token budget, `--compact`, and
+`--compression-mode off|compact|ids`. Use `ids` only when the caller can retrieve
+the referenced observations.
+
+`memory context trace <task>` explains why context was selected. Its human and
+`--json` output follow the existing trace contracts.
+
+```text
+codemem memory context trace "Investigate the retry regression"
+codemem memory context trace "Investigate the retry regression" --json
+```
+
+### Maintain project labels
+
+Project-label maintenance previews changes by default. Add `--apply` to write the
+reviewed change.
+
+```text
+codemem maintenance project rename old-project new-project
+codemem maintenance project rename old-project new-project --apply
+codemem maintenance project normalize
+codemem maintenance project normalize --apply
+```
+
+The coordinator uses `coordinator link-account`, `coordinator upgrade-auth-schema`,
+and `coordinator upgrade-account-schema` for account linking and schema upgrades.
+
+`codemem serve` remains a compatibility entrypoint. Existing `serve` invocations
+continue to work, and bare `codemem serve` runs the local service in the foreground.
 
 ### MCP protocol compatibility
 

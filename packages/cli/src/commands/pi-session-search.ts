@@ -1,5 +1,5 @@
 /**
- * codemem pi-session-search — search stored pi session conversations.
+ * codemem session search — search stored Pi session conversations.
  *
  * Queries the raw-event store (source "pi") via core searchPiSessions — the
  * same contract as GET /api/pi/sessions/search and the pi-extension
@@ -8,7 +8,7 @@
  * parses.
  *
  * Empty results usually mean the index only covers sessions captured since
- * codemem was installed; `codemem pi-import-sessions` backfills history.
+ * codemem was installed; `codemem session import` backfills history.
  */
 
 import * as p from "@clack/prompts";
@@ -31,7 +31,7 @@ import {
 
 const EMPTY_INDEX_HINT =
 	"The index may only cover sessions captured since codemem was installed; " +
-	"backfill history with: codemem pi-import-sessions";
+	"backfill history with: codemem session import";
 
 interface PiSessionSearchOpts extends DbOpts, JsonOpts {
 	project?: string;
@@ -93,19 +93,22 @@ export function formatPiSessionSearchHuman(response: PiSessionSearchResponse): s
 	return lines.join("\n");
 }
 
-const cmd = new Command("pi-session-search")
-	.configureHelp(helpStyle)
-	.description("Search stored pi session conversations by text query")
-	.argument("<query>", "search query")
-	.option("--project <project>", "filter by project label")
-	.option("--session-id <id>", "filter by pi session id")
-	.option("--limit <n>", "max results (1-20)", "10")
-	.option("--snippet-chars <n>", "per-result snippet cap in chars (100-4000)", "1200");
+export function createPiSessionSearchCommand(): Command {
+	const cmd = new Command("pi-session-search")
+		.configureHelp(helpStyle)
+		.description("Search Pi session conversations")
+		.argument("<query>", "search query")
+		.option("--project <project>", "filter by project label")
+		.option("--session-id <id>", "filter by Pi session ID")
+		.option("--limit <n>", "max results (1-20)", "10")
+		.option("--snippet-chars <n>", "per-result snippet cap in chars (100-4000)", "1200");
 
-addDbOption(cmd);
-addJsonOption(cmd);
+	addDbOption(cmd);
+	addJsonOption(cmd);
+	return cmd.action(piSessionSearchAction);
+}
 
-export const piSessionSearchCommand = cmd.action((query: string, opts: PiSessionSearchOpts) => {
+const piSessionSearchAction = (query: string, opts: PiSessionSearchOpts) => {
 	try {
 		const response = runPiSessionSearch(query, opts);
 		if (opts.json) {
@@ -124,4 +127,6 @@ export const piSessionSearchCommand = cmd.action((query: string, opts: PiSession
 			process.exitCode = 1;
 		}
 	}
-});
+};
+
+export const piSessionSearchCommand = createPiSessionSearchCommand();

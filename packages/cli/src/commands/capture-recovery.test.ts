@@ -146,7 +146,8 @@ function argumentsForRecovery() {
 
 async function run(args = argumentsForRecovery()) {
 	const command = registerRootCommands(new Command("codemem")).exitOverride();
-	const capture = command.commands.find((child) => child.name() === "capture");
+	const diagnostics = command.commands.find((child) => child.name() === "diagnostics");
+	const capture = diagnostics?.commands.find((child) => child.name() === "capture");
 	expect(capture?.commands.some((child) => child.name() === "recover-rejected")).toBe(true);
 	function overrideExits(parent: Command) {
 		parent.exitOverride();
@@ -154,7 +155,7 @@ async function run(args = argumentsForRecovery()) {
 	}
 	overrideExits(command);
 	try {
-		await command.parseAsync(["capture", ...args], { from: "user" });
+		await command.parseAsync(["diagnostics", "capture", ...args], { from: "user" });
 	} catch (error) {
 		if (
 			!(error instanceof Error) ||
@@ -280,7 +281,8 @@ it.each(["confirmation", "non-ACK", "changed snapshot"])(
 it("advertises keep-receipt as an optional recovery flag", () => {
 	// Arrange
 	const root = registerRootCommands(new Command("codemem"));
-	const capture = root.commands.find((command) => command.name() === "capture");
+	const diagnostics = root.commands.find((command) => command.name() === "diagnostics");
+	const capture = diagnostics?.commands.find((command) => command.name() === "capture");
 	const recovery = capture?.commands.find((command) => command.name() === "recover-rejected");
 	// Act
 	const help = recovery?.helpInformation();

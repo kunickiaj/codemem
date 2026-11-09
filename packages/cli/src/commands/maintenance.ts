@@ -25,14 +25,31 @@ import {
 	type JsonOpts,
 	resolveDbOpt,
 } from "../shared-options.js";
+import {
+	createBackfillDedupKeysCommand,
+	createBackfillNarrativeCommand,
+	createBackfillStructuredCommand,
+	createBackfillTagsCommand,
+	createDatabaseInitCommand,
+	createDatabasePruneEventsCommand,
+	createDatabasePruneHistoryCommand,
+	createDatabaseStatsCommand,
+	createDatabaseVacuumCommand,
+	createMemoryDeduplicateCommand,
+	createMemoryPruneCommand,
+	createMemoryRedactSecretsCommand,
+	createProjectNormalizeCommand,
+	createProjectRenameCommand,
+} from "./db.js";
+import { createEmbeddingsCommand } from "./embed.js";
 
 const maintenanceCmd = new Command("maintenance")
 	.configureHelp(helpStyle)
-	.description("Inspect background maintenance / backfill jobs");
+	.description("Inspect jobs and repair stored data");
 
 const statusCmd = new Command("status")
 	.configureHelp(helpStyle)
-	.description("Print current status of all maintenance jobs");
+	.description("Show maintenance job status");
 
 addDbOption(statusCmd);
 addJsonOption(statusCmd);
@@ -109,11 +126,46 @@ workerCmd.action(async (opts: DbOpts & ConfigOpts) => {
 
 maintenanceCmd.addCommand(statusCmd);
 maintenanceCmd.addCommand(workerCmd, { hidden: true });
+maintenanceCmd.addCommand(createEmbeddingsCommand());
+maintenanceCmd.addCommand(
+	new Command("database")
+		.configureHelp(helpStyle)
+		.description("Inspect and clean up database storage")
+		.addCommand(createDatabaseInitCommand())
+		.addCommand(createDatabaseVacuumCommand())
+		.addCommand(createDatabaseStatsCommand())
+		.addCommand(createDatabasePruneEventsCommand())
+		.addCommand(createDatabasePruneHistoryCommand()),
+);
+maintenanceCmd.addCommand(
+	new Command("memory")
+		.configureHelp(helpStyle)
+		.description("Deactivate low-quality memories or redact secrets")
+		.addCommand(createMemoryPruneCommand())
+		.addCommand(createMemoryDeduplicateCommand())
+		.addCommand(createMemoryRedactSecretsCommand()),
+);
+maintenanceCmd.addCommand(
+	new Command("project")
+		.configureHelp(helpStyle)
+		.description("Repair project names in stored history")
+		.addCommand(createProjectRenameCommand())
+		.addCommand(createProjectNormalizeCommand()),
+);
+maintenanceCmd.addCommand(
+	new Command("backfill")
+		.configureHelp(helpStyle)
+		.description("Repair missing fields in historical memories")
+		.addCommand(createBackfillTagsCommand())
+		.addCommand(createBackfillDedupKeysCommand())
+		.addCommand(createBackfillNarrativeCommand())
+		.addCommand(createBackfillStructuredCommand()),
+);
 
 export const maintenanceCommand = maintenanceCmd;
 
 function printJobsTable(jobs: MaintenanceJobSnapshot[]): void {
-	p.intro("codemem maintenance");
+	p.intro("codemem maintenance status");
 	if (jobs.length === 0) {
 		p.log.info("No maintenance jobs recorded in this database.");
 		p.outro("done");

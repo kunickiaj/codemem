@@ -1,5 +1,5 @@
 /**
- * Sync CLI commands — enable/disable/status/peers/connect.
+ * Sync CLI commands — enable/disable/peers/connect.
  */
 
 import { spawn } from "node:child_process";
@@ -17,7 +17,6 @@ import {
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
-	getSemanticIndexDiagnostics,
 	hasUnsyncedSharedMemoryChanges,
 	listPerPeerScopeSyncState,
 	loadPublicKey,
@@ -213,7 +212,7 @@ async function runServeLifecycle(
 
 export const syncCommand = new Command("sync")
 	.configureHelp(helpStyle)
-	.description("Sync configuration and peer management");
+	.description("Configure sync and manage peers");
 
 // ---- sync attempts ----
 
@@ -270,7 +269,7 @@ syncCommand.addCommand(attemptsCmd);
 function addDeprecatedLifecycleCommand(action: "start" | "stop" | "restart") {
 	const cmd = new Command(action)
 		.configureHelp(helpStyle)
-		.description(`[deprecated] ${action} sync daemon — use 'codemem serve ${action}'`);
+		.description(`[deprecated] use 'codemem service ${action}'`);
 	addDbOption(cmd);
 	addConfigOption(cmd);
 	addViewerHostOptions(cmd);
@@ -375,7 +374,7 @@ syncCommand.addCommand(onceCmd);
 
 const pairCmd = new Command("pair")
 	.configureHelp(helpStyle)
-	.description("Print pairing payload or accept a peer payload")
+	.description("Create or accept a device pairing request")
 	.option("--accept <json>", "accept pairing payload JSON from another device")
 	.option("--accept-file <path>", "accept pairing payload from file path, or '-' for stdin")
 	.option("--payload-only", "when generating pairing payload, print JSON only")
@@ -655,7 +654,7 @@ syncCommand.addCommand(pairCmd);
 
 const doctorCmd = new Command("doctor")
 	.configureHelp(helpStyle)
-	.description("Diagnose common sync setup and connectivity issues");
+	.description("Check sync configuration and connectivity");
 addDbOption(doctorCmd);
 addConfigOption(doctorCmd);
 addJsonOption(doctorCmd);
@@ -827,14 +826,13 @@ doctorCmd.action(
 );
 syncCommand.addCommand(doctorCmd);
 
-// ---- sync status ----
+// ---- sync peer diagnostics ----
 
-function syncStatusIdentityAndPeers(store: MemoryStore) {
+function syncPeersWithScopes(store: MemoryStore) {
 	const d = drizzle(store.db, { schema });
 	const deviceRow = d
 		.select({
 			device_id: schema.syncDevice.device_id,
-			fingerprint: schema.syncDevice.fingerprint,
 		})
 		.from(schema.syncDevice)
 		.limit(1)
@@ -846,8 +844,10 @@ function syncStatusIdentityAndPeers(store: MemoryStore) {
 			last_sync_at: schema.syncPeers.last_sync_at,
 			last_error: schema.syncPeers.last_error,
 			public_key: schema.syncPeers.public_key,
+			addresses: schema.syncPeers.addresses_json,
 		})
 		.from(schema.syncPeers)
+		.orderBy(desc(schema.syncPeers.last_sync_at))
 		.all();
 	// Signing keys are authorization inputs only, not status output fields.
 	const localDeviceId = deviceRow?.device_id ?? null;
@@ -878,117 +878,8 @@ function syncStatusIdentityAndPeers(store: MemoryStore) {
 		});
 		return { peer, scopes };
 	});
-	return { deviceRow, peers, peersWithScopes };
+	return peersWithScopes;
 }
-
-function printSyncStatusPeers(
-	peersWithScopes: ReturnType<typeof syncStatusIdentityAndPeers>["peersWithScopes"],
-) {
-	if (peersWithScopes.length === 0) {
-		p.log.info("Peers: none");
-		return;
-	}
-	for (const { peer, scopes } of peersWithScopes) {
-		const label = peer.name || peer.peer_device_id;
-		const peerHeader = `  ${label}: last_sync=${peer.last_sync_at ?? "never"}, status=${peer.last_error ?? "ok"}`;
-		if (scopes.length === 0) {
-			p.log.message(peerHeader);
-			continue;
-		}
-		const scopeLines = scopes.map((scope) => {
-			const state = scope.bootstrapped ? "received" : "pending";
-			return `      - ${scope.label} (${scope.scope_id}): ${state}`;
-		});
-		p.log.message([peerHeader, "    Spaces:", ...scopeLines].join("\n"));
-	}
-}
-
-function printSyncStatus(
-	config: ReturnType<typeof readCliConfig>,
-	identityAndPeers: ReturnType<typeof syncStatusIdentityAndPeers>,
-	semanticIndex: ReturnType<typeof getSemanticIndexDiagnostics>,
-) {
-	const { deviceRow, peers, peersWithScopes } = identityAndPeers;
-	p.intro("codemem sync status");
-	p.log.info(
-		[
-			`Enabled:    ${config.sync_enabled === true ? "yes" : "no"}`,
-			`Host:       ${config.sync_host ?? "0.0.0.0"}`,
-			`Port:       ${config.sync_port ?? 7337}`,
-			`Interval:   ${config.sync_interval_s ?? 120}s`,
-			`Coordinator: ${config.sync_coordinator_url ?? "(not configured)"}`,
-		].join("\n"),
-	);
-	if (deviceRow) {
-		p.log.info(`Device ID:   ${deviceRow.device_id}\nFingerprint: ${deviceRow.fingerprint}`);
-	} else {
-		p.log.warn("Device identity not initialized (run `codemem sync enable`)");
-	}
-	printSyncStatusPeers(peersWithScopes);
-	p.log.info(
-		[
-			"Semantic index:",
-			`  State: ${semanticIndex.state}`,
-			`  Summary: ${semanticIndex.summary}`,
-			`  Coverage: ${semanticIndex.indexed_memory_count}/${semanticIndex.embeddable_memory_count}`,
-			`  Mode: ${semanticIndex.mode === "semantic" ? `semantic (${semanticIndex.semantic_search_model ?? semanticIndex.current_model})` : "keyword-only"}`,
-		].join("\n"),
-	);
-	p.outro(`${peers.length} peer(s)`);
-}
-
-const statusCmd = new Command("status")
-	.configureHelp(helpStyle)
-	.description("Show sync configuration and peer summary");
-addDbOption(statusCmd);
-addConfigOption(statusCmd);
-addJsonOption(statusCmd);
-statusCmd.action(function showSyncStatus(opts: {
-	db?: string;
-	dbPath?: string;
-	config?: string;
-	json?: boolean;
-}) {
-	const config = readCliConfig(opts.config);
-	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
-	try {
-		const identityAndPeers = syncStatusIdentityAndPeers(store);
-		const { deviceRow, peersWithScopes } = identityAndPeers;
-		const semanticIndex = getSemanticIndexDiagnostics(store.db);
-
-		if (opts.json) {
-			console.log(
-				JSON.stringify(
-					{
-						enabled: config.sync_enabled === true,
-						host: config.sync_host ?? "0.0.0.0",
-						port: config.sync_port ?? 7337,
-						interval_s: config.sync_interval_s ?? 120,
-						semantic_index: semanticIndex,
-						device_id: deviceRow?.device_id ?? null,
-						fingerprint: deviceRow?.fingerprint ?? null,
-						coordinator_url: config.sync_coordinator_url ?? null,
-						peers: peersWithScopes.map(({ peer, scopes }) => ({
-							device_id: peer.peer_device_id,
-							name: peer.name,
-							last_sync: peer.last_sync_at,
-							status: peer.last_error ?? "ok",
-							scopes,
-						})),
-					},
-					null,
-					2,
-				),
-			);
-			return;
-		}
-
-		printSyncStatus(config, identityAndPeers, semanticIndex);
-	} finally {
-		store.close();
-	}
-});
-syncCommand.addCommand(statusCmd);
 
 // ---- sync enable ----
 
@@ -1105,24 +996,20 @@ syncCommand.addCommand(disableCmd);
 
 const peersCommand = new Command("peers")
 	.configureHelp(helpStyle)
-	.description("List known sync peers");
+	.description("Show peer health and sync progress");
 addDbOption(peersCommand);
 addJsonOption(peersCommand);
 peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
-		const d = drizzle(store.db, { schema });
-		const peers = d
-			.select({
-				peer_device_id: schema.syncPeers.peer_device_id,
-				name: schema.syncPeers.name,
-				addresses: schema.syncPeers.addresses_json,
-				last_sync_at: schema.syncPeers.last_sync_at,
-				last_error: schema.syncPeers.last_error,
-			})
-			.from(schema.syncPeers)
-			.orderBy(desc(schema.syncPeers.last_sync_at))
-			.all();
+		const peers = syncPeersWithScopes(store).map(({ peer, scopes }) => ({
+			peer_device_id: peer.peer_device_id,
+			name: peer.name,
+			addresses: peer.addresses,
+			last_sync_at: peer.last_sync_at,
+			last_error: peer.last_error,
+			scopes,
+		}));
 
 		if (opts.json) {
 			console.log(JSON.stringify(peers, null, 2));
@@ -1140,6 +1027,13 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 			p.log.message(
 				`${label}\n  addresses: ${addrs}\n  last_sync: ${peer.last_sync_at ?? "never"}\n  status: ${peer.last_error ?? "ok"}`,
 			);
+			if (peer.scopes.length > 0) {
+				const scopeLines = peer.scopes.map((scope) => {
+					const state = scope.bootstrapped ? "received" : "pending";
+					return `    - ${scope.label} (${scope.scope_id}): ${state}`;
+				});
+				p.log.message(["  Spaces:", ...scopeLines].join("\n"));
+			}
 		}
 		p.outro(`${peers.length} peer(s)`);
 	} finally {
@@ -1207,7 +1101,7 @@ syncCommand.addCommand(approveRelayKeyCommand);
 
 const bootstrapCmd = new Command("bootstrap")
 	.configureHelp(helpStyle)
-	.description("Fast-bootstrap memories from a peer (full snapshot transfer)")
+	.description("Copy existing memories from a peer")
 	.argument("[peer-device-id]", "peer device ID to bootstrap from")
 	.option("--bootstrap-grant <grant-id>", "bootstrap grant id for seed-authorized bootstrap")
 	.option("--page-size <n>", "items per snapshot page (default: 2000)", "2000")
@@ -1454,7 +1348,7 @@ syncCommand.addCommand(bootstrapCmd);
 
 const connectCmd = new Command("connect")
 	.configureHelp(helpStyle)
-	.description("Configure coordinator URL for cloud sync")
+	.description("Set the coordinator URL for sync")
 	.argument("<url>", "coordinator URL (e.g. https://coordinator.example.com)")
 	.option("--group <group>", "sync group ID");
 addConfigOption(connectCmd);
@@ -1488,7 +1382,15 @@ const syncCoordinatorAlias = buildCoordinatorCommand();
 
 syncCoordinatorAlias.hook("preAction", (_thisCmd: Command, actionCmd: Command) => {
 	if (actionCmd.optsWithGlobals().json) return;
-	const subName = actionCmd.name();
+	const path: string[] = [];
+	for (
+		let command: Command | null = actionCmd;
+		command && command !== syncCoordinatorAlias;
+		command = command.parent
+	) {
+		path.unshift(command.name());
+	}
+	const subName = path.join(" ");
 	emitDeprecationWarning(`codemem sync coordinator ${subName}`, `codemem coordinator ${subName}`);
 });
 

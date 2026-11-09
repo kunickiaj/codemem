@@ -111,7 +111,7 @@ codemem update check --json
   writes that exact release into the primary global config, which may move a declaration from a
   user `conf.d` or recognized user-level `~/.config/mise.toml` source to `config.toml`. Verification re-reads global state and requires `version`
   or `requested_version` to match the target,
-  then uses `mise exec -- codemem version` from outside the invoking project, avoiding stale `PATH`
+then uses `mise exec -- codemem --version` from outside the invoking project, avoiding stale `PATH`
   entries and project-local overrides. Both paths refresh release status and stay on the installed channel. It refuses npx, Docker, pinned,
   development, stale, cross-channel, downgrade, unsupported-channel, and unknown installations. Bare `codemem update`
   remains non-mutating. As with a
@@ -120,11 +120,15 @@ codemem update check --json
   either global installation requires the direct `codemem update install` command or the reported
   manual action.
 
-## Start or restart the viewer
-- `codemem serve` runs the viewer in the foreground.
-- `codemem serve start` runs it in the background.
-- `codemem serve restart` restarts the background viewer.
-- `codemem serve --background` still works as a deprecated alias for `codemem serve start`.
+## Start, stop, or restart the local service
+
+The local service runs the viewer, sync, raw-event ingestion, and maintenance.
+
+- `codemem service start` runs the local service in the background.
+- `codemem service start -f` or `codemem service start --foreground` keeps it in the foreground.
+- `codemem service stop` stops the local service, and `codemem service restart` restarts it in the background.
+- `codemem service status` returns the same local operational report as `codemem status`.
+- `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations continue to work, and bare `codemem serve` runs the local service in the foreground.
 
 ## Viewer trust model
 
@@ -137,7 +141,7 @@ codemem update check --json
 
 ### Listener and embedding behavior
 
-For a loopback listener started by `codemem serve`, every viewer request must have
+For a loopback listener started by the local service, every viewer request must have
 a `Host` matching its request URL and the actual listening port, including when
 `--port 0` chooses an available port. This check runs before preflight and route
 handlers, including for requests without an `Origin` from CLI or hook callers.
@@ -182,19 +186,21 @@ codemem status --json
 codemem status --db-path ./codemem.sqlite --config ./codemem.json
 ```
 
-- `status` answers whether codemem can do useful local work; `stats` reports database inventory and usage.
+- `status` answers whether codemem can do useful local work; `memory stats` reports database inventory and usage.
 - Collection is offline and local-only. It does not contact peers, coordinators, registries, update services, or non-loopback viewer hosts.
 - A missing database is reported without creating it. Existing databases are opened read-only.
 - With no viewer PID record, status probes the configured loopback viewer address; a malformed or non-loopback record reports `unknown` and is not fetched.
 - Warnings and errors appear in the bounded `attention` list. A collected report exits `0` even when `ok` is false; collection failures exit `1`, and usage errors exit `2`.
 - With `CODEMEM_EMBEDDING_DISABLED=1`, the semantic index reports `disabled` and adds no attention item: semantic search is off by choice and keyword search still works.
-- Terminal raw-event and observer failures affect `ok` for 24 hours; use `codemem db raw-events-gate` for the detailed reliability window.
-- Use `codemem sync status` or `codemem sync doctor`, `codemem maintenance status`, and `codemem db raw-events-status` for detailed subsystem diagnostics.
+- Terminal raw-event and observer failures affect `ok` for 24 hours; use `codemem diagnostics capture check` for the detailed reliability window.
+- `codemem service status` replaces `codemem sync status` for operational health.
+- Use `codemem sync peers` for peer health and per-scope received/pending work, `codemem sync attempts` for recent passes, and `codemem sync doctor` for detailed sync diagnostics.
+- Use `codemem maintenance status` for background jobs and `codemem diagnostics capture status` for the ingestion backlog.
 
 ## Seeing UI changes
 - The viewer UI is built from `packages/ui/` and served by `packages/viewer-server/`.
 - Rebuild UI assets after frontend changes: `pnpm --filter @codemem/ui build`.
-- Restart the viewer after updates: `codemem serve restart`.
+- Restart the viewer after updates: `codemem service restart`.
 
 ## Getting started in the viewer
 - New browser profiles show a non-blocking checklist in Feed until its five jobs are completed or skipped: capture a memory, inspect its details, find it again, choose project scope, and check Settings or Health.
@@ -250,11 +256,11 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 ## Extraction replay and benchmarks
 
 Proven delegated brief-only batches produce a context-only outcome instead of an
-observer evaluation. `memory extraction-replay --json` returns
+observer evaluation. `diagnostics extraction replay --json` returns
 `status: "context_only"`, `code: "delegated_brief_context_only"`, `evaluated: false`,
 the batch/scenario IDs and an explanatory message, with exit status zero.
 
-`memory extraction-benchmark` continues past context-only batches and records each
+`diagnostics extraction benchmark` continues past context-only batches and records each
 skipped iteration in `summary.contextOnlySkips`. `summary.contextOnlySkipped` counts
 those skips, while `summary.scheduledTotal` counts every scheduled batch/iteration.
 `summary.total`, `runs`, failure counts and quality, stability, output, cost and
@@ -325,6 +331,46 @@ Command/file token caching notes:
 - Observations and summaries persist when the observer emits meaningful content.
 - Low-signal observations are filtered before writing.
 
+## Retrieve context for a task
+
+Use `memory context` when you want prompt-ready memory text for a task:
+
+```fish
+codemem memory context 'Investigate the retry regression'
+codemem memory context 'Investigate the retry regression' --compact
+codemem memory context 'Investigate the retry regression' --json
+```
+
+The default output is plain text for a prompt. `--json` returns the structured pack
+response, including selection and size metrics. The command supports the full pack
+flag set, including project scope, working-set hints, limits, token budget,
+`--compact`, and `--compression-mode off|compact|ids`. Use `ids` only when the
+caller can retrieve the referenced observations.
+
+To inspect selection, run:
+
+```fish
+codemem memory context trace 'Investigate the retry regression'
+codemem memory context trace 'Investigate the retry regression' --json
+```
+
+The trace uses the existing human and JSON trace output contracts. `memory pack` and
+root `pack` remain hidden compatibility commands for installed integrations and Pi
+callers. Report-style terminal output and the existing JSON response schema remain
+available there.
+
+## Maintain project labels
+
+Project rename and normalization commands preview their changes by default. Add
+`--apply` only after reviewing the preview:
+
+```fish
+codemem maintenance project rename 'old-project' 'new-project'
+codemem maintenance project rename 'old-project' 'new-project' --apply
+codemem maintenance project normalize
+codemem maintenance project normalize --apply
+```
+
 ## Automatic context injection
 - The OpenCode 1 plugin injects a memory pack next to the latest user message by default, keeping older prompt prefixes stable for provider prompt caches.
 - The OpenCode 2 entrypoint (beta integration, validated on the exact stable OpenCode 2.0.24 release) captures activity, manages lifecycle cleanup, and exposes manual `mem-status`, `mem-recent`, and `mem-stats` tools through `tool.transform` with `codemode: false`. On OpenCode 2.0.24, automatic recall runs through `session.context` when the latest user message has a non-empty ID. Each identified turn performs one fresh retrieval, while retries and tool continuations replay retained context; missing or blank identity skips safely. Auxiliary hooks remain isolated; see the [pinned contract](opencode-v2-contract.md). To stop the OpenCode 2 path or return to OpenCode 1.18.29+, follow [troubleshooting and rollback](plugin-reference.md#opencode-host-support-troubleshooting-and-rollback); no database migration is needed.
@@ -348,14 +394,14 @@ Pi captures session, message, and tool activity through `@codemem/pi-extension`.
 - `CODEMEM_PI_INJECT_PROMPTS=0` disables prompt recall. If that variable is unset, `CODEMEM_INJECT_CONTEXT=0` does the same for Pi prompts.
 - `CODEMEM_PI_FILE_CONTEXT=0` disables read-file context. It is independent of prompt recall.
 - `pi.tools_mode` / `CODEMEM_PI_TOOLS_MODE`: `native` (default) registers 15 native tools; `mcp-adapter` skips native registration so an independently configured MCP surface can supply them. Use one surface.
-- Pre-install history is not imported automatically. Run `codemem pi-import-sessions` to backfill it. `--extract` also runs the observer over pending Pi sessions, so model cost scales with the backlog; without it, this command does not run extraction. Import `--json` also reports whether extraction was requested, flushed-event and failed/pending-session counts, and the first extraction error. Incomplete extraction exits with code 1 while keeping imported events.
-- Search stored user/assistant text with `codemem pi-session-search <query>`. `--json` returns the shared core response, including `query_truncated` when matching uses a bounded prefix of the query. Human output warns about partial matching even with zero results; shorten the query and retry. See [session search and history import](plugin-reference.md#session-search-and-history-import) for flags and import safety limits.
+- Pre-install history is not imported automatically. Run `codemem session import` to backfill it. `--extract` also runs the observer over pending Pi sessions, so model cost scales with the backlog; without it, this command does not run extraction. Import `--json` also reports whether extraction was requested, flushed-event and failed/pending-session counts, and the first extraction error. Incomplete extraction exits with code 1 while keeping imported events.
+- Search stored user/assistant text with `codemem session search <query>`. `--json` returns the shared core response, including `query_truncated` when matching uses a bounded prefix of the query. Human output warns about partial matching even with zero results; shorten the query and retry. See [session search and history import](plugin-reference.md#session-search-and-history-import) for flags and import safety limits.
 
 Settings: [Pi extension](plugin-reference.md#pi-extension) and the [package configuration table](../packages/pi-extension/README.md#configuration).
 
 ### Usage metric semantics
 
-`codemem stats --json` and the viewer usage API identify token units and provenance. Pack rows are estimates of tokens injected into context. Observer rows use provider-reported input tokens (`tokens_read`) and output tokens (`tokens_written`) across every attempted observer call; transports without usage telemetry record those values as unavailable instead of estimating them.
+`codemem memory stats --json` and the viewer usage API identify token units and provenance. Pack rows are estimates of tokens injected into context. Observer rows use provider-reported input tokens (`tokens_read`) and output tokens (`tokens_written`) across every attempted observer call; transports without usage telemetry record those values as unavailable instead of estimating them.
 
 Observer rows written before this provenance marker used UTF-16 text lengths, not tokens. Codemem keeps those rows for audit but excludes their values from token aggregates and reports them through `legacy_text_length_count`; the original token counts cannot be recovered. Health’s Injected, Savings, and Reduction cards use pack estimates only, so observer model usage is not mixed into pack-size metrics.
 
@@ -363,11 +409,11 @@ The viewer may cache global usage totals, but it checks recent memory packs agai
 
 ## Retrieval attribution diagnostics
 
-Use `codemem stats --attribution` to inspect local, bounded, observational retrieval diagnostics:
+Use `codemem memory stats --attribution` to inspect local, bounded, observational retrieval diagnostics:
 
 ```fish
-codemem stats --attribution
-codemem stats --json --attribution
+codemem memory stats --attribution
+codemem memory stats --attribution --json
 ```
 
 - The report covers the 50 most recent retrieval attempts and at most 100 linked assessments; counts are a recent bounded window, not lifetime totals.
@@ -419,7 +465,7 @@ need repair.
 
 Cleanup removes vectors with invalid numeric values or unusable metadata,
 without changing source memories. Rows from undeclared models remain available
-for a later model transition. Use `codemem embed --dry-run`, then `codemem embed`,
+for a later model transition. Use `codemem maintenance embeddings --dry-run`, then `codemem maintenance embeddings`,
 to backfill missing vectors.
 
 For applications that create a `MemoryStore`, close an asynchronous semantic
@@ -442,14 +488,14 @@ flush those writes. A store that owns a semantic worker requires `closeAsync()`.
 
 ## Distill recurring lessons
 
-Use `codemem distill` to find lessons that keep showing up in memory history.
+Use `codemem memory distill` to find lessons that keep showing up in memory history.
 
 ```fish
-codemem distill --explain
-codemem distill --all-projects --json
-codemem distill --no-judge       # skip the observer-model worthiness judgment
-codemem distill --draft          # draft an AGENTS.md rule for the top candidate + diff
-codemem distill --draft --apply  # write it after confirmation
+codemem memory distill --explain
+codemem memory distill --all-projects --json
+codemem memory distill --no-judge       # skip the observer-model worthiness judgment
+codemem memory distill --draft          # draft an AGENTS.md rule for the top candidate + diff
+codemem memory distill --draft --apply  # write it after confirmation
 ```
 
 Candidate mining is deterministic and review-first:
@@ -865,15 +911,16 @@ do not assume rollback or retry automatically.
 ### Sync runtime
 
 - `codemem sync enable` generates keys and writes config.
-- `codemem serve start|stop|restart` manages the viewer-backed sync runtime.
-- `codemem sync status` shows device info and peer health.
+- `codemem service start|stop|restart` manages the local service runtime.
+- `codemem service status` and `codemem status` show the same local operational report.
+- `codemem sync peers` shows peer health, including per-scope received and pending work.
 
 ### Manual pairing
 
 Use manual pairing for same-person devices, existing integrations, or compatibility—not normal teammate sharing.
 
 1. In **Devices**, choose **Pair a device** and copy the displayed `codemem sync pair --payload-only` command.
-2. On the device you want to connect, run `codemem sync enable` and `codemem serve restart` before running the copied command. Both devices need sync enabled to exchange memories.
+2. On the device you want to connect, run `codemem sync enable` and `codemem service restart` before running the copied command. Both devices need sync enabled to exchange memories.
 3. Copy the generated payload and paste it under **Accept a pairing payload** in **Devices**. Choose **Review invite** to check the device ID, fingerprint, and addresses against the other device, then choose **Accept invite**. Accept only a payload from a device you trust; acceptance trusts that device.
 4. Repeat in the other direction: enable sync and restart this device, generate its payload, then accept that payload on the other device. Each device must accept the other's payload; one-way acceptance does not complete pairing.
 
@@ -990,19 +1037,20 @@ When selected history may already have replicated, all participating owner devic
 ### Autostart
 
 - codemem does not ship a `sync install` helper in the TS CLI.
-- Use an OS service manager to run `codemem serve start --foreground` at login/boot.
+- Use an OS service manager to run `codemem service start --foreground` at login/boot.
 - Follow the [autostart template guide](autostart/README.md) to customize executable paths, runtime environment, and logs before installing an OS service.
 
 ### Diagnostics
 
-- `codemem sync doctor` diagnoses sync configuration issues (keys, config, peer reachability).
-- `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
+- `codemem sync peers` shows peer health, including per-scope received and pending work.
 - `codemem sync attempts` shows recent sync attempt history per peer.
+- `codemem sync doctor` shows detailed sync configuration and reachability diagnostics.
+- `codemem sync bootstrap <peer-device-id>` bootstraps sync state from a peer's snapshot.
 - `codemem sync relay-keys` lists the relay service key pinned for each coordinator group. When a
   coordinator advertises a different key, relay pauses for that group and sync stays direct until
   you check the new key with the coordinator operator and run
   `codemem sync approve-relay-key <group> --key <candidate>`. Set `sync_relay_enabled` to `false`
-  to turn relay off on a device, then restart `codemem serve`. The viewer reads the setting only at
+   to turn relay off on a device, then run `codemem service restart`. The service reads the setting only at
   startup. [Relay](relay.md) explains relay status lines and failure codes.
 - A restored peer requires its SQLite database and original signing key together.
   If no matching key exists in `device.key` or the configured platform keychain,
@@ -1014,10 +1062,11 @@ When selected history may already have replicated, all participating owner devic
 - See [Anchor-peer deployment](anchor-peer-deployment.md#storage-and-backups) for
   the complete backup and restore contract.
 
-### Service helpers
+### Service commands
 
-- `codemem sync status` shows sync config and peer health.
-- `codemem sync start|stop|restart` are deprecated — use `codemem serve start|stop|restart` instead. The viewer process manages the sync runtime; there is no separate sync-only daemon.
+- `codemem service start|stop|restart` manages the local service runtime.
+- `codemem service status` returns the same local operational report as `codemem status`.
+- Existing `codemem serve` invocations remain supported for compatibility. Bare `codemem serve` runs the local service in the foreground.
 
 ### Coordinator-backed discovery
 
@@ -1193,18 +1242,18 @@ This source workflow has not yet been validated end-to-end against a live coordi
 ## Troubleshooting
 - If sessions are missing, confirm the viewer and plugin share the same DB path.
 - Check `~/.codemem/plugin.log` for plugin errors.
-- Sync errors: `codemem sync status` shows the last error per peer.
+- Sync errors: `codemem sync peers` shows the last error per peer.
 
 ### Inspect retained rejected events
 
-Use `codemem capture list-rejected --json` to list retained OpenCode rejection metadata without reading private event text. Copy a receipt into `codemem capture show-rejected '<receipt>' --json` to validate that file and inspect its metadata. The commands work without a running Viewer or database connection and do not modify retained files.
+Use `codemem diagnostics capture list-rejected --json` to list retained OpenCode rejection metadata without reading private event text. Copy a receipt into `codemem diagnostics capture show-rejected '<receipt>' --json` to validate that file and inspect its metadata. The commands work without a running Viewer or database connection and do not modify retained files.
 
 Without `--json`, inspection prints a short metadata summary. Add `--raw` only when you intend to reveal private event text. That option always returns JSON with the original serialized text as an escaped string. Entries larger than 16 MiB remain listed but report `read_limit_exceeded` when inspected. Malformed entries report `invalid`. If a file changes during inspection, the result is `changed_during_read`. Rerun the command for a stable snapshot. Inspection never removes the file.
 
 After inspecting a valid entry, retry that selected receipt only when you intend to deliver it to the current database and runtime identity:
 
 ```fish
-codemem capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
+codemem diagnostics capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y
 ```
 
 The original delivery target is unknown. `--db-path` selects the current database, and `-y` confirms that choice. Before sending, the command verifies the loopback Viewer's protocol, database, runtime identity, and advertised ingest size. It sends the exact retained event bytes in one wrapped HTTP request, rejects redirects, and does not use a SQLite fallback. Add `--json` for machine-readable output.
@@ -1218,8 +1267,8 @@ The Viewer treats an existing event ID as a duplicate without comparing content.
 Native Claude, Codex, and Pi hook receipts have their own format. Select it and the provider explicitly:
 
 ```fish
-codemem capture list-rejected --format native-hook-v1 --provider claude --json
-codemem capture show-rejected '<receipt>' --format native-hook-v1 --provider claude --raw
+codemem diagnostics capture list-rejected --format native-hook-v1 --provider claude --json
+codemem diagnostics capture show-rejected '<receipt>' --format native-hook-v1 --provider claude --raw
 ```
 
 Replace `claude` with `codex` or `pi` as needed. Listing reads metadata only. Showing a receipt validates its saved JSON within the 16 MiB inspection limit, and only `--raw` includes the saved text as an escaped JSON string. Inspection uses the provider's existing spool directory and overrides, makes no HTTP or SQLite calls, and refuses unsafe or symlinked paths without changing permissions. Native retained files end in `.retained`, so older CLIs do not replay them as active `.json` entries.
@@ -1227,7 +1276,7 @@ Replace `claude` with `codex` or `pi` as needed. Listing reads metadata only. Sh
 To recover a supported native receipt, select its format and provider and confirm the current database:
 
 ```fish
-codemem capture recover-rejected '<receipt>' --format native-hook-v1 --provider claude --db-path '~/.codemem/mem.sqlite' -y
+codemem diagnostics capture recover-rejected '<receipt>' --format native-hook-v1 --provider claude --db-path '~/.codemem/mem.sqlite' -y
 ```
 
 Recovery uses the provider's HTTP route after checking the Viewer profile, current database, runtime identity, and complete request size. It rejects redirects and has no SQLite fallback. Add `--keep-receipt` to preserve the file after a recognized acknowledgement. Duplicate or no-op skip responses leave the receipt intact because they do not confirm native capture.
@@ -1274,9 +1323,9 @@ available, allowing it to resolve the globally installed sibling package.
 Setup-managed `npx` launchers instead request `codemem` and
 `@codemem/embeddings` together in one temporary environment. After installation,
 restart the host you configured — OpenCode, Claude Code, Codex, or Pi — plus any
-running `codemem serve` process. Each MCP process checks runtime availability
+running local service. Each MCP process checks runtime availability
 once per lifetime, so a running Claude or Codex MCP host stays lexical-only until
-it restarts; restarting `codemem serve` alone does not restart that MCP child.
+it restarts; restarting the local service alone does not restart that MCP child.
 
 Codemem runs semantic inference on the CPU. `ONNXRUNTIME_NODE_INSTALL=skip`
 prevents ONNX Runtime's Linux installer from downloading unused GPU provider

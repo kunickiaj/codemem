@@ -138,6 +138,7 @@ async function run(extra: string[] = [], json = true) {
 	try {
 		await command.parseAsync(
 			[
+				"diagnostics",
 				"capture",
 				"recover-rejected",
 				receipt,

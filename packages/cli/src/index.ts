@@ -3,12 +3,7 @@
 /**
  * @codemem/cli — CLI entry point.
  *
- * Commands:
- *   codemem stats   → database statistics
- *   codemem search  → FTS5 memory search
- *   codemem pack    → context-aware memory pack
- *   codemem serve   → viewer server
- *   codemem mcp     → MCP stdio server
+ * Public command registration and completion live in command-tree.ts.
  */
 
 import { VERSION } from "@codemem/core";

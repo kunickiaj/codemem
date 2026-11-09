@@ -646,6 +646,25 @@ describe("serve command option resolution", () => {
 	});
 });
 
+describe("service process recognition", () => {
+	it.each([
+		["node /repo/bin/codemem service start --foreground", true],
+		["node /repo/packages/cli/dist/index.js service start --foreground", true],
+		["node /repo/packages/cli/src/index.ts serve start --foreground", true],
+		["node /repo/unrelated.js service start --foreground", false],
+		["node /usr/bin/python -m http.server 38888", false],
+	])("recognizes service processes without matching unrelated commands: %s", (line, expected) => {
+		// Arrange: process listings may use either supported lifecycle spelling.
+		const commandLine = line;
+
+		// Act: classify the process before allowing lifecycle management.
+		const result = isLikelyViewerCommand(commandLine);
+
+		// Assert: unrelated processes must never be selected for termination.
+		expect(result).toBe(expected);
+	});
+});
+
 describe("serve relay wiring", () => {
 	const context = { db: {} as never, dbPath: "mem.sqlite", keysDir: "keys" };
 	afterEach(() => {

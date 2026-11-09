@@ -244,9 +244,9 @@ describe("status command", () => {
 		const { command, stdout } = harness({ snapshot });
 		await command.parseAsync([], { from: "user" });
 		expect(stdout).toHaveLength(1);
-		expect(stdout[0]).toContain("codemem status OK");
+		expect(stdout[0]).toContain("codemem service status OK");
 		expect(stdout[0]).toContain("Raw events:     backlogged (3 pending)");
-		expect(stdout[0]).toContain("codemem db raw-events-status");
+		expect(stdout[0]).toContain("codemem diagnostics capture status");
 	});
 
 	it("emits one structured error and exits one on collection failure", async () => {

@@ -1,136 +1,236 @@
 import { Command } from "commander";
-import { afterEach, describe, expect, it } from "vitest";
-import {
-	COMPLETION_ONLY_TOKENS,
-	ROOT_COMPLETION_COMMANDS,
-	registerRootCommands,
-} from "./command-tree.js";
-import { memoryCommand } from "./commands/memory.js";
-import { syncCommand } from "./commands/sync.js";
+import { describe, expect, it } from "vitest";
+import { ROOT_COMPLETION_COMMANDS, registerRootCommands } from "./command-tree.js";
 import { helpStyle } from "./help-style.js";
-import { invokedAsTopLevelAlias } from "./top-level-alias.js";
 
-const completionOnly = new Set<string>(["help", ...COMPLETION_ONLY_TOKENS]);
+const publicRoots = [
+	"memory",
+	"session",
+	"service",
+	"status",
+	"sync",
+	"coordinator",
+	"maintenance",
+	"diagnostics",
+	"config",
+	"setup",
+	"update",
+	"mcp",
+];
+const protocolRoots = [
+	"serve",
+	"pack",
+	"recent",
+	"stats",
+	"search",
+	"distill",
+	"version",
+	"pi-session-search",
+	"prompt-pack-ledger",
+	"claude-hook-file-context",
+	"claude-hook-inject",
+	"claude-hook-ingest",
+	"codex-hook-inject",
+	"codex-hook-ingest",
+	"pi-hook-inject",
+	"pi-hook-ingest",
+	"enqueue-raw-event",
+	"memory-tool",
+];
 
-// The exact assembly used by the runtime entrypoint (index.ts).
-const program = registerRootCommands(new Command("codemem").configureHelp(helpStyle));
+function makeProgram() {
+	return registerRootCommands(new Command("codemem").configureHelp(helpStyle))
+		.exitOverride()
+		.configureOutput({ writeErr: () => {} });
+}
 
-describe("root command tree", () => {
-	it("keeps visible registrations and completions in parity", () => {
-		const registeredNames = new Set(program.commands.map((command) => command.name()));
-		const visibleNames = program
+function atPath(program: Command, path: string[]): Command {
+	return path.reduce((parent, name) => {
+		const child = parent.commands.find((command) => command.name() === name);
+		if (!child) throw new Error(`Missing command: ${path.join(" ")}`);
+		return child;
+	}, program);
+}
+
+describe("public command tree", () => {
+	it("advertises exactly twelve roots in everyday-first order", () => {
+		// Arrange
+		const program = makeProgram();
+		// Act
+		const visible = program
 			.createHelp()
 			.visibleCommands(program)
 			.map((command) => command.name());
+		// Assert
+		expect(visible.filter((name) => name !== "help")).toEqual(publicRoots);
+		expect(
+			ROOT_COMPLETION_COMMANDS.filter((name) => !["help", "--help", "--version"].includes(name)),
+		).toEqual(publicRoots);
+	});
 
-		for (const commandName of visibleNames) {
-			expect(ROOT_COMPLETION_COMMANDS).toContain(commandName);
-		}
-
-		for (const completion of ROOT_COMPLETION_COMMANDS) {
-			if (completionOnly.has(completion)) continue;
-			expect(registeredNames).toContain(completion);
+	it("keeps installed protocol roots executable but absent from discovery", () => {
+		// Arrange
+		const program = makeProgram();
+		// Act
+		const registered = program.commands.map((command) => command.name());
+		const visible = program
+			.createHelp()
+			.visibleCommands(program)
+			.map((command) => command.name());
+		// Assert
+		for (const name of protocolRoots) {
+			expect(registered).toContain(name);
+			expect(visible).not.toContain(name);
+			expect(ROOT_COMPLETION_COMMANDS).not.toContain(name);
 		}
 	});
 
-	it("keeps hidden compatibility commands out of shell completion", () => {
-		const visibleNames = new Set(
-			program
-				.createHelp()
-				.visibleCommands(program)
-				.map((command) => command.name()),
-		);
-		const hiddenNames = program.commands
-			.map((command) => command.name())
-			.filter((name) => name !== "help" && !visibleNames.has(name));
+	it.each([
+		"show",
+		"forget",
+		"remember",
+		"capture",
+		"db",
+		"embed",
+		"export-memories",
+		"import-memories",
+		"pi-import-sessions",
+	])("removes the old human root %s", (name) => {
+		// Arrange
+		const program = makeProgram();
+		// Act
+		const registered = program.commands.map((command) => command.name());
+		// Assert
+		expect(registered).not.toContain(name);
+	});
 
-		expect(hiddenNames.sort()).toEqual(
-			[
+	it.each([
+		{
+			path: ["memory"],
+			children: [
+				"list",
+				"search",
 				"show",
-				"forget",
 				"remember",
-				"prompt-pack-ledger",
-				"claude-hook-file-context",
-				"claude-hook-inject",
-				"claude-hook-ingest",
-				"codex-hook-inject",
-				"codex-hook-ingest",
-				"pi-hook-inject",
-				"pi-hook-ingest",
-				"enqueue-raw-event",
-				"memory-tool",
-			].sort(),
-		);
-		for (const hiddenName of hiddenNames) {
-			expect(ROOT_COMPLETION_COMMANDS).not.toContain(hiddenName);
-		}
-	});
-
-	it("shows warned aliases and omits hidden root compatibility commands", () => {
-		const help = program.helpInformation();
-
-		expect(help).toMatch(/^\s+export-memories(?:\s|$)/m);
-		expect(help).toMatch(/^\s+import-memories(?:\s|$)/m);
-		for (const hiddenName of [
-			"show",
-			"forget",
-			"remember",
-			"prompt-pack-ledger",
-			"claude-hook-file-context",
-			"claude-hook-inject",
-			"claude-hook-ingest",
-			"codex-hook-inject",
-			"codex-hook-ingest",
-			"pi-hook-inject",
-			"pi-hook-ingest",
-			"enqueue-raw-event",
-			"memory-tool",
-		]) {
-			expect(help).not.toMatch(new RegExp(`^\\s+${hiddenName}(?:\\s|$)`, "m"));
-		}
-	});
-
-	it("registers the memory export/import wrappers exactly once", () => {
-		registerRootCommands(new Command("codemem-again").configureHelp(helpStyle));
-
-		const wrapperNames = memoryCommand.commands
-			.map((command) => command.name())
-			.filter((name) => name === "export" || name === "import");
-		expect(wrapperNames.sort()).toEqual(["export", "import"]);
-	});
-
-	it("hides sync coordinator from help without unregistering it", () => {
-		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
-
-		expect(coordinator).toBeDefined();
-		expect(syncCommand.helpInformation()).not.toMatch(/^\s+coordinator(?:\s|$)/m);
+				"forget",
+				"context",
+				"distill",
+				"stats",
+				"export",
+				"import",
+			],
+		},
+		{ path: ["memory", "context"], children: ["trace"] },
+		{ path: ["session"], children: ["import", "search"] },
+		{ path: ["service"], children: ["start", "stop", "restart", "status"] },
+		{
+			path: ["diagnostics", "memory"],
+			children: ["roles", "compare", "artifacts", "relink", "relink-plan"],
+		},
+		{ path: ["diagnostics", "extraction"], children: ["report", "replay", "benchmark"] },
+		{
+			path: ["diagnostics", "capture"],
+			children: ["list-rejected", "show-rejected", "recover-rejected", "status", "retry", "check"],
+		},
+		{
+			path: ["maintenance"],
+			children: ["status", "embeddings", "database", "memory", "project", "backfill"],
+		},
+		{
+			path: ["maintenance", "database"],
+			children: ["init", "vacuum", "stats", "prune-events", "prune-history"],
+		},
+		{
+			path: ["maintenance", "memory"],
+			children: ["prune", "deduplicate", "redact-secrets"],
+		},
+		{ path: ["maintenance", "project"], children: ["rename", "normalize"] },
+		{
+			path: ["maintenance", "backfill"],
+			children: ["tags", "dedup-keys", "narrative", "structured"],
+		},
+	])("discovers canonical children of $path without obsolete siblings", ({ path, children }) => {
+		// Arrange
+		const group = atPath(makeProgram(), path);
+		// Act
+		const names = group
+			.createHelp()
+			.visibleCommands(group)
+			.map((command) => command.name());
+		// Assert: exact sets catch both missing routes and leaked diagnostic/legacy names.
+		expect(names.filter((name) => name !== "help").sort()).toEqual([...children].sort());
 	});
 });
 
-describe("invokedAsTopLevelAlias", () => {
-	const originalArgv = process.argv;
-	afterEach(() => {
-		process.argv = originalArgv;
+describe("compatibility and session discovery", () => {
+	it("retains memory pack as hidden compatibility and removes obsolete project routes", () => {
+		// Arrange
+		const program = makeProgram();
+		const memory = atPath(program, ["memory"]);
+		const repairs = atPath(program, ["maintenance", "memory"]);
+		// Act
+		const visible = memory
+			.createHelp()
+			.visibleCommands(memory)
+			.map((command) => command.name());
+		// Assert
+		expect(atPath(memory, ["pack", "trace"])).toBeDefined();
+		expect(visible).toContain("context");
+		expect(visible).not.toContain("pack");
+		expect(repairs.commands.map((command) => command.name())).not.toContain("rename-project");
+		expect(repairs.commands.map((command) => command.name())).not.toContain("normalize-projects");
 	});
 
-	it("matches an alias when it is the first non-flag token", () => {
-		expect(invokedAsTopLevelAlias("export-memories", ["--verbose", "export-memories"])).toBe(true);
+	it("describes sessions as Pi conversations without a speculative backend flag", () => {
+		// Arrange
+		const session = atPath(makeProgram(), ["session"]);
+		// Act
+		const description = session.description();
+		const options = [session, ...session.commands].flatMap((command) =>
+			command.options.map((option) => option.long),
+		);
+		// Assert
+		expect(description).toBe("Import and search Pi conversations");
+		expect(options).not.toContain("--backend");
+		expect(options).not.toContain("--source");
 	});
 
-	it("does not match aliases forwarded through the memory group", () => {
-		expect(invokedAsTopLevelAlias("export-memories", ["memory", "export"])).toBe(false);
-		expect(invokedAsTopLevelAlias("import-memories", ["memory", "import"])).toBe(false);
+	it("does not duplicate children when the runtime tree is assembled again", () => {
+		// Arrange
+		makeProgram();
+		// Act
+		const memory = atPath(makeProgram(), ["memory"]);
+		const names = memory.commands.map((command) => command.name());
+		// Assert
+		expect(new Set(names).size).toBe(names.length);
+		expect(names.filter((name) => name === "export")).toHaveLength(1);
+		expect(names.filter((name) => name === "import")).toHaveLength(1);
 	});
 
-	it("stops scanning at the -- terminator", () => {
-		expect(invokedAsTopLevelAlias("export-memories", ["--", "export-memories"])).toBe(false);
+	it("keeps sync status removed and coordinator compatibility hidden", () => {
+		// Arrange
+		const sync = atPath(makeProgram(), ["sync"]);
+		// Act
+		const visible = sync
+			.createHelp()
+			.visibleCommands(sync)
+			.map((command) => command.name());
+		// Assert
+		expect(sync.commands.map((command) => command.name())).not.toContain("status");
+		expect(visible).toContain("peers");
+		expect(visible).not.toContain("coordinator");
+		expect(atPath(sync, ["coordinator"])).toBeDefined();
 	});
 
-	it("reads the real process argv by default", () => {
-		process.argv = ["node", "codemem", "export-memories", "out.json"];
-		expect(invokedAsTopLevelAlias("export-memories")).toBe(true);
-
-		process.argv = ["node", "codemem", "memory", "export", "out.json"];
-		expect(invokedAsTopLevelAlias("export-memories")).toBe(false);
+	it("does not add an all-commands escape hatch", () => {
+		// Arrange
+		const program = makeProgram();
+		// Act
+		const options = program.options.map((option) => option.long);
+		// Assert
+		expect(options).not.toContain("--all");
+		for (const alias of ["link-account", "upgrade-auth-schema", "upgrade-account-schema"]) {
+			expect(ROOT_COMPLETION_COMMANDS).not.toContain(alias);
+		}
 	});
 });

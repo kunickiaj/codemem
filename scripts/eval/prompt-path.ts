@@ -557,7 +557,16 @@ async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
 	try {
 		await runCommand(
 			"pnpm",
-			["exec", "tsx", "--conditions", "source", "packages/cli/src/index.ts", "db", "init"],
+			[
+				"exec",
+				"tsx",
+				"--conditions",
+				"source",
+				"packages/cli/src/index.ts",
+				"maintenance",
+				"database",
+				"init",
+			],
 			{ cwd: root, env },
 		);
 		await seedFixture(paths.db);

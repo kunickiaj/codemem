@@ -5,6 +5,8 @@ import { initDatabase, MemoryStore } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import * as embeddings from "../../../core/src/embeddings.js";
 import {
+	createExtractionDiagnosticsCommand,
+	createMemoryDiagnosticsCommand,
 	estimateBenchmarkAttemptCost,
 	forgetMemoryCommand,
 	memoryCommand,
@@ -54,19 +56,23 @@ function insertHiddenOwnedMemory(store: MemoryStore): number {
 
 describe("memory command aliases", () => {
 	it("keeps memory subcommands available under the memory group", () => {
-		expect(memoryCommand.commands.map((command) => command.name())).toEqual([
+		// Arrange
+		const command = memoryCommand;
+		// Act
+		const names = command.commands.map((child) => child.name());
+		// Assert
+		expect(names).toEqual([
+			"list",
+			"search",
 			"show",
-			"forget",
 			"remember",
-			"inject",
-			"role-report",
-			"role-compare",
-			"artifact-report",
-			"extraction-report",
-			"extraction-replay",
-			"extraction-benchmark",
-			"relink-report",
-			"relink-plan",
+			"forget",
+			"context",
+			"pack",
+			"distill",
+			"stats",
+			"export",
+			"import",
 		]);
 	});
 
@@ -76,16 +82,37 @@ describe("memory command aliases", () => {
 		expect(rememberMemoryCommand.name()).toBe("remember");
 	});
 
-	it("keeps inject expecting a context argument", () => {
-		const inject = memoryCommand.commands.find((command) => command.name() === "inject");
-		expect(inject).toBeDefined();
-		expect(inject?.registeredArguments[0]?.required).toBe(true);
-		expect(inject?.registeredArguments[0]?.name()).toBe("context");
-		expect(inject?.options.some((option) => option.long === "--working-set-file")).toBe(true);
+	it("requires a task argument for context with the full retrieval flag set", () => {
+		// Arrange
+		const context = memoryCommand.commands.find((command) => command.name() === "context");
+		// Act
+		const options = context?.options.map((option) => option.long);
+		// Assert
+		expect(context).toBeDefined();
+		expect(context?.registeredArguments[0]?.required).toBe(true);
+		expect(context?.registeredArguments[0]?.name()).toBe("task");
+		expect(options).toEqual(
+			expect.arrayContaining([
+				"--working-set-file",
+				"--project",
+				"--all-projects",
+				"--limit",
+				"--token-budget",
+				"--compact",
+				"--compact-detail",
+				"--compression-mode",
+				"--json",
+				"--db-path",
+			]),
+		);
 	});
+});
 
-	it("registers role-report under memory with shared analysis options", () => {
-		const roleReport = memoryCommand.commands.find((command) => command.name() === "role-report");
+describe("memory and extraction diagnostics options", () => {
+	it("registers roles with shared analysis options", () => {
+		const roleReport = createMemoryDiagnosticsCommand().commands.find(
+			(command) => command.name() === "roles",
+		);
 		expect(roleReport).toBeDefined();
 		const longs = roleReport?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--db");
@@ -99,7 +126,9 @@ describe("memory command aliases", () => {
 	});
 
 	it("registers role-compare under memory with scenario options", () => {
-		const roleCompare = memoryCommand.commands.find((command) => command.name() === "role-compare");
+		const roleCompare = createMemoryDiagnosticsCommand().commands.find(
+			(command) => command.name() === "compare",
+		);
 		expect(roleCompare).toBeDefined();
 		const longs = roleCompare?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--project");
@@ -109,10 +138,12 @@ describe("memory command aliases", () => {
 		expect(longs).toContain("--inactive");
 		expect(longs).toContain("--json");
 	});
+});
 
-	it("registers extraction-report under memory with session eval options", () => {
-		const extractionReport = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-report",
+describe("extraction diagnostics options", () => {
+	it("registers report with session eval options", () => {
+		const extractionReport = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "report",
 		);
 		expect(extractionReport).toBeDefined();
 		const longs = extractionReport?.options.map((option) => option.long) ?? [];
@@ -126,8 +157,8 @@ describe("memory command aliases", () => {
 	});
 
 	it("registers extraction-replay under memory with replay eval options", () => {
-		const extractionReplay = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-replay",
+		const extractionReplay = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "replay",
 		);
 		expect(extractionReplay).toBeDefined();
 		const longs = extractionReplay?.options.map((option) => option.long) ?? [];
@@ -146,8 +177,8 @@ describe("memory command aliases", () => {
 	});
 
 	it("registers extraction-benchmark under memory with benchmark-runner options", () => {
-		const extractionBenchmark = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-benchmark",
+		const extractionBenchmark = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "benchmark",
 		);
 		expect(extractionBenchmark).toBeDefined();
 		const longs = extractionBenchmark?.options.map((option) => option.long) ?? [];
@@ -168,8 +199,8 @@ describe("memory command aliases", () => {
 	});
 
 	it("registers relink-report under memory with dry-run analysis options", () => {
-		const relinkReport = memoryCommand.commands.find(
-			(command) => command.name() === "relink-report",
+		const relinkReport = createMemoryDiagnosticsCommand().commands.find(
+			(command) => command.name() === "relink",
 		);
 		expect(relinkReport).toBeDefined();
 		const longs = relinkReport?.options.map((option) => option.long) ?? [];
@@ -182,7 +213,9 @@ describe("memory command aliases", () => {
 	});
 
 	it("registers relink-plan under memory with dry-run planning options", () => {
-		const relinkPlan = memoryCommand.commands.find((command) => command.name() === "relink-plan");
+		const relinkPlan = createMemoryDiagnosticsCommand().commands.find(
+			(command) => command.name() === "relink-plan",
+		);
 		expect(relinkPlan).toBeDefined();
 		const longs = relinkPlan?.options.map((option) => option.long) ?? [];
 		expect(longs).toContain("--db");
@@ -520,8 +553,8 @@ describe("memory command error boundaries", () => {
 	});
 
 	it("does not throw and emits a JSON error for an invalid extraction-replay batch id", async () => {
-		const extractionReplay = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-replay",
+		const extractionReplay = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "replay",
 		);
 		expect(extractionReplay).toBeDefined();
 		if (!extractionReplay) throw new Error("expected extraction-replay command");
@@ -547,8 +580,8 @@ describe("memory command error boundaries", () => {
 	});
 
 	it("does not throw and emits a JSON error for an unknown extraction-benchmark id", async () => {
-		const extractionBenchmark = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-benchmark",
+		const extractionBenchmark = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "benchmark",
 		);
 		expect(extractionBenchmark).toBeDefined();
 		if (!extractionBenchmark) throw new Error("expected extraction-benchmark command");
@@ -573,8 +606,8 @@ describe("memory command error boundaries", () => {
 	});
 
 	it("rejects unsafe extraction-benchmark repetition counts before running a model", async () => {
-		const extractionBenchmark = memoryCommand.commands.find(
-			(command) => command.name() === "extraction-benchmark",
+		const extractionBenchmark = createExtractionDiagnosticsCommand().commands.find(
+			(command) => command.name() === "benchmark",
 		);
 		if (!extractionBenchmark) throw new Error("expected extraction-benchmark command");
 

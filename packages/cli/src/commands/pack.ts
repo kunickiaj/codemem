@@ -299,9 +299,20 @@ export function renderPackTrace(trace: PackTrace): string {
 	return lines.join("\n");
 }
 
+type ContextOutputOptions = { humanOutput: "text" | "report" };
+
+function writeRetrievalError(message: string, output: ContextOutputOptions): void {
+	if (output.humanOutput === "text") {
+		console.error(message);
+		return;
+	}
+	p.log.error(message);
+}
+
 async function withStore(
 	opts: PackCommandOptions,
 	errorCode: string,
+	output: ContextOutputOptions,
 	run: (store: MemoryStore) => Promise<void>,
 ): Promise<void> {
 	let store: MemoryStore | null = null;
@@ -315,7 +326,7 @@ async function withStore(
 			emitJsonError(usageError ? "usage_error" : errorCode, message, usageError ? 2 : 1);
 			return;
 		}
-		p.log.error(message);
+		writeRetrievalError(message, output);
 		process.exitCode = usageError ? 2 : 1;
 	} finally {
 		await store?.closeAsync();
@@ -340,8 +351,12 @@ async function readOptionalLedgerPayload(): Promise<InternalLedgerPayload | unde
 	}
 }
 
-async function packAction(context: string, opts: PackCommandOptions): Promise<void> {
-	await withStore(opts, "pack_failed", async (store) => {
+async function packAction(
+	context: string,
+	opts: PackCommandOptions,
+	output: ContextOutputOptions,
+): Promise<void> {
+	await withStore(opts, "pack_failed", output, async (store) => {
 		const { limit, budget, filters, renderOptions } = buildPackRequestOptions(opts, {
 			envProject: process.env.CODEMEM_PROJECT,
 		});
@@ -380,6 +395,7 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 				context,
 				opts,
 				result,
+				output,
 				artifactFingerprint,
 				ledgerOutcome?.ok === false && ledgerOutcome.reason === "idempotency_conflict"
 					? ledgerOutcome
@@ -388,7 +404,7 @@ async function packAction(context: string, opts: PackCommandOptions): Promise<vo
 			return;
 		}
 		result = await store.buildMemoryPackAsync(context, limit, budget, filters, renderOptions);
-		emitPackResult(context, opts, result);
+		emitPackResult(context, opts, result, output);
 	});
 }
 
@@ -396,6 +412,7 @@ function emitPackResult(
 	context: string,
 	opts: Pick<PackCommandOptions, "json">,
 	result: Awaited<ReturnType<MemoryStore["buildMemoryPackAsync"]>>,
+	output: ContextOutputOptions,
 	ledgerArtifactFingerprint?: string,
 	ledgerOutcome?: Extract<RetrievalLedgerWriteOutcome, { ok: false }>,
 ): void {
@@ -413,6 +430,11 @@ function emitPackResult(
 				2,
 			),
 		);
+		return;
+	}
+
+	if (output.humanOutput === "text") {
+		console.log(result.pack_text ?? "");
 		return;
 	}
 
@@ -435,12 +457,16 @@ function emitPackResult(
 		p.log.step(`#${item.id}  ${item.kind}  ${item.title}`);
 	}
 
-	p.note(result.pack_text, "pack_text");
+	p.note(result.pack_text, "Memory context");
 	p.outro("done");
 }
 
-async function traceAction(context: string, opts: PackCommandOptions): Promise<void> {
-	await withStore(opts, "pack_trace_failed", async (store) => {
+async function traceAction(
+	context: string,
+	opts: PackCommandOptions,
+	output: ContextOutputOptions,
+): Promise<void> {
+	await withStore(opts, "pack_trace_failed", output, async (store) => {
 		const { limit, budget, filters, renderOptions } = buildPackRequestOptions(opts, {
 			envProject: process.env.CODEMEM_PROJECT,
 		});
@@ -461,32 +487,50 @@ async function traceAction(context: string, opts: PackCommandOptions): Promise<v
 	});
 }
 
-const packCmd = addPackRequestOptions(
-	new Command("pack")
-		.enablePositionalOptions()
-		.configureHelp(helpStyle)
-		.description("Build a context-aware memory pack")
-		.argument("<context>", "context string to search for"),
-);
-packCmd.addOption(new Option("--internal-ledger").hideHelp());
+function createRetrievalCommand(
+	options: ContextOutputOptions & { name: "context" | "pack" },
+): Command {
+	const argumentName = options.name === "context" ? "task" : "context";
+	const description =
+		options.name === "context" ? "Print memory context for a task" : "Select memories for a task";
+	const packCmd = addPackRequestOptions(
+		new Command(options.name)
+			.enablePositionalOptions()
+			.configureHelp(helpStyle)
+			.description(description)
+			.argument(`<${argumentName}>`, "task or question to find memories for"),
+	);
+	packCmd.addOption(new Option("--internal-ledger").hideHelp());
 
-addDbOption(packCmd);
-addJsonOption(packCmd);
-packCmd.action(packAction);
+	addDbOption(packCmd);
+	addJsonOption(packCmd);
+	packCmd.action((context: string, opts: PackCommandOptions) => packAction(context, opts, options));
 
-const traceCmd = addPackRequestOptions(
-	new Command("trace")
-		.configureHelp(helpStyle)
-		.description("Trace retrieval and assembly for a memory pack")
-		.argument("<context>", "context string to trace"),
-);
+	const traceCmd = addPackRequestOptions(
+		new Command("trace")
+			.configureHelp(helpStyle)
+			.description("Explain memory selection for a task")
+			.argument(`<${argumentName}>`, "task or question to explain memory selection for"),
+	);
 
-addDbOption(traceCmd);
-addJsonOption(traceCmd);
-traceCmd.action(traceAction);
-packCmd.addCommand(traceCmd);
+	addDbOption(traceCmd);
+	addJsonOption(traceCmd);
+	traceCmd.action((context: string, opts: PackCommandOptions) =>
+		traceAction(context, opts, options),
+	);
+	packCmd.addCommand(traceCmd);
+	return packCmd;
+}
 
-export const packCommand = packCmd;
+export function createContextCommand(): Command {
+	return createRetrievalCommand({ name: "context", humanOutput: "text" });
+}
+
+export function createPackCommand(): Command {
+	return createRetrievalCommand({ name: "pack", humanOutput: "report" });
+}
+
+export const packCommand = createPackCommand();
 
 function handleRecallMeasurement(
 	db: Database,
@@ -570,10 +614,15 @@ function handlePromptPackLifecycle(db: Database, payload: InternalLedgerPayload)
 }
 
 async function promptPackLedgerAction(opts: DbOpts): Promise<void> {
-	await withStore(opts as PackCommandOptions, "prompt_pack_ledger_failed", async (store) => {
-		const payload = await readInternalLedgerPayload();
-		handlePromptPackLedger(store.db, payload);
-	});
+	await withStore(
+		opts as PackCommandOptions,
+		"prompt_pack_ledger_failed",
+		{ humanOutput: "report" },
+		async (store) => {
+			const payload = await readInternalLedgerPayload();
+			handlePromptPackLedger(store.db, payload);
+		},
+	);
 }
 
 const ledgerCmd = new Command("prompt-pack-ledger")

@@ -260,7 +260,7 @@ describe("codemem pi-session-search", () => {
 			truncated: false,
 		});
 		expect(human).toContain('No results found for "xenoglossia"');
-		expect(human).toContain("codemem pi-import-sessions");
+		expect(human).toContain("codemem session import");
 	});
 
 	it("blank query fails like the route (json: structured error, exit code)", async () => {

@@ -23,7 +23,7 @@ surface and legacy system surface work.
 1. Install the configured npm plugin on either host. OpenCode 1 contributors can instead remove that entry temporarily and start OpenCode inside this repo to load the checkout-local V1 source.
 2. Every tooling session creates memory artifacts in SQLite.
 3. Prompt-time memory injection appends volatile recall output to the latest user message by default, preserving the stable system/history prefix for provider prompt caches.
-4. Use `codemem stats` and `codemem recent` to confirm ingestion.
+4. Use `codemem memory stats` and `codemem memory list` to confirm ingestion.
 5. Browse the viewer at the printed URL.
 
 OpenCode loads configured npm plugins and project-local `.opencode/plugins/` files as separate sources. In this repository, the local wrapper loads the V1 source but is a no-op on OpenCode 2. For OpenCode 1 source testing, temporarily remove the configured npm entry before launching from the checkout so the local wrapper cannot lose the first-registration race. For OpenCode 2 source testing, add this checkout's `packages/opencode-plugin` directory to the host's `cli.json` `plugins` list, temporarily remove the npm entry, and restart the TUI. Restore the npm entry after testing; removing it without adding the package directory leaves Codemem inactive on OpenCode 2.
@@ -44,7 +44,7 @@ Troubleshooting:
 - **No automatic recall on OpenCode 2.** Recall runs through `session.context` and requires a non-empty, non-whitespace latest user-message ID. When the ID is missing or blank, that turn skips recall rather than guessing identity; capture and the manual tools continue. Retries and tool continuations replay retained context and do not retrieve again, so a repeated turn without new context is expected.
 - **No notifications on OpenCode 2.** OpenCode 2 loads `@codemem/opencode-plugin/tui` automatically beside the server plugin. The companion subscribes to the server plugin's location-scoped RPC notices and replays notices emitted during startup. Restart the TUI after installing or upgrading the plugin; notification delivery is best-effort and does not affect capture or recall.
 - **Duplicate registration warning.** `codemem duplicate plugin registration skipped` in `~/.codemem/plugin.log` means OpenCode loaded Codemem twice for one project, usually a configured npm entry plus a checkout-local copy. Remove one of them. The first server registration owns notifications as well as capture and recall.
-- **Capture looks stalled on either host.** Run `codemem db raw-events-status` and follow the [post-restart config sanity checklist](#post-restart-config-sanity-checklist); both hosts share the same raw-event pipeline and spool behavior.
+- **Capture looks stalled on either host.** Run `codemem diagnostics capture status` and follow the [post-restart config sanity checklist](#post-restart-config-sanity-checklist); both hosts share the same raw-event pipeline and spool behavior.
 - **Raw-event POST returns `409 viewer_identity_mismatch`.** Check that the viewer and host use the same database, home, device, actor, runtime/workspace, and embedding settings. An older viewer may reject a host with no `CODEMEM_CONFIG` override when the viewer explicitly sets the same default config file.
 
   Update the viewer receiver and restart only its owning service, keeping OpenCode running so memory-only events survive. After the viewer recovers, reach a normal session boundary to retry retained events and check backlog status; keep spool files until delivery is confirmed.
@@ -352,7 +352,7 @@ Uninstall: remove the `@codemem/pi-extension` packages entry and restart Pi. The
 | Compaction | `session_before_compact` attempts a flush only and does not skip recall. `session_compact` skips one new fetch only when `willRetry` is set and `reason` is not `manual` (overflow resume). Failed compaction, `agent_settled`, manual compaction, and a later user message clear that skip. A threshold compact skips only if that same guard matches |
 | Project | Nearest Git root, same walk as the other adapters |
 
-Prompt recall uses the latest user text, trimmed and cut at 500 characters (`recent work` when empty). Project scope is separate; this is not the OpenCode working-set query. Fetch order: prove `GET /api/prompt-pack-profile`, `POST /api/pack`, `codemem pack <query> --json`, then `pi-hook-inject`. That HTTP pack attempt times out at 2 seconds and does not write an OpenCode retrieval-ledger row.
+Prompt recall uses the latest user text, trimmed and cut at 500 characters (`recent work` when empty). Project scope is separate; this is not the OpenCode working-set query. Fetch order: prove `GET /api/prompt-pack-profile`, `POST /api/pack`, `codemem memory pack <query> --json`, then `pi-hook-inject`. That HTTP pack attempt times out at 2 seconds and does not write an OpenCode retrieval-ledger row.
 
 Already-shown items are omitted from a new pack when the response carries valid renderer item ids, fingerprints, and spans. Defaults are 8 items, 800 approximate pack tokens, and 16000 characters. Without `CODEMEM_INJECT_RETAINED_TOKEN_BUDGET`, 800 is the pack request budget and does not reserve the header. A positive retained ceiling is optional; a full ceiling attaches nothing new.
 
@@ -364,9 +364,9 @@ Pi's CLI boundary fallback shares one local extraction allowance across the enti
 
 Session search covers the Pi conversation text codemem ingests (user/assistant text blocks; thinking, tool-call, and tool-result content is skipped). The CLI, viewer REST route, Pi native tool, and shared core primitive return `{query, query_truncated, results[], returned, total_matches, truncated}`. Each result carries `source: "pi"`, session id, project, role, timestamp, a snippet plus `snippet_truncated`, and `full_length`. Matching uses only the first 8,192 input characters and 64 effective tokens; `query_truncated` marks that reduction independently of query-echo clipping, and counts reflect only the effective query. Empty results are explicit, never an error. Human output warns when only part of the query was matched, including when there are no results; shorten the query before treating an empty partial match as missing history.
 
-- `codemem pi-session-search <query>` searches stored Pi sessions. Flags: `--project <project>`, `--session-id <id>`, `--limit <n>` (1–20, default 10), `--snippet-chars <n>` (100–4000, default 1200), `--json`, `-d/--db-path`.
-- `codemem pi-import-sessions` backfills `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`) into the raw-event store. Deterministic event ids dedupe against live capture; size/mtime-unchanged files are skipped per destination database. Unsafe partial overlap is reported per file without rewriting stored history; use a separate destination database for a complete import. `--extract` (off by default, observer-model cost scales with backlog) drains pending Pi sessions through the standard sweeper flush so extracted memories carry Pi attribution. Without it, the command stores searchable events without running extraction, though a running viewer's sweeper can still pick them up like any other backlog.
-- `memory_session_search` is available in native tools mode (not `mcp-adapter` mode); it calls `GET /api/pi/sessions/search` and falls back to `codemem pi-session-search --json` when the viewer is unavailable. Both transports default to the current Pi project; a non-blank `project` argument overrides it. The manually invoked CLI and direct viewer route remain unscoped when no project filter is supplied.
+- `codemem session search <query>` searches stored Pi sessions. Flags: `--project <project>`, `--session-id <id>`, `--limit <n>` (1–20, default 10), `--snippet-chars <n>` (100–4000, default 1200), `--json`, `-d/--db-path`.
+- `codemem session import` backfills `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`) into the raw-event store. Deterministic event ids dedupe against live capture; size/mtime-unchanged files are skipped per destination database. Unsafe partial overlap is reported per file without rewriting stored history; use a separate destination database for a complete import. `--extract` (off by default, observer-model cost scales with backlog) drains pending Pi sessions through the standard sweeper flush so extracted memories carry Pi attribution. Without it, the command stores searchable events without running extraction, though a running viewer's sweeper can still pick them up like any other backlog.
+- `memory_session_search` is available in native tools mode (not `mcp-adapter` mode); it calls `GET /api/pi/sessions/search` and falls back to `codemem session search --json` when the viewer is unavailable. Both transports default to the current Pi project; a non-blank `project` argument overrides it. The manually invoked CLI and direct viewer route remain unscoped when no project filter is supplied.
 
 Import `--json` preserves the top-level import counters and adds `extraction: {requested, flushedEvents, failedSessions, pendingSessions, error}`. `failedSessions` counts flush errors during this run; `pendingSessions` counts the remaining Pi backlog, or is `null` when extraction was not requested. `error` contains the first observer-initialization or session-flush error, or `null`. Extraction snapshots every pending Pi stream's latest event sequence before processing and drains those captured ranges in batches of at most 100 events. It stops a stream on failure or lack of cursor progress and continues to later streams. Concurrent arrivals beyond the captured sequence wait for a later run or the Viewer. Initialization failure, session failure, or remaining Pi backlog exits with code 1 in both output modes; JSON also includes `error: "pi_extraction_incomplete"` and `message`. Successfully imported events remain stored, and failed batches retain the standard sweeper retry behavior.
 
@@ -408,15 +408,15 @@ Config and env, including `CODEMEM_PI_*` and shared inject knobs, are in the [pa
 After restarting OpenCode or the viewer, run this quick check when behavior looks off:
 
 1. Confirm plugin + viewer are talking to the same DB path.
-2. Check backend stats and recent writes (`codemem stats`, `codemem recent`).
+2. Check backend stats and recent writes (`codemem memory stats`, `codemem memory list`).
 3. Verify runner mode and source (`CODEMEM_RUNNER`, `CODEMEM_RUNNER_FROM`) match your install strategy.
 4. Confirm injection controls are what you expect (`CODEMEM_INJECT_CONTEXT`, `CODEMEM_INJECT_LIMIT`, `CODEMEM_INJECT_TOKEN_BUDGET`).
-5. If stream mode is enabled, check backlog health (`codemem db raw-events-status`).
+5. If stream mode is enabled, check backlog health (`codemem diagnostics capture status`).
 
 If needed, restart viewer + plugin flow:
 
 ```bash
-codemem serve restart
+codemem service restart
 ```
 
 If you override the viewer bind, keep the plugin and viewer aligned on the same target:
@@ -426,7 +426,7 @@ set -lx CODEMEM_VIEWER_HOST 127.0.0.1
 set -lx CODEMEM_VIEWER_PORT 38892
 ```
 
-The plugin now passes that explicit host/port through when it auto-starts, health-checks, stops, or restarts the viewer. Every plugin instance with viewer auto-start enabled runs the liveness monitor, including instances that found a viewer already running. After two consecutive failed checks (one per minute), it runs `codemem serve start`, at most once every five minutes. `serve start` does nothing when the port is already open, so several instances recovering at once cannot stop each other's viewer. A viewer that holds the port but stops answering is not replaced; run `codemem serve restart` yourself. The liveness monitor requires a successful `GET /api/health` JSON response identifying `service: "codemem-viewer"`; `ready: false` still means the viewer process is live. For compatibility, only a `404` from the health route triggers one bounded probe of the legacy raw-event status endpoint. Raw-event ingest availability keeps its separate preflight behavior, now bounded by a 5-second timeout so a hung viewer socket cannot stall event delivery. Do not run multiple viewers against the same DB/runtime folder unless they intentionally share the same bind target; otherwise `viewer.pid` ownership becomes ambiguous.
+The plugin now passes that explicit host/port through when it auto-starts, health-checks, stops, or restarts the viewer. Every plugin instance with viewer auto-start enabled runs the liveness monitor, including instances that found a viewer already running. After two consecutive failed checks (one per minute), it runs `codemem serve start`, at most once every five minutes. `serve start` does nothing when the port is already open, so several instances recovering at once cannot stop each other's viewer. A viewer that holds the port but stops answering is not replaced; run `codemem service restart` yourself. The liveness monitor requires a successful `GET /api/health` JSON response identifying `service: "codemem-viewer"`; `ready: false` still means the viewer process is live. For compatibility, only a `404` from the health route triggers one bounded probe of the legacy raw-event status endpoint. Raw-event ingest availability keeps its separate preflight behavior, now bounded by a 5-second timeout so a hung viewer socket cannot stall event delivery. Do not run multiple viewers against the same DB/runtime folder unless they intentionally share the same bind target; otherwise `viewer.pid` ownership becomes ambiguous.
 
 If compatibility toasts appear after restart, follow the runner-specific guidance in Compatibility guidance behavior below.
 
@@ -456,7 +456,7 @@ session directory and the result ends with a note that the viewer was
 unavailable. A write (`memory_remember`, `memory_forget`) that times out or fails
 inside the viewer returns an error rather than retrying through the CLI,
 because the write may already have happened. A read retried through the CLI
-counts as one retrieval in `codemem stats`: both attempts carry the same call
+counts as one retrieval in `codemem memory stats`: both attempts carry the same call
 ID, which is OpenCode 2's tool-call ID or, on OpenCode 1 (which has none), an
 ID the plugin generates for that call.
 
@@ -621,19 +621,19 @@ Stream contract:
 - Corrupt spool entries are retained for recovery. The spool accepts at most `CODEMEM_RAW_EVENT_SPOOL_MAX_ENTRIES` `.json` entries and rejects a new event when full without evicting existing entries; an existing event ID remains idempotent. A repeat with the same ID and identical content except for top-level delivery timestamps keeps the first durable entry instead of falsely warning that it exists only in memory. Different content under the same ID still fails rather than overwriting the retained entry. If a private spool write fails or the spool is full, keep OpenCode running while you repair or restart Viewer and reach a session boundary to retry; restarting OpenCode before the memory-only event is delivered could lose it. If specific entries remain rejected, archive the retained spool for manual recovery; do not delete it until the events are delivered or intentionally discarded.
 - OpenCode delivery retains rejected entries only after an actual POST returns an exact known payload-validation message at HTTP 400, or HTTP 413 with `error: "payload too large"` and a positive finite `max_bytes` smaller than the full outgoing UTF-8 request. Unknown responses, malformed JSON, Content-Length errors, authentication failures, and target errors remain retryable. Retention preserves the original saved bytes outside active drain selection and inside the existing capacity limit. It publishes and syncs the retained name before removing the active name. A conflicting retained copy leaves the active copy intact. Retention and inspection require real directory paths and reject entry symlinks. Normal capture writes continue to support symlinked spool locations.
 - A drain processes only its existing loaded batch, normally at most 20 entries. Retaining a full batch makes later healthy entries eligible on the next drain. Retention failures leave saved copies intact but may prevent queue advancement. Live terminal rejections are persisted before retention and do not start Viewer backoff. Other failures keep their existing ordering and backoff behavior. Content-free warnings distinguish successful retention, failed retention, and lock-release failure.
-- `codemem capture list-rejected --json` lists the `opencode-raw-event-v1` format, opaque receipts, byte counts, statuses, reasons, and `not_checked` validation state without reading payloads. Oversized and malformed payloads remain visible in this metadata list. `codemem capture show-rejected '<receipt>' --json` validates one entry and reports metadata. Only explicit `--raw` includes its original text as an escaped JSON string. Reads are capped at 16 MiB even if a file grows during inspection. These commands leave files untouched and use neither HTTP nor SQLite. After inspection, `codemem capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y` retries one selected entry. The original target is unknown, so `--db-path` and `-y` confirm the current database and runtime identity. The command preflights the loopback Viewer profile, protocol, database, identity, and advertised ingest size. It posts the exact retained bytes in one wrapped request, rejects redirects, and has no SQLite fallback. Use `--json` for machine-readable output.
+- `codemem diagnostics capture list-rejected --json` lists the `opencode-raw-event-v1` format, opaque receipts, byte counts, statuses, reasons, and `not_checked` validation state without reading payloads. Oversized and malformed payloads remain visible in this metadata list. `codemem diagnostics capture show-rejected '<receipt>' --json` validates one entry and reports metadata. Only explicit `--raw` includes its original text as an escaped JSON string. Reads are capped at 16 MiB even if a file grows during inspection. These commands leave files untouched and use neither HTTP nor SQLite. After inspection, `codemem diagnostics capture recover-rejected '<receipt>' --db-path '~/.codemem/mem.sqlite' -y` retries one selected entry. The original target is unknown, so `--db-path` and `-y` confirm the current database and runtime identity. The command preflights the loopback Viewer profile, protocol, database, identity, and advertised ingest size. It posts the exact retained bytes in one wrapped request, rejects redirects, and has no SQLite fallback. Use `--json` for machine-readable output.
 - `CODEMEM_RAW_EVENTS=0` pauses capture and every OpenCode spool drain. Existing spool files remain untouched until raw events are enabled again.
 - If OpenCode reports that a raw event was not saved for retry after a Viewer timeout, keep the client running until delivery recovers. The plugin records a content-free `raw_events.spool.failure` line in the local Codemem plugin log with a failure stage and allowlisted code (`conflict`, `full`, or a filesystem errno). Conflict lines also identify the comparison branch, the reason, and changed paths from a fixed field-name allowlist. Differences outside that list produce only `other=true`. Field values, arbitrary payload keys, event IDs, filenames, and hashes are omitted. If that log cannot be written, the same safe category goes to the host log. This distinguishes an existing-entry conflict from a directory, write, or sync error without logging the event ID or transcript. The warning alone does not prove which event was lost; inspect the retained spool and Viewer status before restarting the client.
 
 ### Selected-entry recovery storage
 
-Native hook inspection is available separately through `capture list-rejected` and `capture show-rejected` with `--format native-hook-v1`. Select `--provider claude`, `--provider codex`, or `--provider pi`. OpenCode remains the default format. Native retained names end in `.retained`, which older native hook drainers ignore. Inspection preserves existing permissions, refuses unsafe paths, caps payload reads at 16 MiB, and reveals text only with `--raw`. Automatic native retention is not enabled yet.
+Native hook inspection is available separately through `codemem diagnostics capture list-rejected` and `codemem diagnostics capture show-rejected` with `--format native-hook-v1`. Select `--provider claude`, `--provider codex`, or `--provider pi`. OpenCode remains the default format. Native retained names end in `.retained`, which older native hook drainers ignore. Inspection preserves existing permissions, refuses unsafe paths, caps payload reads at 16 MiB, and reveals text only with `--raw`. Automatic native retention is not enabled yet.
 
-`capture recover-rejected` accepts the same native format and provider selectors, plus explicit `--db-path` and `-y` confirmation. It reuses the Viewer profile, identity, origin, redirect, and size checks, and sends the native payload to its provider route. A valid `202` with one accepted and queued request transfers responsibility to the Viewer. An ordinary `200` must report one insertion and zero skips. Native skip responses and all synchronous Pi boundary responses keep the receipt. Pi receipts containing a saved extraction cutoff are rejected before POST because the HTTP route cannot preserve that cutoff. Recovery rechecks the locked snapshot before cleanup, leaves active aliases untouched, and supports `--keep-receipt`.
+`codemem diagnostics capture recover-rejected` accepts the same native format and provider selectors, plus explicit `--db-path` and `-y` confirmation. It reuses the Viewer profile, identity, origin, redirect, and size checks, and sends the native payload to its provider route. A valid `202` with one accepted and queued request transfers responsibility to the Viewer. An ordinary `200` must report one insertion and zero skips. Native skip responses and all synchronous Pi boundary responses keep the receipt. Pi receipts containing a saved extraction cutoff are rejected before POST because the HTTP route cannot preserve that cutoff. Recovery rechecks the locked snapshot before cleanup, leaves active aliases untouched, and supports `--keep-receipt`.
 
 The internal OpenCode recovery API validates one retained entry and passes its original bytes to a delivery callback. The callback must validate acceptance before returning a supported `queued` or `ingested` acknowledgement. The storage API itself sends no HTTP requests. After acknowledgement it rechecks the opened file, current path, metadata, hash, and exact bytes before removing only the selected retained name. Active aliases remain untouched. Results distinguish accepted delivery, changed or failed cleanup, uncertain directory durability, and lock-release failure. Successful retention can likewise report a lock-release warning separately from its durable result. If retention fails, its original error takes precedence over a later release failure.
 
-Passing `--keep-receipt` to `capture recover-rejected` requests preservation after acknowledgement. The storage API's named `keepReceipt` option still requires successful validation and unchanged-file checks, then reports accepted delivery with `cleanup: "kept"`. The command exits successfully when the lock is released. It leaves the receipt's bytes and inode unchanged, and the receipt continues to count toward the existing spool capacity limit. Default cleanup is unchanged.
+Passing `--keep-receipt` to `codemem diagnostics capture recover-rejected` requests preservation after acknowledgement. The storage API's named `keepReceipt` option still requires successful validation and unchanged-file checks, then reports accepted delivery with `cleanup: "kept"`. The command exits successfully when the lock is released. It leaves the receipt's bytes and inode unchanged, and the receipt continues to count toward the existing spool capacity limit. Default cleanup is unchanged.
 
 Retention and recovery share a private lock per event digest. A live or uncertain owner reports busy. A newly starting owner can briefly leave an incomplete record, so retry a repair-required result once before attempting repair. Stopped owners, persistent incomplete records, and unverifiable locks require manual repair, without automatic age-based removal. A crash can leave a lock behind. Stop capture and all recovery processes, make a private backup of the spool, and verify that no operation owns the lock before removing only that lock. Never remove retained `.json` entries to clear a lock. If ownership remains uncertain, leave the files intact.
 
@@ -697,9 +697,9 @@ including batches without a local session mapping; mixed batches keep their labe
 and may recover earlier same-stream instructions. This refusal does not fabricate
 a successful extraction evaluation or alter the raw history.
 
-`memory extraction-replay` presents that context-only result as a non-error outcome
+`diagnostics extraction replay` presents that context-only result as a non-error outcome
 with `status: "context_only"`, `code: "delegated_brief_context_only"`,
-`evaluated: false` and exit status zero. `memory extraction-benchmark` records it in
+`evaluated: false` and exit status zero. `diagnostics extraction benchmark` records it in
 `summary.contextOnlySkips`, increments `summary.contextOnlySkipped`, and continues
 the remaining batches and repetitions. The existing `runs`, output failures and
 all evaluation, stability, cost, latency and output-rate denominators exclude these
@@ -753,13 +753,13 @@ export CODEMEM_RAW_EVENTS_STUCK_BATCH_MS=300000
 To monitor backlog:
 
 ```bash
-codemem db raw-events-status
+codemem diagnostics capture status
 ```
 
 If `raw-events-status` shows `batches=error:N` (legacy label) or `queue=... failed:N` for a stream, retry:
 
 ```bash
-codemem db raw-events-retry <session_stream_id>
+codemem diagnostics capture retry <session_stream_id>
 ```
 
 ## Hook lifecycle and flush boundaries
@@ -780,7 +780,7 @@ Force-flush thresholds (immediate flush):
 Failure semantics:
 - Stream POST failures are backoff-gated in plugin runtime (`CODEMEM_RAW_EVENTS_BACKOFF_MS`).
 - Availability checks are rate-limited (`CODEMEM_RAW_EVENTS_STATUS_CHECK_MS`) and use the queue-capable Viewer's memory-only readiness response.
-- Each periodic viewer sweep drains a bounded batch from accepted sessions, including sessions that remain active; failed batches are retried by viewer/store queue workers (`codemem db raw-events-retry`).
+- Each periodic viewer sweep drains a bounded batch from accepted sessions, including sessions that remain active; failed batches are retried by viewer/store queue workers (`codemem diagnostics capture retry`).
 
 ## Project label normalization
 
@@ -905,7 +905,7 @@ bounded machine-readable active and global mise source records, requires a user-
 and canonicalizes current install-path ownership. It then pins public npm registries for the spawned
 command and writes the exact release into mise's primary global config. Verification allows the source
 to move from user `conf.d` or the recognized user-level `~/.config/mise.toml` file to `config.toml` but requires the post-update global
-`version` or `requested_version` before running `mise exec -- codemem version` outside the invoking project; plugin background
+`version` or `requested_version` before running `mise exec -- codemem --version` outside the invoking project; plugin background
 auto-update never treats mise as eligible.
 
 pnpm-global CLIs are recognized from canonical virtual-store path evidence, which can provide release
