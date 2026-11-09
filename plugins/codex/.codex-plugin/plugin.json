@@ -1,6 +1,6 @@
 {
   "name": "codemem",
-  "version": "0.48.0",
+  "version": "0.49.0-beta.1",
   "description": "Persistent memory for Codex. Capture work across sessions and recall relevant context.",
   "author": {
     "name": "Adam Kunicki"

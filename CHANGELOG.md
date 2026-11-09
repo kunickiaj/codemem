@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [0.49.0-beta.1] - 2026-11-09
+
+### Added
+
+- `memory context <task>` and `memory context trace <task>` provide the public manual-retrieval and selection-explanation commands. ([#2630])
+- MCP supports both the 2026-07-28 discovery protocol and legacy `initialize` clients over its existing stdio and HTTP entrypoints. ([#2599])
+- The Viewer Feed loads scoped projections and cursor-paged results, retains older pages when it refreshes, and loads hidden event context on disclosure. ([#2619], [#2624])
+
+### Changed
+
+- **Breaking: grouped CLI commands.** Commands now use `memory`, `session`, `service`, `maintenance`, and `diagnostics` groups. Use `codemem memory search` instead of `codemem search`, and `codemem diagnostics capture status` instead of `codemem db raw-events-status`. Replace `sync status` with `service status` for overall health or `sync peers` for peer details. Coordinator actions also move into resource groups, including `coordinator account link`, `coordinator device list`, and `coordinator schema diagnose-team`. See [Command migration](docs/cli-reference.md#command-migration). Hidden compatibility entrypoints remain for installed integrations, including `codemem serve` and selected older coordinator instructions. ([#2630], [#2632])
+- Viewer status uses indexed counts and shares simultaneous reads. Refreshes avoid nonessential capture-backlog scans. ([#2608], [#2609])
+- An MCP request for an unknown tool now returns JSON-RPC error `-32602`. Registered-tool validation and execution errors keep their existing result behavior. ([#2599])
+
+### Fixed
+
+- Failed extraction retries keep their event range stable when new events arrive. Rejected capture receipts can be inspected and explicitly recovered through the Viewer HTTP route. `--keep-receipt` preserves the receipt after an acknowledgement when content under an event ID is uncertain. ([#2581], [#2612])
+- OpenCode and native Claude, Codex, and Pi capture retain verified payload rejections so later queued events can proceed. Retention preserves saved bytes and stops draining on failure. Claude keeps its current boundary fallback, and Pi keeps saved cutoffs and unfinished boundary work retryable. Older queued Claude boundaries can require explicit recovery. ([#2613], [#2647])
+- Duplicate-only capture replay can fill missing session context without replacing populated fields. Mixed batches derive updates from newly inserted events. Runtime-context retries reuse the first valid saved envelope, and size rejections apply only to the posted copy. ([#2644], [#2646])
+- Local writes and redaction durably enqueue vector repair. Maintenance rejects obsolete source snapshots and stale job generations, and stale pending vectors no longer affect semantic ranking. ([#2587], [#2592], [#2593], [#2596], [#2605])
+
+**Upgrade notes and limitations:**
+
+- This is an opt-in beta. Install it from npm's `beta` channel. The `latest` stable channel remains unchanged.
+- Restart the Viewer and agent hosts after upgrading so they load the new backend and UI.
+- Update scripts and user-facing instructions to the grouped CLI commands in the [CLI reference](docs/cli-reference.md#command-migration). Existing hidden compatibility entrypoints are for installed integrations, not new automation.
+- MCP protocol compatibility does not enable cross-project pooling. Callers still need their directory for search scope, write-session paths, and project context.
+- Historical completed-vector coverage reconciliation remains deferred. The new coverage helpers preserve forgotten vectors. ([#2607])
+- Native Pi saved-cutoff HTTP recovery is unsupported. Native Windows retention has not completed validation. Unsafe permissions or unsupported filesystem synchronization stop retention or draining and produce an inspection warning. The commands do not change permissions.
+- Concurrent scoped reset and late-response behavior has not completed beta qualification.
+
 ## [0.48.0] - 2026-11-06
 
 ### Added
@@ -260,7 +291,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...HEAD
+[0.49.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0-beta.1
 [0.48.0]: https://github.com/kunickiaj/codemem/compare/v0.47.3...v0.48.0
 [0.47.3]: https://github.com/kunickiaj/codemem/compare/v0.47.2...v0.47.3
 [0.47.2]: https://github.com/kunickiaj/codemem/compare/v0.47.1...v0.47.2
@@ -395,3 +427,22 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2426]: https://github.com/kunickiaj/codemem/pull/2426
 [#2427]: https://github.com/kunickiaj/codemem/pull/2427
 [#2428]: https://github.com/kunickiaj/codemem/pull/2428
+[#2581]: https://github.com/kunickiaj/codemem/pull/2581
+[#2587]: https://github.com/kunickiaj/codemem/pull/2587
+[#2592]: https://github.com/kunickiaj/codemem/pull/2592
+[#2593]: https://github.com/kunickiaj/codemem/pull/2593
+[#2596]: https://github.com/kunickiaj/codemem/pull/2596
+[#2599]: https://github.com/kunickiaj/codemem/pull/2599
+[#2605]: https://github.com/kunickiaj/codemem/pull/2605
+[#2607]: https://github.com/kunickiaj/codemem/pull/2607
+[#2608]: https://github.com/kunickiaj/codemem/pull/2608
+[#2609]: https://github.com/kunickiaj/codemem/pull/2609
+[#2612]: https://github.com/kunickiaj/codemem/pull/2612
+[#2613]: https://github.com/kunickiaj/codemem/pull/2613
+[#2619]: https://github.com/kunickiaj/codemem/pull/2619
+[#2624]: https://github.com/kunickiaj/codemem/pull/2624
+[#2630]: https://github.com/kunickiaj/codemem/pull/2630
+[#2632]: https://github.com/kunickiaj/codemem/pull/2632
+[#2644]: https://github.com/kunickiaj/codemem/pull/2644
+[#2646]: https://github.com/kunickiaj/codemem/pull/2646
+[#2647]: https://github.com/kunickiaj/codemem/pull/2647
