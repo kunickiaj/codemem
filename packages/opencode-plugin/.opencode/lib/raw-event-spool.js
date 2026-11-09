@@ -155,7 +155,15 @@ const changedConflictFields = (existing, incoming, schema = CONFLICT_FIELDS, pre
   return { fields, other: other || !isDeepStrictEqual(left, right) };
 };
 
-/** Delivery timestamps can change when the same host event is captured again. */
+const RUNTIME_CONTEXT_FIELDS = ["cwd", "project", "started_at"];
+const hasRuntimeContext = (event) => RUNTIME_CONTEXT_FIELDS.every((key) =>
+  Object.hasOwn(event, key) && (event[key] === null || typeof event[key] === "string"));
+const withoutRuntimeContext = ({ cwd: _cwd, project: _project, started_at: _started, ...event }) => event;
+const differsOnlyInRuntimeContext = (left, right) =>
+  hasRuntimeContext(left) && hasRuntimeContext(right)
+  && isDeepStrictEqual(withoutRuntimeContext(left), withoutRuntimeContext(right));
+
+/** Content-derived IDs can be shared by runtimes with different directory context. Keep the first saved context. */
 const compareEventApartFromDeliveryTime = (existingBytes, incomingBytes) => {
   if (existingBytes === incomingBytes) return null;
   try {
@@ -166,6 +174,7 @@ const compareEventApartFromDeliveryTime = (existingBytes, incomingBytes) => {
     const left = withoutDeliveryTime(existing);
     const right = withoutDeliveryTime(incoming);
     if (isDeepStrictEqual(left, right)) return null;
+    if (differsOnlyInRuntimeContext(left, right)) return null;
     return { reason: "field_mismatch", ...changedConflictFields(left, right) };
   } catch {
     // Malformed retained data is not proof that the new event is already durable.
@@ -281,6 +290,7 @@ const requireSpoolCapacity = async (directory, maxEntries) =>
   });
 
 const publishSpoolEntry = async (temporary, destination, bytes) => {
+  let published = bytes;
   try {
     await atSpoolStage("temporary_write", () => writeDurableFile(temporary, bytes));
     await atSpoolStage("publish", async () => {
@@ -291,6 +301,7 @@ const publishSpoolEntry = async (temporary, destination, bytes) => {
         const existing = await readFile(destination, "utf8");
         const mismatch = compareEventApartFromDeliveryTime(existing, bytes);
         if (mismatch) throw conflictingEntry({ branch: "publish_comparison", ...mismatch });
+        published = existing;
         await chmod(destination, 0o600);
       }
       await chmod(destination, 0o600);
@@ -298,6 +309,7 @@ const publishSpoolEntry = async (temporary, destination, bytes) => {
   } finally {
     await rm(temporary, { force: true }).catch(() => {});
   }
+  return published;
 };
 
 const writeRawEventSpoolEntryUnlocked = async ({
@@ -324,10 +336,10 @@ const writeRawEventSpoolEntryUnlocked = async ({
     readMatchingRejectedEntry(directory, eventId, bytes));
   if (rejected || existing) return rejected || existing;
   await requireSpoolCapacity(directory, normalizedMaxEntries);
-  await publishSpoolEntry(temporary, destination, bytes);
+  const published = await publishSpoolEntry(temporary, destination, bytes);
   await atSpoolStage("directory_sync", () => syncDirectory(directory));
 
-  return { eventId, serialized: bytes };
+  return { eventId, serialized: published };
 };
 
 const serializeSpoolMutation = (directory, action) => {

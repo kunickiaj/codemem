@@ -225,7 +225,9 @@ test.each(allowedPaths)("reports only the allowlisted changed path %s", async (p
 	const parts = path.split(".");
 	let parent = incoming;
 	for (const key of parts.slice(0, -1)) parent = parent[key];
-	parent[parts.at(-1)] = `${SECRET}_changed`;
+	// cwd/project become wrong-typed. For started_at, the stored numeric 10
+	// keeps the incoming string a conflict because both contexts must be valid.
+	parent[parts.at(-1)] = ["cwd", "project"].includes(path) ? 123 : `${SECRET}_changed`;
 	// Act
 	const error = await write(incoming).catch((caught) => caught);
 	// Assert
