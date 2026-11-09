@@ -667,7 +667,10 @@ test.each([
 		lock: "not_acquired",
 	});
 	expect(deliver).not.toHaveBeenCalled();
-	expect(await readFile(lock.path)).toEqual(kind === "symlink" ? lock.bytes : bytes);
+	const expectedBytes = kind === "symlink" ? lock.bytes : bytes;
+	const actualBytes = await readFile(lock.path);
+	expect(actualBytes.byteLength).toBe(expectedBytes.byteLength);
+	expect(actualBytes.equals(expectedBytes)).toBe(true);
 	expect(await readFile(target, "utf8")).toBe(serialized);
 	safe(result);
 });
