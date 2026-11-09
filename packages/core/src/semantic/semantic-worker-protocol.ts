@@ -31,10 +31,10 @@ export interface RankOutput {
 }
 
 export type WorkerRequest =
-	| { type: "rank"; id: number; deadlineAt: number; input: RankInput }
+	| { type: "rank"; id: number; deadlineAt: number; input: RankInput; collectTiming?: boolean }
 	| { type: "close" };
 
 export type WorkerReply =
 	| { type: "ready" }
-	| { type: "result"; id: number; output: RankOutput | null }
-	| { type: "error"; id: number; code: "ranking_failed" | "expired" };
+	| { type: "result"; id: number; output: RankOutput | null; rankElapsedMs?: number }
+	| { type: "error"; id: number; code: "ranking_failed" | "expired"; rankElapsedMs?: number };

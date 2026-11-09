@@ -5,6 +5,7 @@
  * data structures in codemem/store/types.py.
  */
 
+import type { PromptPackTimingObserver } from "./prompt-pack-timing.js";
 import type { SyncCapability } from "./sync-capability.js";
 
 // ---------------------------------------------------------------------------
@@ -773,6 +774,7 @@ export interface AutomaticContext {
 /** Cancellation stops waiting; it cannot cancel embedding work or native SQL. */
 export interface SemanticExecutionOptions {
 	signal?: AbortSignal;
+	onTiming?: PromptPackTimingObserver;
 }
 
 /** Controls how pack text is rendered. Passed separately from retrieval filters. */

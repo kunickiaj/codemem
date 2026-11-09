@@ -35,6 +35,7 @@ import {
 	startMaintenanceJob,
 } from "./maintenance-jobs.js";
 import { projectColumnClause } from "./project.js";
+import { createPromptPackTimingScope, startPromptPackTiming } from "./prompt-pack-timing.js";
 import { snapshot } from "./semantic/validated-vector-index-state.js";
 import {
 	buildAuthorizedSemanticMemoryIdsQuery,
@@ -43,7 +44,7 @@ import {
 	semanticResult,
 } from "./semantic-query.js";
 import type { ReplicationVectorWork } from "./sync-replication.js";
-import type { MemoryFilters } from "./types.js";
+import type { MemoryFilters, SemanticExecutionOptions } from "./types.js";
 import { resolveVectorLayout, vectorStoreExists } from "./vector-layout.js";
 import {
 	createVectorMetadataSnapshot,
@@ -1875,35 +1876,53 @@ export async function semanticSearch(
 	filters: MemoryFilters | null,
 	context: SemanticSearchScopeContext,
 	summarySessionId?: number | null,
+	executionOptions?: SemanticExecutionOptions,
 ): Promise<SemanticSearchResult[]> {
 	if (query.trim().length < 3) return [];
 	if (!hasVectorRows(db)) return [];
-	const client = await getEmbeddingClient();
-	if (!client) return [];
-	const searchModels = resolveSemanticSearchModels(
-		db,
-		resolveEmbeddingClientVectorIdentityLabel(client),
-	);
-	if (searchModels.length === 0) return [];
-	if (!context?.deviceId?.trim()) {
-		throw new Error("semantic_search_scope_context_required");
+	const timing = createPromptPackTimingScope(executionOptions?.onTiming, executionOptions?.signal);
+	try {
+		const endClientInit = startPromptPackTiming(timing.onTiming, "embedding_client_init");
+		let client: EmbeddingClient | null;
+		try {
+			client = await getEmbeddingClient();
+		} finally {
+			endClientInit();
+		}
+		if (!client) return [];
+		const searchModels = resolveSemanticSearchModels(
+			db,
+			resolveEmbeddingClientVectorIdentityLabel(client),
+		);
+		if (searchModels.length === 0) return [];
+		if (!context?.deviceId?.trim()) {
+			throw new Error("semantic_search_scope_context_required");
+		}
+
+		const endInference = startPromptPackTiming(timing.onTiming, "embedding_inference");
+		let embeddings: Float32Array[];
+		try {
+			embeddings = await embedTexts([query], client);
+		} finally {
+			endInference();
+		}
+		if (embeddings.length === 0) return [];
+
+		const firstEmbedding = embeddings[0];
+		if (!firstEmbedding) return [];
+		const queryEmbedding = serializeFloat32(firstEmbedding);
+		return rankSemanticEmbedding(
+			db,
+			queryEmbedding,
+			searchModels,
+			limit,
+			filters,
+			context,
+			summarySessionId,
+		);
+	} finally {
+		timing.close();
 	}
-
-	const embeddings = await embedTexts([query], client);
-	if (embeddings.length === 0) return [];
-
-	const firstEmbedding = embeddings[0];
-	if (!firstEmbedding) return [];
-	const queryEmbedding = serializeFloat32(firstEmbedding);
-	return rankSemanticEmbedding(
-		db,
-		queryEmbedding,
-		searchModels,
-		limit,
-		filters,
-		context,
-		summarySessionId,
-	);
 }
 
 /** Internal exact ranking stage shared with the read-only semantic worker. */

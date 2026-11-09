@@ -51,16 +51,22 @@ port.on("message", (request: WorkerRequest) => {
 	) {
 		throw new Error("invalid_semantic_worker_message");
 	}
+	let rankStartedAt: number | undefined;
 	try {
 		validateInput(request.input);
 		if (Date.now() >= request.deadlineAt) {
 			port.postMessage({ type: "error", id: request.id, code: "expired" });
 			return;
 		}
+		if (request.collectTiming === true) rankStartedAt = performance.now();
 		const output = rankWorkerInput(db, request.input);
-		port.postMessage({ type: "result", id: request.id, output });
+		const timing =
+			rankStartedAt === undefined ? {} : { rankElapsedMs: performance.now() - rankStartedAt };
+		port.postMessage({ type: "result", id: request.id, output, ...timing });
 	} catch {
-		port.postMessage({ type: "error", id: request.id, code: "ranking_failed" });
+		const timing =
+			rankStartedAt === undefined ? {} : { rankElapsedMs: performance.now() - rankStartedAt };
+		port.postMessage({ type: "error", id: request.id, code: "ranking_failed", ...timing });
 	}
 });
 port.postMessage({ type: "ready" });

@@ -1,3 +1,10 @@
+import {
+	createPromptPackTimingScope,
+	type PromptPackTimingObserver,
+	recordPromptPackTiming,
+	startPromptPackTiming,
+} from "../prompt-pack-timing.js";
+import type { SemanticExecutionOptions } from "../types.js";
 import type {
 	RankInput,
 	RankOutput,
@@ -42,7 +49,7 @@ export class SemanticWorkerError extends Error {
 export interface SemanticWorkerQueue {
 	run(
 		prepare: () => Promise<RankInput | null>,
-		options?: { signal?: AbortSignal },
+		options?: SemanticExecutionOptions,
 	): Promise<RankOutput | null>;
 	close(): Promise<void>;
 }
@@ -54,6 +61,10 @@ interface Job {
 	settled: boolean;
 	started: boolean;
 	dispatched: boolean;
+	onTiming: PromptPackTimingObserver | undefined;
+	endQueueWait(): void;
+	endReadiness(): void;
+	endRoundtrip(): void;
 	finish(value: RankOutput | null, error?: unknown): void;
 }
 
@@ -95,7 +106,7 @@ class WorkerQueue implements SemanticWorkerQueue {
 
 	constructor(private readonly options: ResolvedOptions) {}
 
-	run(prepare: Job["prepare"], options: { signal?: AbortSignal } = {}): Promise<RankOutput | null> {
+	run(prepare: Job["prepare"], options: SemanticExecutionOptions = {}): Promise<RankOutput | null> {
 		if (this.closing) return Promise.reject(new SemanticWorkerError("closed"));
 		if (this.circuit) return Promise.reject(new SemanticWorkerError(this.circuit));
 		if (options.signal?.aborted) return Promise.reject(new SemanticWorkerError("aborted"));
@@ -103,7 +114,7 @@ class WorkerQueue implements SemanticWorkerQueue {
 			return Promise.reject(new SemanticWorkerError("overloaded"));
 		}
 		return new Promise((resolve, reject) => {
-			const job = this.createJob(prepare, options.signal, resolve, reject);
+			const job = this.createJob(prepare, options, resolve, reject);
 			if (this.active) this.pending.push(job);
 			else this.active = job;
 			this.startWorker();
@@ -113,10 +124,17 @@ class WorkerQueue implements SemanticWorkerQueue {
 
 	private createJob(
 		prepare: Job["prepare"],
-		signal: AbortSignal | undefined,
+		executionOptions: SemanticExecutionOptions,
 		resolve: (value: RankOutput | null) => void,
 		reject: (error: unknown) => void,
 	): Job {
+		const { signal } = executionOptions;
+		const timing = createPromptPackTimingScope(executionOptions.onTiming, signal);
+		const endQueueWait = startPromptPackTiming(timing.onTiming, "semantic_queue_wait");
+		// Readiness is the request's overlapping subset of queue wait before the ready reply.
+		const endReadiness = this.ready
+			? () => {}
+			: startPromptPackTiming(timing.onTiming, "semantic_worker_readiness");
 		const cancel = (code: "aborted" | "expired") => {
 			job.finish(null, new SemanticWorkerError(code));
 			this.pending = this.pending.filter((item) => item !== job);
@@ -132,9 +150,14 @@ class WorkerQueue implements SemanticWorkerQueue {
 			settled: false,
 			started: false,
 			dispatched: false,
+			onTiming: timing.onTiming,
+			endQueueWait,
+			endReadiness,
+			endRoundtrip: () => {},
 			finish(value, error) {
 				if (job.settled) return;
 				job.settled = true;
+				timing.close();
 				clearTimeout(timer);
 				signal?.removeEventListener("abort", abort);
 				if (error !== undefined) reject(error);
@@ -164,11 +187,17 @@ class WorkerQueue implements SemanticWorkerQueue {
 		if (message.type === "ready") {
 			this.ready = true;
 			clearTimeout(this.readinessTimer);
+			this.active?.endReadiness();
+			for (const job of this.pending) job.endReadiness();
 			this.pump();
 			return;
 		}
 		const job = this.active;
 		if (!job?.dispatched || job.id !== message.id) return;
+		job.endRoundtrip();
+		if (typeof message.rankElapsedMs === "number" && message.rankElapsedMs >= 0) {
+			recordPromptPackTiming(job.onTiming, "semantic_worker_rank", message.rankElapsedMs);
+		}
 		if (message.type === "result") job.finish(message.output);
 		else
 			job.finish(
@@ -187,6 +216,7 @@ class WorkerQueue implements SemanticWorkerQueue {
 		}
 		if (job.started) return;
 		job.started = true;
+		job.endQueueWait();
 		const preparation = Promise.resolve().then(() => this.prepare(job));
 		this.preparation = preparation;
 		void preparation.then(() => {
@@ -207,7 +237,14 @@ class WorkerQueue implements SemanticWorkerQueue {
 				return;
 			}
 			job.dispatched = true;
-			this.worker?.postMessage({ type: "rank", id: job.id, deadlineAt: job.deadlineAt, input });
+			job.endRoundtrip = startPromptPackTiming(job.onTiming, "semantic_worker_roundtrip");
+			this.worker?.postMessage({
+				type: "rank",
+				id: job.id,
+				deadlineAt: job.deadlineAt,
+				input,
+				...(job.onTiming ? { collectTiming: true } : {}),
+			});
 		} catch (error) {
 			job.finish(null, error);
 			this.release(job);

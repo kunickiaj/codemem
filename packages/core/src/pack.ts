@@ -20,6 +20,11 @@ import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
 import { fusePackCandidates } from "./pack-fusion.js";
 import { projectBasename } from "./project.js";
+import {
+	createPromptPackTimingScope,
+	type PromptPackTimingObserver,
+	startPromptPackTiming,
+} from "./prompt-pack-timing.js";
 import { sanitizeSearchQuery } from "./query-sanitizer.js";
 import { memoryLooksRecapLike, queryPrefersRecap } from "./recap-policy.js";
 import { findByFile } from "./ref-queries.js";
@@ -2716,6 +2721,8 @@ function finalizePackArtifacts(
 	retrievalStage: PackRetrievalStage,
 	assemblyStage: PackAssemblyStage,
 	renderStage: PackRenderStage,
+	endAssembly: () => void,
+	onTiming?: PromptPackTimingObserver,
 ): PackArtifacts {
 	const selectionStage = selectPackItems(retrievalStage.results, assemblyStage, renderStage);
 	const { allItemIds, allItems } = selectionStage;
@@ -2751,8 +2758,14 @@ function finalizePackArtifacts(
 		selectionStage,
 	);
 
+	endAssembly();
 	if (recordUsage) {
-		recordPackUsage(store, metrics);
+		const endUsage = startPromptPackTiming(onTiming, "usage_write");
+		try {
+			recordPackUsage(store, metrics);
+		} finally {
+			endUsage();
+		}
 	}
 
 	return { response, trace };
@@ -2771,30 +2784,41 @@ function buildPackArtifacts(
 		compactDetailCount?: number;
 		compressionMode?: PackCompressionMode;
 		automaticContext?: AutomaticContext | null;
+		onTiming?: PromptPackTimingObserver;
+		signal?: AbortSignal;
 	} = {
 		recordUsage: true,
 	},
 ): PackArtifacts {
-	const retrievalStage = retrievePackCandidates(
-		store,
-		context,
-		limit,
-		filters,
-		semanticResults,
-		options.automaticContext,
-	);
-	const assemblyStage = assemblePackSections(store, context, filters, retrievalStage, options);
-	const renderStage = renderPackSections(assemblyStage, tokenBudget);
-	return finalizePackArtifacts(
-		store,
-		context,
-		tokenBudget,
-		filters,
-		options.recordUsage,
-		retrievalStage,
-		assemblyStage,
-		renderStage,
-	);
+	const timing = createPromptPackTimingScope(options.onTiming, options.signal);
+	const endAssembly = startPromptPackTiming(timing.onTiming, "pack_assembly");
+	try {
+		const retrievalStage = retrievePackCandidates(
+			store,
+			context,
+			limit,
+			filters,
+			semanticResults,
+			options.automaticContext,
+		);
+		const assemblyStage = assemblePackSections(store, context, filters, retrievalStage, options);
+		const renderStage = renderPackSections(assemblyStage, tokenBudget);
+		return finalizePackArtifacts(
+			store,
+			context,
+			tokenBudget,
+			filters,
+			options.recordUsage,
+			retrievalStage,
+			assemblyStage,
+			renderStage,
+			endAssembly,
+			timing.onTiming,
+		);
+	} finally {
+		endAssembly();
+		timing.close();
+	}
 }
 
 export function buildMemoryPack(
@@ -2902,6 +2926,8 @@ export async function buildMemoryPackAsync(
 	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: true,
+		onTiming: executionOptions?.onTiming,
+		signal: executionOptions?.signal,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
@@ -2941,6 +2967,8 @@ export async function buildMemoryPackWithTraceAsync(
 	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: true,
+		onTiming: executionOptions?.onTiming,
+		signal: executionOptions?.signal,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
@@ -2980,6 +3008,8 @@ export async function buildMemoryPackTraceAsync(
 	executionOptions?.signal?.throwIfAborted();
 	return buildPackArtifacts(store, context, limit, tokenBudget, filters, semResults, {
 		recordUsage: false,
+		onTiming: executionOptions?.onTiming,
+		signal: executionOptions?.signal,
 		compact: renderOptions?.compact,
 		compactDetailCount: renderOptions?.compactDetailCount,
 		compressionMode: renderOptions?.compressionMode,
@@ -3009,5 +3039,6 @@ function packSemanticSearch(
 		filters ?? null,
 		ownershipFilterContext(store),
 		automaticSummarySessionId(store, automaticContext),
+		executionOptions,
 	);
 }

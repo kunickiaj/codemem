@@ -2350,6 +2350,7 @@ export class MemoryStore {
 				input.filters,
 				this.ownershipFilterContext(),
 				summarySessionId(this.db, input.automaticContext),
+				executionOptions,
 			);
 		}
 		if (isEmbeddingDisabled() || input.query.trim().length < 3) return [];

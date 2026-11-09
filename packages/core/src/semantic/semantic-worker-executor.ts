@@ -11,6 +11,11 @@ import {
 	tryResolveEmbeddingRevision,
 } from "../embeddings.js";
 import { buildFilterClausesWithContext } from "../filters.js";
+import {
+	createPromptPackTimingScope,
+	type PromptPackTimingObserver,
+	startPromptPackTiming,
+} from "../prompt-pack-timing.js";
 import { ownershipFilterContext, type StoreHandle } from "../search.js";
 import { semanticResult } from "../semantic-query.js";
 import { summaryContinuityFilter } from "../summary-memory.js";
@@ -70,6 +75,16 @@ interface SearchState {
 	model: string;
 	embeddingIdentity: string;
 	client: EmbeddingClient | null;
+}
+
+function createSearchState(): SearchState {
+	return {
+		generationId: "",
+		models: [],
+		model: "",
+		embeddingIdentity: "",
+		client: null,
+	};
 }
 
 function cloneRequest(input: Parameters<PackSemanticExecutor["search"]>[0]) {
@@ -209,9 +224,7 @@ export function createSemanticExecutor(options: SemanticWorkerOptions): PackSema
 	const { store } = options;
 	const { dbPath, identity, queue } = createWorkerOwner(options);
 	let generation = 0;
-	const unsubscribe = store.onIdentityChanged?.(() => {
-		generation++;
-	});
+	const unsubscribe = store.onIdentityChanged?.(() => generation++);
 	return {
 		async search(input, executionOptions) {
 			const requestIdentity = captureIdentity(store);
@@ -222,38 +235,45 @@ export function createSemanticExecutor(options: SemanticWorkerOptions): PackSema
 			}
 			const proof = captureProof(store, requestIdentity);
 			const request = cloneRequest(input);
-			const state: SearchState = {
-				generationId: "",
-				models: [],
-				model: "",
-				embeddingIdentity: "",
-				client: null,
-			};
-			const outcome = await queue
-				.run(async () => {
-					if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
-					assertIdentity(store, proof);
-					const embedding = await prepareEmbedding(options, request.query, state);
-					assertIdentity(store, proof);
-					if (!embedding) return null;
-					assertDatabaseIdentity(store, dbPath, identity);
-					return {
-						...request,
-						generationId: state.generationId,
-						proof,
-						embedding: new Float32Array(embedding),
-						embeddingIdentity: state.embeddingIdentity,
-					};
-				}, executionOptions)
-				.then(
-					(output) => ({ output }),
-					(error: unknown) => ({ error }),
-				);
-			// Check both outcomes: identity changes must not become keyword delivery on timeout/crash.
-			assertCompletion(store, proof, dbPath, identity);
-			if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
-			if ("error" in outcome) throw outcome.error;
-			return revalidateOutput(store, outcome.output, state, request, proof);
+			const state = createSearchState();
+			const timing = createPromptPackTimingScope(
+				executionOptions?.onTiming,
+				executionOptions?.signal,
+			);
+			try {
+				const outcome = await queue
+					.run(async () => {
+						if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
+						assertIdentity(store, proof);
+						const embedding = await prepareEmbedding(
+							options,
+							request.query,
+							state,
+							timing.onTiming,
+						);
+						assertIdentity(store, proof);
+						if (!embedding) return null;
+						assertDatabaseIdentity(store, dbPath, identity);
+						return {
+							...request,
+							generationId: state.generationId,
+							proof,
+							embedding: new Float32Array(embedding),
+							embeddingIdentity: state.embeddingIdentity,
+						};
+					}, executionOptions)
+					.then(
+						(output) => ({ output }),
+						(error: unknown) => ({ error }),
+					);
+				// Check both outcomes: identity changes must not become keyword delivery on timeout/crash.
+				assertCompletion(store, proof, dbPath, identity);
+				if (generation !== requestGeneration) throw new SemanticIdentityChangedError();
+				if ("error" in outcome) throw outcome.error;
+				return revalidateOutput(store, outcome.output, state, request, proof);
+			} finally {
+				timing.close();
+			}
 		},
 		async close() {
 			await queue.close();
@@ -266,12 +286,20 @@ async function prepareEmbedding(
 	options: SemanticWorkerOptions,
 	query: string,
 	state: SearchState,
+	onTiming?: PromptPackTimingObserver,
 ): Promise<Float32Array | null> {
 	const catalog = currentCatalog(options.store.db);
 	if (!catalog) return null;
 	state.generationId = catalog.generationId;
 	state.model = configuredModel();
-	const client = await (options.getClient ?? getEmbeddingClient)();
+	// Includes waiting on a shared startup promise, not exclusive factory ownership.
+	const endClientInit = startPromptPackTiming(onTiming, "embedding_client_init");
+	let client: EmbeddingClient | null;
+	try {
+		client = await (options.getClient ?? getEmbeddingClient)();
+	} finally {
+		endClientInit();
+	}
 	if (!client) return null;
 	state.client = client;
 	state.embeddingIdentity = resolveEmbeddingClientVectorIdentityLabel(client);
@@ -281,7 +309,13 @@ async function prepareEmbedding(
 		state.embeddingIdentity,
 	);
 	if (!state.models.length) return null;
-	const embedding = (await embedTexts([query], client))[0];
+	const endInference = startPromptPackTiming(onTiming, "embedding_inference");
+	let embedding: Float32Array | undefined;
+	try {
+		embedding = (await embedTexts([query], client))[0];
+	} finally {
+		endInference();
+	}
 	if (!embedding || !currentEmbedding(state)) return null;
 	const current = catalogModels(
 		options.store.db,
