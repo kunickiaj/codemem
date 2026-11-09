@@ -566,6 +566,15 @@ legacy text, unused metadata, and text already hidden under an observation's
 closed Full context disclosure. Low-signal and query-match evidence are derived
 before that text is omitted, preserving current substring search behavior.
 
+The Feed requests the projection for initial and continuation pages. Cards still
+start expanded. Opening a projected Full context starts a card-local read with
+loading and retry states. Closing or unmounting the disclosure discards its read,
+and actor, filter, or text-revision changes invalidate pending responses. Older
+full-row responses continue to render their inline context. Search excerpts stay
+visible until matching content is actually rendered. If the text revision changes,
+the disclosure offers to reload the Feed from its first page. Background and
+mutation refreshes retain older loaded cards.
+
 `GET /api/memory/:id/context` reads that hidden text when requested. It applies
 the same current active-row and read filters as the list, with optional project,
 ownership scope, classification, and query narrowing. Missing, inactive,

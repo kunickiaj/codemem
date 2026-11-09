@@ -1,4 +1,5 @@
 /* Shared types for the Feed tab. */
+import type { FeedProjectionInfo } from "@codemem/core/feed-contract";
 
 /**
  * A feed item — observations and session summaries are pulled from different
@@ -23,6 +24,7 @@ export interface FeedItemMetadata {
 }
 
 export interface FeedItem {
+	feed?: FeedProjectionInfo;
 	id?: number;
 	memory_id?: number | string;
 	observation_id?: number | string;
@@ -63,7 +65,7 @@ export interface FeedViewOps {
 	replaceFeedItem: (item: FeedItem) => void;
 	removeFeedItem: (memoryId: number) => void;
 	updateFeedView: (force?: boolean) => void;
-	loadFeedData: () => Promise<void>;
+	loadFeedData: (options?: { restart?: boolean }) => Promise<void>;
 	updateFeedQuery: (query: string) => void;
 	hasMorePages: () => boolean;
 }

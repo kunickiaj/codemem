@@ -155,6 +155,7 @@ export function FeedList({
 				onRemove: ops.removeFeedItem,
 				onViewRefresh: () => ops.updateFeedView(true),
 				onReload: ops.loadFeedData,
+				onContextReload: () => ops.loadFeedData({ restart: true }),
 			}),
 		),
 	);
