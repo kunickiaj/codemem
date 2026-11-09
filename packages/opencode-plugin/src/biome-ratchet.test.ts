@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type ChangedPath,
 	compareBiomePolicy,
+	compareBiomeReports,
 	compareBiomeToolPolicy,
 	compareChangedDiagnostics,
 	parsePinnedBiomeReport,
@@ -21,7 +22,7 @@ import {
 	resolveRootBiomeEntrypoint,
 	runRatchet,
 } from "./biome-ratchet-cli.js";
-import type { LintDiagnostic } from "./lint-diagnostics.js";
+import { compareDiagnostics, type LintDiagnostic } from "./lint-diagnostics.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -705,6 +706,148 @@ describe("Biome diagnostic source comparison", () => {
 			]),
 		).toEqual([after[1]]);
 	});
+});
+
+function commandFactory(name: string, statements: number): string {
+	return [
+		`export function create${name}Command(): Command {`,
+		"  addDbOption(new Command()).action(() => {",
+		...Array.from({ length: statements }, () => "    run();"),
+		"  });",
+		"  return new Command();",
+		"}",
+	].join("\n");
+}
+
+function measuredReport(root: string, source: string): string {
+	writeFileSync(path.join(root, "src/commands.ts"), source);
+	const result = spawnSync(
+		process.execPath,
+		[
+			createRequire(import.meta.url).resolve("@biomejs/biome/bin/biome"),
+			"lint",
+			"--only=complexity/noExcessiveLinesPerFunction",
+			"--reporter=json",
+			"src/commands.ts",
+		],
+		{ cwd: root, encoding: "utf8" },
+	);
+	if (result.error || ![0, 1].includes(result.status ?? -1)) {
+		throw result.error ?? new Error(result.stderr);
+	}
+	return result.stdout;
+}
+
+describe("Biome command factory callback ratchet", () => {
+	it.each(["unchanged", "worsened", "added"] as const)(
+		"preserves real legacy callback warnings after a regex insertion when %s",
+		(scenario) => {
+			// Arrange: identical callback bodies must retain separate factory owners.
+			const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-regex-test-"));
+			temporaryDirectories.push(root);
+			mkdirSync(path.join(root, "src"));
+			writeFileSync(path.join(root, "biome.json"), config());
+			const beforeSource = [commandFactory("First", 7), commandFactory("Second", 7)].join("\n");
+			const firstStatements = scenario === "worsened" ? 9 : 7;
+			const firstFactory = commandFactory("First", firstStatements).replace(
+				"Command {",
+				"Command { /}/.test(input);",
+			);
+			let afterSource = [firstFactory, commandFactory("Second", 7)].join("\n");
+			if (scenario === "added") afterSource += `\n${commandFactory("Third", 7)}`;
+			const before = parsePinnedBiomeReport(measuredReport(root, beforeSource), () => beforeSource);
+			const after = parsePinnedBiomeReport(measuredReport(root, afterSource), () => afterSource);
+			// Act: exercise the plugin comparator with actual pinned Biome diagnostics.
+			const regressions = compareDiagnostics(before, after);
+			// Assert
+			expect(
+				before.filter((entry) => entry.scopeIdentity?.startsWith(":method:addDbOption")),
+			).toHaveLength(2);
+			if (scenario === "unchanged") {
+				expect(regressions).toEqual([]);
+				return;
+			}
+			const factoryName = scenario === "worsened" ? "First" : "Third";
+			expect(regressions).toContainEqual(
+				expect.objectContaining({
+					category: "lint/complexity/noExcessiveLinesPerFunction",
+					scopeIdentity: `:method:addDbOption:factory:create${factoryName}Command`,
+					measuredValue: expect.any(Number),
+				}),
+			);
+		},
+	);
+
+	it("does not report unchanged legacy callbacks after adding a TypeScript generic helper", () => {
+		// Arrange: a valid .ts generic must not make identical callbacks lose their owners.
+		const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-generic-test-"));
+		temporaryDirectories.push(root);
+		mkdirSync(path.join(root, "src"));
+		writeFileSync(path.join(root, "biome.json"), config());
+		const beforeSource = [commandFactory("First", 7), commandFactory("Second", 7)].join("\n");
+		const afterSource = `const id = <T>(value: T): T => value;\n${beforeSource}`;
+		const before = parsePinnedBiomeReport(measuredReport(root, beforeSource), () => beforeSource);
+		const after = parsePinnedBiomeReport(measuredReport(root, afterSource), () => afterSource);
+		// Act
+		const regressions = compareDiagnostics(before, after);
+		// Assert
+		expect(
+			before.filter((entry) => entry.scopeIdentity?.startsWith(":method:addDbOption")),
+		).toHaveLength(2);
+		expect(regressions).toEqual([]);
+	});
+
+	// Real pinned reporter measurements must preserve per-factory warning ownership.
+	it.each(["reordered", "worsened", "added"] as const)(
+		"compares measured factory callbacks when %s",
+		(scenario) => {
+			// Arrange
+			const root = mkdtempSync(path.join(tmpdir(), "codemem-biome-factory-test-"));
+			temporaryDirectories.push(root);
+			mkdirSync(path.join(root, "src"));
+			const configText = config();
+			writeFileSync(path.join(root, "biome.json"), configText);
+			const beforeSource = [commandFactory("First", 9), commandFactory("Second", 7)].join("\n");
+			let afterSource = [commandFactory("Second", 7), commandFactory("First", 9)].join("\n");
+			if (scenario === "worsened") {
+				afterSource = [commandFactory("Second", 9), commandFactory("First", 7)].join("\n");
+			}
+			if (scenario === "added") afterSource += `\n${commandFactory("Third", 7)}`;
+			const baseOutput = measuredReport(root, beforeSource);
+			const headOutput = measuredReport(root, afterSource);
+			// Act
+			const result = compareBiomeReports({
+				baseOutput,
+				headOutput,
+				baseConfigText: configText,
+				headConfigText: configText,
+				changes: [
+					{
+						status: "modified",
+						beforePath: "src/commands.ts",
+						afterPath: "src/commands.ts",
+						beforeSource,
+						afterSource,
+					},
+				],
+			});
+			// Assert
+			expect(result.baseDiagnosticCount).toBeGreaterThanOrEqual(2);
+			expect(result.policyViolations).toEqual([]);
+			if (scenario === "reordered") {
+				expect(result.regressions).toEqual([]);
+				return;
+			}
+			const factoryName = scenario === "worsened" ? "Second" : "Third";
+			expect(result.regressions).toContainEqual(
+				expect.objectContaining({
+					category: "lint/complexity/noExcessiveLinesPerFunction",
+					scopeIdentity: `:method:addDbOption:factory:create${factoryName}Command`,
+					measuredValue: expect.any(Number),
+				}),
+			);
+		},
+	);
 });
 
 describe("pinned Biome report schema", () => {

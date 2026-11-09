@@ -3288,6 +3288,7 @@ describe("OpenCode transform-time injection", () => {
 	});
 
 	test("retries a retained event after transport backoff without spawning the CLI", async () => {
+		// Arrange: delay durable publication independently of the fake clock.
 		const home = mkdtempSync(join(tmpdir(), "codemem-opencode-terminal-spool-"));
 		tmpDirs.push(home);
 		process.env.HOME = home;
@@ -3297,36 +3298,51 @@ describe("OpenCode transform-time injection", () => {
 		let viewerAvailable = false;
 		const postedEventIds = [];
 		const appLog = vi.fn().mockResolvedValue(undefined);
-		vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-			if (!viewerAvailable) throw new Error("viewer unavailable");
-			if (String(url).includes("/api/raw-events/status")) {
-				return jsonResponse(200, { ingest: { available: true } });
-			}
-			if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
-				postedEventIds.push(JSON.parse(String(init.body)).event_id);
-				return jsonResponse(202, { accepted: 1, queued: 1 });
-			}
-			return jsonResponse(200, {});
-		});
-		const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
-		const hooks = await OpencodeMemPlugin({
-			project: { name: "atlas" },
-			client: { app: { log: appLog }, tui: {} },
-			directory: "/tmp/atlas",
-			worktree: "/tmp/atlas",
-		});
+		const barrier = await holdSpoolPublication(home);
+		try {
+			vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+				if (!viewerAvailable) throw new Error("viewer unavailable");
+				if (String(url).includes("/api/raw-events/status")) {
+					return jsonResponse(200, { ingest: { available: true } });
+				}
+				if (String(url).endsWith("/api/raw-events") && init?.method === "POST") {
+					postedEventIds.push(JSON.parse(String(init.body)).event_id);
+					return jsonResponse(202, { accepted: 1, queued: 1 });
+				}
+				return jsonResponse(200, {});
+			});
+			const { OpencodeMemPlugin } = await import("../plugins/codemem.js");
+			const hooks = await OpencodeMemPlugin({
+				project: { name: "atlas" },
+				client: { app: { log: appLog }, tui: {} },
+				directory: "/tmp/atlas",
+				worktree: "/tmp/atlas",
+			});
 
-		await hooks["tool.execute.after"](
-			{ tool: "read", args: {}, sessionID },
-			{},
-		);
-		await vi.waitFor(() =>
+			await hooks["tool.execute.after"](
+				{ tool: "read", args: {}, sessionID },
+				{},
+			);
+			await barrier.publication;
+			// Act: idle must join capture's cached delivery while real I/O is pending.
+			let idleCompleted = false;
+			const idle = hooks.event({ event: { type: "session.idle", properties: { sessionID } } }).then(() => {
+				idleCompleted = true;
+			});
+			await vi.advanceTimersByTimeAsync(1_001);
+			// Assert: a whole polling deadline cannot complete an unpublished delivery.
+			expect(idleCompleted).toBe(false);
+			expect(appLog.mock.calls.map(([entry]) => entry.body.message)).toEqual([
+				"codemem plugin initialized",
+			]);
+			barrier.release();
+			await idle;
 			expect(appLog).toHaveBeenCalledWith({
 				body: expect.objectContaining({
 					message: expect.stringContaining(
 						"codemem raw event was saved for retry after viewer status connection",
 					),
-						extra: expect.objectContaining({
+					extra: expect.objectContaining({
 						category: "connection",
 						delivery: "spool",
 						viewer_stage: "status",
@@ -3336,20 +3352,21 @@ describe("OpenCode transform-time injection", () => {
 						cli_elapsed_ms: expect.any(Number),
 					}),
 				}),
-			}),
-		);
-		const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
-		expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
-		viewerAvailable = true;
-		const afterBackoff = Date.now() + 1_001;
-		vi.spyOn(Date, "now").mockReturnValue(afterBackoff);
-		await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
+			});
+			const spoolDirectory = join(home, ".codemem", "opencode-raw-event-spool");
+			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toHaveLength(1);
+			viewerAvailable = true;
+			const afterBackoff = Date.now() + 1_001;
+			vi.spyOn(Date, "now").mockReturnValue(afterBackoff);
+			await hooks.event({ event: { type: "session.idle", properties: { sessionID } } });
 
-		await vi.waitFor(() => expect(postedEventIds).toHaveLength(1));
-		await vi.waitFor(() =>
-			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]),
-		);
-		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
+			// Assert: the awaited idle hook also finishes retry delivery and spool removal.
+			expect(postedEventIds).toHaveLength(1);
+			expect(readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"))).toEqual([]);
+			expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
+		} finally {
+			barrier.restore();
+		}
 	});
 
 	test("recovers a retained event over HTTP after plugin module restart", async () => {

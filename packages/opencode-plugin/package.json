@@ -46,9 +46,10 @@
 		"@opencode/plugin": "2.0.24"
 	},
 	"devDependencies": {
-		"codemem": "workspace:^",
+		"@babel/parser": "8.1.0",
 		"@opencode/cli": "2.0.24",
 		"@types/node": "^24.12.4",
+		"codemem": "workspace:^",
 		"vitest": "catalog:"
 	},
 	"repository": {
