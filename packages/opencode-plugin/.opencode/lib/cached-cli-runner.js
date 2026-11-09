@@ -206,13 +206,25 @@ export const createCachedCliRunner = ({
     return resolution;
   };
 
-  const command = (args) => {
-    if (explicit) return [runner, ...runnerArgs, ...args];
+  const command = (args, { onResolved } = {}) => {
+    const reportResolved = (category) => {
+      if (!onResolved) return;
+      try { void Promise.resolve(onResolved?.(category)).catch(() => {}); } catch { /* best effort */ }
+    };
+    if (explicit) {
+      reportResolved(["codemem", "npx", "node", "uv", "uvx"].includes(runner) ? runner : "custom");
+      return [runner, ...runnerArgs, ...args];
+    }
     return resolveInvocation().then((invocation) => {
       if (!invocation) {
-        if (runner === "codemem") return [runner, ...runnerArgs, ...args];
+        if (runner === "codemem") {
+          reportResolved("codemem");
+          return [runner, ...runnerArgs, ...args];
+        }
+        reportResolved("none");
         return null;
       }
+      reportResolved("cached_node");
       return [invocation.command, ...invocation.args, ...args];
     });
   };

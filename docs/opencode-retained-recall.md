@@ -51,6 +51,82 @@ Reasons distinguish disabled transport, active backoff, malformed profiles, prot
 
 Each runtime keeps only fixed operation/reason counters, capped at 1,000,000 each, and a suppressed-entry counter with the same cap. Successful HTTP calls increment counters without writing a log. Failure entries include cumulative counters and failures suppressed since the previous entry, with at most one write every 30 seconds and one write in flight; no timer or pending-log queue is created. Elapsed values are clamped to 0–86,400,000 milliseconds. A later failure reports accumulated counts; suppressed details are not replayed, and counters are not persisted across runtime instances. This diagnostic adds no database storage or remote telemetry and never includes query, prompt, payload, URL, raw error, path, identifier, or token content.
 
+### Prompt-pack timing diagnostics
+
+Prompt-pack timing is off by default. Set `CODEMEM_TRACE_PROMPT_PACK=1` before
+starting **both** the OpenCode plugin and Viewer to trace the prompt-pack
+critical path. The plugin creates a fresh, content-independent UUIDv4 for every
+pack attempt, including a retry. It sends the ID only in
+`x-codemem-prompt-timing-id` on the pack `POST`.
+
+By default, the Viewer collects a record when its process started with the flag
+and the header is a valid UUIDv4. Embedded viewers can override the flag through
+`AppOptions.promptPackTimings`. A missing or invalid header leaves collection
+off and does not change the response. The
+trace ID is separate from the ledger's deterministic `attempt.request_id`. It never enters the
+pack request body, ledger, or identity metadata.
+
+Timing records use the `prompt.pack.timing ` prefix followed by schema-version-1
+JSON. Each record sets `operation` to `pack` and `side` to `client` or `viewer`.
+Plugin records use the existing plugin error-log writer without requiring the
+plugin verbose flag. Viewer records use stderr through `console.warn`.
+
+Every record contains a random `request_id`, monotonic `elapsed_ms`, maximum
+`event_loop_lag_ms` from a 25 ms request-local timer, a fixed-name
+`timings_ms` map, and `incomplete_stages`. Durations are rounded to three
+decimal places and clamped from 0 to 86,400,000 ms.
+The client emits zero for stages it did not run. The Viewer omits stages it did
+not observe.
+
+Client records also include `outcome` (`completed`, `failed`, or `terminal`),
+`transport` (`viewer`, `cli`, or `none`), the existing closed `http_reason`,
+and the actual closed `execution` category. Viewer records include `outcome`
+(`completed`, `rejected`, `failed`, or `aborted`) and HTTP `status_class`.
+
+| Side | Stages |
+| --- | --- |
+| Client | `profile` (GET, decode, and profile proof), `request_headers` (POST to response headers), `response_body` (read and decode), `fallback_total` (CLI resolution and execution), `cli_resolve`, `cli_execute` |
+| Viewer | `request_body`, `request_validation` (schema plus store/target proof), `pack_build`, `artifact_fingerprint`, `ledger_write`, `response_encode`, and the Core stages below |
+| Core | `semantic_queue_wait`, `semantic_worker_readiness`, `embedding_client_init`, `embedding_inference`, `semantic_worker_roundtrip`, `semantic_worker_rank`, `pack_assembly`, `usage_write` |
+
+`cached_node` identifies a verified direct Node execution. Other recognized
+invocations use the runner's name. Unrecognized runners use `custom`, and an
+unavailable invocation uses `none`. A successful Viewer request uses `viewer`.
+
+Client `elapsed_ms` covers the whole attempt, including a CLI fallback. The
+existing `inject.transport` elapsed value continues to describe only the HTTP
+path. A healthy Viewer request starts no CLI resolution or probes. Prompt-pack
+ledger HTTP calls remain outside this trace, although the pack request includes
+its usage and artifact-ledger write stages.
+
+Stage values overlap and must not be summed. `semantic_worker_readiness`
+overlaps queue wait, `pack_build` overlaps Core work, and `fallback_total`
+overlaps its CLI child stages.
+
+`embedding_client_init` measures how long this request waited for an embedding
+client, including shared initialization or a cached lookup.
+`semantic_worker_rank` is worker-local wall time for catalog, SQL,
+authorization, filtering, and result work. `semantic_worker_roundtrip` also
+includes scheduling and message handoff.
+
+Viewer timing starts at handler entry, so it cannot measure kernel, socket, or
+pre-handler admission time. Match client and Viewer rows by the random trace
+ID and compare client POST time with Viewer elapsed time and event-loop lag.
+
+An abort emits one partial Viewer record when the event loop next runs, marks
+active stages incomplete, and removes its watcher and listener. Late
+completions are ignored. Synchronous SQL can delay abort observation.
+A completed record can also contain incomplete semantic stages after expiry or
+abandonment. Their reported durations extend to report finalization.
+
+A completed Viewer record means the handler constructed a response. It does
+not prove that the client received it. Timing and reporting failures do not
+affect pack delivery, retries, authentication, ledger behavior, or existing
+timeouts. The opt-in adds timer and logging overhead.
+
+Records exclude prompts, memory text, raw error messages, SQL text, paths, origins, credentials, and
+stable actor, device, or session identifiers.
+
 ## Source Evidence
 
 The canonical plugin already exposes the required part identity and replay boundary, but its old normalization rules do not satisfy this contract.

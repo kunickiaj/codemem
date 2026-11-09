@@ -233,6 +233,8 @@ flowchart TD
 
 The OpenCode 1 plugin injects a memory pack automatically on every turn. Volatile recall output is appended beside the latest user message by default so provider prompt caches can keep the stable system/history prefix. The OpenCode 2 entrypoint (beta integration, validated on 2.0.24) uses `session.context` only: it requires a non-empty, non-whitespace latest user-message ID, skips safely when that identity is absent or blank, and performs one fresh retrieval per identified turn. Retries and tool continuations replay retained context byte-for-byte; compaction, title, and generate hooks do not receive automatic recall. Both the default message surface and legacy system surface are supported.
 
+When `CODEMEM_TRACE_PROMPT_PACK=1` is present when both processes start, the plugin and Viewer can correlate opt-in local timing rows for one `POST /api/pack` with a fresh UUIDv4 header. The Viewer passes an optional timing observer through Core semantic execution; reporting failures cannot affect pack handling. The timings describe overlapping stages, so readers compare related spans instead of summing every value. See [prompt-pack timing diagnostics](opencode-retained-recall.md#prompt-pack-timing-diagnostics) for the record schema, stage meanings, privacy limits, and abort behavior.
+
 ### Packaged Claude and Codex hooks
 
 The packaged `UserPromptSubmit` hooks are dependency-free direct Viewer clients. Each performs a

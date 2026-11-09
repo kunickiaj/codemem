@@ -80,6 +80,85 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+test.each(["node", "npx", "uv", "uvx", "codemem", "/fixture/node", "custom-runner"])(
+	"observes explicit execution without parsing paths or probing (%s)",
+	(command) => {
+		// Arrange
+		const execute = vi.fn();
+		const onResolved = vi.fn();
+		const resolver = runner({ explicit: true, runner: command, runnerArgs: ["source"], execute });
+		// Act
+		const result = resolver.command(["stats"], { onResolved });
+		// Assert: the legacy explicit call stays synchronous.
+		expect(result).toEqual([command, "source", "stats"]);
+		expect(onResolved).toHaveBeenCalledExactlyOnceWith(
+			command.startsWith("/") || command === "custom-runner" ? "custom" : command,
+		);
+		expect(execute).not.toHaveBeenCalled();
+	},
+);
+
+test.each(["throw", "reject"])(
+	"contains an observer %s without altering the command",
+	async (mode) => {
+		// Arrange
+		const execute = vi.fn();
+		const resolver = runner({ explicit: true, runner: "node", runnerArgs: ["source"], execute });
+		const onResolved = vi.fn(() => {
+			if (mode === "throw") throw new Error("private observer failure");
+			return Promise.reject(new Error("private observer failure"));
+		});
+		// Act
+		const result = resolver.command(["stats"], { onResolved });
+		await Promise.resolve();
+		// Assert
+		expect(result).toEqual(["node", "source", "stats"]);
+		expect(onResolved).toHaveBeenCalledTimes(1);
+		expect(execute).not.toHaveBeenCalled();
+	},
+);
+
+test("isolates concurrent cached observers without additional probes", async () => {
+	// Arrange: use verified fixture metadata, never infer a category from its path.
+	const f = fixture();
+	const { resolver, execute } = harness({ installed: f });
+	const first = vi.fn();
+	const second = vi.fn();
+	const retained = vi.fn();
+	// Act
+	const results = await Promise.all([
+		resolver.command(["stats"], { onResolved: first }),
+		resolver.command(["recent"], { onResolved: second }),
+	]);
+	await resolver.command(["version"], { onResolved: retained });
+	// Assert
+	expect(results.map((command) => command.at(-1))).toEqual(["stats", "recent"]);
+	for (const observer of [first, second, retained])
+		expect(observer).toHaveBeenCalledExactlyOnceWith("cached_node");
+	expect(execute).toHaveBeenCalledTimes(1);
+});
+
+test.each(["codemem", "npx"])(
+	"reports retained or unavailable %s metadata per call",
+	async (command) => {
+		// Arrange
+		const execute = vi.fn().mockRejectedValue(new Error("private unavailable"));
+		const resolver = runner({ runner: command, runnerArgs: [], execute });
+		const onResolved = vi.fn();
+		// Act
+		const result = await resolver.command(["stats"], { onResolved });
+		const retry = await resolver.command(["recent"], { onResolved });
+		// Assert: cooldown does not skip per-caller observation or add probes.
+		expect(result).toEqual(command === "codemem" ? ["codemem", "stats"] : null);
+		expect(retry).toEqual(command === "codemem" ? ["codemem", "recent"] : null);
+		expect(onResolved.mock.calls).toEqual([
+			[command === "codemem" ? "codemem" : "none"],
+			[command === "codemem" ? "codemem" : "none"],
+		]);
+		expect(execute).toHaveBeenCalledTimes(command === "codemem" ? 1 : 2);
+	},
+);
+
 test.each([PIN, "1.2.3-beta.3"])(
 	"reuses a verified installed CLI on the same channel (%s)",
 	async (version) => {

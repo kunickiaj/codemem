@@ -497,6 +497,7 @@ Common overrides:
 | `CODEMEM_INJECT_CONTEXT` | `0` to disable automatic context injection |
 | `CODEMEM_INJECT_SURFACE` | `message` (default) to inject near the latest OpenCode user message; `system` for the legacy OpenCode system-prompt surface |
 | `CODEMEM_INJECT_TOKEN_BUDGET` | Positive approximate token cap for OpenCode's complete injected context (default `800`); unset, zero, negative, and invalid values use the default |
+| `CODEMEM_TRACE_PROMPT_PACK` | Set to `1` in the environments that start both OpenCode and the Viewer to write opt-in, local prompt-pack timing records. See [prompt-pack timing diagnostics](docs/opencode-retained-recall.md#prompt-pack-timing-diagnostics). |
 | `CODEMEM_VIEWER_HOST`, `CODEMEM_VIEWER_PORT` | Host/port the plugin-managed viewer should start, probe, and restart |
 | `CODEMEM_VIEWER_AUTO` | `0` to disable auto-starting the viewer |
 | `CODEMEM_OPENCODE_NATIVE_TOOLS` | Experimental: `1` to have the OpenCode plugin register the codemem memory tools itself instead of relying on the MCP server (skipped while a `codemem` MCP server is configured); see [plugin reference](docs/plugin-reference.md#built-in-memory-tools-experimental-opt-in) |

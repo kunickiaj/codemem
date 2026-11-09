@@ -1,10 +1,11 @@
-const REASONS = [
+export const PROMPT_TRANSPORT_REASONS = [
   "success", "disabled", "backoff", "profile_malformed", "protocol_mismatch",
   "database_mismatch", "identity_mismatch", "contract_unsupported",
   "request_rejected", "authorization_failure", "policy_failure",
   "endpoint_unavailable", "server_failure", "unexpected_status",
   "malformed_response", "timeout", "connection_failure", "unknown",
 ];
+const REASONS = PROMPT_TRANSPORT_REASONS;
 const OPERATIONS = ["pack", "prompt-pack-ledger"];
 const RUNNERS = ["viewer", "none", "codemem", "npx", "node", "uvx", "uv", "custom"];
 const STAGES = ["skipped", "profile", "request"];

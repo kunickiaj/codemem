@@ -1,7 +1,16 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const io = vi.hoisted(() => ({ appendFile: vi.fn(), mkdir: vi.fn(), spawn: vi.fn() }));
+const io = vi.hoisted(() => ({
+	appendFile: vi.fn(),
+	mkdir: vi.fn(),
+	spawn: vi.fn(),
+	randomUUID: vi.fn(),
+}));
+vi.mock("node:crypto", async (importOriginal) => ({
+	...(await importOriginal()),
+	randomUUID: io.randomUUID,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => ({
 	...(await importOriginal()),
 	appendFile: io.appendFile,
@@ -44,6 +53,13 @@ function entries() {
 			return marker < 0 ? null : JSON.parse(line.slice(marker + "inject.transport ".length));
 		})
 		.filter(Boolean);
+}
+
+function timingEntries() {
+	return io.appendFile.mock.calls.flatMap(([, line]) => {
+		const marker = line.indexOf("prompt.pack.timing ");
+		return marker < 0 ? [] : [JSON.parse(line.slice(marker + "prompt.pack.timing ".length))];
+	});
 }
 
 async function drain() {
@@ -124,6 +140,7 @@ beforeEach(() => {
 		CODEMEM_PLUGIN_IGNORE: "0",
 		CODEMEM_PLUGIN_DEBUG: "0",
 		CODEMEM_PLUGIN_LOG: "0",
+		CODEMEM_TRACE_PROMPT_PACK: "0",
 		CODEMEM_VIEWER_AUTO: "0",
 		CODEMEM_RAW_EVENTS: "0",
 		CODEMEM_BACKEND_UPDATE_POLICY: "off",
@@ -136,6 +153,11 @@ beforeEach(() => {
 	}))
 		vi.stubEnv(key, value);
 	io.appendFile.mockReset().mockResolvedValue();
+	io.randomUUID
+		.mockReset()
+		.mockImplementation(
+			() => `12345678-1234-4234-8234-${String(io.randomUUID.mock.calls.length).padStart(12, "0")}`,
+		);
 	io.mkdir.mockReset().mockResolvedValue();
 	io.spawn.mockReset().mockImplementation(() => {
 		const child = new EventEmitter();
@@ -180,6 +202,166 @@ it("counts successful viewer packs silently and does not invoke CLI fallback", a
 	});
 	expect(commands("pack")).toHaveLength(1);
 	expect(fetch.mock.calls[1][1]).toMatchObject({ method: "POST", redirect: "manual" });
+});
+
+it("traces profile proof, POST headers, and response body separately without CLI work", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_TRACE_PROMPT_PACK", "1");
+	const runtime = await fixture();
+	fetch.mockImplementation(async (_url, init) => {
+		clock += init.method === "GET" ? 2 : 5;
+		const result = response(init.method === "GET" ? compatibleProfile() : pack);
+		result.json.mockImplementation(async () => {
+			clock += init.method === "GET" ? 3 : 7;
+			return init.method === "GET" ? compatibleProfile() : pack;
+		});
+		return result;
+	});
+	// Act
+	await transform(runtime);
+	// Assert
+	expect(timingEntries()).toHaveLength(1);
+	expect(timingEntries()[0]).toMatchObject({
+		outcome: "completed",
+		transport: "viewer",
+		execution: "viewer",
+		http_reason: "success",
+		elapsed_ms: 17,
+		timings_ms: {
+			profile: 5,
+			request_headers: 5,
+			response_body: 7,
+			fallback_total: 0,
+			cli_resolve: 0,
+			cli_execute: 0,
+		},
+		incomplete_stages: [],
+	});
+	const posts = fetch.mock.calls.filter(([, init]) => init.method === "POST");
+	expect(posts[0][1].headers["x-codemem-prompt-timing-id"]).toBe(timingEntries()[0].request_id);
+	expect(JSON.parse(posts[0][1].body)).not.toHaveProperty("request_id");
+	expect(io.spawn).not.toHaveBeenCalled();
+	expect(entries()).toEqual([]);
+	for (const sentinel of [dbPath, actorID, query, "session-sentinel", "/fixture"])
+		expect(JSON.stringify(timingEntries())).not.toContain(sentinel);
+});
+
+it.each(["0", "true", ""])(
+	"does not forward a timing header or log when flag is %s",
+	async (flag) => {
+		// Arrange
+		vi.stubEnv("CODEMEM_TRACE_PROMPT_PACK", flag);
+		const runtime = await fixture();
+		fetch
+			.mockResolvedValueOnce(response(compatibleProfile()))
+			.mockResolvedValueOnce(response(pack));
+		// Act
+		await transform(runtime);
+		// Assert
+		expect(fetch.mock.calls[1][1].headers).not.toHaveProperty("x-codemem-prompt-timing-id");
+		expect(timingEntries()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(io.spawn).not.toHaveBeenCalled();
+	},
+);
+
+it("uses a fresh timing nonce on a later pack and keeps ledger bodies untraced", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_TRACE_PROMPT_PACK", "1");
+	const runtime = await fixture();
+	fetch.mockImplementation(async (_url, init) => {
+		if (init.method === "GET") return response(compatibleProfile());
+		if (JSON.parse(init.body).action) return response({ ok: true });
+		return response({ pack_text: "retrieved context", metrics: { total_items: 1 } });
+	});
+	// Act
+	await transform(runtime);
+	clock = 30_000;
+	await transform(runtime);
+	// Assert
+	const timings = timingEntries();
+	expect(timings).toHaveLength(2);
+	expect(timings[0].request_id).not.toBe(timings[1].request_id);
+	for (const entry of timings)
+		expect(entry.request_id).toMatch(
+			/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+		);
+	const ledger = fetch.mock.calls.filter(([, init]) => init.body && JSON.parse(init.body).action);
+	expect(ledger.length).toBeGreaterThan(0);
+	for (const [, init] of ledger)
+		expect(init.headers).not.toHaveProperty("x-codemem-prompt-timing-id");
+});
+
+it("includes CLI execution in fallback timing while keeping old HTTP elapsed unchanged", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_TRACE_PROMPT_PACK", "1");
+	const runtime = await fixture();
+	fetch.mockImplementation(async (_url, init) => {
+		clock += init.method === "GET" ? 5 : 10;
+		return response(
+			init.method === "GET" ? compatibleProfile() : {},
+			init.method === "GET" ? 200 : 503,
+		);
+	});
+	const spawn = io.spawn.getMockImplementation();
+	io.spawn.mockImplementation((...args) => {
+		clock += 20;
+		return spawn(...args);
+	});
+	// Act
+	await transform(runtime);
+	// Assert
+	expect(timingEntries()[0]).toMatchObject({
+		outcome: "completed",
+		transport: "cli",
+		execution: "node",
+		http_reason: "server_failure",
+		elapsed_ms: 35,
+		timings_ms: {
+			profile: 5,
+			request_headers: 10,
+			fallback_total: 20,
+			cli_resolve: 0,
+			cli_execute: 20,
+		},
+	});
+	expect(entries()[0]).toMatchObject({ elapsed_ms: 15, reason: "server_failure", runner: "node" });
+	expect(commands("pack")).toHaveLength(1);
+	expect(commands("pack")[0][2]).not.toHaveProperty("timing");
+});
+
+it("keeps delayed body timeout classification and terminal fallback eligibility", async () => {
+	// Arrange
+	vi.stubEnv("CODEMEM_TRACE_PROMPT_PACK", "1");
+	const runtime = await fixture();
+	const body = response(pack);
+	body.json.mockImplementation(async () => {
+		clock += 11;
+		signals.at(-1).abort(new DOMException("private body timeout", "TimeoutError"));
+		throw new Error("private body error");
+	});
+	fetch.mockResolvedValueOnce(response(compatibleProfile())).mockResolvedValueOnce(body);
+	// Act
+	await transform(runtime);
+	clock = 1_000_000;
+	fetch
+		.mockResolvedValueOnce(response(compatibleProfile()))
+		.mockResolvedValueOnce(response({}, 403));
+	await transform(runtime);
+	// Assert
+	expect(timingEntries()[0]).toMatchObject({
+		transport: "cli",
+		http_reason: "timeout",
+		timings_ms: { response_body: 11 },
+	});
+	expect(entries()[0]).toMatchObject({ reason: "timeout", stage: "request" });
+	expect(timingEntries()[1]).toMatchObject({
+		outcome: "terminal",
+		execution: "none",
+		timings_ms: { fallback_total: 0 },
+	});
+	expect(commands("pack")).toHaveLength(1);
+	expect(JSON.stringify(timingEntries())).not.toContain("private body");
 });
 
 it("records disabled transport without network I/O and preserves the custom fallback command", async () => {

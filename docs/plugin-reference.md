@@ -814,6 +814,7 @@ If you run multiple adapters for the same project (for example OpenCode + Claude
 | `CODEMEM_VIEWER_AUTO_STOP` | Set to `1`/`true`/`yes` to stop a viewer this plugin instance started when its session is deleted, including one it started to replace a viewer that stopped responding (default off, because one viewer serves every OpenCode project). |
 | `CODEMEM_PLUGIN_LOG` | Path for the plugin log file (set `1`/`true`/`yes` for `~/.codemem/plugin.log`; Claude hook failures are logged to this path by default). |
 | `CODEMEM_PLUGIN_LOG_PATH` | Explicit log file path for Claude hook script logging (overrides `CODEMEM_PLUGIN_LOG` for that script). |
+| `CODEMEM_TRACE_PROMPT_PACK` | Set to exactly `1` before starting both the OpenCode plugin and Viewer to emit local timing records for `POST /api/pack`. The plugin writes through its existing error log and the Viewer writes to stderr. See [prompt-pack timing diagnostics](opencode-retained-recall.md#prompt-pack-timing-diagnostics). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_CONNECT_TIMEOUT_S` | Claude hook HTTP enqueue connect timeout in seconds (default `1`). |
 | `CODEMEM_CLAUDE_HOOK_HTTP_MAX_TIME_S` | Claude hook HTTP enqueue total timeout in seconds (default `2`). |
 | `CODEMEM_CODEX_HOOK_HTTP_TIMEOUT_MS` | Codex hook HTTP enqueue timeout in milliseconds (default `1000`). |

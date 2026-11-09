@@ -19,6 +19,7 @@ import {
   createNativeMemoryTools,
   nativeMemoryToolsEnabled,
 } from "./memory-tools.js";
+import { createPromptPackTiming } from "./prompt-pack-timings.js";
 import { createPromptTransportDiagnostics } from "./prompt-transport-diagnostics.js";
 import {
   classifyRawEventTransportCause,
@@ -1029,8 +1030,77 @@ const classifyViewerProfileFailure = (profileBody, { operation, dbPath, identity
   };
 };
 
-const createPromptTransportResult = ({ operation, runner, diagnostics, viewerOnly, timing }) =>
+const NO_PROMPT_TIMING = { start: () => () => {}, transition: () => {}, setHttpReason: () => {}, setExecution: () => {} };
+const promptPostHeaders = (trace) => ({
+  "Content-Type": "application/json",
+  ...(trace.requestId ? { "x-codemem-prompt-timing-id": trace.requestId } : {}),
+});
+
+const readPromptResponseBody = async (response, trace) => {
+  trace.transition("response_body");
+  try { return await response.json(); }
+  catch { return null; }
+  finally {
+    // Reading and JSON decoding exclude classification and validation.
+    trace.transition(null);
+  }
+};
+
+const runCliWithTiming = (cliRunner, args, options, runCommand) => {
+  const { requestTiming, ...childOptions } = options;
+  const endResolve = requestTiming.start("cli_resolve");
+  const execute = (cmd) => {
+    endResolve();
+    if (!cmd) return { exitCode: 1, stdout: "", stderr: "CLI runner unavailable" };
+    const endExecute = requestTiming.start("cli_execute");
+    return runCommand(cmd, childOptions).finally(endExecute);
+  };
+  try {
+    const command = cliRunner.command(args, { onResolved: requestTiming.setExecution });
+    if (Array.isArray(command)) return execute(command);
+    return command.then(execute).finally(endResolve);
+  } catch (error) {
+    endResolve();
+    throw error;
+  }
+};
+
+const runTimedPromptPack = async (run, options) => {
+  const trace = createPromptPackTiming(options);
+  let transport = "none";
+  let outcome = "failed";
+  let endFallback;
+  const beginFallback = () => {
+    transport = "cli";
+    endFallback = trace?.start("fallback_total");
+  };
+  try {
+    const response = await run(trace, beginFallback);
+    endFallback?.();
+    transport = response.result.transport;
+    if (response.result.exitCode === 0) outcome = "completed";
+    else if (transport === "viewer") outcome = "terminal";
+    if (transport === "viewer" && outcome === "completed") trace?.setExecution("viewer");
+    return response;
+  } finally {
+    trace?.finish({ outcome, transport });
+  }
+};
+
+const runPackCliFallback = async ({ packArgs, metadata, runCli, logLine, trace, beginFallback }) => {
+  beginFallback();
+  const result = await runCli(packArgs, { stdinText: JSON.stringify(metadata), requestTiming: trace });
+  if (rejectsInternalLedgerFlag(result)) {
+    // An older CLI cannot enforce requester-session continuity. Do not retry
+    // its generic pack path, which may inject an unrelated summary.
+    await logLine("inject.pack.cli_legacy_unsafe_fallback_blocked");
+  }
+  return { packArgs, result: { ...result, transport: "cli" } };
+};
+
+const createPromptTransportResult = ({ operation, runner, diagnostics, viewerOnly, timing, trace = NO_PROMPT_TIMING }) =>
   (result, reason, status = null) => {
+    trace.setHttpReason(reason);
     let selectedRunner = "viewer";
     if (!result.ok) {
       selectedRunner = result.classification.retryable && !viewerOnly ? runner : "none";
@@ -2403,6 +2473,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   const errorLogPath = resolveErrorLogPath(cwd, process.env.HOME);
   const logLine = createLogLine(logPath);
   const errorLogLine = createLogLine(errorLogPath);
+  const tracePromptPack = process.env.CODEMEM_TRACE_PROMPT_PACK === "1";
   const promptTransportDiagnostics = createPromptTransportDiagnostics({ logLine: errorLogLine });
   const log = createDebugLogger({
     debug,
@@ -2920,11 +2991,13 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     runChildCommand(cmd, options, { cwd, timeoutMs: commandTimeout });
 
   const runCli = (args, options = {}) => {
+    if (options.requestTiming) return runCliWithTiming(cliRunner, args, options, runCommand);
+    const { requestTiming: _requestTiming, ...childOptions } = options;
     const command = cliRunner.command(args);
-    if (Array.isArray(command)) return runCommand(command, options);
+    if (Array.isArray(command)) return runCommand(command, childOptions);
     return command.then((cmd) => {
       if (!cmd) return { exitCode: 1, stdout: "", stderr: "CLI runner unavailable" };
-      return runCommand(cmd, options);
+      return runCommand(cmd, childOptions);
     });
   };
 
@@ -2972,11 +3045,11 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     spoolMaxEntries: rawEventSpoolMaxEntries,
   });
 
-  const postViewerJson = async ({ url, operation, payload, validate, viewerOnly = false }) => {
+  const postViewerJson = async ({ url, operation, payload, validate, viewerOnly = false, trace = NO_PROMPT_TIMING }) => {
     const timing = { startedAt: performance.now(), stage: "skipped" };
     let signal;
     const finish = createPromptTransportResult({
-      operation, runner, diagnostics: promptTransportDiagnostics, viewerOnly, timing,
+      operation, runner, diagnostics: promptTransportDiagnostics, viewerOnly, timing, trace,
     });
     if (!viewerEnabled) {
       return finish({
@@ -3000,6 +3073,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
     let response;
     try {
       timing.stage = "profile";
+      trace.transition("profile");
       signal = AbortSignal.timeout(promptPackHttpTimeout);
       const profileResponse = await fetch(promptPackProfileUrl, {
         method: "GET",
@@ -3036,11 +3110,12 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         }, diagnosticTimeoutReason(signal, profileFailure.reason), profileResponse.status);
       }
       timing.stage = "request";
+      trace.transition("request_headers");
       signal = AbortSignal.timeout(promptPackHttpTimeout);
       response = await fetch(url, {
         method: "POST",
         redirect: "manual",
-        headers: { "Content-Type": "application/json" },
+        headers: promptPostHeaders(trace),
         body: JSON.stringify(payload),
         signal,
       });
@@ -3051,12 +3126,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       return finish({ ok: false, classification }, viewerHttpDiagnosticReason({ operation, signal }));
     }
 
-    let body;
-    try {
-      body = await response.json();
-    } catch {
-      body = null;
-    }
+    const body = await readPromptResponseBody(response, trace);
     if (!response.ok) {
       const classification = classifyViewerHttpFailure({
         operation,
@@ -3497,7 +3567,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         promptNumber: promptCounter,
       };
     }
-    const runPack = async () => {
+    const runPack = runTimedPromptPack.bind(null, async (trace, beginFallback) => {
       const packArgs = buildPackArgs({
         query,
         filesModified: sessionContext.filesModified,
@@ -3508,6 +3578,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       const httpResult = await postViewerJson({
         url: packUrl,
         operation: "pack",
+        trace,
         payload: buildPackHttpBody({
           query,
           filesModified: sessionContext.filesModified,
@@ -3547,14 +3618,8 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         };
       }
 
-      const result = await runCli(packArgs, { stdinText: JSON.stringify(metadata) });
-      if (rejectsInternalLedgerFlag(result)) {
-        // An older CLI cannot enforce requester-session continuity. Do not retry
-        // through its generic pack path, which may inject an unrelated summary.
-        await logLine("inject.pack.cli_legacy_unsafe_fallback_blocked");
-      }
-      return { packArgs, result: { ...result, transport: "cli" } };
-    };
+      return runPackCliFallback({ packArgs, metadata, runCli, logLine, trace, beginFallback });
+    }, { enabled: tracePromptPack, logLine: errorLogLine });
     let { packArgs, result } = await runPack();
     let { packText, conflictPackText, metrics, itemCount, ledgerConflict } = parsePackOutput(result);
     let artifactFingerprint = packText || itemCount === 0
