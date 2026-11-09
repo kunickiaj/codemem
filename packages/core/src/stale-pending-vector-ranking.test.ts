@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSqliteVec } from "./db.js";
 import {
 	chunkText,
@@ -40,6 +40,15 @@ const routes = [
 type Route = (typeof routes)[number];
 type Neighbor = { id: number; distance: number };
 
+// Share compiled source modules only. Each rank still opens a fresh worker and database connection.
+let compileCacheDirectory: string;
+beforeAll(() => {
+	compileCacheDirectory = mkdtempSync(join(tmpdir(), "codemem-ranking-compile-cache-"));
+});
+afterAll(() => {
+	rmSync(compileCacheDirectory, { recursive: true, force: true });
+});
+
 function sourceHash(db: Database.Database, id: number): string {
 	const row = db.prepare("SELECT title, body_text FROM memory_items WHERE id=?").get(id) as {
 		title: string;
@@ -55,7 +64,14 @@ async function workerRank(path: string, input: RankInput): Promise<Neighbor[]> {
 	const stat = statSync(path);
 	const worker = new Worker(new URL("./semantic/semantic-worker-entry.ts", import.meta.url), {
 		workerData: { dbPath: path, fileIdentity: `${stat.dev}:${stat.ino}` },
-		env: {},
+		env: {
+			NODE_COMPILE_CACHE: compileCacheDirectory,
+			...(process.env.NODE_DISABLE_COMPILE_CACHE === undefined
+				? {}
+				: { NODE_DISABLE_COMPILE_CACHE: process.env.NODE_DISABLE_COMPILE_CACHE }),
+			// Cached V8 functions can yield less precise coverage.
+			...(process.env.NODE_V8_COVERAGE !== undefined ? { NODE_DISABLE_COMPILE_CACHE: "1" } : {}),
+		},
 		execArgv: ["--experimental-transform-types"],
 	});
 	try {
