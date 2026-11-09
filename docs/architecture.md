@@ -580,6 +580,34 @@ Projection reduces response bytes and client parsing. SQLite can still need
 body and metadata columns to evaluate classification, search, and authored-history
 read rules.
 
+### Optional cursor paging
+
+Both list endpoints accept `paging=cursor`, independently of `view=feed`. Omit
+`cursor` for the first page, then pass the response's `pagination.next_cursor`
+unchanged for the next page. Cursor responses include `paging: "cursor"`,
+`has_more`, and a string `next_cursor` when more rows exist. The cursor is `null`
+on the last page, and `offset` and `next_offset` are always `null` in this mode.
+Requests without `paging=cursor` retain the existing offset response.
+
+Continuation uses the stored `(created_at, id)` pair in descending order. It
+preserves timestamp text exactly, including numeric time-zone offsets, and works
+after the anchor row is deleted. New rows ahead of the cursor appear on a fresh
+first-page read. These pages do not represent a database snapshot.
+
+Each cursor binds the classification, project, normalized ownership scope and
+search query, and viewer identity. Clients can change the page limit or projection
+without restarting. A changed filter requires a new first page. Malformed,
+mismatched, or oversized cursors return `400` with `{"error":"invalid_cursor"}`.
+Cursor requests cannot include an offset other than the literal `0`.
+
+Tokens are limited to 4,096 characters and preserve up to 256 UTF-16 code units
+of timestamp text. If a stored anchor cannot fit these limits, the endpoint
+returns `409` with `{"error":"cursor_unavailable"}`. Clients can restart from the
+first page using offset mode, which continues to support those rows.
+Tokens identify a position and grant no read permission. Every
+page applies current visibility and read rules again. Cursor responses use
+`Cache-Control: no-store`.
+
 ## Design tradeoffs
 
 codemem is built for **episodic memory** — remembering what happened across coding sessions: what was tried, changed, decided, and learned. It's good at:
