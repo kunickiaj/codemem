@@ -1,8 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { Readable } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createClaudeHookFileContextCommand } from "./claude-hook-file-context.js";
 import { runClaudeFileContextTransport } from "./claude-hook-file-context-transport.js";
 
 const mocks = vi.hoisted(() => {
@@ -30,26 +33,10 @@ vi.mock("@codemem/core", async (importOriginal) => ({
 	buildViewerIdentityTarget: () => mocks.identity,
 }));
 let directory: string;
-let compileCacheDirectory: string;
-beforeAll(() => {
-	compileCacheDirectory = mkdtempSync(join(tmpdir(), "codemem-cli-transport-compile-cache-"));
-	const home = mkdtempSync(join(tmpdir(), "codemem-cli-transport-warmup-"));
-	try {
-		// Compile the real entrypoint before case budgets, without sharing case state.
-		const result = child(["--help"], "", { home });
-		expect(result.error).toBeUndefined();
-		expect(result.status).toBe(0);
-		expect(result.stderr).toBe("");
-		expect(result.stdout).toContain("claude-hook-file-context");
-		expect(readdirSync(home)).toEqual([]);
-	} finally {
-		rmSync(home, { recursive: true, force: true });
-	}
-});
-afterAll(() => {
-	rmSync(compileCacheDirectory, { recursive: true, force: true });
-});
+let originalExitCode: typeof process.exitCode;
 beforeEach(() => {
+	originalExitCode = process.exitCode;
+	process.exitCode = undefined;
 	vi.clearAllMocks();
 	mocks.store.hasCurrentIdentity.mockReturnValue(true);
 	mocks.store.close.mockReset();
@@ -65,6 +52,8 @@ beforeEach(() => {
 	vi.stubEnv("CODEMEM_KEYS_DIR", join(directory, "keys"));
 });
 afterEach(() => {
+	process.exitCode = originalExitCode;
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 	rmSync(directory, { recursive: true, force: true });
 });
@@ -84,26 +73,45 @@ const payload = () => ({
 function run(body = payload()) {
 	return runClaudeFileContextTransport(body, { dbPath: join(directory, "memory.sqlite") });
 }
-function child(args: string[], input = "", { home = directory }: { home?: string } = {}) {
+async function command(args: string[], input: string) {
+	let stdout = "";
+	let stderr = "";
+	vi.spyOn(console, "log").mockImplementation((value) => {
+		stdout += `${value}\n`;
+	});
+	vi.spyOn(process.stdout, "write").mockImplementation((value) => {
+		stdout += String(value);
+		return true;
+	});
+	vi.spyOn(process.stderr, "write").mockImplementation((value) => {
+		stderr += String(value);
+		return true;
+	});
+	const stream = Readable.from([input]);
+	const stdin = vi
+		.spyOn(process.stdin, Symbol.asyncIterator)
+		.mockImplementation(() => stream[Symbol.asyncIterator]());
+	await createClaudeHookFileContextCommand().parseAsync(args, { from: "user" });
+	return { stdout, stderr, status: process.exitCode ?? 0, stdin };
+}
+
+async function child(args: string[], options: { input?: string } = {}) {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (!key.startsWith("CODEMEM_")) env[key] = value;
 	}
 	Object.assign(env, {
-		HOME: home,
-		XDG_CONFIG_HOME: join(home, "config"),
-		CODEMEM_CONFIG: join(home, "config.json"),
-		CODEMEM_DB: join(home, "memory.sqlite"),
-		CODEMEM_KEYS_DIR: join(home, "keys"),
+		HOME: directory,
+		XDG_CONFIG_HOME: join(directory, "config"),
+		CODEMEM_CONFIG: join(directory, "config.json"),
+		CODEMEM_DB: join(directory, "memory.sqlite"),
+		CODEMEM_KEYS_DIR: join(directory, "keys"),
 		CODEMEM_SYNC_KEY_STORE: "file",
 		CODEMEM_EMBEDDING_DISABLED: "1",
 		CODEMEM_EMBEDDING_OFFLINE: "1",
-		CODEMEM_PLUGIN_LOG_PATH: join(home, "plugin.log"),
-		NODE_COMPILE_CACHE: compileCacheDirectory,
+		CODEMEM_PLUGIN_LOG_PATH: join(directory, "plugin.log"),
 	});
-	// Keep explicit cache opt-outs. Direct child coverage needs uncached source positions.
-	if (env.NODE_V8_COVERAGE !== undefined) env.NODE_DISABLE_COMPILE_CACHE = "1";
-	return spawnSync(
+	const child = spawn(
 		process.execPath,
 		[
 			"--import",
@@ -117,11 +125,26 @@ function child(args: string[], input = "", { home = directory }: { home?: string
 		{
 			cwd: resolve(import.meta.dirname, "../../../.."),
 			env,
-			input,
-			encoding: "utf8",
-			timeout: 30_000,
+			stdio: "pipe",
+			timeout: 10_000,
 		},
 	);
+	let stdout = "";
+	let stderr = "";
+	let stdinError: Error | undefined;
+	child.stdin.on("error", (error: Error) => {
+		stdinError = error;
+	});
+	child.stdout.setEncoding("utf8").on("data", (chunk) => {
+		stdout += chunk;
+	});
+	child.stderr.setEncoding("utf8").on("data", (chunk) => {
+		stderr += chunk;
+	});
+	// Omit input for the profile probe so stdin stays unwritten and open until exit.
+	if (options.input !== undefined) child.stdin.end(options.input);
+	const [status, signal] = await once(child, "close");
+	return { stdout, stderr, status, signal, stdinError };
 }
 
 describe("CLI transport validates before opening the database", () => {
@@ -243,39 +266,37 @@ describe("CLI transport validates before opening the database", () => {
 	});
 });
 
-describe("real CLI transport entrypoint", () => {
-	it.each(["", " \t\r\n", "not valid JSON"])(
-		"returns the capability profile without reading stdin %j or creating a database",
-		(input) => {
-			// Arrange
-			const args = [
-				"--transport-profile",
-				"--db-path",
-				join(directory, "missing-parent", "memory.sqlite"),
-			];
-			// Act
-			const result = child(args, input);
-			// Assert
-			expect(result.error).toBeUndefined();
-			expect(result.status).toBe(0);
-			expect(result.stderr).toBe("");
-			expect(JSON.parse(result.stdout)).toEqual({
-				file_context_transport: 1,
-				visibility_enforced: true,
-				deferred_delivery: true,
-			});
-			expect(readdirSync(directory)).toEqual([]);
-		},
-	);
+describe("CLI transport command input", () => {
+	it("returns the capability profile without reading stdin or creating a database", async () => {
+		// Arrange
+		const args = [
+			"--transport-profile",
+			"--db-path",
+			join(directory, "missing-parent", "memory.sqlite"),
+		];
+		// Act
+		const result = await command(args, "not valid JSON");
+		// Assert
+		expect(result.stdin).not.toHaveBeenCalled();
+		expect(mocks.open).not.toHaveBeenCalled();
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(JSON.parse(result.stdout)).toEqual({
+			file_context_transport: 1,
+			visibility_enforced: true,
+			deferred_delivery: true,
+		});
+		expect(readdirSync(directory)).toEqual([]);
+	});
 	it.each(["", " \t\r\n"])(
 		"rejects blank transport input %j before creating a database",
-		(input) => {
+		async (input) => {
 			// Arrange: transport requires a request, even when legacy mode would continue.
 			const args = ["--transport", "--db-path", join(directory, "memory.sqlite")];
 			// Act
-			const result = child(args, input);
+			const result = await command(args, input);
 			// Assert
-			expect(result.error).toBeUndefined();
+			expect(mocks.open).not.toHaveBeenCalled();
 			expect(readdirSync(directory)).toEqual([]);
 			expect(result.status).toBe(1);
 			expect(result.stderr).toBe("");
@@ -287,33 +308,44 @@ describe("real CLI transport entrypoint", () => {
 	);
 	it.each(["", " \t\r\n"])(
 		"preserves legacy continuation for blank input %j without creating a database",
-		(input) => {
+		async (input) => {
 			// Arrange
 			const args = ["--db-path", join(directory, "memory.sqlite")];
 			// Act
-			const result = child(args, input);
+			const result = await command(args, input);
 			// Assert
-			expect(result.error).toBeUndefined();
+			expect(mocks.open).not.toHaveBeenCalled();
 			expect(result.status).toBe(0);
 			expect(result.stderr).toBe("");
 			expect(JSON.parse(result.stdout)).toEqual({ continue: true });
 			expect(readdirSync(directory)).toEqual([]);
 		},
 	);
-	it.each(["{", "[]", JSON.stringify({ action: "lookup" }), " ".repeat(16_385)])(
+	it.each([
+		{ input: "{", error: "parse_error", message: "invalid JSON" },
+		{ input: "[]", error: "parse_error", message: "payload must be a JSON object" },
+		{
+			input: JSON.stringify({ action: "lookup" }),
+			error: "file_context_failed",
+			message: "file context unavailable",
+		},
+		{ input: " ".repeat(16_385), error: "parse_error", message: "transport payload too large" },
+	])(
 		"rejects malformed/oversized transport input before creating a database",
-		(input) => {
+		async ({ input, error, message }) => {
 			// Arrange
 			const args = ["--transport", "--db-path", join(directory, "memory.sqlite")];
 			// Act
-			const result = child(args, input);
+			const result = await command(args, input);
 			// Assert
-			expect(result.error).toBeUndefined();
+			expect(mocks.open).not.toHaveBeenCalled();
 			expect(result.status).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(JSON.parse(result.stderr)).toEqual({ error, message });
 			expect(readdirSync(directory)).toEqual([]);
 		},
 	);
-	it("preserves legacy continuation output for a payload without a file", () => {
+	it("preserves legacy continuation output for a payload without a file", async () => {
 		// Arrange
 		const input = JSON.stringify({
 			hook_event_name: "PreToolUse",
@@ -321,11 +353,70 @@ describe("real CLI transport entrypoint", () => {
 			tool_input: {},
 		});
 		// Act
-		const result = child([], input);
+		const result = await command([], input);
 		// Assert
-		expect(result.error).toBeUndefined();
+		expect(mocks.open).not.toHaveBeenCalled();
 		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
 		expect(JSON.parse(result.stdout)).toEqual({ continue: true });
 		expect(readdirSync(directory)).toEqual([]);
 	});
+});
+
+// Full source startup is covered here. Input permutations above use real Commander actions.
+describe("real CLI transport entrypoint", () => {
+	it("returns the capability profile while stdin remains open without creating a database", async () => {
+		// Arrange
+		const args = [
+			"--transport-profile",
+			"--db-path",
+			join(directory, "missing-parent", "memory.sqlite"),
+		];
+		// Act
+		const result = await child(args);
+		// Assert
+		expect(result.stdinError).toBeUndefined();
+		expect(result.signal).toBeNull();
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(JSON.parse(result.stdout)).toEqual({
+			file_context_transport: 1,
+			visibility_enforced: true,
+			deferred_delivery: true,
+		});
+		expect(readdirSync(directory)).toEqual([]);
+	}, 15_000);
+
+	it("rejects malformed transport input without creating a database", async () => {
+		// Arrange
+		const args = ["--transport", "--db-path", join(directory, "memory.sqlite")];
+		// Act
+		const result = await child(args, { input: "{" });
+		// Assert
+		expect(result.stdinError).toBeUndefined();
+		expect(result.signal).toBeNull();
+		expect(result.status).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(JSON.parse(result.stderr)).toEqual({ error: "parse_error", message: "invalid JSON" });
+		expect(readdirSync(directory)).toEqual([]);
+	}, 15_000);
+
+	it("preserves legacy continuation without creating a database", async () => {
+		// Arrange
+		const args = ["--db-path", join(directory, "memory.sqlite")];
+		const input = JSON.stringify({
+			hook_event_name: "PreToolUse",
+			tool_name: "Read",
+			tool_input: {},
+		});
+		// Act
+		const result = await child(args, { input });
+		// Assert
+		expect(result.stdinError).toBeUndefined();
+		expect(result.signal).toBeNull();
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(JSON.parse(result.stdout)).toEqual({ continue: true });
+		expect(readdirSync(directory)).toEqual([]);
+	}, 15_000);
 });
