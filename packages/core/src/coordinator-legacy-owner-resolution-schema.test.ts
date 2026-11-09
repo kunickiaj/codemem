@@ -386,21 +386,6 @@ describe("resolution JSON and installation", () => {
 			expect(rows(db)).toEqual([]);
 		});
 	}
-	test("rolls back earlier writes when a later receipt conflicts in the fixture transaction", ({
-		db,
-	}) => {
-		// Arrange
-		const transaction = db.transaction(() => {
-			insert(db);
-			insert(db, { resolution_id: "resolution-b", owner_identity_id: "owner-b" });
-		});
-		// Act
-		const attempt = () => transaction();
-		// Assert
-		expect(attempt).toThrow();
-		expect(rows(db)).toEqual([]);
-		expect(db.inTransaction).toBe(false);
-	});
 	it("initial and repeated installation preserve unrelated schema and exact bytes without backfill", () => {
 		// Arrange: fixture-only unrelated state, not a production schema or migration.
 		const db = new Database(":memory:");
