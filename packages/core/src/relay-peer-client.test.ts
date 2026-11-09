@@ -9,6 +9,7 @@ import type { PeerHttpServerRequest } from "./peer-http-server.js";
 import { decodeRelayCheckPacket } from "./relay-admission-codec.js";
 import { decodeRelayDataFrame, encodeRelayDataFrame } from "./relay-data-frame.js";
 import { RELAY_FAILURE_REASONS, RelayFailure } from "./relay-failure-reason.js";
+import { simulatedRelayPairPacing } from "./relay-pair-pacing-test-fixtures.js";
 import type { RelayInboundFailure, RelayPeerClientOptions } from "./relay-peer-client.js";
 import {
 	disposableIdentity,
@@ -314,7 +315,8 @@ describe("relay inbound diagnostics after admission", () => {
 describe("relay peer graceful socket close", () => {
 	it("completes a route opened while the relay socket closes gracefully, on a new socket", async () => {
 		// Arrange: a registered source, and one refilled upgrade for its reconnect.
-		const f = await fixture();
+		const clock = simulatedRelayPairPacing();
+		const f = await fixture({ simulatedPairPacing: clock });
 		const target = f.client("target", {
 			onInbound: async (_connection, context) =>
 				context.serve({
@@ -325,7 +327,7 @@ describe("relay peer graceful socket close", () => {
 		const source = f.client("source");
 		await target.connect(new AbortController().signal, relayDeadline());
 		await source.connect(new AbortController().signal, relayDeadline());
-		await new Promise((resolve) => setTimeout(resolve, 6100));
+		clock.advance(6100);
 		const socket = (source as unknown as { socket: WebSocket }).socket;
 		// Act: the socket enters CLOSING with no event yet, and a route opens in that window.
 		socket.close(1000);
