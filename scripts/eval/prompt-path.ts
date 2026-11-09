@@ -1,27 +1,28 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import {
-	appendFileSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { type ChildProcess, spawn } from "node:child_process";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MemoryStore } from "@codemem/core";
 import {
+	CommandInterruptedError,
+	killProcessGroup,
+	ownedChildren,
+	runCommand,
+	stopOwnedChildren,
+} from "./prompt-path-children.js";
+import {
 	classifyFailure,
 	emptyFailureCounts,
 	evaluatePromptPathGate,
-	parseSubprocessLog,
 	PromptPathBenchmarkError,
+	parseSubprocessLog,
 	RELEASE_REPETITIONS,
+	type SubprocessCounts,
 	subprocessActivitySettled,
 	summarizeTimings,
-	type SubprocessCounts,
 	type TimingSummary,
 } from "./prompt-path-lib.js";
+import { type PhaseRequest, runPhaseProcess } from "./prompt-path-process.js";
 
 const PROMPT = "trace prompt path latency and preserve classified fallback";
 const PROJECT = "codemem-benchmark";
@@ -31,7 +32,6 @@ const LEDGER_SETTLE_TIMEOUT_MS = 30_000;
 const STARTUP_SETTLE_TIMEOUT_MS = 30_000;
 const HEALTHY_POST_MEASURE_OBSERVE_MS = 2_000;
 const POLL_INTERVAL_MS = 25;
-const ownedChildren = new Set<ChildProcess>();
 
 type Hook = (input: { sessionID: string }, output: MessageOutput) => Promise<void>;
 type PluginFactory = (input: {
@@ -55,12 +55,7 @@ interface MessageOutput {
 	}>;
 }
 
-interface CommandResult {
-	exitCode: number;
-	stdout: string;
-}
-
-interface PathResult extends TimingSummary {
+export interface PathResult extends TimingSummary {
 	subprocesses: SubprocessCounts;
 }
 
@@ -94,59 +89,6 @@ function parseRepetitions(argv: readonly string[]): number {
 		throw new Error("--repetitions must be a positive integer");
 	}
 	return Number(raw);
-}
-
-function runCommand(
-	command: string,
-	args: readonly string[],
-	options: { cwd: string; env: NodeJS.ProcessEnv; stdin?: string; timeoutMs?: number },
-): Promise<CommandResult> {
-	return new Promise((resolveCommand, rejectCommand) => {
-		const child = spawn(command, [...args], {
-			cwd: options.cwd,
-			env: options.env,
-			detached: true,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
-		ownedChildren.add(child);
-		let stdout = "";
-		let stderr = "";
-		let settled = false;
-		const finish = (callback: () => void) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			ownedChildren.delete(child);
-			callback();
-		};
-		child.stdout.on("data", (chunk) => {
-			stdout += String(chunk);
-		});
-		child.stderr.on("data", (chunk) => {
-			stderr += String(chunk);
-		});
-		child.once("error", (error) => finish(() => rejectCommand(error)));
-		let timedOut = false;
-		child.once("close", (code) => {
-			if (timedOut) return;
-			finish(() => {
-				if (code === 0) resolveCommand({ exitCode: 0, stdout });
-				else
-					rejectCommand(
-						new Error(`command failed with exit ${code ?? 1} (stderr ${stderr.length} bytes)`),
-					);
-			});
-		});
-		const timer = setTimeout(() => {
-			timedOut = true;
-			killProcessGroup(child, "SIGTERM");
-			setTimeout(() => {
-				killProcessGroup(child, "SIGKILL");
-				finish(() => rejectCommand(new Error("command timed out")));
-			}, 1_000);
-		}, options.timeoutMs ?? CLI_TIMEOUT_MS);
-		child.stdin.end(options.stdin);
-	});
 }
 
 function runnerSource(): string {
@@ -287,6 +229,7 @@ async function createPluginHook(
 	pluginFactory: PluginFactory,
 	root: string,
 	viewerPort: number,
+	options: { onDispose: (dispose: () => Promise<void>) => void },
 ): Promise<Hook> {
 	process.env.CODEMEM_VIEWER_PORT = String(viewerPort);
 	const hooks = await pluginFactory({
@@ -297,6 +240,7 @@ async function createPluginHook(
 	});
 	const hook = hooks["experimental.chat.messages.transform"];
 	if (typeof hook !== "function") throw new Error("message transform hook is unavailable");
+	if (typeof hooks.dispose === "function") options.onDispose(hooks.dispose as () => Promise<void>);
 	return hook as Hook;
 }
 
@@ -325,6 +269,7 @@ async function measure(
 			await options.afterEach?.(iteration, before);
 			timings.push(duration);
 		} catch (error) {
+			if (error instanceof CommandInterruptedError) throw error;
 			failures[classifyFailure(error)] += 1;
 		}
 	}
@@ -334,7 +279,10 @@ async function measure(
 async function seedFixture(dbPath: string): Promise<void> {
 	const store = new MemoryStore(dbPath);
 	try {
-		const sessionId = store.startSession({ project: PROJECT, toolVersion: "prompt-path-benchmark" });
+		const sessionId = store.startSession({
+			project: PROJECT,
+			toolVersion: "prompt-path-benchmark",
+		});
 		store.remember(
 			sessionId,
 			"decision",
@@ -362,7 +310,12 @@ async function seedFixture(dbPath: string): Promise<void> {
 	}
 }
 
-function startViewer(root: string, port: number, env: NodeJS.ProcessEnv): ChildProcess {
+function startViewer(
+	root: string,
+	port: number,
+	env: NodeJS.ProcessEnv,
+	options: { detached?: boolean } = {},
+): ChildProcess {
 	const viewer = spawn(
 		"pnpm",
 		[
@@ -379,27 +332,11 @@ function startViewer(root: string, port: number, env: NodeJS.ProcessEnv): ChildP
 			"--port",
 			String(port),
 		],
-		{ cwd: root, env, detached: true, stdio: "ignore" },
+		{ cwd: root, env, detached: options.detached ?? true, stdio: "ignore" },
 	);
 	ownedChildren.add(viewer);
 	viewer.once("exit", () => ownedChildren.delete(viewer));
 	return viewer;
-}
-
-function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-	if (child.pid) {
-		try {
-			process.kill(-child.pid, signal);
-			return;
-		} catch {
-			// Platforms without process groups fall back to the direct child.
-		}
-	}
-	try {
-		child.kill(signal);
-	} catch {
-		// The child may already have exited.
-	}
 }
 
 async function waitForViewer(port: number, viewer: ChildProcess): Promise<void> {
@@ -434,17 +371,16 @@ async function stopViewer(viewer: ChildProcess): Promise<void> {
 	ownedChildren.delete(viewer);
 }
 
-async function stopOwnedChildren(): Promise<void> {
-	const children = [...ownedChildren];
-	for (const child of children) killProcessGroup(child, "SIGTERM");
-	if (children.length > 0) await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
-	for (const child of children) killProcessGroup(child, "SIGKILL");
-	ownedChildren.clear();
-}
-
 function benchmarkEnvironment(
 	base: NodeJS.ProcessEnv,
-	paths: { db: string; config: string; runtimeRoot: string; runner: string; counter: string; root: string },
+	paths: {
+		db: string;
+		config: string;
+		runtimeRoot: string;
+		runner: string;
+		counter: string;
+		root: string;
+	},
 ): NodeJS.ProcessEnv {
 	return {
 		...base,
@@ -525,9 +461,7 @@ function buildReport(
 	};
 }
 
-async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
-	const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-	const tempRoot = mkdtempSync(join(tmpdir(), "codemem-prompt-path-"));
+async function preparePhaseFixture(tempRoot: string, root: string) {
 	const paths = {
 		db: join(tempRoot, "fixture.sqlite"),
 		config: join(tempRoot, "config.toml"),
@@ -540,138 +474,173 @@ async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
 	writeFileSync(paths.runner, runnerSource(), "utf8");
 	appendFileSync(paths.counter, "", "utf8");
 	const env = benchmarkEnvironment(process.env, paths);
+	await runCommand(
+		"pnpm",
+		[
+			"exec",
+			"tsx",
+			"--conditions",
+			"source",
+			"packages/cli/src/index.ts",
+			"maintenance",
+			"database",
+			"init",
+		],
+		{ cwd: root, env, detached: false },
+	);
 	const restoreEnvironment = applyEnvironment(env);
-	let viewer: ChildProcess | null = null;
-	let cleaned = false;
-	const cleanup = async () => {
-		if (cleaned) return;
-		cleaned = true;
-		if (viewer) await stopViewer(viewer);
-		await stopOwnedChildren();
-		restoreEnvironment();
-		rmSync(tempRoot, { recursive: true, force: true });
-	};
-	const handleInterrupt = () => {
-		void cleanup().finally(() => process.exit(130));
-	};
-	process.once("SIGINT", handleInterrupt);
-	process.once("SIGTERM", handleInterrupt);
 	try {
-		await runCommand(
-			"pnpm",
-			[
-				"exec",
-				"tsx",
-				"--conditions",
-				"source",
-				"packages/cli/src/index.ts",
-				"maintenance",
-				"database",
-				"init",
-			],
-			{ cwd: root, env },
-		);
 		await seedFixture(paths.db);
-		const pluginFactory = await loadPlugin();
-		const healthyPort = await reservePort();
-		viewer = startViewer(root, healthyPort, env);
-		await waitForViewer(healthyPort, viewer);
-
-		const cliArgs = ["memory", "pack", `${PROMPT} ${PROJECT}`, "--json"];
-		const runDirect = async () => {
-			try {
-				const result = await runCommand(process.execPath, [paths.runner, ...cliArgs], {
-					cwd: root,
-					env,
-				});
-				validatePackJson(result.stdout);
-			} catch (error) {
-				if (error instanceof PromptPathBenchmarkError) throw error;
-				throw new PromptPathBenchmarkError("terminal_contract", "direct CLI pack failed");
-			}
-		};
-		await runDirect();
-		resetSubprocessCounts(paths.counter);
-		const directSummary = await measure(repetitions, async () => runDirect());
-		const direct = withSubprocesses(directSummary, readSubprocessCounts(paths.counter));
-
-		const healthyHook = await createPluginHook(pluginFactory, root, healthyPort);
-		await invokeHook(healthyHook, -1, "benchmark-healthy");
-		await settlePluginStartupChecks(paths.counter);
-		resetSubprocessCounts(paths.counter);
-		const healthySummary = await measure(
-			repetitions,
-			async (iteration) => invokeHook(healthyHook, iteration, "benchmark-healthy"),
-			{
-				beforeEach: () => readSubprocessCounts(paths.counter),
-				afterEach: (_iteration, beforeValue) => {
-					const before = beforeValue as SubprocessCounts;
-					const after = readSubprocessCounts(paths.counter);
-					if (
-						after.pack !== before.pack ||
-						after.ledger !== before.ledger ||
-						after.other !== before.other
-					) {
-						throw new PromptPathBenchmarkError(
-							"retryable_transport_protocol",
-							"healthy viewer path used a CLI subprocess",
-						);
-					}
-				},
-			},
-		);
-		await observeHealthySubprocessQuiescence(paths.counter);
-		const healthy = withSubprocesses(healthySummary, readSubprocessCounts(paths.counter));
-
-		const fallbackPort = await reservePort();
-		const fallbackHook = await createPluginHook(pluginFactory, root, fallbackPort);
-		await invokeHook(fallbackHook, -2, "benchmark-fallback");
-		await waitFor(
-			() => {
-				const counts = readSubprocessCounts(paths.counter);
-				const activity = readSubprocessActivity(paths.counter);
-				return counts.pack >= 1 && counts.ledger >= 1 && activity.started === activity.ended;
-			},
-			LEDGER_SETTLE_TIMEOUT_MS,
-			"fallback warm-up subprocesses did not settle",
-		);
-		resetSubprocessCounts(paths.counter);
-		const fallbackSummary = await measure(
-			repetitions,
-			async (iteration) => invokeHook(fallbackHook, iteration, "benchmark-fallback"),
-			{
-				afterEach: async (iteration) => {
-					const expected = iteration + 1;
-					await waitFor(
-						() => {
-							const counts = readSubprocessCounts(paths.counter);
-							const activity = readSubprocessActivity(paths.counter);
-							return (
-								counts.pack >= expected &&
-								counts.ledger >= expected &&
-								activity.started === activity.ended
-							);
-						},
-						LEDGER_SETTLE_TIMEOUT_MS,
-						"fallback subprocesses did not settle",
-					);
-				},
-			},
-		);
-		const fallback = withSubprocesses(fallbackSummary, readSubprocessCounts(paths.counter));
-		return buildReport(repetitions, direct, healthy, fallback);
 	} finally {
-		process.off("SIGINT", handleInterrupt);
-		process.off("SIGTERM", handleInterrupt);
-		await cleanup();
+		restoreEnvironment();
 	}
+	return { paths, env };
+}
+
+type PhaseFixture = Awaited<ReturnType<typeof preparePhaseFixture>>;
+
+async function measureDirectPhase(
+	{ paths, env }: PhaseFixture,
+	repetitions: number,
+): Promise<PathResult> {
+	const cliArgs = ["memory", "pack", `${PROMPT} ${PROJECT}`, "--json"];
+	const runDirect = async () => {
+		try {
+			const result = await runCommand(process.execPath, [paths.runner, ...cliArgs], {
+				cwd: paths.root,
+				env,
+				detached: false,
+			});
+			validatePackJson(result.stdout);
+		} catch (error) {
+			if (error instanceof CommandInterruptedError) throw error;
+			if (error instanceof PromptPathBenchmarkError) throw error;
+			throw new PromptPathBenchmarkError("terminal_contract", "direct CLI pack failed");
+		}
+	};
+	await runDirect();
+	resetSubprocessCounts(paths.counter);
+	const summary = await measure(repetitions, async () => runDirect());
+	return withSubprocesses(summary, readSubprocessCounts(paths.counter));
+}
+
+async function measureHealthyPhase(
+	healthyHook: Hook,
+	counter: string,
+	repetitions: number,
+): Promise<PathResult> {
+	await invokeHook(healthyHook, -1, "benchmark-healthy");
+	await settlePluginStartupChecks(counter);
+	resetSubprocessCounts(counter);
+	const healthySummary = await measure(
+		repetitions,
+		async (iteration) => invokeHook(healthyHook, iteration, "benchmark-healthy"),
+		{
+			beforeEach: () => readSubprocessCounts(counter),
+			afterEach: (_iteration, beforeValue) => {
+				const before = beforeValue as SubprocessCounts;
+				const after = readSubprocessCounts(counter);
+				if (
+					after.pack !== before.pack ||
+					after.ledger !== before.ledger ||
+					after.other !== before.other
+				) {
+					throw new PromptPathBenchmarkError(
+						"retryable_transport_protocol",
+						"healthy viewer path used a CLI subprocess",
+					);
+				}
+			},
+		},
+	);
+	await observeHealthySubprocessQuiescence(counter);
+	return withSubprocesses(healthySummary, readSubprocessCounts(counter));
+}
+
+async function waitForFallback(counter: string, expected: number): Promise<void> {
+	await waitFor(
+		() => {
+			const counts = readSubprocessCounts(counter);
+			return (
+				counts.pack >= expected &&
+				counts.ledger >= expected &&
+				subprocessActivitySettled(readSubprocessActivity(counter))
+			);
+		},
+		LEDGER_SETTLE_TIMEOUT_MS,
+		"fallback subprocesses did not settle",
+	);
+}
+
+async function measureFallbackPhase(
+	fallbackHook: Hook,
+	counter: string,
+	repetitions: number,
+): Promise<PathResult> {
+	await invokeHook(fallbackHook, -2, "benchmark-fallback");
+	await settlePluginStartupChecks(counter);
+	await waitForFallback(counter, 1);
+	resetSubprocessCounts(counter);
+	const fallbackSummary = await measure(
+		repetitions,
+		async (iteration) => invokeHook(fallbackHook, iteration, "benchmark-fallback"),
+		{
+			afterEach: (iteration) => waitForFallback(counter, iteration + 1),
+		},
+	);
+	return withSubprocesses(fallbackSummary, readSubprocessCounts(counter));
+}
+
+export async function executePhase({
+	phase,
+	repetitions,
+	tempRoot,
+	root,
+}: PhaseRequest): Promise<PathResult> {
+	const fixture = await preparePhaseFixture(tempRoot, root);
+	const restoreEnvironment = applyEnvironment(fixture.env);
+	let viewer: ChildProcess | undefined;
+	let disposePlugin: (() => Promise<void>) | undefined;
+	try {
+		if (phase === "direct_cli") return await measureDirectPhase(fixture, repetitions);
+		const port = await reservePort();
+		if (phase === "healthy_viewer_plugin") {
+			viewer = startViewer(root, port, fixture.env, { detached: false });
+			await waitForViewer(port, viewer);
+		}
+		const hook = await createPluginHook(await loadPlugin(), root, port, {
+			onDispose: (dispose) => {
+				disposePlugin = dispose;
+			},
+		});
+		if (phase === "healthy_viewer_plugin")
+			return await measureHealthyPhase(hook, fixture.paths.counter, repetitions);
+		return await measureFallbackPhase(hook, fixture.paths.counter, repetitions);
+	} finally {
+		try {
+			await disposePlugin?.();
+		} finally {
+			if (viewer) await stopViewer(viewer);
+			await stopOwnedChildren();
+			restoreEnvironment();
+		}
+	}
+}
+
+export async function runBenchmark(repetitions: number): Promise<BenchmarkReport> {
+	const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+	const direct = await runPhaseProcess("direct_cli", repetitions, { root });
+	const healthy = await runPhaseProcess("healthy_viewer_plugin", repetitions, { root });
+	const fallback = await runPhaseProcess("viewer_unavailable_cli_fallback", repetitions, { root });
+	return buildReport(repetitions, direct, healthy, fallback);
 }
 
 async function main(): Promise<void> {
 	const repetitions = parseRepetitions(process.argv.slice(2));
 	const report = await runBenchmark(repetitions);
 	process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-	if (!report.run_valid || (report.release_gate_eligible && !report.gate.passed)) process.exitCode = 1;
+	if (!report.run_valid || (report.release_gate_eligible && !report.gate.passed))
+		process.exitCode = 1;
 }
 
 const entrypoint = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";

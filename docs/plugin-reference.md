@@ -147,8 +147,11 @@ bodies are not replayed to another endpoint.
 
 ### OpenCode prompt-path benchmark
 
-A 30-run synthetic-fixture benchmark measured the **OpenCode 1 plugin path only**; it does not measure
-Claude or Codex latency. The privacy-safe report contains no prompt, memory content, IDs, or paths.
+The following results are historical source-tree measurements from before the
+current phase isolation. They cover the **OpenCode 1 plugin path only** and
+exclude Claude and Codex latency. See the [benchmark methodology](../scripts/eval/README.md#prompt-path-performance-benchmark)
+for the current isolated-phase process and counter rules. The privacy-safe report
+contains no prompt, memory content, IDs, or paths.
 
 | Mode | Median / p95 | Prompt children |
 | --- | --- | --- |

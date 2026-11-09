@@ -96,21 +96,24 @@ export function summarizeTimings(
 	attempted: number,
 	failures: FailureCounts,
 ): TimingSummary {
-	const sorted = [...timings].sort((left, right) => left - right);
+	// Compute metrics at the same precision as the samples used to verify the report.
+	const sorted = timings.map(roundMilliseconds).sort((left, right) => left - right);
 	const middle = Math.floor(sorted.length / 2);
-	const median =
-		sorted.length === 0
-			? null
-			: sorted.length % 2 === 0
-				? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
-				: (sorted[middle] ?? null);
+	let median: number | null = null;
+	if (sorted.length > 0) {
+		if (sorted.length % 2 === 0) {
+			median = ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+		} else {
+			median = sorted[middle] ?? null;
+		}
+	}
 	const p95 = nearestRank(sorted, 0.95);
 	return {
 		attempted,
 		succeeded: sorted.length,
 		median_ms: median == null ? null : roundMilliseconds(median),
 		p95_ms: p95 == null ? null : roundMilliseconds(p95),
-		sorted_ms: sorted.map(roundMilliseconds),
+		sorted_ms: sorted,
 		failures: { ...failures },
 	};
 }
@@ -162,10 +165,15 @@ export function evaluatePromptPathGate(
 	const subprocessContractsMet =
 		direct.subprocesses.pack === repetitions &&
 		direct.subprocesses.ledger === 0 &&
+		direct.subprocesses.other === 0 &&
 		healthyZeroSubprocesses &&
 		fallback.subprocesses.pack === repetitions &&
-		fallback.subprocesses.ledger === repetitions;
-	const runValid = allSucceeded && subprocessContractsMet;
+		fallback.subprocesses.ledger === repetitions &&
+		fallback.subprocesses.other === 0;
+	const runValid =
+		allSucceeded &&
+		subprocessContractsMet &&
+		[direct, healthy, fallback].every((path) => path.attempted === repetitions);
 	return {
 		runValid,
 		passed:
