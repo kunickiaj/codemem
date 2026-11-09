@@ -183,7 +183,7 @@ function startServer(
 		"env",
 		"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
 		...CLI_PREFIX,
-		"serve",
+		"service",
 		"start",
 		"--foreground",
 		"--db-path",
@@ -360,7 +360,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 
 	const group = ctx.compose.exec(
 		"coordinator",
-		[...CLI_PREFIX, "sync", "coordinator", "group-create", GROUP_ID, "--db-path", "/data/coordinator.sqlite"],
+		[...CLI_PREFIX, "coordinator", "group", "create", GROUP_ID, "--db-path", "/data/coordinator.sqlite"],
 		"09-group-create",
 	);
 	assertStatus(group.status, 0, "coordinator group creation failed");
@@ -368,9 +368,8 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"enroll-device",
+			"device", "enroll",
 			GROUP_ID,
 			peerA.device_id,
 			"--fingerprint",
@@ -1084,9 +1083,8 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"disable-device",
+			"device", "disable",
 			GROUP_ID,
 			peerC.device_id,
 			"--db-path",

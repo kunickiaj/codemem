@@ -155,7 +155,8 @@ function options() {
 }
 function commandArgs(extra: string[]) {
 	return [
-		"import-invite",
+		"invitation",
+		"accept",
 		invite,
 		"--db-path",
 		dbPath,

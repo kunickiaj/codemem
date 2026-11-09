@@ -169,7 +169,7 @@ it("confirms exact reviewed subjects once and displays both retained references 
 	vi.mocked(fetch).mockResolvedValueOnce(reply(committed));
 	// Act
 	await buildCoordinatorCommand().parseAsync(
-		["revoke-device", "group-a", "device-a", "--config", "fixture-config.json"],
+		["device", "revoke", "group-a", "device-a", "--config", "fixture-config.json"],
 		{ from: "user" },
 	);
 	// Assert
@@ -440,14 +440,18 @@ it("registers independent equivalent top-level and sync-alias commands", () => {
 	const top = buildCoordinatorCommand();
 	const alias = syncCommand.commands.find((command) => command.name() === "coordinator");
 	// Act
-	const first = top.commands.find((command) => command.name() === "revoke-device");
-	const second = alias?.commands.find((command) => command.name() === "revoke-device");
+	const first = top.commands
+		.find((command) => command.name() === "device")
+		?.commands.find((command) => command.name() === "revoke");
+	const second = alias?.commands
+		.find((command) => command.name() === "device")
+		?.commands.find((command) => command.name() === "revoke");
 	// Assert
 	expect(first).toBeDefined();
 	expect(second).toBeDefined();
 	expect(first).not.toBe(second);
-	expect(first?.helpInformation()).toContain("Usage: coordinator revoke-device");
-	expect(second?.helpInformation()).toContain("Usage: sync coordinator revoke-device");
+	expect(first?.helpInformation()).toContain("Usage: coordinator device revoke");
+	expect(second?.helpInformation()).toContain("Usage: sync coordinator device revoke");
 	expect(first?.registeredArguments).toEqual(second?.registeredArguments);
 	expect(first?.options).toEqual(second?.options);
 	expect(first?.options.map((option) => option.long)).toEqual(["--config", "--json"]);
@@ -457,7 +461,7 @@ it.each(["top-level", "sync-alias"])(
 	"executes real network preview through %s registration",
 	async (entry) => {
 		// Arrange
-		const args = ["coordinator", "revoke-device", "group-a", "device-a", "--json"];
+		const args = ["coordinator", "device", "revoke", "group-a", "device-a", "--json"];
 		// Act
 		if (entry === "sync-alias") await syncCommand.parseAsync(args, { from: "user" });
 		else await buildCoordinatorCommand().parseAsync(args.slice(1), { from: "user" });

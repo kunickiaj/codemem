@@ -111,7 +111,7 @@ export async function renderHeadlessConsentPage(
 		});
 	return buildPage(
 		"Link account to a device",
-		`<h1>Link account to a device</h1>${profileMarkup(projectAccountProfileView(input.profile, input.issuer))}<section aria-label="Link details"><h2>Link details</h2><dl>${details}</dl></section>${keyCheck}<p role="alert"><strong>Only continue if you ran <code class="command">codemem coordinator link-account --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.</strong></p><div class="actions">${actions}</div>`,
+		`<h1>Link account to a device</h1>${profileMarkup(projectAccountProfileView(input.profile, input.issuer))}<section aria-label="Link details"><h2>Link details</h2><dl>${details}</dl></section>${keyCheck}<p role="alert"><strong>Only continue if you ran <code class="command">codemem coordinator account link --headless</code> on this device yourself in the last 10 minutes and the key fingerprint matches its terminal.</strong></p><div class="actions">${actions}</div>`,
 		input.issuer,
 		{ referrerPolicy: "same-origin" },
 	);

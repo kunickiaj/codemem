@@ -79,7 +79,7 @@ function startSyncServer(ctx: ScenarioContext, service: string, artifactName: st
 			"env",
 			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
 			...CLI_PREFIX,
-			"serve",
+			"service",
 			"start",
 			"--foreground",
 			"--db-path",
@@ -222,7 +222,7 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 	for (const swarm of spec.swarms) {
 		const groupCreate = ctx.compose.exec(
 			coordinatorService,
-			[...CLI_PREFIX, "sync", "coordinator", "group-create", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite"],
+			[...CLI_PREFIX, "coordinator", "group", "create", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite"],
 			`08-group-create-${swarm.id}`,
 			120_000,
 		);
@@ -231,9 +231,8 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 			coordinatorService,
 			[
 				...CLI_PREFIX,
-				"sync",
 				"coordinator",
-				"enroll-device",
+				"device", "enroll",
 				swarm.coordinator_group,
 				seedIdentity.device_id,
 				"--fingerprint",
@@ -251,7 +250,7 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 
 		const inviteResult = ctx.compose.exec(
 			seedService,
-			[...CLI_PREFIX, "sync", "coordinator", "create-invite", swarm.coordinator_group, "--policy", "approval_required", "--json"],
+			[...CLI_PREFIX, "coordinator", "invitation", "create", swarm.coordinator_group, "--policy", "approval_required", "--json"],
 			`10-create-invite-${swarm.id}`,
 			120_000,
 		);
@@ -280,9 +279,8 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 				service,
 				[
 					...CLI_PREFIX,
-					"sync",
 					"coordinator",
-					"import-invite",
+					"invitation", "accept",
 					invitePayload.encoded,
 					"--db-path",
 					"/data/mem.sqlite",
@@ -305,7 +303,7 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 			assertStatus(enableWorker.status, 0, `failed to enable sync on ${worker.id}`);
 			const joinRequestsResult = ctx.compose.exec(
 				coordinatorService,
-				[...CLI_PREFIX, "sync", "coordinator", "list-join-requests", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite", "--json"],
+				[...CLI_PREFIX, "coordinator", "request", "list", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite", "--json"],
 				`14-list-join-requests-${worker.id}`,
 				120_000,
 			);
@@ -317,9 +315,8 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 				coordinatorService,
 				[
 					...CLI_PREFIX,
-					"sync",
 					"coordinator",
-					"approve-join-request",
+					"request", "approve",
 					"--db-path",
 					"/data/coordinator.sqlite",
 					"--json",

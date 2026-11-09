@@ -123,7 +123,7 @@ async function grantIdentityGroup(attestationId: string, options: Options): Prom
 }
 
 export function buildCoordinatorGrantIdentityGroupCommand(): Command {
-	const command = new Command("grant-identity-group")
+	const command = new Command("grant-identity")
 		.configureHelp(helpStyle)
 		.description("Preview and confirm an explicit transport enrollment grant")
 		.argument("<attestation-id>", "stored controller attestation reference");

@@ -743,7 +743,7 @@ before draining attempts; the new schema check also refuses legacy maintenance.
 For an existing local coordinator database, explicitly run:
 
 ```text
-codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite --json
+codemem coordinator schema upgrade-auth --db-path coordinator.sqlite --json
 ```
 
 This opens only that existing file, validates the recognized legacy schema and
@@ -754,7 +754,7 @@ references, delete history, or invent controller IDs to force it through.
 For D1, export the exact reviewed source without opening any database:
 
 ```text
-codemem coordinator upgrade-auth-schema --export-sql > coordinator-auth-upgrade.sql
+codemem coordinator schema upgrade-auth --export-sql > coordinator-auth-upgrade.sql
 ```
 
 The file targets Wrangler's remote SQL-file import (`wrangler d1 execute --remote
@@ -1029,7 +1029,7 @@ The existing owner consumer accepts qualified links only with the canonical ledg
 complete connection-history schema, and migration 0036 owner-attempt column and
 authority guards. The configured Worker mounts the authenticated
 [preview/issue route](coordinator-identity-group-grants.md#owner-qualification-api)
-used by `codemem coordinator qualify-owner` only with valid browser authentication
+used by `codemem coordinator owner qualify` only with valid browser authentication
 and owner enrollment enabled. Neither performs automatic migration or store-open
 installation. Default Workers and local serving cannot issue qualifications.
 Bare device claims and all other privileged consumers remain denied

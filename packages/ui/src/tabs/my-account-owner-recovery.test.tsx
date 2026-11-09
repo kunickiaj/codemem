@@ -368,7 +368,7 @@ describe("server recovery preview consent metadata", () => {
 		// Assert
 		expect(dialog().textContent).toMatch(/schema|upgrade/i);
 		expect(dialog().textContent).toMatch(
-			/^(?![\s\S]*\bowner-resolution-schema\b)[\s\S]*codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json/,
+			/^(?![\s\S]*\bowner-resolution-schema\b)[\s\S]*codemem coordinator schema upgrade-account --owner-resolution --export-sql --json/,
 		);
 		expect(ack().disabled).toBe(true);
 		expect(button("Confirm account ownership").disabled).toBe(true);

@@ -64,7 +64,7 @@ function showPrivateBrowserLink(privateUrl: string): void {
 function requireHeadlessTerminal(): boolean {
 	if (process.stdin.isTTY && process.stderr.isTTY) return true;
 	p.log.error(
-		"Headless linking asks for confirmation in this terminal. Run it interactively, for example with `docker exec -it <container> codemem coordinator link-account <group> --headless`.",
+		"Headless linking asks for confirmation in this terminal. Run it interactively, for example with docker exec -it <container> codemem coordinator account link <group> --headless.",
 		{ output: process.stderr },
 	);
 	process.exitCode = 2;
@@ -240,7 +240,7 @@ async function linkAccount(group: string, options: Options): Promise<void> {
 	}
 }
 export function buildCoordinatorLinkAccountCommand(): Command {
-	const command = new Command("link-account")
+	const command = new Command("link")
 		.configureHelp(helpStyle)
 		.description("Link a coordinator account to your existing Identity")
 		.argument("<group>", "group id")

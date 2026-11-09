@@ -71,7 +71,7 @@ and name, but no memory or ownership binding.
 Enroll A before any review:
 
 ```fish
-pnpm run codemem -- coordinator enroll-device "$group_id" "$a_device_id" \
+pnpm run codemem -- coordinator device enroll "$group_id" "$a_device_id" \
   --fingerprint "$a_fingerprint" \
   --public-key-file "$profile_a/keys/device.key.pub" \
   --db-path "$state_dir/coordinator.sqlite"
@@ -100,9 +100,9 @@ begin
   set -lx CODEMEM_CONFIG "$profile_a/config.json"
   set -lx CODEMEM_KEYS_DIR "$profile_a/keys"
   set -lx CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET "$OWNER_PILOT_ADMIN_SECRET"
-  pnpm run codemem -- coordinator review-device-owner "$group_id" --coordinator "$origin" \
+   pnpm run codemem -- coordinator owner review "$group_id" --coordinator "$origin" \
     --config "$profile_a/config.json" --db-path "$profile_a/mem.sqlite"
-  pnpm run codemem -- coordinator link-account "$group_id" --coordinator "$origin" \
+   pnpm run codemem -- coordinator account link "$group_id" --coordinator "$origin" \
     --config "$profile_a/config.json" --db-path "$profile_a/mem.sqlite"
 end
 ```
@@ -161,14 +161,14 @@ needed to make this scope writable for A's project mapping:
 
 ```fish
 set scope_id "owner-pilot-scope"
-pnpm run codemem -- coordinator create-scope "$group_id" "$scope_id" \
+pnpm run codemem -- coordinator domain create "$group_id" "$scope_id" \
   --label "Owner pilot" \
   --coordinator-id "$coordinator_id" \
   --db-path "$state_dir/coordinator.sqlite"
-pnpm run codemem -- coordinator grant-scope-member "$group_id" "$scope_id" "$a_device_id" \
+pnpm run codemem -- coordinator domain grant "$group_id" "$scope_id" "$a_device_id" \
   --effect-id "owner-pilot-grant-a" --role owner \
   --db-path "$state_dir/coordinator.sqlite"
-pnpm run codemem -- coordinator grant-scope-member "$group_id" "$scope_id" "$b_device_id" \
+pnpm run codemem -- coordinator domain grant "$group_id" "$scope_id" "$b_device_id" \
   --effect-id "owner-pilot-grant-b" \
   --db-path "$state_dir/coordinator.sqlite"
 ```

@@ -156,10 +156,12 @@ it("is registered under the coordinator group", () => {
 	const command = buildCoordinatorCommand();
 
 	// Act
-	const names = command.commands.map((child) => child.name());
+	const names = command.commands
+		.find((child) => child.name() === "schema")
+		?.commands.map((child) => child.name());
 
 	// Assert
-	expect(names).toContain("diagnose-team-setup");
+	expect(names).toContain("diagnose-team");
 });
 
 it("reports configured groups that have no coordinator completion", async () => {

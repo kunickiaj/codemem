@@ -66,7 +66,7 @@ describe("headless consent link details", () => {
 		const page = await render("Build box");
 		// Assert
 		expect(page.body).toContain(
-			'<code class="command">codemem coordinator link-account --headless</code>',
+			'<code class="command">codemem coordinator account link --headless</code>',
 		);
 		// The page CSP allows only the hashed stylesheet, so the rule lives there.
 		expect(COORDINATOR_AUTH_STYLE).toContain("code.command{white-space:nowrap");

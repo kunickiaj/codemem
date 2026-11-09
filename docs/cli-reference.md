@@ -15,7 +15,7 @@ The visible roots are `memory`, `session`, `service`, `status`, `sync`,
 | `service` | `start`, `stop`, `restart`, `status` | Run and inspect the local viewer, sync, ingestion, and maintenance service. |
 | `status` | — | Alias for `service status`. |
 | `sync` | `enable`, `disable`, `peers`, `peers remove`, `pair`, `once`, `attempts`, `doctor`, `relay-keys`, `approve-relay-key`, `bootstrap`, `connect` | Configure and diagnose peer-to-peer sync. |
-| `coordinator` | `link-account`, `enroll-owner`, `review-device-owner`, `qualify-owner`, `grant-identity-group`, `revoke-device`, `diagnose-team-setup`, `upgrade-auth-schema`, `upgrade-account-schema`, `group-create`, `list-groups`, `enroll-device`, `list-devices`, `list-scopes`, `create-scope`, `update-scope`, `list-scope-members`, `grant-scope-member`, `revoke-scope-member`, `rename-device`, `disable-device`, `remove-device`, `list-bootstrap-grants`, `revoke-bootstrap-grant`, `create-invite`, `import-invite`, `list-join-requests`, `approve-join-request`, `deny-join-request`, `serve` | Administer a self-hosted coordinator. |
+| `coordinator` | `account link`; `owner enroll`, `review`, `qualify`; `group grant-identity`, `create`, `list`; `device revoke`, `enroll`, `list`, `rename`, `disable`, `remove`; `domain list`, `create`, `update`, `members`, `grant`, `revoke`; `grant list`, `revoke`; `invitation create`, `accept`; `request list`, `approve`, `deny`; `schema diagnose-team`, `upgrade-auth`, `upgrade-account`; `serve` | Administer a self-hosted coordinator. |
 | `maintenance` | `database init`, `vacuum`, `stats`, `prune-events`, `prune-history`; `memory prune`, `deduplicate`, `redact-secrets`; `project rename <old> <new>`, `normalize`; `embeddings`; `backfill tags`, `dedup-keys`, `narrative`, `structured`; `status` | Run storage, memory, embedding, project, and backfill maintenance. |
 | `diagnostics` | `memory roles`, `compare`, `artifacts`, `relink`, `relink-plan`; `extraction report`, `replay`, `benchmark`; `capture status`, `retry`, `check`, `list-rejected`, `show-rejected`, `recover-rejected` | Inspect retrieval, extraction, and capture state. |
 | `config` | `workspace`, `where` | Update workspace configuration or show the configuration file path. |
@@ -158,8 +158,9 @@ codemem maintenance project normalize
 codemem maintenance project normalize --apply
 ```
 
-The coordinator uses `coordinator link-account`, `coordinator upgrade-auth-schema`,
-and `coordinator upgrade-account-schema` for account linking and schema upgrades.
+The coordinator also accepts hidden account-linking and schema-upgrade aliases
+used in messages from older deployed coordinators. New instructions use the
+grouped `coordinator account` and `coordinator schema` commands.
 
 `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations
 continue to work, and bare `codemem serve` runs the local service in the foreground.

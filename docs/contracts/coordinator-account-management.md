@@ -62,7 +62,7 @@ For an existing local V2 SQLite database, operators must pause auth writers, dra
 pending attempts, back up the database, then obtain approval before running:
 
 ```fish
-codemem coordinator upgrade-account-schema --db-path PATH
+codemem coordinator schema upgrade-account --db-path PATH
 ```
 
 The command never applies automatically and creates no backup or pause. It fails
@@ -77,7 +77,7 @@ An intact prior 38-statement account extension takes a nine-statement atomic del
 one receipt table, four receipt guards, replacement of the archive guard, and exact
 pre/postflight checks. No existing table is rebuilt or copied. Fresh V2 installation
 uses 45 statements. For D1, export the prior-extension delta with
-`codemem coordinator upgrade-account-schema --export-sql --device-unlink --json`;
+`codemem coordinator schema upgrade-account --export-sql --device-unlink --json`;
 the default export is for V2 without the extension. Applying SQL and deploying still
 require separate operator approval. Partial or unknown schemas are rejected.
 

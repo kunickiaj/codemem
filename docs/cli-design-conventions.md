@@ -23,7 +23,7 @@ not the other way around.
 ### Nesting depth
 
 - Normally use two levels of subcommands: `codemem <group> <action>`.
-- Three levels are allowed when a specialist resource group needs them, such as `codemem maintenance memory prune`. Do not add a fourth level.
+- Three levels are allowed when a specialist resource group needs them, such as `codemem coordinator device revoke`. Do not add a fourth level.
 - If a group would need a fourth level, promote the inner group to the top level instead.
 
 ### When to create a subcommand group
@@ -63,7 +63,7 @@ Good positional arguments:
 ```
 codemem memory search <query>
 codemem memory show <id>
-codemem coordinator list-devices <group>
+codemem coordinator device list <group>
 codemem memory import <file>
 ```
 

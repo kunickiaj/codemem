@@ -14,6 +14,66 @@ vi.mock("@codemem/core", async (importOriginal) => {
 
 import { buildCoordinatorCommand } from "./coordinator.js";
 
+describe("coordinator aliases used by deployed browser pages", () => {
+	it.each(["link-account", "upgrade-auth-schema", "upgrade-account-schema"])(
+		"parses hidden %s help without executing its action",
+		async (name) => {
+			// Arrange: help exercises routing without accessing auth or storage.
+			const coordinator = buildCoordinatorCommand();
+			const alias = coordinator.commands.find((command) => command.name() === name);
+			const action = vi.fn();
+			let output = "";
+			expect(alias).toBeDefined();
+			alias
+				?.exitOverride()
+				.configureOutput({
+					writeOut: (text) => {
+						output += text;
+					},
+				})
+				.action(action);
+			// Act
+			const result = coordinator.parseAsync([name, "--help"], { from: "user" });
+			// Assert
+			await expect(result).rejects.toMatchObject({ code: "commander.helpDisplayed", exitCode: 0 });
+			expect(output).toContain(` ${name}`);
+			expect(action).not.toHaveBeenCalled();
+			expect(alias).not.toBe(
+				buildCoordinatorCommand().commands.find((command) => command.name() === name),
+			);
+			expect(
+				coordinator
+					.createHelp()
+					.visibleCommands(coordinator)
+					.map((command) => command.name()),
+			).not.toContain(name);
+			expect(coordinator.helpInformation()).not.toMatch(new RegExp(`^\\s+${name}(?:\\s|$)`, "m"));
+		},
+	);
+
+	it("does not restore unrelated flat commands", () => {
+		// Arrange
+		const coordinator = buildCoordinatorCommand();
+		// Act
+		const names = coordinator.commands.map((command) => command.name());
+		// Assert
+		for (const name of [
+			"enroll-owner",
+			"review-device-owner",
+			"qualify-owner",
+			"group-create",
+			"list-groups",
+			"enroll-device",
+			"revoke-device",
+			"create-scope",
+			"import-invite",
+			"approve-join-request",
+		]) {
+			expect(names).not.toContain(name);
+		}
+	});
+});
+
 describe("coordinator import-invite", () => {
 	const previousExitCode = process.exitCode;
 
@@ -48,7 +108,7 @@ describe("coordinator import-invite", () => {
 		},
 	])("trims and forwards $label", async ({ args, recipientDisplayName, deviceDisplayName }) => {
 		await buildCoordinatorCommand().parseAsync(
-			["import-invite", "invite-value", ...args, "--json"],
+			["invitation", "accept", "invite-value", ...args, "--json"],
 			{
 				from: "user",
 			},
@@ -61,7 +121,7 @@ describe("coordinator import-invite", () => {
 
 	it("forwards absent or blank names as null", async () => {
 		await buildCoordinatorCommand().parseAsync(
-			["import-invite", "invite-value", "--recipient-name", "   ", "--json"],
+			["invitation", "accept", "invite-value", "--recipient-name", "   ", "--json"],
 			{ from: "user" },
 		);
 
@@ -83,7 +143,7 @@ describe("coordinator import-invite", () => {
 	])("maps %s to actionable JSON guidance", async (code, expectedFlag) => {
 		mocks.coordinatorImportInviteAction.mockRejectedValueOnce(new Error(code));
 
-		await buildCoordinatorCommand().parseAsync(["import-invite", "invite-value", "--json"], {
+		await buildCoordinatorCommand().parseAsync(["invitation", "accept", "invite-value", "--json"], {
 			from: "user",
 		});
 
@@ -104,12 +164,12 @@ describe("coordinator import-invite", () => {
 	])("directs %s recipient invitation failures to the Viewer", async (code) => {
 		mocks.coordinatorImportInviteAction.mockRejectedValueOnce(new Error(code));
 
-		await buildCoordinatorCommand().parseAsync(["import-invite", "invite-value", "--json"], {
+		await buildCoordinatorCommand().parseAsync(["invitation", "accept", "invite-value", "--json"], {
 			from: "user",
 		});
 
 		const output = vi.mocked(console.log).mock.calls.at(-1)?.[0];
-		expect(JSON.parse(String(output)).message).toContain("codemem serve");
+		expect(JSON.parse(String(output)).message).toContain("codemem service start");
 		expect(process.exitCode).toBe(1);
 	});
 
@@ -120,7 +180,7 @@ describe("coordinator import-invite", () => {
 		);
 
 		// Act
-		await buildCoordinatorCommand().parseAsync(["import-invite", "invite-value", "--json"], {
+		await buildCoordinatorCommand().parseAsync(["invitation", "accept", "invite-value", "--json"], {
 			from: "user",
 		});
 

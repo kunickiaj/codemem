@@ -183,9 +183,10 @@ async function revokeDevice(groupId: string, deviceId: string, options: Options)
 	}
 }
 export function buildCoordinatorRevokeDeviceCommand(): Command {
-	const command = new Command("revoke-device")
+	const command = new Command("revoke")
 		.configureHelp(helpStyle)
-		.description("Preview and confirm whole-database device ID and key revocation")
+		.description("Preview and confirm device ID and key revocation in ALL groups")
+		.addHelpText("after", `\n${IMPACT}\n`)
 		.argument("<group>", "group supplying current enrollment evidence only")
 		.argument("<device>", "device ID to revoke across all groups");
 	addConfigOption(command);

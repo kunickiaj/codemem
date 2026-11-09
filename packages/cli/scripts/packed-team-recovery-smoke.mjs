@@ -185,7 +185,7 @@ async function installedFixture(installDir, scenario) {
 		const sourceBytes = readFileSync(process.env.CODEMEM_DB);
 
 		// Act: the installed CLI diagnoses before any viewer request can create a draft.
-		const output = await runNode([cli, "coordinator", "diagnose-team-setup", GROUP,
+		const output = await runNode([cli, "coordinator", "schema", "diagnose-team", GROUP,
 			"--db-path", process.env.CODEMEM_DB, "--config", process.env.CODEMEM_CONFIG, "--json"], {
 			cwd: installDir, env: process.env,
 		});

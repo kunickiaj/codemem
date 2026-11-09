@@ -5,8 +5,8 @@
 An older coordinator can keep serving ordinary device-signed sync while optional
 auth reports `coordinator_auth_schema_upgrade_required`. The operator must pause
 auth writers and back up the coordinator database before running
-`codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite --json`.
-For D1, `codemem coordinator upgrade-auth-schema --export-sql` only prints the
+`codemem coordinator schema upgrade-auth --db-path coordinator.sqlite --json`.
+For D1, `codemem coordinator schema upgrade-auth --export-sql` only prints the
 reviewed SQL; apply it separately using the [controlled cutover](contracts/coordinator-auth-protocol.md#operator-cutover).
 Never replay historical migrations on a deployment without a migration ledger.
 
@@ -16,8 +16,8 @@ on an intact V2 coordinator. Pause auth writers, drain pending attempts, back up
 database, and obtain separate approval before running either:
 
 ```fish
-codemem coordinator upgrade-account-schema --db-path coordinator.sqlite
-codemem coordinator upgrade-account-schema --export-sql --json
+codemem coordinator schema upgrade-account --db-path coordinator.sqlite
+codemem coordinator schema upgrade-account --export-sql --json
 ```
 
 The local command changes only the selected existing database; the export applies
@@ -30,8 +30,8 @@ pending attempts, making a backup and obtaining separate approval, an operator c
 install it on an existing regular SQLite file:
 
 ```fish
-codemem coordinator upgrade-account-schema --owner-resolution --db-path 'coordinator.sqlite'
-codemem coordinator upgrade-account-schema --owner-resolution --export-sql --json
+codemem coordinator schema upgrade-account --owner-resolution --db-path 'coordinator.sqlite'
+codemem coordinator schema upgrade-account --owner-resolution --export-sql --json
 ```
 
 This mode installs empty, immutable receipt storage only: it does not resolve an
@@ -561,10 +561,10 @@ A device with no browser, such as a NAS, a Docker container, or a server you rea
 Run the command in an interactive terminal on that device. In a container, use `docker exec -it` so the command can prompt you:
 
 ```fish
-docker exec -it <container> codemem coordinator link-account <group> --headless
+docker exec -it <container> codemem coordinator account link <group> --headless
 ```
 
-On a host you reach over SSH, run `codemem coordinator link-account <group> --headless` in the SSH session. The command refuses to run without a terminal on both stdin and stderr, and it does not support `--json`. `--headless` cannot be combined with `--loopback-host`, and the command never switches to headless mode by itself.
+On a host you reach over SSH, run `codemem coordinator account link <group> --headless` in the SSH session. The command refuses to run without a terminal on both stdin and stderr, and it does not support `--json`. `--headless` cannot be combined with `--loopback-host`, and the command never switches to headless mode by itself.
 
 The terminal shows:
 
@@ -733,8 +733,8 @@ A device that is not a member of every Space in a completed Team still applies t
 If a completed Team keeps asking for setup or the setup dialog will not load, run a dry run on the affected device. It needs the coordinator admin settings saved in your configuration:
 
 ```bash
-codemem coordinator diagnose-team-setup
-codemem coordinator diagnose-team-setup '<group>' --json
+codemem coordinator schema diagnose-team
+codemem coordinator schema diagnose-team '<group>' --json
 ```
 
 For each configured group, the report shows whether the coordinator has a completed setup, which mapped Spaces are not active on this device, and what applying the completion would do. You can run it before opening **Sharing**. It creates any missing review draft inside the temporary copy, following the viewer's recovery sequence. When the apply fails, the report names the failing check. The command opens the existing database read-only and diagnoses a private temporary SQLite backup, including committed changes from a running viewer. It needs temporary disk space for a full database copy and removes the copy afterward. Database initialization and compatibility upgrades run only on the copy. The viewer logs the original failing check as a `[team-setup]` warning when a setup request fails.
@@ -843,7 +843,7 @@ database; it does not rewrite account links, browser sessions, grants, stored da
 or manual peer trust. The coordinator-wide admin secret and a trusted configured
 coordinator/database pair are required, not a browser owner or Team role. Default
 `coordinator serve` does not activate this capability. The maintained
-[`coordinator revoke-device` CLI](#operator-device-revocation) uses saved operator
+[`coordinator device revoke` CLI](#operator-device-revocation) uses saved operator
 configuration to preview and explicitly confirm revocation. See the [activation contract](contracts/coordinator-device-revocations.md#optional-configured-operator-http-routes)
 for runtime composition and request limits.
 
@@ -859,7 +859,7 @@ Legacy `#sync` and `#sync/diagnostics` viewer links remain valid Advanced routes
 
 ### Operator device revocation
 
-Use `codemem coordinator revoke-device <group> <device>` only as a coordinator-wide
+Use `codemem coordinator device revoke <group> <device>` only as a coordinator-wide
 operator. Group/Team authority, an actor hint, or a planted enrollment is not
 permission to revoke globally. The group selects current enrollment evidence,
 including disabled enrollment; it does not limit the effect to that group.
@@ -871,8 +871,8 @@ argument. Use an HTTPS origin without credentials, path, query or fragment;
 HTTP is allowed only for literal `127.0.0.1` or `[::1]` origins.
 
 ```fish
-codemem coordinator revoke-device '<evidence-group>' '<device-id>' --config '<operator-config>' --json
-codemem coordinator revoke-device '<evidence-group>' '<device-id>' --config '<operator-config>'
+codemem coordinator device revoke '<evidence-group>' '<device-id>' --config '<operator-config>' --json
+codemem coordinator device revoke '<evidence-group>' '<device-id>' --config '<operator-config>'
 ```
 
 The first call sends a read-only network preview and prints validated public
@@ -1094,7 +1094,7 @@ Part A reviews and links the already-enrolled profile. Part B enrolls a separate
 
 ##### Reviewed account qualification
 
-`codemem coordinator qualify-owner <attestation-id>` previews a separate permission:
+`codemem coordinator owner qualify <attestation-id>` previews a separate permission:
 “Allow this linked account to enroll new devices under this Identity.” Its server
 API is mounted only on the configured Worker with browser authentication and
 owner enrollment enabled, the selected D1 binding, and complete current schemas
@@ -1128,7 +1128,7 @@ Run these commands on the existing device. The review reads its actual current I
 For a separate operator review, preview the existing device owner. The group name is the coordinator administrative group, not a Team permission or an access grant:
 
 ```fish
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>' --json
+codemem coordinator owner review team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>' --json
 ```
 
 The preview reads the existing local device database and current Identity, then asks the coordinator to preview the review. It does not run database maintenance, change configuration or credentials, rotate keys, adopt an Identity, move memories, or change ownership or grants. It uses the configured coordinator-admin credential; do not put that credential in the command or output.
@@ -1142,7 +1142,7 @@ If the coordinator omits history or returns invalid history, update it before re
 To confirm the review, run the same command in a terminal without `--json`:
 
 ```fish
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
+codemem coordinator owner review team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
 ```
 
 After confirmation, the command displays the coordinator's stored **Controller attestation reference** (`controller-v1:` followed by 64 lowercase hexadecimal characters). Keep that noncredential reference with the reviewed coordinator and group for a separate, explicit operator-issued transport group grant. It is not an admin credential, invitation, review receipt ID, or proof of Team/Project access. A successful retry returns the same stored reference; previews do not return one.
@@ -1150,7 +1150,7 @@ After confirmation, the command displays the coordinator's stored **Controller a
 The review command does not issue a transport group grant. To preview that separate operator action, use the stored reference with the maintained command (replace the example reference with the one returned by your review):
 
 ```fish
-codemem coordinator grant-identity-group 'controller-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' --config '<operator-config>' --json
+codemem coordinator group grant-identity 'controller-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' --config '<operator-config>' --json
 ```
 
 Run the same command in a terminal without `--json` to confirm; the prompt defaults to **No**. JSON and noninteractive invocations only show a local request preview, make no network request, and do not check server eligibility. There is no `--yes` shortcut. Cancellation sends no request.
@@ -1166,7 +1166,7 @@ Ambiguous ownership stops the review. If ownership records disappear or change d
 After the grant succeeds, use the maintained link command on that same device. It resolves the current configuration or environment Identity and readiness automatically; it does not accept an Identity to nominate. Choose the intended Google account in its browser:
 
 ```fish
-codemem coordinator link-account team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
+codemem coordinator account link team-alpha --coordinator "https://coord.example.com" --config '<A-config>' --db-path '<A.sqlite>'
 ```
 
 Add `--config` or `--db-path` only to select the intended existing configuration or database. Keep `CODEMEM_KEYS_DIR` unchanged when selecting existing device keys. The command also honors `CODEMEM_SYNC_COORDINATOR_URL`.
@@ -1188,14 +1188,14 @@ See [Coordinator-backed discovery](coordinator-discovery.md#optional-account-lin
 
 ##### B. Enroll a separate fresh-key profile
 
-Part B is not the Part A profile: do not run `enroll-owner` against Part A's already-enrolled key, and do not copy that key. Prepare a separate profile with its own new key, configuration, database, and state directory. Use the same Google account linked in Part A. `codemem coordinator enroll-owner` does not manually adopt an Identity or an old key, create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. It does not configure Google or deploy a coordinator; follow [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md) for operator setup.
+Part B is not the Part A profile: do not run `owner enroll` against Part A's already-enrolled key, and do not copy that key. Prepare a separate profile with its own new key, configuration, database, and state directory. Use the same Google account linked in Part A. `codemem coordinator owner enroll` does not manually adopt an Identity or an old key, create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. It does not configure Google or deploy a coordinator; follow [Cloudflare coordinator deployment](cloudflare-coordinator-deployment.md) for operator setup.
 
 This enrollment flow currently requires POSIX private-file checks. Windows enrollment stops before changing the profile because Windows ACL verification is not implemented; do not copy signing keys to work around this limitation.
 
 Before preparing, stop this profile's capture plugin, viewer, and sync daemon. Keep them stopped until the command reports `Verified coordinator Identity`:
 
 ```fish
-codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
+codemem coordinator owner enroll team-alpha --prepare --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
 The review reports the current Identity, device, key, and memory-author counts. Existing keys, history, and authorship remain unchanged. It does not create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. Bootstrap state is populated only after immutable creation proof. Conflicts, legacy enrollment, and already-enrolled keys stop the review; ask the coordinator operator to resolve them.
@@ -1205,7 +1205,7 @@ Preparation writes a private `capability-request.json`. Reuse the same coordinat
 Operator admission submits that unchanged file through the operator's private process. Never paste the file contents or a capability into chat or a URL. All resume operations require an interactive terminal, including retained-final and config-only retries; `--json` is supported for preparation, not resume.
 
 ```fish
-codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
+codemem coordinator owner enroll team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
 If an ambiguous failure occurs after a final request is retained, retry that exact request unchanged. If a start succeeded but no final request was saved, keep the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the prior state.
@@ -1215,7 +1215,7 @@ If an ambiguous failure occurs after a final request is retained, retry that exa
 Operator admission remains the default. Account admission requires a Worker that serves authenticated `/auth/owner/admit`, an active review-backed account link, an eligible existing Identity group grant, and a verified management session from `/auth/sign-in`. Resume the same prepared review with account admission instead:
 
 ```fish
-codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
+codemem coordinator owner enroll team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com" --config '<B-config>' --db-path '<B.sqlite>' --keys-dir '<B-keys-dir>' --state-dir '<B-state-dir>'
 ```
 
 `--account-admission` is resume-only and cannot be combined with `--capability`. It skips the initial operator start request. The client first binds its retained literal-loopback receiver and saves the start marker, then displays a fixed HTTPS link with no private handoff or secrets in its query. Open the link while signed in to the management account, upload the unchanged private `capability-request.json` from the displayed path, and compare its device and fingerprint with the local output. The fixed admission URL does not carry private handoff material; the OIDC callback follows its configured protocol. Keep the command running and capture stopped until `Verified coordinator Identity` appears; browser confirmation alone is incomplete.
@@ -1445,7 +1445,7 @@ The viewer's startup retries automatically with embeddings disabled if the initi
 The wire error is intentionally generic. Check the peer serving the bootstrap snapshot for the specific reason, then work through these:
 
 1. **Is the coordinator reachable from the peer serving bootstrap?** That peer, not the worker, calls the coordinator's admin API to verify the grant. If the coordinator is down or unreachable from that peer, the grant cannot be verified and bootstrap will fail. Check network connectivity and `sync_coordinator_url` config on the serving peer.
-2. **Is the grant expired or revoked?** List active grants with `codemem coordinator list-bootstrap-grants <group>` and confirm the grant is still valid.
+2. **Is the grant expired or revoked?** List active grants with `codemem coordinator grant list <group>` and confirm the grant is still valid.
 3. **Does the grant's worker device match the bootstrapping device?** The `worker_device_id` on the grant must match the device ID of the worker attempting bootstrap. A mismatch (e.g., using a grant issued for a different worker) will be rejected.
 
 ## Retrieval scope
@@ -1474,7 +1474,7 @@ the local device and prints its public pairing metadata; it does not accept a pe
 or start sync. Do not accept or send that pairing payload for this invitation flow.
 
 ```fish
-codemem coordinator import-invite '<invite>' --review --json
+codemem coordinator invitation accept '<invite>' --review --json
 ```
 
 The review shows the coordinator, group, invitation kind, target Identity, device
@@ -1485,7 +1485,7 @@ future memories or Team Projects are shared. It returns
 After checking those details, accept explicitly:
 
 ```fish
-codemem coordinator import-invite '<invite>' --reviewed-onboarding-digest '<digest>' --json
+codemem coordinator invitation accept '<invite>' --reviewed-onboarding-digest '<digest>' --json
 ```
 
 Pass the same `--db-path`, `--config`, `--keys-dir`, and `--device-name` overrides

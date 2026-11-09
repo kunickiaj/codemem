@@ -8,7 +8,12 @@ async function aliasCommand(commandName: string) {
 	const program = new Command("codemem").exitOverride();
 	program.addCommand(syncCommand);
 	const alias = syncCommand.commands.find((command) => command.name() === "coordinator");
-	const leaf = alias?.commands.find((command) => command.name() === commandName);
+	const leaf = commandName
+		.split(" ")
+		.reduce<Command | undefined>(
+			(parent, name) => parent?.commands.find((command) => command.name() === name),
+			alias,
+		);
 	if (!alias || !leaf) throw new Error(`Missing coordinator alias command: ${commandName}`);
 	return { program, alias, leaf };
 }
@@ -27,9 +32,9 @@ describe("sync coordinator alias deprecation output", () => {
 	});
 
 	it.each([
-		{ name: "enroll-owner", args: ["test-group", "--prepare", "--json"], ancestorJson: false },
-		{ name: "list-groups", args: ["--json"], ancestorJson: false },
-		{ name: "list-groups", args: [], ancestorJson: true },
+		{ name: "owner enroll", args: ["test-group", "--prepare", "--json"], ancestorJson: false },
+		{ name: "group list", args: ["--json"], ancestorJson: false },
+		{ name: "group list", args: [], ancestorJson: true },
 	])("keeps $name JSON output unchanged with ancestor JSON=$ancestorJson", async (fixture) => {
 		// Arrange: replace only the action, retaining the real alias hook and leaf options.
 		const { program, alias, leaf } = await aliasCommand(fixture.name);
@@ -37,7 +42,7 @@ describe("sync coordinator alias deprecation output", () => {
 		const payload = { ok: true, result: "test-result" };
 		const action = vi.fn(() => console.log(JSON.stringify(payload)));
 		leaf.action(action);
-		const args = ["sync", "coordinator", fixture.name, ...fixture.args];
+		const args = ["sync", "coordinator", ...fixture.name.split(" "), ...fixture.args];
 		if (fixture.ancestorJson) args.unshift("--json");
 
 		// Act: parse the full hidden alias, not the leaf in isolation.
@@ -55,8 +60,8 @@ describe("sync coordinator alias deprecation output", () => {
 	});
 
 	it.each([
-		{ name: "enroll-owner", args: ["test-group", "--prepare"] },
-		{ name: "list-groups", args: [] },
+		{ name: "owner enroll", args: ["test-group", "--prepare"] },
+		{ name: "group list", args: [] },
 	])("still warns for $name without JSON", async (fixture) => {
 		// Arrange: avoid profile, database and network work while retaining alias behavior.
 		const { program, leaf } = await aliasCommand(fixture.name);
@@ -64,7 +69,7 @@ describe("sync coordinator alias deprecation output", () => {
 		leaf.action(action);
 
 		// Act.
-		await program.parseAsync(["sync", "coordinator", fixture.name, ...fixture.args], {
+		await program.parseAsync(["sync", "coordinator", ...fixture.name.split(" "), ...fixture.args], {
 			from: "user",
 		});
 

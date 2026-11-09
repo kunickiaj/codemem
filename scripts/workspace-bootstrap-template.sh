@@ -152,20 +152,20 @@ record_state "joining" "Identity initialized, preparing coordinator join."
 
 phase "coordinator join"
 
-codemem coordinator import-invite "$INVITE_TOKEN" \
+codemem coordinator invitation accept "$INVITE_TOKEN" \
   --db-path "$CODEMEM_DB" \
   --keys-dir "$CODEMEM_KEYS_DIR" \
   --config "$CODEMEM_CONFIG" \
   --json \
   2>"$ARTIFACTS_DIR/import-invite-stderr.log" \
-  > "$ARTIFACTS_DIR/import-invite.json" || fail "join_failed" "coordinator import-invite failed"
+  > "$ARTIFACTS_DIR/import-invite.json" || fail "join_failed" "coordinator invitation accept failed"
 
 # Verify the join was admitted (not just pending approval).
 # For approval_required invites, the status may be "pending" until an admin approves.
 JOIN_STATUS=$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('status', d.get('join_request_status', '')))" < "$ARTIFACTS_DIR/import-invite.json" 2>/dev/null || echo "")
 
 if [ "$JOIN_STATUS" = "pending" ] || [ "$JOIN_STATUS" = "pending_approval" ]; then
-  fail "join_pending_approval" "Coordinator join request requires admin approval (status=$JOIN_STATUS). Approve via: codemem coordinator approve-join-request <request-id>"
+  fail "join_pending_approval" "Coordinator join request requires admin approval (status=$JOIN_STATUS). Approve via: codemem coordinator request approve <request-id>"
 fi
 
 log "invite imported, join status=$JOIN_STATUS"
@@ -220,7 +220,7 @@ codemem sync once \
 SYNC_EXIT=$?
 
 # Check stats to capture database state regardless of sync result
-codemem stats \
+codemem memory stats \
   --db-path "$CODEMEM_DB" \
   --json \
   > "$ARTIFACTS_DIR/stats.json" 2>/dev/null || true

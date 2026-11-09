@@ -749,7 +749,7 @@ unverified owner or a new universal ownership framework.
 
 ### Operator CLI client
 
-`codemem coordinator revoke-device <group> <device>` is an operator-only HTTP
+`codemem coordinator device revoke <group> <device>` is an operator-only HTTP
 client for this contract, not route activation. Configured operator-context runtimes
 mount the endpoints as described above; legacy/unconfigured Workers and default
 `coordinator serve` leave them unavailable. It adds no owner or

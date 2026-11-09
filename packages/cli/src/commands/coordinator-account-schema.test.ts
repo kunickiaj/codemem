@@ -185,13 +185,15 @@ it("includes pause/drain/backup guidance and keeps the new command at coordinato
 			},
 		})
 		.outputHelp();
-	expect(command.name()).toBe("upgrade-account-schema");
+	expect(command.name()).toBe("upgrade-account");
 	expect(command.helpInformation()).toContain("--db-path");
 	expect(command.helpInformation()).toContain("--json");
 	expect(help).toContain("Pause auth writers");
 	expect(help).toContain("drain pending attempts");
 	expect(help).toContain("back up");
 	expect(
-		buildCoordinatorCommand().commands.some((c) => c.name() === "upgrade-account-schema"),
+		buildCoordinatorCommand()
+			.commands.find((c) => c.name() === "schema")
+			?.commands.some((c) => c.name() === "upgrade-account"),
 	).toBe(true);
 });

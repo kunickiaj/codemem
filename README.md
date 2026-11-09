@@ -2,7 +2,7 @@
 
 Normal V2 account linking needs no account-management upgrade. An older authority
 schema still needs the [explicit auth-schema cutover](docs/contracts/coordinator-auth-protocol.md#operator-cutover):
-`codemem coordinator upgrade-auth-schema --db-path coordinator.sqlite` upgrades an
+`codemem coordinator schema upgrade-auth --db-path coordinator.sqlite` upgrades an
 existing local coordinator file; `--export-sql` exports D1 SQL without applying it.
 Optional **Refresh profile**, **Unlink Google account**, and reconnect support instead
 require an intact V2 coordinator and the separate
@@ -29,7 +29,7 @@ codemem is persistent coding memory across sessions, machines, and teammates for
 - **Remote MCP access** — advanced single-user self-hosting can expose an OAuth-protected Streamable HTTP MCP endpoint to configured remote clients; keep the localhost viewer private ([guide](docs/remote-mcp-oauth.md))
 
 Team/add-device recipient invitations support a read-only CLI review:
-`codemem coordinator import-invite '<invite>' --review --json`. Inspect the access
+`codemem coordinator invitation accept '<invite>' --review --json`. Inspect the access
 details, then accept with `--reviewed-onboarding-digest '<digest>'` using the same
 device profile and device name. Review requires an initialized device and matching keys;
 it does not accept the invitation or change local state. See the
@@ -565,7 +565,7 @@ For ongoing collaboration:
 
 Team onboarding links Identities and devices. The invitation does not assign Projects to the Team, but a new member inherits every current and future Project assigned to it. Review the Team's Projects before sending or accepting the invitation. Use **Share exact Projects** to send a separate direct Project invitation to one Identity. Team sharing must already be configured, but accepting the direct invitation does not add the recipient to the Team.
 
-For a legacy Team that needs setup, finish the reviewed setup on any upgraded device. The first valid finish becomes the Team's shared result; other upgraded devices apply it locally and stop showing that setup task. To finish setup, the device must list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. If a completed Team keeps asking for setup on one device, `codemem coordinator diagnose-team-setup` dry-runs the completion there and names the failing check. See [Set up an existing Team](docs/user-guide.md#set-up-an-existing-team) for recovery and compatibility details.
+For a legacy Team that needs setup, finish the reviewed setup on any upgraded device. The first valid finish becomes the Team's shared result; other upgraded devices apply it locally and stop showing that setup task. To finish setup, the device must list the Team's coordinator group in `sync_coordinator_groups`; scope-backed discovery can show a Team for review but cannot complete its setup. If a completed Team keeps asking for setup on one device, `codemem coordinator schema diagnose-team` dry-runs the completion there and names the failing check. See [Set up an existing Team](docs/user-guide.md#set-up-an-existing-team) for recovery and compatibility details.
 
 For a direct share, choose **Create an invitation → Share exact Projects**:
 
@@ -622,16 +622,16 @@ Coordinator account linking is optional. On an active enrolled device whose curr
 Operators can separately preview legacy ownership or enrollment cases; `--json` is always preview-only:
 
 ```text
-codemem coordinator review-device-owner team-alpha --coordinator "https://coord.example.com" --json
+codemem coordinator owner review team-alpha --coordinator "https://coord.example.com" --json
 ```
 
 The review reads the existing local device database and current Identity without running maintenance, changing configuration or credentials, rotating keys, adopting an Identity, moving memories, or changing grants. Interactive review defaults to **No**; only an operator confirmation records ownership evidence, without changing device assignments or access. It requires the configured coordinator-admin credential.
 
-After confirmed review, operators can separately run `codemem coordinator grant-identity-group <attestation-id>` with the stored `controller-v1:` reference. It uses only the configured coordinator and existing admin credential; it accepts no Identity/group override. Interactive confirmation defaults to **No**; `--json` and noninteractive calls show only a local preview and send no request. This grants transport enrollment eligibility, not Team/Project access, and does not run Google sign-in or alter the local profile. See the [operator grant workflow](docs/user-guide.md#optional-coordinator-account-linking).
+After confirmed review, operators can separately run `codemem coordinator group grant-identity <attestation-id>` with the stored `controller-v1:` reference. It uses only the configured coordinator and existing admin credential; it accepts no Identity/group override. Interactive confirmation defaults to **No**; `--json` and noninteractive calls show only a local preview and send no request. This grants transport enrollment eligibility, not Team/Project access, and does not run Google sign-in or alter the local profile. See the [operator grant workflow](docs/user-guide.md#optional-coordinator-account-linking).
 
-`codemem coordinator qualify-owner <attestation-id>` previews a separate linked-account device-enrollment permission on the configured Worker with browser authentication and owner enrollment enabled. It requires a genuine operator review, the existing private admin credential, and complete current schemas, including migrations 0035 and 0036. Default/unconfigured Workers and local coordinator serving do not support issuance. Unlike the grant command, its preview contacts the configured coordinator; `--json` and noninteractive use never issue a qualification. The owner consumer accepts qualified links with an independently eligible transport-group grant; bare claims remain denied. No live configuration, migration, deployment or verified live two-device journey is included. See the [qualification contract](docs/contracts/coordinator-identity-group-grants.md#owner-qualification-api).
+`codemem coordinator owner qualify <attestation-id>` previews a separate linked-account device-enrollment permission on the configured Worker with browser authentication and owner enrollment enabled. It requires a genuine operator review, the existing private admin credential, and complete current schemas, including migrations 0035 and 0036. Default/unconfigured Workers and local coordinator serving do not support issuance. Unlike the grant command, its preview contacts the configured coordinator; `--json` and noninteractive use never issue a qualification. The owner consumer accepts qualified links with an independently eligible transport-group grant; bare claims remain denied. No live configuration, migration, deployment or verified live two-device journey is included. See the [qualification contract](docs/contracts/coordinator-identity-group-grants.md#owner-qualification-api).
 
-`codemem coordinator revoke-device <group> <device>` previews coordinator-wide device-ID **and** canonical-key revocation over the network. The group supplies evidence only: confirmation revokes that device ID with any key, and that key under any device ID, across **all groups**. Another device continues only if both its ID and key differ. Confirmation defaults to **No**; JSON and noninteractive calls never commit, and there is no `--yes`. It reads credentials only from saved operator configuration, not environment overrides. Configured operator-context runtimes support these endpoints; legacy/unconfigured Workers and default `coordinator serve` do not. The CLI cannot activate server routes. See [operator device revocation](docs/user-guide.md#operator-device-revocation).
+`codemem coordinator device revoke <group> <device>` previews coordinator-wide device-ID **and** canonical-key revocation over the network. The group supplies evidence only: confirmation revokes that device ID with any key, and that key under any device ID, across **all groups**. Another device continues only if both its ID and key differ. Confirmation defaults to **No**; JSON and noninteractive calls never commit, and there is no `--yes`. It reads credentials only from saved operator configuration, not environment overrides. Configured operator-context runtimes support these endpoints; legacy/unconfigured Workers and default `coordinator serve` do not. The CLI cannot activate server routes. See [operator device revocation](docs/user-guide.md#operator-device-revocation).
 
 Ambiguous ownership stops the review; ownership records disappearing or changing during confirmation require a fresh preview. The interactive link command resolves the current configuration or environment Identity and readiness automatically. See [coordinator-backed discovery](docs/coordinator-discovery.md#optional-account-linking).
 
@@ -643,14 +643,14 @@ An account-link conflict may involve the Google account or the coordinator Ident
 
 #### Optional coordinator owner enrollment
 
-The maintained `codemem coordinator enroll-owner` flow is for an operator-enabled coordinator owner enrollment. It does not configure Google or deploy a coordinator; see [Cloudflare coordinator deployment](docs/cloudflare-coordinator-deployment.md) for the operator setup.
+The maintained `codemem coordinator owner enroll` flow is for an operator-enabled coordinator owner enrollment. It does not configure Google or deploy a coordinator; see [Cloudflare coordinator deployment](docs/cloudflare-coordinator-deployment.md) for the operator setup.
 
 This enrollment flow currently requires POSIX private-file checks. Windows enrollment stops before changing the profile because Windows ACL verification is not implemented; do not copy signing keys to work around this limitation.
 
 Stop this profile's capture plugin, viewer, and sync daemon before preparing, and keep them stopped until the command reports `Verified coordinator Identity`:
 
 ```text
-codemem coordinator enroll-owner team-alpha --prepare --coordinator "https://coord.example.com"
+codemem coordinator owner enroll team-alpha --prepare --coordinator "https://coord.example.com"
 ```
 
 The review shows the current Identity, device, key, and memory-author counts. Existing keys, history, and authorship stay unchanged. The command does not create Team or Project grants, merge Identities, populate existing Identity devices or access authorities, or transfer legacy ownership. Bootstrap state is populated only after immutable creation proof. A conflict, legacy enrollment, or already-enrolled key stops the review for operator help.
@@ -658,7 +658,7 @@ The review shows the current Identity, device, key, and memory-author counts. Ex
 Preparation writes a private `capability-request.json` that includes the browser-start code. Submit that file unchanged through the operator's private process; never paste its contents into chat. After admission, resume with the review digest and capability using the same coordinator, configuration, database, and key selections:
 
 ```text
-codemem coordinator enroll-owner team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
+codemem coordinator owner enroll team-alpha --resume --review-digest '<review-digest>' --capability '<operator-provided-capability>' --coordinator "https://coord.example.com"
 ```
 
 After an ambiguous failure with a retained final request, retry that exact request unchanged. If a start succeeded but no final request was saved, retain the old state and prepare a new attempt in a new `--state-dir`; do not delete or replace the earlier state. Google confirmation and a two-device workflow have not been verified live.
@@ -666,7 +666,7 @@ After an ambiguous failure with a retained final request, retry that exact reque
 Account admission is a separate, explicit opt-in on coordinators that serve the authenticated `/auth/owner/admit` page. After the same preparation and local review, use this instead of `--capability`:
 
 ```text
-codemem coordinator enroll-owner team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com"
+codemem coordinator owner enroll team-alpha --resume --account-admission --review-digest '<review-digest>' --coordinator "https://coord.example.com"
 ```
 
 Open the displayed fixed HTTPS link manually while signed in to the intended account, upload the unchanged private `capability-request.json`, and compare the displayed local fingerprint. Keep the command running and capture stopped until `Verified coordinator Identity` appears. The client sends no initial operator start request and needs no operator capability; never combine the two admission modes. Preparation still supports `--json`; resume requires an interactive terminal.

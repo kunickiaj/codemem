@@ -23,7 +23,7 @@ export async function runSmokeScenario(ctx: ScenarioContext): Promise<void> {
 		async () => {
 			const result = ctx.compose.exec(
 				"peer-a",
-				[...CLI_PREFIX, "version"],
+				[...CLI_PREFIX, "--version"],
 				"03-peer-a-version-check",
 				30_000,
 			);
@@ -36,9 +36,8 @@ export async function runSmokeScenario(ctx: ScenarioContext): Promise<void> {
 		"coordinator",
 		[
 			...CLI_PREFIX,
-			"sync",
 			"coordinator",
-			"group-create",
+			"group", "create",
 			GROUP_ID,
 			"--db-path",
 			"/data/coordinator.sqlite",
