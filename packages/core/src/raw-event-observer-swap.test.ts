@@ -1,12 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { RawEventSweeper } from "./raw-event-sweeper.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+
+beforeEach(() => {
+	// Observer swapping does not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 function addSession(store: MemoryStore, sessionId: string): void {
 	store.recordRawEvent({

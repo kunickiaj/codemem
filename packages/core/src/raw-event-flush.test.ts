@@ -1,13 +1,22 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildRawEventEnvelopeFromHook, TRUSTED_HOOK_MAPPER_OPTIONS } from "./claude-hooks.js";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+
+beforeEach(() => {
+	// Flush state and session metadata do not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("flushRawEvents max retry", () => {
 	let tmpDir: string;

@@ -7,7 +7,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import {
 	budgetToolEvents,
@@ -37,6 +37,15 @@ import type { ObserverConfig } from "./observer-client.js";
 import { flushRawEvents } from "./raw-event-flush.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema } from "./test-utils.js";
+
+beforeEach(() => {
+	// Ingest persistence and parsing do not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 // ---------------------------------------------------------------------------
 // ingest-events

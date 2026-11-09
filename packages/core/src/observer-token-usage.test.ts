@@ -1,13 +1,22 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
 import type { IngestPayload } from "./ingest-types.js";
 import { buildMemoryPack } from "./pack.js";
 import { MemoryStore } from "./store.js";
 import { initTestSchema, insertTestSession } from "./test-utils.js";
+
+beforeEach(() => {
+	// Usage provenance does not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 const OBSERVATION = `<observation><type>discovery</type><title>Token usage</title><narrative>😀漢字 usage must come from the provider.</narrative><facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified></observation>`;
 
