@@ -90,9 +90,13 @@ mismatches rising are reported as `WORSE` and fail the run.
 
 The development-only prompt-path harness compares the real source CLI with the
 canonical `CodememPlugin` using both a healthy foreground viewer and classified
-viewer-unavailable CLI fallback. It creates and removes an isolated three-memory
-synthetic database, discards one warm-up per path, and measures 30 repetitions by
-default:
+viewer-unavailable CLI fallback. Each phase creates and removes its own isolated
+three-memory synthetic database, discards one warm-up, and measures 30 repetitions
+by default. Each direct, healthy, and fallback phase uses fresh short-lived
+processes and its own counter file, then stops those processes before the next
+phase begins. Phase initialization, plugin startup, and the warm-up run occur
+before latency sampling. Parallel plugin callbacks could otherwise write to the
+same counter and mix phase results.
 
 ```fish
 pnpm exec tsx --conditions source scripts/eval/prompt-path.ts
@@ -101,11 +105,22 @@ pnpm exec tsx --conditions source scripts/eval/prompt-path.ts
 pnpm exec tsx --conditions source scripts/eval/prompt-path.ts --repetitions 1
 ```
 
+Run this development harness on macOS or Linux. In Linux containers, use an init
+process to collect exited child processes. Docker provides one through `--init`.
+Windows process-group cleanup is unsupported.
+
+Put the pinned standalone `pnpm` binary on `PATH`. Each phase isolates `HOME` and
+`XDG_CONFIG_HOME`, so Corepack or version-manager shims that depend on those
+locations may otherwise try to resolve or download the package manager again.
+
 The JSON report contains aggregate median/p95 latency, sorted unlabelled timing
 samples, failure counts by class, and started pack, ledger, other, and failed
-subprocess counts. The median averages the middle pair and p95 uses nearest rank.
-The harness never emits fixture text, prompts, memory IDs, database paths, or
-per-query results.
+subprocess counts. For `N` repetitions, direct must report `pack=N`, `ledger=0`,
+`other=0`, `failed=0`; healthy must report all zero; and fallback must report
+`pack=N`, `ledger=N`, `other=0`, `failed=0`, with every attempt succeeding. The
+median averages the middle pair and p95 uses nearest rank. The harness never
+emits fixture text, prompts, memory IDs, database paths, or per-query results.
+Statistics use the same rounded samples included in the report.
 
 This source-tree benchmark intentionally includes an instrumentation shim process
 plus the `pnpm exec tsx` startup used by both direct CLI and fallback paths. The
@@ -116,7 +131,7 @@ CLI. The small fixture emphasizes startup and transport cost rather than retriev
 cost at realistic corpus size.
 
 The release gate requires a lower healthy-viewer median, a healthy-viewer p95 no
-higher than direct CLI, zero healthy pack/ledger subprocesses, and no failed
+higher than direct CLI, all-zero healthy subprocess counts, and no failed
 repetitions. The zero-subprocess check includes a bounded two-second
 post-measurement observation window; work that starts or completes in that window
 invalidates the run without affecting measured latency. Any other healthy-path CLI
@@ -130,7 +145,7 @@ test command and root CLI scripts:
 
 ```fish
 pnpm run eval:pack:typecheck
-node --import tsx --test scripts/eval/prompt-path-lib.test.ts
+node --import tsx --conditions source --test scripts/eval/prompt-path-lib.test.ts scripts/eval/prompt-path-process.test.ts
 ```
 
 ## Automatic recall transport regression
