@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from "vitest";
 import type { DiagnosticEvent, DiagnosticEventsResponse } from "../../lib/api/diagnostics";
 import { loadTechnicalHistory } from "./technical-history";

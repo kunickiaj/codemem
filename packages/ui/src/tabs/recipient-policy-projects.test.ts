@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, it } from "vitest";
 import type { ProjectScopeInventoryProject } from "../lib/api/sync";
 import { toReceivedProjectShares } from "./recipient-policy-projects";
