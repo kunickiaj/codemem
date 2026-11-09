@@ -41,6 +41,7 @@ export {
 	forgetMemory,
 	loadMemories,
 	loadMemoriesPage,
+	loadMemoryContext,
 	loadSummaries,
 	loadSummariesPage,
 	moveMemoryProject,

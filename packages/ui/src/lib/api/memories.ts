@@ -3,6 +3,7 @@
  * actions on individual memories, and the pack-trace debug call used
  * by the Inspector. */
 
+import type { FeedContextResponse } from "@codemem/core/feed-contract";
 import { buildProjectParams, fetchJson, payloadError, readJsonPayload } from "./internal";
 import type { PackTrace, PaginatedResponse } from "./types";
 
@@ -12,7 +13,14 @@ export async function loadMemories(project: string): Promise<PaginatedResponse> 
 
 export async function loadMemoriesPage(
 	project: string,
-	options?: { limit?: number; offset?: number; scope?: string; q?: string; signal?: AbortSignal },
+	options?: {
+		limit?: number;
+		offset?: number;
+		scope?: string;
+		q?: string;
+		signal?: AbortSignal;
+		view?: "feed";
+	},
 ): Promise<PaginatedResponse> {
 	const query = buildProjectParams(
 		project,
@@ -21,7 +29,10 @@ export async function loadMemoriesPage(
 		options?.scope,
 		options?.q,
 	);
-	return fetchJson<PaginatedResponse>(`/api/observations?${query}`, { signal: options?.signal });
+	const view = options?.view === "feed" ? "&view=feed" : "";
+	return fetchJson<PaginatedResponse>(`/api/observations?${query}${view}`, {
+		signal: options?.signal,
+	});
 }
 
 export async function updateMemoryVisibility(
@@ -73,7 +84,14 @@ export async function loadSummaries(project: string): Promise<PaginatedResponse>
 
 export async function loadSummariesPage(
 	project: string,
-	options?: { limit?: number; offset?: number; scope?: string; q?: string; signal?: AbortSignal },
+	options?: {
+		limit?: number;
+		offset?: number;
+		scope?: string;
+		q?: string;
+		signal?: AbortSignal;
+		view?: "feed";
+	},
 ): Promise<PaginatedResponse> {
 	const query = buildProjectParams(
 		project,
@@ -82,7 +100,48 @@ export async function loadSummariesPage(
 		options?.scope,
 		options?.q,
 	);
-	return fetchJson<PaginatedResponse>(`/api/summaries?${query}`, { signal: options?.signal });
+	const view = options?.view === "feed" ? "&view=feed" : "";
+	return fetchJson<PaginatedResponse>(`/api/summaries?${query}${view}`, {
+		signal: options?.signal,
+	});
+}
+
+export async function loadMemoryContext(options: {
+	id: number;
+	project?: string;
+	scope?: string;
+	q?: string;
+	classification?: "observation" | "summary";
+	signal?: AbortSignal;
+}): Promise<FeedContextResponse> {
+	if (!Number.isSafeInteger(options.id) || options.id <= 0) {
+		throw new Error("Invalid memory id.");
+	}
+	const query = new URLSearchParams();
+	for (const key of ["project", "scope", "q", "classification"] as const) {
+		if (options[key] !== undefined) query.set(key, options[key]);
+	}
+	try {
+		const result = await fetchJson<unknown>(`/api/memory/${options.id}/context?${query}`, {
+			signal: options.signal,
+			cache: "no-store",
+		});
+		if (!result || typeof result !== "object") throw new Error("Invalid context response.");
+		const response = result as Partial<FeedContextResponse>;
+		if (
+			!Number.isSafeInteger(response.id) ||
+			response.id !== options.id ||
+			typeof response.revision !== "string" ||
+			typeof response.context !== "string"
+		) {
+			throw new Error("Invalid context response.");
+		}
+		return { id: Number(response.id), revision: response.revision, context: response.context };
+	} catch {
+		// Fetch failures can include URLs containing the user's search text.
+		if (options.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+		throw new Error("Full context unavailable. Try again.");
+	}
 }
 
 export async function tracePack(payload: {
