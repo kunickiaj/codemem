@@ -30,6 +30,7 @@ import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, addViewerHostOptions, type DbOpts, resolveDbOpt } from "../shared-options.js";
 import { logHookEvent } from "./claude-hook-plugin-log.js";
+import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
 import {
 	drainPiHookSpool,
 	hasPiHookSpooledEntries,
@@ -54,6 +55,7 @@ type HttpIngestResult = {
 	skipped: number;
 	queued?: number;
 	targetMismatch?: boolean;
+	failureOutcome?: ReturnType<typeof classifyNativeHookHttpFailure>;
 };
 type IngestLock = <T>(fn: () => Promise<T> | T) => Promise<T>;
 type IngestOpts = { host: string; port: string | number } & DbOpts;
@@ -106,19 +108,27 @@ async function tryHttpIngest(
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), httpTimeoutMs());
 	try {
+		const requestBody = JSON.stringify(payload);
 		const res = await fetch(url, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(payload),
+			body: requestBody,
 			signal: controller.signal,
 		});
 		if (!res.ok) {
 			const body = await res.json().catch(() => null);
+			const failureOutcome = classifyNativeHookHttpFailure({
+				status: res.status,
+				responseBody: body,
+				outgoingBytes: Buffer.byteLength(requestBody, "utf8"),
+				redirected: res.redirected,
+			});
 			return {
 				ok: false,
 				inserted: 0,
 				skipped: 0,
 				targetMismatch: isViewerTargetConflict(res.status, body),
+				...(failureOutcome ? { failureOutcome } : {}),
 			};
 		}
 

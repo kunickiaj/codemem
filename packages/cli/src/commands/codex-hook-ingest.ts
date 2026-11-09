@@ -28,6 +28,7 @@ import {
 	spoolCodexHookPayloadWithReceipt,
 	withCodexHookIngestLock,
 } from "./codex-hook-ingest-spool.js";
+import { classifyNativeHookHttpFailure } from "./hook-delivery-outcome.js";
 import { isViewerTargetConflict, rawEventTarget } from "./raw-event-target.js";
 
 type IngestVia = "http" | "spool";
@@ -47,6 +48,7 @@ type HttpIngestResult = {
 	cause?: "timeout" | "connection" | "http_status" | "malformed_response" | "invalid_target";
 	status?: number;
 	elapsedMs?: number;
+	failureOutcome?: ReturnType<typeof classifyNativeHookHttpFailure>;
 };
 
 function elapsedSince(startedAt: number): number {
@@ -189,15 +191,22 @@ export async function tryHttpIngest(
 	const timeout = setTimeout(() => controller.abort(), httpTimeoutMs());
 	const startedAt = Date.now();
 	try {
+		const requestBody = JSON.stringify(payload);
 		const res = await fetch(url, {
 			method: "POST",
 			redirect: "manual",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(payload),
+			body: requestBody,
 			signal: controller.signal,
 		});
 		if (!res.ok) {
 			const body = await res.json().catch(() => null);
+			const failureOutcome = classifyNativeHookHttpFailure({
+				status: res.status,
+				responseBody: body,
+				outgoingBytes: Buffer.byteLength(requestBody, "utf8"),
+				redirected: res.redirected,
+			});
 			return {
 				ok: false,
 				inserted: 0,
@@ -206,6 +215,7 @@ export async function tryHttpIngest(
 				cause: "http_status",
 				status: res.status,
 				elapsedMs: elapsedSince(startedAt),
+				...(failureOutcome ? { failureOutcome } : {}),
 			};
 		}
 
