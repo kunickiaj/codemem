@@ -59,6 +59,8 @@ interface NormalizedRequest {
 	requestMeta: Pick<NormalizedEvent, "cwd" | "project" | "startedAt">;
 }
 
+type SessionMetadata = NormalizedRequest["requestMeta"];
+
 interface StreamIdResolution {
 	streamId: string | null;
 	error: RawEventIngestValidationError | null;
@@ -307,6 +309,42 @@ function normalizeRequest(request: Record<string, unknown>): NormalizedRequest {
 	};
 }
 
+/** Duplicate-only batches can fill missing context, but only new events replace recorded context. */
+function sessionMetadataForEvents({
+	events,
+	candidates,
+	requestMeta,
+	applyRequestMeta,
+	previous,
+}: {
+	events: NormalizedEvent[];
+	candidates: NormalizedEvent[];
+	requestMeta: SessionMetadata;
+	applyRequestMeta: boolean;
+	previous?: SessionMetadata;
+}): SessionMetadata {
+	const metadataEvents = candidates.length > 0 ? candidates : events;
+	const eventMeta = metadataEvents.reduce(
+		(meta, event) => ({
+			cwd: event.cwd ?? meta.cwd,
+			project: event.project ?? meta.project,
+			startedAt: event.startedAt ?? meta.startedAt,
+		}),
+		{ cwd: null, project: null, startedAt: null } as SessionMetadata,
+	);
+	const incoming = {
+		cwd: eventMeta.cwd ?? (applyRequestMeta ? requestMeta.cwd : null),
+		project: eventMeta.project ?? (applyRequestMeta ? requestMeta.project : null),
+		startedAt: eventMeta.startedAt ?? (applyRequestMeta ? requestMeta.startedAt : null),
+	};
+	if (candidates.length > 0) return incoming;
+	return {
+		cwd: previous?.cwd ?? incoming.cwd,
+		project: previous?.project ?? incoming.project,
+		startedAt: previous?.startedAt ?? incoming.startedAt,
+	};
+}
+
 function persistStream(
 	store: RawEventIngestStore,
 	source: string,
@@ -347,9 +385,10 @@ function persistStream(
 
 	const sessionRow = store.db
 		.prepare(
-			"SELECT last_received_event_seq FROM raw_event_sessions WHERE source = ? AND stream_id = ?",
+			`SELECT last_received_event_seq, cwd, project, started_at AS startedAt
+			 FROM raw_event_sessions WHERE source = ? AND stream_id = ?`,
 		)
-		.get(source, streamId) as { last_received_event_seq: number } | undefined;
+		.get(source, streamId) as (SessionMetadata & { last_received_event_seq: number }) | undefined;
 	const maxRow = store.db
 		.prepare(
 			"SELECT MAX(event_seq) AS max_event_seq FROM raw_events WHERE source = ? AND stream_id = ?",
@@ -387,22 +426,13 @@ function persistStream(
 		lastReceived = assignedSeq;
 	}
 
-	const applyRequestMeta = singleStream || request.defaultStreamId === streamId;
-	const eventMeta = events.reduce(
-		(meta, event) => ({
-			cwd: event.cwd ?? meta.cwd,
-			project: event.project ?? meta.project,
-			startedAt: event.startedAt ?? meta.startedAt,
-		}),
-		{ cwd: null, project: null, startedAt: null } as Pick<
-			NormalizedEvent,
-			"cwd" | "project" | "startedAt"
-		>,
-	);
-	const cwd = eventMeta.cwd ?? (applyRequestMeta ? request.requestMeta.cwd : null);
-	const project = eventMeta.project ?? (applyRequestMeta ? request.requestMeta.project : null);
-	const startedAt =
-		eventMeta.startedAt ?? (applyRequestMeta ? request.requestMeta.startedAt : null);
+	const { cwd, project, startedAt } = sessionMetadataForEvents({
+		events,
+		candidates,
+		requestMeta: request.requestMeta,
+		applyRequestMeta: singleStream || request.defaultStreamId === streamId,
+		previous: sessionRow,
+	});
 	const lastSeen = events.reduce<number | null>(
 		(max, event) =>
 			event.tsWallMs == null ? max : Math.max(max ?? event.tsWallMs, event.tsWallMs),

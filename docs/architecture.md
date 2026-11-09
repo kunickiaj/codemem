@@ -51,6 +51,8 @@ flowchart LR
 9. Ingest writes artifacts (transcript, context snapshots), observations, and summaries to SQLite.
 10. The viewer, MCP server, and CLI all read from the same SQLite database.
 
+Raw-event IDs are deduplicated per source and stream. Duplicate-only requests can fill null `cwd`, `project`, and `started_at` fields without replacing existing non-null values. Mixed batches derive context updates from newly inserted events and the existing request-level fallback. First-seen events still update context by arrival order, and ingestion stores `started_at` as supplied.
+
 ### Raw-event batch ownership
 
 Each successful flush claim advances a durable `claim_generation`, independently of its attempt count and wall-clock timestamp. Admission failures can refund attempts without reusing ownership. In one immediate SQLite transaction, the current worker verifies the batch ID, generation, and status, then commits memories, observer usage, batch completion, and cursor progress together. Intentional skips commit usage and completion together. Superseded workers can record actual observer cost, tagged as superseded with zero observations and no summary, but cannot publish memories or progress. A session-cleanup failure after commit leaves the batch completed on retry.
