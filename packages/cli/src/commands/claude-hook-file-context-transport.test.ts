@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { runClaudeFileContextTransport } from "./claude-hook-file-context-transport.js";
 
 const mocks = vi.hoisted(() => {
@@ -30,6 +30,13 @@ vi.mock("@codemem/core", async (importOriginal) => ({
 	buildViewerIdentityTarget: () => mocks.identity,
 }));
 let directory: string;
+let compileCacheDirectory: string;
+beforeAll(() => {
+	compileCacheDirectory = mkdtempSync(join(tmpdir(), "codemem-cli-transport-compile-cache-"));
+});
+afterAll(() => {
+	rmSync(compileCacheDirectory, { recursive: true, force: true });
+});
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.store.hasCurrentIdentity.mockReturnValue(true);
@@ -80,7 +87,10 @@ function child(args: string[], input = "") {
 		CODEMEM_EMBEDDING_DISABLED: "1",
 		CODEMEM_EMBEDDING_OFFLINE: "1",
 		CODEMEM_PLUGIN_LOG_PATH: join(directory, "plugin.log"),
+		NODE_COMPILE_CACHE: compileCacheDirectory,
 	});
+	// Keep explicit cache opt-outs. Direct child coverage needs uncached source positions.
+	if (env.NODE_V8_COVERAGE !== undefined) env.NODE_DISABLE_COMPILE_CACHE = "1";
 	return spawnSync(
 		process.execPath,
 		[
