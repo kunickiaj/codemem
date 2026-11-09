@@ -11,6 +11,7 @@ import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-
 import * as peerHttpServer from "../../core/src/peer-http-server.js";
 import { relayRealmPath } from "../../core/src/relay-client-config.js";
 import { RELAY_FAILURE_REASONS } from "../../core/src/relay-failure-reason.js";
+import { simulatedRelayPairPacing } from "../../core/src/relay-pair-pacing-test-fixtures.js";
 import {
 	relayClientFixture,
 	relayDeadline,
@@ -59,7 +60,7 @@ async function targetDevice() {
 			target: identity(serverKeys, f.remote.localPublicKey),
 		},
 		{ source: f.remote.peerDeviceId, target: f.remote.localDeviceId },
-		{ groupId: GROUP },
+		{ groupId: GROUP, simulatedPairPacing: simulatedRelayPairPacing() },
 	);
 	cleanups.push(() => relay.dispose());
 	// Tests switch the coordinator's answer through this override.
