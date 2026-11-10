@@ -56,6 +56,79 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+describe("My Account device connection", () => {
+	it("connects an eligible linked device only after the person chooses the existing sign-in flow", async () => {
+		// Arrange: signed status offers connection for the current Identity.
+		view = status({
+			canConnectDevice: true,
+			canSignIn: true,
+			canLink: false,
+			remote: {
+				kind: "status",
+				coordinatorId: "coordinator-one",
+				identityId: "identity-one",
+				authority: "controller_attestation",
+				identityMatches: true,
+				state: "linked",
+				account: { email: "fixture@example.test" },
+			},
+		});
+		await show();
+		expect(
+			transport.mock.calls.filter(([url]) => String(url).endsWith("link-operations")),
+		).toHaveLength(0);
+		expect(summary()).toContain("same account");
+		expect(summary()).toContain("Your Identity and sharing access won’t change");
+		// Act
+		await act(async () => {
+			button("Connect this device")?.click();
+		});
+		await settle();
+		// Assert: this is the maintained Google/rebind ceremony, with no alternate identity choice.
+		const starts = transport.mock.calls.filter(([url]) => String(url).endsWith("link-operations"));
+		expect(starts).toHaveLength(1);
+		expect(JSON.parse(String(starts[0][1]?.body))).toEqual({
+			intent: "sign_in",
+			groupId: "group-one",
+			contextId: "context-one",
+			coordinatorId: "coordinator-one",
+			authority: "controller_attestation",
+		});
+		expect(button("Link Google account")).toBeUndefined();
+	});
+
+	it.each([false, undefined])(
+		"does not offer connection without positive eligibility (%s)",
+		async (eligible) => {
+			// Arrange
+			view = status({ canSignIn: true, canConnectDevice: eligible });
+			// Act
+			await show();
+			// Assert
+			expect(button("Connect this device")).toBeUndefined();
+			expect(button("Sign in with Google")?.disabled).toBe(false);
+			expect(window.open).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not dispatch connection while another operation is active", async () => {
+		// Arrange
+		view = status({ canConnectDevice: true, canSignIn: true, operation: signInOperation() });
+		await show();
+		// Act
+		await act(async () => {
+			button("Connect this device")?.click();
+		});
+		await settle();
+		// Assert
+		expect(button("Connect this device")).toBeUndefined();
+		expect(
+			transport.mock.calls.filter(([url]) => String(url).endsWith("link-operations")),
+		).toHaveLength(0);
+		expect(window.open).not.toHaveBeenCalled();
+	});
+});
+
 describe("My Account sign-in", () => {
 	it("starts a sign-in from one 'Sign in with Google' button", async () => {
 		// Arrange

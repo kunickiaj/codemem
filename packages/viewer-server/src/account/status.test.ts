@@ -1,6 +1,7 @@
 import type { CoordinatorAccountLinkStatusRead } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AppOptions, createApp } from "../index.js";
+import { createAccountLinkRegistry } from "./link-registry.js";
 
 const ORIGIN = "http://127.0.0.1:7441";
 const PATH = "/api/account/link-status";
@@ -32,7 +33,10 @@ type AccountOptions = NonNullable<AppOptions["accountLink"]>;
 type Context = ReturnType<NonNullable<AccountOptions["readContext"]>>;
 
 afterEach(() => vi.restoreAllMocks());
-async function fixture(capabilities?: NonNullable<AccountOptions["readRemoteCapabilities"]>) {
+async function fixture(
+	capabilities?: NonNullable<AccountOptions["readRemoteCapabilities"]>,
+	connection: Partial<AccountOptions> = {},
+) {
 	const readContext = vi.fn((): Context => structuredClone(ready));
 	const readRemoteStatus = vi.fn(
 		async (): Promise<CoordinatorAccountLinkStatusRead> => ({ kind: "unsupported" }),
@@ -47,6 +51,7 @@ async function fixture(capabilities?: NonNullable<AccountOptions["readRemoteCapa
 			readContext,
 			readRemoteStatus,
 			readRemoteCapabilities: capabilities,
+			...connection,
 		},
 	});
 	const session = await app.request(`${ORIGIN}/api/account/session`, {
@@ -103,6 +108,129 @@ function privateResponse(response: Response) {
 		[],
 	);
 }
+
+describe("normal device connection status", () => {
+	const registries: ReturnType<typeof createAccountLinkRegistry>[] = [];
+	afterEach(async () => {
+		await Promise.all(registries.splice(0).map((registry) => registry.close()));
+	});
+	async function connectionFixture() {
+		const rebind = vi.fn(async () => ({ kind: "bound" as const }));
+		const registry = createAccountLinkRegistry({
+			readContext: () => structuredClone(ready),
+			rebind,
+		});
+		registries.push(registry);
+		const read = vi.fn<NonNullable<AccountOptions["readRemoteDeviceSetup"]>>(async () => ({
+			kind: "connect_required",
+		}));
+		const capabilities = vi.fn<NonNullable<AccountOptions["readRemoteCapabilities"]>>(async () => ({
+			kind: "capabilities",
+			coordinatorId: "coordinator-a",
+			actions: { refresh: true, disconnect: true },
+			unlinkTarget: "link-a",
+		}));
+		const f = await fixture(capabilities, { registry, readRemoteDeviceSetup: read });
+		f.readRemoteStatus.mockResolvedValue(
+			status("linked", local.identityId, "controller_attestation"),
+		);
+		return { ...f, registry, rebind, read, capabilities };
+	}
+
+	it("offers an explicit same-Identity connection without starting a ceremony from GET", async () => {
+		// Arrange: a linked controller account is eligible but has no device binding.
+		const f = await connectionFixture();
+		// Act
+		const response = await f.request();
+		const body = await response.json();
+		// Assert: eligibility is a read, and existing management actions remain usable.
+		expect(body).toMatchObject({ canConnectDevice: true, canSignIn: true, blockedReason: null });
+		expect(body.local.identityId).toBe(local.identityId);
+		expect(body.managementActions).toEqual({ refresh: true, disconnect: true });
+		expect(f.read).toHaveBeenCalledWith(
+			expect.objectContaining({
+				currentIdentityId: local.identityId,
+				groupId: "group-a",
+				dbPath: subject.dbPath,
+			}),
+		);
+		expect(f.rebind).not.toHaveBeenCalled();
+		expect(f.registry.hasActive()).toBe(false);
+		expect(f.storeFactory).not.toHaveBeenCalled();
+		privateResponse(response);
+	});
+
+	it.each(["ready", "requires_review", "unsupported", "unavailable", "throws"] as const)(
+		"preserves the healthy linked account without offering connection after %s",
+		async (kind) => {
+			// Arrange: older coordinators and refused/ambiguous eligibility provide no connection authority.
+			const f = await connectionFixture();
+			f.read.mockImplementation(async () => {
+				if (kind === "throws") throw new Error("private-fixture");
+				if (kind === "unsupported") return { kind, cause: "coordinator_upgrade_required" };
+				if (kind === "unavailable") return { kind, cause: "coordinator_unreachable" };
+				return { kind };
+			});
+			// Act
+			const body = await (await f.request()).json();
+			// Assert
+			expect(body.canConnectDevice).not.toBe(true);
+			expect(body.remote).toMatchObject({
+				state: "linked",
+				account: { email: "fixture@example.test" },
+			});
+			expect(body.managementActions).toEqual({ refresh: true, disconnect: true });
+			expect(f.rebind).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["unlinked", "revoked", "conflict", "review_required", "mismatch"] as const)(
+		"does not request connection eligibility for %s account status",
+		async (state) => {
+			// Arrange
+			const f = await connectionFixture();
+			f.readRemoteStatus.mockResolvedValue(
+				state === "mismatch" ? status("linked", "other") : status(state),
+			);
+			// Act
+			const body = await (await f.request()).json();
+			// Assert
+			expect(body.canConnectDevice).not.toBe(true);
+			expect(f.read).not.toHaveBeenCalled();
+			expect(f.rebind).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["eligibility", "capabilities"] as const)(
+		"denies connection after profile drift during %s",
+		async (stage) => {
+			// Arrange
+			const f = await connectionFixture();
+			const drift = () =>
+				f.readContext.mockReturnValue({
+					...structuredClone(ready),
+					context: { ...subject, identityId: "other" },
+				});
+			if (stage === "eligibility")
+				f.read.mockImplementation(async () => {
+					drift();
+					return { kind: "connect_required" };
+				});
+			else
+				f.capabilities.mockImplementation(async () => {
+					drift();
+					return { kind: "unsupported" };
+				});
+			// Act
+			const body = await (await f.request()).json();
+			// Assert
+			expect(body.canConnectDevice).not.toBe(true);
+			expect(body.canSignIn).toBe(false);
+			expect(body.remote).toEqual({ kind: "unavailable", code: "context_changed" });
+			expect(f.rebind).not.toHaveBeenCalled();
+		},
+	);
+});
 
 describe("account management capabilities", () => {
 	it.each(
