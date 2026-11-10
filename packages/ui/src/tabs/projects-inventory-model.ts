@@ -8,6 +8,8 @@ export interface ProjectInventoryRecipientViewModel {
 	key: string;
 	kind: "Team" | "Identity";
 	displayName: string;
+	coveredProjectCount?: number;
+	knownProjectCount?: number;
 }
 
 export interface ProjectInventoryProjectViewModel {
