@@ -1990,6 +1990,14 @@ async function readRecipientPolicyCoordinatorSnapshot<T>(read: () => Promise<T>)
 	}
 }
 
+interface RecipientPolicyCapabilityEnrollment {
+	identityId: string;
+	ownershipIdentityId: string | undefined;
+	publicKey: string;
+	fingerprint: string;
+	presenceCapabilityExpiresAtMs: number | null;
+}
+
 export function createRecipientPolicyReconcilerEffects(
 	store: MemoryStore,
 	options: {
@@ -2021,18 +2029,7 @@ export function createRecipientPolicyReconcilerEffects(
 		}
 		return evidence;
 	};
-	const boundaryEnrollments = new Map<
-		string,
-		Map<
-			string,
-			{
-				identityId: string;
-				publicKey: string;
-				fingerprint: string;
-				presenceCapabilityExpiresAtMs: number | null;
-			}
-		>
-	>();
+	const boundaryEnrollments = new Map<string, Map<string, RecipientPolicyCapabilityEnrollment>>();
 	const target = (scopeId: string) => recipientPolicyCoordinatorBoundary(store, scopeId);
 	const coordinatorOptions = (scopeId: string) => {
 		const boundary = target(scopeId);
@@ -2106,10 +2103,8 @@ export function createRecipientPolicyReconcilerEffects(
 					adminSecret: targetOptions.adminSecret,
 				}),
 			).catch((error) => recipientPolicySnapshotUnavailable("device_enrollments", error));
-			const presenceCapabilityExpiries = recipientPolicyPresenceCapabilityExpiries(
-				enrollments,
-				observedAt,
-			);
+			const presenceExpiries = recipientPolicyPresenceCapabilityExpiries(enrollments, observedAt);
+			const bindings = new Map<string, RecipientPolicyCapabilityEnrollment>();
 			const mapped = enrollments.map((enrollment) => {
 				if (
 					enrollment.group_id !== targetOptions.groupId ||
@@ -2123,6 +2118,15 @@ export function createRecipientPolicyReconcilerEffects(
 				) {
 					throw new Error("recipient_policy_snapshot_invalid");
 				}
+				if (enrollment.enabled === 1 && enrollment.identity_id !== null) {
+					bindings.set(enrollment.device_id, {
+						identityId: enrollment.identity_id,
+						ownershipIdentityId: enrollment.ownership_identity_id,
+						publicKey: enrollment.public_key,
+						fingerprint: enrollment.fingerprint,
+						presenceCapabilityExpiresAtMs: presenceExpiries.get(enrollment.device_id) ?? null,
+					});
+				}
 				return {
 					deviceId: enrollment.device_id,
 					identityId: enrollment.identity_id,
@@ -2131,27 +2135,7 @@ export function createRecipientPolicyReconcilerEffects(
 					enabled: enrollment.enabled === 1,
 				};
 			});
-			boundaryEnrollments.set(
-				scopeId,
-				new Map(
-					mapped.flatMap((enrollment) =>
-						enrollment.enabled && enrollment.identityId !== null
-							? [
-									[
-										enrollment.deviceId,
-										{
-											identityId: enrollment.identityId,
-											publicKey: enrollment.publicKey,
-											fingerprint: enrollment.fingerprint,
-											presenceCapabilityExpiresAtMs:
-												presenceCapabilityExpiries.get(enrollment.deviceId) ?? null,
-										},
-									] as const,
-								]
-							: [],
-					),
-				),
-			);
+			boundaryEnrollments.set(scopeId, bindings);
 			return mapped;
 		},
 		probeCapability: async ({ deviceId, scopeId }) => {
@@ -2166,18 +2150,16 @@ export function createRecipientPolicyReconcilerEffects(
 				.get(deviceId) as
 				| { pinned_fingerprint: string | null; public_key: string | null }
 				| undefined;
-			if (peer) {
-				const peerPublicKey = String(peer.public_key ?? "").trim();
-				const peerFingerprint =
-					String(peer.pinned_fingerprint ?? "").trim() ||
-					(peerPublicKey ? fingerprintPublicKey(peerPublicKey) : "");
-				if (
-					(peerFingerprint || peerPublicKey) &&
-					(peerFingerprint !== enrollment.fingerprint ||
-						(peerPublicKey && peerPublicKey !== enrollment.publicKey))
-				) {
-					return "undetermined";
-				}
+			const peerPublicKey = String(peer?.public_key ?? "").trim();
+			const peerFingerprint =
+				String(peer?.pinned_fingerprint ?? "").trim() ||
+				(peerPublicKey ? fingerprintPublicKey(peerPublicKey) : "");
+			if (
+				(peerFingerprint || peerPublicKey) &&
+				(peerFingerprint !== enrollment.fingerprint ||
+					(peerPublicKey && peerPublicKey !== enrollment.publicKey))
+			) {
+				return "undetermined";
 			}
 			const observed = await peerSupportsSyncRequirements(store, deviceId, {
 				scoped: true,
@@ -2192,9 +2174,11 @@ export function createRecipientPolicyReconcilerEffects(
 			) {
 				return "undetermined";
 			}
-			// A consumed, still-reviewed Team/add-device invite is the only bootstrap
-			// identity proof accepted before normal peer discovery can observe the new
-			// device. Fresh authenticated presence separately proves capability.
+			// The current coordinator listing binds canonical ownership to this exact
+			// enrollment key. Fresh authenticated presence separately proves capability.
+			if (enrollment.ownershipIdentityId === enrollment.identityId) return "supported";
+			// A consumed, still-reviewed Team/add-device invite remains an alternative
+			// identity proof before normal peer discovery can observe the new device.
 			const evidence = await loadReviewedRecipientInviteEvidence(targetOptions.groupId).catch(
 				() => [],
 			);
