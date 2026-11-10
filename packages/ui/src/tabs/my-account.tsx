@@ -102,6 +102,8 @@ function ownerOnlySummary(view: AccountView): string {
 }
 
 function linkedSummary(view: AccountView): string {
+	if (view.canConnectDevice)
+		return "Your Google account is linked. Connect this device by signing in with the same account and confirming in your browser. Your Identity and sharing access won’t change.";
 	if (view.remote.kind === "status" && view.remote.account) return "";
 	if (view.canSignIn)
 		return "Linked on another device. Sign in with Google to refresh or unlink it here too.";
@@ -145,6 +147,25 @@ function unknownOutcomeSummary(operation: AccountOperation): string {
 	return unknownAccountOutcome(operation);
 }
 
+function awaitingBrowserSummary(view: AccountView, operation: AccountOperation): string {
+	if (
+		operation.intent === "sign_in" &&
+		!view.ownerProjection &&
+		view.remote.kind === "status" &&
+		view.remote.state === "linked" &&
+		view.remote.identityMatches
+	)
+		return "Waiting for Google sign-in. Use the linked account and confirm connecting this device in your browser. Keep this Viewer open.";
+	return {
+		connect: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
+		sign_in:
+			"Waiting for Google sign-in. If the account belongs to another Identity, you’ll confirm before this device switches.",
+		refresh:
+			"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
+		disconnect: "Unlinking Google account…",
+	}[operation.intent ?? "connect"];
+}
+
 function accountSummary(view: AccountView | null, operation: AccountOperation | null): string {
 	const copy = accountOperationCopy(operation);
 	if (!view)
@@ -156,15 +177,7 @@ function accountSummary(view: AccountView | null, operation: AccountOperation | 
 			refresh: "Preparing Google sign-in to refresh your profile…",
 			disconnect: "Unlinking Google account…",
 		}[operation.intent ?? "connect"];
-	if (operation?.state === "awaiting_browser")
-		return {
-			connect: "Waiting for Google sign-in. Keep this Viewer open on the same computer.",
-			sign_in:
-				"Waiting for Google sign-in. If the account belongs to another Identity, you’ll confirm before this device switches.",
-			refresh:
-				"Waiting for Google sign-in to refresh your account. Keep this Viewer open on the same computer.",
-			disconnect: "Unlinking Google account…",
-		}[operation.intent ?? "connect"];
+	if (operation?.state === "awaiting_browser") return awaitingBrowserSummary(view, operation);
 	if (operation?.state === "outcome_unknown") return unknownOutcomeSummary(operation);
 	if (operation?.state === "failed" && operation.failure === "link_stopped")
 		return `${copy.subject} stopped. Check status before trying again.`;
@@ -374,6 +387,8 @@ function PrimaryAccountAction({
 	const signIn = view.canSignIn !== undefined;
 	// An owner-only view offers sign-in and nothing else.
 	const allowed = signIn ? view.canSignIn : view.canLink && !view.ownerProjection;
+	let label = signIn ? "Sign in with Google" : "Link Google account";
+	if (view.canConnectDevice) label = "Connect this device";
 	return (
 		<button
 			className="settings-save"
@@ -382,7 +397,7 @@ function PrimaryAccountAction({
 			aria-describedby="my-account-summary"
 			onClick={() => void (signIn ? flow.signIn() : flow.link())}
 		>
-			{signIn ? "Sign in with Google" : "Link Google account"}
+			{label}
 		</button>
 	);
 }

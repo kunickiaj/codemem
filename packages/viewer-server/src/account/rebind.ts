@@ -41,7 +41,7 @@ export type AccountRebindRunner = (input: {
 }) => Promise<AccountRebindResult>;
 
 /** Pins the local facts the person reviewed; the coordinator stores and signs it. */
-function reviewDigest(store: MemoryStore, context: AccountContext): string {
+export function reviewDigest(store: MemoryStore, context: AccountContext): string {
 	const binding = store.db
 		.prepare("SELECT identity_id, assignment_version FROM identity_devices WHERE device_id = ?")
 		.get(context.deviceId);

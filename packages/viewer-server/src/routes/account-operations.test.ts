@@ -3,6 +3,7 @@ import type {
 	changeCoordinatorAccount,
 	linkCoordinatorAccount,
 	readCoordinatorAccountChangeCapabilities,
+	readCoordinatorDeviceSetup,
 } from "@codemem/core";
 import { CoordinatorAccountLinkError } from "@codemem/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -75,7 +76,10 @@ afterEach(async () => {
 	await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 	vi.restoreAllMocks();
 });
-async function fixture(registryOptions: { rebind?: AccountRebindRunner } = {}) {
+async function fixture(
+	registryOptions: { rebind?: AccountRebindRunner } = {},
+	readRemoteDeviceSetup?: typeof readCoordinatorDeviceSetup,
+) {
 	const readContext = vi.fn((_group?: string): AccountContextResult => structuredClone(ready));
 	const readRemoteStatus = vi.fn(async (): Promise<CoordinatorAccountLinkStatusRead> => remote());
 	const done = deferred<Awaited<ReturnType<typeof linkCoordinatorAccount>>>();
@@ -108,6 +112,7 @@ async function fixture(registryOptions: { rebind?: AccountRebindRunner } = {}) {
 			readContext,
 			readRemoteStatus,
 			readRemoteCapabilities,
+			readRemoteDeviceSetup,
 			registry,
 		},
 	});
@@ -167,6 +172,65 @@ function privateResponse(response: Response) {
 		[],
 	);
 }
+
+describe("explicit device connection HTTP contract", () => {
+	it.each(["connect_required", "requires_review", "revoked", "mismatch", "profile_drift"] as const)(
+		"rechecks signed eligibility at POST before starting the existing ceremony: %s",
+		async (outcome) => {
+			// Arrange: initial GET offers connection for a linked controller account.
+			const read = vi.fn<typeof readCoordinatorDeviceSetup>(async () => ({
+				kind: "connect_required",
+			}));
+			const rebind = vi.fn<AccountRebindRunner>(async () => ({ kind: "bound" }));
+			const f = await fixture({ rebind }, read);
+			f.readRemoteStatus.mockResolvedValue(
+				remote("linked", {
+					authority: "controller_attestation",
+					account: { email: "fixture@example.test" },
+				}),
+			);
+			const before = await f.request("/api/account/link-status", "GET");
+			expect((await before.json()).canConnectDevice).toBe(true);
+			expect(rebind).not.toHaveBeenCalled();
+			if (outcome === "requires_review") read.mockResolvedValue({ kind: "requires_review" });
+			if (outcome === "revoked") f.readRemoteStatus.mockResolvedValue(remote("revoked"));
+			if (outcome === "mismatch")
+				f.readRemoteStatus.mockResolvedValue(remote("linked", { identityId: "other" }));
+			if (outcome === "profile_drift")
+				read.mockImplementation(async () => {
+					f.readContext.mockReturnValue({
+						...structuredClone(ready),
+						context: { ...context, identityId: "other" },
+					});
+					return { kind: "connect_required" };
+				});
+			// Act
+			const response = await f.request(
+				PATH,
+				"POST",
+				JSON.stringify({
+					intent: "sign_in",
+					groupId: context.groupId,
+					contextId: context.contextId,
+					coordinatorId: "coordinator-a",
+					authority: "controller_attestation",
+				}),
+			);
+			// Assert: the earlier GET never authorizes a later mutation by itself.
+			if (outcome === "connect_required") {
+				expect(response.status).toBe(202);
+				await vi.waitFor(() => expect(rebind).toHaveBeenCalledTimes(1));
+				expect(rebind).toHaveBeenCalledWith(
+					expect.objectContaining({ context, isCurrent: expect.any(Function) }),
+				);
+			} else {
+				expect(response.status).toBe(409);
+				expect(rebind).not.toHaveBeenCalled();
+			}
+			expect(f.link).not.toHaveBeenCalled();
+		},
+	);
+});
 
 describe("account management HTTP contract", () => {
 	it("keeps an unknown device-unlink outcome globally busy past its deadline without a browser handoff", async () => {
