@@ -1027,10 +1027,22 @@ function resolveSourceOwnedMemoryScope(
 	});
 }
 
+function sourceOwnedMemoryScopeQuery(deviceId: string) {
+	return {
+		fromAndWhere: `FROM memory_items mi
+			 JOIN sessions s ON s.id = mi.session_id
+			 WHERE mi.active = 1
+			   AND (mi.origin_device_id IS NULL OR TRIM(mi.origin_device_id) = '' OR mi.origin_device_id = ?)
+			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)`,
+		bindings: [deviceId, SYNC_BOOTSTRAP_CWD_PREFIX, SYNC_BOOTSTRAP_CWD_PREFIX] as const,
+	};
+}
+
 function sourceOwnedMemoryRowsForScopePropagation(
 	db: Database,
 	deviceId: string,
 ): SourceOwnedMemoryScopeRow[] {
+	const source = sourceOwnedMemoryScopeQuery(deviceId);
 	return db
 		.prepare(
 			`SELECT
@@ -1045,17 +1057,9 @@ function sourceOwnedMemoryRowsForScopePropagation(
 				s.git_branch,
 				s.git_remote,
 				s.project
-			 FROM memory_items mi
-			 JOIN sessions s ON s.id = mi.session_id
-			 WHERE mi.active = 1
-			   AND (mi.origin_device_id IS NULL OR TRIM(mi.origin_device_id) = '' OR mi.origin_device_id = ?)
-			   AND (s.cwd IS NULL OR substr(s.cwd, 1, length(?)) <> ?)`,
+			 ${source.fromAndWhere}`,
 		)
-		.all(
-			deviceId,
-			SYNC_BOOTSTRAP_CWD_PREFIX,
-			SYNC_BOOTSTRAP_CWD_PREFIX,
-		) as SourceOwnedMemoryScopeRow[];
+		.all(...source.bindings) as SourceOwnedMemoryScopeRow[];
 }
 
 function recordSourceOwnedMemoryScopeMove(
@@ -1318,19 +1322,35 @@ function deletionConfirmationState(
 	deviceId: string,
 	mappings: ProjectScopeSettingsMapping[],
 ): string {
-	const memories = sourceOwnedMemoryRowsForScopePropagation(db, deviceId)
-		.toSorted((left, right) => left.id - right.id)
-		.map((row) => [
-			row.id,
-			row.scope_id,
-			row.cwd,
-			row.git_remote,
-			row.session_metadata_json,
-			row.workspace_id,
-		]);
-	return createHash("sha256")
-		.update(JSON.stringify([mappingConfirmationState(mappings), memories]))
-		.digest("hex");
+	// Keep the legacy JSON bytes, but never construct a whole-corpus string.
+	const hash = createHash("sha256").update(
+		`[${JSON.stringify(mappingConfirmationState(mappings))},[`,
+	);
+	// One ordered statement keeps the cursor's rows in one SQLite read snapshot.
+	const source = sourceOwnedMemoryScopeQuery(deviceId);
+	const rows = db.prepare(
+		`SELECT mi.id, mi.scope_id, s.cwd, s.git_remote,
+		        s.metadata_json AS session_metadata_json, mi.workspace_id
+		 ${source.fromAndWhere}
+		 ORDER BY mi.id`,
+	);
+	let separator = "";
+	for (const row of rows.iterate(...source.bindings) as Iterable<SourceOwnedMemoryScopeRow>) {
+		hash
+			.update(separator)
+			.update(
+				JSON.stringify([
+					row.id,
+					row.scope_id,
+					row.cwd,
+					row.git_remote,
+					row.session_metadata_json,
+					row.workspace_id,
+				]),
+			);
+		separator = ",";
+	}
+	return hash.update("]]").digest("hex");
 }
 
 export function analyzeProjectScopeMappingDeletionGuardrails(
