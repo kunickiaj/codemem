@@ -137,10 +137,19 @@ function summarizeRawEventObserverFailure(
 	exc: RawEventObserverOutputError,
 	providerTitle: string,
 ): string {
+	if (exc.reason === "no_processable_input") {
+		return "Raw-event input contained no processable content. Observer inference was not called.";
+	}
 	if (exc.reason === "lossy_repair") {
 		return `${providerTitle} returned structurally incomplete output that could not be repaired.`;
 	}
-	return `${providerTitle} returned no usable output for raw-event processing.`;
+	if (exc.reason === "unstorable_observer_output") {
+		return `${providerTitle} output produced no storable content after validation and filtering.`;
+	}
+	if (exc.reason === "empty_observer_output") {
+		return `${providerTitle} returned no usable output for raw-event processing.`;
+	}
+	return "Raw-event processing failed for an unspecified reason.";
 }
 
 function summarizeFlushFailure(exc: Error, provider: string | null | undefined): string {
