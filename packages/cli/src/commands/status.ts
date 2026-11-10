@@ -38,7 +38,15 @@ export type SemanticIndexState =
 	| "failed"
 	| "unknown";
 export type RawEventsState = "healthy" | "backlogged" | "failing" | "unknown";
-export type ObserverState = "healthy" | "idle" | "backoff" | "failed" | "unconfigured" | "unknown";
+export type ObserverState =
+	| "healthy"
+	| "idle"
+	/** Retained for compatibility. The health-only status command does not emit backoff. */
+	| "backoff"
+	| "degraded"
+	| "failed"
+	| "unconfigured"
+	| "unknown";
 export type AttentionSeverity = "warning" | "error";
 
 export interface StatusAttention {
@@ -331,12 +339,12 @@ function projectDatabaseSubsystems(
 			severity: "error",
 			message: "Observer exhausted retries recently. Run `codemem diagnostics capture check`",
 		});
-	} else if (configuredObserver && snapshot.observer.backoff_batches > 0) {
-		observerState = "backoff";
+	} else if (configuredObserver && snapshot.observer.recent_failed_batches > 0) {
+		observerState = "degraded";
 		attention.push({
-			code: "observer_backoff",
+			code: "observer_recent_failures",
 			severity: "warning",
-			message: "Observer has retryable failures. Run `codemem diagnostics capture status`",
+			message: "Observer batches failed recently. Run `codemem diagnostics capture status`",
 		});
 	}
 	return {

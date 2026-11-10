@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `codemem status --json` and `codemem service status --json` now report recent observer batch failures as `observer.state: degraded` with attention code `observer_recent_failures`, replacing `backoff` and `observer_backoff`. Historical failures no longer trigger that warning. The CLI health probe cannot confirm the worker's active backoff timer.
+
 ## [0.49.0-beta.1] - 2026-11-09
 
 ### Added

@@ -180,7 +180,7 @@ const healthySnapshot: OperationalStatusSnapshot = {
 	maintenance: { state: "idle", running: 0, failed: 0 },
 	semantic_index: { state: "healthy", vector_table_present: true },
 	raw_events: { available: true, pending: 0, failed_batches: 0 },
-	observer: { available: true, failed_batches: 0, backoff_batches: 0 },
+	observer: { available: true, failed_batches: 0, backoff_batches: 0, recent_failed_batches: 0 },
 };
 
 function statusHarness(offline: boolean) {
