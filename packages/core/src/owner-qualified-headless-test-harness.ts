@@ -3,7 +3,11 @@ import {
 	HEADLESS_CODE_LIMITS_TABLE,
 	HEADLESS_LINK_PROVENANCE_TABLE,
 } from "./coordinator-auth-headless-schema.js";
-import type { QualifiedFixture, qualifiedTest } from "./owner-qualified-consumer-test-harness.js";
+import {
+	expectQualifiedDeviceBinding,
+	type QualifiedFixture,
+	type qualifiedTest,
+} from "./owner-qualified-consumer-test-harness.js";
 
 /** Marks a link as written by headless finalize, as its finalize batch would. */
 async function markHeadless(f: QualifiedFixture, linkId: string) {
@@ -50,7 +54,7 @@ export function registerQualifiedHeadlessTests(test: ReturnType<typeof qualified
 		const result = await f.api.finalize(final);
 		// Assert
 		expect(result).toEqual(headlessLinked);
-		expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+		expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 		expect(await f.attempt()).toMatchObject({ state: "confirmed" });
 	});
 
@@ -63,6 +67,7 @@ export function registerQualifiedHeadlessTests(test: ReturnType<typeof qualified
 		const result = await f.api.finalize(await f.confirmed());
 		// Assert
 		expect(result).toMatchObject({ kind: "finalized", identityId: "identity-a" });
+		await expectQualifiedDeviceBinding(f);
 	});
 
 	test("enrolls as before without the headless tables", async ({ fixture: f }) => {
@@ -75,5 +80,6 @@ export function registerQualifiedHeadlessTests(test: ReturnType<typeof qualified
 		const result = await f.api.finalize(await f.confirmed());
 		// Assert
 		expect(result).toMatchObject({ kind: "finalized", identityId: "identity-a" });
+		await expectQualifiedDeviceBinding(f);
 	});
 }

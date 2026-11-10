@@ -520,8 +520,39 @@ async function deviceOwnedSnapshot(f) {
 			.map(table => f.a.store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()),
 		keys: await Promise.all(["device.key", "device.key.pub"].map(name => readFile(join(f.a.keysDir, name), "utf8"))),
 		remote: await Promise.all(["enrolled_devices", "coordinator_auth_controller_attestations", "coordinator_identity_group_grants",
-			"coordinator_device_ownership_bindings", "coordinator_owner_enrollment_audit_log", "coordinator_scope_memberships"].map(f.remote.rows)),
+			"coordinator_device_ownership_bindings", "coordinator_owner_enrollment_audit_log", "coordinator_scope_memberships",
+			"coordinator_device_rebind_audit_log"].map(f.remote.rows)),
 	};
+}
+
+async function deviceClaimLinkSnapshot(f) {
+	// The immutable claim table is WITHOUT ROWID; this fixture's generic rows helper sorts by rowid.
+	const claims = (await f.remote.db.prepare("SELECT * FROM coordinator_auth_device_claims").all()).results;
+	assert.equal(claims.length, 1);
+	const [claim] = claims;
+	assert.equal(claim.attempt_id, f.link.attemptId);
+	assert.equal(claim.coordinator_id, f.config.coordinatorId);
+	assert.equal(claim.device_id, f.a.store.deviceId);
+	assert.equal(claim.public_key, f.a.key.publicKey);
+	assert.equal(claim.identity_id, f.a.store.actorId);
+	const [binding] = await f.remote.rows("coordinator_device_ownership_bindings");
+	const [audit] = await f.remote.rows("coordinator_device_rebind_audit_log");
+	assert.match(binding.binding_id, /^[0-9a-f-]{36}$/);
+	assert.match(audit.event_id, /^[0-9a-f-]{36}$/);
+	const ownBinding = { device_id: claim.device_id, key_id: claim.key_id, identity_id: claim.identity_id,
+		coordinator_id: claim.coordinator_id, binding_id: binding.binding_id, provenance: "owner_enrollment",
+		source_ref: `device_claim:${claim.claim_id}`, bound_at: new Date(f.now).toISOString() };
+	const ownAudit = { coordinator_id: claim.coordinator_id, event_id: audit.event_id,
+		attempt_id: ownBinding.source_ref, action: "owner_device_rebound", binding_id: binding.binding_id,
+		device_id: claim.device_id, previous_identity_id: claim.identity_id, target_identity_id: claim.identity_id,
+		enrollment_count: 1, created_at_ms: f.now };
+	return { ...f.beforeLink, remote: f.beforeLink.remote.map((rows, index) => {
+		if (index === 0) return rows.map(row => row.device_id === claim.device_id
+			? { ...row, identity_id: claim.identity_id } : row);
+		if (index === 3) return [...rows, ownBinding];
+		if (index === 6) return [...rows, ownAudit];
+		return rows;
+	}) };
 }
 
 async function bootstrapCliFixture(t) {
@@ -720,7 +751,10 @@ test("fake-only device-owned Google link keeps the current Identity without owne
 	const logs = [];
 	for (const method of ["log", "warn", "error"]) t.mock.method(console, method, (...args) => logs.push(args));
 	const f = await fixture(t, { deviceOwned: true });
-	assert.deepEqual(await deviceOwnedSnapshot(f), f.beforeLink);
+	// First claim completes only A's remote ownership. Local history/keys and grants stay exact.
+	const linked = await deviceClaimLinkSnapshot(f);
+	assert.deepEqual(await deviceOwnedSnapshot(f), linked);
+	assert.deepEqual(await f.remote.rows("coordinator_owner_enrollment_attempts"), []);
 	assert.equal(f.beforeLink.remote[0][0].enabled, 1);
 	assert.equal(f.beforeLink.local[4].length, 1);
 	for (const rows of f.beforeLink.remote.slice(1)) assert.deepEqual(rows, []);
@@ -756,7 +790,8 @@ test("fake-only device-owned Google link keeps the current Identity without owne
 	assert.deepEqual(Object.keys(f.link).sort(), ["attemptId", "coordinatorId", "identityId", "state"]);
 	assert.ok(f.provider.requests.some(({ url }) => url.endsWith("/token")));
 	assert.ok(f.provider.requests.some(({ url }) => url.endsWith("/jwks")));
-	assert.deepEqual(await deviceOwnedSnapshot(f), f.beforeLink);
+	assert.deepEqual(await deviceOwnedSnapshot(f), linked);
+	assert.deepEqual(await f.remote.rows("coordinator_owner_enrollment_attempts"), []);
 	assert.equal((await f.remote.rows("coordinator_auth_sessions")).length, 1);
 	assert.equal((await f.remote.rows("coordinator_auth_link_attempts"))[0].state, "session_redeemed");
 	assert.equal((await f.remote.rows("coordinator_auth_account_links"))[0].authority_kind, "device_claim");

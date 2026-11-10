@@ -533,15 +533,42 @@ async function managedJourney(f, a, b) {
 	}
 }
 
+async function claimOwnershipBaseline(f, a, link) {
+	const claims = await f.rows("coordinator_auth_device_claims");
+	assert.equal(claims.length, 1);
+	const [claim] = claims;
+	assert.equal(claim.coordinator_id, link.coordinator_id);
+	assert.equal(claim.claim_id, link.device_claim_id);
+	assert.equal(claim.device_id, a.deviceId);
+	assert.equal(claim.public_key, f.publicKey);
+	assert.equal(claim.identity_id, a.identityId);
+	const bindings = await f.rows("coordinator_device_ownership_bindings");
+	assert.equal(bindings.length, 1);
+	assert.match(bindings[0].binding_id, /^[0-9a-f-]{36}$/);
+	assert.deepEqual(bindings, [{ device_id: a.deviceId, key_id: claim.key_id, identity_id: a.identityId,
+		coordinator_id: claim.coordinator_id, binding_id: bindings[0].binding_id, provenance: "owner_enrollment",
+		source_ref: `device_claim:${claim.claim_id}`, bound_at: new Date(f.now).toISOString() }]);
+	const bindingAudits = await f.rows("coordinator_device_rebind_audit_log");
+	assert.equal(bindingAudits.length, 1);
+	assert.match(bindingAudits[0].event_id, /^[0-9a-f-]{36}$/);
+	assert.deepEqual(bindingAudits, [{ coordinator_id: claim.coordinator_id, event_id: bindingAudits[0].event_id,
+		attempt_id: bindings[0].source_ref, action: "owner_device_rebound", binding_id: bindings[0].binding_id,
+		device_id: a.deviceId, previous_identity_id: a.identityId, target_identity_id: a.identityId,
+		enrollment_count: 1, created_at_ms: f.now }]);
+	return { bindings, bindingAudits };
+}
+
 async function arrangeProfileEnrollment(t, { managed }) {
 	// Arrange: A first links by device claim, then an actual operator separately reviews and grants transport.
 	const f = await journeyFixture(t);
 	const a = await linkedA(f, { managed });
 	const aBefore = history(a.store);
 	const linksBefore = await f.rows("coordinator_auth_account_links");
+	const ownership = await claimOwnershipBaseline(f, a, linksBefore[0]);
 	const attestationId = await reviewAndGrant(f, a);
 	const grants = await f.rows("coordinator_identity_group_grants");
 	const scopeMemberships = await f.rows("coordinator_scope_memberships");
+	const enrollments = await f.rows("enrolled_devices");
 	const b = await f.createProfile("b-existing-profile");
 	const before = ["sync_device", "sessions", "memory_items", "replication_ops", "policy_team_memberships", "project_recipients", "scope_memberships"]
 		.map(table => f.profileRows(b, table));
@@ -554,7 +581,7 @@ async function arrangeProfileEnrollment(t, { managed }) {
 	assert.deepEqual(f.profileRows(b, "identity_devices"), []);
 	assert.deepEqual(f.profileRows(b, "actors").filter(row => row.is_local === 1).map(row => row.actor_id), [`local:${b.deviceId}`]);
 	const session = await signIn(f);
-	return { f, a, b, attestationId, session, baseline: { aBefore, linksBefore, grants, scopeMemberships, before, keys } };
+	return { f, a, b, attestationId, session, baseline: { aBefore, linksBefore, grants, scopeMemberships, enrollments, ...ownership, before, keys } };
 }
 
 async function prepareProfileEnrollment(state, { lostFinalReply }) {
@@ -576,12 +603,16 @@ async function prepareProfileEnrollment(state, { lostFinalReply }) {
 	return { options, prepared, finalBodies };
 }
 
-async function verifyPrequalificationDenial({ f, b, session }) {
+async function verifyPrequalificationDenial({ f, b, session, baseline }) {
 	// Act/Assert: the authenticated account and existing transport grant are insufficient before qualification.
 	const denied = await f.request(`${origin}/auth/owner/admit`, { headers: { cookie: session } });
 	assert.equal(denied.status, 403, await denied.clone().text());
 	assert.deepEqual(await f.rows("coordinator_owner_enrollment_attempts"), []);
-	assert.deepEqual(await f.rows("coordinator_device_ownership_bindings"), []);
+	assert.deepEqual(await f.rows("coordinator_device_ownership_bindings"), baseline.bindings);
+	assert.deepEqual(await f.rows("coordinator_device_rebind_audit_log"), baseline.bindingAudits);
+	assert.deepEqual(await f.rows("enrolled_devices"), baseline.enrollments);
+	assert.deepEqual(await f.rows("coordinator_identity_group_grants"), baseline.grants);
+	assert.deepEqual(await f.rows("coordinator_scope_memberships"), baseline.scopeMemberships);
 	assert.deepEqual(f.profileRows(b, "identity_devices"), []);
 	assert.equal(JSON.parse(await readFile(b.configPath, "utf8")).actor_id, undefined);
 }
@@ -606,10 +637,27 @@ async function qualifyProfileOwner({ f, attestationId, baseline }) {
 	assert.deepEqual(await f.rows("coordinator_identity_group_grants"), baseline.grants);
 }
 
-async function recoverLostProfileReply({ f, b }, resume, { readBrowserError }) {
+async function verifyProfileBindings({ f, a, b, baseline }) {
+	const attempts = await f.rows("coordinator_owner_enrollment_attempts");
+	assert.equal(attempts.length, 1);
+	const [attempt] = attempts;
+	assert.equal(attempt.state, "finalized");
+	assert.equal(attempt.device_id, b.deviceId);
+	assert.equal(attempt.public_key, baseline.keys[1].trim());
+	assert.equal(attempt.identity_id, a.identityId);
+	const expected = [...baseline.bindings, { device_id: b.deviceId, key_id: attempt.key_id,
+		identity_id: a.identityId, coordinator_id: attempt.coordinator_id, binding_id: attempt.binding_id,
+		provenance: "owner_enrollment", source_ref: attempt.attempt_id, bound_at: new Date(f.now).toISOString() }];
+	assert.deepEqual(await f.rows("coordinator_device_ownership_bindings"),
+		expected.sort((left, right) => left.device_id.localeCompare(right.device_id)));
+	assert.deepEqual(await f.rows("coordinator_device_rebind_audit_log"), baseline.bindingAudits);
+}
+
+async function recoverLostProfileReply(state, resume, { readBrowserError }) {
+	const { f, b } = state;
 	await assert.rejects(f.h.enrollOwnerProfile(resume), { code: "retained_request_incomplete" });
 	if (readBrowserError()) throw readBrowserError();
-	assert.equal((await f.rows("coordinator_device_ownership_bindings")).length, 1);
+	await verifyProfileBindings(state);
 	assert.deepEqual(f.profileRows(b, "identity_devices"), []);
 	assert.equal(JSON.parse(await readFile(b.configPath, "utf8")).actor_id, undefined);
 	// The core client closed its database. A new call reopens the saved profile and exact final request;
@@ -657,6 +705,7 @@ async function verifyProfileAdoption(state, enrollment, result, { lostFinalReply
 	assert.equal(enrolled.identity_id, a.identityId);
 	assert.equal(enrolled.public_key, keys[1].trim());
 	assert.equal((await f.rows("coordinator_owner_enrollment_audit_log")).length, 1);
+	await verifyProfileBindings(state);
 }
 
 async function runQualifiedProfileEnrollment(t, { lostFinalReply, managed }) {

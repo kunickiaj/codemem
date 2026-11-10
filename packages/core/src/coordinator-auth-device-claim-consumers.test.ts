@@ -55,7 +55,13 @@ async function linked(f: LinkFixture) {
 	await f.store.confirmAuthLinkAttempt({ ...browser, completionSecretHash: completionHash }, f.cfg);
 	const before = authority(f);
 	expect(await f.store.finalizeAuthLinkAttempt(proof(), f.cfg)).toMatchObject({ kind: "applied" });
-	expect(authority(f)).toEqual(before);
+	// First claim completes only this device's enrollment. Grants/controllers and peers stay exact.
+	expect(authority(f)).toEqual([
+		before[0]?.map((row) =>
+			row.device_id === input.signer.deviceId ? { ...row, identity_id: input.identityId } : row,
+		),
+		...before.slice(1),
+	]);
 	return { ...browser, binderHash: start.binderHash, credentialHash };
 }
 for (const backend of ["SQLite", "D1"] as const) {

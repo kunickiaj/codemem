@@ -277,8 +277,8 @@ test.for(["controller_attestation", "device_claim"] as const)(
 			"coordinator_scope_memberships",
 			"coordinator_scopes",
 		];
-		const protectedBefore = protectedTables.map((name) =>
-			f.remote.db.prepare(`SELECT * FROM ${name}`).all(),
+		const protectedBefore = protectedTables.map(
+			(name) => f.remote.db.prepare(`SELECT * FROM ${name}`).all() as Record<string, unknown>[],
 		);
 		let proofs: Awaited<ReturnType<typeof browser>> | undefined;
 		let browserDone: Promise<unknown> = Promise.resolve();
@@ -325,7 +325,15 @@ test.for(["controller_attestation", "device_claim"] as const)(
 		).toEqual([{ identity_id: "identity-a" }]);
 		expect(
 			protectedTables.map((name) => f.remote.db.prepare(`SELECT * FROM ${name}`).all()),
-		).toEqual(protectedBefore);
+		).toEqual(
+			protectedBefore.map((rows, index) => {
+				if (authority !== "device_claim" || protectedTables[index] !== "enrolled_devices")
+					return rows;
+				return rows.map((row) =>
+					row.device_id === "device-a" ? { ...row, identity_id: "identity-a" } : row,
+				);
+			}),
+		);
 		expect(localSnapshot(f)).toEqual(before);
 		for (const secret of [body.runtime_verifier, proofs?.completion, proofs?.start])
 			expect(JSON.stringify(result)).not.toContain(secret);
