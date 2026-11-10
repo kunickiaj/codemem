@@ -1,4 +1,4 @@
-import { render } from "preact";
+import { options, render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type DeviceIdentityInventoryV1, loadSyncStatus } from "../lib/api/sync";
@@ -12,6 +12,8 @@ vi.mock("../lib/api/sync", () => ({ loadSyncStatus: vi.fn() }));
 let root: HTMLDivElement;
 const loadStatus = vi.mocked(loadSyncStatus);
 type Issue = {
+	coordinator_id?: string;
+	group_id?: string;
 	kind: "device" | "team_membership";
 	reference_id: string;
 	code: string;
@@ -219,6 +221,88 @@ describe("DeviceEnrollmentIssues labels and counts", () => {
 	});
 });
 
+describe("DeviceEnrollmentIssues technical context", () => {
+	it("distinguishes identical device errors across coordinator and group contexts", async () => {
+		// Arrange: each boundary can report the same device and error independently.
+		const issues = [
+			issue({ coordinator_id: "coordinator-a", group_id: "group-a" }),
+			issue({ coordinator_id: "coordinator-a", group_id: "group-b" }),
+			issue({ coordinator_id: "coordinator-b", group_id: "group-a" }),
+		];
+		respond(payload(issues));
+		mount();
+		// Act
+		await click();
+		// Assert
+		expect(
+			Array.from(root.querySelectorAll("li"), (item) =>
+				Array.from(item.querySelectorAll("dd code"), (value) => value.textContent),
+			),
+		).toEqual(
+			issues.map((item) => [item.code, item.reference_id, item.coordinator_id, item.group_id]),
+		);
+	});
+
+	it("uses stable complete tuple keys even when contexts contain separators or reorder", async () => {
+		// Arrange: delimiter-joined IDs would collide for the first two boundaries.
+		const issues = [
+			issue({ coordinator_id: "coordinator:a", group_id: "group" }),
+			issue({ coordinator_id: "coordinator", group_id: "a:group" }),
+			issue({ coordinator_id: "coordinator", group_id: "group" }),
+		];
+		respond(payload(issues));
+		respond(payload([...issues].reverse()));
+		const keys: unknown[] = [];
+		const original = options.vnode;
+		options.vnode = (node) => {
+			original?.(node);
+			if (node.type === "li") keys.push(node.key);
+		};
+		try {
+			mount();
+			// Act
+			await click();
+			const initialKeys = keys.splice(0);
+			await click("Refresh setup issues");
+			// Assert
+			expect(initialKeys).toEqual(
+				issues.map((item) =>
+					JSON.stringify([
+						item.coordinator_id,
+						item.group_id,
+						item.kind,
+						item.reference_id,
+						item.code,
+					]),
+				),
+			);
+			expect(new Set(initialKeys).size).toBe(3);
+			expect(keys).toEqual([...initialKeys].reverse());
+		} finally {
+			options.vnode = original;
+		}
+	});
+
+	it.each([{}, { coordinator_id: "coordinator-a" }, { group_id: "group-a" }])(
+		"keeps issues readable with missing context %j",
+		async (context) => {
+			// Arrange: a partial response may omit either boundary field.
+			respond(payload([issue(context)]));
+			mount();
+			// Act
+			await click();
+			// Assert
+			expect(root.querySelector('[role="alert"]')).toBeNull();
+			expect(Array.from(root.querySelectorAll("dd code"), (item) => item.textContent)).toEqual([
+				"enrollment_invalid",
+				"device-1",
+				...Object.values(context),
+			]);
+			expect(root.textContent).not.toContain("undefined");
+		},
+	);
+});
+
 describe("DeviceEnrollmentIssues guidance", () => {
 	it.each(["future_issue_code", "constructor", "toString", "__proto__"])(
 		"uses the generic reason for unknown code %s",
@@ -287,11 +371,17 @@ describe("DeviceEnrollmentIssues guidance", () => {
 	});
 
 	it("uses a truthful fallback for unknown codes and exposes escaped technical details", async () => {
-		// Arrange: untrusted codes, references, and names must remain text.
+		// Arrange: all server-provided technical context must remain text.
 		const code = '<img src=x onerror="alert(1)">';
 		const reference = '<script>alert("reference")</script>';
 		const name = '<svg onload="alert(2)">';
-		respond(payload([issue({ code, reference_id: reference })]));
+		const coordinator = '<img src=x onerror="alert(3)">';
+		const group = '<script>alert("group")</script>';
+		respond(
+			payload([
+				issue({ code, reference_id: reference, coordinator_id: coordinator, group_id: group }),
+			]),
+		);
 		mount({ inventory: inventory([{ name, ids: [reference] }]) });
 		// Act
 		await click();
@@ -308,10 +398,14 @@ describe("DeviceEnrollmentIssues guidance", () => {
 		expect(Array.from(root.querySelectorAll("dt"), (item) => item.textContent)).toEqual([
 			"Error code",
 			"Reference ID",
+			"Coordinator ID",
+			"Group ID",
 		]);
 		expect(Array.from(root.querySelectorAll("dd code"), (item) => item.textContent)).toEqual([
 			code,
 			reference,
+			coordinator,
+			group,
 		]);
 		expect(root.querySelector("img, script, svg")).toBeNull();
 	});
