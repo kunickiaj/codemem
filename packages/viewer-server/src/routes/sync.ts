@@ -55,6 +55,7 @@ import {
 	cleanupNonces,
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
+	completeCoordinatorDeviceSetup,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
@@ -109,6 +110,7 @@ import {
 	LOCAL_DEFAULT_SCOPE_ID,
 	LOCAL_SYNC_CAPABILITY,
 	LOCAL_SYNC_FEATURES,
+	LocalIdentitySupersededError,
 	listAuthorizedScopesForPeer,
 	listDeviceIdentityInventory,
 	listInboundScopeRejections,
@@ -195,6 +197,7 @@ import {
 	wakeRecipientPoliciesForProjectIdentities,
 } from "@codemem/core";
 import type { SyncPeerReachabilityResolver } from "@codemem/core/internal/relay-runtime";
+import { completeCoordinatorEnrollmentSetup } from "../application/coordinator-enrollment-context.js";
 import {
 	type AdvancePendingProjectSharesResult,
 	type AdvanceProjectShareOperationResult,
@@ -1716,6 +1719,7 @@ export interface ReconcileConfiguredCoordinatorEnrollmentResult {
 }
 
 export type CoordinatorEnrollmentMaintenanceStage =
+	| "complete_device_setup"
 	| "list_devices"
 	| "list_consumed_team_invites"
 	| "reconcile_snapshot";
@@ -1727,11 +1731,28 @@ export interface CoordinatorEnrollmentMaintenanceFailure {
 }
 
 function coordinatorEnrollmentFailureCode(error: unknown): string {
+	if (error instanceof LocalIdentitySupersededError) return error.code;
 	const message = (error instanceof Error ? error.message : String(error)).trim();
 	const httpStatus = message.match(/\((\d{3})(?::|\))/u)?.[1];
 	if (httpStatus) return `http_${httpStatus}`;
 	if (
 		new Set([
+			"coordinator_upgrade_required",
+			"completion_outcome_unknown",
+			"device_unavailable",
+			"invalid_input",
+			"coordinator_unreachable",
+			"invalid_response",
+			"coordinator_rejected",
+			"rate_limited",
+			"coordinator_auth_schema_upgrade_required",
+			"coordinator_unavailable",
+			"device_setup_requires_review",
+			"device_setup_connect_required",
+			"device_setup_ready",
+			"device_setup_enrollment_incomplete",
+			"device_setup_context_changed",
+			"local_identity_superseded",
 			"coordinator_consumed_team_invite_invalid",
 			"coordinator_device_list_malformed",
 			"coordinator_group_id_invalid",
@@ -1759,26 +1780,81 @@ function coordinatorEnrollmentFailure(
 	return { groupId: safeGroupId, stage, code: coordinatorEnrollmentFailureCode(error) };
 }
 
+interface ConfiguredCoordinatorEnrollmentOptions {
+	config?: ReturnType<typeof readCoordinatorSyncConfig>;
+	completeDeviceSetup?: typeof completeCoordinatorDeviceSetup;
+	listDevices?: (input: {
+		groupId: string;
+		remoteUrl: string;
+		adminSecret: string;
+	}) => Promise<CoordinatorEnrollment[]>;
+	listConsumedTeamInvites?: (input: {
+		groupId: string;
+		remoteUrl: string;
+		adminSecret: string;
+	}) => Promise<CoordinatorConsumedTeamInvite[]>;
+	reconcileSnapshot?: (
+		input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
+	) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
+}
+
+async function reconcileConfiguredCoordinatorGroup(
+	store: MemoryStore,
+	groupId: string,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	options: ConfiguredCoordinatorEnrollmentOptions,
+): Promise<
+	| { result: CoordinatorEnrollmentReconcileResult }
+	| { failures: CoordinatorEnrollmentMaintenanceFailure[] }
+> {
+	const remoteUrl = config.syncCoordinatorUrl.trim();
+	const adminSecret = config.syncCoordinatorAdminSecret.trim();
+	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
+	const listInvites = options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
+	const reconcile =
+		options.reconcileSnapshot ??
+		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
+	let stage: CoordinatorEnrollmentMaintenanceStage = "complete_device_setup";
+	try {
+		const context = await completeCoordinatorEnrollmentSetup(store, {
+			config,
+			readConfig: () => options.config ?? readCoordinatorSyncConfig(),
+			keysDir: syncKeysDir,
+			groupId,
+			completeDeviceSetup: options.completeDeviceSetup ?? completeCoordinatorDeviceSetup,
+			listDevices: () => listDevices({ groupId, remoteUrl, adminSecret }),
+		});
+		if ("failure" in context) {
+			return {
+				failures: [
+					coordinatorEnrollmentFailure(groupId, context.failure.stage, context.failure.error),
+				],
+			};
+		}
+		stage = "list_consumed_team_invites";
+		const invites = await listInvites({ groupId, remoteUrl, adminSecret });
+		stage = "complete_device_setup";
+		context.assertSnapshot();
+		stage = "reconcile_snapshot";
+		return {
+			result: await reconcile({
+				coordinatorId: buildBaseUrl(remoteUrl),
+				groupId,
+				enrollments: context.enrollments,
+				consumedTeamInvites: invites,
+				localDeviceId: store.deviceId,
+			}),
+		};
+	} catch (error) {
+		return { failures: [coordinatorEnrollmentFailure(groupId, stage, error)] };
+	}
+}
+
 export async function reconcileConfiguredCoordinatorEnrollment(
 	store: MemoryStore,
-	options: {
-		config?: ReturnType<typeof readCoordinatorSyncConfig>;
-		listDevices?: (input: {
-			groupId: string;
-			remoteUrl: string;
-			adminSecret: string;
-		}) => Promise<CoordinatorEnrollment[]>;
-		listConsumedTeamInvites?: (input: {
-			groupId: string;
-			remoteUrl: string;
-			adminSecret: string;
-		}) => Promise<CoordinatorConsumedTeamInvite[]>;
-		reconcileSnapshot?: (
-			input: Parameters<typeof reconcileCoordinatorEnrollmentSnapshot>[1],
-		) => CoordinatorEnrollmentReconcileResult | Promise<CoordinatorEnrollmentReconcileResult>;
-	} = {},
+	options: ConfiguredCoordinatorEnrollmentOptions = {},
 ): Promise<ReconcileConfiguredCoordinatorEnrollmentResult> {
-	const config = options.config ?? readCoordinatorSyncConfig();
+	const config = structuredClone(options.config ?? readCoordinatorSyncConfig());
 	const remoteUrl = config.syncCoordinatorUrl.trim();
 	const adminSecret = config.syncCoordinatorAdminSecret.trim();
 	if (!remoteUrl || !adminSecret || config.syncCoordinatorGroups.length === 0) {
@@ -1794,12 +1870,6 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 			issues: 0,
 		};
 	}
-	const listDevices = options.listDevices ?? coordinatorListDevicesAction;
-	const listConsumedTeamInvites =
-		options.listConsumedTeamInvites ?? coordinatorListConsumedTeamInvitesAction;
-	const reconcileSnapshot =
-		options.reconcileSnapshot ??
-		((input) => reconcileCoordinatorEnrollmentSnapshot(store.db, input));
 	const total: ReconcileConfiguredCoordinatorEnrollmentResult = {
 		skipped: false,
 		groupsProcessed: 0,
@@ -1812,49 +1882,19 @@ export async function reconcileConfiguredCoordinatorEnrollment(
 		issues: 0,
 	};
 	for (const groupId of config.syncCoordinatorGroups) {
-		const [enrollmentsResult, consumedTeamInvitesResult] = await Promise.allSettled([
-			listDevices({ groupId, remoteUrl, adminSecret }),
-			listConsumedTeamInvites({ groupId, remoteUrl, adminSecret }),
-		]);
-		if (enrollmentsResult.status === "rejected") {
-			total.failures.push(
-				coordinatorEnrollmentFailure(groupId, "list_devices", enrollmentsResult.reason),
-			);
-		}
-		if (consumedTeamInvitesResult.status === "rejected") {
-			total.failures.push(
-				coordinatorEnrollmentFailure(
-					groupId,
-					"list_consumed_team_invites",
-					consumedTeamInvitesResult.reason,
-				),
-			);
-		}
-		if (
-			enrollmentsResult.status === "rejected" ||
-			consumedTeamInvitesResult.status === "rejected"
-		) {
+		const outcome = await reconcileConfiguredCoordinatorGroup(store, groupId, config, options);
+		if ("failures" in outcome) {
 			total.failedGroups += 1;
+			total.failures.push(...outcome.failures);
 			continue;
 		}
-		try {
-			const result = await reconcileSnapshot({
-				coordinatorId: buildBaseUrl(remoteUrl),
-				groupId,
-				enrollments: enrollmentsResult.value,
-				consumedTeamInvites: consumedTeamInvitesResult.value,
-				localDeviceId: store.deviceId,
-			});
-			total.groupsProcessed += 1;
-			total.devicesAdded += result.devicesAdded;
-			total.membershipsAdded += result.membershipsAdded;
-			total.identitiesAdded += result.identitiesAdded;
-			total.unchanged += result.unchanged;
-			total.issues += result.issues.length;
-		} catch (error) {
-			total.failedGroups += 1;
-			total.failures.push(coordinatorEnrollmentFailure(groupId, "reconcile_snapshot", error));
-		}
+		const { result } = outcome;
+		total.groupsProcessed += 1;
+		total.devicesAdded += result.devicesAdded;
+		total.membershipsAdded += result.membershipsAdded;
+		total.identitiesAdded += result.identitiesAdded;
+		total.unchanged += result.unchanged;
+		total.issues += result.issues.length;
 	}
 	return total;
 }
@@ -1990,6 +2030,14 @@ async function readRecipientPolicyCoordinatorSnapshot<T>(read: () => Promise<T>)
 	}
 }
 
+interface RecipientPolicyCapabilityEnrollment {
+	identityId: string;
+	ownershipIdentityId: string | undefined;
+	publicKey: string;
+	fingerprint: string;
+	presenceCapabilityExpiresAtMs: number | null;
+}
+
 export function createRecipientPolicyReconcilerEffects(
 	store: MemoryStore,
 	options: {
@@ -2021,18 +2069,7 @@ export function createRecipientPolicyReconcilerEffects(
 		}
 		return evidence;
 	};
-	const boundaryEnrollments = new Map<
-		string,
-		Map<
-			string,
-			{
-				identityId: string;
-				publicKey: string;
-				fingerprint: string;
-				presenceCapabilityExpiresAtMs: number | null;
-			}
-		>
-	>();
+	const boundaryEnrollments = new Map<string, Map<string, RecipientPolicyCapabilityEnrollment>>();
 	const target = (scopeId: string) => recipientPolicyCoordinatorBoundary(store, scopeId);
 	const coordinatorOptions = (scopeId: string) => {
 		const boundary = target(scopeId);
@@ -2106,10 +2143,8 @@ export function createRecipientPolicyReconcilerEffects(
 					adminSecret: targetOptions.adminSecret,
 				}),
 			).catch((error) => recipientPolicySnapshotUnavailable("device_enrollments", error));
-			const presenceCapabilityExpiries = recipientPolicyPresenceCapabilityExpiries(
-				enrollments,
-				observedAt,
-			);
+			const presenceExpiries = recipientPolicyPresenceCapabilityExpiries(enrollments, observedAt);
+			const bindings = new Map<string, RecipientPolicyCapabilityEnrollment>();
 			const mapped = enrollments.map((enrollment) => {
 				if (
 					enrollment.group_id !== targetOptions.groupId ||
@@ -2123,6 +2158,15 @@ export function createRecipientPolicyReconcilerEffects(
 				) {
 					throw new Error("recipient_policy_snapshot_invalid");
 				}
+				if (enrollment.enabled === 1 && enrollment.identity_id !== null) {
+					bindings.set(enrollment.device_id, {
+						identityId: enrollment.identity_id,
+						ownershipIdentityId: enrollment.ownership_identity_id,
+						publicKey: enrollment.public_key,
+						fingerprint: enrollment.fingerprint,
+						presenceCapabilityExpiresAtMs: presenceExpiries.get(enrollment.device_id) ?? null,
+					});
+				}
 				return {
 					deviceId: enrollment.device_id,
 					identityId: enrollment.identity_id,
@@ -2131,27 +2175,7 @@ export function createRecipientPolicyReconcilerEffects(
 					enabled: enrollment.enabled === 1,
 				};
 			});
-			boundaryEnrollments.set(
-				scopeId,
-				new Map(
-					mapped.flatMap((enrollment) =>
-						enrollment.enabled && enrollment.identityId !== null
-							? [
-									[
-										enrollment.deviceId,
-										{
-											identityId: enrollment.identityId,
-											publicKey: enrollment.publicKey,
-											fingerprint: enrollment.fingerprint,
-											presenceCapabilityExpiresAtMs:
-												presenceCapabilityExpiries.get(enrollment.deviceId) ?? null,
-										},
-									] as const,
-								]
-							: [],
-					),
-				),
-			);
+			boundaryEnrollments.set(scopeId, bindings);
 			return mapped;
 		},
 		probeCapability: async ({ deviceId, scopeId }) => {
@@ -2166,18 +2190,16 @@ export function createRecipientPolicyReconcilerEffects(
 				.get(deviceId) as
 				| { pinned_fingerprint: string | null; public_key: string | null }
 				| undefined;
-			if (peer) {
-				const peerPublicKey = String(peer.public_key ?? "").trim();
-				const peerFingerprint =
-					String(peer.pinned_fingerprint ?? "").trim() ||
-					(peerPublicKey ? fingerprintPublicKey(peerPublicKey) : "");
-				if (
-					(peerFingerprint || peerPublicKey) &&
-					(peerFingerprint !== enrollment.fingerprint ||
-						(peerPublicKey && peerPublicKey !== enrollment.publicKey))
-				) {
-					return "undetermined";
-				}
+			const peerPublicKey = String(peer?.public_key ?? "").trim();
+			const peerFingerprint =
+				String(peer?.pinned_fingerprint ?? "").trim() ||
+				(peerPublicKey ? fingerprintPublicKey(peerPublicKey) : "");
+			if (
+				(peerFingerprint || peerPublicKey) &&
+				(peerFingerprint !== enrollment.fingerprint ||
+					(peerPublicKey && peerPublicKey !== enrollment.publicKey))
+			) {
+				return "undetermined";
 			}
 			const observed = await peerSupportsSyncRequirements(store, deviceId, {
 				scoped: true,
@@ -2192,9 +2214,11 @@ export function createRecipientPolicyReconcilerEffects(
 			) {
 				return "undetermined";
 			}
-			// A consumed, still-reviewed Team/add-device invite is the only bootstrap
-			// identity proof accepted before normal peer discovery can observe the new
-			// device. Fresh authenticated presence separately proves capability.
+			// The current coordinator listing binds canonical ownership to this exact
+			// enrollment key. Fresh authenticated presence separately proves capability.
+			if (enrollment.ownershipIdentityId === enrollment.identityId) return "supported";
+			// A consumed, still-reviewed Team/add-device invite remains an alternative
+			// identity proof before normal peer discovery can observe the new device.
 			const evidence = await loadReviewedRecipientInviteEvidence(targetOptions.groupId).catch(
 				() => [],
 			);
