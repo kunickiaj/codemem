@@ -111,10 +111,10 @@ async function reset() {
 	await exec("DELETE FROM coordinator_invites");
 	expect(await definitions()).toEqual(initialDefinitions);
 }
-function laptop() {
+function laptop(keyByte = 19) {
 	// Deterministic synthetic wire key; no signing or provider network is involved.
 	const kind = Buffer.from("ssh-ed25519");
-	const raw = Buffer.alloc(32, 19);
+	const raw = Buffer.alloc(32, keyByte);
 	const wire = Buffer.alloc(8 + kind.length + raw.length);
 	wire.writeUInt32BE(kind.length, 0);
 	kind.copy(wire, 4);
@@ -540,6 +540,15 @@ it.each(["other device same key", "other key same device", "foreign owner"] as c
 				fingerprint: fingerprintPublicKey(origin.signer.publicKey),
 			};
 		if (variant === "foreign owner") owner = "identity-b";
+		if (variant === "other key same device") {
+			// The original Google claimant owns its key, so legacy enrollment cannot reuse it.
+			const protectedBefore = await snapshot();
+			await expect(f.store.enrollDevice(signer.groupId, signer)).rejects.toThrow("device_ownership_requires_verified_identity");
+			expect(await snapshot()).toEqual(protectedBefore);
+			// Re-enroll the unbound caller with a fresh key; its retained resolution still names the old one.
+			const fresh = laptop(20);
+			signer = { ...signer, publicKey: fresh.publicKey, fingerprint: fresh.fingerprint };
+		}
 		if (variant !== "foreign owner") await f.store.enrollDevice(signer.groupId, signer);
 		const before = await snapshot();
 		// Act

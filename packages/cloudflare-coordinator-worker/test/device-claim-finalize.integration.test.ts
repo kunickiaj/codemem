@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
 import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
+import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import { config, input, NOW, seedEnrollmentSql } from "./device-claim-eligibility-fixture.js";
 
 it("native D1 finalizes atomically, rolls back an audit fault, and retains the exact retry receipt", async () => {
@@ -21,7 +22,9 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	expect(await store.readAuthLinkCompletionDestination(browser, config)).toEqual({ destination: request.loopbackRedirect });
 	expect(await store.confirmAuthLinkAttempt({ ...browser, completionSecretHash: "d".repeat(64) }, config)).toMatchObject({ kind: "applied" });
 	const proof = { purpose: "coordinator-account-link-v1" as const, coordinatorId: config.coordinatorId, attemptId: request.attemptId, groupId: input.signer.groupId, identityId: input.identityId, deviceId: input.signer.deviceId, fingerprint: input.signer.fingerprint, runtimeVerifierHash: request.runtimeVerifierHash, completionSecretHash: "d".repeat(64), signer: input.signer };
-	const tables = ["coordinator_auth_link_attempts", "coordinator_auth_device_claims", "coordinator_auth_account_links", "coordinator_auth_link_audit_log", "enrolled_devices", "coordinator_identity_group_grants"];
+	const tables = ["coordinator_auth_link_attempts", "coordinator_auth_device_claims", "coordinator_auth_account_links", "coordinator_auth_link_audit_log", "enrolled_devices", "coordinator_identity_group_grants", "coordinator_device_ownership_bindings", "coordinator_device_rebind_audit_log"];
+	const catalog = await env.COORDINATOR_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all<{ name: string }>();
+	tables.push(...catalog.results.map(({ name }) => name).filter(name => !name.startsWith("_cf_") && !name.startsWith("coordinator_auth_") && !tables.includes(name)));
 	const snapshot = () => Promise.all(tables.map(async (name) => (await env.COORDINATOR_DB.prepare(`SELECT * FROM ${name}`).all()).results));
 	await env.COORDINATOR_DB.exec("CREATE TRIGGER finalization_fault BEFORE INSERT ON coordinator_auth_link_audit_log BEGIN SELECT RAISE(ABORT,'injected_finalization_failure'); END");
 	const before = await snapshot();
@@ -39,15 +42,24 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	expect(result).toMatchObject({ kind: "applied", status: { state: "finalized" } });
 	expect(retry).toEqual({ ...result, kind: "existing" });
 	expect(await snapshot()).toEqual(committed);
-	const [attempts, claims, links, audits, enrollments, grants] = committed;
+	const [attempts, claims, links, audits, enrollments, grants, bindings, bindingAudits] = committed;
 	expect(claims).toHaveLength(1);
 	expect(links).toHaveLength(1);
 	expect(audits).toHaveLength(1);
 	expect(links?.[0]).toMatchObject({ authority_kind: "device_claim", device_claim_id: claims?.[0]?.claim_id, controller_attestation_id: null });
 	expect(audits?.[0]).toMatchObject({ action: "link_created", device_claim_id: claims?.[0]?.claim_id, link_id: links?.[0]?.link_id });
 	expect(attempts?.[0]).toMatchObject({ state: "finalized", link_id: links?.[0]?.link_id });
-	expect(enrollments).toEqual(before[4]);
+	expect(enrollments).toEqual(before[4]?.map(row => row.device_id === input.signer.deviceId
+		? { ...row, identity_id: input.identityId } : row));
 	expect(grants).toEqual(before[5]);
+	expect(bindings).toEqual([{ device_id: input.signer.deviceId, key_id: await ed25519KeyIdForRevocation(input.signer.publicKey), identity_id: input.identityId,
+		coordinator_id: config.coordinatorId, binding_id: expect.any(String), provenance: "owner_enrollment",
+		source_ref: `device_claim:${claims?.[0]?.claim_id}`, bound_at: new Date(NOW).toISOString() }]);
+	expect(bindingAudits).toEqual([{ coordinator_id: config.coordinatorId, event_id: expect.any(String),
+		attempt_id: `device_claim:${claims?.[0]?.claim_id}`, action: "owner_device_rebound", binding_id: bindings?.[0]?.binding_id,
+		device_id: input.signer.deviceId, previous_identity_id: input.identityId, target_identity_id: input.identityId,
+		enrollment_count: 1, created_at_ms: NOW }]);
+	expect(committed.slice(8)).toEqual(before.slice(8));
 	expect(await store.getAuthLinkAttemptStatus(request.attemptId, { kind: "device", signer: input.signer }, config)).toEqual(result.kind === "applied" ? result.status : null);
 	// Act: consume the committed device link through the normal browser session API.
 	const credentialHash = "8".repeat(64);
@@ -74,4 +86,6 @@ it("native D1 finalizes atomically, rolls back an audit fault, and retains the e
 	expect(revoked[2]).toEqual([expect.objectContaining({ link_id: issued.session.linkId, revoked_at_ms: NOW })]);
 	expect(revoked[3]).toEqual([audits?.[0], expect.objectContaining({ action: "link_revoked", link_id: issued.session.linkId, device_claim_id: claims?.[0]?.claim_id })]);
 	expect(revoked[5]).toEqual(grants);
+	expect(revoked[6]).toEqual(bindings);
+	expect(revoked[7]).toEqual(bindingAudits);
 });
