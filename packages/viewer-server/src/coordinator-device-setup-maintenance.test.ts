@@ -244,8 +244,8 @@ describe("maintenance origins without a completion write", () => {
 		},
 	);
 
-	it("rejects an invalid account-link origin only when NULL own metadata needs completion", async () => {
-		// Arrange: the real client must reject before any completion network request.
+	it("keeps reconciling a NULL own row when the coordinator URL cannot carry completion", async () => {
+		// Arrange: an operator-enrolled device on a plain-HTTP coordinator, as in the Project sharing E2E.
 		if (!options.config) throw new Error("Missing fixture config");
 		options.config.syncCoordinatorUrl = "http://localhost:7347";
 		own = { ...own, identity_id: null, ownership_identity_id: undefined };
@@ -253,10 +253,10 @@ describe("maintenance origins without a completion write", () => {
 		// Act
 		const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
 		// Assert
-		expectFailure(result, "invalid_input");
-		expect(options.listDevices).toHaveBeenCalledOnce();
-		expect(options.listConsumedTeamInvites).not.toHaveBeenCalled();
+		expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
 		expect(globalThis.fetch).not.toHaveBeenCalled();
+		expect(options.listConsumedTeamInvites).toHaveBeenCalledOnce();
+		expect(options.reconcileSnapshot).toHaveBeenCalledOnce();
 	});
 });
 

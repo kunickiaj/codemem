@@ -1032,8 +1032,7 @@ coordinator without the route keeps the earlier baseline and reconciliation
 continues. A null own row in either case stops that group before invites. A missing
 own row keeps the existing operator baseline. Only the POST path requires a
 coordinator URL that the account-link origin check accepts. When that check
-rejects the URL, an explicit Identity row keeps the same baseline and a null own
-row stops the group.
+rejects the URL, no request is sent and every row keeps the earlier baseline.
 
 The first device claim keeps the full eligibility guard before OIDC and at the
 winning commit. It atomically writes the immutable claim, link, audit, canonical
