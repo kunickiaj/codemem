@@ -1,0 +1,93 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`preview transition streaming > does not reuse identities across previews or independent databases > changed metadata 1`] = `
+{
+  "existing_mapping": {
+    "created_at": "2026-05-06T00:00:00Z",
+    "guardrail_warnings": [],
+    "id": 1,
+    "priority": 0,
+    "project_pattern": "fixture",
+    "scope_id": "fixture-space",
+    "source": "user",
+    "updated_at": "2026-05-06T00:00:00Z",
+    "workspace_identity": "git@git.example.invalid:example/fixture.git",
+  },
+  "requested_project_pattern": "fixture",
+  "requested_scope_id": "local-default",
+  "requested_workspace_identity": "git@git.example.invalid:example/fixture.git",
+  "warnings": [
+    {
+      "code": "scope_reassignment_old_copies",
+      "confirmation_token": "psg_c07e7a64fea953a1d6aa4c063e0865d2",
+      "conflict_state": "e9759514802917f1e4968ff5c4c9429c52dc84a21c7eb1c43da90343dd07b8b2",
+      "mapping_id": 1,
+      "message": "Assigning this mapping changes the Sharing domain for existing memories. Review access before continuing; old copies may remain on devices and backups.",
+      "previous_scope_id": "fixture-space",
+      "project_pattern": "fixture",
+      "requires_confirmation": true,
+      "scope_id": "local-default",
+      "severity": "warning",
+      "workspace_identity": "git@git.example.invalid:example/fixture.git",
+    },
+  ],
+}
+`;
+
+exports[`preview transition streaming > does not reuse identities across previews or independent databases > independent database 1`] = `
+{
+  "existing_mapping": null,
+  "requested_project_pattern": "fixture",
+  "requested_scope_id": "local-default",
+  "requested_workspace_identity": "git@git.example.invalid:example/fixture.git",
+  "warnings": [
+    {
+      "code": "scope_reassignment_old_copies",
+      "confirmation_token": "psg_a87d9a0a8c8df7f9f58c8c704df5afea",
+      "conflict_state": "408f88ed0960f70d8dd9f04e5bdb1e6b68866b3fa58fe8e1676a594569c6d000",
+      "mapping_id": 1,
+      "message": "Assigning this mapping changes the Sharing domain for existing memories. Review access before continuing; old copies may remain on devices and backups.",
+      "previous_scope_id": "fixture-space",
+      "project_pattern": "fixture",
+      "requires_confirmation": true,
+      "scope_id": "local-default",
+      "severity": "warning",
+      "workspace_identity": "git@git.example.invalid:example/fixture.git",
+    },
+  ],
+}
+`;
+
+exports[`preview transition streaming > matches the complete pre-optimization preview on reused cwd, metadata and null scopes 1`] = `
+{
+  "existing_mapping": {
+    "created_at": "2026-05-06T00:00:00Z",
+    "guardrail_warnings": [],
+    "id": 1,
+    "priority": 0,
+    "project_pattern": "fixture",
+    "scope_id": "fixture-space",
+    "source": "user",
+    "updated_at": "2026-05-06T00:00:00Z",
+    "workspace_identity": "git@git.example.invalid:example/fixture.git",
+  },
+  "requested_project_pattern": "fixture",
+  "requested_scope_id": "local-default",
+  "requested_workspace_identity": "git@git.example.invalid:example/fixture.git",
+  "warnings": [
+    {
+      "code": "scope_reassignment_old_copies",
+      "confirmation_token": "psg_9e8246dee0945239bb8df7d30a2f9ab5",
+      "conflict_state": "01c8942f5c2e734938de2d8b6e56aa2d9fd0b394fdcd5534aa3e9bcc38e77c52",
+      "mapping_id": 1,
+      "message": "Assigning this mapping changes the Sharing domain for existing memories. Review access before continuing; old copies may remain on devices and backups.",
+      "previous_scope_id": "fixture-space",
+      "project_pattern": "fixture",
+      "requires_confirmation": true,
+      "scope_id": "local-default",
+      "severity": "warning",
+      "workspace_identity": "git@git.example.invalid:example/fixture.git",
+    },
+  ],
+}
+`;
