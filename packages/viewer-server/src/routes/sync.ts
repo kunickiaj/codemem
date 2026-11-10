@@ -1853,7 +1853,6 @@ function hasLegacyOwnIdentity(
 function completionWasOptional(
 	setup: Awaited<ReturnType<typeof completeCoordinatorDeviceSetup>>,
 ): boolean {
-	if (setup.kind === "unavailable") return setup.cause === "invalid_input";
 	return setup.kind === "unsupported" || setup.kind === "requires_review";
 }
 
@@ -1872,7 +1871,6 @@ async function completeCoordinatorEnrollment(
 	if (!compatibleOwnCoordinatorEnrollment(context, own)) {
 		throw new Error("device_setup_enrollment_incomplete");
 	}
-	// The client rejects a coordinator URL it cannot sign for before any request.
 	const setup = await completeDeviceSetup({
 		dbPath: context.dbPath,
 		keysDir: context.keysDir,
@@ -1886,6 +1884,8 @@ async function completeCoordinatorEnrollment(
 		},
 	});
 	context.assertCurrent();
+	// No request was sent for this URL, so every row keeps the earlier reconciliation.
+	if (setup.kind === "unavailable" && setup.cause === "invalid_input") return initial;
 	if (completionWasOptional(setup) && hasLegacyOwnIdentity(context, own)) return initial;
 	if (setup.kind === "unsupported") throw new Error("coordinator_upgrade_required");
 	if (setup.kind !== "complete" && setup.kind !== "unknown")
