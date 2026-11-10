@@ -5,6 +5,7 @@
 ### Fixed
 
 - `codemem status --json` and `codemem service status --json` now report recent observer batch failures as `observer.state: degraded` with attention code `observer_recent_failures`, replacing `backoff` and `observer_backoff`. Historical failures no longer trigger that warning. The CLI health probe cannot confirm the worker's active backoff timer.
+- Saving a Project Space assignment no longer fails with `Invalid string length` when unrelated session metadata makes the confirmation fingerprint too large to serialize at once.
 
 ## [0.49.0-beta.1] - 2026-11-09
 
