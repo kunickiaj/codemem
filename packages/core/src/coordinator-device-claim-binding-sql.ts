@@ -210,23 +210,27 @@ function bindingPlanGuard(input: {
 	enrollments: string;
 }): AuthLinkStatement {
 	const { negative, captured, connections, bindingGuard, enrollments } = input;
+	// SQLite 3.54.0 and 3.54.1 (production D1) refuse a statement that resolves a CTE
+	// name after about 100 table references. Checks that reference CTEs come first and
+	// binding_guards is the last FROM term of binding_ok, so the plain-table checks
+	// after them are not counted. The two checks with bound values keep their order.
 	const checks = [
+		claimSource(connections),
+		AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
 		LIVE_SIGNER,
 		EXACT_ENROLLMENTS,
 		NO_REVOCATION,
 		bindingGuard.sql,
 		AUTH_DEVICE_CLAIM_BINDING_STRUCTURE_SQL,
-		AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
 		AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL,
 		AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL,
 		AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL,
 		REQUESTER_LEGACY_COMPATIBLE,
-		claimSource(connections),
 	];
 	return {
 		sql: `WITH negative_claim_owner AS MATERIALIZED (${negative.sql}), ${AUTH_DEVICE_CLAIM_INPUT_SQL.slice(5)}, ${claimSourceStages(connections)},
  binding_guards AS MATERIALIZED (SELECT ${checks.map((check, index) => `(${check}) AS g${index}`).join(",")} FROM claim_input p),
- binding_ok AS MATERIALIZED (SELECT ${checks.map((_, index) => `g${index}`).join(" AND ")} AND n.matches AS ok FROM binding_guards CROSS JOIN negative_claim_owner n)
+ binding_ok AS MATERIALIZED (SELECT ${checks.map((_, index) => `g${index}`).join(" AND ")} AND n.matches AS ok FROM negative_claim_owner n CROSS JOIN binding_guards)
  SELECT p.*,d.claim_id FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id=p.coordinator_id AND d.device_id=p.device_id
  WHERE (SELECT ok FROM binding_ok)=1`,
 		values: [...negative.values, ...captured, enrollments, enrollments, ...bindingGuard.values],
