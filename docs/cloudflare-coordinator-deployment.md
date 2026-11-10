@@ -253,6 +253,25 @@ either limit it answers 429 with `Retry-After`. The Worker identifies a client o
 `CODEMEM_COORDINATOR_BROWSER_CSRF_KEY`. Rotating that key starts every client window over. A
 host that cannot supply a platform-verified client address does not serve the page.
 
+### Rebind start authority (0044)
+
+Migration `0044_add_rebind_start_authority.sql` additively adds
+`start_authority_json` to rebind attempts. It pins the server-derived authority
+snapshot for **Connect this device** self-binds. It creates no table and leaves
+existing attempts with a null value under their original rebind rules. Migration
+0040 remains unchanged.
+
+Apply 0044 before deploying a Worker that offers this authority path. That order
+keeps ordinary rebind routes available. If the Worker is deployed first, its
+rebind-backend check requires `start_authority_json` as part of the current rebind
+shape and returns controlled `404` responses for every rebind route until 0044
+exists, rather than letting requests reach missing-column SQL. A self-hosted SQLite
+coordinator adds the column during its existing schema upgrade.
+
+Applying the D1 migration still needs separate approval. Validate the additive
+upgrade with native D1 coverage before offering the feature. The Worker does not
+apply the D1 migration automatically.
+
 ### Optional relay host (off by default)
 
 [Relay](relay.md) explains what relay does for users, its privacy limits, and how to turn it off. The relay runs as the `RelayRealm` Durable Object in the coordinator Worker (ADR 0006). It stays

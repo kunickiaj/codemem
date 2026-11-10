@@ -49,6 +49,7 @@ const excludedOwnerMigrationNames = [
 	"0038_add_device_rebind.sql",
 	"0040_allow_device_self_bind.sql",
 	"0043_add_headless_account_linking.sql",
+	"0044_add_rebind_start_authority.sql",
 ];
 // Relay admission storage is neither caller nor auth history; replaying it adds no caller tables.
 const excludedRelayAdmissionMigrationNames = [

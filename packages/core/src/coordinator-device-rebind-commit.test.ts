@@ -398,13 +398,14 @@ describe("device rebind schema", () => {
 		expect(read("schema.sql")).toContain(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL.trim());
 	});
 
-	it("builds the same tables through migrations 0038 and 0040", () => {
+	it("builds the same tables through migrations 0038, 0040 and 0044", () => {
 		// Arrange
 		const migrated = new Database(":memory:");
 		const fresh = new Database(":memory:");
 		// Act
 		migrated.exec(read("migrations/0038_add_device_rebind.sql"));
 		migrated.exec(read("migrations/0040_allow_device_self_bind.sql"));
+		migrated.exec(read("migrations/0044_add_rebind_start_authority.sql"));
 		fresh.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
 		// Assert
 		expect(ddl(migrated)).toEqual(ddl(fresh));

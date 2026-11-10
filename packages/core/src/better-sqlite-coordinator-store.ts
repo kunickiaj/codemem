@@ -575,7 +575,26 @@ function initializeDeviceLedgerSchemas(db: DatabaseType): void {
 	// attempts table is recreated; see upgradePreReleaseRebindAttemptsSql.
 	upgradePreReleaseRebindAttempts(db);
 	upgradeRebindAttemptsForSelfBind(db);
+	upgradeRebindStartAuthority(db);
 	db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
+}
+
+function upgradeRebindStartAuthority(db: DatabaseType): void {
+	const needed = () => {
+		const columns = db.prepare("PRAGMA table_info(coordinator_device_rebind_attempts)").all() as {
+			name: string;
+		}[];
+		return columns.length > 0 && !columns.some((column) => column.name === "start_authority_json");
+	};
+	if (!needed()) return;
+	db.transaction(() => {
+		if (!needed()) return;
+		db.exec(
+			"ALTER TABLE coordinator_device_rebind_attempts ADD COLUMN start_authority_json TEXT CHECK (start_authority_json IS NULL OR json_valid(start_authority_json))",
+		);
+		db.exec("DROP TRIGGER IF EXISTS coordinator_device_rebind_attempt_pins");
+		db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
+	}).immediate();
 }
 
 const REBIND_ATTEMPTS_SQL =

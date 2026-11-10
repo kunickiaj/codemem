@@ -310,9 +310,15 @@ describe.each(["SQLite", "D1"] as const)("signed device rebind routes (%s)", (ki
 		// Assert
 		expect(response.status).toBe(401);
 	});
+});
 
+describe.each(["SQLite", "D1"] as const)("unavailable device rebind storage (%s)", (kind) => {
 	it.each([
 		["the rebind tables are missing", "DROP TABLE coordinator_device_rebind_audit_log"],
+		[
+			"the attempts table predates migration 0044",
+			"DROP TRIGGER coordinator_device_rebind_attempt_pins; ALTER TABLE coordinator_device_rebind_attempts DROP COLUMN start_authority_json",
+		],
 		[
 			"the attempts table predates the review digest at start",
 			`DROP TABLE coordinator_device_rebind_attempts;
@@ -322,10 +328,48 @@ describe.each(["SQLite", "D1"] as const)("signed device rebind routes (%s)", (ki
 		// Arrange
 		const f = await rebindHttpFixture(kind);
 		f.db.exec(sql);
+		const enrollments = f.db.prepare("SELECT * FROM enrolled_devices ORDER BY rowid").all();
 		// Act
 		const response = await f.send("POST", ROOT, startBody());
 		// Assert
 		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ error: "not_found" });
+		expect(
+			f.db.prepare("SELECT count(*) FROM coordinator_device_rebind_attempts").pluck().get(),
+		).toBe(0);
+		expect(f.db.prepare("SELECT * FROM coordinator_device_ownership_bindings").all()).toEqual([]);
+		expect(f.db.prepare("SELECT * FROM enrolled_devices ORDER BY rowid").all()).toEqual(
+			enrollments,
+		);
+	});
+
+	it("refuses existing ordinary attempt status and finalization before migration 0044 without writes", async () => {
+		// Arrange: an ordinary attempt remains confirmed in the pre-0044 schema.
+		const f = await rebindHttpFixture(kind);
+		const started = await (await f.send("POST", ROOT, startBody())).json();
+		const body = await finalizeBody(f, started, await confirmInBrowser(f));
+		f.db.exec(
+			"DROP TRIGGER coordinator_device_rebind_attempt_pins; ALTER TABLE coordinator_device_rebind_attempts DROP COLUMN start_authority_json",
+		);
+		const tables = [
+			"coordinator_device_rebind_attempts",
+			"coordinator_auth_browser_transactions",
+			"coordinator_device_ownership_bindings",
+			"enrolled_devices",
+			"coordinator_device_rebind_audit_log",
+		];
+		const snapshot = () =>
+			tables.map((table) => f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+		const before = snapshot();
+		// Act
+		const status = await f.send("GET", statusPath);
+		const finalize = await f.send("POST", `${ROOT}/rebind-a/finalize`, body);
+		// Assert
+		expect(status.status).toBe(404);
+		expect(await status.json()).toEqual({ error: "not_found" });
+		expect(finalize.status).toBe(404);
+		expect(await finalize.json()).toEqual({ error: "not_found" });
+		expect(snapshot()).toEqual(before);
 	});
 
 	it("reports an unknown outcome when storage fails mid-step", async () => {

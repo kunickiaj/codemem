@@ -4,7 +4,8 @@ import type { AuthLinkBackend } from "./coordinator-auth-link.js";
  * Storage for ADR 0005 Section 8 rebinding: an enrolled device whose current
  * Identity has no account link of its own moves to the Identity linked to the
  * Google account it signs in with. A self-bind keeps the device's Identity
- * (target = current) and gives a device without its own proof a binding. Both tables are additive. They never change
+ * (target = current). Controller-only connections pin their server authority at
+ * start before fresh OIDC and browser consent. Both tables are additive. They never change
  * the owner-enrollment tables, whose schema readiness checks compare exact DDL.
  *
  * Mirror: packages/cloudflare-coordinator-worker/migrations/0038_add_device_rebind.sql
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
  binding_id TEXT UNIQUE,
  audit_event_id TEXT UNIQUE,
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR json_valid(final_outcome_json)),
+ start_authority_json TEXT CHECK (start_authority_json IS NULL OR json_valid(start_authority_json)),
  PRIMARY KEY (coordinator_id, attempt_id),
  CHECK (state NOT IN ('confirmed', 'finalized') OR (account_subject IS NOT NULL
   AND target_identity_id IS NOT NULL AND link_id IS NOT NULL AND link_authority_kind IS NOT NULL
@@ -83,6 +85,7 @@ WHEN OLD.state IN ('finalized', 'expired', 'failed') OR NEW.rowid IS NOT OLD.row
  OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.current_identity_id IS NOT OLD.current_identity_id
  OR NEW.issuer IS NOT OLD.issuer OR NEW.auth_config_revision IS NOT OLD.auth_config_revision
  OR NEW.browser_start_hash IS NOT OLD.browser_start_hash
+ OR NEW.start_authority_json IS NOT OLD.start_authority_json
  OR NEW.created_at_ms IS NOT OLD.created_at_ms OR NEW.expires_at_ms IS NOT OLD.expires_at_ms
  OR (OLD.browser_transaction_hash IS NOT NULL AND NEW.browser_transaction_hash IS NOT OLD.browser_transaction_hash)
  OR (OLD.browser_binder_hash IS NOT NULL AND NEW.browser_binder_hash IS NOT OLD.browser_binder_hash)
@@ -213,13 +216,15 @@ export function upgradePreReleaseRebindAttemptsSql(
 
 const REBIND_SCHEMA_PRESENT_SQL = `SELECT
  EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_device_rebind_attempts'
-  AND instr(sql, 'CHECK (review_digest IS NOT NULL)') > 0) AS attempts,
+  AND instr(sql, 'CHECK (review_digest IS NOT NULL)') > 0)
+  AND EXISTS (SELECT 1 FROM pragma_table_info('coordinator_device_rebind_attempts')
+   WHERE name = 'start_authority_json') AS attempts,
  EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table'
   AND name = 'coordinator_device_rebind_audit_log') AS audit`;
 
 /**
  * The backend, only when this database has the current rebind tables. Without
- * them (a D1 database before migration 0038) rebind routes report not found
+ * them (including D1 before migration 0044) rebind routes report not found
  * and the shared OIDC callback skips the rebind hook.
  */
 export async function readDeviceRebindBackend(
@@ -257,16 +262,24 @@ function attemptStatements() {
  */
 export function rebuildRebindAttemptsForSelfBindSql(): string {
 	const { table, index, triggers } = attemptStatements();
+	// 0040 predates the additive authority column. Keep its historical shape.
+	const historicalTable = table.replace(/\n start_authority_json TEXT[^\n]+,/, "");
+	const historicalTriggers = triggers.map((sql) =>
+		sql.replace(/\n OR NEW.start_authority_json IS NOT OLD.start_authority_json/, ""),
+	);
 	const names = triggers.map((t) => t.match(/coordinator_device_rebind_attempt_\w+/)?.[0]);
 	return [
 		...names.map((name) => `DROP TRIGGER IF EXISTS ${name};`),
 		"DROP INDEX IF EXISTS idx_coordinator_device_rebind_attempts_device;",
-		table.replace(`CREATE TABLE IF NOT EXISTS ${ATTEMPTS_TABLE}`, `CREATE TABLE ${REBUILT_TABLE}`),
+		historicalTable.replace(
+			`CREATE TABLE IF NOT EXISTS ${ATTEMPTS_TABLE}`,
+			`CREATE TABLE ${REBUILT_TABLE}`,
+		),
 		`INSERT INTO ${REBUILT_TABLE} SELECT * FROM ${ATTEMPTS_TABLE};`,
 		`DROP TABLE ${ATTEMPTS_TABLE};`,
 		`ALTER TABLE ${REBUILT_TABLE} RENAME TO ${ATTEMPTS_TABLE};`,
 		index,
-		...triggers,
+		...historicalTriggers,
 	].join("\n");
 }
 
