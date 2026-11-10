@@ -229,6 +229,77 @@ describe("GET /api/diagnostics/events query planning", () => {
 	});
 });
 
+describe("GET /api/diagnostics/events processing stages", () => {
+	it.each([
+		["no_processable_input", "input preparation"],
+		["empty_observer_output", "empty response"],
+		["lossy_repair", "structural repair"],
+		["unstorable_observer_output", "output validation and filtering"],
+		["unknown_synthetic_reason", "unspecified"],
+		["no_processable_input_extra", "unspecified"],
+		["no_processable_input", "input preparation", "auth_failed"],
+		["empty_observer_output", "authentication", "auth_failed"],
+		["empty_observer_output", "rate limit", "rate_limited"],
+		["empty_observer_output", "timeout", "observer_timeout"],
+		["unknown_synthetic_reason", "response format", "parse_failed"],
+	])(
+		"reports the known stage or unknown fallback for %s",
+		async (reason, category, observerCode) => {
+			// Arrange: stored details must never enter the sanitized category.
+			const store = createStore();
+			insertObserverFailure(store, "synthetic-sensitive-content");
+			store.db
+				.prepare("UPDATE raw_event_flush_batches SET error_type = ?, observer_error_code = ?")
+				.run(`RawEventObserverOutputError:${reason}`, observerCode ?? null);
+			const app = diagnosticsRoutes(() => store);
+
+			// Act: request the technical category.
+			const response = await app.request("/api/diagnostics/events?includeTechnical=1");
+			const body = (await response.json()) as DiagnosticsResponse;
+
+			// Assert: stages stay failures and unknown values stay unspecified.
+			expect(body.items).toHaveLength(1);
+			expect(body.items[0]).toMatchObject({
+				severity: "error",
+				code: "observer_flush_failed",
+				technical_detail: { text: `Failure category: ${category}. Attempts: 3.` },
+			});
+			expect(JSON.stringify(body)).not.toContain("synthetic-sensitive-content");
+			expect(JSON.stringify(body)).not.toContain(reason);
+		},
+	);
+
+	it.each(["error", "failed", "gave_up"])(
+		"keeps capture-stage categories visible for %s",
+		async (status) => {
+			// Arrange: provider absence retains the existing capture subsystem mapping.
+			const store = createStore();
+			insertObserverFailure(store, "synthetic-sensitive-content");
+			store.db
+				.prepare(
+					"UPDATE raw_event_flush_batches SET status = ?, observer_provider = NULL, error_type = 'RawEventObserverOutputError:lossy_repair'",
+				)
+				.run(status);
+			const app = diagnosticsRoutes(() => store);
+
+			// Act: request only capture diagnostics.
+			const response = await app.request(
+				"/api/diagnostics/events?subsystem=capture&includeTechnical=1",
+			);
+			const body = (await response.json()) as DiagnosticsResponse;
+
+			// Assert: disposition changes neither severity nor subsystem visibility.
+			expect(body.items).toHaveLength(1);
+			expect(body.items[0]).toMatchObject({
+				subsystem: "capture",
+				severity: "error",
+				code: `capture_flush_${status === "gave_up" ? "gave_up" : "failed"}`,
+				technical_detail: { text: "Failure category: structural repair. Attempts: 3." },
+			});
+		},
+	);
+});
+
 describe("GET /api/diagnostics/events", () => {
 	it("normalizes recent source records in deterministic order", async () => {
 		const store = createStore();

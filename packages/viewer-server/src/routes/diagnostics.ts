@@ -187,12 +187,16 @@ function observerSelect(options: EventOptions): string | null {
 					updated_at AS occurred_at, status, attempt_count AS metric_a,
 					NULL AS metric_b,
 					CASE
+						WHEN error_type = 'RawEventObserverOutputError:no_processable_input' THEN 'input preparation'
+						WHEN error_type = 'RawEventObserverOutputError:lossy_repair' THEN 'structural repair'
+						WHEN error_type = 'RawEventObserverOutputError:unstorable_observer_output' THEN 'output validation and filtering'
 						WHEN lower(COALESCE(observer_error_code, error_type)) LIKE '%auth%' THEN 'authentication'
 						WHEN lower(COALESCE(observer_error_code, error_type)) LIKE '%rate%'
 							OR lower(COALESCE(observer_error_code, error_type)) LIKE '%limit%' THEN 'rate limit'
 						WHEN lower(COALESCE(observer_error_code, error_type)) LIKE '%timeout%' THEN 'timeout'
 						WHEN lower(COALESCE(observer_error_code, error_type)) LIKE '%schema%'
 							OR lower(COALESCE(observer_error_code, error_type)) LIKE '%parse%' THEN 'response format'
+						WHEN error_type = 'RawEventObserverOutputError:empty_observer_output' THEN 'empty response'
 						ELSE 'unspecified'
 					END AS category,
 					NULL AS stored_category

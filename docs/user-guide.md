@@ -193,6 +193,7 @@ codemem status --db-path ./codemem.sqlite --config ./codemem.json
 - Warnings and errors appear in the bounded `attention` list. A collected report exits `0` even when `ok` is false; collection failures exit `1`, and usage errors exit `2`.
 - With `CODEMEM_EMBEDDING_DISABLED=1`, the semantic index reports `disabled` and adds no attention item: semantic search is off by choice and keyword search still works.
 - Terminal raw-event and observer failures affect `ok` for 24 hours; use `codemem diagnostics capture check` for the detailed reliability window.
+- Capture failure messages identify the known processing stage. `no_processable_input` means input preparation stopped before observer inference. Structural repair failures mean incomplete output could not be repaired, while output validation and filtering failures mean returned output produced no storable content. Technical details in Health diagnostics distinguish these stages and empty responses without including captured content. Unknown stages remain unspecified. These descriptions do not change retry or completion rules.
 - `codemem service status` replaces `codemem sync status` for operational health.
 - Use `codemem sync peers` for peer health and per-scope received/pending work, `codemem sync attempts` for recent passes, and `codemem sync doctor` for detailed sync diagnostics.
 - Use `codemem maintenance status` for background jobs and `codemem diagnostics capture status` for the ingestion backlog.
