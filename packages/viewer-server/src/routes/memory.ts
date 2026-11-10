@@ -709,14 +709,16 @@ export function memoryRoutes(getStore: StoreFactory) {
 			const clauses = [
 				"memory_items.session_id = sessions.id",
 				"memory_items.active = 1",
-				"sessions.project IS NOT NULL",
 				...filterResult.clauses,
 			];
+			// Nested existence checks keep memory lookups tied to each session even without planner statistics.
 			const rows = store.db
 				.prepare(
-					`SELECT DISTINCT sessions.project AS project FROM sessions
-					 JOIN memory_items ON memory_items.session_id = sessions.id
-					 WHERE ${clauses.join(" AND ")}`,
+					`SELECT candidates.project AS project
+					 FROM (SELECT DISTINCT project FROM sessions WHERE project IS NOT NULL) candidates
+					 WHERE EXISTS (SELECT 1 FROM sessions
+					 WHERE sessions.project = candidates.project
+					 AND EXISTS (SELECT 1 FROM memory_items WHERE ${clauses.join(" AND ")}))`,
 				)
 				.all(...filterResult.params) as Record<string, unknown>[];
 			const projects = [

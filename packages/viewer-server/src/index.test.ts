@@ -1816,6 +1816,179 @@ describe("raw event default config targeting", () => {
 	);
 });
 
+function seedProjectQueryFixtures(store: MemoryStore): void {
+	const fixtures = [
+		{ project: "z-local" },
+		{ project: "a-received", scopeId: "project-reader" },
+		{ project: "denied-only", scopeId: "project-denied" },
+		{ project: "forged-owner", scopeId: "project-denied", originDeviceId: store.deviceId },
+		{ project: "received-local-scope", scopeId: "local-default", originDeviceId: "foreign-device" },
+		{ project: "mixed", scopeId: "project-denied" },
+		{ project: "mixed" },
+		{ project: "inactive-only", active: false },
+		{ project: null },
+		{ project: "" },
+		{ project: "   " },
+		{ project: "fatal: not a repository" },
+		{ project: "/checkout/same-name" },
+		{ project: "C:\\checkout\\same-name" },
+		{ project: "  /checkout/trimmed  " },
+		{ project: "quote's_%_project" },
+		{ project: "quoteXs_ANY_project", scopeId: "project-denied" },
+	];
+	for (const [index, fixture] of fixtures.entries()) {
+		const sessionId = insertTestSession(store.db);
+		store.db
+			.prepare("UPDATE sessions SET project = ? WHERE id = ?")
+			.run(fixture.project, sessionId);
+		insertTestMemory(store, {
+			...fixture,
+			sessionId,
+			kind: "discovery",
+			title: `Project fixture ${index}`,
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		if (fixture.project === "z-local") {
+			insertTestMemory(store, {
+				sessionId,
+				kind: "discovery",
+				title: "Second local memory",
+				createdAt: "2026-01-01T00:00:00Z",
+			});
+			insertTestMemory(store, {
+				sessionId,
+				kind: "discovery",
+				title: "Denied in local session",
+				scopeId: "project-denied",
+				createdAt: "2026-01-01T00:00:00Z",
+			});
+		}
+	}
+	const emptySession = insertTestSession(store.db);
+	store.db.prepare("UPDATE sessions SET project = 'memoryless' WHERE id = ?").run(emptySession);
+	const authoredSession = insertTestSession(store.db);
+	store.db
+		.prepare("UPDATE sessions SET project = 'authored-history' WHERE id = ?")
+		.run(authoredSession);
+	vi.spyOn(store, "enqueueVectorWrite").mockImplementation(() => {});
+	store.db
+		.prepare(`INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at)
+		VALUES ('/tmp/test', '/tmp/test', 'project-denied', 100, 'user', '2026-01-01', '2026-01-01')`)
+		.run();
+	const authored = store.remember(
+		authoredSession,
+		"discovery",
+		"Genuine authored history",
+		"History",
+		0.8,
+		[],
+	);
+	expect(store.db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").get(authored)).toEqual({
+		scope_id: "project-denied",
+	});
+}
+
+describe("GET /api/projects visibility equivalence", () => {
+	it.each([true, false])(
+		"matches original visibility with managed access %s",
+		async (allowManaged) => {
+			// Arrange: denied rows share project names and sessions with visible rows.
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				if (allowManaged) await grantVisibleReaderScope(store, "project-reader");
+				else grantSyncScopeToDevices(store, "project-reader", []);
+				grantSyncScopeToDevices(store, "project-denied", []);
+				seedProjectQueryFixtures(store);
+				const filter = core.buildFilterClausesWithContext(null, store.ownershipFilterContext());
+				const originalSql = `SELECT DISTINCT sessions.project AS project FROM sessions
+			JOIN memory_items ON memory_items.session_id = sessions.id
+			WHERE memory_items.session_id = sessions.id AND memory_items.active = 1
+			AND sessions.project IS NOT NULL AND ${filter.clauses.join(" AND ")}`;
+				const originalRows = store.db.prepare(originalSql).all(...filter.params);
+				const prepare = vi.spyOn(store.db, "prepare");
+
+				// Act: capture the actual route statement, including its correlation aliases.
+				const response = await app.request("/api/projects");
+				const body = await response.json();
+				const projectQueries = prepare.mock.calls
+					.map(([sql]) => sql)
+					.filter((sql) => sql.includes("AS project") && sql.includes("memory_items"));
+				prepare.mockRestore();
+				const routeRows = store.db.prepare(projectQueries[0] ?? "").all(...filter.params);
+
+				// Assert: one statement preserves raw visibility and public normalization/order.
+				expect(projectQueries).toHaveLength(1);
+				expect(routeRows).toEqual(expect.arrayContaining(originalRows));
+				expect(routeRows).toHaveLength(originalRows.length);
+				expect(response.status).toBe(200);
+				const expected = [
+					"authored-history",
+					"mixed",
+					"quote's_%_project",
+					"received-local-scope",
+					"same-name",
+					"trimmed",
+					"z-local",
+				];
+				if (allowManaged) expected.push("a-received");
+				expect(body).toEqual({ projects: expected.sort() });
+			} finally {
+				vi.restoreAllMocks();
+				cleanup();
+			}
+		},
+	);
+});
+
+describe("GET /api/projects query plan", () => {
+	it.each([false, true])(
+		"checks candidates through a memory session index with statistics %s",
+		async (analyze) => {
+			// Arrange: use the real schema and predicate, without adding indexes or plan hints.
+			const { app, ensureStore, cleanup } = createTestApp();
+			try {
+				const store = ensureStore();
+				// Projects with only inactive memories must not rescan every active memory without statistics.
+				store.db.exec(`WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<3000)
+			INSERT INTO sessions(id, started_at, project) SELECT n, '2026-01-01', 'project-' || ((n-1)%300) FROM ids;
+			WITH RECURSIVE copies(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM copies WHERE n<20)
+			INSERT INTO memory_items(session_id, kind, title, body_text, active, created_at, updated_at)
+			SELECT sessions.id, 'discovery', 'memory-' || n, '', CASE WHEN ((sessions.id-1)%300)%2=0 THEN 1 ELSE 0 END,
+				'2026-01-01', '2026-01-01' FROM sessions CROSS JOIN copies;`);
+				if (analyze) store.db.exec("ANALYZE");
+				const filter = core.buildFilterClausesWithContext(null, store.ownershipFilterContext());
+				const prepare = vi.spyOn(store.db, "prepare");
+
+				// Act: inspect the route statement rather than a separately maintained replacement.
+				await app.request("/api/projects");
+				const sql = prepare.mock.calls
+					.map(([query]) => query)
+					.find((query) => query.includes("AS project") && query.includes("memory_items"));
+				prepare.mockRestore();
+				const plan = store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...filter.params) as Array<{
+					detail: string;
+				}>;
+
+				// Assert: allow optimizer ordering/index variants, but reject a global memory scan.
+				expect(sql).toContain("WHERE EXISTS");
+				expect(plan.map(({ detail }) => detail)).toEqual(
+					expect.arrayContaining([
+						expect.stringMatching(/SEARCH memory_items .*INDEX.*\(session_id=\?/),
+					]),
+				);
+				expect(plan.some(({ detail }) => /SCAN memory_items\b/.test(detail))).toBe(false);
+				expect(plan.some(({ detail }) => /SEARCH memory_items .*\(active=\?/.test(detail))).toBe(
+					false,
+				);
+			} finally {
+				vi.restoreAllMocks();
+				cleanup();
+			}
+		},
+	);
+});
+
 describe("viewer-server", () => {
 	it("serves viewer shell and app bundle with cache-safe headers", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));
@@ -5350,9 +5523,9 @@ describe("viewer-server", () => {
 			const { app, cleanup } = createTestApp();
 			try {
 				const res = await app.request("/api/projects");
-				expect(res.status).toBe(200);
 				const body = (await res.json()) as Record<string, unknown>;
-				expect(body).toHaveProperty("projects");
+				expect(res.status).toBe(200);
+				expect(body).toEqual({ projects: [] });
 			} finally {
 				cleanup();
 			}
