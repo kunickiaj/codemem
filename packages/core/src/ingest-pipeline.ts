@@ -711,7 +711,10 @@ function buildObserverPromptText(latestPrompt: string | null, context: SessionCo
 }
 
 function buildPreparedObserverContext(
-	stage: IngestSessionStage,
+	stage: Pick<
+		IngestSessionStage,
+		"observerMaxChars" | "sessionContext" | "priorDelegatedContext" | "project" | "storeSummary"
+	>,
 	input: {
 		currentDelegatedBriefs: string[];
 		lastAssistantMessage: string | null;
@@ -743,7 +746,7 @@ function buildPreparedObserverContext(
 }
 
 function hasProcessableInput(
-	stage: IngestSessionStage,
+	stage: Pick<IngestSessionStage, "storeSummary" | "historicalRecovery">,
 	latestPrompt: string | null,
 	toolEvents: ToolEvent[],
 	lastAssistantMessage: string | null,
@@ -763,7 +766,20 @@ function hasProcessableInput(
 	);
 }
 
-function prepareIngestInput(stage: IngestSessionStage): PreparedIngestStage {
+/** Pure preparation shared by ingestion and capture regression checks. */
+export function prepareIngestInput(
+	stage: Pick<
+		IngestSessionStage,
+		| "events"
+		| "maxChars"
+		| "observerMaxChars"
+		| "priorDelegatedContext"
+		| "sessionContext"
+		| "project"
+		| "storeSummary"
+		| "historicalRecovery"
+	>,
+): PreparedIngestStage {
 	const normalizedEvents = normalizeAdapterEvents(stage.events);
 	const partitioned = isTrustedOpenCodeRawEventContext(stage.sessionContext)
 		? partitionDelegatedBriefEvents(normalizedEvents)

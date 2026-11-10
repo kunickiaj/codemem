@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { connect } from "./db.js";
 import type { IngestOptions } from "./ingest-pipeline.js";
 import { ObserverAuthError } from "./observer-client.js";
@@ -14,6 +14,8 @@ let store: MemoryStore;
 let previousMaxAttempts: string | undefined;
 
 beforeEach(() => {
+	// Auth recovery writes memories but does not test embedding model startup.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	previousMaxAttempts = process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS;
 	process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = "1";
 	dir = mkdtempSync(join(tmpdir(), "codemem-auth-retry-"));
@@ -39,10 +41,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	store.close();
-	if (previousMaxAttempts === undefined) delete process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS;
-	else process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = previousMaxAttempts;
-	rmSync(dir, { recursive: true, force: true });
+	try {
+		store.close();
+		if (previousMaxAttempts === undefined) delete process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS;
+		else process.env.CODEMEM_RAW_EVENTS_MAX_FLUSH_ATTEMPTS = previousMaxAttempts;
+		rmSync(dir, { recursive: true, force: true });
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });
 
 function batchState() {
