@@ -2,10 +2,35 @@
 
 ## [Unreleased]
 
+## [0.49.0-beta.2] - 2026-11-10
+
+### Added
+
+- My Account offers **Connect this device** when a linked device still needs its ownership recorded and the coordinator can complete it with a fresh Google sign-in for the same Identity. ([#2667], [#2677])
+
+### Changed
+
+- Space-assignment previews stream their rows, and the Projects list finds visible Projects through indexed checks. ([#2661], [#2662])
+- Enrollment issue details show the coordinator and group, so two issues for the same device can be told apart. ([#2654])
+- Grouped Project entries open directly below their group, before Advanced Space assignment. ([#2657])
+- Sharing review shows saved coverage separately from requested additions, and a fully covered recipient cannot be added again. ([#2658])
+
 ### Fixed
 
-- `codemem status --json` and `codemem service status --json` now report recent observer batch failures as `observer.state: degraded` with attention code `observer_recent_failures`, replacing `backoff` and `observer_backoff`. Historical failures no longer trigger that warning. The CLI health probe cannot confirm the worker's active backoff timer.
-- Saving a Project Space assignment no longer fails with `Invalid string length` when unrelated session metadata makes the confirmation fingerprint too large to serialize at once.
+- **Linked devices finish setup without manual repair.** A device that was enrolled before account linking, or linked before ownership was recorded, could stay out of sync with a repeating enrollment error. Background maintenance now records its ownership with the coordinator when the device's own committed account claim proves it, and first account linking records ownership in the same step. Two devices that the coordinator lists under the same Identity can then publish to each other and sync without an invitation. Sharing settings, exclusions, keys, other devices, and memory history are unchanged. ([#2664], [#2666], [#2669], [#2675], [#2676])
+- Enrollment maintenance keeps running against a coordinator that is older, has account sign-in turned off, or uses a URL the signed setup request cannot use, such as plain HTTP. ([#2678], [#2679])
+- Signed device setup works on a Cloudflare D1 coordinator that runs SQLite 3.54.0 or 3.54.1. ([#2680])
+- `codemem status --json` and `codemem service status --json` now report recent observer batch failures as `observer.state: degraded` with attention code `observer_recent_failures`, replacing `backoff` and `observer_backoff`. Historical failures no longer trigger that warning. The CLI health probe cannot confirm the worker's active backoff timer. ([#2656])
+- Saving a Project Space assignment no longer fails with `Invalid string length` when unrelated session metadata makes the confirmation fingerprint too large to serialize at once. ([#2660])
+- Capture failures are reported at the stage where they happened, and input with nothing to process no longer reads as an observer failure. ([#2655])
+- OpenCode V2 `shell` command results are kept during capture instead of failing as unprocessable input. ([#2659])
+
+**Upgrade notes and limitations:**
+
+- This is an opt-in beta on npm's `beta` channel. Restart the Viewer and agent hosts after upgrading.
+- Automatic setup completion needs a coordinator with these changes. Self-hosted Cloudflare coordinators must apply migration `0044_add_rebind_start_authority.sql` before deploying the new Worker. See [Cloudflare coordinator deployment](docs/cloudflare-coordinator-deployment.md).
+- A device without a coordinator admin secret does not run enrollment maintenance, so it does not complete setup automatically.
+- On a Cloudflare D1 that runs SQLite 3.54.0 or 3.54.1, account status in My Account, **Connect this device**, account connection changes, and legacy owner resolution answer 503 until D1 runs a fixed SQLite. Device setup completion and sync are not affected.
 
 ## [0.49.0-beta.1] - 2026-11-09
 
@@ -296,7 +321,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.2...HEAD
+[0.49.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...v0.49.0-beta.2
 [0.49.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0-beta.1
 [0.48.0]: https://github.com/kunickiaj/codemem/compare/v0.47.3...v0.48.0
 [0.47.3]: https://github.com/kunickiaj/codemem/compare/v0.47.2...v0.47.3
@@ -451,3 +477,22 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2644]: https://github.com/kunickiaj/codemem/pull/2644
 [#2646]: https://github.com/kunickiaj/codemem/pull/2646
 [#2647]: https://github.com/kunickiaj/codemem/pull/2647
+[#2654]: https://github.com/kunickiaj/codemem/pull/2654
+[#2655]: https://github.com/kunickiaj/codemem/pull/2655
+[#2656]: https://github.com/kunickiaj/codemem/pull/2656
+[#2657]: https://github.com/kunickiaj/codemem/pull/2657
+[#2658]: https://github.com/kunickiaj/codemem/pull/2658
+[#2659]: https://github.com/kunickiaj/codemem/pull/2659
+[#2660]: https://github.com/kunickiaj/codemem/pull/2660
+[#2661]: https://github.com/kunickiaj/codemem/pull/2661
+[#2662]: https://github.com/kunickiaj/codemem/pull/2662
+[#2664]: https://github.com/kunickiaj/codemem/pull/2664
+[#2666]: https://github.com/kunickiaj/codemem/pull/2666
+[#2667]: https://github.com/kunickiaj/codemem/pull/2667
+[#2669]: https://github.com/kunickiaj/codemem/pull/2669
+[#2675]: https://github.com/kunickiaj/codemem/pull/2675
+[#2676]: https://github.com/kunickiaj/codemem/pull/2676
+[#2677]: https://github.com/kunickiaj/codemem/pull/2677
+[#2678]: https://github.com/kunickiaj/codemem/pull/2678
+[#2679]: https://github.com/kunickiaj/codemem/pull/2679
+[#2680]: https://github.com/kunickiaj/codemem/pull/2680
