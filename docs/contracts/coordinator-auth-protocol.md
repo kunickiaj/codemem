@@ -608,11 +608,10 @@ controller, and a device claim never creates one.
 ## Device-claim first link (planned)
 
 **Status:** Internal Core readiness, attempt creation, browser transitions, and
-atomic device-claim finalization are implemented. The finalization batch consumes
-only a confirmed attempt and writes its immutable proof, account link, and
-creation audit together. Exact finalization retries read the retained receipt;
-they never insert the proof again. Completed status and browser resolution check
-historical proof/link/audit pins instead of rerunning first-binding eligibility.
+atomic device-claim finalization for the claim, account link, and creation audit
+are implemented. The device-binding resource below adds ownership completion.
+Its internal receipt and provenance checks remain part of finalization; they do
+not expand the public response.
 Device-authenticated status requires a current enrolled, unrevoked key: the
 original key or an exact shared assignment as described below. Finalization
 retries still require the original key's current enrollment and no device/key
@@ -649,12 +648,12 @@ confirmation. There is no extra checkbox or admin step. The confirmation page
 names the Identity and device as it does today, and says that this link comes
 from the device key and Google sign-in, not an admin review.
 
-A device claim yields Google sign-in for that Identity and nothing else. It
-creates no controller attestation, Identity-group grant, enrollment assignment,
-ownership binding, key, scope, or owner-enrollment right, and changes no
-enrollment or history. The link cannot authorize another device or owner
-enrollment, even if grants for the Identity appear later. Upgrading a device-claim
-link with stronger proof is out of scope.
+A device claim yields Google sign-in for that Identity. Its first qualifying
+finalization also creates the canonical ownership binding for that same device,
+as described below. It creates no controller attestation, Identity-group grant,
+key, scope, or owner-enrollment right, and it cannot authorize another device or
+owner enrollment even if grants for the Identity appear later. Upgrading a
+device-claim link with stronger proof is out of scope.
 
 ### Authority model
 
@@ -995,11 +994,75 @@ Finalization commits in one SQLite immediate transaction or one D1 batch:
 2. Insert the device-claims row from the consumed attempt.
 3. Insert the account link that references that claim.
 4. Insert the redacted audit row.
+5. Insert the canonical ownership binding when this is the device's first
+   qualifying claim, and reconcile the matching enrollment rows as one set.
 
 A unique conflict on the claim (Identity, device, or key) or on the link
 (Identity, or issuer plus subject) rolls back the whole batch and returns
-`409 auth_link_conflict`. Only this committed claim and link use up the first
-claim. If the outcome is unknown, read status before offering another attempt.
+`409 auth_link_conflict`. Only this committed claim, link, and binding use up the
+first claim. If the outcome is unknown, read status before offering another
+attempt.
+
+### Device-claim ownership and legacy setup completion
+
+`GET` and `POST /v1/auth/device-binding` use existing signed-device admission and
+strict `group_id` plus current `identity_id` inputs. GET returns one `kind`:
+`ready`, `complete`, `requires_review`, or `connect_required`. POST returns
+`complete` or `requires_review`; Core maps its internal `completed` result to
+`complete`. The resource exposes no claim, audit, or receipt fields. Definitive
+authentication, schema, rate, and conflict errors fail closed. A route `404` is a
+typed unsupported result that can cover an older coordinator, disabled account auth,
+or an unavailable backend.
+
+The normal Viewer action makes one GET. `connect_required` starts **Connect this
+device**, the existing rebind ceremony with fresh Google proof for the same current
+Identity, browser consent, review digest, and final device-key signature. A
+controller-only legacy device never gains ownership from a GET. The device-binding
+POST completes claim-backed ownership only; the controller path uses the fresh
+rebind ceremony.
+
+Automatic completion posts directly after maintenance has a fresh initial
+enrollment snapshot. An enabled enrollment in the current group with the exact key
+and fingerprint is a healthy skip condition only when both
+`ownership_identity_id` and `identity_id` equal the current Identity. A null or
+unowned initial row may POST under the internal authority guards. An explicit
+Identity row without canonical ownership posts, including when the null update
+count is zero. For that explicit Identity row, a `requires_review` answer or an old
+coordinator without the route keeps the earlier baseline and reconciliation
+continues. A null own row in either case stops that group before invites. A missing
+own row keeps the existing operator baseline. Only the POST path requires a
+coordinator URL that the account-link origin check accepts. When that check
+rejects the URL, an explicit Identity row keeps the same baseline and a null own
+row stops the group.
+
+The first device claim keeps the full eligibility guard before OIDC and at the
+winning commit. It atomically writes the immutable claim, link, audit, canonical
+ownership binding (`owner_enrollment`, `device_claim:<claim_id>`), and permitted
+null enrollment updates. It preserves Identity, grants, key ownership, and history
+outside that device's binding. Existing same-Identity devices and intended grants
+remain valid. The internal receipt and compare-and-set checks make a later matching
+request idempotent. The coordinator validates immutable provenance and the
+internal receipt before and after the atomic batch.
+
+POST uncertainty permits one status GET. `complete` resolves that outcome. A
+`complete` status is not authority: maintenance continues only after a fresh
+listing shows the exact key with `identity_id` and `ownership_identity_id` both
+equal to the current Identity. A current schema-unavailable result preserves the
+upgrade guidance. Other unverified
+results are unknown and must not trigger an immediate POST retry. A later background
+tick may make an idempotent request after it captures a new context and enrollment
+snapshot. The absence of a fresh canonical listing does not prove that an earlier
+request failed.
+No persistent recovery workflow or registry records the unknown result.
+
+Self-bind authority is server-derived. The winning rebind start stores immutable
+`start_authority_json`, then the browser claim, callback, confirmation, and commit
+recompute its link genesis, exact current controller, enrollment set and null
+count, issuer, and configuration. Account mismatch, drift, revocation, competing
+key, alias, or exclusion denies the ceremony. Migration 0044 adds this field;
+pre-migration readiness fails closed, while historical null attempts keep their
+original rules. Existing rebind receipts and client review-digest handling remain
+unchanged. This adds no table, wizard, flag, or registry.
 
 ### Operator-only consumers
 
