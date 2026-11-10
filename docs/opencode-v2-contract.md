@@ -87,6 +87,17 @@ pinned release remains unverified.
 - The promise-plugin context exposes neither logging nor toast methods, so the V2
   adapter retains local diagnostics and treats user notifications as unavailable.
 
+## Command capture
+
+During adapter projection, a validated OpenCode `tool_result` with retained V2
+host provenance, the exact tool name `shell`, and a nonblank string
+`tool_input.command` is normalized to `bash` for observer input and session
+context. This preserves command-only batches as processable input and applies
+existing bash privacy sanitization, output compaction, deduplication, and budgets
+to the adapter result. Raw envelopes remain unchanged. Legacy or unmarked shell
+events, non-command inputs, and namespaced shell tools retain their existing
+exclusion. Command failures retain sanitized error details.
+
 ## Local observer service connection
 
 Observer generation and model discovery use OpenCode's service discovery for

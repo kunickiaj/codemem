@@ -64,6 +64,8 @@ describe("RawEventSweeper active session draining", () => {
 	let previousWorkerMaxEvents: string | undefined;
 
 	beforeEach(() => {
+		// Active-session draining does not test embedding model startup.
+		vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 		previousAutoFlush = process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
 		previousWorkerMaxEvents = process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
 		delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
@@ -76,12 +78,16 @@ describe("RawEventSweeper active session draining", () => {
 	});
 
 	afterEach(() => {
-		store.close();
-		if (previousAutoFlush == null) delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
-		else process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = previousAutoFlush;
-		if (previousWorkerMaxEvents == null) delete process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
-		else process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = previousWorkerMaxEvents;
-		rmSync(tmpDir, { recursive: true, force: true });
+		try {
+			store.close();
+			if (previousAutoFlush == null) delete process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH;
+			else process.env.CODEMEM_RAW_EVENTS_AUTO_FLUSH = previousAutoFlush;
+			if (previousWorkerMaxEvents == null) delete process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS;
+			else process.env.CODEMEM_RAW_EVENTS_WORKER_MAX_EVENTS = previousWorkerMaxEvents;
+			rmSync(tmpDir, { recursive: true, force: true });
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("drains a recently active session when auto flush is disabled", async () => {

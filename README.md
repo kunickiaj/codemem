@@ -61,7 +61,9 @@ support is validated against the exact stable `@opencode/cli@2.0.24` and
 
 On OpenCode 2 the plugin captures user and assistant messages, terminal usage,
 tool results, and session lifecycle events, and exposes the same `mem-status`,
-`mem-recent`, and `mem-stats` tools. Automatic recall runs through
+`mem-recent`, and `mem-stats` tools. Captured V2 `shell` command results use the
+same observer filtering, privacy sanitization, and output limits as `bash` results.
+Automatic recall runs through
 `session.context`: the latest user-message ID is required, and a missing or blank
 ID skips recall safely. Each identified turn performs one fresh retrieval; retries
 and tool continuations replay retained context byte-for-byte. Compaction, title,

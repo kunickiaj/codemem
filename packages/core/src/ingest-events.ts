@@ -8,6 +8,7 @@
 
 import { sanitizePayload, sanitizeToolOutput } from "./ingest-sanitize.js";
 import type { ToolEvent } from "./ingest-types.js";
+import { isV2Event } from "./raw-event-host-generation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -167,6 +168,25 @@ export function extractAdapterEvent(
 	return a;
 }
 
+function adapterCommandToolName(
+	adapter: Record<string, unknown>,
+	event: Record<string, unknown>,
+	payload: Record<string, unknown>,
+	toolInput: unknown,
+): unknown {
+	if (adapter.source !== "opencode" || !isV2Event(event) || payload.tool_name !== "shell") {
+		return payload.tool_name;
+	}
+	if (toolInput == null || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+		return payload.tool_name;
+	}
+	const command = (toolInput as Record<string, unknown>).command;
+	if (typeof command !== "string" || !command.trim()) return payload.tool_name;
+	// V2 calls its command tool `shell`. Use bash sanitization/compaction without
+	// enabling legacy shell events or reinterpreting namespaced/custom tools.
+	return "bash";
+}
+
 /** Project an adapter tool_result into the flat event format expected by eventToToolEvent. */
 export function projectAdapterToolEvent(
 	adapter: Record<string, unknown>,
@@ -188,7 +208,7 @@ export function projectAdapterToolEvent(
 
 	return {
 		type: "tool.execute.after",
-		tool: payload.tool_name,
+		tool: adapterCommandToolName(adapter, event, payload, toolInput),
 		args: toolInput,
 		result: toolOutput,
 		error: toolError,
