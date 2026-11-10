@@ -179,9 +179,18 @@ path for ordinary users.
 
 | Account state at sign-in | Result |
 | --- | --- |
-| No active link | Link the device's current Identity (the existing first-link flow). |
-| Linked to the device's current Identity | The Identity stays. A device without its own claim, attestation, or binding gets an ownership binding (a self-bind, amended 2026-10-27), so it can manage the account too. |
+| No active link | Link the device's current Identity through the existing first-link flow. A qualifying first device-claim link also records that device's canonical ownership binding as part of the same commit. |
+| Linked to the device's current Identity | The Identity stays. A device without its own proof may complete a claim-backed binding or start the user-confirmed self-bind ceremony. |
 | Linked to a different Identity | After explicit confirmation, rebind the device to the account's Identity (below). |
+
+**Device setup completion.** The [coordinator auth protocol](../contracts/coordinator-auth-protocol.md#device-claim-ownership-and-legacy-setup-completion)
+defines the signed device-binding resource, atomic claim-backed completion, and
+normal maintenance recovery. A linked device with the strict controller-backed
+self-bind evidence uses **Connect this device** and the existing fresh-Google,
+same-Identity rebind ceremony. Controller evidence alone never gives a legacy
+device automatic ownership. Neither path changes Team membership, Project grants,
+key ownership, or memory history, and setup completion does not attest that sync is
+healthy.
 
 **Rebinding an enrolled device.**
 
@@ -214,6 +223,9 @@ path for ordinary users.
   reports "coordinator bound, local switch pending" and resumes from a receipt.
   An unknown outcome means reading status before retrying. Nothing rolls back
   automatically.
+- Removing an account link does not remove an existing ownership binding. The
+  binding remains until the device is revoked. A later change of Identity uses the
+  same current rebind ceremony and its checks.
 
 **Teams and access.**
 
@@ -448,6 +460,13 @@ own approval.
   writes nothing. A current Identity with its own link is refused. An exact
   retry returns the same receipt, and a status read resolves an unknown
   outcome.
+- **S3a. Device-claim setup recovery** (Core, Worker, and client route-presence
+  rollout). A first
+  device-claim link writes its canonical ownership binding with the claim, link,
+  and audit. A qualifying legacy device can reconcile that binding from retained
+   evidence without changing memberships or grants. *Check:* a partial write rolls
+   back, a lost reply resolves through the receipt, and an attestation-only device
+   remains account-only until its user-confirmed self-bind ceremony completes.
 - **S4. Local switch.** Config, actor merge, device bindings, and a generation
   marker change in one transaction, with a resumable receipt. *Check:*
   authorship is unchanged, and a capture process holding the old Identity
