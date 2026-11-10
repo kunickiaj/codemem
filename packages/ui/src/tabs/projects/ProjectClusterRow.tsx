@@ -89,6 +89,7 @@ type ClusterHeaderProps = ClusterContentProps & {
 	onOpenAssignment: () => void;
 	onToggleWorktrees: () => void;
 	titleId: string;
+	entriesId: string;
 	worktreesOpen: boolean;
 };
 
@@ -131,14 +132,14 @@ function ClusterHeader(props: ClusterHeaderProps) {
 				{model.projectIds.length > 0 ? (
 					<label className="project-selection-control project-selection-target">
 						<input
-							aria-label={`Select all identities for ${model.label}`}
+							aria-label={`Select all Project entries for ${model.label}`}
 							checked={allSelected}
 							className="project-selection-checkbox"
 							onChange={() => callbacks.toggleSelection(model.projectIds)}
 							ref={checkboxRef}
 							type="checkbox"
 						/>
-						<span className="sr-only">Select all identities for {model.label}</span>
+						<span className="sr-only">Select all Project entries for {model.label}</span>
 					</label>
 				) : null}
 			</td>
@@ -147,10 +148,11 @@ function ClusterHeader(props: ClusterHeaderProps) {
 					{model.label}
 				</strong>
 				<div className="project-inventory-badges">
-					<Chip variant="badge">{model.projects.length} worktrees</Chip>
+					<Chip variant="badge">{model.projects.length} Project entries</Chip>
 					<button
+						aria-controls={props.entriesId}
 						aria-expanded={worktreesOpen}
-						aria-label={`${worktreesOpen ? "Hide" : "Show"} worktrees for ${model.label}${groupLabel}`}
+						aria-label={`${worktreesOpen ? "Hide" : "Show"} entries for ${model.label}${groupLabel}`}
 						className="settings-button project-worktrees-toggle"
 						onClick={(event) => {
 							if (worktreesOpen) event.currentTarget.focus();
@@ -158,7 +160,7 @@ function ClusterHeader(props: ClusterHeaderProps) {
 						}}
 						type="button"
 					>
-						{worktreesOpen ? "Hide worktrees" : "Show worktrees"}
+						{worktreesOpen ? "Hide entries" : "Show entries"}
 					</button>
 					{summary.warningTotal > 0 ? (
 						<Chip tone="badge-offline" variant="badge">
@@ -179,14 +181,16 @@ type ClusterDetailsProps = ClusterContentProps & {
 	scopeId: string;
 	selectRef: ReturnType<typeof useRef<HTMLSelectElement>>;
 	setScopeId: (scopeId: string) => void;
+	onReviewEntries: () => void;
+	entriesId: string;
 };
 
 function ClusterAssignmentControls(props: ClusterDetailsProps) {
 	const { callbacks, model, scopeId, selectRef, setScopeId, summary, view } = props;
 	if (summary.assignable.length === 0) {
 		const message = model.projects.every((item) => item.project.read_only)
-			? "These project identities were received from other devices. Change project or Space assignments on their source devices."
-			: "These project identities cannot be bulk assigned until they have stable local identities. Expand each identity for details.";
+			? "These Project entries were received from other devices. Change Project or Space assignments on their source devices."
+			: "These Project entries cannot be bulk assigned until they have stable local identities. Expand each entry for details.";
 		return <div className="settings-note">{message}</div>;
 	}
 	const scopeAvailable = scopeIsAvailable(scopeId, view);
@@ -221,25 +225,30 @@ function ClusterAssignmentControls(props: ClusterDetailsProps) {
 				type="button"
 			>
 				Save Space for {summary.assignable.length}{" "}
-				{summary.assignable.length === 1 ? "identity" : "identities"}
+				{summary.assignable.length === 1 ? "Project entry" : "Project entries"}
 			</button>
 		</>
 	);
 }
 
-function ClusterWarnings({ summary }: Pick<ClusterContentProps, "summary">) {
+function ClusterWarnings({
+	summary,
+	onReviewEntries,
+	entriesId,
+}: Pick<ClusterDetailsProps, "summary" | "onReviewEntries" | "entriesId">) {
 	if (summary.blocking.length > 0) {
 		return (
 			<div className="settings-note project-attention-note">
-				One or more identities in this group need individual review before bulk assignment.
-				<ul>
-					{summary.blocking.map(({ project, warning }) => (
-						<li key={`${project.key}:${warning.code}`}>
-							<strong>Blocked identity: {project.project.workspace_identity}</strong> —{" "}
-							{warning.message}
-						</li>
-					))}
-				</ul>
+				<strong>Project match needs review.</strong> One or more Project entries need individual
+				review before bulk assignment. Review the remote or recorded path before assigning a Space.
+				<button
+					aria-controls={entriesId}
+					className="settings-button project-review-entries"
+					onClick={onReviewEntries}
+					type="button"
+				>
+					Review entries
+				</button>
 			</div>
 		);
 	}
@@ -271,10 +280,83 @@ function ClusterDetails(props: ClusterDetailsProps) {
 					<div className="project-inventory-details-body">
 						<div className="project-inventory-actions">
 							<ClusterAssignmentControls {...props} />
-							<ClusterWarnings summary={summary} />
+							<ClusterWarnings {...props} />
 						</div>
 					</div>
 				</details>
+			</td>
+		</tr>
+	);
+}
+
+function ClusterEntries({
+	callbacks,
+	model,
+	view,
+	entriesId,
+	regionRef,
+	summary,
+}: ProjectClusterRowProps & {
+	entriesId: string;
+	regionRef: ReturnType<typeof useRef<HTMLElement>>;
+	summary: ClusterSummary;
+}) {
+	return (
+		<tr className="project-cluster-entries-row" hidden={!model.worktreesOpen}>
+			<td colSpan={7}>
+				<section
+					aria-label={`Project entries for ${model.label}`}
+					className="project-cluster-entries"
+					id={entriesId}
+					ref={regionRef}
+					tabIndex={-1}
+				>
+					<table className="project-inventory-table project-entries-table">
+						<caption className="sr-only">Project entries for {model.label}</caption>
+						<thead className="sr-only">
+							<tr>
+								{[
+									"Select",
+									"Project entry",
+									"Memories",
+									"Sessions",
+									"Last activity",
+									"Shared with",
+									"Actions",
+								].map((label) => (
+									<th key={label} scope="col">
+										{label}
+									</th>
+								))}
+							</tr>
+						</thead>
+						{model.worktreesOpen
+							? model.projects.map((project) => (
+									<ProjectRow
+										callbacks={callbacks}
+										child
+										clusterKey={model.key}
+										key={`${project.project.read_only ? "received" : "local"}:${project.key}`}
+										model={project}
+										view={view}
+									/>
+								))
+							: null}
+					</table>
+					{summary.blocking.length > 0 ? (
+						<details className="project-entry-review-details">
+							<summary>Project matches needing review · {summary.blocking.length}</summary>
+							<ul>
+								{summary.blocking.map(({ project, warning }) => (
+									<li key={`${project.key}:${warning.code}`}>
+										<strong>Project entry: {project.project.workspace_identity}</strong> —{" "}
+										{warning.message}
+									</li>
+								))}
+							</ul>
+						</details>
+					) : null}
+				</section>
 			</td>
 		</tr>
 	);
@@ -285,6 +367,7 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 	const [open, setOpen] = useState(model.detailsOpen);
 	const [scopeId, setScopeId] = useState(model.draftScopeId ?? "");
 	const selectRef = useRef<HTMLSelectElement>(null);
+	const regionRef = useRef<HTMLElement>(null);
 	useEffect(() => {
 		if (model.detailsOpen) setOpen(true);
 	}, [model.detailsOpen]);
@@ -299,45 +382,38 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 		queueMicrotask(() => selectRef.current?.focus());
 	};
 	const titleId = projectDomId("project-cluster-title", model.key);
+	const entriesId = projectDomId("project-cluster-entries", model.key);
+	const reviewEntries = () => {
+		callbacks.setClusterWorktreesOpen(model.key, true);
+		queueMicrotask(() => regionRef.current?.focus());
+	};
 	return (
-		<>
-			<tbody
-				aria-labelledby={titleId}
-				className="project-inventory-row project-inventory-cluster"
-				data-project-cluster-key={model.key}
-			>
-				<ClusterHeader
-					{...props}
-					onOpenAssignment={openAssignment}
-					onToggleWorktrees={() =>
-						callbacks.setClusterWorktreesOpen(model.key, !model.worktreesOpen)
-					}
-					summary={summary}
-					titleId={titleId}
-					worktreesOpen={model.worktreesOpen}
-				/>
-				<ClusterDetails
-					{...props}
-					onOpenChange={setDetailsOpen}
-					open={open}
-					scopeId={scopeId}
-					selectRef={selectRef}
-					setScopeId={setScopeId}
-					summary={summary}
-				/>
-			</tbody>
-			{model.worktreesOpen
-				? model.projects.map((project) => (
-						<ProjectRow
-							callbacks={callbacks}
-							child
-							clusterKey={model.key}
-							key={`${project.project.read_only ? "received" : "local"}:${project.key}`}
-							model={project}
-							view={props.view}
-						/>
-					))
-				: null}
-		</>
+		<tbody
+			aria-labelledby={titleId}
+			className="project-inventory-row project-inventory-cluster"
+			data-project-cluster-key={model.key}
+		>
+			<ClusterHeader
+				{...props}
+				entriesId={entriesId}
+				onOpenAssignment={openAssignment}
+				onToggleWorktrees={() => callbacks.setClusterWorktreesOpen(model.key, !model.worktreesOpen)}
+				summary={summary}
+				titleId={titleId}
+				worktreesOpen={model.worktreesOpen}
+			/>
+			<ClusterEntries {...props} entriesId={entriesId} regionRef={regionRef} summary={summary} />
+			<ClusterDetails
+				{...props}
+				entriesId={entriesId}
+				onReviewEntries={reviewEntries}
+				onOpenChange={setDetailsOpen}
+				open={open}
+				scopeId={scopeId}
+				selectRef={selectRef}
+				setScopeId={setScopeId}
+				summary={summary}
+			/>
+		</tbody>
 	);
 }

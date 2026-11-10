@@ -595,7 +595,9 @@ function focusProjectAdministration(projectIdentity: string): boolean {
 				(candidate) => candidate.dataset.projectClusterKey === clusterKey,
 			)
 		: null;
-	const clusterDetails = cluster?.querySelector<HTMLDetailsElement>(".project-inventory-details");
+	const clusterDetails = cluster?.querySelector<HTMLDetailsElement>(
+		":scope > .project-inventory-cluster-details-row .project-inventory-details",
+	);
 	if (clusterDetails) {
 		clusterDetails.open = true;
 		const clusterKey = cluster?.dataset.projectClusterKey;
