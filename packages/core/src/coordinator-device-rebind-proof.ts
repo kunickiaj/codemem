@@ -7,6 +7,7 @@ import { verifyOwnerEnrollmentSignature } from "./coordinator-owner-enrollment-p
 
 /** One stored rebinding attempt. Private ceremony state, never current authority. */
 export interface DeviceRebindAttempt {
+	start_authority_json?: string | null;
 	coordinator_id: string;
 	attempt_id: string;
 	origin: string;

@@ -610,12 +610,28 @@ it.each(["device", "canonical key"] as const)(
 			publicKey: family === "device" ? origin.signer.publicKey : `${f.signer.publicKey} B-alias`,
 		};
 		await f.store.createGroup(b.groupId);
+		if (family === "device") {
+			// A's first claim now owns its key. The enrollment writer must not lend it to B.
+			const protectedBefore = await snapshot();
+			await expect(f.store.enrollDevice(b.groupId, b)).rejects.toThrow("device_ownership_requires_verified_identity");
+			expect(await snapshot()).toEqual(protectedBefore);
+			// A fresh unowned key gives the same current device independent strong B evidence.
+			const fresh = laptop();
+			b.publicKey = fresh.publicKey;
+			b.fingerprint = fresh.fingerprint;
+		}
 		await f.store.enrollDevice(b.groupId, b);
+		expect(await db.prepare("SELECT identity_id FROM enrolled_devices WHERE group_id=? AND device_id=?").bind(b.groupId, b.deviceId).first()).toEqual({ identity_id: null });
 		expect(
 			await f.store.createAuthControllerAttestation(
 				ordinary(b, { identityId: "identity-b", attestationId: "strong-b" }),
 			),
-		).toMatchObject({ kind: "created" });
+		).toMatchObject({ kind: "created", attestation: { identity_id: "identity-b", device_id: b.deviceId, public_key: b.publicKey, fingerprint: b.fingerprint } });
+		// The denial below uses a real positive controller record, never an enrollment Identity label.
+		expect(await rows(controllerTable)).toContainEqual(expect.objectContaining({
+			attestation_id: "strong-b", identity_id: "identity-b", group_id: b.groupId,
+			device_id: b.deviceId, public_key: b.publicKey, fingerprint: b.fingerprint,
+		}));
 		const before = await snapshot();
 		// Act
 		const pending = commit(f, review);
