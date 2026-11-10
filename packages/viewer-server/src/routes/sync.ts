@@ -1847,13 +1847,14 @@ function hasLegacyOwnIdentity(
 }
 
 /**
- * Completion is optional for a row that already names this Identity. When the
- * coordinator cannot or will not complete it, the earlier reconciliation stands.
+ * True when the coordinator state cannot have changed: the client sent no request
+ * for this URL, or an older coordinator has no completion route.
  */
-function completionWasOptional(
+function completionNotAttempted(
 	setup: Awaited<ReturnType<typeof completeCoordinatorDeviceSetup>>,
 ): boolean {
-	return setup.kind === "unsupported" || setup.kind === "requires_review";
+	if (setup.kind === "unavailable") return setup.cause === "invalid_input";
+	return setup.kind === "unsupported";
 }
 
 async function completeCoordinatorEnrollment(
@@ -1884,10 +1885,10 @@ async function completeCoordinatorEnrollment(
 		},
 	});
 	context.assertCurrent();
-	// No request was sent for this URL, so every row keeps the earlier reconciliation.
-	if (setup.kind === "unavailable" && setup.cause === "invalid_input") return initial;
-	if (completionWasOptional(setup) && hasLegacyOwnIdentity(context, own)) return initial;
-	if (setup.kind === "unsupported") throw new Error("coordinator_upgrade_required");
+	// Every row keeps the earlier reconciliation when completion was never attempted.
+	if (completionNotAttempted(setup)) return initial;
+	// A row that already names this Identity does not need the coordinator to complete it.
+	if (setup.kind === "requires_review" && hasLegacyOwnIdentity(context, own)) return initial;
 	if (setup.kind !== "complete" && setup.kind !== "unknown")
 		throw new Error("cause" in setup ? setup.cause : `device_setup_${setup.kind}`);
 	const enrollments = await readDevices();

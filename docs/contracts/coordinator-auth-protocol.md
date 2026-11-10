@@ -1027,12 +1027,13 @@ and fingerprint is a healthy skip condition only when both
 `ownership_identity_id` and `identity_id` equal the current Identity. A null or
 unowned initial row may POST under the internal authority guards. An explicit
 Identity row without canonical ownership posts, including when the null update
-count is zero. For that explicit Identity row, a `requires_review` answer or an old
-coordinator without the route keeps the earlier baseline and reconciliation
-continues. A null own row in either case stops that group before invites. A missing
-own row keeps the existing operator baseline. Only the POST path requires a
-coordinator URL that the account-link origin check accepts. When that check
-rejects the URL, no request is sent and every row keeps the earlier baseline.
+count is zero. For that explicit Identity row, a `requires_review` answer keeps the
+earlier baseline and reconciliation continues. A null own row that receives
+`requires_review` stops that group before invites. A missing own row keeps the
+existing operator baseline. Only the POST path requires a coordinator URL that the
+account-link origin check accepts. When that check rejects the URL, or the
+coordinator answers that it has no completion route, the coordinator state is
+unchanged and every row keeps the earlier baseline.
 
 The first device claim keeps the full eligibility guard before OIDC and at the
 winning commit. It atomically writes the immutable claim, link, audit, canonical

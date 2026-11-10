@@ -344,7 +344,7 @@ describe("canonical ownership and compatibility", () => {
 	});
 
 	it.each([null, "identity-local"])(
-		"limits old-coordinator fallback for initial Identity %j",
+		"keeps reconciling against an older coordinator for initial Identity %j",
 		async (identity) => {
 			// Arrange
 			own = { ...own, identity_id: identity, ownership_identity_id: undefined };
@@ -356,13 +356,8 @@ describe("canonical ownership and compatibility", () => {
 			const result = await reconcileConfiguredCoordinatorEnrollment(store, options);
 			// Assert
 			expect(options.completeDeviceSetup).toHaveBeenCalledOnce();
-			if (identity === null) {
-				expectFailure(result, "coordinator_upgrade_required");
-				expect(calls).toEqual(["devices", "POST"]);
-			} else {
-				expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
-				expect(calls).toEqual(["devices", "POST", "invites", "reconcile"]);
-			}
+			expect(result).toMatchObject({ groupsProcessed: 1, failedGroups: 0 });
+			expect(calls).toEqual(["devices", "POST", "invites", "reconcile"]);
 		},
 	);
 
