@@ -13,7 +13,11 @@ afterEach(() => {
 });
 
 /** The first release's table, which forbade target = current. */
-const FIRST_RELEASE_SQL = COORDINATOR_DEVICE_REBIND_SCHEMA_SQL.replace(
+const BEFORE_START_AUTHORITY_SQL = COORDINATOR_DEVICE_REBIND_SCHEMA_SQL.replace(
+	/\n start_authority_json TEXT[^\n]+,/,
+	"",
+).replace(/\n OR NEW.start_authority_json IS NOT OLD.start_authority_json/, "");
+const FIRST_RELEASE_SQL = BEFORE_START_AUTHORITY_SQL.replace(
 	" PRIMARY KEY (coordinator_id, attempt_id),\n",
 	" PRIMARY KEY (coordinator_id, attempt_id),\n CHECK (target_identity_id IS NULL OR target_identity_id <> current_identity_id),\n",
 );
@@ -116,6 +120,31 @@ describe("rebind attempts table upgrade for self-binds", () => {
 				.pluck()
 				.get(),
 		).toBe(4);
+		await store.close();
+	});
+});
+
+describe("additive rebind start authority upgrade", () => {
+	it("keeps old attempts NULL and refuses later promotion of their birth authority", async () => {
+		// Arrange
+		const directory = mkdtempSync(join(tmpdir(), "rebind-authority-upgrade-"));
+		directories.push(directory);
+		const path = join(directory, "coordinator.sqlite");
+		const old = new Database(path);
+		old.exec(BEFORE_START_AUTHORITY_SQL);
+		pendingInsert(old, "ordinary");
+		old.close();
+		// Act
+		const store = new BetterSqliteCoordinatorStore(path);
+		// Assert
+		expect(
+			store.db
+				.prepare("SELECT attempt_id,start_authority_json FROM coordinator_device_rebind_attempts")
+				.all(),
+		).toEqual([{ attempt_id: "ordinary", start_authority_json: null }]);
+		expect(() =>
+			store.db.exec("UPDATE coordinator_device_rebind_attempts SET start_authority_json='{}'"),
+		).toThrow(/immutable/);
 		await store.close();
 	});
 });

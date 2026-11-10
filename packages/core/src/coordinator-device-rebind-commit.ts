@@ -9,6 +9,7 @@ import {
 	type DeviceRebindAttempt,
 	verifyDeviceRebindCompletion,
 } from "./coordinator-device-rebind-proof.js";
+import { prepareDeviceSelfBindAuthority } from "./coordinator-device-self-bind-authority.js";
 import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
@@ -161,12 +162,14 @@ function guards(
 		// Accounts are never merged: switching needs a current Identity with no
 		// active link. A self-bind (target = current) keeps the Identity, so its
 		// link is the target link checked above, and the device must still have
-		// no proof of its own.
+		// no proof of its own unless the start pinned the exceptional controller review.
 		{
-			sql: `((a.target_identity_id = a.current_identity_id AND ${NO_OWN_PROOF_SQL})
+			sql: `((a.start_authority_json IS NOT NULL AND a.target_identity_id=a.current_identity_id
+ AND a.start_authority_json IS (SELECT snapshot FROM current_self_bind_authority))
+ OR (a.start_authority_json IS NULL AND ((a.target_identity_id = a.current_identity_id AND ${NO_OWN_PROOF_SQL})
  OR (a.target_identity_id <> a.current_identity_id AND NOT EXISTS (SELECT 1
  FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
- AND l.identity_id = a.current_identity_id AND l.revoked_at_ms IS NULL)))`,
+ AND l.identity_id = a.current_identity_id AND l.revoked_at_ms IS NULL)))))`,
 			values: [],
 		},
 		// Bindings are immutable, so a device is bound at most once.
@@ -249,21 +252,52 @@ async function guardStatement(
 	backend: AuthLinkBackend,
 	a: DeviceRebindAttempt,
 	checks: Guard[],
+	now: number,
 ): Promise<AuthLinkStatement> {
 	const all = [...checks];
+	let authority: AuthLinkStatement = { sql: "SELECT NULL AS snapshot", values: [] };
+	if (a.start_authority_json) {
+		const pin = JSON.parse(a.start_authority_json) as { groupId: string };
+		authority =
+			(await prepareDeviceSelfBindAuthority(
+				backend,
+				{
+					signer: {
+						groupId: pin.groupId,
+						deviceId: a.device_id,
+						publicKey: a.public_key,
+						fingerprint: a.fingerprint,
+					},
+					currentIdentityId: a.current_identity_id,
+					attemptId: a.attempt_id,
+				},
+				{
+					coordinatorId: a.coordinator_id,
+					issuer: a.issuer,
+					revision: a.auth_config_revision,
+					enabled: true,
+				},
+				now,
+			)) ?? authority;
+	}
 	if (await hasTable(backend, "coordinator_legacy_owner_resolutions"))
 		all.push(NO_OTHER_LEGACY_OWNER);
 	// Checked here as well as at verification, so a headless link written in between still refuses.
 	if (await hasTable(backend, HEADLESS_LINK_PROVENANCE_TABLE))
 		all.push({ sql: NO_HEADLESS_TARGET_LINK_SQL, values: [] });
 	return {
-		sql: `WITH rebind_guards AS MATERIALIZED (SELECT ${all
+		sql: `WITH current_self_bind_authority AS MATERIALIZED (${authority.sql}), rebind_guards AS MATERIALIZED (SELECT ${all
 			.map((guard, index) => `(${guard.sql}) AS g${index}`)
 			.join(",\n ")}
  FROM ${ATTEMPT} a WHERE a.coordinator_id = ? AND a.attempt_id = ?),
  rebind_ok AS MATERIALIZED (SELECT ${all.map((_, index) => `g${index}`).join(" AND ")} AS ok
  FROM rebind_guards)`,
-		values: [...all.flatMap((guard) => guard.values), a.coordinator_id, a.attempt_id],
+		values: [
+			...authority.values,
+			...all.flatMap((guard) => guard.values),
+			a.coordinator_id,
+			a.attempt_id,
+		],
 	};
 }
 
@@ -280,7 +314,13 @@ function assertWrite(winner: readonly string[], expected: number): AuthLinkState
 function statements(
 	a: DeviceRebindAttempt,
 	guard: AuthLinkStatement,
-	fields: { now: number; bindingId: string; eventId: string; keyProofHash: string },
+	fields: {
+		now: number;
+		bindingId: string;
+		eventId: string;
+		keyProofHash: string;
+		nullCount: number;
+	},
 ): AuthLinkStatement[] {
 	const { now, bindingId, eventId, keyProofHash } = fields;
 	const winner = [a.coordinator_id, a.attempt_id, bindingId];
@@ -314,10 +354,10 @@ function statements(
 		assertWrite(winner, 1),
 		{
 			sql: `UPDATE enrolled_devices SET identity_id = ?
- WHERE device_id = ? AND EXISTS (SELECT 1 FROM ${ATTEMPT} WHERE ${WINNER})`,
+ WHERE device_id = ? ${a.start_authority_json ? "AND identity_id IS NULL" : ""} AND EXISTS (SELECT 1 FROM ${ATTEMPT} WHERE ${WINNER})`,
 			values: [a.target_identity_id, a.device_id, ...winner],
 		},
-		assertWrite(winner, count),
+		assertWrite(winner, a.start_authority_json ? fields.nullCount : count),
 		{
 			sql: `INSERT INTO coordinator_device_rebind_audit_log
  (coordinator_id, event_id, attempt_id, action, binding_id, device_id, previous_identity_id,
@@ -409,7 +449,7 @@ export async function commitDeviceRebind(
 	if (!proof) return { kind: "refused" };
 	const scan = await keyAliasScan(backend, row);
 	if (!scan) return { kind: "refused" };
-	const guard = await guardStatement(backend, row, guards(row, now, revision, scan));
+	const guard = await guardStatement(backend, row, guards(row, now, revision, scan), now);
 	const bindingId = globalThis.crypto.randomUUID();
 	await backend.batch(
 		statements(row, guard, {
@@ -417,6 +457,9 @@ export async function commitDeviceRebind(
 			bindingId,
 			eventId: globalThis.crypto.randomUUID(),
 			keyProofHash: proof.keyProofHash,
+			nullCount: (JSON.parse(scan.enrollments) as KeyRow[]).filter(
+				(e) => e.deviceId === row.device_id && e.identityId === null,
+			).length,
 		}),
 	);
 	const receipt = await readDeviceRebindReceipt(backend, row.coordinator_id, row.attempt_id);

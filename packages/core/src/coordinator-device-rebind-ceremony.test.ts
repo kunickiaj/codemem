@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
@@ -11,6 +11,7 @@ import {
 } from "./coordinator-device-rebind-ceremony.js";
 import { deviceRebindFinalMessage } from "./coordinator-device-rebind-proof.js";
 import { insertOwnDeviceClaim } from "./coordinator-device-rebind-test-fixtures.js";
+import * as selfBindAuthority from "./coordinator-device-self-bind-authority.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
 	browserForm,
@@ -28,6 +29,7 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const closers: Array<() => unknown> = [];
 afterEach(async () => {
 	for (const close of closers.splice(0)) await close();
+	vi.restoreAllMocks();
 });
 
 /** A migrated device in two groups whose person's Google account is linked to TARGET. */
@@ -182,6 +184,7 @@ function registerCeremony(kind: Backend) {
 	it("rebinds the device after start, Google sign-in, confirmation and the device's signature", async () => {
 		// Arrange
 		const f = await rebindCeremonyFixture(kind);
+		const prepare = vi.spyOn(selfBindAuthority, "prepareDeviceSelfBindAuthority");
 		const { confirmation, completionSecret } = await throughConfirm(f);
 		// Act
 		const finalized = await f.ceremony.finalize(finalizeInput(f, completionSecret));
@@ -200,6 +203,7 @@ function registerCeremony(kind: Backend) {
 			state: "finalized",
 			receipt: { targetIdentityId: TARGET },
 		});
+		expect(prepare).not.toHaveBeenCalled();
 	});
 
 	it("writes nothing when the browser confirms a different commitment", async () => {

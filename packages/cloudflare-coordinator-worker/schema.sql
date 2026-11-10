@@ -900,6 +900,7 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rebind_attempts (
  binding_id TEXT UNIQUE,
  audit_event_id TEXT UNIQUE,
  final_outcome_json TEXT CHECK (final_outcome_json IS NULL OR json_valid(final_outcome_json)),
+ start_authority_json TEXT CHECK (start_authority_json IS NULL OR json_valid(start_authority_json)),
  PRIMARY KEY (coordinator_id, attempt_id),
  CHECK (state NOT IN ('confirmed', 'finalized') OR (account_subject IS NOT NULL
   AND target_identity_id IS NOT NULL AND link_id IS NOT NULL AND link_authority_kind IS NOT NULL
@@ -938,6 +939,7 @@ WHEN OLD.state IN ('finalized', 'expired', 'failed') OR NEW.rowid IS NOT OLD.row
  OR NEW.fingerprint IS NOT OLD.fingerprint OR NEW.current_identity_id IS NOT OLD.current_identity_id
  OR NEW.issuer IS NOT OLD.issuer OR NEW.auth_config_revision IS NOT OLD.auth_config_revision
  OR NEW.browser_start_hash IS NOT OLD.browser_start_hash
+ OR NEW.start_authority_json IS NOT OLD.start_authority_json
  OR NEW.created_at_ms IS NOT OLD.created_at_ms OR NEW.expires_at_ms IS NOT OLD.expires_at_ms
  OR (OLD.browser_transaction_hash IS NOT NULL AND NEW.browser_transaction_hash IS NOT OLD.browser_transaction_hash)
  OR (OLD.browser_binder_hash IS NOT NULL AND NEW.browser_binder_hash IS NOT OLD.browser_binder_hash)
