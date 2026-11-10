@@ -7,6 +7,8 @@ export interface DeviceEnrollmentIssuesProps {
 }
 
 interface EnrollmentIssue {
+	coordinator_id?: string;
+	group_id?: string;
 	kind: "device" | "team_membership";
 	reference_id: string;
 	code: string;
@@ -85,6 +87,8 @@ function readEnrollmentIssues(payload: unknown): EnrollmentIssueSummary {
 		issues: summary.issues
 			.filter((issue) => issue.status === "open")
 			.map((issue) => ({
+				coordinator_id: typeof issue.coordinator_id === "string" ? issue.coordinator_id : undefined,
+				group_id: typeof issue.group_id === "string" ? issue.group_id : undefined,
 				kind: issue.kind,
 				reference_id: issue.reference_id,
 				code: issue.code,
@@ -124,8 +128,16 @@ function EnrollmentIssueList({
 				</p>
 			)}
 			<ul class="small">
-				{summary.issues.map((issue, index) => (
-					<li key={`${issue.kind}:${issue.reference_id}:${issue.code}:${index}`}>
+				{summary.issues.map((issue) => (
+					<li
+						key={JSON.stringify([
+							issue.coordinator_id,
+							issue.group_id,
+							issue.kind,
+							issue.reference_id,
+							issue.code,
+						])}
+					>
 						<strong>{issueLabel(issue, inventory)}</strong>
 						<p>{ISSUE_REASONS.get(issue.code) ?? "Enrollment issue"}</p>
 						<p>
@@ -143,6 +155,22 @@ function EnrollmentIssueList({
 								<dd>
 									<code>{issue.reference_id}</code>
 								</dd>
+								{issue.coordinator_id !== undefined && (
+									<>
+										<dt>Coordinator ID</dt>
+										<dd>
+											<code>{issue.coordinator_id}</code>
+										</dd>
+									</>
+								)}
+								{issue.group_id !== undefined && (
+									<>
+										<dt>Group ID</dt>
+										<dd>
+											<code>{issue.group_id}</code>
+										</dd>
+									</>
+								)}
 							</dl>
 						</details>
 					</li>
