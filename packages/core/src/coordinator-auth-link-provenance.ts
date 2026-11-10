@@ -23,11 +23,13 @@ export function authDeviceClaimProvenanceSql(options: {
 		options.canonicalKeyId,
 	);
 }
+// These proofs use FROM subqueries, never WITH. A FROM subquery keeps the proof out of
+// the outer expression tree, which D1 limits to depth 100. SQLite 3.54.0 and 3.54.1
+// (production D1) refuse a statement that resolves a WITH name after about 100 table
+// references, and these proofs are embedded late in large statements.
 function genesisClaimProvenance(link: string, births: string, canonicalKeyId?: "?"): string {
-	// Keep provenance independent of the outer session/browser expression tree.
-	// Native D1 limits expression depth to 100, including correlated subqueries.
 	const l = "pl";
-	return `EXISTS (WITH committed_claim AS MATERIALIZED (
+	return `EXISTS (SELECT 1 FROM (
  SELECT ct.coordinator_id, ct.link_id, cd.key_id FROM coordinator_auth_link_attempts ct
  JOIN ${births} pl ON pl.coordinator_id = ct.coordinator_id AND pl.link_id = ct.link_id
  JOIN coordinator_auth_device_claims cd ON cd.coordinator_id = ct.coordinator_id AND cd.claim_id = ${l}.device_claim_id
@@ -48,18 +50,20 @@ function genesisClaimProvenance(link: string, births: string, canonicalKeyId?: "
  AND cd.issuer = ct.issuer AND cd.auth_config_revision = ct.auth_config_revision AND cd.created_at_ms = ct.finalized_at_ms
  AND ca.authority_kind = 'device_claim' AND ca.controller_attestation_id IS NULL AND ca.device_claim_id IS ${l}.device_claim_id
  AND ca.attempt_id = ct.attempt_id AND ca.identity_id = ct.identity_id AND ca.group_id = ct.group_id AND ca.device_id = ct.device_id
- AND ca.fingerprint = ct.fingerprint AND ca.auth_config_revision = ct.auth_config_revision AND ca.created_at_ms = ct.finalized_at_ms)
- SELECT 1 FROM committed_claim cp WHERE cp.coordinator_id = ${link}.coordinator_id AND cp.link_id = ${link}.link_id
+ AND ca.fingerprint = ct.fingerprint AND ca.auth_config_revision = ct.auth_config_revision AND ca.created_at_ms = ct.finalized_at_ms) cp
+ WHERE cp.coordinator_id = ${link}.coordinator_id AND cp.link_id = ${link}.link_id
  ${canonicalKeyId ? `AND cp.key_id = ${canonicalKeyId}` : ""})`;
 }
 
 /** One immutable claim resolves its genesis directly; no recursive lineage walk. */
 export function authClaimGenesisSql(claim: "d" | "cd"): string {
-	return `EXISTS (WITH connection_births AS MATERIALIZED (${rootBirths(`${claim}.coordinator_id`, `${claim}.claim_id`)}) SELECT 1 FROM connection_births gl WHERE gl.coordinator_id = ${claim}.coordinator_id AND gl.link_id = ${claim}.claim_id AND ${genesisClaimProvenance("gl", "connection_births")})`;
+	const births = `(${rootBirths(`${claim}.coordinator_id`, `${claim}.claim_id`)})`;
+	return `EXISTS (SELECT 1 FROM ${births} gl WHERE gl.coordinator_id = ${claim}.coordinator_id AND gl.link_id = ${claim}.claim_id AND ${genesisClaimProvenance("gl", births)})`;
 }
 function connectionClaimProvenance(options: { link: "l" | "cl"; canonicalKeyId?: "?" }): string {
 	const l = options.link;
-	return `EXISTS (WITH connection_births AS MATERIALIZED (${rootBirths(`${l}.coordinator_id`, `${l}.device_claim_id`)}), continuation AS MATERIALIZED (
+	const births = `(${rootBirths(`${l}.coordinator_id`, `${l}.device_claim_id`)})`;
+	return `EXISTS (SELECT 1 FROM (
  SELECT t.coordinator_id,t.link_id,d.key_id FROM coordinator_auth_link_attempts t
  JOIN coordinator_auth_link_audit_log a ON a.coordinator_id = t.coordinator_id AND a.link_id = t.link_id AND a.action = 'link_created'
  JOIN coordinator_auth_device_claims d ON d.coordinator_id = t.coordinator_id AND d.claim_id = ${l}.device_claim_id
@@ -70,13 +74,13 @@ function connectionClaimProvenance(options: { link: "l" | "cl"; canonicalKeyId?:
  AND (d.identity_id = t.identity_id AND d.issuer = t.issuer AND d.group_id = t.group_id AND d.device_id = t.device_id AND d.public_key = t.public_key AND d.fingerprint = t.fingerprint)
  AND (a.attempt_id = t.attempt_id AND a.identity_id = t.identity_id AND a.group_id = t.group_id AND a.device_id = t.device_id AND a.fingerprint = t.fingerprint AND a.auth_config_revision = t.auth_config_revision AND a.created_at_ms = t.finalized_at_ms AND a.authority_kind = 'device_claim' AND a.controller_attestation_id IS NULL AND a.device_claim_id = d.claim_id)
  AND ((t.prior_link_id IS NULL AND t.link_id = d.claim_id) OR EXISTS (SELECT 1 FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id = t.coordinator_id AND h.link_id = t.prior_link_id AND h.identity_id = t.identity_id AND h.successor_link_id = t.link_id))
- AND EXISTS (SELECT 1 FROM connection_births gl WHERE gl.coordinator_id = d.coordinator_id AND gl.link_id = d.claim_id AND ${genesisClaimProvenance("gl", "connection_births")}))
- SELECT 1 FROM continuation cp ${options.canonicalKeyId ? "WHERE cp.key_id = ?" : ""})`;
+ AND EXISTS (SELECT 1 FROM ${births} gl WHERE gl.coordinator_id = d.coordinator_id AND gl.link_id = d.claim_id AND ${genesisClaimProvenance("gl", births)})) cp
+ ${options.canonicalKeyId ? "WHERE cp.key_id = ?" : ""})`;
 }
 
 /** Account management only; privileged enrollment/grant proofs remain attested-only. */
 function controllerBirthProvenance(link: "l"): string {
-	return `EXISTS (WITH controller_receipt AS MATERIALIZED (SELECT t.coordinator_id,t.link_id FROM coordinator_auth_link_attempts t
+	return `EXISTS (SELECT 1 FROM (SELECT t.coordinator_id,t.link_id FROM coordinator_auth_link_attempts t
  JOIN coordinator_auth_controller_attestations origin ON origin.coordinator_id=t.coordinator_id AND origin.attestation_id=t.controller_attestation_id
  JOIN coordinator_auth_link_audit_log a ON a.coordinator_id=t.coordinator_id AND a.link_id=t.link_id AND a.action='link_created'
  WHERE (t.coordinator_id=${link}.coordinator_id AND t.link_id=${link}.link_id AND t.attempt_id=${link}.attempt_id AND t.authority_kind='controller_attestation' AND t.controller_attestation_id=${link}.controller_attestation_id)
@@ -84,7 +88,7 @@ function controllerBirthProvenance(link: "l"): string {
  AND (t.browser_transaction_hash IS NOT NULL AND t.runtime_verifier_hash IS NOT NULL AND t.completion_secret_hash IS NOT NULL AND t.created_at_ms<=t.claimed_at_ms AND t.claimed_at_ms<=t.oidc_verified_at_ms AND t.oidc_verified_at_ms<=t.confirmed_at_ms AND t.confirmed_at_ms<=t.finalized_at_ms AND t.finalized_at_ms<t.expires_at_ms)
  AND (origin.identity_id=t.identity_id AND origin.group_id=t.group_id AND origin.device_id=t.device_id AND origin.public_key=t.public_key AND origin.fingerprint=t.fingerprint AND origin.review_receipt_id=t.controller_review_receipt_id AND origin.revision=t.controller_revision)
  AND (t.prior_link_id IS NULL OR EXISTS (SELECT 1 FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id=t.coordinator_id AND h.identity_id=t.identity_id AND h.link_id=t.prior_link_id AND h.successor_link_id=t.link_id))
- AND (a.attempt_id=t.attempt_id AND a.identity_id=t.identity_id AND a.group_id=t.group_id AND a.device_id=t.device_id AND a.fingerprint=t.fingerprint AND a.controller_attestation_id=t.controller_attestation_id AND a.authority_kind=t.authority_kind AND a.device_claim_id IS NULL AND a.auth_config_revision=t.auth_config_revision AND a.created_at_ms=t.finalized_at_ms)) SELECT 1 FROM controller_receipt)`;
+ AND (a.attempt_id=t.attempt_id AND a.identity_id=t.identity_id AND a.group_id=t.group_id AND a.device_id=t.device_id AND a.fingerprint=t.fingerprint AND a.controller_attestation_id=t.controller_attestation_id AND a.authority_kind=t.authority_kind AND a.device_claim_id IS NULL AND a.auth_config_revision=t.auth_config_revision AND a.created_at_ms=t.finalized_at_ms)) cr)`;
 }
 export function authAccountLinkProvenanceSql(
 	link: "l",
