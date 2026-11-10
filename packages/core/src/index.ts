@@ -181,6 +181,14 @@ export {
 	coordinatorRevokeDeviceAction,
 } from "./coordinator-device-revocation-client.js";
 export type {
+	CoordinatorDeviceSetupOptions,
+	CoordinatorDeviceSetupOutcome,
+} from "./coordinator-device-setup-client.js";
+export {
+	completeCoordinatorDeviceSetup,
+	readCoordinatorDeviceSetup,
+} from "./coordinator-device-setup-client.js";
+export type {
 	CoordinatorEnrollmentReconcileIssue,
 	CoordinatorEnrollmentReconcileResult,
 } from "./coordinator-enrollment-reconciler.js";
