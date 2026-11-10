@@ -47,7 +47,8 @@ it("bounds serial dial attempts for legacy bloated address caches", async () => 
 			"local-device-id",
 			"ed25519 AAAA",
 		]);
-		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		// Keep dial-limit coverage independent of signing keys in the user's home directory.
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
 		const request = vi
 			.spyOn(syncHttpClient, "requestJson")
 			.mockRejectedValue(new Error("network is unreachable"));
@@ -60,6 +61,9 @@ it("bounds serial dial attempts for legacy bloated address caches", async () => 
 
 		expect(result.ok).toBe(false);
 		expect(result.addressErrors).toHaveLength(MAX_PEER_ADDRESSES);
+		expect(result.addressErrors.every(({ error }) => error === "network is unreachable")).toBe(
+			true,
+		);
 		expect(request).toHaveBeenCalledTimes(MAX_PEER_ADDRESSES);
 	} finally {
 		db.close();

@@ -59,6 +59,8 @@ let directory: string;
 let dbPath: string;
 let store: MemoryStore;
 beforeEach(() => {
+	// Delegated brief extraction does not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	directory = mkdtempSync(join(tmpdir(), "codemem-brief-"));
 	dbPath = join(directory, "test.sqlite");
 	store = new MemoryStore(dbPath);
@@ -66,6 +68,7 @@ beforeEach(() => {
 afterEach(() => {
 	if (store.db.open) store.close();
 	rmSync(directory, { recursive: true, force: true });
+	vi.unstubAllEnvs();
 });
 
 describe("delegated brief raw-event contract", () => {

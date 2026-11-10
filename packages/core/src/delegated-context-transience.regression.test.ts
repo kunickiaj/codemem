@@ -1,10 +1,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DELEGATED_BRIEF_LABEL } from "./capture-context.js";
 import { type IngestOptions, ingest } from "./ingest-pipeline.js";
 import { MemoryStore } from "./store.js";
+
+beforeEach(() => {
+	// Context lifetime does not exercise embeddings or model downloads.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 describe("delegated observer context lifetime", () => {
 	it("passes prior briefs to the observer without persisting them in session metadata", async () => {

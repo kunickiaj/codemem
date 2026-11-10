@@ -17,7 +17,7 @@
 
 - Install: `pnpm install`
 - Full local gate: `pnpm run tsc && pnpm run lint && pnpm run test` (`pnpm run check`)
-- CI test scheduling: `pnpm run test:ci` runs the workspace suite in parallel except `coordinator-legacy-completion-owner-proof.test.ts` and the Worker package's own source tests, then runs that entire file with one worker. The Cloudflare Worker job runs those Worker source tests through `test:node`, so each runs once in CI. Assertions and test deadlines are unchanged.
+- CI test scheduling: `pnpm run test:ci` runs `test:ci:parallel` followed by `test:ci:isolated`. The parallel phase excludes `coordinator-legacy-completion-owner-proof.test.ts` and the Worker package's own source tests. The isolated phase runs that entire proof file with one worker. Full CI runs split only the parallel phase across two native Vitest shards on separate runners, while the common job runs auxiliary checks and the isolated proof once. Normal PRs keep affected-test selection on one runner. The Cloudflare Worker job runs Worker source tests through `test:node`, so each runs once in CI. Assertions and test deadlines are unchanged.
 - Build everything: `pnpm run build`
 - Run CLI from source: `pnpm run codemem --help`
 - Run one vitest file: `pnpm exec vitest run packages/cli/src/commands/serve.test.ts`

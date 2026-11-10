@@ -37,8 +37,8 @@ jobs:
       - name: TypeScript project reference check
         run: pnpm run tsc
 
-  ts-test:
-    name: TypeScript Test
+  ts-test-common:
+    name: TypeScript Test Common
     runs-on: ubuntu-latest
 
     steps:
@@ -68,10 +68,74 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Test
+      - name: Affected PR tests
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci:full')
         env:
           CI_TEST_BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
         run: node scripts/ci-changed-tests.mjs test:release test:adapter-normalizers test:ci-workflow test:semantic-installed test:ci
+
+      - name: Full auxiliary tests and isolated owner proof
+        if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+        run: pnpm run test:release && pnpm run test:adapter-normalizers && pnpm run test:ci-workflow && pnpm run test:semantic-installed && pnpm run test:ci:isolated
+
+  ts-test-shards:
+    name: TypeScript Test Shard ${{ matrix.shard }}/2
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The automatic-recall baseline test archives a pinned historical main commit.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Copy viewer static assets
+        run: |
+          mkdir -p packages/viewer-server/static
+          cp packages/ui/static/index.html packages/ui/static/favicon.svg packages/viewer-server/static/
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Test shard
+        run: pnpm run test:ci:parallel --shard=${{ matrix.shard }}/2
+
+  ts-test:
+    name: TypeScript Test
+    needs: [ts-test-common, ts-test-shards]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require expected test jobs
+        env:
+          FULL_RUN: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          COMMON_RESULT: ${{ needs.ts-test-common.result }}
+          SHARDS_RESULT: ${{ needs.ts-test-shards.result }}
+        run: |
+          node --input-type=module <<'NODE'
+          const { FULL_RUN, COMMON_RESULT, SHARDS_RESULT } = process.env;
+          const expectedShards = FULL_RUN === 'true' ? 'success' : 'skipped';
+          if (!['true', 'false'].includes(FULL_RUN) || COMMON_RESULT !== 'success' || SHARDS_RESULT !== expectedShards) {
+            console.error(`TypeScript Test failed: common=${COMMON_RESULT || 'missing'}, shards=${SHARDS_RESULT || 'missing'}, full=${FULL_RUN || 'missing'}. Expected common=success and shards=${expectedShards}.`);
+            process.exitCode = 1;
+          }
+          NODE
 
   account-browser:
     name: Account Browser Acceptance
