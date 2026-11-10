@@ -152,7 +152,7 @@ function decodeStatusState(
 }
 
 /** Race even injected transports/streams that do not implement AbortSignal themselves. */
-async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+export async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
 	let onAbort = () => {};
 	try {
 		const aborted = new Promise<never>((_, reject) => {
@@ -165,10 +165,10 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise
 		signal.removeEventListener("abort", onAbort);
 	}
 }
-function discard(response: Response): void {
+export function discard(response: Response): void {
 	void response.body?.cancel().catch(() => {});
 }
-async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
+export async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
 	if (!response.body) throw new Error("Invalid status.");
 	const reader = response.body.getReader();
 	const chunks: Uint8Array[] = [];
