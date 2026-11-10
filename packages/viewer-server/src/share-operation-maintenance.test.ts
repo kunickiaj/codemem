@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -6,8 +6,9 @@ import {
 	ensureDeviceIdentity,
 	fingerprintPublicKey,
 	initTestSchema,
-	type MemoryStore,
+	MemoryStore,
 	type RecipientPolicyReconcilerEffects,
+	readAccountLinkDevice,
 	reconcileRecipientPolicyProject,
 } from "@codemem/core";
 import Database from "better-sqlite3";
@@ -23,7 +24,72 @@ import {
 	reconcileConfiguredCoordinatorEnrollment,
 } from "./routes/sync.js";
 
+function createEnrollmentProfile() {
+	const directory = mkdtempSync(join(tmpdir(), "codemem-enrollment-maintenance-"));
+	vi.stubEnv("CODEMEM_KEYS_DIR", join(directory, "keys"));
+	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+	vi.stubEnv("CODEMEM_CONFIG", join(directory, "config.json"));
+	vi.stubEnv("CODEMEM_ACTOR_ID", "actor-local");
+	vi.stubEnv("CODEMEM_DEVICE_ID", "device-local");
+	writeFileSync(join(directory, "config.json"), JSON.stringify({ actor_id: "actor-local" }));
+	const dbPath = join(directory, "memory.sqlite");
+	const db = new Database(dbPath);
+	initTestSchema(db);
+	ensureDeviceIdentity(db, { keysDir: join(directory, "keys") });
+	db.prepare("UPDATE sync_device SET device_id = 'device-local'").run();
+	db.prepare(`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		VALUES ('actor-local', 'Local owner', 1, 'active', ?, ?)`).run(
+		"2026-07-29T00:00:00.000Z",
+		"2026-07-29T00:00:00.000Z",
+	);
+	const enrollmentStore: MemoryStore = Object.assign(Object.create(MemoryStore.prototype), {
+		db,
+		dbPath,
+		deviceId: "device-local",
+		actorId: "actor-local",
+	});
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(() => {
+			throw new Error("Unexpected network request");
+		}),
+	);
+	return { directory, enrollmentStore };
+}
+
+function enrollmentProfileFixture() {
+	let enrollmentStore: MemoryStore;
+	let directory: string;
+	beforeEach(() => {
+		({ directory, enrollmentStore } = createEnrollmentProfile());
+	});
+
+	afterEach(() => {
+		if (enrollmentStore.db.open) enrollmentStore.db.close();
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+		rmSync(directory, { recursive: true, force: true });
+	});
+	return () => enrollmentStore;
+}
+
+function configuredOwnEnrollment(store: MemoryStore, groupId: string) {
+	const device = readAccountLinkDevice(store.dbPath);
+	return {
+		group_id: groupId,
+		device_id: device.deviceId,
+		public_key: device.publicKey,
+		fingerprint: device.fingerprint,
+		identity_id: store.actorId,
+		ownership_identity_id: store.actorId,
+		enabled: 1,
+		display_name: "Local owner",
+		created_at: "2026-07-29T00:00:00.000Z",
+	};
+}
+
 describe("reconcileConfiguredCoordinatorEnrollment", () => {
+	const getEnrollmentStore = enrollmentProfileFixture();
 	it("skips recipient devices without coordinator admin configuration", async () => {
 		const result = await reconcileConfiguredCoordinatorEnrollment({ db: {} } as MemoryStore, {
 			config: {
@@ -37,34 +103,31 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 
 	it("reads and reconciles each configured group", async () => {
 		const calls: string[] = [];
-		const result = await reconcileConfiguredCoordinatorEnrollment(
-			{ db: {}, deviceId: "device-local" } as MemoryStore,
-			{
-				config: {
-					syncCoordinatorUrl: "https://coord.example.test",
-					syncCoordinatorAdminSecret: "secret",
-					syncCoordinatorGroups: ["group-a", "group-b"],
-				} as never,
-				listDevices: async ({ groupId }) => {
-					calls.push(`devices:${groupId}`);
-					return [];
-				},
-				listConsumedTeamInvites: async ({ groupId }) => {
-					calls.push(`invites:${groupId}`);
-					return [];
-				},
-				reconcileSnapshot: (input) => {
-					calls.push(`reconcile:${input.coordinatorId}:${input.groupId}:${input.localDeviceId}`);
-					return {
-						devicesAdded: 1,
-						membershipsAdded: 2,
-						identitiesAdded: 1,
-						unchanged: 3,
-						issues: [],
-					};
-				},
+		const result = await reconcileConfiguredCoordinatorEnrollment(getEnrollmentStore(), {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a", "group-b"],
+			} as never,
+			listDevices: async ({ groupId }) => {
+				calls.push(`devices:${groupId}`);
+				return [configuredOwnEnrollment(getEnrollmentStore(), groupId)];
 			},
-		);
+			listConsumedTeamInvites: async ({ groupId }) => {
+				calls.push(`invites:${groupId}`);
+				return [];
+			},
+			reconcileSnapshot: (input) => {
+				calls.push(`reconcile:${input.coordinatorId}:${input.groupId}:${input.localDeviceId}`);
+				return {
+					devicesAdded: 1,
+					membershipsAdded: 2,
+					identitiesAdded: 1,
+					unchanged: 3,
+					issues: [],
+				};
+			},
+		});
 
 		expect(calls).toEqual([
 			"devices:group-a",
@@ -86,53 +149,56 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 			issues: 0,
 		});
 	});
+});
 
-	it("reports sanitized failures for each coordinator fetch stage", async () => {
-		const result = await reconcileConfiguredCoordinatorEnrollment(
-			{ db: {}, deviceId: "device-local" } as MemoryStore,
-			{
+describe("coordinator enrollment maintenance failures", () => {
+	const getEnrollmentStore = enrollmentProfileFixture();
+	it.each(["list_devices", "list_consumed_team_invites"] as const)(
+		"reports sanitized failures for %s",
+		async (stage) => {
+			// Arrange: initial device failure stops before the consumed-invite request.
+			const listConsumedTeamInvites = vi.fn(async () => {
+				throw new Error("coordinator_consumed_team_invite_invalid");
+			});
+			// Act
+			const result = await reconcileConfiguredCoordinatorEnrollment(getEnrollmentStore(), {
 				config: {
 					syncCoordinatorUrl: "https://coord.example.test",
 					syncCoordinatorAdminSecret: "secret",
 					syncCoordinatorGroups: ["group-a"],
 				} as never,
 				listDevices: async () => {
-					throw new Error("Remote coordinator request failed (404): token=do-not-log");
+					if (stage === "list_devices")
+						throw new Error("Remote coordinator request failed (404): token=do-not-log");
+					return [configuredOwnEnrollment(getEnrollmentStore(), "group-a")];
 				},
-				listConsumedTeamInvites: async () => {
-					throw new Error("coordinator_consumed_team_invite_invalid");
-				},
-			},
-		);
-
-		expect(result).toMatchObject({ groupsProcessed: 0, failedGroups: 1 });
-		expect(result.failures).toEqual([
-			{ groupId: "group-a", stage: "list_devices", code: "http_404" },
-			{
-				groupId: "group-a",
-				stage: "list_consumed_team_invites",
-				code: "coordinator_consumed_team_invite_invalid",
-			},
-		]);
-		expect(JSON.stringify(result.failures)).not.toContain("do-not-log");
-	});
+				listConsumedTeamInvites,
+			});
+			// Assert
+			expect(result).toMatchObject({ groupsProcessed: 0, failedGroups: 1 });
+			let code = "coordinator_consumed_team_invite_invalid";
+			if (stage === "list_devices") {
+				code = "http_404";
+				expect(listConsumedTeamInvites).not.toHaveBeenCalled();
+			} else expect(listConsumedTeamInvites).toHaveBeenCalledOnce();
+			expect(result.failures).toEqual([{ groupId: "group-a", stage, code }]);
+			expect(JSON.stringify(result.failures)).not.toContain("do-not-log");
+		},
+	);
 
 	it("reports a sanitized local snapshot reconciliation failure", async () => {
-		const result = await reconcileConfiguredCoordinatorEnrollment(
-			{ db: {}, deviceId: "device-local" } as MemoryStore,
-			{
-				config: {
-					syncCoordinatorUrl: "https://coord.example.test",
-					syncCoordinatorAdminSecret: "secret",
-					syncCoordinatorGroups: ["group-a"],
-				} as never,
-				listDevices: async () => [],
-				listConsumedTeamInvites: async () => [],
-				reconcileSnapshot: () => {
-					throw new Error("database is locked at /private/path");
-				},
+		const result = await reconcileConfiguredCoordinatorEnrollment(getEnrollmentStore(), {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: ["group-a"],
+			} as never,
+			listDevices: async () => [configuredOwnEnrollment(getEnrollmentStore(), "group-a")],
+			listConsumedTeamInvites: async () => [],
+			reconcileSnapshot: () => {
+				throw new Error("database is locked at /private/path");
 			},
-		);
+		});
 
 		expect(result.failures).toEqual([
 			{ groupId: "group-a", stage: "reconcile_snapshot", code: "unexpected_error" },
@@ -141,20 +207,17 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 
 	it("hashes unsafe group ids and never echoes arbitrary rejection text", async () => {
 		const unsafeGroupId = "group a/../private";
-		const result = await reconcileConfiguredCoordinatorEnrollment(
-			{ db: {}, deviceId: "device-local" } as MemoryStore,
-			{
-				config: {
-					syncCoordinatorUrl: "https://coord.example.test",
-					syncCoordinatorAdminSecret: "secret",
-					syncCoordinatorGroups: [unsafeGroupId],
-				} as never,
-				listDevices: async () => {
-					throw "https://private.example.test/path?token=secret";
-				},
-				listConsumedTeamInvites: async () => [],
+		const result = await reconcileConfiguredCoordinatorEnrollment(getEnrollmentStore(), {
+			config: {
+				syncCoordinatorUrl: "https://coord.example.test",
+				syncCoordinatorAdminSecret: "secret",
+				syncCoordinatorGroups: [unsafeGroupId],
+			} as never,
+			listDevices: async () => {
+				throw "https://private.example.test/path?token=secret";
 			},
-		);
+			listConsumedTeamInvites: async () => [],
+		});
 
 		expect(result.failures).toEqual([
 			{
@@ -167,10 +230,12 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 		expect(serialized).not.toContain(unsafeGroupId);
 		expect(serialized).not.toContain("private.example.test");
 	});
+});
 
-	it("preserves issues on fetch failure and resolves them after a successful empty snapshot", async () => {
-		const db = new Database(":memory:");
-		initTestSchema(db);
+describe("coordinator enrollment issue recovery", () => {
+	const getEnrollmentStore = enrollmentProfileFixture();
+	it("preserves issues on fetch failure and resolves them after a fresh snapshot omits the affected device", async () => {
+		const db = getEnrollmentStore().db;
 		try {
 			db.prepare(`INSERT INTO coordinator_enrollment_reconciliation_issues(
 				coordinator_id, group_id, kind, reference_id, code, status,
@@ -181,7 +246,7 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 				"2026-07-29T00:00:00.000Z",
 				"2026-07-29T00:00:00.000Z",
 			);
-			const store = { db, deviceId: "device-local" } as unknown as MemoryStore;
+			const store = getEnrollmentStore();
 			const config = {
 				syncCoordinatorUrl: "https://coord.example.test/",
 				syncCoordinatorAdminSecret: "secret",
@@ -202,7 +267,7 @@ describe("reconcileConfiguredCoordinatorEnrollment", () => {
 
 			const succeeded = await reconcileConfiguredCoordinatorEnrollment(store, {
 				config,
-				listDevices: async () => [],
+				listDevices: async () => [configuredOwnEnrollment(store, "group-a")],
 				listConsumedTeamInvites: async () => [],
 			});
 			expect(succeeded).toMatchObject({ groupsProcessed: 1, failedGroups: 0, issues: 0 });
