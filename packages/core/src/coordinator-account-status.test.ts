@@ -18,6 +18,7 @@ import {
 	createCoordinatorBrowserAuth,
 } from "./coordinator-browser-auth-app.js";
 import { importBrowserCsrfKey } from "./coordinator-browser-csrf.js";
+import { COORDINATOR_DEVICE_REBIND_SCHEMA_SQL } from "./coordinator-device-rebind-schema.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
@@ -109,8 +110,10 @@ async function setup(
 	const f = prepared ?? setupStore(backend, { authClock: () => NOW });
 	if (prepared) {
 		historicalCleanups.push(prepared.close);
-		// Status eligibility inspects owner attempts; that caller-owned table is not account history.
+		// Shared status eligibility reads owner and rebind attempts. Supply its caller
+		// storage without migrating the historical account evidence or auth schema.
 		f.db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
+		f.db.exec(COORDINATOR_DEVICE_REBIND_SCHEMA_SQL);
 	}
 	databases.push(f.db);
 	vi.spyOn(f.store, "close").mockResolvedValue(undefined);
