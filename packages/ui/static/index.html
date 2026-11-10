@@ -1375,7 +1375,18 @@
       .project-recipient-summary { min-width: 0; }
       .project-recipient-status { color: var(--text-secondary); font-size: var(--font-size-sm); }
       .project-inventory-child-row { padding-left: var(--sp-5); }
-      .project-inventory-cluster + .project-inventory-child .project-inventory-child-row { border-top: 1px solid var(--border); }
+      .project-cluster-entries-row:not([hidden]),
+      .project-cluster-entries-row > td { display: block; }
+      .project-cluster-entries {
+        margin: 0 var(--sp-3) var(--sp-3) var(--sp-5);
+        border-left: 3px solid var(--border);
+        background: var(--surface-2);
+      }
+      .project-cluster-entries:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 2px; }
+      .project-entries-table { border: 0; border-radius: 0; }
+      .project-entries-table > thead { width: 1px; }
+      .project-entry-review-details { padding: var(--sp-3); overflow-wrap: anywhere; }
+      .project-review-entries { margin-left: var(--sp-2); }
       .recipient-policy-review-section + .recipient-policy-review-section { margin-top: var(--sp-5); }
       .recipient-policy-review-heading { margin-bottom: var(--sp-2); }
       .recipient-policy-review-item .project-inventory-actions label {

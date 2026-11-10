@@ -1940,87 +1940,110 @@ describe("Projects cached recipient presentation", () => {
 		).toBe(true);
 	});
 
-	it("opens the containing cluster before focusing a duplicate-name repair target", async () => {
-		const repairProject = project({
-			cwd: "/workspace/repair-target",
-			display_project: "duplicate-repair",
-			git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
-			project: "duplicate-repair",
-			workspace_identity: "cwd:/workspace/repair-target",
-		});
-		const duplicateNameProject = project({
-			cwd: "/workspace/duplicate-name",
-			display_project: "duplicate-repair",
-			git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
-			project: "duplicate-repair",
-			workspace_identity: "git:https://git.example.invalid/exampleco/duplicate-name.git",
-		});
-		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
-			inventoryPage([repairProject, duplicateNameProject]),
-		);
-		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
-			recipientReview({
-				blockedItems: [
-					blockedProjectRepair(repairProject.workspace_identity, {
-						blockedItemId: "blocked-clustered",
-						repairAction: "Assign a stable canonical Project identity.",
-					}),
-				],
-				continuity: null,
-				reviewItems: [],
-			}),
-		);
+	it.each([0, 1])(
+		"opens the containing cluster before focusing duplicate-name repair entry %i",
+		async (targetIndex) => {
+			// Arrange: either entry can need repair, independently of its sibling.
+			initProjectsTab(vi.fn());
+			const repairProject = project({
+				cwd: "/workspace/repair-target",
+				display_project: "duplicate-repair",
+				git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
+				project: "duplicate-repair",
+				workspace_identity: "cwd:/workspace/repair-target",
+			});
+			const duplicateNameProject = project({
+				cwd: "/workspace/duplicate-name",
+				display_project: "duplicate-repair",
+				git_remote: "https://git.example.invalid/exampleco/duplicate-repair.git",
+				project: "duplicate-repair",
+				workspace_identity: "git:https://git.example.invalid/exampleco/duplicate-name.git",
+			});
+			vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+				inventoryPage(
+					targetIndex === 0
+						? [repairProject, duplicateNameProject]
+						: [duplicateNameProject, repairProject],
+				),
+			);
+			vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+				recipientReview({
+					blockedItems: [
+						blockedProjectRepair(repairProject.workspace_identity, {
+							blockedItemId: "blocked-clustered",
+							repairAction: "Assign a stable canonical Project identity.",
+						}),
+					],
+					continuity: null,
+					reviewItems: [],
+				}),
+			);
 
-		await loadProjectsData();
-		const clusterDetails = document.querySelector<HTMLDetailsElement>(
-			".project-inventory-cluster .project-inventory-details",
-		);
-		expect(clusterDetails?.open).toBe(false);
+			await loadProjectsData();
+			const clusterDetails = document.querySelector<HTMLDetailsElement>(
+				".project-inventory-cluster > .project-inventory-cluster-details-row .project-inventory-details",
+			);
+			expect(clusterDetails?.open).toBe(false);
 
-		blockedRepairButton()?.click();
+			// Act.
+			blockedRepairButton()?.click();
 
-		await vi.waitFor(() =>
+			// Assert: the cluster panel and exact target open, while its sibling stays closed.
+			await vi.waitFor(() =>
+				expect(
+					document.querySelector<HTMLDetailsElement>(
+						".project-inventory-cluster > .project-inventory-cluster-details-row .project-inventory-details",
+					)?.open,
+				).toBe(true),
+			);
+			const repairRow = document.querySelector<HTMLElement>(
+				`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+			);
+			expect(document.querySelectorAll<HTMLElement>(".project-inventory-child")[targetIndex]).toBe(
+				repairRow,
+			);
+			expect(
+				document
+					.querySelector<HTMLElement>(".project-inventory-cluster button[aria-expanded]")
+					?.getAttribute("aria-expanded"),
+			).toBe("true");
+			expect(repairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open).toBe(
+				true,
+			);
+			expect(document.activeElement).toBe(
+				repairRow?.querySelector(".project-inventory-details > summary"),
+			);
+			expect(
+				document
+					.querySelector<HTMLElement>(
+						`[data-project-workspace-identity="${duplicateNameProject.workspace_identity}"]`,
+					)
+					?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+			).toBe(false);
+
+			await loadProjectsData();
+
+			const rerenderedRepairRow = document.querySelector<HTMLElement>(
+				`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
+			);
 			expect(
 				document.querySelector<HTMLDetailsElement>(
-					".project-inventory-cluster .project-inventory-details",
+					".project-inventory-cluster > .project-inventory-cluster-details-row .project-inventory-details",
 				)?.open,
-			).toBe(true),
-		);
-		const repairRow = document.querySelector<HTMLElement>(
-			`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
-		);
-		expect(
-			document
-				.querySelector<HTMLElement>(".project-inventory-cluster button[aria-expanded]")
-				?.getAttribute("aria-expanded"),
-		).toBe("true");
-		expect(repairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open).toBe(
-			true,
-		);
-		expect(repairRow?.contains(document.activeElement)).toBe(true);
-		expect(
-			document
-				.querySelector<HTMLElement>(
-					`[data-project-workspace-identity="${duplicateNameProject.workspace_identity}"]`,
-				)
-				?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
-		).toBe(false);
-
-		await loadProjectsData();
-
-		const rerenderedRepairRow = document.querySelector<HTMLElement>(
-			`[data-project-workspace-identity="${repairProject.workspace_identity}"]`,
-		);
-		expect(
-			document.querySelector<HTMLDetailsElement>(
-				".project-inventory-cluster .project-inventory-details",
-			)?.open,
-		).toBe(true);
-		expect(
-			rerenderedRepairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
-		).toBe(true);
-		expect(rerenderedRepairRow?.contains(document.activeElement)).toBe(true);
-	});
+			).toBe(true);
+			expect(
+				rerenderedRepairRow?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+			).toBe(true);
+			expect(rerenderedRepairRow?.contains(document.activeElement)).toBe(true);
+			expect(
+				document
+					.querySelector<HTMLElement>(
+						`[data-project-workspace-identity="${duplicateNameProject.workspace_identity}"]`,
+					)
+					?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open,
+			).toBe(false);
+		},
+	);
 
 	it("opens row sharing with exactly the selected canonical project", async () => {
 		const selected = project({
@@ -2494,7 +2517,7 @@ describe("Projects cached recipient presentation", () => {
 		if (!rerenderedSelect) throw new Error("cluster Space select missing after refresh");
 		expect(rerenderedSelect.value).toBe("exampleco-work");
 		const save = Array.from(document.querySelectorAll("button")).find((button) =>
-			button.textContent?.startsWith("Save Space for 2 identities"),
+			button.textContent?.startsWith("Save Space for 2 Project entries"),
 		) as HTMLButtonElement | undefined;
 		expect(save).toBeDefined();
 		save?.click();
@@ -2618,10 +2641,10 @@ describe("Projects cached recipient presentation", () => {
 
 		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
 		if (!cluster) throw new Error("project cluster missing");
-		expect(cluster.textContent).toContain("2 worktrees");
+		expect(cluster.textContent).toContain("2 Project entries");
 		expect(cluster.querySelector("details")?.open).toBe(false);
 		const disclosure = cluster.querySelector<HTMLButtonElement>(
-			'button[aria-label="Show worktrees for api"]',
+			'button[aria-label="Show entries for api"]',
 		);
 		expect(disclosure?.getAttribute("aria-expanded")).toBe("false");
 		expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(0);
@@ -2631,10 +2654,14 @@ describe("Projects cached recipient presentation", () => {
 		);
 		const childRows = [...document.querySelectorAll<HTMLElement>(".project-inventory-child")];
 		expect(childRows).toHaveLength(2);
-		expect(childRows.every((row) => !cluster.contains(row))).toBe(true);
-		expect(childRows[0]?.previousElementSibling).toBe(cluster);
+		expect(childRows.every((row) => cluster.contains(row))).toBe(true);
+		const entries = document.getElementById(disclosure?.getAttribute("aria-controls") ?? "");
+		expect(entries?.contains(childRows[0] ?? null)).toBe(true);
+		expect(
+			cluster.querySelector(".project-inventory-row-header")?.nextElementSibling?.contains(entries),
+		).toBe(true);
 		const hideWorktrees = document.querySelector<HTMLButtonElement>(
-			'button[aria-label="Hide worktrees for api"]',
+			'button[aria-label="Hide entries for api"]',
 		);
 		expect(hideWorktrees).not.toBeNull();
 		expect(hideWorktrees?.getAttribute("aria-expanded")).toBe("true");
@@ -2654,7 +2681,7 @@ describe("Projects cached recipient presentation", () => {
 		expect(document.activeElement).toBe(hideWorktrees);
 		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("5");
 		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
-		expect(document.body.textContent).toContain("Save Space for 2 identities");
+		expect(document.body.textContent).toContain("Save Space for 2 Project entries");
 		const select = document.querySelector(
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
@@ -2663,7 +2690,7 @@ describe("Projects cached recipient presentation", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 2 identities",
+			(button) => button.textContent === "Save Space for 2 Project entries",
 		) as HTMLButtonElement | undefined;
 		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
@@ -2683,7 +2710,110 @@ describe("Projects cached recipient presentation", () => {
 		});
 	});
 
-	it("distinguishes same-name repository groups in worktree disclosure labels", async () => {
+	it("reviews mixed Project entries ahead of long assignment warnings without losing drafts or writing", async () => {
+		// Arrange: an inventory count includes repository, recorded-path and received entries.
+		initProjectsTab(vi.fn());
+		const warnings = Array.from({ length: 24 }, (_, index) => ({
+			code: `review-${index}`,
+			message: `Recorded Project match ${index} needs review before assignment.`,
+			requires_confirmation: true,
+			severity: "info" as const,
+		}));
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
+				project({ memory_count: 2, session_count: 1 }),
+				project({
+					cwd: "/workspace/recorded/api",
+					workspace_identity: "/workspace/recorded/api",
+					identity_source: "cwd",
+					guardrail_warnings: warnings,
+					memory_count: 3,
+					session_count: 2,
+				}),
+				project({
+					workspace_identity: "peer-received:peer-a:project:api",
+					read_only: true,
+					read_only_reason: "peer_received",
+					statuses: ["received"],
+					memory_count: 4,
+					session_count: 0,
+				}),
+			]),
+		);
+		await loadProjectsData();
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		const assignment = cluster?.querySelector<HTMLDetailsElement>(
+			".project-inventory-cluster-details-row details",
+		);
+		const select = cluster?.querySelector<HTMLSelectElement>("select");
+		if (!cluster || !assignment || !select) throw new Error("cluster controls missing");
+		assignment.open = true;
+		assignment.dispatchEvent(new Event("toggle"));
+		select.value = "exampleco-work";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+
+		// Act: the warning's action discloses entries and moves keyboard focus to them.
+		cluster.querySelector<HTMLButtonElement>(".project-review-entries")?.click();
+		await vi.waitFor(() =>
+			expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(3),
+		);
+
+		// Assert: children precede the entire advanced panel, including all its warnings.
+		const disclosure = cluster.querySelector<HTMLButtonElement>(".project-worktrees-toggle");
+		const entries = document.getElementById(disclosure?.getAttribute("aria-controls") ?? "");
+		expect(entries?.tagName).toBe("SECTION");
+		expect(entries?.getAttribute("aria-label")).toBe("Project entries for api");
+		expect(document.activeElement).toBe(entries);
+		expect(
+			cluster.querySelector(".project-inventory-row-header")?.nextElementSibling?.contains(entries),
+		).toBe(true);
+		expect(entries?.compareDocumentPosition(assignment)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+		expect(cluster.textContent).toContain("3 Project entries");
+		expect(cluster.querySelector('[data-label="Memories"]')?.textContent).toBe("9");
+		expect(cluster.querySelector('[data-label="Sessions"]')?.textContent).toBe("3");
+		expect(assignment.textContent).not.toContain(warnings[0]?.message);
+		expect(entries?.textContent).toContain(warnings[0]?.message);
+		expect(assignment.open).toBe(true);
+		expect(select.value).toBe("exampleco-work");
+		const reviewAction = cluster.querySelector<HTMLButtonElement>(".project-review-entries");
+		expect(reviewAction?.hasAttribute("aria-expanded")).toBe(false);
+		expect(reviewAction?.getAttribute("aria-controls")).toBe(entries?.id);
+		cluster.querySelector<HTMLButtonElement>(".project-review-entries")?.click();
+		await vi.waitFor(() => expect(document.activeElement).toBe(entries));
+		expect(disclosure?.getAttribute("aria-expanded")).toBe("true");
+		const save = [...assignment.querySelectorAll("button")].find((button) =>
+			button.textContent?.startsWith("Save Space"),
+		);
+		expect(save?.disabled).toBe(true);
+		save?.click();
+		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
+		expect(api.saveSharingDomainProjectMapping).not.toHaveBeenCalled();
+
+		// Act: collapse while a child is focused, then reopen.
+		const childDetails = entries?.querySelector<HTMLDetailsElement>("details");
+		if (!childDetails) throw new Error("child details missing");
+		childDetails.open = true;
+		childDetails.dispatchEvent(new Event("toggle"));
+		childDetails.querySelector("summary")?.focus();
+		disclosure?.click();
+		await vi.waitFor(() =>
+			expect(document.querySelectorAll(".project-inventory-child")).toHaveLength(0),
+		);
+
+		// Assert: collapse returns focus without changing the advanced panel or draft.
+		expect(document.activeElement).toBe(disclosure);
+		expect(assignment.open).toBe(true);
+		expect(select.value).toBe("exampleco-work");
+		disclosure?.click();
+		await vi.waitFor(() =>
+			expect(entries?.querySelector<HTMLDetailsElement>("details")?.open).toBe(true),
+		);
+		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
+		initProjectsTab(vi.fn());
+	});
+
+	it("distinguishes same-name repository groups in Project entry disclosure labels", async () => {
+		// Arrange: matching display names must not merge unrelated repositories.
 		const firstRemote = "https://git.example.invalid/exampleco/first.git";
 		const secondRemote = "https://git.example.invalid/exampleco/second.git";
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
@@ -2694,12 +2824,26 @@ describe("Projects cached recipient presentation", () => {
 				]),
 			),
 		);
+		// Act.
 		await loadProjectsData();
 		const toggles = [...document.querySelectorAll<HTMLButtonElement>(".project-worktrees-toggle")];
+		// Assert: each disclosure controls only its own entries region.
 		expect(toggles.map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Show worktrees for api (group 1 of 2)",
-			"Show worktrees for api (group 2 of 2)",
+			"Show entries for api (group 1 of 2)",
+			"Show entries for api (group 2 of 2)",
 		]);
+		const regions = toggles.map((button) =>
+			document.getElementById(button.getAttribute("aria-controls") ?? ""),
+		);
+		expect(regions.every((region) => region?.tagName === "SECTION")).toBe(true);
+		expect(new Set(regions).size).toBe(2);
+		toggles[0]?.click();
+		await vi.waitFor(() =>
+			expect(regions[0]?.querySelectorAll(".project-inventory-child")).toHaveLength(2),
+		);
+		expect(regions[1]?.querySelectorAll(".project-inventory-child")).toHaveLength(0);
+		expect(toggles[1]?.getAttribute("aria-expanded")).toBe("false");
+		toggles[0]?.click();
 	});
 
 	it("excludes peer-received identities from cluster bulk assignment", async () => {
@@ -2739,10 +2883,10 @@ describe("Projects cached recipient presentation", () => {
 		await loadProjectsData();
 
 		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
-		expect(cluster?.textContent).toContain("2 worktrees");
+		expect(cluster?.textContent).toContain("2 Project entries");
 		expect(cluster?.querySelector('[data-label="Memories"]')?.textContent).toBe("6");
 		expect(cluster?.querySelector('[data-label="Sessions"]')?.textContent).toBe("1");
-		expect(document.body.textContent).toContain("Save Space for 1 identity");
+		expect(document.body.textContent).toContain("Save Space for 1 Project entry");
 		const select = document.querySelector(
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
@@ -2750,7 +2894,7 @@ describe("Projects cached recipient presentation", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 1 identity",
+			(button) => button.textContent === "Save Space for 1 Project entry",
 		) as HTMLButtonElement | undefined;
 		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
@@ -2815,7 +2959,7 @@ describe("Projects cached recipient presentation", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 2 identities",
+			(button) => button.textContent === "Save Space for 2 Project entries",
 		) as HTMLButtonElement | undefined;
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2823,10 +2967,12 @@ describe("Projects cached recipient presentation", () => {
 		expect(save?.disabled).toBe(true);
 		expect(api.saveSharingDomainProjectMappings).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("need individual review");
-		expect(document.body.textContent).toContain(
-			"Blocked identity: https://git.example.invalid/exampleco/api.git:worktree",
+		expect(document.body.textContent).toContain("Project match needs review");
+		expect(document.body.textContent).toContain("Review the remote or recorded path");
+		expect(document.body.textContent).not.toContain("Blocked identity:");
+		expect(document.querySelector<HTMLButtonElement>(".project-review-entries")?.textContent).toBe(
+			"Review entries",
 		);
-		expect(document.body.textContent).toContain("Another project is also named api.");
 		expect(document.body.textContent).toContain("Advanced Space assignment");
 	});
 
@@ -2856,10 +3002,11 @@ describe("Projects cached recipient presentation", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 2 identities",
+			(button) => button.textContent === "Save Space for 2 Project entries",
 		) as HTMLButtonElement | undefined;
 		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		expect(document.body.textContent).not.toContain("Blocked identity:");
+		expect(document.querySelector(".project-review-entries")).toBeNull();
 
 		save?.click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2891,7 +3038,7 @@ describe("Projects cached recipient presentation", () => {
 			".project-inventory-cluster select",
 		) as HTMLSelectElement | null;
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 2 identities",
+			(button) => button.textContent === "Save Space for 2 Project entries",
 		) as HTMLButtonElement | undefined;
 
 		expect(select?.value).toBe("");
@@ -2924,7 +3071,7 @@ describe("Projects cached recipient presentation", () => {
 		select.value = "exampleco-work";
 		select.dispatchEvent(new Event("change", { bubbles: true }));
 		const save = Array.from(document.querySelectorAll("button")).find(
-			(button) => button.textContent === "Save Space for 2 identities",
+			(button) => button.textContent === "Save Space for 2 Project entries",
 		) as HTMLButtonElement | undefined;
 		await vi.waitFor(() => expect(save?.disabled).toBe(false));
 		save?.click();
@@ -3538,7 +3685,7 @@ describe("Projects cached recipient presentation", () => {
 		expect(action?.textContent).toBe("Manage sharing");
 		expect(action?.getAttribute("aria-label")).toBe("Manage sharing for api");
 		const clusterSelection = cluster.querySelector<HTMLInputElement>(
-			':scope > .project-inventory-row-header input[aria-label="Select all identities for api"]',
+			':scope > .project-inventory-row-header input[aria-label="Select all Project entries for api"]',
 		);
 		clusterSelection?.click();
 		expect(document.getElementById("projectsSelectionStatus")?.textContent).toBe(
