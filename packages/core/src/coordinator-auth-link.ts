@@ -76,6 +76,12 @@ import { CONNECTION_BIRTHS_SQL } from "./coordinator-auth-link-provenance.js";
 import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
+import {
+	deviceClaimBindingStatements,
+	isDeviceClaimBindingConflict,
+	prepareFirstLinkDeviceClaimBinding,
+	readFirstLinkDeviceClaimOwnershipComplete,
+} from "./coordinator-device-claim-binding.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	prepareNegativeOwnerConsistency,
@@ -1420,6 +1426,8 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
 		if (!keyId) return rejected("attempt_unavailable");
 		const connections = await this.connectionSchema();
+		const binding = await this.prepareFirstClaimBinding(i, c, now, linkId, row, connections);
+		if (!binding) return rejected("attempt_unavailable");
 		const consistency = await prepareNegativeOwnerConsistency(this.backend, {
 			coordinatorId: c.coordinatorId,
 			ownerIdentityId: i.identityId,
@@ -1439,6 +1447,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
 				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),
 				...provenanceStatements(i, c, linkId),
+				...binding,
 			]);
 		} catch (error) {
 			if (
@@ -1446,9 +1455,41 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 				String(error).includes("auth_device_claim_collision")
 			)
 				return rejected("link_conflict");
+			if (isDeviceClaimBindingConflict(error)) return rejected("attempt_unavailable");
 			throw authPersistenceError(error, "auth_link_persistence_error");
 		}
-		return this.deviceReceipt(i, c, now, linkId, await this.finalizeSource(i, c, now));
+		return this.deviceReceipt(i, c, now, linkId, await this.finalizeSource(i, c, now), {
+			requireCompleteBinding: true,
+		});
+	}
+	private async prepareFirstClaimBinding(
+		i: FinalizeRequest,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		linkId: string,
+		row: Attempt,
+		connections: boolean,
+	): Promise<AuthLinkStatement[] | null> {
+		if (row.prior_link_id) return [];
+		const plan = await prepareFirstLinkDeviceClaimBinding(
+			this.backend,
+			{ signer: i.signer, currentIdentityId: i.identityId },
+			c,
+			now,
+		);
+		if (!plan) return null;
+		return deviceClaimBindingStatements(
+			plan,
+			globalThis.crypto.randomUUID(),
+			globalThis.crypto.randomUUID(),
+			{
+				winning: {
+					sql: `EXISTS (SELECT 1 FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
+ AND authority_kind = 'device_claim' AND state = 'finalized' AND link_id = ? AND finalized_at_ms = ?${connections ? " AND prior_link_id IS NULL" : ""})`,
+					values: [i.attemptId, ...configValues(c), linkId, now],
+				},
+			},
+		);
 	}
 	private async finalizeSource(
 		i: FinalizeRequest,
@@ -1464,6 +1505,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		now: number,
 		linkId: string,
 		source: AuthLinkStatement,
+		options: { requireCompleteBinding?: boolean } = {},
 	): Promise<CoordinatorAuthLinkResult> {
 		const row = await this.first<Attempt>({
 			sql: `SELECT * FROM coordinator_auth_link_attempts WHERE attempt_id = ? AND ${CURRENT_CONFIG}
@@ -1471,6 +1513,17 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			values: [i.attemptId, ...configValues(c), ...source.values],
 		});
 		if (!row || !finalizeMatches(row, i)) return rejected("attempt_unavailable");
+		if (
+			options.requireCompleteBinding &&
+			!row.prior_link_id &&
+			!(await readFirstLinkDeviceClaimOwnershipComplete(
+				this.backend,
+				{ signer: i.signer, currentIdentityId: i.identityId },
+				c,
+				now,
+			))
+		)
+			return rejected("attempt_unavailable");
 		return { kind: row.link_id === linkId ? "applied" : "existing", status: status(row, now) };
 	}
 	private async finalizeReceipt(

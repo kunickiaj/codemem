@@ -4,6 +4,7 @@ import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { ownerAdmissionSessionGuard } from "./owner-browser-admission-authority.js";
 import {
+	expectQualifiedDeviceBinding,
 	NOW,
 	type QualifiedFixture,
 	type qualifiedTest,
@@ -181,6 +182,7 @@ export function registerQualifiedAccessTests(test: ReturnType<typeof qualifiedTe
 			(await f.rows(attempts)).filter((a) => String(a.attempt_id).startsWith("retained-")),
 		).toEqual(retained);
 		await assertIndexedAccess(f, statements);
+		await expectQualifiedDeviceBinding(f);
 	});
 }
 function registerWrongScope(test: ReturnType<typeof qualifiedTest>) {
@@ -221,7 +223,7 @@ function registerWrongScope(test: ReturnType<typeof qualifiedTest>) {
 				await f.backend.first(await ownerAdmissionSessionGuard(otherInput)),
 				"unrelated historical owner must still qualify after scope mutation",
 			).not.toBeNull();
-			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 		},
 	);
 }
@@ -264,6 +266,7 @@ function registerWrongAttempt(test: ReturnType<typeof qualifiedTest>) {
 		// Assert: failed substitution leaves the legitimate exact proof usable.
 		expect(denied).toMatchObject({ kind: "rejected" });
 		expect(accepted).toMatchObject({ kind: "finalized", identityId: "identity-a" });
+		await expectQualifiedDeviceBinding(f);
 	});
 }
 async function assertIndexedAccess(f: QualifiedFixture, statements: AuthLinkStatement[]) {

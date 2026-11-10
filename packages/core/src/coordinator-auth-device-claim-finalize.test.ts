@@ -42,7 +42,14 @@ function snapshot(f: LinkFixture, options: { unchangedOnly?: boolean } = {}) {
 	return tables
 		.filter(
 			({ name }) =>
-				!options.unchangedOnly || ![...TABLES, "coordinator_auth_device_claims"].includes(name),
+				!options.unchangedOnly ||
+				![
+					...TABLES,
+					"coordinator_auth_device_claims",
+					"coordinator_device_ownership_bindings",
+					"coordinator_device_rebind_audit_log",
+					"enrolled_devices",
+				].includes(name),
 		)
 		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
 }
@@ -82,6 +89,9 @@ for (const backend of ["SQLite", "D1"] as const) {
 		// Arrange: browser metadata is trusted test input, never a Google network call.
 		await confirmed(f);
 		const unchanged = snapshot(f, { unchangedOnly: true });
+		const enrollments = f.db
+			.prepare("SELECT * FROM enrolled_devices ORDER BY device_id")
+			.all() as Record<string, unknown>[];
 		// Act
 		const [result, competing] = await Promise.all([
 			f.store.finalizeAuthLinkAttempt(proof(), f.cfg),
@@ -147,6 +157,27 @@ for (const backend of ["SQLite", "D1"] as const) {
 		});
 		expect(snapshot(f)).toEqual(committed);
 		expect(snapshot(f, { unchangedOnly: true })).toEqual(unchanged);
+		expect(f.db.prepare("SELECT * FROM enrolled_devices ORDER BY device_id").all()).toEqual(
+			enrollments.map((row) =>
+				row.device_id === input.signer.deviceId ? { ...row, identity_id: input.identityId } : row,
+			),
+		);
+		expect(f.db.prepare("SELECT * FROM coordinator_device_ownership_bindings").all()).toEqual([
+			expect.objectContaining({
+				device_id: input.signer.deviceId,
+				identity_id: input.identityId,
+				source_ref: `device_claim:${claim.claim_id}`,
+				provenance: "owner_enrollment",
+			}),
+		]);
+		expect(f.db.prepare("SELECT * FROM coordinator_device_rebind_audit_log").all()).toEqual([
+			expect.objectContaining({
+				attempt_id: `device_claim:${claim.claim_id}`,
+				enrollment_count: 1,
+				previous_identity_id: input.identityId,
+				target_identity_id: input.identityId,
+			}),
+		]);
 		expect(() =>
 			f.db.exec("UPDATE coordinator_auth_device_claims SET identity_id='other'"),
 		).toThrow();

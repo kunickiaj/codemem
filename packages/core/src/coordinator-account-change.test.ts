@@ -223,14 +223,29 @@ test("wrong key, same-Identity shared reader, revoked key and enrollment snapsho
 		),
 	).toBe(false);
 	await f.prepare();
+	// First linking now assigns the own enrollment. Change it to a contradictory Identity.
+	expect(f.rows("enrolled_devices")).toContainEqual(
+		expect.objectContaining({ device_id: input.signer.deviceId, identity_id: input.identityId }),
+	);
+	expect(
+		await f.exec(
+			"UPDATE enrolled_devices SET identity_id = ? WHERE device_id = ?",
+			"contradictory-identity",
+			input.signer.deviceId,
+		),
+	).toBe(1);
+	expect(f.rows("enrolled_devices")).toContainEqual(
+		expect.objectContaining({
+			device_id: input.signer.deviceId,
+			identity_id: "contradictory-identity",
+		}),
+	);
+	const changed = f.snapshot();
+	expect(await f.operations.finalize(f.proof(), config)).toBeNull();
+	expect(f.snapshot()).toEqual(changed);
 	await f.exec(
 		"UPDATE enrolled_devices SET identity_id = ? WHERE device_id = ?",
 		input.identityId,
-		input.signer.deviceId,
-	);
-	expect(await f.operations.finalize(f.proof(), config)).toBeNull();
-	await f.exec(
-		"UPDATE enrolled_devices SET identity_id = NULL WHERE device_id = ?",
 		input.signer.deviceId,
 	);
 	await f.exec(

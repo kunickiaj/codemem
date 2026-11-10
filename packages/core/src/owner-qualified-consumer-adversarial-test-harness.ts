@@ -6,7 +6,11 @@ import {
 	ownerEnrollmentConfirmationHash,
 } from "./coordinator-owner-enrollment-proof.js";
 import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
-import type { qualifiedFixture, qualifiedTest } from "./owner-qualified-consumer-test-harness.js";
+import {
+	expectQualifiedDeviceBinding,
+	type qualifiedFixture,
+	type qualifiedTest,
+} from "./owner-qualified-consumer-test-harness.js";
 
 type Test = ReturnType<typeof qualifiedTest>;
 type Consumer = Awaited<ReturnType<typeof qualifiedFixture>>;
@@ -61,7 +65,7 @@ function registerFinalPins(test: Test) {
 			// Assert
 			expect(entered).toBe(true);
 			expect(result).toMatchObject({ kind: "rejected" });
-			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 			expect(await f.attempt()).toMatchObject({
 				state: "confirmed",
 				binding_id: null,
@@ -146,7 +150,7 @@ function registerWinningUpdates(test: Test) {
 				// Assert
 				expect(entered).toBe(true);
 				expect(result).toMatchObject({ kind: "rejected" });
-				expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+				expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 			},
 		);
 	}
@@ -185,7 +189,7 @@ function registerWrongAccount(test: Test) {
 			identity_id: null,
 			link_id: null,
 		});
-		expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+		expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 	});
 }
 function registerHistoricalRevocation(test: Test) {
@@ -209,6 +213,7 @@ function registerHistoricalRevocation(test: Test) {
 			// Assert: retained owner authority is not fresh grant issuance from old A.
 			expect(result).toMatchObject({ kind: "finalized", identityId: "identity-a" });
 			expect(await f.authority()).toEqual(f.original);
+			await expectQualifiedDeviceBinding(f);
 		},
 	);
 }
@@ -237,7 +242,7 @@ function registerCryptoRaces(test: Test) {
 			// Assert
 			expect(entered).toBe(true);
 			expect(result).toMatchObject({ kind: "rejected" });
-			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 		},
 	);
 }
@@ -422,7 +427,7 @@ function registerProvenance(test: Test) {
 		"controller_attestation_created_at='other'",
 		"review_receipt_id='other'",
 		`evidence_digest='${"2".repeat(64)}'`,
-		"enrollment_identity_id='identity-a'",
+		"enrollment_identity_id='different-enrollment-identity'",
 		"link_attempt_id='other'",
 		`link_auth_config_revision='${"2".repeat(64)}'`,
 		"link_created_at_ms=link_created_at_ms-1",
@@ -431,8 +436,21 @@ function registerProvenance(test: Test) {
 		// Arrange: real issuance and a separate grant are the positive control.
 		await f.qualify();
 		await f.grant();
+		const birth = await f.rows(qualification);
+		if (assignment.startsWith("enrollment_identity_id=")) {
+			// Current first-link completion sets A's Identity before controller review.
+			// Replacing it with identity-a would now leave the birth proof unchanged.
+			expect(birth[0]?.enrollment_identity_id).toBe("identity-a");
+			const source = (await f.rows("coordinator_auth_controller_attestations")).find(
+				(row) => row.attestation_id === f.review.attestationId,
+			);
+			expect(source?.enrollment_identity_id).toBe(birth[0]?.enrollment_identity_id);
+		}
 		await corrupt(f, qualification, assignment);
 		const rows = await f.rows(qualification);
+		expect(rows, "each adversarial mutation must change the original birth proof").not.toEqual(
+			birth,
+		);
 		// Act
 		const response = await f.admit();
 		// Assert: no replacement qualification or new attempt.

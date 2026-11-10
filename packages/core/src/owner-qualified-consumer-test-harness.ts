@@ -74,6 +74,7 @@ export interface QualifiedFixture extends QualifiedDatabase {
 	start: import("./owner-enrollment-start.js").OwnerEnrollmentStart;
 	link: Record<string, unknown>;
 	original: Record<string, unknown>[][];
+	originalBindings: Record<string, unknown>[];
 	authority(): Promise<Record<string, unknown>[][]>;
 	qualify(): Promise<string>;
 	grant(): Promise<void>;
@@ -169,7 +170,15 @@ async function ordinaryClaim(db: QualifiedDatabase) {
 				"coordinator_auth_link_audit_log",
 			].map(rows),
 		);
-	return { signer, fingerprint, session, link, authority, original: await authority() };
+	return {
+		signer,
+		fingerprint,
+		session,
+		link,
+		authority,
+		original: await authority(),
+		originalBindings: await rows("coordinator_device_ownership_bindings"),
+	};
 }
 async function completeClaim(store: Store, request: Parameters<Store["createAuthLinkAttempt"]>[0]) {
 	const signer = request.signer;
@@ -481,13 +490,7 @@ function registerCeremony(test: ReturnType<typeof qualifiedTest>) {
 		});
 		expect(retry).toEqual({ ...result, kind: "prior_commit" });
 		expect(await f.authority()).toEqual(f.original);
-		expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([
-			expect.objectContaining({
-				device_id: f.start.deviceId,
-				identity_id: "identity-a",
-				key_id: await ed25519KeyId(f.start.publicKey),
-			}),
-		]);
+		await expectQualifiedDeviceBinding(f);
 		expect(f.provider.requests.some((r) => r.url.endsWith("/token"))).toBe(true);
 	});
 	test.for(["bare-reviewed-claim", "qualification-without-grant"])(
@@ -518,7 +521,25 @@ function registerCeremony(test: ReturnType<typeof qualifiedTest>) {
 		// Assert
 		expect(result).toMatchObject({ kind: "finalized", identityId: "identity-a" });
 		expect(await f.attempt()).toMatchObject({ owner_qualification_id: id });
+		await expectQualifiedDeviceBinding(f);
 	});
+}
+
+/** Preserve A's complete immutable record and admit exactly the expected B. */
+export async function expectQualifiedDeviceBinding(f: QualifiedFixture) {
+	expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([
+		...f.originalBindings,
+		{
+			device_id: f.start.deviceId,
+			identity_id: "identity-a",
+			key_id: await ed25519KeyId(f.start.publicKey),
+			coordinator_id: config.coordinatorId,
+			binding_id: (await f.attempt()).binding_id,
+			provenance: "owner_enrollment",
+			source_ref: f.start.attemptId,
+			bound_at: new Date(NOW).toISOString(),
+		},
+	]);
 }
 function registerLosses(test: ReturnType<typeof qualifiedTest>) {
 	for (const stage of ["callback", "confirm", "finalize"] as const) {
@@ -573,7 +594,7 @@ function registerRaces(test: ReturnType<typeof qualifiedTest>) {
 			// Assert
 			expect(entered).toBe(true);
 			expect(result).toMatchObject({ kind: "rejected" });
-			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual([]);
+			expect(await f.rows("coordinator_device_ownership_bindings")).toEqual(f.originalBindings);
 			expect(await f.attempt()).toMatchObject({
 				state: "confirmed",
 				binding_id: null,

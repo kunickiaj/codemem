@@ -109,7 +109,7 @@ function snapshot(f: LinkFixture, options: { stableOnly?: boolean } = {}) {
 		.all() as { name: string }[];
 	return tables
 		.filter(({ name }) => !options.stableOnly || !name.startsWith("coordinator_auth_"))
-		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
+		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()] as const);
 }
 async function confirmed(f: LinkFixture) {
 	expect(await f.store.createAuthLinkAttempt(request(), f.cfg)).toMatchObject({ kind: "created" });
@@ -301,7 +301,7 @@ function seedHistoricalPeerLink(f: LinkFixture) {
 afterEach(() => vi.restoreAllMocks());
 for (const backend of ["SQLite", "D1"] as const) {
 	const test = backendTest(backend);
-	test(`${backend} links an exactly assigned shared Identity without changing enrollment or grants`, async ({
+	test(`${backend} links an exactly assigned shared Identity with own ownership and unchanged enrollment or grants`, async ({
 		fixture: f,
 	}) => {
 		// Arrange: both different-key devices already belong to the same reviewed Identity.
@@ -360,7 +360,38 @@ for (const backend of ["SQLite", "D1"] as const) {
 		expect(f.db.prepare("SELECT * FROM coordinator_auth_link_audit_log").all()).toEqual([
 			expect.objectContaining({ ...source, action: "link_created" }),
 		]);
-		expect(snapshot(f, { stableOnly: true })).toEqual(stable);
+		const binding = f.db
+			.prepare("SELECT binding_id FROM coordinator_device_ownership_bindings WHERE device_id=?")
+			.get(input.signer.deviceId) as { binding_id: string };
+		const ownBinding = {
+			binding_id: expect.any(String),
+			bound_at: new Date(f.now).toISOString(),
+			coordinator_id: f.cfg.coordinatorId,
+			device_id: input.signer.deviceId,
+			identity_id: input.identityId,
+			key_id: await ed25519KeyIdForRevocation(input.signer.publicKey),
+			provenance: "owner_enrollment",
+			source_ref: `device_claim:${source.device_claim_id}`,
+		};
+		const ownAudit = {
+			action: "owner_device_rebound",
+			attempt_id: ownBinding.source_ref,
+			binding_id: binding.binding_id,
+			coordinator_id: f.cfg.coordinatorId,
+			created_at_ms: f.now,
+			device_id: input.signer.deviceId,
+			enrollment_count: 1,
+			event_id: expect.any(String),
+			previous_identity_id: input.identityId,
+			target_identity_id: input.identityId,
+		};
+		expect(snapshot(f, { stableOnly: true })).toEqual(
+			stable.map(([name, rows]) => {
+				if (name === "coordinator_device_ownership_bindings") return [name, [...rows, ownBinding]];
+				if (name === "coordinator_device_rebind_audit_log") return [name, [...rows, ownAudit]];
+				return [name, rows];
+			}),
+		);
 	});
 	test.for(invalidEvidence)(
 		`${backend} rejects %s without writes or account disclosure`,
