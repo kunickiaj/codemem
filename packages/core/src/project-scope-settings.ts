@@ -983,17 +983,29 @@ interface SourceOwnedMemoryScopeRow {
 	project: string | null;
 }
 
+type PreviewMemoryScopeRow = Pick<
+	SourceOwnedMemoryScopeRow,
+	| "id"
+	| "scope_id"
+	| "workspace_id"
+	| "session_metadata_json"
+	| "cwd"
+	| "git_branch"
+	| "git_remote"
+	| "project"
+> & { session_id: number };
+
 function resolveSourceOwnedMemoryScope(
-	row: SourceOwnedMemoryScopeRow,
+	row: PreviewMemoryScopeRow | SourceOwnedMemoryScopeRow,
 	mappings: ProjectScopeSettingsMapping[],
 	repositoryIdentities: ReadonlyMap<string, string>,
 	conflictsByRepository: Map<string, boolean>,
-) {
-	const repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
+	repositoryIdentity = repositoryIdentityForWorkspace(repositoryIdentities, {
 		cwd: row.cwd,
 		gitRemote: row.git_remote,
 		metadataJson: row.session_metadata_json,
-	});
+	}),
+) {
 	const cwd = normalizeRepositoryWorkspaceIdentity(row.cwd);
 	const ambiguousWorkspace = Boolean(
 		cwd &&
@@ -1170,7 +1182,7 @@ function resolveSourceOwnedMemoryMappingTransition(
 
 function memoryScopeBeforeMappingChange(
 	db: Database,
-	row: SourceOwnedMemoryScopeRow,
+	row: Pick<SourceOwnedMemoryScopeRow, "id">,
 	oldMappings: ScopeMapping[],
 ): string {
 	const scopeId = resolveMemoryScopeId(db, row.id, { mappings: oldMappings });
@@ -1255,6 +1267,53 @@ function propagateProjectScopeMappingToSourceOwnedMemories(
 	);
 }
 
+function sourceOwnedMemoryRowsForScopePreview(db: Database, deviceId: string) {
+	// Only this preview streams rows. Mutation propagation must materialize before writing.
+	const source = sourceOwnedMemoryScopeQuery(deviceId);
+	const rows = db.prepare(
+		`SELECT mi.id, mi.session_id, mi.scope_id, mi.workspace_id,
+		        s.metadata_json AS session_metadata_json, s.cwd, s.git_branch, s.git_remote, s.project
+		 ${source.fromAndWhere}`,
+	);
+	return rows.iterate(...source.bindings) as Iterable<PreviewMemoryScopeRow>;
+}
+
+function previewRepositoryIdentityResolver(identities: ReadonlyMap<string, string>) {
+	// Session IDs alone are insufficient if metadata changes. Keep exact inputs and derived
+	// identities only for this preview, including null results and reused workspace paths.
+	const repositoryBySession = new Map<
+		number,
+		{
+			cwd: string | null;
+			gitRemote: string | null;
+			metadataJson: string | null;
+			identity: string | null;
+		}
+	>();
+	return (row: PreviewMemoryScopeRow): string | null => {
+		let cached = repositoryBySession.get(row.session_id);
+		if (
+			!cached ||
+			cached.cwd !== row.cwd ||
+			cached.gitRemote !== row.git_remote ||
+			cached.metadataJson !== row.session_metadata_json
+		) {
+			cached = {
+				cwd: row.cwd,
+				gitRemote: row.git_remote,
+				metadataJson: row.session_metadata_json,
+				identity: repositoryIdentityForWorkspace(identities, {
+					cwd: row.cwd,
+					gitRemote: row.git_remote,
+					metadataJson: row.session_metadata_json,
+				}),
+			};
+			repositoryBySession.set(row.session_id, cached);
+		}
+		return cached.identity;
+	};
+}
+
 function changedScopesAfterMappingTransition(
 	db: Database,
 	id: number,
@@ -1277,18 +1336,28 @@ function changedScopesAfterMappingTransition(
 	const oldConflicts = new Map<string, boolean>();
 	const newConflicts = new Map<string, boolean>();
 	const changes = new Set<string>();
-	for (const row of sourceOwnedMemoryRowsForScopePropagation(db, deviceId)) {
+	const mappingIds = new Set([id]);
+	const repositoryIdentity = previewRepositoryIdentityResolver(identities);
+	for (const row of sourceOwnedMemoryRowsForScopePreview(db, deviceId)) {
 		const oldScopeId = memoryScopeBeforeMappingChange(db, row, oldAliases);
-		const before = resolveSourceOwnedMemoryScope(row, oldAliases, identities, oldConflicts);
-		const after = resolveSourceOwnedMemoryScope(row, newAliases, identities, newConflicts);
-		const repository = repositoryIdentityForWorkspace(identities, {
-			cwd: row.cwd,
-			gitRemote: row.git_remote,
-			metadataJson: row.session_metadata_json,
-		});
+		const repository = repositoryIdentity(row);
+		const before = resolveSourceOwnedMemoryScope(
+			row,
+			oldAliases,
+			identities,
+			oldConflicts,
+			repository,
+		);
+		const after = resolveSourceOwnedMemoryScope(
+			row,
+			newAliases,
+			identities,
+			newConflicts,
+			repository,
+		);
 		if (
 			!mappingChangeAffectsSourceOwnedMemory(
-				new Set([id]),
+				mappingIds,
 				repository,
 				before,
 				after,
