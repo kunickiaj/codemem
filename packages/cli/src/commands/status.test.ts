@@ -15,7 +15,7 @@ const healthySnapshot: OperationalStatusSnapshot = {
 	maintenance: { state: "idle", running: 0, failed: 0 },
 	semantic_index: { state: "healthy", vector_table_present: true },
 	raw_events: { available: true, pending: 0, failed_batches: 0 },
-	observer: { available: true, failed_batches: 0, backoff_batches: 0 },
+	observer: { available: true, failed_batches: 0, backoff_batches: 0, recent_failed_batches: 0 },
 };
 
 function harness(
@@ -135,7 +135,9 @@ describe("status command", () => {
 		expect(stderr).toEqual([]);
 		expect(close).toHaveBeenCalledOnce();
 	});
+});
 
+describe("status subsystem projection", () => {
 	it("keeps warnings successful and exits zero for degraded reports", async () => {
 		const snapshot = structuredClone(healthySnapshot);
 		snapshot.sync.peer_errors = 2;
@@ -225,19 +227,60 @@ describe("status command", () => {
 		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
 		expect(report.observer.state).toBe("unconfigured");
 	});
+});
 
-	it("reports retryable observer failures as backoff warnings", async () => {
+describe("status observer failure projection", () => {
+	it("reports recent observer failures without claiming an active pause", async () => {
+		// Arrange: database failures cannot confirm the worker's runtime deadline.
 		const snapshot = structuredClone(healthySnapshot);
 		snapshot.observer.backoff_batches = 1;
+		snapshot.observer.recent_failed_batches = 1;
 		const { command, stdout } = harness({ snapshot });
+		// Act
 		await command.parseAsync(["--json"], { from: "user" });
+		// Assert
 		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
-		expect(report.observer.state).toBe("backoff");
+		expect(report.observer.state).toBe("degraded");
 		expect(report.attention).toContainEqual(
-			expect.objectContaining({ code: "observer_backoff", severity: "warning" }),
+			expect.objectContaining({ code: "observer_recent_failures", severity: "warning" }),
 		);
+		expect(report.ok).toBe(true);
 	});
 
+	it("does not report historical observer failures as current attention", async () => {
+		// Arrange
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.observer.backoff_batches = 3;
+		const { command, stdout, fetchMock } = harness({ snapshot });
+		// Act
+		await command.parseAsync(["--json"], { from: "user" });
+		// Assert: the health-only probe supplies no observer timer evidence.
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.observer.state).toBe("idle");
+		expect(report.attention).toEqual([]);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls[0]?.[0]).toContain("/api/health");
+	});
+
+	it("keeps exhausted observer failures as errors ahead of recent failures", async () => {
+		// Arrange
+		const snapshot = structuredClone(healthySnapshot);
+		snapshot.observer.failed_batches = 1;
+		snapshot.observer.recent_failed_batches = 1;
+		const { command, stdout } = harness({ snapshot });
+		// Act
+		await command.parseAsync(["--json"], { from: "user" });
+		// Assert
+		const report = JSON.parse(stdout[0] ?? "{}") as OperationalStatusReport;
+		expect(report.observer.state).toBe("failed");
+		expect(report.ok).toBe(false);
+		expect(report.attention).toEqual([
+			expect.objectContaining({ code: "observer_failed", severity: "error" }),
+		]);
+	});
+});
+
+describe("status output and usage", () => {
 	it("renders compact human output and detailed command suggestions", async () => {
 		const snapshot = structuredClone(healthySnapshot);
 		snapshot.raw_events.pending = 3;

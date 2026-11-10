@@ -35,7 +35,10 @@ export interface OperationalStatusSnapshot {
 	observer: {
 		available: boolean;
 		failed_batches: number;
+		/** @deprecated Historical failed/error count, not evidence of an active runtime pause. */
 		backoff_batches: number;
+		/** Failed/error rows within the requested window. Does not predict retry eligibility. */
+		recent_failed_batches: number;
 	};
 }
 
@@ -213,7 +216,9 @@ function collectObserver(
 	const available =
 		tableExists(db, "raw_event_flush_batches") &&
 		columnExists(db, "raw_event_flush_batches", "observer_error_code");
-	if (!available) return { available: false, failed_batches: 0, backoff_batches: 0 };
+	if (!available) {
+		return { available: false, failed_batches: 0, backoff_batches: 0, recent_failed_batches: 0 };
+	}
 	return {
 		available,
 		failed_batches:
@@ -239,6 +244,16 @@ function collectObserver(
 				 WHERE status IN ('error', 'failed')
 				   AND observer_error_code IS NOT NULL
 				   AND TRIM(observer_error_code) != ''`,
+			) ?? 0,
+		recent_failed_batches:
+			aggregateCount(
+				db,
+				"raw_event_flush_batches",
+				`SELECT COUNT(*) AS count FROM raw_event_flush_batches
+				 WHERE status IN ('error', 'failed')
+				   AND observer_error_code IS NOT NULL
+				   AND TRIM(observer_error_code) != ''${recentFailureCutoff ? " AND updated_at >= ?" : ""}`,
+				recentFailureCutoff ? [recentFailureCutoff] : [],
 			) ?? 0,
 	};
 }

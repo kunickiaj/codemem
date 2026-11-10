@@ -56,7 +56,12 @@ describe("collectOperationalStatus", () => {
 				maintenance: { state: "idle", running: 0, failed: 0 },
 				semantic_index: { state: "failed", vector_table_present: false },
 				raw_events: { available: true, pending: 2, failed_batches: 1 },
-				observer: { available: true, failed_batches: 1, backoff_batches: 1 },
+				observer: {
+					available: true,
+					failed_batches: 1,
+					backoff_batches: 1,
+					recent_failed_batches: 1,
+				},
 			});
 			expect(JSON.stringify(result)).not.toContain("private");
 			const afterRecentWindow = collectOperationalStatus(db, {
@@ -67,12 +72,66 @@ describe("collectOperationalStatus", () => {
 				available: true,
 				failed_batches: 0,
 				backoff_batches: 1,
+				recent_failed_batches: 0,
 			});
 		} finally {
 			db.close();
 		}
 	});
+});
 
+describe("observer failure windows", () => {
+	it.each([
+		["failed", "rate_limited", "2026-08-11T12:00:00Z", 1, 0, 1],
+		["error", "auth_failure", "2026-08-11T12:00:00Z", 1, 0, 1],
+		["failed", "rate_limited", "2026-08-10T12:00:00Z", 0, 0, 1],
+		["failed", "rate_limited", "2026-08-11T00:00:00Z", 1, 0, 1],
+		["failed", "  ", "2026-08-11T12:00:00Z", 0, 0, 0],
+		["error", null, "2026-08-11T12:00:00Z", 0, 0, 0],
+		["completed", "rate_limited", "2026-08-11T12:00:00Z", 0, 0, 0],
+		["pending", "rate_limited", "2026-08-11T12:00:00Z", 0, 0, 0],
+		["gave_up", "auth_failure", "2026-08-11T12:00:00Z", 0, 1, 0],
+		["gave_up", "auth_failure", "2026-08-10T12:00:00Z", 0, 0, 0],
+	])(
+		"separates recent failures from history: %s %s %s",
+		(status, code, updatedAt, recent, exhausted, historical) => {
+			// Arrange: failed/error rows remain visible even when attempts await finalization.
+			const db = new Database(":memory:");
+			try {
+				initTestSchema(db);
+				db.prepare(`INSERT INTO raw_event_flush_batches(
+				id, source, stream_id, opencode_session_id, start_event_seq, end_event_seq,
+				extractor_version, status, attempt_count, observer_error_code, created_at, updated_at
+			) VALUES (1, 'opencode', 'synthetic', 'synthetic', 1, 1, 'v1', ?, 99, ?, ?, ?)`).run(
+					status,
+					code,
+					updatedAt,
+					updatedAt,
+				);
+				const before = db.prepare("SELECT * FROM raw_event_flush_batches").all();
+
+				// Act: a fixed inclusive cutoff does not imply retry eligibility.
+				const result = collectOperationalStatus(db, {
+					embeddingDisabled: true,
+					recentFailureCutoff: "2026-08-11T00:00:00Z",
+				});
+
+				// Assert: preserve history and avoid changing any batch.
+				expect(result.observer).toEqual({
+					available: true,
+					failed_batches: exhausted,
+					backoff_batches: historical,
+					recent_failed_batches: recent,
+				});
+				expect(db.prepare("SELECT * FROM raw_event_flush_batches").all()).toEqual(before);
+			} finally {
+				db.close();
+			}
+		},
+	);
+});
+
+describe("operational status compatibility", () => {
 	it("reports daemon errors when the additive phase column is absent", () => {
 		const db = new Database(":memory:");
 		try {
@@ -120,7 +179,12 @@ describe("collectOperationalStatus", () => {
 				maintenance: { state: "unknown", running: 0, failed: 0 },
 				semantic_index: { state: "disabled", vector_table_present: false },
 				raw_events: { available: false, pending: 0, failed_batches: 0 },
-				observer: { available: false, failed_batches: 0, backoff_batches: 0 },
+				observer: {
+					available: false,
+					failed_batches: 0,
+					backoff_batches: 0,
+					recent_failed_batches: 0,
+				},
 			});
 		} finally {
 			db.close();
