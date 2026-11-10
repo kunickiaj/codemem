@@ -991,7 +991,9 @@ describe("Projects inventory table presentation", projectsInventoryTablePresenta
 describe("Projects cached recipient presentation", () => {
 	it("keeps a loaded empty recipient state visible while a refresh is pending", async () => {
 		await loadProjectsData();
-		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("Not shared");
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
+			"No Teams or Identities added",
+		);
 		let releaseIntent: ((value: ReturnType<typeof recipientIntent>) => void) | undefined;
 		vi.mocked(api.loadRecipientPolicyIntent).mockReturnValueOnce(
 			new Promise((resolve) => {
@@ -1001,7 +1003,9 @@ describe("Projects cached recipient presentation", () => {
 
 		const refresh = loadProjectsData();
 
-		expect(document.querySelector(".project-recipient-status")?.textContent).toBe("Not shared");
+		expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
+			"No Teams or Identities added",
+		);
 		releaseIntent?.(recipientIntent());
 		await refresh;
 	});
@@ -3678,7 +3682,35 @@ describe("Projects cached recipient presentation", () => {
 					":scope > .project-inventory-row-header .project-recipient-chip",
 				),
 			].map((chip) => chip.textContent),
-		).toEqual(["Identity: Adam", "Team: ExampleCo"]);
+		).toEqual([
+			"Identity: Adam · 1 of 2 known Project entries",
+			"Team: ExampleCo · 1 of 2 known Project entries",
+		]);
+		const model = getProjectsInventoryController().getViewModel().rows[0];
+		if (model?.kind !== "cluster") throw new Error("project cluster model missing");
+		expect(
+			model.recipients.map(({ key, coveredProjectCount, knownProjectCount }) => ({
+				key,
+				coveredProjectCount,
+				knownProjectCount,
+			})),
+		).toEqual([
+			{ key: "identity:identity-adam", coveredProjectCount: 1, knownProjectCount: 2 },
+			{ key: "team:team-example", coveredProjectCount: 1, knownProjectCount: 2 },
+		]);
+		expect(
+			model.projects
+				.find((entry) => entry.project.workspace_identity === "project-zeta")
+				?.recipients.map((recipient) => recipient.kind),
+		).toEqual(["Team"]);
+		expect(
+			model.projects
+				.find((entry) => entry.project.workspace_identity === "project-alpha")
+				?.recipients.map((recipient) => recipient.kind),
+		).toEqual(["Identity"]);
+		expect(cluster.querySelector(".project-recipient-status")?.textContent).toBe(
+			"Different sharing across entries",
+		);
 		const action = cluster.querySelector<HTMLButtonElement>(
 			":scope > .project-inventory-row-header .project-recipient-action",
 		);
@@ -3829,8 +3861,124 @@ describe("Projects inventory controller collision keys", () => {
 		expect(localProject?.draftScopeId).toBe("exampleco-work");
 		expect(localProject?.recipients).toHaveLength(1);
 		expect(peerProject?.draftScopeId).toBeNull();
-		expect(peerProject?.recipients).toEqual([]);
+		expect(peerProject?.recipients).toEqual(localProject?.recipients);
+		expect(peerProject?.recipients).toMatchObject([
+			{ coveredProjectCount: 1, knownProjectCount: 1 },
+		]);
+		expect(draftRow.recipients).toMatchObject([{ coveredProjectCount: 1, knownProjectCount: 1 }]);
 	});
+});
+
+describe("Projects distinct canonical sharing coverage", () => {
+	it("retains archived Team names and distinguishes multiple unknown recipients safely", async () => {
+		// Arrange
+		const graph = recipientIntent({
+			identities: [],
+			teams: [{ version: 1, teamId: "team-studio", displayName: "Studio", status: "archived" }],
+		});
+		const refs = [
+			{ recipientKind: "team", teamId: "team-studio" },
+			{ recipientKind: "team", teamId: "missing-team-a" },
+			{ recipientKind: "team", teamId: "missing-team-b" },
+			{ recipientKind: "identity", identityId: "missing-identity-a" },
+			{ recipientKind: "identity", identityId: "missing-identity-b" },
+		] as const;
+		graph.projectRecipients = refs.map((recipient) => ({
+			...recipient,
+			version: 1,
+			canonicalProjectIdentity: "project-studio",
+			intentSource: "user",
+			policyRevision: "one",
+			status: "active",
+		}));
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(graph);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([project({ workspace_identity: "project-studio" })]),
+		);
+		// Act
+		await loadProjectsData();
+		// Assert
+		const row = getProjectsInventoryController().getViewModel().rows[0];
+		expect(row?.recipients.map((recipient) => recipient.displayName)).toEqual([
+			"Unavailable Identity 1 of 2",
+			"Unavailable Identity 2 of 2",
+			"Studio (archived)",
+			"Unavailable Team 1 of 2",
+			"Unavailable Team 2 of 2",
+		]);
+		expect(
+			row?.recipients.every(
+				(recipient) => recipient.coveredProjectCount === 1 && recipient.knownProjectCount === 1,
+			),
+		).toBe(true);
+		expect(document.body.textContent).not.toContain("missing-team-");
+		expect(document.body.textContent).not.toContain("missing-identity-");
+	});
+
+	it.each([0, 1, 2])(
+		"counts %i covered entries without counting duplicate rows or edges",
+		async (count) => {
+			// Arrange: the local and received rows refer to the same canonical Project.
+			const ids = ["project-studio-one", "project-studio-two"];
+			vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+				inventoryPage([
+					project({ workspace_identity: ids[0] }),
+					project({
+						workspace_identity: ids[0],
+						read_only: true,
+						read_only_reason: "peer_received",
+					}),
+					project({ workspace_identity: ids[1] }),
+				]),
+			);
+			const edges: RecipientPolicyIntentGraphV1["projectRecipients"] = ids
+				.slice(0, count)
+				.map((id) => ({
+					version: 1,
+					canonicalProjectIdentity: id,
+					recipientKind: "team",
+					teamId: "team-example",
+					intentSource: "user",
+					policyRevision: "one",
+					status: "active",
+				}));
+			if (edges[0]) edges.push({ ...edges[0] });
+			edges.push({
+				version: 1,
+				canonicalProjectIdentity: ids[1],
+				recipientKind: "identity",
+				identityId: "identity-adam",
+				intentSource: "user",
+				policyRevision: "revoked",
+				status: "revoked",
+			});
+			vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+				recipientIntent({ projectRecipients: edges }),
+			);
+			// Act
+			await loadProjectsData();
+			// Assert: repeated inventory rows and edges do not inflate either count.
+			const row = getProjectsInventoryController().getViewModel().rows[0];
+			if (row?.kind !== "cluster") throw new Error("project cluster missing");
+			expect(row.projects).toHaveLength(3);
+			expect(row.projectIds).toEqual(ids);
+			if (!count) {
+				expect(row.recipients).toEqual([]);
+				expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
+					"No Teams or Identities added",
+				);
+				return;
+			}
+			expect(row.recipients).toMatchObject([
+				{ key: "team:team-example", coveredProjectCount: count, knownProjectCount: 2 },
+			]);
+			expect(row.recipients).toHaveLength(1);
+			expect(document.querySelector(".project-recipient-status")?.textContent).toBe(
+				count === 1 ? "Different sharing across entries" : "Sharing across known entries",
+			);
+			expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("Projects inventory controller subscriptions", () => {

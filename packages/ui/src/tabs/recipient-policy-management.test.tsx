@@ -227,30 +227,215 @@ async function confirmChanges() {
 	});
 }
 
-describe("recipient policy management dialog", () => {
-	beforeEach(() => {
-		document.body.innerHTML = '<button id="trigger">Manage</button><div id="mount"></div>';
-		vi.mocked(api.previewRecipientPolicyEdges).mockImplementation(async (request) =>
-			preview(request.changes),
-		);
-		vi.mocked(api.commitRecipientPolicyEdges).mockResolvedValue({
-			version: 1,
-			status: "applied",
-			reviewedPolicyDigest: "policy:digest",
-			errorCode: null,
-			outcomes: [],
-			writeCount: 1,
-			idempotent: false,
+beforeEach(() => {
+	document.body.innerHTML = '<button id="trigger">Manage</button><div id="mount"></div>';
+	vi.mocked(api.previewRecipientPolicyEdges).mockImplementation(async (request) =>
+		preview(request.changes),
+	);
+	vi.mocked(api.commitRecipientPolicyEdges).mockResolvedValue({
+		version: 1,
+		status: "applied",
+		reviewedPolicyDigest: "policy:digest",
+		errorCode: null,
+		outcomes: [],
+		writeCount: 1,
+		idempotent: false,
+	});
+});
+
+afterEach(() => {
+	const element = document.getElementById("mount");
+	if (element) act(() => render(null, element));
+	vi.clearAllMocks();
+	document.body.innerHTML = "";
+});
+
+describe("saved direct sharing coverage", () => {
+	it.each([0, 1, 2])("shows %i direct entries separately from unchecked additions", (count) => {
+		// Arrange: a one-member Team and the same Identity are separate recipients.
+		const graph = intent();
+		graph.teams[0].displayName = "Studio";
+		graph.identities[0].displayName = "Alex";
+		graph.teamMemberships = graph.teamMemberships.slice(0, 1);
+		graph.projectRecipients = projects.slice(0, count).map((project) => ({
+			...intent().projectRecipients[0],
+			canonicalProjectIdentity: project.canonicalProjectIdentity,
+		}));
+		mount(graph);
+		// Act: duplicate Project IDs must not inflate coverage.
+		act(() => {
+			openRecipientPolicyManagement({
+				mode: "project-add",
+				projectIds: ["git:codemem", "git:api", "git:api"],
+			});
 		});
+		// Assert: saved direct relationships never become requested additions.
+		const team = checkbox("Studio");
+		expect(team.checked).toBe(false);
+		expect(team.disabled).toBe(count === 2);
+		expect(team.getAttribute("aria-label")).toBe(
+			count === 2
+				? "Studio already added to all selected Project entries"
+				: "Add Studio to remaining Project entries",
+		);
+		expect(team.closest("label")?.textContent).toContain(
+			count === 0 ? "Not added directly" : `Added to ${count} of 2 selected Project entries`,
+		);
+		expect(checkbox("Alex").checked).toBe(false);
+		expect(checkbox("Alex").disabled).toBe(false);
+		if (count > 0)
+			expect(checkbox("Alex").closest("label")?.textContent).toContain(
+				`Access through Team Studio: ${count} of 2 selected Project entries`,
+			);
+		expect(document.body.textContent).toContain(
+			"Existing sharing stays unchanged. Select additions below.",
+		);
+		expect(document.body.textContent).not.toContain("locally verified");
+		expect(document.body.textContent).not.toContain("You");
+		expect(api.previewRecipientPolicyEdges).not.toHaveBeenCalled();
+		expect(api.commitRecipientPolicyEdges).not.toHaveBeenCalled();
+		const descriptionId = team.getAttribute("aria-describedby");
+		expect(document.getElementById(descriptionId ?? "")?.textContent).toContain("Team");
+		if (count === 2) {
+			// Act: a fully covered choice cannot request a duplicate addition.
+			act(() => team.click());
+			// Assert
+			expect(team.checked).toBe(false);
+			expect(actionButton("Review changes").disabled).toBe(true);
+		}
 	});
 
-	afterEach(() => {
-		const element = document.getElementById("mount");
-		if (element) act(() => render(null, element));
-		vi.clearAllMocks();
-		document.body.innerHTML = "";
+	it.each(["active", "pending", "revoked"] as const)(
+		"shows inherited context only for active membership (%s)",
+		(status) => {
+			// Arrange
+			const graph = intent();
+			graph.identities[0].displayName = "Alex";
+			graph.teamMemberships[0].status = status;
+			mount(graph);
+			// Act
+			act(() => {
+				openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
+			});
+			// Assert
+			expect(checkbox("Alex").closest("label")?.textContent?.includes("Access through Team")).toBe(
+				status === "active",
+			);
+			expect(checkbox("Alex").checked).toBe(false);
+			expect(checkbox("Alex").disabled).toBe(true);
+		},
+	);
+
+	it("shows unavailable saved recipients in bulk without offering additions", () => {
+		// Arrange
+		const graph = intent({ teams: [], identities: [] });
+		mount(graph);
+		// Act
+		act(() => {
+			openRecipientPolicyManagement({
+				mode: "project-add",
+				projectIds: projects.map((project) => project.canonicalProjectIdentity),
+			});
+		});
+		// Assert
+		expect(checkbox("Unavailable Team").disabled).toBe(true);
+		expect(checkbox("Unavailable Identity").disabled).toBe(true);
+		expect(checkbox("Unavailable Team").closest("label")?.textContent).toContain(
+			"Added to 1 of 2 selected Project entries",
+		);
+		expect(document.body.textContent).not.toContain("team-example");
+	});
+});
+
+describe("sharing paths and preview coverage", () => {
+	it("keeps direct and inherited access separate when removing one relationship", async () => {
+		// Arrange
+		mount();
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-manage", projectId: "git:codemem" });
+		});
+		// Act
+		act(() => checkbox("Adam").click());
+		// Assert
+		expect(checkbox("Adam").checked).toBe(false);
+		expect(checkbox("ExampleCo").checked).toBe(true);
+		expect(checkbox("Adam").closest("label")?.textContent).toContain(
+			"Access through Team ExampleCo: 1 of 1 selected Project entries",
+		);
+		expect(document.body.textContent).toContain(
+			"Removing one relationship does not remove access through another Team or direct relationship.",
+		);
+		// Act
+		await reviewSelection();
+		// Assert
+		expect(api.previewRecipientPolicyEdges).toHaveBeenCalledWith({
+			version: 1,
+			changes: [
+				{
+					canonicalProjectIdentity: "git:codemem",
+					recipient: { recipientKind: "identity", identityId: "identity-adam" },
+					action: "remove",
+				},
+			],
+		});
+		expect(api.commitRecipientPolicyEdges).not.toHaveBeenCalled();
 	});
 
+	it("preserves authoritative partial device coverage without promising delivery", async () => {
+		// Arrange: the local inventory has a device the authoritative preview excludes.
+		const reviewed = preview([]);
+		reviewed.projects.push({
+			...reviewed.projects[0],
+			canonicalProjectIdentity: "git:api",
+			displayName: "API",
+		});
+		reviewed.effectiveDevices = [{ ...reviewed.effectiveDevices[0], displayName: "Studio laptop" }];
+		vi.mocked(api.previewRecipientPolicyEdges).mockResolvedValue(reviewed);
+		const graph = intent();
+		graph.identities[0].displayName = "Alex";
+		graph.identityDevices.push({
+			...graph.identityDevices[0],
+			deviceId: "device-excluded",
+			displayName: "Excluded desktop",
+		});
+		graph.identityDevices.push({
+			...graph.identityDevices[0],
+			deviceId: "device-revoked",
+			displayName: "Revoked laptop",
+			status: "revoked",
+		});
+		mount(graph);
+		act(() => {
+			openRecipientPolicyManagement({
+				mode: "project-add",
+				projectIds: ["git:codemem", "git:api"],
+			});
+		});
+		act(() => checkbox("Brian").click());
+		// Act
+		await reviewSelection();
+		// Assert
+		expect(document.body.textContent).toContain("Devices included after this update");
+		expect(document.body.textContent).toContain(
+			"Studio laptop — Alex — 1 of 2 affected Project entries",
+		);
+		expect(document.body.textContent).toContain(
+			"Access settings do not confirm delivery. Devices sync in the background.",
+		);
+		expect(document.body.textContent).not.toContain("will be available");
+		expect(document.body.textContent).not.toContain("Excluded desktop");
+		expect(document.body.textContent).not.toContain("Revoked laptop");
+		expect(api.commitRecipientPolicyEdges).not.toHaveBeenCalled();
+		// Act
+		await confirmChanges();
+		// Assert
+		expect(document.getElementById("recipient-policy-management-title")?.textContent).toBe(
+			"Sharing settings saved",
+		);
+	});
+});
+
+describe("recipient policy management dialog", () => {
 	it("project-add emits canonical add edges for every seeded Project and selected recipient", async () => {
 		mount();
 		act(() => {
@@ -437,7 +622,11 @@ describe("recipient policy management dialog", () => {
 		expect(checkbox("Archived Team").checked).toBe(true);
 		expect(checkbox("Merged recipient").checked).toBe(true);
 		expect(checkbox("Unavailable Identity").checked).toBe(true);
-		expect(document.body.textContent).toContain("existing access can only be removed");
+		expect(
+			checkbox("Archived Team")
+				.closest("label")
+				?.querySelector(".recipient-policy-management-description")?.textContent,
+		).toBe("Archived Team · unavailable for additions. Existing access can only be removed.");
 		act(() => {
 			checkbox("Archived Team").click();
 			checkbox("Merged recipient").click();
@@ -475,9 +664,9 @@ describe("recipient policy management dialog", () => {
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
-		expect(document.body.textContent).not.toContain("Archived Team");
-		expect(document.body.textContent).not.toContain("Merged recipient");
-		expect(document.body.textContent).not.toContain("Unavailable Identity");
+		expect(checkbox("Archived Team").disabled).toBe(true);
+		expect(checkbox("Merged recipient").disabled).toBe(true);
+		expect(checkbox("Unavailable Identity").disabled).toBe(true);
 	});
 
 	it("recipient-manage emits the same canonical edge shape with only Project diffs", async () => {
@@ -884,7 +1073,7 @@ describe("recipient policy management dialog", () => {
 			writeCount: 0,
 			idempotent: true,
 		});
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -901,7 +1090,7 @@ describe("recipient policy management dialog", () => {
 			[...document.querySelectorAll(".recipient-policy-management-review > section > h3")].map(
 				(heading) => heading.textContent,
 			),
-		).toEqual(["Projects affected", "Recipient changes", "Resulting availability"]);
+		).toEqual(["Projects affected", "Recipient changes", "Devices included after this update"]);
 		expect(document.body.textContent).not.toContain("Who receives it");
 		expect(document.body.textContent).toContain(
 			"Codemem — Access changes affect 436 existing memories and future activity",
@@ -909,9 +1098,9 @@ describe("recipient policy management dialog", () => {
 		expect(document.body.textContent).toContain("ExampleCo");
 		expect(document.body.textContent).toContain("Team · 2 current members");
 		expect(document.body.textContent).toContain("Adam, Brian");
-		expect(document.body.textContent).toContain("Future Team members inherit access");
+		expect(document.body.textContent).toContain("Eligible future Team members inherit access");
 		expect(document.body.textContent).toContain(
-			"After the update, the affected Projects will be available on 1 current device across all recipients",
+			"The reviewed access settings include 1 current device.",
 		);
 		const reviewFooter = document.querySelector(
 			".modal-footer.recipient-policy-management-actions",
@@ -943,10 +1132,11 @@ describe("recipient policy management dialog", () => {
 			reviewedPolicyDigest: "policy:digest",
 		});
 		expect(document.getElementById("recipient-policy-management-title")?.textContent).toBe(
-			"Recipient access updated",
+			"Sharing settings saved",
 		);
 		const resultDescription = document.getElementById("recipient-policy-management-description");
-		const appliedSummary = "The reviewed recipient access changes are applied.";
+		const appliedSummary =
+			"Access settings do not confirm delivery. Devices sync in the background.";
 		expect(resultDescription?.textContent).toBe(appliedSummary);
 		expect(resultDescription?.hasAttribute("aria-live")).toBe(false);
 		expect(resultDescription?.hasAttribute("role")).toBe(false);
@@ -976,7 +1166,7 @@ describe("recipient policy management dialog", () => {
 			...preview(request.changes),
 			effectiveDevices: [],
 		}));
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -984,7 +1174,7 @@ describe("recipient policy management dialog", () => {
 		await reviewSelection();
 
 		expect(document.body.textContent).toContain(
-			"After the update, no recipient devices will have access to the affected Projects yet",
+			"No recipient devices are included in this preview.",
 		);
 		expect(document.body.textContent).toContain("Your own access on this device is not affected.");
 	});
@@ -996,6 +1186,10 @@ describe("recipient policy management dialog", () => {
 			if (!device) throw new Error("device fixture is incomplete");
 			return {
 				...value,
+				projects: [
+					...value.projects,
+					{ ...value.projects[0], canonicalProjectIdentity: "git:api", displayName: "API" },
+				],
 				effectiveDevices: [
 					device,
 					{
@@ -1012,7 +1206,7 @@ describe("recipient policy management dialog", () => {
 				],
 			};
 		});
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -1020,15 +1214,18 @@ describe("recipient policy management dialog", () => {
 		await reviewSelection();
 
 		expect(document.body.textContent).toContain(
-			"After the update, the affected Projects will be available on 2 current devices across all recipients",
+			"The reviewed access settings include 2 current devices.",
 		);
 		const availableSection = document
 			.getElementById("recipient-policy-review-availability")
 			?.closest("section");
-		const deviceNames = [...(availableSection?.querySelectorAll("li") ?? [])].map(
+		const deviceNames = [...(availableSection?.querySelectorAll("summary") ?? [])].map(
 			(item) => item.textContent,
 		);
-		expect(deviceNames).toEqual(["Adam’s Mac", "Brian’s Mac"]);
+		expect(deviceNames).toEqual([
+			"Adam’s Mac — Adam — 2 of 2 affected Project entries",
+			"Brian’s Mac — Brian — 1 of 2 affected Project entries",
+		]);
 		expect(document.body.textContent).not.toContain("Duplicate project label");
 	});
 
@@ -1073,6 +1270,7 @@ describe("recipient policy management dialog", () => {
 		const baseIntent = intent();
 		mount(
 			intent({
+				projectRecipients: [],
 				identities: baseIntent.identities.map((identity, index) => ({
 					...identity,
 					displayName: index === 0 ? longMember : longIdentity,
@@ -1126,7 +1324,7 @@ describe("recipient policy management dialog", () => {
 				idempotent: false,
 			}),
 		);
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -1153,7 +1351,7 @@ describe("recipient policy management dialog", () => {
 	});
 
 	it("clears review-ready status when returning to selection", async () => {
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -1187,7 +1385,7 @@ describe("recipient policy management dialog", () => {
 		const closeButton = document.querySelector<HTMLButtonElement>(
 			".modal-close-button.recipient-policy-management-target",
 		);
-		expect(closeButton?.getAttribute("aria-label")).toBe("Close Manage Project recipients");
+		expect(closeButton?.getAttribute("aria-label")).toBe("Close Update sharing");
 		expect(closeButton?.type).toBe("button");
 		expect(closeButton?.textContent).toContain("Close");
 		expect(closeButton?.querySelector(".modal-close-button-icon")).not.toBeNull();
@@ -1263,7 +1461,7 @@ describe("recipient policy management dialog", () => {
 				resolvePreview = resolve;
 			}).then(() => preview(request.changes)),
 		);
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});
@@ -1316,7 +1514,7 @@ describe("recipient policy management dialog", () => {
 			writeCount: 0,
 			idempotent: false,
 		});
-		mount();
+		mount(intent({ projectRecipients: [] }));
 		act(() => {
 			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:codemem"] });
 		});

@@ -199,42 +199,75 @@ function setProjectSelection(projectIds: string[]) {
 	notifyProjectInventoryChanged();
 }
 
-type RecipientChip = { key: string; kind: "Team" | "Identity"; displayName: string };
+type RecipientChip = {
+	key: string;
+	kind: "Team" | "Identity";
+	displayName: string;
+	coveredProjectCount: number;
+	knownProjectCount: number;
+};
+
+function unavailableChipLabels(
+	ids: string[],
+	knownIds: Set<string>,
+	kind: "Team" | "Identity",
+): Map<string, string> {
+	const missing = [...new Set(ids)].filter((id) => !knownIds.has(id)).sort();
+	return new Map(
+		missing.map((id, index) => [
+			id,
+			missing.length === 1
+				? `Unavailable ${kind}`
+				: `Unavailable ${kind} ${index + 1} of ${missing.length}`,
+		]),
+	);
+}
 
 function recipientChips(projectIds: string[]): RecipientChip[] {
 	const projectIdSet = new Set(projectIds);
+	const edges = recipientPolicyIntent.projectRecipients.filter(
+		(edge) => edge.status === "active" && projectIdSet.has(edge.canonicalProjectIdentity),
+	);
 	const teams = new Map(
-		recipientPolicyIntent.teams
-			.filter((team) => team.status === "active")
-			.map((team) => [team.teamId, team.displayName]),
+		recipientPolicyIntent.teams.map((team) => [
+			team.teamId,
+			team.status === "archived" ? `${team.displayName} (archived)` : team.displayName,
+		]),
 	);
 	const identities = new Map(
-		recipientPolicyIntent.identities
-			.filter((identity) => identity.status === "active" || identity.status === "pending")
-			.map((identity) => [identity.identityId, identity.displayName]),
+		recipientPolicyIntent.identities.map((identity) => [
+			identity.identityId,
+			identity.status === "merged" ? `${identity.displayName} (merged)` : identity.displayName,
+		]),
+	);
+	const missingTeams = unavailableChipLabels(
+		edges.flatMap((edge) => (edge.recipientKind === "team" ? [edge.teamId] : [])),
+		new Set(teams.keys()),
+		"Team",
+	);
+	const missingIdentities = unavailableChipLabels(
+		edges.flatMap((edge) => (edge.recipientKind === "identity" ? [edge.identityId] : [])),
+		new Set(identities.keys()),
+		"Identity",
 	);
 	const chips = new Map<string, RecipientChip>();
-	for (const edge of recipientPolicyIntent.projectRecipients) {
-		if (edge.status !== "active" || !projectIdSet.has(edge.canonicalProjectIdentity)) continue;
-		if (edge.recipientKind === "team") {
-			const displayName = teams.get(edge.teamId);
-			if (displayName) {
-				chips.set(`team:${edge.teamId}`, {
-					key: `team:${edge.teamId}`,
-					kind: "Team",
-					displayName,
-				});
-			}
-		} else {
-			const displayName = identities.get(edge.identityId);
-			if (displayName) {
-				chips.set(`identity:${edge.identityId}`, {
-					key: `identity:${edge.identityId}`,
-					kind: "Identity",
-					displayName,
-				});
-			}
-		}
+	const coverage = new Map<string, Set<string>>();
+	for (const edge of edges) {
+		const isTeam = edge.recipientKind === "team";
+		const key = isTeam ? `team:${edge.teamId}` : `identity:${edge.identityId}`;
+		const displayName = isTeam
+			? (teams.get(edge.teamId) ?? missingTeams.get(edge.teamId))
+			: (identities.get(edge.identityId) ?? missingIdentities.get(edge.identityId));
+		const projects = coverage.get(key) ?? new Set<string>();
+		projects.add(edge.canonicalProjectIdentity);
+		coverage.set(key, projects);
+		chips.set(key, {
+			key,
+			kind: isTeam ? "Team" : "Identity",
+			displayName: displayName ?? (isTeam ? "Unavailable Team" : "Unavailable Identity"),
+			coveredProjectCount: projects.size,
+			knownProjectCount: projectIdSet.size,
+		});
 	}
 	return [...chips.values()].sort((left, right) =>
 		`${left.kind}:${left.displayName}`.localeCompare(`${right.kind}:${right.displayName}`),
@@ -779,7 +812,7 @@ function projectViewModel(project: ProjectScopeInventoryProject): ProjectInvento
 				}
 			: null,
 		pendingForgetConfirmation: pendingForget ? { ...pendingForget } : null,
-		recipients: locallyAssignable ? recipientChips([project.workspace_identity]) : [],
+		recipients: recipientChips([project.workspace_identity]),
 	};
 }
 
@@ -799,7 +832,7 @@ function inventoryRowViewModel(
 		worktreesOpen: openProjectWorktrees.has(key),
 		detailsOpen: openProjectClusters.has(key),
 		draftScopeId: draftClusterDomainSelections.get(key) ?? null,
-		recipients: recipientChips(projectIds),
+		recipients: recipientChips(uniqueProjectIds(projects)),
 	};
 }
 

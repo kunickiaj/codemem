@@ -1,4 +1,4 @@
-import { render } from "preact";
+import { type ComponentChildren, render } from "preact";
 import { useEffect, useId, useMemo, useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
@@ -99,11 +99,12 @@ function unavailableRecipientLabels(
 	intent: RecipientPolicyIntentGraphV1,
 	request: RecipientPolicyManagementRequest | null,
 ): ReadonlyMap<string, string> {
-	if (request?.mode !== "project-manage") return new Map();
+	if (!request?.mode.startsWith("project-")) return new Map();
+	const projectIds = new Set(requestProjectIds(request));
 	const knownTeamIds = new Set(intent.teams.map((team) => team.teamId));
 	const knownIdentityIds = new Set(intent.identities.map((identity) => identity.identityId));
 	const activeEdges = intent.projectRecipients.filter(
-		(edge) => edge.status === "active" && edge.canonicalProjectIdentity === request.projectId,
+		(edge) => edge.status === "active" && projectIds.has(edge.canonicalProjectIdentity),
 	);
 	const missingTeams = activeEdges.flatMap((edge) =>
 		edge.recipientKind === "team" && !knownTeamIds.has(edge.teamId) ? [edgeRecipientKey(edge)] : [],
@@ -140,12 +141,14 @@ function safeError(cause: unknown, fallback: string): string {
 }
 
 function Choice({
+	ariaLabel,
 	checked,
 	description,
 	disabled,
 	label,
 	onChange,
 }: {
+	ariaLabel?: string;
 	checked: boolean;
 	description: string;
 	disabled?: boolean;
@@ -158,14 +161,26 @@ function Choice({
 			className="sync-dialog-radio-option recipient-policy-management-choice recipient-policy-management-target"
 			htmlFor={id}
 		>
-			<input checked={checked} disabled={disabled} id={id} onChange={onChange} type="checkbox" />
+			<input
+				aria-label={ariaLabel}
+				aria-describedby={`${id}-description`}
+				checked={checked}
+				disabled={disabled}
+				id={id}
+				onChange={onChange}
+				type="checkbox"
+			/>
 			<span className="sync-dialog-choice-copy">
 				<strong className="recipient-policy-management-name">{label}</strong>
-				<span className="small recipient-policy-management-description">{description}</span>
+				<span id={`${id}-description`} className="small recipient-policy-management-description">
+					{description}
+				</span>
 			</span>
 		</label>
 	);
 }
+
+type RecipientChoice = { key: string; label: string; description: string; unavailable?: boolean };
 
 function recipientChoices(
 	intent: RecipientPolicyIntentGraphV1,
@@ -176,7 +191,7 @@ function recipientChoices(
 	const identitiesById = new Map(
 		intent.identities.map((identity) => [identity.identityId, identity]),
 	);
-	const choices = [
+	const choices: RecipientChoice[] = [
 		...intent.teams
 			.filter((team) => team.status === "active")
 			.map((team) => {
@@ -187,7 +202,7 @@ function recipientChoices(
 				return {
 					key: recipientKey({ recipientKind: "team", teamId: team.teamId }),
 					label: team.displayName,
-					description: `Team · ${members.length.toLocaleString()} current ${members.length === 1 ? "member" : "members"}${members.length ? `: ${members.join(", ")}` : ""}`,
+					description: `Team · ${members.length.toLocaleString()} current ${members.length === 1 ? "member" : "members"}${members.length ? `: ${members.join(", ")}` : ""}. Eligible current and future members inherit access.`,
 				};
 			}),
 		...intent.identities
@@ -195,13 +210,14 @@ function recipientChoices(
 			.map((identity) => ({
 				key: recipientKey({ recipientKind: "identity", identityId: identity.identityId }),
 				label: identity.displayName,
-				description: `Identity · ${identity.status === "pending" ? "pending · " : ""}locally verified`,
+				description: `Identity · ${identity.status === "pending" ? "pending · " : ""}direct access, independent of Team membership.`,
 			})),
 	];
-	if (request?.mode !== "project-manage") return choices;
+	if (!request?.mode.startsWith("project-")) return choices;
+	const projectIds = new Set(requestProjectIds(request));
 	const choiceKeys = new Set(choices.map((choice) => choice.key));
 	for (const edge of intent.projectRecipients) {
-		if (edge.status !== "active" || edge.canonicalProjectIdentity !== request.projectId) continue;
+		if (edge.status !== "active" || !projectIds.has(edge.canonicalProjectIdentity)) continue;
 		const key = edgeRecipientKey(edge);
 		if (choiceKeys.has(key)) continue;
 		if (edge.recipientKind === "team") {
@@ -210,7 +226,8 @@ function recipientChoices(
 			choices.push({
 				key,
 				label: team?.displayName ?? unavailableLabel,
-				description: `${team?.status === "archived" ? "Archived Team" : unavailableLabel} · existing access can only be removed`,
+				unavailable: true,
+				description: `${team?.status === "archived" ? "Archived Team" : unavailableLabel} · unavailable for additions.`,
 			});
 		} else {
 			const identity = identitiesById.get(edge.identityId);
@@ -218,12 +235,125 @@ function recipientChoices(
 			choices.push({
 				key,
 				label: identity?.displayName ?? unavailableLabel,
-				description: `${identity?.status === "merged" ? "Merged Identity" : unavailableLabel} · existing access can only be removed`,
+				unavailable: true,
+				description: `${identity?.status === "merged" ? "Merged Identity" : unavailableLabel} · unavailable for additions.`,
 			});
 		}
 		choiceKeys.add(key);
 	}
 	return choices;
+}
+
+function recipientCoverage(
+	intent: RecipientPolicyIntentGraphV1,
+	projectIds: string[],
+	key: string,
+): Set<string> {
+	return new Set(
+		intent.projectRecipients
+			.filter(
+				(edge) =>
+					edge.status === "active" &&
+					projectIds.includes(edge.canonicalProjectIdentity) &&
+					edgeRecipientKey(edge) === key,
+			)
+			.map((edge) => edge.canonicalProjectIdentity),
+	);
+}
+
+function inheritedTeamDescriptions(
+	intent: RecipientPolicyIntentGraphV1,
+	projectIds: string[],
+	key: string,
+): string[] {
+	const recipient = recipientFromKey(key);
+	if (recipient?.recipientKind !== "identity") return [];
+	return intent.teams
+		.filter((team) => team.status === "active")
+		.flatMap((team) => {
+			const member = intent.teamMemberships.some(
+				(membership) =>
+					membership.status === "active" &&
+					membership.teamId === team.teamId &&
+					membership.identityId === recipient.identityId,
+			);
+			if (!member) return [];
+			const count = recipientCoverage(intent, projectIds, `team:${team.teamId}`).size;
+			if (!count) return [];
+			return [
+				`Access through Team ${team.displayName}: ${count} of ${projectIds.length} selected Project entries. Device eligibility is checked in Review.`,
+			];
+		});
+}
+
+function recipientChoicePresentation(
+	choice: ReturnType<typeof recipientChoices>[number],
+	intent: RecipientPolicyIntentGraphV1,
+	request: RecipientPolicyManagementRequest,
+) {
+	const projectIds = requestProjectIds(request);
+	const direct = recipientCoverage(intent, projectIds, choice.key).size;
+	const descriptions = [choice.description];
+	const bulk = request.mode === "project-add";
+	const fullyCovered = projectIds.length > 0 && direct === projectIds.length;
+	const unavailable = Boolean(choice.unavailable);
+	if (unavailable && !bulk) descriptions.push("Existing access can only be removed.");
+	if (bulk) {
+		descriptions.push(
+			direct
+				? `Added to ${direct} of ${projectIds.length} selected Project entries directly.`
+				: "Not added directly.",
+		);
+		if (fullyCovered) descriptions.push("Already added.");
+	}
+	descriptions.push(...inheritedTeamDescriptions(intent, projectIds, choice.key));
+	let ariaLabel: string | undefined;
+	if (bulk) {
+		ariaLabel = `Add ${choice.label} to remaining Project entries`;
+		if (unavailable) ariaLabel = `${choice.label} unavailable for additions`;
+		else if (fullyCovered)
+			ariaLabel = `${choice.label} already added to all selected Project entries`;
+	}
+	return {
+		description: descriptions.join(" "),
+		disabled: bulk && (fullyCovered || unavailable),
+		ariaLabel,
+	};
+}
+
+function RecipientChoices({
+	choices,
+	intent,
+	request,
+	selected,
+	busy,
+	toggle,
+}: {
+	choices: RecipientChoice[];
+	intent: RecipientPolicyIntentGraphV1;
+	request: RecipientPolicyManagementRequest;
+	selected: string[];
+	busy: boolean;
+	toggle: (key: string) => void;
+}) {
+	return (
+		<>
+			{choices.map((choice) => {
+				const presentation = recipientChoicePresentation(choice, intent, request);
+				return (
+					<Choice
+						ariaLabel={presentation.ariaLabel}
+						checked={selected.includes(choice.key)}
+						description={presentation.description}
+						disabled={busy || presentation.disabled}
+						key={choice.key}
+						label={choice.label}
+						onChange={() => toggle(choice.key)}
+					/>
+				);
+			})}
+		</>
+	);
 }
 
 function requestProjectIds(request: RecipientPolicyManagementRequest): string[] {
@@ -341,18 +471,55 @@ function buildChanges(
 	});
 }
 
+function ProjectChoices({
+	choices,
+	selected,
+	busy,
+	toggle,
+	emptyMessage,
+}: {
+	choices: ReturnType<typeof projectChoices>;
+	selected: string[];
+	busy: boolean;
+	toggle: (key: string) => void;
+	emptyMessage: string;
+}) {
+	if (!choices.length)
+		return (
+			<p className="small" role="status">
+				{emptyMessage}
+			</p>
+		);
+	return (
+		<>
+			{choices.map((project) => (
+				<Choice
+					checked={selected.includes(project.canonicalProjectIdentity)}
+					description={project.description}
+					disabled={busy}
+					key={project.canonicalProjectIdentity}
+					label={project.displayName}
+					onChange={() => toggle(project.canonicalProjectIdentity)}
+				/>
+			))}
+		</>
+	);
+}
+
 function dialogCopy(request: RecipientPolicyManagementRequest) {
 	if (request.mode === "project-add") {
 		return {
-			title: "Add recipient access",
-			description: "Choose the Teams and Identities that should receive the selected Projects.",
-			legend: "Choose recipients",
+			title: "Add Teams or Identities",
+			description:
+				"Existing sharing stays unchanged. Select additions below. Unchecked boxes mean no addition requested. One person can have separate personal and work Identities.",
+			legend: "Choose additions",
 		};
 	}
 	if (request.mode === "project-manage") {
 		return {
-			title: "Manage Project recipients",
-			description: "Choose exactly which Teams and Identities receive this Project.",
+			title: "Update sharing",
+			description:
+				"Checked boxes are saved direct relationships. Removing one relationship does not remove access through another Team or direct relationship. One person can have separate personal and work Identities.",
 			legend: "Project recipients",
 		};
 	}
@@ -411,15 +578,17 @@ function changedRecipientsMissingFromPreview(
 	return [...missing.values()];
 }
 
-function deduplicateEffectiveDevices(
+function effectiveDeviceCoverage(
 	devices: RecipientPolicyEdgePreviewResponseV1["effectiveDevices"],
-): RecipientPolicyEdgePreviewResponseV1["effectiveDevices"] {
-	const seenDeviceIds = new Set<string>();
-	return devices.filter((device) => {
-		if (seenDeviceIds.has(device.deviceId)) return false;
-		seenDeviceIds.add(device.deviceId);
-		return true;
-	});
+) {
+	const coverage = new Map<string, { device: (typeof devices)[number]; projectIds: Set<string> }>();
+	for (const device of devices) {
+		const key = `${device.identityId}:${device.deviceId}`;
+		const entry = coverage.get(key) ?? { device, projectIds: new Set<string>() };
+		entry.projectIds.add(device.canonicalProjectIdentity);
+		coverage.set(key, entry);
+	}
+	return [...coverage.values()];
 }
 
 function previewProjectLabel(
@@ -442,7 +611,10 @@ function Review({
 	projectLabels: ReadonlyMap<string, string>;
 	recipientLabels: ReadonlyMap<string, string>;
 }) {
-	const effectiveDevices = deduplicateEffectiveDevices(preview.effectiveDevices);
+	const effectiveDevices = effectiveDeviceCoverage(preview.effectiveDevices);
+	const affectedProjectCount = new Set(
+		preview.projects.map((project) => project.canonicalProjectIdentity),
+	).size;
 	const missingChangedRecipients = changedRecipientsMissingFromPreview(preview);
 	return (
 		<div className="sync-dialog-stack recipient-policy-management-review">
@@ -474,7 +646,7 @@ function Review({
 							<strong className="recipient-policy-management-name">{recipient.displayName}</strong>{" "}
 							<span>— {recipientActionLabel(preview.outcomes, recipient)} · </span>
 							{recipient.recipientKind === "identity" ? (
-								<span>Identity · locally verified</span>
+								<span>Identity · direct access, independent of Team membership</span>
 							) : (
 								<span className="recipient-policy-management-recipient-context">
 									Team · {recipient.currentMembers.length.toLocaleString()} current{" "}
@@ -487,7 +659,7 @@ function Review({
 											</span>
 										</>
 									) : null}
-									. Future Team members{" "}
+									. Eligible future Team members{" "}
 									{recipient.futureMembersInherit ? "inherit" : "do not inherit"} access.
 								</span>
 							)}
@@ -510,26 +682,50 @@ function Review({
 				</ul>
 			</section>
 			<section aria-labelledby="recipient-policy-review-availability">
-				<h3 id="recipient-policy-review-availability">Resulting availability</h3>
+				<h3 id="recipient-policy-review-availability">Devices included after this update</h3>
+				<p>Access settings do not confirm delivery. Devices sync in the background.</p>
 				{effectiveDevices.length ? (
 					<>
 						<p>
-							After the update, the affected Projects will be available on{" "}
-							{effectiveDevices.length.toLocaleString()} current{" "}
-							{effectiveDevices.length === 1 ? "device" : "devices"} across all recipients.
+							The reviewed access settings include {effectiveDevices.length.toLocaleString()}{" "}
+							current {effectiveDevices.length === 1 ? "device" : "devices"}.
 						</p>
 						<ul>
-							{effectiveDevices.map((device) => (
-								<li className="recipient-policy-management-name" key={device.deviceId}>
-									{device.displayName}
+							{effectiveDevices.map(({ device, projectIds }) => (
+								<li
+									className="recipient-policy-management-name"
+									key={`${device.identityId}:${device.deviceId}`}
+								>
+									<details>
+										<summary>
+											<span className="recipient-policy-management-name">{device.displayName}</span>{" "}
+											—{" "}
+											{recipientLabels.get(`identity:${device.identityId}`) ??
+												"Unavailable Identity"}{" "}
+											— {projectIds.size} of {affectedProjectCount} affected Project entries
+										</summary>
+										<ul>
+											{[...projectIds].map((projectId) => {
+												const project = preview.projects.find(
+													(item) => item.canonicalProjectIdentity === projectId,
+												);
+												return (
+													<li key={projectId}>
+														{project
+															? previewProjectLabel(project, projectLabels)
+															: "Unavailable Project"}
+													</li>
+												);
+											})}
+										</ul>
+									</details>
 								</li>
 							))}
 						</ul>
 					</>
 				) : (
 					<p>
-						After the update, no recipient devices will have access to the affected Projects yet —
-						for example, a Team with no current members. Your own access on this device is not
+						No recipient devices are included in this preview. Your own access on this device is not
 						affected.
 					</p>
 				)}
@@ -724,20 +920,18 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		request.mode !== "project-add" && request.mode !== "recipient-add" && changes.length === 0;
 	const availableProjects = projectChoices(projects, request, initial, unavailableProjects);
 	const resultApplied = result?.status === "applied";
-	const title = result
-		? resultApplied
-			? "Recipient access updated"
-			: "Recipient access needs attention"
-		: preview
-			? "Review recipient access"
-			: copy.title;
-	const description = result
-		? resultApplied
-			? "The reviewed recipient access changes are applied."
-			: "Some reviewed recipient access changes were not applied. Review the technical details."
-		: preview
-			? "Confirm the exact Projects, recipients, and resulting access."
-			: copy.description;
+	let title = copy.title;
+	let description = copy.description;
+	if (preview) {
+		title = "Review recipient access";
+		description = "Confirm the exact Projects, recipients, and resulting access.";
+	}
+	if (result) {
+		title = resultApplied ? "Sharing settings saved" : "Recipient access needs attention";
+		description = resultApplied
+			? "Access settings do not confirm delivery. Devices sync in the background."
+			: "Some reviewed recipient access changes were not applied. Review the technical details.";
+	}
 
 	const close = () => {
 		if (submitting.current) return;
@@ -828,6 +1022,69 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		unavailableMessage = "This recipient is no longer available. Refresh and try again.";
 	}
 
+	let content: ComponentChildren;
+	if (unavailableMessage) {
+		content = (
+			<p aria-live="polite" role={options.loadError ? "alert" : "status"}>
+				{unavailableMessage}
+			</p>
+		);
+	} else if (result && preview) {
+		content = (
+			<CommitResult
+				preview={preview}
+				projectLabels={reviewedProjectLabels.current}
+				recipientLabels={reviewedRecipientLabels.current}
+				result={result}
+			/>
+		);
+	} else if (preview) {
+		content = (
+			<Review
+				preview={preview}
+				projectLabels={reviewedProjectLabels.current}
+				recipientLabels={reviewedRecipientLabels.current}
+			/>
+		);
+	} else if (request.mode === "recipient-add" || request.mode === "recipient-manage") {
+		const emptyMessage =
+			request.mode === "recipient-add"
+				? "No additional Projects are available."
+				: "No Projects are available.";
+		content = (
+			<fieldset className="sync-dialog-radio-list" disabled={busy}>
+				<legend>{copy.legend}</legend>
+				<ProjectChoices
+					choices={availableProjects}
+					selected={selected}
+					busy={busy}
+					toggle={toggle}
+					emptyMessage={emptyMessage}
+				/>
+			</fieldset>
+		);
+	} else {
+		content = (
+			<fieldset className="sync-dialog-radio-list" disabled={busy}>
+				<legend>{copy.legend}</legend>
+				{choices.length ? (
+					<RecipientChoices
+						choices={choices}
+						intent={intent}
+						request={request}
+						selected={selected}
+						busy={busy}
+						toggle={toggle}
+					/>
+				) : (
+					<p className="small" role="status">
+						No active Teams or Identities are available.
+					</p>
+				)}
+			</fieldset>
+		);
+	}
+
 	return (
 		<RadixDialog
 			ariaDescribedby="recipient-policy-management-description"
@@ -875,66 +1132,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 					<p className="small" id="recipient-policy-management-description">
 						{description}
 					</p>
-					{unavailableMessage ? (
-						<p aria-live="polite" role={options.loadError ? "alert" : "status"}>
-							{unavailableMessage}
-						</p>
-					) : result && preview ? (
-						<CommitResult
-							preview={preview}
-							projectLabels={reviewedProjectLabels.current}
-							recipientLabels={reviewedRecipientLabels.current}
-							result={result}
-						/>
-					) : preview ? (
-						<Review
-							preview={preview}
-							projectLabels={reviewedProjectLabels.current}
-							recipientLabels={reviewedRecipientLabels.current}
-						/>
-					) : request.mode === "recipient-add" || request.mode === "recipient-manage" ? (
-						<fieldset className="sync-dialog-radio-list" disabled={busy}>
-							<legend>{copy.legend}</legend>
-							{availableProjects.length ? (
-								availableProjects.map((project) => (
-									<Choice
-										checked={selected.includes(project.canonicalProjectIdentity)}
-										description={project.description}
-										disabled={busy}
-										key={project.canonicalProjectIdentity}
-										label={project.displayName}
-										onChange={() => toggle(project.canonicalProjectIdentity)}
-									/>
-								))
-							) : (
-								<p className="small" role="status">
-									{request.mode === "recipient-add"
-										? "No additional Projects are available."
-										: "No Projects are available."}
-								</p>
-							)}
-						</fieldset>
-					) : (
-						<fieldset className="sync-dialog-radio-list" disabled={busy}>
-							<legend>{copy.legend}</legend>
-							{choices.length ? (
-								choices.map((choice) => (
-									<Choice
-										checked={selected.includes(choice.key)}
-										description={choice.description}
-										disabled={busy}
-										key={choice.key}
-										label={choice.label}
-										onChange={() => toggle(choice.key)}
-									/>
-								))
-							) : (
-								<p className="small" role="status">
-									No active Teams or Identities are available.
-								</p>
-							)}
-						</fieldset>
-					)}
+					{content}
 					{result ? null : (
 						<p
 							aria-live="polite"

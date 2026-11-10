@@ -16,6 +16,12 @@ import {
 	projectSignal,
 } from "./project-view";
 
+function recipientCoverageLabel(recipient: ProjectInventoryRecipientViewModel): string {
+	if (recipient.coveredProjectCount == null || recipient.knownProjectCount == null)
+		return " · Coverage unavailable";
+	return ` · ${recipient.coveredProjectCount} of ${recipient.knownProjectCount} known Project entries`;
+}
+
 export function RecipientSummary({
 	available,
 	cluster = false,
@@ -27,9 +33,20 @@ export function RecipientSummary({
 }) {
 	if (!available) return <span className="project-recipient-status tertiary">Unavailable</span>;
 	if (recipients.length === 0)
-		return <span className="project-recipient-status tertiary">Not shared</span>;
-	const visible = recipients.slice(0, 2);
+		return <span className="project-recipient-status tertiary">No Teams or Identities added</span>;
+	const visible = cluster ? recipients : recipients.slice(0, 2);
 	const remaining = recipients.length - visible.length;
+	const differentSharing =
+		cluster &&
+		recipients.some((recipient) => recipient.coveredProjectCount !== recipient.knownProjectCount);
+	let groupStatus = "Sharing across known entries";
+	if (differentSharing) groupStatus = "Different sharing across entries";
+	if (
+		recipients.some(
+			(recipient) => recipient.coveredProjectCount == null || recipient.knownProjectCount == null,
+		)
+	)
+		groupStatus = "Coverage unavailable";
 	return (
 		<div className="project-recipient-summary">
 			<ul aria-label="Active recipients" className="project-recipient-chips">
@@ -39,13 +56,12 @@ export function RecipientSummary({
 						key={recipient.key}
 					>
 						{recipient.kind}: {recipient.displayName}
+						{cluster ? recipientCoverageLabel(recipient) : ""}
 					</li>
 				))}
 				{remaining > 0 ? <li className="project-recipient-chip">+{remaining}</li> : null}
 			</ul>
-			{cluster ? (
-				<span className="project-recipient-status">{recipients.length} recipients</span>
-			) : null}
+			{cluster ? <span className="project-recipient-status">{groupStatus}</span> : null}
 		</div>
 	);
 }
