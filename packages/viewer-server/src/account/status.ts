@@ -5,6 +5,7 @@ import {
 	type ResolvedAccountOwnerStatus,
 	readCoordinatorAccountChangeCapabilities,
 	readCoordinatorAccountLinkStatus,
+	type readCoordinatorDeviceSetup,
 	readCoordinatorResolvedAccountOwnerStatus,
 } from "@codemem/core";
 import type {
@@ -13,6 +14,7 @@ import type {
 	AccountContextResult,
 	AccountSetup,
 } from "./context.js";
+import { attachDeviceConnection } from "./device-connection.js";
 import {
 	type AccountLinkOperationV1,
 	type AccountLinkRegistry,
@@ -26,6 +28,7 @@ export interface AccountStatusOptions {
 	readRemoteStatus?: typeof readCoordinatorAccountLinkStatus;
 	readRemoteOwnerStatus?: typeof readCoordinatorResolvedAccountOwnerStatus;
 	readRemoteCapabilities?: typeof readCoordinatorAccountChangeCapabilities;
+	readRemoteDeviceSetup?: typeof readCoordinatorDeviceSetup;
 	/** The local People name for an Identity, so My Account and Sharing name it the same way. */
 	identityName?: (identityId: string) => string | undefined;
 }
@@ -67,6 +70,8 @@ export interface AccountLinkViewV1 {
 	canLink: boolean;
 	/** "Sign in with Google": may link this Identity or switch the device to the account's. */
 	canSignIn?: boolean;
+	/** Signed eligibility for connecting this device without changing its Identity. */
+	canConnectDevice?: boolean;
 	/**
 	 * Where sign-in starts when this view is the owner-only projection, whose
 	 * own contextId is not a mutation context: this device's own Identity.
@@ -130,9 +135,10 @@ function attachOperation(
 	operationContextId = input.contextId,
 ): AccountLinkViewV1 {
 	// Without a rebind runner there is no sign-in; the UI keeps the link action.
-	const { canSignIn, signIn, ...rest } = input;
+	const { canSignIn, canConnectDevice, signIn, ...rest } = input;
 	const view: AccountLinkViewV1 = registry?.supportsSignIn?.() ? input : rest;
 	void canSignIn;
+	void canConnectDevice;
 	void signIn;
 	const operation = operationContextId ? (registry?.forContext(operationContextId) ?? null) : null;
 	const operationContext =
@@ -146,6 +152,7 @@ function attachOperation(
 			operation,
 			canLink: false,
 			...("canSignIn" in view ? { canSignIn: false } : {}),
+			...("canConnectDevice" in view ? { canConnectDevice: false } : {}),
 			blockedReason: "operation_active",
 		};
 	return { ...view, ...operationContext, operation };
@@ -405,6 +412,7 @@ async function finishAccountStatus(
 			return attachOperation(owner, options.registry, context.contextId);
 		}
 	}
+	await attachDeviceConnection(options, context, currentView, signal);
 	await attachManagementActions(options, context, currentView, signal);
 	if (remote.kind === "status") {
 		try {
@@ -516,6 +524,8 @@ async function attachManagementActions(
 	) {
 		view.remote = { kind: "unavailable", code: "context_changed" };
 		view.blockedReason = "status_unavailable";
+		view.canSignIn = false;
+		view.canConnectDevice = false;
 		return;
 	}
 	if (

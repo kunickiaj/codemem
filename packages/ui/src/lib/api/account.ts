@@ -100,6 +100,8 @@ export type AccountView = {
 	canLink: boolean;
 	/** Sign in with Google: links this Identity, or switches the device to the account's. */
 	canSignIn?: boolean;
+	/** Connects this device to its current Identity through Google sign-in. */
+	canConnectDevice?: boolean;
 	/** Sign-in start fields for the owner-only view, whose contextId is not a mutation context. */
 	signIn?: {
 		contextId: string;

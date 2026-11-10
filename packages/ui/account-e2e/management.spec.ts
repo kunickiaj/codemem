@@ -1,5 +1,91 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { BrowserContext, Page } from "@playwright/test";
 import { type AccountFixture, expect, test } from "./fixture";
+
+for (const eligible of [true, false]) {
+	test(`device connection presentation uses explicit sign-in dispatch; eligible=${eligible}`, async (
+		{ page, account: f },
+		testInfo,
+	) => {
+		// Arrange: mock presentation only, without claiming authorization or binding success.
+		const starts: unknown[] = [];
+		let expectedStart: unknown;
+		await page.route("**/api/account/link-status*", async (route) => {
+			const response = await route.fetch();
+			const view = await response.json();
+			expectedStart = {
+				intent: "sign_in",
+				groupId: view.selectedGroupId,
+				contextId: view.contextId,
+				coordinatorId: view.remote.coordinatorId,
+				authority: view.remote.authority,
+			};
+			await route.fulfill({
+				response,
+				json: {
+					...view,
+					canConnectDevice: eligible,
+					canSignIn: eligible,
+					blockedReason: eligible ? null : "already_linked",
+				},
+			});
+		});
+		await page.route("**/api/account/link-operations", async (route) => {
+			starts.push(route.request().postDataJSON());
+			// No synthetic success receipt: the real ceremony is covered separately.
+			await route.fulfill({
+				status: 409,
+				json: { error: "account_link_not_allowed", blockedReason: "already_linked" },
+			});
+		});
+		await page.setViewportSize({ width: 1100, height: 850 });
+		await page.goto(f.viewerOrigin);
+		const html = readFileSync(resolve(import.meta.dirname, "../static/index.html"), "utf8");
+		for (const name of ["tokens.css", "themes.css", "controls.css"]) {
+			await page.addStyleTag({
+				content: readFileSync(resolve(import.meta.dirname, "../static", name), "utf8"),
+			});
+		}
+		await page.addStyleTag({
+			content: html.slice(html.indexOf("<style>") + 7, html.lastIndexOf("</style>")),
+		});
+		const connect = page.getByRole("button", { name: "Connect this device", exact: true });
+		await expect(page.getByRole("heading", { name: "My Account", exact: true })).toBeVisible();
+		expect(starts).toEqual([]);
+		// Act
+		if (eligible) {
+			await expect(connect).toBeEnabled();
+			await expect(page.locator("#my-account-summary")).toContainText(
+				"Your Identity and sharing access won’t change",
+			);
+			const screenshot = testInfo.outputPath("connect-this-device.png");
+			await page.getByRole("region", { name: "My Account", exact: true }).screenshot({
+				path: screenshot,
+				animations: "disabled",
+			});
+			await testInfo.attach("Connect this device (presentation fixture)", {
+				path: screenshot,
+				contentType: "image/png",
+			});
+			const refreshed = page.waitForResponse(
+				(response) => new URL(response.url()).pathname === "/api/account/link-status",
+			);
+			await connect.click();
+			await refreshed;
+			await expect(connect).toBeEnabled();
+		} else {
+			await expect(connect).toHaveCount(0);
+			await expect(page.getByRole("button", { name: "Refresh profile", exact: true })).toBeEnabled();
+		}
+		// Assert: only an explicit eligible action sends the current-context sign-in payload.
+		await expect.poll(() => starts).toEqual(eligible ? [expectedStart] : []);
+		expect(f.finalRequests).toHaveLength(0);
+		expect(f.unlinkRequests).toHaveLength(0);
+		expect(f.providerHops).toEqual([]);
+		await page.unrouteAll({ behavior: "wait" });
+	});
+}
 
 async function openProvider(page: Page, context: BrowserContext, action: string) {
 	const opened = context.waitForEvent("page");
