@@ -34,7 +34,7 @@ export const CONNECTION_RELINK_ELIGIBLE_SQL = `(EXISTS (SELECT 1 FROM coordinato
 
 /** A renewed same-Identity review is distinct from a contradictory assignment. */
 export const CONNECTION_REQUESTER_ATTESTATION_IDENTITY_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_auth_controller_attestations a
- WHERE a.coordinator_id=p.coordinator_id AND (a.device_id=p.device_id OR EXISTS (SELECT 1 FROM claim_same_keys k WHERE k.value=a.public_key)) AND a.identity_id<>p.identity_id)`;
+ WHERE a.coordinator_id=p.coordinator_id AND (a.device_id=p.device_id OR EXISTS (SELECT 1 FROM json_each(p.same_keys) k WHERE k.value=a.public_key)) AND a.identity_id<>p.identity_id)`;
 const otherIdentityClaimSql = (
 	extra: string,
 ) => `NOT EXISTS (SELECT 1 FROM coordinator_auth_device_claims d

@@ -64,12 +64,12 @@ const CHECKS = [
 	AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL,
-	`NOT EXISTS (SELECT 1 FROM enrolled_devices e,claim_same_keys k WHERE e.public_key=k.value AND e.device_id<>p.device_id)`,
+	`NOT EXISTS (SELECT 1 FROM enrolled_devices e,json_each(p.same_keys) k WHERE e.public_key=k.value AND e.device_id<>p.device_id)`,
 	`NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts o WHERE o.coordinator_id=p.coordinator_id
  AND o.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND o.expires_at_ms>p.now_ms AND (o.device_id=p.device_id OR o.key_id=p.key_id))`,
 	`NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts b WHERE b.coordinator_id=p.coordinator_id
  AND b.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND b.expires_at_ms>p.now_ms
- AND b.identity_id<>p.identity_id AND (b.device_id=p.device_id OR b.public_key IN (SELECT value FROM claim_same_keys)))`,
+ AND b.identity_id<>p.identity_id AND (b.device_id=p.device_id OR b.public_key IN (SELECT value FROM json_each(p.same_keys))))`,
 	`NOT EXISTS (SELECT 1 FROM coordinator_device_rebind_attempts r WHERE r.coordinator_id=p.coordinator_id
  AND r.attempt_id IS NOT p.attempt_id AND r.state IN ('pending','browser_claimed','oidc_verified','confirmed')
  AND r.expires_at_ms>p.now_ms AND (r.device_id=p.device_id OR r.key_id=p.key_id))`,
@@ -81,7 +81,7 @@ const CHECKS = [
 	`(SELECT count(*) FROM self_bind_controllers)=1 AND (SELECT count(*) FROM self_bind_link_candidates)=1
  AND (SELECT count(*) FROM self_bind_links)=1`,
 	`(SELECT count(*) FROM coordinator_auth_controller_attestations t WHERE t.coordinator_id=p.coordinator_id
- AND (t.device_id=p.device_id OR t.public_key IN (SELECT value FROM claim_same_keys)) AND t.revoked_at IS NULL)=1`,
+ AND (t.device_id=p.device_id OR t.public_key IN (SELECT value FROM json_each(p.same_keys))) AND t.revoked_at IS NULL)=1`,
 ];
 
 /** Server proof only. Embed this SELECT in the winning statement, never authorize from a pre-read.
