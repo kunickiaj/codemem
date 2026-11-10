@@ -40,6 +40,10 @@ import {
 	type CoordinatorDeviceRevocationContext,
 	registerCoordinatorDeviceRevocationRoutes,
 } from "./coordinator-device-revocation-route.js";
+import {
+	DEVICE_BINDING_PATH,
+	registerCoordinatorDeviceSetupRoutes,
+} from "./coordinator-device-setup-http.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
@@ -236,6 +240,7 @@ function registerOptionalCoordinatorAuth(
 			"/v1/auth/owner-attempts",
 			"/v1/auth/owner-attempts/*",
 			DEVICE_REBIND_ATTEMPTS_PATH,
+			DEVICE_BINDING_PATH,
 			`${DEVICE_REBIND_ATTEMPTS_PATH}/*`,
 			"/v1/admin/auth-controller-reviews",
 		]) {
@@ -251,6 +256,7 @@ function registerOptionalCoordinatorAuth(
 			? { config: ready.auth.storeConfig, storeFactory: ready.storeFactory }
 			: opts.authLink;
 	if (authLink?.config.enabled) {
+		registerCoordinatorDeviceSetupRoutes(app, { ...deps, ...authLink });
 		registerCoordinatorDeviceAuthLinkRoutes(app, { ...deps, ...authLink });
 		registerCoordinatorAuthControllerReviewRoutes(app, {
 			...deps,
