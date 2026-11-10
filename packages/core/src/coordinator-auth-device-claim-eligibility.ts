@@ -70,6 +70,31 @@ export const AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL = `
  AND NOT EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings b WHERE
  (b.device_id = p.device_id OR b.key_id = p.key_id) AND b.identity_id <> p.identity_id)`;
 
+/** Negative setup checks shared by first-link admission and legacy completion.
+ * p/claim_same_keys come from AUTH_DEVICE_CLAIM_INPUT_SQL. Existing exact D/K/X
+ * ownership is compatible here. The producer decides whether to reuse it.
+ * This predicate never supplies positive authority or first-link absence rules.
+ */
+export const AUTH_DEVICE_CLAIM_BINDING_STRUCTURE_SQL = `(
+ (SELECT count(*) FROM enrolled_devices e WHERE e.device_id=p.device_id) BETWEEN 1 AND 50
+ AND NOT EXISTS (SELECT 1 FROM enrolled_devices e WHERE e.device_id=p.device_id
+ AND (e.public_key<>p.public_key OR e.fingerprint<>p.fingerprint OR (e.identity_id IS NOT NULL AND e.identity_id<>p.identity_id)))
+ AND NOT EXISTS (SELECT 1 FROM enrolled_devices e,claim_same_keys k WHERE e.public_key=k.value AND e.device_id<>p.device_id)
+ ) AND (
+ NOT EXISTS (SELECT 1 FROM coordinator_device_ownership_bindings b WHERE (b.device_id=p.device_id OR b.key_id=p.key_id)
+ AND (b.device_id<>p.device_id OR b.key_id<>p.key_id OR b.identity_id<>p.identity_id OR b.coordinator_id<>p.coordinator_id))
+ ) AND (
+ NOT EXISTS (SELECT 1 FROM coordinator_owner_enrollment_attempts o WHERE o.coordinator_id=p.coordinator_id
+ AND o.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND o.expires_at_ms>p.now_ms
+ AND (o.device_id=p.device_id OR o.key_id=p.key_id))
+ AND NOT EXISTS (SELECT 1 FROM coordinator_device_rebind_attempts r WHERE r.coordinator_id=p.coordinator_id
+ AND r.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND r.expires_at_ms>p.now_ms
+ AND (r.device_id=p.device_id OR r.key_id=p.key_id))
+ AND NOT EXISTS (SELECT 1 FROM coordinator_auth_link_attempts a WHERE a.coordinator_id=p.coordinator_id
+ AND a.state IN ('pending','browser_claimed','oidc_verified','confirmed') AND a.expires_at_ms>p.now_ms
+ AND a.identity_id<>p.identity_id AND (a.device_id=p.device_id OR a.public_key IN (SELECT value FROM claim_same_keys)))
+ )`;
+
 /** A shared reader's own attestations are current checks, not historical origin pins. */
 export const AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL = `NOT EXISTS (
  SELECT 1 FROM coordinator_auth_controller_attestations a WHERE a.coordinator_id = p.coordinator_id
@@ -195,7 +220,7 @@ export const AUTH_DEVICE_CLAIM_ELIGIBLE_SQL = `(
  AND ((${inviteLive} AND (i.consumed_at IS NULL OR i.consumed_at = '')) OR (${inviteBinding} AND ${otherSubject("i.bound_device_id", "i.bound_public_key")})))
  OR (i.recipient_actor_id = p.identity_id AND ${inviteBinding} AND ${otherSubject("i.bound_device_id", "i.bound_public_key")})
  OR (i.inviter_actor_id = p.identity_id AND i.inviter_device_id IS NOT NULL AND i.inviter_device_id <> p.device_id)))))
- AND ${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL})`;
+ AND ${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL}) AND (${AUTH_DEVICE_CLAIM_BINDING_STRUCTURE_SQL})`;
 
 function captureInput(input: CoordinatorDeviceClaimReadinessInput) {
 	try {
