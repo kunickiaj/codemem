@@ -68,6 +68,62 @@ export function beforeGuardedTransaction(
 	};
 }
 
+/**
+ * Runs each stage's `mutate` once, in order, before the next execution of a statement
+ * matching its `pattern`, whether or not guards lead it. Outside a transaction the change
+ * lands just before that statement. Inside one, the transaction stops there and runs again
+ * from its start, so the change also precedes any guards in front of it.
+ */
+export function beforeStatements(db: Database, stages: { pattern: RegExp; mutate: () => void }[]) {
+	const prepare = db.prepare.bind(db);
+	const transaction = db.transaction.bind(db);
+	let next = 0;
+	let pending = false;
+	// Advance first: a change may itself prepare a statement a later stage matches.
+	const fire = () => {
+		const stage = stages[next];
+		next += 1;
+		stage?.mutate();
+	};
+	const prepared = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+		if (pending || !stages[next]?.pattern.test(sql)) return prepare(sql);
+		if (db.inTransaction) {
+			pending = true;
+			throw RESTART;
+		}
+		fire();
+		return prepare(sql);
+	});
+	const restartable =
+		(run: (...args: unknown[]) => unknown) =>
+		(...args: unknown[]) => {
+			try {
+				return run(...args);
+			} catch (error) {
+				if (error !== RESTART) throw error;
+				fire();
+				pending = false;
+				return run(...args);
+			}
+		};
+	const transactions = vi.spyOn(db, "transaction").mockImplementation((fn) => {
+		const tx = transaction(fn) as unknown as Transaction;
+		return Object.assign(restartable(tx), {
+			deferred: restartable(tx.deferred),
+			immediate: restartable(tx.immediate),
+			exclusive: restartable(tx.exclusive),
+		}) as unknown as ReturnType<typeof transaction>;
+	});
+	return {
+		/** How many stages ran. */
+		reached: () => next,
+		restore() {
+			prepared.mockRestore();
+			transactions.mockRestore();
+		},
+	};
+}
+
 // The statements a controller review checks with, in the SQLite store's transaction: its
 // guards, its reads of the reviewed snapshot, and its plain insert, eligibility and
 // current-attestation statements.
