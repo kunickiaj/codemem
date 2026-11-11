@@ -17,6 +17,7 @@ import {
 	normalizeCoordinatorLegacyTeamCompletionManifest,
 } from "./coordinator-legacy-team-completion.js";
 import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const actor = "actor-current";
 const adminSecret = "synthetic-admin-secret";
@@ -24,7 +25,7 @@ const signer = {
 	groupId: "group-a",
 	deviceId: "device-a",
 	publicKey: CANONICAL_PUBLIC_KEY,
-	fingerprint: "a".repeat(64),
+	fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
 };
 const groups = ["group-a", "group-b"] as const;
 const linkTables = [

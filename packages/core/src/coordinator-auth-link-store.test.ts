@@ -16,18 +16,14 @@ import {
 	rows,
 	setIdentity,
 	signer,
+	signerReview,
 	snapshot,
 	status,
 	TABLES,
 	type Test,
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
-import {
-	type Backend,
-	enroll,
-	review,
-	setupStore,
-} from "./coordinator-auth-store-test-fixtures.js";
+import { type Backend, enroll, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 
 function registerCreationTests(test: Test) {
 	test.for([null, "identity-a"])(
@@ -87,7 +83,7 @@ function registerConflictTests(test: Test) {
 		// Arrange
 		await authorize(f);
 		if ("signer" in overrides) {
-			const other = review({
+			const other = signerReview({
 				deviceId: "other-device",
 				attestationId: "attestation-other",
 				reviewReceiptId: "receipt-other",
@@ -227,8 +223,8 @@ it.each(
 		// Arrange
 		const f = setupStore(backend, { authClock: () => now });
 		try {
-			await enroll(f.store);
-			await f.store.createAuthControllerAttestation(review());
+			await enroll(f.store, signerReview());
+			await f.store.createAuthControllerAttestation(signerReview());
 			// Act
 			const result = f.store.createAuthLinkAttempt(attempt(), cfg);
 			// Assert
@@ -249,8 +245,8 @@ it.each(
 	// Arrange
 	const f = setupStore(backend, { authClock: () => now });
 	try {
-		await enroll(f.store);
-		await f.store.createAuthControllerAttestation(review());
+		await enroll(f.store, signerReview());
+		await f.store.createAuthControllerAttestation(signerReview());
 		// Act
 		const result = await f.store.createAuthLinkAttempt(attempt(), cfg);
 		// Assert
@@ -271,8 +267,8 @@ it("SQLite existing-file upgrade adds empty link storage without changing review
 	const path = join(directory, "coordinator.sqlite");
 	let store = new BetterSqliteCoordinatorStore(path, { authClock: () => NOW });
 	try {
-		await enroll(store);
-		await store.createAuthControllerAttestation(review());
+		await enroll(store, signerReview());
+		await store.createAuthControllerAttestation(signerReview());
 		const enrollment = store.db.prepare("SELECT * FROM enrolled_devices").all();
 		const controllers = store.db
 			.prepare("SELECT * FROM coordinator_auth_controller_attestations")

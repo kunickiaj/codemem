@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { expect, it } from "vitest";
 import {
 	browserProofConfig,
 	startBrowserProof,
 } from "./coordinator-auth-browser-proof-test-fixtures.js";
+import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export {
 	browserProofConfig,
@@ -42,11 +44,38 @@ export const cfg: Config = {
 	revision: "a".repeat(64),
 	enabled: true,
 };
+// A real device key: every enrolled codemem device signs with ssh-ed25519, and the
+// current account schema derives the canonical key ID from it.
+export const deviceKey = {
+	publicKey: CANONICAL_PUBLIC_KEY,
+	fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+};
+/** A second real device key, for a device of another Identity. */
+export const otherDeviceKey = realEd25519Key(2);
+
+/** A deterministic real ssh-ed25519 public key and its fingerprint. */
+export function realEd25519Key(seed: number): { publicKey: string; fingerprint: string } {
+	const der = createPublicKey(
+		createPrivateKey({
+			key: Buffer.concat([
+				Buffer.from("302e020100300506032b657004220420", "hex"),
+				Buffer.alloc(32, seed),
+			]),
+			format: "der",
+			type: "pkcs8",
+		}),
+	).export({ format: "der", type: "spki" });
+	const wire = Buffer.concat([
+		Buffer.from("0000000b7373682d6564323535313900000020", "hex"),
+		der.subarray(-32),
+	]);
+	const publicKey = `ssh-ed25519 ${wire.toString("base64")}`;
+	return { publicKey, fingerprint: fingerprintPublicKey(publicKey) };
+}
 export const signer = {
 	groupId: "group-a",
 	deviceId: "device-a",
-	publicKey: review().publicKey,
-	fingerprint: review().fingerprint,
+	...deviceKey,
 };
 export const browserHash = "c".repeat(64);
 export const completionHash = "d".repeat(64);
@@ -103,10 +132,19 @@ export function setIdentity(f: Fixture, identity: string | null) {
 		.run(identity, signer.groupId, signer.deviceId);
 }
 
+/** A controller review of the fixture's signer: its real device key. */
+export function signerReview(
+	overrides: Parameters<typeof review>[0] = {},
+): ReturnType<typeof review> {
+	return review({ ...deviceKey, ...overrides });
+}
+
 export async function authorize(f: LinkFixture) {
-	await enroll(f.store);
+	await enroll(f.store, signerReview());
 	expect(
-		await f.store.createAuthControllerAttestation(review({ coordinatorId: f.cfg.coordinatorId })),
+		await f.store.createAuthControllerAttestation(
+			signerReview({ coordinatorId: f.cfg.coordinatorId }),
+		),
 	).toMatchObject({
 		kind: "created",
 	});
@@ -123,7 +161,8 @@ export async function advance(
 	if (state !== "pending" && !Object.hasOwn(input, "browserStartHash")) {
 		creation.browserStartHash = fixtureHash(`browser-start:${input.attemptId}`);
 	}
-	await f.store.createAuthLinkAttempt(creation, f.cfg);
+	// Later steps assume the attempt exists; a refused creation must fail here, not later.
+	expect(await f.store.createAuthLinkAttempt(creation, f.cfg)).toMatchObject({ kind: "created" });
 	if (state === "pending") return;
 	const materials = await startBrowserProof(f, {
 		attemptId: input.attemptId,

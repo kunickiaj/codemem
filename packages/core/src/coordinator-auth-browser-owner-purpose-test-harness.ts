@@ -2,14 +2,14 @@ import { expect } from "vitest";
 import type { SchemaFixture } from "./coordinator-auth-browser-migration-test-harness.js";
 import type { CoordinatorAuthBrowserTransactionStartInput } from "./coordinator-auth-browser-transaction-contract.js";
 import { browserConfig, materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
-import { attempt, NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { enroll, review, type Store } from "./coordinator-auth-store-test-fixtures.js";
+import { attempt, NOW, signerReview } from "./coordinator-auth-link-test-fixtures.js";
+import { enroll, type Store } from "./coordinator-auth-store-test-fixtures.js";
 
 export async function assertReservedOwnerPurposeIsolation(f: SchemaFixture & { store: Store }) {
 	// Arrange: a genuine live link with the same attempt/hash must not confer link purpose.
 	const input = materials();
-	await enroll(f.store);
-	expect((await f.store.createAuthControllerAttestation(review())).kind).toBe("created");
+	await enroll(f.store, signerReview());
+	expect((await f.store.createAuthControllerAttestation(signerReview())).kind).toBe("created");
 	expect(
 		(await f.store.createAuthLinkAttempt(attempt({ attemptId: "owner-attempt-a" }), browserConfig))
 			.kind,

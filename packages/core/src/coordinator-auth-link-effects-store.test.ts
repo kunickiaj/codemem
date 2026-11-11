@@ -10,6 +10,7 @@ import {
 	finalize,
 	type LinkFixture,
 	NOW,
+	otherDeviceKey,
 	rows,
 	signer,
 	snapshot,
@@ -31,11 +32,11 @@ async function secondConfirmed(
 			deviceId: "device-b",
 			attestationId: "attestation-b",
 			reviewReceiptId: "receipt-b",
-			fingerprint: "f".repeat(64),
+			...otherDeviceKey,
 		});
 		await enroll(f.store, reviewed);
 		await f.store.createAuthControllerAttestation(reviewed);
-		secondSigner = { ...signer, deviceId: reviewed.deviceId, fingerprint: reviewed.fingerprint };
+		secondSigner = { ...signer, deviceId: reviewed.deviceId, ...otherDeviceKey };
 	}
 	const input = attempt({
 		attemptId: "attempt-b",

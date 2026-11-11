@@ -4,8 +4,12 @@ import {
 	AUTH_LINK_CREATE_WINDOW_MS,
 	AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
 } from "./coordinator-auth-link-contract.js";
-import { attempt as linkAttempt, NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { enroll, review } from "./coordinator-auth-store-test-fixtures.js";
+import {
+	attempt as linkAttempt,
+	NOW,
+	signerReview,
+} from "./coordinator-auth-link-test-fixtures.js";
+import { enroll } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { oidcFixture } from "./coordinator-oidc-test-fixtures.js";
 import {
@@ -247,8 +251,8 @@ it.each(["pending", "failed"] as const)(
 	"link creation atomically excludes %s owner attempt IDs",
 	async (state) => {
 		// Arrange: real controller authority plus a different-ID positive creation control.
-		await enroll(f.store);
-		expect((await f.store.createAuthControllerAttestation(review())).kind).toBe("created");
+		await enroll(f.store, signerReview());
+		expect((await f.store.createAuthControllerAttestation(signerReview())).kind).toBe("created");
 		const c = await compose();
 		const links = new AuthLinkOperations(f.backend, () => NOW);
 		expect(
@@ -284,8 +288,8 @@ it.each(
 	"link creation reports a conflict for a $state owner browser-only attempt ID with retry=$retry",
 	async ({ state, retry }) => {
 		// Arrange: browser history reserves the ID even without an owner attempt row.
-		await enroll(f.store);
-		expect((await f.store.createAuthControllerAttestation(review())).kind).toBe("created");
+		await enroll(f.store, signerReview());
+		expect((await f.store.createAuthControllerAttestation(signerReview())).kind).toBe("created");
 		const links = new AuthLinkOperations(f.backend, () => NOW);
 		const input = linkAttempt({ runtimeVerifierHash: "e".repeat(64) });
 		if (retry) {
@@ -338,8 +342,8 @@ it.each(["pending", "failed"] as const)(
 	"exact link retry rejects a retained legacy %s owner attempt collision",
 	async (state) => {
 		// Arrange: real controller authority and an unrelated signed owner start.
-		await enroll(f.store);
-		expect((await f.store.createAuthControllerAttestation(review())).kind).toBe("created");
+		await enroll(f.store, signerReview());
+		expect((await f.store.createAuthControllerAttestation(signerReview())).kind).toBe("created");
 		const c = await compose();
 		expect((await c.start(c.signed("owner-source"), "transport-a")).kind).toBe("started");
 		const links = new AuthLinkOperations(f.backend, () => NOW);
