@@ -1,10 +1,10 @@
 import { expect } from "vitest";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
 import {
 	captureLegacyCompletionOwnerProof,
 	legacyCompletionOwnerProofSql,
 } from "./coordinator-legacy-completion-owner-proof.js";
-import { LEGACY_OWNER_INPUT_SQL } from "./coordinator-legacy-owner-compatibility.js";
 
 type Backend = {
 	all<T>(statement: AuthLinkStatement): Promise<T[]>;
@@ -13,7 +13,7 @@ type Backend = {
 const start =
 	"SELECT DISTINCT json_array(c.group_id,c.candidate_ref,c.manifest_version,c.completed_at,c.created_at,c.manifest_json) AS row FROM coordinator_legacy_team_completions c";
 // Frozen selector from 6594432a, before statement-local membership sets. Only this
-// selector is substituted; the production CTEs, codec, caps and bindings stay live.
+// selector is substituted; the production CTEs, guards, caps and bindings stay live.
 const oldSelector = `${start} WHERE EXISTS (
  SELECT 1 FROM completion_proof_active s
  WHERE (json_extract(CASE WHEN json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END,'$.coordinator_id')=(SELECT json_extract(value,'$.coordinator') FROM completion_proof_input)
@@ -33,7 +33,7 @@ export function referenceHistorySql(sql: string): string {
 	const offset = sql.indexOf(start);
 	if (offset < 0) throw new Error("history selector not observed");
 	// Balanced SQL parentheses, ignoring quoted SQL literals. This also works for
-	// the selector embedded in the atomic writer's observed-history CTE.
+	// the selector embedded in the winning batch's history guard.
 	let depth = 0;
 	let quoted = false;
 	let end = offset;
@@ -75,18 +75,28 @@ export async function captureHistorySql(
 	});
 	if (!observed) throw new Error("real capture did not reach history");
 	const winning = legacyCompletionOwnerProofSql(proof);
-	expect(winning.values).toHaveLength(1);
+	expect(winning.currentSql).toBe("1");
+	expect(winning.guards.some(({ sql }) => sql.includes(start))).toBe(true);
 	const statement = observed;
 	return {
 		statement,
 		observedRows,
+		/**
+		 * 1 while every guard of the winning batch holds. With `reference`, the history
+		 * guard uses the frozen selector instead of the live one.
+		 */
 		async current(options: { reference?: boolean } = {}) {
-			let sql = `${LEGACY_OWNER_INPUT_SQL}${winning.ctes} SELECT (${winning.currentSql}) AS current`;
-			if (options.reference) sql = referenceHistorySql(sql);
-			return backend.first<{ current: number }>({
-				sql,
-				values: [input.manifestJson, input.groupId, input.keyMetadata, ...winning.values],
-			});
+			for (const guard of winning.guards) {
+				const swap = options.reference && guard.sql.includes(start);
+				const sql = swap ? referenceHistorySql(guard.sql) : guard.sql;
+				try {
+					await backend.first({ sql, values: guard.values });
+				} catch (error) {
+					if (isSnapshotChanged(error)) return { current: 0 };
+					throw error;
+				}
+			}
+			return { current: 1 };
 		},
 	};
 }

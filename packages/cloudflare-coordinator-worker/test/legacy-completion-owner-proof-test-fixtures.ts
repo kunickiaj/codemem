@@ -113,7 +113,11 @@ export async function history(groupId: string, owner: string) {
 	});
 }
 
-/** Actual native SQL only. Mutations run after composition, immediately before INSERT execution. */
+/**
+ * Actual native SQL only. Mutations run after composition, immediately before the native
+ * batch that runs the capture's guards and then the INSERT. Nothing can write inside that
+ * batch, so this is the last moment a concurrent write can land.
+ */
 export function harness() {
 	let mutation: (() => Promise<void>) | undefined;
 	let injected = false;
@@ -134,45 +138,49 @@ export function harness() {
 	};
 	const winning = (sql: string) =>
 		/\bINSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+coordinator_legacy_team_completions\s*\(/iu.test(sql);
+	// The native statement and its SQL and values behind each wrapped statement.
+	const bound = new WeakMap<
+		D1PreparedStatement,
+		{ target: D1PreparedStatement; sql: string; values: unknown[] }
+	>();
+	/** Records the winning batch's binds: guards and INSERT, each under D1's limits. */
+	const measure = (statements: { sql: string; values: unknown[] }[]) => {
+		const insert = statements.find(({ sql }) => winning(sql));
+		if (!insert) return false;
+		bindCount = insert.values.length;
+		metrics.captureMs = performance.now() - operationStarted;
+		for (const { values } of statements) {
+			metrics.parameters = Math.max(metrics.parameters, values.length);
+			for (const value of values) {
+				if (typeof value !== "string" || !/^[[{]/u.test(value)) continue;
+				const size = new TextEncoder().encode(value).byteLength;
+				metrics.maxJsonBindBytes = Math.max(metrics.maxJsonBindBytes, size);
+				// The roster the guards select by.
+				if (!value.startsWith('{"coordinator":')) continue;
+				metrics.snapshotBytes = size;
+				metrics.snapshotSubjects = (JSON.parse(value) as { subjects: unknown[] }).subjects.length;
+			}
+		}
+		// The INSERT binds the approved subjects after the manifest, group and key metadata.
+		metrics.snapshotApproved = (JSON.parse(String(insert.values[3])) as unknown[]).length;
+		return true;
+	};
 	const wrap = (
 		statement: D1PreparedStatement,
 		sql: string,
 		values: unknown[] = [],
-	): D1PreparedStatement =>
-		new Proxy(statement, {
+	): D1PreparedStatement => {
+		const wrapped = new Proxy(statement, {
 			get(target, key) {
 				if (key === "bind") return (...bound: unknown[]) => wrap(target.bind(...bound), sql, bound);
 				if (key === "run")
 					return async () => {
-						if (winning(sql)) {
-							bindCount = values.length;
-							metrics.parameters = values.length;
-							metrics.captureMs = performance.now() - operationStarted;
-							for (const value of values) {
-								if (typeof value !== "string" || !value.startsWith("{")) continue;
-								const size = new TextEncoder().encode(value).byteLength;
-								metrics.maxJsonBindBytes = Math.max(metrics.maxJsonBindBytes, size);
-								if (!value.includes('"subjects":') || !value.includes('"approved":')) continue;
-								const encoded = JSON.parse(value) as { subjects: unknown[]; approved: unknown[] };
-								metrics.snapshotBytes = size;
-								metrics.snapshotSubjects = encoded.subjects.length;
-								metrics.snapshotApproved = encoded.approved.length;
-							}
-							if (mutation && !injected) {
-								injected = true;
-								await mutation();
-								afterMutation = await state();
-							}
-						}
-						phase = winning(sql) ? "winning completion INSERT" : "native run";
-						const started = performance.now();
+						phase = "native run";
 						try {
 							return await target.run();
 						} catch (error) {
 							failingSql = sql;
 							throw error;
-						} finally {
-							if (winning(sql)) metrics.insertMs = performance.now() - started;
 						}
 					};
 				if (key === "first" || key === "all")
@@ -189,9 +197,33 @@ export function harness() {
 				return typeof value === "function" ? value.bind(target) : value;
 			},
 		});
+		bound.set(wrapped, { target: statement, sql, values });
+		return wrapped;
+	};
 	const database = new Proxy(db, {
 		get(target, key) {
 			if (key === "prepare") return (sql: string) => wrap(target.prepare(sql), sql);
+			if (key === "batch")
+				return async (statements: D1PreparedStatement[]) => {
+					const known = statements.map((statement) => bound.get(statement));
+					const natives = known.map((entry, i) => entry?.target ?? statements[i]);
+					const winningBatch = measure(known.flatMap((entry) => (entry ? [entry] : [])));
+					if (winningBatch && mutation && !injected) {
+						injected = true;
+						await mutation();
+						afterMutation = await state();
+					}
+					phase = winningBatch ? "winning completion batch" : "native batch";
+					const started = performance.now();
+					try {
+						return await target.batch(natives as D1PreparedStatement[]);
+					} catch (error) {
+						failingSql = known.map((entry) => entry?.sql ?? "").join(";\n");
+						throw error;
+					} finally {
+						if (winningBatch) metrics.insertMs = performance.now() - started;
+					}
+				};
 			const value = Reflect.get(target, key);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
