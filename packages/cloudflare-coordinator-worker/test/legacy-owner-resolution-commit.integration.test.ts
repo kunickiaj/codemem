@@ -712,6 +712,31 @@ it.each([
 	},
 );
 
+it("native ownership binding added before the batch aborts it through the evidence guards", async () => {
+	// Arrange: only the reviewed ownership evidence covers bindings; the owner checks do not.
+	const f = await setup();
+	const review = await buildReview(f);
+	let injected: Snapshot | undefined;
+	f.hooks.beforeBatch = async () => {
+		await exec(
+			`INSERT INTO coordinator_device_ownership_bindings
+			(device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
+			VALUES (?,?,'identity-b',?,'raced-binding','owner_enrollment','raced-source','raced')`,
+			f.signer.deviceId,
+			"e".repeat(64),
+			config.coordinatorId,
+		);
+		injected = await snapshot();
+	};
+	// Act
+	const pending = commit(f, review);
+	// Assert: the native batch refused before any receipt was written.
+	await expect(pending).rejects.toThrow(/outcome is unavailable/u);
+	expect(f.diagnostics.batches).toBe(1);
+	expect(String(f.diagnostics.error)).toMatch(/auth_snapshot_changed/u);
+	expect(await snapshot()).toEqual(injected);
+});
+
 it.each(receipts)(
 	"native zero-row %s winner forces checked rollback and preserves old source",
 	async (table) => {

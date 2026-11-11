@@ -102,8 +102,12 @@ export function beforeStatements(db: Database, stages: { pattern: RegExp; mutate
 			} catch (error) {
 				if (error !== RESTART) throw error;
 				fire();
-				pending = false;
-				return run(...args);
+				// The rerun repeats the statements already matched; no stage fires during it.
+				try {
+					return run(...args);
+				} finally {
+					pending = false;
+				}
 			}
 		};
 	const transactions = vi.spyOn(db, "transaction").mockImplementation((fn) => {
