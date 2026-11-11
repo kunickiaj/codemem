@@ -1,6 +1,6 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
-	AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE,
+	AUTH_CURRENT_LEGACY_ASSIGNMENT_ROWS_SQL,
 	AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL,
 	AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL,
 	captureCurrentLegacyAssignment,
@@ -53,8 +53,12 @@ const KEY_SNAPSHOT_SQL = `SELECT (${AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL}) AS assi
 export const AUTH_DEVICE_CLAIM_INPUT_SQL = `WITH claim_input(
  coordinator_id, identity_id, group_id, device_id, public_key, fingerprint, key_id,
  now_ms, now_iso, attempt_id, issuer, revision, key_snapshot, same_keys, assignment_snapshot
-) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)),
- ${AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE}`;
+) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?))`;
+
+/** The same 15 inputs as one FROM row, for statements that must not use WITH. */
+export const AUTH_DEVICE_CLAIM_INPUT_ROW_SQL = `(SELECT ? AS coordinator_id, ? AS identity_id, ? AS group_id,
+ ? AS device_id, ? AS public_key, ? AS fingerprint, ? AS key_id, ? AS now_ms, ? AS now_iso, ? AS attempt_id,
+ ? AS issuer, ? AS revision, ? AS key_snapshot, ? AS same_keys, ? AS assignment_snapshot)`;
 
 const sameKey = (column: string) =>
 	`EXISTS (SELECT 1 FROM json_each(p.same_keys) k WHERE k.value = ${column})`;
@@ -109,7 +113,7 @@ const matchingLegacyPeerEnrollment = `e.group_id = p.group_id AND e.enabled = 1
  AND e.device_id <> p.device_id AND e.fingerprint <> p.fingerprint
  AND NOT ${sameKey("e.public_key")}
  AND EXISTS (SELECT 1 FROM json_each(p.assignment_snapshot, '$.distinct_keys') k WHERE k.value = e.public_key)
- AND EXISTS (SELECT 1 FROM claim_current_assignment ca, json_each(ca.manifest_json, '$.device_decisions') d
+ AND EXISTS (SELECT 1 FROM ${AUTH_CURRENT_LEGACY_ASSIGNMENT_ROWS_SQL} ca, json_each(ca.manifest_json, '$.device_decisions') d
  WHERE json_extract(d.value, '$.device_id') = e.device_id
  AND json_extract(d.value, '$.key_fingerprint') = e.fingerprint
  AND json_extract(d.value, '$.identity_id') = p.identity_id
@@ -158,7 +162,7 @@ const legacyPeerBranch = `(json_extract(d.value, '$.identity_id') = p.identity_i
  AND NOT (json_extract(d.value, '$.device_id') <> p.device_id
  AND json_extract(d.value, '$.key_fingerprint') <> p.fingerprint
  AND json_extract(d.value, '$.decision') = 'included' AND json_extract(d.value, '$.enabled') = 1
- AND EXISTS (SELECT 1 FROM claim_current_assignment ca WHERE ca.group_id = c.group_id
+ AND EXISTS (SELECT 1 FROM ${AUTH_CURRENT_LEGACY_ASSIGNMENT_ROWS_SQL} ca WHERE ca.group_id = c.group_id
  AND ca.candidate_ref = c.candidate_ref AND ca.manifest_json = c.manifest_json)))`;
 export const AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL = legacyCompletionSql(`(${legacyThisDevice}
  AND (json_extract(d.value, '$.decision') = 'excluded' OR json_extract(d.value, '$.identity_id') IS NOT p.identity_id))

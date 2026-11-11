@@ -874,11 +874,11 @@ about 100 table references, and they count every table inside a `WITH` block aga
 reference to it. D1 reports this as `VIEWs and/or subqueries nested too deep`, and the Worker
 answers 503. SQLite replaced the check with a limit of 50,000 on 2026-10-18, after 3.54.1.
 
-The readiness check and the completion write behind signed device setup
-(`/v1/auth/device-binding`) compile on an affected D1. The other account statements are larger: account-link status, **Connect this device**, account
-connection changes, and legacy owner resolution fail on an affected D1 until it runs a fixed
-SQLite. The built-in coordinator and local Wrangler bundle SQLite 3.53.4 and are unaffected,
-so local tests do not show the failure.
+Signed device setup (`/v1/auth/device-binding`) and account-link status
+(`/v1/auth/account-link-status`) compile on an affected D1. Larger account statements still
+fail there until D1 runs a fixed SQLite: **Connect this device**, account refresh and
+disconnect, owner enrollment checks, and legacy owner resolution. The built-in coordinator and
+local Wrangler bundle SQLite 3.53.4 and are unaffected, so local tests do not show the failure.
 
 To check one statement against a real database without running it, prefix it with `EXPLAIN`
 and replace each `?` with a literal:
@@ -893,5 +893,5 @@ wrangler d1 execute codemem-coordinator --remote --command "EXPLAIN <statement>"
 - enrollment remains operator-managed rather than polished end-user onboarding
 - direct peer sync is still separate from coordinator discovery
 - new coordinator features may land in the built-in runtime first and reach the Worker later
-- on a D1 that runs SQLite 3.54.0 or 3.54.1, most account routes answer 503; see
+- on a D1 that runs SQLite 3.54.0 or 3.54.1, some account actions answer 503; see
   [the troubleshooting entry](#account-routes-answer-503-auth_link_unavailable-on-d1)

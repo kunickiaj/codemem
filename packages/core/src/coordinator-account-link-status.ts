@@ -5,6 +5,7 @@ import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import {
 	AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
+	AUTH_DEVICE_CLAIM_INPUT_ROW_SQL,
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
 	AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL,
 	AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL,
@@ -16,9 +17,9 @@ import {
 } from "./coordinator-auth-device-claim-eligibility.js";
 import { AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL } from "./coordinator-auth-legacy-assignment.js";
 import {
-	AUTH_LINK_AUTHORITY_COLUMNS,
 	AUTH_LINK_CONTROLLER_SOURCE_SQL,
 	type AuthLinkBackend,
+	type AuthLinkStatement,
 	authLinkControllerSourceValues,
 	authLinkNow,
 	captureAuthLinkConfig,
@@ -140,45 +141,167 @@ function requesterAccount(
 }
 
 /** This exact device key's ownership binding for the requested Identity (ADR 0005 Section 8). */
-const REQUESTER_BINDING_SQL = `SELECT 1 FROM claim_input bp JOIN coordinator_device_ownership_bindings ob
- ON ob.coordinator_id = bp.coordinator_id AND ob.device_id = bp.device_id AND ob.key_id = bp.key_id
- AND ob.identity_id = bp.identity_id`;
+const REQUESTER_BINDING_SQL = `SELECT 1 FROM coordinator_device_ownership_bindings ob
+ WHERE ob.coordinator_id = p.coordinator_id AND ob.device_id = p.device_id AND ob.key_id = p.key_id
+ AND ob.identity_id = p.identity_id`;
 
-/**
- * A rebound device has no claim of its own; its binding names the Identity and
- * the Identity's link is the account. Valid only while the device's exact
- * enrollment is current, neither device nor key is revoked, and the link was
- * born through a reviewed claim or attestation.
- */
-const bindingCandidateSql = (
-	connections: boolean,
-) => `SELECT ob.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
- CASE WHEN EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
+const NOT_REVOKED_SQL = `NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
+  WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
+  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))`;
+const currentEnrollmentSql = (identity: string) =>
+	`EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
   WHERE e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key
   AND e.fingerprint = p.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL
-  AND (e.identity_id IS NULL OR e.identity_id = ob.identity_id))
- AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
-  WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
-  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))
- AND (l.link_id IS NULL OR ${authAccountLinkProvenanceSql("l", { connections })})
- THEN 1 ELSE 0 END, 1, 'device_claim'
- FROM claim_input p JOIN coordinator_device_ownership_bindings ob ON ob.coordinator_id = p.coordinator_id
- AND ob.device_id = p.device_id AND ob.key_id = p.key_id AND ob.identity_id = p.identity_id
- LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = p.coordinator_id
- AND l.identity_id = ob.identity_id`;
+  AND (e.identity_id IS NULL OR e.identity_id = ${identity}))`;
 
 /** This device's old claim under another Identity, once a binding moved it and that link ended. */
 const SUPERSEDED_OWN_CLAIM_SQL = `d.identity_id <> p.identity_id AND EXISTS (${REQUESTER_BINDING_SQL})
  AND NOT EXISTS (SELECT 1 FROM coordinator_auth_account_links al WHERE al.coordinator_id = d.coordinator_id
  AND al.identity_id = d.identity_id AND al.revoked_at_ms IS NULL)`;
 
-function statusConnectionFacts(connections: boolean): string {
-	if (!connections) return "";
-	return `,
- status_genesis AS MATERIALIZED (SELECT d.coordinator_id,d.claim_id,d.identity_id FROM coordinator_auth_device_claims d JOIN claim_input p ON p.coordinator_id=d.coordinator_id WHERE (d.device_id=p.device_id OR d.key_id=p.key_id OR d.identity_id=p.identity_id) AND ${authClaimGenesisSql("d")}),
- status_subjects AS MATERIALIZED (SELECT coordinator_id,identity_id FROM status_genesis UNION SELECT p.coordinator_id,c.controller_identity_id FROM controller c CROSS JOIN claim_input p),
- status_links AS MATERIALIZED (SELECT l.coordinator_id,l.link_id,l.authority_kind FROM coordinator_auth_account_links l JOIN status_subjects ss ON ss.coordinator_id=l.coordinator_id AND ss.identity_id=l.identity_id WHERE ${authAccountLinkProvenanceSql("l", { connections: true })})`;
+const CANDIDATE_FIELDS = ["identity_id", "link_id", "issuer", "revoked_at_ms", "valid", "own"];
+const jsonRows = (fields: string[]) =>
+	`json_group_array(json_object(${fields.map((field) => `'${field}',${field}`).join(",")}))`;
+const fromJson = (alias: string, fields: string[]) =>
+	fields.map((field) => `json_extract(${alias}.value,'$.${field}') AS ${field}`).join(",");
+const GENESIS_ROWS = `(SELECT json_extract(value,'$.claim_id') AS claim_id FROM json_each(p.genesis))`;
+const LINK_ROWS = `(SELECT json_extract(value,'$.link_id') AS link_id,
+ json_extract(value,'$.authority_kind') AS authority_kind FROM json_each(p.links))`;
+const NO_CLAIMS = "json_array_length(p.claims) = 0";
+const NO_CONTROLLER = "json_array_length(p.controllers) = 0";
+
+/**
+ * One statement, so authority, current enrollment, tombstones and metadata share a
+ * snapshot. It uses no WITH: SQLite 3.54.0 and 3.54.1 (production D1) refuse a
+ * statement that resolves a WITH name after about 100 table references, and every
+ * reference to a WITH block counts its tables again. Each stage is instead a one-row
+ * FROM subquery named p that adds a JSON column to the stage inside it, and later
+ * stages read those columns with json_each. OFFSET keeps SQLite from flattening a
+ * stage into its consumers, so each stage is computed once.
+ *
+ * Stages, innermost first: the 15 inputs; this device's current controller
+ * attestations, its exact legacy assignment and (connection schema) the verified
+ * claim genesis; verified links; claims; candidates.
+ */
+function statusSql(connections: boolean): string {
+	// A current attestation for this exact enrollment whose device and key are not revoked.
+	const controllers = `(SELECT json_group_array(c.controller_identity_id) FROM (
+  SELECT a.identity_id AS controller_identity_id ${AUTH_LINK_CONTROLLER_SOURCE_SQL}
+  AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
+  WHERE (r.subject_kind = 'device_id' AND r.subject_value = a.device_id)
+  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = ?))) c)`;
+	const assigned = `CASE WHEN (${AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL} AND ${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL})
+   AND (${AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL})
+   AND (${AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL}
+   AND ${AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL})
+   AND (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL}) THEN 1 ELSE 0 END`;
+	const genesis = `(SELECT json_group_array(json_object('claim_id',d.claim_id,'identity_id',d.identity_id))
+  FROM coordinator_auth_device_claims d WHERE d.coordinator_id = p.coordinator_id
+  AND (d.device_id = p.device_id OR d.key_id = p.key_id OR d.identity_id = p.identity_id) AND ${authClaimGenesisSql("d")})`;
+	const links = `(SELECT json_group_array(json_object('link_id',l.link_id,'authority_kind',l.authority_kind))
+  FROM coordinator_auth_account_links l WHERE l.coordinator_id = p.coordinator_id
+  AND (l.identity_id IN (SELECT json_extract(value,'$.identity_id') FROM json_each(p.genesis))
+  OR l.identity_id IN (SELECT value FROM json_each(p.controllers)))
+  AND ${authAccountLinkProvenanceSql("l", { connections: true })})`;
+	const ownClaimProof = connections
+		? "(sg.claim_id IS NOT NULL AND (l.link_id IS NULL OR sl.link_id IS NOT NULL))"
+		: authDeviceClaimProvenanceSql({ link: "l", canonicalKeyId: "?" });
+	const peerClaimProof = connections
+		? "(sl.link_id IS NOT NULL AND sl.authority_kind = 'device_claim')"
+		: authDeviceClaimProvenanceSql({ link: "l" });
+	const claims = `(SELECT ${jsonRows(CANDIDATE_FIELDS)} FROM (
+  SELECT d.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
+  CASE WHEN (l.identity_id = d.identity_id${connections ? " OR (l.link_id IS NULL AND sg.claim_id IS NOT NULL)" : ""})
+  AND ${currentEnrollmentSql("d.identity_id")}
+  AND ${NOT_REVOKED_SQL}
+  AND ((d.group_id = p.group_id AND d.device_id = p.device_id
+  AND d.key_id = p.key_id AND d.fingerprint = p.fingerprint
+  AND ${ownClaimProof})
+  OR (d.identity_id = p.identity_id AND d.device_id <> p.device_id
+  AND d.key_id <> p.key_id AND d.fingerprint <> p.fingerprint
+  AND p.assigned = 1
+  AND ${peerClaimProof}))
+  THEN 1 ELSE 0 END AS valid,
+  CASE WHEN d.device_id = p.device_id AND d.key_id = p.key_id THEN 1 ELSE 0 END AS own
+  FROM coordinator_auth_device_claims d
+  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = d.coordinator_id AND ${connections ? "l.identity_id = d.identity_id" : "l.device_claim_id = d.claim_id"}
+  ${connections ? `LEFT JOIN ${GENESIS_ROWS} sg ON sg.claim_id = d.claim_id LEFT JOIN ${LINK_ROWS} sl ON sl.link_id = l.link_id` : ""}
+  WHERE d.coordinator_id = p.coordinator_id
+  AND (d.device_id = p.device_id OR d.key_id = p.key_id
+  OR (d.identity_id = p.identity_id AND p.assigned = 1))
+  AND NOT (${SUPERSEDED_OWN_CLAIM_SQL})))`;
+	// A rebound device has no claim of its own; its binding names the Identity and the
+	// Identity's link is the account. Valid only while the device's exact enrollment is
+	// current, neither device nor key is revoked, and the link was born through a
+	// reviewed claim or attestation.
+	const candidates = `(SELECT ${jsonRows([...CANDIDATE_FIELDS, "authority"])} FROM (
+  SELECT ${fromJson("c", CANDIDATE_FIELDS)}, 'device_claim' AS authority FROM json_each(p.claims) c
+  UNION ALL SELECT a.value, l.link_id, l.issuer, l.revoked_at_ms,
+  ${connections ? "CASE WHEN l.link_id IS NULL OR valid_controller.link_id IS NOT NULL THEN 1 ELSE 0 END" : "1"}, 1, 'controller_attestation'
+  FROM json_each(p.controllers) a LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = p.coordinator_id
+  AND l.identity_id = a.value ${connections ? "" : "AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL"}
+  ${connections ? `LEFT JOIN ${LINK_ROWS} valid_controller ON valid_controller.link_id = l.link_id` : ""}
+  WHERE ${NO_CLAIMS}
+  UNION ALL SELECT ob.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
+  CASE WHEN ${currentEnrollmentSql("ob.identity_id")}
+  AND ${NOT_REVOKED_SQL}
+  AND (l.link_id IS NULL OR ${authAccountLinkProvenanceSql("l", { connections })})
+  THEN 1 ELSE 0 END, 1, 'device_claim'
+  FROM coordinator_device_ownership_bindings ob
+  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = p.coordinator_id AND l.identity_id = ob.identity_id
+  WHERE ob.coordinator_id = p.coordinator_id AND ob.device_id = p.device_id AND ob.key_id = p.key_id
+  AND ob.identity_id = p.identity_id AND ${NO_CLAIMS} AND ${NO_CONTROLLER}
+  UNION ALL SELECT p.identity_id, NULL, NULL, NULL, 1, 1, 'device_claim'
+  WHERE ${NO_CLAIMS} AND ${NO_CONTROLLER}
+  AND NOT EXISTS (${REQUESTER_BINDING_SQL}) AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL}))`;
+	const stage = (inner: string, columns: string) =>
+		`(SELECT p.*, ${columns} FROM ${inner} p LIMIT 1 OFFSET 0)`;
+	const facts = stage(
+		AUTH_DEVICE_CLAIM_INPUT_ROW_SQL,
+		`${controllers} AS controllers, ${assigned} AS assigned${connections ? `, ${genesis} AS genesis` : ""}`,
+	);
+	const linked = connections ? stage(facts, `${links} AS links`) : facts;
+	const claimed = stage(linked, `${claims} AS claims`);
+	const a = (field: string) => `json_extract(a.value,'$.${field}')`;
+	const revoked = connections
+		? `coalesce((SELECT min(h.revoked_at_ms) FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id = p.coordinator_id AND h.identity_id = ${a("identity_id")} AND h.revoked_at_ms IS NOT NULL),${a("revoked_at_ms")})`
+		: a("revoked_at_ms");
+	const profile = connections
+		? connectionProfileColumns("m")
+		: `CASE WHEN m.link_id IS NOT NULL THEN m.display_name ELSE b.display_name END AS display_name,
+  CASE WHEN m.link_id IS NOT NULL THEN m.email ELSE b.email END AS email,
+  CASE WHEN m.link_id IS NOT NULL THEN m.email_verified ELSE b.email_verified END AS email_verified,
+  CASE WHEN m.link_id IS NOT NULL THEN m.picture_url ELSE b.picture_url END AS picture_url`;
+	return `SELECT ${["identity_id", "link_id", "issuer", "valid", "own", "authority"].map((field) => `${a(field)} AS ${field}`).join(",")},
+ EXISTS (${REQUESTER_BINDING_SQL} AND ob.identity_id = ${a("identity_id")}) AS bound,
+ ${revoked} AS revoked_at_ms,
+ json_array_length(p.claims) AS claim_count,
+ json_array_length(p.controllers) AS controller_count,
+ json_extract(p.controllers,'$[0]') AS controller_identity,
+  ${profile}
+  FROM ${stage(claimed, `${candidates} AS candidates`)} p
+  JOIN json_each(p.candidates) a
+  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = p.coordinator_id AND l.link_id = ${a("link_id")}
+  AND l.identity_id = ${a("identity_id")} AND ${a("identity_id")} = p.identity_id AND l.issuer = ${a("issuer")}
+  AND l.revoked_at_ms IS NULL
+  LEFT JOIN coordinator_auth_account_profiles m ON m.coordinator_id = l.coordinator_id
+  AND m.link_id = l.link_id
+  LEFT JOIN coordinator_auth_link_profiles b ON b.coordinator_id = l.coordinator_id
+  AND b.link_id = l.link_id AND b.attempt_id = l.attempt_id AND b.issuer = l.issuer
+  AND b.subject = l.subject AND b.auth_config_revision = l.auth_config_revision LIMIT 1`;
 }
+
+/** Bound values in the order statusSql writes its placeholders. */
+function statusValues(
+	connections: boolean,
+	captured: AuthLinkStatement["values"],
+	controllerSource: AuthLinkStatement["values"],
+	keyId: string,
+): AuthLinkStatement["values"] {
+	// Without the connection schema the own-claim proof pins the canonical key ID.
+	return [...(connections ? [] : [keyId]), ...controllerSource, keyId, ...captured];
+}
+
 /** Reads only. Rechecks the exact enrollment and controller after key derivation. */
 export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatusStore {
 	constructor(
@@ -244,88 +367,14 @@ export class AccountLinkStatusOperations implements CoordinatorAccountLinkStatus
 			);
 			if (!captured) return base;
 			const connections = captured.connectionSession;
-			const connectionFacts = statusConnectionFacts(connections);
-			// Authority, current enrollment, tombstones and metadata share one snapshot.
 			const row = await this.backend.first<StatusRow>({
-				sql: `${AUTH_DEVICE_CLAIM_INPUT_SQL}, controller AS (
- SELECT ${AUTH_LINK_AUTHORITY_COLUMNS} ${AUTH_LINK_CONTROLLER_SOURCE_SQL}
- AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
- WHERE (r.subject_kind = 'device_id' AND r.subject_value = a.device_id)
- OR (r.subject_kind = 'ed25519_key' AND r.subject_value = ?))),
-  status_assignment AS MATERIALIZED (SELECT 1 FROM claim_input p
-   WHERE (${AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL} AND ${AUTH_DEVICE_CLAIM_LEGACY_COMPATIBLE_SQL})
-   AND (${AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL})
-   AND (${AUTH_DEVICE_CLAIM_REQUESTER_ATTESTATION_COMPATIBLE_SQL}
-   AND ${AUTH_DEVICE_CLAIM_REQUESTER_INVITE_COMPATIBLE_SQL})
-    AND (${AUTH_DEVICE_CLAIM_REQUESTER_LINK_COMPATIBLE_SQL}))${connectionFacts},
-  claims AS MATERIALIZED (SELECT d.identity_id, l.link_id, l.issuer, l.revoked_at_ms,
- CASE WHEN (l.identity_id = d.identity_id${connections ? " OR (l.link_id IS NULL AND sg.claim_id IS NOT NULL)" : ""})
- AND EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
- WHERE e.group_id = p.group_id AND e.device_id = p.device_id AND e.public_key = p.public_key
- AND e.fingerprint = p.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL
- AND (e.identity_id IS NULL OR e.identity_id = d.identity_id))
- AND NOT EXISTS (SELECT 1 FROM coordinator_device_revocations r
- WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
- OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id))
- AND ((d.group_id = p.group_id AND d.device_id = p.device_id
- AND d.key_id = p.key_id AND d.fingerprint = p.fingerprint
-  AND ${connections ? "(sg.claim_id IS NOT NULL AND (l.link_id IS NULL OR sl.link_id IS NOT NULL) AND d.key_id = ?)" : authDeviceClaimProvenanceSql({ link: "l", canonicalKeyId: "?" })})
- OR (d.identity_id = p.identity_id AND d.device_id <> p.device_id
- AND d.key_id <> p.key_id AND d.fingerprint <> p.fingerprint
- AND EXISTS (SELECT 1 FROM status_assignment)
-  AND ${connections ? "(sl.link_id IS NOT NULL AND sl.authority_kind = 'device_claim')" : authDeviceClaimProvenanceSql({ link: "l" })}))
- THEN 1 ELSE 0 END AS valid,
- CASE WHEN d.device_id = p.device_id AND d.key_id = p.key_id THEN 1 ELSE 0 END AS own
- FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id = p.coordinator_id
- LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = d.coordinator_id AND ${connections ? "l.identity_id = d.identity_id" : "l.device_claim_id = d.claim_id"}
- ${connections ? "LEFT JOIN status_genesis sg ON sg.coordinator_id=d.coordinator_id AND sg.claim_id=d.claim_id LEFT JOIN status_links sl ON sl.coordinator_id=l.coordinator_id AND sl.link_id=l.link_id" : ""}
- WHERE (d.device_id = p.device_id OR d.key_id = p.key_id
- OR (d.identity_id = p.identity_id AND EXISTS (SELECT 1 FROM status_assignment)))
- AND NOT (${SUPERSEDED_OWN_CLAIM_SQL})),
- candidates AS (
- SELECT *, 'device_claim' AS authority FROM claims
- UNION ALL SELECT a.controller_identity_id, l.link_id, l.issuer, l.revoked_at_ms, ${connections ? "CASE WHEN l.link_id IS NULL OR valid_controller.link_id IS NOT NULL THEN 1 ELSE 0 END" : "1"}, 1, 'controller_attestation'
- FROM controller a LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = ?
- AND l.identity_id = a.controller_identity_id ${connections ? "" : "AND l.authority_kind = 'controller_attestation' AND l.controller_attestation_id IS NOT NULL AND l.device_claim_id IS NULL"}
- ${connections ? "LEFT JOIN status_links valid_controller ON valid_controller.coordinator_id=l.coordinator_id AND valid_controller.link_id=l.link_id" : ""}
- WHERE NOT EXISTS (SELECT 1 FROM claims)
- UNION ALL ${bindingCandidateSql(connections)}
- WHERE NOT EXISTS (SELECT 1 FROM claims) AND NOT EXISTS (SELECT 1 FROM controller)
- UNION ALL SELECT p.identity_id, NULL, NULL, NULL, 1, 1, 'device_claim' FROM claim_input p
- WHERE NOT EXISTS (SELECT 1 FROM claims) AND NOT EXISTS (SELECT 1 FROM controller)
- AND NOT EXISTS (${REQUESTER_BINDING_SQL}) AND ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL})
- SELECT a.identity_id,a.link_id,a.issuer,a.valid,a.own,a.authority,
- EXISTS (${REQUESTER_BINDING_SQL} AND ob.identity_id = a.identity_id) AS bound,
- ${connections ? `coalesce((SELECT min(h.revoked_at_ms) FROM coordinator_auth_account_connection_history h WHERE h.coordinator_id = (SELECT coordinator_id FROM claim_input) AND h.identity_id = a.identity_id AND h.revoked_at_ms IS NOT NULL),a.revoked_at_ms)` : "a.revoked_at_ms"} AS revoked_at_ms,
- (SELECT count(*) FROM claims) AS claim_count,
- (SELECT count(*) FROM controller) AS controller_count,
- (SELECT controller_identity_id FROM controller LIMIT 1) AS controller_identity,
-  ${
-		connections
-			? connectionProfileColumns("m")
-			: `CASE WHEN m.link_id IS NOT NULL THEN m.display_name ELSE b.display_name END AS display_name,
-  CASE WHEN m.link_id IS NOT NULL THEN m.email ELSE b.email END AS email,
-  CASE WHEN m.link_id IS NOT NULL THEN m.email_verified ELSE b.email_verified END AS email_verified,
-  CASE WHEN m.link_id IS NOT NULL THEN m.picture_url ELSE b.picture_url END AS picture_url`
-	}
-  FROM candidates a
-  LEFT JOIN coordinator_auth_account_links l ON l.coordinator_id = ? AND l.link_id = a.link_id
-  AND l.identity_id = a.identity_id AND a.identity_id = ? AND l.issuer = a.issuer
-  AND l.revoked_at_ms IS NULL
-  LEFT JOIN coordinator_auth_account_profiles m ON m.coordinator_id = l.coordinator_id
-  AND m.link_id = l.link_id
-  LEFT JOIN coordinator_auth_link_profiles b ON b.coordinator_id = l.coordinator_id
-  AND b.link_id = l.link_id AND b.attempt_id = l.attempt_id AND b.issuer = l.issuer
-  AND b.subject = l.subject AND b.auth_config_revision = l.auth_config_revision LIMIT 1`,
-				values: [
-					...captured.values,
-					...authLinkControllerSourceValues(c, s),
+				sql: statusSql(connections),
+				values: statusValues(
+					connections,
+					captured.values,
+					authLinkControllerSourceValues(c, s),
 					keyId,
-					keyId,
-					c.coordinatorId,
-					c.coordinatorId,
-					identityId,
-				],
+				),
 			});
 			return projectStatus(base, row, c, identityId);
 		} catch (error) {

@@ -66,16 +66,18 @@ export function captureCurrentLegacyAssignment(
 
 // A label row (another device's guess) never makes a current assignment. Grouped
 // terms keep D1's expression depth (max 100) unchanged for embedding queries.
-// MATERIALIZED keeps the validated snapshot independent of deeper D1 predicates.
 // Exact bytes and row metadata pin normalization to the record used by the writer.
-export const AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE = `claim_current_assignment AS MATERIALIZED (
- SELECT c.* FROM claim_input p JOIN coordinator_legacy_team_completions c
- ON c.group_id = p.group_id AND c.group_id = json_extract(p.assignment_snapshot, '$.group_id')
+// This is a FROM subquery correlated to the embedding statement's claim_input row p,
+// never a WITH name: SQLite 3.54.0 and 3.54.1 (production D1) refuse a statement that
+// resolves a WITH name after about 100 table references.
+export const AUTH_CURRENT_LEGACY_ASSIGNMENT_ROWS_SQL = `(
+ SELECT c.* FROM coordinator_legacy_team_completions c
+ WHERE c.group_id = p.group_id AND c.group_id = json_extract(p.assignment_snapshot, '$.group_id')
  AND c.candidate_ref = json_extract(p.assignment_snapshot, '$.candidate_ref')
  AND c.manifest_version = json_extract(p.assignment_snapshot, '$.manifest_version')
  AND c.completed_at = json_extract(p.assignment_snapshot, '$.completed_at')
  AND c.manifest_json = json_extract(p.assignment_snapshot, '$.manifest_json')
- WHERE json_extract(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.coordinator_id') = p.coordinator_id
+ AND json_extract(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.coordinator_id') = p.coordinator_id
  AND EXISTS (SELECT 1 FROM json_each(json_extract(p.assignment_snapshot, '$.manifest_json'), '$.device_decisions') d
  WHERE json_extract(d.value, '$.device_id') = p.device_id
  AND json_extract(d.value, '$.key_fingerprint') = p.fingerprint
@@ -90,4 +92,4 @@ export const AUTH_CURRENT_LEGACY_ASSIGNMENT_CTE = `claim_current_assignment AS M
  WHERE (r.subject_kind = 'device_id' AND r.subject_value = p.device_id)
  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = p.key_id)))`;
 
-export const AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL = "EXISTS (SELECT 1 FROM claim_current_assignment)";
+export const AUTH_CURRENT_LEGACY_ASSIGNMENT_SQL = `EXISTS (SELECT 1 FROM ${AUTH_CURRENT_LEGACY_ASSIGNMENT_ROWS_SQL} ca)`;
