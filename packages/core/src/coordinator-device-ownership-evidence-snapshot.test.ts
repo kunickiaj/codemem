@@ -1,15 +1,14 @@
 import { expect, vi } from "vitest";
 import { controllerHistoryDiscoveryFragments } from "./coordinator-auth-controller-history.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import { readSnapshot } from "./coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence.js";
+// The per-category statements the read set replaced, from their verbatim copy.
 import {
-	BYTE_LIMIT,
-	type CapturedEvidenceRow,
 	EVIDENCE_QUERIES,
-	ROW_LIMIT,
-	readCombinedEvidenceQuery,
 	readEvidenceQuery,
-} from "./coordinator-device-ownership-evidence-queries.js";
+} from "./coordinator-device-ownership-evidence-original-sql-test-fixtures.js";
+import { BYTE_LIMIT, ROW_LIMIT } from "./coordinator-device-ownership-evidence-queries.js";
 import {
 	binding,
 	cfg,
@@ -25,6 +24,7 @@ import {
 	signer,
 	sourceRef,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
+import { discoveredReads, evidenceReads } from "./coordinator-owner-negative-reads.js";
 import { deterministicReviewTests } from "./coordinator-owner-resolution-review-test-fixtures.js";
 
 function encodedInput(input: Awaited<ReturnType<typeof collectInput>>) {
@@ -37,6 +37,33 @@ function encodedInput(input: Awaited<ReturnType<typeof collectInput>>) {
 		},
 		legacyHistory: input.verifiedHistory,
 	});
+}
+
+/** Every category as the read set returns it: each row's exact JSON text, or null. */
+async function categoryRows(
+	db: ReturnType<typeof evidenceBackend>,
+	input: Awaited<ReturnType<typeof collectInput>>,
+): Promise<Record<string, (string | null)[]>> {
+	const subject = {
+		...input.actualSigner,
+		coordinatorId: cfg.coordinatorId,
+		keyId: EXPECTED_KEY_ID,
+	};
+	type Rows = Record<string, (string | null)[]>;
+	const first = await readSnapshot<Rows>(
+		db,
+		evidenceReads({ subject, history: input.verifiedHistory }),
+	);
+	const discovered = (first.rows.discovery ?? []).flatMap((row) =>
+		row === null ? [] : [JSON.parse(row) as [string, string]],
+	);
+	const ids = (source: string) =>
+		discovered.filter(([kind]) => kind === source).map(([, id]) => id);
+	const next = await readSnapshot<Rows>(
+		db,
+		discoveredReads(subject, { controllers: ids("controller"), invites: ids("invite") }),
+	);
+	return { ...first.rows, ...next.rows };
 }
 
 // Each evidence category is one read whose `rows` column holds a JSON array of row texts.
@@ -56,7 +83,7 @@ deterministicReviewTests();
 for (const backend of ["SQLite", "D1"] as const) {
 	const test = evidenceTest(backend);
 	test.for(["empty", "populated"])(
-		`${backend}: combined snapshot preserves every legacy category and sorted row for %s data`,
+		`${backend}: the read set preserves every legacy category and sorted row for %s data`,
 		async (variant, { f }) => {
 			// Arrange: retain real history, metadata, and schema rows, including empty markers.
 			if (variant === "populated") {
@@ -77,22 +104,19 @@ for (const backend of ["SQLite", "D1"] as const) {
 				});
 			}
 			const db = evidenceBackend(f, backend);
-			const encoded = encodedInput(await collectInput(f));
+			const input = await collectInput(f);
+			const encoded = encodedInput(input);
 			// Act
-			const captured = await db.all<CapturedEvidenceRow>(readCombinedEvidenceQuery(encoded));
+			const captured = await categoryRows(db, input);
 			const legacy = await Promise.all(
 				EVIDENCE_QUERIES.map((query) => db.all<{ row: string }>(readEvidenceQuery(query, encoded))),
 			);
 			// Assert: compare actual SQL responses, not a reconstructed expected rowset.
-			expect(new Set(captured.map(({ category }) => category))).toEqual(
+			expect(new Set(Object.keys(captured))).toEqual(
 				new Set(EVIDENCE_QUERIES.map(({ name }) => name)),
 			);
 			EVIDENCE_QUERIES.forEach(({ name }, index) => {
-				const rows = legacy[index];
-				const expected = rows.length ? rows : [{ row: null }];
-				expect(captured.filter(({ category }) => category === name)).toEqual(
-					expected.map(({ row }) => ({ category: name, row_count: rows.length, row })),
-				);
+				expect(captured[name]).toEqual(legacy[index]?.map(({ row }) => row));
 			});
 		},
 	);
@@ -113,14 +137,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const db = evidenceBackend(f, backend);
 			const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 			// Act
-			const captured = await db.all<CapturedEvidenceRow>(
-				readCombinedEvidenceQuery(encodedInput(input)),
-			);
+			const captured = await categoryRows(db, input);
 			const result = await reader.collect(input);
 			// Assert: the sentinel row must cause rejection, never silent truncation.
-			const controllers = captured.filter(({ category }) => category === "controllers");
-			expect(controllers).toHaveLength(count);
-			expect(controllers.every(({ row_count }) => row_count === count)).toBe(true);
+			expect(captured.controllers).toHaveLength(count);
 			expect(result.kind).toBe(count === ROW_LIMIT ? "collected" : "unavailable");
 		},
 	);
@@ -153,9 +173,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const legacy = await Promise.all(
 				EVIDENCE_QUERIES.map((query) => db.all<{ row: string }>(readEvidenceQuery(query, encoded))),
 			);
-			const captured = await db.all<CapturedEvidenceRow>(readCombinedEvidenceQuery(encoded));
+			const captured = await categoryRows(db, input);
 			const result = await reader.collect(input);
-			// Assert: byte overflow must suppress all evidence text before crossing the adapter.
+			// Assert: each category fits its own byte limit, so its text crosses the adapter;
+			// the aggregate limit then refuses the capture.
 			expect(legacy.flat().every(({ row }) => typeof row === "string")).toBe(true);
 			const text = legacy
 				.flat()
@@ -164,7 +185,11 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(text.length).toBeLessThan(BYTE_LIMIT);
 			const overflow = new TextEncoder().encode(text).byteLength > BYTE_LIMIT;
 			expect(overflow).toBe(count === 120);
-			expect(captured.every(({ row }) => row === null)).toBe(overflow);
+			expect(
+				Object.values(captured)
+					.flat()
+					.every((row) => row !== null),
+			).toBe(true);
 			expect(result.kind).toBe(overflow ? "unavailable" : "collected");
 		},
 	);
@@ -191,14 +216,14 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 			// Act
 			const legacy = await db.all<{ row: string | null }>(readEvidenceQuery(query, encoded));
-			const captured = await db.all<CapturedEvidenceRow>(readCombinedEvidenceQuery(encoded));
+			const captured = await categoryRows(db, input);
 			const result = await reader.collect(input);
 			// Assert: both query shapes suppress oversized category text, without truncating counts.
 			const overflow = count === 260;
 			expect(legacy).toHaveLength(count);
 			expect(legacy.every(({ row }) => row === null)).toBe(overflow);
-			expect(captured.filter(({ category }) => category === "controllers")).toHaveLength(count);
-			expect(captured.every(({ row }) => row === null)).toBe(overflow);
+			expect(captured.controllers).toHaveLength(count);
+			expect(captured.controllers?.every((row) => row === null)).toBe(overflow);
 			expect(result.kind).toBe(overflow ? "unavailable" : "collected");
 		},
 	);
