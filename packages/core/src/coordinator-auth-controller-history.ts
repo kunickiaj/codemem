@@ -148,19 +148,6 @@ export const CONTROLLER_HISTORY_SELECT_SQL = `WITH snapshot(value) AS (SELECT ?)
  THEN manifest_json ELSE NULL END AS manifest_json
  FROM live_history ORDER BY group_id, candidate_ref LIMIT ${MAX_RECORDS + 1}`;
 
-export const CONTROLLER_HISTORY_GUARD = `AND (
- (SELECT value FROM history_input) IS NULL OR (
- json_extract((SELECT value FROM history_input), '$.deviceId') = e.device_id
- AND json_extract((SELECT value FROM history_input), '$.publicKey') = e.public_key
- AND json_extract((SELECT value FROM history_input), '$.fingerprint') = e.fingerprint
- AND (SELECT count(*) FROM live_history) = (SELECT count(*) FROM snapshot_history)
- AND NOT EXISTS (SELECT * FROM live_history EXCEPT SELECT * FROM snapshot_history)
- AND NOT EXISTS (SELECT * FROM live_history_keys EXCEPT SELECT * FROM snapshot_history_keys)
- AND NOT EXISTS (SELECT * FROM snapshot_history_keys EXCEPT SELECT * FROM live_history_keys)
- AND NOT EXISTS (SELECT * FROM live_discovery_keys EXCEPT SELECT * FROM snapshot_discovery_keys)
- AND NOT EXISTS (SELECT * FROM snapshot_discovery_keys EXCEPT SELECT * FROM live_discovery_keys)
- ))`;
-
 export function parseControllerHistoryRecord(
 	row: ControllerHistoryRecord,
 	coordinatorId: string,

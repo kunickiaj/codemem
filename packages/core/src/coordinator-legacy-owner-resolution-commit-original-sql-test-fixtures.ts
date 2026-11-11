@@ -16,14 +16,12 @@ import type {
 	CoordinatorAuthControllerAttestation,
 	CoordinatorAuthControllerReviewInput,
 } from "./coordinator-auth-controller.js";
-import {
-	CONTROLLER_HISTORY_CTE,
-	CONTROLLER_HISTORY_GUARD,
-} from "./coordinator-auth-controller-history.js";
+import { CONTROLLER_HISTORY_CTE } from "./coordinator-auth-controller-history.js";
 import {
 	AUTH_CONTROLLER_OWNER_CTE,
 	AUTH_CONTROLLER_OWNER_GUARD,
-} from "./coordinator-auth-controller-owner.js";
+	CONTROLLER_HISTORY_GUARD,
+} from "./coordinator-auth-controller-stages-original-sql-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { OriginalDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence-original-sql-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
