@@ -25,10 +25,18 @@ import {
 const here = import.meta.dirname;
 const packageRoot = resolve(here, "../..");
 
-function captureStatements(directory) {
+// The owner-proof suite runs 500-subject cases and must not share a runner with other
+// suites, so it is captured alone with one worker, as test:ci:isolated runs it.
+const ISOLATED_SUITE = "coordinator-legacy-completion-owner-proof.test.ts";
+const CAPTURE_RUNS = [
+	["--exclude", `**/${ISOLATED_SUITE}`],
+	[`src/${ISOLATED_SUITE}`, "--maxWorkers=1"],
+];
+
+function runCapture(directory, selection) {
 	const result = spawnSync(
 		"pnpm",
-		["exec", "vitest", "run", "--config", join(here, "capture.vitest.config.ts")],
+		["exec", "vitest", "run", "--config", join(here, "capture.vitest.config.ts"), ...selection],
 		{
 			cwd: packageRoot,
 			env: { ...process.env, CODEMEM_D1_STATEMENT_CAPTURE_DIR: directory },
@@ -36,6 +44,10 @@ function captureStatements(directory) {
 		},
 	);
 	if (result.status !== 0) throw new Error("The core coordinator tests failed during capture.");
+}
+
+function captureStatements(directory) {
+	for (const selection of CAPTURE_RUNS) runCapture(directory, selection);
 	const lines = readdirSync(directory).flatMap((file) =>
 		readFileSync(join(directory, file), "utf8").split("\n"),
 	);

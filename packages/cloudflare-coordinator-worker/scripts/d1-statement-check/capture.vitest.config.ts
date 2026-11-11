@@ -9,6 +9,8 @@ export default defineConfig({
 		name: "d1-statement-capture",
 		root: core,
 		include: ["src/coordinator-*.test.ts", "src/linked-legacy-*.test.ts", "src/owner-*.test.ts"],
+		// The root config's worker cap does not apply to this standalone config.
+		maxWorkers: process.env.CI ? 3 : undefined,
 		setupFiles: [resolve(import.meta.dirname, "capture-setup.ts")],
 		// Capture needs every test to reach its statements; the suite's own run enforces speed.
 		testTimeout: 60_000,
