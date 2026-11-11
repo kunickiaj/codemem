@@ -33,10 +33,10 @@ import {
 import { sqlEq } from "./coordinator-sql-compare.js";
 
 /**
- * Read-set form of prepareNegativeOwnerConsistency: the same reads, the same
- * classification, and guards in place of the statement that pinned them.
+ * Negative owner consistency as a read set: evidence reads, the shared
+ * classification, and guards that pin the rows the classification used.
  *
- * Like that statement, the result never grants owner authority. It only says that no
+ * The result never grants owner authority. It only says that no
  * retained legacy owner fact for the subject contradicts the producer's owner.
  */
 export interface NegativeOwnerGuards {

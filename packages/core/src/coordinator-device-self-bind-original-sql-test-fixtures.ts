@@ -29,7 +29,8 @@ import {
 	hasDeviceRebindStartAuthorityColumn,
 } from "./coordinator-device-self-bind-authority.js";
 import { legacyDecisionCountsAsOwnerSql } from "./coordinator-legacy-team-completion.js";
-import { prepareNegativeOwnerConsistency } from "./coordinator-owner-negative-consistency.js";
+// The negative owner builder from the same main commit, kept verbatim in its own fixture.
+import { prepareOriginalNegativeOwnerConsistency as prepareNegativeOwnerConsistency } from "./coordinator-owner-negative-original-sql-test-fixtures.js";
 
 // ---- verbatim copy starts ----
 const manifest = "CASE WHEN json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END";

@@ -7,11 +7,9 @@ import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	authControllerAuthorityValues,
 	authControllerInsertValues,
-	authControllerRetryActiveValues,
 	authControllerRetryEligibleValues,
 	type CoordinatorAuthControllerReviewInput,
 } from "./coordinator-auth-controller.js";
@@ -462,7 +460,7 @@ function registerSnapshotPerformanceTests(
 	test("materializes each snapshot array once and compares sets without correlated snapshot scans", async ({
 		fixture: { store, db },
 	}) => {
-		// Arrange: explain the insert and both live retry guards against the fixture schema.
+		// Arrange: explain the insert and retry eligibility the legacy owner resolution still sends.
 		await enroll(store);
 		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
 		const enrollment = await store.getEnrollment(input.groupId, input.deviceId, true);
@@ -471,7 +469,6 @@ function registerSnapshotPerformanceTests(
 		for (const [sql, values] of [
 			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now", authority)],
 			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input, authority)],
-			[AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerRetryActiveValues(input, authority)],
 		] as const) {
 			// Act
 			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {

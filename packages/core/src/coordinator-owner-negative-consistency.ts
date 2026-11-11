@@ -1,49 +1,24 @@
-import {
-	type ControllerHistorySnapshot,
-	captureControllerHistory,
-} from "./coordinator-auth-controller-history.js";
+import type { ControllerHistorySnapshot } from "./coordinator-auth-controller-history.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import type { EvidenceRow } from "./coordinator-device-ownership-evidence-classify.js";
 import {
-	classifyEvidence,
-	type EvidenceRow,
-	type EvidenceRows,
-	type EvidenceSubject,
-} from "./coordinator-device-ownership-evidence-classify.js";
-import {
-	atomicEvidenceQuery,
-	BYTE_LIMIT,
 	CONTROLLER_COLUMNS,
-	EVIDENCE_QUERIES,
 	RESOLUTION_COLUMNS,
 	ROW_LIMIT,
-	readEvidenceQuery,
 } from "./coordinator-device-ownership-evidence-queries.js";
-import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	captureLegacyOwnerResolutionRecord,
 	classifyLegacyOwnerResolutionSchemaCatalog,
 } from "./coordinator-legacy-owner-resolution-metadata.js";
 
+/**
+ * Helpers the negative owner read set shares: the subject it checks, the resolution
+ * catalog's classification, evidence row parsing, and the original-source pin.
+ */
+
 interface Backend {
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
 	all?<T>(statement: AuthLinkStatement): Promise<T[]>;
-}
-
-export interface NegativeOwnerConsistency extends AuthLinkStatement {
-	/** Catalog, retained facts and original source only; unaffected by producer output. */
-	retainedRecheck: AuthLinkStatement;
-}
-
-function consistencyResult(statement: AuthLinkStatement): NegativeOwnerConsistency {
-	return { ...statement, retainedRecheck: statement };
-}
-
-async function captureNegativeCatalog(backend: Backend) {
-	const catalog = await backend.first<{ objects: string }>({ sql: catalogSql, values: [] });
-	if (!catalog || typeof catalog.objects !== "string") return null;
-	const state = capturedCatalogState(catalog.objects);
-	if (state === "unsupported" || (state === "missing" && catalog.objects !== "[]")) return null;
-	return { ...catalog, state, pin: `(${catalogSql.replace(" AS objects", "")}) IS ?` };
 }
 
 /** Trusted subject metadata, not authority. Enrollment is optional for future
@@ -58,9 +33,6 @@ export interface NegativeOwnerSubject {
 	enrollment?: { groupId: string };
 	verifiedHistory?: ControllerHistorySnapshot;
 }
-
-const catalogSql = `SELECT json_group_array(json_array(type,name,tbl_name,sql)) AS objects
- FROM sqlite_master WHERE tbl_name='coordinator_legacy_owner_resolutions'`;
 
 export function capturedCatalogState(encoded: string) {
 	const rows: unknown = JSON.parse(encoded);
@@ -95,30 +67,6 @@ export function parseEvidenceRows(values: { row: string | null }[]): EvidenceRow
 			throw new Error("ownership_evidence_unavailable");
 		return value as EvidenceRow;
 	});
-}
-
-async function captureEvidence(
-	backend: Backend,
-	subject: EvidenceSubject,
-	legacyHistory: ControllerHistorySnapshot,
-) {
-	const base = {
-		subject: { ...subject, fragments: legacyHistory.discoveryFragments },
-		legacyHistory,
-	};
-	const parameters = JSON.stringify(base);
-	const rows: EvidenceRows = {};
-	const encodedRows: Record<string, string[]> = {};
-	for (const query of EVIDENCE_QUERIES) {
-		if (!backend.all) throw new Error("ownership_evidence_reader_unavailable");
-		const values = await backend.all<{ row: string | null }>(readEvidenceQuery(query, parameters));
-		rows[query.name] = parseEvidenceRows(values);
-		encodedRows[query.name] = values.map(({ row }) => String(row));
-	}
-	const encoded = JSON.stringify({ ...base, rows: encodedRows });
-	if (new TextEncoder().encode(encoded).byteLength > BYTE_LIMIT)
-		throw new Error("ownership_evidence_too_large");
-	return { rows, encoded };
 }
 
 export async function sourcePins(
@@ -160,153 +108,5 @@ export async function sourcePins(
 		sql: `SELECT EXISTS (SELECT 1 FROM json_each(?) pin WHERE EXISTS (
  SELECT 1 FROM coordinator_auth_controller_attestations source WHERE ${CONTROLLER_COLUMNS.map((column, i) => `source.${column} IS json_extract(pin.value,'$[${i}]')`).join(" AND ")})) AS matches`,
 		values: [JSON.stringify(sources)],
-	};
-}
-
-function absentSubjectResolutions(
-	input: NegativeOwnerSubject,
-	keyId: string | null,
-): AuthLinkStatement {
-	return {
-		sql: `SELECT NOT EXISTS (SELECT 1 FROM coordinator_legacy_owner_resolutions
- WHERE coordinator_id=? AND (device_id=? OR key_id=?)) AS matches`,
-		values: [input.coordinatorId, input.deviceId, keyId],
-	};
-}
-
-/** Returns only a negative write predicate. No result grants owner authority.
- * The missing-schema predicate deliberately never names the absent table.
- */
-export async function prepareNegativeOwnerConsistency(
-	backend: Backend,
-	input: NegativeOwnerSubject,
-): Promise<NegativeOwnerConsistency | null> {
-	try {
-		const catalog = await captureNegativeCatalog(backend);
-		if (!catalog) return null;
-		const catalogPin = catalog.pin;
-		if (catalog.state === "missing") {
-			return consistencyResult({
-				sql: `SELECT ${catalogPin} AS matches`,
-				values: [catalog.objects],
-			});
-		}
-		const keyId = await ed25519KeyIdForRevocation(input.publicKey);
-		const absent = absentSubjectResolutions(input, keyId);
-		const result = await backend.first<{ matches: number }>(absent);
-		if (!result) return null;
-		// Ready deployments with no retained fact for this subject keep ordinary
-		// admission semantics and limits. The winning write still pins absence.
-		if (result.matches === 1)
-			return consistencyResult({
-				sql: `WITH consistency_absent AS MATERIALIZED (${absent.sql}) SELECT ${catalogPin}
- AND (SELECT matches FROM consistency_absent) AS matches`,
-				values: [...absent.values, catalog.objects],
-			});
-		return await prepareResolvedOwnerConsistency(backend, input, keyId, catalog);
-	} catch {
-		return null;
-	}
-}
-
-async function prepareResolvedOwnerConsistency(
-	backend: Backend,
-	input: NegativeOwnerSubject,
-	keyId: string | null,
-	catalog: { objects: string },
-): Promise<NegativeOwnerConsistency | null> {
-	const catalogPin = `(${catalogSql.replace(" AS objects", "")}) IS ?`;
-	const history =
-		input.verifiedHistory ??
-		(await captureControllerHistory(
-			{
-				coordinatorId: input.coordinatorId,
-				deviceId: input.deviceId,
-				publicKey: input.publicKey,
-				fingerprint: input.fingerprint,
-			},
-			<T>(sql: string, values: string[]) => {
-				if (!backend.all) throw new Error("ownership_evidence_reader_unavailable");
-				return backend.all<T>({ sql, values });
-			},
-		));
-	const subject: EvidenceSubject = {
-		coordinatorId: input.coordinatorId,
-		deviceId: input.deviceId,
-		publicKey: input.publicKey,
-		fingerprint: input.fingerprint,
-		groupId: input.enrollment?.groupId ?? "",
-		// Legacy trusted seed callers can have opaque keys. They still receive
-		// device checks; no canonical-key inference is made from opaque text.
-		keyId: keyId ?? "",
-	};
-	const { rows, encoded } = await captureEvidence(backend, subject, history);
-	const classificationRows = { ...rows };
-	if (!input.enrollment)
-		classificationRows.enrollment = [
-			["", input.deviceId, input.publicKey, input.fingerprint, null, 1, null],
-		];
-	const classification = await classifyEvidence(
-		classificationRows,
-		subject,
-		input.ownerIdentityId,
-		history,
-	);
-	if (!["compatible", "weak_label_review_required"].includes(classification.decision)) return null;
-	const sources = await sourcePins(backend, rows.resolutions ?? []);
-	const evidence = atomicEvidenceQuery(encoded);
-	const retainedRecheck = retainedFactsRecheck(
-		input,
-		keyId,
-		rows.resolutions ?? [],
-		sources,
-		catalog,
-	);
-	return {
-		sql: `WITH consistency_evidence AS MATERIALIZED (${evidence.sql}),
- consistency_sources AS MATERIALIZED (${sources.sql})
- SELECT ${catalogPin} AND (SELECT matches FROM consistency_evidence)
- AND (SELECT matches FROM consistency_sources) AS matches`,
-		values: [...evidence.values, ...sources.values, catalog.objects],
-		retainedRecheck,
-	};
-}
-
-function retainedFactsRecheck(
-	input: NegativeOwnerSubject,
-	keyId: string | null,
-	rows: EvidenceRow[],
-	sources: AuthLinkStatement,
-	catalog: { objects: string },
-): AuthLinkStatement {
-	return {
-		sql: `WITH consistency_sources AS MATERIALIZED (${sources.sql}), consistency_facts AS MATERIALIZED (
- SELECT json_group_array(row) AS rows FROM (SELECT json_array(${RESOLUTION_COLUMNS.join(",")}) AS row
- FROM coordinator_legacy_owner_resolutions WHERE coordinator_id=? AND (device_id=? OR key_id=?) ORDER BY row))
- SELECT (${catalogSql.replace(" AS objects", "")}) IS ? AND (SELECT matches FROM consistency_sources)
- AND (SELECT rows FROM consistency_facts) IS ? AS matches`,
-		values: [
-			...sources.values,
-			input.coordinatorId,
-			input.deviceId,
-			keyId,
-			catalog.objects,
-			JSON.stringify(rows.map((row) => JSON.stringify(row)).sort()),
-		],
-	};
-}
-
-/** Keep the ordinary authority and evidence trees in independent materialized
- * root stages instead of nesting one predicate beneath the other's SQL tree.
- */
-export function withNegativeOwnerConsistency(
-	statement: AuthLinkStatement,
-	predicate: AuthLinkStatement,
-): AuthLinkStatement {
-	if (!statement.sql.trimStart().startsWith("WITH "))
-		throw new Error("invalid_controller_statement");
-	return {
-		sql: `WITH negative_owner_consistency AS MATERIALIZED (${predicate.sql}), ${statement.sql.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
-		values: [...predicate.values, ...statement.values],
 	};
 }
