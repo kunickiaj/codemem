@@ -17,6 +17,7 @@ export default defineConfig({
 			"src/coordinator-account-change-equivalence.test.ts",
 			"src/coordinator-owner-negative-equivalence.test.ts",
 			"src/coordinator-owner-producer-equivalence.test.ts",
+			"src/coordinator-recipient-owner-equivalence.test.ts",
 		],
 		// The root config's worker cap does not apply to this standalone config.
 		maxWorkers: process.env.CI ? 3 : undefined,
