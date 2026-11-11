@@ -25,17 +25,10 @@ import {
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_ENROLLMENT_SQL,
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
-	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	authControllerAuthorityValues,
 	authControllerConflictValues,
-	authControllerInsertValues,
-	authControllerRetryActiveValues,
-	authControllerRetryEligibleValues,
 	authControllerRetryResult,
-	authControllerReviewSql,
 	authControllerSubjectOwnerConflictValues,
 	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
@@ -51,6 +44,12 @@ import {
 	captureControllerHistory,
 } from "./coordinator-auth-controller-history.js";
 import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
+import {
+	controllerActiveStatement,
+	controllerEligibleStatement,
+	controllerInsertStatement,
+	readControllerReview,
+} from "./coordinator-auth-controller-read-set.js";
 import { readHeadlessLinkBackend } from "./coordinator-auth-headless-schema.js";
 import {
 	type AuthLinkBackend,
@@ -191,10 +190,9 @@ import {
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
 import {
-	prepareNegativeOwnerConsistency,
-	withNegativeOwnerConsistency,
-} from "./coordinator-owner-negative-consistency.js";
-import type { NegativeOwnerGuards } from "./coordinator-owner-negative-read-set.js";
+	type NegativeOwnerGuards,
+	readNegativeOwnerConsistency,
+} from "./coordinator-owner-negative-read-set.js";
 import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
@@ -1145,6 +1143,7 @@ async function runProjectInviteBatch(
 
 export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly accountChangeBackend: AuthLinkBackend;
+	private readonly controllerBackend: AuthLinkBackend;
 	private readonly accountChangesCapability: AccountChangeOperations;
 	readonly db: D1DatabaseLike;
 	private readonly authLinks: AuthLinkOperations;
@@ -1183,6 +1182,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			options.authClock,
 		);
 		const authBackend = createD1AuthLinkBackend(db);
+		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
 		this.accountChangesCapability = new AccountChangeOperations(
 			this.accountChangeBackend,
@@ -1598,20 +1598,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(review)),
 		);
 		if (conflict) return this.resolveAuthControllerRetry(review, authority);
-		const consistency = await this.prepareAuthControllerConsistency(review);
+		const consistency = await this.readAuthControllerConsistency(review);
 		if (!consistency) return authControllerUnavailableResult(review);
 		try {
-			const statement = withNegativeOwnerConsistency(
-				{
-					sql: authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review),
-					values: authControllerInsertValues(review, nowISO(), authority),
-				},
-				consistency,
-			);
-			const inserted = await runChanges(this.db.prepare(statement.sql).bind(...statement.values));
+			const inserted = await this.insertAuthControllerAttestation(review, authority, consistency);
 			if (inserted === 0) {
 				// The winner changes the evidence pin. Recapture without accepting new conflicts.
-				const retryConsistency = await this.prepareAuthControllerConsistency(review);
+				const retryConsistency = await this.readAuthControllerConsistency(review);
 				if (!retryConsistency) return authControllerUnavailableResult(review);
 				return this.resolveAuthControllerRetry(review, authority, retryConsistency);
 			}
@@ -1628,55 +1621,78 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return { kind: "created", attestation };
 	}
 
-	private prepareAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
-		return prepareNegativeOwnerConsistency(
-			{
-				first: <T>({ sql, values }: AuthLinkStatement) =>
-					this.db
-						.prepare(sql)
-						.bind(...values)
-						.first<T>(),
-				all: async <T>({ sql, values }: AuthLinkStatement) => {
-					const result = await this.db
-						.prepare(sql)
-						.bind(...values)
-						.all<T>();
-					if (!Array.isArray(result.results)) throw new Error("ownership_evidence_unavailable");
-					return result.results;
-				},
-			},
-			{
-				...review,
-				ownerIdentityId: review.identityId,
-				enrollment: { groupId: review.groupId },
-				verifiedHistory: review.verifiedSnapshot?.legacyHistory,
-			},
-		);
+	/**
+	 * The insert, led by the guards for the retained-ownership reads and the reviewed
+	 * snapshot. Zero when either no longer holds, as the old insert then selected nothing.
+	 */
+	private async insertAuthControllerAttestation(
+		review: CoordinatorAuthControllerReviewInput,
+		authority: (string | null)[],
+		consistency: NegativeOwnerGuards,
+	): Promise<number> {
+		const controller = await readControllerReview(this.controllerBackend, review, authority);
+		if (!controller.allowed) return 0;
+		const guards = [...consistency.guards, ...controller.guards];
+		try {
+			const changes = await this.controllerBackend.batch([
+				...guards,
+				controllerInsertStatement(review, nowISO(), authority),
+			]);
+			if (!Array.isArray(changes)) throw new Error("auth_controller_persistence_incomplete");
+			return Number(changes[guards.length] ?? 0);
+		} catch (error) {
+			if (isSnapshotChanged(error)) return 0;
+			throw error;
+		}
+	}
+
+	private readAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
+		return readNegativeOwnerConsistency(this.controllerBackend, {
+			...review,
+			ownerIdentityId: review.identityId,
+			enrollment: { groupId: review.groupId },
+			verifiedHistory: review.verifiedSnapshot?.legacyHistory,
+		});
+	}
+
+	/** The statement's first row, read in one batch after the guards; null when one fails. */
+	private async readAuthControllerGuarded<T>(
+		guards: AuthLinkStatement[],
+		statement: AuthLinkStatement,
+	): Promise<T | null> {
+		if (guards.length === 0) return this.controllerBackend.first<T>(statement);
+		const read = this.controllerBackend.readBatch;
+		if (!read) throw new Error("auth_link_atomic_batch_required");
+		try {
+			const rows = await read<T>([...guards, statement]);
+			return rows[guards.length]?.[0] ?? null;
+		} catch (error) {
+			if (isSnapshotChanged(error)) return null;
+			throw error;
+		}
 	}
 
 	private async resolveAuthControllerRetry(
 		input: CoordinatorAuthControllerReviewInput,
 		authority: (string | null)[],
-		consistency?: AuthLinkStatement,
+		consistency?: NegativeOwnerGuards,
 	): Promise<CoordinatorAuthControllerCreateResult> {
-		const eligible = await firstRow<{ eligible: number }>(
-			this.db
-				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, input))
-				.bind(...authControllerRetryEligibleValues(input, authority)),
-		);
+		const controller = await readControllerReview(this.controllerBackend, input, authority);
+		const eligible =
+			controller.allowed &&
+			(await this.readAuthControllerGuarded<{ eligible: number }>(
+				controller.guards,
+				controllerEligibleStatement(input, authority),
+			));
 		if (!eligible) return authControllerUnavailableResult(input);
 		const row = await firstRow<CoordinatorAuthControllerAttestation>(
 			this.db.prepare(AUTH_CONTROLLER_CONFLICT_SQL).bind(...authControllerConflictValues(input)),
 		);
 		const result = authControllerRetryResult(input, row);
 		if (result.kind === "rejected") return result;
-		let statement: AuthLinkStatement = {
-			sql: authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, input),
-			values: authControllerRetryActiveValues(input, authority),
-		};
-		if (consistency) statement = withNegativeOwnerConsistency(statement, consistency);
-		const active = await firstRow<CoordinatorAuthControllerAttestation>(
-			this.db.prepare(statement.sql).bind(...statement.values),
+		const active = await this.readAuthControllerGuarded<CoordinatorAuthControllerAttestation>(
+			[...(consistency?.guards ?? []), ...controller.guards],
+			controllerActiveStatement(input, authority),
 		);
 		// A change after the conflict read makes this review stale, including revocation.
 		if (!active)
@@ -1718,10 +1734,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			source,
 			await ed25519KeyIdForRevocation(source.public_key),
 		);
-		return firstRow<CoordinatorAuthControllerAttestation>(
-			this.db
-				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, review))
-				.bind(...authControllerRetryActiveValues(review, authority)),
+		const controller = await readControllerReview(this.controllerBackend, review, authority);
+		if (!controller.allowed) return null;
+		return this.readAuthControllerGuarded<CoordinatorAuthControllerAttestation>(
+			controller.guards,
+			controllerActiveStatement(review, authority),
 		);
 	}
 

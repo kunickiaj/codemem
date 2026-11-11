@@ -14,6 +14,7 @@ import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifie
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
 import { changeFixture, config, NOW, input as origin } from "./account-change-fixture.js";
+import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
 import { rows as nativeRows, resetCeremony } from "./owner-ceremony-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
@@ -99,36 +100,15 @@ async function resetAuthSchema() {
 async function setup() {
 	await resetAuthSchema();
 	let beforeWinning: (() => Promise<void>) | undefined;
-	let winningFragment = "";
-	const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement =>
-		new Proxy(statement, {
-			get(statement, property) {
-				if (property === "bind")
-					return (...values: unknown[]) => wrap(statement.bind(...values), query);
-				if (property === "run" || property === "first")
-					return async (...args: unknown[]) => {
-						if (
-							beforeWinning &&
-							query.includes("controller_owner_connection AS MATERIALIZED (") &&
-							query.includes(winningFragment)
-						) {
-							expect(query).toContain("$.accountOwnerTarget.linkId");
-							const action = beforeWinning;
-							beforeWinning = undefined;
-							await action();
-						}
-						return Reflect.apply(statement[property], statement, args);
-					};
-				const value = Reflect.get(statement, property);
-				return typeof value === "function" ? value.bind(statement) : value;
-			},
-		});
-	const database = new Proxy(db, {
-		get(database, property) {
-			if (property === "prepare") return (query: string) => wrap(database.prepare(query), query);
-			const value = Reflect.get(database, property);
-			return typeof value === "function" ? value.bind(database) : value;
-		},
+	let winningStage: "create" | "retry" = "create";
+	// The winning insert or reuse read runs in one batch its read-set guards lead.
+	const database = hookNativeD1(db, async (execution) => {
+		if (!beforeWinning || controllerGuardedStage(execution) !== winningStage) return;
+		// A guard in the batch rereads the account owner target's link.
+		expect(execution.queries.join("\n")).toContain("FROM coordinator_auth_account_links l");
+		const action = beforeWinning;
+		beforeWinning = undefined;
+		await action();
 	});
 	const backend: AuthLinkBackend = {
 		first: ({ sql, values }) =>
@@ -179,9 +159,7 @@ async function setup() {
 		input,
 		birthLinkId,
 		arm({ reuse }: { reuse: boolean }, action: () => Promise<void>) {
-			winningFragment = reuse
-				? "SELECT a.* FROM coordinator_auth_controller_attestations a"
-				: "INSERT INTO coordinator_auth_controller_attestations";
+			winningStage = reuse ? "retry" : "create";
 			beforeWinning = action;
 		},
 	};

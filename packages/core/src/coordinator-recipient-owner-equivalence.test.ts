@@ -22,6 +22,14 @@ import {
 	retainProducerOwner,
 } from "./coordinator-producer-negative-owner-test-fixtures.js";
 import {
+	afterRetainedRead,
+	fixtureReader,
+	portedPinsAfterSameOwnerResolution,
+	recipientSubject,
+	retainedRecipientFixture,
+	sameOwnerResolution,
+} from "./coordinator-recipient-negative-race-test-fixtures.js";
+import {
 	originalRecipientConfirmation,
 	originalRecipientOwnerWriteSql,
 	originalRepairNegative,
@@ -443,3 +451,33 @@ describe("recipient invite on D1", () => {
 		expect(ported).toEqual(original);
 	});
 });
+
+describe.each(["SQLite", "D1"] as const)(
+	"%s negative owner pins when a same-owner resolution lands between the retained and evidence reads",
+	(backend) => {
+		it("pin the same retained rows in the original and the read set", async () => {
+			// Arrange: two identical fixtures; the resolution lands mid-read in each.
+			const main = await retainedRecipientFixture(backend, "add_device", cleanup);
+			const port = await retainedRecipientFixture(backend, "add_device", cleanup);
+			const hook = afterRetainedRead(main.f, () => sameOwnerResolution(main.f));
+			// Act: main's full pin and its retained recheck, then the read set's two guard sets.
+			const original = await prepareOriginalNegativeOwnerConsistency(
+				fixtureReader(main.f),
+				recipientSubject(main.subject),
+			);
+			hook.restore();
+			if (!original) throw new Error("the original refused the same-owner subject");
+			const matches = ({ sql, values }: AuthLinkStatement) =>
+				(main.f.db.prepare(sql).get(...values) as { matches: number }).matches === 1;
+			const originalPins = {
+				ran: hook.ran(),
+				full: matches(original),
+				retained: matches(original.retainedRecheck),
+			};
+			const portedPins = await portedPinsAfterSameOwnerResolution(port.f, port.subject);
+			// Assert: in both, each pin agrees with the database the write batch will see.
+			expect(originalPins).toEqual({ ran: true, full: true, retained: true });
+			expect(portedPins).toEqual(originalPins);
+		});
+	},
+);

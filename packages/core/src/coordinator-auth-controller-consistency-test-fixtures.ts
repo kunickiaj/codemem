@@ -1,5 +1,5 @@
-import { vi } from "vitest";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
+import { beforeGuardedTransaction } from "./coordinator-auth-controller-race-test-fixtures.js";
 import { type Fixture, review } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	controller,
@@ -41,7 +41,11 @@ export async function ordinaryReview(
 	return input;
 }
 
-/** Intercept the real backend's last prepare, after the producer built its SQL. */
+/**
+ * Runs `change` once after the producer's reads, just before the transaction or batch
+ * that writes: its read-set guards lead it, so the change lands where the old pinned
+ * INSERT used to see it.
+ */
 export function beforeControllerWrite(
 	f: Fixture,
 	change: () => void,
@@ -49,19 +53,10 @@ export function beforeControllerWrite(
 	restore(): void;
 	afterChange(): ReturnType<typeof databaseSnapshot> | undefined;
 } {
-	const prepare = f.db.prepare.bind(f.db);
 	let afterChange: ReturnType<typeof databaseSnapshot> | undefined;
-	let fired = false;
-	const hook = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
-		if (
-			!fired &&
-			/\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+coordinator_auth_controller_attestations\b/iu.test(sql)
-		) {
-			fired = true;
-			change();
-			afterChange = databaseSnapshot(f);
-		}
-		return prepare(sql);
+	const hook = beforeGuardedTransaction(f.db, () => {
+		change();
+		afterChange = databaseSnapshot(f);
 	});
-	return { restore: () => hook.mockRestore(), afterChange: () => afterChange };
+	return { restore: () => hook.restore(), afterChange: () => afterChange };
 }

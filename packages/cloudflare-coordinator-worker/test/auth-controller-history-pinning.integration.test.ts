@@ -1,11 +1,7 @@
 import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import {
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
-	type CoordinatorAuthControllerReviewInput,
-} from "../../core/src/coordinator-auth-controller.js";
+import type { CoordinatorAuthControllerReviewInput } from "../../core/src/coordinator-auth-controller.js";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson as canonical,
@@ -13,6 +9,7 @@ import {
 } from "../../core/src/coordinator-legacy-team-completion.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifiers.js";
+import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
 
 const db = env.COORDINATOR_DB;
 const timestamp = "2026-10-01T00:00:00.000Z";
@@ -46,43 +43,17 @@ afterEach(async () => {
 async function setup() {
 	let beforeStatement: { stage: Stage; action: () => Promise<void> } | undefined;
 	const executions: { stage: Stage; binds: number }[] = [];
-	// Interpose only at execution: every bind and result still comes from native D1.
-	const wrap = (statement: D1PreparedStatement, query: string, binds = 0): D1PreparedStatement =>
-		new Proxy(statement, {
-			get(statement, property) {
-				if (property === "bind")
-					return (...values: unknown[]) => wrap(statement.bind(...values), query, values.length);
-				let stage: Stage | undefined;
-				// The winning write retains the complete insert template after the consistency CTE.
-				if (
-					query.startsWith("WITH negative_owner_consistency AS MATERIALIZED (") &&
-					query.endsWith(
-						`${AUTH_CONTROLLER_INSERT_SQL.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
-					)
-				)
-					stage = "create";
-				else if (query === AUTH_CONTROLLER_RETRY_ACTIVE_SQL) stage = "retry";
-				if (stage && (property === "run" || property === "first")) {
-					return async (...args: unknown[]) => {
-						executions.push({ stage, binds });
-						if (beforeStatement?.stage === stage) {
-							const { action } = beforeStatement;
-							beforeStatement = undefined;
-							await action();
-						}
-						return Reflect.apply(Reflect.get(statement, property), statement, args);
-					};
-				}
-				const value = Reflect.get(statement, property);
-				return typeof value === "function" ? value.bind(statement) : value;
-			},
-		});
-	const database = new Proxy(db, {
-		get(database, property) {
-			if (property === "prepare") return (query: string) => wrap(database.prepare(query), query);
-			const value = Reflect.get(database, property);
-			return typeof value === "function" ? value.bind(database) : value;
-		},
+	// Interpose only at execution: every bind and result still comes from native D1. The
+	// winning insert and the retry's final read each run in one batch their guards lead.
+	const database = hookNativeD1(db, async (execution) => {
+		const stage = controllerGuardedStage(execution);
+		if (!stage) return;
+		executions.push({ stage, binds: Math.max(...execution.binds) });
+		if (beforeStatement?.stage === stage) {
+			const { action } = beforeStatement;
+			beforeStatement = undefined;
+			await action();
+		}
 	});
 	const store = new D1CoordinatorStore(database, { authClock: () => Date.parse(timestamp) });
 	const review: CoordinatorAuthControllerReviewInput = {
@@ -170,10 +141,10 @@ async function rows(f: Fixture) {
 	).results;
 }
 function expectBinds(f: Fixture, stage: Stage) {
-	// Four consistency binds precede the original 23 insert binds. Exact retries
-	// find the conflict before insertion and execute only the 14-bind active read.
-	const binds = stage === "create" ? 27 : 14;
-	expect(f.executions).toEqual([{ stage, binds }]);
+	// One final guarded execution of the stage, each statement within D1's bind limit.
+	// Exact retries find the conflict before insertion and reach only the final read.
+	expect(f.executions.map((execution) => execution.stage)).toEqual([stage]);
+	expect(Math.max(...f.executions.map(({ binds }) => binds))).toBeLessThanOrEqual(100);
 }
 
 it("native explicit nonempty history creates and exactly retries without rewriting proof or enrollment", async () => {
@@ -193,10 +164,8 @@ it("native explicit nonempty history creates and exactly retries without rewriti
 	expect(before).toHaveLength(1);
 	expect(await rows(f)).toEqual(before);
 	expect(await f.store.getEnrollment(f.review.groupId, f.review.deviceId)).toEqual(enrollment);
-	expect(f.executions).toEqual([
-		{ stage: "create", binds: 27 },
-		{ stage: "retry", binds: 14 },
-	]);
+	expect(f.executions.map((execution) => execution.stage)).toEqual(["create", "retry"]);
+	expect(Math.max(...f.executions.map(({ binds }) => binds))).toBeLessThanOrEqual(100);
 });
 
 for (const stage of ["create", "retry"] as const) {

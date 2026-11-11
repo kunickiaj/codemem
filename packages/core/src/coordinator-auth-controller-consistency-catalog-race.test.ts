@@ -72,9 +72,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 					!sql.includes("coordinator_legacy_owner_resolutions")
 				)
 					return statement;
-				const get = statement.get.bind(statement);
-				vi.spyOn(statement, "get").mockImplementation((...values: unknown[]) => {
-					const captured = get(...values);
+				// The SQLite store reads the catalog with get(); D1 runs it in a read batch with all().
+				const capturedOnce = (captured: unknown) => {
 					transitions.push("captured unsupported catalog");
 					// Restore the prepare hook before installing the existing winning-write hook.
 					capture.mockRestore();
@@ -87,7 +86,15 @@ for (const backend of ["SQLite", "D1"] as const) {
 						afterExternalChange = state(f);
 					});
 					return captured;
-				});
+				};
+				const get = statement.get.bind(statement);
+				const all = statement.all.bind(statement);
+				vi.spyOn(statement, "get").mockImplementation((...values: unknown[]) =>
+					capturedOnce(get(...values)),
+				);
+				vi.spyOn(statement, "all").mockImplementation((...values: unknown[]) =>
+					capturedOnce(all(...values)),
+				);
 				return statement;
 			});
 			// Act: return the first real read before making the second catalog read see ready.

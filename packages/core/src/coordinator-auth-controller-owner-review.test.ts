@@ -14,6 +14,10 @@ import {
 	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	authControllerReviewSql,
 } from "./coordinator-auth-controller.js";
+import {
+	beforeControllerCheck,
+	beforeGuardedTransaction,
+} from "./coordinator-auth-controller-race-test-fixtures.js";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { review, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -51,15 +55,15 @@ function snapshot(f: LinkFixture, except: string[] = []) {
 		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
 }
 
-function isOwnerReviewWinner(query: string, { reuse }: { reuse: boolean }): boolean {
-	if (!query.includes("controller_owner_connection AS MATERIALIZED (")) return false;
-	if (!reuse) return /\bINSERT INTO coordinator_auth_controller_attestations\s*\(/.test(query);
-	return (
-		/\bSELECT 1 AS eligible FROM enrolled_devices e\b/.test(query) ||
-		/\bSELECT a\.\* FROM coordinator_auth_controller_attestations a\s+JOIN enrolled_devices e\b/.test(
-			query,
-		)
-	);
+/**
+ * Runs `inject` once after the review's reads and just before its winning write or answer:
+ * before D1's guarded batch, or inside the SQLite store's transaction before its first
+ * check, where the old single winning statement read everything.
+ */
+function beforeOwnerReviewWinner(f: LinkFixture, kind: "SQLite" | "D1", inject: () => void) {
+	return kind === "D1"
+		? beforeGuardedTransaction(f.db, inject)
+		: beforeControllerCheck(f.db, inject);
 }
 
 async function otherGroupController(
@@ -388,19 +392,13 @@ for (const kind of ["SQLite", "D1"] as const) {
 					.all();
 				const prepare = f.db.prepare.bind(f.db);
 				let injected: ReturnType<typeof snapshot> | undefined;
-				let winnerCalls = 0;
-				vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-					const winner = isOwnerReviewWinner(query, { reuse });
-					if (winner) winnerCalls++;
-					if (!injected && winner) {
-						injected = [];
-						const entries = Object.entries(b);
-						prepare(
-							`INSERT INTO coordinator_auth_controller_attestations (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
-						).run(...entries.map(([, value]) => value));
-						injected = snapshot(f);
-					}
-					return prepare(query);
+				const hook = beforeOwnerReviewWinner(f, kind, () => {
+					injected = [];
+					const entries = Object.entries(b);
+					prepare(
+						`INSERT INTO coordinator_auth_controller_attestations (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+					).run(...entries.map(([, value]) => value));
+					injected = snapshot(f);
 				});
 				// Act
 				const response = await request(app, {
@@ -408,7 +406,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 					confirm_evidence_digest: preview.evidence_digest,
 				});
 				// Assert: the final family-discovery check must include trusted retained controller keys.
-				expect(winnerCalls).toBe(1);
+				expect(hook.observed()).toBe(true);
 				expect(injected).toBeDefined();
 				expect.soft(response.status).toBe(409);
 				expect.soft(await response.json()).toEqual({ error: "review_stale" });
@@ -538,19 +536,13 @@ for (const kind of ["SQLite", "D1"] as const) {
 					.all();
 				const prepare = f.db.prepare.bind(f.db);
 				let injected: ReturnType<typeof snapshot> | undefined;
-				let winnerCalls = 0;
-				vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-					const winner = isOwnerReviewWinner(query, { reuse });
-					if (winner) winnerCalls++;
-					if (!injected && winner) {
-						injected = [];
-						const entries = Object.entries(b);
-						prepare(
-							`INSERT INTO coordinator_auth_controller_attestations (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
-						).run(...entries.map(([, value]) => value));
-						injected = snapshot(f);
-					}
-					return prepare(query);
+				const hook = beforeOwnerReviewWinner(f, kind, () => {
+					injected = [];
+					const entries = Object.entries(b);
+					prepare(
+						`INSERT INTO coordinator_auth_controller_attestations (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
+					).run(...entries.map(([, value]) => value));
+					injected = snapshot(f);
 				});
 				// Act
 				const response = await request(app, {
@@ -558,7 +550,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 					confirm_evidence_digest: preview.evidence_digest,
 				});
 				// Assert: no new A row or reused approval may silently contradict the committed B proof.
-				expect(winnerCalls).toBe(1);
+				expect(hook.observed()).toBe(true);
 				expect(injected).toBeDefined();
 				expect.soft(response.status).toBe(409);
 				expect.soft(await response.json()).toEqual({ error: "review_stale" });
@@ -955,19 +947,11 @@ for (const kind of ["SQLite", "D1"] as const) {
 				}
 				const preview = await (await request(app)).json();
 				let injected: ReturnType<typeof snapshot> | undefined;
-				let winnerCalls = 0;
-				const prepare = f.db.prepare.bind(f.db);
-				vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-					const winner = isOwnerReviewWinner(query, { reuse });
-					if (winner) winnerCalls++;
-					if (!injected && winner) {
-						expect(query).toContain("$.accountOwnerTarget.linkId");
-						// Set the sentinel before snapshot reads reenter prepare.
-						injected = [];
-						f.db.exec(mutation.replaceAll("CURRENT_KEY_ID", currentKeyId));
-						injected = snapshot(f);
-					}
-					return prepare(query);
+				const hook = beforeOwnerReviewWinner(f, kind, () => {
+					// Set the sentinel before snapshot reads reenter prepare.
+					injected = [];
+					f.db.exec(mutation.replaceAll("CURRENT_KEY_ID", currentKeyId));
+					injected = snapshot(f);
 				});
 				// Act
 				const denied = await request(app, {
@@ -978,7 +962,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 				expect(denied.status).toBe(409);
 				expect(await denied.json()).toEqual({ error: "review_stale" });
 				expect(injected).toBeDefined();
-				expect(winnerCalls).toBe(1);
+				expect(hook.observed()).toBe(true);
 				expect(snapshot(f)).toEqual(injected);
 			});
 		}
@@ -1003,28 +987,21 @@ for (const kind of ["SQLite", "D1"] as const) {
 				const rowBefore = f.db
 					.prepare("SELECT * FROM coordinator_auth_controller_attestations")
 					.all();
-				const prepare = f.db.prepare.bind(f.db);
 				let injected: ReturnType<typeof snapshot> | undefined;
-				let winnerCalls = 0;
-				vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-					const winner = isOwnerReviewWinner(query, { reuse });
-					if (winner) winnerCalls++;
-					if (!injected && winner) {
-						injected = [];
-						f.db
-							.prepare(`INSERT INTO coordinator_device_revocations
-							(subject_kind,subject_value,revocation_id,evidence_group_id,evidence_device_id,
-							evidence_public_key,evidence_fingerprint,created_at) VALUES (?,?,'retired-origin',
-							'group-a','device-a',?,?,'created')`)
-							.run(
-								subject,
-								subject === "device_id" ? "device-a" : EXPECTED_KEY_ID,
-								CANONICAL_PUBLIC_KEY,
-								"a".repeat(64),
-							);
-						injected = snapshot(f, reuse ? [] : ["coordinator_auth_controller_attestations"]);
-					}
-					return prepare(query);
+				const hook = beforeOwnerReviewWinner(f, kind, () => {
+					injected = [];
+					f.db
+						.prepare(`INSERT INTO coordinator_device_revocations
+						(subject_kind,subject_value,revocation_id,evidence_group_id,evidence_device_id,
+						evidence_public_key,evidence_fingerprint,created_at) VALUES (?,?,'retired-origin',
+						'group-a','device-a',?,?,'created')`)
+						.run(
+							subject,
+							subject === "device_id" ? "device-a" : EXPECTED_KEY_ID,
+							CANONICAL_PUBLIC_KEY,
+							"a".repeat(64),
+						);
+					injected = snapshot(f, reuse ? [] : ["coordinator_auth_controller_attestations"]);
 				});
 				// Act
 				const response = await request(app, {
@@ -1034,7 +1011,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 				const result = await response.json();
 				// Assert: account, link audit, grants and history are byte-identical; no laptop tombstone exists.
 				expect(injected).toBeDefined();
-				expect(winnerCalls).toBe(1);
+				expect(hook.observed()).toBe(true);
 				expect(response.status).toBe(reuse ? 200 : 201);
 				expect(result.recovery_receipt.disposition).toBe(reuse ? "reused" : "created");
 				expect(snapshot(f, reuse ? [] : ["coordinator_auth_controller_attestations"])).toEqual(
@@ -1123,22 +1100,15 @@ for (const kind of ["SQLite", "D1"] as const) {
 				expect(preview.account_owner_target.link_id).toBe(
 					change === "valid reconnect" ? "claim-a" : "successor-link",
 				);
-				const prepare = f.db.prepare.bind(f.db);
 				let injected: ReturnType<typeof snapshot> | undefined;
-				let winnerCalls = 0;
-				vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-					const winner = isOwnerReviewWinner(query, { reuse });
-					if (winner) winnerCalls++;
-					if (!injected && winner) {
-						injected = [];
-						if (change === "valid reconnect") reconnect(f);
-						else
-							f.db.exec(
-								`UPDATE coordinator_auth_account_connection_history SET revoked_at_ms=${NOW + 2}`,
-							);
-						injected = snapshot(f);
-					}
-					return prepare(query);
+				const hook = beforeOwnerReviewWinner(f, kind, () => {
+					injected = [];
+					if (change === "valid reconnect") reconnect(f);
+					else
+						f.db.exec(
+							`UPDATE coordinator_auth_account_connection_history SET revoked_at_ms=${NOW + 2}`,
+						);
+					injected = snapshot(f);
 				});
 				// Act
 				const response = await request(app, {
@@ -1153,7 +1123,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 				expect(response.status).toBe(409);
 				expect(await response.json()).toEqual({ error: "review_stale" });
 				expect(injected).toBeDefined();
-				expect(winnerCalls).toBe(1);
+				expect(hook.observed()).toBe(true);
 				expect(snapshot(f)).toEqual(injected);
 				if (change === "valid reconnect")
 					expect(currentTarget).toMatchObject({ kind: "ready", linkId: "successor-link" });

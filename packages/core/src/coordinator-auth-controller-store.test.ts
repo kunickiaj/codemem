@@ -758,8 +758,8 @@ function registerD1ReadRaceTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 		expect((await store.createAuthControllerAttestation(input)).kind).toBe("created");
 		let revocation: Promise<boolean> | undefined;
 		const beforeRead = vi.fn((query: string) => {
-			if (!/^\s*WITH snapshot\b/u.test(query) || !/SELECT (?:1 AS eligible|a\.\*)/u.test(query))
-				return;
+			// The retry eligibility read: the first statement that checks the reviewed snapshot.
+			if (!/\bSELECT 1 AS eligible FROM enrolled_devices e\b/u.test(query)) return;
 			if (!revocation)
 				revocation = store.revokeAuthControllerAttestation(
 					input.coordinatorId,

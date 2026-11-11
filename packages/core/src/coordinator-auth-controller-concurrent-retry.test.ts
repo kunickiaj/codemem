@@ -4,6 +4,7 @@ import {
 	ordinaryReview,
 	retainedResolution,
 } from "./coordinator-auth-controller-consistency-test-fixtures.js";
+import { beforeGuardedTransaction } from "./coordinator-auth-controller-race-test-fixtures.js";
 import type { Fixture } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	binding,
@@ -11,7 +12,7 @@ import {
 	evidenceTest,
 	history,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
-import * as negativeConsistency from "./coordinator-owner-negative-consistency.js";
+import * as negativeConsistency from "./coordinator-owner-negative-read-set.js";
 
 /** SQLite INSERTs are synchronous; hold the last real async capture before its transaction. */
 async function overlappingReview(
@@ -21,10 +22,10 @@ async function overlappingReview(
 ) {
 	const captured = Promise.withResolvers<void>();
 	const resume = Promise.withResolvers<void>();
-	const prepareConsistency = negativeConsistency.prepareNegativeOwnerConsistency;
+	const prepareConsistency = negativeConsistency.readNegativeOwnerConsistency;
 	let held = false;
 	const captureHook = vi
-		.spyOn(negativeConsistency, "prepareNegativeOwnerConsistency")
+		.spyOn(negativeConsistency, "readNegativeOwnerConsistency")
 		.mockImplementation(async (...args) => {
 			const pause = !held;
 			held = true;
@@ -96,7 +97,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 				kind: "existing",
 				attestation: winner.kind === "created" ? winner.attestation : null,
 			});
-			expect(writes).toEqual([1, 0]);
+			// Only the winner's insert wrote a row; the loser's wrote none or never ran.
+			expect(writes.filter((changes) => changes > 0)).toEqual([1]);
 			expect(databaseSnapshot(f)).toEqual(afterWinner);
 			expect(
 				f.db
@@ -123,17 +125,12 @@ for (const backend of ["SQLite", "D1"] as const) {
 						invites: [],
 					};
 				// Act: the later-started valid request commits before the earlier request resumes.
-				const { winner, loser, afterWinner, writes, capturedBeforeWrite } = await overlappingReview(
-					f,
-					input,
-					wrong,
-				);
+				const { winner, loser, afterWinner, writes } = await overlappingReview(f, input, wrong);
 				// Assert: the losing request neither replays nor mutates the winning receipt.
 				expect(winner.kind).toBe("created");
 				expect(loser.kind).toBe("rejected");
-				// Invalid snapshots may fail preflight; receipt/digest controls must overlap at INSERT.
-				if (change === "snapshot" && !capturedBeforeWrite) expect(writes).toEqual([1]);
-				else expect(writes).toEqual([1, 0]);
+				// Only the winner's insert wrote a row, whether or not the loser reached its own.
+				expect(writes.filter((changes) => changes > 0)).toEqual([1]);
 				expect(databaseSnapshot(f)).toEqual(afterWinner);
 				expect(
 					f.db
@@ -152,7 +149,6 @@ for (const backend of ["SQLite", "D1"] as const) {
 			async (change, { f }) => {
 				retainedResolution(f);
 				const input = await ordinaryReview(f);
-				const prepare = f.db.prepare.bind(f.db);
 				const changes = {
 					binding: () => binding(f),
 					history: () => history(f),
@@ -161,24 +157,14 @@ for (const backend of ["SQLite", "D1"] as const) {
 							"UPDATE coordinator_auth_controller_attestations SET revoked_at='2026-10-23T00:00:00.000Z' WHERE attestation_id='ordinary-controller'",
 						),
 				};
-				let writes = 0;
-				const hook = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
-					if (
-						/\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+coordinator_auth_controller_attestations\b/iu.test(
-							sql,
-						)
-					) {
-						writes += 1;
-						if (writes === 2) changes[change]();
-					}
-					return prepare(sql);
-				});
+				// The change lands just before the second invocation's guarded write.
+				const hook = beforeGuardedTransaction(f.db, () => changes[change](), 2);
 				const results = await Promise.all([
 					f.store.createAuthControllerAttestation(input),
 					f.store.createAuthControllerAttestation(input),
 				]);
-				hook.mockRestore();
-				expect(writes).toBe(2);
+				hook.restore();
+				expect(hook.observed()).toBe(true);
 				expect(results.filter((result) => result.kind === "rejected")).toHaveLength(1);
 				expect(results.some((result) => result.kind === "existing")).toBe(false);
 			},
