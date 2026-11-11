@@ -27,7 +27,6 @@ import {
 import {
 	BYTE_LIMIT,
 	CONTROLLER_COLUMNS,
-	type EvidenceQuery,
 	RESOLUTION_COLUMNS,
 	ROW_LIMIT,
 } from "./coordinator-device-ownership-evidence-queries.js";
@@ -36,6 +35,12 @@ import {
 	captureLegacyOwnerResolutionRecord,
 	classifyLegacyOwnerResolutionSchemaCatalog,
 } from "./coordinator-legacy-owner-resolution-metadata.js";
+
+// The evidence statement shape, as the queries module declared it at that commit.
+interface EvidenceQuery {
+	name: string;
+	sql: string;
+}
 
 // ---- verbatim copy starts ----
 // Invites and groups are server-local tables: neither has a coordinator column.
