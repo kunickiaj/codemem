@@ -5,6 +5,7 @@ import {
 	parseControllerHistoryRecord,
 } from "./coordinator-auth-controller-history.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import { snapshotGuard } from "./coordinator-auth-read-set.js";
 import {
 	classifyEvidence,
 	type EvidenceRow,
@@ -61,8 +62,14 @@ interface Snapshot {
 	approved: string[];
 }
 interface ProofSql {
+	/**
+	 * One per capture read. Each re-runs its read and aborts its batch unless the rows are
+	 * still the captured set. They lead the winning INSERT's batch, and the denial read.
+	 */
+	readonly guards: readonly AuthLinkStatement[];
 	/** Append after LEGACY_OWNER_INPUT_SQL, which already starts WITH. */
 	readonly ctes: string;
+	/** "1" once captured; "0" when the capture is unavailable, so nothing can be written. */
 	readonly currentSql: string;
 	readonly compatibleSql: string;
 	/** Bind after the three LEGACY_OWNER_INPUT_SQL values. */
@@ -71,7 +78,8 @@ interface ProofSql {
 
 // A single JSON bind must fit D1's 2 MB string/value limit. This aggregate
 // ceiling is separate from the established per-subject row/history ceilings.
-// Oversized captures are unavailable, never a smaller permitted roster.
+// Oversized captures are unavailable, never a smaller permitted roster. The ceiling
+// applies to the whole capture, each read's rows included, as one encoded value.
 const MAX_CAPTURE_BYTES = 2_000_000;
 const MAX_SUBJECT_ROWS = 500;
 const MAX_SUBJECT_BYTES = 2_000_000;
@@ -131,13 +139,23 @@ function encodeRows(rows: Snapshot["rows"]): {
 	};
 }
 
-/** SQL needs only selector fields. Active subjects refer to this shared roster;
- * expected row cells refer to one private dictionary of original JSON lexemes.
+/** The whole capture as one value, measured against the aggregate ceiling. Active
+ * subjects refer to the shared roster; row cells refer to one dictionary of original
+ * JSON lexemes, so a row whose text is not plain JSON scalars is refused.
  */
 function encodeSnapshot(snapshot: Snapshot): string {
-	const active = new Set(snapshot.active);
 	return JSON.stringify({
-		...snapshot,
+		...selector(snapshot),
+		approved: snapshot.approved,
+		...encodeRows(snapshot.rows),
+	});
+}
+
+/** What the capture reads select by: the roster, its active members and key metadata. */
+function selector(snapshot: Snapshot) {
+	const active = new Set(snapshot.active);
+	return {
+		coordinator: snapshot.coordinator,
 		subjects: snapshot.subjects.map(({ deviceId, keyId, publicKey, fragments, fingerprints }) => ({
 			deviceId,
 			keyId,
@@ -146,16 +164,16 @@ function encodeSnapshot(snapshot: Snapshot): string {
 			fingerprints,
 		})),
 		active: snapshot.subjects.flatMap((subject, index) => (active.has(subject) ? [index] : [])),
-		...encodeRows(snapshot.rows),
-	});
+		keys: snapshot.keys,
+	};
 }
+
+const encodeSelector = (snapshot: Snapshot) => JSON.stringify(selector(snapshot));
 
 const subjectColumns = ["deviceId", "keyId", "publicKey", "fragments", "fingerprints"]
 	.map((name) => `json_extract(j.value,'$.${name}') AS ${name}`)
 	.join(",");
 const subjectCtes = `completion_proof_input(value) AS MATERIALIZED (SELECT ?),
- completion_proof_atoms(atom_index,lexeme) AS MATERIALIZED (
- SELECT j.key,j.value FROM completion_proof_input i,json_each(i.value,'$.atoms') j),
  completion_proof_subjects AS MATERIALIZED (
  SELECT j.key AS ordinal,j.value,${subjectColumns} FROM completion_proof_input i,json_each(i.value,'$.subjects') j),
  completion_proof_active AS MATERIALIZED (
@@ -165,8 +183,6 @@ const subjectCtes = `completion_proof_input(value) AS MATERIALIZED (SELECT ?),
  SELECT DISTINCT f.value FROM completion_proof_active s,json_each(s.fragments) f),
  completion_proof_fingerprints(fingerprint) AS MATERIALIZED (
  SELECT DISTINCT f.value FROM completion_proof_active s,json_each(s.value,'$.fingerprints') f),
- completion_proof_approved AS MATERIALIZED (
- SELECT j.value FROM completion_proof_input i,json_each(i.value,'$.approved') j),
  completion_proof_keys AS MATERIALIZED (
  SELECT json_extract(j.value,'$.public_key') AS public_key,
  json_extract(j.value,'$.key_id') AS key_id,
@@ -605,31 +621,54 @@ async function approveSubject(
 	return hasOriginalSource(selected, subject, keys);
 }
 
-function pinSql(queries: Record<string, string>): { ctes: string; predicate: string } {
-	const stages: string[] = [];
-	const predicates: string[] = [];
-	for (const [name, sql] of Object.entries(queries)) {
-		if (name !== "resolutions")
-			stages.push(`completion_observed_${name}(row) AS MATERIALIZED (${sql})`);
-		stages.push(`completion_expected_${name}(row) AS MATERIALIZED (
- SELECT '[' || group_concat(a.lexeme,',' ORDER BY c.key) || ']'
- FROM completion_proof_input i,json_each(i.value,'$.rows.${name}') r,
- json_each(r.value) c JOIN completion_proof_atoms a ON a.atom_index=c.value
- GROUP BY r.key)`);
-		stages.push(`completion_added_${name}(row) AS MATERIALIZED (
- SELECT row FROM completion_observed_${name} EXCEPT SELECT row FROM completion_expected_${name})`);
-		stages.push(`completion_removed_${name}(row) AS MATERIALIZED (
- SELECT row FROM completion_expected_${name} EXCEPT SELECT row FROM completion_observed_${name})`);
-		predicates.push(
-			`NOT EXISTS (SELECT 1 FROM completion_added_${name})`,
-			`NOT EXISTS (SELECT 1 FROM completion_removed_${name})`,
-		);
-	}
-	return { ctes: stages.join(",\n"), predicate: predicates.join(" AND ") };
+/** The WITH prefix each capture read runs under. */
+function readPrefix(name: string, queries: Record<string, string>): string {
+	if (name === "schema") return "";
+	if (name === "resolutions") return `WITH ${subjectCtes}`;
+	return capturePrefix(queries);
+}
+
+/**
+ * Internal; exported for its tests. Re-runs one read, `prefix` then a SELECT of distinct
+ * `row` texts, and aborts its batch unless those rows are exactly `rows`: equal as sorted
+ * text, so each original JSON lexeme must match, and none may be added or removed.
+ */
+export function capturedRowsGuard(
+	read: { prefix: string; sql: string; values: readonly string[] },
+	rows: readonly string[],
+): AuthLinkStatement {
+	return snapshotGuard({
+		sql: `(${read.prefix} SELECT group_concat(row,char(10) ORDER BY row) FROM (${read.sql}))
+ IS (SELECT group_concat(value,char(10) ORDER BY value) FROM json_each(?))`,
+		values: [...read.values, JSON.stringify(rows)],
+	});
+}
+
+/** One guard per capture read, bound to the final roster the INSERT also decides on. */
+function captureGuards(
+	queries: Record<string, string>,
+	rows: Snapshot["rows"],
+	selectorJson: string,
+): AuthLinkStatement[] {
+	return Object.entries(queries).map(([name, sql]) => {
+		const prefix = readPrefix(name, queries);
+		const values = prefix ? [selectorJson] : [];
+		return capturedRowsGuard({ prefix, sql, values }, rows[name] ?? []);
+	});
 }
 
 const approvedSubject = `EXISTS (SELECT 1 FROM completion_proof_approved a
  WHERE a.value=json_array(r.device_id,r.key_id,r.identity_id))`;
+/** The approved subjects, each `[device, key, owner]` text. Bind their JSON array. */
+const approvedCte =
+	",completion_proof_approved(value) AS MATERIALIZED (SELECT j.value FROM json_each(?) j)";
+const unavailable: ProofSql = {
+	guards: [],
+	ctes: approvedCte,
+	currentSql: "0",
+	compatibleSql: "0",
+	values: ["[]"],
+};
 
 // Only the two weak-label branches gain an exception. Intra-roster owner
 // assignments and ledger bindings retain the exact existing checks.
@@ -651,29 +690,35 @@ const recoveredCompatibleSql = replaceExactlyOnce(
 
 function remember(sql: ProofSql): LegacyCompletionOwnerProof {
 	const token = Object.freeze({ version: 1 as const });
-	snapshots.set(token, Object.freeze({ ...sql, values: Object.freeze([...sql.values]) }));
+	snapshots.set(
+		token,
+		Object.freeze({
+			...sql,
+			guards: Object.freeze(sql.guards.map((guard) => Object.freeze({ ...guard }))),
+			values: Object.freeze([...sql.values]),
+		}),
+	);
 	return token;
 }
 
 function finishCapture(
 	snapshot: Snapshot,
 	queries: Record<string, string>,
-	options: { compatible: boolean; recovered: boolean; missing?: boolean },
+	options: { compatible: boolean; recovered: boolean },
 ): LegacyCompletionOwnerProof {
-	const encoded = encodeSnapshot(snapshot);
-	requireProof(encoder.encode(encoded).byteLength <= MAX_CAPTURE_BYTES);
-	const pin = pinSql(queries);
-	let ctes = `,${subjectCtes}`;
-	if (!options.missing) {
-		ctes += `,${discoveryCtes},completion_observed_resolutions(row) AS MATERIALIZED (${resolutionSql})`;
-	}
-	ctes += `,${pin.ctes}`;
+	requireProof(encoder.encode(encodeSnapshot(snapshot)).byteLength <= MAX_CAPTURE_BYTES);
 	let compatibleSql = "0";
 	if (options.compatible) {
 		compatibleSql = LEGACY_OWNER_COMPATIBLE_SQL;
 		if (options.recovered) compatibleSql = recoveredCompatibleSql;
 	}
-	return remember({ ctes, currentSql: pin.predicate, compatibleSql, values: [encoded] });
+	return remember({
+		guards: captureGuards(queries, snapshot.rows, encodeSelector(snapshot)),
+		ctes: approvedCte,
+		currentSql: "1",
+		compatibleSql,
+		values: [JSON.stringify(snapshot.approved)],
+	});
 }
 
 async function captureReady(
@@ -683,7 +728,7 @@ async function captureReady(
 	const queries = evidenceQueries();
 	const initialPrefix = `WITH ${subjectCtes}`;
 	const facts = await readRows(backend, `${initialPrefix} ${resolutionSql}`, [
-		encodeSnapshot(snapshot),
+		encodeSelector(snapshot),
 	]);
 	snapshot.rows.resolutions = facts.encoded;
 	snapshot.active = snapshot.subjects.filter((s) => facts.parsed.some((r) => relevantFact(r, s)));
@@ -700,7 +745,7 @@ async function captureReady(
 	for (const name of ["historyKeys", "historyDiscovery"]) {
 		const sql = queries[name];
 		requireProof(sql);
-		const result = await readRows(backend, `${prefix} ${sql}`, [encodeSnapshot(snapshot)]);
+		const result = await readRows(backend, `${prefix} ${sql}`, [encodeSelector(snapshot)]);
 		rows[name] = result.parsed;
 		snapshot.rows[name] = result.encoded;
 	}
@@ -717,7 +762,7 @@ async function captureReady(
 	}
 	for (const [name, sql] of Object.entries(queries)) {
 		if (Object.hasOwn(snapshot.rows, name)) continue;
-		const result = await readRows(backend, `${prefix} ${sql}`, [encodeSnapshot(snapshot)]);
+		const result = await readRows(backend, `${prefix} ${sql}`, [encodeSelector(snapshot)]);
 		rows[name] = result.parsed;
 		snapshot.rows[name] = result.encoded;
 	}
@@ -755,23 +800,23 @@ export async function captureLegacyCompletionOwnerProof(input: {
 			rows: { schema: catalog.encoded },
 			approved: [],
 		};
-		if (state === "unsupported")
-			return remember({ ctes: "", currentSql: "0", compatibleSql: "0", values: [] });
+		if (state === "unsupported") return remember(unavailable);
 		if (state === "missing")
 			return finishCapture(
 				snapshot,
 				{ schema: catalogSql },
-				{ compatible: true, recovered: false, missing: true },
+				{ compatible: true, recovered: false },
 			);
 		return await captureReady(input.backend, snapshot);
 	} catch {
-		return remember({ ctes: "", currentSql: "0", compatibleSql: "0", values: [] });
+		return remember(unavailable);
 	}
 }
 
-/** The winning INSERT must use both predicates. A token by itself grants nothing.
- * Keep LEGACY_OWNER_SOURCE_CURRENT_SQL and all ordinary completion checks as well.
+/** The winning INSERT must use both predicates, in one batch its guards lead. A token
+ * by itself grants nothing. Keep LEGACY_OWNER_SOURCE_CURRENT_SQL and all ordinary
+ * completion checks as well.
  */
 export function legacyCompletionOwnerProofSql(proof: LegacyCompletionOwnerProof): ProofSql {
-	return snapshots.get(proof) ?? { ctes: "", currentSql: "0", compatibleSql: "0", values: [] };
+	return snapshots.get(proof) ?? unavailable;
 }

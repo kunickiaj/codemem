@@ -270,7 +270,7 @@ test("SQLite malformed plausible history retains the same fail-closed capture re
 	const originalError = await result();
 	// Assert
 	expect(current).toEqual(old);
-	expect(current).toEqual({ ctes: "", currentSql: "0", compatibleSql: "0", values: [] });
+	expect(current).toMatchObject({ guards: [], currentSql: "0", compatibleSql: "0" });
 	expect(currentError).toEqual(originalError);
 	expect(currentError).toMatch(/completion_(?:conflict|manifest_unavailable)/u);
 	expect(snapshot(f)).toEqual(before);

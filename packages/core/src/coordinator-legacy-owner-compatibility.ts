@@ -1,3 +1,4 @@
+import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
@@ -162,3 +163,82 @@ export const LEGACY_OWNER_DENIAL_SQL = `${LEGACY_OWNER_INPUT_SQL}
  SELECT CASE WHEN NOT ${LEGACY_OWNER_SOURCE_CURRENT_SQL} THEN 'completion_manifest_unavailable'
  WHEN NOT (${LEGACY_OWNER_COMPATIBLE_SQL}) THEN 'completion_conflict'
  ELSE 'completion_manifest_unavailable' END AS denial`;
+
+/**
+ * The winning completion INSERT. Every ordinary completion check and both owner checks
+ * run in it, so they decide at write time; the capture's guards lead its batch. `proof`
+ * starts with the three LEGACY_OWNER_INPUT_SQL values.
+ */
+export function legacyCompletionInsertStatement(input: {
+	proof: {
+		ctes: string;
+		currentSql: string;
+		compatibleSql: string;
+		values: readonly (string | number | null)[];
+	};
+	groupId: string;
+	manifest: { candidate_ref: string; version: number; completed_at: string };
+	manifestJson: string;
+	coordinatorId: string | null;
+	createdAt: string;
+}): AuthLinkStatement {
+	const { proof, groupId, manifest, manifestJson } = input;
+	return {
+		sql: `${LEGACY_OWNER_INPUT_SQL}${proof.ctes}
+ INSERT OR IGNORE INTO coordinator_legacy_team_completions(
+ group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
+ ) SELECT ?, ?, ?, ?, ?, ?
+ FROM groups
+ WHERE group_id = ? AND archived_at IS NULL
+ AND NOT EXISTS (
+ SELECT 1
+ FROM json_each(?, '$.project_mappings') AS requested
+ LEFT JOIN coordinator_scopes AS scope
+ ON scope.scope_id = json_extract(requested.value, '$.scope_id')
+ AND scope.authority_type = 'coordinator'
+ AND scope.coordinator_id = ?
+ AND scope.group_id = ?
+ AND scope.status = 'active'
+ WHERE scope.scope_id IS NULL
+ )
+ AND NOT EXISTS (
+ SELECT 1 FROM enrolled_devices AS enrolled
+ WHERE enrolled.group_id = ?
+ AND NOT EXISTS (
+ SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
+ WHERE json_extract(requested.value, '$.device_id') = enrolled.device_id
+ AND json_extract(requested.value, '$.key_fingerprint') = enrolled.fingerprint
+ AND json_extract(requested.value, '$.enabled') = enrolled.enabled
+ )
+ )
+ AND NOT EXISTS (
+ SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
+ WHERE json_extract(requested.value, '$.decision') = 'included'
+ AND NOT EXISTS (
+ SELECT 1 FROM enrolled_devices AS enrolled
+ WHERE enrolled.group_id = ?
+ AND enrolled.device_id = json_extract(requested.value, '$.device_id')
+ AND enrolled.fingerprint = json_extract(requested.value, '$.key_fingerprint')
+ AND enrolled.enabled = 1
+ )
+ ) AND ${LEGACY_OWNER_SOURCE_CURRENT_SQL}
+ AND (${proof.currentSql}) AND (${proof.compatibleSql})`,
+		values: [
+			...proof.values,
+			groupId,
+			manifest.candidate_ref,
+			manifest.version,
+			manifestJson,
+			manifest.completed_at,
+			input.createdAt,
+			groupId,
+			manifestJson,
+			input.coordinatorId,
+			groupId,
+			groupId,
+			manifestJson,
+			manifestJson,
+			groupId,
+		],
+	};
+}

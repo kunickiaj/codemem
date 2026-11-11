@@ -201,6 +201,7 @@ import {
 	LEGACY_OWNER_INPUT_SQL,
 	LEGACY_OWNER_KEYS_SQL,
 	LEGACY_OWNER_SOURCE_CURRENT_SQL,
+	legacyCompletionInsertStatement,
 	legacyCompletionWriteResult,
 	legacyOwnerKeyMetadata,
 } from "./coordinator-legacy-owner-compatibility.js";
@@ -3514,69 +3515,28 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			normalizedGroupId,
 			manifestJson,
 		);
+		const insert = legacyCompletionInsertStatement({
+			proof: ownerProof,
+			groupId: normalizedGroupId,
+			manifest: normalized,
+			manifestJson,
+			coordinatorId,
+			createdAt: nowISO(),
+		});
 		const { result, stored, denial } = this.db
 			.transaction(() => {
-				const result = this.db
-					.prepare(`${LEGACY_OWNER_INPUT_SQL}${ownerProof.ctes}
-			INSERT OR IGNORE INTO coordinator_legacy_team_completions(
-				group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
-			) SELECT ?, ?, ?, ?, ?, ?
-			  FROM groups
-			  WHERE group_id = ? AND archived_at IS NULL
-			    AND NOT EXISTS (
-			      SELECT 1
-			      FROM json_each(?, '$.project_mappings') AS requested
-			      LEFT JOIN coordinator_scopes AS scope
-			        ON scope.scope_id = json_extract(requested.value, '$.scope_id')
-			       AND scope.authority_type = 'coordinator'
-			       AND scope.coordinator_id = ?
-			       AND scope.group_id = ?
-				       AND scope.status = 'active'
-			      WHERE scope.scope_id IS NULL
-			    )
-			    AND NOT EXISTS (
-			      SELECT 1 FROM enrolled_devices AS enrolled
-			      WHERE enrolled.group_id = ?
-			        AND NOT EXISTS (
-			          SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
-			          WHERE json_extract(requested.value, '$.device_id') = enrolled.device_id
-			            AND json_extract(requested.value, '$.key_fingerprint') = enrolled.fingerprint
-			            AND json_extract(requested.value, '$.enabled') = enrolled.enabled
-			        )
-			    )
-			    AND NOT EXISTS (
-			      SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
-			      WHERE json_extract(requested.value, '$.decision') = 'included'
-			        AND NOT EXISTS (
-			          SELECT 1 FROM enrolled_devices AS enrolled
-			          WHERE enrolled.group_id = ?
-			            AND enrolled.device_id = json_extract(requested.value, '$.device_id')
-			            AND enrolled.fingerprint = json_extract(requested.value, '$.key_fingerprint')
-			            AND enrolled.enabled = 1
-			        )
-			    ) AND ${LEGACY_OWNER_SOURCE_CURRENT_SQL}
-				      AND (${ownerProof.currentSql}) AND (${ownerProof.compatibleSql})`)
-					.run(
-						...ownerProof.values,
-						normalizedGroupId,
-						normalized.candidate_ref,
-						normalized.version,
-						manifestJson,
-						normalized.completed_at,
-						nowISO(),
-						normalizedGroupId,
-						manifestJson,
-						coordinatorId,
-						normalizedGroupId,
-						normalizedGroupId,
-						manifestJson,
-						manifestJson,
-						normalizedGroupId,
-					);
+				// The capture's guards lead the INSERT in this transaction; while one fails,
+				// nothing is written and the refusal is "unavailable".
+				const held = this.legacyCompletionGuardsHold(ownerProof.guards);
+				const result = held ? this.db.prepare(insert.sql).run(...insert.values) : { changes: 0 };
 				const stored = this.readStoredLegacyCompletion(normalizedGroupId, normalized.candidate_ref);
-				const denial = stored
-					? null
-					: (this.db.prepare(ownerProof.denialSql).get(...ownerProof.values) as { denial: string });
+				let denial: { denial: string } | null = null;
+				if (!stored)
+					denial = held
+						? (this.db.prepare(ownerProof.denialSql).get(...ownerProof.values) as {
+								denial: string;
+							})
+						: { denial: "completion_manifest_unavailable" };
 				return { result, stored, denial };
 			})
 			.immediate();
@@ -3592,6 +3552,19 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			manifestJson,
 			result.changes === 1 ? "created" : "existing",
 		);
+	}
+
+	/** Runs each guard in the open transaction; false once one finds its read changed. */
+	private legacyCompletionGuardsHold(guards: readonly AuthLinkStatement[]): boolean {
+		for (const { sql, values } of guards) {
+			try {
+				this.db.prepare(sql).get(...values);
+			} catch (error) {
+				if (isSnapshotChanged(error)) return false;
+				throw error;
+			}
+		}
+		return true;
 	}
 
 	private readStoredLegacyCompletion(groupId: string, candidateRef: string) {
