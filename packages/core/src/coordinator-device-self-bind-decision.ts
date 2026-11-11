@@ -67,8 +67,6 @@ export type SelfBindFacts = {
 	attestations: SelfBindAttestation[];
 	/** Active account links of the current Identity. */
 	links: SelfBindLink[];
-	/** One row: whether retained legacy ownership facts still agree. */
-	negativeOwner: { matches: SqlValue }[];
 	/** Consumed invites that assigned this device, key or fingerprint to another Identity. */
 	inviteConflicts: unknown[];
 	bindingConflicts: unknown[];
@@ -190,8 +188,6 @@ function pin(
  */
 export function decideDeviceSelfBind(p: SelfBindSubject, facts: SelfBindFacts): string | null {
 	if (CONFLICTS.some((name) => facts[name].length > 0)) return null;
-	if (facts.negativeOwner.length !== 1 || !sqlEq(facts.negativeOwner[0]?.matches ?? null, 1))
-		return null;
 	if (!enrollmentsAllow(p, facts)) return null;
 	const controller = ownController(p, facts);
 	const link = provenLink(p, facts);

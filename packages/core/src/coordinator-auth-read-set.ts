@@ -67,18 +67,26 @@ function abortUnless(condition: string, marker: string): string {
 const collected = (sql: string) =>
 	`SELECT coalesce(json_group_array(json(row)), '[]') AS rows FROM (${sql})`;
 
-function guardFor(read: AuthRead, seenRows: string): AuthLinkStatement {
-	if (!read.holds) {
-		return {
-			sql: abortUnless(`(${collected(read.sql)}) IS ?`, SNAPSHOT_CHANGED),
-			values: [...read.values, seenRows],
-		};
-	}
+/** An SQL condition that is true while the read still supports the decision. */
+function holdsCondition(read: AuthRead, seenRows: string): AuthLinkStatement {
+	if (!read.holds)
+		return { sql: `(${collected(read.sql)}) IS ?`, values: [...read.values, seenRows] };
 	const predicate = read.holds(seenRows);
-	return {
-		sql: abortUnless(`(SELECT * FROM (${predicate.sql})) IS 1`, SNAPSHOT_CHANGED),
-		values: predicate.values,
-	};
+	return { sql: `(SELECT * FROM (${predicate.sql})) IS 1`, values: predicate.values };
+}
+
+const abortWhenChanged = (condition: AuthLinkStatement): AuthLinkStatement => ({
+	sql: abortUnless(condition.sql, SNAPSHOT_CHANGED),
+	values: condition.values,
+});
+
+export interface ReadSnapshotOptions {
+	/**
+	 * Builds each guard from its condition instead of the default guard, whose failure
+	 * {@link writeGuarded} reports as "changed". For a batch that must fail its own way,
+	 * or must check the read only when another condition of that batch holds.
+	 */
+	guard?: (condition: AuthLinkStatement) => AuthLinkStatement;
 }
 
 /** Follows a write in the batch. Aborts unless that write changed exactly `expected` rows. */
@@ -123,7 +131,10 @@ function parseRows(text: string): unknown[] {
 export async function readSnapshot<Rows extends RowsByName>(
 	backend: RowReader,
 	reads: Record<keyof Rows, AuthRead>,
+	options: ReadSnapshotOptions = {},
 ): Promise<AuthReadSnapshot<Rows>> {
+	const guardFor = (read: AuthRead, seenRows: string) =>
+		(options.guard ?? abortWhenChanged)(holdsCondition(read, seenRows));
 	const names = Object.keys(reads) as (keyof Rows)[];
 	const seen = await readCollected(
 		backend,

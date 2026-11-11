@@ -134,17 +134,36 @@ it("native D1 links an assigned shared Identity and rejects ledger deletion afte
 		signer: input.signer,
 	};
 	const before = await snapshot();
+	// Finalize also reads in batches, so the deletion waits for the batch holding the winning write.
+	const winning = new WeakSet<object>();
+	const prepare = db.prepare.bind(db);
+	const tag = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+		const statement = prepare(sql);
+		if (!/UPDATE coordinator_auth_link_attempts SET state = 'finalized'/.test(sql)) return statement;
+		const bind = statement.bind.bind(statement);
+		statement.bind = (...values: unknown[]) => {
+			const bound = bind(...values);
+			winning.add(bound);
+			return bound;
+		};
+		return statement;
+	});
+	let deletions = 0;
 	const batch = db.batch.bind(db);
-	const hook = vi.spyOn(db, "batch").mockImplementationOnce(async (statements) => {
-		await db.prepare("DELETE FROM coordinator_legacy_team_completions").run();
+	const hook = vi.spyOn(db, "batch").mockImplementation(async (statements) => {
+		if (deletions === 0 && statements.some((statement) => winning.has(statement))) {
+			deletions += 1;
+			await db.prepare("DELETE FROM coordinator_legacy_team_completions").run();
+		}
 		return batch(statements);
 	});
 	try {
 		expect(await store.finalizeAuthLinkAttempt(proof, config)).toMatchObject({ kind: "rejected" });
-		expect(hook).toHaveBeenCalledOnce();
+		expect(deletions).toBe(1);
 		expect(await snapshot()).toEqual(before);
 	} finally {
 		hook.mockRestore();
+		tag.mockRestore();
 	}
 	await insertLedger();
 	expect(await store.finalizeAuthLinkAttempt(proof, config)).toMatchObject({

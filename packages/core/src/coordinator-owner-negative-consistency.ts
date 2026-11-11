@@ -62,7 +62,7 @@ export interface NegativeOwnerSubject {
 const catalogSql = `SELECT json_group_array(json_array(type,name,tbl_name,sql)) AS objects
  FROM sqlite_master WHERE tbl_name='coordinator_legacy_owner_resolutions'`;
 
-function capturedCatalogState(encoded: string) {
+export function capturedCatalogState(encoded: string) {
 	const rows: unknown = JSON.parse(encoded);
 	if (!Array.isArray(rows)) return "unsupported";
 	const objects: { type: string; sql: string }[] = [];
@@ -83,7 +83,7 @@ function capturedCatalogState(encoded: string) {
 	return classifyLegacyOwnerResolutionSchemaCatalog(objects);
 }
 
-function parseRows(values: { row: string | null }[]): EvidenceRow[] {
+export function parseEvidenceRows(values: { row: string | null }[]): EvidenceRow[] {
 	if (values.length > ROW_LIMIT) throw new Error("ownership_evidence_too_large");
 	return values.map(({ row }) => {
 		if (typeof row !== "string") throw new Error("ownership_evidence_unavailable");
@@ -112,7 +112,7 @@ async function captureEvidence(
 	for (const query of EVIDENCE_QUERIES) {
 		if (!backend.all) throw new Error("ownership_evidence_reader_unavailable");
 		const values = await backend.all<{ row: string | null }>(readEvidenceQuery(query, parameters));
-		rows[query.name] = parseRows(values);
+		rows[query.name] = parseEvidenceRows(values);
 		encodedRows[query.name] = values.map(({ row }) => String(row));
 	}
 	const encoded = JSON.stringify({ ...base, rows: encodedRows });
@@ -121,7 +121,10 @@ async function captureEvidence(
 	return { rows, encoded };
 }
 
-async function sourcePins(backend: Backend, rows: EvidenceRow[]): Promise<AuthLinkStatement> {
+export async function sourcePins(
+	backend: Backend,
+	rows: EvidenceRow[],
+): Promise<AuthLinkStatement> {
 	const sources: EvidenceRow[] = [];
 	for (const row of rows) {
 		const resolution = await captureLegacyOwnerResolutionRecord(
