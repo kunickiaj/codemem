@@ -874,20 +874,30 @@ about 100 table references, and they count every table inside a `WITH` block aga
 reference to it. D1 reports this as `VIEWs and/or subqueries nested too deep`, and the Worker
 answers 503. SQLite replaced the check with a limit of 50,000 on 2026-10-18, after 3.54.1.
 
-Signed device setup (`/v1/auth/device-binding`) and account-link status
-(`/v1/auth/account-link-status`) compile on an affected D1. Larger account statements still
-fail there until D1 runs a fixed SQLite: **Connect this device**, account refresh and
-disconnect, owner enrollment checks, and legacy owner resolution. The built-in coordinator and
-local Wrangler bundle SQLite 3.53.4 and are unaffected, so local tests do not show the failure.
+Coordinator statements no longer resolve `WITH` names that deeply. Each authorization decision
+reads its facts with small statements and repeats those reads at the start of the batch that
+writes, so **Connect this device**, account refresh and disconnect, owner enrollment checks,
+legacy owner resolution and legacy team completion compile on an affected D1. The built-in
+coordinator and local Wrangler bundle SQLite 3.53.4, which never had the limit, so ordinary
+local tests cannot show a regression.
 
-`pnpm --filter @codemem/cloudflare-coordinator-worker check:d1-statements` compiles every large
-coordinator statement on Wrangler's local D1, which runs the same SQLite as production. It
-records the statements while the core coordinator tests run. `scripts/d1-statement-check/baseline.json`
-holds the number of statements that still exceed a D1 limit. The check fails when that number
-rises, and asks for the baseline to drop when it falls. CI runs it as its own job, beside the
-Worker tests, and skips it for pull requests that change neither `packages/core` nor the Worker
-package. Set
-`CODEMEM_D1_STATEMENT_CHECK_VERBOSE=1` to list the statements.
+`pnpm --filter @codemem/cloudflare-coordinator-worker check:d1-statements` compiles every
+coordinator statement, of any length, on Wrangler's local D1, which runs the same SQLite as
+production. It records each statement, with the schema it was prepared on, while the core
+coordinator tests run, and compiles it on each of those schemas with its parameters bound
+to NULL. The check fails when a statement exceeds a D1 limit on any schema, compiles on none
+of them, or a schema object cannot be created. The limits it recognizes are D1's documented
+ones (columns per table, bound parameters, function arguments, statement and value size,
+LIKE patterns) and its SQLite's caps on `WITH` nesting, expression depth, result columns
+and compound `SELECT` terms. `scripts/d1-statement-check/classify.mjs` lists the few
+statements whose failure is excused because they never run on D1, such as test probes and
+the local memory store, each by the exact function and SQL that prepare it. The check prints
+every excused statement, and it fails when an excuse matches nothing. Statements that no
+captured test prepares are not checked.
+
+CI runs this check as its own job alongside the Worker tests. Pull requests that change
+neither `packages/core` nor the Worker package nor the lockfile skip it. Set
+`CODEMEM_D1_STATEMENT_CHECK_VERBOSE=1` to list the checked statements.
 
 To check one statement against a real database without running it, prefix it with `EXPLAIN`
 and replace each `?` with a literal:
