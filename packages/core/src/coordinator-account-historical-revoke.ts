@@ -1,4 +1,3 @@
-import { CONNECTION_BIRTH_COLUMNS } from "./coordinator-account-connection-storage.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { authAccountLinkProvenanceSql } from "./coordinator-auth-link-provenance.js";
 
@@ -18,16 +17,50 @@ function context(): string {
  current_targets AS MATERIALIZED (SELECT l.* FROM ${current} l JOIN requested h ON h.coordinator_id=l.coordinator_id AND h.identity_id=l.identity_id),
  valid_current AS MATERIALIZED (SELECT l.coordinator_id,l.link_id FROM current_targets l WHERE ${authAccountLinkProvenanceSql("l", { connections: true })})`;
 }
-/** Audit proof is historical equality, not liveness: it remains valid after flags change. */
-export function historicalRevocationReadSql(): string {
-	const columns = CONNECTION_BIRTH_COLUMNS.join(",");
-	return `/* historical_revocation_complete */ ${context()},
- auditable_links AS MATERIALIZED (SELECT ${columns} FROM requested UNION ALL SELECT ${CONNECTION_BIRTH_COLUMNS.map((c) => `l.${c}`).join(",")} FROM current_targets l JOIN valid_current v ON v.coordinator_id=l.coordinator_id AND v.link_id=l.link_id),
- receipts AS MATERIALIZED (SELECT l.coordinator_id,l.link_id FROM auditable_links l JOIN ${audit} a ON ${birthMatch} JOIN ${audit} r ON ${receiptMatch} WHERE l.revoked_at_ms IS NOT NULL)
- SELECT 1 AS revoked FROM requested h WHERE h.revoked_at_ms IS NOT NULL
- AND EXISTS (SELECT 1 FROM receipts r WHERE r.coordinator_id=h.coordinator_id AND r.link_id=h.link_id)
- AND NOT EXISTS (SELECT 1 FROM current_targets c LEFT JOIN receipts r ON r.coordinator_id=c.coordinator_id AND r.link_id=c.link_id WHERE c.revoked_at_ms IS NULL OR r.link_id IS NULL)
- AND NOT EXISTS (SELECT 1 FROM coordinator_auth_sessions s WHERE s.coordinator_id=h.coordinator_id AND s.identity_id=h.identity_id AND s.revoked_at_ms IS NULL)`;
+// The requested row's Identity. The last two checks need no provenance of their own: the
+// first check refuses a requested row without it, and the three only ever hold together.
+const requestedIdentity = `SELECT identity_id FROM ${history} WHERE coordinator_id=? AND link_id=?`;
+// Aliases l: the provenance expression names its row l.
+const receiptOf = `EXISTS (SELECT 1 FROM ${audit} a JOIN ${audit} r ON ${receiptMatch} WHERE ${birthMatch})`;
+const provenOf = `(${authAccountLinkProvenanceSql("l", { connections: true })})`;
+
+/**
+ * Audit proof is historical equality, not liveness: it remains valid after flags change.
+ * The revocation is complete when all three checks hold. Each is a plain statement with
+ * its own small nesting, where the old single statement nested them all through WITH
+ * stages, past production D1's limit. Every check binds the coordinator and link once
+ * per use of the requested row, in order.
+ */
+export function historicalRevocationChecks(coordinator: string, link: string): AuthLinkStatement[] {
+	// The marker names each check of the completion read, as it named the old statement.
+	const marked = (statement: AuthLinkStatement) => ({
+		...statement,
+		sql: `/* historical_revocation_complete */ ${statement.sql}`,
+	});
+	return [
+		// The requested row itself is revoked with its receipt.
+		{
+			sql: `SELECT EXISTS (SELECT 1 FROM ${history} l WHERE l.coordinator_id=? AND l.link_id=?
+ AND ${provenOf} AND l.revoked_at_ms IS NOT NULL AND ${receiptOf}) AS ok`,
+			values: [coordinator, link],
+		},
+		// Every current link of its Identity is revoked, valid, and has its receipt: as many
+		// links qualify as there are. A count keeps the deep provenance expression out of a
+		// negated subquery, within production D1's expression depth.
+		{
+			sql: `SELECT (SELECT count(*) FROM ${current} l WHERE l.coordinator_id=?
+ AND l.identity_id IN (${requestedIdentity}))
+ = (SELECT count(*) FROM ${current} l WHERE l.coordinator_id=? AND l.identity_id IN (${requestedIdentity})
+ AND l.revoked_at_ms IS NOT NULL AND ${provenOf} AND ${receiptOf}) AS ok`,
+			values: [coordinator, coordinator, link, coordinator, coordinator, link],
+		},
+		// No session of that Identity is live.
+		{
+			sql: `SELECT NOT EXISTS (SELECT 1 FROM coordinator_auth_sessions s WHERE s.coordinator_id=?
+ AND s.revoked_at_ms IS NULL AND s.identity_id IN (${requestedIdentity})) AS ok`,
+			values: [coordinator, coordinator, link],
+		},
+	].map(marked);
 }
 function insertAudit(source: "requested" | "current_targets"): string {
 	return `${context()} INSERT INTO ${audit} (${auditColumns})
@@ -58,10 +91,11 @@ export function historicalRevocationStatements(
 			sql: `${context()} UPDATE coordinator_auth_sessions SET revoked_at_ms=(SELECT revoked_at_ms FROM requested) WHERE revoked_at_ms IS NULL AND coordinator_id=? AND identity_id=(SELECT identity_id FROM requested)`,
 			values: [...values, coordinator],
 		},
-		// A standalone invalid insert fails even when a trigger ignored a required effect.
-		{
-			sql: `INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT EXISTS (${historicalRevocationReadSql()})`,
-			values,
-		},
+		// A standalone invalid insert fails even when a trigger ignored a required effect,
+		// once for each check of a complete revocation.
+		...historicalRevocationChecks(coordinator, link).map((check) => ({
+			sql: `INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (SELECT ok FROM (${check.sql}))`,
+			values: check.values,
+		})),
 	];
 }

@@ -4,7 +4,7 @@ import {
 	CONNECTION_SIGNIN_ORDER_SQL,
 } from "./coordinator-account-connection-storage.js";
 import {
-	historicalRevocationReadSql,
+	historicalRevocationChecks,
 	historicalRevocationStatements,
 } from "./coordinator-account-historical-revoke.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
@@ -713,11 +713,10 @@ export class AuthSessionOperations
 			});
 			if (historical) {
 				await this.batch(historicalRevocationStatements(s.coordinatorId, i.linkId, now));
-				const receipt = await this.first({
-					sql: historicalRevocationReadSql(),
-					values: [s.coordinatorId, i.linkId],
-				});
-				if (!receipt) throw new Error("auth_session_persistence_incomplete");
+				for (const check of historicalRevocationChecks(s.coordinatorId, i.linkId)) {
+					const held = await this.first<{ ok: number }>(check);
+					if (held?.ok !== 1) throw new Error("auth_session_persistence_incomplete");
+				}
 				return { kind: "revoked" };
 			}
 		}
