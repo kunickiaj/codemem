@@ -1,11 +1,10 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
-import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
-	type NegativeOwnerConsistency,
-	prepareNegativeOwnerConsistency,
-	prepareUnknownNamespaceOwnerConsistency,
-	withNegativeOwnerWrite,
-} from "./coordinator-owner-negative-consistency.js";
+	type NegativeOwnerGuards,
+	readNegativeOwnerConsistency,
+	readUnknownNamespaceOwnerConsistency,
+} from "./coordinator-owner-negative-read-set.js";
 import type { CoordinatorConsumeRecipientInviteInput } from "./coordinator-store-contract.js";
 
 export function validateRecipientOwnerInput(input: CoordinatorConsumeRecipientInviteInput): void {
@@ -24,30 +23,19 @@ export function validateRecipientOwnerInput(input: CoordinatorConsumeRecipientIn
 		throw new Error("invite_identity_conflict");
 }
 
-export function prepareRecipientOwnerConsistency(
-	backend: Pick<AuthLinkBackend, "first" | "all">,
+/** Reads the recipient's retained ownership. Null refuses the invite. */
+export function readRecipientOwnerConsistency(
+	backend: Pick<AuthLinkBackend, "first" | "all" | "readBatch">,
 	input: CoordinatorConsumeRecipientInviteInput,
-): Promise<NegativeOwnerConsistency | null> {
+): Promise<NegativeOwnerGuards | null> {
 	if (input.coordinatorId === undefined)
-		return prepareUnknownNamespaceOwnerConsistency(backend, input);
+		return readUnknownNamespaceOwnerConsistency(backend, input);
 	if (!isAuthControllerId(input.coordinatorId)) return Promise.resolve(null);
-	return prepareNegativeOwnerConsistency(backend, {
+	return readNegativeOwnerConsistency(backend, {
 		coordinatorId: input.coordinatorId,
 		ownerIdentityId: input.identityId,
 		deviceId: input.deviceId,
 		publicKey: input.publicKey,
 		fingerprint: input.fingerprint,
 	});
-}
-
-export async function assertRecipientOwnerConsistency(
-	backend: Pick<AuthLinkBackend, "first">,
-	predicate: AuthLinkStatement | null,
-): Promise<void> {
-	if (!predicate || (await backend.first<{ matches: number }>(predicate))?.matches !== 1)
-		throw new Error("device_ownership_authorization_unavailable");
-}
-
-export function recipientOwnerWriteSql(sql: string, predicate: AuthLinkStatement): string {
-	return withNegativeOwnerWrite({ sql, values: [] }, predicate).sql;
 }

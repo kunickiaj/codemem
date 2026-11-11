@@ -209,34 +209,6 @@ export async function prepareNegativeOwnerConsistency(
 	}
 }
 
-/** Compatibility for old internal callers, never infer a coordinator namespace. */
-export async function prepareUnknownNamespaceOwnerConsistency(
-	backend: Backend,
-	input: Pick<NegativeOwnerSubject, "deviceId" | "publicKey">,
-): Promise<NegativeOwnerConsistency | null> {
-	try {
-		const catalog = await captureNegativeCatalog(backend);
-		if (!catalog) return null;
-		if (catalog.state === "missing")
-			return consistencyResult({
-				sql: `SELECT ${catalog.pin} AS matches`,
-				values: [catalog.objects],
-			});
-		const keyId = await ed25519KeyIdForRevocation(input.publicKey);
-		const absent: AuthLinkStatement = {
-			sql: "SELECT NOT EXISTS (SELECT 1 FROM coordinator_legacy_owner_resolutions WHERE device_id=? OR key_id=?) AS matches",
-			values: [input.deviceId, keyId],
-		};
-		if ((await backend.first<{ matches: number }>(absent))?.matches !== 1) return null;
-		return consistencyResult({
-			sql: `WITH consistency_absent AS MATERIALIZED (${absent.sql}) SELECT ${catalog.pin} AND (SELECT matches FROM consistency_absent) AS matches`,
-			values: [...absent.values, catalog.objects],
-		});
-	} catch {
-		return null;
-	}
-}
-
 async function prepareResolvedOwnerConsistency(
 	backend: Backend,
 	input: NegativeOwnerSubject,
@@ -335,23 +307,6 @@ export function withNegativeOwnerConsistency(
 		throw new Error("invalid_controller_statement");
 	return {
 		sql: `WITH negative_owner_consistency AS MATERIALIZED (${predicate.sql}), ${statement.sql.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
-		values: [...predicate.values, ...statement.values],
-	};
-}
-
-/** Compose only trusted producer statements; all captured data remains bound. */
-export function withNegativeOwnerWrite(
-	statement: AuthLinkStatement,
-	predicate: AuthLinkStatement,
-): AuthLinkStatement {
-	const sql = statement.sql.trimStart();
-	const tail = sql.startsWith("WITH ") ? sql.slice(5) : sql;
-	const separator = sql.startsWith("WITH ") ? "," : "";
-	const conflict = tail.indexOf("ON CONFLICT");
-	const beforeConflict = conflict < 0 ? tail : tail.slice(0, conflict);
-	const afterConflict = conflict < 0 ? "" : tail.slice(conflict);
-	return {
-		sql: `WITH negative_owner_consistency AS MATERIALIZED (${predicate.sql})${separator} ${beforeConflict} AND (SELECT matches FROM negative_owner_consistency) ${afterConflict}`,
 		values: [...predicate.values, ...statement.values],
 	};
 }

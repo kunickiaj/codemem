@@ -149,6 +149,13 @@ export async function readSnapshot<Rows extends RowsByName>(
 	};
 }
 
+/** Whether an error is a default guard's refusal: a read no longer holds. */
+export function isSnapshotChanged(error: unknown): boolean {
+	return String((error as { message?: unknown } | null)?.message ?? error).includes(
+		SNAPSHOT_CHANGED,
+	);
+}
+
 /**
  * Runs the guards and then the writes as one atomic batch. Any other error propagates,
  * so an unknown outcome is never reported as a refusal.
@@ -162,8 +169,8 @@ export async function writeGuarded(
 		await backend.batch([...guards, ...writes]);
 		return "committed";
 	} catch (error) {
+		if (isSnapshotChanged(error)) return "changed";
 		const message = String((error as { message?: unknown } | null)?.message ?? error);
-		if (message.includes(SNAPSHOT_CHANGED)) return "changed";
 		if (message.includes(WRITE_UNMATCHED)) return "unmatched";
 		throw error;
 	}

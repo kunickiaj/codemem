@@ -75,6 +75,7 @@ import type {
 	CoordinatorAuthLinkHeadlessCreateInput,
 	CoordinatorAuthLinkHeadlessFinalizeInput,
 } from "./coordinator-auth-link-headless.js";
+import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
 import {
 	assertCoordinatorAuthSchema,
 	CoordinatorAuthSchemaUpgradeRequiredError,
@@ -190,10 +191,10 @@ import {
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
 import {
-	type NegativeOwnerConsistency,
 	prepareNegativeOwnerConsistency,
 	withNegativeOwnerConsistency,
 } from "./coordinator-owner-negative-consistency.js";
+import type { NegativeOwnerGuards } from "./coordinator-owner-negative-read-set.js";
 import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
@@ -204,9 +205,7 @@ import {
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
-	assertRecipientOwnerConsistency,
-	prepareRecipientOwnerConsistency,
-	recipientOwnerWriteSql,
+	readRecipientOwnerConsistency,
 	validateRecipientOwnerInput,
 } from "./coordinator-recipient-owner-consistency.js";
 import { ResolvedAccountOwnerStatusOperations } from "./coordinator-resolved-account-owner-status.js";
@@ -832,48 +831,67 @@ async function prepareRecipientInviteGuards(
 	return { ...evidence, assertEligible };
 }
 
+interface RecipientInviteGuard {
+	sql: string;
+	values: unknown[];
+	assertEligible: (options: { requireBinding: boolean }) => Promise<void>;
+	/** Retained-ownership guards. They lead the batch, before any write. */
+	guards?: AuthLinkStatement[];
+	/**
+	 * Only for the first token write. Its old pin left the batch a no-op when a fact the
+	 * write itself changes had moved, and the batch then still had to confirm these.
+	 */
+	unpinned?: AuthLinkStatement[];
+}
+
+/** The guards, the writes and the eligibility confirmation in one batch. First write's changes. */
+async function confirmRecipientInviteBatch(
+	db: D1DatabaseLike,
+	statements: D1PreparedStatementLike[],
+	guard: RecipientInviteGuard,
+	guards: AuthLinkStatement[],
+): Promise<number> {
+	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
+	const lead = guards.map(({ sql, values }) => db.prepare(sql).bind(...values));
+	const results = await db.batch([
+		...lead,
+		...statements,
+		db
+			.prepare(
+				`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE json('recipient_invite_authorization_failed') END AS confirmed`,
+			)
+			.bind(...guard.values),
+	]);
+	const writes = results.slice(lead.length, lead.length + statements.length);
+	const confirmation = results[lead.length + statements.length] as
+		| { results?: { confirmed?: unknown }[] }
+		| undefined;
+	if (legacyDeviceWriteChanges(confirmation) !== 0 || confirmation?.results?.[0]?.confirmed !== 1)
+		throw new Error("device_ownership_authorization_unavailable");
+	for (const result of writes) legacyDeviceWriteChanges(result);
+	return writes.length ? legacyDeviceWriteChanges(writes[0]) : 0;
+}
+
 async function runRecipientInviteBatch(
 	db: D1DatabaseLike,
 	statements: D1PreparedStatementLike[],
-	guard: {
-		sql: string;
-		values: unknown[];
-		assertEligible: (options: { requireBinding: boolean }) => Promise<void>;
-		negative?: AuthLinkStatement;
-	},
+	guard: RecipientInviteGuard,
 ): Promise<number> {
 	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
-	const negative = guard.negative ?? { sql: "SELECT 1 AS matches", values: [] };
 	try {
-		const results = await db.batch([
-			...statements,
-			db
-				.prepare(`WITH recipient_negative AS MATERIALIZED (${negative.sql})
- SELECT CASE WHEN (${guard.sql}) AND (SELECT matches FROM recipient_negative)
- THEN 1 ELSE json('recipient_invite_authorization_failed') END AS confirmed`)
-				.bind(...negative.values, ...guard.values),
-		]);
-		const confirmation = results[statements.length] as
-			| { results?: { confirmed?: unknown }[] }
-			| undefined;
-		if (legacyDeviceWriteChanges(confirmation) !== 0 || confirmation?.results?.[0]?.confirmed !== 1)
-			throw new Error("device_ownership_authorization_unavailable");
-		for (const result of results.slice(0, statements.length)) legacyDeviceWriteChanges(result);
-		return legacyDeviceWriteChanges(results[0]);
-	} catch {
+		return await confirmRecipientInviteBatch(db, statements, guard, guard.guards ?? []);
+	} catch (error) {
 		// A SQL assertion rolls back the batch; malformed metadata may arrive after commit.
+		if (guard.unpinned && isSnapshotChanged(error)) {
+			const unpinned = await confirmRecipientInviteBatch(db, [], guard, guard.unpinned).then(
+				() => true,
+				() => false,
+			);
+			if (unpinned) return 0;
+		}
 		await guard.assertEligible({ requireBinding: false });
 		throw new Error("device_ownership_authorization_unavailable");
 	}
-}
-
-function prepareRecipientOwnerStatement(
-	db: D1DatabaseLike,
-	sql: string,
-	negative?: AuthLinkStatement,
-) {
-	const statement = db.prepare(negative ? recipientOwnerWriteSql(sql, negative) : sql);
-	return { bind: (...values: unknown[]) => statement.bind(...(negative?.values ?? []), ...values) };
 }
 
 function createRecipientOwnerBackend(db: D1DatabaseLike) {
@@ -898,46 +916,37 @@ async function repairBoundRecipientInviteIdentity(
 	db: D1DatabaseLike,
 	opts: CoordinatorConsumeRecipientInviteInput,
 	invite: CoordinatorInvite,
-	guard: Parameters<typeof runRecipientInviteBatch>[2],
-	firstWrite: { winningChanges: number; consistency: NegativeOwnerConsistency },
-): Promise<AuthLinkStatement> {
+	guard: Omit<RecipientInviteGuard, "guards" | "unpinned">,
+	firstWrite: { winningChanges: number; consistency: NegativeOwnerGuards },
+): Promise<AuthLinkStatement[]> {
 	validateRecipientInviteBinding(invite, opts, { requireBinding: true });
 	// A zero-row token UPDATE (including another invocation's winner) did
 	// not consume this invocation's full initial evidence pin.
-	const firstWriteNegative =
+	const firstWriteGuards =
 		firstWrite.winningChanges === 1
-			? firstWrite.consistency.retainedRecheck
-			: firstWrite.consistency;
+			? firstWrite.consistency.retainedGuards
+			: firstWrite.consistency.guards;
 	const repaired = await runRecipientInviteBatch(
 		db,
 		[
-			prepareRecipientOwnerStatement(
-				db,
-				`UPDATE enrolled_devices SET identity_id = ?
+			db
+				.prepare(
+					`UPDATE enrolled_devices SET identity_id = ?
 		WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
 		AND public_key = ? AND fingerprint = ? AND ${guard.sql}`,
-				firstWriteNegative,
-			).bind(
-				opts.identityId,
-				invite.group_id,
-				opts.deviceId,
-				opts.publicKey,
-				opts.fingerprint,
-				...guard.values,
-			),
+				)
+				.bind(
+					opts.identityId,
+					invite.group_id,
+					opts.deviceId,
+					opts.publicKey,
+					opts.fingerprint,
+					...guard.values,
+				),
 		],
-		{
-			...guard,
-			negative: {
-				// Only the immediately preceding identity UPDATE can consume the full pin.
-				// A no-op must still check it inside this batch, then carry it to recovery.
-				sql: `SELECT (changes() = 1 OR (SELECT matches FROM (${firstWriteNegative.sql})))
-				AND (SELECT matches FROM (${firstWrite.consistency.retainedRecheck.sql})) AS matches`,
-				values: [...firstWriteNegative.values, ...firstWrite.consistency.retainedRecheck.values],
-			},
-		},
+		{ ...guard, guards: firstWriteGuards },
 	);
-	return repaired === 1 ? firstWrite.consistency.retainedRecheck : firstWriteNegative;
+	return repaired === 1 ? firstWrite.consistency.retainedGuards : firstWriteGuards;
 }
 
 async function rejectStaleRecipientInviteEvidence(
@@ -2199,7 +2208,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			sql: string;
 			values: unknown[];
 			consumedAt: string;
-			negative?: AuthLinkStatement;
+			guards: AuthLinkStatement[];
 			assertEligible: (options: { requireBinding: boolean }) => Promise<void>;
 		},
 	): Promise<void> {
@@ -2208,9 +2217,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		await runRecipientInviteBatch(
 			this.db,
 			[
-				prepareRecipientOwnerStatement(
-					this.db,
-					`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+				this.db
+					.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 				trust_state = 'bootstrap_grant_created'
 				WHERE invite_id = ? AND invite_kind = 'add_device'
 				AND bootstrap_grant_id IS NULL AND inviter_device_id IS NOT NULL
@@ -2218,19 +2226,17 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				AND EXISTS (SELECT 1 FROM enrolled_devices e
 					WHERE e.group_id = coordinator_invites.group_id
 					AND e.device_id = coordinator_invites.inviter_device_id AND e.enabled = 1)
-				AND ${guard.sql}`,
-					guard.negative,
-				).bind(
-					tokenUrlSafe(12),
-					invite.invite_id,
-					opts.deviceId,
-					opts.identityId,
-					guard.consumedAt,
-					...guard.values,
-				),
-				prepareRecipientOwnerStatement(
-					this.db,
-					`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
+				AND ${guard.sql}`)
+					.bind(
+						tokenUrlSafe(12),
+						invite.invite_id,
+						opts.deviceId,
+						opts.identityId,
+						guard.consumedAt,
+						...guard.values,
+					),
+				this.db
+					.prepare(`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
 				grant_id, group_id, seed_device_id, worker_device_id, expires_at,
 				created_at, created_by, revoked_at
 			) SELECT i.bootstrap_grant_id, i.group_id, i.inviter_device_id, i.bound_device_id,
@@ -2239,9 +2245,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				AND e.device_id = i.inviter_device_id AND e.enabled = 1
 			WHERE i.invite_id = ? AND i.invite_kind = 'add_device'
 				AND i.bootstrap_grant_id IS NOT NULL AND i.bound_device_id = ?
-				AND ${guard.sql}`,
-					guard.negative,
-				).bind(guard.consumedAt, invite.invite_id, opts.deviceId, ...guard.values),
+				AND ${guard.sql}`)
+					.bind(guard.consumedAt, invite.invite_id, opts.deviceId, ...guard.values),
 			],
 			guard,
 		);
@@ -2249,9 +2254,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	private async prepareEligibleRecipientOwner(opts: CoordinatorConsumeRecipientInviteInput) {
 		const backend = createRecipientOwnerBackend(this.db);
-		const consistency = await prepareRecipientOwnerConsistency(backend, opts);
+		const consistency = await readRecipientOwnerConsistency(backend, opts);
+		// The decision comes from these reads. The old pin was read once more here; the
+		// guards that lead each write batch now re-run every read instead.
 		if (!consistency) throw new Error("device_ownership_authorization_unavailable");
-		await assertRecipientOwnerConsistency(backend, consistency);
 		return consistency;
 	}
 
@@ -2299,7 +2305,6 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		} = await prepareRecipientInviteGuards(this.db, initial, _opts);
 		await assertEligible({ requireBinding: Boolean(initial.consumed_at) });
 		const consistency = await this.prepareEligibleRecipientOwner(_opts);
-		const negative = consistency.retainedRecheck;
 		let changed = 0;
 		const bootstrapGrantId = tokenUrlSafe(12);
 		if (!initial.consumed_at) {
@@ -2308,9 +2313,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			changed = await runRecipientInviteBatch(
 				this.db,
 				[
-					prepareRecipientOwnerStatement(
-						this.db,
-						`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
+					this.db
+						.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
 						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
 						recipient_display_name = ?, recipient_device_display_name = ?
 						WHERE (token_digest = ? OR token = ?) AND consumed_at IS NULL
@@ -2327,36 +2331,34 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						)
 						AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
 							AND g.archived_at IS NULL)
-						AND ${eligibilitySql}`,
-						consistency,
-					).bind(
-						`consumed:${initial.invite_id}`,
-						consumedAt,
-						_opts.deviceId,
-						_opts.publicKey,
-						_opts.fingerprint,
-						authoritativeIdentityId,
-						recipientDisplayName,
-						deviceDisplayName,
-						digest,
-						_opts.token,
-						initial.invite_id,
-						initial.group_id,
-						consumedAt,
-						_opts.inviteKind,
-						initial.reviewed_intent_json,
-						initial.reviewed_preview_digest,
-						authoritativeIdentityId,
-						authoritativeIdentityId,
-						_opts.deviceId,
-						_opts.publicKey,
-						_opts.fingerprint,
-						authoritativeIdentityId,
-						...eligibilityValues,
-					),
-					prepareRecipientOwnerStatement(
-						this.db,
-						`INSERT INTO enrolled_devices(
+						AND ${eligibilitySql}`)
+						.bind(
+							`consumed:${initial.invite_id}`,
+							consumedAt,
+							_opts.deviceId,
+							_opts.publicKey,
+							_opts.fingerprint,
+							authoritativeIdentityId,
+							recipientDisplayName,
+							deviceDisplayName,
+							digest,
+							_opts.token,
+							initial.invite_id,
+							initial.group_id,
+							consumedAt,
+							_opts.inviteKind,
+							initial.reviewed_intent_json,
+							initial.reviewed_preview_digest,
+							authoritativeIdentityId,
+							authoritativeIdentityId,
+							_opts.deviceId,
+							_opts.publicKey,
+							_opts.fingerprint,
+							authoritativeIdentityId,
+							...eligibilityValues,
+						),
+					this.db
+						.prepare(`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 					) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
 						i.recipient_actor_id, i.recipient_device_display_name, 1, ? FROM coordinator_invites i
@@ -2371,25 +2373,23 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						display_name = COALESCE(enrolled_devices.display_name, excluded.display_name),
 						enabled = 1
 					WHERE enrolled_devices.identity_id IS NULL
-						OR enrolled_devices.identity_id = excluded.identity_id`,
-						negative,
-					).bind(
-						consumedAt,
-						digest,
-						_opts.token,
-						_opts.deviceId,
-						initial.invite_id,
-						initial.group_id,
-						_opts.publicKey,
-						_opts.fingerprint,
-						authoritativeIdentityId,
-						...boundEligibilityValues,
-					),
+						OR enrolled_devices.identity_id = excluded.identity_id`)
+						.bind(
+							consumedAt,
+							digest,
+							_opts.token,
+							_opts.deviceId,
+							initial.invite_id,
+							initial.group_id,
+							_opts.publicKey,
+							_opts.fingerprint,
+							authoritativeIdentityId,
+							...boundEligibilityValues,
+						),
 					// Enrollment follows the winning token write. Keep bootstrap writes on
 					// that changes() chain; a loser still needs its full pin during repair.
-					prepareRecipientOwnerStatement(
-						this.db,
-						`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+					this.db
+						.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 						trust_state = 'bootstrap_grant_created'
 						WHERE (token_digest = ? OR token = ?) AND invite_kind = 'add_device'
 						AND invite_id = ? AND group_id = ?
@@ -2398,20 +2398,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 						AND EXISTS (SELECT 1 FROM enrolled_devices e
 							WHERE e.group_id = coordinator_invites.group_id
 							AND e.device_id = coordinator_invites.inviter_device_id AND e.enabled = 1)
-						AND changes() = 1 AND ${boundEligibilitySql}`,
-						negative,
-					).bind(
-						bootstrapGrantId,
-						digest,
-						_opts.token,
-						initial.invite_id,
-						initial.group_id,
-						consumedAt,
-						...boundEligibilityValues,
-					),
-					prepareRecipientOwnerStatement(
-						this.db,
-						`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
+						AND changes() = 1 AND ${boundEligibilitySql}`)
+						.bind(
+							bootstrapGrantId,
+							digest,
+							_opts.token,
+							initial.invite_id,
+							initial.group_id,
+							consumedAt,
+							...boundEligibilityValues,
+						),
+					this.db
+						.prepare(`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
 						grant_id, group_id, seed_device_id, worker_device_id, expires_at,
 						created_at, created_by, revoked_at
 					) SELECT i.bootstrap_grant_id, i.group_id, i.inviter_device_id, i.bound_device_id,
@@ -2421,19 +2419,24 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					WHERE (i.token_digest = ? OR i.token = ?) AND i.invite_kind = 'add_device'
 						AND i.invite_id = ? AND i.group_id = ?
 						AND i.bootstrap_grant_id IS NOT NULL AND i.bound_device_id = ?
-						AND changes() = 1 AND ${boundEligibilitySql}`,
-						negative,
-					).bind(
-						consumedAt,
-						digest,
-						_opts.token,
-						initial.invite_id,
-						initial.group_id,
-						_opts.deviceId,
-						...boundEligibilityValues,
-					),
+						AND changes() = 1 AND ${boundEligibilitySql}`)
+						.bind(
+							consumedAt,
+							digest,
+							_opts.token,
+							initial.invite_id,
+							initial.group_id,
+							_opts.deviceId,
+							...boundEligibilityValues,
+						),
 				],
-				{ sql: eligibilitySql, values: eligibilityValues, assertEligible, negative },
+				{
+					sql: eligibilitySql,
+					values: eligibilityValues,
+					assertEligible,
+					guards: consistency.guards,
+					unpinned: consistency.retainedGuards,
+				},
 			);
 		}
 		await assertEligible({ requireBinding: false });
@@ -2467,7 +2470,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			this.db,
 			_opts,
 			saved,
-			{ sql: boundEligibilitySql, values: boundEligibilityValues, assertEligible, negative },
+			{ sql: boundEligibilitySql, values: boundEligibilityValues, assertEligible },
 			{ winningChanges: changed, consistency },
 		);
 		await assertEligible({ requireBinding: true });
@@ -2485,7 +2488,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				values: boundEligibilityValues,
 				consumedAt,
 				assertEligible,
-				negative: recoveryNegative,
+				guards: recoveryNegative,
 			});
 			const refreshed = await this.getInviteByTokenForInspection(_opts.token);
 			if (!refreshed) throw new Error("invite_invalid");

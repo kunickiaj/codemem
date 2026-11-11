@@ -179,18 +179,21 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const adapter = sqliteD1(f.db);
 				const batch = adapter.batch?.bind(adapter);
 				if (!batch) throw new Error("test batch unavailable");
-				let batches = 0;
+				// Falsify the first write's result: guard and read results carry rows, writes do not.
+				let falsified = 0;
 				adapter.batch = async (statements) => {
 					const results = await batch(statements);
-					batches++;
-					results[0] = { meta: { changes: metadata } };
+					const write = results.findIndex((result) => !("results" in (result as object)));
+					if (write < 0) return results;
+					falsified++;
+					results[write] = { meta: { changes: metadata } };
 					return results;
 				};
 				const store = new D1CoordinatorStore(adapter);
 				await expect(store.consumeRecipientInvite(input)).rejects.toThrow(
 					"device_ownership_authorization_unavailable",
 				);
-				expect(batches).toBe(1);
+				expect(falsified).toBe(1);
 				expect(producerSnapshot(f.db)).toEqual(before);
 				expect(f.db.prepare("SELECT * FROM coordinator_bootstrap_grants").all()).toEqual([]);
 			});

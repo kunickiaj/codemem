@@ -4,7 +4,7 @@ import { otherKey } from "./coordinator-device-ownership-evidence-test-fixtures.
 import { revocationInput } from "./coordinator-device-revocation-test-harness.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 import {
-	beforeProducerWinningWrite,
+	beforeProducerWriteBatch,
 	prepareProducerOwner,
 	producerSnapshot,
 	retainProducerOwner,
@@ -122,15 +122,18 @@ for (const backend of ["SQLite", "D1"] as const) {
 			{ ...input, coordinatorId: "foreign-coordinator", ownerIdentityId: input.identityId },
 			{ removeSource: true },
 		);
-		const before = producerSnapshot(f.db);
-		const hook = beforeProducerWinningWrite(f.db, /UPDATE coordinator_invites SET token\s*=/, seed);
+		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			seed();
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const acceptance = f.store.consumeRecipientInvite(legacyInput);
 			// Assert: the late fact, token update, enrollment and bootstrap all roll back.
 			await expect(acceptance).rejects.toThrow();
 			expect(hook.observed()).toBe(true);
-			expect(producerSnapshot(f.db)).toEqual(before);
+			expect(producerSnapshot(f.db)).toEqual(atWrite);
 		} finally {
 			hook.restore();
 		}
@@ -144,19 +147,18 @@ for (const backend of ["SQLite", "D1"] as const) {
 				{ ...input, coordinatorId: "coordinator-a", ownerIdentityId: "owner-A" },
 				{ removeSource: true },
 			);
-			const before = producerSnapshot(f.db);
-			const hook = beforeProducerWinningWrite(
-				f.db,
-				/UPDATE coordinator_invites SET token\s*=/,
-				seed,
-			);
+			let atWrite: ReturnType<typeof producerSnapshot> | undefined;
+			const hook = beforeProducerWriteBatch(f.db, () => {
+				seed();
+				atWrite = producerSnapshot(f.db);
+			});
 			try {
 				// Act
 				const acceptance = f.store.consumeRecipientInvite(input);
 				// Assert: the transaction must roll back rather than leave a consumed token.
 				await expect(acceptance).rejects.toThrow();
 				expect(hook.observed()).toBe(true);
-				expect(producerSnapshot(f.db)).toEqual(before);
+				expect(producerSnapshot(f.db)).toEqual(atWrite);
 			} finally {
 				hook.restore();
 			}
@@ -246,19 +248,18 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Arrange
 			const { input } = await invitation(f, kind);
 			f.db.exec("DROP TABLE IF EXISTS coordinator_legacy_owner_resolutions");
-			const before = producerSnapshot(f.db);
-			const hook = beforeProducerWinningWrite(
-				f.db,
-				/UPDATE coordinator_invites SET token\s*=/,
-				() => f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL),
-			);
+			let atWrite: ReturnType<typeof producerSnapshot> | undefined;
+			const hook = beforeProducerWriteBatch(f.db, () => {
+				f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
+				atWrite = producerSnapshot(f.db);
+			});
 			try {
 				// Act
 				const acceptance = f.store.consumeRecipientInvite(input);
 				// Assert: denial rolls back both the token mutation and dependent stages.
 				await expect(acceptance).rejects.toThrow();
 				expect(hook.observed()).toBe(true);
-				expect(producerSnapshot(f.db)).toEqual(before);
+				expect(producerSnapshot(f.db)).toEqual(atWrite);
 			} finally {
 				hook.restore();
 			}
