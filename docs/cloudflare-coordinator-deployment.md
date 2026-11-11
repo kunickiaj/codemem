@@ -880,6 +880,13 @@ fail there until D1 runs a fixed SQLite: **Connect this device**, account refres
 disconnect, owner enrollment checks, and legacy owner resolution. The built-in coordinator and
 local Wrangler bundle SQLite 3.53.4 and are unaffected, so local tests do not show the failure.
 
+`pnpm --filter @codemem/cloudflare-coordinator-worker check:d1-statements` compiles every large
+coordinator statement on Wrangler's local D1, which runs the same SQLite as production. It
+records the statements while the core coordinator tests run. `scripts/d1-statement-check/baseline.json`
+holds the number of statements that still exceed a D1 limit. The check fails when that number
+rises, and asks for the baseline to drop when it falls. Set
+`CODEMEM_D1_STATEMENT_CHECK_VERBOSE=1` to list the statements.
+
 To check one statement against a real database without running it, prefix it with `EXPLAIN`
 and replace each `?` with a literal:
 
