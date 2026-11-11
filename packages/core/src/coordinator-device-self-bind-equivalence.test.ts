@@ -42,6 +42,8 @@ const OWN = "device_id='device-a'";
 const SIGNED = `group_id='group-a' AND ${OWN}`;
 const OTHER = `group_id='group-b' AND ${OWN}`;
 const sql = (f: Fixture, text: string, ...values: unknown[]) => f.db.prepare(text).run(...values);
+/** Another stored text form of the signer's key. The checks must treat it as the same key. */
+const aliasKey = (f: Fixture) => `${f.signer.publicKey} alias-comment`;
 function insert(f: Fixture, table: string, row: Record<string, unknown>) {
 	const columns = Object.keys(row);
 	sql(
@@ -54,7 +56,7 @@ const enroll = (f: Fixture, row: Record<string, unknown>) =>
 	insert(f, "enrolled_devices", {
 		group_id: "group-a",
 		device_id: "alias-device",
-		public_key: `${f.signer.publicKey} alias-comment`,
+		public_key: aliasKey(f),
 		fingerprint: "f".repeat(64),
 		identity_id: null,
 		enabled: 1,
@@ -117,7 +119,12 @@ const foreignLink = (f: Fixture) =>
 		`INSERT INTO coordinator_auth_account_links(coordinator_id,link_id,issuer,subject,identity_id,attempt_id,auth_config_revision,created_at_ms,authority_kind,device_claim_id)
  SELECT coordinator_id,'foreign-link',issuer,'foreign-subject','foreign-identity','foreign-attempt',auth_config_revision,1,'device_claim','foreign-claim' FROM coordinator_auth_account_links`,
 	);
-const ownerAttempt = (f: Fixture, keyId: string, createdAtMs: number) =>
+const ownerAttempt = (
+	f: Fixture,
+	keyId: string,
+	createdAtMs: number,
+	row: Record<string, unknown> = {},
+) =>
 	insert(f, "coordinator_owner_enrollment_attempts", {
 		coordinator_id: f.config.coordinatorId,
 		attempt_id: "owner-attempt",
@@ -134,8 +141,9 @@ const ownerAttempt = (f: Fixture, keyId: string, createdAtMs: number) =>
 		state: "pending",
 		created_at_ms: createdAtMs,
 		expires_at_ms: createdAtMs + 600_000,
+		...row,
 	});
-const linkAttempt = (f: Fixture, identityId: string) =>
+const linkAttempt = (f: Fixture, identityId: string, row: Record<string, unknown> = {}) =>
 	insert(f, "coordinator_auth_link_attempts", {
 		coordinator_id: f.config.coordinatorId,
 		attempt_id: "live-link",
@@ -153,6 +161,19 @@ const linkAttempt = (f: Fixture, identityId: string) =>
 		expires_at_ms: SELF_BIND_NOW + 599_000,
 		browser_start_hash: "e".repeat(64),
 		authority_kind: "device_claim",
+		...row,
+	});
+/** A finished link attempt, as the one that created another Identity's link. */
+const finalizedLinkAttempt = (f: Fixture, row: Record<string, unknown>) =>
+	linkAttempt(f, "foreign-identity", {
+		attempt_id: "foreign-attempt",
+		state: "finalized",
+		link_id: "foreign-link",
+		account_subject: "foreign-subject",
+		browser_transaction_hash: "1".repeat(64),
+		completion_secret_hash: "2".repeat(64),
+		finalized_at_ms: SELF_BIND_NOW - 500,
+		...row,
 	});
 /** A raw legacy completion whose single decision is about this device. */
 const legacyDecision = (f: Fixture, decision: Record<string, unknown>, coordinatorId?: string) =>
@@ -386,6 +407,11 @@ const CASES: Case[] = [
 			}),
 	},
 	{
+		name: "a consumed invite bound to a text form of the key on another device",
+		fails: [7],
+		change: (f) => invite(f, { bound_device_id: "other-device", bound_public_key: aliasKey(f) }),
+	},
+	{
 		name: "an invite revoked after it was consumed",
 		fails: [7],
 		change: (f) => invite(f, { revoked_at: "2026-01-03" }),
@@ -422,6 +448,14 @@ const CASES: Case[] = [
 		},
 	},
 	{
+		name: "another Identity's link created with a text form of the key on another device",
+		fails: [8],
+		change: (f) => {
+			foreignLink(f);
+			finalizedLinkAttempt(f, { device_id: "other-device", public_key: aliasKey(f) });
+		},
+	},
+	{
 		name: "another Identity's link with an audit record of this device",
 		fails: [8],
 		change: (f) => {
@@ -438,6 +472,16 @@ const CASES: Case[] = [
 		change: (f, keyId) => ownerAttempt(f, keyId, SELF_BIND_NOW - 1000),
 	},
 	{
+		name: "a live owner-enrollment attempt for the device with another key",
+		fails: [10],
+		change: (f) =>
+			ownerAttempt(f, "9".repeat(64), SELF_BIND_NOW - 1000, {
+				device_id: f.signer.deviceId,
+				public_key: "another-key",
+				fingerprint: "9".repeat(64),
+			}),
+	},
+	{
 		name: "an expired owner-enrollment attempt for the key",
 		fails: [],
 		change: (f, keyId) => ownerAttempt(f, keyId, SELF_BIND_NOW - 600_000),
@@ -446,6 +490,12 @@ const CASES: Case[] = [
 		name: "a live link attempt for another Identity",
 		fails: [11],
 		change: (f) => linkAttempt(f, "other-identity"),
+	},
+	{
+		name: "a live link attempt for another Identity with a text form of the key on another device",
+		fails: [11],
+		change: (f) =>
+			linkAttempt(f, "other-identity", { device_id: "other-device", public_key: aliasKey(f) }),
 	},
 	{
 		name: "a live link attempt for the same Identity",
