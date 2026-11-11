@@ -75,6 +75,7 @@ import {
 import { CONNECTION_BIRTHS_SQL } from "./coordinator-auth-link-provenance.js";
 import { captureAuthLinkSource } from "./coordinator-auth-link-source.js";
 import { parseCoordinatorAuthLoopback } from "./coordinator-auth-loopback.js";
+import { writeGuarded } from "./coordinator-auth-read-set.js";
 import { authPersistenceError } from "./coordinator-auth-schema.js";
 import {
 	deviceClaimBindingStatements,
@@ -83,10 +84,7 @@ import {
 	readFirstLinkDeviceClaimOwnershipComplete,
 } from "./coordinator-device-claim-binding.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
-import {
-	prepareNegativeOwnerConsistency,
-	withNegativeOwnerWrite,
-} from "./coordinator-owner-negative-consistency.js";
+import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
 
 export * from "./coordinator-auth-link-contract.js";
 export interface AuthLinkStatement {
@@ -1430,7 +1428,7 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		const connections = await this.connectionSchema();
 		const binding = await this.prepareFirstClaimBinding(i, c, now, linkId, row, connections);
 		if (!binding) return rejected("attempt_unavailable");
-		const consistency = await prepareNegativeOwnerConsistency(this.backend, {
+		const consistency = await readNegativeOwnerConsistency(this.backend, {
 			coordinatorId: c.coordinatorId,
 			ownerIdentityId: i.identityId,
 			deviceId: i.signer.deviceId,
@@ -1440,11 +1438,11 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		});
 		if (!consistency) return rejected("attempt_unavailable");
 		try {
-			await this.backend.batch([
-				...deviceFinalizeStatements(i, c, now, linkId, keyId, source, connections).map(
-					(statement, index) =>
-						index < 2 ? withNegativeOwnerWrite(statement, consistency) : statement,
-				),
+			// The retained-ownership guards replace the pin the attempt update and claim insert
+			// carried. A changed fact writes nothing, as that pin made the whole batch a no-op,
+			// and the receipt below then refuses.
+			await writeGuarded(this.backend, consistency.guards, [
+				...deviceFinalizeStatements(i, c, now, linkId, keyId, source, connections),
 				...(connections ? connectionSuccessorStatements(c.coordinatorId, i.attemptId, linkId) : []),
 				promoteAuthLinkProfile(c.coordinatorId, i.attemptId, linkId),
 				...(await initialConnectionFloor(this.backend, c.coordinatorId, linkId)),

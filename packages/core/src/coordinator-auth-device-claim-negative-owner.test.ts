@@ -13,7 +13,7 @@ import {
 } from "./coordinator-auth-link-test-fixtures.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 import {
-	beforeProducerWinningWrite,
+	beforeProducerWriteBatch,
 	prepareProducerOwner,
 	producerSnapshot,
 	retainProducerOwner,
@@ -71,14 +71,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		);
 		await confirmed(f);
 		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
-		const hook = beforeProducerWinningWrite(
-			f.db,
-			/UPDATE coordinator_auth_link_attempts\s+SET state = 'finalized'/,
-			() => {
-				seed();
-				atWrite = producerSnapshot(f.db);
-			},
-		);
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			seed();
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const result = await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);
@@ -185,14 +181,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		await confirmed(f);
 		f.db.exec("DROP TABLE IF EXISTS coordinator_legacy_owner_resolutions");
 		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
-		const hook = beforeProducerWinningWrite(
-			f.db,
-			/UPDATE coordinator_auth_link_attempts\s+SET state = 'finalized'/,
-			() => {
-				f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
-				atWrite = producerSnapshot(f.db);
-			},
-		);
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const result = await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);

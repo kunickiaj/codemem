@@ -7,7 +7,7 @@ import { commitOwnerEnrollment } from "./coordinator-owner-enrollment-commit.js"
 import type { CommitWriterFixture } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import { commitWriterFixture } from "./coordinator-owner-enrollment-historical-test-fixture.js";
 import {
-	beforeProducerWinningWrite,
+	beforeProducerWriteBatch,
 	prepareProducerOwner,
 	producerSnapshot,
 	retainProducerOwner,
@@ -70,16 +70,12 @@ for (const backend of ["SQLite", "D1"] as const) {
 		// Arrange: same-owner compatibility is not a substitute for an unrevoked original source.
 		await retainProducerOwner(f.db, subject(f));
 		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
-		const hook = beforeProducerWinningWrite(
-			f.db,
-			/UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'finalized'/,
-			() => {
-				f.db.exec(
-					"UPDATE coordinator_auth_controller_attestations SET revoked_at='2026-10-01T00:00:00.000Z' WHERE attestation_id='producer-original-controller'",
-				);
-				atWrite = producerSnapshot(f.db);
-			},
-		);
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			f.db.exec(
+				"UPDATE coordinator_auth_controller_attestations SET revoked_at='2026-10-01T00:00:00.000Z' WHERE attestation_id='producer-original-controller'",
+			);
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const result = await commitOwnerEnrollment(request(f));
@@ -99,14 +95,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 			{ removeSource: true },
 		);
 		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
-		const hook = beforeProducerWinningWrite(
-			f.db,
-			/UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'finalized'/,
-			() => {
-				seed();
-				atWrite = producerSnapshot(f.db);
-			},
-		);
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			seed();
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const result = await commitOwnerEnrollment(request(f));
@@ -193,14 +185,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 		// Arrange
 		f.db.exec("DROP TABLE IF EXISTS coordinator_legacy_owner_resolutions");
 		let atWrite: ReturnType<typeof producerSnapshot> | undefined;
-		const hook = beforeProducerWinningWrite(
-			f.db,
-			/UPDATE coordinator_owner_enrollment_attempts AS a SET state = 'finalized'/,
-			() => {
-				f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
-				atWrite = producerSnapshot(f.db);
-			},
-		);
+		const hook = beforeProducerWriteBatch(f.db, () => {
+			f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
+			atWrite = producerSnapshot(f.db);
+		});
 		try {
 			// Act
 			const result = await commitOwnerEnrollment(request(f));

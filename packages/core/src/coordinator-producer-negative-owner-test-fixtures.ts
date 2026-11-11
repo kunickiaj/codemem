@@ -113,3 +113,55 @@ export function beforeProducerWinningWrite(db: Database, gate: RegExp, mutate: (
 		},
 	};
 }
+
+// Every read-set guard aborts through this JSON path, and guards lead their write batch.
+const GUARD_MARKER = "auth_snapshot_changed";
+const RESTART = Symbol("restart the batch after the change");
+type Transaction = ((...args: unknown[]) => unknown) &
+	Record<"deferred" | "immediate" | "exclusive", (...args: unknown[]) => unknown>;
+
+/**
+ * Runs `mutate` once, just before the next write batch that starts with read-set guards:
+ * after the producer's reads, before its atomic write, and outside that batch's
+ * transaction so the change survives the batch's own rollback. The batch's statements are
+ * prepared inside its transaction, so the first guard ends that attempt unexecuted; the
+ * change is then made and the same batch runs from its start.
+ */
+export function beforeProducerWriteBatch(db: Database, mutate: () => void) {
+	const prepare = db.prepare.bind(db);
+	const transaction = db.transaction.bind(db);
+	let observed = false;
+	const prepared = vi.spyOn(db, "prepare").mockImplementation((sql) => {
+		if (!observed && db.inTransaction && sql.includes(GUARD_MARKER)) {
+			observed = true;
+			throw RESTART;
+		}
+		return prepare(sql);
+	});
+	const restartable =
+		(run: (...args: unknown[]) => unknown) =>
+		(...args: unknown[]) => {
+			try {
+				return run(...args);
+			} catch (error) {
+				if (error !== RESTART) throw error;
+				mutate();
+				return run(...args);
+			}
+		};
+	const transactions = vi.spyOn(db, "transaction").mockImplementation((fn) => {
+		const tx = transaction(fn) as unknown as Transaction;
+		return Object.assign(restartable(tx), {
+			deferred: restartable(tx.deferred),
+			immediate: restartable(tx.immediate),
+			exclusive: restartable(tx.exclusive),
+		}) as unknown as ReturnType<typeof transaction>;
+	});
+	return {
+		observed: () => observed,
+		restore() {
+			prepared.mockRestore();
+			transactions.mockRestore();
+		},
+	};
+}
