@@ -158,7 +158,9 @@ async function readResolvedOwnerConsistency(
 	};
 	const evidence = await readEvidence(backend, subject, history, options);
 	// A change between capture and the evidence reads would be pinned but never classified.
-	if (!sameHistory(evidence.rows, history)) return null;
+	// A reviewed history is the caller's to check: the controller review compares it with
+	// the live rows and guards that comparison, as its old statement did.
+	if (!input.verifiedHistory && !sameHistory(evidence.rows, history)) return null;
 	if (!(await ownerCompatible(evidence.rows, subject, input, history))) return null;
 	// Unguarded: these reads only choose which sources to pin. The verdict read and its
 	// guard check the chosen sources again, as the old pin did.
