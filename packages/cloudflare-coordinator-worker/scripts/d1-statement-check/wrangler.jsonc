@@ -1,0 +1,12 @@
+{
+	// Local-only config for the D1 statement check. It binds one throwaway database.
+	"name": "codemem-d1-statement-check",
+	"compatibility_date": "2026-03-28",
+	"d1_databases": [
+		{
+			"binding": "COORDINATOR_DB",
+			"database_name": "codemem-d1-statement-check",
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	]
+}

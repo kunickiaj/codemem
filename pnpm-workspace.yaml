@@ -66,3 +66,11 @@ minimumReleaseAgeExclude:
   - '@opencode/protocol@2.0.24'
   - '@opencode/schema@2.0.24'
   - '@opencode/util@2.0.24'
+  - '@cloudflare/workerd-darwin-64@1.20261110.1'
+  - '@cloudflare/workerd-darwin-arm64@1.20261110.1'
+  - '@cloudflare/workerd-linux-64@1.20261110.1'
+  - '@cloudflare/workerd-linux-arm64@1.20261110.1'
+  - '@cloudflare/workerd-windows-64@1.20261110.1'
+  - miniflare@5.20261110.0-beta
+  - workerd@1.20261110.1
+  - wrangler@4.160.0
