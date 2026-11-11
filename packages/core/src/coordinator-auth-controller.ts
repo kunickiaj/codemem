@@ -501,21 +501,10 @@ export const AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL = `
 		${AUTH_CONTROLLER_SNAPSHOT_GUARD}
 		${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
 
-/** Named builder keeps ordinary exported SQL unchanged and usable without connection tables. */
-export function authControllerReviewSql(
-	base: string,
-	input: CoordinatorAuthControllerReviewInput,
-): string {
-	if (!input.verifiedSnapshot?.accountOwnerTarget) return base;
-	const { subject, statement } = ownerReviewStages(base);
-	return `${AUTH_CONTROLLER_SNAPSHOT_CTE}, ${AUTH_CONTROLLER_OWNER_CTE},
-		controller_review_subject AS MATERIALIZED (${subject})
-		${statement} ${AUTH_CONTROLLER_OWNER_GUARD}`;
-}
-
 /** Internal explicit-resolution path only. The collector must first prove the
  * current label weak; snapshot and authority guards still pin that exact label.
- * Ordinary creation, retries and mutation readers retain their original SQL.
+ * Only legacy owner resolution still uses these statement stages. Ordinary
+ * creation, retries and snapshot reads use coordinator-auth-controller-read-set.ts.
  */
 export function authControllerOwnerResolutionSql(
 	mode: "create" | "eligible",
@@ -565,13 +554,6 @@ function ownerReviewStages(base: string): { subject: string; statement: string }
 		return {
 			subject: base.slice(selectAt).replace("SELECT 1 AS eligible", "SELECT e.*"),
 			statement: "SELECT 1 AS eligible FROM controller_review_subject e WHERE 1",
-		};
-	}
-	if (base === AUTH_CONTROLLER_RETRY_ACTIVE_SQL) {
-		const selectAt = base.indexOf("SELECT a.* FROM coordinator_auth_controller_attestations a");
-		return {
-			subject: base.slice(selectAt),
-			statement: "SELECT e.* FROM controller_review_subject e WHERE 1",
 		};
 	}
 	throw new Error("account_owner_statement_invalid");
@@ -652,25 +634,6 @@ export const AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL = AUTH_CONTROLLER_CURRENT_SQ
 
 export const AUTH_CONTROLLER_ACTIVE_SQL = `
 	${AUTH_CONTROLLER_CURRENT_SQL} ${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
-
-/** D1 retries must return the row checked against live authority in this statement. */
-export const AUTH_CONTROLLER_RETRY_ACTIVE_SQL = `
-	${AUTH_CONTROLLER_SNAPSHOT_CTE}
-	${AUTH_CONTROLLER_ACTIVE_SQL}
-	${AUTH_CONTROLLER_SNAPSHOT_GUARD}`;
-
-export function authControllerRetryActiveValues(
-	input: CoordinatorAuthControllerReviewInput,
-	authority: (string | null)[],
-): (string | null)[] {
-	return [
-		...authControllerSnapshotValues(input),
-		input.coordinatorId,
-		input.attestationId,
-		...authority,
-		...ownerGuardValues(input, authority),
-	];
-}
 
 export const AUTH_CONTROLLER_CONFLICT_SQL = `
 	SELECT * FROM coordinator_auth_controller_attestations

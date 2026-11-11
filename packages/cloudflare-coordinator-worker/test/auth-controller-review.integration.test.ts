@@ -2,8 +2,6 @@ import { env } from "cloudflare:workers";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "../../core/src/coordinator-api.js";
-import { AUTH_CONTROLLER_RETRY_ACTIVE_SQL, authControllerAuthorityValues, authControllerRetryActiveValues } from "../../core/src/coordinator-auth-controller.js";
-import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
@@ -190,7 +188,24 @@ it.each(["invite", "attestation"] as const)("native D1 retry rejects %s revoked 
 	}
 });
 it("native D1 guards all 201 invitations with fixed SQL binds and a limited response sample", async () => {
-	const f = await setup();
+	// Record the retry's final guarded batch as native D1 returns it.
+	let finalRead: { results: unknown[]; rowsRead: number } | undefined;
+	const native = env.COORDINATOR_DB;
+	const database = new Proxy(native, {
+		get(database, property) {
+			if (property === "batch")
+				return async (statements: D1PreparedStatement[]) => {
+					const results = await database.batch(statements);
+					const last = results.at(-1);
+					if (last && JSON.stringify(last.results[0] ?? {}).includes("attestation_id"))
+						finalRead = { results: last.results, rowsRead: results.reduce((sum, r) => sum + r.meta.rows_read, 0) };
+					return results;
+				};
+			const value = Reflect.get(database, property);
+			return typeof value === "function" ? value.bind(database) : value;
+		},
+	});
+	const f = await setup(database);
 	const ids: string[] = [];
 	for (let index = 0; index < 201; index++) ids.push(await seedReviewedInvite(f));
 	const response = await review(f);
@@ -215,19 +230,13 @@ it("native D1 guards all 201 invitations with fixed SQL binds and a limited resp
 	expect((await review(f, fresh.evidence_digest)).status).toBe(201);
 	const stored = await rows(f);
 	expect(stored).toHaveLength(1);
-	vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (input) => {
-		// Act: use the actual reviewed snapshot and persisted attestation ID.
-		const enrollment = await f.store.getEnrollment(input.groupId, input.deviceId, true);
-		if (!enrollment) throw new Error("Fixture enrollment missing");
-		const authority = authControllerAuthorityValues(enrollment, await ed25519KeyIdForRevocation(enrollment.public_key));
-		const active = await env.COORDINATOR_DB.prepare(AUTH_CONTROLLER_RETRY_ACTIVE_SQL)
-			.bind(...authControllerRetryActiveValues({ ...input, attestationId: stored[0].attestation_id as string }, authority)).all();
-		// Assert: the native guard returns the stored row within a linear scan budget.
-		expect(active.results).toEqual(stored);
-		// A generous linear scan budget, not a machine-dependent timing limit.
-		expect(active.meta.rows_read).toBeGreaterThan(0);
-		expect(active.meta.rows_read).toBeLessThan(201 * 20 + 100);
-		return create(input);
-	});
-	expect((await review(f, fresh.evidence_digest)).status).toBe(200);
+	// Act: the exact retry's final guarded read uses the actual reviewed snapshot and stored ID.
+	finalRead = undefined;
+	const retried = await review(f, fresh.evidence_digest);
+	// Assert: the native final read returns the stored row within a linear scan budget.
+	expect(retried.status).toBe(200);
+	expect(finalRead?.results).toEqual(stored);
+	// A generous linear scan budget for the whole guarded batch, not a timing limit.
+	expect(finalRead?.rowsRead).toBeGreaterThan(0);
+	expect(finalRead?.rowsRead).toBeLessThan(201 * 20 + 100);
 });

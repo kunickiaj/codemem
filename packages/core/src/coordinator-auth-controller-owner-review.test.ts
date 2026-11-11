@@ -10,14 +10,15 @@ import { applyAccountConnectionSchema } from "./coordinator-account-connection-s
 import { CONNECTION_BIRTH_COLUMNS } from "./coordinator-account-connection-storage.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import {
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
-	authControllerReviewSql,
-} from "./coordinator-auth-controller.js";
-import {
 	beforeControllerCheck,
 	beforeGuardedTransaction,
 } from "./coordinator-auth-controller-race-test-fixtures.js";
+import {
+	controllerActiveStatement,
+	controllerEligibleStatement,
+	controllerInsertStatement,
+	controllerReviewReads,
+} from "./coordinator-auth-controller-read-set.js";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { review, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -743,8 +744,14 @@ for (const kind of ["SQLite", "D1"] as const) {
 		expect(normal).not.toHaveProperty("account_owner_target");
 		expect(normal).not.toHaveProperty("historical_owner_hints");
 		expect(owner.evidence_digest).not.toBe(normal.evidence_digest);
-		for (const sql of [AUTH_CONTROLLER_INSERT_SQL, AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL]) {
-			expect(authControllerReviewSql(sql, review())).toBe(sql);
+		// Without an owner target, the review's statements and reads never touch connections.
+		const ordinaryReview = review();
+		for (const { sql } of [
+			controllerInsertStatement(ordinaryReview, "now", []),
+			controllerEligibleStatement(ordinaryReview, []),
+			controllerActiveStatement(ordinaryReview, []),
+			...Object.values(controllerReviewReads(ordinaryReview, [])),
+		]) {
 			expect(sql).not.toMatch(/coordinator_auth_account_connection|coordinator_auth_account_links/);
 		}
 		expect(denied.status).toBe(409);
