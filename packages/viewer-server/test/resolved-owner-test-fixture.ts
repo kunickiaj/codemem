@@ -110,6 +110,12 @@ export async function seedResolvedOwner(
 		async all<T>({ sql, values }: Parameters<Fixture["backend"]["first"]>[0]): Promise<T[]> {
 			return f.db.prepare(sql).all(...values) as T[];
 		},
+		/** Evidence reads one snapshot, as both stores' backends do. */
+		async readBatch<T>(statements: Parameters<Fixture["backend"]["first"]>[0][]): Promise<T[][]> {
+			return f.db.transaction(() =>
+				statements.map(({ sql, values }) => f.db.prepare(sql).all(...values) as T[]),
+			)();
+		},
 	};
 	const evidence = new CoordinatorDeviceOwnershipEvidence(backend, f.config);
 	const collection = await evidence.collect({

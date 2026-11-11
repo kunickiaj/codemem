@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { captureControllerHistory } from "../../core/src/coordinator-auth-controller-history.js";
 import type { AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
+import { guardsHold } from "../../core/src/coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "../../core/src/coordinator-device-ownership-evidence.js";
 import {
 	CANONICAL_PUBLIC_KEY,
@@ -28,7 +29,14 @@ const prepare = (s: AuthLinkStatement) => db.prepare(s.sql).bind(...s.values);
 const backend = {
 	first: <T>(s: AuthLinkStatement) => prepare(s).first<T>(),
 	all: async <T>(s: AuthLinkStatement) => (await prepare(s).all<T>()).results,
+	// The D1 store reads a set of statements in one native batch, as one snapshot.
+	readBatch: async <T>(statements: AuthLinkStatement[]) =>
+		(await db.batch(statements.map(prepare))).map((result) => (result.results ?? []) as T[]),
 };
+/** The capture's recheck guards, reported as the old atomic predicate: 1 while all hold. */
+async function recheck(guards: AuthLinkStatement[] | null) {
+	return { matches: guards !== null && (await guardsHold(backend, guards)) ? 1 : 0 };
+}
 const reader = () => new CoordinatorDeviceOwnershipEvidence(backend, config);
 async function insert(table: string, row: Row) {
 	const entries = Object.entries(row);
@@ -319,11 +327,11 @@ it("native atomic predicate changes from one to zero after a new B fact", async 
 	const api = reader();
 	const captured = await collect(api);
 	if (captured.kind !== "collected") throw new Error("Native collection fixture rejected");
-	const statement = api.prepareAtomicRecheck(captured.recheckSnapshot);
-	expect(await readOnly(() => backend.first(statement))).toEqual({ matches: 1 });
+	const statement = api.recheckGuards(captured.recheckSnapshot);
+	expect(await readOnly(() => recheck(statement))).toEqual({ matches: 1 });
 	await invitation();
 	// Act: execute the already prepared SQL after the new fact, not JS preflight.
-	const result = await readOnly(() => backend.first(statement));
+	const result = await readOnly(() => recheck(statement));
 	// Assert
 	expect(result).toEqual({ matches: 0 });
 });
@@ -333,7 +341,7 @@ it("native unrelated person's fact does not change the atomic predicate", async 
 	const api = reader();
 	const captured = await collect(api);
 	if (captured.kind !== "collected") throw new Error("Native collection fixture rejected");
-	const statement = api.prepareAtomicRecheck(captured.recheckSnapshot);
+	const statement = api.recheckGuards(captured.recheckSnapshot);
 	await insert("coordinator_device_ownership_bindings", {
 		device_id: "unrelated-device",
 		key_id: "f".repeat(64),
@@ -345,7 +353,7 @@ it("native unrelated person's fact does not change the atomic predicate", async 
 		bound_at: timestamp,
 	});
 	// Act
-	const result = await readOnly(() => backend.first(statement));
+	const result = await readOnly(() => recheck(statement));
 	// Assert
 	expect(result).toEqual({ matches: 1 });
 });
@@ -356,13 +364,13 @@ it("native serialized, fake, and other-reader snapshots cannot supply recheck au
 	const captured = await collect(api);
 	if (captured.kind !== "collected") throw new Error("Native collection fixture rejected");
 	const candidates = [
-		api.prepareAtomicRecheck({ version: 1 }),
-		api.prepareAtomicRecheck(JSON.parse(JSON.stringify(captured.recheckSnapshot))),
-		reader().prepareAtomicRecheck(captured.recheckSnapshot),
+		api.recheckGuards({ version: 1 }),
+		api.recheckGuards(JSON.parse(JSON.stringify(captured.recheckSnapshot))),
+		reader().recheckGuards(captured.recheckSnapshot),
 	];
 	// Act
 	const results = await readOnly(() =>
-		Promise.all(candidates.map((statement) => backend.first(statement))),
+		Promise.all(candidates.map((statement) => recheck(statement))),
 	);
 	// Assert: only the opaque original object on its original reader can match.
 	expect(JSON.stringify(captured.recheckSnapshot)).toBe('{"version":1}');

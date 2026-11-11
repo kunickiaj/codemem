@@ -25,6 +25,8 @@ const drops = [
 	},
 ] as const;
 type CatalogRow = [type: string, name: string, table: string, sql: string];
+// The capture's read of the resolution table's schema objects.
+const SCHEMA_CATEGORY = `tbl_name='${table}' AND sql IS NOT NULL`;
 const groups: string[] = [];
 
 async function restoreSchema() {
@@ -73,8 +75,6 @@ function evidenceBackend(
 			if (statement.sql.includes("AS objects")) {
 				observed.readiness.push(JSON.parse((result as { objects: string }).objects));
 				if (observed.readiness.length === 1) await hooks.afterReadiness?.();
-			} else if (statement.sql.includes("AS matches")) {
-				observed.atomic.push(result);
 			}
 			return result;
 		},
@@ -83,11 +83,30 @@ function evidenceBackend(
 				.prepare(statement.sql)
 				.bind(...statement.values)
 				.all<T>();
-			if (statement.sql.includes("json_array(type,name,tbl_name,sql)")) {
+			return results;
+		},
+		// The D1 store reads a set of statements in one native batch. The capture reads every
+		// category in one; the recheck runs the capture's guards, then a plain read.
+		async readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]> {
+			const guards = statements.some(({ sql }) => sql.includes("auth_snapshot_changed"));
+			let results: T[][];
+			try {
+				results = (
+					await db.batch(statements.map(({ sql, values }) => db.prepare(sql).bind(...values)))
+				).map((result) => (result.results ?? []) as T[]);
+			} catch (error) {
+				if (guards) observed.atomic.push({ matches: 0 });
+				throw error;
+			}
+			if (guards) {
+				observed.atomic.push({ matches: 1 });
+				return results;
+			}
+			const schema = statements.findIndex(({ sql }) => sql.includes(SCHEMA_CATEGORY));
+			if (schema >= 0) {
+				const { rows } = results[schema]?.[0] as { rows: string };
 				observed.captured.push(
-					(results as { category: string; row: string }[])
-						.filter(({ category }) => category === "schema")
-						.map(({ row }) => JSON.parse(row) as CatalogRow),
+					(JSON.parse(rows) as string[]).map((row) => JSON.parse(row) as CatalogRow),
 				);
 				await hooks.afterCapture?.();
 			}

@@ -30,18 +30,20 @@ const sourceMatch = `c.attestation_id=r.source_attestation_id
  AND c.revision=r.source_controller_revision AND c.created_at=r.source_created_at
  AND c.revoked_at IS NULL`;
 
+/**
+ * The resolved owner's fact, requester and profile. The evidence the status was built on
+ * is checked by guards that run in the same read batch, in front of this query.
+ */
 export function resolvedOwnerProfileQuery(options: {
 	signer: CoordinatorAuthLinkSigner;
 	config: CoordinatorAuthLinkConfig;
 	resolution: LegacyOwnerResolutionRecord;
 	keyId: string;
-	recheck: AuthLinkStatement;
 }): AuthLinkStatement {
-	const { signer, config, resolution, keyId, recheck } = options;
+	const { signer, config, resolution, keyId } = options;
 	return {
 		sql: `WITH resolved_input AS MATERIALIZED (SELECT ? AS coordinator_id,? AS owner_id,
  ? AS group_id,? AS device_id,? AS public_key,? AS fingerprint,? AS key_id,? AS issuer,? AS fact),
- resolved_evidence AS MATERIALIZED (${recheck.sql}),
  resolved_fact AS MATERIALIZED (
  SELECT r.resolution_id FROM resolved_input i
  JOIN coordinator_legacy_owner_resolutions r ON r.coordinator_id=i.coordinator_id
@@ -74,7 +76,7 @@ export function resolvedOwnerProfileQuery(options: {
  WHERE l.not_revoked=1)
  SELECT (SELECT count(*) FROM resolved_links) AS link_count,l.link_id,l.not_revoked,
  v.link_id AS valid_link,p.display_name,p.email,p.email_verified,p.picture_url
- FROM resolved_fact f JOIN resolved_evidence evidence ON evidence.matches=1
+ FROM resolved_fact f
  JOIN resolved_requester requester ON requester.present=1
  LEFT JOIN resolved_links l ON 1
  LEFT JOIN resolved_valid_links v ON v.link_id=l.link_id
@@ -89,7 +91,6 @@ export function resolvedOwnerProfileQuery(options: {
 			keyId,
 			config.issuer,
 			JSON.stringify(resolution),
-			...recheck.values,
 		],
 	};
 }

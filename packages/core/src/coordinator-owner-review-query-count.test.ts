@@ -2,13 +2,6 @@ import { expect } from "vitest";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import {
-	atomicEvidenceQuery,
-	type CapturedEvidenceRow,
-	EVIDENCE_QUERIES,
-	readCombinedEvidenceQuery,
-	readEvidenceQuery,
-} from "./coordinator-device-ownership-evidence-queries.js";
-import {
 	deterministicReviewTests,
 	selection,
 	setupReview,
@@ -19,84 +12,50 @@ import {
 	type D1PreparedStatementLike,
 } from "./d1-coordinator-store.js";
 
-const categories = new Map([
-	[atomicEvidenceQuery("").sql, "evidence:atomic"],
-	[readCombinedEvidenceQuery("").sql, "evidence:snapshot"],
-]);
-
-async function readLegacySnapshot(adapter: D1DatabaseLike, encoded: string) {
-	const rows: CapturedEvidenceRow[] = [];
-	const categoryCalls: string[] = [];
-	for (const query of EVIDENCE_QUERIES) {
-		const { sql, values } = readEvidenceQuery(query, encoded);
-		const result = await adapter
-			.prepare(sql)
-			.bind(...values)
-			.all<{ row: string | null }>();
-		categoryCalls.push(query.name);
-		const selected = result.results ?? [];
-		const marked = selected.length ? selected : [{ row: null }];
-		rows.push(
-			...marked.map(({ row }) => ({ category: query.name, row_count: selected.length, row })),
-		);
-	}
-	rows.sort((a, b) => (a.category < b.category ? -1 : Number(a.category > b.category)));
-	return { rows, categoryCalls };
-}
-
 function measuredStore(f: LinkFixture) {
 	const adapter = sqliteD1(f.db);
 	const originals = new WeakMap<D1PreparedStatementLike, D1PreparedStatementLike>();
-	let calls: { method: string; category: string }[] = [];
-	let snapshots: {
-		combined: CapturedEvidenceRow[];
-		legacy: Awaited<ReturnType<typeof readLegacySnapshot>>;
-	}[] = [];
-	// The call ledger contains only static classifications, never bindings or timings.
-	const record = (method: string, sql: string) => {
-		calls.push({ method, category: categories.get(sql) ?? "review:other" });
+	const queries = new WeakMap<D1PreparedStatementLike, string>();
+	let calls: string[] = [];
+	// The call ledger contains only D1 methods, never SQL, bindings or timings.
+	const record = (method: string) => {
+		calls.push(method);
 	};
 	const db: D1DatabaseLike = {
 		prepare(sql) {
 			const statement = adapter.prepare(sql);
-			let bindings: unknown[] = [];
 			const wrapped: D1PreparedStatementLike = {
 				bind(...values) {
-					bindings = values;
 					statement.bind(...values);
 					return wrapped;
 				},
 				first<T>() {
-					record("first", sql);
+					record("first");
 					return statement.first<T>();
 				},
-				async all<T>() {
-					record("all", sql);
-					if (categories.get(sql) === "evidence:snapshot") {
-						// Replay only evidence reads on the same fixture before any writes.
-						// Reference calls are separate from the production operation's ledger.
-						const legacy = await readLegacySnapshot(adapter, String(bindings[0]));
-						const result = await statement.all<CapturedEvidenceRow>();
-						snapshots.push({ combined: result.results ?? [], legacy });
-						return result as { results?: T[] };
-					}
+				all<T>() {
+					record("all");
 					return statement.all<T>();
 				},
 				run() {
-					record("run", sql);
+					record("run");
 					return statement.run();
 				},
 				raw<T>() {
-					record("raw", sql);
+					record("raw");
 					return statement.raw<T>();
 				},
 			};
 			originals.set(wrapped, statement);
+			queries.set(wrapped, sql);
 			return wrapped;
 		},
-		batch(statements) {
-			// One D1 call, not one call per statement executed inside the transaction.
-			record("batch", "");
+		async batch(statements) {
+			// One D1 call, not one call per statement executed inside the transaction. A batch
+			// of reads only is a "readBatch"; any statement that writes makes it a "batch".
+			const sqls = statements.map((statement) => queries.get(statement) ?? "");
+			const writes = sqls.some((sql) => !f.db.prepare(sql).reader);
+			record(writes ? "batch" : "readBatch");
 			if (!adapter.batch) throw new Error("fixture D1 batch unavailable");
 			return adapter.batch(
 				statements.map((statement) => {
@@ -111,14 +70,8 @@ function measuredStore(f: LinkFixture) {
 		store: new D1CoordinatorStore(db, { authClock: () => NOW }),
 		reset: () => {
 			calls = [];
-			snapshots = [];
 		},
-		counts: () => ({
-			total: calls.length,
-			methods: countBy(calls.map(({ method }) => method)),
-			categories: countBy(calls.map(({ category }) => category)),
-			snapshots,
-		}),
+		counts: () => ({ total: calls.length, methods: countBy(calls) }),
 	};
 }
 
@@ -128,70 +81,8 @@ function countBy(keys: string[]) {
 	return counts;
 }
 
-function expectEvidenceReduction(
-	counts: ReturnType<ReturnType<typeof measuredStore>["counts"]>,
-	options: { collections: number; fewerReads: number; atomicRechecks: number },
-) {
-	expect(counts.categories["evidence:snapshot"]).toBe(options.collections);
-	expect(counts.categories["evidence:atomic"]).toBe(options.atomicRechecks);
-	expect(counts.snapshots).toHaveLength(options.collections);
-	for (const { combined, legacy } of counts.snapshots) {
-		expect(legacy.categoryCalls).toEqual(EVIDENCE_QUERIES.map(({ name }) => name));
-		expect(legacy.categoryCalls).toHaveLength(12);
-		expect(combined).toEqual(legacy.rows);
-		expect(combined.some(({ row_count, row }) => row_count === 0 && row === null)).toBe(true);
-		expect(combined.some(({ row_count }) => row_count > 0)).toBe(true);
-	}
-	const legacyReads = counts.snapshots.reduce(
-		(sum, { legacy }) => sum + legacy.categoryCalls.length,
-		0,
-	);
-	// Compare executed evidence reads only, excluding schema checks and unrelated review I/O.
-	expect(legacyReads - counts.categories["evidence:snapshot"]).toBe(options.fewerReads);
-}
-
 deterministicReviewTests();
 const test = backendTest("D1");
-for (const reused of [false, true]) {
-	test(`one snapshot replaces twelve category reads for ${reused ? "reused" : "new"} scoped owner receipts`, async ({
-		fixture: f,
-	}) => {
-		// Arrange: seed real provenance/schema without counting fixture setup.
-		await setupReview(f, "D1");
-		const measured = measuredStore(f);
-		if (reused) {
-			const initial = await measured.store.previewOwnerResolutionReview(selection, f.cfg);
-			await measured.store.confirmOwnerResolutionReview(
-				{ ...selection, confirmOwnerResolutionDigest: initial.owner_resolution_digest },
-				f.cfg,
-			);
-		}
-		measured.reset();
-		// Act: confirmation includes its own preview preparation and a second collection.
-		const preview = await measured.store.previewOwnerResolutionReview(selection, f.cfg);
-		const previewCalls = measured.counts();
-		measured.reset();
-		const confirmed = await measured.store.confirmOwnerResolutionReview(
-			{ ...selection, confirmOwnerResolutionDigest: preview.owner_resolution_digest },
-			f.cfg,
-		);
-		const confirmationCalls = measured.counts();
-		// Assert: measure successful real operations, not stubbed SQL responses.
-		expect(preview.state).toBe(reused ? "restored" : "ready");
-		expect(confirmed).toMatchObject({
-			state: "ready",
-			recovery_receipt: { disposition: reused ? "reused" : "created" },
-			owner_resolution: { disposition: reused ? "reused" : "created" },
-		});
-		expectEvidenceReduction(previewCalls, { collections: 1, fewerReads: 11, atomicRechecks: 2 });
-		expectEvidenceReduction(confirmationCalls, {
-			collections: 2,
-			fewerReads: 22,
-			atomicRechecks: 3,
-		});
-	});
-}
-
 test("rejected preview performs no D1 calls and stale confirmation never batches writes", async ({
 	fixture: f,
 }) => {

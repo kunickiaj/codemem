@@ -2,12 +2,11 @@ import {
 	type ControllerHistorySnapshot,
 	captureControllerHistory,
 	captureControllerHistorySnapshot,
-	controllerHistoryDiscoveryFragments,
 } from "./coordinator-auth-controller-history.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import { guardsHold } from "./coordinator-auth-read-set.js";
 import {
 	classifyEvidence,
-	type EvidenceRow,
 	type EvidenceRows,
 	type EvidenceSubject,
 	evidenceRows,
@@ -17,25 +16,23 @@ import {
 	type OwnershipDecision,
 } from "./coordinator-device-ownership-evidence-classify.js";
 import { capturedOwnershipEvidenceDigest } from "./coordinator-device-ownership-evidence-digest.js";
-import {
-	atomicEvidenceQuery,
-	BYTE_LIMIT,
-	type CapturedEvidenceRow,
-	CONTROLLER_COLUMNS,
-	EVIDENCE_QUERIES,
-	ROW_LIMIT,
-	readCombinedEvidenceQuery,
-} from "./coordinator-device-ownership-evidence-queries.js";
+import { CONTROLLER_COLUMNS } from "./coordinator-device-ownership-evidence-queries.js";
 import {
 	captureLegacyOwnerResolutionRecord,
 	classifyLegacyOwnerResolutionSchemaCatalog,
 	type ReviewedWeakLabel,
 	readLegacyOwnerResolutionSchemaState,
 } from "./coordinator-legacy-owner-resolution-metadata.js";
+import { readEvidence } from "./coordinator-owner-negative-read-set.js";
 
 interface EvidenceBackend {
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
 	all<T>(statement: AuthLinkStatement): Promise<T[]>;
+	/**
+	 * Runs reads together, so a capture and each recheck are one snapshot. Required: a
+	 * one-at-a-time fallback would check the guards at different moments.
+	 */
+	readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]>;
 }
 interface ActualSigner {
 	groupId: string;
@@ -93,55 +90,6 @@ async function captureSigner(value: unknown, coordinatorId: string): Promise<Evi
 	};
 }
 
-function parseRows(rows: { row: string | null }[]): { encoded: string[]; parsed: EvidenceRow[] } {
-	if (rows.length > ROW_LIMIT) throw new Error("evidence_too_large");
-	const encoded: string[] = [];
-	let bytes = 0;
-	const parsed = rows.map(({ row }) => {
-		if (typeof row !== "string") throw new Error("invalid_evidence");
-		bytes += new TextEncoder().encode(row).byteLength;
-		if (bytes > BYTE_LIMIT) throw new Error("evidence_too_large");
-		const value: unknown = JSON.parse(row);
-		if (
-			!Array.isArray(value) ||
-			value.some((item) => item !== null && typeof item !== "string" && typeof item !== "number")
-		)
-			throw new Error("invalid_evidence");
-		encoded.push(row);
-		return value as EvidenceRow;
-	});
-	return { encoded, parsed };
-}
-
-function requireCapturedCategory(category: CapturedEvidenceRow[]): CapturedEvidenceRow[] {
-	const count = category[0]?.row_count;
-	if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > ROW_LIMIT)
-		throw new Error("invalid_evidence");
-	if (category.length !== Math.max(1, count)) throw new Error("invalid_evidence");
-	if (category.some((row) => row.row_count !== count)) throw new Error("invalid_evidence");
-	if (count !== 0) return category;
-	if (category[0]?.row !== null) throw new Error("invalid_evidence");
-	return [];
-}
-
-function groupCapturedRows(captured: CapturedEvidenceRow[]): Map<string, CapturedEvidenceRow[]> {
-	if (captured.length > EVIDENCE_QUERIES.length * (ROW_LIMIT + 1))
-		throw new Error("evidence_too_large");
-	const categories = new Map<string, CapturedEvidenceRow[]>(
-		EVIDENCE_QUERIES.map(({ name }) => [name, []]),
-	);
-	for (const value of captured) {
-		const row = captureFields(value, ["category", "row_count", "row"]);
-		if (typeof row.category !== "string") throw new Error("invalid_evidence");
-		const category = categories.get(row.category);
-		if (!category) throw new Error("invalid_evidence");
-		category.push(value);
-	}
-	for (const [name, category] of categories)
-		categories.set(name, requireCapturedCategory(category));
-	return categories;
-}
-
 function historyRows(history: ControllerHistorySnapshot): EvidenceRows {
 	return {
 		history: history.records.map((row) => [
@@ -190,7 +138,10 @@ function requireSupportedCapturedSchema(rows: EvidenceRows): void {
 
 /** Internal read-only metadata collector. No result of this class grants access. */
 export class CoordinatorDeviceOwnershipEvidence {
-	private readonly snapshots = new WeakMap<object, { encoded: string; digest: string }>();
+	private readonly snapshots = new WeakMap<
+		object,
+		{ guards: AuthLinkStatement[]; digest: string }
+	>();
 	private readonly coordinatorId: string;
 	constructor(
 		private readonly backend: EvidenceBackend,
@@ -212,7 +163,7 @@ export class CoordinatorDeviceOwnershipEvidence {
 			const history = await this.verifyHistory(captured.verifiedHistory, subject);
 			if ((await readLegacyOwnerResolutionSchemaState(this.backend)) !== "ready")
 				return unavailable;
-			const { rows, encoded } = await this.captureRows(subject, history);
+			const { rows, guards } = await readEvidence(this.backend, subject, history, {});
 			requireSupportedCapturedSchema(rows);
 			requireSameHistory(rows, history);
 			const classification = await classifyEvidence(
@@ -221,8 +172,8 @@ export class CoordinatorDeviceOwnershipEvidence {
 				captured.canonicalOwnerId,
 				history,
 			);
-			const matches = await this.backend.first<{ matches: number }>(atomicEvidenceQuery(encoded));
-			if (matches?.matches !== 1) return unavailable;
+			// The reads ran as two batches; every one must still hold at once.
+			if (!(await guardsHold(this.backend, guards))) return unavailable;
 			const digest = await capturedOwnershipEvidenceDigest(
 				rows,
 				subject,
@@ -230,7 +181,7 @@ export class CoordinatorDeviceOwnershipEvidence {
 				history,
 			);
 			const recheckSnapshot = Object.freeze({ version: 1 as const });
-			this.snapshots.set(recheckSnapshot, { encoded, digest });
+			this.snapshots.set(recheckSnapshot, { guards, digest });
 			return { kind: "collected", ...classification, recheckSnapshot };
 		} catch {
 			return unavailable;
@@ -263,39 +214,13 @@ export class CoordinatorDeviceOwnershipEvidence {
 		return live;
 	}
 
-	private async captureRows(
-		subject: EvidenceSubject,
-		legacyHistory: ControllerHistorySnapshot,
-	): Promise<{ rows: EvidenceRows; encoded: string }> {
-		const base = {
-			subject: { ...subject, fragments: controllerHistoryDiscoveryFragments(subject.publicKey) },
-			legacyHistory,
-		};
-		const parameters = JSON.stringify(base);
-		const categories = groupCapturedRows(
-			await this.backend.all<CapturedEvidenceRow>(readCombinedEvidenceQuery(parameters)),
-		);
-		const rows: EvidenceRows = {};
-		const encodedRows: Record<string, string[]> = {};
-		let bytes = parameters.length;
-		for (const [name, category] of categories) {
-			const values = parseRows(category);
-			rows[name] = values.parsed;
-			encodedRows[name] = values.encoded;
-			bytes += values.encoded.reduce((total, row) => total + row.length, 0);
-			if (bytes > BYTE_LIMIT) throw new Error("evidence_too_large");
-		}
-		const encoded = JSON.stringify({ ...base, rows: encodedRows });
-		if (new TextEncoder().encode(encoded).byteLength > BYTE_LIMIT)
-			throw new Error("evidence_too_large");
-		return { rows, encoded };
-	}
-
-	/** A predicate for a future checked batch, never an admission or a write. */
-	prepareAtomicRecheck(snapshot: RecheckSnapshot): AuthLinkStatement {
-		const encoded = this.snapshots.get(snapshot)?.encoded;
-		if (!encoded) return { sql: "SELECT 0 AS matches", values: [] };
-		return atomicEvidenceQuery(encoded);
+	/**
+	 * Guards that re-run every read of this capture, for a later checked batch: each aborts
+	 * it once its read changed. Never an admission or a write. Null for a snapshot this
+	 * reader did not capture, which therefore never matches.
+	 */
+	recheckGuards(snapshot: RecheckSnapshot): AuthLinkStatement[] | null {
+		return this.snapshots.get(snapshot)?.guards ?? null;
 	}
 
 	/** Private confirmation metadata; only this reader's original capture is accepted. */

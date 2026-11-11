@@ -165,6 +165,17 @@ async function setup(options: { weakCurrent?: boolean } = {}) {
 	const backend: OwnerResolutionReviewBackend = {
 		first: <T>(statement: AuthLinkStatement) => read<T | null>(statement, { mode: "first" }),
 		all: <T>(statement: AuthLinkStatement) => read<T[]>(statement, { mode: "all" }),
+		// A read batch is one native snapshot; each statement's hook runs before it starts.
+		async readBatch<T>(statements: AuthLinkStatement[]) {
+			for (const statement of statements) hooks.beforeFirst?.(statement);
+			try {
+				return (await db.batch(statements.map(prepare))).map((row) => row.results as T[]);
+			} catch (error) {
+				diagnostics.stage = "native read batch";
+				diagnostics.error = error;
+				throw error;
+			}
+		},
 		async run(statement) {
 			diagnostics.runs++;
 			return (await prepare(statement).run()).meta.changes;

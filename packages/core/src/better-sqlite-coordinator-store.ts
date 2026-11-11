@@ -105,7 +105,7 @@ import {
 	type CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
 import { AUTH_LINK_PROFILE_SCHEMA_SQL } from "./coordinator-auth-link-profile.js";
-import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
+import { isSnapshotChanged, requireReadBatch } from "./coordinator-auth-read-set.js";
 import {
 	AUTH_SCHEMA_READINESS_SQL,
 	AUTH_SCHEMA_READY_COUNT,
@@ -1239,32 +1239,37 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	readResolvedAccountOwnerStatus(
 		...args: Parameters<ResolvedAccountOwnerStatusOperations["readResolvedAccountOwnerStatus"]>
 	) {
-		return new ResolvedAccountOwnerStatusOperations({
-			...this.accountChangeBackend,
-			all: async <T>({ sql, values }: AuthLinkStatement) =>
-				this.db.prepare(sql).all(...values) as T[],
-		}).readResolvedAccountOwnerStatus(...args);
+		return new ResolvedAccountOwnerStatusOperations(
+			requireReadBatch({
+				...this.accountChangeBackend,
+				all: async <T>({ sql, values }: AuthLinkStatement) =>
+					this.db.prepare(sql).all(...values) as T[],
+			}),
+		).readResolvedAccountOwnerStatus(...args);
 	}
 	private ownerResolutionReviews(): OwnerResolutionReviewOperations {
-		return new OwnerResolutionReviewOperations({
-			...this.schemaBackend,
-			all: async <T>({ sql, values }: AuthLinkStatement) =>
-				this.db.prepare(sql).all(...values) as T[],
-			run: async ({ sql, values }) => this.db.prepare(sql).run(...values).changes,
-			batch: async (statements) =>
-				this.db
-					.transaction(() =>
-						statements.map(({ sql, values }) => {
-							const statement = this.db.prepare(sql);
-							if (statement.reader) {
-								statement.all(...values);
-								return 0;
-							}
-							return statement.run(...values).changes;
-						}),
-					)
-					.immediate(),
-		});
+		return new OwnerResolutionReviewOperations(
+			requireReadBatch({
+				...this.schemaBackend,
+				all: async <T>({ sql, values }: AuthLinkStatement) =>
+					this.db.prepare(sql).all(...values) as T[],
+				run: async ({ sql, values }: AuthLinkStatement) =>
+					this.db.prepare(sql).run(...values).changes,
+				batch: async (statements: AuthLinkStatement[]) =>
+					this.db
+						.transaction(() =>
+							statements.map(({ sql, values }) => {
+								const statement = this.db.prepare(sql);
+								if (statement.reader) {
+									statement.all(...values);
+									return 0;
+								}
+								return statement.run(...values).changes;
+							}),
+						)
+						.immediate(),
+			}),
+		);
 	}
 	previewOwnerResolutionReview(
 		...args: Parameters<OwnerResolutionReviewOperations["previewOwnerResolutionReview"]>

@@ -109,7 +109,8 @@ export async function recoveryFixture(options: { fact?: boolean; groups?: string
 		requests.push(request.clone());
 		return coordinator.request(request);
 	});
-	const backend = { ...remote.backend, async all<T>({ sql, values }: Parameters<typeof remote.backend.first>[0]): Promise<T[]> { return remote.db.prepare(sql).all(...values) as T[]; } };
+	// Evidence reads one snapshot in a read batch, as both stores' backends do.
+	const backend = { ...remote.backend, async all<T>({ sql, values }: Parameters<typeof remote.backend.first>[0]): Promise<T[]> { return remote.db.prepare(sql).all(...values) as T[]; }, async readBatch<T>(statements: Parameters<typeof remote.backend.first>[0][]): Promise<T[][]> { return remote.db.transaction(() => statements.map(({ sql, values }) => remote.db.prepare(sql).all(...values) as T[]))(); } };
 	const ops = new OwnerResolutionReviewOperations(backend, () => remote.clock.now);
 	const reviewOwner = vi.fn<typeof coordinatorAuthControllerReviewAction>(async (input) => {
 		if (options.maintainedReview) return coordinatorAuthControllerReviewAction(input);

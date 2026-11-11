@@ -121,6 +121,13 @@ export async function setupResolved(
 			before(statement);
 			return original.backend.all<T>(statement);
 		},
+		// The final read runs behind the evidence guards in one read batch; a change
+		// lands before that batch, where the old single statement read everything.
+		async readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]> {
+			for (const statement of statements) before(statement);
+			if (!original.backend.readBatch) throw new Error("fixture read batch missing");
+			return original.backend.readBatch<T>(statements);
+		},
 	};
 	return { ...original, backend, fact, finalRead, statements };
 }

@@ -238,8 +238,9 @@ function discoveredIds(discovery: EvidenceRow[]) {
 /**
  * Reads every evidence category, then the controllers and invites among the discovered
  * keys. Fails like the old reader on too many rows, too many bytes or malformed rows.
+ * The ownership evidence collector reads its categories the same way.
  */
-async function readEvidence(
+export async function readEvidence(
 	backend: Backend,
 	subject: EvidenceSubject,
 	history: ControllerHistorySnapshot,
