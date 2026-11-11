@@ -22,6 +22,7 @@ export default defineConfig({
 			"src/coordinator-device-ownership-evidence-equivalence.test.ts",
 			"src/coordinator-legacy-owner-resolution-commit-equivalence.test.ts",
 			"src/coordinator-account-historical-revoke-equivalence.test.ts",
+			"src/coordinator-legacy-completion-owner-proof-equivalence.test.ts",
 		],
 		// The root config's worker cap does not apply to this standalone config.
 		maxWorkers: process.env.CI ? 3 : undefined,
