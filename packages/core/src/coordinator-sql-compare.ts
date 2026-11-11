@@ -27,3 +27,8 @@ export function sqlNe(a: SqlValue, b: SqlValue): boolean {
 export function sqlIn(a: SqlValue, list: readonly (string | number)[]): boolean {
 	return a !== null && list.includes(a);
 }
+
+/** SQL `a IS b`: true when both are NULL or both are the same value. */
+export function sqlIs(a: SqlValue, b: SqlValue): boolean {
+	return a === b;
+}

@@ -306,7 +306,7 @@ export async function captureDeviceClaimSubject(
 
 /** The three inputs of AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL for this subject. */
 export function deviceClaimAssignmentInputs(
-	subject: DeviceClaimSubject,
+	subject: Pick<DeviceClaimSubject, "config" | "signer">,
 ): AuthLinkStatement["values"] {
 	return [
 		COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
