@@ -66,7 +66,6 @@ function eligibleFacts(): SelfBindFacts {
 				linkClaim: [["claim", "identity"]],
 			},
 		],
-		negativeOwner: [{ matches: 1 }],
 		inviteConflicts: [],
 		bindingConflicts: [],
 		claimConflicts: [],
@@ -98,8 +97,6 @@ describe("self-bind decision", () => {
 	// Stored state cannot produce these facts when the decision runs, so the comparison
 	// with the original SQL does not reach them.
 	const refusals: [string, (facts: SelfBindFacts) => void][] = [
-		["retained ownership no longer matches", (f) => f.negativeOwner.splice(0, 1, { matches: 0 })],
-		["the retained ownership read returned no row", (f) => f.negativeOwner.splice(0)],
 		["a proof verdict is NULL", (f) => Object.assign(f.links[0] as object, { proven: null })],
 		[
 			"the receipt verdict is NULL",

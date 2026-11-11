@@ -20,13 +20,14 @@ import {
 	type DeviceClaimBindingInput,
 } from "./coordinator-device-claim-binding-contract.js";
 import {
+	assertPredicate,
 	type ExistingFirstLinkBinding,
 	existingFirstLinkBindingPin,
 	readExistingFirstLinkBinding,
 	reuseFirstLinkBindingStatements,
 } from "./coordinator-device-claim-binding-reuse.js";
 import { legacyDecisionCountsAsOwnerSql } from "./coordinator-legacy-team-completion.js";
-import { prepareNegativeOwnerConsistency } from "./coordinator-owner-negative-consistency.js";
+import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
 
 export interface PreparedDeviceClaimBinding {
 	guard: AuthLinkStatement;
@@ -39,6 +40,14 @@ export interface PreparedDeviceClaimBinding {
 	/** Producer only: preserve this immutable positive ownership instead of minting. */
 	existingBinding?: ExistingFirstLinkBinding;
 	completedGuard?: AuthLinkStatement;
+	/**
+	 * Re-run the retained-ownership reads. They fail with the binding's own error, so a
+	 * changed fact refuses the binding exactly as the old pin inside `guard` did, and they
+	 * run where that pin ran: just before the binding's first write.
+	 */
+	negativeGuards: AuthLinkStatement[];
+	/** The retained facts only, checked again after the enrollment update. */
+	completedNegativeGuards: AuthLinkStatement[];
 }
 
 const LIVE_SIGNER = `EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id=e.group_id
@@ -137,6 +146,26 @@ function completedEnrollmentSnapshot(enrollments: string, identityId: string): s
 	);
 }
 
+/** Its guards fail with the binding's own error, as the old pin inside `guard` made it fail. */
+function readBindingNegativeOwner(
+	backend: AuthLinkBackend,
+	input: DeviceClaimBindingInput,
+	coordinatorId: string,
+) {
+	return readNegativeOwnerConsistency(
+		backend,
+		{
+			coordinatorId,
+			deviceId: input.signer.deviceId,
+			publicKey: input.signer.publicKey,
+			fingerprint: input.signer.fingerprint,
+			ownerIdentityId: input.currentIdentityId,
+			enrollment: { groupId: input.signer.groupId },
+		},
+		{ guard: (holds) => assertPredicate(holds) },
+	);
+}
+
 async function prepareBinding(
 	backend: AuthLinkBackend,
 	value: DeviceClaimBindingInput,
@@ -159,14 +188,7 @@ async function prepareBinding(
 	const bindingGuard = existingBinding
 		? existingFirstLinkBindingPin(existingBinding)
 		: { sql: NO_BINDING, values: [] };
-	const negative = await prepareNegativeOwnerConsistency(backend, {
-		coordinatorId: config.coordinatorId,
-		deviceId: input.signer.deviceId,
-		publicKey: input.signer.publicKey,
-		fingerprint: input.signer.fingerprint,
-		ownerIdentityId: input.currentIdentityId,
-		enrollment: { groupId: input.signer.groupId },
-	});
+	const negative = await readBindingNegativeOwner(backend, input, config.coordinatorId);
 	if (!negative) return null;
 	const row = await backend.first<{ rows: string; null_count: number }>({
 		sql: `SELECT json_group_array(json_object('groupId',group_id,'publicKey',public_key,'fingerprint',fingerprint,'identityId',identity_id,'enabled',enabled)) AS rows,
@@ -177,7 +199,6 @@ async function prepareBinding(
 	if (!row || count < 1 || count > 50) return null;
 	const connections = await hasConnectionSessionSchema(backend);
 	const guardInput = {
-		negative,
 		captured: captured.values,
 		connections,
 		bindingGuard,
@@ -195,21 +216,21 @@ async function prepareBinding(
 		completedGuard: existingBinding
 			? bindingPlanGuard({
 					...guardInput,
-					negative: negative.retainedRecheck,
 					enrollments: completedEnrollmentSnapshot(row.rows, input.currentIdentityId),
 				})
 			: undefined,
+		negativeGuards: negative.guards,
+		completedNegativeGuards: existingBinding ? negative.retainedGuards : [],
 	};
 }
 
 function bindingPlanGuard(input: {
-	negative: AuthLinkStatement;
 	captured: AuthLinkStatement["values"];
 	connections: boolean;
 	bindingGuard: AuthLinkStatement;
 	enrollments: string;
 }): AuthLinkStatement {
-	const { negative, captured, connections, bindingGuard, enrollments } = input;
+	const { captured, connections, bindingGuard, enrollments } = input;
 	// SQLite 3.54.0 and 3.54.1 (production D1) refuse a statement that resolves a CTE
 	// name after about 100 table references. Checks that reference CTEs come first and
 	// binding_guards is the last FROM term of binding_ok, so the plain-table checks
@@ -228,12 +249,12 @@ function bindingPlanGuard(input: {
 		REQUESTER_LEGACY_COMPATIBLE,
 	];
 	return {
-		sql: `WITH negative_claim_owner AS MATERIALIZED (${negative.sql}), ${AUTH_DEVICE_CLAIM_INPUT_SQL.slice(5)}, ${claimSourceStages(connections)},
+		sql: `${AUTH_DEVICE_CLAIM_INPUT_SQL}, ${claimSourceStages(connections)},
  binding_guards AS MATERIALIZED (SELECT ${checks.map((check, index) => `(${check}) AS g${index}`).join(",")} FROM claim_input p),
- binding_ok AS MATERIALIZED (SELECT ${checks.map((_, index) => `g${index}`).join(" AND ")} AND n.matches AS ok FROM negative_claim_owner n CROSS JOIN binding_guards)
+ binding_ok AS MATERIALIZED (SELECT ${checks.map((_, index) => `g${index}`).join(" AND ")} AS ok FROM binding_guards)
  SELECT p.*,d.claim_id FROM claim_input p JOIN coordinator_auth_device_claims d ON d.coordinator_id=p.coordinator_id AND d.device_id=p.device_id
  WHERE (SELECT ok FROM binding_ok)=1`,
-		values: [...negative.values, ...captured, enrollments, enrollments, ...bindingGuard.values],
+		values: [...captured, enrollments, enrollments, ...bindingGuard.values],
 	};
 }
 
@@ -266,6 +287,7 @@ export function deviceClaimBindingStatements(
 	const writes = plan.existingBinding
 		? reuseFirstLinkBindingStatements(plan, plan.existingBinding)
 		: [
+				...plan.negativeGuards,
 				{
 					sql: `INSERT INTO coordinator_device_ownership_bindings (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
  SELECT device_id,key_id,identity_id,coordinator_id,?,'owner_enrollment','device_claim:'||claim_id,? FROM (${plan.guard.sql}) WHERE 1`,

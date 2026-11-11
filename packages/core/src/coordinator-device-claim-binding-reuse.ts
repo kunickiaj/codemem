@@ -64,7 +64,7 @@ export function existingFirstLinkBindingPin(binding: ExistingFirstLinkBinding): 
 }
 
 /** A failing projection runs before table triggers, including RAISE(IGNORE). */
-function assertPredicate(predicate: AuthLinkStatement): AuthLinkStatement {
+export function assertPredicate(predicate: AuthLinkStatement): AuthLinkStatement {
 	return {
 		sql: `INSERT INTO coordinator_device_ownership_bindings (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
  SELECT json_extract('{}','device_claim_binding_count_mismatch'),NULL,NULL,NULL,NULL,NULL,NULL,NULL WHERE NOT (${predicate.sql})`,
@@ -83,6 +83,7 @@ export function reuseFirstLinkBindingStatements(
 	const { input } = plan;
 	if (!plan.completedGuard) throw new Error("first_link_binding_plan_incomplete");
 	return [
+		...plan.negativeGuards,
 		assertPredicate({ sql: `EXISTS (${plan.guard.sql})`, values: plan.guard.values }),
 		{
 			sql: `UPDATE enrolled_devices SET identity_id=? WHERE device_id=? AND identity_id IS NULL AND public_key=? AND fingerprint=? AND ${pin.sql}`,
@@ -95,6 +96,8 @@ export function reuseFirstLinkBindingStatements(
 			],
 		},
 		assertPredicate({ sql: "changes()=?", values: [plan.nullCount] }),
+		// Only the retained facts: this batch's own claim and enrollment writes change the rest.
+		...plan.completedNegativeGuards,
 		assertPredicate({
 			sql: `EXISTS (${plan.completedGuard.sql})`,
 			values: plan.completedGuard.values,

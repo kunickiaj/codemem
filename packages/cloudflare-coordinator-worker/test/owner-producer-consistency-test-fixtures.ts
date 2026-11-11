@@ -151,6 +151,17 @@ export function nativeHarness(gate: RegExp) {
 		await mutate();
 		afterMutation = await state();
 	};
+	/** Runs the catalog change once, just after the first read of the resolution catalog. */
+	const afterCatalogRead = async (entries: { sql: string; values: unknown[] }[]) => {
+		const readsCatalog = entries.some(
+			({ sql, values }) =>
+				/\bFROM\s+sqlite_master\b/iu.test(sql) &&
+				(sql.includes(resolutionTable) || values.includes(resolutionTable)),
+		);
+		if (!catalogChange || catalogObserved || !readsCatalog) return;
+		catalogObserved = true;
+		await catalogChange();
+	};
 	const wrap = (
 		statement: D1PreparedStatement,
 		sql: string,
@@ -162,15 +173,7 @@ export function nativeHarness(gate: RegExp) {
 				if (key === "first")
 					return async (...args: Parameters<D1PreparedStatement["first"]>) => {
 						const result = await target.first(...args);
-						if (
-							catalogChange &&
-							!catalogObserved &&
-							/\bFROM\s+sqlite_master\b/iu.test(sql) &&
-							(sql.includes(resolutionTable) || values.includes(resolutionTable))
-						) {
-							catalogObserved = true;
-							await catalogChange();
-						}
+						await afterCatalogRead([{ sql, values }]);
 						return result;
 					};
 				if (key === "run")
@@ -190,14 +193,16 @@ export function nativeHarness(gate: RegExp) {
 			if (key === "prepare") return (sql: string) => wrap(target.prepare(sql), sql);
 			if (key === "batch")
 				return async (batch: D1PreparedStatement[]) => {
-					await before(
-						batch.map((statement) => {
-							const entry = statements.get(statement);
-							if (!entry) throw new Error("native statement metadata missing");
-							return entry;
-						}),
-					);
-					return target.batch(batch);
+					const entries = batch.map((statement) => {
+						const entry = statements.get(statement);
+						if (!entry) throw new Error("native statement metadata missing");
+						return entry;
+					});
+					await before(entries);
+					const results = await target.batch(batch);
+					// Read-set reads arrive as one read batch, not as single first() calls.
+					await afterCatalogRead(entries);
+					return results;
 				};
 			const value = Reflect.get(target, key);
 			return typeof value === "function" ? value.bind(target) : value;

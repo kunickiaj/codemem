@@ -24,7 +24,7 @@ import {
 	type SelfBindSubject,
 } from "./coordinator-device-self-bind-decision.js";
 import { legacyDecisionCountsAsOwnerSql } from "./coordinator-legacy-team-completion.js";
-import { prepareNegativeOwnerConsistency } from "./coordinator-owner-negative-consistency.js";
+import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
 
 export interface DeviceSelfBindInput {
 	signer: CoordinatorAuthLinkSigner;
@@ -60,8 +60,6 @@ const ALIASES = "(SELECT value FROM json_each(?))";
 
 /** What the fact reads depend on besides the subject. */
 interface ReadContext {
-	/** The retained-ownership pin, which reports whether it still matches. */
-	negative: AuthLinkStatement;
 	connections: boolean;
 	headless: boolean;
 }
@@ -106,13 +104,6 @@ const FACT_READS: {
  FROM coordinator_auth_account_links l WHERE l.coordinator_id=? AND l.identity_id=? AND l.revoked_at_ms IS NULL
  ORDER BY l.link_id`,
 		values: [p.coordinatorId, p.identityId],
-	}),
-	// The retained-ownership pin keeps its own statement. When the device has retained
-	// legacy owner resolutions, that statement is a large WITH that production D1 refuses,
-	// here as before this read existed, until the owner consistency checks are ported too.
-	negativeOwner: (_p, { negative }) => ({
-		sql: `SELECT json_object('matches',matches) AS row FROM (${negative.sql})`,
-		values: negative.values,
 	}),
 	inviteConflicts: (p) => ({
 		sql: `SELECT json_object('invite_id',i.invite_id) AS row FROM coordinator_invites i
@@ -273,7 +264,7 @@ export async function prepareDeviceSelfBindAuthority(
 	if (!(await hasDeviceRebindStartAuthorityColumn(backend))) return null;
 	const prepared = await readSubject(backend, input, config, now);
 	if (!prepared) return null;
-	const negative = await prepareNegativeOwnerConsistency(backend, {
+	const negative = await readNegativeOwnerConsistency(backend, {
 		coordinatorId: config.coordinatorId,
 		deviceId: input.signer.deviceId,
 		publicKey: input.signer.publicKey,
@@ -286,11 +277,15 @@ export async function prepareDeviceSelfBindAuthority(
 	const headless = await hasHeadlessLinkProvenance(backend);
 	const facts = await readSnapshot<SelfBindFacts>(
 		backend,
-		factReads(prepared.subject, { negative, connections, headless }),
+		factReads(prepared.subject, { connections, headless }),
 	);
+	// The retained-ownership read set allowed this owner above; its guards join the batch.
 	const snapshot = decideDeviceSelfBind(prepared.subject, facts.rows);
 	if (snapshot === null) return null;
-	return { snapshot, guards: [...prepared.guards, ...Object.values(facts.guards)] };
+	return {
+		snapshot,
+		guards: [...prepared.guards, ...negative.guards, ...Object.values(facts.guards)],
+	};
 }
 
 /** Readiness is deliberately fail closed on D1 before migration 0044. */
