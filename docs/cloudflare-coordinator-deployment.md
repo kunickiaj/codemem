@@ -884,7 +884,9 @@ local Wrangler bundle SQLite 3.53.4 and are unaffected, so local tests do not sh
 coordinator statement on Wrangler's local D1, which runs the same SQLite as production. It
 records the statements while the core coordinator tests run. `scripts/d1-statement-check/baseline.json`
 holds the number of statements that still exceed a D1 limit. The check fails when that number
-rises, and asks for the baseline to drop when it falls. Set
+rises, and asks for the baseline to drop when it falls. CI runs it as its own job, beside the
+Worker tests, and skips it for pull requests that change neither `packages/core` nor the Worker
+package. Set
 `CODEMEM_D1_STATEMENT_CHECK_VERBOSE=1` to list the statements.
 
 To check one statement against a real database without running it, prefix it with `EXPLAIN`

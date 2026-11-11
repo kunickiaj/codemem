@@ -189,6 +189,49 @@ jobs:
           CODEMEM_WORKER_D1_PROFILE: '1'
         run: node ../../scripts/ci-changed-tests.mjs test:worker
 
+  d1-statement-check:
+    name: D1 Statement Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # PR scoping diffs against the base commit.
+          fetch-depth: 0
+
+      # Coordinator SQL lives in core and the Worker package. Pull requests that change neither
+      # skip the check; main and ci:full always run it.
+      - name: Check whether coordinator SQL can have changed
+        id: scope
+        env:
+          BASE: ${{ !contains(github.event.pull_request.labels.*.name, 'ci:full') && github.event.pull_request.base.sha || '' }}
+        run: |
+          if [ -z "$BASE" ] || git diff --name-only "$BASE" HEAD | grep -qE '^(packages/core/|packages/cloudflare-coordinator-worker/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install pnpm
+        if: steps.scope.outputs.run == 'true'
+        uses: pnpm/action-setup@v5
+
+      - name: Set up Node
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # Runs beside the Worker job, because capturing statements reruns the core coordinator tests.
+      - name: Compile coordinator statements on production D1's SQLite
+        if: steps.scope.outputs.run == 'true'
+        run: pnpm --filter @codemem/cloudflare-coordinator-worker check:d1-statements
+
   ts-lint:
     name: TypeScript Lint
     runs-on: ubuntu-latest
