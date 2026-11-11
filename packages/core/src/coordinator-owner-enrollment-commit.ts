@@ -1,6 +1,7 @@
 import { NO_HEADLESS_TARGET_LINK_SQL } from "./coordinator-auth-headless-provenance.js";
 import { hasHeadlessLinkProvenance } from "./coordinator-auth-headless-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import { writeGuarded } from "./coordinator-auth-read-set.js";
 import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
@@ -12,10 +13,7 @@ import {
 	validOwnerEnrollmentReceiptMetadata,
 	verifyOwnerEnrollmentCompletion,
 } from "./coordinator-owner-enrollment-proof.js";
-import {
-	prepareNegativeOwnerConsistency,
-	withNegativeOwnerWrite,
-} from "./coordinator-owner-negative-consistency.js";
+import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
 import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
 import { matchesAdmissionOwner } from "./owner-enrollment-owner-pin.js";
 
@@ -175,10 +173,21 @@ export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): 
 		update.sql += " AND a.owner_qualification_id IS ?";
 		update.values.push(a.owner_qualification_id ?? null);
 	}
-	await backend.batch([
-		withEnrollmentNegativeOwner(update, consistency),
-		...dependentWrites(winner, now, grants.length, consistency),
-	]);
+	const writes = [update, ...dependentWrites(winner, now, grants.length)];
+	return writeOwnerEnrollment(backend, consistency.guards, writes, winner);
+}
+
+/**
+ * The retained-ownership guards replace the pin the update and binding insert carried.
+ * A changed fact writes nothing, as that pin made the whole batch a no-op.
+ */
+async function writeOwnerEnrollment(
+	backend: AuthLinkBackend,
+	guards: AuthLinkStatement[],
+	writes: AuthLinkStatement[],
+	winner: string[],
+): Promise<boolean> {
+	if ((await writeGuarded(backend, guards, writes)) === "changed") return false;
 	return readCommittedOwnerEnrollment(backend, winner);
 }
 
@@ -191,27 +200,6 @@ async function headlessTargetGuard(backend: AuthLinkBackend): Promise<string> {
 	return (await hasHeadlessLinkProvenance(backend)) ? ` AND ${NO_HEADLESS_TARGET_LINK_SQL}` : "";
 }
 
-/** Join the already materialized negative result rather than adding its SELECT
- * tree beneath the UPDATE's long chain of ordinary pins (native D1 depth 100).
- * These markers belong only to this module's trusted winning UPDATE template.
- */
-function withEnrollmentNegativeOwner(
-	update: AuthLinkStatement,
-	consistency: AuthLinkStatement,
-): AuthLinkStatement {
-	const checked = withNegativeOwnerWrite(update, consistency);
-	const source = "FROM owner_commit_links p";
-	const guard = "AND (SELECT matches FROM negative_owner_consistency)";
-	if (!checked.sql.includes(source) || !checked.sql.includes(guard))
-		throw new Error("owner_enrollment_statement_invalid");
-	return {
-		sql: checked.sql
-			.replace(source, `${source} CROSS JOIN negative_owner_consistency negative`)
-			.replace(guard, "AND negative.matches"),
-		values: checked.values,
-	};
-}
-
 async function readCommittedOwnerEnrollment(backend: AuthLinkBackend, winner: string[]) {
 	const committed = await backend.first({
 		sql: `SELECT 1 FROM coordinator_owner_enrollment_attempts WHERE ${WINNER}`,
@@ -221,7 +209,7 @@ async function readCommittedOwnerEnrollment(backend: AuthLinkBackend, winner: st
 }
 
 function prepareEnrollmentNegativeConsistency(backend: AuthLinkBackend, a: OwnerAttempt) {
-	return prepareNegativeOwnerConsistency(backend, {
+	return readNegativeOwnerConsistency(backend, {
 		coordinatorId: a.coordinator_id,
 		ownerIdentityId: a.identity_id ?? "",
 		deviceId: a.device_id,
@@ -306,12 +294,7 @@ function winningUpdate(
 		],
 	};
 }
-function dependentWrites(
-	winner: string[],
-	now: number,
-	grantCount: number,
-	consistency: AuthLinkStatement,
-): AuthLinkStatement[] {
+function dependentWrites(winner: string[], now: number, grantCount: number): AuthLinkStatement[] {
 	const binding: AuthLinkStatement = {
 		sql: `INSERT INTO coordinator_device_ownership_bindings
    (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
@@ -338,7 +321,7 @@ function dependentWrites(
 		values: winner,
 	};
 	return [
-		withNegativeOwnerWrite(binding, consistency),
+		binding,
 		assertWrite(winner, 1),
 		enrollment,
 		assertWrite(winner, grantCount),
