@@ -174,6 +174,49 @@ function historyReads(h: ControllerHistorySnapshot, fragments: string) {
 	};
 }
 
+/**
+ * The rows the controller review's history guard compared with the reviewed snapshot,
+ * with that guard's own limits: one more row than the snapshot may hold, so a larger live
+ * set can never equal it. Plain rows ordered by their whole text; no byte cap applies.
+ */
+export function controllerHistoryReads(h: ControllerHistorySnapshot): Record<string, AuthRead> {
+	const fingerprints = JSON.stringify(h.fingerprints);
+	const fragments = JSON.stringify(h.discoveryFragments);
+	const rows = (columns: string, from: string, limit: number, values: AuthRead["values"]) => ({
+		sql: `SELECT json_array(${columns}) AS row FROM ${from} ORDER BY row LIMIT ${limit}`,
+		values,
+	});
+	return {
+		history: rows(
+			"group_id,candidate_ref,manifest_version,completed_at,created_at,manifest_json",
+			LIVE_HISTORY,
+			501,
+			[
+				h.coordinatorId,
+				h.deviceId,
+				fingerprints,
+				h.deviceId,
+				fingerprints,
+				h.deviceId,
+				fingerprints,
+			],
+		),
+		historyKeys: rows(
+			"public_key,fingerprint",
+			`(SELECT DISTINCT public_key,fingerprint FROM (${HISTORY_KEY_SOURCES})
+ WHERE public_key IN (SELECT value FROM json_each(?)))`,
+			4097,
+			[h.coordinatorId, JSON.stringify(h.keys.map((key) => key.public_key))],
+		),
+		historyDiscovery: rows(
+			"public_key",
+			`(SELECT DISTINCT public_key FROM ${tokenized(HISTORY_KEY_SOURCES)} WHERE public_key=? OR ${SUSPECT_TOKEN})`,
+			8193,
+			[h.coordinatorId, h.publicKey, fragments],
+		),
+	};
+}
+
 /** Every category but controllers and invites, which depend on the discovered IDs. */
 export function evidenceReads({ subject, history }: EvidenceReadInput): Record<string, AuthRead> {
 	const fragments = JSON.stringify(history.discoveryFragments);
