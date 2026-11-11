@@ -17,9 +17,16 @@ import {
 	deviceRebindFinalMessage,
 } from "./coordinator-device-rebind-proof.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
+import {
+	canonicalCoordinatorLegacyTeamCompletionManifestJson,
+	normalizeCoordinatorLegacyTeamCompletionManifest,
+} from "./coordinator-legacy-team-completion.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import { createD1AuthLinkBackend } from "./d1-coordinator-store.js";
+import { legacyTeamCandidateId } from "./recipient-policy-identifiers.js";
 
 export const SELF_BIND_NOW = 1_791_028_800_000;
 const ORIGIN = "https://app.example.test";
@@ -274,4 +281,81 @@ function browserSteps(
 		confirm: () =>
 			c.confirm(form(transaction, { csrf, attempt_id: input.attemptId }), "client", commitment),
 	};
+}
+
+/** Stores a canonical legacy completion of group-a that assigns device-a to its Identity. */
+export function assignLegacyCompletion(f: Awaited<ReturnType<typeof selfBindFixture>>): void {
+	const manifest = normalizeCoordinatorLegacyTeamCompletionManifest({
+		version: 1,
+		coordinator_id: f.config.coordinatorId,
+		candidate_ref: legacyTeamCandidateId(f.config.coordinatorId, f.signer.groupId),
+		candidate_digest: "a".repeat(64),
+		team_id: "team-a",
+		team_digest: "b".repeat(64),
+		source_digest: "c".repeat(64),
+		finish_digest: "d".repeat(64),
+		access_delta_digest: "e".repeat(64),
+		team: {
+			display_name: "Synthetic Team",
+			policy_revision: "f".repeat(64),
+			device_eligibility_mode: "reviewed_allowlist",
+		},
+		memberships: [{ identity_id: f.identityId, role: "member" }],
+		device_decisions: [
+			{
+				device_id: f.signer.deviceId,
+				key_fingerprint: f.signer.fingerprint,
+				enabled: true,
+				identity_id: f.identityId,
+				decision: "included",
+			},
+		],
+		project_mappings: [],
+		project_recipients: [],
+		completed_at: "2026-10-01T00:00:00.000Z",
+	});
+	insert(f.db, "coordinator_legacy_team_completions", {
+		group_id: f.signer.groupId,
+		candidate_ref: manifest.candidate_ref,
+		manifest_version: 1,
+		manifest_json: canonicalCoordinatorLegacyTeamCompletionManifestJson(manifest),
+		completed_at: manifest.completed_at,
+		created_at: manifest.completed_at,
+	});
+}
+
+/**
+ * Stores a retained legacy owner resolution for device-a whose original source is the
+ * device's own controller review. The self-bind authority then takes the path that
+ * reads and classifies ownership evidence, which needs a backend that can read rows.
+ */
+export async function retainOwnReviewOwnership(
+	f: Awaited<ReturnType<typeof selfBindFixture>>,
+): Promise<void> {
+	f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
+	const review = f.db
+		.prepare("SELECT * FROM coordinator_auth_controller_attestations WHERE device_id=?")
+		.get(f.signer.deviceId) as Record<string, string | number | null>;
+	insert(f.db, "coordinator_legacy_owner_resolutions", {
+		coordinator_id: review.coordinator_id,
+		resolution_id: "retained-resolution",
+		resolution_version: 1,
+		device_id: review.device_id,
+		key_id: await ed25519KeyIdForRevocation(f.signer.publicKey),
+		owner_identity_id: review.identity_id,
+		purpose: "existing_account_owner",
+		scope: "historical_included_owner_labels_only",
+		source_attestation_id: review.attestation_id,
+		source_group_id: review.group_id,
+		source_controller_revision: review.revision,
+		source_public_key: review.public_key,
+		source_fingerprint: review.fingerprint,
+		source_enrollment_identity_id: review.enrollment_identity_id,
+		source_created_at: review.created_at,
+		source_review_receipt_id: review.review_receipt_id,
+		source_evidence_digest: review.evidence_digest,
+		resolution_evidence_digest: "d".repeat(64),
+		reviewed_weak_labels_json: "[]",
+		created_at: "2026-09-02T00:00:00.000Z",
+	});
 }

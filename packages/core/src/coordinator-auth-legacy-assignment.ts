@@ -22,6 +22,10 @@ export const AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL = `SELECT json_object(
  CASE WHEN length(CAST(manifest_json AS BLOB)) <= ? THEN manifest_json ELSE NULL END)
  FROM coordinator_legacy_team_completions WHERE group_id = ? AND candidate_ref = ?`;
 
+/** Read-set form of the capture: the same object as one `row`, with the same three inputs. */
+export const AUTH_LEGACY_ASSIGNMENT_READ_SQL = `SELECT row FROM (SELECT (${AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL}) AS row)
+ WHERE row IS NOT NULL`;
+
 /** A capture is not authority: every consumer must recheck it inside its statement. */
 export function captureCurrentLegacyAssignment(
 	snapshot: string | null | undefined,
