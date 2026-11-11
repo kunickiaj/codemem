@@ -53,18 +53,11 @@ import {
 	AUTH_CONTROLLER_CONFLICT_SQL,
 	AUTH_CONTROLLER_CURRENT_ENROLLMENT_SQL,
 	AUTH_CONTROLLER_ENROLLMENT_SQL,
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
-	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	AUTH_CONTROLLER_REVOKE_SQL,
 	AUTH_CONTROLLER_SCHEMA_SQL,
 	authControllerAuthorityValues,
 	authControllerConflictValues,
-	authControllerInsertValues,
-	authControllerRetryActiveValues,
-	authControllerRetryEligibleValues,
 	authControllerRetryResult,
-	authControllerReviewSql,
 	authControllerSubjectOwnerConflictValues,
 	authControllerUnavailableResult,
 	type CoordinatorAuthControllerAttestation,
@@ -80,6 +73,13 @@ import {
 	captureControllerHistory,
 } from "./coordinator-auth-controller-history.js";
 import { AUTH_CONTROLLER_SUBJECT_OWNER_CONFLICT_SQL } from "./coordinator-auth-controller-owner.js";
+import {
+	controllerActiveStatement,
+	controllerEligibleStatement,
+	controllerInsertStatement,
+	controllerReviewReads,
+	decideControllerReviewSync,
+} from "./coordinator-auth-controller-read-set.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import {
 	HEADLESS_LINK_SCHEMA_SQL,
@@ -233,10 +233,9 @@ import {
 } from "./coordinator-membership-effects.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
-	prepareNegativeOwnerConsistency,
-	withNegativeOwnerConsistency,
-} from "./coordinator-owner-negative-consistency.js";
-import type { NegativeOwnerGuards } from "./coordinator-owner-negative-read-set.js";
+	type NegativeOwnerGuards,
+	readNegativeOwnerConsistency,
+} from "./coordinator-owner-negative-read-set.js";
 import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
@@ -1505,7 +1504,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			| CoordinatorAuthControllerAttestation
 			| undefined;
 		const hasConflict = conflict !== undefined;
-		const consistency = hasConflict ? null : await this.prepareAuthControllerConsistency(review);
+		const consistency = hasConflict ? null : await this.readAuthControllerConsistency(review);
 		if (!hasConflict && !consistency) return authControllerUnavailableResult(review);
 		let retryAfterPinChange = false;
 		const result = this.db
@@ -1520,15 +1519,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				);
 				if (hasConflict) return this.resolveAuthControllerRetrySync(review, authority);
 				try {
-					const statement = withNegativeOwnerConsistency(
-						{
-							sql: authControllerReviewSql(AUTH_CONTROLLER_INSERT_SQL, review),
-							values: authControllerInsertValues(review, nowISO(), authority),
-						},
-						consistency ?? { sql: "SELECT 0 AS matches", values: [] },
-					);
-					const inserted = this.db.prepare(statement.sql).run(...statement.values);
-					if (inserted.changes === 0) {
+					const inserted = this.insertAuthControllerAttestationSync(review, authority, consistency);
+					if (inserted === 0) {
 						retryAfterPinChange = true;
 						return authControllerUnavailableResult(review);
 					}
@@ -1549,18 +1541,32 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.retryAuthControllerAfterPinChange(review);
 	}
 
+	/**
+	 * The guards replace the retained-ownership pin, and the snapshot decision the stages
+	 * the old insert carried. Either failing left that insert empty. Building the reads first
+	 * keeps the old order of a missing owner key's error.
+	 */
+	private insertAuthControllerAttestationSync(
+		review: CoordinatorAuthControllerReviewInput,
+		authority: (string | null)[],
+		consistency: NegativeOwnerGuards | null,
+	): number {
+		const reads = controllerReviewReads(review, authority);
+		if (!this.authGuardsHold(consistency?.guards)) return 0;
+		if (!decideControllerReviewSync(this.allRows, review, reads)) return 0;
+		return this.runStatement(controllerInsertStatement(review, nowISO(), authority));
+	}
+
 	private async retryAuthControllerAfterPinChange(
 		review: CoordinatorAuthControllerReviewInput,
 	): Promise<CoordinatorAuthControllerCreateResult> {
 		// The winner changes the evidence pin. Recapture without accepting new conflicts.
-		const retryConsistency = await this.prepareAuthControllerConsistency(review);
+		const retryConsistency = await this.readAuthControllerConsistency(review);
 		if (!retryConsistency) return authControllerUnavailableResult(review);
 		return this.db
 			.transaction((): CoordinatorAuthControllerCreateResult => {
-				const pin = this.db.prepare(retryConsistency.sql).get(...retryConsistency.values) as
-					| { matches: number }
-					| undefined;
-				if (pin?.matches !== 1) return authControllerUnavailableResult(review);
+				if (!this.authGuardsHold(retryConsistency.guards))
+					return authControllerUnavailableResult(review);
 				const source = this.db
 					.prepare(AUTH_CONTROLLER_ENROLLMENT_SQL)
 					.get(review.groupId, review.deviceId) as CoordinatorEnrollment | undefined;
@@ -1573,8 +1579,28 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.immediate();
 	}
 
-	private prepareAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
-		return prepareNegativeOwnerConsistency(
+	/** Rows of a read-set read, run directly inside the open transaction. */
+	private readonly allRows = (read: AuthLinkStatement) =>
+		this.db.prepare(read.sql).all(...read.values) as { row: string }[];
+
+	private runStatement(statement: AuthLinkStatement): number {
+		return this.db.prepare(statement.sql).run(...statement.values).changes;
+	}
+
+	/** Runs read-set guards inside the open transaction. False when one no longer holds. */
+	private authGuardsHold(guards: AuthLinkStatement[] | undefined): boolean {
+		if (!guards) return false;
+		try {
+			for (const guard of guards) this.db.prepare(guard.sql).get(...guard.values);
+			return true;
+		} catch (error) {
+			if (isSnapshotChanged(error)) return false;
+			throw error;
+		}
+	}
+
+	private readAuthControllerConsistency(review: CoordinatorAuthControllerReviewInput) {
+		return readNegativeOwnerConsistency(
 			{
 				first: async <T>({ sql, values }: AuthLinkStatement) =>
 					(this.db.prepare(sql).get(...values) as T | undefined) ?? null,
@@ -1594,10 +1620,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		input: CoordinatorAuthControllerReviewInput,
 		authority: (string | null)[],
 	): CoordinatorAuthControllerCreateResult {
+		const eligible = controllerEligibleStatement(input, authority);
 		if (
-			!this.db
-				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, input))
-				.get(...authControllerRetryEligibleValues(input, authority))
+			!decideControllerReviewSync(this.allRows, input, controllerReviewReads(input, authority)) ||
+			!this.db.prepare(eligible.sql).get(...eligible.values)
 		)
 			return {
 				kind: "rejected",
@@ -1664,13 +1690,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			source,
 			enrollmentRevocationKeyId(source.public_key),
 		);
-		return (
-			(this.db
-				.prepare(authControllerReviewSql(AUTH_CONTROLLER_RETRY_ACTIVE_SQL, review))
-				.get(...authControllerRetryActiveValues(review, authority)) as
-				| CoordinatorAuthControllerAttestation
-				| undefined) ?? null
-		);
+		// One transaction keeps the snapshot reads and the active row consistent.
+		return this.db.transaction((): CoordinatorAuthControllerAttestation | null => {
+			const reads = controllerReviewReads(review, authority);
+			if (!decideControllerReviewSync(this.allRows, review, reads)) return null;
+			const active = controllerActiveStatement(review, authority);
+			return (
+				(this.db.prepare(active.sql).get(...active.values) as
+					| CoordinatorAuthControllerAttestation
+					| undefined) ?? null
+			);
+		})();
 	}
 
 	async hasAuthControllerSubjectOwnerConflict(

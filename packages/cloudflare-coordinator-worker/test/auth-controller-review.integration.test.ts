@@ -8,6 +8,7 @@ import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
+import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
 const NOW = 1791028800000;
 const PATH = "/v1/admin/auth-controller-reviews";
 const secret = "fixture-admin-secret";
@@ -154,26 +155,11 @@ it.each([false, true])("native D1 rejects null-to-matching enrollment Identity a
 	expect(await rows(f)).toEqual(before);
 });
 it.each(["invite", "attestation"] as const)("native D1 retry rejects %s revoked before its final guarded read", async (target) => {
-	// Arrange: wrap native prepared statements while preserving bind cloning.
+	// Arrange: wrap native D1, forwarding the real statements and batches.
 	let beforeRead: (() => Promise<void>) | undefined;
-	const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement => new Proxy(statement, {
-		get(statement, property) {
-			if (property === "bind") return (...values: unknown[]) => wrap(statement.bind(...values), query);
-			if (property === "first") return async (...args: Parameters<D1PreparedStatement["first"]>) => {
-				// Eligibility precedes the conflict read; revoke only at the final live retry read.
-				if (query === AUTH_CONTROLLER_RETRY_ACTIVE_SQL) await beforeRead?.();
-				return statement.first(...args);
-			};
-			const value = Reflect.get(statement, property);
-			return typeof value === "function" ? value.bind(statement) : value;
-		},
-	});
-	const database = new Proxy(env.COORDINATOR_DB, {
-		get(database, property) {
-			if (property === "prepare") return (query: string) => wrap(database.prepare(query), query);
-			const value = Reflect.get(database, property);
-			return typeof value === "function" ? value.bind(database) : value;
-		},
+	const database = hookNativeD1(env.COORDINATOR_DB, async (execution) => {
+		// Eligibility precedes the conflict read; revoke only before the final guarded retry read.
+		if (controllerGuardedStage(execution) === "retry") await beforeRead?.();
 	});
 	const f = await setup(database);
 	const inviteId = await seedReviewedInvite(f);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCoordinatorApp } from "./coordinator-api.js";
+import { beforeGuardedTransaction } from "./coordinator-auth-controller-race-test-fixtures.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	enroll,
@@ -520,15 +521,14 @@ for (const backend of ["SQLite", "D1"] as const) {
 					} else history(f, { group: "raced" });
 				};
 				let racing = f.store;
+				// D1 gates each statement before its batch runs; the SQLite store's write
+				// transaction starts with its guards, where the change now lands.
 				if (backend === "D1")
 					racing = controllerGuardedD1(sqliteD1(f.db), async (query) => gate(query));
-				else {
-					const prepare = f.db.prepare.bind(f.db);
-					vi.spyOn(f.db, "prepare").mockImplementation((query: string) => {
-						gate(query);
-						return prepare(query);
-					});
-				}
+				else
+					beforeGuardedTransaction(f.db, () =>
+						gate("INSERT INTO coordinator_auth_controller_attestations"),
+					);
 				// Act
 				const result = await racing.createAuthControllerAttestation(input);
 				// Assert

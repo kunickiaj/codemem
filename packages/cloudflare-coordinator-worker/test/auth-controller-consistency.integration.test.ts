@@ -7,6 +7,7 @@ import {
 } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "../../core/src/coordinator-legacy-owner-resolution-schema.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
 import { resetCeremony, snapshot } from "./owner-ceremony-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
@@ -96,41 +97,23 @@ async function ordinaryReview(
 	return input;
 }
 
-/** Native statements execute unchanged; only the last run boundary is intercepted. */
+/**
+ * Native statements execute unchanged; only the winning write's batch boundary is
+ * intercepted. Its read-set guards lead that batch, so the change lands where the old
+ * single INSERT first read it.
+ */
 function winningWrite(change: () => Promise<void>) {
 	let injected = false;
 	let afterChange: Awaited<ReturnType<typeof snapshot>> | undefined;
 	let bindCount = 0;
-	const wrap = (statement: D1PreparedStatement, query: string): D1PreparedStatement =>
-		new Proxy(statement, {
-			get(statement, property) {
-				if (property === "bind")
-					return (...values: unknown[]) => {
-						if (query.includes(`INSERT INTO ${controllerTable}`)) bindCount = values.length;
-						return wrap(statement.bind(...values), query);
-					};
-				if (property === "run")
-					return async () => {
-						if (
-							!injected &&
-							/\bINSERT\s+INTO\s+coordinator_auth_controller_attestations\b/iu.test(query)
-						) {
-							injected = true;
-							await change();
-							afterChange = await snapshot();
-						}
-						return statement.run();
-					};
-				const value = Reflect.get(statement, property);
-				return typeof value === "function" ? value.bind(statement) : value;
-			},
-		});
-	const database = new Proxy(db, {
-		get(database, property) {
-			if (property === "prepare") return (query: string) => wrap(database.prepare(query), query);
-			const value = Reflect.get(database, property);
-			return typeof value === "function" ? value.bind(database) : value;
-		},
+	const database = hookNativeD1(db, async (execution) => {
+		if (controllerGuardedStage(execution) !== "create") return;
+		// Every statement in the batch is checked against D1's 100-bind limit.
+		bindCount = Math.max(...execution.binds);
+		if (injected) return;
+		injected = true;
+		await change();
+		afterChange = await snapshot();
 	});
 	return {
 		store: new D1CoordinatorStore(database),

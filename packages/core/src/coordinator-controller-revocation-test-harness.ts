@@ -1,10 +1,12 @@
 import { expect } from "vitest";
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
 	type CoordinatorAuthControllerReviewInput,
 } from "./coordinator-auth-controller.js";
+import {
+	controllerActiveStatement,
+	controllerInsertStatement,
+} from "./coordinator-auth-controller-read-set.js";
 import { review } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	enrollRevocation,
@@ -281,27 +283,48 @@ function registerEvidence(test: ControllerTest) {
 }
 
 // Forward real statements; only the deterministic execution boundary is intercepted.
+// A batch is one atomic execution, so every statement in it is gated before it starts.
 export function controllerGuardedD1(db: D1DatabaseLike, gate: Gate) {
-	const wrap = (statement: D1PreparedStatementLike, query: string): D1PreparedStatementLike => ({
-		bind: (...values) => wrap(statement.bind(...values), query),
-		first: async <T>() => {
-			await gate(query);
-			return statement.first<T>();
-		},
-		all: async <T>() => {
-			await gate(query);
-			return statement.all<T>();
-		},
-		raw: async <T>() => {
-			await gate(query);
-			return statement.raw<T>();
-		},
-		run: async () => {
-			await gate(query);
-			return statement.run();
+	const inner = new WeakMap<D1PreparedStatementLike, D1PreparedStatementLike>();
+	const wrap = (statement: D1PreparedStatementLike, query: string): D1PreparedStatementLike => {
+		const wrapped: D1PreparedStatementLike = {
+			bind: (...values) => wrap(statement.bind(...values), query),
+			first: async <T>() => {
+				await gate(query);
+				return statement.first<T>();
+			},
+			all: async <T>() => {
+				await gate(query);
+				return statement.all<T>();
+			},
+			raw: async <T>() => {
+				await gate(query);
+				return statement.raw<T>();
+			},
+			run: async () => {
+				await gate(query);
+				return statement.run();
+			},
+		};
+		inner.set(wrapped, statement);
+		queries.set(wrapped, query);
+		return wrapped;
+	};
+	const queries = new WeakMap<D1PreparedStatementLike, string>();
+	return new D1CoordinatorStore({
+		prepare: (query) => wrap(db.prepare(query), query),
+		batch: async (statements) => {
+			if (!db.batch) throw new Error("fixture batch missing");
+			for (const statement of statements) await gate(queries.get(statement) ?? "");
+			return db.batch(
+				statements.map((statement) => {
+					const original = inner.get(statement);
+					if (!original) throw new Error("unknown statement");
+					return original;
+				}),
+			);
 		},
 	});
-	return new D1CoordinatorStore({ prepare: (query) => wrap(db.prepare(query), query) });
 }
 export function registerControllerReadWriteGuards(test: ControllerTest, guarded: Guarded) {
 	registerRevocationGates(test, guarded);
@@ -318,11 +341,7 @@ function registerRevocationGates(test: ControllerTest, guarded: Guarded) {
 			const input = controllerReview(f, true);
 			if (stage !== "insert") await f.store.createAuthControllerAttestation(input);
 			const before = await history(f);
-			const sql = {
-				insert: AUTH_CONTROLLER_INSERT_SQL,
-				active: AUTH_CONTROLLER_ACTIVE_SQL,
-				retry: AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
-			}[stage];
+			const sql = controllerGateSql(stage, input);
 			let called = false;
 			const racing = guarded(f, async (query) => {
 				if (called || !matchesControllerGate(query, sql)) return;
@@ -347,16 +366,18 @@ function registerRevocationGates(test: ControllerTest, guarded: Guarded) {
 		});
 	}
 }
-// Consistency prepends a CTE; match the entire retained template and final guard,
-// not an earlier evidence query that only mentions the attestation table.
+// The exact statement of each stage: the plain insert and the current-attestation read
+// the controller review now sends after its guards, or the unchanged active read.
+function controllerGateSql(
+	stage: "insert" | "active" | "retry",
+	input: CoordinatorAuthControllerReviewInput,
+) {
+	if (stage === "insert") return controllerInsertStatement(input, "", []).sql;
+	if (stage === "retry") return controllerActiveStatement(input, []).sql;
+	return AUTH_CONTROLLER_ACTIVE_SQL;
+}
 function matchesControllerGate(query: string, sql: string) {
-	if (sql !== AUTH_CONTROLLER_INSERT_SQL) return query === sql;
-	return (
-		query.startsWith("WITH negative_owner_consistency AS MATERIALIZED (") &&
-		query.endsWith(
-			`${sql.trimStart().slice(5)} AND (SELECT matches FROM negative_owner_consistency)`,
-		)
-	);
+	return query === sql;
 }
 function registerReplacementGates(test: ControllerTest, guarded: Guarded) {
 	for (const stage of ["insert", "active", "retry"] as const) {
@@ -367,11 +388,7 @@ function registerReplacementGates(test: ControllerTest, guarded: Guarded) {
 			await enrollRevocation(f);
 			const input = controllerReview(f);
 			if (stage !== "insert") await f.store.createAuthControllerAttestation(input);
-			const sql = {
-				insert: AUTH_CONTROLLER_INSERT_SQL,
-				active: AUTH_CONTROLLER_ACTIVE_SQL,
-				retry: AUTH_CONTROLLER_RETRY_ACTIVE_SQL,
-			}[stage];
+			const sql = controllerGateSql(stage, input);
 			let called = false;
 			const racing = guarded(f, async (query) => {
 				if (called || !matchesControllerGate(query, sql)) return;
