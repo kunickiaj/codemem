@@ -111,6 +111,8 @@ export interface AuthLinkBackend {
 	readAuthSchemaState?: () => Promise<ConnectionSchemaState>;
 	first<T>(statement: AuthLinkStatement): Promise<T | null>;
 	all?<T>(statement: AuthLinkStatement): Promise<T[]>;
+	/** Runs read statements in one round trip and returns each statement's rows. */
+	readBatch?<T>(statements: AuthLinkStatement[]): Promise<T[][]>;
 	run(statement: AuthLinkStatement): Promise<number>;
 	/** Atomic execution; production backends return each statement's native change count. */
 	batch(statements: AuthLinkStatement[]): Promise<unknown>;

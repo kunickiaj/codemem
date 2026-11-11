@@ -568,6 +568,17 @@ function createRawD1AuthLinkBackend(db: D1DatabaseLike): AuthLinkBackend {
 			if (!Array.isArray(result.results)) throw new Error("ownership_evidence_reader_unavailable");
 			return result.results;
 		},
+		readBatch: async <T>(statements: AuthLinkStatement[]) => {
+			if (!db.batch) throw new Error("auth_link_atomic_batch_required");
+			const results = await db.batch(
+				statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+			);
+			return results.map((result) => {
+				const rows = (result as { results?: T[] } | undefined)?.results;
+				if (!Array.isArray(rows)) throw new Error("auth_read_set_unavailable");
+				return rows;
+			});
+		},
 		run: (statement) => runChanges(db.prepare(statement.sql).bind(...statement.values)),
 		batch: async (statements) => {
 			if (!db.batch) throw new Error("auth_link_atomic_batch_required");

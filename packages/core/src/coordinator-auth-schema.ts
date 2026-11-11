@@ -36,6 +36,21 @@ export async function assertCoordinatorAuthSchema(
 		throw new CoordinatorAuthSchemaUpgradeRequiredError();
 }
 
+/** The wrapper offers a read batch only when the wrapped backend has one. */
+function checkedReadBatch(
+	backend: AuthLinkBackend,
+	options: { connections?: boolean },
+): Pick<AuthLinkBackend, "readBatch"> {
+	const readBatch = backend.readBatch?.bind(backend);
+	if (!readBatch) return {};
+	return {
+		readBatch: async <T>(statements: AuthLinkStatement[]) => {
+			await assertCoordinatorAuthSchema(backend, options);
+			return readBatch<T>(statements);
+		},
+	};
+}
+
 /** Protect every optional-auth SQL entry, including trusted callers outside HTTP. */
 export function withCoordinatorAuthSchema(
 	backend: AuthLinkBackend,
@@ -54,6 +69,7 @@ export function withCoordinatorAuthSchema(
 			if (!backend.all) throw new Error("ownership_evidence_reader_unavailable");
 			return backend.all<T>(statement);
 		},
+		...checkedReadBatch(backend, options),
 		run: async (statement) => {
 			await assertCoordinatorAuthSchema(backend, options);
 			return backend.run(statement);

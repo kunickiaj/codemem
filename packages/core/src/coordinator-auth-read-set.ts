@@ -1,0 +1,159 @@
+import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+
+/**
+ * Read-set validation for coordinator authorization.
+ *
+ * D1 has no interactive transactions, so a decision cannot read, decide and write under
+ * one lock. A decision instead works in three steps:
+ *
+ * 1. Read the facts with small plain queries ({@link readSnapshot}).
+ * 2. Decide in TypeScript from those rows alone.
+ * 3. Write in one atomic batch whose first statements re-run every read and abort the
+ *    batch unless each read still supports the decision ({@link writeGuarded}).
+ *
+ * The decision is void unless its guards run in the batch that writes.
+ */
+
+/**
+ * One fact query. It returns one JSON value per row in a column named `row`, usually
+ * `json_object(...) AS row`. It needs an explicit ORDER BY so the same rows always give
+ * the same text. Write it without a WITH clause: production D1 refuses large statements
+ * that resolve WITH names, and the guard embeds the read a second time.
+ *
+ * A read may compute a 0/1 verdict in SQL, such as `'proven', EXISTS (...)`, when a
+ * proof joins several tables and its NULL handling is easier to keep exact in SQL. The
+ * guard re-runs the whole read, so the verdict is evaluated again inside the winning
+ * batch and a changed verdict aborts it.
+ */
+export interface AuthRead extends AuthLinkStatement {
+	/**
+	 * Replaces the default guard, which requires the read to return byte-identical rows.
+	 * Use it only when the decision survives some changes to those rows, for example a
+	 * list that may lose entries but must not gain any. It receives the JSON array text
+	 * of the rows that were read, and returns a statement with exactly one value: 1 while
+	 * the decision still holds.
+	 */
+	holds?: (seenRows: string) => AuthLinkStatement;
+}
+
+/** The caller states the row shape of its own reads; the rows come from its SQL. */
+type RowsByName = Record<string, unknown[]>;
+
+export interface AuthReadSnapshot<Rows extends RowsByName> {
+	/** Parsed rows of each read. */
+	rows: Rows;
+	/** One statement per read. Each aborts its batch when the read no longer holds. */
+	guards: Record<keyof Rows, AuthLinkStatement>;
+}
+
+export type GuardedWriteResult =
+	/** Every guard held and every write assertion passed. */
+	| "committed"
+	/** A read no longer supports the decision. Nothing was written. */
+	| "changed"
+	/** A write changed an unexpected number of rows. Nothing was written. */
+	| "unmatched";
+
+// json_extract rejects a path without a leading "$", so SQLite raises an error that names
+// the path. SQLite and D1 both put the path in the error message. Callers never see the
+// markers: writeGuarded turns them into a GuardedWriteResult.
+const SNAPSHOT_CHANGED = "auth_snapshot_changed";
+const WRITE_UNMATCHED = "auth_write_unmatched";
+
+function abortUnless(condition: string, marker: string): string {
+	return `SELECT CASE WHEN ${condition} THEN 1 ELSE json_extract('{}', '${marker}') END AS held`;
+}
+
+const collected = (sql: string) =>
+	`SELECT coalesce(json_group_array(json(row)), '[]') AS rows FROM (${sql})`;
+
+function guardFor(read: AuthRead, seenRows: string): AuthLinkStatement {
+	if (!read.holds) {
+		return {
+			sql: abortUnless(`(${collected(read.sql)}) IS ?`, SNAPSHOT_CHANGED),
+			values: [...read.values, seenRows],
+		};
+	}
+	const predicate = read.holds(seenRows);
+	return {
+		sql: abortUnless(`(SELECT * FROM (${predicate.sql})) IS 1`, SNAPSHOT_CHANGED),
+		values: predicate.values,
+	};
+}
+
+/** Follows a write in the batch. Aborts unless that write changed exactly `expected` rows. */
+export function changedRows(expected = 1): AuthLinkStatement {
+	return { sql: abortUnless("changes() = ?", WRITE_UNMATCHED), values: [expected] };
+}
+
+type RowReader = Pick<AuthLinkBackend, "first" | "readBatch">;
+type Collected = { rows: string } | null | undefined;
+
+// Without a read batch the reads run one by one. That is still safe: the guards re-check
+// every read in the write batch, so a write commits only if all of them hold at once.
+async function firstRows(
+	backend: RowReader,
+	statements: AuthLinkStatement[],
+): Promise<Collected[]> {
+	if (backend.readBatch)
+		return (await backend.readBatch<{ rows: string }>(statements)).map((rows) => rows[0]);
+	const rows: Collected[] = [];
+	for (const statement of statements) rows.push(await backend.first<{ rows: string }>(statement));
+	return rows;
+}
+
+async function readCollected(
+	backend: RowReader,
+	statements: AuthLinkStatement[],
+): Promise<string[]> {
+	if (statements.length === 0) return [];
+	return (await firstRows(backend, statements)).map((row) => {
+		if (typeof row?.rows !== "string") throw new Error("auth_read_set_unavailable");
+		return row.rows;
+	});
+}
+
+function parseRows(text: string): unknown[] {
+	const rows: unknown = JSON.parse(text);
+	if (!Array.isArray(rows)) throw new Error("auth_read_set_unavailable");
+	return rows;
+}
+
+/** Runs the named reads and returns their rows with the guards that pin them. */
+export async function readSnapshot<Rows extends RowsByName>(
+	backend: RowReader,
+	reads: Record<keyof Rows, AuthRead>,
+): Promise<AuthReadSnapshot<Rows>> {
+	const names = Object.keys(reads) as (keyof Rows)[];
+	const seen = await readCollected(
+		backend,
+		names.map((name) => ({ sql: collected(reads[name].sql), values: reads[name].values })),
+	);
+	const entries = names.map((name, index) => ({ name, text: seen[index] as string }));
+	return {
+		rows: Object.fromEntries(entries.map(({ name, text }) => [name, parseRows(text)])) as Rows,
+		guards: Object.fromEntries(
+			entries.map(({ name, text }) => [name, guardFor(reads[name], text)]),
+		) as Record<keyof Rows, AuthLinkStatement>,
+	};
+}
+
+/**
+ * Runs the guards and then the writes as one atomic batch. Any other error propagates,
+ * so an unknown outcome is never reported as a refusal.
+ */
+export async function writeGuarded(
+	backend: Pick<AuthLinkBackend, "batch">,
+	guards: readonly AuthLinkStatement[],
+	writes: readonly AuthLinkStatement[],
+): Promise<GuardedWriteResult> {
+	try {
+		await backend.batch([...guards, ...writes]);
+		return "committed";
+	} catch (error) {
+		const message = String((error as { message?: unknown } | null)?.message ?? error);
+		if (message.includes(SNAPSHOT_CHANGED)) return "changed";
+		if (message.includes(WRITE_UNMATCHED)) return "unmatched";
+		throw error;
+	}
+}

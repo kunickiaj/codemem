@@ -995,6 +995,24 @@ function enrollmentRevocationKeyId(publicKey: string): string | null {
 	return createHash("sha256").update(parsed.blob).digest("hex");
 }
 
+/** No auth-schema check per statement; callers gate on their own tables. */
+function rawSqliteAuthBackend(db: DatabaseType): AuthLinkBackend {
+	const changes = (statement: AuthLinkStatement) =>
+		db.prepare(statement.sql).run(...statement.values).changes;
+	return {
+		all: async <T>(statement: AuthLinkStatement) =>
+			db.prepare(statement.sql).all(...statement.values) as T[],
+		first: async <T>(statement: AuthLinkStatement) =>
+			(db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
+		readBatch: async <T>(statements: AuthLinkStatement[]) =>
+			db.transaction(() =>
+				statements.map((statement) => db.prepare(statement.sql).all(...statement.values) as T[]),
+			)(),
+		run: async (statement) => db.transaction(() => changes(statement)).immediate(),
+		batch: async (statements) => db.transaction(() => statements.map(changes)).immediate(),
+	};
+}
+
 export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	/** The raw backend, without the auth schema wrapper. */
 	private readonly schemaBackend: AuthLinkBackend;
@@ -1035,25 +1053,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			},
 			options.authClock,
 		);
-		const rawAuthBackend: AuthLinkBackend = {
-			all: async <T>(statement: AuthLinkStatement) =>
-				this.db.prepare(statement.sql).all(...statement.values) as T[],
-			first: async <T>(statement: AuthLinkStatement) =>
-				(this.db.prepare(statement.sql).get(...statement.values) as T | undefined) ?? null,
-			run: async (statement) =>
-				this.db
-					.transaction(() => this.db.prepare(statement.sql).run(...statement.values).changes)
-					.immediate(),
-			batch: async (statements) => {
-				return this.db
-					.transaction(() =>
-						statements.map(
-							(statement) => this.db.prepare(statement.sql).run(...statement.values).changes,
-						),
-					)
-					.immediate();
-			},
-		};
+		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
 		const authBackend = withCoordinatorAuthSchema(rawAuthBackend);
