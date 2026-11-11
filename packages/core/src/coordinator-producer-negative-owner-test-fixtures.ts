@@ -88,32 +88,6 @@ export function producerSnapshot(db: Database) {
 	return tables.map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]);
 }
 
-/** Execution hook: D1 may prepare before the batch starts its transaction. */
-export function beforeProducerWinningWrite(db: Database, gate: RegExp, mutate: () => void) {
-	const prepare = db.prepare.bind(db);
-	let observed = false;
-	let execution: { mockRestore(): void } | undefined;
-	const hook = vi.spyOn(db, "prepare").mockImplementation((sql) => {
-		const statement = prepare(sql);
-		if (!execution && gate.test(sql)) {
-			const run = statement.run.bind(statement);
-			execution = vi.spyOn(statement, "run").mockImplementationOnce((...values) => {
-				observed = true;
-				mutate();
-				return run(...values);
-			});
-		}
-		return statement;
-	});
-	return {
-		observed: () => observed,
-		restore() {
-			execution?.mockRestore();
-			hook.mockRestore();
-		},
-	};
-}
-
 // Every read-set guard aborts through this JSON path, and guards lead their write batch.
 const GUARD_MARKER = "auth_snapshot_changed";
 const RESTART = Symbol("restart the batch after the change");

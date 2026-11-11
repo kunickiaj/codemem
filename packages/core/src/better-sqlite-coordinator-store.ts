@@ -105,6 +105,7 @@ import {
 	type CoordinatorAuthLinkRequester,
 } from "./coordinator-auth-link-contract.js";
 import { AUTH_LINK_PROFILE_SCHEMA_SQL } from "./coordinator-auth-link-profile.js";
+import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
 import {
 	AUTH_SCHEMA_READINESS_SQL,
 	AUTH_SCHEMA_READY_COUNT,
@@ -232,10 +233,10 @@ import {
 } from "./coordinator-membership-effects.js";
 import { COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL } from "./coordinator-owner-enrollment-schema.js";
 import {
-	type NegativeOwnerConsistency,
 	prepareNegativeOwnerConsistency,
 	withNegativeOwnerConsistency,
 } from "./coordinator-owner-negative-consistency.js";
+import type { NegativeOwnerGuards } from "./coordinator-owner-negative-read-set.js";
 import { OwnerResolutionReviewOperations } from "./coordinator-owner-resolution-review.js";
 import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
@@ -246,8 +247,7 @@ import {
 } from "./coordinator-peer-discovery.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
-	prepareRecipientOwnerConsistency,
-	recipientOwnerWriteSql,
+	readRecipientOwnerConsistency,
 	validateRecipientOwnerInput,
 } from "./coordinator-recipient-owner-consistency.js";
 import { ResolvedAccountOwnerStatusOperations } from "./coordinator-resolved-account-owner-status.js";
@@ -2161,7 +2161,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		validateRecipientOwnerInput(opts);
 		const preflightInvite = await this.getInviteByTokenForInspection(opts.token);
 		const preflightInspection = preflightInvite ? await inspectInvite(preflightInvite) : null;
-		const consistency = await prepareRecipientOwnerConsistency(
+		const consistency = await readRecipientOwnerConsistency(
 			{
 				...this.schemaBackend,
 				all: async <T>({ sql, values }: AuthLinkStatement) =>
@@ -2217,14 +2217,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				const authorization = this.recipientInviteAuthorization(invite, opts, participantSubjects);
 				const { sql: authorizationSql, values: authorizationValues } = authorization;
 				this.assertRecipientInviteAuthorized(invite, opts, participantSubjects);
-				this.assertRecipientOwnerPin(consistency);
-				const retained = consistency.retainedRecheck;
+				// The guards re-run the retained-ownership reads inside this transaction. They
+				// replace the pin that the token update and later writes each carried.
+				this.assertRecipientOwnerGuards(consistency?.guards);
 				const changed = this.consumeRecipientOwnerToken(invite, opts, {
 					authorization,
-					consistency,
 					consumedAt,
 				});
-				let pendingPin = retained;
+				let pendingGuards = consistency.retainedGuards;
 				const saved = this.getRecipientInviteById(invite.invite_id);
 				if (
 					saved.bound_device_id !== opts.deviceId ||
@@ -2238,8 +2238,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (changed === 1) {
 					this.db
 						.prepare(
-							recipientOwnerWriteSql(
-								`INSERT INTO enrolled_devices(
+							`INSERT INTO enrolled_devices(
 						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
 					) SELECT ?, ?, ?, ?, ?, ?, 1, ?
 					WHERE ${authorizationSql}
@@ -2251,11 +2250,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						enabled = 1
 					WHERE enrolled_devices.identity_id IS NULL
 							OR enrolled_devices.identity_id = excluded.identity_id`,
-								retained,
-							),
 						)
 						.run(
-							...retained.values,
 							invite.group_id,
 							opts.deviceId,
 							opts.publicKey,
@@ -2266,7 +2262,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 							...authorizationValues,
 						);
 				} else {
-					pendingPin = this.repairRecipientOwnerIdentity(invite, opts, {
+					pendingGuards = this.repairRecipientOwnerIdentity(invite, opts, {
 						authorization,
 						consistency,
 					});
@@ -2288,14 +2284,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						const grantId = tokenUrlSafe(12);
 						const claimed = this.db
 							.prepare(
-								recipientOwnerWriteSql(
-									`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+								`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 						 trust_state = 'bootstrap_grant_created'
 								 WHERE invite_id = ? AND bootstrap_grant_id IS NULL AND ${authorizationSql}`,
-									pendingPin,
-								),
 							)
-							.run(...pendingPin.values, grantId, invite.invite_id, ...authorizationValues);
+							.run(grantId, invite.invite_id, ...authorizationValues);
 						if (claimed.changes === 1) {
 							bootstrapGrant = insertBootstrapGrantSync(
 								this.db,
@@ -2319,7 +2312,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				}
 				// Trigger effects belong to this transaction too; denial rolls back all acceptance writes.
 				this.assertRecipientInviteAuthorized(savedWithGrant, opts, participantSubjects);
-				this.assertRecipientOwnerPin(pendingPin);
+				this.assertRecipientOwnerGuards(pendingGuards);
 				return {
 					status: changed === 1 ? "accepted" : "existing",
 					invite: savedWithGrant,
@@ -2333,20 +2326,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private repairRecipientOwnerIdentity(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeRecipientInviteInput,
-		options: { authorization: AuthLinkStatement; consistency: NegativeOwnerConsistency },
-	): AuthLinkStatement {
+		options: { authorization: AuthLinkStatement; consistency: NegativeOwnerGuards },
+	): AuthLinkStatement[] {
 		const { authorization, consistency } = options;
 		const repaired = this.db
 			.prepare(
-				recipientOwnerWriteSql(
-					`UPDATE enrolled_devices SET identity_id = ?
+				`UPDATE enrolled_devices SET identity_id = ?
 			WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
 			AND public_key = ? AND fingerprint = ? AND ${authorization.sql}`,
-					consistency,
-				),
 			)
 			.run(
-				...consistency.values,
 				opts.identityId,
 				invite.group_id,
 				opts.deviceId,
@@ -2355,7 +2344,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				...authorization.values,
 			);
 		// A zero-row repair does not consume the initial owner evidence.
-		return repaired.changes === 1 ? consistency.retainedRecheck : consistency;
+		return repaired.changes === 1 ? consistency.retainedGuards : consistency.guards;
 	}
 
 	private validateAcceptedRecipientOwner(
@@ -2375,41 +2364,35 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			throw new Error("invite_identity_conflict");
 	}
 
-	private assertRecipientOwnerPin(
-		predicate: AuthLinkStatement | null,
-	): asserts predicate is AuthLinkStatement {
-		if (
-			!predicate ||
-			(this.db.prepare(predicate.sql).get(...predicate.values) as { matches: number } | undefined)
-				?.matches !== 1
-		)
-			throw new Error("device_ownership_authorization_unavailable");
+	/** Runs read-set guards inside the open transaction. Any refusal is the same error. */
+	private assertRecipientOwnerGuards(
+		guards: AuthLinkStatement[] | undefined,
+	): asserts guards is AuthLinkStatement[] {
+		if (!guards) throw new Error("device_ownership_authorization_unavailable");
+		try {
+			for (const guard of guards) this.db.prepare(guard.sql).get(...guard.values);
+		} catch (error) {
+			if (isSnapshotChanged(error)) throw new Error("device_ownership_authorization_unavailable");
+			throw error;
+		}
 	}
 
 	private consumeRecipientOwnerToken(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeRecipientInviteInput,
-		options: {
-			authorization: AuthLinkStatement;
-			consistency: AuthLinkStatement;
-			consumedAt: string;
-		},
+		options: { authorization: AuthLinkStatement; consumedAt: string },
 	) {
 		if (invite.consumed_at) return 0;
-		const { authorization, consistency, consumedAt } = options;
+		const { authorization, consumedAt } = options;
 		return this.db
 			.prepare(
-				recipientOwnerWriteSql(
-					`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
+				`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
  bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?, recipient_display_name = ?, recipient_device_display_name = ?
  WHERE invite_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
  AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id AND g.archived_at IS NULL)
  AND ${authorization.sql}`,
-					consistency,
-				),
 			)
 			.run(
-				...consistency.values,
 				`consumed:${invite.invite_id}`,
 				consumedAt,
 				opts.deviceId,

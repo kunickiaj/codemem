@@ -23,6 +23,7 @@ import {
 	sourcePins,
 } from "./coordinator-owner-negative-consistency.js";
 import {
+	anyNamespaceResolutionsRead,
 	discoveredReads,
 	evidenceReads,
 	NEGATIVE_CATALOG_READ,
@@ -96,11 +97,37 @@ export async function readNegativeOwnerConsistency(
 	}
 }
 
+/**
+ * The negative owner check for old internal callers that name no coordinator. It allows
+ * only a device with no retained resolution anywhere, and never infers a namespace.
+ */
+export async function readUnknownNamespaceOwnerConsistency(
+	backend: Backend,
+	input: Pick<NegativeOwnerSubject, "deviceId" | "publicKey">,
+): Promise<NegativeOwnerGuards | null> {
+	try {
+		const catalog = await readSnapshot<{ catalog: unknown[] }>(backend, {
+			catalog: NEGATIVE_CATALOG_READ,
+		});
+		const state = catalogState(catalog.rows.catalog);
+		if (state === null) return null;
+		if (state === "missing") return both([catalog.guards.catalog]);
+		const keyId = await ed25519KeyIdForRevocation(input.publicKey);
+		const retained = await readSnapshot<{ resolutions: unknown[] }>(backend, {
+			resolutions: anyNamespaceResolutionsRead(input.deviceId, keyId),
+		});
+		if (retained.rows.resolutions.length !== 0) return null;
+		return both([catalog.guards.catalog, retained.guards.resolutions]);
+	} catch {
+		return null;
+	}
+}
+
 async function readResolvedOwnerConsistency(
 	backend: Backend,
 	input: NegativeOwnerSubject,
 	keyId: string | null,
-	fixed: { catalog: AuthLinkStatement; retained: AuthLinkStatement },
+	fixed: { catalog: AuthLinkStatement },
 	options: ReadSnapshotOptions,
 ): Promise<NegativeOwnerGuards | null> {
 	// The old evidence statement needed a backend that returns rows; keep refusing without one.
@@ -143,9 +170,12 @@ async function readResolvedOwnerConsistency(
 	);
 	const [verdict] = sources.rows.sources;
 	if (sources.rows.sources.length !== 1 || !sqlEq(verdict?.matches ?? null, 1)) return null;
+	// The retained guards pin the resolutions the evidence reads saw, not the earlier
+	// retained read: a resolution added between the two would otherwise leave the full and
+	// retained guards pinning different rows. The old pins both used the evidence rows.
 	return {
 		guards: [fixed.catalog, ...evidence.guards, sources.guards.sources],
-		retainedGuards: [fixed.catalog, fixed.retained, sources.guards.sources],
+		retainedGuards: [fixed.catalog, evidence.resolutionsGuard, sources.guards.sources],
 	};
 }
 
@@ -212,7 +242,12 @@ async function readEvidence(
 	subject: EvidenceSubject,
 	history: ControllerHistorySnapshot,
 	options: ReadSnapshotOptions,
-): Promise<{ rows: EvidenceRows; guards: AuthLinkStatement[] }> {
+): Promise<{
+	rows: EvidenceRows;
+	guards: AuthLinkStatement[];
+	/** The guard of the resolutions category alone. */
+	resolutionsGuard: AuthLinkStatement;
+}> {
 	const first = await readSnapshot<Record<string, EvidenceText>>(
 		backend,
 		evidenceReads({ subject, history }),
@@ -241,5 +276,11 @@ async function readEvidence(
 	return {
 		rows: Object.fromEntries(categories.map(([name, category]) => [name, category.rows])),
 		guards: snapshots.flatMap((snapshot) => Object.values(snapshot.guards)),
+		resolutionsGuard: requireGuard(first.guards.resolutions),
 	};
+}
+
+function requireGuard(guard: AuthLinkStatement | undefined): AuthLinkStatement {
+	if (!guard) throw new Error("ownership_evidence_unavailable");
+	return guard;
 }

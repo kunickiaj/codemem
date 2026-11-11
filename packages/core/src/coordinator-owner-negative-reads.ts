@@ -36,6 +36,15 @@ export function retainedResolutionsRead(
 	};
 }
 
+/** Resolutions of the device or key in any coordinator, for callers with no namespace. */
+export function anyNamespaceResolutionsRead(deviceId: string, keyId: string | null): AuthRead {
+	return {
+		sql: `SELECT json_array(${RESOLUTION_COLUMNS.join(",")}) AS row FROM ${RESOLUTIONS}
+ WHERE device_id=? OR key_id=? ORDER BY row`,
+		values: [deviceId, keyId],
+	};
+}
+
 /**
  * One evidence category as its old stage returned it: at most ROW_LIMIT + 1 rows, each the
  * exact `json_array` text, or NULL in every row once the rows together pass BYTE_LIMIT.
