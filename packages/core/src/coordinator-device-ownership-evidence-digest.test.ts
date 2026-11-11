@@ -13,6 +13,7 @@ import {
 	insert,
 	invitation,
 	otherKey,
+	recheckMatches,
 	signer,
 	sourceRef,
 	timestamp,
@@ -58,6 +59,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		const before = databaseSnapshot(f);
 		const firstRead = vi.spyOn(db, "first").mockRejectedValue(new Error("no digest queries"));
 		const allRead = vi.spyOn(db, "all").mockRejectedValue(new Error("no digest queries"));
+		const batchRead = vi.spyOn(db, "readBatch").mockRejectedValue(new Error("no digest queries"));
 		// Act
 		const result = await digest(reader, first.recheckSnapshot);
 		const repeated = await digest(reader, first.recheckSnapshot);
@@ -68,6 +70,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		expect(independent).toBe(result);
 		expect(firstRead).not.toHaveBeenCalled();
 		expect(allRead).not.toHaveBeenCalled();
+		expect(batchRead).not.toHaveBeenCalled();
 		expect(databaseSnapshot(f)).toEqual(before);
 	});
 
@@ -283,7 +286,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		const db = evidenceBackend(f, backend);
 		const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 		const old = await captured(reader, await collectInput(f));
-		const atomic = reader.prepareAtomicRecheck(old.recheckSnapshot);
+		const atomic = reader.recheckGuards(old.recheckSnapshot);
 		f.db
 			.prepare(
 				"UPDATE coordinator_auth_controller_attestations SET review_receipt_id='changed-unrelated-receipt'",
@@ -299,13 +302,13 @@ for (const backend of ["SQLite", "D1"] as const) {
 		// Act
 		const fresh = await captured(reader, await collectInput(f));
 		expect(fresh.decision).toBe("compatible");
-		expect(await db.first(atomic)).toEqual({ matches: 0 });
+		expect(await recheckMatches(db, atomic)).toEqual({ matches: 0 });
 		const before = await digest(reader, old.recheckSnapshot);
 		const after = await digest(reader, fresh.recheckSnapshot);
 		// Assert: old atomic rowset pins remain strict, unlike the human semantic digest.
 		expect(fresh.decision).toBe("compatible");
 		expect(after).toBe(before);
-		expect(await db.first(atomic)).toEqual({ matches: 0 });
+		expect(await recheckMatches(db, atomic)).toEqual({ matches: 0 });
 	});
 
 	test("equivalent validated schema spelling keeps digest but invalidates raw atomic catalog pin", async ({
@@ -315,16 +318,16 @@ for (const backend of ["SQLite", "D1"] as const) {
 		const db = evidenceBackend(f, backend);
 		const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 		const old = await captured(reader, await collectInput(f));
-		const atomic = reader.prepareAtomicRecheck(old.recheckSnapshot);
+		const atomic = reader.recheckGuards(old.recheckSnapshot);
 		f.db.exec("DROP TABLE coordinator_legacy_owner_resolutions");
 		f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL.replaceAll("\n", "\n  "));
 		// Act
 		const fresh = await captured(reader, await collectInput(f));
-		expect(await db.first(atomic)).toEqual({ matches: 0 });
+		expect(await recheckMatches(db, atomic)).toEqual({ matches: 0 });
 		const before = await digest(reader, old.recheckSnapshot);
 		const after = await digest(reader, fresh.recheckSnapshot);
 		// Assert
 		expect(after).toBe(before);
-		expect(await db.first(atomic)).toEqual({ matches: 0 });
+		expect(await recheckMatches(db, atomic)).toEqual({ matches: 0 });
 	});
 }

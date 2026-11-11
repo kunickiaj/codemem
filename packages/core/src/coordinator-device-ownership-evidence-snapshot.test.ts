@@ -39,32 +39,17 @@ function encodedInput(input: Awaited<ReturnType<typeof collectInput>>) {
 	});
 }
 
-function schemaRow(rows: CapturedEvidenceRow[]) {
-	const schema = rows.find(({ category }) => category === "schema");
-	if (!schema) throw new Error("missing schema fixture category");
-	return schema;
-}
-
-const responseMutations: Record<string, (rows: CapturedEvidenceRow[], empty: number) => void> = {
-	unchanged: () => {},
-	missing: (rows, empty) => rows.splice(empty, 1),
-	unknown: (rows, empty) => {
-		rows[empty] = { ...rows[empty], category: "unknown" };
-	},
-	duplicate: (rows, empty) => rows.push({ ...rows[empty] }),
-	"duplicate-schema": (rows) => rows.push({ ...schemaRow(rows) }),
-	"wrong-count": (rows, empty) => {
-		rows[empty] = { ...rows[empty], row_count: 1 };
-	},
-	"fractional-count": (rows, empty) => {
-		rows[empty] = { ...rows[empty], row_count: 0.5 };
-	},
-	"inconsistent-count": (rows) => {
-		schemaRow(rows).row_count += 1;
-	},
-	"invalid-empty": (rows, empty) => {
-		rows[empty] = { ...rows[empty], row: "[]" };
-	},
+// Each evidence category is one read whose `rows` column holds a JSON array of row texts.
+const SCHEMA_CATEGORY = "tbl_name='coordinator_legacy_owner_resolutions' AND sql IS NOT NULL";
+const responseMutations: Record<string, (rows: string) => string | null> = {
+	unchanged: (rows) => rows,
+	missing: () => null,
+	"not-array": () => "{}",
+	"null-row": (rows) => JSON.stringify([...JSON.parse(rows), null]),
+	"non-array-row": (rows) => JSON.stringify([...JSON.parse(rows), JSON.stringify({})]),
+	"object-field": (rows) => JSON.stringify([...JSON.parse(rows), JSON.stringify([{}])]),
+	"over-limit": (rows) =>
+		JSON.stringify([...JSON.parse(rows), ...Array.from({ length: ROW_LIMIT + 1 }, () => "[]")]),
 };
 
 deterministicReviewTests();
@@ -219,28 +204,37 @@ for (const backend of ["SQLite", "D1"] as const) {
 	);
 
 	test.for(Object.keys(responseMutations))(
-		`${backend}: validates combined category metadata for %s responses`,
+		`${backend}: validates the schema category response for %s rows`,
 		async (variant, { f }) => {
-			// Arrange: alter only the combined response after executing its real SQL.
+			// Arrange: alter only the schema category's response after running its real SQL.
 			const input = await collectInput(f);
 			const db = evidenceBackend(f, backend);
-			const actualAll = db.all;
-			const combinedSql = readCombinedEvidenceQuery("").sql;
-			const reads = vi
-				.spyOn(db, "all")
-				.mockImplementation(async <T>(statement: AuthLinkStatement) => {
-					const rows = await actualAll<T>(statement);
-					if (statement.sql !== combinedSql) return rows;
-					const captured = rows as CapturedEvidenceRow[];
-					const empty = captured.findIndex(({ row_count }) => row_count === 0);
-					responseMutations[variant](captured, empty);
+			const actualReadBatch = db.readBatch;
+			const mutate = <T>(statement: AuthLinkStatement, rows: T[]): T[] => {
+				if (
+					!statement.sql.includes(SCHEMA_CATEGORY) ||
+					statement.sql.includes("auth_snapshot_changed")
+				)
 					return rows;
-				});
+				const text = responseMutations[variant]((rows[0] as { rows: string }).rows);
+				return [(text === null ? {} : { rows: text }) as T];
+			};
+			const reads = vi
+				.spyOn(db, "readBatch")
+				.mockImplementation(async <T>(statements: AuthLinkStatement[]) =>
+					(await actualReadBatch<T>(statements)).map((rows, index) =>
+						mutate(statements[index] as AuthLinkStatement, rows),
+					),
+				);
 			const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 			// Act
 			const result = await reader.collect(input);
-			// Assert: malformed metadata cannot produce an accepted snapshot.
-			expect(reads.mock.calls.some(([statement]) => statement.sql === combinedSql)).toBe(true);
+			// Assert: a malformed category response cannot produce an accepted snapshot.
+			expect(
+				reads.mock.calls.some(([statements]) =>
+					statements.some(({ sql }) => sql.includes(SCHEMA_CATEGORY)),
+				),
+			).toBe(true);
 			expect(result.kind).toBe(variant === "unchanged" ? "collected" : "unavailable");
 		},
 	);

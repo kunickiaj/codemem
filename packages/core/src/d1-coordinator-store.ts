@@ -74,7 +74,7 @@ import type {
 	CoordinatorAuthLinkHeadlessCreateInput,
 	CoordinatorAuthLinkHeadlessFinalizeInput,
 } from "./coordinator-auth-link-headless.js";
-import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
+import { isSnapshotChanged, requireReadBatch } from "./coordinator-auth-read-set.js";
 import {
 	assertCoordinatorAuthSchema,
 	CoordinatorAuthSchemaUpgradeRequiredError,
@@ -1374,30 +1374,34 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	readResolvedAccountOwnerStatus(
 		...args: Parameters<ResolvedAccountOwnerStatusOperations["readResolvedAccountOwnerStatus"]>
 	) {
-		return new ResolvedAccountOwnerStatusOperations({
-			...this.accountChangeBackend,
-			all: async <T>({ sql, values }: AuthLinkStatement) => {
-				const result = await this.db
-					.prepare(sql)
-					.bind(...values)
-					.all<T>();
-				if (!result.results) throw new Error("resolved_account_owner_status_unavailable");
-				return result.results;
-			},
-		}).readResolvedAccountOwnerStatus(...args);
+		return new ResolvedAccountOwnerStatusOperations(
+			requireReadBatch({
+				...this.accountChangeBackend,
+				all: async <T>({ sql, values }: AuthLinkStatement) => {
+					const result = await this.db
+						.prepare(sql)
+						.bind(...values)
+						.all<T>();
+					if (!result.results) throw new Error("resolved_account_owner_status_unavailable");
+					return result.results;
+				},
+			}),
+		).readResolvedAccountOwnerStatus(...args);
 	}
 	private ownerResolutionReviews(): OwnerResolutionReviewOperations {
-		return new OwnerResolutionReviewOperations({
-			...createD1AuthLinkBackend(this.db),
-			all: async <T>({ sql, values }: AuthLinkStatement) => {
-				const result = await this.db
-					.prepare(sql)
-					.bind(...values)
-					.all<T>();
-				if (!result.results) throw new Error("owner_resolution_rows_unavailable");
-				return result.results;
-			},
-		});
+		return new OwnerResolutionReviewOperations(
+			requireReadBatch({
+				...createD1AuthLinkBackend(this.db),
+				all: async <T>({ sql, values }: AuthLinkStatement) => {
+					const result = await this.db
+						.prepare(sql)
+						.bind(...values)
+						.all<T>();
+					if (!result.results) throw new Error("owner_resolution_rows_unavailable");
+					return result.results;
+				},
+			}),
+		);
 	}
 	previewOwnerResolutionReview(
 		...args: Parameters<OwnerResolutionReviewOperations["previewOwnerResolutionReview"]>

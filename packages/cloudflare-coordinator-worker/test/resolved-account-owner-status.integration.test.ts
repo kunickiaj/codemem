@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
+import { isSnapshotChanged } from "../../core/src/coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "../../core/src/coordinator-device-ownership-evidence.js";
 import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import {
@@ -181,17 +182,22 @@ async function setup(options: { fact?: boolean } = {}) {
 		failure?: { stage: string; sql: string; error: unknown };
 	} = { phase: "birth", finalReads: 0, writes: 0 };
 	const prepare = ({ sql, values }: AuthLinkStatement) => db.prepare(sql).bind(...values);
+	// The final profile-bearing read; a change lands before it, and before any guards
+	// that run in front of it in the same read batch.
+	async function beforeFinal(statement: AuthLinkStatement) {
+		if (
+			statement.sql.includes("coordinator_legacy_owner_resolutions") &&
+			/coordinator_auth_(?:account|link)_profiles/u.test(statement.sql)
+		) {
+			diagnostics.finalReads++;
+			const inject = hooks.final;
+			hooks.final = undefined;
+			await inject?.();
+		}
+	}
 	async function read<T>(statement: AuthLinkStatement, mode: "first" | "all"): Promise<T> {
 		try {
-			if (
-				statement.sql.includes("coordinator_legacy_owner_resolutions") &&
-				/coordinator_auth_(?:account|link)_profiles/u.test(statement.sql)
-			) {
-				diagnostics.finalReads++;
-				const inject = hooks.final;
-				hooks.final = undefined;
-				await inject?.();
-			}
+			await beforeFinal(statement);
 			if (mode === "all") return (await prepare(statement).all()).results as T;
 			return (await prepare(statement).first()) as T;
 		} catch (error) {
@@ -202,6 +208,24 @@ async function setup(options: { fact?: boolean } = {}) {
 	const backend = {
 		first: <T>(statement: AuthLinkStatement) => read<T | null>(statement, "first"),
 		all: <T>(statement: AuthLinkStatement) => read<T[]>(statement, "all"),
+		// The D1 store reads a set of statements in one native batch, as one snapshot.
+		async readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]> {
+			for (const statement of statements) await beforeFinal(statement);
+			try {
+				return (await db.batch(statements.map(prepare))).map(
+					(result) => (result.results ?? []) as T[],
+				);
+			} catch (error) {
+				// A guard's refusal is an answer: the evidence changed, so no row is read.
+				if (isSnapshotChanged(error)) throw error;
+				diagnostics.failure ??= {
+					stage: `${diagnostics.phase}/readBatch`,
+					sql: statements.map(({ sql }) => sql).join(";\n"),
+					error,
+				};
+				throw error;
+			}
+		},
 		async run(statement: AuthLinkStatement) {
 			diagnostics.writes++;
 			return (await prepare(statement).run()).meta.changes;
