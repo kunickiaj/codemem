@@ -5,11 +5,15 @@ import {
 	decodeCoordinatorAuthProof32,
 	hashCoordinatorAuthProofBytes32,
 } from "./coordinator-auth-proof.js";
+import { writeGuarded } from "./coordinator-auth-read-set.js";
 import {
 	type DeviceRebindAttempt,
 	verifyDeviceRebindCompletion,
 } from "./coordinator-device-rebind-proof.js";
-import { prepareDeviceSelfBindAuthority } from "./coordinator-device-self-bind-authority.js";
+import {
+	type DeviceSelfBindAuthority,
+	prepareDeviceSelfBindAuthority,
+} from "./coordinator-device-self-bind-authority.js";
 import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
@@ -145,6 +149,7 @@ function guards(
 	now: number,
 	revision: string,
 	scan: { enrollments: string; attestations: string },
+	authoritySnapshot: string | null,
 ): Guard[] {
 	return [
 		{
@@ -165,12 +170,12 @@ function guards(
 		// no proof of its own unless the start pinned the exceptional controller review.
 		{
 			sql: `((a.start_authority_json IS NOT NULL AND a.target_identity_id=a.current_identity_id
- AND a.start_authority_json IS (SELECT snapshot FROM current_self_bind_authority))
+ AND a.start_authority_json IS ?)
  OR (a.start_authority_json IS NULL AND ((a.target_identity_id = a.current_identity_id AND ${NO_OWN_PROOF_SQL})
  OR (a.target_identity_id <> a.current_identity_id AND NOT EXISTS (SELECT 1
  FROM coordinator_auth_account_links l WHERE l.coordinator_id = a.coordinator_id
  AND l.identity_id = a.current_identity_id AND l.revoked_at_ms IS NULL)))))`,
-			values: [],
+			values: [authoritySnapshot],
 		},
 		// Bindings are immutable, so a device is bound at most once.
 		{
@@ -245,6 +250,39 @@ async function hasTable(backend: AuthLinkBackend, name: string): Promise<boolean
 }
 
 /**
+ * The exceptional self-bind authority as it stands now, with the guards that keep it
+ * current in the commit batch. Null for an ordinary attempt, or when it no longer holds.
+ */
+async function currentSelfBindAuthority(
+	backend: AuthLinkBackend,
+	a: DeviceRebindAttempt,
+	now: number,
+): Promise<DeviceSelfBindAuthority | null> {
+	if (!a.start_authority_json) return null;
+	const pin = JSON.parse(a.start_authority_json) as { groupId: string };
+	return prepareDeviceSelfBindAuthority(
+		backend,
+		{
+			signer: {
+				groupId: pin.groupId,
+				deviceId: a.device_id,
+				publicKey: a.public_key,
+				fingerprint: a.fingerprint,
+			},
+			currentIdentityId: a.current_identity_id,
+			attemptId: a.attempt_id,
+		},
+		{
+			coordinatorId: a.coordinator_id,
+			issuer: a.issuer,
+			revision: a.auth_config_revision,
+			enabled: true,
+		},
+		now,
+	);
+}
+
+/**
  * Each guard is its own column, so the winning UPDATE stays shallow on D1
  * (expression depth limit 100).
  */
@@ -252,52 +290,21 @@ async function guardStatement(
 	backend: AuthLinkBackend,
 	a: DeviceRebindAttempt,
 	checks: Guard[],
-	now: number,
 ): Promise<AuthLinkStatement> {
 	const all = [...checks];
-	let authority: AuthLinkStatement = { sql: "SELECT NULL AS snapshot", values: [] };
-	if (a.start_authority_json) {
-		const pin = JSON.parse(a.start_authority_json) as { groupId: string };
-		authority =
-			(await prepareDeviceSelfBindAuthority(
-				backend,
-				{
-					signer: {
-						groupId: pin.groupId,
-						deviceId: a.device_id,
-						publicKey: a.public_key,
-						fingerprint: a.fingerprint,
-					},
-					currentIdentityId: a.current_identity_id,
-					attemptId: a.attempt_id,
-				},
-				{
-					coordinatorId: a.coordinator_id,
-					issuer: a.issuer,
-					revision: a.auth_config_revision,
-					enabled: true,
-				},
-				now,
-			)) ?? authority;
-	}
 	if (await hasTable(backend, "coordinator_legacy_owner_resolutions"))
 		all.push(NO_OTHER_LEGACY_OWNER);
 	// Checked here as well as at verification, so a headless link written in between still refuses.
 	if (await hasTable(backend, HEADLESS_LINK_PROVENANCE_TABLE))
 		all.push({ sql: NO_HEADLESS_TARGET_LINK_SQL, values: [] });
 	return {
-		sql: `WITH current_self_bind_authority AS MATERIALIZED (${authority.sql}), rebind_guards AS MATERIALIZED (SELECT ${all
+		sql: `WITH rebind_guards AS MATERIALIZED (SELECT ${all
 			.map((guard, index) => `(${guard.sql}) AS g${index}`)
 			.join(",\n ")}
  FROM ${ATTEMPT} a WHERE a.coordinator_id = ? AND a.attempt_id = ?),
  rebind_ok AS MATERIALIZED (SELECT ${all.map((_, index) => `g${index}`).join(" AND ")} AS ok
  FROM rebind_guards)`,
-		values: [
-			...authority.values,
-			...all.flatMap((guard) => guard.values),
-			a.coordinator_id,
-			a.attempt_id,
-		],
+		values: [...all.flatMap((guard) => guard.values), a.coordinator_id, a.attempt_id],
 	};
 }
 
@@ -449,19 +456,25 @@ export async function commitDeviceRebind(
 	if (!proof) return { kind: "refused" };
 	const scan = await keyAliasScan(backend, row);
 	if (!scan) return { kind: "refused" };
-	const guard = await guardStatement(backend, row, guards(row, now, revision, scan), now);
-	const bindingId = globalThis.crypto.randomUUID();
-	await backend.batch(
-		statements(row, guard, {
-			now,
-			bindingId,
-			eventId: globalThis.crypto.randomUUID(),
-			keyProofHash: proof.keyProofHash,
-			nullCount: (JSON.parse(scan.enrollments) as KeyRow[]).filter(
-				(e) => e.deviceId === row.device_id && e.identityId === null,
-			).length,
-		}),
+	const authority = await currentSelfBindAuthority(backend, row, now);
+	const guard = await guardStatement(
+		backend,
+		row,
+		guards(row, now, revision, scan, authority?.snapshot ?? null),
 	);
+	const bindingId = globalThis.crypto.randomUUID();
+	const writes = statements(row, guard, {
+		now,
+		bindingId,
+		eventId: globalThis.crypto.randomUUID(),
+		keyProofHash: proof.keyProofHash,
+		nullCount: (JSON.parse(scan.enrollments) as KeyRow[]).filter(
+			(e) => e.deviceId === row.device_id && e.identityId === null,
+		).length,
+	});
+	// A changed authority read aborts the batch with nothing written. Either way the
+	// receipt read below reports this commit, a concurrent exact retry that won, or a refusal.
+	await writeGuarded(backend, authority?.guards ?? [], writes);
 	const receipt = await readDeviceRebindReceipt(backend, row.coordinator_id, row.attempt_id);
 	if (!receipt) return { kind: "refused" };
 	// A concurrent exact retry may have won; this call then wrote nothing itself.

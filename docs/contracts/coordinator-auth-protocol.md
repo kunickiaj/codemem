@@ -1055,10 +1055,19 @@ snapshot. The absence of a fresh canonical listing does not prove that an earlie
 request failed.
 No persistent recovery workflow or registry records the unknown result.
 
-Self-bind authority is server-derived. The winning rebind start stores immutable
-`start_authority_json`, then the browser claim, callback, confirmation, and commit
-recompute its link genesis, exact current controller, enrollment set and null
-count, issuer, and configuration. Account mismatch, drift, revocation, competing
+Self-bind authority is server-derived. Each ceremony step reads the facts with
+queries, decides from those rows, and writes in one atomic batch whose first
+statements re-run every fact read the decision depends on. The batch writes
+nothing if one of them no longer supports the decision. Two reads are re-checked
+more narrowly, as they were before. The stored key list is checked only for
+newly introduced keys, so a removed key does not abort the write. The legacy
+assignment is re-checked only when the device relies on it. Which optional
+tables and columns exist is looked up once per step and is not re-checked.
+The winning rebind start stores the decision's pin as immutable
+`start_authority_json`. The browser claim, callback, confirmation, and commit
+read and decide again and require the same pin, which covers the link genesis,
+exact current controller, enrollment set and null count, issuer, and
+configuration. Account mismatch, drift, revocation, competing
 key, alias, or exclusion denies the ceremony. Migration 0044 adds this field;
 pre-migration readiness fails closed, while historical null attempts keep their
 original rules. Existing rebind receipts and client review-digest handling remain

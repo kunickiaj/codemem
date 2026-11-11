@@ -11,6 +11,7 @@ import type {
 	CoordinatorAuthLinkSigner,
 } from "./coordinator-auth-link-contract.js";
 import { captureAuthLinkConfig, captureAuthLinkSigner } from "./coordinator-auth-link-input.js";
+import type { AuthRead } from "./coordinator-auth-read-set.js";
 import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
@@ -39,6 +40,22 @@ const CURRENT_KEYS = `SELECT public_key FROM enrolled_devices
  UNION SELECT public_key FROM coordinator_auth_controller_attestations
  UNION SELECT public_key FROM coordinator_auth_link_attempts
  UNION SELECT bound_public_key AS public_key FROM coordinator_invites`;
+/**
+ * Read-set form of the key list: one JSON string per distinct stored text key, in key
+ * order. Its guard keeps the rule of AUTH_DEVICE_CLAIM_CURRENT_SUBJECT_COMPATIBLE_SQL:
+ * no stored key may be outside the list that was classified. A key that disappears
+ * leaves the classification valid, so it does not abort the write.
+ */
+export const AUTH_DEVICE_CLAIM_KEYS_READ: AuthRead = {
+	sql: `SELECT json_quote(public_key) AS row FROM (${CURRENT_KEYS})
+ WHERE typeof(public_key) = 'text' ORDER BY public_key`,
+	values: [],
+	holds: (seenKeys) => ({
+		sql: `SELECT NOT EXISTS (SELECT public_key FROM (${CURRENT_KEYS}) WHERE typeof(public_key) = 'text'
+ EXCEPT SELECT value FROM json_each(?)) AS holds`,
+		values: [seenKeys],
+	}),
+};
 const KEY_SNAPSHOT_SQL = `SELECT (${AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL}) AS assignment_snapshot,
  (SELECT count(*) FROM pragma_table_info('coordinator_auth_browser_transactions') WHERE name = 'start_order') AS connection_session,
  (SELECT json_group_array(public_key) FROM (
@@ -125,6 +142,8 @@ const live = (alias: string) =>
 // but an invite revoked before consumption supplies no footprint.
 const inviteLive = `(i.revoked_at IS NULL AND i.expires_at > p.now_iso)`;
 const inviteConsumed = `(i.consumed_at IS NOT NULL AND i.consumed_at <> '' AND (i.revoked_at IS NULL OR i.revoked_at > i.consumed_at))`;
+/** Alias i: an invite that was consumed and not revoked before its consumption. */
+export const AUTH_DEVICE_CLAIM_INVITE_CONSUMED_SQL = inviteConsumed;
 const inviteBinding = `(i.bound_device_id IS NOT NULL OR i.bound_public_key IS NOT NULL)`;
 const completionJson = `CASE WHEN typeof(c.manifest_json) = 'text' AND json_valid(c.manifest_json) THEN c.manifest_json ELSE '{}' END`;
 
@@ -260,13 +279,21 @@ function hasKeyBlob(key: string, blob: Uint8Array): boolean {
 	const parsed = parseSshEd25519PublicKeyForRevocation(key);
 	return parsed.kind === "ed25519" && parsed.blob.every((byte, index) => byte === blob[index]);
 }
-/** Capture only server-derived key metadata; a later writer must include the SQL guard. */
-export async function captureDeviceClaimEligibility(
-	backend: Pick<AuthLinkBackend, "first">,
+/** A validated claim request with the canonical ID and raw bytes of its key. */
+export interface DeviceClaimSubject {
+	config: CoordinatorAuthLinkConfig;
+	signer: CoordinatorAuthLinkSigner;
+	identityId: string;
+	attemptId: string | null;
+	keyId: string;
+	keyBlob: Uint8Array;
+}
+
+/** Validates the request and configuration and derives the key ID. Reads nothing. */
+export async function captureDeviceClaimSubject(
 	input: CoordinatorDeviceClaimReadinessInput,
 	config: CoordinatorAuthLinkConfig,
-	now: number,
-): Promise<CapturedClaimEligibility | null> {
+): Promise<DeviceClaimSubject | null> {
 	const c = captureAuthLinkConfig(config);
 	const i = captureInput(input);
 	if (!c?.enabled || !i) return null;
@@ -274,47 +301,87 @@ export async function captureDeviceClaimEligibility(
 	if (target.kind !== "ed25519") return null;
 	const keyId = await ed25519KeyIdForRevocation(i.signer.publicKey);
 	if (!keyId) return null;
-	const row = await backend.first<ClaimKeySnapshot>({
-		sql: KEY_SNAPSHOT_SQL,
-		values: [
-			COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
-			i.signer.groupId,
-			legacyTeamCandidateId(c.coordinatorId, i.signer.groupId),
-		],
-	});
-	const keys: unknown = JSON.parse(row?.keys ?? "null");
+	return { config: c, ...i, keyId, keyBlob: target.blob };
+}
+
+/** The three inputs of AUTH_LEGACY_ASSIGNMENT_CAPTURE_SQL for this subject. */
+export function deviceClaimAssignmentInputs(
+	subject: DeviceClaimSubject,
+): AuthLinkStatement["values"] {
+	return [
+		COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
+		subject.signer.groupId,
+		legacyTeamCandidateId(subject.config.coordinatorId, subject.signer.groupId),
+	];
+}
+
+export interface DeviceClaimKeyFacts {
+	/** Every stored text key. */
+	keys: string[];
+	/** The stored text forms of the subject's own key. */
+	aliases: string[];
+	/** The legacy assignment this device relies on, or null when it has none. */
+	assignmentSnapshot: string | null;
+}
+
+/** Classifies the stored keys and the stored legacy assignment for the subject. */
+export function deriveDeviceClaimKeyFacts(
+	subject: DeviceClaimSubject,
+	stored: { keys: unknown; assignment: string | null | undefined },
+): DeviceClaimKeyFacts {
+	const { keys } = stored;
 	if (!Array.isArray(keys) || !keys.every((key): key is string => typeof key === "string"))
 		throw new Error("auth_device_claim_unavailable");
-	const aliases = keys.filter((key) => hasKeyBlob(key, target.blob));
+	const aliases = keys.filter((key) => hasKeyBlob(key, subject.keyBlob));
 	const distinctKeys = keys.filter(
 		(key) =>
 			!aliases.includes(key) && parseSshEd25519PublicKeyForRevocation(key).kind === "ed25519",
 	);
-	const assignmentSnapshot = captureCurrentLegacyAssignment(row?.assignment_snapshot, {
-		coordinatorId: c.coordinatorId,
-		identityId: i.identityId,
-		signer: i.signer,
+	const assignmentSnapshot = captureCurrentLegacyAssignment(stored.assignment, {
+		coordinatorId: subject.config.coordinatorId,
+		identityId: subject.identityId,
+		signer: subject.signer,
 		distinctKeys,
 	});
+	return { keys, aliases, assignmentSnapshot };
+}
+
+/** Capture only server-derived key metadata; a later writer must include the SQL guard. */
+export async function captureDeviceClaimEligibility(
+	backend: Pick<AuthLinkBackend, "first">,
+	input: CoordinatorDeviceClaimReadinessInput,
+	config: CoordinatorAuthLinkConfig,
+	now: number,
+): Promise<CapturedClaimEligibility | null> {
+	const subject = await captureDeviceClaimSubject(input, config);
+	if (!subject) return null;
+	const row = await backend.first<ClaimKeySnapshot>({
+		sql: KEY_SNAPSHOT_SQL,
+		values: deviceClaimAssignmentInputs(subject),
+	});
+	const facts = deriveDeviceClaimKeyFacts(subject, {
+		keys: JSON.parse(row?.keys ?? "null"),
+		assignment: row?.assignment_snapshot,
+	});
 	return {
-		identityId: i.identityId,
+		identityId: subject.identityId,
 		connectionSession: row?.connection_session === 1,
 		values: [
-			c.coordinatorId,
-			i.identityId,
-			i.signer.groupId,
-			i.signer.deviceId,
-			i.signer.publicKey,
-			i.signer.fingerprint,
-			keyId,
+			subject.config.coordinatorId,
+			subject.identityId,
+			subject.signer.groupId,
+			subject.signer.deviceId,
+			subject.signer.publicKey,
+			subject.signer.fingerprint,
+			subject.keyId,
 			now,
 			new Date(now).toISOString(),
-			i.attemptId,
-			c.issuer,
-			c.revision,
-			JSON.stringify(keys),
-			JSON.stringify(aliases),
-			assignmentSnapshot,
+			subject.attemptId,
+			subject.config.issuer,
+			subject.config.revision,
+			JSON.stringify(facts.keys),
+			JSON.stringify(facts.aliases),
+			facts.assignmentSnapshot,
 		],
 	};
 }

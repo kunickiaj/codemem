@@ -17,6 +17,7 @@ import {
 	decodeCoordinatorAuthProof32,
 	hashCoordinatorAuthProofBytes32,
 } from "./coordinator-auth-proof.js";
+import { changedRows, writeGuarded } from "./coordinator-auth-read-set.js";
 import {
 	clearBrowserCookie,
 	readBrowserCookie,
@@ -190,7 +191,8 @@ const TARGET_LINK_SQL = `EXISTS (SELECT 1 FROM coordinator_auth_account_links l
 const CURRENT_ACCOUNT_SQL = `((a.start_authority_json IS NULL AND (${CURRENT_UNLINKED_SQL}
  OR ((a.target_identity_id IS NULL OR a.target_identity_id = a.current_identity_id) AND ${NO_OWN_PROOF_SQL})))
  OR (a.start_authority_json IS NOT NULL AND (a.target_identity_id IS NULL OR a.target_identity_id=a.current_identity_id)
- AND a.start_authority_json IS (SELECT snapshot FROM current_self_bind_authority)))`;
+ AND a.start_authority_json IS ?))`;
+// Eight values, from live(): the last is the current self-bind authority pin, or NULL.
 const LIVE_SQL = `a.coordinator_id = ? AND a.attempt_id = ? AND a.origin = ? AND a.issuer = ?
  AND a.auth_config_revision = ? AND a.created_at_ms <= ? AND a.expires_at_ms > ?
  AND ${UNBOUND_SQL} AND ${UNREVOKED_SQL} AND ${CURRENT_ACCOUNT_SQL}`;
@@ -223,15 +225,35 @@ interface Ctx<D extends DeviceRebindDeviceDependencies = DeviceRebindDependencie
 /** Device steps and their helpers run with either dependency set. */
 type DeviceCtx = Ctx<DeviceRebindDeviceDependencies>;
 
-async function selfBindAuthority(ctx: DeviceCtx, input: DeviceSelfBindInput | null) {
-	const query = (input
+interface CurrentAuthority {
+	/** The pin the exceptional path requires right now; null when it is not available. */
+	snapshot: string | null;
+	/** Re-run the reads behind the pin; they go first in the batch that writes. */
+	guards: AuthLinkStatement[];
+}
+
+async function selfBindAuthority(
+	ctx: DeviceCtx,
+	input: DeviceSelfBindInput | null,
+): Promise<CurrentAuthority> {
+	const authority = input
 		? await prepareDeviceSelfBindAuthority(ctx.deps.backend, input, ctx.c, ctx.deps.now())
-		: null) ?? { sql: "SELECT NULL AS snapshot", values: [] };
-	return {
-		query,
-		prefix: `WITH current_self_bind_authority AS MATERIALIZED (${query.sql})`,
-		values: query.values,
-	};
+		: null;
+	return { snapshot: authority?.snapshot ?? null, guards: authority?.guards ?? [] };
+}
+
+/**
+ * Runs one write and returns how many rows it changed. With authority guards, the
+ * guards and the write share a batch, and a changed read counts as no row written.
+ */
+async function runWithAuthority(
+	ctx: DeviceCtx,
+	authority: CurrentAuthority,
+	write: AuthLinkStatement,
+): Promise<number> {
+	if (authority.guards.length === 0) return ctx.deps.backend.run(write);
+	const outcome = await writeGuarded(ctx.deps.backend, authority.guards, [write, changedRows(1)]);
+	return outcome === "committed" ? 1 : 0;
 }
 
 function authorityInput(row: DeviceRebindAttempt): DeviceSelfBindInput | null {
@@ -249,9 +271,18 @@ function authorityInput(row: DeviceRebindAttempt): DeviceSelfBindInput | null {
 	};
 }
 
-function live(ctx: DeviceCtx, time: number, attemptId: string) {
+function live(ctx: DeviceCtx, time: number, attemptId: string, authority: CurrentAuthority) {
 	const { c, deps } = ctx;
-	return [c.coordinatorId, attemptId, deps.publicOrigin, c.issuer, c.revision, time, time];
+	return [
+		c.coordinatorId,
+		attemptId,
+		deps.publicOrigin,
+		c.issuer,
+		c.revision,
+		time,
+		time,
+		authority.snapshot,
+	];
 }
 
 function readAttempt(ctx: DeviceCtx, attemptId: string) {
@@ -278,7 +309,8 @@ function boundary<C extends DeviceCtx, A extends unknown[]>(
 /**
  * The browser and device ceremony for ADR 0005 Section 8 rebinding. Every
  * step re-checks live authority in its winning statement; pre-reads only pick
- * the refusal reason shown to the person.
+ * the refusal reason shown to the person. The pinned self-bind authority is
+ * read and decided before the write, and guards in the same batch re-run its reads.
  */
 export function createDeviceRebindCeremony(deps: DeviceRebindDependencies) {
 	const ctx = context(deps);
@@ -372,20 +404,19 @@ async function start(ctx: DeviceCtx, input: DeviceRebindStart, clientKey: string
 	const reason = await startRefusal(ctx, input, keyId);
 	if (reason && reason !== "current_identity_linked") return refused(reason);
 	const authority = await selfBindAuthority(ctx, reason ? input : null);
-	const selfBind =
-		reason && (await ctx.deps.backend.first<{ snapshot: string }>(authority.query))?.snapshot;
+	const selfBind = authority.snapshot !== null;
 	if (reason && !selfBind) return refused(reason);
 	const time = ctx.deps.now();
 	const s = input.signer;
-	const wrote = await ctx.deps.backend.run({
-		sql: `${authority.prefix} INSERT INTO ${ATTEMPT} (coordinator_id, attempt_id, origin, device_id, public_key, key_id,
+	const wrote = await runWithAuthority(ctx, authority, {
+		sql: `INSERT INTO ${ATTEMPT} (coordinator_id, attempt_id, origin, device_id, public_key, key_id,
  fingerprint, current_identity_id, issuer, auth_config_revision, loopback_redirect, browser_start_hash,
  review_digest, state, created_at_ms, expires_at_ms, start_authority_json)
  SELECT a.* FROM (SELECT ? AS coordinator_id, ? AS attempt_id, ? AS origin, ? AS device_id,
  ? AS public_key, ? AS key_id, ? AS fingerprint, ? AS current_identity_id, ? AS issuer,
  ? AS auth_config_revision, ? AS loopback_redirect, ? AS browser_start_hash, ? AS review_digest,
  'pending' AS state, ? AS created_at_ms, ? AS expires_at_ms,
- (SELECT snapshot FROM current_self_bind_authority) AS start_authority_json) a
+ ? AS start_authority_json) a
  WHERE EXISTS (SELECT 1 FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
   WHERE e.group_id = ? AND e.device_id = a.device_id AND e.public_key = a.public_key
   AND e.fingerprint = a.fingerprint AND e.enabled = 1 AND g.archived_at IS NULL)
@@ -403,7 +434,6 @@ async function start(ctx: DeviceCtx, input: DeviceRebindStart, clientKey: string
  AND (SELECT count(*) FROM ${ATTEMPT} o WHERE o.coordinator_id = a.coordinator_id AND o.device_id = a.device_id
   AND o.created_at_ms > ?) < ?`,
 		values: [
-			...authority.values,
 			ctx.c.coordinatorId,
 			input.attemptId,
 			ctx.deps.publicOrigin,
@@ -419,6 +449,7 @@ async function start(ctx: DeviceCtx, input: DeviceRebindStart, clientKey: string
 			input.reviewDigest,
 			time,
 			time + TTL_MS,
+			authority.snapshot,
 			s.groupId,
 			time,
 			AUTH_LINK_MAX_ACTIVE_PER_DEVICE,
@@ -465,14 +496,15 @@ async function claimBrowser(ctx: Ctx, request: Request, clientKey: string) {
 		globalThis.crypto.getRandomValues(new Uint8Array(32)),
 	);
 	const stateHash = await sha256Hex(authorization.material.state);
-	await ctx.deps.backend.batch(
-		await claimStatements(ctx, row, authorization.material, {
-			time,
-			transactionHash,
-			stateHash,
-			binderHash: checked.cookieHash,
-		}),
-	);
+	const claim = await claimStatements(ctx, row, authorization.material, {
+		time,
+		transactionHash,
+		stateHash,
+		binderHash: checked.cookieHash,
+	});
+	// A changed authority read ends the claim the way a failed row assertion does.
+	if ((await writeGuarded(ctx.deps.backend, claim.guards, claim.writes)) !== "committed")
+		throw new Error("device_rebind_claim_unconfirmed");
 	const claimed = await readAttempt(ctx, row.attempt_id);
 	if (claimed?.state !== "browser_claimed" || claimed.browser_transaction_hash !== transactionHash)
 		throw new Error("device_rebind_claim_unconfirmed");
@@ -483,13 +515,16 @@ async function claimBrowser(ctx: Ctx, request: Request, clientKey: string) {
 	};
 }
 
-/** Browser transaction insert and attempt claim; each asserts it changed exactly one row. */
+/**
+ * Browser transaction insert and attempt claim; each asserts it changed exactly one row.
+ * The guards re-run the self-bind authority reads and go first in the same batch.
+ */
 async function claimStatements(
 	ctx: Ctx,
 	row: DeviceRebindAttempt,
 	material: { nonce: string; pkceVerifier: string },
 	p: { time: number; transactionHash: string; stateHash: string; binderHash: string },
-): Promise<AuthLinkStatement[]> {
+): Promise<{ guards: AuthLinkStatement[]; writes: AuthLinkStatement[] }> {
 	const authority = await selfBindAuthority(ctx, authorityInput(row));
 	const pending = `${LIVE_SQL} AND a.state = 'pending' AND a.browser_start_hash = ?
  AND a.browser_transaction_hash IS NULL AND a.browser_binder_hash IS NULL`;
@@ -498,15 +533,14 @@ async function claimStatements(
 		sql: "INSERT INTO coordinator_auth_browser_transactions (purpose) SELECT 'owner_enroll' WHERE changes() <> 1",
 		values: [],
 	};
-	return [
+	const writes = [
 		{
-			sql: `${authority.prefix} INSERT INTO coordinator_auth_browser_transactions (coordinator_id, browser_transaction_hash,
+			sql: `INSERT INTO coordinator_auth_browser_transactions (coordinator_id, browser_transaction_hash,
  purpose, attempt_id, state_hash, binder_hash, issuer, auth_config_revision, redirect_uri, state, nonce,
  pkce_verifier, created_at_ms, expires_at_ms)
  SELECT a.coordinator_id, ?, 'owner_enroll', a.attempt_id, ?, ?, a.issuer, a.auth_config_revision, ?,
  'pending', ?, ?, ?, a.expires_at_ms FROM ${ATTEMPT} a WHERE ${pending}`,
 			values: [
-				...authority.values,
 				p.transactionHash,
 				p.stateHash,
 				p.binderHash,
@@ -514,24 +548,24 @@ async function claimStatements(
 				material.nonce,
 				material.pkceVerifier,
 				p.time,
-				...live(ctx, p.time, row.attempt_id),
+				...live(ctx, p.time, row.attempt_id, authority),
 				row.browser_start_hash,
 			],
 		},
 		assertOne,
 		{
-			sql: `${authority.prefix} UPDATE ${ATTEMPT} AS a SET state = 'browser_claimed', browser_transaction_hash = ?,
+			sql: `UPDATE ${ATTEMPT} AS a SET state = 'browser_claimed', browser_transaction_hash = ?,
  browser_binder_hash = ? WHERE ${pending}`,
 			values: [
-				...authority.values,
 				p.transactionHash,
 				p.binderHash,
-				...live(ctx, p.time, row.attempt_id),
+				...live(ctx, p.time, row.attempt_id, authority),
 				row.browser_start_hash,
 			],
 		},
 		assertOne,
 	];
+	return { guards: authority.guards, writes };
 }
 
 /** The single OIDC state of a well-formed callback to the configured URL, checked before any burn. */
@@ -685,8 +719,8 @@ async function persistVerified(
 	// only a refused write looks up why. The commit repeats the check atomically.
 	const headless = link.headless_capable === 1;
 	const time = ctx.deps.now();
-	const wrote = await ctx.deps.backend.run({
-		sql: `${authority.prefix} UPDATE ${ATTEMPT} AS a SET state = 'oidc_verified', account_subject = ?, target_identity_id = ?,
+	const wrote = await runWithAuthority(ctx, authority, {
+		sql: `UPDATE ${ATTEMPT} AS a SET state = 'oidc_verified', account_subject = ?, target_identity_id = ?,
  link_id = ?, link_authority_kind = ?,
  enrollment_count = (SELECT count(*) FROM enrolled_devices e WHERE e.device_id = a.device_id),
  team_effects_json = json_object('groupsWithoutAccess', json((${GROUPS_WITHOUT_ACCESS_SQL})))
@@ -698,13 +732,12 @@ async function persistVerified(
   AND b.browser_transaction_hash = a.browser_transaction_hash AND b.state = 'consumed' AND b.claim_token = ?)
  AND (? = a.current_identity_id OR ${CURRENT_UNLINKED_SQL})${headless ? ` AND NOT ${headlessLinkExistsSql("a.coordinator_id")}` : ""}`,
 		values: [
-			...authority.values,
 			account.subject,
 			link.identity_id,
 			link.link_id,
 			link.authority_kind,
 			link.identity_id,
-			...live(ctx, time, attemptId),
+			...live(ctx, time, attemptId, authority),
 			link.link_id,
 			link.identity_id,
 			account.subject,
@@ -795,8 +828,8 @@ async function confirm(ctx: Ctx, request: Request, clientKey: string, commitment
 	const completionSecret = mintCompletionSecret();
 	const time = ctx.deps.now();
 	const authority = await selfBindAuthority(ctx, authorityInput(row));
-	const wrote = await ctx.deps.backend.run({
-		sql: `${authority.prefix} UPDATE ${ATTEMPT} AS a SET state = 'confirmed', confirmation_hash = ?, completion_secret_hash = ?
+	const wrote = await runWithAuthority(ctx, authority, {
+		sql: `UPDATE ${ATTEMPT} AS a SET state = 'confirmed', confirmation_hash = ?, completion_secret_hash = ?
  WHERE ${LIVE_SQL} AND a.state = 'oidc_verified' AND a.browser_binder_hash = ?
  AND a.account_subject = ? AND a.target_identity_id = ? AND a.link_id = ? AND a.team_effects_json = ?
  AND a.enrollment_count = ? AND ${TARGET_LINK_SQL} AND ${ENROLLMENTS_CURRENT_SQL}
@@ -804,10 +837,9 @@ async function confirm(ctx: Ctx, request: Request, clientKey: string, commitment
  AND EXISTS (SELECT 1 FROM coordinator_auth_browser_transactions b WHERE b.coordinator_id = a.coordinator_id
   AND b.browser_transaction_hash = a.browser_transaction_hash AND b.state = 'consumed')`,
 		values: [
-			...authority.values,
 			view.confirmationHash,
 			await proofHash(completionSecret),
-			...live(ctx, time, row.attempt_id),
+			...live(ctx, time, row.attempt_id, authority),
 			cookie.cookieHash,
 			row.account_subject,
 			row.target_identity_id,
@@ -871,8 +903,7 @@ async function finalizeRefusal(
 	if (!proof) return "unavailable";
 	if (after.start_authority_json) {
 		const authority = await selfBindAuthority(ctx, authorityInput(after));
-		const current = await ctx.deps.backend.first<{ snapshot: string }>(authority.query);
-		if (current?.snapshot !== after.start_authority_json) return "unavailable";
+		if (authority.snapshot !== after.start_authority_json) return "unavailable";
 	}
 	if (
 		after.link_id &&
