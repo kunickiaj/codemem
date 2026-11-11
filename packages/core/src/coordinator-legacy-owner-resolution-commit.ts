@@ -1,9 +1,5 @@
 import {
 	authControllerAuthorityValues,
-	authControllerInsertValues,
-	authControllerOwnerResolutionSql,
-	authControllerOwnerResolutionStages,
-	authControllerRetryEligibleValues,
 	type CoordinatorAuthControllerAttestation,
 	type CoordinatorAuthControllerReviewInput,
 	captureAuthControllerReview,
@@ -13,6 +9,11 @@ import {
 	type ControllerHistorySnapshot,
 	captureControllerHistorySnapshot,
 } from "./coordinator-auth-controller-history.js";
+import {
+	controllerEligibleStatement,
+	controllerInsertStatement,
+	readControllerReview,
+} from "./coordinator-auth-controller-read-set.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import type { CoordinatorDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -340,18 +341,19 @@ function assertRead(
 	}));
 }
 
+/**
+ * Asserts the enrollment is still eligible under the reviewed weak label. The snapshot and
+ * owner reads behind it are pinned by their own guards, which lead the batch.
+ */
 function assertEligibility(
 	input: CoordinatorAuthControllerReviewInput,
 	authority: (string | null)[],
 ): AuthLinkStatement[] {
-	const stages = authControllerOwnerResolutionStages("eligible", input);
-	return [CONTROLLER_ASSERT, RESOLUTION_ASSERT].map((prefix) => ({
-		sql: `${stages.ctes}, owner_resolution_eligibility AS MATERIALIZED (${stages.statement})
-			${prefix} FROM (SELECT 1) pending
-			LEFT JOIN owner_resolution_eligibility eligible_result ON 1
-			WHERE eligible_result.eligible IS NULL`,
-		values: authControllerRetryEligibleValues(input, authority),
-	}));
+	const eligible = controllerEligibleStatement(input, authority, { reviewedLabel: true });
+	return assertRead(
+		{ sql: `SELECT EXISTS (${eligible.sql}) AS eligible`, values: eligible.values },
+		"eligible",
+	);
 }
 
 function rowPin(
@@ -442,10 +444,13 @@ async function prepareCommit(
 		keyId,
 	);
 	// The evidence guards lead the batch: they re-run every read the review was built on.
+	// The reviewed snapshot's and owner target's guards follow them.
 	const evidenceGuards = evidence.recheckGuards(collected.recheckSnapshot);
 	if (!evidenceGuards) throw new Error("ownership_evidence_changed");
+	const reviewed = await readControllerReview(backend, input, authority);
+	if (!reviewed.allowed) throw new Error("review_changed");
 	const statements = await prepareAssertions(backend, review, controller, resolution, authority);
-	statements.unshift(...evidenceGuards);
+	statements.unshift(...evidenceGuards, ...reviewed.guards);
 	appendReceiptWrites(statements, review, resolution, now, authority);
 	return { controller, resolution, statements };
 }
@@ -536,10 +541,7 @@ function appendReceiptWrites(
 ): void {
 	const input = review.controllerReview;
 	if (!review.existingController) {
-		statements.push({
-			sql: authControllerOwnerResolutionSql("create", input),
-			values: authControllerInsertValues(input, now, authority),
-		});
+		statements.push(controllerInsertStatement(input, now, authority, { reviewedLabel: true }));
 		statements.push({ sql: `${RESOLUTION_ASSERT} WHERE changes() <> 1`, values: [] });
 	}
 	if (!review.existingResolution) {
