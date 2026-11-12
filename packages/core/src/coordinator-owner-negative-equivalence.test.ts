@@ -470,7 +470,7 @@ const VARIANTS = (["SQLite", "D1"] as const).flatMap((kind) =>
 describe.each(VARIANTS)("$kind backend, connection schema $connections", (variant) => {
 	it.each([...DECISION_CASES, ...GUARD_CASES])("answers like the original for $name", async (c) => {
 		// Arrange
-		const f = await selfBindFixture(variant.kind, "peer");
+		const f = await selfBindFixture(variant.kind, "peer", undefined, { accountSchema: "v2" });
 		close.push(f.close);
 		if (variant.connections) await applyAccountConnectionSchema(f.backend);
 		const s: RaceSubject = {

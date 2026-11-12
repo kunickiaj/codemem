@@ -317,6 +317,11 @@ test("denied signin admission preserves its typed limit result and never consume
 }) => {
 	seedBrowserRows({ ...f, cfg: config, now: f.clock.now }, AUTH_SIGNIN_TXN_MAX_STARTS_PER_WINDOW);
 	const before = f.rows("coordinator_auth_browser_transactions");
+	// Seeded starts allocate orders as real starts do; the denied start must add none.
+	const orders = f.rows("coordinator_auth_account_connection_orders");
+	expect(orders).toEqual([
+		{ coordinator_id: config.coordinatorId, last_order: 1 + AUTH_SIGNIN_TXN_MAX_STARTS_PER_WINDOW },
+	]);
 	expect(
 		await f.browser.startAuthBrowserTransaction(
 			{
@@ -330,9 +335,7 @@ test("denied signin admission preserves its typed limit result and never consume
 		),
 	).toEqual({ kind: "rejected", error: "transaction_limited" });
 	expect(f.rows("coordinator_auth_browser_transactions")).toEqual(before);
-	expect(f.rows("coordinator_auth_account_connection_orders")).toEqual([
-		{ coordinator_id: config.coordinatorId, last_order: 1 },
-	]);
+	expect(f.rows("coordinator_auth_account_connection_orders")).toEqual(orders);
 });
 
 test("historical IDs remain administratively revocable after disconnect; fresh admission cannot use the removed link", async ({

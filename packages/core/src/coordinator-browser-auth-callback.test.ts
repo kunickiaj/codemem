@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { reassignBrowserStarts } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { browserCapability, TABLE } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { linked } from "./coordinator-auth-session-test-fixtures.js";
@@ -505,7 +506,7 @@ describe("guarded admission and existing session preservation", () => {
 				f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms=?").run(NOW);
 			if (fault === "coordinator")
 				f.store.signInWithConsumedBrowserTransaction.mockImplementation(async (...args) => {
-					f.db.prepare(`UPDATE ${TABLE} SET coordinator_id=?`).run("other-coordinator");
+					reassignBrowserStarts(f.db, { sql: "1", values: [] }, "other-coordinator");
 					return f.persistence.signInWithConsumedBrowserTransaction(...args);
 				});
 			if (fault === "ten-sessions")

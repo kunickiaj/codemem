@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+
+const CONNECTION_ORDERS = "coordinator_auth_account_connection_orders";
+
 import { readBrowserCookie } from "./coordinator-browser-credential.js";
 import { issueBrowserCsrfToken } from "./coordinator-browser-csrf.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -361,6 +366,21 @@ it("rejects a stored attempt when the server config revision changes", async () 
 	// Assert
 	expect(result).toEqual(unavailable);
 	expect(f.snapshot()).toEqual(before);
+});
+
+it("orders the first browser claim on a coordinator installed before any account rows", async () => {
+	// Arrange: the account extension is current and this coordinator has no account rows yet.
+	await useCurrentAccountSchema(f.backend);
+	const orders = () => f.db.prepare(`SELECT * FROM ${CONNECTION_ORDERS}`).all();
+	expect(orders()).toEqual([]);
+	const c = await pending();
+	// Act
+	const result = await c.claimBrowser(c.form.request(), "browser-a");
+	// Assert: the first browser transaction allocates the coordinator's first order,
+	// as signin and link starts do, so account readiness stays intact.
+	expect(result.kind).toBe("browser_claimed");
+	expect(orders()).toEqual([{ coordinator_id: config.coordinatorId, last_order: 1 }]);
+	expect(await readConnectionSchemaState(f.backend)).toBe("ready");
 });
 
 it("denies replay after a successful browser claim", async () => {

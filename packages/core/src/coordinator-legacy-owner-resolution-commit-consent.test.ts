@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} captures an exact explicit resolution review without writes or retaining mutable input`, async ({
 		fixture: f,
 	}) => {

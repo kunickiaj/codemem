@@ -1,5 +1,6 @@
 import { describe, expect, vi } from "vitest";
 import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	browserConfig,
@@ -529,6 +530,8 @@ function registerBudgetIsolation(test: SessionTest) {
 			if (change === "old-revision") value = hash(900);
 			if (change === "other-issuer") value = "https://other.example.test";
 			f.db.prepare(`UPDATE coordinator_auth_sessions SET ${field} = ?`).run(value);
+			// Sessions on another coordinator follow that coordinator's own browser starts.
+			if (change === "other-coordinator") seedConnectionOrder(f.db, value);
 			const input = await ready(f);
 			const before = sessionRows(f)[1];
 			// Act

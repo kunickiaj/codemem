@@ -41,7 +41,7 @@ async function readOrUnavailable(f: LinkFixture, h: ResolvedHarness) {
 }
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	const races = [
 		[
 			"persisted fact changed with unchanged accepted schema",

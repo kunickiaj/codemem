@@ -6,6 +6,7 @@ import {
 	seedKeyRevocationSql,
 	seedLinkSql,
 } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthLinkCreateInput } from "./coordinator-auth-link-contract.js";
 import { attempt, backendTest, type LinkFixture } from "./coordinator-auth-link-test-fixtures.js";
 
@@ -19,6 +20,8 @@ function deviceAttempt(changes: Partial<CoordinatorAuthLinkCreateInput> = {}) {
 }
 function seed(f: LinkFixture) {
 	f.db.exec(seedEnrollmentSql);
+	// Seeded account links follow this coordinator's earlier browser starts.
+	seedConnectionOrder(f.db, f.cfg.coordinatorId);
 	return deviceAttempt();
 }
 function rows(f: LinkFixture) {

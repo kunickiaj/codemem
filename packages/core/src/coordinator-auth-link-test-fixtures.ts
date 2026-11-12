@@ -1,5 +1,6 @@
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { expect, it } from "vitest";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	browserProofConfig,
 	startBrowserProof,
@@ -237,11 +238,19 @@ export async function transition(f: LinkFixture, stage: Stage, config = f.cfg) {
 	);
 }
 
-export function backendTest(backend: Backend) {
+/**
+ * `accountSchema: "v2"` opens SQLite coordinators as V2 releases left them, for tests whose
+ * seeds model rows written before the account extension and then install it. D1 fixtures
+ * start on V2 either way.
+ */
+export function backendTest(backend: Backend, options: { accountSchema?: "current" | "v2" } = {}) {
 	return it.extend<{ fixture: LinkFixture }>({
 		fixture: async ({ task: _task }, use) => {
 			const clock = { now: NOW };
-			const base = setupStore(backend, { authClock: () => clock.now });
+			const base =
+				backend === "SQLite" && options.accountSchema === "v2"
+					? setupV2Store({ authClock: () => clock.now })
+					: setupStore(backend, { authClock: () => clock.now });
 			const f: LinkFixture = {
 				...base,
 				cfg: { ...cfg },

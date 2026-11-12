@@ -77,7 +77,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test.for(["consumed project actor", "same owner other group controller"] as const)(
 		`${kind} fixture control: %s is valid collected evidence without changing old review projections`,
 		async (change, { fixture: f }) => {

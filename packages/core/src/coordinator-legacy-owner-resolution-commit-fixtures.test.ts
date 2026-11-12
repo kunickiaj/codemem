@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} fixture proves linked A through actual birth provenance and collects weak C read-only`, async ({
 		fixture: f,
 	}) => {

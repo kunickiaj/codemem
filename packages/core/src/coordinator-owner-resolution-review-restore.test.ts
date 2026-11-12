@@ -27,7 +27,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} same-owner other-device receipt cannot displace the exact device and key receipt`, async ({
 		fixture: f,
 	}) => {

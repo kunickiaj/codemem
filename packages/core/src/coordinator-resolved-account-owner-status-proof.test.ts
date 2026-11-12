@@ -27,7 +27,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind}: caller-supplied complete fact metadata never replaces missing persisted proof`, async ({
 		fixture: f,
 	}) => {

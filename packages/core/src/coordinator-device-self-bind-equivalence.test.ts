@@ -564,7 +564,9 @@ const VARIANTS = (["SQLite", "D1"] as const).flatMap((kind) =>
 describe.each(VARIANTS)("$kind $origin-origin link, connection schema $connections", (variant) => {
 	it.each(CASES)("answers like the original SQL for $name", async (c) => {
 		// Arrange
-		const f = await selfBindFixture(variant.kind, variant.origin);
+		const f = await selfBindFixture(variant.kind, variant.origin, undefined, {
+			accountSchema: "v2",
+		});
 		close.push(f.close);
 		if (variant.connections) await applyAccountConnectionSchema(f.backend);
 		await c.change(f, (await ed25519KeyId(f.signer.publicKey)) as string);

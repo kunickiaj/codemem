@@ -18,7 +18,7 @@ import {
 } from "./coordinator-owner-resolution-review-test-fixtures.js";
 import { requestJson } from "./sync-http-client.js";
 
-const test = backendTest("SQLite");
+const test = backendTest("SQLite", { accountSchema: "v2" });
 const options = {
 	remoteUrl: "https://coordinator.example.test",
 	adminSecret: "fixture-scoped-admin",

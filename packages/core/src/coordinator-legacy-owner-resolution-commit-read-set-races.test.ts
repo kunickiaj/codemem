@@ -38,7 +38,7 @@ const OWNER_TARGET_CHANGES = [
 ] as const;
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	for (const [label, change] of OWNER_TARGET_CHANGES) {
 		test(`${kind}: a ${label} after the review's reads aborts the guarded batch`, async ({
 			fixture: f,

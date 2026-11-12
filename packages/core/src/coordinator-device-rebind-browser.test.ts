@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import {
@@ -60,6 +61,8 @@ function seed(f: ReturnType<typeof setupStore>, key: ReturnType<typeof commitPen
 			 VALUES (?, 'link-target', ?, 'fixture-subject', ?, 'link-attempt', ?, 1, 'device_claim', 'claim-target')`,
 		)
 		.run(config.coordinatorId, config.issuer, TARGET, config.revision);
+	// The seeded link follows this coordinator's earlier browser starts.
+	seedConnectionOrder(f.db, config.coordinatorId);
 	return { groupId: "group-a", deviceId: "device-work", publicKey: key.publicKey, fingerprint };
 }
 

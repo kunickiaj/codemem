@@ -1,6 +1,6 @@
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	AUTH_LIFECYCLE_PREDECESSOR_RECOGNITION_SQL,
 	AUTH_LIFECYCLE_SQLITE_PREDECESSOR_RECOGNITION_SQL,
@@ -13,7 +13,7 @@ afterEach(() => {
 	for (const db of databases.splice(0)) db.close();
 });
 function setup() {
-	const db = connectCoordinator(":memory:");
+	const db = connectV2Coordinator();
 	databases.push(db);
 	db.exec(`INSERT INTO main.${links}
 	 (coordinator_id, link_id, issuer, subject, identity_id, attempt_id,

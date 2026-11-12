@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { startBrowserProof } from "./coordinator-auth-browser-proof-test-fixtures.js";
 import type { CoordinatorAuthLinkStore } from "./coordinator-auth-link-contract.js";
 import { NOW, TTL } from "./coordinator-auth-link-test-fixtures.js";
 import { review } from "./coordinator-auth-store-test-fixtures.js";
@@ -90,7 +91,13 @@ async function authorize(f: LinkRevocationFixture) {
 }
 async function confirmed(f: LinkRevocationFixture, i: Inputs, profile?: { displayName: string }) {
 	expect(await f.store.createAuthLinkAttempt(i.start, i.cfg)).toMatchObject({ kind: "created" });
-	expect(await f.store.claimAuthLinkAttempt(i.browser, i.cfg)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	const browserConfig = { ...i.cfg, redirectUri: "https://coordinator.example.test/auth/callback" };
+	const proof = await startBrowserProof({ ...f, cfg: i.cfg }, i.browser, browserConfig);
+	expect(await f.store.consumeAuthBrowserTransaction(proof, browserConfig)).toMatchObject({
+		kind: "consumed",
+		purpose: "link",
+	});
 	expect(
 		await f.store.recordAuthLinkOidcVerified(
 			{ ...i.browser, account: { issuer: i.cfg.issuer, subject: "subject-a" }, profile },

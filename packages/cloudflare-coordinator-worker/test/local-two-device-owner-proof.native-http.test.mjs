@@ -83,7 +83,7 @@ export const log = Object.fromEntries(['error', 'warn', 'message', 'success', 'i
 				}));
 				builder.onResolve({ filter: /^vitest$/ }, () => ({ path: "vitest", namespace: "fixture" }));
 				builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
-					contents: "export const vi = { fn: f => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); };",
+					contents: "export const vi = { fn: f => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); }; export const onTestFinished = () => { throw new Error('Unexpected Vitest hook'); };",
 					loader: "js",
 				}));
 				builder.onResolve({ filter: /^@codemem\/core$/ }, () => ({ path: join(coreDir, "src/index.ts") }));

@@ -247,7 +247,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} accepts matching nonnull enrollment and fresh verifier revision without changing birth`, async ({
 		fixture: f,
 	}) => {

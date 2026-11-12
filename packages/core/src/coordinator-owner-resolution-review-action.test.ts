@@ -33,7 +33,7 @@ const options = {
 	resolutionScope: scope,
 	...selection,
 } satisfies CoordinatorAuthControllerReviewActionOptions;
-const test = backendTest("SQLite");
+const test = backendTest("SQLite", { accountSchema: "v2" });
 const wireBody = {
 	purpose: options.purpose,
 	resolution_scope: scope,

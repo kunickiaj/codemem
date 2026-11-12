@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { reassignBrowserStarts } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import {
 	browserCapability,
@@ -163,9 +164,7 @@ function registerEligibility(test: Test) {
 					`UPDATE ${TABLE} SET state = 'expired', nonce = NULL, pkce_verifier = NULL WHERE state_hash = ?`,
 				)
 				.run(hash(20002));
-			f.db
-				.prepare(`UPDATE ${TABLE} SET coordinator_id = 'other' WHERE state_hash = ?`)
-				.run(hash(20003));
+			reassignBrowserStarts(f.db, { sql: "state_hash = ?", values: [hash(20003)] }, "other");
 			const before = transactionRows(f);
 			const protectedBefore = protectedData(f);
 			const changed = { ...config };

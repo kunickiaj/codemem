@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import SqliteDatabase from "better-sqlite3";
 import { expect, vi } from "vitest";
+import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import { prepareHistoricalAccountDatabase } from "./coordinator-auth-historical-test-fixture.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
@@ -406,6 +411,53 @@ function composeSignedApi(
 	return { app, signed, restoreClose: () => close.mockRestore() };
 }
 
+type LinkedLegacySetupOptions = NonNullable<Parameters<typeof linkedLegacySetupFixture>[1]>;
+
+/**
+ * The seeded account history predates the account extension. SQLite coordinators are
+ * seeded as a V2 file and then reopened, so ordinary startup handles that history the way
+ * it handles an upgraded coordinator. Tests that install the extension themselves keep it
+ * on V2.
+ */
+async function seededCoordinator(
+	backend: Backend,
+	options: LinkedLegacySetupOptions,
+	keyA: DeviceKey,
+	keyB: DeviceKey,
+) {
+	const directory =
+		backend === "SQLite" && !options.coordinatorDatabasePath
+			? mkdtempSync(join(tmpdir(), "linked-legacy-coordinator-"))
+			: undefined;
+	const removeDirectory = () => {
+		if (directory) rmSync(directory, { recursive: true, force: true });
+	};
+	const path = options.coordinatorDatabasePath ?? join(directory ?? "", "coordinator.sqlite");
+	if (backend === "SQLite") createV2CoordinatorFile(path);
+	const seeding =
+		backend === "SQLite"
+			? new BetterSqliteCoordinatorStore(path, { authClock: () => NOW, existingOnly: true })
+			: null;
+	const coordinator = seeding
+		? { store: seeding, db: seeding.db }
+		: setupStore(backend, { authClock: () => NOW });
+	try {
+		const authority = options.accountAuthority ?? "device_claim";
+		const account = await seedCoordinatorState(coordinator, keyA, keyB, authority);
+		if (!seeding || options.accountSchema === "v2")
+			return { coordinator, account, removeDirectory };
+		await seeding.close();
+		if (seeding.db.open) seeding.db.close();
+		const store = new BetterSqliteCoordinatorStore(path, { authClock: () => NOW });
+		return { coordinator: { store, db: store.db }, account, removeDirectory };
+	} catch (error) {
+		await coordinator.store.close();
+		if (coordinator.db.open) coordinator.db.close();
+		removeDirectory();
+		throw error;
+	}
+}
+
 export async function linkedLegacySetupFixture(
 	backend: Backend,
 	options: {
@@ -415,22 +467,20 @@ export async function linkedLegacySetupFixture(
 		authConfigured?: boolean;
 		adminSecret?: string;
 		authRedirectUri?: string;
+		/** SQLite only: `v2` keeps the seeded coordinator on V2 instead of reopening it. */
+		accountSchema?: "current" | "v2";
 	} = {},
 ): Promise<LinkedLegacySetupFixture> {
-	const coordinator = setupStore(backend, {
-		authClock: () => NOW,
-		databasePath: options.coordinatorDatabasePath,
-	});
+	const keyA = deviceKey("device-a");
+	const keyB = deviceKey("device-b");
+	const { coordinator, account, removeDirectory } = await seededCoordinator(
+		backend,
+		options,
+		keyA,
+		keyB,
+	);
 	const local = connect(options.localDatabasePath ?? ":memory:");
 	try {
-		const keyA = deviceKey("device-a");
-		const keyB = deviceKey("device-b");
-		const account = await seedCoordinatorState(
-			coordinator,
-			keyA,
-			keyB,
-			options.accountAuthority ?? "device_claim",
-		);
 		seedLocalState(local, keyA);
 		const api = composeSignedApi(coordinator, options);
 		return {
@@ -459,12 +509,14 @@ export async function linkedLegacySetupFixture(
 				await coordinator.store.close();
 				if (coordinator.db.open) coordinator.db.close();
 				local.close();
+				removeDirectory();
 			},
 		};
 	} catch (error) {
 		await coordinator.store.close();
 		if (coordinator.db.open) coordinator.db.close();
 		local.close();
+		removeDirectory();
 		throw error;
 	}
 }

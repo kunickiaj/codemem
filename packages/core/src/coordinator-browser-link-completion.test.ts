@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { startBrowserProof } from "./coordinator-auth-browser-proof-test-fixtures.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	attempt,
@@ -48,7 +49,12 @@ async function existingSessionFixture(
 	const account = { issuer: config.issuer, subject: "opaque-subject-a" };
 	const created = attempt({ attemptId: browser.attemptId, runtimeVerifierHash: "9".repeat(64) });
 	expect(await f.store.createAuthLinkAttempt(created, config)).toMatchObject({ kind: "created" });
-	expect(await f.store.claimAuthLinkAttempt(browser, config)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	const started = await startBrowserProof({ ...f, cfg: config }, browser, config);
+	expect(await f.store.consumeAuthBrowserTransaction(started, config)).toMatchObject({
+		kind: "consumed",
+		purpose: "link",
+	});
 	expect(await f.store.recordAuthLinkOidcVerified({ ...browser, account }, config)).toMatchObject({
 		kind: "applied",
 	});

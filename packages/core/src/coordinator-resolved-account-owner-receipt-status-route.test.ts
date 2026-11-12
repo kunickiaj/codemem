@@ -24,7 +24,7 @@ import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION, verifySignature } from "./sync-auth.js";
 
 deterministicReviewTests();
-const test = backendTest("SQLite");
+const test = backendTest("SQLite", { accountSchema: "v2" });
 const ORIGIN = "https://app.example.test";
 const ROOT = "/v1/auth/resolved-account-owner-receipt-status";
 // Public RFC 8032 test vector matches the genuine projection requester's key.

@@ -46,7 +46,7 @@ function isReceiptWinner(sql: string, table: string): boolean {
 }
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	for (const [label, mutation] of [
 		["history", "UPDATE coordinator_legacy_team_completions SET created_at='changed'"],
 		["request group", "UPDATE groups SET archived_at='changed' WHERE group_id='group-a'"],

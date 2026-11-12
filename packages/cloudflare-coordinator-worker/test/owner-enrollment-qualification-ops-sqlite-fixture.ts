@@ -1,5 +1,5 @@
 import { expect, vi } from "vitest";
-import { setupStore } from "../../core/src/coordinator-auth-store-test-fixtures.js";
+import { setupV2Store } from "../../core/src/coordinator-account-schema-sqlite-test-fixtures.js";
 import { COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS } from "../../core/src/coordinator-owner-enrollment-qualification-schema.js";
 import {
 	qualificationOpsFixture,
@@ -7,7 +7,8 @@ import {
 } from "./owner-enrollment-qualification-ops-test-harness.js";
 
 export const test = qualificationOpsTest(async (use) => {
-	const { db } = setupStore("SQLite");
+	// The harness seeds account history from before the extension, then installs it.
+	const { db } = setupV2Store();
 	const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 	try {
 		for (const sql of COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS) db.exec(sql);

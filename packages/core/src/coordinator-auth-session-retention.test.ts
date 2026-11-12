@@ -5,6 +5,10 @@ import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
 import {
+	reassignBrowserStarts,
+	seedConnectionOrder,
+} from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import {
 	browserConfig,
 	hash,
 	materials,
@@ -93,6 +97,7 @@ function seed(f: LinkFixture, id = 1, changes: Record<string, unknown> = {}) {
 		revoked_at_ms: null,
 		...changes,
 	};
+	seedConnectionOrder(f.db, session.coordinator_id);
 	insert(f.db, SESSIONS, session);
 	insert(f.db, RECEIPTS, {
 		coordinator_id: session.coordinator_id,
@@ -192,7 +197,7 @@ function registerBoundaries(test: Test) {
 		f.now += AGE;
 		// Act
 		const blocked = await purge(f, methods[0]);
-		f.db.prepare(`UPDATE ${TABLE} SET coordinator_id='other'`).run();
+		reassignBrowserStarts(f.db, { sql: "1", values: [] }, "other");
 		const allowed = await purge(f, methods[0]);
 		const receipt = await purge(f, methods[1]);
 		// Assert

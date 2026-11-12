@@ -23,7 +23,7 @@ import {
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} fresh explicit confirmation creates only both receipts even after clock advances`, async ({
 		fixture: f,
 	}) => {

@@ -22,7 +22,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test.for([
 		{ rows: 501, commentBytes: 0 },
 		{ rows: 250, commentBytes: 3600 },

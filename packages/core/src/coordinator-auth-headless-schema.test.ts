@@ -1,13 +1,15 @@
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { initializeBaseSchema } from "./better-sqlite-coordinator-store.js";
 import {
 	AUTH_V2_SCHEMA_READINESS_SQL,
 	applyAccountConnectionSchema,
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
-import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import {
+	connectV2Coordinator,
+	setupV2Store,
+} from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	HEADLESS_CODE_LIMITS_TABLE,
 	HEADLESS_LINK_PROVENANCE_TABLE,
@@ -130,9 +132,8 @@ describe("existing auth readiness with headless tables", () => {
 
 	it("passes every lifecycle predecessor fence on a store that created the headless tables", () => {
 		// Arrange: the lifecycle upgrade's predecessor is the V2 schema earlier releases created.
-		const db = new Database(":memory:");
+		const db = connectV2Coordinator();
 		closers.push(() => db.close());
-		initializeBaseSchema(db);
 		// Act
 		const failed = AUTH_LIFECYCLE_PREDECESSOR_CHECKS.filter(
 			({ matches }) => (db.prepare(`SELECT (${matches}) AS ok`).get() as { ok: number }).ok !== 1,

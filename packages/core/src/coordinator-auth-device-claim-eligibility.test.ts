@@ -20,6 +20,7 @@ import {
 	seedOwnerAttemptSql,
 	seedUnrelatedCompletionSql,
 } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	AUTH_DEVICE_CLAIM_ELIGIBLE_SQL,
 	AUTH_DEVICE_CLAIM_INPUT_SQL,
@@ -254,6 +255,8 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 	beforeEach(() => {
 		f = setupStore(backend, { authClock: () => NOW });
 		f.db.exec(seedEnrollmentSql);
+		// The seeded account evidence follows this coordinator's earlier browser starts.
+		seedConnectionOrder(f.db, config.coordinatorId);
 	});
 	afterEach(async () => {
 		await f.store.close();

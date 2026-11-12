@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { seedBrowserStart } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { type AuthLinkBackend, AuthLinkOperations } from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_CREATE_WINDOW_MS,
@@ -301,26 +302,33 @@ it.each(
 				kind: "existing",
 			});
 		}
-		// Arrange: seed retained legacy history after any successful link retry.
-		f.db
-			.prepare(`INSERT INTO ${TRANSACTIONS}
+		// Arrange: seed retained legacy history after any successful link retry, ordered as
+		// the owner claim that wrote it would be.
+		seedBrowserStart(
+			f.db,
+			{
+				sql: `INSERT INTO ${TRANSACTIONS}
 		(coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,
 		issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
-		VALUES (?,?,'owner_enroll','attempt-a',?,?,?,?,?,?,?,?,?,?)`)
-			.run(
-				config.coordinatorId,
-				"1".repeat(64),
-				"2".repeat(64),
-				"3".repeat(64),
-				config.issuer,
-				config.revision,
-				config.redirectUri,
-				state,
-				state === "pending" ? proof() : null,
-				state === "pending" ? proof() : null,
-				NOW - 300000,
-				state === "pending" ? NOW + 300000 : NOW - 1,
-			);
+		VALUES (?,?,'owner_enroll','attempt-a',?,?,?,?,?,?,?,?,?,?)`,
+				values: [
+					config.coordinatorId,
+					"1".repeat(64),
+					"2".repeat(64),
+					"3".repeat(64),
+					config.issuer,
+					config.revision,
+					config.redirectUri,
+					state,
+					state === "pending" ? proof() : null,
+					state === "pending" ? proof() : null,
+					NOW - 300000,
+					state === "pending" ? NOW + 300000 : NOW - 1,
+				],
+			},
+			config.coordinatorId,
+			"1".repeat(64),
+		);
 		const before = f.rows(TRANSACTIONS);
 		// Act: a different ID succeeds; the reserved ID must not look rate-limited.
 		const created = await links.createAuthLinkAttempt(
