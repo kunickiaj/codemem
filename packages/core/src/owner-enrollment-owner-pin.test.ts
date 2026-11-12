@@ -62,7 +62,13 @@ registerOwnerPinTests(async (use) => {
 					.filter(
 						({ name }) =>
 							!options?.authorityOnly ||
-							![ATTEMPTS, "coordinator_auth_browser_transactions"].includes(name),
+							// A browser start's own rows: its transaction and, on the current
+							// account schema, the connection order it allocates.
+							![
+								ATTEMPTS,
+								"coordinator_auth_browser_transactions",
+								"coordinator_auth_account_connection_orders",
+							].includes(name),
 					)
 					.map(({ name }) => {
 						let orderBy = RELAY_ADMISSION_TABLE_KEYS[name]?.join(", ") ?? "rowid";

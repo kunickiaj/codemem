@@ -335,12 +335,11 @@ test.for(["inactive", "removed"])(
 	async (state, { writer: f }) => {
 		// Arrange: historical provenance remains pinned but is not live controller permission.
 		await commitFixtureEnrollment(f, commitPendingKey().publicKey, "historical-device");
+		// The historical link's own controller review exists; it is no longer active.
 		await f.exec(
-			"INSERT INTO coordinator_auth_controller_attestations (attestation_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,review_receipt_id,evidence_digest,created_at,revoked_at) SELECT ?,'coordinator-a','identity-a',group_id,device_id,public_key,fingerprint,'historical-receipt',?,?,? FROM enrolled_devices",
+			"UPDATE coordinator_auth_controller_attestations SET revoked_at = ? WHERE attestation_id = ?",
+			new Date(NOW).toISOString(),
 			f.row.link_controller_attestation_id,
-			"b".repeat(64),
-			new Date(NOW).toISOString(),
-			new Date(NOW).toISOString(),
 		);
 		await f.exec("UPDATE enrolled_devices SET enabled = 0");
 		if (state === "removed") {

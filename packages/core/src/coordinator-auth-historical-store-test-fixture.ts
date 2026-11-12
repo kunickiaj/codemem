@@ -102,6 +102,7 @@ export function setupHistoricalStore(
 		const history = prepareHistoricalAccountDatabase(db, options.history);
 		// Caller tables are explicit; excluded owner/relay admission storage and future auth DDL are not replayed.
 		for (const name of callerMigrations) db.exec(readFileSync(new URL(name, migrations), "utf8"));
+		seedHistoricalControllerReview(db, history);
 		// Atomic V3 activation: explicitly call upgradeAuthLifecycleSchema(db) here,
 		// after seeding and before either current store opens. V2 intentionally stays V2 now.
 		let store: Store;
@@ -129,4 +130,25 @@ export function setupHistoricalStore(
 		if (directory) rmSync(directory, { recursive: true });
 		throw error;
 	}
+}
+
+/**
+ * The controller review a historical controller-attested link was finalized under.
+ * Coordinators never delete reviews, so a link that names one always has its row.
+ */
+function seedHistoricalControllerReview(db: Database.Database, p: HistoricalAccountPins): void {
+	if (!p.controllerAttestationId) return;
+	db.prepare(`INSERT INTO coordinator_auth_controller_attestations
+ (attestation_id,coordinator_id,identity_id,group_id,device_id,public_key,fingerprint,review_receipt_id,evidence_digest,created_at)
+ VALUES (?,?,?,?,?,?,?,'historical-review',?,?)`).run(
+		p.controllerAttestationId,
+		p.config.coordinatorId,
+		p.identityId,
+		p.groupId,
+		p.deviceId,
+		p.publicKey,
+		p.fingerprint,
+		"e".repeat(64),
+		new Date(p.bornAtMs - 1000).toISOString(),
+	);
 }

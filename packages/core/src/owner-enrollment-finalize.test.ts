@@ -292,6 +292,9 @@ it.each(["confirm", "finalize"] as const)(
 	"V3 storage rejects account-birth replacement before owner %s",
 	async (stage) => {
 		// Arrange: keep the real prepared ceremony; after upgrade this case exercises only storage.
+		// The deferred V3 upgrade's predecessor is V2 without account management.
+		f.close();
+		f = ownerStartFixture({ accountSchema: "v2" });
 		await prepared(stage);
 		upgradeAuthLifecycleSchema(f.db);
 		const before = f.snapshot();
