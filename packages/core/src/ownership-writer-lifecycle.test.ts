@@ -44,6 +44,7 @@ describe.each(["SQLite", "D1"] as const)(
 					if (!f.tables.includes(table)) throw new Error("Unknown lifecycle fixture table");
 					const snapshotKeys: Record<string, string> = {
 						coordinator_auth_device_claims: "claim_id",
+						coordinator_owner_enrollment_qualifications: "qualification_id",
 						coordinator_legacy_owner_resolutions: "coordinator_id, resolution_id",
 					};
 					const orderBy =

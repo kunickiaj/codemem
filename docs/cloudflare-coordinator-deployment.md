@@ -602,6 +602,19 @@ every migration from `0001` and fail on the first change that already exists. Re
 
 1. Pause auth writers and back up the database. Compare its schema with the numbered chain for the expected stage,
    including indexes, triggers and constraints, before recording migration history.
+
+   Older `schema.sql` installations omitted `coordinator_owner_enrollment_qualifications` and its five triggers.
+   If inspection confirms that this table is absent, review migration `0035_add_owner_enrollment_qualifications.sql`
+   and apply that file alone as a prerequisite repair, with operator approval:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --file migrations/0035_add_owner_enrollment_qualifications.sql --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+   This creates empty qualification storage and its triggers. It does not issue qualifications or record migration
+   history. Compare the resulting table and trigger definitions with that migration before proceeding. If the table
+   already exists with different definitions, stop for a separate repair rather than relying on `IF NOT EXISTS`.
+   Do not record `0035` as applied while its storage is missing.
 2. Check, read-only, whether the ledger exists and what it holds:
 
    ```fish

@@ -159,18 +159,58 @@ describe("numbered auth-stage migrations", () => {
 	});
 });
 
-describe("guarded ledger baseline", () => {
-	// Wrangler's own ledger table, as `wrangler d1 migrations list` creates it.
-	const ledger = `CREATE TABLE IF NOT EXISTS d1_migrations(
+// Wrangler's own ledger table, as `wrangler d1 migrations list` creates it.
+const ledger = `CREATE TABLE IF NOT EXISTS d1_migrations(
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		name       TEXT UNIQUE,
 		applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );`;
-	const names = (db: Database.Database) =>
-		(db.prepare("SELECT name FROM d1_migrations ORDER BY id").all() as { name: string }[]).map(
-			({ name }) => name,
+const names = (db: Database.Database) =>
+	(db.prepare("SELECT name FROM d1_migrations ORDER BY id").all() as { name: string }[]).map(
+		({ name }) => name,
+	);
+const current = () => chainThrough(numbered.at(-1) as string);
+const fromWorkerSchema = () => {
+	const db = new Database(":memory:");
+	databases.push(db);
+	db.exec(readFileSync(new URL("../schema.sql", migrations), "utf8"));
+	return db;
+};
+const qualificationObjects = (source: Database.Database) =>
+	everything(source).filter(
+		({ name }) =>
+			name === "coordinator_owner_enrollment_qualifications" ||
+			name.startsWith("owner_enrollment_qualification_"),
+	);
+
+describe("guarded ledger baseline", () => {
+	it("baselines a fresh Worker schema without prerequisite repairs", () => {
+		const db = fromWorkerSchema();
+		expect(qualificationObjects(db)).toEqual(qualificationObjects(current()));
+		db.exec(ledger);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered);
+	});
+
+	it("requires qualification storage repair before baselining an older Worker schema", () => {
+		const db = fromWorkerSchema();
+		db.exec("DROP TABLE IF EXISTS coordinator_owner_enrollment_qualifications");
+		db.exec(ledger);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual([]);
+		const before = everything(db);
+		apply(db, "0035_add_owner_enrollment_qualifications.sql");
+		const repaired = everything(db);
+		expect(repaired.filter(({ name }) => before.some((object) => object.name === name))).toEqual(
+			before,
 		);
-	const current = () => chainThrough(numbered.at(-1) as string);
+		const reference = current();
+		expect(qualificationObjects(db)).toEqual(qualificationObjects(reference));
+		apply(db, "0035_add_owner_enrollment_qualifications.sql");
+		expect(everything(db)).toEqual(repaired);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered);
+	});
 
 	it("pins every table and column through V2 without excluding auth tables", () => {
 		const db = chainThrough(authorityCutover);
