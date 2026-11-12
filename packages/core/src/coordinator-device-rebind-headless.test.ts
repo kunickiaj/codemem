@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	HEADLESS_CODE_LIMITS_TABLE,
@@ -117,6 +118,8 @@ async function ceremonyFixture(kind: Backend) {
 		 attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
 		 VALUES (?, 'link-target', ?, ?, ?, 'link-attempt', ?, 1, 'device_claim', 'claim-target')`,
 	).run(config.coordinatorId, config.issuer, SUBJECT, TARGET, config.revision);
+	// The seeded target link follows this coordinator's earlier browser starts.
+	seedConnectionOrder(db, config.coordinatorId);
 	const material = {
 		state: randomBytes(32).toString("base64url"),
 		nonce: randomBytes(32).toString("base64url"),

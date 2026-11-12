@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { hashCoordinatorAuthProofBytes32 } from "./coordinator-auth-proof.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
@@ -86,6 +87,8 @@ function seedCoordinator(
 		REVISION,
 		NOW - 1000,
 	);
+	// The seeded target link follows this coordinator's earlier browser starts.
+	seedConnectionOrder(db, COORDINATOR);
 }
 
 async function confirmedAttempt(publicKey: string, secret: string): Promise<DeviceRebindAttempt> {

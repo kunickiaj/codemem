@@ -741,6 +741,15 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			if (row) return this.createRetry(row, i, s, c, now, authority);
 			return this.diagnoseCreateAdmission(i.attemptId, c, s, authority);
 		}
+		// On the current account schema a refused pinned insert reports a rejection instead of
+		// zero rows. When the V2 insert itself would have written nothing, the V2 diagnosis
+		// names the reason: inactive authority, a reserved ID, or exhausted admission.
+		if (
+			typeof result !== "number" &&
+			!row &&
+			!(await this.wouldAdmitCreation(i, s, c, now, authority))
+		)
+			return this.diagnoseCreateAdmission(i.attemptId, c, s, authority);
 		if (typeof result !== "number") return this.createRetry(row, i, s, c, now, authority);
 		if (!row || !creationMatches(row, i, s, c)) throw new Error("auth_link_persistence_incomplete");
 		return { kind: "created", status: status(row, now), identityId: row.identity_id };
@@ -896,6 +905,24 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 		}
 		if (!row || !creationMatches(row, i, s, c)) throw new Error("auth_link_persistence_incomplete");
 		return { kind: "created", status: status(row, now), identityId: row.identity_id };
+	}
+	/** Whether the attested INSERT's own source, authority and admission predicates hold. */
+	private async wouldAdmitCreation(
+		i: CreateInput,
+		s: CoordinatorAuthLinkSigner,
+		c: CoordinatorAuthLinkConfig,
+		now: number,
+		authority: (string | number | null)[],
+	): Promise<boolean> {
+		const admitted = await this.first({
+			sql: `SELECT 1 ${CREATE_SOURCE_SQL} ${AUTHORITY_GUARD} ${creationAdmissionSql("a")}`,
+			values: [
+				...createSourceValues(c, s),
+				...authority,
+				...creationAdmissionValues(i.attemptId, now),
+			],
+		});
+		return admitted !== null;
 	}
 	private async diagnoseCreateAdmission(
 		attemptId: string,

@@ -1,5 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
@@ -32,9 +35,13 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-/** A migrated device in two groups whose person's Google account is linked to TARGET. */
-async function rebindCeremonyFixture(kind: Backend) {
+/**
+ * A migrated device in two groups whose person's Google account is linked to TARGET.
+ * `emptyAccounts` instead leaves an installed account schema with no account rows yet.
+ */
+async function rebindCeremonyFixture(kind: Backend, options: { emptyAccounts?: boolean } = {}) {
 	const store = setupStore(kind, { authClock: () => NOW });
+	if (options.emptyAccounts) await useCurrentAccountSchema(nativeBackend(store.db));
 	closers.push(async () => {
 		await store.store.close();
 		if (store.db.open) store.db.close();
@@ -65,11 +72,14 @@ async function rebindCeremonyFixture(kind: Backend) {
 		 source_kind, source_receipt_id, created_at) VALUES (?, ?, 'group-a', 'active', 1, 'controller_attestation',
 		 'receipt', 'created')`,
 	).run(config.coordinatorId, TARGET);
-	db.prepare(
-		`INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id,
-		 attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
-		 VALUES (?, 'link-target', ?, ?, ?, 'link-attempt', ?, 1, 'device_claim', 'claim-target')`,
-	).run(config.coordinatorId, config.issuer, SUBJECT, TARGET, config.revision);
+	if (!options.emptyAccounts)
+		db.prepare(
+			`INSERT INTO coordinator_auth_account_links (coordinator_id, link_id, issuer, subject, identity_id,
+			 attempt_id, auth_config_revision, created_at_ms, authority_kind, device_claim_id)
+			 VALUES (?, 'link-target', ?, ?, ?, 'link-attempt', ?, 1, 'device_claim', 'claim-target')`,
+		).run(config.coordinatorId, config.issuer, SUBJECT, TARGET, config.revision);
+	// The seeded target link follows this coordinator's earlier browser starts.
+	if (!options.emptyAccounts) seedConnectionOrder(db, config.coordinatorId);
 	const account = { subject: SUBJECT };
 	const material = {
 		state: randomBytes(32).toString("base64url"),
@@ -556,4 +566,47 @@ describe.each(["SQLite", "D1"] as const)("%s device rebind ceremony", (kind) => 
 	registerSelfBind(kind);
 	registerSelfBindProof(kind);
 	registerReviewFixes(kind);
+});
+
+describe("SQLite device rebind on an installed coordinator with no account rows", () => {
+	const orders = (f: Fixture) =>
+		f.db.prepare("SELECT * FROM coordinator_auth_account_connection_orders").all();
+	it("orders the first browser claim and keeps the account schema ready", async () => {
+		// Arrange: an unlinked enrolled device may start a rebind before any account row exists.
+		const f = await rebindCeremonyFixture("SQLite", { emptyAccounts: true });
+		expect(orders(f)).toEqual([]);
+		const code = startCode();
+		expect(await f.ceremony.start(startInput(f, code), "client-a")).toMatchObject({
+			kind: "started",
+		});
+		// Act
+		const claimed = await f.ceremony.claimBrowser(
+			(await browserForm("rebind-a", code)).request(),
+			"client-a",
+		);
+		// Assert
+		expect(claimed?.kind).toBe("browser_claimed");
+		expect(orders(f)).toEqual([{ coordinator_id: config.coordinatorId, last_order: 1 }]);
+		expect(
+			f.db.prepare("SELECT purpose, start_order FROM coordinator_auth_browser_transactions").all(),
+		).toEqual([{ purpose: "owner_enroll", start_order: 1 }]);
+		expect(await readConnectionSchemaState(nativeBackend(f.db))).toBe("ready");
+	});
+	it("allocates no order for a claim refused before its batch", async () => {
+		// Arrange
+		const f = await rebindCeremonyFixture("SQLite", { emptyAccounts: true });
+		expect(await f.ceremony.start(startInput(f, startCode()), "client-a")).toMatchObject({
+			kind: "started",
+		});
+		// Act: the browser presents a different start code.
+		const claimed = await f.ceremony.claimBrowser(
+			(await browserForm("rebind-a", startCode())).request(),
+			"client-a",
+		);
+		// Assert
+		expect(claimed?.kind).not.toBe("browser_claimed");
+		expect(orders(f)).toEqual([]);
+		expect(f.db.prepare("SELECT * FROM coordinator_auth_browser_transactions").all()).toEqual([]);
+		expect(await readConnectionSchemaState(nativeBackend(f.db))).toBe("ready");
+	});
 });

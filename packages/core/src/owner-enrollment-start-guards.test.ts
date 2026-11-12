@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { seedBrowserStart } from "./coordinator-account-schema-sqlite-test-fixtures.js";
-import { type AuthLinkBackend, AuthLinkOperations } from "./coordinator-auth-link.js";
+import {
+	type AuthLinkBackend,
+	AuthLinkOperations,
+	type AuthLinkStatement,
+} from "./coordinator-auth-link.js";
 import {
 	AUTH_LINK_CREATE_WINDOW_MS,
 	AUTH_LINK_MAX_UNFINISHED_PER_COORDINATOR,
@@ -259,13 +263,28 @@ it.each(["pending", "failed"] as const)(
 		expect(
 			(await links.createAuthLinkAttempt(linkAttempt({ attemptId: "other-attempt" }), config)).kind,
 		).toBe("created");
-		const run = f.backend.run;
-		vi.spyOn(f.backend, "run").mockImplementationOnce(async (s) => {
-			// The collision arrives after the create preflight, before its atomic INSERT.
+		// The collision arrives after the create preflight, before the write that holds its
+		// atomic INSERT: a single run on V2, a batch on the current account schema.
+		let collided = false;
+		const collide = async (statements: AuthLinkStatement[]) => {
+			if (
+				collided ||
+				!statements.some(({ sql }) => sql.includes("INSERT INTO coordinator_auth_link_attempts"))
+			)
+				return;
+			collided = true;
 			expect((await c.start(c.input, "transport-a")).kind).toBe("started");
 			if (state === "failed")
 				f.db.exec(`UPDATE ${ATTEMPTS} SET state='failed',loopback_redirect=NULL`);
+		};
+		const { run, batch } = f.backend;
+		vi.spyOn(f.backend, "run").mockImplementation(async (s) => {
+			await collide([s]);
 			return run(s);
+		});
+		vi.spyOn(f.backend, "batch").mockImplementation(async (statements) => {
+			await collide(statements);
+			return batch(statements);
 		});
 		// Act: unique verifier avoids an unrelated unique-key rejection.
 		const result = await links.createAuthLinkAttempt(
@@ -273,6 +292,7 @@ it.each(["pending", "failed"] as const)(
 			config,
 		);
 		// Assert
+		expect(collided).toBe(true);
 		expect(result).toEqual({ kind: "rejected", error: "attempt_conflict" });
 		expect(f.rows("coordinator_auth_link_attempts").map((r) => r.attempt_id)).toEqual([
 			"other-attempt",

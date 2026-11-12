@@ -1,4 +1,5 @@
 import { describe, expect, vi } from "vitest";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { CoordinatorAuthBrowserTransactionStartInput } from "./coordinator-auth-browser-transaction-contract.js";
 import {
 	browserCapability,
@@ -24,6 +25,7 @@ import {
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
 import type { Backend } from "./coordinator-auth-store-test-fixtures.js";
+import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 function registerStartTests(test: Test) {
 	test("signin start returns only expiry and stores fresh server-owned proof", async ({
@@ -799,3 +801,33 @@ for (const backend of ["SQLite", "D1"] as const satisfies readonly Backend[]) {
 		registerCorruptionTests(test);
 	});
 }
+
+describe("SQLite browser transactions on the current account schema", () => {
+	const test = backendTest("SQLite");
+	test.for(["missing", "expired", "failed"])(
+		"link start denies %s attempt with its reason and allocates no order",
+		async (state, { fixture: f }) => {
+			// Arrange
+			await useCurrentAccountSchema(nativeBackend(f.db));
+			await authorize(f);
+			if (state !== "missing") await f.store.createAuthLinkAttempt(attempt(), f.cfg);
+			if (state === "expired") f.now += TTL;
+			if (state === "failed")
+				await f.store.failAuthLinkAttempt(
+					{ attemptId: "attempt-a", requester: device, reason: "cancelled" },
+					f.cfg,
+				);
+			const orders = () =>
+				f.db.prepare("SELECT * FROM coordinator_auth_account_connection_orders").all();
+			const before = [snapshot(f), transactionRows(f), orders()];
+			// Act
+			const result = await f.store.startAuthBrowserTransaction(
+				{ ...materials(), purpose: "link", attemptId: "attempt-a" },
+				config,
+			);
+			// Assert: the conditional insert writes nothing, so the start's whole batch rolls back.
+			expectRejected(result, state === "expired" ? "attempt_expired" : "attempt_unavailable");
+			expect([snapshot(f), transactionRows(f), orders()]).toEqual(before);
+		},
+	);
+});

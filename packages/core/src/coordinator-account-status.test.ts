@@ -91,10 +91,10 @@ async function setup(
 	const prepared = preparation.history
 		? setupHistoricalStore(backend, {
 				history: {
+					// The account was linked under the coordinator's previous provider issuer.
 					authority: "controller_attestation",
-					issuer: config.issuer,
+					issuer: "https://other.example.test",
 					bornAtMs: NOW - 10,
-					defect: "link_issuer",
 					session: {
 						credentialHash: "7".repeat(64),
 						profile: {

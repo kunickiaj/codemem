@@ -156,7 +156,8 @@ function reconnect(
 }
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	// Each test builds a finalized V2 birth, then installs only the storage DDL by hand.
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} rejects rowid and disconnected-head REPLACE collisions without losing history`, async ({
 		fixture: f,
 	}) => {

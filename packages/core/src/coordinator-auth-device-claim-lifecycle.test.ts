@@ -38,10 +38,12 @@ const start = () => ({
 	browserStartHash: request().browserStartHash,
 });
 
+// Browser starts also allocate a connection order on the current account schema; that
+// counter orders transactions and grants no authority.
 function authoritySnapshot(f: LinkFixture) {
 	const tables = f.db
 		.prepare(
-			"SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('coordinator_auth_link_attempts','coordinator_auth_browser_transactions') ORDER BY name",
+			"SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('coordinator_auth_link_attempts','coordinator_auth_browser_transactions','coordinator_auth_account_connection_orders') ORDER BY name",
 		)
 		.all() as { name: string }[];
 	return tables.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);

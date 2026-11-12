@@ -379,6 +379,9 @@ it.each([
 	"UPDATE coordinator_auth_account_links SET controller_attestation_id = 'changed-controller'",
 ])("V3 storage rejects the impossible callback birth race: %s", (mutation) => {
 	// Arrange: this is storage-only; never run the V2 owner reader through a V3 readiness gate.
+	// The deferred V3 upgrade's predecessor is V2 without account management.
+	f.close();
+	f = ownerStartFixture({ accountSchema: "v2" });
 	upgradeAuthLifecycleSchema(f.db);
 	const before = ownerCallbackAuthority(f);
 	// Act
