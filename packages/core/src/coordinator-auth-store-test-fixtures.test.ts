@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "./coordinator-account-connection-schema.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 
 const schema = readFileSync(
@@ -72,11 +73,12 @@ afterEach(() => {
 
 describe.each(["memory", "file"] as const)("D1 %s fixture initialization", (storage) => {
 	it("preserves the entire schema, empty tables, and default connection settings", () => {
-		// Arrange: the reference applies the exact Worker schema without an enclosing transaction.
+		// Arrange: apply the Worker schema and account upgrade without an enclosing transaction.
 		const path = storage === "memory" ? ":memory:" : databasePath();
 		const referencePath = storage === "memory" ? ":memory:" : databasePath();
 		const reference = openDatabase(referencePath);
 		reference.exec(schema);
+		for (const sql of ACCOUNT_CONNECTION_MIGRATION_STATEMENTS) reference.exec(sql);
 
 		// Act
 		const db = fixtureDatabase(path);

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "./coordinator-account-connection-schema.js";
 import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import {
@@ -91,19 +92,14 @@ export function sqliteD1(
 	};
 }
 
-/** Where the Worker schema's V2 prefix ends and account management begins. */
-export const WORKER_SCHEMA_ACCOUNT_MARKER = "-- Account management (migrations 0046 and 0047)";
 /**
- * The fresh Worker schema, or with `accountSchema: "v2"` its prefix: the V2 schema a
- * D1 coordinator had before migrations 0046 and 0047.
+ * The V2 Worker schema with the explicit account upgrade for current-schema fixtures.
  */
 export function workerSchemaSql(accountSchema: "current" | "v2" = "current"): string {
 	const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
 	const schema = readFileSync(join(worker, "schema.sql"), "utf8");
-	if (accountSchema === "current") return schema;
-	const end = schema.indexOf(WORKER_SCHEMA_ACCOUNT_MARKER);
-	if (end < 0) throw new Error("worker_schema_account_marker_missing");
-	return schema.slice(0, end);
+	if (accountSchema === "v2") return schema;
+	return `${schema}\n${ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.join(";\n")};`;
 }
 
 /**
