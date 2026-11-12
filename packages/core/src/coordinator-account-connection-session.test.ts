@@ -9,7 +9,6 @@ import { connectionSessionFixture } from "../../cloudflare-coordinator-worker/te
 import { seedEnrollmentSql } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
 import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
-	applyAccountConnectionSchema,
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
 import { ACCOUNT_CONNECTION_STORAGE_STATEMENTS } from "./coordinator-account-connection-storage.js";
@@ -21,8 +20,8 @@ import { AuthSessionOperations } from "./coordinator-auth-session.js";
 import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import type { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
-function baseFixture() {
-	const base = setupStore("D1", { authClock: () => NOW });
+function baseFixture(accountSchema: "current" | "v2" = "current") {
+	const base = setupStore("D1", { authClock: () => NOW, accountSchema });
 	const db = sqliteD1(base.db),
 		batch = db.batch?.bind(db);
 	if (!batch) throw new Error("missing atomic batch");
@@ -360,11 +359,11 @@ test("historical IDs remain administratively revocable after disconnect; fresh a
 it.each(["new coordinator", "attempt-only migration"] as const)(
 	"%s allocates its missing counter atomically at the first browser start",
 	async (mode) => {
-		const f = baseFixture();
+		// A new coordinator starts current; the attempt-only migration starts from V2.
+		const f = baseFixture(mode === "new coordinator" ? "current" : "v2");
 		try {
 			for (const sql of seedEnrollmentSql.split(";").filter((s) => s.trim()))
 				await f.backend.run({ sql, values: [] });
-			if (mode === "new coordinator") await applyAccountConnectionSchema(f.backend);
 			const links = new AuthLinkOperations(f.backend, () => NOW);
 			const request = {
 				attemptId: "first",
@@ -419,7 +418,6 @@ it.each(["new coordinator", "attempt-only migration"] as const)(
 it("real first-link finalization records the counter floor, rejects earlier signin and admits its own bound ceremony", async () => {
 	const f = baseFixture();
 	try {
-		await applyAccountConnectionSchema(f.backend);
 		for (const sql of seedEnrollmentSql.split(";").filter((s) => s.trim()))
 			await f.backend.run({ sql, values: [] });
 		const links = new AuthLinkOperations(f.backend, () => NOW),

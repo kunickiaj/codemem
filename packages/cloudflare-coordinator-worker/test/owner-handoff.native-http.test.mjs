@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 import {
 	ownerHandoffClient,
 	ownerBrowserStart,
@@ -42,7 +42,8 @@ export { COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL } from './coordinator-own
 export { createCoordinatorOwnerEnrollmentReceiver } from './coordinator-account-link-receiver.ts';
 export { issueBrowserCookie } from './coordinator-browser-credential.ts';
 export { oidcFixture, PROVIDER } from './coordinator-oidc-test-fixtures.ts';
-export { NOW } from './coordinator-auth-link-test-fixtures.ts';`,
+export { NOW } from './coordinator-auth-link-test-fixtures.ts';
+export { seedD1ConnectionOrder } from './coordinator-account-schema-test-fixtures.ts';`,
 			resolveDir: join(coreDir, "src"),
 			sourcefile: "test-only-owner-handoff.ts",
 		},
@@ -111,6 +112,7 @@ async function storage(t, h, kind) {
 	for (const migration of migrations)
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 	await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+	await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	// Copy only existing synthetic account/grant authority, never an owner attempt or device.
 	for (const table of [
@@ -128,6 +130,8 @@ async function storage(t, h, kind) {
 				.run();
 		}
 	}
+	// The order the copied link's start allocated; order rows begin at zero by design.
+	await h.seedD1ConnectionOrder(db, h.config.coordinatorId);
 	const prepare = (s) => db.prepare(s.sql).bind(...s.values);
 	return {
 		backend: {

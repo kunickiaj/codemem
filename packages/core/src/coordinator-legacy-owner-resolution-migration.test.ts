@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { readBrowserFixtureMigrations } from "../../cloudflare-coordinator-worker/test/browser-purpose-migrations-fixture.js";
 import { normalizeDefinitions } from "./coordinator-auth-browser-migration-test-harness.js";
-import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { setupStore, workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	LEGACY_OWNER_RESOLUTION_SCHEMA_SQL,
 	LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS,
@@ -11,7 +10,6 @@ import {
 
 const table = "coordinator_legacy_owner_resolutions";
 const definitions = `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE tbl_name = '${table}' ORDER BY type, name`;
-const worker = new URL("../../cloudflare-coordinator-worker/", import.meta.url);
 
 describe("inert owner-resolution migration inputs", () => {
 	it("migration 0037, complete statements and Worker fresh schema match source DDL", async () => {
@@ -29,7 +27,8 @@ describe("inert owner-resolution migration inputs", () => {
 			for (const statements of [
 				migration.queries,
 				LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS,
-				[readFileSync(new URL("schema.sql", worker), "utf8")],
+				// V2: the account block's guards apply once; the rest of the schema is repeatable.
+				[workerSchemaSql("v2")],
 			]) {
 				const db = new Database(":memory:");
 				try {

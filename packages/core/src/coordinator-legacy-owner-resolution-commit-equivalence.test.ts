@@ -5,7 +5,6 @@
 // new and reused controllers, in both resolution schema variants. Both must answer alike
 // and leave the same rows.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { cfg, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -185,11 +184,7 @@ async function answer(
 	variant: Variant,
 	options: { reuse: boolean; change: Change; stage: Stage; original: boolean },
 ) {
-	const f = (
-		kind === "SQLite"
-			? setupV2Store({ authClock: () => NOW })
-			: setupStore(kind, { authClock: () => NOW })
-	) as LinkFixture;
+	const f = setupStore(kind, { authClock: () => NOW, accountSchema: "v2" }) as LinkFixture;
 	f.cfg = { ...cfg };
 	open.push(f);
 	const h = backendFor(f, kind);

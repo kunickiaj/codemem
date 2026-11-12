@@ -4,9 +4,10 @@ import { dirname, join } from "node:path";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import Sqlite from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "../../core/src/coordinator-account-connection-schema.js";
 import * as receiver from "../../core/src/coordinator-account-link-receiver.js";
 import { linkCoordinatorAccount } from "../../core/src/coordinator-account-link-runtime.js";
-import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
+import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { enrollOwnerProfile } from "../../core/src/coordinator-owner-profile-client.js";
 import {
@@ -267,12 +268,8 @@ beforeEach(async () => {
 	const migrations = await readD1Migrations(join(import.meta.dirname, "../migrations"));
 	for (const migration of migrations)
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
-	await db.batch(
-		AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";")
-			.map((sql) => sql.trim())
-			.filter(Boolean)
-			.map((sql) => db.prepare(sql)),
-	);
+	await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+	await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 	traceOwnerProfile("schema-ready");
 	nativeDb = db;
 	if (traceCase <= 2 && process.env.CODEMEM_WORKER_D1_PROFILE === "1") {

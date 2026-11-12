@@ -346,6 +346,15 @@ export function deriveDeviceClaimKeyFacts(
 	return { keys, aliases, assignmentSnapshot };
 }
 
+/**
+ * The clock as the ISO text stored timestamps use. Auth clocks are documented as safe up
+ * to Number.MAX_SAFE_INTEGER less a lifetime, past the largest four-digit-year ISO date;
+ * there the latest four-digit timestamp keeps comparisons with stored text correct.
+ */
+function isoClock(now: number): string {
+	return now < Date.UTC(10000, 0, 1) ? new Date(now).toISOString() : "9999-12-31T23:59:59.999Z";
+}
+
 /** Capture only server-derived key metadata; a later writer must include the SQL guard. */
 export async function captureDeviceClaimEligibility(
 	backend: Pick<AuthLinkBackend, "first">,
@@ -375,7 +384,7 @@ export async function captureDeviceClaimEligibility(
 			subject.signer.fingerprint,
 			subject.keyId,
 			now,
-			new Date(now).toISOString(),
+			isoClock(now),
 			subject.attemptId,
 			subject.config.issuer,
 			subject.config.revision,

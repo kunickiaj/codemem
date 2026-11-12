@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { upgradeAuthLinkAuthoritySchema } from "./coordinator-auth-link-authority-upgrade.js";
 import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
+import { workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 
 // Foundation coverage uses only schema initialization and existing one-argument constructors.
 const TABLES = [
@@ -13,15 +14,11 @@ const TABLES = [
 	"coordinator_auth_link_audit_log",
 ] as const;
 type Backend = "SQLite" | "D1";
+// V2: these tables as each feature migration created them, before migrations 0046 and 0047.
 function setupSchema(backend: Backend): SqliteDatabase {
-	if (backend === "SQLite") return connectCoordinator(":memory:");
+	if (backend === "SQLite") return connectV2Coordinator();
 	const db = new Database(":memory:");
-	db.exec(
-		readFileSync(
-			join(import.meta.dirname, "../../cloudflare-coordinator-worker/schema.sql"),
-			"utf8",
-		),
-	);
+	db.exec(workerSchemaSql("v2"));
 	return db;
 }
 

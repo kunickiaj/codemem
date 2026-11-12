@@ -542,12 +542,10 @@ describe("first-generation proof and predecessor fence", () => {
 		const db = connectCoordinator(":memory:");
 		databases.push(db);
 		// Act
-		const ready = db.prepare(AUTH_SCHEMA_READINESS_SQL).get();
 		const installed = db
 			.prepare("SELECT name FROM sqlite_master WHERE name = ?")
 			.all("coordinator_auth_device_claims_first_generation");
-		// Assert
-		expect(ready).toEqual({ ready: 10 });
+		// Assert: fresh initialization is the current account schema, not V3.
 		expect(installed).toEqual([]);
 		expect(
 			db.prepare("SELECT name FROM pragma_table_info(?) WHERE name = ?").all(links, "generation"),

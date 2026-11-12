@@ -5,6 +5,7 @@ import {
 	reopenCoordinator,
 	setupV2Store,
 } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import { prepareHistoricalAccountDatabase } from "./coordinator-auth-historical-test-fixture.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
@@ -49,9 +50,10 @@ const insert = (db: Database.Database, table: string, row: Record<string, unknow
 export type SelfBindLinkOrigin = "own" | "peer" | "peer_controller";
 
 /**
- * The seeded account history predates the account extension, so SQLite coordinators are
- * seeded as a V2 file. `accountSchema: "v2"` keeps that file on V2 for tests that install
- * the extension themselves; otherwise it reopens through ordinary startup.
+ * The seeded account history predates the account extension, so coordinators are seeded
+ * on V2. `accountSchema: "v2"` keeps them there for tests that install the extension
+ * themselves; otherwise SQLite reopens through ordinary startup and D1 takes the
+ * account migrations.
  */
 async function seedSelfBind(
 	kind: Backend,
@@ -60,7 +62,8 @@ async function seedSelfBind(
 	options: SelfBindFixtureOptions,
 ) {
 	const v2 = kind === "SQLite" ? setupV2Store({ authClock: () => SELF_BIND_NOW }) : null;
-	const f: Fixture = v2 ?? setupStore(kind, { authClock: () => SELF_BIND_NOW });
+	const f: Fixture =
+		v2 ?? setupStore(kind, { authClock: () => SELF_BIND_NOW, accountSchema: "v2" });
 	const { db } = f;
 	const own = commitPendingKey();
 	const peer = commitPendingKey();
@@ -103,10 +106,12 @@ async function seedSelfBind(
 	await copyHistoricalRows(db, historical, source, identityId);
 	historical.close();
 	await seedControllerReviews(f, signer, source, identityId, origin);
-	const opened: Fixture =
-		v2 && options.accountSchema !== "v2"
-			? await reopenCoordinator(v2, { authClock: () => SELF_BIND_NOW })
-			: f;
+	let opened: Fixture = f;
+	if (options.accountSchema !== "v2") {
+		// SQLite startup, or D1 migrations 0046 and 0047, bring the history to current.
+		if (v2) opened = await reopenCoordinator(v2, { authClock: () => SELF_BIND_NOW });
+		else await useCurrentAccountSchema(createD1AuthLinkBackend(sqliteD1(f.db)));
+	}
 	return { ...opened, own, signer, identityId, config, pins };
 }
 

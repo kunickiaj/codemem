@@ -23,6 +23,7 @@ import {
 // Trusted persistence metadata only; D1 parity uses the SQLite-backed fixture.
 for (const backend of ["SQLite", "D1"] as const) {
 	const test = backendTest(backend);
+	const v2 = backendTest(backend, { accountSchema: "v2" });
 	describe(`${backend} auth-link maintenance smoke`, () => {
 		test("parallel admission caps new attempts and preserves the winner's TTL on retry", async ({
 			fixture: f,
@@ -81,38 +82,42 @@ for (const backend of ["SQLite", "D1"] as const) {
 			expect(sessionRows(f)).toEqual([[], []]);
 		});
 
-		test("normal sign-in burns its browser proof without blocking a fresh link claim", async ({
-			fixture: f,
-		}) => {
-			// Arrange: seed the link through the existing reviewed-device flow.
-			await linked(f);
-			const signedIn = await f.store.signInWithConsumedBrowserTransaction(
-				signInInput(f),
-				browserProofConfig(f),
-			);
-			const input = attempt({ attemptId: "smoke-new", runtimeVerifierHash: "1".repeat(64) });
-			const created = await f.store.createAuthLinkAttempt(input, f.cfg);
-			const before = rows(f, TABLES[0]);
-			const sessions = sessionRows(f);
-			const links = rows(f, TABLES[1]);
-			// Act
-			const replay = await f.store.claimAuthLinkAttempt(
-				{ attemptId: input.attemptId, browserTransactionHash: freshBrowserHash },
-				f.cfg,
-			);
-			const afterReplay = rows(f, TABLES[0]);
-			const fresh = await f.store.claimAuthLinkAttempt(
-				{ attemptId: input.attemptId, browserTransactionHash: "2".repeat(64) },
-				f.cfg,
-			);
-			// Assert: replay consumes nothing, while an unused commitment succeeds.
-			expect(signedIn.kind).toBe("issued");
-			expect(created.kind).toBe("created");
-			expectRejected(replay, "attempt_unavailable");
-			expect(afterReplay).toEqual(before);
-			expect(fresh).toMatchObject({ kind: "applied", status: { state: "browser_claimed" } });
-			expect(sessionRows(f)).toEqual(sessions);
-			expect(rows(f, TABLES[1])).toEqual(links);
-		});
+		// V2: a second attempt for an already linked Identity, claimed through the desktop
+		// claim API no production path uses. Account management refuses that attempt at
+		// creation (attempt_conflict) instead of at finalization.
+		v2(
+			"normal sign-in burns its browser proof without blocking a fresh link claim",
+			async ({ fixture: f }) => {
+				// Arrange: seed the link through the existing reviewed-device flow.
+				await linked(f);
+				const signedIn = await f.store.signInWithConsumedBrowserTransaction(
+					signInInput(f),
+					browserProofConfig(f),
+				);
+				const input = attempt({ attemptId: "smoke-new", runtimeVerifierHash: "1".repeat(64) });
+				const created = await f.store.createAuthLinkAttempt(input, f.cfg);
+				const before = rows(f, TABLES[0]);
+				const sessions = sessionRows(f);
+				const links = rows(f, TABLES[1]);
+				// Act
+				const replay = await f.store.claimAuthLinkAttempt(
+					{ attemptId: input.attemptId, browserTransactionHash: freshBrowserHash },
+					f.cfg,
+				);
+				const afterReplay = rows(f, TABLES[0]);
+				const fresh = await f.store.claimAuthLinkAttempt(
+					{ attemptId: input.attemptId, browserTransactionHash: "2".repeat(64) },
+					f.cfg,
+				);
+				// Assert: replay consumes nothing, while an unused commitment succeeds.
+				expect(signedIn.kind).toBe("issued");
+				expect(created.kind).toBe("created");
+				expectRejected(replay, "attempt_unavailable");
+				expect(afterReplay).toEqual(before);
+				expect(fresh).toMatchObject({ kind: "applied", status: { state: "browser_claimed" } });
+				expect(sessionRows(f)).toEqual(sessions);
+				expect(rows(f, TABLES[1])).toEqual(links);
+			},
+		);
 	});
 }

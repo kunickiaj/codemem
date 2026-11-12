@@ -3,6 +3,7 @@ import type { CoordinatorAuthLinkSigner } from "./coordinator-auth-link-contract
 import {
 	attempt,
 	type LinkFixture,
+	realEd25519Key,
 	rows,
 	signer,
 	TABLES,
@@ -24,7 +25,10 @@ export async function actor(
 	identityId = "identity-a",
 	coordinatorId = f.cfg.coordinatorId,
 ): Promise<CoordinatorAuthLinkSigner> {
+	// Each actor device has its own real Ed25519 key, derived from its suffix.
+	const seed = [...suffix].reduce((sum, char) => (sum + char.charCodeAt(0)) % 200, 0) + 10;
 	const input = review({
+		...realEd25519Key(seed),
 		deviceId: `device-${suffix}`,
 		attestationId: `attestation-${suffix}`,
 		reviewReceiptId: `receipt-${suffix}`,

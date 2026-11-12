@@ -151,6 +151,8 @@ currentChecks.push(
 	`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE ${reservedObjects} AND name NOT IN (${[...definitions, ...newDefinitions].map((d) => quote(d.name)).join(",")}))`,
 );
 const readySql = readiness(currentChecks);
+/** Scalar readiness of the exact prior (pre-unlink) account extension. */
+export const PRIOR_ACCOUNT_CONNECTION_SCHEMA_READINESS_SQL = legacyReadySql;
 /** Scalar readiness query for reads that must check schema and data in one snapshot. */
 export const ACCOUNT_CONNECTION_SCHEMA_READINESS_SQL = readySql;
 export const ACCOUNT_CONNECTION_SCHEMA_CHECKS = currentChecks;
@@ -209,20 +211,35 @@ export const ACCOUNT_UNLINK_MIGRATION_STATEMENTS = [
 	unlinkGuard,
 	`INSERT INTO coordinator_auth_account_connection_orders (coordinator_id,last_order) SELECT NULL,0 WHERE NOT (${readySql})`,
 ] as const;
+/**
+ * What brings a schema to the current account extension: nothing once it is current,
+ * the full install on intact V2, the unlink delta on the exact prior extension. Any
+ * other schema is unsupported and must not be written.
+ */
+type AccountSchemaPlan =
+	| { kind: "current" }
+	| { kind: "install"; statements: readonly string[] }
+	| { kind: "unsupported" };
+function accountSchemaPlan(state: ConnectionSchemaState, prior: boolean): AccountSchemaPlan {
+	if (state === "ready") return { kind: "current" };
+	if (state === "v2")
+		return { kind: "install", statements: ACCOUNT_CONNECTION_MIGRATION_STATEMENTS };
+	if (prior) return { kind: "install", statements: ACCOUNT_UNLINK_MIGRATION_STATEMENTS };
+	return { kind: "unsupported" };
+}
 export async function applyAccountConnectionSchema(backend: AuthLinkBackend): Promise<void> {
 	const state = await readConnectionSchemaState(backend);
-	if (state === "ready") throw new Error("account_connection_schema_already_installed");
-	const legacy = state === "upgrade_required" && (await hasPriorAccountSchema(backend));
-	if (state !== "v2" && !legacy) throw new CoordinatorAuthSchemaUpgradeRequiredError();
-	await backend.batch(
-		(legacy ? ACCOUNT_UNLINK_MIGRATION_STATEMENTS : ACCOUNT_CONNECTION_MIGRATION_STATEMENTS).map(
-			(sql): AuthLinkStatement => ({ sql, values: [] }),
-		),
-	);
+	const prior = state === "upgrade_required" && (await hasPriorAccountSchema(backend));
+	const plan = accountSchemaPlan(state, prior);
+	if (plan.kind === "current") throw new Error("account_connection_schema_already_installed");
+	if (plan.kind === "unsupported") throw new CoordinatorAuthSchemaUpgradeRequiredError();
+	await backend.batch(plan.statements.map((sql): AuthLinkStatement => ({ sql, values: [] })));
 	if ((await readConnectionSchemaState(backend)) !== "ready")
 		throw new CoordinatorAuthSchemaUpgradeRequiredError();
 }
-async function hasPriorAccountSchema(backend: AuthLinkBackend): Promise<boolean> {
+export async function hasPriorAccountSchema(
+	backend: Pick<AuthLinkBackend, "first">,
+): Promise<boolean> {
 	try {
 		return (
 			(await backend.first<{ ready: number }>({ sql: legacyReadySql, values: [] }))?.ready === 1
@@ -230,4 +247,51 @@ async function hasPriorAccountSchema(backend: AuthLinkBackend): Promise<boolean>
 	} catch {
 		return false;
 	}
+}
+
+/** A synchronous reader, for SQLite store startup inside one IMMEDIATE transaction. */
+export interface SyncSchemaReader {
+	first<T>(sql: string): T | undefined;
+	run(sql: string): void;
+}
+export function readConnectionSchemaStateSync(db: SyncSchemaReader): ConnectionSchemaState {
+	const p = db.first<{ present: number; v2: number }>(
+		`SELECT (${CONNECTION_SCHEMA_PRESENCE_SQL}) AS present, ((${AUTH_V2_SCHEMA_READINESS_SQL})=10) AS v2`,
+	);
+	if (!p?.present) return p?.v2 === 1 ? "v2" : "upgrade_required";
+	try {
+		return db.first<{ ready: number }>(readySql)?.ready === 1 ? "ready" : "upgrade_required";
+	} catch (error) {
+		if (!isIncompleteConnectionSchemaError(error)) throw error;
+		return "upgrade_required";
+	}
+}
+function hasPriorAccountSchemaSync(db: SyncSchemaReader): boolean {
+	try {
+		return db.first<{ ready: number }>(legacyReadySql)?.ready === 1;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Startup step of the SQLite coordinator: brings an intact V2 or exact prior extension
+ * to the current account extension, and leaves a current one alone. Run it inside one
+ * IMMEDIATE transaction; any failure throws and rolls the transaction back. An
+ * unsupported or partial schema is left untouched, and authentication keeps reporting
+ * that it needs an upgrade. Enabling account management stays a configuration choice.
+ */
+export function installAccountConnectionSchemaSync(
+	db: SyncSchemaReader,
+): AccountSchemaPlan["kind"] {
+	const state = readConnectionSchemaStateSync(db);
+	const plan = accountSchemaPlan(
+		state,
+		state === "upgrade_required" && hasPriorAccountSchemaSync(db),
+	);
+	if (plan.kind !== "install") return plan.kind;
+	for (const sql of plan.statements) db.run(sql);
+	if (readConnectionSchemaStateSync(db) !== "ready")
+		throw new Error("account_connection_schema_install_incomplete");
+	return plan.kind;
 }

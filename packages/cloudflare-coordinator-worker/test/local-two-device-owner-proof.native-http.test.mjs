@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 import { ownerHttpRequest } from "./owner-handoff-fixture.mjs";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
@@ -151,6 +151,7 @@ async function coordinator(h, now) {
 	const db = await mf.getD1Database("DB");
 	for (const migration of migrations) await db.batch(migration.queries.map(sql => db.prepare(sql)));
 	await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+	await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	const prepare = s => db.prepare(s.sql).bind(...s.values);
 	return {

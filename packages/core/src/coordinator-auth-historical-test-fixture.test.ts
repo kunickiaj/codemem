@@ -5,6 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
 import { AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES } from "./coordinator-auth-historical-migration-test-fixture.js";
 import {
 	historicalCallerMigrationNames,
@@ -24,6 +25,7 @@ import { columns, rawAuthSnapshot } from "./coordinator-auth-lifecycle-upgrade-t
 import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 const databases: Database.Database[] = [];
@@ -37,20 +39,22 @@ function memory() {
 	databases.push(db);
 	return db;
 }
-function accountAuthState(db: Database.Database) {
-	const definitions = db
-		.prepare(
-			"SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE instr(tbl_name,'coordinator_auth_') = 1 ORDER BY type,name",
-		)
-		.all() as { type: string; name: string; sql: string | null }[];
-	const inventory = definitions
-		.filter(({ type }) => type === "table")
-		.map(({ name, sql }) => ({
-			table: name,
-			columns: columns(db, name),
-			rowid: !/\bWITHOUT ROWID\b/iu.test(sql ?? ""),
-		}));
-	return { definitions, data: rawAuthSnapshot(db, inventory) };
+/** Each auth table's rows over the columns it had in `columnsFrom` (default: now). */
+function retainedRows(db: Database.Database, columnsFrom?: { table: string; columns: string[] }[]) {
+	const tables =
+		columnsFrom ??
+		(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'table' AND instr(name,'coordinator_auth_') = 1 ORDER BY name",
+				)
+				.all() as { name: string }[]
+		).map(({ name }) => ({ table: name, columns: columns(db, name) as string[], rows: [] }));
+	return tables.map(({ table, columns: names }) => ({
+		table,
+		columns: names,
+		rows: db.prepare(`SELECT ${names.join(",")} FROM ${table} ORDER BY ${names.join(",")}`).all(),
+	}));
 }
 const credentialHash = "7".repeat(64);
 const profile = { displayName: "Historical Ω", email: "fixture@example.test", emailVerified: true };
@@ -146,28 +150,28 @@ describe("explicit historical account bundles", () => {
 			});
 		},
 	);
-	it("seeds a historical SQLite file before opening the current store", async () => {
+	it("seeds a historical SQLite file that ordinary startup brings to current, keeping every row", async () => {
 		// Arrange
 		const directory = mkdtempSync(join(tmpdir(), "historical-account-test-"));
 		directories.push(directory);
 		const path = join(directory, "fixture.sqlite");
 		const seed = new Database(path);
 		let p: ReturnType<typeof prepareHistoricalAccountDatabase>;
-		let before: ReturnType<typeof accountAuthState>;
+		let before: ReturnType<typeof retainedRows>;
 		try {
 			p = prepareHistoricalAccountDatabase(seed, { authority: "device_claim", session });
 			expect(seed.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get()).toEqual({ ready: 10 });
-			before = accountAuthState(seed);
+			before = retainedRows(seed);
 		} finally {
 			seed.close();
 		}
-		// Act: constructor observes existing V2 history; it did not create that history.
+		// Act: startup installs account management over the existing V2 history.
 		const store = new BetterSqliteCoordinatorStore(path, { authClock: () => p.bornAtMs + 20 });
 		databases.push(store.db);
 		const result = await store.readAuthSessionAccount(credentialHash, p.config);
-		// Assert
-		expect(store.db.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get()).toEqual({ ready: 10 });
-		expect(accountAuthState(store.db)).toEqual(before);
+		// Assert: every historical row keeps its original columns and values.
+		expect(await readConnectionSchemaState(nativeBackend(store.db))).toBe("ready");
+		expect(retainedRows(store.db, before)).toEqual(before);
 		expect(result?.profile).toEqual(profile);
 		expect(result?.session.account).toEqual(p.account);
 		expect(
@@ -249,7 +253,10 @@ it.each(["SQLite", "D1"] as const)(
 			expect(result?.profile).toEqual(profile);
 			expect(f.history.session?.createdAtMs).toBe(now);
 			expect(wrongIssuer).toBeNull();
-			expect(f.db.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get()).toEqual({ ready: 10 });
+			// SQLite startup installs account management; a D1 history stays V2 without 0046.
+			expect(await readConnectionSchemaState(nativeBackend(f.db))).toBe(
+				backend === "SQLite" ? "ready" : "v2",
+			);
 			expect(rawAuthSnapshot(f.db)).toEqual(before);
 		} finally {
 			f.close();

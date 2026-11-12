@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
 	authControllerAuthorityValues,
@@ -1060,12 +1061,14 @@ function registerBindingTests(test: ReturnType<typeof it.extend<{ fixture: Fixtu
 
 describe("SQLite auth-controller existing-file upgrade", () => {
 	it("adds an empty review table without trusting or changing legacy enrollment", async () => {
-		// Arrange: only this disposable fixture file simulates a pre-controller store.
+		// Arrange: only this disposable fixture file simulates a pre-controller store, built
+		// from the V2 file earlier releases created.
 		const directory = mkdtempSync(join(tmpdir(), "controller-upgrade-test-"));
 		const path = join(directory, "coordinator.sqlite");
 		let store: BetterSqliteCoordinatorStore | undefined;
 		try {
-			store = new BetterSqliteCoordinatorStore(path);
+			createV2CoordinatorFile(path);
+			store = new BetterSqliteCoordinatorStore(path, { existingOnly: true });
 			await enroll(store);
 			setIdentity(store.db, "identity-a");
 			const before = await store.getEnrollment("group-a", "device-a", true);

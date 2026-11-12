@@ -93,9 +93,15 @@ function completionOperations(store: ReturnType<typeof setupStore>["store"]) {
 		),
 	};
 }
-async function setup(backend: Backend = "SQLite", options: { existingSession?: boolean } = {}) {
+async function setup(
+	backend: Backend = "SQLite",
+	options: { existingSession?: boolean; accountSchema?: "v2" } = {},
+) {
 	const clock = { now: NOW };
-	const f = setupStore(backend, { authClock: () => clock.now });
+	const f = setupStore(backend, {
+		authClock: () => clock.now,
+		...(options.accountSchema ? { accountSchema: options.accountSchema } : {}),
+	});
 	databases.push(f.db);
 	const config = Object.freeze({
 		enabled: true,
@@ -632,7 +638,9 @@ it("pins the original browser snapshot while HMAC verification awaits", async ()
 
 it("does not clear a pending ceremony even with a genuinely live SESSION", async () => {
 	// Arrange
-	const f = await setup("SQLite", { existingSession: true });
+	// V2: a pending ceremony for an Identity that already holds a live session. The current
+	// account schema refuses that second link attempt at creation.
+	const f = await setup("SQLite", { existingSession: true, accountSchema: "v2" });
 	await confirm(f);
 	const cookie = `${f.header}; ${f.existingSession}`;
 	const before = authority(f);
@@ -904,10 +912,11 @@ it.each(["readback-throw", "readback-missing", "zero-metadata"])(
 							vi.spyOn(statement, "first").mockRejectedValue(new Error("privateCause"));
 						if (fault === "readback-missing") vi.spyOn(statement, "first").mockResolvedValue(null);
 					}
+					// The preservation update, with or without the account schema's leading CTEs.
 					if (
 						fault === "zero-metadata" &&
-						query.startsWith(
-							"UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'",
+						/UPDATE coordinator_auth_link_attempts AS t SET state ?= ?'session_redeemed'/u.test(
+							query,
 						)
 					) {
 						const run = statement.run.bind(statement);

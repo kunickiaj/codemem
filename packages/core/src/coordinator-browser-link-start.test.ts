@@ -36,8 +36,14 @@ afterEach(() => {
 	}
 });
 
-async function setup(backend: Backend = "SQLite", options: { legacy?: boolean } = {}) {
-	const f = setupStore(backend, { authClock: () => NOW });
+async function setup(
+	backend: Backend = "SQLite",
+	options: { legacy?: boolean; accountSchema?: "v2" } = {},
+) {
+	const f = setupStore(backend, {
+		authClock: () => NOW,
+		...(options.accountSchema ? { accountSchema: options.accountSchema } : {}),
+	});
 	databases.push(f.db);
 	const config = {
 		enabled: true,
@@ -773,7 +779,8 @@ describe.each(["SQLite", "D1"] as const)("%s terminal browser-cookie restart", (
 		"allows %s GET and protected POST after finalization without session redemption",
 		async (kind) => {
 			// Arrange: device proof finalized the prior link, but its browser still holds TXN.
-			const f = await setup(backend);
+			// V2: the current account schema refuses the linked Identity's next attempt at creation.
+			const f = await setup(backend, { accountSchema: "v2" });
 			const handlers = await linkStage(f, "finalized");
 			expect(rows(f, "coordinator_auth_sessions")).toEqual([]);
 			const raw = randomBytes(32);

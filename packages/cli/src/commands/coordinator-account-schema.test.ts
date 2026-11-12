@@ -4,9 +4,9 @@ import { DatabaseSync as Database } from "node:sqlite";
 import {
 	ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,
 	ACCOUNT_UNLINK_MIGRATION_STATEMENTS,
-	BetterSqliteCoordinatorStore,
 } from "@codemem/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createV2CoordinatorFile } from "../../../core/src/coordinator-account-schema-sqlite-test-fixtures.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { buildCoordinatorAccountSchemaCommand } from "./coordinator-auth-schema.js";
 
@@ -139,16 +139,18 @@ it("rejects an unrelated existing database without initialization or data change
 });
 
 it("upgrades only the selected V2 file and preserves raw enrollment row identity and key bytes", async () => {
-	const path = join(dir, "coordinator.sqlite"),
-		store = new BetterSqliteCoordinatorStore(path);
-	await store.createGroup("fixture-group");
-	await store.enrollDevice("fixture-group", {
-		deviceId: "fixture-device",
-		publicKey: "fixture public key\r\nbytes",
-		fingerprint: "a".repeat(64),
-	});
-	const before = store.db.prepare("SELECT rowid AS original_rowid,* FROM enrolled_devices").all();
-	await store.close();
+	// A file as a V2 release left it; current coordinators install account management at startup.
+	const path = join(dir, "coordinator.sqlite");
+	createV2CoordinatorFile(path);
+	const seed = new Database(path);
+	seed.exec("INSERT INTO groups (group_id, created_at) VALUES ('fixture-group', 'created')");
+	seed
+		.prepare(
+			"INSERT INTO enrolled_devices (group_id, device_id, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?, 'created')",
+		)
+		.run("fixture-group", "fixture-device", "fixture public key\r\nbytes", "a".repeat(64));
+	const before = seed.prepare("SELECT rowid AS original_rowid,* FROM enrolled_devices").all();
+	seed.close();
 	const out = await run(["--db-path", path, "--json"]);
 	expect(JSON.parse(String(out.stdout.mock.calls[0]?.[0]))).toEqual({ upgraded: true });
 	expect(out.errors).not.toHaveBeenCalled();

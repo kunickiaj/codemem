@@ -16,6 +16,10 @@ import {
 } from "./recipient-policy-identifiers.js";
 
 const EXPECTED_COORDINATOR_TABLES = [
+	"coordinator_account_change_attempts",
+	"coordinator_auth_account_connection_history",
+	"coordinator_auth_account_connection_orders",
+	"coordinator_auth_account_connection_unlinks",
 	"coordinator_auth_account_links",
 	"coordinator_auth_account_profiles",
 	"coordinator_auth_browser_transactions",

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS } from "./coordinator-account-connection-schema.js";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import {
 	D1CoordinatorStore,
@@ -90,18 +92,36 @@ export function sqliteD1(
 	};
 }
 
+/**
+ * The V2 Worker schema with the explicit account upgrade for current-schema fixtures.
+ */
+export function workerSchemaSql(accountSchema: "current" | "v2" = "current"): string {
+	const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
+	const schema = readFileSync(join(worker, "schema.sql"), "utf8");
+	if (accountSchema === "v2") return schema;
+	return `${schema}\n${ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.join(";\n")};`;
+}
+
+/**
+ * A store on the current schema, or with `accountSchema: "v2"` on the V2 schema earlier
+ * releases left (a SQLite file opened as existing, or the Worker schema's V2 prefix).
+ */
 export function setupStore(
 	backend: Backend,
-	options: { authClock?: () => number; databasePath?: string } = {},
+	options: {
+		authClock?: () => number;
+		databasePath?: string;
+		accountSchema?: "current" | "v2";
+	} = {},
 ): Fixture {
 	if (backend === "SQLite") {
+		if (options.accountSchema === "v2") return setupV2Store(options);
 		const store = new BetterSqliteCoordinatorStore(options.databasePath ?? ":memory:", options);
 		return { store, db: store.db };
 	}
 	const db = new Database(options.databasePath ?? ":memory:");
 	try {
-		const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
-		const schema = readFileSync(join(worker, "schema.sql"), "utf8");
+		const schema = workerSchemaSql(options.accountSchema);
 		// Commit the full fixture schema once instead of syncing each DDL statement.
 		db.transaction(() => db.exec(schema))();
 		return { store: new D1CoordinatorStore(sqliteD1(db), options), db };

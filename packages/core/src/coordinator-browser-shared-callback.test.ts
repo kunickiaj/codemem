@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { afterEach, expect, it, vi } from "vitest";
+import { seedBrowserStart } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -36,25 +37,32 @@ async function fixture(purpose: "signin" | "owner_enroll" = "owner_enroll") {
 	databases.push(f.db);
 	if (!(f.store instanceof D1CoordinatorStore)) throw new Error("Expected D1 fixture");
 	const cookie = await issueBrowserCookie("transaction");
-	f.db
-		.prepare(`INSERT INTO coordinator_auth_browser_transactions
+	// Written as that start would be, including its connection order.
+	seedBrowserStart(
+		f.db,
+		{
+			sql: `INSERT INTO coordinator_auth_browser_transactions
  (coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
- VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`)
-		.run(
-			config.coordinatorId,
-			"9".repeat(64),
-			purpose,
-			purpose === "signin" ? null : "owner-a",
-			digest(state),
-			cookie.cookieHash,
-			config.issuer,
-			config.revision,
-			config.redirectUri,
-			"n".repeat(43),
-			"p".repeat(43),
-			NOW,
-			NOW + 600000,
-		);
+ VALUES (?,?,?,?,?,?,?,?,?,'pending',?,?,?,?)`,
+			values: [
+				config.coordinatorId,
+				"9".repeat(64),
+				purpose,
+				purpose === "signin" ? null : "owner-a",
+				digest(state),
+				cookie.cookieHash,
+				config.issuer,
+				config.revision,
+				config.redirectUri,
+				"n".repeat(43),
+				"p".repeat(43),
+				NOW,
+				NOW + 600000,
+			],
+		},
+		config.coordinatorId,
+		"9".repeat(64),
+	);
 	const ownerCallback = vi.fn(async () => new Response("owner", { status: 202 }));
 	const consume = vi.spyOn(f.store, "consumeAuthBrowserTransaction");
 	const read = vi.spyOn(f.store, "readAuthBrowserTransactionPurpose");

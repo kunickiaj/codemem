@@ -50,7 +50,7 @@ import {
 } from "./coordinator-auth-session-test-fixtures.js";
 import type { Backend } from "./coordinator-auth-store-test-fixtures.js";
 
-function registerCapacity(test: Test) {
+function registerCapacity(test: Test, v2: Test) {
 	test("eight parallel creates admit two per device and exact retries keep their TTL", async ({
 		fixture: f,
 	}) => {
@@ -141,78 +141,81 @@ function registerCapacity(test: Test) {
 		expect(boundary.kind).toBe("created");
 		expect(rows(f, TABLES[0])).toHaveLength(7);
 	});
-	test("sixty retained creates limit admission until the strict thirty-day cutoff", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await authorize(f);
-		await advance(f, "pending");
-		f.db.prepare("UPDATE coordinator_auth_link_attempts SET state = 'expired'").run();
-		expireAt(f, NOW - AUTH_LINK_RETENTION_WINDOW_MS + 1);
-		seedCopies(f, 59);
-		const before = rows(f, TABLES[0]);
-		// Act
-		const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		f.now++;
-		const boundary = await f.store.createAuthLinkAttempt(numberedAttempt(2), f.cfg);
-		// Assert
-		expectRejected(limited, "attempt_limited");
-		expect(boundary.kind).toBe("created");
-		expect(rows(f, TABLES[0]).slice(0, 60)).toEqual(before);
-	});
+	v2(
+		"sixty retained creates limit admission until the strict thirty-day cutoff",
+		async ({ fixture: f }) => {
+			// Arrange
+			await authorize(f);
+			await advance(f, "pending");
+			f.db.prepare("UPDATE coordinator_auth_link_attempts SET state = 'expired'").run();
+			expireAt(f, NOW - AUTH_LINK_RETENTION_WINDOW_MS + 1);
+			seedCopies(f, 59);
+			const before = rows(f, TABLES[0]);
+			// Act
+			const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
+			f.now++;
+			const boundary = await f.store.createAuthLinkAttempt(numberedAttempt(2), f.cfg);
+			// Assert
+			expectRejected(limited, "attempt_limited");
+			expect(boundary.kind).toBe("created");
+			expect(rows(f, TABLES[0]).slice(0, 60)).toEqual(before);
+		},
+	);
 }
 
-function registerCeiling(test: Test) {
-	test("ten thousand unfinished rows block creates, not an existing pending completion", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await authorize(f);
-		await advance(f, "confirmed");
-		seedCopies(f, 9_999, {
-			state: "expired",
-			account_subject: null,
-			device_id: "history-device",
-			identity_id: "history-identity",
-		});
-		const before = rows(f, TABLES[0]);
-		// Act
-		const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		const completed = await f.store.finalizeAuthLinkAttempt(finalize(), f.cfg);
-		const admitted = await f.store.createAuthLinkAttempt(numberedAttempt(2), f.cfg);
-		// Assert
-		expectRejected(limited, "attempt_limited");
-		expect(completed.kind).toBe("applied");
-		expect(admitted.kind).toBe("created");
-		expect(rows(f, TABLES[0]).slice(1, 10_000)).toEqual(before.slice(1));
-	});
-	test("linked sign-in and session reads remain available at the unfinished ceiling", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		seedCopies(f, 10_000, {
-			state: "expired",
-			account_subject: null,
-			link_id: null,
-			finalized_at_ms: null,
-			device_id: "history-device",
-			identity_id: "history-identity",
-		});
-		const before = grants(f);
-		// Act
-		const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		const issued = await f.store.signInWithConsumedBrowserTransaction(
-			signInInput(f),
-			browserProofConfig(f),
-		);
-		const read = await f.store.readAuthSession(credentialHash, f.cfg);
-		// Assert
-		expectRejected(limited, "attempt_limited");
-		expect(issued.kind).toBe("issued");
-		expect(read).not.toBeNull();
-		expect(grants(f)).toEqual(before);
-	});
+function registerCeiling(v2: Test) {
+	v2(
+		"ten thousand unfinished rows block creates, not an existing pending completion",
+		async ({ fixture: f }) => {
+			// Arrange
+			await authorize(f);
+			await advance(f, "confirmed");
+			seedCopies(f, 9_999, {
+				state: "expired",
+				account_subject: null,
+				device_id: "history-device",
+				identity_id: "history-identity",
+			});
+			const before = rows(f, TABLES[0]);
+			// Act
+			const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
+			const completed = await f.store.finalizeAuthLinkAttempt(finalize(), f.cfg);
+			const admitted = await f.store.createAuthLinkAttempt(numberedAttempt(2), f.cfg);
+			// Assert
+			expectRejected(limited, "attempt_limited");
+			expect(completed.kind).toBe("applied");
+			expect(admitted.kind).toBe("created");
+			expect(rows(f, TABLES[0]).slice(1, 10_000)).toEqual(before.slice(1));
+		},
+	);
+	v2(
+		"linked sign-in and session reads remain available at the unfinished ceiling",
+		async ({ fixture: f }) => {
+			// Arrange
+			await linked(f);
+			seedCopies(f, 10_000, {
+				state: "expired",
+				account_subject: null,
+				link_id: null,
+				finalized_at_ms: null,
+				device_id: "history-device",
+				identity_id: "history-identity",
+			});
+			const before = grants(f);
+			// Act
+			const limited = await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
+			const issued = await f.store.signInWithConsumedBrowserTransaction(
+				signInInput(f),
+				browserProofConfig(f),
+			);
+			const read = await f.store.readAuthSession(credentialHash, f.cfg);
+			// Assert
+			expectRejected(limited, "attempt_limited");
+			expect(issued.kind).toBe("issued");
+			expect(read).not.toBeNull();
+			expect(grants(f)).toEqual(before);
+		},
+	);
 }
 
 backendTest("SQLite")(
@@ -245,30 +248,31 @@ backendTest("SQLite")(
 	},
 );
 
-function registerMaintenance(test: Test) {
-	test("bounded expiry drains forty rows in 32 then 8 while preserving commitments", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await authorize(f);
-		await advance(f, "confirmed");
-		seedCopies(f, 39);
-		const before = rows(f, TABLES[0]);
-		const immutable = grants(f);
-		f.now += TTL;
-		// Act
-		const first = await f.store.maintainAuthLinkAttempts(f.cfg);
-		const second = await f.store.maintainAuthLinkAttempts(f.cfg);
-		const done = await f.store.maintainAuthLinkAttempts(f.cfg);
-		// Assert
-		expect(first).toEqual({ kind: "maintained", processedCount: 32, more: true });
-		expect(second).toEqual({ kind: "maintained", processedCount: 8, more: false });
-		expect(done).toEqual({ kind: "maintained", processedCount: 0, more: false });
-		expect(rows(f, TABLES[0])).toEqual(
-			before.map((row) => ({ ...row, state: "expired", account_subject: null })),
-		);
-		expect(grants(f)).toEqual(immutable);
-	});
+function registerMaintenance(test: Test, v2: Test) {
+	v2(
+		"bounded expiry drains forty rows in 32 then 8 while preserving commitments",
+		async ({ fixture: f }) => {
+			// Arrange
+			await authorize(f);
+			await advance(f, "confirmed");
+			seedCopies(f, 39);
+			const before = rows(f, TABLES[0]);
+			const immutable = grants(f);
+			f.now += TTL;
+			// Act
+			const first = await f.store.maintainAuthLinkAttempts(f.cfg);
+			const second = await f.store.maintainAuthLinkAttempts(f.cfg);
+			const done = await f.store.maintainAuthLinkAttempts(f.cfg);
+			// Assert
+			expect(first).toEqual({ kind: "maintained", processedCount: 32, more: true });
+			expect(second).toEqual({ kind: "maintained", processedCount: 8, more: false });
+			expect(done).toEqual({ kind: "maintained", processedCount: 0, more: false });
+			expect(rows(f, TABLES[0])).toEqual(
+				before.map((row) => ({ ...row, state: "expired", account_subject: null })),
+			);
+			expect(grants(f)).toEqual(immutable);
+		},
+	);
 	test("a full last batch reports conservative more even when no work remains", async ({
 		fixture: f,
 	}) => {
@@ -376,7 +380,7 @@ function registerMaintenance(test: Test) {
 	});
 }
 
-function registerBoundaries(test: Test) {
+function registerBoundaries(test: Test, v2: Test) {
 	test("exact expiry frees active capacity without an automatic maintenance write", async ({
 		fixture: f,
 	}) => {
@@ -418,32 +422,33 @@ function registerBoundaries(test: Test) {
 		expectRejected(oldCommitment, "attempt_conflict");
 		expect(allData(f)).toEqual(before);
 	});
-	test("maintenance processes deadline then attempt ID with a stable capped order", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await authorize(f);
-		await advance(f, "pending");
-		seedCopies(f, 2);
-		f.db
-			.prepare(
-				"UPDATE coordinator_auth_link_attempts SET created_at_ms = ?, expires_at_ms = ? WHERE attempt_id = ?",
-			)
-			.run(NOW - 1, NOW + TTL - 1, "seed-101");
-		f.now += TTL;
-		// Act
-		const first = await f.store.maintainAuthLinkAttempts(f.cfg, { limit: 2 });
-		const states = rows(f, TABLES[0]).map((row) => [row.attempt_id, row.state]);
-		const next = await f.store.maintainAuthLinkAttempts(f.cfg, { limit: 2 });
-		// Assert
-		expect(first).toEqual({ kind: "maintained", processedCount: 2, more: true });
-		expect(states).toEqual([
-			["attempt-a", "expired"],
-			["seed-100", "pending"],
-			["seed-101", "expired"],
-		]);
-		expect(next).toEqual({ kind: "maintained", processedCount: 1, more: false });
-	});
+	v2(
+		"maintenance processes deadline then attempt ID with a stable capped order",
+		async ({ fixture: f }) => {
+			// Arrange
+			await authorize(f);
+			await advance(f, "pending");
+			seedCopies(f, 2);
+			f.db
+				.prepare(
+					"UPDATE coordinator_auth_link_attempts SET created_at_ms = ?, expires_at_ms = ? WHERE attempt_id = ?",
+				)
+				.run(NOW - 1, NOW + TTL - 1, "seed-101");
+			f.now += TTL;
+			// Act
+			const first = await f.store.maintainAuthLinkAttempts(f.cfg, { limit: 2 });
+			const states = rows(f, TABLES[0]).map((row) => [row.attempt_id, row.state]);
+			const next = await f.store.maintainAuthLinkAttempts(f.cfg, { limit: 2 });
+			// Assert
+			expect(first).toEqual({ kind: "maintained", processedCount: 2, more: true });
+			expect(states).toEqual([
+				["attempt-a", "expired"],
+				["seed-100", "pending"],
+				["seed-101", "expired"],
+			]);
+			expect(next).toEqual({ kind: "maintained", processedCount: 1, more: false });
+		},
+	);
 	test.for(["finalized", "session_redeemed"])(
 		"maintenance never touches %s, sessions or consumed receipts",
 		async (state, { fixture: f }) => {
@@ -581,7 +586,7 @@ function registerValidation(test: Test) {
 	);
 }
 
-function registerBurns(test: Test) {
+function registerBurns(test: Test, v2: Test) {
 	test.for(["claim", "confirm", "finalize", "fail"] as const)(
 		"persisted expiry cannot %s after clock rollback",
 		async (stage, { fixture: f }) => {
@@ -633,85 +638,96 @@ function registerBurns(test: Test) {
 		expectRejected(replay, "attempt_conflict");
 		expect(allData(f)).toEqual(before);
 	});
-	test("normal sign-in receipt prevents a later link claim with the same browser proof", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		expect(
-			(await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)))
-				.kind,
-		).toBe("issued");
-		await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		const before = allData(f);
-		// Act
-		const replay = await f.store.claimAuthLinkAttempt(
-			{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
-			f.cfg,
-		);
-		const replayData = allData(f);
-		const fresh = await f.store.claimAuthLinkAttempt(
-			{ attemptId: "maintenance-1", browserTransactionHash: digest(500) },
-			f.cfg,
-		);
-		// Assert
-		expectRejected(replay, "attempt_unavailable");
-		expect(replayData).toEqual(before);
-		expect(fresh.kind).toBe("applied");
-		expect(sessionRows(f)).toEqual(before.slice(-2));
-	});
-	test("claimed expired link proof cannot sign in even after subject scrubbing", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		await f.store.claimAuthLinkAttempt(
-			{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
-			f.cfg,
-		);
-		f.now += TTL;
-		await f.store.maintainAuthLinkAttempts(f.cfg);
-		const before = allData(f);
-		// Act
-		const replay = await f.store.signInWithConsumedBrowserTransaction(
-			signInInput(f),
-			browserProofConfig(f),
-		);
-		// Assert
-		expectRejected(replay, "browser_transaction_used");
-		expect(allData(f)).toEqual(before);
-	});
-	test("racing claim and normal sign-in admits only one browser proof consumer", async ({
-		fixture: f,
-	}) => {
-		// Arrange
-		await linked(f);
-		await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
-		// Act
-		const results = await Promise.all([
-			f.store.claimAuthLinkAttempt(
+	v2(
+		"normal sign-in receipt prevents a later link claim with the same browser proof",
+		async ({ fixture: f }) => {
+			// Arrange
+			await linked(f);
+			expect(
+				(await f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)))
+					.kind,
+			).toBe("issued");
+			await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
+			const before = allData(f);
+			// Act
+			const replay = await f.store.claimAuthLinkAttempt(
 				{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
 				f.cfg,
-			),
-			f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)),
-		]);
-		// Assert
-		expect(
-			results.filter((result) => result.kind === "applied" || result.kind === "issued"),
-		).toHaveLength(1);
-		expect(results.filter((result) => result.kind === "rejected")).toHaveLength(1);
-	});
+			);
+			const replayData = allData(f);
+			const fresh = await f.store.claimAuthLinkAttempt(
+				{ attemptId: "maintenance-1", browserTransactionHash: digest(500) },
+				f.cfg,
+			);
+			// Assert
+			expectRejected(replay, "attempt_unavailable");
+			expect(replayData).toEqual(before);
+			expect(fresh.kind).toBe("applied");
+			expect(sessionRows(f)).toEqual(before.slice(-2));
+		},
+	);
+	v2(
+		"claimed expired link proof cannot sign in even after subject scrubbing",
+		async ({ fixture: f }) => {
+			// Arrange
+			await linked(f);
+			await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
+			await f.store.claimAuthLinkAttempt(
+				{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
+				f.cfg,
+			);
+			f.now += TTL;
+			await f.store.maintainAuthLinkAttempts(f.cfg);
+			const before = allData(f);
+			// Act
+			const replay = await f.store.signInWithConsumedBrowserTransaction(
+				signInInput(f),
+				browserProofConfig(f),
+			);
+			// Assert
+			expectRejected(replay, "browser_transaction_used");
+			expect(allData(f)).toEqual(before);
+		},
+	);
+	// V2: the desktop claim API races sign-in for the linked Identity's second attempt,
+	// which the current account schema refuses at creation.
+	v2(
+		"racing claim and normal sign-in admits only one browser proof consumer",
+		async ({ fixture: f }) => {
+			// Arrange: the race needs a real attempt to claim.
+			await linked(f);
+			expect(await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg)).toMatchObject({
+				kind: "created",
+			});
+			// Act
+			const results = await Promise.all([
+				f.store.claimAuthLinkAttempt(
+					{ attemptId: "maintenance-1", browserTransactionHash: freshBrowserHash },
+					f.cfg,
+				),
+				f.store.signInWithConsumedBrowserTransaction(signInInput(f), browserProofConfig(f)),
+			]);
+			// Assert
+			expect(
+				results.filter((result) => result.kind === "applied" || result.kind === "issued"),
+			).toHaveLength(1);
+			expect(results.filter((result) => result.kind === "rejected")).toHaveLength(1);
+		},
+	);
 }
 
 function registerBackend(backend: Backend) {
 	const test = backendTest(backend);
-	registerCapacity(test);
-	registerCeiling(test);
-	registerMaintenance(test);
-	registerBoundaries(test);
+	// V2 history: these seed attempts past the admission caps, which only coordinators
+	// from before account management can hold, or call the desktop claim API directly,
+	// which no production path uses. The current schema enforces the caps on every insert.
+	const v2 = backendTest(backend, { accountSchema: "v2" });
+	registerCapacity(test, v2);
+	registerCeiling(v2);
+	registerMaintenance(test, v2);
+	registerBoundaries(test, v2);
 	registerValidation(test);
-	registerBurns(test);
+	registerBurns(test, v2);
 	test("exports fixed work and admission limits", ({ fixture: _f }) => {
 		// Arrange
 		const constants = [

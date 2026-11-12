@@ -15,7 +15,11 @@ async function fixture(
 	authority: "device_claim" | "controller_attestation" = "device_claim",
 	beforeInstall?: (store: D1CoordinatorStore) => Promise<void>,
 ) {
-	const base = setupStore("D1", { authClock: () => NOW }),
+	// A pre-upgrade hook writes on V2 before the fixture installs account management.
+	const base = setupStore("D1", {
+			authClock: () => NOW,
+			accountSchema: beforeInstall ? "v2" : "current",
+		}),
 		db = sqliteD1(base.db),
 		batch = db.batch?.bind(db);
 	if (!batch) throw new Error("missing batch");

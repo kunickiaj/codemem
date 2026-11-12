@@ -166,29 +166,44 @@ function authorityDefinition(table: (typeof tables)[number]): string {
 	]);
 }
 
-function recognizedSchema(): string {
-	return tables
-		.map((table) => {
-			const definitions = [...table.columns, ...table.constraints];
-			const accepted = [canonical(createTable(table.name, definitions))];
-			if (table.name === ATTEMPTS) {
-				// ALTER ADD COLUMN in migration 0025 puts this column after table CHECKs.
-				accepted.push(
-					canonical(
-						createTable(table.name, [
-							...table.columns.filter((column) => column !== browserStart),
-							...table.constraints,
-							browserStart,
-						]),
-					),
-				);
-			}
-			return assertion(
-				`EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${quote(table.name)} AND ${canonicalSql("sql")} IN (${accepted.map(quote).join(",")}))`,
+function recognizedSchema(): string[] {
+	return tables.map((table) => {
+		const definitions = [...table.columns, ...table.constraints];
+		const accepted = [canonical(createTable(table.name, definitions))];
+		if (table.name === ATTEMPTS) {
+			// ALTER ADD COLUMN in migration 0025 puts this column after table CHECKs.
+			accepted.push(
+				canonical(
+					createTable(table.name, [
+						...table.columns.filter((column) => column !== browserStart),
+						...table.constraints,
+						browserStart,
+					]),
+				),
 			);
-		})
-		.join("\n");
+		}
+		return `EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ${quote(table.name)} AND ${canonicalSql("sql")} IN (${accepted.map(quote).join(",")}))`;
+	});
 }
+/** Schema-only recognition of the legacy authority tables; reads sqlite_master only. */
+const legacySchemaConditions = [
+	...AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(
+		({ name, matches }) =>
+			`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ${quote(name)} COLLATE NOCASE) OR ${matches}`,
+	),
+	...recognizedSchema(),
+	`(SELECT count(*) FROM sqlite_master WHERE tbl_name IN (${tables.map((t) => quote(t.name)).join(",")}) AND type IN ('index','trigger') AND sql IS NOT NULL) = ${indexes.length}`,
+	...indexes.map(
+		(sql) =>
+			`EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND ${canonicalSql("sql")} = ${quote(canonical(sql))})`,
+	),
+	`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view','trigger') AND tbl_name NOT IN (${tables.map((t) => quote(t.name)).join(",")}) AND (${tables.map((t) => `instr(lower(sql), ${quote(t.name)}) > 0`).join(" OR ")}))`,
+];
+/**
+ * Read-only: 1 when the authority tables have exactly the legacy schema the cutover
+ * starts from. The cutover itself still validates every row before it changes anything.
+ */
+export const AUTH_LINK_LEGACY_AUTHORITY_SCHEMA_SQL = `SELECT min(column1) AS recognized FROM (VALUES ${legacySchemaConditions.map((c) => `(CASE WHEN ${c} THEN 1 ELSE 0 END)`).join(",")})`;
 
 const sameLinkPins = `a.coordinator_id = l.coordinator_id AND a.attempt_id = l.attempt_id
  AND a.link_id = l.link_id AND a.identity_id = l.identity_id AND a.issuer = l.issuer
@@ -308,11 +323,7 @@ ${assertion(`NOT EXISTS (SELECT ${select} FROM ${rebuilt} EXCEPT SELECT ${select
  */
 export const AUTH_LINK_AUTHORITY_UPGRADE_SQL = `
 CREATE TABLE ${CHECKS} (passed INTEGER NOT NULL CHECK (passed = 1));
-${AUTH_DEVICE_CLAIM_DEFINITION_CHECKS.map(({ name, matches }) => assertion(`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name = ${quote(name)} COLLATE NOCASE) OR ${matches}`)).join("\n")}
-${recognizedSchema()}
-${assertion(`(SELECT count(*) FROM sqlite_master WHERE tbl_name IN (${tables.map((t) => quote(t.name)).join(",")}) AND type IN ('index','trigger') AND sql IS NOT NULL) = ${indexes.length}`)}
-${indexes.map((sql) => assertion(`EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND ${canonicalSql("sql")} = ${quote(canonical(sql))})`)).join("\n")}
-${assertion(`NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view','trigger') AND tbl_name NOT IN (${tables.map((t) => quote(t.name)).join(",")}) AND (${tables.map((t) => `instr(lower(sql), ${quote(t.name)}) > 0`).join(" OR ")}))`)}
+${legacySchemaConditions.map(assertion).join("\n")}
 ${provenance}
 ${copyAndCompare()}
 ${tables.map((table) => `DROP TABLE ${table.name};\nALTER TABLE ${table.name}_authority_upgrade RENAME TO ${table.name};`).join("\n")}

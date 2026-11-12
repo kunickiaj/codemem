@@ -10,7 +10,6 @@ import {
 	seedEnrollmentSql,
 } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
 import { applyAccountConnectionSchema } from "./coordinator-account-connection-schema.js";
-import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import {
 	OriginalD1ControllerReview,
@@ -363,10 +362,7 @@ async function run(
 	kase: Case,
 	implementation: "ported" | "original",
 ) {
-	const f =
-		backend === "SQLite"
-			? setupV2Store({ authClock: () => NOW })
-			: setupStore(backend, { authClock: () => NOW });
+	const f = setupStore(backend, { authClock: () => NOW, accountSchema: "v2" });
 	try {
 		// The D1 fixture schema ships the resolution table; the SQLite one does not.
 		if (variant === "ready") f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);

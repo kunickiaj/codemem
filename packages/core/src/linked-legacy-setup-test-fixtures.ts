@@ -6,10 +6,16 @@ import SqliteDatabase from "better-sqlite3";
 import { expect, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import { prepareHistoricalAccountDatabase } from "./coordinator-auth-historical-test-fixture.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
-import { type Backend, review, setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import {
+	type Backend,
+	review,
+	setupStore,
+	sqliteD1,
+} from "./coordinator-auth-store-test-fixtures.js";
 import {
 	type DeviceKey,
 	deviceKey,
@@ -17,6 +23,7 @@ import {
 } from "./coordinator-device-headless-link-test-fixtures.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
+import { createD1AuthLinkBackend } from "./d1-coordinator-store.js";
 import { connect, type Database } from "./db.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
@@ -440,12 +447,16 @@ async function seededCoordinator(
 			: null;
 	const coordinator = seeding
 		? { store: seeding, db: seeding.db }
-		: setupStore(backend, { authClock: () => NOW });
+		: setupStore(backend, { authClock: () => NOW, accountSchema: "v2" });
 	try {
 		const authority = options.accountAuthority ?? "device_claim";
 		const account = await seedCoordinatorState(coordinator, keyA, keyB, authority);
-		if (!seeding || options.accountSchema === "v2")
+		if (options.accountSchema === "v2") return { coordinator, account, removeDirectory };
+		if (!seeding) {
+			// D1 takes the account migrations 0046 and 0047 over the seeded V2 history.
+			await useCurrentAccountSchema(createD1AuthLinkBackend(sqliteD1(coordinator.db)));
 			return { coordinator, account, removeDirectory };
+		}
 		await seeding.close();
 		if (seeding.db.open) seeding.db.close();
 		const store = new BetterSqliteCoordinatorStore(path, { authClock: () => NOW });
@@ -467,7 +478,7 @@ export async function linkedLegacySetupFixture(
 		authConfigured?: boolean;
 		adminSecret?: string;
 		authRedirectUri?: string;
-		/** SQLite only: `v2` keeps the seeded coordinator on V2 instead of reopening it. */
+		/** `v2` keeps the seeded coordinator on V2 instead of bringing it to current. */
 		accountSchema?: "current" | "v2";
 	} = {},
 ): Promise<LinkedLegacySetupFixture> {

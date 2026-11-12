@@ -144,6 +144,11 @@ function registerIssuance(test: SessionTest) {
 		await linked(f);
 		const input = await ready(f);
 		const before = { grants: grants(f), links: snapshot(f), transactions: transactionRows(f) };
+		const { start_order: startOrder } = f.db
+			.prepare(
+				"SELECT start_order FROM coordinator_auth_browser_transactions WHERE browser_transaction_hash = ?",
+			)
+			.get(input.browserTransactionHash) as { start_order: number };
 		// Act
 		const result = await f.store.signInWithConsumedBrowserTransaction(input, browserConfig);
 		const live = await f.store.readAuthSession(input.credentialHash, f.cfg);
@@ -163,6 +168,8 @@ function registerIssuance(test: SessionTest) {
 					auth_config_revision: f.cfg.revision,
 					created_at_ms: f.now,
 					purge_eligible: 1,
+					// The receipt carries the signin's browser start order.
+					source_order: startOrder,
 				},
 			],
 			[

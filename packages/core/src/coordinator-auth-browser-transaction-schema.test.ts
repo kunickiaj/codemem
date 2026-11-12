@@ -26,7 +26,8 @@ function schema(db: Database.Database) {
 
 for (const backend of ["SQLite", "D1"] as const satisfies readonly Backend[]) {
 	describe(`${backend} browser transaction constraints`, () => {
-		const test = backendTest(backend);
+		// V2: the shared contract is the table before migration 0046 adds start_order.
+		const test = backendTest(backend, { accountSchema: "v2" });
 		test("fresh schema matches the shared SQL contract and excludes provider profile columns", async ({
 			fixture: f,
 		}) => {
