@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { AUTH_LIFECYCLE_SQLITE_PREDECESSOR_RECOGNITION_SQL } from "./coordinator-auth-lifecycle-recognition.js";
 import { AUTH_LINK_AUTHORITY_CUTOVER_SQL } from "./coordinator-auth-link-authority-upgrade.js";
 
@@ -15,7 +15,7 @@ afterEach(() => {
 });
 function setup(source: "inline" | "migrations" = "inline") {
 	if (source === "inline") {
-		const db = connectCoordinator(":memory:");
+		const db = connectV2Coordinator();
 		databases.push(db);
 		return db;
 	}

@@ -12,6 +12,8 @@ import { pendingOwner } from "./coordinator-owner-enrollment-test-harness.js";
 export interface OwnerAccountHistoryOptions {
 	authority?: "controller_attestation" | "device_claim";
 	defect?: HistoricalAccountDefect;
+	/** `v2` keeps the coordinator as a V2 release left it, for tests of that schema. */
+	accountSchema?: "current" | "v2";
 }
 
 // Core-only import boundary: portable browser/signing helpers must not pull in filesystem history.
@@ -25,6 +27,7 @@ export function ownerStartFixture(options: OwnerAccountHistoryOptions = {}) {
 			bornAtMs: NOW - 1000,
 		},
 		authClock: () => NOW,
+		accountSchema: options.accountSchema,
 	});
 	try {
 		return bindOwnerStart(prepared);

@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { AUTH_LINK_AUTHORITY_CUTOVER_SQL } from "./coordinator-auth-link-authority-upgrade.js";
 
 export const LEGACY_AUTH_TABLES = [
@@ -146,7 +146,7 @@ function legacyRow(db: SqliteDatabase, table: string, index: number) {
 }
 export function populatedPredecessor(source: "inline" | "migrations"): SqliteDatabase {
 	let db: SqliteDatabase;
-	if (source === "inline") db = connectCoordinator(":memory:");
+	if (source === "inline") db = connectV2Coordinator();
 	else {
 		db = new Database(":memory:");
 		const directory = new URL("../../cloudflare-coordinator-worker/migrations/", import.meta.url);

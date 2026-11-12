@@ -70,7 +70,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		},
 	);
 
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 
 	test(`${kind}: the preview's unchanged-capture check refuses a source added after the capture`, async ({
 		fixture: f,

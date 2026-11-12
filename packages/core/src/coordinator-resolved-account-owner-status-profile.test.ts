@@ -17,7 +17,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test.for([0, null])(
 		`${kind}: email verification %j discloses no owner details`,
 		async (verified, { fixture: f }) => {

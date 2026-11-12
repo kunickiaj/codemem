@@ -98,7 +98,7 @@ async function fixture(f: LinkFixture, options: { many?: boolean } = {}) {
 	return { backend, input, captured: await captureHistorySql(backend, input) };
 }
 
-const test = backendTest("SQLite");
+const test = backendTest("SQLite", { accountSchema: "v2" });
 test("SQLite captured selectors preserve raw rows, order, scalar types and conservative malformed discovery", async ({
 	fixture: f,
 }) => {

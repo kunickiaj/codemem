@@ -17,6 +17,8 @@ import {
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
 import { hasConnectionSessionSchema } from "./coordinator-account-connection-session.js";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import { AuthAccountProfileOperations } from "./coordinator-auth-account-profile.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
@@ -49,7 +51,7 @@ it("executes two fresh raw schema lookups instead of six recursively wrapped loo
 	const f = setupStore("SQLite");
 	try {
 		const backend = raw(f);
-		await applyAccountConnectionSchema(backend);
+		await useCurrentAccountSchema(backend);
 		let queries = 0;
 		const counted: AuthLinkBackend = {
 			...backend,
@@ -76,7 +78,7 @@ it("executes two fresh raw schema lookups instead of six recursively wrapped loo
 	}
 });
 it("keeps the trusted selector's legacy V2 result unchanged", async () => {
-	const f = setupStore("SQLite");
+	const f = setupV2Store();
 	try {
 		expect(await hasConnectionSessionSchema(withCoordinatorAuthSchema(raw(f)))).toBe(false);
 	} finally {
@@ -86,7 +88,7 @@ it("keeps the trusted selector's legacy V2 result unchanged", async () => {
 it.each(["SQLite", "D1"] as const)(
 	"%s startup capability reads current schema and never caches a ready result",
 	async (kind) => {
-		const f = setupStore(kind);
+		const f = kind === "SQLite" ? setupV2Store() : setupStore(kind);
 		try {
 			expect(await f.store.readAccountChangeCapability()).toBeNull();
 			await applyAccountConnectionSchema(raw(f));
@@ -220,7 +222,7 @@ it.each(["schema", "enrollment"] as const)(
 );
 
 it("records the frozen V2 column inventory used by extension preflight", async () => {
-	const f = setupStore("SQLite");
+	const f = setupV2Store();
 	try {
 		const tables = [
 			"coordinator_auth_link_attempts",
@@ -253,7 +255,7 @@ it("records the frozen V2 column inventory used by extension preflight", async (
 });
 
 it("explicitly installs complete extensions as one atomic batch", async () => {
-	const f = setupStore("SQLite");
+	const f = setupV2Store();
 	try {
 		await applyAccountConnectionSchema(raw(f));
 		expect(await readConnectionSchemaState(raw(f))).toBe("ready");
@@ -264,7 +266,7 @@ it("explicitly installs complete extensions as one atomic batch", async () => {
 });
 
 it("matches every declared postflight invariant independently", async () => {
-	const f = setupStore("SQLite");
+	const f = setupV2Store();
 	try {
 		await raw(f).batch(
 			ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.slice(0, -1).map((sql) => ({ sql, values: [] })),
@@ -343,7 +345,7 @@ it.each([{ displayName: "Retained profile" }, {}])(
 	"keeps legacy profile %j after actual receipt retention and migration",
 	async (profile) => {
 		let now = NOW;
-		const f = setupStore("SQLite", { authClock: () => now });
+		const f = setupV2Store({ authClock: () => now });
 		let live = "";
 		try {
 			await changeFixture(f.store, raw(f), "device_claim", async () => {
@@ -401,7 +403,7 @@ it.each([
 	},
 	{},
 ])("preserves legacy rows and profile %j through upgrade", async (profile) => {
-	const f = setupStore("SQLite", { authClock: () => NOW });
+	const f = setupV2Store({ authClock: () => NOW });
 	try {
 		const snapshots: { table: string; columns: string; rows: unknown[] }[] = [];
 		await changeFixture(f.store, raw(f), "device_claim", async () => {
@@ -486,7 +488,7 @@ it.each(["missing", "fake", "column"])(
 	async (defect) => {
 		const f = setupStore("SQLite");
 		try {
-			await applyAccountConnectionSchema(raw(f));
+			await useCurrentAccountSchema(raw(f));
 			const cap = await f.store.getAccountChanges();
 			if (defect === "column")
 				f.db.exec(
@@ -522,7 +524,7 @@ it.each(["missing", "fake", "column"])(
 );
 
 it("rejects partial installation and rolls back a late migration fault completely", async () => {
-	const f = setupStore("SQLite");
+	const f = setupV2Store();
 	try {
 		const before = f.db.prepare("SELECT name,sql FROM sqlite_master ORDER BY name").all(),
 			b = raw(f);
@@ -557,7 +559,7 @@ it("never repairs partial optional-auth DDL on SQLite reopen and preserves the o
 	const dir = mkdtempSync(join(".tmp", "connection-readiness-")),
 		f = setupStore("SQLite");
 	try {
-		await applyAccountConnectionSchema(raw(f));
+		await useCurrentAccountSchema(raw(f));
 		// Replay the old auth initializer's unchanged frozen declarations.
 		f.db.exec(AUTH_LINK_SCHEMA_SQL);
 		f.db.exec(COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL);
@@ -595,7 +597,10 @@ it("never repairs partial optional-auth DDL on SQLite reopen and preserves the o
 it.each(["SQLite", "D1"] as const)(
 	"%s exposes matching raw schema-state and browser-purpose delegates",
 	async (backend) => {
-		const f = setupStore(backend, { authClock: () => NOW });
+		const f =
+			backend === "SQLite"
+				? setupV2Store({ authClock: () => NOW })
+				: setupStore(backend, { authClock: () => NOW });
 		try {
 			expect(await f.store.readAccountConnectionSchemaState()).toBe("v2");
 			const bc = { ...config, redirectUri: "https://coordinator.example.test/auth/callback" };
@@ -676,7 +681,7 @@ it("sanitizes schema-selector failures and preserves upgrade-required errors at 
 it.each(["SQLite", "D1"] as const)(
 	"%s keeps legacy auth readiness independent of optional profile storage",
 	async (backend) => {
-		const f = setupStore(backend);
+		const f = backend === "SQLite" ? setupV2Store() : setupStore(backend);
 		try {
 			f.db.exec("DROP TABLE coordinator_auth_account_profiles");
 			expect(f.db.prepare(AUTH_SCHEMA_READINESS_SQL).get()).toEqual({ ready: 10 });

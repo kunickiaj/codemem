@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import type { D1CoordinatorStore } from '../../core/src/d1-coordinator-store.js';
 import type { AuthLinkBackend } from '../../core/src/coordinator-auth-link.js';
 import { AuthSessionOperations } from '../../core/src/coordinator-auth-session.js';
-import { applyAccountConnectionSchema } from '../../core/src/coordinator-account-connection-schema.js';
+import { useCurrentAccountSchema } from '../../core/src/coordinator-account-schema-test-fixtures.js';
 import { input,hash,NOW } from './account-change-fixture.js';
 
 type Store=Pick<D1CoordinatorStore,'createGroup'|'enrollDevice'|'createAuthControllerAttestation'|'issueIdentityGroupGrantFromControllerAttestation'|'createAuthLinkAttempt'|'startAuthBrowserTransaction'|'consumeAuthBrowserTransaction'|'recordAuthLinkOidcVerified'|'confirmAuthLinkAttempt'|'finalizeAuthLinkAttempt'|'redeemAuthLinkSessionWithBrowserTransaction'|'getAccountChanges'>;
@@ -35,7 +35,7 @@ export async function historicalRevokeFixture(store:Store,backend:AuthLinkBacken
 		return row.link_id;
 	}
 	const a=await link(1,'account-A');
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	const operations=await store.getAccountChanges();
 	async function unlink(n:number,subject:string) {
 		const attemptId=`end-${n}`,base={attemptId,intent:'disconnect',signer:input.signer,expectedIdentityId:input.identityId,runtimeVerifierHash:hash(2000+n*10),browserStartHash:hash(2001+n*10),loopbackRedirect:'http://127.0.0.1:43210/codemem/auth/complete'};

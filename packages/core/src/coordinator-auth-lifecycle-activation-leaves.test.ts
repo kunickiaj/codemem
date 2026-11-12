@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	AUTH_LIFECYCLE_CURRENT_READINESS_SQL,
 	AUTH_LIFECYCLE_CURRENT_READY_COUNT,
@@ -71,7 +71,7 @@ function fresh() {
 }
 function old(source: "inline" | "migrations") {
 	if (source === "inline") {
-		const db = connectCoordinator(":memory:");
+		const db = connectV2Coordinator();
 		databases.push(db);
 		return db;
 	}

@@ -27,7 +27,7 @@ function reference(row: LegacyOwnerResolutionRecord) {
 	};
 }
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind}: genuine ordinary-controller references confirm A without writes or mutation authority`, async ({
 		fixture: f,
 	}) => {

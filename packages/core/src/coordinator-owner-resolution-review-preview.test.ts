@@ -20,7 +20,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} previews proved weak C and Project labels with complete history, no persisted fact or authority`, async ({
 		fixture: f,
 	}) => {

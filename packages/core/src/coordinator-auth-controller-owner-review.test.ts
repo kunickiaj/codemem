@@ -340,7 +340,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	for (const variant of ["comment", "alternate-wire"] as const) {
 		test(`${kind} rejects retained B ${variant} key alias after its sole enrollment is removed`, async ({
 			fixture: f,

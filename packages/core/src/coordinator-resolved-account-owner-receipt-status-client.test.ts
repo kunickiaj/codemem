@@ -20,7 +20,7 @@ vi.mock("node:child_process", () => ({
 	}),
 }));
 deterministicReviewTests();
-const test = backendTest("SQLite");
+const test = backendTest("SQLite", { accountSchema: "v2" });
 const ORIGIN = "https://coordinator.example.test";
 const cleanup: (() => void)[] = [];
 afterEach(() => {

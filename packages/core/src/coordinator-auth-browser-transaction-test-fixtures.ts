@@ -1,3 +1,4 @@
+import { seedBrowserStart } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import type {
 	CoordinatorAuthBrowserConfig,
@@ -50,12 +51,12 @@ export function transactionRows(f: LinkFixture) {
 	>[];
 }
 export function seed(f: LinkFixture, count: number, createdAt = f.now, state = "pending") {
-	const statement = f.db.prepare(`INSERT INTO ${TABLE}
+	const sql = `INSERT INTO ${TABLE}
 		(coordinator_id,browser_transaction_hash,purpose,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
-		VALUES (?,?,'signin',?,?,?,?,?,?,?,?,?,?)`);
+		VALUES (?,?,'signin',?,?,?,?,?,?,?,?,?,?)`;
 	f.db.transaction(() => {
 		for (let i = 1; i <= count; i++) {
-			statement.run(
+			const values = [
 				browserConfig.coordinatorId,
 				hash(i + 10000),
 				hash(i + 20000),
@@ -68,7 +69,8 @@ export function seed(f: LinkFixture, count: number, createdAt = f.now, state = "
 				state === "pending" ? "p".repeat(43) : null,
 				createdAt,
 				createdAt + 600000,
-			);
+			];
+			seedBrowserStart(f.db, { sql, values }, browserConfig.coordinatorId, hash(i + 10000));
 		}
 	})();
 }

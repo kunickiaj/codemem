@@ -7,6 +7,7 @@
 // both backends and both resolution schema variants. Both must answer alike, reach the
 // stage, and leave the same rows.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { cfg, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -239,7 +240,11 @@ const MISSING: Record<string, Change> = {
 async function answer(kind: Kind, variant: Variant, name: string, stage: Stage, original: boolean) {
 	const change = (variant === "ready" ? READY : MISSING)[name];
 	if (!change) throw new Error(`unknown change ${name}`);
-	const f = setupStore(kind, { authClock: () => NOW }) as LinkFixture;
+	const f = (
+		kind === "SQLite"
+			? setupV2Store({ authClock: () => NOW })
+			: setupStore(kind, { authClock: () => NOW })
+	) as LinkFixture;
 	f.cfg = { ...cfg };
 	open.push(f);
 	let value: ReturnType<typeof manifest>;

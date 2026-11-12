@@ -21,7 +21,8 @@ afterEach(async () => {
 });
 
 async function nativeFixture(origin: SelfBindLinkOrigin) {
-	const f = await selfBindFixture("SQLite", origin);
+	// The copy below models a D1 coordinator, which migrations leave on V2 for now.
+	const f = await selfBindFixture("SQLite", origin, undefined, { accountSchema: "v2" });
 	close.push(f.close);
 	const runtime = new Miniflare(
 		convertV4MiniflareOptions({

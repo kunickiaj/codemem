@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
+import { reassignBrowserStarts } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import { AUTH_BROWSER_TXN_SCHEMA_SQL } from "./coordinator-auth-browser-transaction-contract.js";
 import {
@@ -126,7 +127,7 @@ function registerEligibility(test: Test) {
 			.run(NOW, hash(20003));
 		setCreated(f, 4, NOW + 1);
 		setCreated(f, 6, NOW + AGE + 1);
-		f.db.prepare(`UPDATE ${TABLE} SET coordinator_id='other' WHERE state_hash=?`).run(hash(20005));
+		reassignBrowserStarts(f.db, { sql: "state_hash = ?", values: [hash(20005)] }, "other");
 		const before = transactionRows(f);
 		const protectedBefore = protectedData(f);
 		f.now = NOW + AGE;
@@ -293,14 +294,19 @@ function registerFloors(test: Test) {
 			denied.push(await f.store.startAuthBrowserTransaction(materials(8000), config));
 		}
 		const rowsBeforeBoundary = transactionRows(f);
+		const protectedBeforeBoundary = protectedData(f);
 		f.now = NOW + WINDOW;
 		const allowed = await f.store.startAuthBrowserTransaction(materials(8000), config);
 		// Assert
 		for (const result of denied) expectRejected(result, "clock_retention_blocked");
 		expect(rowsBeforeBoundary).toEqual([]);
+		expect(protectedBeforeBoundary).toEqual(before);
 		expect(allowed.kind).toBe("started");
 		expect(floor(f)).toBe(NOW);
-		expect(protectedData(f)).toEqual(before);
+		// The allowed start also allocates its connection order when the account schema is current.
+		const withoutOrders = (data: ReturnType<typeof protectedData>) =>
+			data.filter(([name]) => name !== "coordinator_auth_account_connection_orders");
+		expect(withoutOrders(protectedData(f))).toEqual(withoutOrders(before));
 	});
 	test("live rolling-window cap remains 1024 after old rows are purged", async ({ fixture: f }) => {
 		// Arrange

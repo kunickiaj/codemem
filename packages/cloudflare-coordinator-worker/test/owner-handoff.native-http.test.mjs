@@ -63,7 +63,7 @@ export { NOW } from './coordinator-auth-link-test-fixtures.ts';`,
 					}));
 					builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
 						contents:
-							"export const vi = { fn: (f) => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); };",
+							"export const vi = { fn: (f) => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); }; export const onTestFinished = () => { throw new Error('Unexpected Vitest hook'); };",
 						loader: "js",
 					}));
 					builder.onResolve({ filter: /^[^./]/ }, async ({ path, pluginData }) => {

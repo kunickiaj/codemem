@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 import { expect } from "vitest";
+import {
+	reopenCoordinator,
+	setupV2Store,
+} from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { prepareHistoricalAccountDatabase } from "./coordinator-auth-historical-test-fixture.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
 	type Backend,
+	type Fixture,
 	review,
 	setupStore,
 	sqliteD1,
@@ -43,8 +48,19 @@ const insert = (db: Database.Database, table: string, row: Record<string, unknow
  */
 export type SelfBindLinkOrigin = "own" | "peer" | "peer_controller";
 
-async function seedSelfBind(kind: Backend, origin: SelfBindLinkOrigin, identityId: string) {
-	const f = setupStore(kind, { authClock: () => SELF_BIND_NOW });
+/**
+ * The seeded account history predates the account extension, so SQLite coordinators are
+ * seeded as a V2 file. `accountSchema: "v2"` keeps that file on V2 for tests that install
+ * the extension themselves; otherwise it reopens through ordinary startup.
+ */
+async function seedSelfBind(
+	kind: Backend,
+	origin: SelfBindLinkOrigin,
+	identityId: string,
+	options: SelfBindFixtureOptions,
+) {
+	const v2 = kind === "SQLite" ? setupV2Store({ authClock: () => SELF_BIND_NOW }) : null;
+	const f: Fixture = v2 ?? setupStore(kind, { authClock: () => SELF_BIND_NOW });
 	const { db } = f;
 	const own = commitPendingKey();
 	const peer = commitPendingKey();
@@ -87,7 +103,11 @@ async function seedSelfBind(kind: Backend, origin: SelfBindLinkOrigin, identityI
 	await copyHistoricalRows(db, historical, source, identityId);
 	historical.close();
 	await seedControllerReviews(f, signer, source, identityId, origin);
-	return { ...f, own, signer, identityId, config, pins };
+	const opened: Fixture =
+		v2 && options.accountSchema !== "v2"
+			? await reopenCoordinator(v2, { authClock: () => SELF_BIND_NOW })
+			: f;
+	return { ...opened, own, signer, identityId, config, pins };
 }
 
 async function seedControllerReviews(
@@ -168,12 +188,17 @@ async function copyHistoricalRows(
 	}
 }
 
+export interface SelfBindFixtureOptions {
+	accountSchema?: "current" | "v2";
+}
+
 export async function selfBindFixture(
 	kind: Backend,
 	origin: SelfBindLinkOrigin = "own",
 	identityId = "local:device-a",
+	options: SelfBindFixtureOptions = {},
 ) {
-	const f = await seedSelfBind(kind, origin, identityId);
+	const f = await seedSelfBind(kind, origin, identityId, options);
 	const { db, own, signer, config, pins } = f;
 	const backend = kind === "SQLite" ? nativeBackend(db) : createD1AuthLinkBackend(sqliteD1(db));
 	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(17));

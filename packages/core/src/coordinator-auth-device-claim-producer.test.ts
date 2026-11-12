@@ -7,6 +7,7 @@ import {
 	seedClaimSql,
 	seedEnrollmentSql,
 } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	authorizeFor,
 	desktopConfirmed,
@@ -41,6 +42,8 @@ for (const backend of ["SQLite", "D1"] as const) {
  (coordinator_id,link_id,action,attempt_id,identity_id,group_id,device_id,fingerprint,device_claim_id,auth_config_revision,created_at_ms,authority_kind)
  SELECT coordinator_id,link_id,'link_created',attempt_id,identity_id,group_id,device_id,fingerprint,link_id,auth_config_revision,finalized_at_ms,authority_kind
  FROM coordinator_auth_link_attempts;`);
+		// The seeded link follows this coordinator's earlier browser starts.
+		seedConnectionOrder(f.db, f.cfg.coordinatorId);
 		const old = f.db
 			.prepare("SELECT * FROM coordinator_auth_link_attempts WHERE authority_kind='device_claim'")
 			.get() as Record<string, string>;

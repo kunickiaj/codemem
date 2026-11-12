@@ -35,21 +35,48 @@ export async function orderedBrowserStart(
 		await backend.batch(statements);
 		return;
 	}
-	const orders = "coordinator_auth_account_connection_orders";
-	await backend.batch([
+	await backend.batch(orderedBrowserStartStatements(statements, coordinator, hash));
+}
+
+/**
+ * The current-schema browser start: allocate the coordinator's next connection order,
+ * run the start's own writes, then stamp the new transaction with that order.
+ */
+export function orderedBrowserStartStatements(
+	statements: AuthLinkStatement[],
+	coordinator: string,
+	hash: string,
+): AuthLinkStatement[] {
+	return [
+		...connectionOrderAllocation(coordinator),
+		...statements,
+		...connectionOrderStamp(coordinator, hash),
+	];
+}
+
+const ORDERS = "coordinator_auth_account_connection_orders";
+
+/** Allocates the coordinator's next order, creating its order row on first use. */
+export function connectionOrderAllocation(coordinator: string): AuthLinkStatement[] {
+	return [
 		{
-			sql: `INSERT INTO ${orders} (coordinator_id,last_order) SELECT ?,0 WHERE NOT EXISTS (SELECT 1 FROM ${orders} WHERE coordinator_id = ?)`,
+			sql: `INSERT INTO ${ORDERS} (coordinator_id,last_order) SELECT ?,0 WHERE NOT EXISTS (SELECT 1 FROM ${ORDERS} WHERE coordinator_id = ?)`,
 			values: [coordinator, coordinator],
 		},
 		{ sql: CONNECTION_ALLOCATE_ORDER_SQL, values: [coordinator] },
 		{ sql: CONNECTION_ASSERT_ONE_WRITE_SQL, values: [] },
-		...statements,
+	];
+}
+
+/** Stamps exactly one unordered transaction with the coordinator's latest order. */
+export function connectionOrderStamp(coordinator: string, hash: string): AuthLinkStatement[] {
+	return [
 		{
-			sql: `UPDATE coordinator_auth_browser_transactions SET start_order = (SELECT last_order FROM ${orders} WHERE coordinator_id = ?) WHERE coordinator_id = ? AND browser_transaction_hash = ? AND start_order IS NULL`,
+			sql: `UPDATE coordinator_auth_browser_transactions SET start_order = (SELECT last_order FROM ${ORDERS} WHERE coordinator_id = ?) WHERE coordinator_id = ? AND browser_transaction_hash = ? AND start_order IS NULL`,
 			values: [coordinator, coordinator, hash],
 		},
 		{ sql: CONNECTION_ASSERT_ONE_WRITE_SQL, values: [] },
-	]);
+	];
 }
 
 /** Publish the browser floor and reject a continuation missing its prior pin.

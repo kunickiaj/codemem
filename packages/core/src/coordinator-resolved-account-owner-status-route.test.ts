@@ -159,7 +159,7 @@ function confirmed(f: Fixture) {
 	};
 }
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} control: accepted persisted owner and real crypto work before HTTP`, async ({
 		fixture: f,
 	}) => {

@@ -69,7 +69,7 @@ function expectEcho(value: unknown) {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} scoped HTTP preview uses actual weak-C/account-A evidence without writes`, async ({
 		fixture: f,
 	}) => {

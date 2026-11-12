@@ -2,10 +2,9 @@ import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto"
 import { expect, vi } from "vitest";
 import { AccountChangeOperations } from "./coordinator-account-change.js";
 import { AUTH_ACCOUNT_CHANGE_PURPOSE } from "./coordinator-account-change-contract.js";
-import {
-	applyAccountConnectionSchema,
-	readConnectionSchemaState,
-} from "./coordinator-account-connection-schema.js";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import { type CreateCoordinatorAppOptions, createCoordinatorApp } from "./coordinator-api.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -194,12 +193,16 @@ async function seedBirth(
 export async function fixture(
 	authority: "device_claim" | "controller_attestation" = "device_claim",
 	configOverrides: Partial<typeof defaultConfig> = {},
+	/** `install: false` keeps a coordinator file as earlier releases left it: V2 only. */
 	fixtureOptions: { install?: boolean } = {},
 ) {
 	const config = { ...defaultConfig, ...configOverrides };
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	const clock = { now: NOW };
-	const base = setupStore("SQLite", { authClock: () => clock.now });
+	const base =
+		fixtureOptions.install === false
+			? setupV2Store({ authClock: () => clock.now })
+			: setupStore("SQLite", { authClock: () => clock.now });
 	databases.push(base.db);
 	vi.spyOn(base.store, "close").mockResolvedValue(undefined);
 	const key = keypair();
@@ -214,7 +217,7 @@ export async function fixture(
 				for (const { sql, values } of statements) base.db.prepare(sql).run(...values);
 			})(),
 	};
-	if (fixtureOptions.install !== false) await applyAccountConnectionSchema(backend);
+	if (fixtureOptions.install !== false) await useCurrentAccountSchema(backend);
 	const operations = new AccountChangeOperations(backend, () => clock.now);
 	const http = httpFixture(base, backend, operations, key, config);
 	const snapshot = () =>

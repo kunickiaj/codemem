@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect } from "vitest";
-import {
-	applyAccountConnectionSchema,
-	readConnectionSchemaState,
-} from "./coordinator-account-connection-schema.js";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type {
 	CoordinatorAuthControllerAttestation,
 	CoordinatorAuthControllerReviewInput,
@@ -206,7 +204,7 @@ export async function seed(f: LinkFixture, h: Harness, options: { weakCurrent?: 
 		SELECT coordinator_id,link_id,attempt_id,identity_id,group_id,device_id,fingerprint,
 		auth_config_revision,finalized_at_ms,'link_created','device_claim',link_id
 		FROM coordinator_auth_link_attempts;`);
-	await applyAccountConnectionSchema(h.backend);
+	await useCurrentAccountSchema(h.backend);
 	f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
 	await f.store.enrollDevice(signer.groupId, signer);
 	history(f);

@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} creates controller and resolution for proved weak current C without changing any other table`, async ({
 		fixture: f,
 	}) => {

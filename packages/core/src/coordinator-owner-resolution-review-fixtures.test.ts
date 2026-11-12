@@ -17,7 +17,7 @@ import {
 
 deterministicReviewTests();
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind} controls prove discovery-only key spelling is valid, unrelated, and hash-stable`, async ({
 		fixture: f,
 	}) => {

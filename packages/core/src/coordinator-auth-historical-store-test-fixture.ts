@@ -2,7 +2,10 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import {
+	BetterSqliteCoordinatorStore,
+	initializeBaseSchema,
+} from "./better-sqlite-coordinator-store.js";
 import { AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES } from "./coordinator-auth-historical-migration-test-fixture.js";
 import {
 	type HistoricalAccountOptions,
@@ -80,7 +83,12 @@ export function historicalCallerMigrationNames(available: readonly string[]): re
 /** Historical reader fixtures only; never rebuild history through a constructor. */
 export function setupHistoricalStore(
 	backend: Backend,
-	options: { history: HistoricalAccountOptions; authClock?: () => number },
+	options: {
+		history: HistoricalAccountOptions;
+		authClock?: () => number;
+		/** SQLite only: `v2` leaves the file as a V2 release opened it, without account management. */
+		accountSchema?: "current" | "v2";
+	},
 ): Fixture & { history: HistoricalAccountPins; close(): void } {
 	const migrations = new URL("../../cloudflare-coordinator-worker/migrations/", import.meta.url);
 	const callerMigrations = historicalCallerMigrationNames(
@@ -98,8 +106,13 @@ export function setupHistoricalStore(
 		// after seeding and before either current store opens. V2 intentionally stays V2 now.
 		let store: Store;
 		if (backend === "SQLite") {
+			const v2 = options.accountSchema === "v2";
+			if (v2) {
+				db.pragma("journal_mode = WAL");
+				initializeBaseSchema(db);
+			}
 			db.close();
-			store = new BetterSqliteCoordinatorStore(path, options);
+			store = new BetterSqliteCoordinatorStore(path, { ...options, existingOnly: v2 });
 			db = store.db;
 		} else store = new D1CoordinatorStore(sqliteD1(db), options);
 		return {

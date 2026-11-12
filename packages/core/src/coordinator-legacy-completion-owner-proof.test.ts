@@ -1,5 +1,6 @@
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { afterEach, beforeEach, expect, vi } from "vitest";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
@@ -395,7 +396,7 @@ afterEach(() => {
 });
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 
 	// These rows once round-tripped through a dictionary of JSON lexemes inside the
 	// INSERT. The guards now compare the read's own row text, so each spelling must survive
@@ -739,7 +740,10 @@ for (const kind of ["SQLite", "D1"] as const) {
 		fixture: f,
 	}) => {
 		// Arrange: produce authentic source/receipt rows in an independent local fixture.
-		const source = setupStore(kind, { authClock: () => NOW });
+		const source =
+			kind === "SQLite"
+				? setupV2Store({ authClock: () => NOW })
+				: setupStore(kind, { authClock: () => NOW });
 		const sourceFixture: LinkFixture = { ...source, cfg: { ...f.cfg }, now: NOW };
 		let accepted: Awaited<ReturnType<typeof recovery>>["result"];
 		try {

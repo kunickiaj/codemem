@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import {
-	applyAccountConnectionSchema,
-	CoordinatorAuthSchemaUpgradeRequiredError,
-} from "./coordinator-account-connection-schema.js";
+import { CoordinatorAuthSchemaUpgradeRequiredError } from "./coordinator-account-connection-schema.js";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { withCoordinatorAuthSchema } from "./coordinator-auth-schema.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -14,8 +13,9 @@ import { readOwnerLinkAuthority } from "./owner-enrollment-link-authority.js";
 let f: ReturnType<typeof setupStore>;
 let backend: AuthLinkBackend;
 let calls: AuthLinkStatement[];
-beforeEach(() => {
-	f = setupStore("SQLite");
+beforeEach(() => open(setupStore("SQLite")));
+function open(store: ReturnType<typeof setupStore>) {
+	f = store;
 	f.db.exec(COORDINATOR_OWNER_ENROLLMENT_SCHEMA_SQL);
 	for (const sql of COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS) f.db.exec(sql);
 	calls = [];
@@ -27,7 +27,7 @@ beforeEach(() => {
 			return raw.first(statement);
 		},
 	};
-});
+}
 afterEach(() => {
 	f.db.close();
 	vi.restoreAllMocks();
@@ -35,7 +35,7 @@ afterEach(() => {
 
 it("uses the wrapper's fresh raw capability and executes eight SQLite reads on ready storage", async () => {
 	// Arrange: count executed backend reads, not SQL preparations or nested wrapper calls.
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	const wrapped = withCoordinatorAuthSchema(backend);
 	const capability = vi.spyOn(wrapped, "readAuthSchemaState");
 	calls.length = 0;
@@ -50,8 +50,11 @@ it("uses the wrapper's fresh raw capability and executes eight SQLite reads on r
 it.each(["v2", "ready"] as const)(
 	"falls back to a fresh schema read without a capability on %s storage",
 	async (state) => {
-		// Arrange
-		if (state === "ready") await applyAccountConnectionSchema(backend);
+		// Arrange: V2 storage is a coordinator file an earlier release left behind.
+		if (state === "v2") {
+			f.db.close();
+			open(setupV2Store());
+		} else await useCurrentAccountSchema(backend);
 		calls.length = 0;
 		// Act
 		const authority = await readOwnerLinkAuthority(backend, 100);
@@ -68,7 +71,7 @@ it.each([
 	"DROP TRIGGER account_change_birth; CREATE TRIGGER account_change_birth BEFORE INSERT ON coordinator_account_change_attempts BEGIN SELECT 1; END",
 ])("rechecks raw readiness and rejects schema drift after a successful read: %s", async (sql) => {
 	// Arrange: the same wrapper must not cache the earlier ready result.
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	const wrapped = withCoordinatorAuthSchema(backend);
 	expect((await readOwnerLinkAuthority(wrapped, 100)).with).toContain("owner_qualified_links");
 	f.db.exec(sql);
@@ -84,7 +87,7 @@ it.each([
 	"DROP TRIGGER owner_enrollment_qualification_immutable_update; CREATE TRIGGER owner_enrollment_qualification_immutable_update BEFORE UPDATE ON coordinator_owner_enrollment_qualifications BEGIN SELECT 1; END",
 ])("rechecks qualification definitions on every call: %s", async (sql) => {
 	// Arrange
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	const wrapped = withCoordinatorAuthSchema(backend);
 	const capability = vi.spyOn(wrapped, "readAuthSchemaState");
 	expect((await readOwnerLinkAuthority(wrapped, 100)).with).toContain("owner_qualified_links");
@@ -99,7 +102,7 @@ it.each([
 
 it("rejects incomplete connection storage through the no-capability fallback", async () => {
 	// Arrange
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	f.db.exec("DROP TRIGGER account_change_birth");
 	// Act
 	const result = readOwnerLinkAuthority(backend, 100);

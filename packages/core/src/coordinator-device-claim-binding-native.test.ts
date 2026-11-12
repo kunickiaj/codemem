@@ -47,7 +47,8 @@ function nativeD1Backend(db: D1DatabaseLike): AuthLinkBackend {
 }
 
 beforeEach(async () => {
-	f = await linkedLegacySetupFixture("SQLite");
+	// The copy below must be V2: tests install the account extension on it themselves.
+	f = await linkedLegacySetupFixture("SQLite", { accountSchema: "v2" });
 	await retainProducerOwner(f.coordinator.db, {
 		...f.account.signer,
 		coordinatorId: LEGACY_SETUP.coordinatorId,

@@ -1,3 +1,4 @@
+import { orderedBrowserStart } from "./coordinator-account-connection-session.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
@@ -1274,14 +1275,12 @@ async function claimBrowser(
 	);
 	const stateHash = await ownerEnrollmentHash(authorization.material.state);
 	const setCookies = [reissueStartCookieAsTransaction(cookie.secret), clearBrowserCookie("start")];
-	await context.backend.batch(
-		claimStatements(context, row, authorization, {
-			time,
-			hash,
-			stateHash,
-			binder: checked.cookieHash,
-		}),
-	);
+	await commitClaim(context, row, authorization, {
+		time,
+		hash,
+		stateHash,
+		binder: checked.cookieHash,
+	});
 	const claimed = await readAttempt(context, row.attempt_id);
 	if (
 		claimed?.state !== "browser_claimed" ||
@@ -1301,6 +1300,24 @@ function assertOneWrite(): AuthLinkStatement {
 	};
 }
 type ClaimPin = { time: number; hash: string; stateHash: string; binder: string };
+/**
+ * Like signin and link starts, the claim allocates the coordinator's next connection order
+ * when the account extension is installed. The first claim on a coordinator creates its
+ * order row, which account readiness requires once the coordinator has a transaction.
+ */
+async function commitClaim(
+	context: Context,
+	row: OwnerAttempt,
+	authorization: Awaited<ReturnType<CoordinatorOidcClient["createAuthorizationRequest"]>>,
+	p: ClaimPin,
+): Promise<void> {
+	await orderedBrowserStart(
+		context.backend,
+		claimStatements(context, row, authorization, p),
+		context.c.coordinatorId,
+		p.hash,
+	);
+}
 function claimStatements(
 	context: Context,
 	row: OwnerAttempt,

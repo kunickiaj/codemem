@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
 import {
 	AUTH_V2_SCHEMA_READINESS_SQL,
 	applyAccountConnectionSchema,
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
+import {
+	connectV2Coordinator,
+	setupV2Store,
+} from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	HEADLESS_CODE_LIMITS_TABLE,
 	HEADLESS_LINK_PROVENANCE_TABLE,
@@ -31,8 +34,9 @@ afterEach(async () => {
 	for (const close of closers.splice(0)) await close();
 });
 
-function open(backend: Backend): Fixture {
-	const f = setupStore(backend);
+/** `v2` opens a SQLite coordinator file as a V2 release left it; D1 fixtures start on V2. */
+function open(backend: Backend, schema: "current" | "v2" = "current"): Fixture {
+	const f = backend === "SQLite" && schema === "v2" ? setupV2Store() : setupStore(backend);
 	closers.push(async () => {
 		await f.store.close();
 		if (f.db.open) f.db.close();
@@ -93,7 +97,7 @@ describe("existing auth readiness with headless tables", () => {
 		"leaves V2 and account-connection readiness unchanged on %s",
 		async (backend) => {
 			// Arrange
-			const f = open(backend);
+			const f = open(backend, "v2");
 			dropHeadless(f.db);
 			const v2Without = await authReadiness(f);
 			// Act
@@ -127,8 +131,8 @@ describe("existing auth readiness with headless tables", () => {
 	});
 
 	it("passes every lifecycle predecessor fence on a store that created the headless tables", () => {
-		// Arrange
-		const db = connectCoordinator(":memory:");
+		// Arrange: the lifecycle upgrade's predecessor is the V2 schema earlier releases created.
+		const db = connectV2Coordinator();
 		closers.push(() => db.close());
 		// Act
 		const failed = AUTH_LIFECYCLE_PREDECESSOR_CHECKS.filter(

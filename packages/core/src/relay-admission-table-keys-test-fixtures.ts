@@ -1,6 +1,7 @@
 /**
  * Primary keys of the WITHOUT ROWID tables from coordinator migrations 0041
- * and 0042 (relay admission) and 0043 (headless account linking).
+ * and 0042 (relay admission) and 0043 (headless account linking), and from the
+ * account-management extension.
  * Whole-database snapshots order these tables by key,
  * because they have no rowid. Core owns this map so core tests never import the
  * worker package; the worker test helper re-exports it.
@@ -17,4 +18,5 @@ export const RELAY_ADMISSION_TABLE_KEYS: Readonly<Record<string, readonly string
 	admission_budget_buckets: ["authority_id", "pool", "audience_id", "group_id", "device_id"],
 	coordinator_headless_link_code_limits: ["coordinator_id", "scope", "key_hash"],
 	coordinator_headless_link_provenance: ["coordinator_id", "link_id"],
+	coordinator_auth_account_connection_orders: ["coordinator_id"],
 };

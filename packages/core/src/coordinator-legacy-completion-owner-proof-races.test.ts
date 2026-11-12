@@ -162,7 +162,7 @@ CHANGES["historyKeys (alias fingerprint)"] = (f) =>
 	);
 
 for (const kind of ["SQLite", "D1"] as const) {
-	const test = backendTest(kind);
+	const test = backendTest(kind, { accountSchema: "v2" });
 	test(`${kind}: an unchanged capture writes the completion`, async ({ fixture: f }) => {
 		// Arrange
 		const { value } = await recovery(f, kind);

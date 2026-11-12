@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { seedConnectionOrderWith } from "./coordinator-account-schema-test-fixtures.js";
 import type { SchemaFixture } from "./coordinator-auth-browser-migration-test-harness.js";
 import type { CoordinatorAuthBrowserTransactionStartInput } from "./coordinator-auth-browser-transaction-contract.js";
 import { browserConfig, materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
@@ -22,6 +23,8 @@ export async function assertReservedOwnerPurposeIsolation(f: SchemaFixture & { s
 			)
 		).kind,
 	).toBe("applied");
+	// The raw owner row needs the coordinator order row that real browser starts leave.
+	await seedConnectionOrderWith(f, browserConfig.coordinatorId);
 	await f.exec(
 		`INSERT INTO coordinator_auth_browser_transactions
  (coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
@@ -77,6 +80,8 @@ async function assertOwnerGlobalExpiry(f: SchemaFixture & { store: Store }) {
 	const live = await f.query(
 		"SELECT * FROM coordinator_auth_browser_transactions WHERE attempt_id = 'owner-attempt-a'",
 	);
+	// The raw owner row needs the coordinator order row that real browser starts leave.
+	await seedConnectionOrderWith(f, browserConfig.coordinatorId);
 	await f.exec(
 		`INSERT INTO coordinator_auth_browser_transactions
 	(coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
@@ -115,6 +120,8 @@ async function assertLegacyRetirementIsolation(
 	before: Record<string, unknown>[],
 ) {
 	// Arrange: ordinary signin is a positive retirement control; disabled config retires it.
+	// The raw signin row needs the coordinator order row that real browser starts leave.
+	await seedConnectionOrderWith(f, browserConfig.coordinatorId);
 	await f.exec(
 		`INSERT INTO coordinator_auth_browser_transactions
 	(coordinator_id,browser_transaction_hash,purpose,state_hash,binder_hash,issuer,auth_config_revision,redirect_uri,state,nonce,pkce_verifier,created_at_ms,expires_at_ms)
