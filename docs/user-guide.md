@@ -667,8 +667,9 @@ Google-account move, new Identity, Team/Project permission change, or future-pol
 setup. Existing Team and Project delivery or reconciliation warnings still need their
 own sharing review.
 
-After approval, **My Account** says which Identity this device runs as and who owns
-the account. It does not show the owner's Google name, email, or picture, because this
+When the recovered owner differs from the current Identity, **My Account** says
+which Identity this device runs as and who owns the account. It does not show the
+owner's Google name, email, or picture, because this
 device never signed in as the owner. The owner projection does not enable linking,
 profile refresh, unlink, disconnect, or permission changes.
 
@@ -676,6 +677,12 @@ If the recovered owner has a Google link, choose **Sign in with Google** to run 
 device as that Identity. This starts a separate sign-in, not another owner review.
 The coordinator checks the device, and Google sign-in and your confirmation are still
 required before the device switches. Existing memories keep their original author.
+
+When the recovered owner is already the current Identity, **My Account** uses the
+device's normal signed account status. If the coordinator offers **Connect this
+device**, complete Google sign-in and browser confirmation to attach the existing
+device key to that same Identity. This keeps the current Identity and sharing
+permissions. The saved owner review alone does not enable account management.
 
 Without an operator-configured Viewer, use the dialog's **Copy support request** and
 send the noncredential request only to a trusted coordinator operator, never a public

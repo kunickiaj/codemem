@@ -416,7 +416,8 @@ async function finishAccountStatus(
 	await attachManagementActions(options, context, currentView, signal);
 	if (remote.kind === "status") {
 		try {
-			if (readOwnerAssociation(context, remote.status.coordinatorId))
+			const association = readOwnerAssociation(context, remote.status.coordinatorId);
+			if (association && association.ownerIdentityId !== context.identityId)
 				return attachOperation(
 					ownerUnavailable(accountLocalView(fresh), "context_changed"),
 					options.registry,
@@ -447,6 +448,9 @@ async function readAssociatedOwner(
 	try {
 		const association = readOwnerAssociation(context, actorRemote.status.coordinatorId);
 		if (!association) return null;
+		// A retained review of this Identity must not replace its own signed account status
+		// with the restricted display used for a different account owner.
+		if (association.ownerIdentityId === context.identityId) return null;
 		const before = options.readContext(context.groupId);
 		if ("error" in before || !before.context || !sameAuthority(context, before.context))
 			return ownerUnavailable(local, "context_changed");
