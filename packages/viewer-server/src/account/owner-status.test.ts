@@ -78,7 +78,7 @@ function ordinaryStatus(
 	};
 }
 
-function fixture(options: { associate?: boolean } = {}) {
+function fixture(options: { associate?: boolean; ownerIdentityId?: string } = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "viewer-owner-status-"));
 	cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
 	const dbPath = join(directory, "memory.sqlite");
@@ -121,7 +121,7 @@ function fixture(options: { associate?: boolean } = {}) {
 	};
 	const associate = () =>
 		retainAccountOwnerAssociation(ownerProfile, {
-			ownerIdentityId: "identity-a",
+			ownerIdentityId: options.ownerIdentityId ?? "identity-a",
 			attestationId: `controller-v1:${"a".repeat(64)}`,
 			reviewDigest: "b".repeat(64),
 		});
@@ -146,7 +146,7 @@ function fixture(options: { associate?: boolean } = {}) {
 			deviceId,
 			fingerprint,
 			state: "owner_confirmed",
-			ownerIdentity: "identity-a",
+			ownerIdentity: options.ownerIdentityId ?? "identity-a",
 			profileState: "linked",
 			profile: { displayName: "Verified owner", email: "owner@example.test" },
 		},
@@ -181,6 +181,179 @@ function fixture(options: { associate?: boolean } = {}) {
 		read,
 	};
 }
+
+function sameOwnerFixture(options: { associate?: boolean } = {}) {
+	const f = fixture({ ...options, ownerIdentityId: "actor-c" });
+	f.readRemoteStatus.mockImplementation(async ({ identityId }) => {
+		const result = f.status(identityId);
+		if (result.kind !== "status") throw new Error("Invalid status fixture");
+		return {
+			...result,
+			status: {
+				...result.status,
+				authority: "controller_attestation",
+				state: "linked",
+				account: { displayName: "Same owner", email: "current@example.test" },
+			},
+		};
+	});
+	return f;
+}
+
+describe("recovered owner matching the current Identity", () => {
+	it.each(["connect_required", "complete"] as const)(
+		"uses ordinary signed status when device setup is %s",
+		async (kind) => {
+			const f = sameOwnerFixture();
+			const registry = createAccountLinkRegistry({
+				readContext: f.readContext,
+				rebind: async () => ({ kind: "bound" }),
+			});
+			cleanups.push(() => registry.close());
+			const readRemoteDeviceSetup = vi.fn(async () => ({ kind }));
+			const view = await readAccountStatus(
+				{
+					readContext: f.readContext,
+					registry,
+					readRemoteStatus: f.readRemoteStatus,
+					readRemoteOwnerStatus: f.readRemoteOwnerStatus,
+					readRemoteCapabilities: f.readRemoteCapabilities,
+					readRemoteDeviceSetup,
+				},
+				undefined,
+				new AbortController().signal,
+			);
+			expect(view).toMatchObject({
+				contextId: f.context.contextId,
+				local: { identityId: "actor-c" },
+				remote: {
+					kind: "status",
+					identityId: "actor-c",
+					identityMatches: true,
+					state: "linked",
+					account: { email: "current@example.test" },
+				},
+			});
+			expect(view).not.toHaveProperty("ownerProjection");
+			expect(view).not.toHaveProperty("accountOwner");
+			expect("canConnectDevice" in view && view.canConnectDevice === true).toBe(
+				kind === "connect_required",
+			);
+			expect(f.readRemoteOwnerStatus).not.toHaveBeenCalled();
+			expect(readRemoteDeviceSetup).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("starts the normal sign-in operation after same-Identity recovery", async () => {
+		const f = sameOwnerFixture();
+		const rebind = vi.fn(async () => ({ kind: "bound" as const }));
+		const registry = createAccountLinkRegistry({ readContext: f.readContext, rebind });
+		cleanups.push(() => registry.close());
+		const app = createApp({
+			accountLink: {
+				getListenerAddress: () => ({ host: "127.0.0.1", port: 7441 }),
+				readContext: f.readContext,
+				readRemoteStatus: f.readRemoteStatus,
+				readRemoteOwnerStatus: f.readRemoteOwnerStatus,
+				readRemoteDeviceSetup: async () => ({ kind: "connect_required" }),
+				readRemoteCapabilities: f.readRemoteCapabilities,
+				registry,
+			},
+		});
+		const session = await app.request(`${ORIGIN}/api/account/session`, {
+			headers: { Host: "127.0.0.1:7441" },
+		});
+		const { csrfToken } = await session.json();
+		const headers = {
+			Host: "127.0.0.1:7441",
+			Origin: ORIGIN,
+			"Content-Type": "application/json",
+			"X-Codemem-Account-Csrf": csrfToken,
+		};
+		const status = await app.request(`${ORIGIN}/api/account/link-status`, { headers });
+		const view = await status.json();
+		const response = await app.request(`${ORIGIN}/api/account/link-operations`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				intent: "sign_in",
+				groupId: "group-a",
+				contextId: view.contextId,
+				coordinatorId: f.ownerProfile.coordinatorId,
+				authority: "controller_attestation",
+			}),
+		});
+		expect(view.canConnectDevice).toBe(true);
+		expect(response.status).toBe(202);
+		await vi.waitFor(() => expect(rebind).toHaveBeenCalledOnce());
+		expect(rebind).toHaveBeenCalledWith(
+			expect.objectContaining({ context: expect.objectContaining({ identityId: "actor-c" }) }),
+		);
+	});
+});
+
+describe("same-Identity review evidence changes", () => {
+	it("still refuses invalid retained association evidence", async () => {
+		const f = sameOwnerFixture();
+		f.editAssociation({ ownerIdentityId: "not valid!" });
+		expectPrivateFailure(await f.read());
+	});
+
+	it("keeps ordinary signed status when a same-Identity review appears during eligibility", async () => {
+		const f = sameOwnerFixture({ associate: false });
+		const registry = createAccountLinkRegistry({
+			readContext: f.readContext,
+			rebind: async () => ({ kind: "bound" }),
+		});
+		cleanups.push(() => registry.close());
+		const view = await readAccountStatus(
+			{
+				readContext: f.readContext,
+				registry,
+				readRemoteStatus: f.readRemoteStatus,
+				readRemoteOwnerStatus: f.readRemoteOwnerStatus,
+				readRemoteCapabilities: f.readRemoteCapabilities,
+				readRemoteDeviceSetup: async () => {
+					f.associate();
+					return { kind: "connect_required" };
+				},
+			},
+			undefined,
+			new AbortController().signal,
+		);
+		expect(view).toMatchObject({
+			contextId: f.context.contextId,
+			canConnectDevice: true,
+			remote: { kind: "status", identityId: "actor-c", identityMatches: true },
+		});
+		expect(view).not.toHaveProperty("ownerProjection");
+	});
+
+	it("refuses when the retained owner changes during device eligibility", async () => {
+		const f = sameOwnerFixture();
+		const registry = createAccountLinkRegistry({
+			readContext: f.readContext,
+			rebind: async () => ({ kind: "bound" }),
+		});
+		cleanups.push(() => registry.close());
+		const view = await readAccountStatus(
+			{
+				readContext: f.readContext,
+				registry,
+				readRemoteStatus: f.readRemoteStatus,
+				readRemoteOwnerStatus: f.readRemoteOwnerStatus,
+				readRemoteCapabilities: f.readRemoteCapabilities,
+				readRemoteDeviceSetup: async () => {
+					f.editAssociation({ ownerIdentityId: "identity-b" });
+					return { kind: "connect_required" };
+				},
+			},
+			undefined,
+			new AbortController().signal,
+		);
+		expectPrivateFailure(view, "context_changed");
+	});
+});
 
 function expectPrivateFailure(
 	view: Awaited<ReturnType<typeof readAccountStatus>>,
