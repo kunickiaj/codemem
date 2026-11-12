@@ -16,6 +16,7 @@ import {
 	rows,
 	setIdentity,
 	signer,
+	signerReview,
 	snapshot,
 	status,
 	TABLES,
@@ -235,7 +236,7 @@ function registerBindingTests(test: Test) {
 		await advance(f, "confirmed");
 		const otherCfg = { ...f.cfg, coordinatorId: "coordinator-b" };
 		await f.store.createAuthControllerAttestation(
-			review({ coordinatorId: otherCfg.coordinatorId }),
+			signerReview({ coordinatorId: otherCfg.coordinatorId }),
 		);
 		// Act
 		const created = await f.store.createAuthLinkAttempt(attempt(), otherCfg);
