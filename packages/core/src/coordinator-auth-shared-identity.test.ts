@@ -8,6 +8,10 @@ import {
 	seedEnrollmentSql,
 	seedKeyRevocationSql,
 } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
+import {
+	browserProofConfig,
+	consumeSigninProof,
+} from "./coordinator-auth-browser-proof-test-fixtures.js";
 import { browserConfig, materials } from "./coordinator-auth-browser-transaction-test-fixtures.js";
 import {
 	attempt,
@@ -110,6 +114,32 @@ function snapshot(f: LinkFixture, options: { stableOnly?: boolean } = {}) {
 	return tables
 		.filter(({ name }) => !options.stableOnly || !name.startsWith("coordinator_auth_"))
 		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()] as const);
+}
+/** The linked account signs in through a real browser proof and records its profile. */
+async function signedInProfile(f: LinkFixture, pictureUrl?: string) {
+	const browserTransactionHash = "f".repeat(64);
+	const credentialHash = "e".repeat(64);
+	const config = browserProofConfig(f);
+	await consumeSigninProof(f, browserTransactionHash, config);
+	expect(
+		await f.store.signInWithConsumedBrowserTransaction(
+			{
+				credentialHash,
+				browserTransactionHash,
+				account: { issuer: f.cfg.issuer, subject: "synthetic-shared-subject" },
+			},
+			config,
+		),
+	).toMatchObject({ kind: "issued" });
+	const profile = {
+		displayName: "Synthetic Person",
+		email: "synthetic@example.test",
+		emailVerified: true,
+		...(pictureUrl ? { pictureUrl } : {}),
+	};
+	expect(await f.store.recordAuthAccountProfile({ credentialHash, profile }, f.cfg)).toEqual({
+		kind: "recorded",
+	});
 }
 async function confirmed(f: LinkFixture) {
 	expect(await f.store.createAuthLinkAttempt(request(), f.cfg)).toMatchObject({ kind: "created" });
@@ -475,10 +505,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		seed(f);
 		await confirmed(f);
 		await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);
-		f.db.exec(`INSERT INTO coordinator_auth_account_profiles
-		(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
-		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'synthetic-session',${f.now}
-		FROM coordinator_auth_account_links`);
+		await signedInProfile(f);
 		const peer = {
 			groupId: "group-a",
 			deviceId: "unrelated-device",
@@ -511,11 +538,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		seed(f);
 		await confirmed(f);
 		await f.store.finalizeAuthLinkAttempt(proof(), f.cfg);
-		f.db.exec(`INSERT INTO coordinator_auth_account_profiles
-		(coordinator_id,link_id,display_name,email,email_verified,picture_url,source_session_id,source_signed_in_at_ms)
-		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,
-		'https://lh3.googleusercontent.com/synthetic','synthetic-session',${f.now}
-		FROM coordinator_auth_account_links`);
+		await signedInProfile(f, "https://lh3.googleusercontent.com/synthetic");
 		const peer = {
 			groupId: "group-a",
 			deviceId: "unrelated-device",
@@ -562,10 +585,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			publicKey: otherKey,
 			fingerprint: "b".repeat(64),
 		};
-		f.db.exec(`INSERT INTO coordinator_auth_account_profiles
-		(coordinator_id,link_id,display_name,email,email_verified,source_session_id,source_signed_in_at_ms)
-		SELECT coordinator_id,link_id,'Synthetic Person','synthetic@example.test',1,'synthetic-session',${f.now}
-		FROM coordinator_auth_account_links`);
+		await signedInProfile(f);
 		f.db.exec("UPDATE enrolled_devices SET enabled=0 WHERE device_id='device-a'");
 		const before = snapshot(f);
 		// Act / Assert: the origin enrollment is not current Google ownership authority,

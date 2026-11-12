@@ -290,6 +290,11 @@ export function authLinkNow(clock: () => number): number {
 		throw new Error("auth_link_invalid_clock");
 	return now;
 }
+const LINK_HOLDER_SQL = `SELECT 1 AS held FROM coordinator_auth_account_links
+ WHERE coordinator_id = ? AND (identity_id = ? OR (issuer = ? AND subject = ?)) LIMIT 1`;
+function linkHolderValues(row: Attempt): (string | null)[] {
+	return [row.coordinator_id, row.identity_id, row.issuer, row.account_subject];
+}
 function rejected(error: CoordinatorAuthLinkError): CoordinatorAuthLinkRejected {
 	return { kind: "rejected", error };
 }
@@ -1582,6 +1587,12 @@ export class AuthLinkOperations implements CoordinatorAuthLinkStore {
 			!finalizeMatches(row, i)
 		)
 			return diagnosis;
+		// V2 refuses a link for an Identity or account that any link row already holds,
+		// active or revoked, through its unique indexes. Account management refuses the
+		// same finalization through its connection guards, which write nothing, so report
+		// the same conflict rather than a controller failure.
+		if (await this.first({ sql: LINK_HOLDER_SQL, values: linkHolderValues(row) }))
+			return rejected("link_conflict");
 		return rejected("controller_not_active");
 	}
 }

@@ -6,10 +6,7 @@ import {
 	applyAccountConnectionSchema,
 	readConnectionSchemaState,
 } from "./coordinator-account-connection-schema.js";
-import {
-	connectV2Coordinator,
-	setupV2Store,
-} from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	HEADLESS_CODE_LIMITS_TABLE,
 	HEADLESS_LINK_PROVENANCE_TABLE,
@@ -36,7 +33,7 @@ afterEach(async () => {
 
 /** `v2` opens a SQLite coordinator file as a V2 release left it; D1 fixtures start on V2. */
 function open(backend: Backend, schema: "current" | "v2" = "current"): Fixture {
-	const f = backend === "SQLite" && schema === "v2" ? setupV2Store() : setupStore(backend);
+	const f = setupStore(backend, { accountSchema: schema });
 	closers.push(async () => {
 		await f.store.close();
 		if (f.db.open) f.db.close();

@@ -82,7 +82,8 @@ function countBy(keys: string[]) {
 }
 
 deterministicReviewTests();
-const test = backendTest("D1");
+// The seed writes owner-resolution history on V2, then installs account management.
+const test = backendTest("D1", { accountSchema: "v2" });
 test("rejected preview performs no D1 calls and stale confirmation never batches writes", async ({
 	fixture: f,
 }) => {

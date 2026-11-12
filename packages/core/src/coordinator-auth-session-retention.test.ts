@@ -4,7 +4,9 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { CONNECTION_SCHEMA_PRESENCE_SQL } from "./coordinator-account-connection-schema.js";
 import {
+	connectV2Coordinator,
 	reassignBrowserStarts,
 	seedConnectionOrder,
 } from "./coordinator-account-schema-sqlite-test-fixtures.js";
@@ -842,7 +844,8 @@ function historical(db: Database.Database) {
 it("versioned migration 24 runs once, keeps historical flags zero and rejects replay before mutation", () => {
 	// Arrange
 	const db = new Database(":memory:");
-	const reference = connectCoordinator(":memory:");
+	// Migration 24 produces the V2 receipt shape; account management is a later migration.
+	const reference = connectV2Coordinator();
 	try {
 		db.exec(migration("0018_add_auth_sessions.sql"));
 		db.exec(migration("0022_add_auth_session_admission_index.sql"));
@@ -952,7 +955,7 @@ function hasRawTransactionBegin(sql: string) {
 	}
 	return false;
 }
-function observeWarmStartup(probe: Database.Database) {
+function observeWarmStartup(probe: Database.Database, lockProbeSql = retentionReadHint) {
 	const sqlCalls: string[] = [];
 	const lockErrors: unknown[] = [];
 	const originalPrepare = Database.prototype.prepare;
@@ -970,7 +973,7 @@ function observeWarmStartup(probe: Database.Database) {
 		sql: string,
 	) {
 		if (this !== probe) sqlCalls.push(sql);
-		if (this !== probe && sql === retentionReadHint) {
+		if (this !== probe && sql === lockProbeSql) {
 			try {
 				probe.exec("BEGIN IMMEDIATE");
 				lockErrors.push(null);
@@ -1113,7 +1116,7 @@ it.each([
 		probe.close();
 	}
 });
-it("SQLite warm receipt upgrade uses the read hint without invoking transaction APIs or raw BEGIN", () => {
+it("SQLite warm startup after the receipt upgrade reads without transaction APIs or raw BEGIN", () => {
 	// Arrange: cold startup performs the upgrade before transaction instrumentation.
 	const directory = mkdtempSync(join(tmpdir(), "codemem-retention-warm-"));
 	const path = join(directory, "fixture.sqlite");
@@ -1131,11 +1134,14 @@ it("SQLite warm receipt upgrade uses the read hint without invoking transaction 
 		const before = cold.prepare(`SELECT * FROM ${RECEIPTS}`).all();
 		cold.close();
 		// All spies call through; no startup SQL or transaction mode is mocked.
-		trace = observeWarmStartup(probe);
+		trace = observeWarmStartup(probe, CONNECTION_SCHEMA_PRESENCE_SQL);
 		// Act
 		warm = connectCoordinator(path);
-		// Assert: this verifies the helper's fast path, not global lock-free startup.
-		expect(trace.prepareSpy).toHaveBeenCalledWith(retentionReadHint);
+		// Assert: cold startup reached the current account schema, so warm startup's presence
+		// read skips the receipt upgrade and takes no lock. This verifies startup's fast path,
+		// not global lock-free startup.
+		expect(trace.prepareSpy).toHaveBeenCalledWith(CONNECTION_SCHEMA_PRESENCE_SQL);
+		expect(trace.prepareSpy).not.toHaveBeenCalledWith(retentionReadHint);
 		expect(trace.prepareSpy).not.toHaveBeenCalledWith(
 			"PRAGMA table_info(coordinator_auth_session_receipts)",
 		);
@@ -1145,7 +1151,9 @@ it("SQLite warm receipt upgrade uses the read hint without invoking transaction 
 		expect(probe.inTransaction).toBe(false);
 		expect(warm.prepare(`SELECT * FROM ${RECEIPTS}`).all()).toEqual(before);
 		expect(before).toHaveLength(2);
-		expect(before).toEqual(legacy.map((row) => ({ ...(row as object), purge_eligible: 0 })));
+		expect(before).toEqual(
+			legacy.map((row) => ({ ...(row as object), purge_eligible: 0, source_order: null })),
+		);
 	} finally {
 		trace?.restore();
 		if (probe.inTransaction) probe.exec("ROLLBACK");
@@ -1173,13 +1181,18 @@ it("SQLite upgrades old 18/22 receipts without reclassifying historical signin r
 		const firstSchema = schema(upgraded);
 		upgraded.close();
 		upgraded = connectCoordinator(path);
-		// Assert: token-preserving punctuation normalization keeps every CHECK clause.
-		expect(after).toEqual(before.map((row) => ({ ...(row as object), purge_eligible: 0 })));
+		// Assert: token-preserving punctuation normalization keeps every CHECK clause. Startup
+		// continues to account management, whose receipts carry no browser order for history.
+		expect(after).toEqual(
+			before.map((row) => ({ ...(row as object), purge_eligible: 0, source_order: null })),
+		);
 		expect(schema(upgraded)).toEqual(firstSchema);
 		expect(firstSchema).toEqual(schema(fresh));
-		expect((upgraded.pragma(`table_info(${RECEIPTS})`) as { name: string }[]).at(-1)?.name).toBe(
-			"purge_eligible",
-		);
+		expect(
+			(upgraded.pragma(`table_info(${RECEIPTS})`) as { name: string }[])
+				.slice(-2)
+				.map(({ name }) => name),
+		).toEqual(["purge_eligible", "source_order"]);
 	} finally {
 		upgraded?.close();
 		fresh.close();

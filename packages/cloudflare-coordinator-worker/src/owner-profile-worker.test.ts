@@ -6,7 +6,6 @@ import Sqlite from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as receiver from "../../core/src/coordinator-account-link-receiver.js";
 import { linkCoordinatorAccount } from "../../core/src/coordinator-account-link-runtime.js";
-import { AUTH_LINK_AUTHORITY_UPGRADE_SQL } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { enrollOwnerProfile } from "../../core/src/coordinator-owner-profile-client.js";
 import {
@@ -265,14 +264,9 @@ beforeEach(async () => {
 	if (!db.batch) throw new Error("Native D1 batch unavailable");
 	traceOwnerProfile("schema-start");
 	const migrations = await readD1Migrations(join(import.meta.dirname, "../migrations"));
+	// The complete numbered chain, including the authority cutover and account management.
 	for (const migration of migrations)
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
-	await db.batch(
-		AUTH_LINK_AUTHORITY_UPGRADE_SQL.split(";")
-			.map((sql) => sql.trim())
-			.filter(Boolean)
-			.map((sql) => db.prepare(sql)),
-	);
 	traceOwnerProfile("schema-ready");
 	nativeDb = db;
 	if (traceCase <= 2 && process.env.CODEMEM_WORKER_D1_PROFILE === "1") {

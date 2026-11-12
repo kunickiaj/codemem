@@ -88,7 +88,7 @@ it("keeps the trusted selector's legacy V2 result unchanged", async () => {
 it.each(["SQLite", "D1"] as const)(
 	"%s startup capability reads current schema and never caches a ready result",
 	async (kind) => {
-		const f = kind === "SQLite" ? setupV2Store() : setupStore(kind);
+		const f = setupStore(kind, { accountSchema: "v2" });
 		try {
 			expect(await f.store.readAccountChangeCapability()).toBeNull();
 			await applyAccountConnectionSchema(raw(f));
@@ -294,21 +294,13 @@ it("matches every declared postflight invariant independently", async () => {
 	}
 });
 
-it("keeps fresh stores V2-only and management unavailable until explicit installation", async () => {
+it("opens fresh stores on the current account schema with management available", async () => {
 	const f = setupStore("SQLite");
 	try {
 		await f.store.assertAuthSchemaReady();
-		await expect(f.store.getAccountChanges()).rejects.toBeInstanceOf(
-			CoordinatorAuthSchemaUpgradeRequiredError,
-		);
-		expect(await hasConnectionSessionSchema(raw(f))).toBe(false);
-		expect(
-			f.db
-				.prepare(
-					"SELECT name FROM sqlite_master WHERE name LIKE 'coordinator_auth_account_connection_%'",
-				)
-				.all(),
-		).toEqual([]);
+		expect(await f.store.getAccountChanges()).toBeDefined();
+		expect(await hasConnectionSessionSchema(raw(f))).toBe(true);
+		expect(await readConnectionSchemaState(raw(f))).toBe("ready");
 	} finally {
 		await f.store.close();
 	}
@@ -597,10 +589,7 @@ it("never repairs partial optional-auth DDL on SQLite reopen and preserves the o
 it.each(["SQLite", "D1"] as const)(
 	"%s exposes matching raw schema-state and browser-purpose delegates",
 	async (backend) => {
-		const f =
-			backend === "SQLite"
-				? setupV2Store({ authClock: () => NOW })
-				: setupStore(backend, { authClock: () => NOW });
+		const f = setupStore(backend, { authClock: () => NOW, accountSchema: "v2" });
 		try {
 			expect(await f.store.readAccountConnectionSchemaState()).toBe("v2");
 			const bc = { ...config, redirectUri: "https://coordinator.example.test/auth/callback" };
@@ -681,7 +670,7 @@ it("sanitizes schema-selector failures and preserves upgrade-required errors at 
 it.each(["SQLite", "D1"] as const)(
 	"%s keeps legacy auth readiness independent of optional profile storage",
 	async (backend) => {
-		const f = backend === "SQLite" ? setupV2Store() : setupStore(backend);
+		const f = setupStore(backend, { accountSchema: "v2" });
 		try {
 			f.db.exec("DROP TABLE coordinator_auth_account_profiles");
 			expect(f.db.prepare(AUTH_SCHEMA_READINESS_SQL).get()).toEqual({ ready: 10 });

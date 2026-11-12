@@ -15,6 +15,7 @@ import {
 	loadPublicKey,
 	recipientPolicyDigest,
 } from "@codemem/core";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	D1CoordinatorStore,
@@ -476,7 +477,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "cloudflare-coord-worker-test-"));
-		db = connectCoordinator(join(tmpDir, "coordinator.sqlite"));
+		db = new Database(join(tmpDir, "coordinator.sqlite")); // Only the Worker schema below.
 		db.exec(`
 			DROP TABLE IF EXISTS coordinator_legacy_team_completions;
 			DROP TABLE IF EXISTS coordinator_scope_membership_effect_receipts;

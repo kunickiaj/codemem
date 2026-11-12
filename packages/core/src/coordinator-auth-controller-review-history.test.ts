@@ -273,7 +273,11 @@ afterEach(() => {
 });
 
 for (const backend of ["SQLite", "D1"] as const) {
-	const test = backendTest(backend);
+	// V2: link creation after reviewed legacy Team history. On the current account schema
+	// the requester's legacy-history guard refuses these attested creations
+	// (attempt_conflict), so the V2 review ceremonies run on V2 storage.
+	const test = backendTest(backend, { accountSchema: "v2" });
+	const current = backendTest(backend);
 	test(`${backend} requires separate explicit controller review after two completed legacy assignments`, async ({
 		fixture: f,
 	}) => {
@@ -521,7 +525,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		},
 	);
 
-	test.for(["revoked-key", "revoked-device", "conflicting-invite"] as const)(
+	current.for(["revoked-key", "revoked-device", "conflicting-invite"] as const)(
 		`${backend} operator review cannot unblock %s history`,
 		async (control, { fixture: f }) => {
 			// Arrange: change only the named disqualifying control on the same two-group fixture.

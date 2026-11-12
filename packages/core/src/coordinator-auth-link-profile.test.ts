@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
 import { AUTH_LINK_PROFILE_SCHEMA_SQL } from "./coordinator-auth-link-profile.js";
 import {
 	advance,
@@ -14,16 +15,13 @@ import {
 	snapshot,
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
-import {
-	AUTH_SCHEMA_READINESS_SQL,
-	AUTH_SCHEMA_READY_COUNT,
-	CoordinatorAuthSchemaUpgradeRequiredError,
-} from "./coordinator-auth-schema.js";
+import { CoordinatorAuthSchemaUpgradeRequiredError } from "./coordinator-auth-schema.js";
 import {
 	consumeSigninProof,
 	credentialHash,
 	signInInput,
 } from "./coordinator-auth-session-test-fixtures.js";
+import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 const TABLE = "coordinator_auth_link_profiles";
 const profile = {
@@ -222,16 +220,13 @@ function registerAtomicVerificationTests(test: ReturnType<typeof backendTest>) {
 		// Arrange: simulate an installation that has not applied the profile migration.
 		await authorize(f);
 		await advance(f, "browser_claimed");
-		expect(f.db.prepare(AUTH_SCHEMA_READINESS_SQL).get()).toEqual({
-			ready: AUTH_SCHEMA_READY_COUNT,
-		});
+		const state = () => readConnectionSchemaState(nativeBackend(f.db));
+		expect(await state()).toBe("ready");
 		f.db.exec(`DROP TABLE ${TABLE}`);
 		const before = snapshot(f);
 		const schema = f.db.prepare("SELECT * FROM sqlite_master ORDER BY name").all();
 		// Act / Assert: the formal gate includes the new table, not just authority columns.
-		expect(f.db.prepare(AUTH_SCHEMA_READINESS_SQL).get()).toEqual({
-			ready: AUTH_SCHEMA_READY_COUNT - 1,
-		});
+		expect(await state()).toBe("upgrade_required");
 		await expect(f.store.assertAuthSchemaReady()).rejects.toBeInstanceOf(
 			CoordinatorAuthSchemaUpgradeRequiredError,
 		);

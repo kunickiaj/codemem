@@ -9,6 +9,7 @@ import {
 	withoutNewAuthorityColumns,
 } from "../../cloudflare-coordinator-worker/test/link-authority-upgrade-fixture.js";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS as proof } from "./coordinator-auth-device-claim-schema.js";
 import { AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-contract.js";
 import { LEGACY_INLINE_AUTH_LINK_SCHEMA_SQL } from "./coordinator-auth-link-legacy-inline-test-fixture.js";
@@ -22,8 +23,10 @@ afterEach(() => {
 });
 // Each fixture file is disposable; no default profile or coordinator path is opened.
 it("refuses old optional auth before a new-column query, keeps ordinary operations usable, and explicitly upgrades all rows", async () => {
+	// The legacy authority tables replace those of a V2 file earlier releases created.
 	const path = join(directory, "legacy.sqlite");
-	const store = new BetterSqliteCoordinatorStore(path);
+	createV2CoordinatorFile(path);
+	const store = new BetterSqliteCoordinatorStore(path, { existingOnly: true });
 	try {
 		store.db.exec(linkAuthorityTables.map((table) => `DROP TABLE ${table};`).join("\n"));
 		store.db.exec("DROP TABLE coordinator_auth_device_claims");
@@ -109,27 +112,28 @@ it("rolls back fresh link DDL together with a failed proof install, then retries
 	}
 });
 
-it("finishes a partial explicit fresh bootstrap without rebuilding the existing link tables", async () => {
+it("finishes a partial explicit fresh bootstrap to the same schema as a fresh store", async () => {
 	const path = join(directory, "partial.sqlite");
 	const db = new Database(path);
 	db.exec(AUTH_LINK_SCHEMA_SQL);
-	const before = db
-		.prepare(
-			"SELECT name,sql FROM sqlite_master WHERE name LIKE 'coordinator_auth_%' ORDER BY name",
-		)
-		.all();
+	const names = (
+		db
+			.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'coordinator_auth_%' ORDER BY name")
+			.all() as { name: string }[]
+	).map(({ name }) => name);
 	db.close();
+	const fresh = new BetterSqliteCoordinatorStore(join(directory, "fresh-reference.sqlite"));
 	const store = new BetterSqliteCoordinatorStore(path);
 	try {
 		await store.assertAuthSchemaReady();
-		for (const table of before)
-			expect(
-				store.db
-					.prepare("SELECT name,sql FROM sqlite_master WHERE name = ?")
-					.get((table as { name: string }).name),
-			).toEqual(table);
+		// Startup completes the base schema, then the account extension rebuilds the link
+		// tables it extends; the result matches a fresh store's definitions.
+		const definition = (target: BetterSqliteCoordinatorStore, name: string) =>
+			target.db.prepare("SELECT name,sql FROM sqlite_master WHERE name = ?").get(name);
+		for (const name of names) expect(definition(store, name)).toEqual(definition(fresh, name));
 	} finally {
 		await store.close();
+		await fresh.close();
 	}
 });
 

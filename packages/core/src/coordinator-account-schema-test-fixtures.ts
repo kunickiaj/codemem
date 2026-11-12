@@ -6,6 +6,7 @@ import {
 } from "./coordinator-account-connection-schema.js";
 import { connectionOrderAllocation } from "./coordinator-account-connection-session.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+import type { D1DatabaseLike } from "./d1-coordinator-store.js";
 
 /**
  * Ordinary flows need the current account schema. A store that opened with it is left
@@ -30,7 +31,7 @@ export async function seedConnectionOrderWith(
 	coordinatorId: string,
 ): Promise<void> {
 	const ordered = await f.query(
-		"SELECT 1 FROM pragma_table_info('coordinator_auth_browser_transactions') WHERE name = 'start_order'",
+		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_account_connection_orders'",
 	);
 	if (ordered.length === 0) return;
 	const present = await f.query(
@@ -39,4 +40,20 @@ export async function seedConnectionOrderWith(
 	if (present.length > 0) return;
 	for (const { sql, values } of connectionOrderAllocation(coordinatorId))
 		await f.exec(sql, ...(values as (string | number | null)[]));
+}
+
+/** `seedConnectionOrderWith` over a D1 database, for raw seeds on native D1. */
+export function seedD1ConnectionOrder(db: D1DatabaseLike, coordinatorId: string): Promise<void> {
+	return seedConnectionOrderWith(
+		{
+			exec: async (sql, ...values) => {
+				await db
+					.prepare(sql)
+					.bind(...values)
+					.run();
+			},
+			query: async (sql) => (await db.prepare(sql).all<Record<string, unknown>>()).results ?? [],
+		},
+		coordinatorId,
+	);
 }

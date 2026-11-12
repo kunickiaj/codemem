@@ -3,6 +3,7 @@ import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL } from "./coordinator-auth-device-claim-schema.js";
+import { workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 
 const TABLE = "coordinator_auth_device_claims";
 const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
@@ -35,7 +36,8 @@ function setup(source: "constant" | "migration" | "Worker") {
 	databases.push(db);
 	db.pragma("recursive_triggers = OFF");
 	if (source === "constant") db.exec(COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_SQL);
-	if (source === "Worker") db.exec(readFileSync(join(worker, "schema.sql"), "utf8"));
+	// V2: the Worker schema before migration 0046 adds its claim-history trigger.
+	if (source === "Worker") db.exec(workerSchemaSql("v2"));
 	if (source === "migration") {
 		expect(migrationNames).toHaveLength(1);
 		db.exec(readFileSync(join(worker, "migrations", migrationNames[0] as string), "utf8"));

@@ -2,26 +2,23 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import {
 	AUTH_LINK_REDEEM_WINDOW_MS,
 	AUTH_SESSION_SCHEMA_SQL,
 	AUTH_SESSION_TTL_MS,
 } from "./coordinator-auth-session-contract.js";
+import { workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 
 const SESSION_TABLES = ["coordinator_auth_session_receipts", "coordinator_auth_sessions"] as const;
 const SESSION_TTL = AUTH_SESSION_TTL_MS;
 
 type Backend = "SQLite" | "D1";
+// V2: these tables as each feature migration created them, before migrations 0046 and 0047.
 function setup(backend: Backend) {
-	if (backend === "SQLite") return connectCoordinator(":memory:");
+	if (backend === "SQLite") return connectV2Coordinator();
 	const db = new Database(":memory:");
-	db.exec(
-		readFileSync(
-			join(import.meta.dirname, "../../cloudflare-coordinator-worker/schema.sql"),
-			"utf8",
-		),
-	);
+	db.exec(workerSchemaSql("v2"));
 	return db;
 }
 function schema(db: SqliteDatabase, table: (typeof SESSION_TABLES)[number]) {

@@ -12,11 +12,9 @@ import preact from "@preact/preset-vite";
 import { build } from "vite";
 import { accountOwnerAssociationDirectory } from "../../../core/src/account-owner-association-directory";
 import { BetterSqliteCoordinatorStore } from "../../../core/src/better-sqlite-coordinator-store";
-import { applyAccountConnectionSchema } from "../../../core/src/coordinator-account-connection-schema";
 import { readCoordinatorAccountLinkStatus } from "../../../core/src/coordinator-account-link-status-client";
 import { coordinatorAuthControllerReviewAction } from "../../../core/src/coordinator-actions";
 import { createCoordinatorApp } from "../../../core/src/coordinator-api";
-import type { AuthLinkBackend } from "../../../core/src/coordinator-auth-link";
 import {
 	captureCoordinatorBrowserAuthOptions,
 	createCoordinatorBrowserAuth,
@@ -63,18 +61,6 @@ const PROJECT = "https://example.invalid/original.git";
 type Remote = BetterSqliteCoordinatorStore;
 type Device = { deviceId: string; publicKey: string; fingerprint: string };
 const hash = (raw: string) => createHash("sha256").update(raw).digest("hex");
-
-function backendFor(store: Remote): AuthLinkBackend {
-	return {
-		first: async <T>({ sql, values }: Parameters<AuthLinkBackend["first"]>[0]) =>
-			(store.db.prepare(sql).get(...values) as T | undefined) ?? null,
-		run: async ({ sql, values }) => store.db.prepare(sql).run(...values).changes,
-		batch: async (statements) =>
-			store.db.transaction(() => {
-				for (const { sql, values } of statements) store.db.prepare(sql).run(...values);
-			})(),
-	};
-}
 
 // Seed a genuine canonical linked owner using ordinary birth storage. No Vitest,
 // external provider, fake status response, or retained resolution is involved.
@@ -409,7 +395,6 @@ export async function recoveryFixture(browser: BrowserContext) {
 		const remotePath = resolve(dir, "coordinator.sqlite");
 		const store = new BetterSqliteCoordinatorStore(remotePath);
 		disposals.push(() => store.close());
-		await applyAccountConnectionSchema(backendFor(store));
 		store.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
 		await seedOwner(store, { deviceId, publicKey, fingerprint }, config);
 		await seedConflictingHistory(store, { deviceId, publicKey, fingerprint });

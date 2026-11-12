@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { CoordinatorAuthLinkCreateInput as CreateInput } from "./coordinator-auth-link-contract.js";
 import {
@@ -264,10 +265,12 @@ it.each(
 });
 
 it("SQLite existing-file upgrade adds empty link storage without changing review authority", async () => {
-	// Arrange: only this disposable database represents a pre-link installation.
+	// Arrange: only this disposable database represents a pre-link installation, built
+	// from the V2 file earlier releases created.
 	const directory = mkdtempSync(join(tmpdir(), "auth-link-upgrade-"));
 	const path = join(directory, "coordinator.sqlite");
-	let store = new BetterSqliteCoordinatorStore(path, { authClock: () => NOW });
+	createV2CoordinatorFile(path);
+	let store = new BetterSqliteCoordinatorStore(path, { authClock: () => NOW, existingOnly: true });
 	try {
 		await enroll(store, signerReview());
 		await store.createAuthControllerAttestation(signerReview());

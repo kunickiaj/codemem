@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { startBrowserProof } from "./coordinator-auth-browser-proof-test-fixtures.js";
 import type {
 	CoordinatorAuthLinkConfig,
 	CoordinatorAuthLinkFinalizeInput,
 } from "./coordinator-auth-link.js";
+import { signerReview } from "./coordinator-auth-link-test-fixtures.js";
 import {
 	type Backend,
 	enroll,
 	type Fixture,
-	review,
 	setupStore,
 } from "./coordinator-auth-store-test-fixtures.js";
 
@@ -21,7 +22,7 @@ const now = 1_791_028_800_000;
 
 // Trusted persistence inputs only; no provider verification or browser sessions.
 async function confirmedFlow({ store }: Fixture) {
-	const reviewed = review();
+	const reviewed = signerReview();
 	await enroll(store, reviewed);
 	expect(await store.createAuthControllerAttestation(reviewed)).toMatchObject({ kind: "created" });
 	const { groupId, deviceId, publicKey, fingerprint } = reviewed;
@@ -51,7 +52,21 @@ async function confirmedFlow({ store }: Fixture) {
 		},
 		cfgMeta,
 	);
-	const claimed = await store.claimAuthLinkAttempt(browser, cfgMeta);
+	// A real link browser start claims the attempt, as production does.
+	const browserConfig = {
+		...cfgMeta,
+		redirectUri: "https://coordinator.example.test/auth/callback",
+	};
+	const started = await startBrowserProof({ store, cfg: cfgMeta }, browser, browserConfig);
+	expect(await store.consumeAuthBrowserTransaction(started, browserConfig)).toMatchObject({
+		kind: "consumed",
+		purpose: "link",
+	});
+	const claimed = await store.getAuthLinkAttemptStatus(
+		input.attemptId,
+		{ kind: "device", signer },
+		cfgMeta,
+	);
 	const account = { issuer: cfgMeta.issuer, subject: "opaque-subject-a" };
 	const verified = await store.recordAuthLinkOidcVerified({ ...browser, account }, cfgMeta);
 	const confirmed = await store.confirmAuthLinkAttempt(
@@ -59,7 +74,7 @@ async function confirmedFlow({ store }: Fixture) {
 		cfgMeta,
 	);
 	expect(created).toMatchObject({ kind: "created", status: { ...metadata, state: "pending" } });
-	expect(claimed).toEqual({ kind: "applied", status: { ...metadata, state: "browser_claimed" } });
+	expect(claimed).toEqual({ ...metadata, state: "browser_claimed" });
 	expect(verified).toEqual({
 		kind: "applied",
 		status: { ...metadata, state: "oidc_verified" },

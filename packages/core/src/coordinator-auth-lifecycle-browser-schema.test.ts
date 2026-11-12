@@ -561,15 +561,16 @@ describe("lifecycle display-only storage", () => {
 	});
 });
 
-it("leaves current initialization inert and frozen V2 readiness at ten", () => {
-	// Arrange
+it("leaves current initialization without the deferred V3 lifecycle objects", () => {
+	// Arrange: current initialization includes account management, whose own source_order
+	// columns are not the lifecycle's; only lifecycle-only objects are checked here.
 	const db = connectCoordinator(":memory:");
 	databases.push(db);
 	// Act
-	const ready = db.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get();
-	// Assert
+	const v2Ready = db.prepare(AUTH_SCHEMA_V2_READINESS_SQL).get();
+	// Assert: the account extension's claim-history trigger takes V2's count from ten to nine.
 	expect(AUTH_SCHEMA_V2_READY_COUNT).toBe(10);
-	expect(ready).toEqual({ ready: 10 });
+	expect(v2Ready).toEqual({ ready: AUTH_SCHEMA_V2_READY_COUNT - 1 });
 	expect(db.prepare("SELECT name FROM sqlite_master WHERE name = ?").all(refresh)).toEqual([]);
 	expect(
 		db
@@ -578,10 +579,6 @@ it("leaves current initialization inert and frozen V2 readiness at ten", () => {
 	).toEqual([]);
 	for (const table of [signin, linkProfile])
 		expect(
-			db
-				.prepare(
-					"SELECT name FROM pragma_table_info(?) WHERE name IN ('source_order','source_purpose')",
-				)
-				.all(table),
+			db.prepare("SELECT name FROM pragma_table_info(?) WHERE name = 'source_purpose'").all(table),
 		).toEqual([]);
 });

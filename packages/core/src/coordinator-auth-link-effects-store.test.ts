@@ -43,35 +43,25 @@ async function secondConfirmed(
 		runtimeVerifierHash: "1".repeat(64),
 		signer: secondSigner,
 	});
-	const hash = "2".repeat(64);
-	await f.store.createAuthLinkAttempt(input, f.cfg);
-	await f.store.claimAuthLinkAttempt(
-		{ attemptId: input.attemptId, browserTransactionHash: hash },
-		f.cfg,
-	);
-	await f.store.recordAuthLinkOidcVerified(
-		{
-			attemptId: input.attemptId,
-			browserTransactionHash: hash,
-			account: {
-				issuer: cfg.issuer,
-				subject: options.otherSubject ? "opaque-subject-b" : "opaque-subject-a",
+	// The real browser start, consume and verified writers, as production runs them. The
+	// confirmation needs its own completion commitment, distinct from the first attempt's.
+	await advance(f, "oidc_verified", input, "2".repeat(64), {
+		subject: options.otherSubject ? "opaque-subject-b" : "opaque-subject-a",
+	});
+	expect(
+		await f.store.confirmAuthLinkAttempt(
+			{
+				attemptId: input.attemptId,
+				browserTransactionHash: "2".repeat(64),
+				completionSecretHash: "3".repeat(64),
 			},
-		},
-		f.cfg,
-	);
-	await f.store.confirmAuthLinkAttempt(
-		{
-			attemptId: input.attemptId,
-			browserTransactionHash: hash,
-			completionSecretHash: "3".repeat(64),
-		},
-		f.cfg,
-	);
+			f.cfg,
+		),
+	).toMatchObject({ kind: "applied" });
 	return finalize({
+		completionSecretHash: "3".repeat(64),
 		attemptId: input.attemptId,
 		runtimeVerifierHash: input.runtimeVerifierHash,
-		completionSecretHash: "3".repeat(64),
 		signer: secondSigner,
 		deviceId: secondSigner.deviceId,
 		fingerprint: secondSigner.fingerprint,
@@ -79,10 +69,12 @@ async function secondConfirmed(
 	});
 }
 
-function registerUniqueTests(test: Test) {
-	test.for(["account", "identity", "both"])(
-		"competing attempts enforce full %s uniqueness",
-		async (scope, { fixture: f }) => {
+function registerUniqueTests(test: Test, v2: Test) {
+	// A revoked same-Identity tombstone is V2 history. The current account schema refuses
+	// that Identity's next attempt at creation, before any finalization.
+	const sameIdentity = (scope: string) => (scope === "account" ? test : v2);
+	for (const scope of ["account", "identity", "both"])
+		test(`competing attempts enforce full ${scope} uniqueness`, async ({ fixture: f }) => {
 			// Arrange
 			await authorize(f);
 			await advance(f, "confirmed");
@@ -107,27 +99,27 @@ function registerUniqueTests(test: Test) {
 					.map((row) => row.state)
 					.sort(),
 			).toEqual(["confirmed", "finalized"]);
-		},
-	);
-	test.for(["account", "identity"])(
-		"revoked %s tombstone still blocks a fresh attempt",
-		async (scope, { fixture: f }) => {
-			// Arrange
-			await authorize(f);
-			await advance(f, "finalized");
-			f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
-			const second = await secondConfirmed(f, {
-				otherIdentity: scope === "account",
-				otherSubject: scope === "identity",
-			});
-			const before = snapshot(f);
-			// Act
-			const result = await f.store.finalizeAuthLinkAttempt(second, f.cfg);
-			// Assert
-			expectRejected(result, "link_conflict");
-			expect(snapshot(f)).toEqual(before);
-		},
-	);
+		});
+	for (const scope of ["account", "identity"])
+		sameIdentity(scope)(
+			`revoked ${scope} tombstone still blocks a fresh attempt`,
+			async ({ fixture: f }) => {
+				// Arrange
+				await authorize(f);
+				await advance(f, "finalized");
+				f.db.prepare("UPDATE coordinator_auth_account_links SET revoked_at_ms = ?").run(NOW);
+				const second = await secondConfirmed(f, {
+					otherIdentity: scope === "account",
+					otherSubject: scope === "identity",
+				});
+				const before = snapshot(f);
+				// Act
+				const result = await f.store.finalizeAuthLinkAttempt(second, f.cfg);
+				// Assert
+				expectRejected(result, "link_conflict");
+				expect(snapshot(f)).toEqual(before);
+			},
+		);
 	test("another attempt's completion commitment cannot overwrite verified state", async ({
 		fixture: f,
 	}) => {
@@ -314,7 +306,7 @@ function registerProofBindingTest(test: Test) {
 
 function registerBackend(backend: Backend) {
 	const test = backendTest(backend);
-	registerUniqueTests(test);
+	registerUniqueTests(test, backendTest(backend, { accountSchema: "v2" }));
 	registerRollbackTests(test);
 	registerProofBindingTest(test);
 	if (backend === "D1") registerD1Tests(test);

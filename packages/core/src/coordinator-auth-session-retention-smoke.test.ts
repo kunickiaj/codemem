@@ -27,6 +27,21 @@ function authority(f: LinkFixture) {
 		.filter(({ name }) => !excluded.includes(name))
 		.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
 }
+/** `before` after `count` browser starts by `coordinatorId`, on the current account schema. */
+function afterStarts(before: ReturnType<typeof authority>, coordinatorId: string, count: number) {
+	return before.map(([name, rows]) =>
+		name === "coordinator_auth_account_connection_orders"
+			? [
+					name,
+					(rows as { coordinator_id: string; last_order: number }[]).map((row) =>
+						row.coordinator_id === coordinatorId
+							? { ...row, last_order: row.last_order + count }
+							: row,
+					),
+				]
+			: [name, rows],
+	);
+}
 async function guarded(f: LinkFixture) {
 	await sessions.linked(f);
 	const cfg = { ...f.cfg, redirectUri: "https://coordinator.example.test/auth/callback" };
@@ -114,11 +129,12 @@ for (const backend of ["SQLite", "D1"] as const) {
 				input,
 				browserProofConfig(f),
 			);
-			// Assert: old trusted replay remains denied and neither row is rewritten.
+			// Assert: old trusted replay remains denied and neither row is rewritten. The one
+			// signin start allocated this coordinator's next connection order.
 			expect(cleanup).toEqual([purged(0), purged(0)]);
 			expectRejected(replay, "browser_transaction_used");
 			expect(sessions.sessionRows(f)).toEqual(rows);
-			expect(authority(f)).toEqual(before);
+			expect(authority(f)).toEqual(afterStarts(before, f.cfg.coordinatorId, 1));
 		});
 	});
 }

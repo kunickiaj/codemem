@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database as DatabaseType, Statement } from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
 	type CoordinatorLegacyTeamCompletionManifestV1,
@@ -307,12 +308,9 @@ describe("D1CoordinatorStore", () => {
 			DROP TABLE IF EXISTS enrolled_devices;
 			DROP TABLE IF EXISTS groups;
 		`);
-		db.exec(
-			readFileSync(
-				join(import.meta.dirname, "../../cloudflare-coordinator-worker/schema.sql"),
-				"utf8",
-			),
-		);
+		// Re-create the dropped tables from the Worker schema; SQLite startup already
+		// installed the account extension that the schema's last block adds.
+		db.exec(workerSchemaSql("v2"));
 		const store = new D1CoordinatorStore(new SqliteD1Database(db));
 		return {
 			store,

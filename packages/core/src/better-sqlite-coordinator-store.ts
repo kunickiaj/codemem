@@ -26,7 +26,9 @@ import { AccountChangeOperations } from "./coordinator-account-change.js";
 import {
 	CONNECTION_SCHEMA_PRESENCE_SQL,
 	type ConnectionSchemaState,
+	installAccountConnectionSchemaSync,
 	readConnectionSchemaState,
+	readConnectionSchemaStateSync,
 } from "./coordinator-account-connection-schema.js";
 import { AccountLinkStatusOperations } from "./coordinator-account-link-status.js";
 import { AccountOwnerTargetOperations } from "./coordinator-account-owner-target.js";
@@ -688,9 +690,25 @@ function initializeOptionalAuthSchema(db: DatabaseType): void {
 	db.exec(AUTH_LINK_PROFILE_SCHEMA_SQL);
 	initializeAuthBrowserSchema(db);
 }
-/** Every startup: the schema a coordinator opens with. */
+/**
+ * Every startup: the V2 base schema earlier releases created, then, in one IMMEDIATE
+ * transaction, the account extension when the auth schema is intact V2 or the exact
+ * prior extension. A current schema is only read. A partial or unrecognized auth
+ * schema is not changed, and authentication keeps reporting that it needs an upgrade.
+ */
 function initializeSchema(db: DatabaseType): void {
 	initializeBaseSchema(db);
+	const reader = {
+		first: <T>(sql: string) => db.prepare(sql).get() as T | undefined,
+		run: (sql: string) => {
+			db.prepare(sql).run();
+		},
+	};
+	// Warm startup of a current coordinator only reads, so it never waits on another
+	// connection's write lock. The install rereads the state under the IMMEDIATE lock, so
+	// a concurrent startup that already installed leaves this one with nothing to write.
+	if (readConnectionSchemaStateSync(reader) === "ready") return;
+	db.transaction(() => installAccountConnectionSchemaSync(reader)).immediate();
 }
 
 /**

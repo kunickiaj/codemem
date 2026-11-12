@@ -125,10 +125,14 @@ export default { async fetch(request, env) {
 	const migrations = await readD1Migrations(
 		fileURLToPath(new URL("../migrations", import.meta.url)),
 	);
-	for (const migration of migrations) {
+	// The full numbered chain, or for a legacy coordinator only the migrations before the
+	// authority cutover (0045) that the legacy test then applies itself.
+	const applied = legacyAuth
+		? migrations.filter(({ name }) => name < "0045_cut_over_auth_link_authority.sql")
+		: migrations;
+	for (const migration of applied) {
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 	}
-	if (!legacyAuth) await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
 	const base = await mf.ready;
 	const request = async (path, init) => {
 		const response = await fetch(new URL(path, base), { ...init, redirect: "manual" });
@@ -209,7 +213,8 @@ test("actual SDK cold requests own discovery I/O; warm HTTP requests reuse compo
 		cold.map((r) => r.status),
 		Array(10).fill(200),
 	);
-	assert.equal(discoveries, 30);
+	// Each composition discovers once per OIDC client, including the account-change client.
+	assert.equal(discoveries, 40);
 	assert.equal(started.status, 200, started.body);
 	assert.match(started.body, /https:\/\/accounts\.google\.com\/authorize/);
 	assert.equal(warm.status, 200);
@@ -239,6 +244,6 @@ test("mounted warm HTTP quota survives new requests and a different D1 reference
 	assert.equal(mismatch.status, 503);
 	assert.equal(mismatch.headers.get("cache-control"), "no-store");
 	assert.equal(after.status, 200);
-	assert.equal(f.discoveries(), 3);
+	assert.equal(f.discoveries(), 4);
 	assert.equal(await transactionCount(f), 21);
 });

@@ -36,6 +36,17 @@ function profiles(f: LinkFixture) {
 	return f.db.prepare(`SELECT * FROM ${TABLE} ORDER BY coordinator_id, link_id`).all();
 }
 
+/** The browser order of the signin that issued `sessionId`, recorded on its receipt. */
+function signinOrder(f: LinkFixture, sessionId: string) {
+	const row = f.db
+		.prepare(
+			"SELECT source_order FROM coordinator_auth_session_receipts WHERE session_id = ? AND source = 'signin'",
+		)
+		.get(sessionId) as { source_order: number };
+	expect(row.source_order).toBeGreaterThan(0);
+	return row.source_order;
+}
+
 function authority(f: LinkFixture) {
 	return { grants: grants(f), links: snapshot(f), sessions: sessionRows(f) };
 }
@@ -93,6 +104,7 @@ function registerBasics(test: SessionTest) {
 				picture_url: fullProfile.pictureUrl,
 				source_session_id: session.sessionId,
 				source_signed_in_at_ms: issuedAt,
+				source_order: signinOrder(f, session.sessionId),
 			},
 		]);
 		expect(authority(f)).toEqual(before);
@@ -183,6 +195,7 @@ function registerBasics(test: SessionTest) {
 			"email_verified",
 			"link_id",
 			"picture_url",
+			"source_order",
 			"source_session_id",
 			"source_signed_in_at_ms",
 		]);
@@ -277,7 +290,9 @@ function changeGuard(f: LinkFixture, change: string) {
 function registerHistoricalGuards(backend: Backend) {
 	it("a coherent historical session inserts a new profile at the same session timestamp", async () => {
 		// Arrange: same clock, credential and empty profile table as the denial cases below.
+		// V2: account management requires a browser-ordered receipt before recording.
 		const h = setupHistoricalStore(backend, {
+			accountSchema: "v2",
 			history: {
 				authority: "controller_attestation",
 				bornAtMs: NOW - 10,
@@ -705,6 +720,41 @@ function registerNamespace(test: SessionTest) {
 	});
 }
 
+function registerRevocationFaults(test: SessionTest, v2: SessionTest) {
+	// "absent" is V2 only: the current account schema requires the profile table. The V2
+	// "delete-abort" case keeps the V2 cleanup statement covered on a V2 schema.
+	for (const [fault, run, schema] of [
+		["absent", v2, "V2"],
+		["delete-abort", test, "current"],
+		["delete-abort", v2, "V2"],
+	] as const)
+		run(
+			`old revocation remains effective despite optional profile table ${fault} on the ${schema} schema`,
+			async ({ fixture: f }) => {
+				// Arrange
+				await signedIn(f);
+				await record(f);
+				const input = { linkId: linkId(f) };
+				const scope = { coordinatorId: f.cfg.coordinatorId };
+				if (fault === "absent") f.db.exec(`DROP TABLE ${TABLE}`);
+				else
+					f.db.exec(
+						`CREATE TRIGGER fixture_profile_delete_fault BEFORE DELETE ON ${TABLE} BEGIN SELECT RAISE(ABORT, 'private_backend_detail'); END`,
+					);
+				// Act
+				const revoke = await f.store.revokeAuthAccountLink(input, scope);
+				const revoked = authority(f);
+				const cleanup = f.store.clearRevokedAuthAccountProfile(input, scope);
+				// Assert
+				expect(revoke).toEqual({ kind: "revoked" });
+				await expect(cleanup).rejects.toThrow(/^auth_account_profile_persistence_error$/);
+				expect(authority(f)).toEqual(revoked);
+				expect(await f.store.readAuthSession(credentialHash, f.cfg)).toBeNull();
+				if (fault === "delete-abort") expect(profiles(f)).toHaveLength(1);
+			},
+		);
+}
+
 function registerCleanup(test: SessionTest) {
 	test("active clear does nothing; revoked clear removes only the scoped display row", async ({
 		fixture: f,
@@ -716,7 +766,7 @@ function registerCleanup(test: SessionTest) {
 		const scope = { coordinatorId: f.cfg.coordinatorId };
 		f.db
 			.prepare(
-				`INSERT INTO ${TABLE} SELECT 'other-coordinator', link_id, display_name, email, email_verified, picture_url, source_session_id, source_signed_in_at_ms FROM ${TABLE}`,
+				`INSERT INTO ${TABLE} (coordinator_id, link_id, display_name, email, email_verified, picture_url, source_session_id, source_signed_in_at_ms) SELECT 'other-coordinator', link_id, display_name, email, email_verified, picture_url, source_session_id, source_signed_in_at_ms FROM ${TABLE}`,
 			)
 			.run();
 		const before = authority(f);
@@ -740,31 +790,6 @@ function registerCleanup(test: SessionTest) {
 		expect(authority(f)).toEqual(revoked);
 		expect(await f.store.readAuthSession(credentialHash, f.cfg)).toBeNull();
 	});
-	test.for(["absent", "delete-abort"] as const)(
-		"old revocation remains effective despite optional profile table %s",
-		async (fault, { fixture: f }) => {
-			// Arrange
-			await signedIn(f);
-			await record(f);
-			const input = { linkId: linkId(f) };
-			const scope = { coordinatorId: f.cfg.coordinatorId };
-			if (fault === "absent") f.db.exec(`DROP TABLE ${TABLE}`);
-			else
-				f.db.exec(
-					`CREATE TRIGGER fixture_profile_delete_fault BEFORE DELETE ON ${TABLE} BEGIN SELECT RAISE(ABORT, 'private_backend_detail'); END`,
-				);
-			// Act
-			const revoke = await f.store.revokeAuthAccountLink(input, scope);
-			const revoked = authority(f);
-			const cleanup = f.store.clearRevokedAuthAccountProfile(input, scope);
-			// Assert
-			expect(revoke).toEqual({ kind: "revoked" });
-			await expect(cleanup).rejects.toThrow(/^auth_account_profile_persistence_error$/);
-			expect(authority(f)).toEqual(revoked);
-			expect(await f.store.readAuthSession(credentialHash, f.cfg)).toBeNull();
-			if (fault === "delete-abort") expect(profiles(f)).toHaveLength(1);
-		},
-	);
 	test.for(["missing", "namespace"] as const)(
 		"clear cannot remove a profile for %s scope/link",
 		async (change, { fixture: f }) => {
@@ -846,6 +871,7 @@ function registerBackend(backend: Backend) {
 	registerInput(test);
 	registerNamespace(test);
 	registerCleanup(test);
+	registerRevocationFaults(test, backendTest(backend, { accountSchema: "v2" }));
 }
 
 describe.each(["SQLite", "D1"] as const)(

@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { connectCoordinator } from "./better-sqlite-coordinator-store.js";
+import { connectV2Coordinator } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { AUTH_ACCOUNT_PROFILE_SCHEMA_SQL } from "./coordinator-auth-account-profile-contract.js";
+import { workerSchemaSql } from "./coordinator-auth-store-test-fixtures.js";
 
 const TABLE = "coordinator_auth_account_profiles";
 const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
@@ -52,15 +53,14 @@ function insert(db: SqliteDatabase, changes: Record<string, unknown> = {}) {
 	).run(...Object.values(row));
 }
 
+// V2: the profile table as 0021 created it, before migration 0046 adds source_order.
 function setup(source: "constant" | "migration" | "Worker" | "SQLite") {
-	if (source === "SQLite") return connectCoordinator(":memory:");
+	if (source === "SQLite") return connectV2Coordinator();
 	const db = new Database(":memory:");
 	let sql = AUTH_ACCOUNT_PROFILE_SCHEMA_SQL;
-	if (source !== "constant") {
-		const filename =
-			source === "Worker" ? "schema.sql" : "migrations/0021_add_auth_account_profiles.sql";
-		sql = readFileSync(join(worker, filename), "utf8");
-	}
+	if (source === "Worker") sql = workerSchemaSql("v2");
+	if (source === "migration")
+		sql = readFileSync(join(worker, "migrations/0021_add_auth_account_profiles.sql"), "utf8");
 	db.exec(sql);
 	return db;
 }

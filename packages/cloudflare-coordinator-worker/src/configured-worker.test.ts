@@ -13,6 +13,7 @@ import * as coordinator from "@codemem/core/internal/cloudflare-coordinator";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { AccountChangeOperations } from "../../core/src/coordinator-account-change.js";
+import { connectV2Coordinator } from "../../core/src/coordinator-account-schema-sqlite-test-fixtures.js";
 import { AUTH_SCHEMA_READINESS_SQL } from "../../core/src/coordinator-auth-schema.js";
 import { sqliteD1 } from "../../core/src/coordinator-auth-store-test-fixtures.js";
 import {
@@ -137,7 +138,8 @@ it.each([
 });
 
 it("scheduled disabled cleanup checks V2 capability without querying absent extension tables", async () => {
-	const env = environment();
+	// A coordinator that has not applied the account-management migrations.
+	const env = environment({ v2: true });
 	env.CODEMEM_COORDINATOR_BROWSER_AUTH_CONFIG = JSON.stringify({
 		enabled: false,
 		coordinatorId: CONFIG.coordinatorId,
@@ -155,8 +157,8 @@ it("scheduled disabled cleanup checks V2 capability without querying absent exte
 });
 
 // Local SQLite implements the D1 boundary; provider discovery never leaves this process.
-function databaseFixture() {
-	const db = connectCoordinator(":memory:");
+function databaseFixture(options: { v2?: boolean } = {}) {
+	const db = options.v2 ? connectV2Coordinator() : connectCoordinator(":memory:");
 	function prepare(query: string): D1PreparedStatementLike {
 		const statement = db.prepare(query);
 		let bound: unknown[] = [];
@@ -190,8 +192,8 @@ function databaseFixture() {
 }
 
 const databases: ReturnType<typeof databaseFixture>[] = [];
-function environment(): CloudflareCoordinatorEnv {
-	const fixture = databaseFixture();
+function environment(options: { v2?: boolean } = {}): CloudflareCoordinatorEnv {
+	const fixture = databaseFixture(options);
 	databases.push(fixture);
 	return {
 		COORDINATOR_DB: fixture.binding,

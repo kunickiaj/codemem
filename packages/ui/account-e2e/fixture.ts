@@ -11,7 +11,6 @@ import { type BrowserContext, test as base } from "@playwright/test";
 import preact from "@preact/preset-vite";
 import { build } from "vite";
 import { BetterSqliteCoordinatorStore } from "../../core/src/better-sqlite-coordinator-store";
-import { applyAccountConnectionSchema } from "../../core/src/coordinator-account-connection-schema";
 import {
 	changeCoordinatorAccount,
 	linkCoordinatorAccount,
@@ -22,7 +21,6 @@ import {
 	readCoordinatorAccountLinkStatus,
 } from "../../core/src/coordinator-account-link-status-client";
 import { createCoordinatorApp } from "../../core/src/coordinator-api";
-import type { AuthLinkBackend } from "../../core/src/coordinator-auth-link";
 import {
 	captureCoordinatorBrowserAuthOptions,
 	createCoordinatorBrowserAuth,
@@ -237,16 +235,6 @@ export async function fixture(browser: BrowserContext) {
 		cleanup.push(() => {
 			if (store.db.open) store.db.close();
 		});
-		const backend: AuthLinkBackend = {
-			async first<T>({ sql, values }: Parameters<AuthLinkBackend["first"]>[0]) {
-				return (store.db.prepare(sql).get(...values) as T | undefined) ?? null;
-			},
-			run: async ({ sql, values }) => store.db.prepare(sql).run(...values).changes,
-			batch: async (statements) =>
-				store.db.transaction(() => {
-					for (const { sql, values } of statements) store.db.prepare(sql).run(...values);
-				})(),
-		};
 		await store.createGroup("group-a");
 		await store.enrollDevice("group-a", { ...device, identityId: "identity-a" });
 		await store.createAuthControllerAttestation({
@@ -286,7 +274,6 @@ export async function fixture(browser: BrowserContext) {
 			clientSecret: "browser-secret",
 		};
 		const storeFactory = () => new BetterSqliteCoordinatorStore(remotePath);
-		await applyAccountConnectionSchema(backend);
 		const auth = await createCoordinatorBrowserAuth(
 			captureCoordinatorBrowserAuthOptions({
 				config,

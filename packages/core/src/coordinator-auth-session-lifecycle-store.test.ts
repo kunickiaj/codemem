@@ -239,7 +239,10 @@ function registerRevoke(test: SessionTest) {
 		expect(snapshot(f)).toEqual(before);
 		expect(await f.store.readAuthSession(credentialHash, f.cfg)).not.toBeNull();
 	});
-	test("revoked account tombstone still blocks a new account-link finalization", async ({
+}
+
+function registerTombstone(test: SessionTest, v2: SessionTest) {
+	test("revoked account tombstone refuses a new account-link attempt at creation", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -248,38 +251,67 @@ function registerRevoke(test: SessionTest) {
 			{ linkId: linkId(f) },
 			{ coordinatorId: f.cfg.coordinatorId },
 		);
-		await advance(
-			f,
-			"oidc_verified",
-			attempt({ attemptId: "attempt-b", runtimeVerifierHash: "6".repeat(64) }),
-			"7".repeat(64),
-		);
-		const confirmed = await f.store.confirmAuthLinkAttempt(
+		const attempts = f.db.prepare("SELECT * FROM coordinator_auth_link_attempts").all();
+		// Act
+		const result = await f.store.createAuthLinkAttempt(
 			{
-				attemptId: "attempt-b",
-				browserTransactionHash: "7".repeat(64),
-				completionSecretHash: "8".repeat(64),
+				...attempt({ attemptId: "attempt-b", runtimeVerifierHash: "6".repeat(64) }),
+				browserStartHash: "7".repeat(64),
 			},
 			f.cfg,
 		);
-		expect(confirmed.kind).toBe("applied");
-		// Act
-		const result = await f.store.finalizeAuthLinkAttempt(
-			finalize({
-				attemptId: "attempt-b",
-				runtimeVerifierHash: "6".repeat(64),
-				completionSecretHash: "8".repeat(64),
-			}),
-			f.cfg,
-		);
-		const rows = f.db.prepare("SELECT * FROM coordinator_auth_account_links").all();
-		// Assert
-		expectRejected(result, "link_conflict");
-		expect(rows).toHaveLength(1);
-		expect(f.db.prepare("SELECT revoked_at_ms FROM coordinator_auth_account_links").get()).toEqual({
-			revoked_at_ms: f.now,
-		});
+		// Assert: account management refuses before any new attempt row exists.
+		expectRejected(result, "attempt_conflict");
+		expect(f.db.prepare("SELECT * FROM coordinator_auth_link_attempts").all()).toEqual(attempts);
+		expect(f.db.prepare("SELECT revoked_at_ms FROM coordinator_auth_account_links").all()).toEqual([
+			{ revoked_at_ms: f.now },
+		]);
 	});
+	// V2 refused the same Identity only at finalization, through the link unique index.
+	v2(
+		"revoked account tombstone still blocks a new account-link finalization",
+		async ({ fixture: f }) => {
+			// Arrange
+			await linked(f);
+			await f.store.revokeAuthAccountLink(
+				{ linkId: linkId(f) },
+				{ coordinatorId: f.cfg.coordinatorId },
+			);
+			await advance(
+				f,
+				"oidc_verified",
+				attempt({ attemptId: "attempt-b", runtimeVerifierHash: "6".repeat(64) }),
+				"7".repeat(64),
+			);
+			const confirmed = await f.store.confirmAuthLinkAttempt(
+				{
+					attemptId: "attempt-b",
+					browserTransactionHash: "7".repeat(64),
+					completionSecretHash: "8".repeat(64),
+				},
+				f.cfg,
+			);
+			expect(confirmed.kind).toBe("applied");
+			// Act
+			const result = await f.store.finalizeAuthLinkAttempt(
+				finalize({
+					attemptId: "attempt-b",
+					runtimeVerifierHash: "6".repeat(64),
+					completionSecretHash: "8".repeat(64),
+				}),
+				f.cfg,
+			);
+			const rows = f.db.prepare("SELECT * FROM coordinator_auth_account_links").all();
+			// Assert
+			expectRejected(result, "link_conflict");
+			expect(rows).toHaveLength(1);
+			expect(
+				f.db.prepare("SELECT revoked_at_ms FROM coordinator_auth_account_links").get(),
+			).toEqual({
+				revoked_at_ms: f.now,
+			});
+		},
+	);
 }
 
 function registerHistoricalReads(backend: Backend) {
@@ -313,8 +345,11 @@ function registerHistoricalReads(backend: Backend) {
 function registerAuditGap(backend: Backend) {
 	it("missing creation audit leaves revocation effective but reports incomplete persistence on every retry", async () => {
 		// Arrange: the missing audit is historical input, not a deletion after guards install.
+		// V2: the current account schema already refuses to read a session whose link lacks
+		// its creation audit, so the revocation-retry contract is a V2 storage contract.
 		const clock = { now: NOW };
 		const h = setupHistoricalStore(backend, {
+			accountSchema: "v2",
 			history: {
 				authority: "controller_attestation",
 				defect: "missing_creation_audit",
@@ -388,6 +423,7 @@ function registerBackend(backend: Backend) {
 	registerRead(test);
 	registerLogout(test);
 	registerRevoke(test);
+	registerTombstone(test, backendTest(backend, { accountSchema: "v2" }));
 	registerHistoricalReads(backend);
 	registerAuditGap(backend);
 }

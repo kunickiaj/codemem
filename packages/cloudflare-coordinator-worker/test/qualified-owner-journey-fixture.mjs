@@ -7,7 +7,6 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 import { ownerHttpRequest } from "./owner-handoff-fixture.mjs";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
@@ -153,10 +152,7 @@ export async function journeyFixture(t) {
 	cleanup.push(() => mf.dispose());
 	const db = await mf.getD1Database("DB");
 	for (const migration of migrations) await db.batch(migration.queries.map(sql => db.prepare(sql)));
-	await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map(sql => db.prepare(sql)));
-	// Current account qualification requires the maintained explicit connection-schema upgrade,
-	// which is intentionally separate from the numbered D1 migrations. Apply it before any profiles exist.
-	await db.batch(h.ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map(sql => db.prepare(sql)));
+	// The numbered chain includes the authority cutover and account management.
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	const remote = new h.D1CoordinatorStore(db, { authClock: () => now });
 	// The sole direct remote setup operation is the discovery group, not enrollment or authority.

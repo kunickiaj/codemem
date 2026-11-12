@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { connectionOrderAllocation } from "./coordinator-account-connection-session.js";
 import { seedBrowserStart } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
@@ -228,6 +229,15 @@ export function seedOwnerCallbackAuthority(f: OwnerStartFixture): void {
 			"b".repeat(64),
 			NOW - 1000,
 		);
+	// The order this link's start allocated, when the account schema is installed.
+	const ordered = f.db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_auth_account_connection_orders'",
+		)
+		.get();
+	if (ordered)
+		for (const { sql, values } of connectionOrderAllocation(config.coordinatorId))
+			f.db.prepare(sql).run(...values);
 	seedOwnerCallbackGroups(f);
 }
 

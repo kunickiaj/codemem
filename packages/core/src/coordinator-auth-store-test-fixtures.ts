@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database, { type Database as SqliteDatabase } from "better-sqlite3";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { setupV2Store } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import {
 	D1CoordinatorStore,
@@ -90,18 +91,41 @@ export function sqliteD1(
 	};
 }
 
+/** Where the Worker schema's V2 prefix ends and account management begins. */
+export const WORKER_SCHEMA_ACCOUNT_MARKER = "-- Account management (migrations 0046 and 0047)";
+/**
+ * The fresh Worker schema, or with `accountSchema: "v2"` its prefix: the V2 schema a
+ * D1 coordinator had before migrations 0046 and 0047.
+ */
+export function workerSchemaSql(accountSchema: "current" | "v2" = "current"): string {
+	const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
+	const schema = readFileSync(join(worker, "schema.sql"), "utf8");
+	if (accountSchema === "current") return schema;
+	const end = schema.indexOf(WORKER_SCHEMA_ACCOUNT_MARKER);
+	if (end < 0) throw new Error("worker_schema_account_marker_missing");
+	return schema.slice(0, end);
+}
+
+/**
+ * A store on the current schema, or with `accountSchema: "v2"` on the V2 schema earlier
+ * releases left (a SQLite file opened as existing, or the Worker schema's V2 prefix).
+ */
 export function setupStore(
 	backend: Backend,
-	options: { authClock?: () => number; databasePath?: string } = {},
+	options: {
+		authClock?: () => number;
+		databasePath?: string;
+		accountSchema?: "current" | "v2";
+	} = {},
 ): Fixture {
 	if (backend === "SQLite") {
+		if (options.accountSchema === "v2") return setupV2Store(options);
 		const store = new BetterSqliteCoordinatorStore(options.databasePath ?? ":memory:", options);
 		return { store, db: store.db };
 	}
 	const db = new Database(options.databasePath ?? ":memory:");
 	try {
-		const worker = join(import.meta.dirname, "../../cloudflare-coordinator-worker");
-		const schema = readFileSync(join(worker, "schema.sql"), "utf8");
+		const schema = workerSchemaSql(options.accountSchema);
 		// Commit the full fixture schema once instead of syncing each DDL statement.
 		db.transaction(() => db.exec(schema))();
 		return { store: new D1CoordinatorStore(sqliteD1(db), options), db };
