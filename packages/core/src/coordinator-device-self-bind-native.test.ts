@@ -1,9 +1,12 @@
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import { review } from "./coordinator-auth-store-test-fixtures.js";
 import type { DeviceRebindAttempt } from "./coordinator-device-rebind-proof.js";
 import { readDeviceSelfBindEligibility } from "./coordinator-device-self-bind-authority.js";
 import {
+	assignLegacyCompletion,
+	retainOwnReviewOwnership,
 	SELF_BIND_NOW,
 	type SelfBindLinkOrigin,
 	selfBindFixture,
@@ -20,10 +23,14 @@ afterEach(async () => {
 	for (const fn of close.splice(0).reverse()) await fn();
 });
 
-async function nativeFixture(origin: SelfBindLinkOrigin) {
+async function nativeFixture(
+	origin: SelfBindLinkOrigin,
+	arrange?: (f: Awaited<ReturnType<typeof selfBindFixture>>) => Promise<void>,
+) {
 	// The copy below models a D1 coordinator, which migrations leave on V2 for now.
 	const f = await selfBindFixture("SQLite", origin, undefined, { accountSchema: "v2" });
 	close.push(f.close);
+	await arrange?.(f);
 	const runtime = new Miniflare(
 		convertV4MiniflareOptions({
 			modules: true,
@@ -71,6 +78,65 @@ async function nativeFixture(origin: SelfBindLinkOrigin) {
 	}
 	return { ...f, native: backend };
 }
+
+it("native D1 binds a reviewed multiple-group legacy device through the full browser ceremony", async () => {
+	const f = await nativeFixture("peer", async (f) => {
+		expect(
+			await f.store.createAuthControllerAttestation(
+				review({
+					...f.signer,
+					groupId: "group-b",
+					identityId: f.identityId,
+					attestationId: "second-group-review",
+					reviewReceiptId: "second-group-receipt",
+				}),
+			),
+		).toMatchObject({ kind: "created" });
+		assignLegacyCompletion({
+			...f,
+			signer: { ...f.signer, groupId: "group-b" },
+			identityId: "old-owner",
+		});
+		await retainOwnReviewOwnership(f, {
+			reviewedWeakLabels: [
+				{
+					label: "old-owner",
+					kind: "legacy_included_owner_label",
+					group_id: "group-b",
+					device_id: f.signer.deviceId,
+					evidence_ref: "c".repeat(64),
+					effect: "account_owner_display_only",
+				},
+			],
+		});
+	});
+	const c = f.makeCeremony(f.native);
+	const s = f.steps(c);
+	expect(await s.start()).toMatchObject({ kind: "started" });
+	expect(await s.claim()).toMatchObject({ kind: "browser_claimed" });
+	expect(await s.verify()).toMatchObject({ kind: "verified" });
+	const confirmed = await s.confirm();
+	if (confirmed?.kind !== "confirmed") throw new Error(JSON.stringify(confirmed));
+	const row = await f.native.first<DeviceRebindAttempt>({
+		sql: "SELECT * FROM coordinator_device_rebind_attempts",
+		values: [],
+	});
+	if (!row) throw new Error("missing attempt");
+	expect(await c.finalize(f.finalizedInput(row, confirmed.completionSecret))).toMatchObject({
+		kind: "finalized",
+		receipt: {
+			previousIdentityId: f.identityId,
+			targetIdentityId: f.identityId,
+			enrollmentCount: 2,
+		},
+	});
+	expect(
+		await f.native.first({
+			sql: "SELECT count(*) n FROM coordinator_device_ownership_bindings",
+			values: [],
+		}),
+	).toEqual({ n: 1 });
+}, 30000);
 
 describe.each(["own", "peer", "peer_controller"] as const)(
 	"native D1 %s-origin self-bind",

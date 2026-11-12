@@ -247,10 +247,10 @@ const refusals: [string, (f: Fixture) => void | Promise<void>][] = [
 		},
 	],
 	[
-		"duplicate own attestation",
+		"another owner's attestation",
 		(f) => {
 			f.db.exec(
-				"INSERT INTO coordinator_auth_controller_attestations SELECT 'duplicate',coordinator_id,identity_id,'group-b',device_id,public_key,fingerprint,'duplicate-review',evidence_digest,enrollment_identity_id,revision,created_at,revoked_at FROM coordinator_auth_controller_attestations WHERE device_id='device-a'",
+				"INSERT INTO coordinator_auth_controller_attestations SELECT 'duplicate',coordinator_id,'another-owner','group-b',device_id,public_key,fingerprint,'duplicate-review',evidence_digest,enrollment_identity_id,revision,created_at,revoked_at FROM coordinator_auth_controller_attestations WHERE device_id='device-a'",
 			);
 		},
 	],

@@ -290,6 +290,23 @@ Identity. Only a device without its own claim, active attestation, or binding
 may self-bind. Switching to another Identity still requires a current Identity
 with no account link.
 
+An existing device with controller reviews can also use **Connect this device**
+for its current Identity. There must be one review for the signed group, and
+every review of the device or key must be active and agree on the exact device,
+key, fingerprint and Identity. Reviews for different enrolled groups are
+compatible. Duplicate reviews for one group and reviews naming another owner
+still refuse. All accepted reviews are pinned throughout the browser ceremony.
+
+An unmarked historical included-owner label that names another Identity still
+requires an explicit legacy owner resolution. The receipt must cover that exact
+group, device, label and history source digest, and its complete original
+controller source must remain active and unchanged. This exception applies only
+to the current device and key. Exclusions and explicitly self-attested owner
+decisions remain conflicts. The resolution supplies no binding authority by
+itself. Fresh Google sign-in, browser consent and the existing device's final
+signature are still required, and the receipt keeps the current Identity.
+The commit retains reviews, account links, historical records and sharing grants.
+
 | Route | Signed input and result |
 | --- | --- |
 | `POST /v1/auth/rebind-attempts` | Exactly `group_id`, `identity_id` (the device's current Identity), `attempt_id`, `browser_start_hash`, `loopback_redirect` and `review_digest`. `browser_start_hash` is the lowercase SHA-256 hex of the decoded 32-byte start code, as for link attempts. The device keeps the raw code and gives it only to the browser. `review_digest` is the lowercase SHA-256 hex of the device's local review. Returns `attempt_id`, `expires_at_ms`, and the `coordinator_id`, `origin`, `issuer` and `auth_config_revision` that the final signature covers. |

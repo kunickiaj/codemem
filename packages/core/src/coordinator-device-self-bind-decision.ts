@@ -120,18 +120,25 @@ function enrollmentsAllow(p: SelfBindSubject, facts: SelfBindFacts): boolean {
 	return !ownDisagree && !anotherIdentity && !keyOnAnotherDevice;
 }
 
-/** The single active review of this device or key, when it is of exactly this enrollment. */
+/** Use the signed group's review only when every group review agrees on this owner and key. */
 function ownController(p: SelfBindSubject, facts: SelfBindFacts): SelfBindAttestation | null {
-	const [only, ...others] = facts.attestations;
-	if (!only || others.length > 0) return null;
-	if (only.revoked_at !== null || sqlNe(only.identity_id, p.identityId)) return null;
-	const isThisEnrollment =
-		sqlEq(only.device_id, p.deviceId) &&
-		sqlEq(only.public_key, p.publicKey) &&
-		sqlEq(only.fingerprint, p.fingerprint) &&
-		sqlEq(only.identity_id, p.identityId) &&
-		sqlEq(only.group_id, p.groupId);
-	return isThisEnrollment ? only : null;
+	const groups = new Set<SqlValue>();
+	let selected: SelfBindAttestation | null = null;
+	for (const review of facts.attestations) {
+		if (
+			review.revoked_at !== null ||
+			!sqlEq(review.identity_id, p.identityId) ||
+			!sqlEq(review.device_id, p.deviceId) ||
+			!sqlEq(review.public_key, p.publicKey) ||
+			!sqlEq(review.fingerprint, p.fingerprint) ||
+			groups.has(review.group_id) ||
+			!ownEnrollments(p, facts).some((e) => sqlEq(e.group_id, review.group_id))
+		)
+			return null;
+		groups.add(review.group_id);
+		if (sqlEq(review.group_id, p.groupId)) selected = review;
+	}
+	return selected;
 }
 
 /** The single active account link, when its creation records verify for this issuer. */
@@ -143,6 +150,21 @@ function provenLink(p: SelfBindSubject, facts: SelfBindFacts): SelfBindLink | nu
 	return verified && sqlEq(only.issuer, p.issuer) ? only : null;
 }
 
+const controllerPin = (t: SelfBindAttestation) => [
+	t.coordinator_id,
+	t.attestation_id,
+	t.identity_id,
+	t.group_id,
+	t.device_id,
+	t.public_key,
+	t.fingerprint,
+	t.review_receipt_id,
+	t.evidence_digest,
+	t.enrollment_identity_id,
+	t.revision,
+	t.created_at,
+];
+
 function pin(
 	p: SelfBindSubject,
 	facts: SelfBindFacts,
@@ -152,20 +174,10 @@ function pin(
 	return JSON.stringify({
 		groupId: p.groupId,
 		keyId: p.keyId,
-		controller: [
-			t.coordinator_id,
-			t.attestation_id,
-			t.identity_id,
-			t.group_id,
-			t.device_id,
-			t.public_key,
-			t.fingerprint,
-			t.review_receipt_id,
-			t.evidence_digest,
-			t.enrollment_identity_id,
-			t.revision,
-			t.created_at,
-		],
+		controller: controllerPin(t),
+		...(facts.attestations.length > 1
+			? { controllers: facts.attestations.map(controllerPin) }
+			: {}),
 		link: link.link,
 		linkController: link.linkController,
 		linkClaim: link.linkClaim,

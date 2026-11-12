@@ -24,6 +24,10 @@ import {
 } from "./coordinator-device-rebind-proof.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	canonicalReviewedWeakLabels,
+	type ReviewedWeakLabel,
+} from "./coordinator-legacy-owner-resolution-metadata.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
@@ -361,6 +365,7 @@ export function assignLegacyCompletion(f: Awaited<ReturnType<typeof selfBindFixt
  */
 export async function retainOwnReviewOwnership(
 	f: Awaited<ReturnType<typeof selfBindFixture>>,
+	options: { reviewedWeakLabels?: ReviewedWeakLabel[] } = {},
 ): Promise<void> {
 	f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
 	const review = f.db
@@ -385,7 +390,7 @@ export async function retainOwnReviewOwnership(
 		source_review_receipt_id: review.review_receipt_id,
 		source_evidence_digest: review.evidence_digest,
 		resolution_evidence_digest: "d".repeat(64),
-		reviewed_weak_labels_json: "[]",
+		reviewed_weak_labels_json: canonicalReviewedWeakLabels(options.reviewedWeakLabels ?? []),
 		created_at: "2026-09-02T00:00:00.000Z",
 	});
 }
