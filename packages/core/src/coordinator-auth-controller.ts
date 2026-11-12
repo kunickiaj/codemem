@@ -1,15 +1,9 @@
 import {
-	CONTROLLER_HISTORY_CTE,
-	CONTROLLER_HISTORY_GUARD,
 	type ControllerHistoryInput,
 	type ControllerHistorySnapshot,
 	captureControllerHistorySnapshot,
 } from "./coordinator-auth-controller-history.js";
-import {
-	AUTH_CONTROLLER_OWNER_CTE,
-	AUTH_CONTROLLER_OWNER_GUARD,
-	type CoordinatorAuthControllerOwnerSnapshot,
-} from "./coordinator-auth-controller-owner.js";
+import type { CoordinatorAuthControllerOwnerSnapshot } from "./coordinator-auth-controller-owner.js";
 
 /** Persistence of completed, trusted admin reviews, not authentication of request JSON.
  * Future routes must authenticate the configured admin before invoking this capability.
@@ -401,52 +395,6 @@ export const AUTH_CONTROLLER_SCHEMA_SQL = `
 		UNIQUE (coordinator_id, review_receipt_id)
 	);`;
 
-// No foreign keys: removal of an enrollment must not erase revocation tombstones.
-// One JSON bind keeps the exact set comparison below D1's parameter limit.
-// Parse each tuple once; EXCEPT uses temporary B-trees rather than an inner
-// JSON scan per live invite. Unique captured/live IDs plus equal counts prove
-// equality; EXCEPT also compares nullable identity fields without losing NULLs.
-const AUTH_CONTROLLER_SNAPSHOT_CTE = `
-	WITH snapshot(value) AS (SELECT ?), snapshot_invites AS MATERIALIZED (
-		SELECT json_extract(j.value, '$.inviteId') AS invite_id,
-			json_extract(j.value, '$.kind') AS invite_kind,
-			json_extract(j.value, '$.actorId') AS recipient_actor_id,
-			json_extract(j.value, '$.assignedIdentityId') AS assigned_identity_id,
-			json_extract(j.value, '$.targetIdentityId') AS target_identity_id,
-			json_extract(j.value, '$.digest') AS reviewed_preview_digest
-		FROM json_each((SELECT value FROM snapshot), '$.invites') j
-	), live_invites AS MATERIALIZED (
-		SELECT i.invite_id, i.invite_kind, i.recipient_actor_id, i.assigned_identity_id,
-			i.target_identity_id, i.reviewed_preview_digest FROM coordinator_invites i
-		WHERE i.group_id = ? AND i.bound_device_id = ? AND i.bound_public_key = ?
-			AND i.bound_fingerprint = ? AND i.revoked_at IS NULL
-			AND i.consumed_at IS NOT NULL AND i.consumed_at != ''
-			AND i.invite_kind IN ('team_member', 'add_device')
-	), ${CONTROLLER_HISTORY_CTE}`;
-const AUTH_CONTROLLER_SNAPSHOT_GUARD = `
-	AND ((SELECT value FROM snapshot) IS NULL OR (
-		e.identity_id IS json_extract((SELECT value FROM snapshot), '$.enrollmentIdentityId')
-		AND (SELECT count(*) FROM live_invites) =
-			(SELECT count(*) FROM snapshot_invites)
-		AND NOT EXISTS (
-			SELECT * FROM live_invites
-			EXCEPT
-			SELECT * FROM snapshot_invites
-		)
-	)) ${CONTROLLER_HISTORY_GUARD}`;
-
-function authControllerSnapshotValues(
-	input: CoordinatorAuthControllerReviewInput,
-): (string | null)[] {
-	return [
-		input.verifiedSnapshot ? JSON.stringify(input.verifiedSnapshot) : null,
-		input.groupId,
-		input.deviceId,
-		input.publicKey,
-		input.fingerprint,
-	];
-}
-
 /** Pin the actual enrollment used to derive the revocation key across async reads. */
 export function authControllerAuthorityValues(
 	source: {
@@ -478,145 +426,6 @@ const AUTH_CONTROLLER_AUTHORITY_GUARD = `
 
 export const AUTH_CONTROLLER_ENROLLMENT_SQL = `
 	SELECT e.* FROM enrolled_devices e WHERE e.group_id = ? AND e.device_id = ?`;
-
-export const AUTH_CONTROLLER_INSERT_SQL = `
-	${AUTH_CONTROLLER_SNAPSHOT_CTE}
-	INSERT INTO coordinator_auth_controller_attestations (
-		attestation_id, coordinator_id, identity_id, group_id, device_id, public_key,
-		fingerprint, review_receipt_id, evidence_digest, enrollment_identity_id, revision, created_at, revoked_at
-	)
-	SELECT ?, ?, ?, e.group_id, e.device_id, e.public_key, e.fingerprint, ?, ?, e.identity_id, 1, ?, NULL
-	FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
-	WHERE e.group_id = ? AND e.device_id = ? AND e.enabled = 1 AND g.archived_at IS NULL
-		AND e.public_key = ? AND e.fingerprint = ? AND (e.identity_id IS NULL OR e.identity_id = ?)
-		${AUTH_CONTROLLER_SNAPSHOT_GUARD}
-		${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
-
-/** Retry eligibility is read atomically with all the same live evidence guards. */
-export const AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL = `
-	${AUTH_CONTROLLER_SNAPSHOT_CTE}
-	SELECT 1 AS eligible FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id
-	WHERE e.group_id = ? AND e.device_id = ? AND e.enabled = 1 AND g.archived_at IS NULL
-		AND e.public_key = ? AND e.fingerprint = ? AND (e.identity_id IS NULL OR e.identity_id = ?)
-		${AUTH_CONTROLLER_SNAPSHOT_GUARD}
-		${AUTH_CONTROLLER_AUTHORITY_GUARD}`;
-
-/** Internal explicit-resolution path only. The collector must first prove the
- * current label weak; snapshot and authority guards still pin that exact label.
- * Only legacy owner resolution still uses these statement stages. Ordinary
- * creation, retries and snapshot reads use coordinator-auth-controller-read-set.ts.
- */
-export function authControllerOwnerResolutionSql(
-	mode: "create" | "eligible",
-	input: CoordinatorAuthControllerReviewInput,
-): string {
-	const stages = authControllerOwnerResolutionStages(mode, input);
-	return `${stages.ctes} ${stages.statement}`;
-}
-
-/** Keep eligibility proof roots flat when composing a checked batch assertion. */
-export function authControllerOwnerResolutionStages(
-	mode: "create" | "eligible",
-	input: CoordinatorAuthControllerReviewInput,
-): { ctes: string; statement: string } {
-	if (!input.verifiedSnapshot?.accountOwnerTarget)
-		throw new Error("account_owner_authority_unavailable");
-	const base = mode === "create" ? AUTH_CONTROLLER_INSERT_SQL : AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL;
-	const stages = ownerReviewStages(base);
-	const subject = stages.subject.replace(
-		"(e.identity_id IS NULL OR e.identity_id = ?)",
-		"(e.identity_id IS NULL OR e.identity_id = ? OR e.identity_id IS json_extract((SELECT value FROM snapshot), '$.enrollmentIdentityId'))",
-	);
-	return {
-		ctes: `${AUTH_CONTROLLER_SNAPSHOT_CTE}, ${AUTH_CONTROLLER_OWNER_CTE},
-			controller_review_subject AS MATERIALIZED (${subject})`,
-		statement: `${stages.statement} ${AUTH_CONTROLLER_OWNER_GUARD}`,
-	};
-}
-
-/** These are three trusted templates, not arbitrary caller SQL. Keep both deep
- * evidence trees in separate root stages so D1 never combines their depth.
- */
-function ownerReviewStages(base: string): { subject: string; statement: string } {
-	if (base === AUTH_CONTROLLER_INSERT_SQL) {
-		const insertAt = base.indexOf("INSERT INTO coordinator_auth_controller_attestations");
-		const sourceAt = base.indexOf(
-			"FROM enrolled_devices e JOIN groups g ON g.group_id = e.group_id",
-			insertAt,
-		);
-		return {
-			subject: `SELECT e.* ${base.slice(sourceAt)}`,
-			statement: `${base.slice(insertAt, sourceAt)} FROM controller_review_subject e WHERE 1`,
-		};
-	}
-	if (base === AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL) {
-		const selectAt = base.indexOf("SELECT 1 AS eligible FROM enrolled_devices e");
-		return {
-			subject: base.slice(selectAt).replace("SELECT 1 AS eligible", "SELECT e.*"),
-			statement: "SELECT 1 AS eligible FROM controller_review_subject e WHERE 1",
-		};
-	}
-	throw new Error("account_owner_statement_invalid");
-}
-
-function ownerGuardValues(
-	input: CoordinatorAuthControllerReviewInput,
-	authority: (string | null)[],
-): (string | null)[] {
-	if (!input.verifiedSnapshot?.accountOwnerTarget) return [];
-	const keyId = authority[authority.length - 1];
-	if (typeof keyId !== "string" || keyId.length === 0)
-		throw new Error("account_owner_authority_unavailable");
-	return [keyId];
-}
-
-export function authControllerRetryEligibleValues(
-	input: CoordinatorAuthControllerReviewInput,
-	authority: (string | null)[],
-): (string | null)[] {
-	return [
-		...authControllerSnapshotValues(input),
-		input.groupId,
-		input.deviceId,
-		input.publicKey,
-		input.fingerprint,
-		input.identityId,
-		...authority,
-		...ownerGuardValues(input, authority),
-	];
-}
-
-export function authControllerInsertValues(
-	input: CoordinatorAuthControllerReviewInput,
-	createdAt: string,
-	authority: (string | null)[],
-): (string | null)[] {
-	const snapshot = authControllerSnapshotValues(input);
-	const metadata = [
-		input.attestationId,
-		input.coordinatorId,
-		input.identityId,
-		input.reviewReceiptId,
-		input.evidenceDigest,
-		createdAt,
-	];
-	const enrollmentAndAuthority = [
-		input.groupId,
-		input.deviceId,
-		input.publicKey,
-		input.fingerprint,
-		input.identityId,
-		...authority,
-	];
-	if (input.verifiedSnapshot?.accountOwnerTarget)
-		return [
-			...snapshot,
-			...enrollmentAndAuthority,
-			...metadata,
-			...ownerGuardValues(input, authority),
-		];
-	return [...snapshot, ...metadata, ...enrollmentAndAuthority];
-}
 
 const AUTH_CONTROLLER_CURRENT_SQL = `
 	SELECT a.* FROM coordinator_auth_controller_attestations a

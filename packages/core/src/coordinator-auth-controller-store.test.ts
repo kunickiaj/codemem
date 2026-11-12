@@ -6,13 +6,14 @@ import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import {
 	AUTH_CONTROLLER_ACTIVE_SQL,
-	AUTH_CONTROLLER_INSERT_SQL,
-	AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL,
 	authControllerAuthorityValues,
-	authControllerInsertValues,
-	authControllerRetryEligibleValues,
 	type CoordinatorAuthControllerReviewInput,
 } from "./coordinator-auth-controller.js";
+import {
+	controllerEligibleStatement,
+	controllerInsertStatement,
+	controllerReviewReads,
+} from "./coordinator-auth-controller-read-set.js";
 import {
 	type Backend,
 	enroll,
@@ -454,47 +455,74 @@ function registerValidationTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 	});
 }
 
+type PlanRow = { id: number; parent: number; detail: string };
+
+/**
+ * The writes and eligibility checks production sends: an ordinary review's, and an owner
+ * resolution's, which admits the weak label it reviewed.
+ */
+function productionStatements(
+	input: CoordinatorAuthControllerReviewInput,
+	authority: ReturnType<typeof authControllerAuthorityValues>,
+) {
+	const snapshot = input.verifiedSnapshot ?? { enrollmentIdentityId: null, invites: [] };
+	// An owner resolution reviews an account owner target; its fields are not bound here.
+	const resolution = {
+		...input,
+		verifiedSnapshot: {
+			...snapshot,
+			accountOwnerTarget: {
+				purpose: "existing_account_owner" as const,
+				coordinatorId: input.coordinatorId,
+				targetIdentityId: input.identityId,
+				issuer: "https://issuer.example.test",
+				linkId: "link-a",
+				authConfigRevision: "a".repeat(64),
+				createdAtMs: 1,
+			},
+		},
+	};
+	return [
+		controllerInsertStatement(input, "now", authority),
+		controllerEligibleStatement(input, authority),
+		controllerInsertStatement(resolution, "now", authority, { reviewedLabel: true }),
+		controllerEligibleStatement(resolution, authority, { reviewedLabel: true }),
+	];
+}
+
+/** Whether a JSON array scan sits under a correlated subquery of the plan. */
+function correlatedArrayScan(plan: PlanRow[]): boolean {
+	const correlated = plan.filter((row) => /CORRELATED/.test(row.detail));
+	const descendants = new Set(correlated.map((row) => row.id));
+	for (const row of plan) if (descendants.has(row.parent)) descendants.add(row.id);
+	return plan.some((row) => descendants.has(row.id) && /VIRTUAL TABLE/.test(row.detail));
+}
+
 function registerSnapshotPerformanceTests(
 	test: ReturnType<typeof it.extend<{ fixture: Fixture }>>,
 ) {
-	test("materializes each snapshot array once and compares sets without correlated snapshot scans", async ({
+	test("scans each snapshot array once, never per live row, in every statement and read", async ({
 		fixture: { store, db },
 	}) => {
-		// Arrange: explain the insert and retry eligibility the legacy owner resolution still sends.
+		// Arrange: explain the insert, retry eligibility and every read of a reviewed snapshot.
 		await enroll(store);
 		const input = review({ verifiedSnapshot: { enrollmentIdentityId: null, invites: [] } });
+		if (!input.verifiedSnapshot) throw new Error("Fixture snapshot missing");
+		input.verifiedSnapshot.legacyHistory = await store.captureAuthControllerLegacyHistory(input);
 		const enrollment = await store.getEnrollment(input.groupId, input.deviceId, true);
 		if (!enrollment) throw new Error("Fixture enrollment missing");
 		const authority = authControllerAuthorityValues(enrollment, null);
-		for (const [sql, values] of [
-			[AUTH_CONTROLLER_INSERT_SQL, authControllerInsertValues(input, "now", authority)],
-			[AUTH_CONTROLLER_RETRY_ELIGIBLE_SQL, authControllerRetryEligibleValues(input, authority)],
-		] as const) {
+		// The reads that bind arrays from the snapshot. The live history reads scan each stored
+		// manifest's own decisions and the subject's fixed fragments, as the old stages did.
+		const { invites, historyKeys } = controllerReviewReads(input, authority);
+		if (!invites || !historyKeys) throw new Error("Fixture reads missing");
+		const statements = [...productionStatements(input, authority), invites, historyKeys];
+		for (const { sql, values } of statements) {
 			// Act
-			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as {
-				id: number;
-				parent: number;
-				detail: string;
-			}[];
-			const details = plan.map((row) => row.detail);
-			// Assert: each new snapshot array adds one independent materialized scan,
-			// never a per-live-row rescan of the supplied invite/history/key arrays.
-			for (const name of ["snapshot_invites", "snapshot_history", "snapshot_history_keys"]) {
-				const materialized = plan.filter((row) => row.detail === `MATERIALIZE ${name}`);
-				expect(materialized).toHaveLength(1);
-				const descendants = new Set([materialized[0].id]);
-				const subtree = plan.filter((row) => {
-					if (!descendants.has(row.parent)) return false;
-					descendants.add(row.id);
-					return true;
-				});
-				expect(subtree.filter((row) => /SCAN j VIRTUAL TABLE/.test(row.detail))).toHaveLength(1);
-				expect(subtree.some((row) => /CORRELATED/.test(row.detail))).toBe(false);
-			}
-			expect(
-				details.includes("EXCEPT USING TEMP B-TREE") ||
-					(details.includes("MERGE (EXCEPT)") && details.includes("USE TEMP B-TREE FOR ORDER BY")),
-			).toBe(true);
+			const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...values) as PlanRow[];
+			// Assert: a bound JSON array is never rescanned inside a correlated subquery,
+			// which would repeat its scan for every live row.
+			expect(correlatedArrayScan(plan)).toBe(false);
 		}
 	});
 	test("guards all 4096 tuples below the JSON cap, including nullable identity fields", async ({
@@ -534,9 +562,15 @@ function registerSnapshotPerformanceTests(
 		})();
 		const enrollment = await store.getEnrollment(input.groupId, input.deviceId, true);
 		if (!enrollment) throw new Error("Fixture enrollment missing");
-		expect(
-			authControllerInsertValues(input, "now", authControllerAuthorityValues(enrollment, null)),
-		).toHaveLength(23);
+		// The snapshot is compared in TypeScript, so no invite is bound: every insert,
+		// eligibility check and read stays below D1's 100 bound parameters at the maximum
+		// snapshot size.
+		const authority = authControllerAuthorityValues(enrollment, null);
+		for (const statement of [
+			...productionStatements(input, authority),
+			...Object.values(controllerReviewReads(input, authority)),
+		])
+			expect(statement.values.length).toBeLessThanOrEqual(100);
 		expect(await store.createAuthControllerAttestation(input)).toMatchObject({ kind: "created" });
 		// Order is not evidence; an unchanged maximum-size retry must stay valid.
 		const reordered = {
