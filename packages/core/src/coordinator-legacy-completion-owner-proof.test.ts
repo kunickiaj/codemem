@@ -2,25 +2,35 @@ import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { isSnapshotChanged } from "./coordinator-auth-read-set.js";
 import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import {
+	capturedRowsGuard,
 	captureLegacyCompletionOwnerProof,
 	legacyCompletionOwnerProofSql,
 } from "./coordinator-legacy-completion-owner-proof.js";
 import {
+	beforeWinningBatch,
+	completions,
+	controllers,
+	futureGroup,
+	GUARD_MARKER,
+	manifest,
+	ordinary,
+	recovery,
+	resolutions,
+	WINNING_INSERT,
+} from "./coordinator-legacy-completion-owner-proof-test-fixtures.js";
+import {
 	LEGACY_OWNER_INPUT_SQL,
 	legacyOwnerKeyMetadata,
 } from "./coordinator-legacy-owner-compatibility.js";
-import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import {
 	backendFor,
-	buildReview,
-	history,
 	now,
 	revoke,
-	seed,
 	signer,
 	snapshot,
 } from "./coordinator-legacy-owner-resolution-commit-test-fixtures.js";
@@ -34,66 +44,10 @@ import {
 	type CoordinatorLegacyTeamCompletionManifestV1,
 	canonicalCoordinatorLegacyTeamCompletionManifestJson as canonical,
 } from "./coordinator-legacy-team-completion.js";
-import {
-	deterministicPolicyTeamId,
-	legacyTeamCandidateId,
-} from "./recipient-policy-identifiers.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
-
-const futureGroup = "future-completion";
-const completions = "coordinator_legacy_team_completions";
-const resolutions = "coordinator_legacy_owner_resolutions";
-const controllers = "coordinator_auth_controller_attestations";
-
-function manifest(
-	f: LinkFixture,
-	owner = "identity-a",
-	options: { deviceId?: string; publicKey?: string; groupId?: string } = {},
-): CoordinatorLegacyTeamCompletionManifestV1 {
-	const candidate = legacyTeamCandidateId(f.cfg.coordinatorId, options.groupId ?? futureGroup);
-	return {
-		version: 1,
-		coordinator_id: f.cfg.coordinatorId,
-		candidate_ref: candidate,
-		candidate_digest: "a".repeat(64),
-		team_id: deterministicPolicyTeamId(candidate),
-		team_digest: "b".repeat(64),
-		source_digest: "c".repeat(64),
-		finish_digest: "d".repeat(64),
-		access_delta_digest: "e".repeat(64),
-		team: {
-			display_name: "Future Team",
-			policy_revision: "f".repeat(64),
-			device_eligibility_mode: "reviewed_allowlist",
-		},
-		memberships: [{ identity_id: owner, role: "member" }],
-		device_decisions: [
-			{
-				device_id: options.deviceId ?? signer.deviceId,
-				key_fingerprint: fingerprintPublicKey(options.publicKey ?? signer.publicKey),
-				enabled: true,
-				identity_id: owner,
-				decision: "included",
-			},
-		],
-		project_mappings: [],
-		project_recipients: [],
-		completed_at: now,
-	};
-}
 
 function completionRows(f: LinkFixture) {
 	return f.db.prepare(`SELECT * FROM ${completions} ORDER BY rowid`).all();
-}
-
-async function ordinary(f: LinkFixture) {
-	await f.store.createGroup(futureGroup);
-	await f.store.enrollDevice(futureGroup, {
-		deviceId: signer.deviceId,
-		publicKey: signer.publicKey,
-		fingerprint: fingerprintPublicKey(signer.publicKey),
-	});
-	return manifest(f);
 }
 
 async function captureHelper(
@@ -128,41 +82,22 @@ async function captureHelper(
 	});
 	const sql = legacyCompletionOwnerProofSql(proof);
 	const bindings = [manifestJson, futureGroup, keyMetadata, ...sql.values];
-	const captured = JSON.parse(sql.values[0] ?? "null") as {
-		atoms: string[];
-		rows: Record<string, number[][]>;
-	};
 	return {
-		captured,
-		// Exercise generated decoder CTEs only. Altered test snapshots are never
-		// submitted as a capability or used for a completion INSERT.
-		async readExpectedRows(atoms: string[], rows: unknown[][]) {
-			const snapshot = { ...captured, atoms, rows: { ...captured.rows, resolutions: rows } };
-			return backend.all<{ row: string }>({
-				sql: `${LEGACY_OWNER_INPUT_SQL}${sql.ctes} SELECT row FROM completion_expected_resolutions`,
-				values: [...bindings.slice(0, 3), JSON.stringify(snapshot)],
-			});
-		},
-		async evaluateChangedReference(reference: unknown) {
-			const snapshot = structuredClone(captured);
-			const row = snapshot.rows.schema?.[0];
-			if (!row) throw new Error("codec fixture requires observed schema");
-			const changed: unknown[] = [...row];
-			changed[0] = reference;
-			const rows = {
-				...snapshot.rows,
-				schema: [changed, ...(snapshot.rows.schema?.slice(1) ?? [])],
-			};
-			return backend.first<{ current: number }>({
-				sql: `${LEGACY_OWNER_INPUT_SQL}${sql.ctes} SELECT (${sql.currentSql}) AS current`,
-				values: [...bindings.slice(0, 3), JSON.stringify({ ...snapshot, rows })],
-			});
-		},
+		/** Whether the capture's guards still hold, and what the winning INSERT would decide. */
 		async evaluate() {
-			return backend.first<{ current: number; compatible: number }>({
-				sql: `${LEGACY_OWNER_INPUT_SQL}${sql.ctes} SELECT (${sql.currentSql}) AS current, (${sql.compatibleSql}) AS compatible`,
+			let current = Number(sql.currentSql === "1");
+			for (const guard of sql.guards) {
+				if (!current) break;
+				await backend.first(guard).catch((error: unknown) => {
+					if (!isSnapshotChanged(error)) throw error;
+					current = 0;
+				});
+			}
+			const decided = await backend.first<{ compatible: number }>({
+				sql: `${LEGACY_OWNER_INPUT_SQL}${sql.ctes} SELECT (${sql.compatibleSql}) AS compatible`,
 				values: bindings,
 			});
+			return { current, compatible: decided?.compatible };
 		},
 	};
 }
@@ -182,70 +117,6 @@ function rosterKey(index: number) {
 		der.subarray(-32),
 	]);
 	return `ssh-ed25519 ${wire.toString("base64")}`;
-}
-
-async function recovery(f: LinkFixture, kind: Backend) {
-	const h = backendFor(f, kind);
-	await seed(f, h);
-	// Fixture-only pre-upgrade state: exact device/key has historical A and B,
-	// with B still the current enrollment and consumed Project actor label.
-	f.db.prepare(`DELETE FROM ${completions}`).run();
-	history(f, "history-a", "identity-a");
-	history(f, "history-b", "identity-b");
-	f.db
-		.prepare("UPDATE enrolled_devices SET identity_id='identity-b' WHERE device_id=?")
-		.run(signer.deviceId);
-	await f.store.createGroup(futureGroup);
-	f.db
-		.prepare(`INSERT INTO enrolled_devices
-		(group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at)
-		SELECT ?,device_id,public_key,?,'identity-b',enabled,created_at
-		FROM enrolled_devices WHERE group_id=? AND device_id=?`)
-		.run(futureGroup, fingerprintPublicKey(signer.publicKey), signer.groupId, signer.deviceId);
-	f.db
-		.prepare(`INSERT INTO coordinator_invites
-		(invite_id,group_id,token,policy,created_at,expires_at,consumed_at,
-		bound_device_id,bound_public_key,bound_fingerprint,invite_kind,
-		assigned_identity_id,target_identity_id,recipient_actor_id,reviewed_preview_digest)
-		VALUES ('completion-project',?,'synthetic-completion-token','open',?,?,?,?,?,?,'project_share',NULL,NULL,'identity-b',?)`)
-		.run(
-			signer.groupId,
-			now,
-			"2026-10-05T00:00:00.000Z",
-			now,
-			signer.deviceId,
-			signer.publicKey,
-			signer.fingerprint,
-			"e".repeat(64),
-		);
-	const result = await commitReviewedOwnerResolution({
-		backend: h.backend,
-		evidence: h.evidence,
-		review: await buildReview(f),
-		now,
-	});
-	expect(result.resolutionDisposition).toBe("created");
-	expect(
-		await h.evidence.verifyControllerSource({
-			sourceRef: result.resolution,
-			expectedOwnerId: "identity-a",
-			actualSigner: {
-				...signer,
-				groupId: futureGroup,
-				fingerprint: fingerprintPublicKey(signer.publicKey),
-			},
-		}),
-	).toEqual({ kind: "verified_controller_source" });
-	expect(JSON.parse(result.resolution.reviewed_weak_labels_json)).toEqual(
-		expect.arrayContaining([
-			expect.objectContaining({ label: "identity-b", kind: "legacy_included_owner_label" }),
-			expect.objectContaining({ label: "identity-b", kind: "consumed_project_actor_label" }),
-		]),
-	);
-	expect(
-		f.db.prepare(`SELECT * FROM ${completions} WHERE group_id=?`).get(futureGroup),
-	).toBeUndefined();
-	return { h, result, value: manifest(f) };
 }
 
 async function verifyRosterReceipt(
@@ -441,23 +312,22 @@ function observeRosterOperation(f: LinkFixture, options: { revokeAtInsert: boole
 	};
 	const recordBindings = (values: unknown[], winning: boolean) => {
 		metrics.maxParameters = Math.max(metrics.maxParameters, values.length);
+		// Every JSON value bound, the guards' captured rows included, must fit D1's 2 MB limit.
 		for (const value of values) {
-			if (typeof value !== "string" || !value.startsWith("{")) continue;
+			if (typeof value !== "string" || !/^[[{]/u.test(value)) continue;
 			const size = Buffer.byteLength(value);
 			metrics.maxJsonBindBytes = Math.max(metrics.maxJsonBindBytes, size);
-			if (winning && (value.startsWith('{"subjects":') || value.startsWith('{"coordinator":'))) {
-				metrics.snapshotBytes = size;
-			}
+			// The roster the winning batch's guards select by.
+			if (winning && value.startsWith('{"coordinator":')) metrics.snapshotBytes = size;
 		}
 	};
-	const beforeInsert = (parameterCount: number) => {
+	beforeWinningBatch(f, () => {
 		metrics.captureMs = performance.now() - started;
-		metrics.insertParameters = parameterCount;
 		if (options.revokeAtInsert) {
 			prepare(`UPDATE ${controllers} SET revoked_at=? WHERE attestation_id='c499'`).run(now);
 			metrics.injected = true;
 		}
-	};
+	});
 	const stringify = JSON.stringify;
 	vi.spyOn(JSON, "stringify").mockImplementation((value, replacer, space) => {
 		const result = stringify(value, replacer, space);
@@ -484,20 +354,21 @@ function observeRosterOperation(f: LinkFixture, options: { revokeAtInsert: boole
 	vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
 		metrics.statements++;
 		const statement = prepare(sql);
-		const winning =
-			/INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+coordinator_legacy_team_completions\s*\(/iu.test(sql);
+		// The winning batch: the capture's guards, then the INSERT.
+		const insert = WINNING_INSERT.test(sql);
+		const winning = insert || sql.includes(GUARD_MARKER);
 		for (const method of ["run", "all", "get"] as const) {
 			const execute = statement[method].bind(statement);
 			vi.spyOn(statement, method).mockImplementation((...values: unknown[]) => {
 				recordBindings(values, winning);
-				if (winning) beforeInsert(values.length);
+				if (insert) metrics.insertParameters = values.length;
 				const queryStarted = performance.now();
 				try {
 					return execute(...values);
 				} finally {
 					const ms = performance.now() - queryStarted;
 					metrics.queries.push({ ms, tail: sql.slice(-220) });
-					if (winning) metrics.insertMs = ms;
+					if (insert) metrics.insertMs = ms;
 					if (ms > 250)
 						console.info("full-recovery-slow-query", {
 							ms,
@@ -526,94 +397,68 @@ afterEach(() => {
 for (const kind of ["SQLite", "D1"] as const) {
 	const test = backendTest(kind);
 
+	// These rows once round-tripped through a dictionary of JSON lexemes inside the
+	// INSERT. The guards now compare the read's own row text, so each spelling must survive
+	// unchanged, and a respelled row must fail.
 	test.for([
-		{
-			name: "null and string null",
-			atoms: ["null", '"null"'],
-			refs: [0, 1, 0],
-			expected: '[null,"null",null]',
-		},
+		{ name: "null and string null", row: '[null,"null",null]', respelled: "[null,null,null]" },
 		{
 			name: "numeric lexemes and strings",
-			atoms: ["1", "1.0", "1e0", "1E+0", "-0", "2.5e-3", '"1"'],
-			refs: [0, 1, 2, 3, 4, 5, 6],
-			expected: '[1,1.0,1e0,1E+0,-0,2.5e-3,"1"]',
+			row: '[1,1.0,1e0,1E+0,-0,2.5e-3,"1"]',
+			respelled: '[1,1,1e0,1E+0,-0,2.5e-3,"1"]',
 		},
 		{
 			name: "Unicode escape spellings",
-			atoms: ['"雪"', '"\\u96ea"', '"\\u96EA"', '"é"', '"e\\u0301"'],
-			refs: [0, 1, 2, 3, 4],
-			expected: '["雪","\\u96ea","\\u96EA","é","e\\u0301"]',
+			row: '["雪","\\u96ea","\\u96EA","é","e\\u0301"]',
+			respelled: '["雪","雪","\\u96EA","é","e\\u0301"]',
 		},
 		{
 			name: "quotes backslashes control escapes",
-			atoms: ['"\\""', '"\\\\"', '"\\n"', '"\\u0000"', '"\\u000A"', '"\\/"'],
-			refs: [0, 1, 2, 3, 4, 5],
-			expected: '["\\"","\\\\","\\n","\\u0000","\\u000A","\\/"]',
+			row: '["\\"","\\\\","\\n","\\u0000","\\u000A","\\/"]',
+			respelled: '["\\"","\\\\","\\n","\\u0000","\\n","\\/"]',
 		},
 		{
-			name: "repeated atoms and numeric column ordering",
-			atoms: ['"same"', "null", "1.0"],
-			refs: [0, 1, 0, 2, 0, 1, 0, 2, 0, 1, 2, 0],
-			expected: '["same",null,"same",1.0,"same",null,"same",1.0,"same",null,1.0,"same"]',
+			name: "repeated values and column order",
+			row: '["same",null,"same",1.0,"same",null]',
+			respelled: '["same","same",null,1.0,"same",null]',
 		},
-	])(
-		`${kind} private codec decoder preserves $name byte-for-byte`,
-		async (sample, { fixture: f }) => {
-			// Arrange: obtain the actual decoder SQL from a legitimate read-only capture.
-			const value = await ordinary(f);
-			f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
-			const helper = await captureHelper(f, kind, value);
-			const before = snapshot(f);
-			// Act
-			const decoded = await helper.readExpectedRows(sample.atoms, [
-				sample.refs,
-				sample.refs.toReversed(),
-			]);
-			// Assert: rows are a set, but cell order and original lexemes are exact.
-			expect(decoded.map(({ row }) => row).sort()).toEqual(
-				[
-					sample.expected,
-					`[${sample.refs
-						.toReversed()
-						.map((reference) => sample.atoms[reference])
-						.join(",")}]`,
-				].sort(),
+	])(`${kind} captured rows keep $name exact`, async (sample, { fixture: f }) => {
+		// Arrange: a read that returns two rows, one being the sample.
+		const backend = backendFor(f, kind).backend;
+		const read = (rows: string[]) => ({
+			prefix: "",
+			sql: "SELECT DISTINCT value AS row FROM json_each(?)",
+			values: [JSON.stringify(rows)],
+		});
+		const captured = [sample.row, '["other"]'];
+		const holds = (guard: AuthLinkStatement) =>
+			backend.first(guard).then(
+				() => true,
+				(error: unknown) => {
+					if (isSnapshotChanged(error)) return false;
+					throw error;
+				},
 			);
-			expect(decoded).toHaveLength(2);
-			expect(snapshot(f)).toEqual(before);
-		},
-	);
+		// Act, Assert: the same rows in any order hold; a respelling, a lost or an added
+		// row does not.
+		expect(await holds(capturedRowsGuard(read([...captured].reverse()), captured))).toBe(true);
+		expect(await holds(capturedRowsGuard(read([sample.respelled, '["other"]']), captured))).toBe(
+			false,
+		);
+		expect(await holds(capturedRowsGuard(read([sample.row]), captured))).toBe(false);
+		expect(await holds(capturedRowsGuard(read([...captured, '["added"]']), captured))).toBe(false);
+	});
 
-	test(`${kind} private codec decoder keeps empty categories empty`, async ({ fixture: f }) => {
+	test(`${kind} a capture whose categories are empty stays current`, async ({ fixture: f }) => {
 		// Arrange
 		const value = await ordinary(f);
 		f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
 		const helper = await captureHelper(f, kind, value);
-		// Act
-		const decoded = await helper.readExpectedRows([], []);
-		// Assert
-		expect(decoded).toEqual([]);
+		// Act, Assert
 		expect(await helper.evaluate()).toEqual({ current: 1, compatible: 1 });
 	});
 
-	test.for([-1, 999999, null, "not-an-index", {}])(
-		`${kind} private codec invalid reference %j cannot pass freshness`,
-		async (reference, { fixture: f }) => {
-			// Arrange: malformed snapshots are evaluated only by a SELECT, never a write.
-			const value = await ordinary(f);
-			f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
-			const helper = await captureHelper(f, kind, value);
-			const before = snapshot(f);
-			// Act
-			const result = await helper.evaluateChangedReference(reference);
-			// Assert: dropping an undecodable cell cannot match the observed schema row.
-			expect(result).toEqual({ current: 0 });
-			expect(snapshot(f)).toEqual(before);
-		},
-	);
-
-	test(`${kind} private codec captures unusual original key comments and null source fields`, async ({
+	test(`${kind} a capture keeps unusual original key comments and null source fields exact`, async ({
 		fixture: f,
 	}) => {
 		// Arrange: append a complete historical receipt with its matching original source.
@@ -657,12 +502,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 		// Act
 		const helper = await captureHelper(f, kind, value);
 		const current = await helper.evaluate();
-		// Assert: encoder interns actual source JSON lexemes, including distinct null kinds.
+		// Assert: the guards compare the original JSON text, distinct null kinds included.
 		expect(current).toEqual({ current: 1, compatible: 1 });
-		expect(helper.captured.atoms).toEqual(
-			expect.arrayContaining(["null", '"null"', JSON.stringify(publicKey)]),
-		);
-		expect(new Set(helper.captured.atoms).size).toBe(helper.captured.atoms.length);
 		expect(snapshot(f)).toEqual(before);
 		// Arrange / Act: the captured row must not hide a changed original source.
 		f.db
@@ -916,36 +757,22 @@ for (const kind of ["SQLite", "D1"] as const) {
 			f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(resolutions),
 		).toBeUndefined();
 		const prepare = f.db.prepare.bind(f.db);
-		let injected = false;
-		vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
-			const statement = prepare(sql);
-			if (
-				/INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+coordinator_legacy_team_completions\s*\(/iu.test(sql)
-			) {
-				const run = statement.run.bind(statement);
-				vi.spyOn(statement, "run").mockImplementation((...values: unknown[]) => {
-					injected = true;
-					f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
-					for (const [table, row] of [
-						[controllers, accepted.controller],
-						[resolutions, accepted.resolution],
-					] as const) {
-						const entries = Object.entries(row);
-						prepare(`INSERT INTO ${table} (${entries.map(([name]) => name).join(",")})
-							VALUES (${entries.map(() => "?").join(",")})`).run(
-							...entries.map(([, value]) => value),
-						);
-					}
-					return run(...values);
-				});
+		const hook = beforeWinningBatch(f, () => {
+			f.db.exec(LEGACY_OWNER_RESOLUTION_SCHEMA_SQL);
+			for (const [table, row] of [
+				[controllers, accepted.controller],
+				[resolutions, accepted.resolution],
+			] as const) {
+				const entries = Object.entries(row);
+				prepare(`INSERT INTO ${table} (${entries.map(([name]) => name).join(",")})
+					VALUES (${entries.map(() => "?").join(",")})`).run(...entries.map(([, value]) => value));
 			}
-			return statement;
 		});
 		// Act
 		const pending = f.store.createLegacyTeamCompletion(futureGroup, value);
 		// Assert: absent schema is a fact to pin, not permission to ignore later ownership.
 		await expect(pending).rejects.toThrow();
-		expect(injected).toBe(true);
+		expect(hook.injected()).toBe(true);
 		expect(f.db.prepare(`SELECT * FROM ${completions} WHERE group_id=?`).all(futureGroup)).toEqual(
 			[],
 		);

@@ -159,6 +159,7 @@ import {
 	LEGACY_OWNER_INPUT_SQL,
 	LEGACY_OWNER_KEYS_SQL,
 	LEGACY_OWNER_SOURCE_CURRENT_SQL,
+	legacyCompletionInsertStatement,
 	legacyCompletionWriteResult,
 	legacyOwnerKeyMetadata,
 } from "./coordinator-legacy-owner-compatibility.js";
@@ -3831,64 +3832,17 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			normalizedGroupId,
 			manifestJson,
 		);
-		const changes = await runChanges(
-			this.db
-				.prepare(`${LEGACY_OWNER_INPUT_SQL}${ownerProof.ctes}
-				INSERT OR IGNORE INTO coordinator_legacy_team_completions(
-					group_id, candidate_ref, manifest_version, manifest_json, completed_at, created_at
-					) SELECT ?, ?, ?, ?, ?, ?
-					  FROM groups
-					  WHERE group_id = ? AND archived_at IS NULL
-					    AND NOT EXISTS (
-					      SELECT 1
-					      FROM json_each(?, '$.project_mappings') AS requested
-					      LEFT JOIN coordinator_scopes AS scope
-					        ON scope.scope_id = json_extract(requested.value, '$.scope_id')
-					       AND scope.authority_type = 'coordinator'
-					       AND scope.coordinator_id = ?
-					       AND scope.group_id = ?
-					       AND scope.status = 'active'
-					      WHERE scope.scope_id IS NULL
-					    )
-					    AND NOT EXISTS (
-					      SELECT 1 FROM enrolled_devices AS enrolled
-					      WHERE enrolled.group_id = ?
-					        AND NOT EXISTS (
-					          SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
-					          WHERE json_extract(requested.value, '$.device_id') = enrolled.device_id
-					            AND json_extract(requested.value, '$.key_fingerprint') = enrolled.fingerprint
-					            AND json_extract(requested.value, '$.enabled') = enrolled.enabled
-					        )
-					    )
-					    AND NOT EXISTS (
-					      SELECT 1 FROM json_each(?, '$.device_decisions') AS requested
-					      WHERE json_extract(requested.value, '$.decision') = 'included'
-					        AND NOT EXISTS (
-					          SELECT 1 FROM enrolled_devices AS enrolled
-					          WHERE enrolled.group_id = ?
-					            AND enrolled.device_id = json_extract(requested.value, '$.device_id')
-					            AND enrolled.fingerprint = json_extract(requested.value, '$.key_fingerprint')
-					            AND enrolled.enabled = 1
-					        )
-					    ) AND ${LEGACY_OWNER_SOURCE_CURRENT_SQL}
-					      AND (${ownerProof.currentSql}) AND (${ownerProof.compatibleSql})`)
-				.bind(
-					...ownerProof.values,
-					normalizedGroupId,
-					normalized.candidate_ref,
-					normalized.version,
-					manifestJson,
-					normalized.completed_at,
-					nowISO(),
-					normalizedGroupId,
-					manifestJson,
-					coordinatorId,
-					normalizedGroupId,
-					normalizedGroupId,
-					manifestJson,
-					manifestJson,
-					normalizedGroupId,
-				),
+		const insert = legacyCompletionInsertStatement({
+			proof: ownerProof,
+			groupId: normalizedGroupId,
+			manifest: normalized,
+			manifestJson,
+			coordinatorId,
+			createdAt: nowISO(),
+		});
+		const changes = await this.runLegacyCompletionBatch(
+			ownerProof.guards,
+			this.db.prepare(insert.sql).bind(...insert.values),
 		);
 		const stored = await firstRow<{ manifest_json: string }>(
 			this.db
@@ -3898,9 +3852,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		if (!stored) {
 			await this.requireLegacyTeamCompletionSources(normalizedGroupId, normalized, manifestJson);
-			const denial = await firstRow<{ denial: string }>(
-				this.db.prepare(ownerProof.denialSql).bind(...ownerProof.values),
-			);
+			const denial = await this.readLegacyCompletionDenial(ownerProof.guards, {
+				sql: ownerProof.denialSql,
+				values: ownerProof.values,
+			});
 			if (denial?.denial === "completion_conflict") {
 				throw new CoordinatorLegacyTeamCompletionConflictError();
 			}
@@ -3911,6 +3866,49 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			manifestJson,
 			changes === 1 ? "created" : "existing",
 		);
+	}
+
+	/**
+	 * The capture's guards, then the INSERT, as one atomic batch. Returns the INSERT's
+	 * changes: 0 when a guard found its read changed and nothing was written.
+	 */
+	private async runLegacyCompletionBatch(
+		guards: readonly AuthLinkStatement[],
+		insert: D1PreparedStatementLike,
+	): Promise<number> {
+		if (!this.db.batch) throw new Error("auth_link_atomic_batch_required");
+		try {
+			const results = await this.db.batch([
+				...guards.map(({ sql, values }) => this.db.prepare(sql).bind(...values)),
+				insert,
+			]);
+			return batchResultChanges(results[guards.length]);
+		} catch (error) {
+			if (isSnapshotChanged(error)) return 0;
+			throw error;
+		}
+	}
+
+	/** Why the INSERT wrote nothing, read behind the same guards: "unavailable" once one fails. */
+	private async readLegacyCompletionDenial(
+		guards: readonly AuthLinkStatement[],
+		denial: AuthLinkStatement,
+	): Promise<{ denial: string } | null> {
+		const unavailable = { denial: "completion_manifest_unavailable" };
+		if (guards.length === 0)
+			return firstRow<{ denial: string }>(this.db.prepare(denial.sql).bind(...denial.values));
+		if (!this.db.batch) throw new Error("auth_link_atomic_batch_required");
+		try {
+			const results = await this.db.batch(
+				[...guards, denial].map(({ sql, values }) => this.db.prepare(sql).bind(...values)),
+			);
+			const rows = (results[guards.length] as { results?: { denial: string }[] } | undefined)
+				?.results;
+			return rows?.[0] ?? null;
+		} catch (error) {
+			if (isSnapshotChanged(error)) return unavailable;
+			throw error;
+		}
 	}
 
 	private async prepareLegacyTeamCompletionOwnerProof(groupId: string, manifestJson: string) {

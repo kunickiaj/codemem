@@ -80,6 +80,13 @@ const abortWhenChanged = (condition: AuthLinkStatement): AuthLinkStatement => ({
 	values: condition.values,
 });
 
+/**
+ * A guard from a caller's own SQL condition, for reads whose rows are compared another
+ * way than the default guard does. It aborts its batch, as a changed read does, unless
+ * the condition is true.
+ */
+export const snapshotGuard = abortWhenChanged;
+
 export interface ReadSnapshotOptions {
 	/**
 	 * Builds each guard from its condition instead of the default guard, whose failure

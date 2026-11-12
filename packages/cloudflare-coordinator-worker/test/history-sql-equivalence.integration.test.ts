@@ -111,7 +111,7 @@ it("native D1 selectors retain exact raw rows/order across malformed, typed, col
 });
 
 it("native D1 actual winning INSERT rejects a history change injected after capture", async () => {
-	// Arrange: the existing harness injects immediately before the real INSERT run.
+	// Arrange: the existing harness injects just before the native batch of guards and INSERT.
 	const { h, value } = await recovery();
 	h.arm(async () => {
 		await exec(
@@ -264,7 +264,7 @@ it("native D1 malformed plausible history keeps the original fail-closed capture
 	const originalError = await result(originalStore);
 	// Assert
 	expect(current).toEqual(old);
-	expect(current).toEqual({ ctes: "", currentSql: "0", compatibleSql: "0", values: [] });
+	expect(current).toMatchObject({ guards: [], currentSql: "0", compatibleSql: "0" });
 	expect(currentError).toEqual(originalError);
 	expect(currentError).toMatch(/completion_(?:conflict|manifest_unavailable)/u);
 	expect(await state()).toEqual(before);

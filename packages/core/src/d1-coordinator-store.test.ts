@@ -199,7 +199,7 @@ class RacingCompletionInsertStatement implements D1PreparedStatementLike {
 
 	constructor(
 		private readonly db: DatabaseType,
-		private readonly statement: D1PreparedStatementLike,
+		readonly statement: D1PreparedStatementLike,
 	) {}
 
 	bind(...values: unknown[]): D1PreparedStatementLike {
@@ -211,15 +211,19 @@ class RacingCompletionInsertStatement implements D1PreparedStatementLike {
 		return await this.statement.first<T>();
 	}
 
+	/** Enrolls a second device in the group, once. */
+	inject(): void {
+		if (this.injected) return;
+		this.injected = true;
+		this.db
+			.prepare(`INSERT INTO enrolled_devices(
+				group_id, device_id, public_key, fingerprint, enabled, created_at
+			) VALUES (?, ?, ?, ?, 1, ?)`)
+			.run("g1", "device-b", "device-b-public-key", "2".repeat(64), "2026-09-01T00:00:00.000Z");
+	}
+
 	async run(): Promise<unknown> {
-		if (!this.injected) {
-			this.injected = true;
-			this.db
-				.prepare(`INSERT INTO enrolled_devices(
-					group_id, device_id, public_key, fingerprint, enabled, created_at
-				) VALUES (?, ?, ?, ?, 1, ?)`)
-				.run("g1", "device-b", "device-b-public-key", "2".repeat(64), "2026-09-01T00:00:00.000Z");
-		}
+		this.inject();
 		return await this.statement.run();
 	}
 
@@ -238,6 +242,17 @@ class RacingCompletionD1Database extends SqliteD1Database {
 		return query.includes("INSERT OR IGNORE INTO coordinator_legacy_team_completions(")
 			? new RacingCompletionInsertStatement(this.db, statement)
 			: statement;
+	}
+
+	// The INSERT runs in one batch behind the capture's guards; nothing can write inside
+	// it, so the roster changes just before the batch starts.
+	override async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
+		const unwrapped = statements.map((statement) => {
+			if (!(statement instanceof RacingCompletionInsertStatement)) return statement;
+			statement.inject();
+			return statement.statement;
+		});
+		return super.batch(unwrapped);
 	}
 }
 
