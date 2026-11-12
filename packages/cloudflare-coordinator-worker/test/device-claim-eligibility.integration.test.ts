@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { seedD1ConnectionOrder } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 import { seedInviteSql } from "./device-claim-eligibility-fixture.js";
 import { config, denied, eligible, input, NOW, aliasKey, seedEnrollmentSql, seedAttemptSql, seedClaimSql, seedUnrelatedCompletionSql } from "./device-claim-eligibility-fixture.js";
 
@@ -35,6 +36,8 @@ it("native D1 evaluates the same read-only guard for unrelated people, key drift
 	await seed(`${seedAttemptSql} UPDATE coordinator_auth_link_attempts SET identity_id='other',state='failed',failure_reason='device_cancelled',failed_at_ms=${NOW},browser_transaction_hash='${"c".repeat(64)}',account_subject='private-oidc-subject';`);
 	expect(await read()).toEqual(eligible);
 	await seed(seedClaimSql);
+	// The order the seeded claim's link start allocated on the current account schema.
+	await seedD1ConnectionOrder(env.COORDINATOR_DB, config.coordinatorId);
 	const committed = await snapshot();
 	const genesis = await env.COORDINATOR_DB.prepare(`SELECT c.claim_id, a.link_id, a.state,
 	 a.account_subject, a.authority_kind, b.state AS browser_state, b.nonce, b.pkce_verifier,

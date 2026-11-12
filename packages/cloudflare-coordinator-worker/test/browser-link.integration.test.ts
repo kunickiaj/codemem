@@ -14,6 +14,7 @@ import { createCoordinatorBrowserLinkHandlers } from "../../core/src/coordinator
 import { createCoordinatorOidcClient } from "../../core/src/coordinator-oidc.js";
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const ORIGIN = "https://app.example.test";
 const NOW = 1791028800000;
@@ -49,8 +50,7 @@ async function setup(destination = "http://127.0.0.1:80/codemem/auth/complete") 
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: "b".repeat(64),
+		...fixtureDeviceKey(),
 		evidenceDigest: "c".repeat(64),
 	};
 	await store.createGroup(review.groupId, "Fixture group");

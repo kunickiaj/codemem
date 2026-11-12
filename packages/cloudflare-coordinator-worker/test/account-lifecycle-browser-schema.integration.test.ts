@@ -1,8 +1,12 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { AUTH_LIFECYCLE_BROWSER_TRANSACTION_TABLE_SQL, AUTH_LIFECYCLE_BROWSER_TRANSACTION_INDEX_STATEMENTS, AUTH_LIFECYCLE_BROWSER_SEQUENCE_GUARD_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-browser-schema.js";
 import { AUTH_LIFECYCLE_ACCOUNT_PROFILE_TABLE_SQL, AUTH_LIFECYCLE_LINK_PROFILE_TABLE_SQL, AUTH_LINK_PROFILE_REFRESH_TABLE_SQL } from "../../core/src/coordinator-auth-lifecycle-profile-schema.js";
 import { AUTH_SCHEMA_V2_READINESS_SQL } from "../../core/src/coordinator-auth-lifecycle-predecessor.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 const db = env.COORDINATOR_DB;
 const browser = "coordinator_auth_browser_transactions";

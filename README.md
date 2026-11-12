@@ -1,12 +1,11 @@
 # codemem
 
-Normal V2 account linking needs no account-management upgrade. An older authority
-schema still needs the [explicit auth-schema cutover](docs/contracts/coordinator-auth-protocol.md#operator-cutover):
-`codemem coordinator schema upgrade-auth --db-path coordinator.sqlite` upgrades an
-existing local coordinator file; `--export-sql` exports D1 SQL without applying it.
-Optional **Refresh profile**, **Unlink Google account**, and reconnect support instead
-require an intact V2 coordinator and the separate
-[`upgrade-account-schema` rollout](docs/cloudflare-coordinator-deployment.md#optional-account-management-extension).
+Coordinators install account management (**Refresh profile**, **Unlink Google account**
+and reconnect) through their normal schema path: a SQLite coordinator installs it at
+startup, and a Cloudflare D1 deployment applies numbered migrations `0045` to `0047`
+([auth schema stages](docs/cloudflare-coordinator-deployment.md#auth-schema-stages-0045-to-0047)).
+An older local authority schema still uses the [explicit auth-schema cutover](docs/contracts/coordinator-auth-protocol.md#operator-cutover):
+`codemem coordinator schema upgrade-auth --db-path coordinator.sqlite`.
 Unlink confirms once in the Viewer and uses the existing authorized device without
 Google sign-in. Link, relink and profile refresh still require Google verification.
 

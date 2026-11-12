@@ -6,23 +6,26 @@ An older coordinator can keep serving ordinary device-signed sync while optional
 auth reports `coordinator_auth_schema_upgrade_required`. The operator must pause
 auth writers and back up the coordinator database before running
 `codemem coordinator schema upgrade-auth --db-path coordinator.sqlite --json`.
-For D1, `codemem coordinator schema upgrade-auth --export-sql` only prints the
-reviewed SQL; apply it separately using the [controlled cutover](contracts/coordinator-auth-protocol.md#operator-cutover).
+A D1 deployment applies the same cutover as numbered migration `0045`;
+`codemem coordinator schema upgrade-auth --export-sql` still prints that SQL for review.
 Never replay historical migrations on a deployment without a migration ledger.
 
-Normal V2 linking needs no further upgrade. **Refresh profile**, **Unlink Google
-account**, and later same- or different-account linking need the optional extension
-on an intact V2 coordinator. Pause auth writers, drain pending attempts, back up the
-database, and obtain separate approval before running either:
+**Refresh profile**, **Unlink Google account**, and later same- or different-account
+linking need account management, which coordinators now install through their normal
+schema path. A SQLite coordinator installs it at startup when its auth schema is intact
+V2 or the earlier account extension. A D1 deployment gets it from numbered migrations
+`0046` and `0047`, after the `0045` authority cutover. Pause auth writers, drain pending
+attempts, back up the database and obtain separate approval before applying them, as the
+[deployment guide](cloudflare-coordinator-deployment.md#auth-schema-stages-0045-to-0047)
+describes. That section also covers a D1 database built from `schema.sql` or an exported
+install, which needs its migration ledger created and baselined first.
+
+The explicit commands remain for local files and exports:
 
 ```fish
 codemem coordinator schema upgrade-account --db-path coordinator.sqlite
 codemem coordinator schema upgrade-account --export-sql --json
 ```
-
-The local command changes only the selected existing database; the export applies
-nothing. Run the exported statements in one atomic D1 binding batch only after the
-separate approval; follow the [deployment guide](cloudflare-coordinator-deployment.md#optional-account-management-extension) for that apply and deployment.
 
 Owner-resolution receipt storage is a separate, explicit extension that requires
 the current account-management schema first. After pausing auth writers, draining

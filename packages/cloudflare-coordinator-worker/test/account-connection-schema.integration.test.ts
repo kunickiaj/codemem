@@ -1,11 +1,15 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { env } from 'cloudflare:workers';
-import { expect,it } from 'vitest';
+import { beforeAll, expect, it } from "vitest";
 import { D1CoordinatorStore } from '../../core/src/d1-coordinator-store.js';
 import type { AuthLinkBackend } from '../../core/src/coordinator-auth-link.js';
 import { applyAccountConnectionSchema,readConnectionSchemaState,ACCOUNT_CONNECTION_MIGRATION_STATEMENTS,CoordinatorAuthSchemaUpgradeRequiredError } from '../../core/src/coordinator-account-connection-schema.js';
 import { AUTH_SCHEMA_READINESS_SQL } from '../../core/src/coordinator-auth-schema.js';
 import { changeFixture,config,hash,NOW } from './account-change-fixture.js';
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 it('native D1 installs the explicit additive batch, preserves legacy proof/session rows and rejects a fake guard',async()=>{
 	const db=(env as unknown as {COORDINATOR_DB:D1Database}).COORDINATOR_DB;

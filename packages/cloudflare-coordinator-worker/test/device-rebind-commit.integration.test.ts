@@ -13,6 +13,7 @@ import {
 } from "../../core/src/coordinator-device-rebind-proof.js";
 import { ed25519KeyId } from "../../core/src/coordinator-ed25519-key-id.js";
 import { createD1AuthLinkBackend } from "../../core/src/d1-coordinator-store.js";
+import { seedD1ConnectionOrder } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 
 const NOW = 1_791_028_800_000;
 const REVISION = "a".repeat(64);
@@ -94,6 +95,8 @@ async function seed(suffix: string) {
 		db.prepare(`INSERT INTO coordinator_device_rebind_attempts (${entries.map(([k]) => k).join(", ")})
 		 VALUES (${entries.map(() => "?").join(", ")})`).bind(...entries.map(([, value]) => value)),
 	]);
+	// The order the seeded link's start allocated on the current account schema.
+	await seedD1ConnectionOrder(db, attempt.coordinator_id);
 	return {
 		attempt,
 		input: (signature = key.sign(deviceRebindFinalMessage(attempt, secret))) => ({

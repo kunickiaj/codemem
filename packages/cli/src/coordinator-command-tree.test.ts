@@ -23,7 +23,10 @@ describe("coordinator resource discovery", () => {
 		{ group: "owner", children: ["enroll", "review", "qualify"] },
 		{ group: "group", children: ["create", "list", "grant-identity"] },
 		{ group: "device", children: ["enroll", "list", "rename", "disable", "remove", "revoke"] },
-		{ group: "schema", children: ["diagnose-team", "upgrade-auth", "upgrade-account"] },
+		{
+			group: "schema",
+			children: ["diagnose-team", "upgrade-auth", "upgrade-account", "baseline-d1"],
+		},
 		{ group: "domain", children: ["list", "create", "update", "members", "grant", "revoke"] },
 		{ group: "grant", children: ["list", "revoke"] },
 		{ group: "invitation", children: ["create", "accept"] },

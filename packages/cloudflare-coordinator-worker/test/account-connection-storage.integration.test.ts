@@ -5,6 +5,10 @@ import {
  ACCOUNT_CONNECTION_STORAGE_STATEMENTS, CONNECTION_ALLOCATE_ORDER_SQL, CONNECTION_ARCHIVED_CURRENT_MATCH_SQL, CONNECTION_ASSERT_ONE_WRITE_SQL,
  CONNECTION_BIRTH_COLUMNS, CONNECTION_DISCONNECTED_HEAD_SQL,
 } from "../../core/src/coordinator-account-connection-storage.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 const db = (env as unknown as { COORDINATOR_DB: D1Database }).COORDINATOR_DB;
 const current = "coordinator_auth_account_links";

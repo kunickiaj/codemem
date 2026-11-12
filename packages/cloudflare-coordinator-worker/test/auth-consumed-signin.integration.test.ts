@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const NOW = 1790899200000;
 const TTL = 28800000;
@@ -32,8 +34,7 @@ async function fixture(config?: Config) {
 		identityId: randomUUID(),
 		attestationId: randomUUID(),
 		reviewReceiptId: randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 	};
 	const start = {
@@ -41,16 +42,18 @@ async function fixture(config?: Config) {
 		attemptId: randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),
+		browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const account = { issuer: cfg.issuer, subject: randomUUID() };
 	await store.createGroup(review.groupId, "Fixture group");
 	await store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await store.createAuthLinkAttempt(start, cfg)).toMatchObject({ kind: "created" });
-	expect(await store.claimAuthLinkAttempt(browser, cfg)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	await consumeLinkProof({ store, cfg }, start, browser);
 	expect(await store.recordAuthLinkOidcVerified({ ...browser, account }, cfg)).toMatchObject({
 		kind: "applied",
 	});

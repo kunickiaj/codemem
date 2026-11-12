@@ -1,9 +1,13 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { env } from 'cloudflare:workers';
-import { expect,it } from 'vitest';
+import { beforeAll, expect, it } from "vitest";
 import { D1CoordinatorStore } from '../../core/src/d1-coordinator-store.js';
 import type { AuthLinkBackend } from '../../core/src/coordinator-auth-link.js';
 import { changeFixture,config,hash,NOW } from './account-change-fixture.js';
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 it('native D1 retains a migrated sign-in profile without admitting old pending browser proof',async()=>{
  const profile={displayName:'Legacy signin',email:'legacy@example.test',emailVerified:true,pictureUrl:'https://lh3.googleusercontent.com/a/legacy'};

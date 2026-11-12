@@ -66,9 +66,11 @@ export async function snapshot(options: { authorityOnly?: boolean } = {}) {
 	const tables = await env.COORDINATOR_DB.prepare(
 		"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 	).all<{ name: string }>();
+	// A browser start's own rows: its transaction and the connection order it allocates.
 	const excluded = new Set([
 		"coordinator_owner_enrollment_attempts",
 		"coordinator_auth_browser_transactions",
+		"coordinator_auth_account_connection_orders",
 	]);
 	return Promise.all(
 		tables.results

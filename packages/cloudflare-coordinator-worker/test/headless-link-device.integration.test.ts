@@ -20,6 +20,7 @@ import { createD1AuthLinkBackend, D1CoordinatorStore } from "../../core/src/d1-c
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { createCloudflareCoordinatorWorker } from "../src/index.js";
+import { seedD1ConnectionOrder } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 
 // Fixture-only values; the code, proofs and keys exist only in this test.
 const ORIGIN = "https://app.example.test";
@@ -379,6 +380,8 @@ it("refuses the native rebind commit when the target link became headless after 
 		 VALUES (?, ?, ?, 'race-subject', 'race-target', ?, ?, 1, 'device_claim', ?)`)
 		.bind(f.config.coordinatorId, linkId, f.config.issuer, crypto.randomUUID(), f.config.revision, crypto.randomUUID())
 		.run();
+	// The order the seeded link's start allocated on the current account schema.
+	await seedD1ConnectionOrder(db, f.config.coordinatorId);
 	const r = await rebindSetup(f.config, "race-subject");
 	const { callback, transaction } = await rebindCallback(r);
 	if (callback?.kind !== "verified") throw new Error(JSON.stringify(callback));

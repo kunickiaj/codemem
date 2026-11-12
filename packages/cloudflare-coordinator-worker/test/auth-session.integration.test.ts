@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
@@ -46,7 +47,7 @@ async function createFixture() {
 	const review = {
 		coordinatorId: randomUUID(), groupId: randomUUID(), deviceId: randomUUID(),
 		identityId: randomUUID(), attestationId: randomUUID(), reviewReceiptId: randomUUID(),
-		publicKey: "fixture-public-key", fingerprint: hash(), evidenceDigest: hash(),
+		...fixtureDeviceKey(), evidenceDigest: hash(),
 	};
 	owned.push(review);
 	const cfg: Config = {
@@ -299,20 +300,17 @@ it("logs out only one session and admin revocation preserves link tombstones", a
 });
 
 async function expectTombstoneConflict(f: Fixture) {
+	// The revoked link's Identity cannot start another link: account management refuses
+	// the attempt at creation, before any attempt, link or audit row is written.
 	const start = { ...f.start, attemptId: randomUUID(), runtimeVerifierHash: hash(), browserStartHash: hash() };
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
-	const confirm = { ...browser, completionSecretHash: hash() };
-	expect(await f.store.createAuthLinkAttempt(start, f.cfg)).toMatchObject({ kind: "created" });
-	await consumeLinkProof(f, start, browser);
-	expect(await f.store.recordAuthLinkOidcVerified({ ...browser, account: f.account }, f.cfg))
-		.toMatchObject({ kind: "applied" });
-	expect(await f.store.confirmAuthLinkAttempt(confirm, f.cfg)).toMatchObject({ kind: "applied" });
+	const priorAttempts = await rows(f, attempts);
 	const priorLinks = await rows(f, links);
 	const priorAudit = await rows(f, audit);
-	expect(await f.store.finalizeAuthLinkAttempt({
-		...f.finalize, attemptId: start.attemptId, runtimeVerifierHash: start.runtimeVerifierHash,
-		completionSecretHash: confirm.completionSecretHash,
-	}, f.cfg)).toEqual({ kind: "rejected", error: "link_conflict" });
+	expect(await f.store.createAuthLinkAttempt(start, f.cfg)).toEqual({
+		kind: "rejected",
+		error: "attempt_conflict",
+	});
+	expect(await rows(f, attempts)).toEqual(priorAttempts);
 	expect(await rows(f, links)).toEqual(priorLinks);
 	expect(await rows(f, audit)).toEqual(priorAudit);
 }
