@@ -80,6 +80,36 @@ function eligibleFacts(): SelfBindFacts {
 }
 
 describe("self-bind decision", () => {
+	it("uses the signed group's review when all group reviews agree on the same device owner", () => {
+		const facts = eligibleFacts();
+		const review = facts.attestations[0];
+		if (!review) throw new Error("missing review fixture");
+		const single = decideDeviceSelfBind(subject, facts);
+		facts.attestations.unshift({ ...review, attestation_id: "a2", group_id: "g2" });
+		const multiple = decideDeviceSelfBind(subject, facts);
+		expect(multiple).not.toBeNull();
+		expect(JSON.parse(multiple as string).controller).toEqual(
+			JSON.parse(single as string).controller,
+		);
+		expect(JSON.parse(multiple as string).controllers).toHaveLength(2);
+	});
+
+	it.each([
+		{ identity_id: "another-owner" },
+		{ device_id: "another-device" },
+		{ public_key: "another-key" },
+		{ fingerprint: "another-fingerprint" },
+		{ revoked_at: "revoked" },
+		{ group_id: "unrelated-group" },
+		{ group_id: "g1" },
+	])("refuses an incompatible additional review: %j", (change) => {
+		const facts = eligibleFacts();
+		const review = facts.attestations[0];
+		if (!review) throw new Error("missing review fixture");
+		facts.attestations.push({ ...review, attestation_id: "a2", group_id: "g2", ...change });
+		expect(decideDeviceSelfBind(subject, facts)).toBeNull();
+	});
+
 	it("pins the review, the link and the device's enrollments in the stored JSON shape", () => {
 		// Arrange
 		const facts = eligibleFacts();

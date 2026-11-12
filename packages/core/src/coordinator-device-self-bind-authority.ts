@@ -23,6 +23,8 @@ import {
 	type SelfBindFacts,
 	type SelfBindSubject,
 } from "./coordinator-device-self-bind-decision.js";
+import { SELF_BIND_REVIEWED_LABEL_SQL } from "./coordinator-device-self-bind-reviewed-history.js";
+import { readLegacyOwnerResolutionSchemaState } from "./coordinator-legacy-owner-resolution-metadata.js";
 import { legacyDecisionCountsAsOwnerSql } from "./coordinator-legacy-team-completion.js";
 import { readNegativeOwnerConsistency } from "./coordinator-owner-negative-read-set.js";
 
@@ -62,6 +64,7 @@ const ALIASES = "(SELECT value FROM json_each(?))";
 interface ReadContext {
 	connections: boolean;
 	headless: boolean;
+	resolutions: boolean;
 }
 
 /**
@@ -165,15 +168,33 @@ const FACT_READS: {
 	}),
 	// No trigger makes completion rows immutable or undeletable, so the guard re-runs
 	// this scan over every manifest. A cheaper projection could miss an edited manifest.
-	legacyDecisionConflicts: (p) => ({
+	legacyDecisionConflicts: (p, { resolutions }) => ({
 		sql: `SELECT json_object('group_id',c.group_id,'candidate_ref',c.candidate_ref,'decision',d.key) AS row
  FROM coordinator_legacy_team_completions c,json_each(${manifest},'$.device_decisions') d
  WHERE json_extract(${manifest},'$.coordinator_id')=?
  AND (json_extract(d.value,'$.device_id')=? OR json_extract(d.value,'$.key_fingerprint')=?)
  AND (${legacyDecisionCountsAsOwnerSql("d.value", "deny")})
- AND (json_extract(d.value,'$.decision')='excluded' OR json_extract(d.value,'$.identity_id') IS NOT ?)
- ORDER BY c.group_id,c.candidate_ref,d.key`,
-		values: [p.coordinatorId, p.deviceId, p.fingerprint, p.identityId],
+	 AND (json_extract(d.value,'$.decision')='excluded' OR json_extract(d.value,'$.identity_id') IS NOT ?)
+	 ${resolutions ? `AND NOT (${SELF_BIND_REVIEWED_LABEL_SQL})` : ""}
+	 ORDER BY c.group_id,c.candidate_ref,d.key`,
+		values: [
+			p.coordinatorId,
+			p.deviceId,
+			p.fingerprint,
+			p.identityId,
+			...(resolutions
+				? [
+						p.coordinatorId,
+						p.deviceId,
+						p.keyId,
+						p.identityId,
+						p.publicKey,
+						p.fingerprint,
+						p.deviceId,
+						p.fingerprint,
+					]
+				: []),
+		],
 	}),
 };
 
@@ -275,9 +296,10 @@ export async function prepareDeviceSelfBindAuthority(
 	if (!negative) return null;
 	const connections = await hasConnectionSessionSchema(backend);
 	const headless = await hasHeadlessLinkProvenance(backend);
+	const resolutions = (await readLegacyOwnerResolutionSchemaState(backend)) === "ready";
 	const facts = await readSnapshot<SelfBindFacts>(
 		backend,
-		factReads(prepared.subject, { connections, headless }),
+		factReads(prepared.subject, { connections, headless, resolutions }),
 	);
 	// The retained-ownership read set allowed this owner above; its guards join the batch.
 	const snapshot = decideDeviceSelfBind(prepared.subject, facts.rows);

@@ -329,9 +329,9 @@ const CASES: Case[] = [
 		change: (f) => sql(f, `DELETE FROM coordinator_auth_controller_attestations WHERE ${OWN}`),
 	},
 	{
-		name: "a second active review",
-		fails: [15],
-		change: (f) => copyReview(f, { group_id: "'group-b'" }),
+		name: "a second active review for another owner",
+		fails: [6, 15],
+		change: (f) => copyReview(f, { group_id: "'group-b'", identity_id: "'another-owner'" }),
 	},
 	{
 		name: "a review of a text form of the key on another device",
