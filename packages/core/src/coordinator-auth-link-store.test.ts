@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { CoordinatorAuthLinkCreateInput as CreateInput } from "./coordinator-auth-link-contract.js";
 import {
 	advance,
@@ -24,6 +25,7 @@ import {
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, enroll, setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 function registerCreationTests(test: Test) {
 	test.for([null, "identity-a"])(
@@ -288,4 +290,49 @@ it("SQLite existing-file upgrade adds empty link storage without changing review
 		if (store.db.open) await store.close();
 		rmSync(directory, { recursive: true, force: true });
 	}
+});
+
+describe("SQLite link creation on the current account schema", () => {
+	async function installed() {
+		const f = setupStore("SQLite", { authClock: () => NOW });
+		await useCurrentAccountSchema(nativeBackend(f.db));
+		await enroll(f.store, signerReview());
+		expect((await f.store.createAuthControllerAttestation(signerReview())).kind).toBe("created");
+		return f;
+	}
+	it("names exhausted device admission attempt_limited, as V2 does", async () => {
+		// Arrange: two active attempts fill this device's admission.
+		const f = await installed();
+		try {
+			for (const n of [1, 2])
+				expect(
+					await f.store.createAuthLinkAttempt(
+						attempt({ attemptId: `attempt-${n}`, runtimeVerifierHash: String(n).repeat(64) }),
+						cfg,
+					),
+				).toMatchObject({ kind: "created" });
+			// Act
+			const result = await f.store.createAuthLinkAttempt(
+				attempt({ attemptId: "attempt-3", runtimeVerifierHash: "3".repeat(64) }),
+				cfg,
+			);
+			// Assert
+			expect(result).toEqual({ kind: "rejected", error: "attempt_limited" });
+		} finally {
+			await f.store.close();
+		}
+	});
+	it("names a revoked device controller_not_active, as V2 does", async () => {
+		// Arrange
+		const f = await installed();
+		try {
+			expect(await f.store.createDeviceRevocation(signer)).toMatchObject({ kind: "revoked" });
+			// Act
+			const result = await f.store.createAuthLinkAttempt(attempt(), cfg);
+			// Assert
+			expect(result).toEqual({ kind: "rejected", error: "controller_not_active" });
+		} finally {
+			await f.store.close();
+		}
+	});
 });
