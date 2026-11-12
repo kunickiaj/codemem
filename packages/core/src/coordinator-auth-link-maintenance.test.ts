@@ -61,19 +61,23 @@ function registerCapacity(test: Test, v2: Test) {
 		const results = await Promise.all(
 			inputs.map((input) => f.store.createAuthLinkAttempt(input, f.cfg)),
 		);
-		f.now++;
-		const retry = await f.store.createAuthLinkAttempt(inputs[0], f.cfg);
-		const altered = await f.store.createAuthLinkAttempt(
-			{ ...inputs[0], runtimeVerifierHash: digest(99) },
-			f.cfg,
-		);
 		// Assert
 		expect(results.filter((result) => result.kind === "created")).toHaveLength(2);
 		expect(results.filter((result) => result.kind === "rejected")).toEqual(
 			Array(6).fill({ kind: "rejected", error: "attempt_limited" }),
 		);
-		expect(retry).toEqual({ ...results[0], kind: "existing" });
-		expectRejected(altered, "attempt_conflict");
+		f.now++;
+		for (const [index, result] of results.entries()) {
+			if (result.kind !== "created") continue;
+			const input = inputs[index];
+			const retry = await f.store.createAuthLinkAttempt(input, f.cfg);
+			const altered = await f.store.createAuthLinkAttempt(
+				{ ...input, runtimeVerifierHash: digest(99) },
+				f.cfg,
+			);
+			expect(retry).toEqual({ ...result, kind: "existing" });
+			expectRejected(altered, "attempt_conflict");
+		}
 		expect(rows(f, TABLES[0])).toHaveLength(2);
 	});
 	test("identity cap spans devices but another coordinator is independent", async ({
