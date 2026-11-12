@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { seedD1ConnectionOrder } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 import type { D1DatabaseLike } from "../../core/src/d1-coordinator-store.js";
 
 export async function pendingKey() {
@@ -85,4 +86,6 @@ export async function seedOwnerAuthority(db: D1DatabaseLike, pins: {
 			`INSERT INTO ${table} (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`,
 		).bind(...entries.map(([, value]) => value));
 	}));
+	// The coordinator order row this history's link start left on the current account schema.
+	await seedD1ConnectionOrder(db, pins.coordinatorId);
 }

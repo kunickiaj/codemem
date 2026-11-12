@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const coreRequire = createRequire(new URL("../../core/package.json", import.meta.url));
@@ -366,7 +367,8 @@ const migrations = await readD1Migrations(fileURLToPath(new URL("../migrations",
 for (const migration of migrations) {
 	await db.batch(migration.queries.map((sql) => db.prepare(sql)));
 }
-// The numbered chain includes the authority cutover and account management.
+await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 store = new D1CoordinatorStore(db);
 await store.createGroup(demo.groupId, "Fake browser demo group");
 await store.enrollDevice(demo.groupId, { ...demo, identityId: null });

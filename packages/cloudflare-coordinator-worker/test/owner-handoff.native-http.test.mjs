@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 import {
 	ownerHandoffClient,
 	ownerBrowserStart,
@@ -110,7 +111,8 @@ async function storage(t, h, kind) {
 	const db = await mf.getD1Database("DB");
 	for (const migration of migrations)
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
-	// The numbered chain includes the authority cutover and account management.
+	await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+	await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 	await db.prepare(h.COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL).run();
 	// Copy only existing synthetic account/grant authority, never an owner attempt or device.
 	for (const table of [

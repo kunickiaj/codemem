@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
+import { ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "@codemem/core";
 
 const require = createRequire(new URL("../package.json", import.meta.url));
 const runtimeRequire = createRequire(require.resolve("wrangler/package.json"));
@@ -132,6 +132,10 @@ export default { async fetch(request, env) {
 		: migrations;
 	for (const migration of applied) {
 		await db.batch(migration.queries.map((sql) => db.prepare(sql)));
+	}
+	if (!legacyAuth) {
+		await db.batch(AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS.map((sql) => db.prepare(sql)));
+		await db.batch(ACCOUNT_CONNECTION_MIGRATION_STATEMENTS.map((sql) => db.prepare(sql)));
 	}
 	const base = await mf.ready;
 	const request = async (path, init) => {
