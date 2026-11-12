@@ -1,8 +1,12 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { AUTH_LIFECYCLE_CONTINUATION_COLUMN_STATEMENTS, AUTH_LIFECYCLE_CONTINUATION_GUARD_STATEMENTS, AUTH_LIFECYCLE_SESSION_ADMISSION_GUARD_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-admission-schema.js";
 import { AUTH_LIFECYCLE_BROWSER_TRANSACTION_TABLE_SQL } from "../../core/src/coordinator-auth-lifecycle-browser-schema.js";
 import { AUTH_ACCOUNT_ASSOCIATION_TABLE_SQL, AUTH_ACCOUNT_LINK_GENERATION_TABLE_SQL, AUTH_ACCOUNT_LINK_GENERATION_INDEX_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-schema.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 const db = env.COORDINATOR_DB;
 const links = "coordinator_auth_account_links";

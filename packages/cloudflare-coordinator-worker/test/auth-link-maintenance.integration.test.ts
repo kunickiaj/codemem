@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
 type Review = Parameters<D1CoordinatorStore["createAuthControllerAttestation"]>[0];
@@ -52,8 +53,7 @@ async function fixture(overrides: Partial<Review> = {}) {
 		identityId: randomUUID(),
 		attestationId: randomUUID(),
 		reviewReceiptId: randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 		...overrides,
 	};
@@ -355,7 +355,8 @@ it("burns browser transaction hashes in both sign-in and expired link directions
 });
 
 it("maintains forty legacy rows in capped D1 batches without deleting or writing for rejected inputs", async () => {
-	// Arrange: seed pre-cap legacy rows in one actual local D1 transaction.
+	// Arrange: seed pending rows in one actual local D1 transaction. Each comes from its own
+	// device and Identity, so the account schema's admission caps accept all forty.
 	const f = await fixture();
 	expect(await f.store.createAuthLinkAttempt(f.start, f.cfg)).toMatchObject({ kind: "created" });
 	const seed = (await rows(f))[0];
@@ -366,6 +367,9 @@ it("maintains forty legacy rows in capped D1 batches without deleting or writing
 		attempt_id: randomUUID(),
 		runtime_verifier_hash: hash(),
 		browser_start_hash: hash(),
+		group_id: randomUUID(),
+		device_id: randomUUID(),
+		identity_id: randomUUID(),
 	}));
 	await env.COORDINATOR_DB.batch(
 		seeded.map((row) =>

@@ -5,6 +5,11 @@ import { authLifecycleFirstLinkStatements, type AuthLifecycleFirstLinkOptions } 
 import { AUTH_LIFECYCLE_FRESH_SCHEMA_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-fresh-schema.js";
 import { AUTH_SCHEMA_V2_READINESS_SQL } from "../../core/src/coordinator-auth-lifecycle-predecessor.js";
 import { AUTH_LIFECYCLE_UPGRADE_STATEMENTS } from "../../core/src/coordinator-auth-lifecycle-upgrade.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current
+// chain. The reset runs before the module captures its predecessor definitions below.
+await resetNativeAuthStage("v2");
 
 const db = env.COORDINATOR_DB;
 const attempts = "coordinator_auth_link_attempts";
@@ -23,7 +28,7 @@ const claim = { claim_id: "new-link", coordinator_id: options.coordinatorId, ide
 const deviceAuthority = { authority_kind: "device_claim", controller_attestation_id: null, controller_review_receipt_id: null, controller_revision: null };
 type Definition = { type: string; name: string; tbl_name: string; sql: string | null };
 const schema = async () => (await db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").all<Definition>()).results;
-// The native setup installed actual Worker predecessor migrations and the authority cutover.
+// The reset above installed actual Worker predecessor migrations through the authority cutover.
 const oldDefinitions = (await schema()).filter(({ tbl_name }) => tbl_name.startsWith("coordinator_auth_"));
 const batch = (sql: readonly string[]) => db.batch(sql.map((statement) => db.prepare(statement)));
 const ready = () => db.prepare(AUTH_LIFECYCLE_CURRENT_READINESS_SQL).first();

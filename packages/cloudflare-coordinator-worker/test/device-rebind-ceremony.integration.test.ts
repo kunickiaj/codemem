@@ -11,6 +11,7 @@ import {
 } from "../../core/src/coordinator-device-rebind-proof.js";
 import { readDeviceRebindBackend } from "../../core/src/coordinator-device-rebind-schema.js";
 import { createD1AuthLinkBackend } from "../../core/src/d1-coordinator-store.js";
+import { seedD1ConnectionOrder } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 
 const NOW = 1_791_028_800_000;
 const ORIGIN = "https://app.example.test";
@@ -65,6 +66,8 @@ it("native D1 runs the rebind ceremony from device start to the atomic commit", 
 			 'device_claim', 'native-claim')`)
 			.bind(config.coordinatorId, config.issuer, config.revision),
 	]);
+	// The order the seeded link's start allocated on the current account schema.
+	await seedD1ConnectionOrder(db, config.coordinatorId);
 	const material = {
 		state: randomBytes(32).toString("base64url"),
 		nonce: randomBytes(32).toString("base64url"),

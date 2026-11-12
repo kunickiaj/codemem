@@ -1,6 +1,5 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { applyAccountConnectionSchema } from "../../core/src/coordinator-account-connection-schema.js";
 import { CONNECTION_BIRTH_COLUMNS } from "../../core/src/coordinator-account-connection-storage.js";
 import { AuthSessionOperations } from "../../core/src/coordinator-auth-session.js";
 import { oidcFixture } from "../../core/src/coordinator-oidc-test-fixtures.js";
@@ -30,7 +29,6 @@ import {
 } from "./owner-ceremony-test-fixtures.js";
 
 const ATTEMPTS = "coordinator_owner_enrollment_attempts";
-let restoreConnections: (() => Promise<void>) | undefined;
 beforeEach(async () => {
 	await resetCeremony();
 	await exec("DELETE FROM coordinator_legacy_team_completions");
@@ -39,8 +37,6 @@ beforeEach(async () => {
 });
 afterEach(async () => {
 	vi.restoreAllMocks();
-	await restoreConnections?.();
-	restoreConnections = undefined;
 	await resetCeremony();
 });
 function providerTransport() {
@@ -297,33 +293,6 @@ async function archiveLink() {
 	);
 }
 
-async function installConnections() {
-	// Preserve the pre-extension graph: the shared ceremony reset retains installed auth DDL.
-	const definitions = (
-		await env.COORDINATOR_DB.prepare(`SELECT type,name,sql FROM sqlite_master
-		WHERE (tbl_name GLOB 'coordinator_auth_*' OR tbl_name='coordinator_account_change_attempts')
-		AND sql IS NOT NULL AND type IN ('table','index','trigger')
-		ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,name`).all<{
-			type: string;
-			name: string;
-			sql: string;
-		}>()
-	).results;
-	restoreConnections = async () => {
-		const tables = (
-			await env.COORDINATOR_DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'
-			AND (name GLOB 'coordinator_auth_*' OR name='coordinator_account_change_attempts')`).all<{
-				name: string;
-			}>()
-		).results;
-		await env.COORDINATOR_DB.batch([
-			...tables.map(({ name }) => env.COORDINATOR_DB.prepare(`DROP TABLE "${name}"`)),
-			...definitions.map(({ sql }) => env.COORDINATOR_DB.prepare(sql)),
-		]);
-	};
-	await applyAccountConnectionSchema(backend);
-}
-
 async function excludePendingKey(options: { mode: string; deviceId: string; fingerprint: string }) {
 	const device =
 		options.mode === "pending-device-exclusion" ? options.deviceId : "different-device";
@@ -359,8 +328,8 @@ it.each([
 ] as const)("rechecks %s at the winning native D1 INSERT", async (mode) => {
 	// Arrange: all application admission reads succeed before the competing D1 write.
 	const f = await ownerBrowserWorkerFixture(createConfiguredCloudflareCoordinatorWorker());
-	if (mode === "connection-unchanged" || mode === "connection-revocation")
-		await installConnections();
+	// Every native coordinator now runs the current account schema, so the connection
+	// modes share the ordinary schema with the other modes.
 	const csrf = await f.page();
 	const fingerprint = await ownerEnrollmentHash(f.start.publicKey);
 	const provider = providerTransport();

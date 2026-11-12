@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
 
 const NOW = 1_791_028_800_000;
 const profile = {
@@ -42,10 +43,10 @@ async function fixture() {
 	const cfg = { coordinatorId: review.coordinatorId, issuer: "https://accounts.example.test", revision: "a".repeat(64), enabled: true };
 	const start = {
 		authority: { kind: "controller_attestation" as const }, attemptId: randomUUID(),
-		signer: review, runtimeVerifierHash: hash(),
+		signer: review, runtimeVerifierHash: hash(), browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const account = { issuer: cfg.issuer, subject: "synthetic-subject" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const proof = { ...review, ...start, completionSecretHash: confirm.completionSecretHash, purpose: "coordinator-account-link-v1" as const };
@@ -53,7 +54,8 @@ async function fixture() {
 	await store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await store.createAuthLinkAttempt(start, cfg)).toMatchObject({ kind: "created" });
-	expect(await store.claimAuthLinkAttempt(browser, cfg)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	await consumeLinkProof({ store, cfg }, start, browser);
 	return { store, time, cfg, review, browser, account, confirm, proof };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;

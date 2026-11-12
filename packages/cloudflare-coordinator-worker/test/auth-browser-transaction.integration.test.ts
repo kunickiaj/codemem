@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
 import { ISSUER, oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const NOW = 1790899200000;
 const TTL = 600000;
@@ -55,8 +56,7 @@ async function linkFixture(f: Fixture) {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 	};
 	const signer = {

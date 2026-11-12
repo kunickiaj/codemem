@@ -12,6 +12,7 @@ import {
 	type HistoricalAccountPins,
 	prepareHistoricalAccountDatabase,
 } from "./coordinator-auth-historical-test-fixture.js";
+import { COORDINATOR_AUTH_STAGE_MIGRATIONS } from "./coordinator-auth-schema-stage.js";
 import {
 	type Backend,
 	type Fixture,
@@ -67,6 +68,8 @@ export function historicalCallerMigrationNames(available: readonly string[]): re
 		...callerMigrationNames,
 		...excludedOwnerMigrationNames,
 		...excludedRelayAdmissionMigrationNames,
+		// Auth stage migrations move a database past the V2 history this fixture builds.
+		...Object.values(COORDINATOR_AUTH_STAGE_MIGRATIONS),
 	];
 	const known = new Set(classified);
 	if (

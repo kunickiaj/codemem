@@ -2,6 +2,8 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
 type FinalizeInput = Parameters<D1CoordinatorStore["finalizeAuthLinkAttempt"]>[0];
@@ -45,8 +47,7 @@ function createReview(): Review {
 		identityId: randomUUID(),
 		attestationId: randomUUID(),
 		reviewReceiptId: randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: fixtureHash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: fixtureHash(),
 	};
 }
@@ -62,10 +63,11 @@ function createInputs(review: Review, cfg: Config) {
 		authority: { kind: "controller_attestation" as const },
 		attemptId: randomUUID(),
 		runtimeVerifierHash: fixtureHash(),
+		browserStartHash: fixtureHash(),
 		signer,
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: fixtureHash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: fixtureHash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: fixtureHash() };
 	const account = { issuer: cfg.issuer, subject: "subject-a" };
 	const finalize: FinalizeInput = {
@@ -130,9 +132,9 @@ async function createAttempt(f: Fixture) {
 
 async function prepareConfirmed(f: Fixture) {
 	await createAttempt(f);
-	expect(await f.store.claimAuthLinkAttempt(f.browser, f.cfg)).toEqual({
-		kind: "applied", status: publicStatus(f, "browser_claimed"),
-	});
+	// A real link browser start claims the attempt, as production does.
+	await consumeLinkProof(f, f.start, f.browser);
+	expect(await browserStatus(f, f.browser)).toEqual(publicStatus(f, "browser_claimed"));
 	expect(await f.store.recordAuthLinkOidcVerified({ ...f.browser, account: f.account }, f.cfg))
 		.toEqual({ kind: "applied", status: publicStatus(f, "oidc_verified"), target: {
 			identityId: f.review.identityId, groupId: f.signer.groupId, deviceId: f.signer.deviceId,
@@ -180,6 +182,8 @@ function browserStatus(f: Fixture, browser: Browser) {
 it("lets only the winning browser advance and freezes provider and completion commitments", async () => {
 	// Arrange: trusted account metadata does not itself authenticate an OIDC callback.
 	const f = await createFixture();
+	// The desktop claim API serves attempts created without a browser start code.
+	delete (f.start as { browserStartHash?: string }).browserStartHash;
 	await createAttempt(f);
 	const contender = { ...f.browser, browserTransactionHash: fixtureHash() };
 

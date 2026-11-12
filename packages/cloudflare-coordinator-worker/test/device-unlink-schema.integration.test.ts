@@ -1,10 +1,14 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import { changeFixture } from "./account-change-fixture.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import type { AuthLinkBackend } from "../../core/src/coordinator-auth-link.js";
 import { ACCOUNT_UNLINK_MIGRATION_STATEMENTS, PRIOR_ACCOUNT_CONNECTION_MIGRATION_STATEMENTS, readConnectionSchemaState } from "../../core/src/coordinator-account-connection-schema.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 it("native D1 atomically upgrades the exact prior 38-statement schema without changing existing rows or proof bytes",async()=>{
  const db=(env as unknown as {COORDINATOR_DB:D1Database}).COORDINATOR_DB;

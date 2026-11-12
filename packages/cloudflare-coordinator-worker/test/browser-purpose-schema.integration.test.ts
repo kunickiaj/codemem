@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import {
 	assertBrowserUniqueness,
 	browserDefinitions,
@@ -11,6 +11,10 @@ import {
 import { assertReservedOwnerPurposeIsolation } from "../../core/src/coordinator-auth-browser-owner-purpose-test-harness.js";
 import { NOW } from "../../core/src/coordinator-auth-link-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 const fixture: SchemaFixture = {
 	exec: async (sql, ...values) => {

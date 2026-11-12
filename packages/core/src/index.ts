@@ -163,6 +163,14 @@ export {
 	upgradeCoordinatorAccountSchemaFile,
 	upgradeCoordinatorAuthSchemaFile,
 } from "./coordinator-auth-schema-operator.js";
+export {
+	COORDINATOR_AUTH_STAGE_APPLIED,
+	COORDINATOR_AUTH_STAGE_MIGRATIONS,
+	type CoordinatorAuthSchemaStage,
+	coordinatorAuthStageBaselineSql,
+	coordinatorD1BaselineMigrations,
+	readCoordinatorAuthSchemaStage,
+} from "./coordinator-auth-schema-stage.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
 export type {
 	DeviceRebindClientRefusal,

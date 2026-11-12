@@ -1,6 +1,10 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL } from "../../core/src/coordinator-auth-lifecycle-recognition.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 const db = env.COORDINATOR_DB;
 const recognize = () => db.prepare(`SELECT (${AUTH_LIFECYCLE_PREDECESSOR_PREDICATE_SQL}) AS recognized`).first();

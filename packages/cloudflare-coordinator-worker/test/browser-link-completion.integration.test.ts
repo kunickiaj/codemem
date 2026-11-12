@@ -17,6 +17,7 @@ import { createCoordinatorBrowserLinkCompletionHandlers } from "../../core/src/c
 import { createCoordinatorOidcClient } from "../../core/src/coordinator-oidc.js";
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const ORIGIN = "https://app.example.test";
 const NOW = 1791028800000;
@@ -53,8 +54,7 @@ async function setup() {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: "b".repeat(64),
+		...fixtureDeviceKey(),
 		evidenceDigest: "c".repeat(64),
 	};
 	await store.createGroup(review.groupId, "Fixture group");
@@ -374,11 +374,23 @@ it("native D1 rejects wrong origin/proof and defers pending completion despite a
 	expect(preserved.response.headers.getSetCookie()).toEqual([]);
 	expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
 	f.operations.readAuthSession.mockClear();
-	// Arrange: same enrolled device starts a second LINK while its prior session remains live.
+	// Arrange: another reviewed device starts a LINK while the first session remains live.
+	// The linked Identity itself cannot start a second link on the account schema.
+	const peer = {
+		...f.review,
+		deviceId: crypto.randomUUID(),
+		identityId: crypto.randomUUID(),
+		attestationId: crypto.randomUUID(),
+		reviewReceiptId: crypto.randomUUID(),
+		...fixtureDeviceKey(),
+	};
+	await f.store.enrollDevice(peer.groupId, { ...peer, identityId: null });
+	expect(await f.store.createAuthControllerAttestation(peer)).toMatchObject({ kind: "created" });
+	const reviewed = await authority(f);
 	const attemptId = crypto.randomUUID();
 	expect(
 		await f.store.createAuthLinkAttempt(
-			{ ...f.attempt, attemptId, runtimeVerifierHash: "9".repeat(64) },
+			{ ...f.attempt, signer: peer, attemptId, runtimeVerifierHash: "9".repeat(64) },
 			f.config,
 		),
 	).toMatchObject({ kind: "created" });
@@ -430,7 +442,7 @@ it("native D1 rejects wrong origin/proof and defers pending completion despite a
 	expect(pending.response.headers.getSetCookie()).toEqual([]);
 	expect(f.operations.readAuthSession).not.toHaveBeenCalled();
 	expect(f.operations.redeemAuthLinkSessionWithBrowserTransaction).not.toHaveBeenCalled();
-	expect(await authority(f)).toEqual(before);
+	expect(await authority(f)).toEqual(reviewed);
 });
 
 it.each(["browser replay", "bound redemption", "legacy redemption"] as const)(
@@ -560,9 +572,8 @@ it.each(["before-write", "after-commit", "readback", "readback-missing", "zero-m
 						const statement = env.COORDINATOR_DB.prepare(query);
 						if (
 							query.startsWith("SELECT state FROM coordinator_auth_link_attempts") ||
-							query.startsWith(
-								"UPDATE coordinator_auth_link_attempts AS t SET state = 'session_redeemed'",
-							)
+							// The preservation update, after the account schema's leading CTEs.
+							/UPDATE coordinator_auth_link_attempts AS t SET state ?= ?'session_redeemed'/u.test(query)
 						) {
 							const bind = statement.bind.bind(statement);
 							vi.spyOn(statement, "bind").mockImplementation((...values) => {

@@ -3,6 +3,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const NOW = 1790899200000;
 const HOUR = 3600000;
@@ -27,8 +28,7 @@ async function fixture() {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 	};
 	const cfg = {
@@ -159,7 +159,9 @@ it("deletes guarded metadata at exactly 32 hours without reviving credentials or
 	expect(removedReceipts).toEqual(purged(1));
 	expect(oldRead).toBeNull();
 	expect(replay).toEqual(rejected("transaction_unavailable"));
-	expect(live).toEqual({ session: current.session, profile });
+	// The profile row stays (see authority below). The current account schema shows a
+	// sign-in profile only while its source receipt exists, so the live read omits it.
+	expect(live).toEqual({ session: current.session, profile: {} });
 	expect(await rows(f, sessions)).toEqual([
 		expect.objectContaining({ session_id: current.session.sessionId }),
 	]);

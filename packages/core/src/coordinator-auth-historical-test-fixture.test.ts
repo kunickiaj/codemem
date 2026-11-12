@@ -5,7 +5,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
 import { AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES } from "./coordinator-auth-historical-migration-test-fixture.js";
 import {
 	historicalCallerMigrationNames,
@@ -23,6 +22,10 @@ import { AUTH_SCHEMA_V2_READINESS_SQL } from "./coordinator-auth-lifecycle-prede
 import { upgradeAuthLifecycleSchema } from "./coordinator-auth-lifecycle-upgrade-sqlite.js";
 import { columns, rawAuthSnapshot } from "./coordinator-auth-lifecycle-upgrade-test-fixture.js";
 import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
+import {
+	COORDINATOR_AUTH_STAGE_MIGRATIONS,
+	readCoordinatorAuthSchemaStage,
+} from "./coordinator-auth-schema-stage.js";
 import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
@@ -85,6 +88,7 @@ it("classifies every repository migration without replaying auth or excluded own
 		...AUTH_ONLY_PREDECESSOR_MIGRATION_NAMES,
 		...excludedOwner,
 		...excludedRelayAdmission,
+		...Object.values(COORDINATOR_AUTH_STAGE_MIGRATIONS),
 	];
 	// Act
 	const caller = historicalCallerMigrationNames(availableMigrations);
@@ -170,7 +174,7 @@ describe("explicit historical account bundles", () => {
 		databases.push(store.db);
 		const result = await store.readAuthSessionAccount(credentialHash, p.config);
 		// Assert: every historical row keeps its original columns and values.
-		expect(await readConnectionSchemaState(nativeBackend(store.db))).toBe("ready");
+		expect(await readCoordinatorAuthSchemaStage(nativeBackend(store.db))).toBe("current");
 		expect(retainedRows(store.db, before)).toEqual(before);
 		expect(result?.profile).toEqual(profile);
 		expect(result?.session.account).toEqual(p.account);
@@ -254,8 +258,8 @@ it.each(["SQLite", "D1"] as const)(
 			expect(f.history.session?.createdAtMs).toBe(now);
 			expect(wrongIssuer).toBeNull();
 			// SQLite startup installs account management; a D1 history stays V2 without 0046.
-			expect(await readConnectionSchemaState(nativeBackend(f.db))).toBe(
-				backend === "SQLite" ? "ready" : "v2",
+			expect(await readCoordinatorAuthSchemaStage(nativeBackend(f.db))).toBe(
+				backend === "SQLite" ? "current" : "v2",
 			);
 			expect(rawAuthSnapshot(f.db)).toEqual(before);
 		} finally {

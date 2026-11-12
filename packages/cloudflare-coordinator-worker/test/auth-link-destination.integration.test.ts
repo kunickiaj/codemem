@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { afterEach, expect, it } from "vitest";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const db = env.COORDINATOR_DB;
 const NOW = 1790899200000;
@@ -39,7 +41,7 @@ async function fixture(destination: string) {
 		revision: "a".repeat(64),
 		enabled: true,
 	};
-	const signer = { groupId: id, deviceId: id, publicKey: "fixture-key", fingerprint: cfg.revision };
+	const signer = { groupId: id, deviceId: id, ...fixtureDeviceKey() };
 	const review = {
 		...signer,
 		coordinatorId: id,
@@ -52,13 +54,16 @@ async function fixture(destination: string) {
 	await store.enrollDevice(id, { ...signer, identityId: null });
 	const authorized = await store.createAuthControllerAttestation(review);
 	expect(authorized.kind).toBe("created");
-	await store.createAuthLinkAttempt(
-		{ authority: { kind: "controller_attestation" }, attemptId: id, signer, runtimeVerifierHash: cfg.revision, loopbackRedirect: destination },
-		cfg,
-	);
+	const start = { browserStartHash: "b".repeat(64) };
+	expect(
+		await store.createAuthLinkAttempt(
+			{ authority: { kind: "controller_attestation" }, attemptId: id, signer, runtimeVerifierHash: cfg.revision, loopbackRedirect: destination, ...start },
+			cfg,
+		),
+	).toMatchObject({ kind: "created" });
 	const proof = { attemptId: id, browserTransactionHash: "e".repeat(64) };
-	// Trusted legacy claim/account inputs; no HTTP or OIDC verification claim.
-	await store.claimAuthLinkAttempt(proof, cfg);
+	// A real link browser start claims the attempt; trusted account input, no OIDC verification.
+	await consumeLinkProof({ store, cfg }, start, { ...proof, binderHash: "" });
 	const account = { issuer: cfg.issuer, subject: "fixture-subject" };
 	await store.recordAuthLinkOidcVerified({ ...proof, account }, cfg);
 	return { id, time, store, cfg, proof };

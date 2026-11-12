@@ -74,7 +74,11 @@ export function buildCoordinatorAuthSchemaCommand(): Command {
 	const command = new Command("upgrade-auth")
 		.configureHelp(helpStyle)
 		.description("Upgrade local coordinator auth or export reviewed D1 SQL")
-		.option("-e, --export-sql", "print D1 cutover SQL without opening a database");
+		.option("-e, --export-sql", "print D1 cutover SQL without opening a database")
+		.addHelpText(
+			"after",
+			"\nD1 deployments get this cutover from numbered migration 0045 through wrangler d1 migrations apply.\n",
+		);
 	addDbOption(command);
 	addJsonOption(command);
 	command.action(upgrade);
@@ -170,7 +174,7 @@ function accountUpgradeFailure(options: Options, error: unknown): string {
 export function buildCoordinatorAccountSchemaCommand(): Command {
 	const command = new Command("upgrade-account")
 		.configureHelp(helpStyle)
-		.description("Install optional account management on an existing V2 database")
+		.description("Install account management on an existing V2 database")
 		.option(
 			"-o, --owner-resolution",
 			"install inert owner-resolution receipt storage (requires current account schema)",
@@ -185,7 +189,7 @@ export function buildCoordinatorAccountSchemaCommand(): Command {
 		)
 		.addHelpText(
 			"after",
-			`\n${accountPrerequisites}\n--owner-resolution installs storage only; it does not resolve an owner or change access. It requires the current account schema and an explicit --db-path, or --export-sql without a database. It cannot be combined with --device-unlink.\nD1 export does not apply SQL or verify remote execution limits.\n`,
+			`\n${accountPrerequisites}\n--owner-resolution installs storage only; it does not resolve an owner or change access. It requires the current account schema and an explicit --db-path, or --export-sql without a database. It cannot be combined with --device-unlink.\nSQLite coordinators also install account management when they start. D1 deployments get it from numbered migrations 0046 and 0047; see the deployment guide to baseline a database that already has it.\nD1 export does not apply SQL or verify remote execution limits.\n`,
 		);
 	addDbOption(command);
 	addJsonOption(command);

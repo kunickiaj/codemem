@@ -16,6 +16,8 @@ import { createCoordinatorBrowserSigninStart } from "../../core/src/coordinator-
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { createInMemoryRequestRateLimiter } from "../../core/src/request-rate-limit.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
 
 const ORIGIN = "https://app.example.test";
 const ACCOUNT = `${ORIGIN}/auth/account`;
@@ -79,8 +81,7 @@ async function setup() {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: "b".repeat(64),
+		...fixtureDeviceKey(),
 		evidenceDigest: "c".repeat(64),
 	};
 	const start = {
@@ -88,15 +89,17 @@ async function setup() {
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: "d".repeat(64),
+		browserStartHash: crypto.randomUUID().replaceAll("-", "").padEnd(64, "0"),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
 	await store.createGroup(review.groupId, "Fixture group");
 	await store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await store.createAuthLinkAttempt(start, config)).toMatchObject({ kind: "created" });
-	const browser = { attemptId: start.attemptId, browserTransactionHash: "e".repeat(64) };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: "e".repeat(64), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: "f".repeat(64) };
-	expect(await store.claimAuthLinkAttempt(browser, config)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	await consumeLinkProof({ store, cfg: config }, start, browser);
 	expect(
 		await store.recordAuthLinkOidcVerified(
 			{ ...browser, account: { issuer: config.issuer, subject: "fixture-subject" } },

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 import { AUTH_LINK_AUTHORITY_UPGRADE_SQL, AUTH_LINK_AUTHORITY_CUTOVER_STATEMENTS } from "../../core/src/coordinator-auth-link-authority-upgrade.js";
 import { AUTH_LINK_SCHEMA_SQL } from "../../core/src/coordinator-auth-link-contract.js";
 import { COORDINATOR_AUTH_DEVICE_CLAIM_SCHEMA_STATEMENTS as proof } from "../../core/src/coordinator-auth-device-claim-schema.js";
@@ -10,6 +10,10 @@ import {
 	linkAuthorityTables,
 	withoutNewAuthorityColumns,
 } from "./link-authority-upgrade-fixture.js";
+import { resetNativeAuthStage } from "./native-auth-stage.js";
+
+// These upgrade tests start from V2, where earlier deployments stopped, not the current chain.
+beforeAll(() => resetNativeAuthStage("v2"));
 
 // These source strings contain no triggers or semicolons inside literals.
 function batch(sql: string) {

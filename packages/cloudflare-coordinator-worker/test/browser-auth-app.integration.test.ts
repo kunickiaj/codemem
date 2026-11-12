@@ -251,7 +251,8 @@ it("preserves missing-binding errors, pins native D1, and caches completed setup
 	expect([cold.status, warm.status, mismatch.status, unavailable.status, legacy.status]).toEqual([
 		200, 200, 503, 503, 401,
 	]);
-	expect(discoveries).toBe(3);
+	// With account management installed, the account-change routes add a fourth client.
+	expect(discoveries).toBe(4);
 	expect(f.oidc.fetch.mock.calls).toHaveLength(discoveries);
 	expect(otherDb.prepare).not.toHaveBeenCalled();
 	expect(await unavailable.text()).not.toContain("private-sdk-secret");

@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
 
 const NOW = 1790899200000;
 const HOUR = 3600000;
@@ -46,9 +48,20 @@ function fixture() {
 	return { time, cfg, fresh, store: fresh(), material };
 }
 async function rows(f: Fixture, table = browserTable) {
+	// Purge covers sign-in rows. Link starts are read separately by linkStarts.
+	const scope = table === browserTable ? " AND purpose = 'signin'" : "";
 	return (
 		await env.COORDINATOR_DB.prepare(
-			`SELECT * FROM ${table} WHERE coordinator_id = ? ORDER BY rowid`,
+			`SELECT * FROM ${table} WHERE coordinator_id = ?${scope} ORDER BY rowid`,
+		)
+			.bind(f.cfg.coordinatorId)
+			.all<Row>()
+	).results;
+}
+async function linkStarts(f: Fixture) {
+	return (
+		await env.COORDINATOR_DB.prepare(
+			`SELECT * FROM ${browserTable} WHERE coordinator_id = ? AND purpose = 'link' ORDER BY rowid`,
 		)
 			.bind(f.cfg.coordinatorId)
 			.all<Row>()
@@ -86,8 +99,7 @@ async function linkedAccount(f: Fixture) {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 	};
 	const start = {
@@ -95,16 +107,18 @@ async function linkedAccount(f: Fixture) {
 		attemptId: crypto.randomUUID(),
 		signer: review,
 		runtimeVerifierHash: hash(),
+		browserStartHash: hash(),
 		loopbackRedirect: "http://127.0.0.1:4567/codemem/auth/complete",
 	};
-	const browser = { attemptId: start.attemptId, browserTransactionHash: hash() };
+	const browser = { attemptId: start.attemptId, browserTransactionHash: hash(), binderHash: "" };
 	const confirm = { ...browser, completionSecretHash: hash() };
 	const account = { issuer: f.cfg.issuer, subject: crypto.randomUUID() };
 	await f.store.createGroup(review.groupId, "Fixture group");
 	await f.store.enrollDevice(review.groupId, { ...review, identityId: null });
 	expect(await f.store.createAuthControllerAttestation(review)).toMatchObject({ kind: "created" });
 	expect(await f.store.createAuthLinkAttempt(start, f.cfg)).toMatchObject({ kind: "created" });
-	expect(await f.store.claimAuthLinkAttempt(browser, f.cfg)).toMatchObject({ kind: "applied" });
+	// A real link browser start claims the attempt, as production does.
+	await consumeLinkProof(f, start, browser);
 	expect(await f.store.recordAuthLinkOidcVerified({ ...browser, account }, f.cfg)).toMatchObject({
 		kind: "applied",
 	});
@@ -134,8 +148,8 @@ it("purges only aged signins in bounded order, leaving links, authority and fore
 	expect(await rows(f, floorTable)).toEqual([]);
 	const linked = await linkedAccount(f);
 	await f.store.startAuthBrowserTransaction(f.material(), f.cfg);
-	await seed(f, 5, (i) => {
-		const created = NOW + [10, 20, 100, 101, 0][i];
+	await seed(f, 4, (i) => {
+		const created = NOW + [10, 20, 100, 101][i];
 		const row: Row = { created_at_ms: created, expires_at_ms: created + 600000 };
 		if (i === 0)
 			Object.assign(row, {
@@ -146,11 +160,13 @@ it("purges only aged signins in bounded order, leaving links, authority and fore
 				consumed_at_ms: created,
 			});
 		if (i === 1) Object.assign(row, { state: "expired", nonce: null, pkce_verifier: null });
-		if (i === 4) Object.assign(row, { purpose: "link", attempt_id: linked.browser.attemptId });
 		return row;
 	});
 	await other.store.startAuthBrowserTransaction(other.material(), other.cfg);
 	const before = await rows(f);
+	// The linked account's real link start, born at NOW, is old enough but never a sign-in.
+	const links = await linkStarts(f);
+	expect(links).toEqual([expect.objectContaining({ attempt_id: linked.browser.attemptId })]);
 	const protectedBefore = await snapshot(f);
 	const enrollment = await f.store.getEnrollment(linked.review.groupId, linked.review.deviceId);
 	const foreign = await rows(other);
@@ -168,6 +184,7 @@ it("purges only aged signins in bounded order, leaving links, authority and fore
 	expect(repeat).toEqual(purged(0));
 	expect(await rows(f)).toEqual(before.slice(4));
 	expect(await rows(f, floorTable)).toEqual(floorRow(f, NOW + 100));
+	expect(await linkStarts(f)).toEqual(links);
 	expect(await snapshot(f)).toEqual(protectedBefore);
 	expect(await f.store.getEnrollment(linked.review.groupId, linked.review.deviceId)).toEqual(
 		enrollment,

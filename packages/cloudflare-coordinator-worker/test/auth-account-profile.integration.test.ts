@@ -4,6 +4,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Issued = Awaited<ReturnType<typeof signIn>>;
@@ -48,8 +49,7 @@ async function fixture() {
 		identityId: randomUUID(),
 		attestationId: randomUUID(),
 		reviewReceiptId: randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: hash(),
+		...fixtureDeviceKey(),
 		evidenceDigest: hash(),
 	};
 	owned.push(review);
@@ -159,22 +159,25 @@ it("persists only display snapshots and refuses delayed or equal-time clobbering
 	const equal = await signIn(f);
 	const stable = await authority(f);
 	const newestProfile = { displayName: "Newest" };
-	expect(await record(f, newest.credentialHash, newestProfile)).toEqual({ kind: "recorded" });
+	// Both sign-ins share a millisecond. The account schema orders them by browser start,
+	// so `equal`, started last, is the newest and `newest` can no longer clobber it.
+	expect(await record(f, equal.credentialHash, newestProfile)).toEqual({ kind: "recorded" });
 	const persisted = await rows(f);
 	expect(await record(f, old.credentialHash)).toEqual({ kind: "not_recorded" });
-	expect(await record(f, equal.credentialHash)).toEqual({ kind: "not_recorded" });
-	expect(await record(f, newest.credentialHash)).toEqual({ kind: "recorded" });
+	expect(await record(f, newest.credentialHash)).toEqual({ kind: "not_recorded" });
+	expect(await record(f, equal.credentialHash)).toEqual({ kind: "recorded" });
 	expect(await rows(f)).toEqual(persisted);
 	expect(persisted).toEqual([
 		{
 			coordinator_id: f.cfg.coordinatorId,
-			link_id: newest.session.linkId,
+			link_id: equal.session.linkId,
 			display_name: "Newest",
 			email: null,
 			email_verified: null,
 			picture_url: null,
-			source_session_id: newest.session.sessionId,
+			source_session_id: equal.session.sessionId,
 			source_signed_in_at_ms: NOW + 2,
+			source_order: expect.any(Number),
 		},
 	]);
 	for (const secret of ["fixture-raw-token", f.account.subject, old.credentialHash])

@@ -188,20 +188,25 @@ eligible existing group grant; it does not create them.
 
 ## 5. Apply the D1 migrations
 
-The example Wrangler template already sets `migrations_dir`. For a new database, prefer applying the complete migration
-history through `0031`, which adds the owner-auth audit table, so migration records support later upgrades.
-`packages/cloudflare-coordinator-worker/schema.sql` also includes the complete owner-auth tables and can initialize a
-fresh database; using it directly does not record which migrations were applied.
+The example Wrangler template already sets `migrations_dir`. The numbered migrations are the complete schema: a new
+database that applies them all, through `0047`, ends on the current coordinator schema, including the authority
+cutover and account management. No exported SQL, separate install or `schema.sql` baseline is needed.
+`packages/cloudflare-coordinator-worker/schema.sql` describes the same fresh schema, but using it directly does not
+record which migrations were applied.
 
-For a **new, empty database only**, run this from the repository root after setting the real database ID in the ignored
+For a **new, empty database**, run this from the repository root after setting the real database ID in the ignored
 deployment config:
 
 ```fish
 pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 migrations apply codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml
 ```
 
-For a database originally created from `schema.sql`, first compare its schema with the migration history and review
-the migration records. Baseline only the migrations whose changes are already present, then apply the remaining
+For an existing database, the same command applies only the migrations its ledger lacks. Before running it on a
+deployment that has users, pause auth writers, drain pending link attempts, back up the database and obtain separate
+approval. See [Auth schema stages](#auth-schema-stages-0045-to-0047) for what the last three migrations require.
+
+For a database originally created from `schema.sql` or an exported install, follow
+[the baseline procedure](#baseline-a-d1-database-whose-schema-came-from-outside-the-migrations) before applying
 migrations; do not replay from `0001` or reset the database to make the migration bookkeeping match.
 
 ### Device rebind storage (0038)
@@ -556,46 +561,115 @@ must join promoted rows to the matching live account link, and never return priv
 snapshots take precedence, including an intentionally empty snapshot. Names, email and pictures are display hints,
 not identity or permission evidence. No coordinator browser session is required to persist a successful link profile.
 
-### Optional account-management extension
+### Auth schema stages (0045 to 0047)
 
-The current V2 extension adds profile refresh and explicit unlink/reconnect support without changing normal V2 linking. It is not the legacy authority cutover and it is not the deferred V3 generation migration. For an existing intact V2 database, pause auth writers, drain pending attempts, back up the database, obtain approval, and use the local CLI only for a local SQLite coordinator:
+Three numbered migrations move a coordinator's auth schema forward one stage each:
 
-```fish
-codemem coordinator schema upgrade-account --db-path PATH
-```
+| Migration | Starts from | Leaves |
+| --- | --- | --- |
+| `0045_cut_over_auth_link_authority.sql` | the legacy controller-attested authority schema, with no pending attempts | V2 authority kinds and device-claim proof |
+| `0046_add_account_connections.sql` | intact V2 without account management | the first account-management extension: refresh, connection history and browser ordering |
+| `0047_add_account_unlink.sql` | exactly the `0046` schema | the current schema, with device unlink receipts and the archive guard |
 
-The command does not pause writers, create a backup, or apply itself by default. Its D1 export opens no database:
+Each file is generated from the statements a SQLite coordinator runs and checks its starting schema before it changes
+anything that schema contains. `0046` and `0047` start with that check, so on any other schema, including a partial or
+unknown one, their first statement aborts the file. `0045` first creates a small check table and then refuses through
+it, so it relies on the file being applied atomically to leave nothing behind. Wrangler records a migration only when
+its whole file succeeds. Existing link rows, IDs, proofs, sessions and history are
+kept. `0046` gives each known coordinator its first connection order and keeps the latest sign-in profile visible; it
+does not backfill orders for old pending browser transactions, which therefore cannot create new sessions.
 
-```fish
-codemem coordinator schema upgrade-account --export-sql --json
-```
+Apply these migrations and deploy the matching Worker in the same paused-writer window, then resume writers. Old
+binaries reject the new schema, and do not roll back to an older Worker after `0047` or after new unlink receipts
+exist. Local `applyD1Migrations` runs each file as one atomic D1 batch, and the native Worker tests show that a refused
+file leaves the database unchanged there. Remote `wrangler d1 migrations apply` sends each file's SQL as one query. Nobody has yet confirmed against remote D1 that one migration
+request is atomic, or that it accepts the largest file: `0047` is about 138 KB in nine statements, and its largest
+statement is about 72 KB, under D1's 100 KB statement limit. Try the chain on a copy of the production database first.
 
-It returns `{ "statements": [...], "applied": false }`. Plain output warns that the whole statement array must run in **one atomic D1 binding batch**; do not add `BEGIN`/`COMMIT`, split it into chunks, or treat Wrangler `execute` or migrations as a safe apply path here. Remote query and batch limits are not verified by this export.
+On any error, stop and inspect the database rather than resetting tables, copying data, synthesizing proof, or
+restoring unrelated traffic. Existing sessions remain valid until unlink or administrator revocation.
 
-The default export installs the extension on V2 without account management (45 statements).
-For the intact prior 38-statement extension, export the nine-statement device-only
-unlink delta instead with `codemem coordinator schema upgrade-account --export-sql --device-unlink --json`.
-The delta adds one receipt table and its guards and replaces the archive guard;
-it does not rebuild tables or change existing rows. The local SQLite command detects
-either supported starting schema. Both exports reject partial or unknown schemas
-inside the atomic batch. Backup, live SQL application and deployment remain separate
-operator actions requiring approval; exporting does not perform them.
+A self-hosted SQLite coordinator needs no command: on startup it installs account management on intact V2 or the
+`0046` schema in one transaction. It leaves a current schema alone, and it leaves a partial or unknown auth schema
+unchanged and keeps reporting `coordinator_auth_schema_upgrade_required`.
 
-Apply the atomic delta and deploy the new Worker in the same paused-writer window,
-then resume writers: old binaries reject the new schema, and new binaries reject
-the prior 38-statement schema. Do not roll back to an old binary after applying the
-delta or creating new unlink receipts.
+#### Baseline a D1 database whose schema came from outside the migrations
 
-On any error, stop and inspect the database rather than resetting tables, copying data, synthesizing proof, or restoring unrelated traffic. The extension retains original link rows, IDs, proofs, and history; it does not backfill old browser orders.
+A database built from `schema.sql`, or one that received the cutover or account management through
+`codemem coordinator schema upgrade-auth --export-sql` or `upgrade-account --export-sql`, has the schema but no
+matching migration records, and often no `d1_migrations` ledger at all. `wrangler d1 migrations apply` would then run
+every migration from `0001` and fail on the first change that already exists. Record what is already present first:
 
-Existing sessions remain valid until unlink or administrator revocation, but old pre-upgrade transactions without an order cannot create a new session. After the upgrade, do not run an older coordinator binary against the database.
+1. Pause auth writers and back up the database. Compare its schema with the numbered chain for the expected stage,
+   including indexes, triggers and constraints, before recording migration history.
+
+   Older `schema.sql` installations omitted `coordinator_owner_enrollment_qualifications` and its five triggers.
+   If inspection confirms that this table is absent, review migration `0035_add_owner_enrollment_qualifications.sql`
+   and apply that file alone as a prerequisite repair, with operator approval:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --file migrations/0035_add_owner_enrollment_qualifications.sql --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+   This creates empty qualification storage and its triggers. It does not issue qualifications or record migration
+   history. Compare the resulting table and trigger definitions with that migration before proceeding. If the table
+   already exists with different definitions, stop for a separate repair rather than relying on `IF NOT EXISTS`.
+   Do not record `0035` as applied while its storage is missing.
+2. Check, read-only, whether the ledger exists and what it holds:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --command "SELECT name FROM sqlite_master WHERE name = 'd1_migrations'" --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+   If it exists, also read `SELECT name FROM d1_migrations ORDER BY id`. If it already lists migrations, stop and
+   compare them with the schema before going on.
+3. Only if the ledger is missing, create it as a separate step. `wrangler d1 migrations list` creates Wrangler's empty
+   `d1_migrations` table and applies nothing:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 migrations list codemem-coordinator --remote --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+   Do not use `migrations apply` for this: it creates the ledger and then replays the chain from `0001`.
+4. Export the baseline for the stage you expect. A database on the current Worker schema is at `current`:
+
+   ```fish
+   codemem coordinator schema baseline-d1 --stage current > baseline.sql
+   ```
+
+   The statement records every numbered migration from `0001` through that stage's last migration (`0045` for `v2`,
+   `0046` for `prior_extension`, `0047` for `current`). It requires that stage's auth readiness checks to pass and
+   checks table and column names for the remaining earlier tables, including controller attestations and sign-in
+   purge floors. This inventory does not validate column types, constraints, indexes, triggers or row validity.
+   The auth-stage checks validate their own definitions and selected row invariants, not the whole database.
+   A successful baseline does not replace the operator's schema comparison and backup. Names already recorded
+   are skipped, so running it twice records nothing new.
+5. Run it once:
+
+   ```fish
+   pnpm --filter @codemem/cloudflare-coordinator-worker exec wrangler d1 execute codemem-coordinator --remote --file baseline.sql --config ../../examples/cloudflare-coordinator/wrangler.toml
+   ```
+
+6. Read the ledger again. The outcomes mean:
+   - `no such table: d1_migrations`: the ledger is missing. Go back to step 3. This error says nothing about the schema.
+   - The ledger now lists the migrations: the baseline matched.
+   - Nothing was recorded, or another `no such table` or `no such column` error: the schema is not at that stage, or
+     part of the earlier chain is missing. A database you expected to be current but that matches no stage is partial
+     or unknown and needs inspection. Retry with `--stage prior_extension` or `--stage v2` only if you have evidence the
+     database stopped at that stage.
+7. Apply the remaining migrations with `wrangler d1 migrations apply`, then deploy the Worker.
+
+Nothing runs the baseline automatically, and Workers never write the migration ledger.
+
+The `upgrade-account` and `upgrade-auth` commands remain for local SQLite files and for exporting the same statements;
+`upgrade-account --owner-resolution` is still the only installer for owner-resolution receipt storage.
 
 ### Optional owner-resolution receipt storage
 
 The explicit `--owner-resolution` mode adds only the reviewed 0037 receipt table,
 indexes and immutability triggers. It requires the **current account-management
-schema** first; for an older supported SQLite coordinator, use the normal
-`schema upgrade-account` command before this mode. Pause auth writers, drain pending
+schema** first, which SQLite coordinators install at startup and D1 deployments get
+from migrations `0046` and `0047`. Pause auth writers, drain pending
 attempts, back up the coordinator database and obtain separate approval before applying:
 
 ```fish

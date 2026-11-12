@@ -8,6 +8,7 @@ import { createCoordinatorBrowserLinkStart } from "../../core/src/coordinator-br
 import { oidcFixture, PROVIDER } from "../../core/src/coordinator-oidc-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { createInMemoryRequestRateLimiter } from "../../core/src/request-rate-limit.js";
+import { fixtureDeviceKey } from "./fixture-device-key.js";
 
 const ORIGIN = "https://app.example.test";
 const START = `${ORIGIN}/auth/link/start`;
@@ -48,8 +49,7 @@ async function setup(legacy = false) {
 		identityId: crypto.randomUUID(),
 		attestationId: crypto.randomUUID(),
 		reviewReceiptId: crypto.randomUUID(),
-		publicKey: "fixture-public-key",
-		fingerprint: "b".repeat(64),
+		...fixtureDeviceKey(),
 		evidenceDigest: "c".repeat(64),
 	};
 	await store.createGroup(review.groupId, "Fixture group");

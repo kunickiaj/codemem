@@ -6,10 +6,12 @@
 
 The current optional V2 extension supports verified profile display, **Refresh
 profile**, and explicit **Unlink Google account**, followed by normal linking to the
-same or a different Google account. It installs only through the explicit
-`upgrade-account-schema` operation for an existing intact V2 coordinator; normal V2
-linking does not require it. Fresh coordinators also remain V2 until the extension
-is explicitly installed.
+same or a different Google account. Coordinators install it through their normal
+schema path: SQLite coordinators at startup, in one transaction, from intact V2 or the
+prior extension; D1 deployments through numbered migrations `0046` and `0047`, each of
+which first checks its exact starting schema. Fresh coordinators start on the current
+schema. Partial or unknown schemas are left unchanged and keep reporting that an
+upgrade is required.
 
 The extension moves an unlinked connection into retained history and creates a fresh,
 opaque link ID for a later normal Link. It retains the original row ID, proof, and
@@ -58,28 +60,21 @@ ID, cleanup skips rather than guessing a scope. It preserves completed receipts,
 account history, and device access, and does not mount browser-auth routes or
 contact Google. This does not configure a schedule or change deployment settings.
 
-For an existing local V2 SQLite database, operators must pause auth writers, drain
-pending attempts, back up the database, then obtain approval before running:
+Before an existing coordinator first opens or migrates onto this schema, operators
+must pause auth writers, drain pending attempts, back up the database and obtain
+approval. Startup and the migrations create no backup or pause. The install adds an
+old-binary fence; after it succeeds, do not run an older coordinator binary against
+that database. Stop and inspect errors instead of resetting, copying tables,
+synthesizing proof, or attempting an automatic restore.
 
-```fish
-codemem coordinator schema upgrade-account --db-path PATH
-```
-
-The command never applies automatically and creates no backup or pause. It fails
-closed when storage is only partly upgraded. Do not use the legacy
-`upgrade-auth-schema` command for account management: that command is the authority
-cutover, not this extension. The upgrade adds an old-binary fence; after it succeeds,
-do not run an older coordinator binary against that database. Stop and inspect errors
-instead of resetting, copying tables, synthesizing proof, or attempting an automatic
-restore.
-
-An intact prior 38-statement account extension takes a nine-statement atomic delta:
-one receipt table, four receipt guards, replacement of the archive guard, and exact
-pre/postflight checks. No existing table is rebuilt or copied. Fresh V2 installation
-uses 45 statements. For D1, export the prior-extension delta with
-`codemem coordinator schema upgrade-account --export-sql --device-unlink --json`;
-the default export is for V2 without the extension. Applying SQL and deploying still
-require separate operator approval. Partial or unknown schemas are rejected.
+The prior 38-statement extension (`0046`) takes a nine-statement delta (`0047`): one
+receipt table, four receipt guards, replacement of the archive guard, and exact
+pre/postflight checks. No existing table is rebuilt or copied. `codemem coordinator
+schema upgrade-account` still installs the same statements on a local file or exports
+them, and `codemem coordinator schema baseline-d1` exports the guarded ledger entries,
+from `0001`, for a D1 database whose schema came from outside the numbered migrations. The baseline requires
+auth-stage readiness and the remaining table and column names. That inventory does not validate types,
+constraints, indexes, triggers or row validity. Operators must back up and compare the schema before applying it.
 
 The upgrade keeps the latest existing sign-in profile visible, including an empty
 snapshot. It assigns baseline order one to the existing receipt only when its

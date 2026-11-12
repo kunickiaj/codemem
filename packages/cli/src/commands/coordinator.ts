@@ -51,6 +51,7 @@ import {
 	buildCoordinatorAccountSchemaCommand,
 	buildCoordinatorAuthSchemaCommand,
 } from "./coordinator-auth-schema.js";
+import { buildCoordinatorD1BaselineCommand } from "./coordinator-d1-baseline.js";
 import { buildCoordinatorDiagnoseTeamSetupCommand } from "./coordinator-diagnose-team-setup.js";
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
@@ -219,7 +220,8 @@ function createCoordinatorResources() {
 	)
 		.addCommand(buildCoordinatorDiagnoseTeamSetupCommand())
 		.addCommand(buildCoordinatorAuthSchemaCommand())
-		.addCommand(buildCoordinatorAccountSchemaCommand());
+		.addCommand(buildCoordinatorAccountSchemaCommand())
+		.addCommand(buildCoordinatorD1BaselineCommand());
 	cmd.addCommand(account);
 	cmd.addCommand(owner);
 	cmd.addCommand(group);
