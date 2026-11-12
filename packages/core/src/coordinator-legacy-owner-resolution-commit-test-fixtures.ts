@@ -282,11 +282,15 @@ export async function buildReview(
 		existingController?: CoordinatorAuthControllerAttestation | null;
 		existingResolution?: LegacyOwnerResolutionRecord | null;
 		resolutionId?: string;
+		/** Runs after the requester's enrollment label is read, before evidence is collected. */
+		afterRequester?: () => void;
 	} = {},
 ): Promise<InternalReviewFixture> {
+	const { afterRequester, ...digested } = options;
 	const enrollment = f.db
 		.prepare("SELECT identity_id FROM enrolled_devices WHERE group_id=? AND device_id=?")
 		.get(signer.groupId, signer.deviceId) as { identity_id: string | null };
+	afterRequester?.();
 	const target = await linkedTarget(f);
 	const legacyHistory = await f.store.captureAuthControllerLegacyHistory({
 		coordinatorId: f.cfg.coordinatorId,
@@ -320,7 +324,7 @@ export async function buildReview(
 				scope: "historical_included_owner_labels_only",
 				controllerReview,
 				ownershipEvidenceDigest,
-				...options,
+				...digested,
 			}),
 		)
 		.digest("hex");

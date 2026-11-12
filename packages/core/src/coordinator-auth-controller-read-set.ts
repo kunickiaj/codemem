@@ -50,8 +50,35 @@ function snapshotRowChecks(review: Review): { sql: string; values: Values } {
 	};
 }
 
-function subjectValues(review: Review): Values {
-	return [review.groupId, review.deviceId, review.publicKey, review.fingerprint, review.identityId];
+export interface ControllerStatementOptions {
+	/**
+	 * Also admit the enrollment label the review accepted as weak. Only the explicit owner
+	 * resolution passes it; the snapshot and authority checks still pin that exact label.
+	 */
+	reviewedLabel?: boolean;
+}
+
+function subject(
+	review: Review,
+	options: ControllerStatementOptions,
+): { sql: string; values: Values } {
+	const values = [
+		review.groupId,
+		review.deviceId,
+		review.publicKey,
+		review.fingerprint,
+		review.identityId,
+	];
+	if (!options.reviewedLabel) return { sql: SUBJECT, values };
+	if (!review.verifiedSnapshot?.accountOwnerTarget)
+		throw new Error("account_owner_authority_unavailable");
+	return {
+		sql: SUBJECT.replace(
+			"(e.identity_id IS NULL OR e.identity_id = ?)",
+			"(e.identity_id IS NULL OR e.identity_id = ? OR e.identity_id IS ?)",
+		),
+		values: [...values, review.verifiedSnapshot.enrollmentIdentityId],
+	};
 }
 
 /** The controller insert, with no WITH stage. */
@@ -59,15 +86,17 @@ export function controllerInsertStatement(
 	review: Review,
 	createdAt: string,
 	authority: Values,
+	options: ControllerStatementOptions = {},
 ): AuthLinkStatement {
 	const rows = snapshotRowChecks(review);
+	const source = subject(review, options);
 	return {
 		sql: `INSERT INTO coordinator_auth_controller_attestations (
 		attestation_id, coordinator_id, identity_id, group_id, device_id, public_key,
 		fingerprint, review_receipt_id, evidence_digest, enrollment_identity_id, revision, created_at, revoked_at
 	)
 	SELECT ?, ?, ?, e.group_id, e.device_id, e.public_key, e.fingerprint, ?, ?, e.identity_id, 1, ?, NULL
-	${SUBJECT}${rows.sql} ${AUTHORITY_GUARD}`,
+	${source.sql}${rows.sql} ${AUTHORITY_GUARD}`,
 		values: [
 			review.attestationId,
 			review.coordinatorId,
@@ -75,7 +104,7 @@ export function controllerInsertStatement(
 			review.reviewReceiptId,
 			review.evidenceDigest,
 			createdAt,
-			...subjectValues(review),
+			...source.values,
 			...rows.values,
 			...authority,
 		],
@@ -83,11 +112,16 @@ export function controllerInsertStatement(
 }
 
 /** Whether the reviewed enrollment may still be attested, with no WITH stage. */
-export function controllerEligibleStatement(review: Review, authority: Values): AuthLinkStatement {
+export function controllerEligibleStatement(
+	review: Review,
+	authority: Values,
+	options: ControllerStatementOptions = {},
+): AuthLinkStatement {
 	const rows = snapshotRowChecks(review);
+	const source = subject(review, options);
 	return {
-		sql: `SELECT 1 AS eligible ${SUBJECT}${rows.sql} ${AUTHORITY_GUARD}`,
-		values: [...subjectValues(review), ...rows.values, ...authority],
+		sql: `SELECT 1 AS eligible ${source.sql}${rows.sql} ${AUTHORITY_GUARD}`,
+		values: [...source.values, ...rows.values, ...authority],
 	};
 }
 

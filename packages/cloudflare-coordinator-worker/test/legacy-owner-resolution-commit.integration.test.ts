@@ -737,6 +737,24 @@ it("native ownership binding added before the batch aborts it through the eviden
 	expect(await snapshot()).toEqual(injected);
 });
 
+it("native owner link issuer change before the batch aborts it through the review guards", async () => {
+	// Arrange: only the controller review's owner reads cover the link; evidence does not.
+	const f = await setup();
+	const review = await buildReview(f);
+	let injected: Snapshot | undefined;
+	f.hooks.beforeBatch = async () => {
+		await exec("UPDATE coordinator_auth_account_links SET issuer='https://changed.example.test'");
+		injected = await snapshot();
+	};
+	// Act
+	const pending = commit(f, review);
+	// Assert: the native batch refused before any receipt was written.
+	await expect(pending).rejects.toThrow(/outcome is unavailable/u);
+	expect(f.diagnostics.batches).toBe(1);
+	expect(String(f.diagnostics.error)).toMatch(/auth_snapshot_changed/u);
+	expect(await snapshot()).toEqual(injected);
+});
+
 it.each(receipts)(
 	"native zero-row %s winner forces checked rollback and preserves old source",
 	async (table) => {
