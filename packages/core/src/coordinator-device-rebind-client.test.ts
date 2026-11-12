@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { seedConnectionOrder } from "./coordinator-account-schema-sqlite-test-fixtures.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -112,6 +113,8 @@ async function clientFixture() {
 			 VALUES (?, 'link-target', ?, 'subject-target', ?, 'link-attempt', ?, 1, 'device_claim', 'claim-target')`,
 		)
 		.run(config.coordinatorId, config.issuer, TARGET, config.revision);
+	// The seeded target link follows this coordinator's earlier browser starts.
+	seedConnectionOrder(remote.db, config.coordinatorId);
 	const app = createCoordinatorApp({
 		storeFactory: () => remote.store,
 		runtime: { adminSecret: () => null, now: () => new Date(NOW).toISOString() },

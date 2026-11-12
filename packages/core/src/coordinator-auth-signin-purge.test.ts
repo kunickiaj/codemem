@@ -57,6 +57,27 @@ function protectedData(f: LinkFixture) {
 		.all(TABLE, FLOOR) as { name: string }[];
 	return tables.map(({ name }) => [name, f.db.prepare(`SELECT * FROM "${name}"`).all()]);
 }
+/**
+ * On the current account schema a start also allocates exactly its own coordinator's
+ * next connection order; every other row and table is unchanged. V2 has no order table.
+ */
+function afterOneStart(before: ReturnType<typeof protectedData>) {
+	const orders = "coordinator_auth_account_connection_orders";
+	const table = before.find(([name]) => name === orders);
+	if (table)
+		expect(table[1]).toContainEqual(
+			expect.objectContaining({ coordinator_id: config.coordinatorId }),
+		);
+	const next = (row: unknown) => {
+		const order = row as { coordinator_id: string; last_order: number };
+		return order.coordinator_id === config.coordinatorId
+			? { ...order, last_order: order.last_order + 1 }
+			: order;
+	};
+	return before.map(([name, rows]) =>
+		name === orders ? [name, (rows as unknown[]).map(next)] : [name, rows],
+	);
+}
 function snapshot(f: LinkFixture) {
 	return [transactionRows(f), f.db.prepare(`SELECT * FROM ${FLOOR}`).all(), protectedData(f)];
 }
@@ -303,10 +324,7 @@ function registerFloors(test: Test) {
 		expect(protectedBeforeBoundary).toEqual(before);
 		expect(allowed.kind).toBe("started");
 		expect(floor(f)).toBe(NOW);
-		// The allowed start also allocates its connection order when the account schema is current.
-		const withoutOrders = (data: ReturnType<typeof protectedData>) =>
-			data.filter(([name]) => name !== "coordinator_auth_account_connection_orders");
-		expect(withoutOrders(protectedData(f))).toEqual(withoutOrders(before));
+		expect(protectedData(f)).toEqual(afterOneStart(before));
 	});
 	test("live rolling-window cap remains 1024 after old rows are purged", async ({ fixture: f }) => {
 		// Arrange

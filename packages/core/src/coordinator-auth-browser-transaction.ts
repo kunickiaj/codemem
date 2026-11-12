@@ -627,7 +627,10 @@ export class CoordinatorAuthBrowserTransactions implements CoordinatorAuthBrowse
 			await orderedBrowserStart(this.backend, statements, coordinator, hash);
 		} catch (error) {
 			if (isAuthControllerUniqueError(error)) return rejected("transaction_conflict");
-			throw authPersistenceError(error, "auth_browser_transaction_persistence_incomplete");
+			// On the current account schema a link start whose conditional insert wrote no
+			// row rolls back at the order stamp; the receipt diagnosis then names the reason.
+			if (!isBrowserAdmissionNoop(error))
+				throw authPersistenceError(error, "auth_browser_transaction_persistence_incomplete");
 		}
 		return null;
 	}

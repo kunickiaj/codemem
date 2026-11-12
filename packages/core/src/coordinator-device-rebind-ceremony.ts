@@ -1,3 +1,7 @@
+import {
+	hasConnectionSessionSchema,
+	orderedBrowserStartStatements,
+} from "./coordinator-account-connection-session.js";
 import { CoordinatorAuthBrowserTransactions } from "./coordinator-auth-browser-transaction.js";
 import type { CoordinatorAuthBrowserConfig } from "./coordinator-auth-browser-transaction-contract.js";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
@@ -517,7 +521,11 @@ async function claimBrowser(ctx: Ctx, request: Request, clientKey: string) {
 
 /**
  * Browser transaction insert and attempt claim; each asserts it changed exactly one row.
- * The guards re-run the self-bind authority reads and go first in the same batch.
+ * The guards re-run the self-bind authority reads and go first in the same batch. On the
+ * current account schema the writes are wrapped like every browser start: allocate the
+ * coordinator's next connection order (creating its row on first use), then stamp it on
+ * the new transaction. A coordinator may have no account rows yet when an unlinked device
+ * claims, and readiness requires that row once any transaction exists.
  */
 async function claimStatements(
 	ctx: Ctx,
@@ -565,7 +573,10 @@ async function claimStatements(
 		},
 		assertOne,
 	];
-	return { guards: authority.guards, writes };
+	const ordered = (await hasConnectionSessionSchema(ctx.deps.backend))
+		? orderedBrowserStartStatements(writes, ctx.c.coordinatorId, p.transactionHash)
+		: writes;
+	return { guards: authority.guards, writes: ordered };
 }
 
 /** The single OIDC state of a well-formed callback to the configured URL, checked before any burn. */
