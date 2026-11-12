@@ -156,6 +156,51 @@ export function isSnapshotChanged(error: unknown): boolean {
 	);
 }
 
+/** A backend whose reads can run together as one snapshot. */
+export type AtomicReader = Required<Pick<AuthLinkBackend, "readBatch">>;
+
+/**
+ * Types a store backend's read batch as required. Every store backend has one. A
+ * backend without it refuses each read batch instead of reading one statement at a
+ * time, which would check the guards at different moments.
+ */
+export function requireReadBatch<B extends Pick<AuthLinkBackend, "readBatch">>(
+	backend: B,
+): Omit<B, "readBatch"> & AtomicReader {
+	const readBatch = backend.readBatch?.bind(backend);
+	const refuse = async <T>(): Promise<T[][]> => {
+		throw new Error("auth_read_batch_required");
+	};
+	return { ...backend, readBatch: readBatch ?? refuse };
+}
+
+/**
+ * Runs the guards and then `statement` as one read batch, and returns the statement's
+ * first row. `changed` when a guard no longer holds.
+ */
+export async function readAfterGuards<T>(
+	backend: AtomicReader,
+	guards: readonly AuthLinkStatement[],
+	statement: AuthLinkStatement,
+): Promise<{ changed: true } | { changed: false; row: T | null }> {
+	try {
+		const rows = await backend.readBatch<T>([...guards, statement]);
+		return { changed: false, row: rows[guards.length]?.[0] ?? null };
+	} catch (error) {
+		if (isSnapshotChanged(error)) return { changed: true };
+		throw error;
+	}
+}
+
+/** Whether every guard still holds, checked together in one read batch. */
+export async function guardsHold(
+	backend: AtomicReader,
+	guards: readonly AuthLinkStatement[],
+): Promise<boolean> {
+	const read = await readAfterGuards(backend, guards, { sql: "SELECT 1 AS held", values: [] });
+	return !read.changed;
+}
+
 /**
  * Runs the guards and then the writes as one atomic batch. Any other error propagates,
  * so an unknown outcome is never reported as a refusal.

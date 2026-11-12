@@ -382,7 +382,7 @@ function rowPin(
 
 async function requireReviewedEvidence(
 	evidence: CoordinatorDeviceOwnershipEvidence,
-	snapshot: Parameters<CoordinatorDeviceOwnershipEvidence["prepareAtomicRecheck"]>[0],
+	snapshot: Parameters<CoordinatorDeviceOwnershipEvidence["recheckGuards"]>[0],
 	review: InternalOwnerResolutionReview,
 ): Promise<void> {
 	const freshDigest = await evidence.reviewedEvidenceDigest(snapshot);
@@ -441,14 +441,11 @@ async function prepareCommit(
 		},
 		keyId,
 	);
-	const statements = await prepareAssertions(
-		backend,
-		review,
-		controller,
-		resolution,
-		evidence.prepareAtomicRecheck(collected.recheckSnapshot),
-		authority,
-	);
+	// The evidence guards lead the batch: they re-run every read the review was built on.
+	const evidenceGuards = evidence.recheckGuards(collected.recheckSnapshot);
+	if (!evidenceGuards) throw new Error("ownership_evidence_changed");
+	const statements = await prepareAssertions(backend, review, controller, resolution, authority);
+	statements.unshift(...evidenceGuards);
 	appendReceiptWrites(statements, review, resolution, now, authority);
 	return { controller, resolution, statements };
 }
@@ -502,7 +499,6 @@ async function prepareAssertions(
 	review: InternalOwnerResolutionReview,
 	controller: CoordinatorAuthControllerAttestation,
 	resolution: LegacyOwnerResolutionRecord,
-	evidenceRecheck: AuthLinkStatement,
 	authority: (string | null)[],
 ): Promise<AuthLinkStatement[]> {
 	const input = review.controllerReview;
@@ -512,7 +508,6 @@ async function prepareAssertions(
 	});
 	if (!catalog) throw new Error("schema_unavailable");
 	return [
-		...assertRead(evidenceRecheck, "matches"),
 		...assertEligibility(input, authority),
 		...assertRead(
 			{

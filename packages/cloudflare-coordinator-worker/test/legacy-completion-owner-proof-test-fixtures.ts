@@ -280,6 +280,8 @@ export async function recovery() {
 		{
 			first: <T>(s: AuthLinkStatement) => prepare(s).first<T>(),
 			all: async <T>(s: AuthLinkStatement) => (await prepare(s).all<T>()).results,
+			readBatch: async <T>(statements: AuthLinkStatement[]) =>
+				(await db.batch(statements.map(prepare))).map((result) => result.results as T[]),
 		},
 		{ coordinatorId },
 	);

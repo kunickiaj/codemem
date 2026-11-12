@@ -46,6 +46,10 @@ function catalog(f: Fixture): CatalogRow[] {
 	return rows.map(({ row }) => JSON.parse(row) as CatalogRow);
 }
 
+// The capture's read of the resolution table's schema objects.
+const SCHEMA_CATEGORY = `tbl_name='${table}' AND sql IS NOT NULL`;
+const GUARD = "auth_snapshot_changed";
+
 // Interleave real DDL at query boundaries, never replace a database proof/result.
 function observeCatalog(
 	f: Fixture,
@@ -59,32 +63,52 @@ function observeCatalog(
 		atomic: [] as unknown[],
 		events: [] as string[],
 	};
+	const atomic = (matches: 0 | 1) => {
+		observed.atomic.push({ matches });
+		observed.events.push("atomic");
+	};
+	// Records one successful read: the readiness check, the end of a recheck whose guards
+	// all held, or the capture's schema category.
+	const observe = (sql: string, result: unknown) => {
+		if (sql.includes("AS objects")) {
+			const { objects } = result as { objects: string };
+			observed.readiness.push(JSON.parse(objects));
+			observed.events.push("readiness");
+			if (observed.readiness.length === 1) hooks.afterReadiness?.();
+		} else if (sql === "SELECT 1 AS held") atomic(1);
+		else if (!sql.includes(GUARD) && sql.includes(SCHEMA_CATEGORY)) {
+			// The schema category of the capture: one JSON text per catalog row.
+			const { rows } = result as { rows: string };
+			observed.captured.push(
+				(JSON.parse(rows) as string[]).map((row) => JSON.parse(row) as CatalogRow),
+			);
+			observed.events.push("capture");
+			hooks.afterCapture?.();
+		}
+	};
 	const db = {
 		async first<T>(statement: AuthLinkStatement): Promise<T | null> {
-			const result = await actual.first<T>(statement);
-			if (statement.sql.includes("AS objects")) {
-				const { objects } = result as { objects: string };
-				observed.readiness.push(JSON.parse(objects));
-				observed.events.push("readiness");
-				if (observed.readiness.length === 1) hooks.afterReadiness?.();
-			} else if (statement.sql.includes("AS matches")) {
-				observed.atomic.push(result);
-				observed.events.push("atomic");
+			try {
+				const result = await actual.first<T>(statement);
+				observe(statement.sql, result);
+				return result;
+			} catch (error) {
+				// The recheck runs the capture's guards; the first that fails ends it.
+				if (statement.sql.includes(GUARD) && observed.events.at(-1) !== "atomic") atomic(0);
+				throw error;
 			}
-			return result;
 		},
-		async all<T>(statement: AuthLinkStatement): Promise<T[]> {
-			const result = await actual.all<T>(statement);
-			if (statement.sql.includes("json_array(type,name,tbl_name,sql)")) {
-				observed.captured.push(
-					(result as { category: string; row: string }[])
-						.filter(({ category }) => category === "schema")
-						.map(({ row }) => JSON.parse(row) as CatalogRow),
-				);
-				observed.events.push("capture");
-				hooks.afterCapture?.();
+		all: actual.all,
+		async readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]> {
+			try {
+				const results = await actual.readBatch<T>(statements);
+				for (const [index, { sql }] of statements.entries()) observe(sql, results[index]?.[0]);
+				return results;
+			} catch (error) {
+				// The recheck runs the capture's guards; the first that fails ends it.
+				if (statements.some(({ sql }) => sql.includes(GUARD))) atomic(0);
+				throw error;
 			}
-			return result;
 		},
 	};
 	return { db, observed };

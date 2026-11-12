@@ -147,6 +147,8 @@ async function setup() {
 	const backend: AuthLinkBackend = {
 		first: <T>(statement: AuthLinkStatement) => prepare(statement).first<T>(),
 		all: async <T>(statement: AuthLinkStatement) => (await prepare(statement).all<T>()).results,
+		readBatch: async <T>(statements: AuthLinkStatement[]) =>
+			(await db.batch(statements.map(prepare))).map((result) => result.results as T[]),
 		run: async (statement) => (await prepare(statement).run()).meta.changes,
 		batch: async (statements) =>
 			(await db.batch(statements.map(prepare))).map((result) => result.meta.changes),
@@ -644,13 +646,16 @@ it("native constrained final SELECT rechecks the original source after candidate
 	const query = params(f);
 	let finalReads = 0;
 	let afterMutation: Awaited<ReturnType<typeof snapshot>> | undefined;
+	// The final SELECT runs in one native read batch behind the evidence guards.
 	const backend = {
 		...f.backend,
-		async first<T>(statement: AuthLinkStatement) {
-			if (
-				statement.sql.includes("coordinator_legacy_owner_resolutions") &&
-				/coordinator_auth_(?:account|link)_profiles/u.test(statement.sql)
-			) {
+		async readBatch<T>(statements: AuthLinkStatement[]) {
+			const final = statements.some(
+				({ sql }) =>
+					sql.includes("coordinator_legacy_owner_resolutions") &&
+					/coordinator_auth_(?:account|link)_profiles/u.test(sql),
+			);
+			if (final) {
 				finalReads++;
 				await exec(
 					"UPDATE coordinator_auth_controller_attestations SET revoked_at=? WHERE attestation_id='original-controller'",
@@ -658,7 +663,7 @@ it("native constrained final SELECT rechecks the original source after candidate
 				);
 				afterMutation = await snapshot();
 			}
-			return prepare(statement).first<T>();
+			return (await db.batch(statements.map(prepare))).map((result) => result.results as T[]);
 		},
 		all: async <T>(statement: AuthLinkStatement) => (await prepare(statement).all<T>()).results,
 	};

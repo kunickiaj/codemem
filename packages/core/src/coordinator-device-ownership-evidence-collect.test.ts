@@ -15,6 +15,7 @@ import {
 	invitation,
 	otherKey,
 	type Row,
+	recheckMatches,
 	signer,
 	sourceRef,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
@@ -65,7 +66,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Act
 			const result = await reader.collect(input);
 			if (result.kind !== "collected") throw new Error("inventory collection rejected");
-			const recheck = await db.first(await reader.prepareAtomicRecheck(result.recheckSnapshot));
+			const recheck = await recheckMatches(db, reader.recheckGuards(result.recheckSnapshot));
 			const returnedRows = await Promise.all(reads.mock.results.map(({ value }) => value));
 			// Assert: irrelevant inventory never crosses the backend boundary; unchanged evidence matches.
 			expect(result).toMatchObject({ kind: "collected", decision });

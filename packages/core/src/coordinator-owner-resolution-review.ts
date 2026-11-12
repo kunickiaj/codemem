@@ -13,6 +13,7 @@ import type {
 	CoordinatorAuthLinkSigner,
 } from "./coordinator-auth-link-contract.js";
 import { capture, captureAuthLinkConfig, isHash } from "./coordinator-auth-link-input.js";
+import { guardsHold } from "./coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence.js";
 import {
 	commitReviewedOwnerResolution,
@@ -34,6 +35,7 @@ import {
 
 export interface OwnerResolutionReviewBackend extends AuthLinkBackend {
 	all<T>(statement: AuthLinkStatement): Promise<T[]>;
+	readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]>;
 }
 export interface OwnerResolutionReviewSelection {
 	groupId: string;
@@ -183,7 +185,7 @@ interface CapturedSubject {
 	evidence: CoordinatorDeviceOwnershipEvidence;
 	ownershipEvidenceDigest: string;
 	weakLabels: ReviewedWeakLabel[];
-	recheckSnapshot: Parameters<CoordinatorDeviceOwnershipEvidence["prepareAtomicRecheck"]>[0];
+	recheckSnapshot: Parameters<CoordinatorDeviceOwnershipEvidence["recheckGuards"]>[0];
 }
 type ResolutionSource = Awaited<ReturnType<typeof readResolutionSource>>;
 
@@ -387,12 +389,11 @@ export class OwnerResolutionReviewOperations implements CoordinatorOwnerResoluti
 		subject: CapturedSubject,
 		target: ResolutionTarget,
 	): Promise<void> {
-		const check = await this.backend.first<{ matches: number }>(
-			subject.evidence.prepareAtomicRecheck(subject.recheckSnapshot),
-		);
+		const guards = subject.evidence.recheckGuards(subject.recheckSnapshot);
+		const unchanged = guards !== null && (await guardsHold(this.backend, guards));
 		const currentTarget = await readResolutionTarget(this.backend, selection, config);
 		if (
-			check?.matches !== 1 ||
+			!unchanged ||
 			currentTarget.link_id !== target.link_id ||
 			currentTarget.auth_config_revision !== target.auth_config_revision ||
 			currentTarget.created_at_ms !== target.created_at_ms

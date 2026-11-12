@@ -12,6 +12,7 @@ import {
 	history,
 	invitation,
 	otherKey,
+	recheckMatches,
 	signer,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
 
@@ -34,8 +35,8 @@ for (const backend of ["SQLite", "D1"] as const) {
 			if (captured.kind !== "collected") throw new Error("collection fixture rejected");
 			const before = databaseSnapshot(f);
 			// Act
-			const statement = await reader.prepareAtomicRecheck(captured.recheckSnapshot);
-			const result = await db.first(statement);
+			const statement = reader.recheckGuards(captured.recheckSnapshot);
+			const result = await recheckMatches(db, statement);
 			// Assert: SELECT matches is an equality predicate, not an authorization decision.
 			expect(result).toEqual({ matches: 1 });
 			expect(databaseSnapshot(f)).toEqual(before);
@@ -55,7 +56,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 			const captured = await reader.collect(await collectInput(f));
 			if (captured.kind !== "collected") throw new Error("collection fixture rejected");
-			const statement = await reader.prepareAtomicRecheck(captured.recheckSnapshot);
+			const statement = reader.recheckGuards(captured.recheckSnapshot);
 			const changes = {
 				controller: () => controller(f),
 				binding: () => binding(f),
@@ -70,7 +71,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			};
 			changes[change]();
 			// Act: mutate AFTER preparing, so JS preflight is not enough.
-			const result = await db.first(statement);
+			const result = await recheckMatches(db, statement);
 			// Assert
 			expect(result).toEqual({ matches: 0 });
 		});
@@ -86,7 +87,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 				const captured = await reader.collect(await collectInput(f));
 				if (captured.kind !== "collected") throw new Error("collection fixture rejected");
-				const statement = await reader.prepareAtomicRecheck(captured.recheckSnapshot);
+				const statement = reader.recheckGuards(captured.recheckSnapshot);
 				if (change === "deletion")
 					f.db.prepare("DELETE FROM coordinator_auth_controller_attestations").run();
 				if (change === "receipt")
@@ -109,7 +110,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 						.run();
 				if (change === "invite") f.db.prepare("DELETE FROM coordinator_invites").run();
 				// Act
-				const result = await db.first(statement);
+				const result = await recheckMatches(db, statement);
 				// Assert
 				expect(result).toEqual({ matches: 0 });
 			},
@@ -124,7 +125,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		const reader = new CoordinatorDeviceOwnershipEvidence(db, cfg);
 		const captured = await reader.collect(await collectInput(f));
 		if (captured.kind !== "collected") throw new Error("collection fixture rejected");
-		const statement = await reader.prepareAtomicRecheck(captured.recheckSnapshot);
+		const statement = reader.recheckGuards(captured.recheckSnapshot);
 		f.db
 			.prepare(
 				"UPDATE coordinator_auth_controller_attestations SET review_receipt_id='foreign-changed' WHERE coordinator_id=? AND attestation_id=?",
@@ -132,7 +133,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			.run("coordinator-b", "controller-a");
 		const before = databaseSnapshot(f);
 		// Act: mutate after preparation to exercise the atomic SQL, not JS preflight.
-		const result = await db.first(statement);
+		const result = await recheckMatches(db, statement);
 		const fresh = await reader.collect(await collectInput(f));
 		// Assert: only current-coordinator controller changes belong in this snapshot.
 		expect(result).toEqual({ matches: 1 });
@@ -154,7 +155,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const input = await collectInput(f);
 			const captured = await reader.collect(input);
 			if (captured.kind !== "collected") throw new Error("collection fixture rejected");
-			const statement = await reader.prepareAtomicRecheck(captured.recheckSnapshot);
+			const statement = reader.recheckGuards(captured.recheckSnapshot);
 			controller(f, { identity_id: "B", device_id: "unrelated", public_key: otherKey });
 			invitation(f, { bound_device_id: "unrelated", bound_public_key: otherKey });
 			await f.store.enrollDevice(signer.groupId, {
@@ -163,7 +164,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 				fingerprint: "f".repeat(64),
 			});
 			// Act
-			const result = await db.first(statement);
+			const result = await recheckMatches(db, statement);
 			const fresh = await reader.collect(await collectInput(f));
 			// Assert: never hash a global inventory into an exact-subject decision.
 			expect(result).toEqual({ matches: 1 });

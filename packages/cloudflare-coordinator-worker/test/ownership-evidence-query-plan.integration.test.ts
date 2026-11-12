@@ -4,14 +4,16 @@ import {
 	captureControllerHistory,
 	controllerHistoryDiscoveryFragments,
 } from "../../core/src/coordinator-auth-controller-history.js";
-import {
-	type CapturedEvidenceRow,
-	readCombinedEvidenceQuery,
-} from "../../core/src/coordinator-device-ownership-evidence-queries.js";
+import type { AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
+import { readSnapshot } from "../../core/src/coordinator-auth-read-set.js";
 import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
 } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	discoveredReads,
+	evidenceReads,
+} from "../../core/src/coordinator-owner-negative-reads.js";
 import { resetCeremony } from "./owner-ceremony-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
@@ -46,6 +48,7 @@ async function seedControllers(count: number) {
 		.run();
 }
 
+/** The evidence read set, natively: every category's rows and the rows D1 read for them. */
 async function capture() {
 	const legacyHistory = await captureControllerHistory(
 		subject,
@@ -57,11 +60,34 @@ async function capture() {
 					.all<T>()
 			).results,
 	);
-	const statement = readCombinedEvidenceQuery(JSON.stringify({ subject, legacyHistory }));
-	return db
-		.prepare(statement.sql)
-		.bind(...statement.values)
-		.all<CapturedEvidenceRow>();
+	let rowsRead = 0;
+	const backend = {
+		first: <T>({ sql, values }: AuthLinkStatement) =>
+			db
+				.prepare(sql)
+				.bind(...values)
+				.first<T>(),
+		readBatch: async <T>(statements: AuthLinkStatement[]) => {
+			const results = await db.batch(
+				statements.map(({ sql, values }) => db.prepare(sql).bind(...values)),
+			);
+			rowsRead += results.reduce((sum, result) => sum + result.meta.rows_read, 0);
+			return results.map((result) => (result.results ?? []) as T[]);
+		},
+	};
+	type Rows = Record<string, (string | null)[]>;
+	const first = await readSnapshot<Rows>(backend, evidenceReads({ subject, history: legacyHistory }));
+	const ids = (first.rows.discovery ?? []).flatMap((row) =>
+		row === null ? [] : [JSON.parse(row) as [string, string]],
+	);
+	const next = await readSnapshot<Rows>(
+		backend,
+		discoveredReads(subject, {
+			controllers: ids.filter(([source]) => source === "controller").map(([, id]) => id),
+			invites: ids.filter(([source]) => source === "invite").map(([, id]) => id),
+		}),
+	);
+	return { rows: { ...first.rows, ...next.rows } as Rows, rowsRead };
 }
 
 beforeEach(async () => {
@@ -75,7 +101,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-it("native combined evidence doubles row reads linearly across two populated categories", async () => {
+it("native evidence reads double row reads linearly across two populated categories", async () => {
 	// Arrange: each controller contributes a discovery row as well as its full evidence row.
 	await seedControllers(250);
 	const half = await capture();
@@ -88,28 +114,26 @@ it("native combined evidence doubles row reads linearly across two populated cat
 		[full, 500],
 	] as const) {
 		for (const category of ["discovery", "controllers"]) {
-			const rows = result.results.filter((row) => row.category === category);
+			const rows = result.rows[category] ?? [];
 			expect(rows).toHaveLength(count);
-			expect(rows.every((row) => row.row_count === count && row.row !== null)).toBe(true);
+			expect(rows.every((row) => row !== null)).toBe(true);
 		}
 	}
-	expect(half.meta.rows_read).toBeGreaterThan(0);
-	expect(full.meta.rows_read).toBeLessThan(half.meta.rows_read * 2.5);
+	expect(half.rowsRead).toBeGreaterThan(0);
+	expect(full.rowsRead).toBeLessThan(half.rowsRead * 2.5);
 });
 
 it.each([0, 501])(
-	"native combined evidence preserves empty or overflow markers with %i controllers",
+	"native evidence reads keep empty or overflowing categories visible with %i controllers",
 	async (count) => {
 		// Arrange
 		await seedControllers(count);
 		// Act
-		const { results } = await capture();
+		const { rows } = await capture();
 		// Assert: overflow remains visible to the caller rather than truncating at the accepted 500 rows.
 		for (const category of ["discovery", "controllers"]) {
-			const rows = results.filter((row) => row.category === category);
-			expect(rows).toHaveLength(Math.max(1, count));
-			expect(rows.every((row) => row.row_count === count)).toBe(true);
-			expect(rows.every((row) => (row.row === null) === (count === 0))).toBe(true);
+			expect(rows[category]).toHaveLength(count);
+			expect(rows[category]?.every((row) => row !== null)).toBe(true);
 		}
 	},
 );

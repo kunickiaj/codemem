@@ -13,6 +13,7 @@ import {
 	captureAuthLinkSigner,
 	isHash,
 } from "./coordinator-auth-link-input.js";
+import { readAfterGuards } from "./coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence.js";
 import {
 	BYTE_LIMIT,
@@ -32,6 +33,8 @@ import {
 
 type ResolvedOwnerBackend = AuthLinkBackend & {
 	all<T>(statement: AuthLinkStatement): Promise<T[]>;
+	/** The final read runs behind the evidence guards in one atomic read batch. */
+	readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]>;
 };
 interface SafeProfile {
 	displayName?: string;
@@ -275,16 +278,15 @@ export class ResolvedAccountOwnerStatusOperations {
 				actualSigner: signer,
 			});
 			if (source.kind !== "verified_controller_source") continue;
-			const row = await this.backend.first<ResolvedOwnerProfileRow>(
-				resolvedOwnerProfileQuery({
-					signer,
-					config,
-					resolution,
-					keyId,
-					recheck: evidence.prepareAtomicRecheck(collected.recheckSnapshot),
-				}),
+			// Changed evidence leaves no row, as the old query's evidence join did.
+			const guards = evidence.recheckGuards(collected.recheckSnapshot);
+			if (!guards) return projectStatus(base, null, owner, config.issuer);
+			const read = await readAfterGuards<ResolvedOwnerProfileRow>(
+				this.backend,
+				guards,
+				resolvedOwnerProfileQuery({ signer, config, resolution, keyId }),
 			);
-			return projectStatus(base, row, owner, config.issuer);
+			return projectStatus(base, read.changed ? null : read.row, owner, config.issuer);
 		}
 		return base;
 	}

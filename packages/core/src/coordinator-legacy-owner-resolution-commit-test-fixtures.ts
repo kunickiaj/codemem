@@ -10,6 +10,7 @@ import type {
 } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import type { AtomicReader } from "./coordinator-auth-read-set.js";
 import { type Backend, review, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { CoordinatorDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
@@ -64,12 +65,29 @@ function d1Changes(row: unknown): number {
 	return meta.changes;
 }
 
-function evidenceBackendFor(f: LinkFixture, backend: AuthLinkBackend) {
+function evidenceBackendFor(f: LinkFixture, backend: AuthLinkBackend & AtomicReader) {
 	return {
 		first: backend.first,
+		readBatch: backend.readBatch,
 		async all<T>({ sql, values }: AuthLinkStatement): Promise<T[]> {
 			return f.db.prepare(sql).all(...values) as T[];
 		},
+	};
+}
+
+/** Both stores' backends read a set of statements together, as one snapshot. */
+function fixtureReadBatch(f: LinkFixture, kind: Backend, d1: ReturnType<typeof sqliteD1>) {
+	return async <T>(statements: AuthLinkStatement[]): Promise<T[][]> => {
+		if (kind === "D1") {
+			if (!d1.batch) throw new Error("fixture D1 batch unavailable");
+			const results = await d1.batch(
+				statements.map(({ sql, values }) => d1.prepare(sql).bind(...values)),
+			);
+			return results.map((result) => ((result as { results?: T[] }).results ?? []) as T[]);
+		}
+		return f.db.transaction(() =>
+			statements.map(({ sql, values }) => f.db.prepare(sql).all(...values) as T[]),
+		)();
 	};
 }
 
@@ -82,7 +100,7 @@ export function backendFor(f: LinkFixture, kind: Backend) {
 	} = {};
 	const d1 = sqliteD1(f.db);
 	let batches = 0;
-	const backend: AuthLinkBackend = {
+	const backend: AuthLinkBackend & AtomicReader = {
 		async first<T>(statement: AuthLinkStatement): Promise<T | null> {
 			hooks.beforeFirst?.(statement);
 			if (kind === "D1")
@@ -95,6 +113,7 @@ export function backendFor(f: LinkFixture, kind: Backend) {
 		async run({ sql, values }) {
 			return f.db.prepare(sql).run(...values).changes;
 		},
+		readBatch: fixtureReadBatch(f, kind, d1),
 		async batch(statements) {
 			batches++;
 			hooks.beforeBatch?.();
@@ -241,6 +260,7 @@ async function reviewedOwnershipEvidenceDigest(
 			async all<T>({ sql, values }: AuthLinkStatement): Promise<T[]> {
 				return f.db.prepare(sql).all(...values) as T[];
 			},
+			readBatch: fixtureReadBatch(f, "SQLite", sqliteD1(f.db)),
 		},
 		f.cfg,
 	);

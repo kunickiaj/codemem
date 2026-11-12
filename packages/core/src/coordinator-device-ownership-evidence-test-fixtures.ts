@@ -1,6 +1,7 @@
 import { it } from "vitest";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { cfg, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { type AtomicReader, guardsHold } from "./coordinator-auth-read-set.js";
 import {
 	type Backend,
 	enroll,
@@ -64,6 +65,19 @@ export function evidenceBackend(f: Fixture, backend: Backend) {
 				);
 			}
 			return f.db.prepare(statement.sql).all(...statement.values) as T[];
+		},
+		/** Both stores' backends read a set of statements together, as one snapshot. */
+		async readBatch<T>(statements: AuthLinkStatement[]): Promise<T[][]> {
+			if (backend === "D1") {
+				if (!d1.batch) throw new Error("fixture D1 batch unavailable");
+				const results = await d1.batch(
+					statements.map(({ sql, values }) => d1.prepare(sql).bind(...values)),
+				);
+				return results.map((result) => ((result as { results?: T[] }).results ?? []) as T[]);
+			}
+			return f.db.transaction(() =>
+				statements.map(({ sql, values }) => f.db.prepare(sql).all(...values) as T[]),
+			)();
 		},
 	};
 }
@@ -244,4 +258,15 @@ export function sourceRef(row: ReturnType<typeof controller>) {
 		reviewed_weak_labels_json: "[]",
 		created_at: "2026-10-22T00:00:00.000Z",
 	};
+}
+
+/**
+ * Runs a capture's recheck guards together and reports them as the old atomic recheck
+ * did: 1 while every read still holds, 0 once one changed or for an unknown capture.
+ */
+export async function recheckMatches(
+	db: AtomicReader,
+	guards: AuthLinkStatement[] | null,
+): Promise<{ matches: 0 | 1 }> {
+	return { matches: guards !== null && (await guardsHold(db, guards)) ? 1 : 0 };
 }

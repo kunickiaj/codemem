@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readConnectionSchemaState } from "../../core/src/coordinator-account-connection-schema.js";
 import type { CoordinatorAuthControllerReviewInput } from "../../core/src/coordinator-auth-controller.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
+import { guardsHold } from "../../core/src/coordinator-auth-read-set.js";
 import { CoordinatorDeviceOwnershipEvidence } from "../../core/src/coordinator-device-ownership-evidence.js";
 import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
 import {
@@ -135,6 +136,12 @@ async function setup(options: { weakCurrent?: boolean } = {}) {
 		async run(statement) {
 			return (await prepare(statement).run()).meta.changes;
 		},
+		// The D1 store reads a set of statements in one native batch, as one snapshot.
+		async readBatch<T>(statements: AuthLinkStatement[]) {
+			return (await db.batch(statements.map(prepare))).map(
+				(result) => (result.results ?? []) as T[],
+			);
+		},
 		async batch(statements) {
 			diagnostics.batches++;
 			await hooks.beforeBatch?.();
@@ -169,6 +176,7 @@ async function setup(options: { weakCurrent?: boolean } = {}) {
 	const evidence = new CoordinatorDeviceOwnershipEvidence(
 		{
 			first: backend.first,
+			readBatch: backend.readBatch,
 			async all<T>(statement: AuthLinkStatement) {
 				return (await prepare(statement).all<T>()).results;
 			},
@@ -463,7 +471,7 @@ it("native valid unrelated Unicode/junk discovery candidate preserves the review
 	});
 	if (originalCollection.kind !== "collected")
 		throw new Error("native original evidence unavailable");
-	const originalAtomic = f.evidence.prepareAtomicRecheck(originalCollection.recheckSnapshot);
+	const originalAtomic = f.evidence.recheckGuards(originalCollection.recheckSnapshot);
 	const other = laptop();
 	const publicKey = `\u2003${other.publicKey.replace(" ", "\u00a0!")}\u2003`;
 	const otherKeyId = await ed25519KeyIdForRevocation(publicKey);
@@ -489,7 +497,10 @@ it("native valid unrelated Unicode/junk discovery candidate preserves the review
 	});
 	if (collected.kind !== "collected") throw new Error("native unrelated fixture unavailable");
 	const freshDigest = await f.evidence.reviewedEvidenceDigest(collected.recheckSnapshot);
-	const oldAtomicAfterInvite = await f.backend.first(originalAtomic);
+	// The original capture's guards, reported as the old atomic predicate.
+	const oldAtomicAfterInvite = {
+		matches: originalAtomic !== null && (await guardsHold(f.backend, originalAtomic)) ? 1 : 0,
+	};
 	// Act: the original confirmation must still work with the newly collected atomic snapshot.
 	const result = await commit(f, review);
 	// Assert: candidate discovery is not ownership and does not churn human confirmation.
@@ -700,6 +711,31 @@ it.each([
 		expect(await snapshot()).toEqual(injected);
 	},
 );
+
+it("native ownership binding added before the batch aborts it through the evidence guards", async () => {
+	// Arrange: only the reviewed ownership evidence covers bindings; the owner checks do not.
+	const f = await setup();
+	const review = await buildReview(f);
+	let injected: Snapshot | undefined;
+	f.hooks.beforeBatch = async () => {
+		await exec(
+			`INSERT INTO coordinator_device_ownership_bindings
+			(device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
+			VALUES (?,?,'identity-b',?,'raced-binding','owner_enrollment','raced-source','raced')`,
+			f.signer.deviceId,
+			"e".repeat(64),
+			config.coordinatorId,
+		);
+		injected = await snapshot();
+	};
+	// Act
+	const pending = commit(f, review);
+	// Assert: the native batch refused before any receipt was written.
+	await expect(pending).rejects.toThrow(/outcome is unavailable/u);
+	expect(f.diagnostics.batches).toBe(1);
+	expect(String(f.diagnostics.error)).toMatch(/auth_snapshot_changed/u);
+	expect(await snapshot()).toEqual(injected);
+});
 
 it.each(receipts)(
 	"native zero-row %s winner forces checked rollback and preserves old source",
