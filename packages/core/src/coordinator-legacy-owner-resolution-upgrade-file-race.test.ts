@@ -4,10 +4,8 @@ import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import {
-	applyAccountConnectionSchema,
-	readConnectionSchemaState,
-} from "./coordinator-account-connection-schema.js";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { readLegacyOwnerResolutionSchemaState } from "./coordinator-legacy-owner-resolution-metadata.js";
 import { upgradeCoordinatorOwnerResolutionSchemaFile } from "./coordinator-legacy-owner-resolution-upgrade.js";
@@ -86,7 +84,7 @@ async function fixture(name: string) {
 			publicKey: `synthetic-key-${name}`,
 			fingerprint: name.repeat(64),
 		});
-		await applyAccountConnectionSchema(backend(store.db));
+		await useCurrentAccountSchema(backend(store.db));
 		expect(await readConnectionSchemaState(backend(store.db))).toBe("ready");
 		expect(await readLegacyOwnerResolutionSchemaState(backend(store.db))).toBe("missing");
 		// Close these synthetic fixtures without WAL companions before renaming their main files.

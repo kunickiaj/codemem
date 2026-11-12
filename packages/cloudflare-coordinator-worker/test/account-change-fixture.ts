@@ -6,7 +6,7 @@ import {
 	seedEnrollmentSql,
 } from "./device-claim-eligibility-fixture.js";
 import { AccountChangeOperations } from "../../core/src/coordinator-account-change.js";
-import { applyAccountConnectionSchema } from '../../core/src/coordinator-account-connection-schema.js';
+import { useCurrentAccountSchema } from '../../core/src/coordinator-account-schema-test-fixtures.js';
 import type { AuthLinkBackend } from "../../core/src/coordinator-auth-link.js";
 import { authDeviceClaimProvenanceSql } from "../../core/src/coordinator-auth-link-provenance.js";
 import type { CoordinatorAuthControllerStore } from "../../core/src/coordinator-auth-controller.js";
@@ -144,7 +144,7 @@ export async function changeFixture(
 	const exec = await enrollFirst(store, backend, authority);
 	await produceBirth(store, backend, authority);
 	await beforeConnectionInstall?.();
-	await applyAccountConnectionSchema(backend);
+	await useCurrentAccountSchema(backend);
 	const clock = { now: NOW + 100 };
 	const operations = new AccountChangeOperations(backend, () => clock.now);
 	async function prepare(

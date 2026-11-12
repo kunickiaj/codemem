@@ -12,10 +12,9 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
-import {
-	applyAccountConnectionSchema,
-	readConnectionSchemaState,
-} from "./coordinator-account-connection-schema.js";
+import { readConnectionSchemaState } from "./coordinator-account-connection-schema.js";
+import { createV2CoordinatorFile } from "./coordinator-account-schema-sqlite-test-fixtures.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { readLegacyOwnerResolutionSchemaState } from "./coordinator-legacy-owner-resolution-metadata.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "./coordinator-legacy-owner-resolution-schema.js";
@@ -45,9 +44,11 @@ function backend(db: Database.Database): AuthLinkBackend {
 	};
 }
 
+/** A coordinator file on the current account schema, or one an earlier release left on V2. */
 async function fixture(current = true): Promise<string> {
 	const path = join(dir, "coordinator.sqlite");
-	const store = new BetterSqliteCoordinatorStore(path);
+	if (!current) createV2CoordinatorFile(path);
+	const store = new BetterSqliteCoordinatorStore(path, { existingOnly: !current });
 	try {
 		await store.createGroup("synthetic-group");
 		await store.enrollDevice("synthetic-group", {
@@ -55,7 +56,7 @@ async function fixture(current = true): Promise<string> {
 			publicKey: "synthetic public key\r\nexact bytes",
 			fingerprint: "a".repeat(64),
 		});
-		if (current) await applyAccountConnectionSchema(backend(store.db));
+		if (current) await useCurrentAccountSchema(backend(store.db));
 	} finally {
 		await store.close();
 	}

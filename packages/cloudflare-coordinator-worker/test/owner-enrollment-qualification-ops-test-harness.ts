@@ -1,8 +1,6 @@
 import { expect, it } from "vitest";
-import {
-	applyAccountConnectionSchema,
-	readConnectionSchemaState,
-} from "../../core/src/coordinator-account-connection-schema.js";
+import { readConnectionSchemaState } from "../../core/src/coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "../../core/src/coordinator-account-schema-test-fixtures.js";
 import { CONNECTION_BIRTH_COLUMNS } from "../../core/src/coordinator-account-connection-storage.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
 import { authDeviceClaimProvenanceSql } from "../../core/src/coordinator-auth-link-provenance.js";
@@ -65,7 +63,7 @@ async function seedQualificationSource(db: QualificationOpsDatabase) {
  VALUES ('${config.coordinatorId}','claim-a','${config.issuer}','private-claim-subject','identity-a','completed-attempt',NULL,'${config.revision}',${NOW},NULL,'device_claim','claim-a')`);
 	await exec(`INSERT INTO coordinator_auth_link_audit_log (coordinator_id,link_id,attempt_id,action,identity_id,group_id,device_id,fingerprint,controller_attestation_id,auth_config_revision,created_at_ms,authority_kind,device_claim_id)
  VALUES ('${config.coordinatorId}','claim-a','completed-attempt','link_created','identity-a','group-a','device-a','${input.signer.fingerprint}',NULL,'${config.revision}',${NOW},'device_claim','claim-a')`);
-	await applyAccountConnectionSchema(db.backend);
+	await useCurrentAccountSchema(db.backend);
 	expect(await readConnectionSchemaState(db.backend)).toBe("ready");
 	// Exercise the real proof validator so a false fixture cannot make denials pass.
 	expect(

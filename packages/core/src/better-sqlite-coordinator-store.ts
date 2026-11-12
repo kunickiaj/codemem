@@ -688,7 +688,16 @@ function initializeOptionalAuthSchema(db: DatabaseType): void {
 	db.exec(AUTH_LINK_PROFILE_SCHEMA_SQL);
 	initializeAuthBrowserSchema(db);
 }
+/** Every startup: the schema a coordinator opens with. */
 function initializeSchema(db: DatabaseType): void {
+	initializeBaseSchema(db);
+}
+
+/**
+ * The schema earlier releases created on open: V2 authentication without account
+ * management. Exported for tests that build databases those releases left behind.
+ */
+export function initializeBaseSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
 	initializeDeviceLedgerSchemas(db);
 	initializeOptionalAuthSchema(db);

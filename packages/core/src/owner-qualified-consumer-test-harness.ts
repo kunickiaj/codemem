@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { applyAccountConnectionSchema } from "./coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { issueBrowserCookie } from "./coordinator-browser-credential.js";
 import { importBrowserCsrfKey, issueBrowserCsrfToken } from "./coordinator-browser-csrf.js";
@@ -94,7 +94,7 @@ export interface QualifiedFixture extends QualifiedDatabase {
 export async function qualifiedFixture(db: QualifiedDatabase): Promise<QualifiedFixture> {
 	const traced = traceBackend(db.backend);
 	db = { ...db, backend: traced.backend };
-	await applyAccountConnectionSchema(db.backend);
+	await useCurrentAccountSchema(db.backend);
 	const source = await ordinaryClaim(db);
 	const reviewed = await reviewClaim(db, source);
 	const composition = await composeConsumer(db);

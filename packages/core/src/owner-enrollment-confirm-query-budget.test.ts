@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { applyAccountConnectionSchema } from "./coordinator-account-connection-schema.js";
+import { useCurrentAccountSchema } from "./coordinator-account-schema-test-fixtures.js";
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { withCoordinatorAuthSchema } from "./coordinator-auth-schema.js";
@@ -27,9 +27,12 @@ let f: ReturnType<typeof ownerStartFixture>;
 let executions: string[];
 let backend: AuthLinkBackend;
 beforeEach(() => {
-	f = ownerStartFixture();
 	vi.spyOn(Date, "now").mockReturnValue(NOW);
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("live network forbidden"));
+	open(ownerStartFixture());
+});
+function open(fixture: ReturnType<typeof ownerStartFixture>) {
+	f = fixture;
 	executions = [];
 	const record = (sql: string) => executions.push(sql);
 	const d1 = sqliteD1(f.db, { beforeRead: record, beforeWrite: record });
@@ -44,7 +47,7 @@ beforeEach(() => {
 		},
 		batch: (statements) => batch(statements.map(statement)),
 	});
-});
+}
 afterEach(() => {
 	try {
 		expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -107,7 +110,12 @@ it.each(["v2-null-pin", "ready-null-pin", "legacy-absent-pin"])(
 	"confirms %s without optional qualification probes",
 	async (schema) => {
 		// Arrange: actual D1 execution hooks count first/all/run invocations, never prepare calls.
-		if (schema === "ready-null-pin") await applyAccountConnectionSchema(nativeBackend(f.db));
+		if (schema === "ready-null-pin") await useCurrentAccountSchema(nativeBackend(f.db));
+		else {
+			// V2 and legacy pins are coordinators an earlier release left without account management.
+			f.close();
+			open(ownerStartFixture({ accountSchema: "v2" }));
+		}
 		if (schema === "legacy-absent-pin") {
 			f.db.exec(`DROP TABLE ${ATTEMPTS}`);
 			for (const name of [
