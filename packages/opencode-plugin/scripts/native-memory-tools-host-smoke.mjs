@@ -664,6 +664,7 @@ const SCENARIOS = {
 	// Alpha searches again once beta's memory exists, so alpha's isolation
 	// check has a foreign-project memory to exclude.
 	"alpha-after-beta": { steps: [searchStep] },
+	nested: { steps: [] },
 	// Step 1 fails host-side schema validation; step 2 passes the schema and
 	// fails in the MCP handler, so it exercises the plugin's Tool.Error path.
 	"bad-args": {
@@ -742,8 +743,7 @@ function assertDatabase(dbPath, repos, sessions) {
 	}
 }
 
-// Informational: which repo each captured session was attributed to, and
-// whether one prompt was captured more than once. Not a native-tools check.
+// Capture ownership is a hard privacy gate alongside native-tool scope isolation.
 function captureAttribution(dbPath, sessionDirs) {
 	const db = openDb(dbPath);
 	try {
@@ -763,6 +763,7 @@ function captureAttribution(dbPath, sessionDirs) {
 				(row) => row.expectedCwd && row.cwd !== row.expectedCwd,
 			),
 			duplicatePrompts,
+			conversationCounts: conversationEventCounts(db, Object.keys(sessionDirs)),
 		};
 	} finally {
 		db.close();
@@ -860,6 +861,15 @@ async function runMainHost({ hostEnv, repos }) {
 		await timed("bad_args_session", () =>
 			promptAndWait(host, alphaSession, repos.alpha, "smoke-scenario=bad-args"),
 		);
+		const nested = join(repos.alpha, "nested");
+		mkdirSync(nested);
+		await waitForPlugin(host, nested);
+		const nestedSession = await createSession(host, nested);
+		// Captured metadata uses the working-copy root, while plugin ownership uses
+		// the exact session location so nested sessions retain their own runtime.
+		evidence.sessionDirs[nestedSession] = repos.alpha;
+		evidence.sessions.nested = nestedSession;
+		await timed("nested_session", () => promptAndWait(host, nestedSession, nested, "smoke-scenario=nested"));
 		const descendants = descendantsOf(host.child.pid);
 		const mcpChildren = descendants.filter((row) => isCodememMcpProcess(row.command));
 		check("b.no_codemem_mcp_descendants", mcpChildren.length === 0, { mcpChildren, descendants });
@@ -1078,6 +1088,17 @@ async function main() {
 		...mainEvidence.sessionDirs,
 		...(precedence.session ? { [precedence.session]: repos.gamma } : {}),
 	});
+	check("c.capture_session_ownership", attribution.misattributedSessions.length === 0, attribution);
+	check("c.capture_no_duplicate_prompts", attribution.duplicatePrompts.length === 0, attribution);
+	for (const [name, session, count] of [
+		["alpha", mainEvidence.sessions.alpha, 3],
+		["beta", mainEvidence.sessions.beta, 1],
+		["nested", mainEvidence.sessions.nested, 1],
+	]) {
+		const actual = attribution.conversationCounts[session];
+		check(`c.${name}_exactly_once_capture`, actual?.prompts === count && actual?.assistant === count,
+			{ expected: count, actual });
+	}
 	await stopTracked(fixture.viewer.child);
 
 	const failed = checks.filter((entry) => !entry.pass);
@@ -1095,7 +1116,7 @@ async function main() {
 		},
 		retrieval,
 		capture,
-		captureAttributionWarnings: attribution,
+		captureAttribution: attribution,
 		precedence: precedenceSummary(precedence, readJsonLines(observerReport)),
 		codememMcpDescendants: mainEvidence.descendantCommands.filter(isCodememMcpProcess),
 		timingsMs: { ...timings, total: Date.now() - startedAt },

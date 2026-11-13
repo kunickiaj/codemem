@@ -350,6 +350,8 @@ function createV2Context(rows) {
 				},
 			},
 			session: {
+				get: async ({ sessionID }) => ({ id: sessionID, projectID: "packed-v2",
+					location: { directory: process.cwd() } }),
 				hook: async (name, callback) => {
 					assert(name === "context", "packed V2 setup registered an auxiliary session hook");
 					contextHook = callback;

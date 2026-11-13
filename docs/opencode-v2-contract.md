@@ -87,6 +87,32 @@ pinned release remains unverified.
 - The promise-plugin context exposes neither logging nor toast methods, so the V2
   adapter retains local diagnostics and treats user notifications as unavailable.
 
+## Session capture isolation
+
+OpenCode subscriptions deliver events across projects. Before translating an event,
+capturing a tool result, or injecting recall, Codemem reads `session.get` and checks
+the session ID, project ID, exact directory, and optional workspace ID against the
+plugin instance. A publication location can reject a foreign event early but cannot
+authorize it alone. Positive ownership decisions are never cached. Missing,
+deleted, invalid, or unreadable sessions skip capture and recall with the fixed
+`v2_session_ownership_unavailable` diagnostic, without recording content.
+
+Delegated sessions use their own location rather than inheriting their parent's.
+Nested directories retain separate plugin registrations even when they share a
+working-copy root. Capture metadata continues to use that root.
+
+Each raw stream has one extraction scope. Ingestion rejects V2 events that would
+change its recorded project or working-copy root, including conflicts inside one
+batch. Ingestion skips the conflicting stream's new events, records the count in
+`skipped_conflict`, and logs a content-free warning. Existing events and metadata
+remain intact, and unrelated streams continue through the queue. After a move between
+projects or worktrees, start a new session for capture in the destination. This
+check does not rewrite history or recover earlier misattributed captures.
+
+The native-memory-tools host smoke treats wrong attribution and duplicate prompts
+as failures. It also verifies exact prompt and assistant counts for two projects
+and a nested directory with an isolated provider and database.
+
 ## Command capture
 
 During adapter projection, a validated OpenCode `tool_result` with retained V2

@@ -80,6 +80,84 @@ afterEach(() => {
 	for (const path of cleanupPaths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
+describe("OpenCode V2 stream attribution", () => {
+	it.each(["cwd", "project"])(
+		"rejects a moved session's changed %s without relabeling retained events",
+		(field) => {
+			const store = createStore();
+			const original = {
+				source: "opencode",
+				session_id: "moving-session",
+				event_id: "first",
+				event_type: "user_prompt",
+				host_generation: "v2",
+				cwd: "/synthetic/private",
+				project: "private",
+				payload: { prompt_text: "Synthetic private finding" },
+			};
+			try {
+				ingestRawEvents(store, original);
+				const moved = {
+					...original,
+					event_id: "second",
+					[field]: field === "cwd" ? "/synthetic/shared" : "shared",
+				};
+				expect(ingestRawEvents(store, moved)).toMatchObject({
+					inserted: 0,
+					skipped: 1,
+					received: 1,
+				});
+				expect(
+					store.db
+						.prepare("SELECT skipped_conflict FROM raw_event_ingest_stats WHERE id = 1")
+						.get(),
+				).toEqual({ skipped_conflict: 1 });
+				expect(persistedRows(store)).toHaveLength(1);
+				expect(
+					store.db
+						.prepare("SELECT cwd, project FROM raw_event_sessions WHERE stream_id = ?")
+						.get("moving-session"),
+				).toEqual({ cwd: original.cwd, project: original.project });
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each(["v2", undefined])(
+		"skips conflicting locations within a V2 batch (first host=%s)",
+		(firstHost) => {
+			const store = createStore();
+			const event = {
+				session_id: "moving-session",
+				event_type: "user_prompt",
+				host_generation: "v2",
+				payload: { prompt_text: "Synthetic finding" },
+			};
+			try {
+				expect(
+					ingestRawEvents(store, {
+						source: "opencode",
+						events: [
+							{
+								...event,
+								host_generation: firstHost,
+								event_id: "first",
+								cwd: "/synthetic/private",
+								project: "private",
+							},
+							{ ...event, event_id: "second", cwd: "/synthetic/shared", project: "shared" },
+						],
+					}),
+				).toMatchObject({ inserted: 0, skipped: 2, received: 2 });
+				expect(persistedRows(store)).toHaveLength(0);
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
 describe("ingestRawEvents schema compatibility", () => {
 	it("retains V2 host provenance without changing the stream source", () => {
 		const dbPath = createDbPath();

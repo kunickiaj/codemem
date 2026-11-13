@@ -523,6 +523,58 @@ describe("queued raw-event validation", () => {
 	});
 });
 
+describe("viewer raw-event attribution conflicts", () => {
+	it("drains unrelated events after a V2 attribution conflict without relabeling history", async () => {
+		const root = testDirectory();
+		const dbPath = join(root, "mem.sqlite");
+		const store = new MemoryStore(dbPath);
+		const onDrainError = vi.fn();
+		const queue = createViewerRawEventInbox({ dbPath, homeDir: root, onDrainError });
+		const event = {
+			source: "opencode",
+			session_id: "old-session",
+			event_id: "original",
+			event_type: "user_prompt",
+			host_generation: "v2",
+			cwd: "/synthetic/private",
+			project: "private",
+			payload: { prompt_text: "Synthetic private finding" },
+		};
+		try {
+			ingestRawEvents(store, event);
+			await queue.inbox.enqueue({
+				...event,
+				event_id: "moved",
+				cwd: "/synthetic/shared",
+				project: "shared",
+			});
+			await queue.inbox.enqueue({
+				...event,
+				session_id: "unrelated-session",
+				event_id: "unrelated",
+			});
+			queue.inbox.start();
+			await vi.waitFor(async () => expect((await queue.inbox.status()).pending).toBe(0));
+			expect(onDrainError).not.toHaveBeenCalled();
+			expect(store.db.prepare("SELECT event_id FROM raw_events ORDER BY event_id").all()).toEqual([
+				{ event_id: "original" },
+				{ event_id: "unrelated" },
+			]);
+			expect(
+				store.db
+					.prepare("SELECT cwd, project FROM raw_event_sessions WHERE stream_id = 'old-session'")
+					.get(),
+			).toEqual({ cwd: event.cwd, project: event.project });
+			expect(
+				store.db.prepare("SELECT skipped_conflict FROM raw_event_ingest_stats WHERE id = 1").get(),
+			).toEqual({ skipped_conflict: 1 });
+		} finally {
+			await queue.stop();
+			store.close();
+		}
+	});
+});
+
 describe("viewer raw-event boundary drain", () => {
 	it("flushes an explicit Pi boundary after earlier queued events", async () => {
 		const root = testDirectory();

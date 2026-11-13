@@ -83,6 +83,12 @@ const claimPluginRegistration = (cwd) => {
     }
   };
 };
+
+const registrationDirectoryFor = ({ directory, cwd, hostGeneration }) => {
+  // V2 loads plugins per location, including nested locations in one worktree.
+  if (hostGeneration === "v2" && directory) return directory;
+  return cwd;
+};
 // Release an unread response body without surfacing cancellation failures.
 const discardResponseBody = (response) => {
   try {
@@ -2418,7 +2424,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   if (pluginIgnored) {
     return null;
   }
-  const releasePluginRegistration = claimPluginRegistration(cwd);
+  const releasePluginRegistration = claimPluginRegistration(registrationDirectoryFor({ directory, cwd, hostGeneration }));
   if (!releasePluginRegistration) {
     await log("warn", "codemem duplicate plugin registration skipped", {
       next_action: "remove either the configured npm plugin or the project-local Codemem plugin",

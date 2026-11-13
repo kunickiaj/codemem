@@ -62,6 +62,10 @@ On OpenCode 2 the plugin captures user and assistant messages, terminal usage,
 tool results, and session lifecycle events, and exposes the same `mem-status`,
 `mem-recent`, and `mem-stats` tools. Captured V2 `shell` command results use the
 same observer filtering, privacy sanitization, and output limits as `bash` results.
+Each V2 plugin instance captures only sessions whose current project and exact
+location match its own. Unavailable ownership checks skip capture and recall.
+Start a new session when moving between projects. Codemem rejects changed capture
+attribution rather than assigning earlier events to the new project's scope.
 Automatic recall runs through
 `session.context`: the latest user-message ID is required, and a missing or blank
 ID skips recall safely. Each identified turn performs one fresh retrieval; retries

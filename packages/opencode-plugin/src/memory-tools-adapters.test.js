@@ -292,7 +292,14 @@ function makeV2Context({ mcpServers = [], mcpError } = {}) {
 				await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
 			},
 		},
-		session: { hook: vi.fn(async () => ({ dispose: async () => undefined })) },
+		session: {
+			get: vi.fn(async ({ sessionID }) => ({
+				id: sessionID,
+				projectID: "project",
+				location: { directory: "/repo/worktree/nested" },
+			})),
+			hook: vi.fn(async () => ({ dispose: async () => undefined })),
+		},
 		tool: {
 			hook: vi.fn(async (_name, callback) => {
 				hooks.toolAfter = callback;
