@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.49.0-beta.5] - 2026-11-13
+
+### Fixed
+
+- OpenCode 2 captures each conversation once in the correct project when one host serves multiple projects. Sessions can move between projects and worktrees while earlier activity keeps its original project and sharing scope. ([#2731])
+- Exhausted capture batches containing only brief acknowledgements complete without false failure warnings. ([#2730])
+- Capture failures include more detail about why generated memories were rejected. Existing failed batches remain available for review and explicit recovery. ([#2730])
+
 ## [0.49.0-beta.2] - 2026-11-10
 
 ### Added
@@ -321,7 +329,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.2...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...HEAD
+[0.49.0-beta.5]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.4...v0.49.0-beta.5
 [0.49.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...v0.49.0-beta.2
 [0.49.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0-beta.1
 [0.48.0]: https://github.com/kunickiaj/codemem/compare/v0.47.3...v0.48.0
@@ -496,3 +505,5 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2678]: https://github.com/kunickiaj/codemem/pull/2678
 [#2679]: https://github.com/kunickiaj/codemem/pull/2679
 [#2680]: https://github.com/kunickiaj/codemem/pull/2680
+[#2730]: https://github.com/kunickiaj/codemem/pull/2730
+[#2731]: https://github.com/kunickiaj/codemem/pull/2731
