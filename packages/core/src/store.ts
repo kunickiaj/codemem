@@ -1329,12 +1329,12 @@ export class MemoryStore {
 
 		let created: CreatedMemory;
 		try {
-			created = this.db.transaction(() => {
-				const importKey = this.memoryCreationImportKey(metadata, metaPayload);
-				metaPayload.import_key = importKey;
-				const insertedRows = this.d
-					.insert(schema.memoryItems)
-					.values({
+			// Take the write lock before source-identity reads to prevent a stale snapshot at the first insert.
+			created = this.db
+				.transaction(() => {
+					const importKey = this.memoryCreationImportKey(metadata, metaPayload);
+					metaPayload.import_key = importKey;
+					const id = this.insertMemoryRow({
 						session_id: sessionId,
 						kind: validKind,
 						title: safeTitle,
@@ -1367,19 +1367,15 @@ export class MemoryStore {
 						import_key: importKey,
 						scope_id: scopeId,
 						project: sessionProject,
-					})
-					.returning({ id: schema.memoryItems.id })
-					.all();
+					});
 
-				const id = insertedRows[0]?.id;
-				if (id == null) throw new Error("memory insert returned no id");
+					populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
 
-				populateMemoryRefs(this.db, id, filesRead, filesModified, concepts);
+					this.recordNewMemoryWrite(id, metadata, options);
 
-				this.recordNewMemoryWrite(id, metadata, options);
-
-				return { memoryId: id, importKey };
-			})();
+					return { memoryId: id, importKey };
+				})
+				.immediate();
 		} catch (error) {
 			if (!isSameSessionDedupConstraintError(error)) throw error;
 			const existingSameSessionHit = this.findExistingDuplicateMemory(
@@ -1410,6 +1406,19 @@ export class MemoryStore {
 		}
 
 		return created.memoryId;
+	}
+
+	private insertMemoryRow(values: typeof schema.memoryItems.$inferInsert): number {
+		const rows = this.d
+			.insert(schema.memoryItems)
+			.values(values)
+			.returning({
+				id: schema.memoryItems.id,
+			})
+			.all();
+		const id = rows[0]?.id;
+		if (id == null) throw new Error("memory insert returned no id");
+		return id;
 	}
 
 	private scheduleRememberVectors(
