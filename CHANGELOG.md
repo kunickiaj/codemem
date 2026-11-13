@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [0.49.0-beta.6] - 2026-11-13
+
 ### Fixed
 
-- The Viewer's **Sync now** action refreshes stale Space permissions before choosing relay, so manual retries do not have to wait for the next background refresh.
+- The Viewer's **Sync now** action refreshes stale Space permissions before choosing relay, so manual retries do not have to wait for the next background refresh. A failed refresh is attempted only once per all-peers request. ([#2735])
 
 ## [0.49.0-beta.5] - 2026-11-13
 
@@ -333,7 +335,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...HEAD
+[0.49.0-beta.6]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...v0.49.0-beta.6
 [0.49.0-beta.5]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.4...v0.49.0-beta.5
 [0.49.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...v0.49.0-beta.2
 [0.49.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0-beta.1
@@ -511,3 +514,4 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2680]: https://github.com/kunickiaj/codemem/pull/2680
 [#2730]: https://github.com/kunickiaj/codemem/pull/2730
 [#2731]: https://github.com/kunickiaj/codemem/pull/2731
+[#2735]: https://github.com/kunickiaj/codemem/pull/2735
