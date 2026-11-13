@@ -65,6 +65,31 @@ type SqliteStatement = {
 	raw: (value: boolean) => { all: (...values: unknown[]) => unknown[] };
 };
 
+function seedLegacyCompletionScopes(
+	db: SqliteDatabase,
+	{
+		coordinatorId,
+		projectMappings,
+	}: { coordinatorId: string; projectMappings: ReadonlyArray<{ scope_id: string }> },
+) {
+	const insertScope = db.prepare(`INSERT INTO coordinator_scopes(
+		scope_id, label, kind, authority_type, coordinator_id, group_id,
+		manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
+	) VALUES (?, ?, 'managed_project', 'coordinator', ?, 'large-group', NULL, 0, NULL, 'active', ?, ?)`);
+	// Batch fixture disk syncs to leave more of the deadline for Worker requests.
+	db.transaction(() => {
+		for (const mapping of projectMappings) {
+			insertScope.run(
+				mapping.scope_id,
+				mapping.scope_id,
+				coordinatorId,
+				"2026-09-01T00:00:00.000Z",
+				"2026-09-01T00:00:00.000Z",
+			);
+		}
+	})();
+}
+
 it("migration 0019 adds only named nonunique indexes and retains expired evidence on repeat", () => {
 	// Arrange: a disposable legacy schema with retained, unlinked evidence.
 	const db = connectCoordinator(":memory:");
@@ -974,19 +999,7 @@ describe("createCloudflareCoordinatorWorker", () => {
 				scope_id: boundedId("scope", index),
 			};
 		});
-		const insertScope = db.prepare(`INSERT INTO coordinator_scopes(
-			scope_id, label, kind, authority_type, coordinator_id, group_id,
-			manifest_issuer_device_id, membership_epoch, manifest_hash, status, created_at, updated_at
-		) VALUES (?, ?, 'managed_project', 'coordinator', ?, 'large-group', NULL, 0, NULL, 'active', ?, ?)`);
-		for (const mapping of projectMappings) {
-			insertScope.run(
-				mapping.scope_id,
-				mapping.scope_id,
-				coordinatorId,
-				"2026-09-01T00:00:00.000Z",
-				"2026-09-01T00:00:00.000Z",
-			);
-		}
+		seedLegacyCompletionScopes(db, { coordinatorId, projectMappings });
 		const manifest = {
 			version: 1,
 			coordinator_id: coordinatorId,
@@ -1020,14 +1033,16 @@ describe("createCloudflareCoordinatorWorker", () => {
 		const enrollDevice = db.prepare(`INSERT INTO enrolled_devices(
 			group_id, device_id, public_key, fingerprint, enabled, created_at
 		) VALUES ('large-group', ?, ?, ?, 1, ?)`);
-		for (const [index, decision] of manifest.device_decisions.entries()) {
-			enrollDevice.run(
-				decision.device_id,
-				keyedMemberships[index]?.publicKey,
-				decision.key_fingerprint,
-				manifest.completed_at,
-			);
-		}
+		db.transaction(() => {
+			for (const [index, decision] of manifest.device_decisions.entries()) {
+				enrollDevice.run(
+					decision.device_id,
+					keyedMemberships[index]?.publicKey,
+					decision.key_fingerprint,
+					manifest.completed_at,
+				);
+			}
+		})();
 
 		const created = await worker.fetch(
 			new Request("https://coord.example.test/v1/admin/legacy-team-completions", {
