@@ -23,6 +23,7 @@ import {
 } from "./ingest-pipeline.js";
 import {
 	extractAssistantMessages,
+	isTrivialRequest,
 	normalizeAdapterEvents,
 	normalizeEventsForSessionContext,
 } from "./ingest-transcript.js";
@@ -278,7 +279,7 @@ function handleFlushFailure(
 	throw error;
 }
 
-function isTerminalNoOutputMicrobatch(
+function isTerminalNoOutputBatch(
 	events: Record<string, unknown>[],
 	failure: {
 		errorType: string | null;
@@ -286,12 +287,28 @@ function isTerminalNoOutputMicrobatch(
 		observerErrorMessage: string | null;
 	},
 ): boolean {
-	if (events.length > TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS) return false;
 	if (failure.observerErrorCode || failure.observerErrorMessage) return false;
 	if (failure.errorType !== "RawEventObserverOutputError:no_processable_input") {
 		return false;
 	}
-	return extractAssistantMessages(normalizeAdapterEvents(events)).length === 0;
+	const normalized = normalizeAdapterEvents(events);
+	if (extractAssistantMessages(normalized).length > 0) return false;
+	if (events.length <= TERMINAL_NO_OUTPUT_MICROBATCH_MAX_EVENTS) return true;
+	// Larger ranges need positive content evidence. A filtered tool or an unknown event
+	// is not an empty acknowledgement, even when an earlier runtime reported no input.
+	return normalized.every((event, index) => {
+		const raw = events[index];
+		if (raw?._adapter != null) {
+			const adapter = extractAdapterEvent(raw);
+			if (adapter?.event_type !== "prompt") return false;
+			if (typeof (adapter.payload as Record<string, unknown>).text !== "string") return false;
+		}
+		return (
+			event.type === "user_prompt" &&
+			typeof event.prompt_text === "string" &&
+			isTrivialRequest(event.prompt_text)
+		);
+	});
 }
 
 function shouldRediagnoseLegacyNoOutputMicrobatch(
@@ -569,7 +586,7 @@ function finalizeExhaustedBatch(
 	if (shouldRediagnoseLegacyNoOutputMicrobatch(events, batch.errorType)) {
 		return { result: null, isLegacyRediagnosis: true };
 	}
-	const completedNoOp = isTerminalNoOutputMicrobatch(events, batch);
+	const completedNoOp = isTerminalNoOutputBatch(events, batch);
 	const finalized = finalizeFailedRawEventFlush(
 		store,
 		{ claim: batch.snapshot, ...stream },
