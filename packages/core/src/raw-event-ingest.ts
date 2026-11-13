@@ -38,6 +38,7 @@ export interface RawEventValidationResult {
 }
 
 interface NormalizedEvent {
+	hostSessionId: string;
 	captureContext: DelegatedBriefContext | null;
 	streamId: string;
 	eventId: string;
@@ -265,6 +266,7 @@ function normalizeEvent(
 		if (legacyEventId !== eventId) eventIdAliases.push(legacyEventId);
 	}
 	return {
+		hostSessionId: streamId,
 		streamId,
 		captureContext: normalizeCaptureContext(item.capture_context, {
 			source,
@@ -345,14 +347,34 @@ function sessionMetadataForEvents({
 	};
 }
 
-function persistStream(
+function attributedEvent(
+	event: NormalizedEvent,
+	request: NormalizedRequest,
+	{ singleHost }: { singleHost: boolean },
+): NormalizedEvent {
+	if (event.payload.codemem_host_generation !== "v2") return event;
+	const applyRequestMeta = singleHost || request.defaultStreamId === event.hostSessionId;
+	const cwd = event.cwd ?? (applyRequestMeta ? request.requestMeta.cwd : null);
+	const project = event.project ?? (applyRequestMeta ? request.requestMeta.project : null);
+	if (!cwd) return event;
+	const digest = createHash("sha256")
+		.update(JSON.stringify([event.hostSessionId, cwd, project]))
+		.digest("hex");
+	return {
+		...event,
+		cwd,
+		project,
+		startedAt: event.startedAt ?? (applyRequestMeta ? request.requestMeta.startedAt : null),
+		streamId: `opencode-v2:${digest}`,
+	};
+}
+
+function unseenStreamEvents(
 	store: RawEventIngestStore,
 	source: string,
-	streamId: string,
+	hostSessionId: string,
 	events: NormalizedEvent[],
-	request: NormalizedRequest,
-	singleStream: boolean,
-): { inserted: number; skippedDuplicate: number } {
+): { candidates: NormalizedEvent[]; skippedDuplicate: number } {
 	let skippedDuplicate = 0;
 	const seenIds = new Set<string>();
 	const uniqueCandidates = events.filter((event) => {
@@ -371,9 +393,9 @@ function persistStream(
 		const rows = store.db
 			.prepare(
 				`SELECT event_id FROM raw_events
-				 WHERE source = ? AND stream_id = ? AND event_id IN (${placeholders})`,
+				 WHERE source = ? AND opencode_session_id = ? AND event_id IN (${placeholders})`,
 			)
-			.all(source, streamId, ...eventIds) as Array<{ event_id: string | null }>;
+			.all(source, hostSessionId, ...eventIds) as Array<{ event_id: string | null }>;
 		for (const row of rows) {
 			if (row.event_id) existingIds.add(row.event_id);
 		}
@@ -382,7 +404,19 @@ function persistStream(
 		(event) => !event.eventIdAliases.some((eventId) => existingIds.has(eventId)),
 	);
 	skippedDuplicate += uniqueCandidates.length - candidates.length;
+	return { candidates, skippedDuplicate };
+}
 
+function persistStream(
+	store: RawEventIngestStore,
+	source: string,
+	streamId: string,
+	events: NormalizedEvent[],
+	request: NormalizedRequest,
+	singleStream: boolean,
+): { inserted: number; skippedDuplicate: number } {
+	const hostSessionId = events[0]?.hostSessionId ?? streamId;
+	const { candidates, skippedDuplicate } = unseenStreamEvents(store, source, hostSessionId, events);
 	const sessionRow = store.db
 		.prepare(
 			`SELECT last_received_event_seq, cwd, project, started_at AS startedAt
@@ -412,7 +446,7 @@ function persistStream(
 		insertEvent.run(
 			source,
 			streamId,
-			streamId,
+			hostSessionId,
 			event.eventId,
 			assignedSeq,
 			event.eventType,
@@ -460,7 +494,7 @@ function persistStream(
 				),
 				updated_at = excluded.updated_at`,
 		)
-		.run(source, streamId, streamId, cwd, project, startedAt, lastSeen, lastReceived, now);
+		.run(source, streamId, hostSessionId, cwd, project, startedAt, lastSeen, lastReceived, now);
 	return { inserted, skippedDuplicate };
 }
 
@@ -501,7 +535,9 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 	return store.db
 		.transaction(() => {
 			const byStream = new Map<string, NormalizedEvent[]>();
-			for (const event of normalized.events) {
+			const singleHost = new Set(normalized.events.map((event) => event.hostSessionId)).size === 1;
+			for (const input of normalized.events) {
+				const event = attributedEvent(input, normalized, { singleHost });
 				const events = byStream.get(event.streamId) ?? [];
 				events.push(event);
 				byStream.set(event.streamId, events);

@@ -11,6 +11,7 @@ import {
 } from "./memory-tools.js";
 import { createCodememRuntime } from "./runtime.js";
 import { registerV2NotificationBridge } from "./v2-notification-bridge.js";
+import { readV2SessionOwnership } from "./v2-session-location.js";
 
 const DEFAULT_EVENT_TASK_TIMEOUT_MS = 250;
 const FAILED_TOOL_ERROR = Object.freeze({
@@ -604,31 +605,59 @@ const captureRuntimeTaskWithinTimeout = async ({
   return { completed, task };
 };
 
-const consumeEvents = async (
-  context,
-  signal,
-  runtime,
-  translator,
-  { eventTaskTimeoutMs, scheduleCapture, waitForCaptureTask, waitForDiagnosticTask },
-) => {
+const CAPTURE_EVENT_TYPES = new Set([
+  "session.inbox.enqueued", "session.text.ended", "session.step.ended",
+  "session.created", "session.deleted", "session.execution.failed",
+  "session.execution.succeeded", "session.execution.interrupted",
+]);
+
+const canCaptureSession = async (context, state, options, { sessionID, location }) => {
+  const ownership = await readV2SessionOwnership(context, sessionID, {
+    location,
+    signal: state.abortController.signal,
+    timeoutMs: options.eventTaskTimeoutMs,
+  });
+  if (ownership === "unavailable" && state.active) {
+    await reportDiagnosticWithinTimeout(state.runtime,
+      V2_ADAPTER_DIAGNOSTICS.sessionOwnershipUnavailable,
+      options.waitForDiagnosticTask, options.eventTaskTimeoutMs);
+  }
+  return state.active && ownership === "owned";
+};
+
+const captureOwnedEvent = async (context, state, options, event) => {
+  if (!CAPTURE_EVENT_TYPES.has(event?.type)) return;
+  if (!(await canCaptureSession(context, state, options, {
+    sessionID: event?.data?.sessionID, location: event?.location,
+  }))) return;
+  const { runtime, translator, scheduleCapture } = state;
+  const signal = state.abortController.signal;
+  const { eventTaskTimeoutMs, waitForCaptureTask, waitForDiagnosticTask } = options;
+  for (const translated of translator.translate(event)) {
+    const capture = await captureRuntimeTaskWithinTimeout({
+      runtime,
+      run: () => runtime.handleEvent(translated),
+      scheduleCapture,
+      diagnosticCode: V2_ADAPTER_DIAGNOSTICS.eventCaptureFailed,
+      timeoutMs: eventTaskTimeoutMs,
+      waitForCaptureTask,
+      waitForDiagnosticTask,
+    });
+    if (!capture.completed) {
+      await waitForCaptureOrAbort(capture.task, signal);
+      if (signal.aborted) return;
+    }
+  }
+};
+
+const consumeEvents = async (context, state, options) => {
+  const { runtime } = state;
+  const signal = state.abortController.signal;
+  const { eventTaskTimeoutMs, waitForDiagnosticTask } = options;
   try {
     for await (const event of context.event.subscribe({ signal })) {
       if (signal.aborted) break;
-      for (const translated of translator.translate(event)) {
-        const capture = await captureRuntimeTaskWithinTimeout({
-          runtime,
-          run: () => runtime.handleEvent(translated),
-          scheduleCapture,
-          diagnosticCode: V2_ADAPTER_DIAGNOSTICS.eventCaptureFailed,
-          timeoutMs: eventTaskTimeoutMs,
-          waitForCaptureTask,
-          waitForDiagnosticTask,
-        });
-        if (!capture.completed) {
-          await waitForCaptureOrAbort(capture.task, signal);
-          if (signal.aborted) return;
-        }
-      }
+      await captureOwnedEvent(context, state, options, event);
     }
     if (!signal.aborted) {
       await reportDiagnosticWithinTimeout(
@@ -774,6 +803,7 @@ const registerContextHook = (context, state, options) =>
     try {
       await state.scheduleContext.schedule(contextScheduleKey(input), async () => {
         if (state.active) {
+          if (!(await canCaptureSession(context, state, options, { sessionID: input?.sessionID }))) return;
           await transformV2Context(state.runtime, input, { isActive: () => state.active });
         }
       });
@@ -803,6 +833,7 @@ const registerCaptureHook = (context, state, options) =>
     // Native memory tool output is retrieved memory; capturing it would distill it into new
     // memories. With the flag off, MCP-provided codemem tools keep their existing capture path.
     if (!state.active || (state.runtime.memoryTools && isNativeMemoryToolResult(input))) return;
+    if (!(await canCaptureSession(context, state, options, { sessionID: input?.sessionID }))) return;
     const translated = translateV2ToolResult(input);
     await captureRuntimeTaskWithinTimeout({
       runtime: state.runtime,
@@ -870,12 +901,7 @@ const activateAdapter = async (context, runtime, registrations, options) => {
     registrations.push(await registerContextHook(context, state, options));
     registrations.push(await registerCaptureHook(context, state, options));
     registrations.push(...(await registerV2Tools(context, runtime, () => state.active)));
-    state.eventTask = consumeEvents(context, state.abortController.signal, runtime, state.translator, {
-      eventTaskTimeoutMs: options.eventTaskTimeoutMs,
-      scheduleCapture: state.scheduleCapture,
-      waitForCaptureTask: options.waitForCaptureTask,
-      waitForDiagnosticTask: options.waitForDiagnosticTask,
-    });
+    state.eventTask = consumeEvents(context, state, options);
   } catch (error) {
     await rollBackActivation(state, options);
     // Preserve the setup error that explains why activation failed.

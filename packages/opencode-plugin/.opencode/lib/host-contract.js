@@ -9,6 +9,7 @@ export const V2_ADAPTER_DIAGNOSTICS = Object.freeze({
   contextCleanupTimeout: "v2_context_cleanup_timeout",
   contextRecallFailed: "v2_context_recall_failed",
   eventCaptureFailed: "v2_event_capture_failed",
+  sessionOwnershipUnavailable: "v2_session_ownership_unavailable",
   eventStreamCleanupTimeout: "v2_event_stream_cleanup_timeout",
   eventStreamEndedUnexpectedly: "v2_event_stream_ended_unexpectedly",
   eventStreamFailed: "v2_event_stream_failed",

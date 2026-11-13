@@ -40,7 +40,7 @@ function makeRuntime() {
 	return {
 		deactivate: vi.fn(),
 		dispose: vi.fn(async () => undefined),
-		handleEvent: vi.fn(async () => undefined),
+		handleEvent: vi.fn(async (_event: Record<string, unknown>) => undefined),
 		handleToolResult: vi.fn(async () => undefined),
 		reportDiagnostic: vi.fn(async () => undefined),
 		transformMessages: vi.fn(
@@ -121,6 +121,7 @@ function makeContext(
 	} = {},
 ) {
 	const aborted = { value: false };
+	const drained = { value: false };
 	const contextDispose = vi.fn(async () => undefined);
 	const hookDispose = vi.fn(async () => {
 		if (options.stuckDispose) await new Promise(() => {});
@@ -134,14 +135,16 @@ function makeContext(
 	let toolTransform:
 		| ((editor: { add: (tool: Record<string, unknown>) => void }) => void)
 		| undefined;
+	const location = {
+		directory: "/repo/worktree/nested",
+		project: { id: "project", directory: "/repo/worktree", canonical: "/repo" },
+	};
 	const context = {
-		location: {
-			directory: "/repo/worktree/nested",
-			project: { id: "project", directory: "/repo/worktree", canonical: "/repo" },
-		},
+		location,
 		event: {
 			subscribe: async function* ({ signal }: { signal: AbortSignal }) {
 				for (const event of events) yield event;
+				drained.value = true;
 				if (options.eventError) throw options.eventError;
 				if (options.stuck) await new Promise(() => {});
 				await new Promise<void>((_resolve, reject) => {
@@ -155,6 +158,11 @@ function makeContext(
 			},
 		},
 		session: {
+			get: vi.fn(async ({ sessionID }: { sessionID: string }) => ({
+				id: sessionID,
+				projectID: location.project.id,
+				location: { directory: location.directory },
+			})),
 			hook: vi.fn(
 				async (name: string, callback: (input: Record<string, unknown>) => Promise<void>) => {
 					if (name === "context" && options.contextHookError) throw options.contextHookError;
@@ -181,6 +189,7 @@ function makeContext(
 	};
 	return {
 		aborted,
+		drained,
 		addedTools,
 		context,
 		contextDispose,
@@ -211,6 +220,14 @@ function assertToolHookContract(hook: Plugin.Context["tool"]["hook"]) {
 }
 
 describe("pinned OpenCode 2 adapter types", () => {
+	it("reads authoritative session location through the pinned SDK", () => {
+		type Session = Awaited<ReturnType<Plugin.Context["session"]["get"]>>;
+		expectTypeOf<Session>().toMatchTypeOf<{
+			id: string;
+			projectID: string;
+			location: { directory: string; workspaceID?: string };
+		}>();
+	});
 	it("derives capture event and tool shapes from Plugin.Context", () => {
 		expectTypeOf<InboxEvent["data"]>().toMatchTypeOf<{
 			sessionID: string;
@@ -225,6 +242,264 @@ describe("pinned OpenCode 2 adapter types", () => {
 		}>();
 		expectTypeOf<ExecutionEvent["data"]>().toMatchTypeOf<{ sessionID: string }>();
 		expectTypeOf(assertToolHookContract).toBeFunction();
+	});
+});
+
+const capturePrompt = (sessionID: string, id: string, directory?: string) => ({
+	id,
+	type: "session.inbox.enqueued",
+	...(directory ? { location: { directory } } : {}),
+	data: {
+		sessionID,
+		inboxID: id,
+		item: { type: "user", payload: { text: `Synthetic ${sessionID} prompt` } },
+	},
+});
+
+describe("OpenCode 2 session capture ownership", () => {
+	it("captures each project's prompt and assistant only in its own instance", async () => {
+		const events = [
+			capturePrompt("session-alpha", "prompt-alpha", "/repo/alpha"),
+			capturePrompt("session-beta", "prompt-beta", "/repo/beta"),
+			{
+				id: "answer-alpha",
+				type: "session.text.ended",
+				location: { directory: "/repo/alpha" },
+				data: {
+					sessionID: "session-alpha",
+					assistantMessageID: "assistant-alpha",
+					text: "Private alpha finding",
+				},
+			},
+			{
+				id: "answer-beta",
+				type: "session.text.ended",
+				location: { directory: "/repo/beta" },
+				data: {
+					sessionID: "session-beta",
+					assistantMessageID: "assistant-beta",
+					text: "Shared beta finding",
+				},
+			},
+		];
+		const alpha = makeContext(events);
+		const beta = makeContext(events);
+		alpha.context.location.directory = "/repo/alpha";
+		beta.context.location.directory = "/repo/beta";
+		const a = makeRuntime();
+		const b = makeRuntime();
+		const stopA = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => a })(
+			alpha.context,
+		);
+		const stopB = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => b })(
+			beta.context,
+		);
+		try {
+			await vi.waitFor(() => {
+				expect(a.handleEvent).toHaveBeenCalledTimes(3);
+				expect(b.handleEvent).toHaveBeenCalledTimes(3);
+			});
+			expect(a.handleEvent.mock.calls.every(([event]) => event.sessionID === "session-alpha")).toBe(
+				true,
+			);
+			expect(b.handleEvent.mock.calls.every(([event]) => event.sessionID === "session-beta")).toBe(
+				true,
+			);
+			expect(JSON.stringify(a.handleEvent.mock.calls)).not.toContain("Shared beta finding");
+			expect(JSON.stringify(b.handleEvent.mock.calls)).not.toContain("Private alpha finding");
+		} finally {
+			await stopA();
+			await stopB();
+		}
+	});
+
+	it.each(["another-project", "same-project-worktree"])(
+		"ignores events from %s even when lookups are locally scoped",
+		async () => {
+			const f = makeContext([capturePrompt("foreign", "foreign-prompt", "/repo/other")]);
+			const runtime = makeRuntime();
+			const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+				f.context,
+			);
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			await cleanup();
+			expect(runtime.handleEvent).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not cache an ownership decision across a session move", async () => {
+		const f = makeContext([capturePrompt("moving", "first"), capturePrompt("moving", "second")]);
+		f.context.session.get
+			.mockResolvedValueOnce({
+				id: "moving",
+				projectID: "project",
+				location: { directory: f.context.location.directory },
+			})
+			.mockResolvedValueOnce({
+				id: "moving",
+				projectID: "project",
+				location: { directory: "/repo/other-worktree" },
+			});
+		const runtime = makeRuntime();
+		const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+			f.context,
+		);
+		try {
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			expect(f.context.session.get).toHaveBeenCalledTimes(2);
+			expect(runtime.handleEvent).toHaveBeenCalledTimes(2);
+		} finally {
+			await cleanup();
+		}
+	});
+});
+
+describe("OpenCode 2 session capture ownership failures", () => {
+	it.each(["missing-api", "lookup-error", "wrong-session", "wrong-project"])(
+		"does not capture when ownership is unavailable: %s",
+		async (mode) => {
+			const f = makeContext([capturePrompt("session-1", "prompt-1")]);
+			if (mode === "missing-api")
+				Object.defineProperty(f.context.session, "get", { value: undefined });
+			if (mode === "lookup-error")
+				f.context.session.get.mockRejectedValue(new Error("lookup failed"));
+			if (mode === "wrong-session")
+				f.context.session.get.mockResolvedValue({
+					id: "wrong",
+					projectID: "project",
+					location: { directory: f.context.location.directory },
+				});
+			if (mode === "wrong-project")
+				f.context.session.get.mockResolvedValue({
+					id: "session-1",
+					projectID: "other-project",
+					location: { directory: f.context.location.directory },
+				});
+			const runtime = makeRuntime();
+			const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+				f.context,
+			);
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			await cleanup();
+			expect(runtime.handleEvent).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not capture tool results or inject recall for another session location", async () => {
+		const f = makeContext();
+		f.context.session.get.mockResolvedValue({
+			id: "foreign",
+			projectID: "project",
+			location: { directory: "/repo/other" },
+		});
+		const runtime = makeRuntime();
+		const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+			f.context,
+		);
+		try {
+			await f.invokeTool({
+				sessionID: "foreign",
+				tool: "read",
+				status: "completed",
+				result: { output: "Private finding" },
+			});
+			await f.invokeContext({ sessionID: "foreign", messages: [] });
+			expect(runtime.handleToolResult).not.toHaveBeenCalled();
+			expect(runtime.transformMessages).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+});
+
+describe("OpenCode 2 workspace and delegated capture ownership", () => {
+	it.each([true, false])(
+		"matches workspace identity as well as directory (same=%s)",
+		async (same) => {
+			const event = capturePrompt("session-1", "prompt-1", "/repo/worktree/nested");
+			Object.assign(event.location ?? {}, { workspaceID: same ? "workspace-a" : "workspace-b" });
+			const f = makeContext([event]);
+			Object.assign(f.context.location, { workspaceID: "workspace-a" });
+			f.context.session.get.mockResolvedValue({
+				id: "session-1",
+				projectID: "project",
+				location: Object.assign(
+					{ directory: f.context.location.directory },
+					{ workspaceID: "workspace-a" },
+				),
+			});
+			const runtime = makeRuntime();
+			const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+				f.context,
+			);
+			try {
+				await vi.waitFor(() => expect(f.drained.value).toBe(true));
+				expect(runtime.handleEvent).toHaveBeenCalledTimes(same ? 2 : 0);
+				expect(f.context.session.get).not.toHaveBeenCalled();
+			} finally {
+				await cleanup();
+			}
+		},
+	);
+
+	it("does not replace invalid event location evidence with the instance default", async () => {
+		const f = makeContext([capturePrompt("session-1", "prompt-1", "relative-directory")]);
+		const runtime = makeRuntime();
+		const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+			f.context,
+		);
+		try {
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			expect(runtime.handleEvent).not.toHaveBeenCalled();
+			expect(f.context.session.get).not.toHaveBeenCalled();
+			expect(runtime.reportDiagnostic).toHaveBeenCalledWith("v2_session_ownership_unavailable");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("retains publication attribution when a queued event precedes the session's current location", async () => {
+		const f = makeContext([capturePrompt("foreign", "prompt-1", "/repo/worktree/nested")]);
+		f.context.session.get.mockResolvedValue({
+			id: "foreign",
+			projectID: "project",
+			location: { directory: "/repo/other" },
+		});
+		const runtime = makeRuntime();
+		const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+			f.context,
+		);
+		try {
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			expect(runtime.handleEvent).toHaveBeenCalledTimes(2);
+			expect(f.context.session.get).not.toHaveBeenCalled();
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("captures a delegated session from its own location without inheriting its parent's location", async () => {
+		const f = makeContext([capturePrompt("child-session", "child-prompt")]);
+		f.context.session.get.mockResolvedValue(
+			Object.assign(
+				{
+					id: "child-session",
+					projectID: "project",
+					location: { directory: f.context.location.directory },
+				},
+				{ parentID: "foreign-parent" },
+			),
+		);
+		const runtime = makeRuntime();
+		const cleanup = await adapter.createOpenCodeV2Adapter({ createRuntime: async () => runtime })(
+			f.context,
+		);
+		try {
+			await vi.waitFor(() => expect(f.drained.value).toBe(true));
+			expect(runtime.handleEvent).toHaveBeenCalledTimes(2);
+		} finally {
+			await cleanup();
+		}
 	});
 });
 

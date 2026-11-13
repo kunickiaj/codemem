@@ -1031,6 +1031,7 @@ export class MemoryStore {
 
 	getOrCreateSessionForOpencodeSession(opts: {
 		opencodeSessionId: string;
+		streamId?: string;
 		source?: string;
 		cwd?: string;
 		project?: string | null;
@@ -1041,7 +1042,7 @@ export class MemoryStore {
 	}): number {
 		const [source, streamId] = this.normalizeStreamIdentity(
 			opts.source ?? "opencode",
-			opts.opencodeSessionId,
+			opts.streamId ?? opts.opencodeSessionId,
 		);
 		const existing = this.d
 			.select({ session_id: schema.opencodeSessions.session_id })
@@ -1079,16 +1080,26 @@ export class MemoryStore {
 		const sessionId = sessionRows[0]?.id;
 		if (sessionId == null) throw new Error("session insert returned no id");
 
-		this.linkOpencodeSession({ source, streamId, sessionId });
+		this.linkOpencodeSession({
+			source,
+			streamId,
+			sessionId,
+			opencodeSessionId: opts.opencodeSessionId,
+		});
 		return Number(sessionId);
 	}
 
-	private linkOpencodeSession(opts: { source: string; streamId: string; sessionId: number }): void {
+	private linkOpencodeSession(opts: {
+		source: string;
+		streamId: string;
+		sessionId: number;
+		opencodeSessionId?: string;
+	}): void {
 		const { source, streamId, sessionId } = opts;
 		this.d
 			.insert(schema.opencodeSessions)
 			.values({
-				opencode_session_id: streamId,
+				opencode_session_id: opts.opencodeSessionId ?? streamId,
 				source,
 				stream_id: streamId,
 				session_id: sessionId,
@@ -2349,7 +2360,7 @@ export class MemoryStore {
 				input.limit,
 				input.filters,
 				this.ownershipFilterContext(),
-				summarySessionId(this.db, input.automaticContext),
+				summarySessionId(this.db, input.automaticContext, input.filters?.project),
 			);
 		}
 		if (isEmbeddingDisabled() || input.query.trim().length < 3) return [];
@@ -2707,6 +2718,7 @@ export class MemoryStore {
 		const row = this.d
 			.select({
 				cwd: schema.rawEventSessions.cwd,
+				opencode_session_id: schema.rawEventSessions.opencode_session_id,
 				project: schema.rawEventSessions.project,
 				started_at: schema.rawEventSessions.started_at,
 				last_seen_ts_wall_ms: schema.rawEventSessions.last_seen_ts_wall_ms,
@@ -2719,6 +2731,7 @@ export class MemoryStore {
 		if (!row) return {};
 		return {
 			cwd: row.cwd,
+			opencode_session_id: row.opencode_session_id,
 			project: row.project,
 			started_at: row.started_at,
 			last_seen_ts_wall_ms: row.last_seen_ts_wall_ms,
@@ -2818,7 +2831,7 @@ export class MemoryStore {
 			.values({
 				source: s,
 				stream_id: sid,
-				opencode_session_id: sid,
+				opencode_session_id: String(this.rawEventSessionMeta(sid, s).opencode_session_id ?? sid),
 				start_event_seq: startEventSeq,
 				end_event_seq: endEventSeq,
 				extractor_version: extractorVersion,
@@ -3043,7 +3056,6 @@ export class MemoryStore {
 			.onConflictDoUpdate({
 				target: [schema.rawEventSessions.source, schema.rawEventSessions.stream_id],
 				set: {
-					opencode_session_id: sql`excluded.opencode_session_id`,
 					last_flushed_event_seq: sql`excluded.last_flushed_event_seq`,
 					updated_at: sql`excluded.updated_at`,
 				},

@@ -389,7 +389,9 @@ function rehydrate(
 	if (candidates.length === 0) return [];
 	const context = ownershipFilterContext(store, { expectedPublicKey: proof.expectedPublicKey });
 	const filter = buildFilterClausesWithContext(request.filters, context);
-	const continuity = summaryContinuityFilter(summarySessionId(store.db, request.automaticContext));
+	const continuity = summaryContinuityFilter(
+		summarySessionId(store.db, request.automaticContext, request.filters?.project),
+	);
 	const join = filter.joinSessions ? "JOIN sessions ON sessions.id = memory_items.session_id" : "";
 	const clauses = [
 		"memory_items.active = 1",

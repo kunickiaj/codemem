@@ -278,6 +278,40 @@ describe("semantic worker eight-request wave", () => {
 	});
 });
 
+describe("semantic worker moved session continuity", () => {
+	const f = useSemanticWorkerFixture();
+	it.each(["alpha", "beta"])(
+		"retains only the %s summary after ranking and rehydration",
+		async (project) => {
+			const hostSessionId = "moving-semantic-host";
+			const summaries = new Map<string, number>();
+			for (const name of ["alpha", "beta"]) {
+				const sessionId = f.store.getOrCreateSessionForOpencodeSession({
+					opencodeSessionId: hostSessionId,
+					streamId: `${name}-stream`,
+					project: name,
+					cwd: `/synthetic/${name}`,
+				});
+				const summaryId = f.store.remember(
+					sessionId,
+					"session_summary",
+					`${name} parser summary`,
+					`${name} parser validation continuity after moving`,
+					0.9,
+				);
+				summaries.set(name, summaryId);
+				seedVector(f.store.db, summaryId, f.client, 0.95);
+			}
+			const results = await f.openExecutor().search({
+				...request,
+				filters: { ...request.filters, project },
+				automaticContext: { source: "opencode", hostSessionId },
+			});
+			expect(results.map((row) => row.id)).toEqual([summaries.get(project)]);
+		},
+	);
+});
+
 describe("semantic worker fresh automatic session mapping", () => {
 	const f = useSemanticWorkerFixture();
 	it.each(["remap", "remove"] as const)(

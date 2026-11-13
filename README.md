@@ -62,6 +62,10 @@ On OpenCode 2 the plugin captures user and assistant messages, terminal usage,
 tool results, and session lifecycle events, and exposes the same `mem-status`,
 `mem-recent`, and `mem-stats` tools. Captured V2 `shell` command results use the
 same observer filtering, privacy sanitization, and output limits as `bash` results.
+Each V2 plugin instance captures activity from its own location. Sessions can move
+between projects and worktrees without restarting. Earlier activity keeps its
+original project and sharing scope, while new activity uses the destination's.
+Unavailable ownership checks skip capture and recall.
 Automatic recall runs through
 `session.context`: the latest user-message ID is required, and a missing or blank
 ID skips recall safely. Each identified turn performs one fresh retrieval; retries
