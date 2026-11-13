@@ -38,6 +38,7 @@ export interface RawEventValidationResult {
 }
 
 interface NormalizedEvent {
+	hostSessionId: string;
 	captureContext: DelegatedBriefContext | null;
 	streamId: string;
 	eventId: string;
@@ -265,6 +266,7 @@ function normalizeEvent(
 		if (legacyEventId !== eventId) eventIdAliases.push(legacyEventId);
 	}
 	return {
+		hostSessionId: streamId,
 		streamId,
 		captureContext: normalizeCaptureContext(item.capture_context, {
 			source,
@@ -345,39 +347,32 @@ function sessionMetadataForEvents({
 	};
 }
 
-const conflictingIdentity = (previous: string | null, incoming: string | null): boolean =>
-	previous !== null && incoming !== null && previous !== incoming;
-
-function hasV2StreamLocationConflict({
-	events,
-	previous,
-	requestMeta,
-	applyRequestMeta,
-}: {
-	events: NormalizedEvent[];
-	previous: SessionMetadata | undefined;
-	requestMeta: SessionMetadata;
-	applyRequestMeta: boolean;
-}): boolean {
-	if (!events.some((event) => event.payload.codemem_host_generation === "v2")) return false;
-	let cwd = previous?.cwd ?? null;
-	let project = previous?.project ?? null;
-	for (const event of events) {
-		const incomingCwd = event.cwd ?? (applyRequestMeta ? requestMeta.cwd : null);
-		const incomingProject = event.project ?? (applyRequestMeta ? requestMeta.project : null);
-		if (conflictingIdentity(cwd, incomingCwd) || conflictingIdentity(project, incomingProject)) {
-			return true;
-		}
-		cwd ??= incomingCwd;
-		project ??= incomingProject;
-	}
-	return false;
+function attributedEvent(
+	event: NormalizedEvent,
+	request: NormalizedRequest,
+	{ singleHost }: { singleHost: boolean },
+): NormalizedEvent {
+	if (event.payload.codemem_host_generation !== "v2") return event;
+	const applyRequestMeta = singleHost || request.defaultStreamId === event.hostSessionId;
+	const cwd = event.cwd ?? (applyRequestMeta ? request.requestMeta.cwd : null);
+	const project = event.project ?? (applyRequestMeta ? request.requestMeta.project : null);
+	if (!cwd) return event;
+	const digest = createHash("sha256")
+		.update(JSON.stringify([event.hostSessionId, cwd, project]))
+		.digest("hex");
+	return {
+		...event,
+		cwd,
+		project,
+		startedAt: event.startedAt ?? (applyRequestMeta ? request.requestMeta.startedAt : null),
+		streamId: `opencode-v2:${digest}`,
+	};
 }
 
 function unseenStreamEvents(
 	store: RawEventIngestStore,
 	source: string,
-	streamId: string,
+	hostSessionId: string,
 	events: NormalizedEvent[],
 ): { candidates: NormalizedEvent[]; skippedDuplicate: number } {
 	let skippedDuplicate = 0;
@@ -398,9 +393,9 @@ function unseenStreamEvents(
 		const rows = store.db
 			.prepare(
 				`SELECT event_id FROM raw_events
-				 WHERE source = ? AND stream_id = ? AND event_id IN (${placeholders})`,
+				 WHERE source = ? AND opencode_session_id = ? AND event_id IN (${placeholders})`,
 			)
-			.all(source, streamId, ...eventIds) as Array<{ event_id: string | null }>;
+			.all(source, hostSessionId, ...eventIds) as Array<{ event_id: string | null }>;
 		for (const row of rows) {
 			if (row.event_id) existingIds.add(row.event_id);
 		}
@@ -419,24 +414,15 @@ function persistStream(
 	events: NormalizedEvent[],
 	request: NormalizedRequest,
 	singleStream: boolean,
-): { inserted: number; skippedDuplicate: number; skippedConflict: number } {
-	const { candidates, skippedDuplicate } = unseenStreamEvents(store, source, streamId, events);
+): { inserted: number; skippedDuplicate: number } {
+	const hostSessionId = events[0]?.hostSessionId ?? streamId;
+	const { candidates, skippedDuplicate } = unseenStreamEvents(store, source, hostSessionId, events);
 	const sessionRow = store.db
 		.prepare(
 			`SELECT last_received_event_seq, cwd, project, started_at AS startedAt
 			 FROM raw_event_sessions WHERE source = ? AND stream_id = ?`,
 		)
 		.get(source, streamId) as (SessionMetadata & { last_received_event_seq: number }) | undefined;
-	if (
-		hasV2StreamLocationConflict({
-			events: candidates,
-			previous: sessionRow,
-			requestMeta: request.requestMeta,
-			applyRequestMeta: singleStream || request.defaultStreamId === streamId,
-		})
-	) {
-		return { inserted: 0, skippedDuplicate, skippedConflict: candidates.length };
-	}
 	const maxRow = store.db
 		.prepare(
 			"SELECT MAX(event_seq) AS max_event_seq FROM raw_events WHERE source = ? AND stream_id = ?",
@@ -460,7 +446,7 @@ function persistStream(
 		insertEvent.run(
 			source,
 			streamId,
-			streamId,
+			hostSessionId,
 			event.eventId,
 			assignedSeq,
 			event.eventType,
@@ -508,25 +494,24 @@ function persistStream(
 				),
 				updated_at = excluded.updated_at`,
 		)
-		.run(source, streamId, streamId, cwd, project, startedAt, lastSeen, lastReceived, now);
-	return { inserted, skippedDuplicate, skippedConflict: 0 };
+		.run(source, streamId, hostSessionId, cwd, project, startedAt, lastSeen, lastReceived, now);
+	return { inserted, skippedDuplicate };
 }
 
 function recordIngestOutcome(
 	store: RawEventIngestStore,
 	inserted: number,
 	skippedDuplicate: number,
-	skippedConflict: number,
 ): void {
 	const now = new Date().toISOString();
-	const skipped = skippedDuplicate + skippedConflict;
+	const skipped = skippedDuplicate;
 	store.db
 		.prepare(
 			`INSERT INTO raw_event_ingest_samples(
 				created_at, inserted_events, skipped_invalid, skipped_duplicate, skipped_conflict
 			 ) VALUES (?, ?, 0, ?, ?)`,
 		)
-		.run(now, inserted, skippedDuplicate, skippedConflict);
+		.run(now, inserted, skippedDuplicate, 0);
 	store.db
 		.prepare(
 			`INSERT INTO raw_event_ingest_stats(
@@ -541,11 +526,7 @@ function recordIngestOutcome(
 				skipped_conflict = raw_event_ingest_stats.skipped_conflict + excluded.skipped_conflict,
 				updated_at = excluded.updated_at`,
 		)
-		.run(inserted, skipped, skippedDuplicate, skippedConflict, now);
-	if (skippedConflict > 0)
-		console.warn(
-			`[codemem] Skipped ${skippedConflict} raw events because OpenCode V2 session attribution changed. Start a new session for capture in the destination project.`,
-		);
+		.run(inserted, skipped, skippedDuplicate, 0, now);
 }
 
 export function ingestRawEvents(store: RawEventIngestStore, request: object): RawEventIngestResult {
@@ -554,14 +535,15 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 	return store.db
 		.transaction(() => {
 			const byStream = new Map<string, NormalizedEvent[]>();
-			for (const event of normalized.events) {
+			const singleHost = new Set(normalized.events.map((event) => event.hostSessionId)).size === 1;
+			for (const input of normalized.events) {
+				const event = attributedEvent(input, normalized, { singleHost });
 				const events = byStream.get(event.streamId) ?? [];
 				events.push(event);
 				byStream.set(event.streamId, events);
 			}
 			let inserted = 0;
 			let skippedDuplicate = 0;
-			let skippedConflict = 0;
 			const sessions: RawEventIngestSession[] = [];
 			const singleStream = byStream.size === 1;
 			for (const [streamId, events] of byStream) {
@@ -575,13 +557,12 @@ export function ingestRawEvents(store: RawEventIngestStore, request: object): Ra
 				);
 				inserted += result.inserted;
 				skippedDuplicate += result.skippedDuplicate;
-				skippedConflict += result.skippedConflict;
 				sessions.push({ source: normalized.source, streamId });
 			}
-			recordIngestOutcome(store, inserted, skippedDuplicate, skippedConflict);
+			recordIngestOutcome(store, inserted, skippedDuplicate);
 			return {
 				inserted,
-				skipped: skippedDuplicate + skippedConflict,
+				skipped: skippedDuplicate,
 				received: normalized.received,
 				sessions,
 			};

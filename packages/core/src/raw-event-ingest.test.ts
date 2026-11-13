@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe("OpenCode V2 stream attribution", () => {
 	it.each(["cwd", "project"])(
-		"rejects a moved session's changed %s without relabeling retained events",
+		"captures a moved session's changed %s without relabeling retained events",
 		(field) => {
 			const store = createStore();
 			const original = {
@@ -96,27 +96,27 @@ describe("OpenCode V2 stream attribution", () => {
 				payload: { prompt_text: "Synthetic private finding" },
 			};
 			try {
-				ingestRawEvents(store, original);
+				const first = ingestRawEvents(store, original).sessions[0].streamId;
 				const moved = {
 					...original,
 					event_id: "second",
 					[field]: field === "cwd" ? "/synthetic/shared" : "shared",
 				};
 				expect(ingestRawEvents(store, moved)).toMatchObject({
-					inserted: 0,
-					skipped: 1,
+					inserted: 1,
+					skipped: 0,
 					received: 1,
 				});
 				expect(
 					store.db
 						.prepare("SELECT skipped_conflict FROM raw_event_ingest_stats WHERE id = 1")
 						.get(),
-				).toEqual({ skipped_conflict: 1 });
-				expect(persistedRows(store)).toHaveLength(1);
+				).toEqual({ skipped_conflict: 0 });
+				expect(persistedRows(store)).toHaveLength(2);
 				expect(
 					store.db
 						.prepare("SELECT cwd, project FROM raw_event_sessions WHERE stream_id = ?")
-						.get("moving-session"),
+						.get(first),
 				).toEqual({ cwd: original.cwd, project: original.project });
 			} finally {
 				store.close();
@@ -125,7 +125,7 @@ describe("OpenCode V2 stream attribution", () => {
 	);
 
 	it.each(["v2", undefined])(
-		"skips conflicting locations within a V2 batch (first host=%s)",
+		"separates locations within a V2 batch (first host=%s)",
 		(firstHost) => {
 			const store = createStore();
 			const event = {
@@ -149,8 +149,8 @@ describe("OpenCode V2 stream attribution", () => {
 							{ ...event, event_id: "second", cwd: "/synthetic/shared", project: "shared" },
 						],
 					}),
-				).toMatchObject({ inserted: 0, skipped: 2, received: 2 });
-				expect(persistedRows(store)).toHaveLength(0);
+				).toMatchObject({ inserted: 2, skipped: 0, received: 2 });
+				expect(persistedRows(store)).toHaveLength(2);
 			} finally {
 				store.close();
 			}

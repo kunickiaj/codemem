@@ -472,12 +472,14 @@ export function buildFlushSessionContext(
 	events: Record<string, unknown>[],
 	{
 		opencodeSessionId,
+		streamId = opencodeSessionId,
 		source,
 		startEventSeq,
 		lastEventSeq,
 		batchId,
 	}: {
 		opencodeSessionId: string;
+		streamId?: string;
 		source: string;
 		startEventSeq: number;
 		lastEventSeq: number;
@@ -489,7 +491,7 @@ export function buildFlushSessionContext(
 	const context = buildSessionContext(normalizedEvents, { contentEvents: primaryEvents });
 	context.opencodeSessionId = opencodeSessionId;
 	context.source = source;
-	context.streamId = opencodeSessionId;
+	context.streamId = streamId;
 	context.flusher = "raw_events";
 	context.flushBatch = {
 		batch_id: batchId,
@@ -626,6 +628,19 @@ function planRawEventFlush(store: MemoryStore, opts: FlushRawEventsOptions & { s
 	return range ? { events, range } : null;
 }
 
+function resolveFlushSessionMetadata(
+	store: MemoryStore,
+	opts: FlushRawEventsOptions & { source: string },
+) {
+	const meta = store.rawEventSessionMeta(opts.opencodeSessionId, opts.source);
+	return {
+		cwd: opts.cwd ?? (meta.cwd as string | null) ?? process.cwd(),
+		project: opts.project ?? (meta.project as string | null) ?? null,
+		startedAt: opts.startedAt ?? (meta.started_at as string | null) ?? null,
+		hostSessionId: String(meta.opencode_session_id ?? opts.opencodeSessionId),
+	};
+}
+
 /**
  * Flush raw events for a single session through the ingest pipeline.
  *
@@ -642,16 +657,13 @@ export async function flushRawEvents(
 	ingestOpts: IngestOptions,
 	opts: FlushRawEventsOptions,
 ): Promise<{ flushed: number; updatedState: number }> {
-	let { source = "opencode", cwd, project, startedAt } = opts;
+	const source = (opts.source ?? "").trim().toLowerCase() || "opencode";
 	const opencodeSessionId = opts.opencodeSessionId.trim();
-
-	source = (source ?? "").trim().toLowerCase() || "opencode";
-
-	// Resolve session metadata for missing fields
-	const meta = store.rawEventSessionMeta(opencodeSessionId, source);
-	if (cwd == null) cwd = (meta.cwd as string) ?? process.cwd();
-	if (project == null) project = (meta.project as string) ?? null;
-	if (startedAt == null) startedAt = (meta.started_at as string) ?? null;
+	const { cwd, project, startedAt, hostSessionId } = resolveFlushSessionMetadata(store, {
+		...opts,
+		source,
+		opencodeSessionId,
+	});
 
 	const plan = planRawEventFlush(store, { ...opts, source, opencodeSessionId });
 	if (!plan) return { flushed: 0, updatedState: 0 };
@@ -696,7 +708,8 @@ export async function flushRawEvents(
 	if (result) return result;
 
 	const sessionContext = buildFlushSessionContext(events, {
-		opencodeSessionId,
+		opencodeSessionId: hostSessionId,
+		streamId: opencodeSessionId,
 		source,
 		startEventSeq,
 		lastEventSeq,

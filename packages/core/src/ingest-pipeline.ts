@@ -597,6 +597,7 @@ function resolveIngestSessionId(
 	}
 	return store.getOrCreateSessionForOpencodeSession({
 		opencodeSessionId: sessionContext.opencodeSessionId,
+		streamId: sessionContext.streamId,
 		source: sessionContext.source,
 		cwd: stage.cwd,
 		project: stage.project,

@@ -61,8 +61,8 @@ function getRawEventRelinkReportFromDb(
 				s.started_at,
 				s.ended_at,
 				COALESCE(
-					json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
-					json_extract(s.metadata_json, '$.session_context.streamId')
+					json_extract(s.metadata_json, '$.session_context.streamId'),
+					json_extract(s.metadata_json, '$.session_context.opencodeSessionId')
 				) AS stable_id,
 				CASE WHEN os.session_id IS NULL THEN 0 ELSE 1 END AS has_mapping,
 				(
@@ -79,13 +79,13 @@ function getRawEventRelinkReportFromDb(
 					'opencode'
 				)
 				AND os.stream_id = COALESCE(
-					json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
-					json_extract(s.metadata_json, '$.session_context.streamId')
+					json_extract(s.metadata_json, '$.session_context.streamId'),
+					json_extract(s.metadata_json, '$.session_context.opencodeSessionId')
 				)
 			WHERE json_extract(s.metadata_json, '$.session_context.flusher') = 'raw_events'
 			  AND COALESCE(
-					json_extract(s.metadata_json, '$.session_context.opencodeSessionId'),
-					json_extract(s.metadata_json, '$.session_context.streamId')
+					json_extract(s.metadata_json, '$.session_context.streamId'),
+					json_extract(s.metadata_json, '$.session_context.opencodeSessionId')
 				  ) IS NOT NULL
 			  ${projectClauseSql}
 			ORDER BY s.started_at DESC, s.id DESC`,
@@ -244,6 +244,30 @@ function repointRelinkMemories(
 	);
 }
 
+function createRelinkBridge(db: Database, group: RawEventRelinkGroup, now: string): void {
+	const row = db
+		.prepare(`SELECT json_extract(metadata_json, '$.session_context.opencodeSessionId') AS host_id
+		FROM sessions WHERE id = ?`)
+		.get(group.canonical_session_id) as { host_id: string | null } | undefined;
+	drizzle(db, { schema })
+		.insert(schema.opencodeSessions)
+		.values({
+			source: group.source,
+			stream_id: group.stable_id,
+			opencode_session_id: row?.host_id ?? group.stable_id,
+			session_id: group.canonical_session_id,
+			created_at: now,
+		})
+		.onConflictDoUpdate({
+			target: [schema.opencodeSessions.source, schema.opencodeSessions.stream_id],
+			set: {
+				opencode_session_id: sql`excluded.opencode_session_id`,
+				session_id: sql`excluded.session_id`,
+			},
+		})
+		.run();
+}
+
 export function applyRawEventRelinkPlanWithDb(
 	db: Database,
 	opts: RawEventRelinkApplyOptions = {},
@@ -270,22 +294,7 @@ export function applyRawEventRelinkPlanWithDb(
 			}
 			eligibleGroups += 1;
 			if (group.would_create_bridge) {
-				d.insert(schema.opencodeSessions)
-					.values({
-						source: group.source,
-						stream_id: group.stable_id,
-						opencode_session_id: group.stable_id,
-						session_id: group.canonical_session_id,
-						created_at: now,
-					})
-					.onConflictDoUpdate({
-						target: [schema.opencodeSessions.source, schema.opencodeSessions.stream_id],
-						set: {
-							opencode_session_id: sql`excluded.opencode_session_id`,
-							session_id: sql`excluded.session_id`,
-						},
-					})
-					.run();
+				createRelinkBridge(db, group, now);
 				bridgeCreations += 1;
 			}
 

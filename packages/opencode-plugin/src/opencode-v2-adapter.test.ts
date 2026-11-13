@@ -435,7 +435,7 @@ describe("OpenCode 2 workspace and delegated capture ownership", () => {
 			try {
 				await vi.waitFor(() => expect(f.drained.value).toBe(true));
 				expect(runtime.handleEvent).toHaveBeenCalledTimes(same ? 2 : 0);
-				expect(f.context.session.get).toHaveBeenCalledTimes(same ? 1 : 0);
+				expect(f.context.session.get).not.toHaveBeenCalled();
 			} finally {
 				await cleanup();
 			}
@@ -458,7 +458,7 @@ describe("OpenCode 2 workspace and delegated capture ownership", () => {
 		}
 	});
 
-	it("requires the session read to agree even when publication location matches", async () => {
+	it("retains publication attribution when a queued event precedes the session's current location", async () => {
 		const f = makeContext([capturePrompt("foreign", "prompt-1", "/repo/worktree/nested")]);
 		f.context.session.get.mockResolvedValue({
 			id: "foreign",
@@ -471,7 +471,8 @@ describe("OpenCode 2 workspace and delegated capture ownership", () => {
 		);
 		try {
 			await vi.waitFor(() => expect(f.drained.value).toBe(true));
-			expect(runtime.handleEvent).not.toHaveBeenCalled();
+			expect(runtime.handleEvent).toHaveBeenCalledTimes(2);
+			expect(f.context.session.get).not.toHaveBeenCalled();
 		} finally {
 			await cleanup();
 		}

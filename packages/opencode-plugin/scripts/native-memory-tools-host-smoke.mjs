@@ -248,6 +248,26 @@ function writeProjectConfig(dir, providerBaseURL, { mcpServers, extraPlugins } =
 	writeFileSync(join(dir, "opencode.json"), JSON.stringify(config, null, 2), "utf8");
 }
 
+function writeCaptureObserver(reportPath) {
+	const dir = join(tempRoot, "capture-observer");
+	mkdirSync(dir);
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "smoke-capture-observer", type: "module", main: "./index.mjs" }));
+	writeFileSync(join(dir, "index.mjs"), `import { appendFileSync } from "node:fs";
+export default { id: "smoke-capture-observer", async setup(context) {
+  const controller = new AbortController();
+  const task = (async () => {
+    for await (const event of context.event.subscribe({ signal: controller.signal })) {
+      if (!event.data?.sessionID) continue;
+      appendFileSync(${JSON.stringify(reportPath)}, JSON.stringify({ id: event.id, type: event.type,
+        sessionID: event.data.sessionID, itemType: event.data.item?.type,
+        instance: context.location.directory, location: event.location }) + "\\n");
+    }
+  })().catch(error => { if (!controller.signal.aborted) throw error; });
+  return async () => { controller.abort(); await task; };
+} };`);
+	return dir;
+}
+
 // --------------------------------------------------------------------- viewer
 
 async function startViewer(env, port, dbPath) {
@@ -522,6 +542,16 @@ async function createSession(host, directory) {
 	return id;
 }
 
+async function moveSession(host, session, directory) {
+	await hostFetch(host, `/api/session/${session}/move`, { method: "POST", body: { directory, delivery: "queue" } });
+	for (let attempt = 0; attempt < 200; attempt += 1) {
+		const result = await hostFetch(host, `/api/session/${session}`);
+		if ((result.data ?? result).location?.directory === directory) return;
+		await sleep(25);
+	}
+	throw new Error("Synthetic session move did not reach its destination");
+}
+
 async function promptAndWait(host, sessionID, directory, text) {
 	await hostFetch(host, `/api/session/${sessionID}/prompt`, {
 		method: "POST",
@@ -665,6 +695,10 @@ const SCENARIOS = {
 	// check has a foreign-project memory to exclude.
 	"alpha-after-beta": { steps: [searchStep] },
 	nested: { steps: [] },
+	"move-alpha": { steps: [] },
+	"move-beta": { steps: [] },
+	"move-worktree": { steps: [] },
+	"move-alpha-back": { steps: [] },
 	// Step 1 fails host-side schema validation; step 2 passes the schema and
 	// fails in the MCP handler, so it exercises the plugin's Tool.Error path.
 	"bad-args": {
@@ -750,17 +784,17 @@ function captureAttribution(dbPath, sessionDirs) {
 		const sessions = db
 			.prepare("SELECT opencode_session_id AS session, cwd, project FROM raw_event_sessions")
 			.all()
-			.map((row) => ({ ...row, expectedCwd: sessionDirs[row.session] ?? null }));
+			.map((row) => ({ ...row, expectedCwds: [sessionDirs[row.session] ?? []].flat() }));
 		const duplicatePrompts = db
 			.prepare(
-				`SELECT opencode_session_id AS session, json_extract(payload_json, '$.prompt_number') AS prompt,
+				`SELECT opencode_session_id AS session, json_extract(payload_json, '$.prompt_text') AS prompt,
 				 COUNT(*) AS copies FROM raw_events WHERE event_type = 'user_prompt'
 				 GROUP BY 1, 2 HAVING COUNT(*) > 1`,
 			)
 			.all();
 		return {
 			misattributedSessions: sessions.filter(
-				(row) => row.expectedCwd && row.cwd !== row.expectedCwd,
+				(row) => row.expectedCwds.length > 0 && !row.expectedCwds.includes(row.cwd),
 			),
 			duplicatePrompts,
 			conversationCounts: conversationEventCounts(db, Object.keys(sessionDirs)),
@@ -785,6 +819,21 @@ function conversationEventCounts(db, sessionIds) {
 		counts[session] = { prompts: Number(row?.prompts ?? 0), assistant: Number(row?.assistant ?? 0) };
 	}
 	return counts;
+}
+
+function assertMovedSessionCapture(dbPath, session, repos) {
+	const db = openDb(dbPath);
+	try {
+		const rows = db.prepare(`SELECT s.cwd, s.project, SUM(r.event_type = 'user_prompt') AS prompts,
+			SUM(r.event_type = 'assistant_message') AS assistant
+			FROM raw_events r JOIN raw_event_sessions s ON s.source = r.source AND s.stream_id = r.stream_id
+			WHERE r.opencode_session_id = ? GROUP BY s.stream_id`).all(session);
+		const expected = new Map([[repos.alpha, ["alpha", 2]], [repos.beta, ["beta", 1]], [repos.worktree, ["alpha", 1]]]);
+		check("c.move_capture_by_project_and_worktree", rows.length === 3 && rows.every(row => {
+			const target = expected.get(row.cwd);
+			return target && row.project === target[0] && row.prompts === target[1] && row.assistant === target[1];
+		}), { streams: rows });
+	} finally { db.close(); }
 }
 
 const hasConversation = (counts) =>
@@ -870,6 +919,15 @@ async function runMainHost({ hostEnv, repos }) {
 		evidence.sessionDirs[nestedSession] = repos.alpha;
 		evidence.sessions.nested = nestedSession;
 		await timed("nested_session", () => promptAndWait(host, nestedSession, nested, "smoke-scenario=nested"));
+		const moving = await createSession(host, repos.alpha);
+		evidence.sessions.moving = moving;
+		evidence.sessionDirs[moving] = [repos.alpha, repos.beta, repos.worktree];
+		await promptAndWait(host, moving, repos.alpha, "smoke-scenario=move-alpha");
+		for (const [destination, scenario] of [[repos.beta, "move-beta"], [repos.worktree, "move-worktree"], [repos.alpha, "move-alpha-back"]]) {
+			await waitForPlugin(host, destination);
+			await moveSession(host, moving, destination);
+			await promptAndWait(host, moving, destination, `smoke-scenario=${scenario}`);
+		}
 		const descendants = descendantsOf(host.child.pid);
 		const mcpChildren = descendants.filter((row) => isCodememMcpProcess(row.command));
 		check("b.no_codemem_mcp_descendants", mcpChildren.length === 0, { mcpChildren, descendants });
@@ -1013,12 +1071,14 @@ async function setupFixture() {
 		gamma: join(tempRoot, "gamma"),
 	};
 	for (const dir of Object.values(repos)) initRepo(dir, gitEnv);
+	repos.worktree = join(tempRoot, "alpha-worktree");
+	run("git", ["worktree", "add", "--detach", repos.worktree, "HEAD"], { cwd: repos.alpha, env: gitEnv });
 	const viewerPort = await freePort();
 	const { dbPath, viewerEnv, hostEnv } = buildEnvironment(viewerPort);
 	const viewer = await timed("viewer_start", () => startViewer(viewerEnv, viewerPort, dbPath));
 	const provider = await startProvider(SCENARIOS);
-	writeProjectConfig(repos.alpha, provider.baseURL);
-	writeProjectConfig(repos.beta, provider.baseURL);
+	const captureObserver = writeCaptureObserver(join(tempRoot, "capture-events.jsonl"));
+	for (const repo of [repos.alpha, repos.beta, repos.worktree]) writeProjectConfig(repo, provider.baseURL, { extraPlugins: [captureObserver] });
 	const observerReport = join(tempRoot, "mcp-observer.jsonl");
 	writeProjectConfig(repos.gamma, provider.baseURL, {
 		mcpServers: {
@@ -1094,11 +1154,19 @@ async function main() {
 		["alpha", mainEvidence.sessions.alpha, 3],
 		["beta", mainEvidence.sessions.beta, 1],
 		["nested", mainEvidence.sessions.nested, 1],
+		["moving", mainEvidence.sessions.moving, 4],
 	]) {
 		const actual = attribution.conversationCounts[session];
 		check(`c.${name}_exactly_once_capture`, actual?.prompts === count && actual?.assistant === count,
 			{ expected: count, actual });
 	}
+	const publications = new Map(readJsonLines(join(tempRoot, "capture-events.jsonl"))
+		.filter(event => event.sessionID === mainEvidence.sessions.moving && event.type === "session.inbox.enqueued" && event.itemType === "user")
+		.map(event => [event.id, event.location?.directory]));
+	check("c.move_publication_locations", JSON.stringify([...publications.values()]) === JSON.stringify([
+		repos.alpha, repos.beta, repos.worktree, repos.alpha,
+	]), { locations: [...publications.values()] });
+	assertMovedSessionCapture(dbPath, mainEvidence.sessions.moving, repos);
 	await stopTracked(fixture.viewer.child);
 
 	const failed = checks.filter((entry) => !entry.pass);

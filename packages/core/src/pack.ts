@@ -15,6 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { automaticSummarySession } from "./automatic-continuity.js";
 import type { Database } from "./db.js";
 import { buildFilterClausesWithContext } from "./filters.js";
 import { inferMemoryRole, readArtifactClass } from "./memory-quality.js";
@@ -1133,25 +1134,12 @@ type AutomaticContinuity = {
 function resolveAutomaticContinuity(
 	store: StoreHandle,
 	automaticContext?: AutomaticContext | null,
+	project?: string | null,
 ): AutomaticContinuity {
-	if (automaticContext === undefined) return { requested: false, sessionId: null };
-	if (automaticContext === null) return { requested: true, sessionId: null };
-	const source = automaticContext.source.trim().toLowerCase();
-	const hostSessionId = automaticContext.hostSessionId.trim();
-	// The ledger's "unknown" placeholder is never a requester identity, even if a
-	// row with that stream ID exists.
-	if (!source || !hostSessionId || hostSessionId.toLowerCase() === "unknown") {
-		return { requested: true, sessionId: null };
-	}
-	const row = store.db
-		.prepare(
-			`SELECT session_id
-			 FROM opencode_sessions
-			 WHERE source = ? AND stream_id = ?
-			 LIMIT 1`,
-		)
-		.get(source, hostSessionId) as { session_id: number | null } | undefined;
-	return { requested: true, sessionId: row?.session_id ?? null };
+	return {
+		requested: automaticContext !== undefined,
+		sessionId: automaticSummarySession(store.db, automaticContext, project) ?? null,
+	};
 }
 
 function automaticEligible(continuity: AutomaticContinuity, item: MemoryResult): boolean {
@@ -1162,8 +1150,9 @@ function automaticEligible(continuity: AutomaticContinuity, item: MemoryResult):
 function automaticSummarySessionId(
 	store: StoreHandle,
 	automaticContext?: AutomaticContext | null,
+	project?: string | null,
 ): number | null | undefined {
-	const continuity = resolveAutomaticContinuity(store, automaticContext);
+	const continuity = resolveAutomaticContinuity(store, automaticContext, project);
 	return continuity.requested ? continuity.sessionId : undefined;
 }
 
@@ -1878,7 +1867,7 @@ function retrievePackCandidates(
 	automaticContext: AutomaticContext | null | undefined,
 ): PackRetrievalStage {
 	const effectiveLimit = Math.max(1, Math.trunc(limit));
-	const continuity = resolveAutomaticContinuity(store, automaticContext);
+	const continuity = resolveAutomaticContinuity(store, automaticContext, filters?.project);
 	const eligible = (item: MemoryResult) => automaticEligible(continuity, item);
 	const summarySessionId = continuity.requested ? continuity.sessionId : undefined;
 	const recentEligibility: RecentEligibility = { eligible, summarySessionId };
@@ -3008,6 +2997,6 @@ function packSemanticSearch(
 		limit,
 		filters ?? null,
 		ownershipFilterContext(store),
-		automaticSummarySessionId(store, automaticContext),
+		automaticSummarySessionId(store, automaticContext, filters?.project),
 	);
 }

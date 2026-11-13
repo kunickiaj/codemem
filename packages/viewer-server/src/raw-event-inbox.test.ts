@@ -524,7 +524,7 @@ describe("queued raw-event validation", () => {
 });
 
 describe("viewer raw-event attribution conflicts", () => {
-	it("drains unrelated events after a V2 attribution conflict without relabeling history", async () => {
+	it("captures a V2 move and drains unrelated events without relabeling history", async () => {
 		const root = testDirectory();
 		const dbPath = join(root, "mem.sqlite");
 		const store = new MemoryStore(dbPath);
@@ -541,7 +541,7 @@ describe("viewer raw-event attribution conflicts", () => {
 			payload: { prompt_text: "Synthetic private finding" },
 		};
 		try {
-			ingestRawEvents(store, event);
+			const originalStream = ingestRawEvents(store, event).sessions[0].streamId;
 			await queue.inbox.enqueue({
 				...event,
 				event_id: "moved",
@@ -557,17 +557,18 @@ describe("viewer raw-event attribution conflicts", () => {
 			await vi.waitFor(async () => expect((await queue.inbox.status()).pending).toBe(0));
 			expect(onDrainError).not.toHaveBeenCalled();
 			expect(store.db.prepare("SELECT event_id FROM raw_events ORDER BY event_id").all()).toEqual([
+				{ event_id: "moved" },
 				{ event_id: "original" },
 				{ event_id: "unrelated" },
 			]);
 			expect(
 				store.db
-					.prepare("SELECT cwd, project FROM raw_event_sessions WHERE stream_id = 'old-session'")
-					.get(),
+					.prepare("SELECT cwd, project FROM raw_event_sessions WHERE stream_id = ?")
+					.get(originalStream),
 			).toEqual({ cwd: event.cwd, project: event.project });
 			expect(
 				store.db.prepare("SELECT skipped_conflict FROM raw_event_ingest_stats WHERE id = 1").get(),
-			).toEqual({ skipped_conflict: 1 });
+			).toEqual({ skipped_conflict: 0 });
 		} finally {
 			await queue.stop();
 			store.close();

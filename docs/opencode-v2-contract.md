@@ -89,29 +89,38 @@ pinned release remains unverified.
 
 ## Session capture isolation
 
-OpenCode subscriptions deliver events across projects. Before translating an event,
-capturing a tool result, or injecting recall, Codemem reads `session.get` and checks
-the session ID, project ID, exact directory, and optional workspace ID against the
-plugin instance. A publication location can reject a foreign event early but cannot
-authorize it alone. Positive ownership decisions are never cached. Missing,
-deleted, invalid, or unreadable sessions skip capture and recall with the fixed
+OpenCode subscriptions deliver events across projects. Codemem routes events by
+the host envelope's publication location, matching the exact directory and optional
+workspace ID against the plugin instance. This preserves earlier attribution when
+an event is delivered after a session move. Tool completion hooks, recall hooks,
+and events without publication locations use a fresh `session.get` read that also
+checks the session and project IDs. Positive lookup decisions are never cached.
+Missing, deleted, invalid, or unreadable ownership evidence skips the operation with the fixed
 `v2_session_ownership_unavailable` diagnostic, without recording content.
 
 Delegated sessions use their own location rather than inheriting their parent's.
 Nested directories retain separate plugin registrations even when they share a
 working-copy root. Capture metadata continues to use that root.
 
-Each raw stream has one extraction scope. Ingestion rejects V2 events that would
-change its recorded project or working-copy root, including conflicts inside one
-batch. Ingestion skips the conflicting stream's new events, records the count in
-`skipped_conflict`, and logs a content-free warning. Existing events and metadata
-remain intact, and unrelated streams continue through the queue. After a move between
-projects or worktrees, start a new session for capture in the destination. This
-check does not rewrite history or recover earlier misattributed captures.
+Each raw stream has one extraction scope. V2 ingestion separates streams by the
+original host session ID, captured working-copy root, and effective project label.
+The original host ID stays separate from the internal stream ID throughout raw
+storage, extraction, native sessions, and recovery. A move from A to B and back to
+A continues capture and reuses A's stream. Frozen delivery envelopes retain their
+original attribution, and event retries are deduplicated across the host's streams.
+Earlier rows and memories are not relabeled. This does not repair historical
+misattribution.
+
+Automatic recall keeps summary continuity inside the requested project, including
+across its worktrees. When one host session has multiple capture streams and no
+project filter is supplied, automatic summary recall skips the ambiguous lookup.
+Explicit project names and existing repository scope mappings retain their meaning.
 
 The native-memory-tools host smoke treats wrong attribution and duplicate prompts
 as failures. It also verifies exact prompt and assistant counts for two projects
-and a nested directory with an isolated provider and database.
+and a nested directory, plus one session moving across two projects and a linked
+worktree. Core tests verify extraction into each project's sharing scope and recall
+after those moves. These tests use isolated providers and databases.
 
 ## Command capture
 

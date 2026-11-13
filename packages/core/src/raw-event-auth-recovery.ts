@@ -345,7 +345,10 @@ async function inferRecoveryWindow(
 	const linked = linkedRecoverySession(store, range);
 	const occurredAt = sourceEventTime(events);
 	const context = buildFlushSessionContext(events, {
-		opencodeSessionId: streamId,
+		opencodeSessionId: String(
+			store.rawEventSessionMeta(streamId, source).opencode_session_id ?? streamId,
+		),
+		streamId,
 		source,
 		startEventSeq,
 		lastEventSeq: endEventSeq,

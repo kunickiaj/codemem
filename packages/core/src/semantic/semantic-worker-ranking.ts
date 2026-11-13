@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { automaticSummarySession } from "../automatic-continuity.js";
 import type { Database } from "../db.js";
 import { resolveSameActorPeerIds } from "../same-actor-peers.js";
 import type { AutomaticContext } from "../types.js";
@@ -16,16 +17,9 @@ export function contentIdentity(row: Record<string, unknown>): string {
 export function summarySessionId(
 	db: Database,
 	context: AutomaticContext | null | undefined,
+	project?: string | null,
 ): number | null | undefined {
-	if (context === undefined) return undefined;
-	if (context === null) return null;
-	const source = context.source.trim().toLowerCase();
-	const streamId = context.hostSessionId.trim();
-	if (!source || !streamId || streamId.toLowerCase() === "unknown") return null;
-	const row = db
-		.prepare("SELECT session_id FROM opencode_sessions WHERE source = ? AND stream_id = ? LIMIT 1")
-		.get(source, streamId) as { session_id: number | null } | undefined;
-	return row?.session_id ?? null;
+	return automaticSummarySession(db, context, project);
 }
 
 /** Authorization, continuity, model selection, ranking and identities share one short read snapshot. */
@@ -45,7 +39,7 @@ export function rankWorkerInput(db: Database, input: RankInput): RankOutput | nu
 				legacyActorIds: claimedDeviceIds.map((id) => `legacy-sync:${id}`),
 				scopeVisibilityDb: db,
 			},
-			summarySessionId: summarySessionId(db, input.automaticContext),
+			summarySessionId: summarySessionId(db, input.automaticContext, input.filters?.project),
 		});
 		if (!ranked || ranked.generationId !== input.generationId) return null;
 		return {

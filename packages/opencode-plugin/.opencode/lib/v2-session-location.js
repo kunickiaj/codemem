@@ -10,8 +10,8 @@ const sameLocation = (a, b) => resolve(a.directory) === resolve(b.directory)
   && (a.workspaceID ?? null) === (b.workspaceID ?? null);
 
 /**
- * Event locations reject foreign publications early. A positive decision always
- * needs a fresh session read; never cache it across a session move.
+ * Host event envelopes retain their publication location across session moves.
+ * Hooks and envelopes without a location need a fresh session read.
  * Message text, tool arguments and parent-session IDs are not location evidence.
  */
 export const readV2SessionOwnership = async (context, sessionID, {
@@ -24,7 +24,7 @@ export const readV2SessionOwnership = async (context, sessionID, {
   }
   if (location !== undefined) {
     if (!validLocation(location)) return "unavailable";
-    if (!sameLocation(context.location, location)) return "foreign";
+    return sameLocation(context.location, location) ? "owned" : "foreign";
   }
   if (typeof context.session?.get !== "function") return "unavailable";
   try {
