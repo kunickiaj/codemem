@@ -18,6 +18,8 @@ Each sync pass with a peer tries the peer's direct addresses first. Relay is use
 
 The Viewer's **Sync now** action uses the same relay fallback as background sync. A recent direct check that identifies a pre-0.48 peer without relay support keeps that peer on direct sync. That observation expires after 24 hours so an upgraded peer can be tried again even if its direct addresses remain unreachable. Peers whose version is unknown can still be tried through relay.
 
+Before choosing a relay route, **Sync now** refreshes stale Space permissions from the coordinator. If that refresh fails, relay stays unavailable and the pass can still try direct sync. An all-peers request does not repeat the same failed refresh for each peer.
+
 Relay doesn't replace an always-on device. These three situations look similar but behave differently:
 
 | Situation | What happens |

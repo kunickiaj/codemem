@@ -7,6 +7,7 @@ import {
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import {
+	listCachedScopesForDevice,
 	loadCachedScope,
 	type ScopeMembershipCacheAuthority,
 } from "./scope-membership-cache-read.js";
@@ -626,14 +627,35 @@ function persistCurrentSnapshots(
 		.immediate();
 }
 
+function configuredScopeCacheNeedsRefresh(db: Database, config: CoordinatorSyncConfig): boolean {
+	const local = db.prepare("SELECT device_id FROM sync_device LIMIT 1").get() as
+		| { device_id: string }
+		| undefined;
+	// An on-demand read must not initialize a new signing identity.
+	if (!local?.device_id) return false;
+	const coordinatorId = authorityId(config.syncCoordinatorUrl);
+	return groupIds(config.syncCoordinatorGroups).some(
+		(groupId) =>
+			listCachedScopesForDevice(db, local.device_id, { authority: { coordinatorId, groupId } })
+				.freshness !== "fresh",
+	);
+}
+
 export async function refreshConfiguredScopeMembershipCache(
 	db: Database,
 	config?: CoordinatorSyncConfig,
-	options?: { keysDir?: string | null; dbPath?: string },
+	options?: { keysDir?: string | null; dbPath?: string; onlyIfStale?: boolean },
 ): Promise<RefreshScopeMembershipCacheResult> {
 	const syncConfig = config ?? readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(syncConfig)) {
 		return { status: "skipped", coordinatorId: null, groups: [] };
+	}
+	if (options?.onlyIfStale && !configuredScopeCacheNeedsRefresh(db, syncConfig)) {
+		return {
+			status: "skipped",
+			coordinatorId: authorityId(syncConfig.syncCoordinatorUrl),
+			groups: [],
+		};
 	}
 	return refreshScopeMembershipCache(db, {
 		groupIds: syncConfig.syncCoordinatorGroups,
