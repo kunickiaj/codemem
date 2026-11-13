@@ -75,7 +75,7 @@ async function runSetup(...args: string[]): Promise<void> {
  * does not accept it until the plugin ships built-in memory tools.
  */
 async function runNativeOpencodeSetup(): Promise<void> {
-	installOpencodeSetup(false, "native");
+	expect(installOpencodeSetup(false, "native"), logs.error.join("\n")).toBe(true);
 }
 
 function writeConfig(raw: string): void {
