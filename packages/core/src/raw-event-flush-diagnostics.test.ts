@@ -94,15 +94,102 @@ it("does not attribute an unknown failure reason to provider output", async () =
 	expect(store.rawEventFlushState("synthetic-session", "opencode")).toBe(-1);
 });
 
-it("reports unprocessable input before inference without changing exhaustion or retention", async () => {
-	// Arrange: three trivial prompts exceed the existing terminal microbatch rule.
-	const sessionId = "ses_no_input_stage";
-	for (let index = 0; index < 3; index += 1) {
+it.each([
+	{ count: 3, adapter: false },
+	{ count: 8, adapter: false },
+	{ count: 100, adapter: false },
+	{ count: 3, adapter: true },
+])(
+	"completes $count diagnosed trivial prompts (adapter=$adapter) at exhaustion without inference",
+	async ({ count, adapter }) => {
+		// Arrange: repeated acknowledgements contain no tool or assistant result to extract.
+		const sessionId = "ses_no_input_stage";
+		for (let index = 0; index < count; index += 1) {
+			store.recordRawEvent({
+				opencodeSessionId: sessionId,
+				eventId: `prompt-${index}`,
+				eventType: "user_prompt",
+				payload: {
+					type: "user_prompt",
+					prompt_text: "ok",
+					...(adapter
+						? {
+								_adapter: {
+									schema_version: "1.0",
+									source: "opencode",
+									session_id: sessionId,
+									event_id: `prompt-${index}`,
+									event_type: "prompt",
+									ts: "2026-01-01T00:00:00.000Z",
+									payload: { text: "ok" },
+								},
+							}
+						: {}),
+				},
+				tsWallMs: 100 + index,
+			});
+		}
+		const observe = vi.fn();
+		const options = {
+			observer: {
+				observe,
+				getStatus: () => ({ provider: "test", model: "test-model", runtime: "test" }),
+			},
+		} as unknown as IngestOptions;
+		const flushOptions = { opencodeSessionId: sessionId, source: "opencode" };
+
+		// Act: retain the normal retry boundary, then finalize the proven trivial range.
+		await expect(flushRawEvents(store, options, flushOptions)).rejects.toThrow();
+		const beforeFinalization = store.rawEventFlushState(sessionId, "opencode");
+		await flushRawEvents(store, options, flushOptions);
+		const batch = store.db
+			.prepare(
+				"SELECT status, attempt_count, error_type, error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
+			)
+			.get(sessionId);
+
+		// Assert: raw input remains available and no extraction or memory writes occurred.
+		expect(observe).not.toHaveBeenCalled();
+		expect(beforeFinalization).toBe(-1);
+		expect(store.rawEventFlushState(sessionId, "opencode")).toBe(count - 1);
+		expect(batch).toEqual({
+			status: "completed",
+			attempt_count: 1,
+			error_type: null,
+			error_message: null,
+		});
+		expect(
+			store.db
+				.prepare("SELECT COUNT(*) AS count FROM raw_events WHERE opencode_session_id = ?")
+				.get(sessionId),
+		).toEqual({ count });
+		expect(store.recent(10)).toHaveLength(0);
+	},
+);
+
+it.each([
+	{
+		type: "tool.execute.after",
+		tool: "shell",
+		args: { command: "printf 'synthetic result'" },
+		result: "synthetic result",
+	},
+	{ type: "assistant_message", assistant_text: "A synthetic durable finding requires review." },
+	{ type: "user_prompt", prompt_text: "Remember that deployment requires a reviewed migration." },
+	{ type: "unknown_event", result: "unrecognized input must remain retained" },
+	{ type: "user_prompt", prompt_text: "ok", _adapter: { schema_version: "unsupported" } },
+])("does not dismiss a larger failed range containing $type", async (event) => {
+	const sessionId = "ses_nontrivial_failure";
+	for (const [index, payload] of [
+		{ type: "user_prompt", prompt_text: "ok" },
+		{ type: "user_prompt", prompt_text: "ok" },
+		event,
+	].entries()) {
 		store.recordRawEvent({
 			opencodeSessionId: sessionId,
-			eventId: `prompt-${index}`,
-			eventType: "user_prompt",
-			payload: { type: "user_prompt", prompt_text: "ok" },
+			eventId: `event-${index}`,
+			eventType: payload.type,
+			payload,
 			tsWallMs: 100 + index,
 		});
 	}
@@ -113,32 +200,32 @@ it("reports unprocessable input before inference without changing exhaustion or 
 			getStatus: () => ({ provider: "test", model: "test-model", runtime: "test" }),
 		},
 	} as unknown as IngestOptions;
+	const error = new ingestPipeline.RawEventObserverOutputError(
+		"synthetic pre-inference failure",
+		"no_processable_input",
+		options.observer,
+		{ includeObserverError: false },
+	);
+	vi.spyOn(ingestPipeline, "ingest").mockRejectedValueOnce(error);
 	const flushOptions = { opencodeSessionId: sessionId, source: "opencode" };
-
-	// Act: record failure, then run the existing exhaustion finalization.
-	await expect(flushRawEvents(store, options, flushOptions)).rejects.toThrow();
-	const beforeFinalization = store.rawEventFlushState(sessionId, "opencode");
+	await expect(flushRawEvents(store, options, flushOptions)).rejects.toBe(error);
 	await flushRawEvents(store, options, flushOptions);
-	const batch = store.db
-		.prepare(
-			"SELECT status, attempt_count, error_type, error_message FROM raw_event_flush_batches WHERE opencode_session_id = ?",
-		)
-		.get(sessionId);
-
-	// Assert: the message describes the stage without altering retry/cursor semantics.
-	expect(observe).not.toHaveBeenCalled();
-	expect(beforeFinalization).toBe(-1);
-	expect(store.rawEventFlushState(sessionId, "opencode")).toBeGreaterThanOrEqual(0);
-	expect(batch).toEqual({
+	expect(
+		store.db
+			.prepare(
+				"SELECT status,error_type,error_message FROM raw_event_flush_batches WHERE opencode_session_id=?",
+			)
+			.get(sessionId),
+	).toEqual({
 		status: "gave_up",
-		attempt_count: 1,
 		error_type: "RawEventObserverOutputError:no_processable_input",
 		error_message:
 			"Raw-event input contained no processable content. Observer inference was not called.",
 	});
+	expect(observe).not.toHaveBeenCalled();
 	expect(
 		store.db
-			.prepare("SELECT COUNT(*) AS count FROM raw_events WHERE opencode_session_id = ?")
+			.prepare("SELECT count(*) count FROM raw_events WHERE opencode_session_id=?")
 			.get(sessionId),
 	).toEqual({ count: 3 });
 	expect(store.recent(10)).toHaveLength(0);

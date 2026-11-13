@@ -936,6 +936,14 @@ interface OutputDispositionStage {
 	summary: SummaryCandidate | null;
 }
 
+interface OutputDiagnostics {
+	parsed_observation_count: number;
+	parsed_has_summary: boolean;
+	validated_observation_count: number;
+	routed_observation_count: number;
+	summary_removal_reason: "none" | "no_candidate" | "filtered" | "policy" | "no_assistant_or_tools";
+}
+
 function filterObservationsForPersistence(
 	stage: IngestSessionStage,
 	parsed: ObserverInferenceStage["response"]["parsed"],
@@ -1057,6 +1065,7 @@ function resolveOutputDisposition(
 	inference: ObserverInferenceStage,
 	capture: CaptureRoutingStage,
 	summaryCandidate: SummaryCandidate | null,
+	diagnostics: OutputDiagnostics,
 ): OutputDispositionStage {
 	const parsed = inference.response.parsed;
 	const sessionClass = classifySessionForInjection({
@@ -1083,6 +1092,7 @@ function resolveOutputDisposition(
 	if (suppressSummary) {
 		summary = null;
 		summaryDisposition = "suppressed";
+		diagnostics.summary_removal_reason = "policy";
 	}
 	if (
 		stage.sessionContext.flusher === "raw_events" &&
@@ -1092,6 +1102,7 @@ function resolveOutputDisposition(
 		!prepared.lastAssistantMessage
 	) {
 		summary = null;
+		diagnostics.summary_removal_reason = "no_assistant_or_tools";
 	}
 	const sessionMetadata = {
 		session_class: sessionClass,
@@ -1345,21 +1356,46 @@ function buildPlannedMemories(
 	return { memories, summaryIndex };
 }
 
+function buildOutputDiagnostics(
+	stage: IngestSessionStage,
+	parsed: ObserverInferenceStage["response"]["parsed"],
+	filtered: CaptureRoutedObservation[],
+	capture: CaptureRoutingStage,
+	summaryCandidate: SummaryCandidate | null,
+): OutputDiagnostics {
+	let summaryRemovalReason: OutputDiagnostics["summary_removal_reason"] = "none";
+	if (!parsed.summary) summaryRemovalReason = "no_candidate";
+	else if (!stage.storeSummary || parsed.skipSummaryReason) summaryRemovalReason = "policy";
+	else if (!summaryCandidate) summaryRemovalReason = "filtered";
+	return {
+		parsed_observation_count: parsed.observations.length,
+		parsed_has_summary: parsed.summary !== null,
+		validated_observation_count: filtered.length,
+		routed_observation_count: capture.observations.length,
+		summary_removal_reason: summaryRemovalReason,
+	};
+}
+
 function buildIngestPersistencePlan(
 	stage: IngestSessionStage,
 	prepared: PreparedIngestStage,
 	inference: ObserverInferenceStage,
+	usageRecord: ObserverUsageRecord,
 ): IngestPersistencePlan {
 	const parsed = inference.response.parsed;
 	const filtered = filterObservationsForPersistence(stage, parsed);
 	const capture = applyCaptureRouting(stage, filtered);
 	const summaryCandidate = prepareSummaryForPersistence(stage, parsed);
+	const diagnostics = buildOutputDiagnostics(stage, parsed, filtered, capture, summaryCandidate);
+	// Keep pre-filter evidence even when disposition rejects all output before a plan exists.
+	usageRecord.metadata.output_diagnostics = diagnostics;
 	const disposition = resolveOutputDisposition(
 		stage,
 		prepared,
 		inference,
 		capture,
 		summaryCandidate,
+		diagnostics,
 	);
 	const observerCallMetadata = buildObserverCallMetadata(
 		stage,
@@ -1368,6 +1404,7 @@ function buildIngestPersistencePlan(
 		capture,
 		disposition,
 	);
+	observerCallMetadata.output_diagnostics = diagnostics;
 	if (disposition.softSkip) {
 		return {
 			action: "skip",
@@ -1619,7 +1656,7 @@ async function processIngestSession(
 			recordCompletedObserverUsage(store, stage.sessionId, usageRecord);
 			return;
 		}
-		const persistence = buildIngestPersistencePlan(stage, prepared, inference);
+		const persistence = buildIngestPersistencePlan(stage, prepared, inference, usageRecord);
 		usageRecord.metadata = persistence.plan.observerCallMetadata;
 		if (persistence.action === "skip") {
 			persistSkippedIngest(store, stage, usageRecord);
