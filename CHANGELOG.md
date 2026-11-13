@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The Viewer's **Sync now** action refreshes stale Space permissions before choosing relay, so manual retries do not have to wait for the next background refresh.
+
 ## [0.49.0-beta.5] - 2026-11-13
 
 ### Fixed

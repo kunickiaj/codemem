@@ -242,14 +242,36 @@ type SafeSkippedSyncDetail = Pick<
 	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
 >;
 
-function manualSyncReachability(
-	resolver: SyncPeerReachabilityResolver | undefined,
+interface ManualSyncOptions {
+	readonly resolver: SyncPeerReachabilityResolver | undefined;
+	readonly config: ReturnType<typeof readCoordinatorSyncConfig>;
+	refreshFailed: boolean;
+}
+
+async function refreshManualSyncAuthorization(store: MemoryStore, options: ManualSyncOptions) {
+	if (options.refreshFailed) return;
+	const refreshed = await refreshConfiguredScopeMembershipCache(store.db, options.config, {
+		keysDir: syncKeysDir(),
+		dbPath: store.dbPath,
+		onlyIfStale: true,
+	}).catch((error) => {
+		options.refreshFailed = true;
+		throw error;
+	});
+	options.refreshFailed = refreshed.status !== "refreshed" && refreshed.status !== "skipped";
+}
+
+async function manualSyncReachability(
 	store: MemoryStore,
 	peerId: string,
+	options: ManualSyncOptions,
 ) {
+	const { resolver } = options;
+	if (!resolver) return undefined;
 	let route: ReturnType<SyncPeerReachabilityResolver["forPeer"]>;
 	try {
-		route = resolver?.forPeer(store.db, peerId);
+		await refreshManualSyncAuthorization(store, options);
+		route = resolver.forPeer(store.db, peerId);
 	} catch {
 		// Match daemon retries: unavailable relay routing must not block direct sync.
 		return undefined;
@@ -266,18 +288,67 @@ function manualSyncReachability(
 	};
 }
 
-function runManualSyncPass(
-	store: MemoryStore,
-	peerId: string,
-	resolver: SyncPeerReachabilityResolver | undefined,
-) {
+async function runManualSyncPass(store: MemoryStore, peerId: string, options: ManualSyncOptions) {
 	// Match the daemon's signing keys, including a configured CODEMEM_KEYS_DIR.
 	return runSyncPass(store.db, peerId, {
 		keysDir: syncKeysDir(),
 		dbPath: store.dbPath,
 		scanner: store.scanner,
-		reachability: manualSyncReachability(resolver, store, peerId),
+		reachability: await manualSyncReachability(store, peerId, options),
 	});
+}
+
+function manualSyncHandler(
+	getStore: StoreFactory,
+	options: Pick<SyncRoutesOptions, "syncReachability">,
+) {
+	return async (c: Context) => {
+		const store = getStore();
+		let body: Record<string, unknown> = {};
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			body = {};
+		}
+		const config = readCoordinatorSyncConfig();
+		if (!config.syncEnabled) return c.json({ error: "sync_disabled" }, 403);
+		const address =
+			typeof body.address === "string" && body.address.trim() ? body.address.trim() : null;
+		const requestedPeerId =
+			typeof body.peer_device_id === "string" && body.peer_device_id.trim()
+				? body.peer_device_id.trim()
+				: null;
+		let peerIds: string[];
+		if (address) {
+			const peerId = findPeerDeviceIdForAddress(store, address);
+			if (!peerId) return c.json({ error: "unknown peer address" }, 404);
+			peerIds = [peerId];
+		} else if (requestedPeerId) {
+			const requestedPeerRows = store.db
+				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+				.all(requestedPeerId) as Array<{ peer_device_id: string | null }>;
+			peerIds = requestedPeerRows
+				.map((row) => String(row.peer_device_id ?? "").trim())
+				.filter(Boolean);
+		} else {
+			const allPeerRows = store.db.prepare("SELECT peer_device_id FROM sync_peers").all() as Array<{
+				peer_device_id: string | null;
+			}>;
+			peerIds = allPeerRows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
+		}
+		const items = [] as Array<Record<string, unknown>>;
+		const manualSyncOptions = { resolver: options.syncReachability, config, refreshFailed: false };
+		for (const peerId of peerIds) {
+			const result = await runManualSyncPass(store, peerId, manualSyncOptions);
+			items.push({
+				peer_device_id: peerId,
+				...result,
+				skippedOut: undefined,
+				skipped_out: safeSkippedSyncDetail(result.skippedOut),
+			});
+		}
+		return c.json({ items });
+	};
 }
 
 function safeSkippedSyncDetail(
@@ -6473,54 +6544,7 @@ export function syncRoutes(
 		}
 	});
 
-	app.post("/api/sync/run", async (c) => {
-		const store = getStore();
-		let body: Record<string, unknown> = {};
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			body = {};
-		}
-		const config = readCoordinatorSyncConfig();
-		if (!config.syncEnabled) {
-			return c.json({ error: "sync_disabled" }, 403);
-		}
-		const address =
-			typeof body.address === "string" && body.address.trim() ? body.address.trim() : null;
-		const requestedPeerId =
-			typeof body.peer_device_id === "string" && body.peer_device_id.trim()
-				? body.peer_device_id.trim()
-				: null;
-		let peerIds: string[];
-		if (address) {
-			const peerId = findPeerDeviceIdForAddress(store, address);
-			if (!peerId) return c.json({ error: "unknown peer address" }, 404);
-			peerIds = [peerId];
-		} else if (requestedPeerId) {
-			const requestedPeerRows = store.db
-				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
-				.all(requestedPeerId) as Array<{ peer_device_id: string | null }>;
-			peerIds = requestedPeerRows
-				.map((row) => String(row.peer_device_id ?? "").trim())
-				.filter(Boolean);
-		} else {
-			const allPeerRows = store.db.prepare("SELECT peer_device_id FROM sync_peers").all() as Array<{
-				peer_device_id: string | null;
-			}>;
-			peerIds = allPeerRows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
-		}
-		const items = [] as Array<Record<string, unknown>>;
-		for (const peerId of peerIds) {
-			const result = await runManualSyncPass(store, peerId, options.syncReachability);
-			items.push({
-				peer_device_id: peerId,
-				...result,
-				skippedOut: undefined,
-				skipped_out: safeSkippedSyncDetail(result.skippedOut),
-			});
-		}
-		return c.json({ items });
-	});
+	app.post("/api/sync/run", manualSyncHandler(getStore, options));
 
 	app.post("/api/sync/peers/scope", async (c) => {
 		const store = getStore();

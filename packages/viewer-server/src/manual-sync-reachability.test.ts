@@ -12,6 +12,11 @@ import { createApp } from "./index.js";
 vi.mock("@codemem/core", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@codemem/core")>()),
 	readCoordinatorSyncConfig: vi.fn(() => ({ syncEnabled: true })),
+	refreshConfiguredScopeMembershipCache: vi.fn(async () => ({
+		status: "skipped",
+		coordinatorId: null,
+		groups: [],
+	})),
 	runSyncPass: vi.fn(),
 }));
 
@@ -25,7 +30,8 @@ vi.mock("@codemem/core/internal/relay-runtime", async (importOriginal) => ({
 // Supply static HTML without requiring a UI build or writing fixture files.
 vi.mock("node:fs", async (importOriginal) => {
 	const fs = await importOriginal<typeof import("node:fs")>();
-	const isFixture = (path: unknown) => String(path) === "/manual-sync-test-assets/index.html";
+	const isFixture = (path: unknown) =>
+		["/manual-sync-test-assets", "/manual-sync-test-assets/index.html"].includes(String(path));
 	return {
 		...fs,
 		existsSync: (path: Parameters<typeof fs.existsSync>[0]) =>
@@ -39,10 +45,13 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const result = { ok: true, opsIn: 2, opsOut: 1, addressErrors: [] };
 const runSyncPass = vi.mocked(core.runSyncPass);
+const refreshAuthorization = vi.mocked(core.refreshConfiguredScopeMembershipCache);
 let db: Database.Database;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	refreshAuthorization.mockReset();
+	refreshAuthorization.mockResolvedValue({ status: "skipped", coordinatorId: null, groups: [] });
 	vi.stubEnv("CODEMEM_VIEWER_STATIC_DIR", "/manual-sync-test-assets");
 	vi.stubEnv("CODEMEM_KEYS_DIR", "/manual-sync-test-keys");
 	db = new Database(":memory:");
@@ -272,5 +281,102 @@ describe("manual sync resolver failures", () => {
 			"peer-a",
 			expect.objectContaining({ reachability: undefined }),
 		);
+	});
+});
+
+describe("manual sync authorization refresh", () => {
+	it("awaits revalidation before choosing a relay route", async () => {
+		const route = { scopeId: "space-a", logicalOrigin: "https://relay.invalid" };
+		const routes = resolver(route);
+		let refreshed = false;
+		refreshAuthorization.mockImplementationOnce(async () => {
+			refreshed = true;
+			return { status: "refreshed", coordinatorId: "https://coord.example.test", groups: [] };
+		});
+		routes.forPeer.mockImplementation(() => (refreshed ? route : undefined));
+		const f = fixture(routes);
+		expect((await f.run({ peer_device_id: "peer-a" })).status).toBe(200);
+		expect(refreshAuthorization).toHaveBeenCalledWith(
+			db,
+			{ syncEnabled: true },
+			{
+				keysDir: "/manual-sync-test-keys",
+				dbPath: f.store.dbPath,
+				onlyIfStale: true,
+			},
+		);
+		expect(passRoute()).toMatchObject(route);
+	});
+
+	it("keeps direct fallback and does not use a route after revalidation throws", async () => {
+		refreshAuthorization.mockRejectedValueOnce(new Error("synthetic refresh unavailable"));
+		const routes = resolver({ scopeId: "space-a", logicalOrigin: "https://relay.invalid" });
+		const f = fixture(routes);
+		expect((await f.run({ peer_device_id: "peer-a" })).status).toBe(200);
+		expect(routes.forPeer).not.toHaveBeenCalled();
+		expect(passRoute()).toBeUndefined();
+	});
+
+	it("does not refresh authorization for direct-only viewers", async () => {
+		expect((await fixture().run()).status).toBe(200);
+		expect(refreshAuthorization).not.toHaveBeenCalled();
+	});
+});
+
+describe("manual sync refresh failures across peers", () => {
+	beforeEach(() => {
+		db.prepare("INSERT INTO sync_peers(peer_device_id, created_at) VALUES (?, ?)").run(
+			"peer-b",
+			"2026-01-01",
+		);
+	});
+
+	it.each(["stale", "partial"] as const)(
+		"does not repeat a %s refresh for every peer",
+		async (status) => {
+			refreshAuthorization.mockResolvedValue({
+				status,
+				coordinatorId: "https://coord.example.test",
+				groups: [],
+			});
+			const routes = resolver();
+			const f = fixture(routes);
+			expect((await f.run()).status).toBe(200);
+			expect(refreshAuthorization).toHaveBeenCalledTimes(1);
+			expect(runSyncPass).toHaveBeenCalledTimes(2);
+			expect(routes.forPeer.mock.calls).toEqual([
+				[db, "peer-a"],
+				[db, "peer-b"],
+			]);
+		},
+	);
+
+	it("does not repeat a thrown refresh for the next peer", async () => {
+		refreshAuthorization.mockRejectedValue(new Error("synthetic coordinator unavailable"));
+		const routes = resolver();
+		const f = fixture(routes);
+		expect((await f.run()).status).toBe(200);
+		expect(refreshAuthorization).toHaveBeenCalledTimes(1);
+		expect(runSyncPass).toHaveBeenCalledTimes(2);
+		expect(routes.forPeer).toHaveBeenCalledExactlyOnceWith(db, "peer-b");
+	});
+
+	it("rechecks freshness for later peers after a successful refresh", async () => {
+		refreshAuthorization.mockResolvedValue({
+			status: "refreshed",
+			coordinatorId: "https://coord.example.test",
+			groups: [],
+		});
+		const f = fixture(resolver());
+		expect((await f.run()).status).toBe(200);
+		expect(refreshAuthorization).toHaveBeenCalledTimes(2);
+	});
+
+	it("tries revalidation again on a new manual request", async () => {
+		refreshAuthorization.mockRejectedValueOnce(new Error("synthetic coordinator unavailable"));
+		const f = fixture(resolver());
+		await f.run({ peer_device_id: "peer-a" });
+		await f.run({ peer_device_id: "peer-a" });
+		expect(refreshAuthorization).toHaveBeenCalledTimes(2);
 	});
 });
