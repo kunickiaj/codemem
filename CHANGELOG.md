@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.49.0-beta.7] - 2026-11-13
+
+### Fixed
+
+- Saving a memory waits for an active database writer before reading its source identity, avoiding immediate database-lock failures during concurrent background work. ([#2737])
+
 ## [0.49.0-beta.6] - 2026-11-13
 
 ### Fixed
@@ -335,7 +341,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.7...HEAD
+[0.49.0-beta.7]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...v0.49.0-beta.7
 [0.49.0-beta.6]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...v0.49.0-beta.6
 [0.49.0-beta.5]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.4...v0.49.0-beta.5
 [0.49.0-beta.2]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.1...v0.49.0-beta.2
@@ -515,3 +522,4 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2730]: https://github.com/kunickiaj/codemem/pull/2730
 [#2731]: https://github.com/kunickiaj/codemem/pull/2731
 [#2735]: https://github.com/kunickiaj/codemem/pull/2735
+[#2737]: https://github.com/kunickiaj/codemem/pull/2737
