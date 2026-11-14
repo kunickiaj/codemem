@@ -5,6 +5,7 @@
 ### Fixed
 
 - Relayed sync accepts valid requests that arrive before the receiving device finishes preparing to read them, avoiding a timing-dependent disconnect.
+- Relay health readiness refreshes after successful coordinator requests, preventing an expired published stamp from rejecting an otherwise healthy exchange.
 
 ## [0.49.0-beta.7] - 2026-11-13
 

@@ -150,6 +150,48 @@ describe("relay health driven by an external scheduler", () => {
 		expect(f.monitor().snapshot().state).toBe("paused");
 		expect(f.published.at(-1)).toMatchObject({ state: "paused" });
 	});
+
+	it("renews the published ready stamp when a real-client success advances fresh observations", async () => {
+		const f = setup();
+		for (let now = 120000; now <= 480000; now += 30000) {
+			f.setNow(now);
+			await f.monitor().runScheduledCycle();
+		}
+		const realSuccess = () =>
+			f.monitor().recordServerSample({
+				groupId: "group-a",
+				cohort: "real-client",
+				observation: {
+					endpoint: "catalogue",
+					completedAt: f.clock(),
+					durationMs: 12,
+					outcome: "success",
+				},
+			});
+		f.setNow(491000);
+		await realSuccess();
+		f.setNow(510000);
+		await f.monitor().runScheduledCycle();
+		expect(f.published.at(-1)).toMatchObject({ state: "ready", observedAtMs: 491000 });
+		f.setNow(520000);
+		await realSuccess();
+		const publications = f.publish.mock.calls.length;
+		await realSuccess();
+		expect(f.publish).toHaveBeenCalledTimes(publications);
+		f.setNow(541000);
+		expect(f.monitor().snapshot()).toMatchObject({
+			state: "ready",
+			observedAtMs: 510000,
+			validUntilMs: 560000,
+		});
+		expect(f.published.at(-1)).toMatchObject({
+			state: "ready",
+			observedAtMs: 510000,
+			validUntilMs: 560000,
+		});
+		f.setNow(560000);
+		expect(f.monitor().snapshot().state).toBe("paused");
+	});
 });
 
 describe("relay health instrumentation for several groups", () => {
