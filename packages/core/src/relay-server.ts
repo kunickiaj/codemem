@@ -14,6 +14,13 @@ import {
 } from "./relay-control-codec.js";
 import { decodeRelayDataFrame } from "./relay-data-frame.js";
 import {
+	RELAY_DIAGNOSTIC_REASONS,
+	type RelayDiagnosticConnection,
+	type RelayDiagnosticDirection,
+	type RelayDiagnosticSite,
+	type RelayServerDiagnostic,
+} from "./relay-server-diagnostic.js";
+import {
 	RELAY_RENEW_AFTER_MS,
 	type RelayRegistrationSnapshot,
 	readRelayRegistrationSnapshot,
@@ -22,6 +29,7 @@ import {
 import {
 	createRelayServiceProof,
 	type RelayServiceSigner,
+	relayBodyDigest,
 	relayRealmId,
 } from "./relay-service-proof.js";
 
@@ -38,7 +46,9 @@ export interface RelayServerSocket {
 export interface RelaySocketEvents {
 	text(bytes: Uint8Array): Promise<void>;
 	binary(bytes: Uint8Array): void;
-	closed(): void;
+	closed(site?: RelayDiagnosticSite): void;
+	/** Records a host close origin without changing when the engine tears down the socket. */
+	closing?(site: RelayDiagnosticSite): void;
 	pending(): boolean;
 }
 export interface RelayServerLimits {
@@ -67,6 +77,8 @@ export interface RelayQuotaPort {
 	): Promise<RelayAdmissionBudgetStatus>;
 }
 export interface RelayServerOptions {
+	/** Local metadata only. Exceptions are ignored. No snapshots or hashes when absent. */
+	readonly onDiagnostic?: (event: RelayServerDiagnostic) => void;
 	readonly namespace: {
 		readonly authorityId: string;
 		readonly groupId: string;
@@ -118,6 +130,11 @@ const ROUTE_LIFETIME_MS = 60_000;
 const INITIAL_TRAFFIC_GRANT = 16 * 1024;
 const MAX_FRAME = 65_558;
 const textBytes = new TextEncoder();
+const CLOSE_ABORT_SITES = { abort: "peer_abort", end: "end_before_accepted" } as const;
+function diagnosticRemainingMs(expires: number, now: number): number | null {
+	const remaining = expires - now;
+	return Number.isFinite(remaining) ? Math.max(0, remaining) : null;
+}
 function defaultRandom(bytes: number): Uint8Array {
 	return globalThis.crypto.getRandomValues(new Uint8Array(bytes));
 }
@@ -146,6 +163,7 @@ interface Connection {
 	phase: "service" | "signing" | "register" | "checking" | "ready";
 	closing: boolean;
 	physicalClosed: boolean;
+	diagnosticSite?: RelayDiagnosticSite;
 	pending: boolean;
 	controlPending: boolean;
 	readonly controls: { readonly message: RelayControl; readonly resolve: () => void }[];
@@ -187,6 +205,7 @@ interface Route {
 	closed: boolean;
 	bytes: number;
 	frames: number;
+	terminalDiagnostic?: RelayServerDiagnostic;
 	timer?: ReturnType<typeof setTimeout>;
 }
 
@@ -197,7 +216,7 @@ export function createRelayServer(options: RelayServerOptions) {
 		adopt: (socket: RelayServerSocket) => engine.adopt(socket),
 		/** Re-adopts a socket after host eviction, or returns null so the host closes it. */
 		restore: (socket: RelayServerSocket, snapshot: unknown) => engine.restore(socket, snapshot),
-		close: () => engine.close(),
+		close: (site?: RelayDiagnosticSite) => engine.close(site),
 		counters: () => engine.counters(),
 	};
 }
@@ -274,7 +293,7 @@ class RelayServerEngine {
 		const known = [...this.connections].find((connection) => connection.socket === socket);
 		if (known) {
 			// A tracked socket cannot be re-adopted. Fail closed instead of merging state.
-			this.disconnect(known);
+			this.disconnect(known, "restore_known_socket");
 			return null;
 		}
 		if (!this.accepting()) return null;
@@ -289,7 +308,7 @@ class RelayServerEngine {
 		);
 		if (claimants.length > 0) {
 			// Two sockets claiming one device after wake cannot be ordered. Close both.
-			for (const other of claimants) this.disconnect(other);
+			for (const other of claimants) this.disconnect(other, "restore_device_conflict");
 			return null;
 		}
 		const now = this.now();
@@ -327,24 +346,29 @@ class RelayServerEngine {
 				try {
 					this.binary(connection, bytes);
 				} catch {
-					this.disconnect(connection);
+					this.disconnect(connection, "binary_exception");
 				}
 			},
-			closed: () => {
+			closing: (site) => {
+				if (!this.options.onDiagnostic) return;
+				connection.diagnosticSite ??= site;
+				this.captureSocketOrigin(connection, connection.diagnosticSite);
+			},
+			closed: (site = "physical_close") => {
 				connection.physicalClosed = true;
-				this.disconnect(connection);
+				this.disconnect(connection, site);
 				this.connections.delete(connection);
 			},
 		};
 	}
-	close(): void {
+	close(site: RelayDiagnosticSite = "engine_shutdown"): void {
 		this.stopped = true;
-		for (const connection of this.connections) this.disconnect(connection);
+		for (const connection of this.connections) this.disconnect(connection, site);
 	}
 	private live(connection: Connection): boolean {
 		if (connection.closing || this.stopped) return false;
 		if (connection.pending && this.now() >= connection.setupExpires) {
-			this.disconnect(connection);
+			this.disconnect(connection, "setup_expired");
 			return false;
 		}
 		if (connection.registration && this.now() >= connection.registration.expires) {
@@ -352,7 +376,7 @@ class RelayServerEngine {
 				this.registrations.delete(connection.registration.deviceId);
 		}
 		if (connection.challenge && this.now() >= connection.challenge.expires) {
-			this.disconnect(connection);
+			this.disconnect(connection, "challenge_expired");
 			return false;
 		}
 		return true;
@@ -383,9 +407,11 @@ class RelayServerEngine {
 		);
 		background(connection.timer);
 	}
-	private disconnect(connection: Connection): void {
+	private disconnect(connection: Connection, site: RelayDiagnosticSite): void {
 		if (connection.closing) return;
 		connection.closing = true;
+		const origin = connection.diagnosticSite ?? site;
+		this.captureSocketOrigin(connection, origin);
 		connection.cancel.abort();
 		for (const control of connection.controls.splice(0)) control.resolve();
 		if (connection.timer) clearTimeout(connection.timer);
@@ -394,12 +420,23 @@ class RelayServerEngine {
 			this.registrations.delete(registration.deviceId);
 		for (const route of this.routes.values())
 			if (route.source === connection || route.target === connection)
-				this.removeRoute(route, "abort");
+				this.removeRoute(route, "abort", origin, connection);
 		try {
 			if (connection.paused) connection.socket.resumeInput();
 			connection.socket.close();
 		} catch {
 			/* Physical slots remain charged until closed(). */
+		}
+	}
+	private captureSocketOrigin(connection: Connection, site: RelayDiagnosticSite): void {
+		if (!this.options.onDiagnostic) return;
+		try {
+			// Abort listeners can re-enter teardown. Save the origin before notifying them.
+			for (const route of this.routes.values())
+				if (route.source === connection || route.target === connection)
+					route.terminalDiagnostic ??= this.routeDiagnostic(route, site, connection);
+		} catch {
+			/* Diagnostics cannot prevent cancellation or cleanup. */
 		}
 	}
 	private send(connection: Connection, message: RelayControl): void {
@@ -408,7 +445,7 @@ class RelayServerEngine {
 			const json = encodeRelayControl(message);
 			const bytes = textBytes.encode(json).byteLength;
 			if (!this.withinBuffers(connection, { additionalBytes: bytes })) {
-				this.disconnect(connection);
+				this.disconnect(connection, "control_buffer_preflight");
 				return;
 			}
 			connection.writes += bytes;
@@ -417,13 +454,13 @@ class RelayServerEngine {
 				if (written) return;
 				written = true;
 				connection.writes -= bytes;
-				if (error) this.disconnect(connection);
+				if (error) this.disconnect(connection, "control_write_callback");
 				this.updatePressure();
 			});
-			if (!this.withinBuffers(connection)) this.disconnect(connection);
+			if (!this.withinBuffers(connection)) this.disconnect(connection, "control_buffer_after_send");
 		} catch {
 			// A throwing adapter may still own text bytes until its callback or physical close.
-			this.disconnect(connection);
+			this.disconnect(connection, "control_send_exception");
 		}
 	}
 	private reject(connection: Connection, session: string): void {
@@ -497,7 +534,7 @@ class RelayServerEngine {
 					(connection.phase === "service" && message.type !== "SERVICE_CHALLENGE") ||
 					(connection.phase === "register" && message.type !== "REGISTER"))
 			) {
-				this.disconnect(connection);
+				this.disconnect(connection, "pending_control");
 				return;
 			}
 			if (message.type === "OPEN" && !connection.controlPending) {
@@ -509,7 +546,7 @@ class RelayServerEngine {
 				connection.controls.length + Number(connection.controlPending) >=
 				this.limits.deviceRoutes + 1
 			) {
-				this.disconnect(connection);
+				this.disconnect(connection, "control_queue_limit");
 				return;
 			}
 			await new Promise<void>((resolve) => {
@@ -517,7 +554,7 @@ class RelayServerEngine {
 				this.nextControl(connection);
 			});
 		} catch {
-			this.disconnect(connection);
+			this.disconnect(connection, "text_exception");
 		}
 	}
 	private nextControl(connection: Connection): void {
@@ -534,12 +571,12 @@ class RelayServerEngine {
 	private async runControl(connection: Connection, message: RelayControl): Promise<void> {
 		try {
 			if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
-				this.disconnect(connection);
+				this.disconnect(connection, "control_quota");
 				return;
 			}
 			await this.control(connection, message);
 		} catch {
-			this.disconnect(connection);
+			this.disconnect(connection, "control_exception");
 		}
 	}
 	private capturePendingEnd(connection: Connection, message: RelayControl): void {
@@ -567,7 +604,7 @@ class RelayServerEngine {
 				this.routeControl(connection, message);
 				return;
 			default:
-				this.disconnect(connection);
+				this.disconnect(connection, "unexpected_control");
 		}
 	}
 	private async service(
@@ -580,7 +617,7 @@ class RelayServerEngine {
 			(connection.registration &&
 				this.now() < connection.registration.started + RELAY_RENEW_AFTER_MS)
 		) {
-			this.disconnect(connection);
+			this.disconnect(connection, "service_context");
 			return;
 		}
 		connection.phase = "signing";
@@ -596,7 +633,7 @@ class RelayServerEngine {
 				}),
 		);
 		if (!body || !this.live(connection)) {
-			this.disconnect(connection);
+			this.disconnect(connection, "service_proof");
 			return;
 		}
 		this.send(connection, { v: 1, type: "SERVICE_PROOF", session: message.session, body });
@@ -645,14 +682,14 @@ class RelayServerEngine {
 				(connection.registration.deviceId !== check.value.deviceId ||
 					connection.registration.keyId !== check.value.keyId))
 		) {
-			this.disconnect(connection);
+			this.disconnect(connection, "registration_context");
 			return;
 		}
 		connection.phase = "checking";
 		// Retain the challenge deadline while the single-use request is in flight.
 		const grant = await this.check(connection, message.body, connection.cancel.signal);
 		if (!grant || !this.live(connection)) {
-			this.disconnect(connection);
+			this.disconnect(connection, "registration_denied");
 			return;
 		}
 		const identity = check.value;
@@ -678,9 +715,10 @@ class RelayServerEngine {
 		const hadClosingPeer = peers.some((other) => other.closing);
 		// A verified key change invalidates old routes even when the replacement cannot fit.
 		for (const other of peers)
-			if (other.registration?.keyId !== registration.keyId) this.disconnect(other);
+			if (other.registration?.keyId !== registration.keyId)
+				this.disconnect(other, "registration_key_replaced");
 		if (hadClosingPeer || peers.length > 1) {
-			this.disconnect(connection);
+			this.disconnect(connection, "registration_conflict");
 			return;
 		}
 		const reply: RelayControl = {
@@ -701,14 +739,14 @@ class RelayServerEngine {
 				additionalBytes: textBytes.encode(encodeRelayControl(reply)).byteLength,
 			})
 		) {
-			this.disconnect(connection);
+			this.disconnect(connection, "registration_buffer");
 			return;
 		}
 		if (!this.announceRegistration(connection, registration)) {
-			this.disconnect(connection);
+			this.disconnect(connection, "registration_snapshot");
 			return;
 		}
-		for (const other of peers) this.disconnect(other);
+		for (const other of peers) this.disconnect(other, "registration_replaced");
 		connection.registration = registration;
 		connection.challenge = undefined;
 		connection.pending = false;
@@ -804,7 +842,7 @@ class RelayServerEngine {
 		connection.controlPending = true;
 		try {
 			if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
-				this.disconnect(connection);
+				this.disconnect(connection, "open_control_quota");
 				return;
 			}
 			if (!route) {
@@ -862,7 +900,7 @@ class RelayServerEngine {
 	private routeLive(route: Route): boolean {
 		if (route.closed) return false;
 		if (this.now() >= route.expires) {
-			this.removeRoute(route, route.accepted ? "abort" : "reject");
+			this.removeRoute(route, route.accepted ? "abort" : "reject", "route_expired");
 			return false;
 		}
 		return true;
@@ -881,17 +919,17 @@ class RelayServerEngine {
 		const route = this.routes.get(message.session);
 		if (!route || !this.routeLive(route)) return;
 		if (connection !== route.source && connection !== route.target) {
-			this.disconnect(connection);
+			this.disconnect(connection, "route_control_nonparticipant");
 			return;
 		}
 		if (message.type === "CLOSE") {
 			if (message.body.mode === "abort" || !route.accepted) {
-				this.removeRoute(route, "abort");
+				this.removeRoute(route, "abort", CLOSE_ABORT_SITES[message.body.mode], connection);
 				return;
 			}
 			const direction = route.directions[Number(connection === route.target)];
 			if (!direction || direction.ended) {
-				this.removeRoute(route, "abort");
+				this.removeRoute(route, "abort", "duplicate_end", connection);
 				return;
 			}
 			direction.ended = true;
@@ -903,7 +941,7 @@ class RelayServerEngine {
 			route.accepted ||
 			(message.type !== "ACCEPTED" && message.type !== "REJECTED")
 		) {
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "invalid_route_control", connection);
 			return;
 		}
 		if (message.type === "REJECTED") {
@@ -913,9 +951,15 @@ class RelayServerEngine {
 		route.accepted = true;
 		this.send(route.source, { v: 1, type: "ACCEPTED", session: route.id, body: {} });
 	}
-	private removeRoute(route: Route, mode: "abort" | "reject" | "clean"): void {
+	private removeRoute(
+		route: Route,
+		mode: "abort" | "reject" | "clean",
+		site?: RelayDiagnosticSite,
+		connection?: Connection,
+	): void {
 		if (route.closed) return;
 		route.closed = true;
+		if (mode === "abort" && site) this.diagnoseRoute(route, site, connection);
 		this.routes.delete(route.id);
 		route.cancel.abort();
 		if (route.timer) clearTimeout(route.timer);
@@ -936,10 +980,107 @@ class RelayServerEngine {
 					});
 		this.updatePressure();
 	}
+	private routeDiagnostic(
+		route: Route,
+		site: RelayDiagnosticSite,
+		connection?: Connection,
+	): RelayServerDiagnostic {
+		let side: RelayServerDiagnostic["side"] = null;
+		if (connection === route.source) side = "source";
+		else if (connection === route.target) side = "target";
+		const now = this.now();
+		const directions = [
+			this.directionDiagnostic(route.directions[0]),
+			this.directionDiagnostic(route.directions[1]),
+		] as const;
+		return {
+			event: "route_abort",
+			trace: relayBodyDigest(textBytes.encode(route.id)).slice(0, 16),
+			reason: RELAY_DIAGNOSTIC_REASONS[site],
+			site,
+			side,
+			accepted: route.accepted,
+			bytes: route.bytes,
+			frames: route.frames,
+			queuedFrames: directions.reduce((sum, direction) => sum + direction.queuedFrames, 0),
+			pendingWrites: directions.reduce((sum, direction) => sum + direction.writes, 0),
+			waitingDirections: directions.filter((direction) => direction.waiting).length,
+			remainingMs: diagnosticRemainingMs(route.expires, now),
+			queuedBytes: directions.reduce(
+				(sum, direction) => sum + direction.queuedBytes + direction.writes,
+				0,
+			),
+			directions,
+			source: this.connectionDiagnostic(route.source, now),
+			target: route.target ? this.connectionDiagnostic(route.target, now) : null,
+		};
+	}
+	private directionDiagnostic(direction: Direction): RelayDiagnosticDirection {
+		return {
+			queuedFrames: direction.frames.length,
+			queuedBytes: direction.frames.reduce((sum, frame) => sum + frame.length, 0),
+			writes: direction.writes,
+			credit: direction.credit,
+			nextGrant: direction.nextGrant,
+			waiting: direction.waiting,
+			ended: direction.ended,
+			pendingEnd: direction.pendingEnd,
+			endForwarded: direction.endForwarded,
+		};
+	}
+	private connectionDiagnostic(connection: Connection, now: number): RelayDiagnosticConnection {
+		return {
+			phase: connection.phase,
+			pending: connection.pending,
+			closing: connection.closing,
+			physicalClosed: connection.physicalClosed,
+			restored: connection.restored !== undefined,
+			held: connection.held,
+			writes: connection.writes,
+			registrationRemainingMs: connection.registration
+				? diagnosticRemainingMs(connection.registration.expires, now)
+				: null,
+		};
+	}
+	private diagnoseRoute(route: Route, site: RelayDiagnosticSite, connection?: Connection): void {
+		const hook = this.options.onDiagnostic;
+		if (!hook) return;
+		try {
+			hook(route.terminalDiagnostic ?? this.routeDiagnostic(route, site, connection));
+		} catch {
+			/* Diagnostic sinks cannot change wire replies or cleanup. */
+		}
+	}
+	private diagnoseOrphan(session: string): void {
+		const hook = this.options.onDiagnostic;
+		if (!hook) return;
+		try {
+			hook({
+				event: "orphan_abort",
+				trace: relayBodyDigest(textBytes.encode(session)).slice(0, 16),
+				reason: "restored_route_lost",
+				site: "restored_route_lost",
+				side: null,
+				accepted: false,
+				bytes: 0,
+				frames: 0,
+				queuedFrames: 0,
+				pendingWrites: 0,
+				waitingDirections: 0,
+				remainingMs: null,
+				queuedBytes: 0,
+				directions: null,
+				source: null,
+				target: null,
+			});
+		} catch {
+			/* A lost route has no state to snapshot. */
+		}
+	}
 	private binary(connection: Connection, bytes: Uint8Array): void {
 		if (!this.live(connection)) return;
 		if (connection.pending) {
-			this.disconnect(connection);
+			this.disconnect(connection, "data_pending_socket");
 			return;
 		}
 		const frame = decodeRelayDataFrame(bytes);
@@ -950,7 +1091,7 @@ class RelayServerEngine {
 		}
 		if (!this.routeLive(route)) return;
 		if (connection !== route.source && connection !== route.target) {
-			this.disconnect(connection);
+			this.disconnect(connection, "data_nonparticipant");
 			return;
 		}
 		const direction = route.directions[Number(connection === route.target)];
@@ -962,7 +1103,7 @@ class RelayServerEngine {
 			++route.frames > 2048 ||
 			bytes.length > this.limits.routeBytes - route.bytes
 		) {
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "data_route_limits", connection);
 			return;
 		}
 		route.bytes += bytes.length;
@@ -973,7 +1114,7 @@ class RelayServerEngine {
 			this.directionQueued(direction) + bytes.length > DIRECTION_BYTES
 		) {
 			connection.held -= bytes.length;
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "data_buffer_limit", connection);
 			return;
 		}
 		direction.frames.push(new Uint8Array(bytes));
@@ -984,24 +1125,27 @@ class RelayServerEngine {
 		// After the longest lifetime of a lost route, unknown DATA is a protocol error as on Node.
 		const restored = connection.restored;
 		if (!restored || this.now() >= restored.at + ROUTE_LIFETIME_MS) {
-			this.disconnect(connection);
+			this.disconnect(connection, "orphan_outside_restore");
 			return;
 		}
 		const orphans = restored.orphans;
 		if (orphans.has(session)) return;
 		if (orphans.size >= this.limits.deviceRoutes) {
-			this.disconnect(connection);
+			this.disconnect(connection, "orphan_limit");
 			return;
 		}
 		orphans.add(session);
-		void this.abortOrphan(connection, session).catch(() => this.disconnect(connection));
+		void this.abortOrphan(connection, session).catch(() =>
+			this.disconnect(connection, "orphan_exception"),
+		);
 	}
 	private async abortOrphan(connection: Connection, session: string): Promise<void> {
 		// The reply spends control quota like any other server-originated control.
 		if (!(await this.quota(connection, "control", 1, connection.cancel.signal))) {
-			this.disconnect(connection);
+			this.disconnect(connection, "orphan_control_quota");
 			return;
 		}
+		this.diagnoseOrphan(session);
 		this.send(connection, { v: 1, type: "CLOSE", session, body: { mode: "abort" } });
 	}
 	private drainDirection(route: Route, direction: Direction): void {
@@ -1012,7 +1156,9 @@ class RelayServerEngine {
 		}
 		if (direction.frames.length > 0) {
 			direction.waiting = true;
-			void this.reserveTraffic(route, direction).catch(() => this.removeRoute(route, "abort"));
+			void this.reserveTraffic(route, direction).catch(() =>
+				this.removeRoute(route, "abort", "traffic_reservation_exception", direction.sender),
+			);
 		} else this.flushEnd(route, direction);
 		this.updatePressure();
 	}
@@ -1040,7 +1186,7 @@ class RelayServerEngine {
 		direction.waiting = false;
 		if (!reserved) {
 			this.trafficQuotaAborts++;
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "traffic_quota", direction.sender);
 			return;
 		}
 		direction.credit += units;
@@ -1063,7 +1209,7 @@ class RelayServerEngine {
 			}) ||
 			this.directionQueued(direction) > DIRECTION_BYTES
 		) {
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "forward_recipient_or_buffer", target);
 			return;
 		}
 		direction.frames.shift();
@@ -1074,7 +1220,7 @@ class RelayServerEngine {
 		if (!this.withinBuffers(target) || this.directionQueued(direction) > DIRECTION_BYTES) {
 			target.writes -= bytes.length;
 			direction.writes -= bytes.length;
-			this.removeRoute(route, "abort");
+			this.removeRoute(route, "abort", "forward_buffer_preflight", target);
 			return;
 		}
 		let written = false;
@@ -1084,17 +1230,17 @@ class RelayServerEngine {
 				written = true;
 				target.writes -= bytes.length;
 				direction.writes -= bytes.length;
-				if (error) this.removeRoute(route, "abort");
+				if (error) this.removeRoute(route, "abort", "data_write_callback", target);
 				else if (this.routeLive(route)) this.flushEnd(route, direction);
 				this.updatePressure();
 			});
 			if (!this.withinBuffers(target) || this.directionQueued(direction) > DIRECTION_BYTES)
-				this.removeRoute(route, "abort");
+				this.removeRoute(route, "abort", "forward_buffer_after_send", target);
 			this.updatePressure();
 		} catch {
 			// A throwing adapter may already own the frame. Only its callback or closure releases it.
-			this.removeRoute(route, "abort");
-			this.disconnect(target);
+			this.removeRoute(route, "abort", "data_send_exception", target);
+			this.disconnect(target, "data_send_exception");
 		}
 	}
 	private flushEnd(route: Route, direction: Direction): void {
@@ -1166,7 +1312,7 @@ class RelayServerEngine {
 				if (pressure) connection.socket.pauseInput();
 				else connection.socket.resumeInput();
 			} catch {
-				this.disconnect(connection);
+				this.disconnect(connection, "input_pressure_exception");
 			}
 		}
 	}

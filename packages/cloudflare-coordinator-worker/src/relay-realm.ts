@@ -7,6 +7,7 @@ import {
 	RELAY_ADDRESS_PENDING_SOCKETS,
 	RelayAddressAllowances,
 	type RelayCoordinatorClientOptions,
+	type RelayDiagnosticSite,
 	type RelayServerLimits,
 	type RelayServerSocket,
 	relayAddressKey,
@@ -128,6 +129,14 @@ function closeQuietly(webSocket: WebSocket, code: number): void {
 	}
 }
 
+function traceHostClose(site: RelayDiagnosticSite): void {
+	try {
+		console.warn("relay_transport_trace", { event: "host_close", site, utcMs: Date.now() });
+	} catch {
+		/* Operator logging cannot change socket handling. */
+	}
+}
+
 /**
  * The client address Cloudflare's edge sets. Public clients cannot set it. A
  * same-account Worker binding can, and is inside the operator trust boundary.
@@ -161,6 +170,7 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 	 */
 	private readonly allowances = new RelayAddressAllowances(() => this.addressClockMs());
 	private readonly socketAddresses = new WeakMap<WebSocket, string>();
+	private readonly socketAdapters = new WeakMap<WebSocket, RelaySocketAdapter>();
 
 	constructor(ctx: DurableObjectState, env: Readonly<Record<string, unknown>>) {
 		// The base class keeps no env. Only the allowlisted snapshot survives this call.
@@ -189,13 +199,13 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 		if (stored === undefined) provisionLocalRelayQuota(database, { realmId, profile });
 		else tightenRelayQuota(database, { realmId, profile });
 		setRelayQuotaEnabled(database, { realmId, enabled });
-		if (!enabled) this.closeAll();
+		if (!enabled) this.closeAll("worker_operator_disable");
 		return { ok: true, realmId, enabled };
 	}
 
 	override async fetch(request: Request): Promise<Response> {
 		if (!this.config) {
-			this.closeAll();
+			this.closeAll("worker_config_missing_fetch");
 			return status(503);
 		}
 		const realmId = RELAY_PATH.exec(new URL(request.url).pathname)?.[1];
@@ -227,11 +237,11 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 	}
 
 	override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
-		await this.peerGone(ws, replyCode(code));
+		await this.peerGone(ws, replyCode(code), "worker_peer_close");
 	}
 
 	override async webSocketError(ws: WebSocket): Promise<void> {
-		await this.peerGone(ws, 1011);
+		await this.peerGone(ws, 1011, "worker_peer_error");
 	}
 
 	/**
@@ -264,10 +274,11 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			this.ctx.acceptWebSocket(server);
 		} catch {
 			// The socket never opened, so release its pending slot now.
-			events.closed();
+			events.closed("worker_accept_failed");
 			return status(503);
 		}
 		host.sockets.set(server, adapter);
+		this.socketAdapters.set(server, adapter);
 		this.socketAddresses.set(server, address);
 		return new Response(null, { status: 101, webSocket: client });
 	}
@@ -276,28 +287,33 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 	 * The compatibility date predates automatic close replies, so the object
 	 * answers every peer close itself.
 	 */
-	private async peerGone(ws: WebSocket, code: number): Promise<void> {
+	private async peerGone(ws: WebSocket, code: number, site: RelayDiagnosticSite): Promise<void> {
 		const host = this.config ? await this.ensureHost() : null;
-		host?.sockets.get(ws)?.peerClosed();
+		host?.sockets.get(ws)?.peerClosed(site);
 		closeQuietly(ws, code);
 	}
 
 	/** Returns the host for a socket event, closing sockets the relay cannot serve. */
 	private async liveHost(ws: WebSocket): Promise<RealmHost | null> {
 		if (!this.config) {
-			this.closeAll();
+			this.closeAll("worker_config_missing_event");
 			return null;
 		}
 		const host = await this.ensureHost();
 		if (!host?.sockets.has(ws)) {
+			traceHostClose("worker_host_missing");
 			closeQuietly(ws, RELAY_CLOSE_UNAVAILABLE);
 			return null;
 		}
 		return host;
 	}
 
-	private closeAll(): void {
-		for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, RELAY_CLOSE_UNAVAILABLE);
+	private closeAll(site: RelayDiagnosticSite): void {
+		for (const ws of this.ctx.getWebSockets()) {
+			this.socketAdapters.get(ws)?.noteClosing(site);
+			traceHostClose(site);
+			closeQuietly(ws, RELAY_CLOSE_UNAVAILABLE);
+		}
 	}
 
 	/** A failed setup, such as unprovisioned quota, is retried on the next event. */
@@ -352,6 +368,8 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			clock: { monotonicMs: () => performance.now(), utcMs: () => Date.now() },
 			random: (bytes) => crypto.getRandomValues(new Uint8Array(bytes)),
 			onRegistration: (socket, snapshot) => adapterOf(socket).storeSnapshot(snapshot),
+			onDiagnostic: (event) =>
+				console.warn("relay_transport_trace", { ...event, utcMs: Date.now() }),
 		});
 		const host = { realmId, engine, quota, sockets };
 		this.restoreSockets(host);
@@ -379,11 +397,13 @@ export class RelayRealm extends DurableObject<Record<string, never>> {
 			const adapter = new RelaySocketAdapter(ws, () => host.sockets.delete(ws));
 			const events = host.engine.restore(adapter, ws.deserializeAttachment());
 			if (!events) {
+				traceHostClose("worker_restore_failed");
 				adapter.close();
 				continue;
 			}
 			adapter.bind(events);
 			host.sockets.set(ws, adapter);
+			this.socketAdapters.set(ws, adapter);
 		}
 	}
 }

@@ -17,6 +17,7 @@ import {
 } from "../../core/src/relay-quota-sqlite.js";
 import {
 	relayAudienceId,
+	relayBodyDigest,
 	relayRealmId,
 	verifyRelayServiceProof,
 } from "../../core/src/relay-service-proof.js";
@@ -223,12 +224,115 @@ const frame = (session: string, size: number, fill = 7) =>
 const closedWith = (peer: Peer, code: number) => vi.waitUntil(() => peer.closeCode === code);
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	Object.assign(relayRealmTestState(), {
 		enabled: true,
 		limits: {},
 		admissions: [],
 		groups: undefined,
 		addressNowMs: undefined,
+	});
+});
+
+describe("operator relay abort tracing", () => {
+	it.each(["worker_peer_close", "worker_peer_error"] as const)(
+		"preserves the coordinator %s branch in the route abort log",
+		async (site) => {
+			const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const stub = await realmObject();
+			const { a, b, session } = await route(stub);
+			await runInDurableObject(stub, async (object, state) => {
+				const ws = state.getWebSockets().find(
+					(socket) => socket.deserializeAttachment()?.deviceId === "source",
+				);
+				if (!ws) throw new Error("Missing fixture socket");
+				if (site === "worker_peer_error") await object.webSocketError(ws);
+				else await object.webSocketClose(ws, 1000);
+			});
+			await b.next("CLOSE", session);
+			const traces = log.mock.calls
+				.filter(([prefix]) => prefix === "relay_transport_trace")
+				.map(([, event]) => event)
+				.filter((event) => event.event === "route_abort");
+			expect(traces).toEqual([
+				expect.objectContaining({
+					event: "route_abort",
+					trace: relayBodyDigest(new TextEncoder().encode(session)).slice(0, 16),
+					reason: "socket_teardown",
+					site,
+					side: "source",
+					accepted: true,
+					bytes: 0,
+					frames: 0,
+					queuedFrames: 0,
+					pendingWrites: 0,
+					waitingDirections: 0,
+					remainingMs: expect.any(Number),
+					queuedBytes: 0,
+					directions: expect.any(Array),
+					source: expect.objectContaining({ phase: "ready", closing: false, physicalClosed: false }),
+					target: expect.objectContaining({ phase: "ready", closing: false, physicalClosed: false }),
+					utcMs: expect.any(Number),
+				}),
+			]);
+			expect(Object.keys(traces[0]).toSorted()).toEqual(
+				[
+					"event",
+					"trace",
+					"reason",
+					"site",
+					"side",
+					"accepted",
+					"bytes",
+					"frames",
+					"queuedFrames",
+					"pendingWrites",
+					"waitingDirections",
+					"remainingMs",
+					"queuedBytes",
+					"directions",
+					"source",
+					"target",
+					"utcMs",
+				].toSorted(),
+			);
+			expect(Number.isFinite(traces[0].utcMs)).toBe(true);
+			expect(JSON.stringify(traces)).not.toContain(session);
+			expect(JSON.stringify(traces)).not.toContain(namespace.groupId);
+			a.ws.close();
+			b.ws.close();
+		},
+	);
+
+	it("keeps operator disable as the origin when physical close arrives later", async () => {
+		const log = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const stub = await realmObject();
+		const { a, b } = await route(stub);
+		await runInDurableObject(stub, async (object, state) => {
+			const sockets = state.getWebSockets();
+			await object.provisionQuota(realmId, false);
+			expect(
+				log.mock.calls.filter(
+					([prefix, event]) => prefix === "relay_transport_trace" && event.event === "route_abort",
+				),
+			).toHaveLength(0);
+			// The fixture records the close frame but does not send the platform's later reply.
+			for (const ws of sockets) await object.webSocketClose(ws, 1000);
+		});
+		await closedWith(a, 1013);
+		await closedWith(b, 1013);
+		await vi.waitUntil(() =>
+			log.mock.calls.some(
+				([prefix, event]) =>
+					prefix === "relay_transport_trace" &&
+					event.event === "route_abort" &&
+					event.site === "worker_operator_disable",
+			),
+		);
+		const aborts = log.mock.calls.filter(
+			([prefix, event]) => prefix === "relay_transport_trace" && event.event === "route_abort",
+		);
+		expect(aborts).toHaveLength(1);
 	});
 });
 
@@ -749,6 +853,27 @@ describe("Workers relay socket adapter", () => {
 		};
 	}
 	const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve));
+
+	it.each([
+		["worker_control_oversize", "x".repeat(4097)],
+		["worker_data_oversize", new ArrayBuffer(65559)],
+	] as const)("retains %s through the unchanged close grace path", async (site, message) => {
+		const ws = fakeWebSocket();
+		const released = vi.fn();
+		const closed = vi.fn();
+		const closing = vi.fn();
+		const adapter = new RelaySocketAdapter(ws as unknown as WebSocket, released, 20);
+		adapter.bind({ text: vi.fn(), binary: vi.fn(), closed, closing, pending: () => false });
+		await adapter.deliver(message);
+		expect(closing).toHaveBeenCalledExactlyOnceWith(site);
+		expect(closed).not.toHaveBeenCalled();
+		expect(released).not.toHaveBeenCalled();
+		await vi.waitUntil(() => closed.mock.calls.length > 0, { timeout: 1000 });
+		adapter.peerClosed("worker_peer_error");
+		expect(closed).toHaveBeenCalledExactlyOnceWith(site);
+		expect(released).toHaveBeenCalledOnce();
+		expect(ws.close).toHaveBeenCalledExactlyOnceWith(1008, "relay closed");
+	});
 
 	it("reports writes once, after send returns, and counts only its own bytes", async () => {
 		// Arrange

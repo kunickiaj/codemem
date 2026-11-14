@@ -307,7 +307,7 @@ function finiteQuota() {
 /** No listener, network, payload storage, or production quota implementation. */
 export async function serverFixture(
 	limits: Partial<RelayServerLimits> = {},
-	hooks: Pick<RelayServerOptions, "onRegistration" | "random"> = {},
+	hooks: Pick<RelayServerOptions, "onRegistration" | "random" | "onDiagnostic"> = {},
 ) {
 	const backend = await decisionBackend();
 	const { namespace, source, target, service, clock, db } = backend;

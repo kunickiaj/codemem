@@ -136,6 +136,66 @@ The first failure in a pass decides the code. A CLOSE, a duplicate frame, or a s
 
 A failure seen at the target reaches the source as `relay_aborted`, because the target can only send CLOSE abort. A source-side pass that fails without a route failure, such as a scope authorization denial, keeps the generic error without a code.
 
+### Operator abort traces
+
+`RelayServerOptions.onDiagnostic` is an optional local callback for route aborts and
+restored orphan aborts. Without the callback, the engine builds no diagnostic
+snapshots and computes no trace hashes. Callback exceptions cannot interrupt
+cleanup or change wire replies. Successful exchanges and ordinary rejections
+produce no diagnostic events.
+
+The coordinator Worker writes these events to operator logs with the fixed prefix
+`relay_transport_trace`. Each route event contains `event`, `trace`, `reason`,
+`site`, `side`, `accepted`, `bytes`, `frames`, `queuedFrames`, `pendingWrites`, and
+`waitingDirections`, plus the snapshots described below. `pendingWrites` counts DATA bytes still owned by adapters,
+not delivery acknowledgements. `side` identifies the affected source or target,
+or is null for route expiry and restored orphans. Orphan state counters are zero
+because the original route no longer exists.
+
+`remainingMs` records the route's time left at its first terminal cause, clamped
+to zero after expiry. `queuedBytes` sums retained DATA frame bytes and outstanding
+DATA writes for both directions. `directions` holds source-to-target followed by
+target-to-source state. Each direction contains `queuedFrames`, `queuedBytes`
+(retained frames only), `writes`, `credit`, `nextGrant`, `waiting`, `ended`,
+`pendingEnd`, and `endForwarded`.
+
+`source` and `target` each contain only `phase`, `pending`, `closing`,
+`physicalClosed`, `restored`, `held`, `writes`, and `registrationRemainingMs`.
+These detached snapshots read engine-owned state without querying adapter
+buffers. They retain their first-cause values through later cleanup.
+`registrationRemainingMs` is null without a registration, and remaining times
+are null if the clock cannot produce a finite difference. A missing target
+has a null snapshot. Restored orphan events have null remaining time,
+directions and source/target snapshots because the original route is lost.
+Only enabled diagnostics read the clock for these snapshots.
+
+Worker log objects also include `utcMs`, taken from `Date.now()` when the log is
+emitted, for correlation with other hosts. The invocation's outer log timestamp
+can precede the event.
+
+The trace is the first 16 lowercase hex digits of SHA256 over the existing
+lowercase 32-hex session **text encoded as UTF-8**, not the decoded 16-byte value.
+It can correlate local client instrumentation with the coordinator without
+logging the session itself. Logs contain fixed branch labels and finite state
+values only. They exclude raw session, device, peer, group and key identifiers,
+packets, URLs, payloads, and exception messages or stacks.
+
+The first terminal cause is captured before route cleanup and socket cancellation
+can destroy evidence. Socket-induced route aborts retain the original engine or
+Worker close branch, including peer close versus platform error, operator disable,
+and adapter message-size rejection. Later physical closure or close-grace expiry
+does not replace that cause. Host closures without available route state emit
+`{ event: "host_close", site, utcMs }`, without a trace. These include missing
+configuration, missing reconstructed host state, and failed registration restore.
+
+`site` names the exact existing branch. Some branches already combine several
+conditions. `data_route_limits` combines route acceptance, END state, frame count
+and byte limits. `forward_recipient_or_buffer` combines recipient availability
+and buffer checks. `traffic_quota` preserves the existing collapsed quota result.
+It does not distinguish denial, uncertainty, timeout or exception. These logs add
+no wire fields, endpoints, retries, timers, configuration switches or lifecycle
+decisions.
+
 ## Relay health
 
 Pass `relayHealth` factory options, including its namespace and probe identity, to a coordinator runtime. The SQLite coordinator runtime also takes a list with one entry per served group, all for one authority. Each group gets its own monitor and realm row, and the authority row carries the aggregate of every group, as on Workers, so one group's trip never denies the others. Each entry's `onMonitor` receives that group's monitor. When `enabled` is true, the runtime constructs a stopped `RelayHealthMonitor` and passes it to `onMonitor`. The owner controls `start()` and `stop()`. `stop()` returns false if storage has not confirmed the final pause. Use the independent relay switch when traffic must stop immediately.

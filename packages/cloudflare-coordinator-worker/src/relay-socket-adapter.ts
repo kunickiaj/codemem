@@ -1,4 +1,5 @@
 import type {
+	RelayDiagnosticSite,
 	RelayRegistrationSnapshot,
 	RelayServerSocket,
 	RelaySocketEvents,
@@ -39,6 +40,7 @@ export class RelaySocketAdapter implements RelayServerSocket {
 	private released = false;
 	private events: RelaySocketEvents | null = null;
 	private grace: ReturnType<typeof setTimeout> | undefined;
+	private diagnosticSite: RelayDiagnosticSite | undefined;
 	constructor(
 		readonly webSocket: WebSocket,
 		private readonly onReleased: () => void,
@@ -47,6 +49,11 @@ export class RelaySocketAdapter implements RelayServerSocket {
 
 	bind(events: RelaySocketEvents): void {
 		this.events = events;
+	}
+	/** Keeps the first host origin without accelerating the existing close/release sequence. */
+	noteClosing(site: RelayDiagnosticSite): void {
+		this.diagnosticSite ??= site;
+		this.events?.closing?.(this.diagnosticSite);
 	}
 	/** True until the engine sees the socket register. */
 	pending(): boolean {
@@ -88,7 +95,8 @@ export class RelaySocketAdapter implements RelayServerSocket {
 		this.grace = setTimeout(() => this.release(), this.closeGraceMs);
 	}
 	/** The peer closed or the socket failed. Releases engine state now. */
-	peerClosed(): void {
+	peerClosed(site: RelayDiagnosticSite = "worker_peer_close"): void {
+		this.noteClosing(site);
 		this.open = false;
 		this.release();
 	}
@@ -105,6 +113,7 @@ export class RelaySocketAdapter implements RelayServerSocket {
 		if (typeof message === "string") {
 			const bytes = encoder.encode(message);
 			if (bytes.byteLength > MAX_CONTROL_BYTES) {
+				this.noteClosing("worker_control_oversize");
 				this.close();
 				return;
 			}
@@ -112,6 +121,7 @@ export class RelaySocketAdapter implements RelayServerSocket {
 			return;
 		}
 		if (!(message instanceof ArrayBuffer) || message.byteLength > MAX_DATA_BYTES) {
+			this.noteClosing("worker_data_oversize");
 			this.close();
 			return;
 		}
@@ -139,7 +149,7 @@ export class RelaySocketAdapter implements RelayServerSocket {
 		if (this.released) return;
 		this.released = true;
 		if (this.grace) clearTimeout(this.grace);
-		this.events?.closed();
+		this.events?.closed(this.diagnosticSite ?? "worker_close_grace");
 		this.onReleased();
 	}
 }

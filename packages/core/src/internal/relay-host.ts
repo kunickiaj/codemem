@@ -30,6 +30,10 @@ export {
 	type RelayServerSocket,
 	type RelaySocketEvents,
 } from "../relay-server.js";
+export type {
+	RelayDiagnosticSite,
+	RelayServerDiagnostic,
+} from "../relay-server-diagnostic.js";
 export {
 	RELAY_RESTORE_GUARD_MS,
 	type RelayRegistrationSnapshot,
