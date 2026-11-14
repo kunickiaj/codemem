@@ -429,14 +429,10 @@ export class RelayHealthMonitor {
 	async recordServerSample(sample: RelayHealthServerSample): Promise<void> {
 		if (!this.options.enabled || sample.groupId !== this.options.groupId) return;
 		await this.afterServerRequest({ sample, fault: false });
-		// A forwarded probe sample can land after its cycle published. Publish again
-		// when it advances a ready stamp, so readiness does not lag a cycle behind.
+		// Any forwarded sample can advance a ready stamp after the cycle published.
+		// Publish that advance so admission does not retain older observations.
 		const snapshot = this.snapshot();
-		if (
-			sample.cohort === "probe-server" &&
-			snapshot.state === "ready" &&
-			snapshot.observedAtMs !== this.publishedObservedAtMs
-		)
+		if (snapshot.state === "ready" && snapshot.observedAtMs !== this.publishedObservedAtMs)
 			await this.publish();
 	}
 	snapshot(): RelayHealthSnapshot {
