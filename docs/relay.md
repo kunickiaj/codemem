@@ -20,6 +20,8 @@ The Viewer's **Sync now** action uses the same relay fallback as background sync
 
 Before choosing a relay route, **Sync now** refreshes stale Space permissions from the coordinator. If that refresh fails, relay stays unavailable and the pass can still try direct sync. An all-peers request does not repeat the same failed refresh for each peer.
 
+Background sync also revalidates stale permissions before selecting each peer's relay route. A failed on-demand refresh is attempted only once per background tick, and direct sync remains available.
+
 Relay doesn't replace an always-on device. These three situations look similar but behave differently:
 
 | Situation | What happens |

@@ -6,6 +6,7 @@
 
 - Relayed sync accepts valid requests that arrive before the receiving device finishes preparing to read them, avoiding a timing-dependent disconnect.
 - Relay health readiness refreshes after successful coordinator requests, preventing an expired published stamp from rejecting an otherwise healthy exchange.
+- Background sync revalidates expired Space permissions before selecting a peer's relay route, including after slow earlier exchanges.
 
 ## [0.49.0-beta.7] - 2026-11-13
 

@@ -283,10 +283,11 @@ export async function syncDaemonTick(
 		return [];
 	}
 
-	const opsLimit = readCoordinatorSyncConfig().syncOpsLimit;
+	const config = readCoordinatorSyncConfig();
+	const opsLimit = config.syncOpsLimit;
 
 	syncPassPreflight(db);
-	const tickRoutes = tickReachability(reachability);
+	const tickRoutes = tickReachability(reachability, staleScopeRefresh({ config, keysDir, dbPath }));
 
 	const results: SyncTickResult[] = [];
 	for (const row of rows) {
@@ -313,7 +314,7 @@ export async function syncDaemonTick(
 			dbPath,
 			limit: opsLimit,
 			scanner,
-			reachability: tickRoutes?.forPeer(db, peerDeviceId),
+			reachability: await tickRoutes?.forPeer(db, peerDeviceId),
 		});
 		results.push({
 			ok: result.ok,
@@ -514,7 +515,7 @@ function combinedSignal(...signals: Array<AbortSignal | undefined>): AbortSignal
 }
 
 interface TickReachability {
-	forPeer(db: Database, peerDeviceId: string): SyncReachabilityOptions | undefined;
+	forPeer(db: Database, peerDeviceId: string): Promise<SyncReachabilityOptions | undefined>;
 	maintenance(): SyncReachabilityMaintenance[];
 }
 
@@ -541,12 +542,38 @@ function resolverClients(input: SyncPeerReachabilityResolver): readonly RelayPee
 	}
 }
 
+function staleScopeRefresh(options: {
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+	keysDir?: string;
+	dbPath?: string;
+}): (db: Database) => Promise<void> {
+	let failed = false;
+	return async (db) => {
+		if (failed || !coordinatorEnabled(options.config)) return;
+		try {
+			const result = await refreshConfiguredScopeMembershipCache(db, options.config, {
+				keysDir: options.keysDir,
+				dbPath: options.dbPath,
+				onlyIfStale: true,
+			});
+			failed = result.status === "stale" || result.status === "partial";
+		} catch (error) {
+			failed = true;
+			logSyncDaemonFailure({ message: "[codemem] relay scope refresh failed:", error });
+		}
+	};
+}
+
 /** Adapts both option shapes to one per-peer form for a single tick. */
-function tickReachability(input?: SyncDaemonReachability): TickReachability | undefined {
+function tickReachability(
+	input?: SyncDaemonReachability,
+	beforePeer?: (db: Database) => Promise<void>,
+): TickReachability | undefined {
 	if (!input) return undefined;
-	if (!isPeerResolver(input)) return { forPeer: () => input, maintenance: () => [input] };
+	if (!isPeerResolver(input)) return { forPeer: async () => input, maintenance: () => [input] };
 	return {
-		forPeer(db, peerDeviceId) {
+		async forPeer(db, peerDeviceId) {
+			await beforePeer?.(db);
 			const route = resolvePeerRoute(input, db, peerDeviceId);
 			if (!route) return undefined;
 			// A daemon tick starts a new pass. Absolute deadlines apply only to one-shot calls.
