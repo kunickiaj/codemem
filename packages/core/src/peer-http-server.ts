@@ -71,13 +71,13 @@ function requireFreshConnection(duplex: Duplex): string {
 		duplex.errored ||
 		duplex.readableEnded ||
 		duplex.writableEnded ||
-		duplex.readableLength !== 0 ||
 		duplex.writableLength !== 0 ||
 		duplex.readableFlowing === true
 	)
 		throw new PeerHttpExchangeError("transport");
 	const peerPin = readAuthenticatedRelayNoisePeerPin(duplex);
 	if (peerPin === null) throw new PeerHttpExchangeError("transport");
+	if (!duplex.claimFreshPlaintext()) throw new PeerHttpExchangeError("transport");
 	return peerPin;
 }
 

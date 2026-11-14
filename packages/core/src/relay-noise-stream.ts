@@ -289,6 +289,9 @@ export class RelayNoiseDuplex extends Duplex {
 	private readingNode = false;
 	private upstreamEnded = false;
 	private eofPushed = false;
+	private plaintextBytesPushed = 0;
+	private readableBytesInjected = false;
+	private httpClaimed = false;
 
 	constructor(
 		private readonly stream: MessageStream,
@@ -303,6 +306,30 @@ export class RelayNoiseDuplex extends Duplex {
 		stream.addEventListener("end", this.endRead);
 		stream.addEventListener("close", this.closeStream);
 		if (stream.readableEnded) this.endRead();
+	}
+
+	/** Claim once, before any authenticated plaintext has been consumed or replaced. */
+	claimFreshPlaintext(): boolean {
+		if (
+			this.httpClaimed ||
+			this.readableBytesInjected ||
+			this.readableEncoding !== null ||
+			this.plaintextBytesPushed !== this.readableLength
+		)
+			return false;
+		this.httpClaimed = true;
+		return true;
+	}
+
+	// Public pushes mark injection. Authenticated delivery must use super.push instead.
+	override push(chunk: unknown, encoding?: BufferEncoding): boolean {
+		this.readableBytesInjected = true;
+		return super.push(chunk, encoding);
+	}
+
+	override unshift(chunk: unknown, encoding?: BufferEncoding): void {
+		this.readableBytesInjected = true;
+		super.unshift(chunk, encoding);
 	}
 
 	override write(
@@ -398,12 +425,13 @@ export class RelayNoiseDuplex extends Duplex {
 					this.pendingRead = undefined;
 					this.pendingReadOffset = 0;
 				}
-				ready = this.push(chunk);
+				this.plaintextBytesPushed += chunk.length;
+				ready = super.push(chunk);
 			}
 			if (this.pendingRead !== undefined) return false;
 			if (this.upstreamEnded && !this.eofPushed) {
 				this.eofPushed = true;
-				this.push(null);
+				super.push(null);
 			}
 			return ready;
 		} finally {
