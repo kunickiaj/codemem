@@ -63,6 +63,21 @@ export function buildDistillDraftPrompt(candidate: DistillCandidate): DistillDra
 	return { system, user };
 }
 
+const QUOTE_CHARS = new Set(['"', "'", "`"]);
+
+/**
+ * Strip leading and trailing quote/backtick runs. A character scan replaces
+ * `/^["'`]+|["'`]+$/g`, whose trailing alternative backtracks quadratically on
+ * long quote runs.
+ */
+export function stripSurroundingQuotes(text: string): string {
+	let start = 0;
+	let end = text.length;
+	while (start < end && QUOTE_CHARS.has(text.charAt(start))) start += 1;
+	while (end > start && QUOTE_CHARS.has(text.charAt(end - 1))) end -= 1;
+	return text.slice(start, end);
+}
+
 /** Normalize a model response into a single clean rule line, or null. */
 export function sanitizeRuleLine(text: string | null | undefined): string | null {
 	if (!text) return null;
@@ -72,12 +87,10 @@ export function sanitizeRuleLine(text: string | null | undefined): string | null
 		.find((line) => line.length > 0);
 	if (!firstLine) return null;
 
-	let rule = firstLine
+	const unlisted = firstLine
 		.replace(/^[-*+]\s+/, "") // strip markdown bullet
-		.replace(/^\d+[.)]\s+/, "") // strip numbered list marker
-		.replace(/^["'`]+|["'`]+$/g, "") // strip surrounding quotes/backticks
-		.replace(/\s+/g, " ")
-		.trim();
+		.replace(/^\d+[.)]\s+/, ""); // strip numbered list marker
+	let rule = stripSurroundingQuotes(unlisted).replace(/\s+/g, " ").trim();
 
 	if (!rule || rule.toUpperCase() === SKIP_TOKEN) return null;
 	if (rule.length > MAX_RULE_CHARS) rule = `${rule.slice(0, MAX_RULE_CHARS - 1).trimEnd()}…`;
@@ -121,7 +134,7 @@ export function applyDistillRule(currentText: string, rule: string): DistillAppl
 	}
 
 	const managedBlock = `${DISTILL_LESSONS_HEADING}\n\n${DISTILL_BLOCK_BEGIN}\n${bullet}\n${DISTILL_BLOCK_END}\n`;
-	const trimmed = existing.replace(/\s+$/, "");
+	const trimmed = existing.trimEnd();
 	if (trimmed.length === 0) return { text: managedBlock, changed: true };
 	return { text: `${trimmed}\n\n${managedBlock}`, changed: true };
 }

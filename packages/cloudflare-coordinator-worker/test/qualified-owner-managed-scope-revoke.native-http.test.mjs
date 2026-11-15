@@ -41,7 +41,7 @@ test("fixture HTTP failures return plain generic errors and retain details only 
 	assert.equal(failed.headers["content-type"], "text/plain; charset=utf-8");
 	assert.equal(failed.headers["x-content-type-options"], "nosniff");
 	assert.equal(failed.body, "Fixture request failed.");
-	assert.doesNotMatch(failed.body, /<script>|SYNTHETIC|private|Error:|\bat /);
+	assert.doesNotMatch(failed.body, /<script>|SYNTHETIC|private|Error:|\bat /i);
 	assert.deepEqual(errors, [failure, failure]);
 });
 

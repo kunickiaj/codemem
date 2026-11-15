@@ -58,6 +58,13 @@ describe("distill judge", () => {
 		});
 	});
 
+	it("strips surrounding quotes before matching the verdict", () => {
+		expect(parseJudgeVerdict('"lesson: keep tags on main"')).toEqual({
+			verdict: "lesson",
+			reason: "keep tags on main",
+		});
+	});
+
 	it("returns unjudged for empty or unparseable output", () => {
 		expect(parseJudgeVerdict(null)).toEqual({ verdict: "unjudged", reason: null });
 		expect(parseJudgeVerdict("")).toEqual({ verdict: "unjudged", reason: null });

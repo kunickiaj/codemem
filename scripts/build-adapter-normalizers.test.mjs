@@ -129,7 +129,7 @@ test("OpenCode random event IDs remain outside derived algorithm versioning", as
 		resolve(repoRoot, "packages/opencode-plugin/.opencode/lib/runtime.js"),
 		"utf8",
 	);
-	assert.match(source, /const nextEventId = \(\) => \{/);
-	assert.match(source, /crypto\.randomUUID\(\)/);
+	assert.match(source, /import \{[^}]*\brandomUUID\b[^}]*\} from "node:crypto";/);
+	assert.match(source, /const nextEventId = \(\) => randomUUID\(\);/);
 	assert.doesNotMatch(source, /event_id_algo/);
 });

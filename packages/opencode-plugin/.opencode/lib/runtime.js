@@ -1,5 +1,5 @@
 import { execSync, spawn as nodeSpawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -2556,12 +2556,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
   let rawEventDeliveryCount = 0;
   let flushDeliveryTail = Promise.resolve();
   let promptPackTransportUnavailableUntil = 0;
-  const nextEventId = () => {
-    if (typeof crypto !== "undefined" && crypto.randomUUID) {
-      return crypto.randomUUID();
-    }
-    return `${Date.now()}-${Math.random()}`;
-  };
+  const nextEventId = () => randomUUID();
 
   const buildViewerCliArgs = createViewerCliArgs({ viewerHost, viewerPort, viewerDbPath, viewerConfigPath });
 

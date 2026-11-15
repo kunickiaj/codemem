@@ -1,5 +1,5 @@
 import type { DistillCandidate, DistillReport } from "./distill.js";
-import type { DistillRuleDrafter } from "./distill-draft.js";
+import { type DistillRuleDrafter, stripSurroundingQuotes } from "./distill-draft.js";
 
 /**
  * B-side worthiness gate for distill candidates.
@@ -77,10 +77,7 @@ export function parseJudgeVerdict(text: string | null | undefined): {
 		.find((line) => line.length > 0);
 	if (!firstLine) return { verdict: "unjudged", reason: null };
 
-	const cleaned = firstLine
-		.replace(/^[-*+]\s+/, "")
-		.replace(/^["'`]+|["'`]+$/g, "")
-		.trim();
+	const cleaned = stripSurroundingQuotes(firstLine.replace(/^[-*+]\s+/, "")).trim();
 	const match = cleaned.match(VERDICT_PATTERN);
 	if (!match) return { verdict: "unjudged", reason: null };
 

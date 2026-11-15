@@ -312,6 +312,16 @@ describe("resolveAutoUpdatePlan", () => {
     expect(plan.reason).toBe("custom-source");
   });
 
+  test.each([
+    ["git+https://example.com/org/repo@main", "pinned-source"],
+    ["git+https://example.com/org/repo@", "custom-source"],
+    ["git+https://example.com/org@team/repo", "custom-source"],
+    ["git+not a url@main", "pinned-source"],
+  ])("classifies the ref suffix of %s", (runnerFrom, reason) => {
+    const plan = resolveAutoUpdatePlan({ runner: "uvx", runnerFrom });
+    expect(plan.reason).toBe(reason);
+  });
+
   test("blocks pinned git source with fragment", () => {
     const plan = resolveAutoUpdatePlan({
       runner: "uvx",
