@@ -115,7 +115,11 @@ The relay charges traffic quota before it forwards DATA, and it never refunds un
 
 ## Relay failure reasons
 
-When a relay route fails, the source records one stable reason code locally. A failed `syncScopedChannelOnce` result sets `relayFailureReason` and appends the code to its generic error, for example `scoped channel exchange failed: relay_rejected`. Through `runSyncPass`, that error text is what `sync_attempts.error` stores. The transfer observation keeps its existing `exchange_failed` code.
+When a relay route fails, the source records one stable reason code locally. A failed `syncScopedChannelOnce` result sets `relayFailureReason` and appends the code to its generic error, for example `scoped channel exchange failed: relay_rejected`. Through `runSyncPass`, that error text is what `sync_attempts.error` stores.
+
+Route setup and status-fetch failures create no send or receive observation, matching direct negotiation failures. Directional failure tracking starts after a valid status response on the authenticated route. Later transport failures record `exchange_failed` for the active direction. The phase decides whether to record a transfer failure, because `relay_expired` can occur both before status succeeds and during an established exchange. Attempt diagnostics and relay rejection backoff still include failures before transfer starts.
+
+Explicit trust, scope, and protocol-version rejections before status validation set the attempt's `failure_category` to `trust`, `scope`, or `compatibility`. They still need attention even though neither direction has started. Unreachable peers keep their existing transport diagnostics and relay reason codes.
 
 The first failure in a pass decides the code. A CLOSE, a duplicate frame, or a second failed open that arrives later does not replace it, and none of them saves an ACK or moves a cursor. Relay control frames still carry no reason, so peers and the relay see only the existing generic REJECTED and CLOSE frames.
 

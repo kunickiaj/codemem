@@ -578,7 +578,7 @@ it("rejects a structural relay substitute without invoking its factory", async (
 	expect(scoped).not.toHaveBeenCalled();
 });
 
-it("records the final direct receive failure when an invalid relay cannot replace it", async () => {
+it("leaves receive unobserved when direct probes fail and the relay is invalid", async () => {
 	// Arrange: a real direct probe fails before the structural relay is rejected.
 	const factory = vi.fn();
 	const relay = { factory } as unknown as RelayPeerClient;
@@ -590,7 +590,7 @@ it("records the final direct receive failure when an invalid relay cannot replac
 		addresses.slice(0, 1),
 		options(execute, relay),
 	);
-	// Assert: rejecting the substitute must not discard the direct failure observation.
+	// Assert: neither path established a directional exchange.
 	expect(result).toMatchObject({
 		ok: false,
 		transport: "wait",
@@ -600,8 +600,8 @@ it("records the final direct receive failure when an invalid relay cannot replac
 	expect(factory).not.toHaveBeenCalled();
 	expect(scoped).not.toHaveBeenCalled();
 	expect(readPeerSyncActivity(db, ["peer"]).get("peer")?.receive).toMatchObject({
-		errorCode: "exchange_failed",
-		lastAttemptAt: expect.any(String),
+		errorCode: null,
+		lastAttemptAt: null,
 		lastSuccessAt: null,
 	});
 });
@@ -804,17 +804,18 @@ it.each([true, false])(
 		release.resolve();
 		const result = await pending;
 		const after = readPeerSyncActivity(db, ["peer"]).get("peer");
-		// Assert: only the final selected outcome can report a failure.
+		// Assert: failed connection probes never become directional observations.
 		expect.soft(during?.receive).toMatchObject({ errorCode: null, lastAttemptAt: null });
 		expect(result).toMatchObject({ ok: succeeds, transport: succeeds ? "direct" : "wait" });
-		expect(after?.receive.errorCode).toBe(succeeds ? null : "exchange_failed");
+		expect(after?.receive.errorCode).toBeNull();
+		if (!succeeds) expect(after).toEqual(during);
 	},
 );
 
 it.each([true, false])(
 	"does not publish direct failures while relay fallback is pending (success: %s)",
 	async (succeeds) => {
-		// Arrange: model the scoped channel's successful and pre-pull failed observations.
+		// Arrange: model a successful exchange or a relay rejection before status.
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		scoped.mockImplementationOnce(async () => {
@@ -823,8 +824,6 @@ it.each([true, false])(
 			if (succeeds) {
 				recordSyncTransferObservation(db, "peer", "receive", { preserveScopedError: true });
 				recordSyncTransferObservation(db, "peer", "send");
-			} else {
-				recordSyncTransferObservation(db, "peer", "receive", { errorCode: "exchange_failed" });
 			}
 			return {
 				ok: succeeds,
@@ -843,15 +842,16 @@ it.each([true, false])(
 		release.resolve();
 		const result = await pending;
 		const after = readPeerSyncActivity(db, ["peer"]).get("peer");
-		// Assert: a final relay failure must still leave the peer's failed receive visible.
+		// Assert: rejecting a route cannot create a failed receive.
 		expect.soft(during?.receive).toMatchObject({ errorCode: null, lastAttemptAt: null });
 		expect(result).toMatchObject({ ok: succeeds, transport: "relay" });
-		expect(after?.receive.errorCode).toBe(succeeds ? null : "exchange_failed");
+		expect(after?.receive.errorCode).toBeNull();
+		if (!succeeds) expect(after).toEqual(during);
 	},
 );
 
-it("retains final negotiation failures when reachability is disabled", async () => {
-	// Arrange: direct-only callers must still publish a final failed receive.
+it("reports direct-only negotiation failures without inventing a failed receive", async () => {
+	// Arrange: no status response succeeds.
 	const requestExecutor = vi.fn<RequestJsonExecutor>().mockRejectedValue(networkError());
 	// Act.
 	const result = await runReachableSyncPass(db, "peer", addresses, { requestExecutor });
@@ -859,8 +859,8 @@ it("retains final negotiation failures when reachability is disabled", async () 
 	expect(result.ok).toBe(false);
 	expect(result.transport).toBeUndefined();
 	expect(readPeerSyncActivity(db, ["peer"]).get("peer")?.receive).toMatchObject({
-		errorCode: "exchange_failed",
-		lastAttemptAt: expect.any(String),
+		errorCode: null,
+		lastAttemptAt: null,
 		lastSuccessAt: null,
 	});
 });

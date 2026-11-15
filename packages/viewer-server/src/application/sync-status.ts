@@ -481,13 +481,15 @@ function peerStates(peers: PeerStatusReadModel): Set<string> {
 	);
 }
 
-function allPeersOffline(peers: PeerStatusReadModel): boolean {
-	return (
-		peers.items.length > 0 &&
-		peers.items.every(
-			(peer) => String((peer.status as Record<string, unknown>)?.peer_state ?? "") === "offline",
-		)
-	);
+function peerNeedsSyncAttention(
+	peer: Record<string, unknown>,
+	failedPeerIds: Set<string>,
+): boolean {
+	const health = peer.sync_health as { state?: string } | null | undefined;
+	if (health?.state) return health.state === "needs_attention";
+	const status = peer.status as Record<string, unknown> | undefined;
+	if (status?.peer_state !== "online" && status?.peer_state !== "degraded") return false;
+	return status?.peer_state === "degraded" || failedPeerIds.has(String(peer.peer_device_id ?? ""));
 }
 
 export function degradedDaemonState(
@@ -495,15 +497,9 @@ export function degradedDaemonState(
 	failedPeerIds: Set<string>,
 ): string {
 	const states = peerStates(peers);
-	const allOffline = allPeersOffline(peers);
-	if (failedPeerIds.size > 0) {
-		if (states.has("online") || states.has("degraded")) return "degraded";
-		if (allOffline) return "offline-peers";
-		if (peers.items.length > 0) return "stale";
-	}
-	if (states.has("degraded")) return "degraded";
-	if (allOffline) return "offline-peers";
-	if (peers.items.length > 0 && !states.has("online")) return "stale";
+	if (peers.items.some((peer) => peerNeedsSyncAttention(peer, failedPeerIds))) return "degraded";
+	if (peers.items.length > 0 && !states.has("online") && !states.has("degraded"))
+		return "offline-peers";
 	return "ok";
 }
 

@@ -75,14 +75,14 @@ type OverviewSignals = {
 	syncIssueCode: string | null;
 	syncStateLabel: string;
 	syncDisabled: boolean;
-	syncOfflinePeers: boolean;
+	syncWaitingForDevices: boolean;
+	syncRecencyIsNeutral: boolean;
 	syncNoPeers: boolean;
 	syncAgeSeconds: number | null;
 	syncLooksStale: boolean;
 	syncRecentlyOk: boolean;
-	syncHasRecentFailedAttempt: boolean;
+	syncHasPeerProblem: boolean;
 	syncProblemPeers: string[];
-	syncOfflinePeersNames: string[];
 	hasBacklog: boolean;
 };
 
@@ -169,7 +169,13 @@ function namedPeers(peers: SyncPeer[], include: (peer: SyncPeer) => boolean): st
 	].sort((left, right) => left.localeCompare(right));
 }
 
+function peerIsUnavailable(peer: SyncPeer): boolean {
+	return ["offline", "stale", "unknown"].includes(peer.status?.peer_state ?? "");
+}
+
 function peerHasSyncProblem(peer: SyncPeer, recentlyFailed: Set<string>): boolean {
+	if (peer.sync_health) return peer.sync_health.state === "needs_attention";
+	if (peerIsUnavailable(peer)) return false;
 	return (
 		peer.status?.recent_failed_attempt === true ||
 		peer.status?.peer_state === "degraded" ||
@@ -178,9 +184,22 @@ function peerHasSyncProblem(peer: SyncPeer, recentlyFailed: Set<string>): boolea
 	);
 }
 
-function hasRecentFailedAttempt(peers: SyncPeer[], recentlyFailed: Set<string>): boolean {
+function waitingForDevices(
+	peers: SyncPeer[],
+	recentlyFailed: Set<string>,
+	syncState: string,
+): boolean {
+	if (syncState === "offline-peers") {
+		return peers.every((peer) => !peerHasSyncProblem(peer, recentlyFailed));
+	}
 	return (
-		recentlyFailed.size > 0 || peers.some((peer) => peer.status?.recent_failed_attempt === true)
+		peers.some(peerIsUnavailable) &&
+		peers.every((peer) => {
+			if (peerHasSyncProblem(peer, recentlyFailed)) return false;
+			if (peerIsUnavailable(peer)) return true;
+			if (peer.sync_health) return peer.sync_health.state === "exchange_succeeded";
+			return peer.status?.peer_state === "online";
+		})
 	);
 }
 
@@ -190,6 +209,7 @@ function deriveSyncSignals() {
 	const syncDisabled = syncState === "disabled" || syncStatus.enabled === false;
 	const peers = Array.isArray(state.lastSyncPeers) ? state.lastSyncPeers : [];
 	const recentlyFailed = recentFailedPeerIds(peers);
+	const syncWaitingForDevices = waitingForDevices(peers, recentlyFailed, syncState);
 	const syncAgeSeconds = secondsSince(
 		syncStatus.last_sync_at || syncStatus.last_sync_at_utc || null,
 	);
@@ -198,14 +218,17 @@ function deriveSyncSignals() {
 		syncIssueCode: syncStatus.daemon_issue_code ?? null,
 		syncStateLabel: syncStateLabel(syncState),
 		syncDisabled,
-		syncOfflinePeers: syncState === "offline-peers",
+		syncWaitingForDevices,
+		syncRecencyIsNeutral:
+			syncState === "offline-peers" ||
+			syncWaitingForDevices ||
+			(peers.length > 0 && peers.every((peer) => peer.sync_health)),
 		syncNoPeers: !syncDisabled && peers.length === 0,
 		syncAgeSeconds,
 		syncLooksStale: syncAgeSeconds !== null && syncAgeSeconds > 7200,
 		syncRecentlyOk: syncAgeSeconds !== null && syncAgeSeconds <= 300,
-		syncHasRecentFailedAttempt: hasRecentFailedAttempt(peers, recentlyFailed),
+		syncHasPeerProblem: peers.some((peer) => peerHasSyncProblem(peer, recentlyFailed)),
 		syncProblemPeers: namedPeers(peers, (peer) => peerHasSyncProblem(peer, recentlyFailed)),
-		syncOfflinePeersNames: namedPeers(peers, (peer) => peer.status?.peer_state === "offline"),
 	};
 }
 
@@ -264,7 +287,7 @@ function applyPipelineRisk(result: RiskResult, signals: OverviewSignals): void {
 }
 
 function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void {
-	if (signals.syncState === "error") {
+	if (signals.syncState === "error" || signals.syncIssueCode) {
 		addRisk(
 			result,
 			36,
@@ -281,23 +304,22 @@ function applySyncStateRisk(result: RiskResult, signals: OverviewSignals): void 
 	}
 	if (
 		signals.syncState === "degraded" &&
-		(!signals.syncRecentlyOk ||
-			signals.syncHasRecentFailedAttempt ||
-			signals.syncProblemPeers.length > 0)
+		!signals.syncHasPeerProblem &&
+		!signals.syncRecencyIsNeutral &&
+		!signals.syncRecentlyOk
 	) {
-		addRisk(result, signals.syncRecentlyOk ? 26 : 20, "sync with paired devices failed");
+		addRisk(result, 20, "sync with paired devices failed");
 	}
-	if (signals.syncState === "ok" && signals.syncHasRecentFailedAttempt) {
+	if (
+		signals.syncHasPeerProblem &&
+		state.lastSyncStatus?.sync_health?.state !== "needs_attention"
+	) {
 		addRisk(result, 26, "sync with paired devices failed");
 	}
 }
 
 function applySyncRecencyRisk(result: RiskResult, signals: OverviewSignals): void {
-	if (signals.syncOfflinePeers) {
-		addRisk(result, 4, "all peers currently offline");
-		if (signals.syncLooksStale) addRisk(result, 4, "offline peers and sync not recent");
-		return;
-	}
+	if (signals.syncRecencyIsNeutral) return;
 	if (signals.syncLooksStale) {
 		addRisk(result, 26, "sync looks stale");
 		return;
@@ -423,6 +445,9 @@ function pipelineTile(signals: OverviewSignals): HealthTileInput {
 function syncTile(signals: OverviewSignals): HealthTileInput {
 	const health = state.lastSyncStatus?.sync_health;
 	if (!signals.syncDisabled) {
+		if (health?.state === "stale" && signals.syncWaitingForDevices) {
+			return tile("sync", "Sync", "Waiting for devices", "unknown", syncHealthSummary(health));
+		}
 		let tone: HealthTileInput["state"] = "unknown";
 		if (health?.state === "exchange_succeeded") tone = "online";
 		if (health?.state === "needs_attention") tone = "attention";
@@ -527,20 +552,17 @@ function primaryRecommendations(signals: OverviewSignals): HealthAction[] {
 			},
 		];
 	}
-	if (signals.syncDisabled || (signals.syncNoPeers && signals.syncState !== "error")) return [];
-	if (
-		signals.syncState === "degraded" &&
-		signals.syncRecentlyOk &&
-		!signals.syncHasRecentFailedAttempt &&
-		signals.syncProblemPeers.length === 0
-	)
+	if (signals.syncDisabled) return [];
+	if (signals.syncState === "error" || signals.syncIssueCode)
+		return unhealthySyncRecommendations(signals);
+	if (signals.syncNoPeers) return [];
+	if (signals.syncHasPeerProblem || state.lastSyncStatus?.sync_health?.state === "needs_attention")
+		return unhealthySyncRecommendations(signals);
+	if (signals.syncState === "degraded" && (signals.syncRecentlyOk || signals.syncRecencyIsNeutral))
 		return [];
 	if (
-		["error", "degraded", "offline-peers", "stale", "needs_attention"].includes(
-			signals.syncState,
-		) ||
-		(signals.syncState === "ok" && signals.syncHasRecentFailedAttempt) ||
-		signals.syncLooksStale
+		["degraded", "stale", "needs_attention"].includes(signals.syncState) ||
+		(signals.syncLooksStale && !signals.syncRecencyIsNeutral)
 	)
 		return unhealthySyncRecommendations(signals);
 	return [];
@@ -563,15 +585,9 @@ function daemonErrorDescription(signals: OverviewSignals, failed: string): strin
 
 function syncProblemDescription(signals: OverviewSignals): string {
 	const failed = shortDeviceList(signals.syncProblemPeers);
-	if (signals.syncState === "error") return daemonErrorDescription(signals, failed);
-	if (signals.syncState === "offline-peers") {
-		const offline = shortDeviceList(signals.syncOfflinePeersNames);
-		return `All paired devices are offline${offline ? `: ${offline}` : ""}. Check those devices' connections.`;
-	}
-	if (
-		signals.syncState === "degraded" ||
-		(signals.syncState === "ok" && signals.syncHasRecentFailedAttempt)
-	) {
+	if (signals.syncState === "error" || signals.syncIssueCode)
+		return daemonErrorDescription(signals, failed);
+	if (signals.syncState === "degraded" || signals.syncHasPeerProblem) {
 		return failed
 			? `Sync with ${failed} is failing. Other devices may still sync.`
 			: "Some device sync attempts are failing.";
@@ -669,6 +685,7 @@ export function renderHealthOverview(): void {
 	const syncEvidence = state.lastSyncStatus?.sync_health;
 	const syncUnverified =
 		!signals.syncDisabled &&
+		!signals.syncWaitingForDevices &&
 		(!syncEvidence || ["not_verified", "stale"].includes(syncEvidence.state));
 	const hasStaleData =
 		syncUnverified ||

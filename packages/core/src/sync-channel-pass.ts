@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { UnexpectedPeerError } from "@libp2p/interface";
 import type { Database } from "./db.js";
 import { createPeerHttpExecutor, type PeerHttpConnectionFactory } from "./peer-http-client.js";
 import { adoptPeerHttpConnection } from "./peer-http-client-lifecycle.js";
@@ -23,7 +24,7 @@ import {
 } from "./sync-channel-progress.js";
 import type { RequestJsonExecutor } from "./sync-http-client.js";
 import { ensureDeviceIdentity, fingerprintPublicKey } from "./sync-identity.js";
-import { type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
+import { type SyncFailureCategory, type SyncScopeResult, syncScopedPeerPull } from "./sync-pass.js";
 import { filterReplicationOpsForSyncWithStatus } from "./sync-replication.js";
 import { parseSyncScopeRequest } from "./sync-scope-protocol.js";
 import {
@@ -52,6 +53,12 @@ type Peer = { public_key: string; pinned_fingerprint: string };
 type Scope = Parameters<typeof syncScopedPeerPull>[1]["scope"];
 type Context = ReturnType<typeof captureContext>;
 
+class ChannelNegotiationError extends Error {
+	constructor(readonly category: SyncFailureCategory) {
+		super("channel negotiation failed");
+	}
+}
+
 function canonicalKey(key: string): string {
 	return `ssh-ed25519 ${Buffer.from(parseRelayEd25519PublicKey(key).wireKey).toString("base64")}`;
 }
@@ -75,7 +82,7 @@ function currentPeer(db: Database, peerDeviceId: string): Peer {
 		!row.pinned_fingerprint ||
 		fingerprintPublicKey(row.public_key) !== row.pinned_fingerprint
 	)
-		throw new Error("channel peer trust invalid");
+		throw new ChannelNegotiationError("trust");
 	canonicalKey(row.public_key);
 	return row;
 }
@@ -112,7 +119,7 @@ function checkAuthorization(context: Context): void {
 		peer.public_key !== context.peer.public_key ||
 		peer.pinned_fingerprint !== context.peer.pinned_fingerprint
 	)
-		throw new Error("channel trust changed");
+		throw new ChannelNegotiationError("trust");
 	const admission = parseSyncScopeRequest(context.scopeId, true, {
 		db: context.db,
 		localDeviceId: local.device_id,
@@ -121,7 +128,7 @@ function checkAuthorization(context: Context): void {
 		authenticatedPeerSigningKey: peer.public_key,
 		negotiatedCapability: "scoped",
 	});
-	if (!admission.ok) throw new Error("channel scope authorization denied");
+	if (!admission.ok) throw new ChannelNegotiationError("scope");
 }
 
 function validatePullPayload(context: Context, url: URL, payload: Record<string, unknown>): void {
@@ -143,27 +150,38 @@ function validatePullPayload(context: Context, url: URL, payload: Record<string,
 		throw new Error("channel snapshot invalid");
 }
 
+async function openChannelConnection(context: Context, options: Parameters<Context["open"]>[0]) {
+	checkAuthorization(context);
+	const connection = await context.open(options);
+	const owned = adoptPeerHttpConnection(connection);
+	try {
+		checkAuthorization(context);
+		if (
+			!owned.valid ||
+			readAuthenticatedRelayNoisePeerPin(owned.duplex) !== canonicalKey(context.peer.public_key)
+		)
+			throw new ChannelNegotiationError("trust");
+		return owned;
+	} catch (error) {
+		await owned.dispose(new Error("channel trust invalid"));
+		throw error;
+	}
+}
+
 function channelExecutor(context: Context): RequestJsonExecutor {
+	let negotiationFailure: ChannelNegotiationError | undefined;
 	const execute = createPeerHttpExecutor({
 		signal: context.signal,
 		deadlineMs: context.deadlineMs,
 		factory: {
 			open: async (options) => {
-				checkAuthorization(context);
-				const connection = await context.open(options);
-				const owned = adoptPeerHttpConnection(connection);
 				try {
-					checkAuthorization(context);
-					if (
-						!owned.valid ||
-						readAuthenticatedRelayNoisePeerPin(owned.duplex) !==
-							canonicalKey(context.peer.public_key)
-					)
-						throw new Error("channel peer pin mismatch");
-					return owned;
-				} catch {
-					await owned.dispose(new Error("channel trust invalid"));
-					throw new Error("channel trust invalid");
+					return await openChannelConnection(context, options);
+				} catch (error) {
+					if (error instanceof ChannelNegotiationError) negotiationFailure = error;
+					if (error instanceof UnexpectedPeerError)
+						negotiationFailure = new ChannelNegotiationError("trust");
+					throw error;
 				}
 			},
 		},
@@ -172,11 +190,17 @@ function channelExecutor(context: Context): RequestJsonExecutor {
 		checkAuthorization(context);
 		const url = new URL(target);
 		if (url.origin !== context.logicalOrigin) throw new Error("channel target invalid");
-		const response = await execute(method, target, options);
+		// The HTTP executor sanitizes transport exceptions, so retain local
+		// authorization failures separately without changing its error contract.
+		const response = await execute(method, target, options).catch((error) => {
+			throw negotiationFailure ?? error;
+		});
 		checkAuthorization(context);
 		const [status, payload] = response;
 		if (method === "GET" && url.pathname !== "/v1/status" && status === 200 && payload)
 			validatePullPayload(context, url, payload);
+		if (status === 401) throw new ChannelNegotiationError("trust");
+		if (status === 403) throw new ChannelNegotiationError("scope");
 		if (status >= 400 && status !== 409 && status !== 413)
 			throw new Error("channel request failed");
 		return response;
@@ -221,6 +245,17 @@ async function fetchStatus(context: Context, execute: RequestJsonExecutor) {
 	const [status, payload] = await execute("GET", url, {
 		headers: signedHeaders(context, "GET", url, Buffer.alloc(0)),
 	});
+	if (status === 409 && payload?.error === "reset_required")
+		throw new ChannelNegotiationError("scope");
+	if (
+		status === 200 &&
+		payload &&
+		(payload.device_id !== context.peerDeviceId ||
+			payload.fingerprint !== context.peer.pinned_fingerprint)
+	)
+		throw new ChannelNegotiationError("trust");
+	if (status === 200 && payload && String(payload.protocol_version) !== "2")
+		throw new ChannelNegotiationError("compatibility");
 	if (
 		status !== 200 ||
 		!payload ||
@@ -430,10 +465,44 @@ function failedPullResult(
 	return failedResult(result, options.factory, "channel pull failed");
 }
 
+function completeChannelPull(context: Context, boundary: SyncChannelBoundary): void {
+	// One Space per pass proves the receive path works, but other scopes stay unretried.
+	recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
+		preserveScopedError: true,
+	});
+	checkAuthorization(context);
+	saveSyncChannelCompletedBoundary(context.db, {
+		peerDeviceId: context.peerDeviceId,
+		scopeId: context.scopeId,
+		boundary,
+	});
+}
+
+function failedChannelExchange(
+	options: ScopedChannelSyncOptions,
+	result: SyncScopeResult,
+	error: unknown,
+	phase: { established: boolean; sending: boolean },
+): SyncScopeResult {
+	if (phase.established)
+		recordSyncTransferObservation(
+			options.db,
+			options.peerDeviceId,
+			phase.sending ? "send" : "receive",
+			{
+				errorCode: "exchange_failed",
+			},
+		);
+	if (!phase.established && error instanceof ChannelNegotiationError)
+		result = { ...result, failureCategory: error.category };
+	return failedResult(result, options.factory, "scoped channel exchange failed");
+}
+
 /** Internal, opt-in scoped exchange. Never discovers addresses or refreshes authorization. */
 export async function syncScopedChannelOnce(
 	options: ScopedChannelSyncOptions,
 ): Promise<SyncScopeResult> {
+	let established = false;
 	let sending = false;
 	let result: SyncScopeResult = {
 		scope_id: options.scopeId,
@@ -447,6 +516,7 @@ export async function syncScopedChannelOnce(
 		checkAuthorization(context);
 		const execute = channelExecutor(context);
 		const status = await fetchStatus(context, execute);
+		established = true;
 		checkAuthorization(context);
 		const progress = getSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId);
 		result = await syncScopedPeerPull(context.db, {
@@ -466,16 +536,7 @@ export async function syncScopedChannelOnce(
 				clearSyncChannelProgress(context.db, context.peerDeviceId, context.scopeId),
 		});
 		if (!result.ok) return failedPullResult(options, result);
-		// One Space per pass proves the receive path works, but other scopes stay unretried.
-		recordSyncTransferObservation(context.db, context.peerDeviceId, "receive", {
-			preserveScopedError: true,
-		});
-		checkAuthorization(context);
-		saveSyncChannelCompletedBoundary(context.db, {
-			peerDeviceId: context.peerDeviceId,
-			scopeId: context.scopeId,
-			boundary: status.scope.sync_reset,
-		});
+		completeChannelPull(context, status.scope.sync_reset);
 		sending = true;
 		const opsOut = await pushOutbound(
 			context,
@@ -485,10 +546,7 @@ export async function syncScopedChannelOnce(
 			status.appliedCursor,
 		);
 		return { ...result, opsOut };
-	} catch {
-		recordSyncTransferObservation(options.db, options.peerDeviceId, sending ? "send" : "receive", {
-			errorCode: "exchange_failed",
-		});
-		return failedResult(result, options.factory, "scoped channel exchange failed");
+	} catch (error) {
+		return failedChannelExchange(options, result, error, { established, sending });
 	}
 }

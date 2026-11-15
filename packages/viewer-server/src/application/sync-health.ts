@@ -34,6 +34,7 @@ interface LatestAttempt {
 	peer_device_id: string;
 	ok: number;
 	finished_at: string | null;
+	failure_category: string | null;
 }
 
 interface SuccessfulConnection {
@@ -129,16 +130,24 @@ export function readPeerSyncHealth(
 	const now = Date.now();
 	const staleAfterMs = Math.max(STALE_AFTER_MS, readCoordinatorSyncConfig().syncIntervalS * 3_000);
 	const activity = readPeerSyncActivity(store.db, peerIds, { now: new Date(now).toISOString() });
-	// The indexed peer/start lookup includes failures before a directional exchange starts.
+	// Negotiation can report actionable trust, scope, or version failures before
+	// directional observations exist. Unreachable retries cannot resolve those
+	// failures, so only a newer successful exchange supersedes them.
 	const latest = store.db.prepare(`
-		SELECT p.peer_device_id, a.ok, a.finished_at FROM sync_peers p
+		SELECT p.peer_device_id, a.ok, a.finished_at, a.failure_category FROM sync_peers p
 		JOIN sync_attempts a ON a.id = (
 			SELECT id FROM sync_attempts WHERE peer_device_id = p.peer_device_id
+			AND (ok <> 0 OR failure_category IN ('trust', 'scope', 'compatibility'))
 			ORDER BY started_at DESC, id DESC LIMIT 1
 		)`);
 	const failed = new Map<string, string>();
 	for (const row of latest.all() as LatestAttempt[]) {
-		if (!row.ok && row.finished_at) failed.set(row.peer_device_id, row.finished_at);
+		if (
+			!row.ok &&
+			row.finished_at &&
+			["trust", "scope", "compatibility"].includes(row.failure_category ?? "")
+		)
+			failed.set(row.peer_device_id, row.finished_at);
 	}
 	const connections = readLastSuccessfulConnections(store);
 	return new Map(

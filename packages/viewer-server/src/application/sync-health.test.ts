@@ -1,4 +1,4 @@
-import { MemoryStore } from "@codemem/core";
+import { MemoryStore, recordSyncTransferObservation } from "@codemem/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type DirectionEvidence,
@@ -27,6 +27,47 @@ const successful: DirectionEvidence = {
 	operations24h: 0,
 	errorCode: null,
 };
+
+function verifyNegotiationRecovery(options: {
+	store: MemoryStore;
+	category: string;
+	attempt: (id: number, at: string, transport: string | null, ok?: number) => void;
+}) {
+	const { store, category, attempt } = options;
+	for (const direction of ["send", "receive"] as const)
+		recordSyncTransferObservation(store.db, "peer", direction, {
+			now: new Date("2026-11-02T11:58:00.000Z"),
+		});
+	attempt(1, recent, "relay", 0);
+	store.db.prepare("UPDATE sync_attempts SET failure_category = ? WHERE id = 1").run(category);
+	const retryAt = "2026-11-02T11:59:30.000Z";
+
+	for (const [index, retryCategory] of ["connectivity", "other", null].entries()) {
+		const id = index + 2;
+		attempt(id, retryAt, "relay", 0);
+		store.db
+			.prepare("UPDATE sync_attempts SET failure_category = ? WHERE id = ?")
+			.run(retryCategory, id);
+
+		const health = readPeerSyncHealth(store, ["peer"]).get("peer");
+		expect(health).toMatchObject({
+			state: "needs_attention",
+			send: { reason_code: null },
+			receive: { reason_code: null },
+		});
+		expect(
+			overallSyncHealth([{ pinned: true, sync_health: health }], { enabled: true }),
+		).toMatchObject({ attention_count: 1 });
+	}
+
+	attempt(5, "2026-11-02T11:59:45.000Z", "direct");
+	attempt(6, "2026-11-02T11:59:50.000Z", "relay", 0);
+	store.db.prepare("UPDATE sync_attempts SET failure_category = 'other' WHERE id = 6").run();
+	expect(readPeerSyncHealth(store, ["peer"]).get("peer")).toMatchObject({
+		state: "exchange_succeeded",
+		last_successful_connection: { transport: "direct", at: "2026-11-02T11:59:45.000Z" },
+	});
+}
 
 describe("readPeerSyncHealth last successful connection", () => {
 	let store: MemoryStore;
@@ -136,6 +177,43 @@ describe("readPeerSyncHealth last successful connection", () => {
 			expect(health.get(id)?.last_successful_connection).toEqual({ transport: null, at: null });
 		}
 	});
+
+	it.each(["connectivity", "other", null])(
+		"keeps stale directions out of attention for a pre-transfer %s failure",
+		(category) => {
+			const old = new Date("2026-11-02T11:00:00.000Z");
+			for (const direction of ["send", "receive"] as const)
+				recordSyncTransferObservation(store.db, "peer", direction, { now: old });
+			attempt(1, recent, "relay", 0);
+			store.db.prepare("UPDATE sync_attempts SET failure_category = ?").run(category);
+
+			const health = readPeerSyncHealth(store, ["peer"]).get("peer");
+
+			expect(health).toMatchObject({
+				state: "stale",
+				send: { state: "stale", reason_code: null },
+				receive: { state: "stale", reason_code: null },
+			});
+			expect(
+				overallSyncHealth([{ pinned: true, sync_health: health }], { enabled: true }),
+			).toMatchObject({ attention_count: 0, stale_count: 1 });
+		},
+	);
+
+	it.each(["trust", "scope", "compatibility"])(
+		"still reports actionable %s negotiation failures",
+		(category) => {
+			attempt(1, recent, "direct", 0);
+			store.db.prepare("UPDATE sync_attempts SET failure_category = ?").run(category);
+
+			expect(readPeerSyncHealth(store, ["peer"]).get("peer")?.state).toBe("needs_attention");
+		},
+	);
+
+	it.each(["trust", "scope", "compatibility"])(
+		"retains an unresolved %s rejection across unreachable retries until recovery",
+		(category) => verifyNegotiationRecovery({ store, category, attempt }),
+	);
 });
 
 describe("directionSyncHealth", () => {
