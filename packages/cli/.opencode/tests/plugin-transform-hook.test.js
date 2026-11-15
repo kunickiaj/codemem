@@ -3186,7 +3186,7 @@ describe("OpenCode transform-time injection", () => {
 			"identity",
 			409,
 			"viewer_identity_mismatch",
-			"restart Codemem and OpenCode with the same environment",
+			"restart the viewer and OpenCode",
 		],
 		[
 			"contract",
@@ -3243,38 +3243,61 @@ describe("OpenCode transform-time injection", () => {
 			{ tool: "read", args: { filePath: "src/raw-event.ts" }, sessionID: `sess-${category}` },
 			{},
 		);
-		await vi.waitFor(() =>
-			expect(appLog).toHaveBeenCalledWith({
-				body: expect.objectContaining({
-					message: expect.stringContaining(
-						`codemem raw event was saved for retry after viewer post returned ${status}`,
-					),
-					extra: expect.objectContaining({
-						category,
-						delivery: "spool",
-						viewer_stage: "post",
-						viewer_cause: "http_status",
-						viewer_status: status,
-						viewer_elapsed_ms: expect.any(Number),
-						cli_attempts: 0,
-						cli_elapsed_ms: expect.any(Number),
+		if (category === "identity") {
+			await vi.waitFor(() =>
+				expect(appLog).toHaveBeenCalledWith({
+					body: expect.objectContaining({
+						level: "error",
+						message: expect.stringContaining("capture delivery paused: viewer identity mismatch"),
+						extra: { category: "identity", code: "viewer_identity_mismatch" },
 					}),
 				}),
-			}),
-		);
+			);
+			expect(showToast).toHaveBeenCalledTimes(1);
+			expect(showToast).toHaveBeenCalledWith({
+				body: expect.objectContaining({
+					variant: "error",
+					message: expect.stringContaining(nextAction),
+				}),
+			});
+		} else {
+			await vi.waitFor(() =>
+				expect(appLog).toHaveBeenCalledWith({
+					body: expect.objectContaining({
+						message: expect.stringContaining(
+							`codemem raw event was saved for retry after viewer post returned ${status}`,
+						),
+						extra: expect.objectContaining({
+							category,
+							delivery: "spool",
+							viewer_stage: "post",
+							viewer_cause: "http_status",
+							viewer_status: status,
+							viewer_elapsed_ms: expect.any(Number),
+							cli_attempts: 0,
+							cli_elapsed_ms: expect.any(Number),
+						}),
+					}),
+				}),
+			);
+			expect(showToast).not.toHaveBeenCalled();
+		}
 		expect(appLog.mock.calls.some(([call]) => call.body.message.includes(nextAction))).toBe(true);
 
 		const httpEnvelope = { ...postedBodies[0] };
 		delete httpEnvelope.db_path;
 		delete httpEnvelope.identity_target;
-		const spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
+		let spoolFiles;
+		await vi.waitFor(() => {
+			spoolFiles = readdirSync(spoolDirectory).filter((name) => name.endsWith(".json"));
+			expect(spoolFiles).toHaveLength(1);
+		});
 		expect(spoolFiles).toHaveLength(1);
 		const spooledEnvelope = JSON.parse(readFileSync(join(spoolDirectory, spoolFiles[0]), "utf8"));
 		expect(spooledEnvelope).toEqual(httpEnvelope);
 		expect(spooledEnvelope).not.toHaveProperty("db_path");
 		expect(spooledEnvelope).not.toHaveProperty("identity_target");
 		expect(spawnMock.mock.calls.some(([, args]) => args?.includes("enqueue-raw-event"))).toBe(false);
-		expect(showToast).not.toHaveBeenCalled();
 		const notices = JSON.stringify([...appLog.mock.calls, ...showToast.mock.calls]);
 		for (const sensitive of [
 			"sensitive-host.invalid",
