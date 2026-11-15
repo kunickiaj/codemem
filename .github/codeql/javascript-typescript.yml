@@ -1,0 +1,20 @@
+name: codemem JavaScript/TypeScript
+
+# The JavaScript extractor skips dot-directories unless they are listed by
+# name; globs such as "**/.opencode" do not re-include them. The OpenCode
+# plugin runtime lives under .opencode/, so each of those directories is
+# listed explicitly. Listing any path turns this into an allowlist, so every
+# tracked source root must appear here too.
+paths:
+  - packages
+  - plugins
+  - scripts
+  - e2e
+  - .opencode
+  - packages/cli/.opencode
+  - packages/opencode-plugin/.opencode
+
+paths-ignore:
+  - "**/node_modules"
+  - "**/dist"
+  - packages/viewer-server/static
