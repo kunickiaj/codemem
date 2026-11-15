@@ -2,11 +2,37 @@
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-14
+
+### Added
+
+- `codemem memory context <task>` retrieves task-relevant memories, and `codemem memory context trace <task>` explains which memories were selected. ([#2630])
+- MCP supports the 2026-07-28 discovery protocol alongside legacy `initialize` clients over stdio and HTTP. ([#2599])
+- My Account offers **Connect this device** when a linked device needs its ownership recorded and a fresh Google sign-in can complete it for the same Identity. ([#2667], [#2677])
+
+### Changed
+
+- **Breaking: grouped CLI commands.** Commands now use `memory`, `session`, `service`, `maintenance`, and `diagnostics` groups. Use `codemem memory search` instead of `codemem search`, `codemem diagnostics capture status` instead of `codemem db raw-events-status`, and `codemem service status` instead of `codemem sync status`. See [Command migration](docs/cli-reference.md#command-migration). Hidden compatibility entrypoints remain for installed integrations. ([#2630], [#2632])
+- The Viewer Feed loads pages without discarding older results on refresh. Project assignment previews stream their rows, and status and Project lists use indexed queries. ([#2608], [#2609], [#2619], [#2624], [#2661], [#2662])
+
 ### Fixed
 
-- Relayed sync accepts valid requests that arrive before the receiving device finishes preparing to read them, avoiding a timing-dependent disconnect.
-- Relay health readiness refreshes after successful coordinator requests, preventing an expired published stamp from rejecting an otherwise healthy exchange.
-- Background sync revalidates expired Space permissions before selecting a peer's relay route, including after slow earlier exchanges.
+- Linked devices can finish ownership setup from existing verified account claims and controller reviews. Devices under the same coordinator Identity can then sync without an invitation. ([#2664], [#2666], [#2669], [#2675], [#2676], [#2727], [#2728])
+- Account status, device setup, account changes, and ownership recovery work on coordinators running SQLite 3.54.0 or 3.54.1. ([#2680], [#2682], [#2716])
+- OpenCode 2 captures conversations in the correct project when one host serves multiple projects. Moving a session preserves the project and sharing scope of its earlier activity. ([#2731])
+- Capture retains rejected payloads for inspection and explicit recovery so later queued activity can proceed. Failed extraction retries keep their original event range, and capture reports the stage where a failure occurred. ([#2581], [#2612], [#2613], [#2647], [#2655])
+- Local memory writes and redaction durably schedule vector repair. Obsolete source snapshots and stale pending vectors no longer affect semantic ranking. ([#2587], [#2592], [#2593], [#2596], [#2605])
+- Relayed sync accepts valid requests that arrive before the receiving device finishes preparing to read them, avoiding a timing-dependent disconnect. ([#2739])
+- Relay health readiness refreshes after successful coordinator requests, preventing an expired published stamp from rejecting an otherwise healthy exchange. ([#2740])
+- Background sync revalidates expired Space permissions before selecting a peer's relay route, including after slow earlier exchanges. ([#2741])
+
+**Upgrade notes and limitations:**
+
+- Restart the Viewer and agent hosts after upgrading. Update scripts to use the [grouped CLI commands](docs/cli-reference.md#command-migration).
+- Self-hosted Cloudflare coordinators must apply migration `0044_add_rebind_start_authority.sql` before deploying the new Worker. See [Cloudflare coordinator deployment](docs/cloudflare-coordinator-deployment.md).
+- Devices without a coordinator admin secret do not run automatic enrollment maintenance.
+- Relay sync can still fail intermittently with `relay_aborted`. The cause remains under investigation.
+- Native Pi saved-cutoff HTTP recovery is unsupported. Native Windows retained-capture recovery has not completed validation. Existing failed capture batches require explicit recovery.
 
 ## [0.49.0-beta.7] - 2026-11-13
 
@@ -347,7 +373,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.7...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0
 [0.49.0-beta.7]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...v0.49.0-beta.7
 [0.49.0-beta.6]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...v0.49.0-beta.6
 [0.49.0-beta.5]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.4...v0.49.0-beta.5
@@ -525,7 +552,14 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2678]: https://github.com/kunickiaj/codemem/pull/2678
 [#2679]: https://github.com/kunickiaj/codemem/pull/2679
 [#2680]: https://github.com/kunickiaj/codemem/pull/2680
+[#2682]: https://github.com/kunickiaj/codemem/pull/2682
+[#2716]: https://github.com/kunickiaj/codemem/pull/2716
+[#2727]: https://github.com/kunickiaj/codemem/pull/2727
+[#2728]: https://github.com/kunickiaj/codemem/pull/2728
 [#2730]: https://github.com/kunickiaj/codemem/pull/2730
 [#2731]: https://github.com/kunickiaj/codemem/pull/2731
 [#2735]: https://github.com/kunickiaj/codemem/pull/2735
 [#2737]: https://github.com/kunickiaj/codemem/pull/2737
+[#2739]: https://github.com/kunickiaj/codemem/pull/2739
+[#2740]: https://github.com/kunickiaj/codemem/pull/2740
+[#2741]: https://github.com/kunickiaj/codemem/pull/2741
