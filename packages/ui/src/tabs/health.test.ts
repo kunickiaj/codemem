@@ -11,6 +11,7 @@ import type {
 	UsageTotals,
 } from "../lib/state";
 import { beginHealthLoad, completeHealthLoad, healthNotLoaded, state } from "../lib/state";
+import type { PeerSyncHealth } from "../lib/sync-health";
 import {
 	markHealthStatusUnchecked,
 	renderHealthOverview,
@@ -117,6 +118,18 @@ function mockSuccessfulHealthReads(): void {
 
 function renderOverview(): void {
 	act(() => renderHealthOverview());
+}
+
+function peerHealth(healthState: PeerSyncHealth["state"]): PeerSyncHealth {
+	const direction = {
+		state: "stale" as const,
+		last_attempt_at: null,
+		last_success_at: "2020-01-01T00:00:00.000Z",
+		operations_24h: null,
+		pending_count: null,
+		reason_code: null,
+	};
+	return { state: healthState, send: { ...direction }, receive: { ...direction } };
 }
 
 function updateBannerText(): string {
@@ -662,16 +675,242 @@ it("names a failed peer when its attempt fell outside the five-row activity prev
 	expect(document.getElementById("healthActions")?.textContent).toContain("Work laptop");
 });
 
-it("explains offline peers without treating a restart as their recovery", () => {
-	state.lastSyncPeers = [
-		{ peer_device_id: "peer-a", name: "Work laptop", status: { peer_state: "offline" } },
-	];
-	state.lastSyncStatus = { enabled: true, daemon_state: "offline-peers" };
+it.each([
+	[false, "offline"],
+	[true, "offline"],
+	[false, "stale"],
+	[true, "stale"],
+	[false, "unknown"],
+	[true, "unknown"],
+] as const)(
+	"keeps unavailable peers neutral with directional health %s and presence %s",
+	(hasHealth, peerState) => {
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				name: "Work laptop",
+				has_error: true,
+				sync_health: hasHealth ? peerHealth("stale") : undefined,
+				status: { peer_state: peerState, recent_failed_attempt: true },
+			},
+		];
+		state.lastSyncAttempts = [
+			{ peer_device_id: "peer-a", status: "error", finished_at: new Date().toISOString() },
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: "offline-peers",
+			last_sync_at: "2020-01-01T00:00:00.000Z",
+			sync_health: {
+				state: "stale",
+				peer_count: 1,
+				attention_count: 0,
+				unverified_count: 0,
+				stale_count: 1,
+			},
+		};
+		renderOverview();
+		expect(document.getElementById("healthMeta")?.textContent).toBe("Healthy · 0 issues");
+		expect(document.getElementById("healthActions")?.textContent).toBe("");
+		const sync = document.querySelectorAll("#healthGrid .health-tile")[1];
+		expect(sync?.querySelector(".health-tile-value")?.textContent).toBe("Waiting for devices");
+		expect(sync?.querySelector(".presence-pip--unknown")).not.toBeNull();
+		expect(sync?.getAttribute("title")).toContain("1 stale");
+		expect(state.lastSyncStatus.last_sync_at).toBe("2020-01-01T00:00:00.000Z");
+		expect(state.lastSyncPeers[0]?.sync_health?.send.last_success_at).toBe(
+			hasHealth ? "2020-01-01T00:00:00.000Z" : undefined,
+		);
+	},
+);
+
+it.each([
+	["ok", "offline"],
+	["degraded", "offline"],
+	["ok", "stale"],
+	["degraded", "stale"],
+] as const)(
+	"keeps mixed peers neutral despite daemon %s and unavailable presence %s",
+	(daemonState, peerState) => {
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				status: { peer_state: "online" },
+				sync_health: peerHealth("exchange_succeeded"),
+			},
+			{
+				peer_device_id: "peer-b",
+				has_error: true,
+				status: { peer_state: peerState, recent_failed_attempt: true },
+				sync_health: peerHealth("stale"),
+			},
+		];
+		state.lastSyncAttempts = [
+			{ peer_device_id: "peer-b", status: "error", finished_at: new Date().toISOString() },
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: daemonState,
+			last_sync_at: "2020-01-01T00:00:00.000Z",
+			sync_health: {
+				state: "stale",
+				peer_count: 2,
+				attention_count: 0,
+				unverified_count: 0,
+				stale_count: 1,
+			},
+		};
+
+		renderOverview();
+
+		expect(document.getElementById("healthMeta")?.textContent).toBe("Healthy · 0 issues");
+		expect(document.getElementById("healthActions")?.textContent).toBe("");
+		expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+			"Waiting for devices",
+		);
+	},
+);
+
+it.each(["stale", "not_verified", "exchange_succeeded"] as const)(
+	"ignores online raw failures when directional health is %s",
+	(healthState) => {
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				has_error: true,
+				status: { peer_state: "degraded", recent_failed_attempt: true },
+				sync_health: peerHealth(healthState),
+			},
+		];
+		state.lastSyncAttempts = [
+			{ peer_device_id: "peer-a", status: "error", finished_at: new Date().toISOString() },
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: "degraded",
+			last_sync_at: "2020-01-01T00:00:00.000Z",
+		};
+
+		renderOverview();
+
+		expect(document.getElementById("healthMeta")?.textContent).toContain("0 issues");
+		expect(document.getElementById("healthActions")?.textContent).toBe("");
+	},
+);
+
+it.each(["online", undefined])(
+	"treats offline-peers as informational despite raw presence %s",
+	(peerState) => {
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				status: { peer_state: peerState },
+				sync_health: peerHealth("stale"),
+			},
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: "offline-peers",
+			last_sync_at: "2020-01-01T00:00:00.000Z",
+			sync_health: {
+				state: "stale",
+				peer_count: 1,
+				attention_count: 0,
+				unverified_count: 0,
+				stale_count: 1,
+			},
+		};
+
+		renderOverview();
+
+		expect(document.getElementById("healthMeta")?.textContent).toBe("Healthy · 0 issues");
+		expect(document.getElementById("healthActions")?.textContent).toBe("");
+		expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+			"Waiting for devices",
+		);
+	},
+);
+
+it.each(["offline", "stale", "unknown"])(
+	"keeps actionable directional errors visible with presence %s",
+	(peerState) => {
+		const health = peerHealth("needs_attention");
+		health.send.state = "needs_attention";
+		health.send.reason_code = "transfer_failed";
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				name: "Work laptop",
+				status: { peer_state: peerState },
+				sync_health: health,
+			},
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: "offline-peers",
+			sync_health: {
+				state: "needs_attention",
+				peer_count: 1,
+				attention_count: 1,
+				unverified_count: 0,
+				stale_count: 0,
+			},
+		};
+
+		renderOverview();
+
+		expect(document.getElementById("healthMeta")?.textContent).toContain(
+			"device sync needs attention",
+		);
+		expect(document.getElementById("healthActions")?.textContent).toContain("Work laptop");
+		expect(document.getElementById("healthActions")?.textContent).toContain("codemem sync doctor");
+		expect(document.querySelectorAll("#healthGrid .health-tile-value")[1]?.textContent).toBe(
+			"Needs attention",
+		);
+	},
+);
+
+it.each(["error", "ok"] as const)(
+	"preserves coordinator errors with offline peers and daemon %s",
+	(daemonState) => {
+		state.lastSyncPeers = [
+			{
+				peer_device_id: "peer-a",
+				status: { peer_state: "offline" },
+				sync_health: peerHealth("stale"),
+			},
+		];
+		state.lastSyncStatus = {
+			enabled: true,
+			daemon_state: daemonState,
+			daemon_issue_code: "coordinator_timeout",
+			last_sync_at: "2020-01-01T00:00:00.000Z",
+		};
+
+		renderOverview();
+
+		expect(document.getElementById("healthMeta")?.textContent).toContain(
+			"coordinator sync requests timed out",
+		);
+		expect(document.getElementById("healthActions")?.textContent).toContain(
+			"Coordinator sync requests timed out",
+		);
+		expect(document.getElementById("healthActions")?.textContent).toContain("codemem sync doctor");
+	},
+);
+
+it.each([
+	["stopped", "sync daemon stopped", "codemem serve start"],
+	["needs_attention", "sync needs manual attention", "codemem sync doctor"],
+	["stale", "sync daemon stale", "codemem sync doctor"],
+	["error", "background sync failed", "codemem sync doctor"],
+] as const)("preserves daemon %s with only offline peers", (daemonState, driver, command) => {
+	state.lastSyncPeers = [{ peer_device_id: "peer-a", status: { peer_state: "offline" } }];
+	state.lastSyncStatus = { enabled: true, daemon_state: daemonState };
+
 	renderOverview();
-	expect(document.getElementById("healthActions")?.textContent).toContain(
-		"All paired devices are offline: Work laptop",
-	);
-	expect(document.getElementById("healthActions")?.textContent).not.toContain("restart");
+
+	expect(document.getElementById("healthMeta")?.textContent).toContain(driver);
+	expect(document.getElementById("healthActions")?.textContent).toContain(command);
 });
 
 it("does not rewrite an unchanged Health announcement", () => {

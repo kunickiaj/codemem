@@ -519,7 +519,7 @@ describe.each(endpoints)("%s partial exchange and freshness", (endpoint) => {
 		};
 		expect(response.status).toBe(200);
 		expect((body.peers ?? body.items)?.[0]?.sync_health).toMatchObject({
-			state: "needs_attention",
+			state: "not_verified",
 			send: unknown,
 			receive: unknown,
 		});
@@ -559,7 +559,13 @@ describe("status aggregates every paired peer", () => {
 			seedExchange("healthy-peer");
 			seedPeer("other-peer");
 			if (state === "stale") seedExchange("other-peer", new Date("2026-11-02T11:49:00.000Z"));
-			if (state === "needs_attention") seedAttempt("other-peer", { ok: false });
+			if (state === "needs_attention") {
+				seedAttempt("other-peer", { ok: false });
+				recordSyncTransferObservation(store.db, "other-peer", "receive", {
+					now: recent,
+					errorCode: "exchange_failed",
+				});
+			}
 			const app = syncRoutes(() => store);
 			// Act.
 			const response = await app.request("/api/sync/status");

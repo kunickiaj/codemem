@@ -22,6 +22,73 @@ describe("derived daemon state across peers", () => {
 	it("returns ok when no active peer has a recent failure", () => {
 		expect(degradedDaemonState(peers, new Set())).toBe("ok");
 	});
+
+	it.each(["stale", "not_verified", undefined])(
+		"does not degrade healthy online peers because an offline peer has %s history",
+		(state) => {
+			const mixed = {
+				items: [
+					{ peer_device_id: "online", status: { peer_state: "online" } },
+					{
+						peer_device_id: "offline",
+						status: { peer_state: "offline" },
+						...(state ? { sync_health: { state } } : {}),
+					},
+				],
+				byId: {},
+			};
+			expect(degradedDaemonState(mixed, new Set(["offline"]))).toBe("ok");
+		},
+	);
+
+	it.each(["offline", "stale", "unknown"])(
+		"keeps an unavailable fleet informational when presence is %s",
+		(availability) => {
+			const offline = {
+				items: [
+					{
+						peer_device_id: "offline",
+						status: { peer_state: availability },
+						sync_health: { state: "stale" },
+					},
+					{ peer_device_id: "legacy", status: { peer_state: availability } },
+				],
+				byId: {},
+			};
+			expect(degradedDaemonState(offline, new Set(["offline", "legacy"]))).toBe("offline-peers");
+		},
+	);
+
+	it.each(["online", "degraded", "offline"])(
+		"retains actionable transfer or negotiation errors when availability is %s",
+		(availability) => {
+			const failed = {
+				items: [
+					{
+						peer_device_id: "failed",
+						status: { peer_state: availability },
+						sync_health: { state: "needs_attention" },
+					},
+				],
+				byId: {},
+			};
+			expect(degradedDaemonState(failed, new Set())).toBe("degraded");
+		},
+	);
+
+	it("uses directional health instead of old transport errors for a reachable peer", () => {
+		const recovered = {
+			items: [
+				{
+					peer_device_id: "recovered",
+					status: { peer_state: "degraded" },
+					sync_health: { state: "exchange_succeeded" },
+				},
+			],
+			byId: {},
+		};
+		expect(degradedDaemonState(recovered, new Set(["recovered"]))).toBe("ok");
+	});
 });
 
 it("finds a failed peer after more than 25 newer attempts by another peer", () => {

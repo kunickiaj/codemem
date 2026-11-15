@@ -191,7 +191,6 @@ async function selectedPass(
 		...options,
 		requestExecutor: direct.request,
 		attemptRecorder: options.attemptRecorder ?? (() => {}),
-		deferConnectionFailure: true,
 	});
 	if (result.ok || direct.committedOrigin !== null || direct.terminal)
 		return { ...result, transport: "direct" };
