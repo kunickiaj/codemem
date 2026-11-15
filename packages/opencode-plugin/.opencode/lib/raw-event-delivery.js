@@ -92,6 +92,7 @@ const createDeliveryState = (options) => ({
   lastStatusCheckAt: 0,
   latestViewerFailure: null,
   lastToastAtBySession: new Map(),
+  identityMismatch: false,
   options,
   retainedPayloads: new WeakSet(),
   spoolDirectory: resolveSpoolDirectory(options.spoolHome),
@@ -344,6 +345,29 @@ const armViewerBackoff = (state, error, timing) => {
   return viewerFailure;
 };
 
+const isIdentityMismatchFailure = (error) =>
+  error?.rawEventFailure?.cause === "viewer_identity_mismatch";
+
+const pauseForIdentityMismatch = async (state) => {
+  if (state.identityMismatch) return;
+  state.identityMismatch = true;
+  if (!state.options.isActive()) return;
+  const message = "codemem capture delivery paused: viewer identity mismatch; align CODEMEM_* settings, then restart the viewer and OpenCode to resume saved events";
+  const diagnostic = `raw_events.delivery.paused code=viewer_identity_mismatch category=identity ${message}`;
+  try {
+    await persistSafeSpoolDiagnostic(state, diagnostic);
+  } catch {
+    // The host warning still explains recovery when the default log is unavailable.
+  }
+  await bestEffortHostLog(state, {
+    service: "codemem",
+    level: "error",
+    message,
+    extra: { category: "identity", code: "viewer_identity_mismatch" },
+  });
+  await bestEffortNotify(state, { message, variant: "error" });
+};
+
 const warnRejectedEntry = async (state, { rejection, outcome, sessionID }) => {
   const messages = {
     retained: "codemem retained a rejected raw event; inspect it with codemem diagnostics capture list-rejected",
@@ -386,6 +410,24 @@ const retainRejectedEntry = async (state, { eventId, rejection, sessionID, paylo
   }
 };
 
+const handleDrainFailure = async (state, entry, error, startedAt) => {
+  if (isIdentityMismatchFailure(error)) {
+    await pauseForIdentityMismatch(state);
+    return false;
+  }
+  if (error?.rawEventTerminalRejection) {
+    await retainRejectedEntry(state, { eventId: entry.eventId, rejection: error.rawEventTerminalRejection });
+    return true;
+  }
+  await state.options.logLine("raw_events.spool.drain_deferred category=fallback");
+  const status = error?.rawEventFailure?.status;
+  if (!Number.isInteger(status) || status >= 500 || status === 409) {
+    armViewerBackoff(state, error, { stage: "post", startedAt });
+    return false;
+  }
+  return true;
+};
+
 const drainLoadedEntries = async (state, loaded) => {
   if (loaded.corruptCount > 0) {
     await state.options.logLine(`raw_events.spool.corrupt_retained count=${loaded.corruptCount}`);
@@ -394,21 +436,14 @@ const drainLoadedEntries = async (state, loaded) => {
     state.spoolCorruptionNoted = false;
   }
   for (const entry of loaded.entries) {
+    if (state.identityMismatch) break;
     const viewerStartedAt = Date.now();
     try {
       await postToViewer(state, entry.envelope);
       await removeFromSpool(state, { eventId: entry.eventId });
     } catch (error) {
-      if (error?.rawEventTerminalRejection) {
-        await retainRejectedEntry(state, { eventId: entry.eventId, rejection: error.rawEventTerminalRejection });
-        continue;
-      }
-      await state.options.logLine("raw_events.spool.drain_deferred category=fallback");
-      const status = error?.rawEventFailure?.status;
-      if (!Number.isInteger(status) || status >= 500 || status === 409) {
-        armViewerBackoff(state, error, { stage: "post", startedAt: viewerStartedAt });
-        break;
-      }
+      const canContinue = await handleDrainFailure(state, entry, error, viewerStartedAt);
+      if (!canContinue) break;
     }
   }
 };
@@ -420,6 +455,7 @@ const runSpoolDrain = async (state) => {
 
 const drainSpool = (state) => {
   if (!state.options.enabled) return Promise.resolve();
+  if (state.identityMismatch) return Promise.resolve();
   if (Date.now() < state.streamUnavailableUntil) return Promise.resolve();
   const existingDrain = rawEventSpoolDrainsInFlight.get(state.spoolDirectory);
   if (existingDrain) return existingDrain;
@@ -533,28 +569,40 @@ const postToViewer = async (state, body) => {
     cause: "http_status",
     status: response.status,
   };
+  if (response.status === 409 && responseBody?.error?.code === "viewer_identity_mismatch") {
+    error.rawEventFailure.cause = "viewer_identity_mismatch";
+  }
   throw error;
 };
 
+const persistRejectedDelivery = async (state, input, rejection) => {
+  const durable = await persistForRetry(state, input);
+  if (durable) {
+    const canonical = input.payload && typeof input.payload === "object"
+      ? state.envelopes.get(input.payload) : null;
+    // A size rejection proves only the posted copy was too large. Retry changed saved bytes first.
+    if (rejection.status === 413
+      && canonical && canonical.serialized !== input.serialized) return durable;
+    await retainRejectedEntry(state, {
+      eventId: input.body.event_id,
+      rejection,
+      sessionID: input.sessionID,
+      payload: input.payload,
+    });
+  }
+  return durable;
+};
+
 const handleViewerFailure = async (state, input, error, timing) => {
+  if (isIdentityMismatchFailure(error)) {
+    await pauseForIdentityMismatch(state);
+    return persistForRetry(state, input);
+  }
   if (error?.rawEventTerminalRejection) {
-    const durable = await persistForRetry(state, input);
-    if (durable) {
-      const canonical = input.payload && typeof input.payload === "object"
-        ? state.envelopes.get(input.payload) : null;
-      // A size rejection proves only the posted copy was too large. Retry changed saved bytes first.
-      if (error.rawEventTerminalRejection.status === 413
-        && canonical && canonical.serialized !== input.serialized) return durable;
-      await retainRejectedEntry(state, {
-        eventId: input.body.event_id,
-        rejection: error.rawEventTerminalRejection,
-        sessionID: input.sessionID,
-        payload: input.payload,
-      });
-    }
-    return durable;
+    return persistRejectedDelivery(state, input, error.rawEventTerminalRejection);
   }
   if (!state.options.isActive()) return persistForRetry(state, input);
+  if (state.identityMismatch) return persistForRetry(state, input);
   const category = error?.rawEventFailureCategory || "connection";
   const viewerFailure = armViewerBackoff(state, error, timing);
   await state.options.logLine(
@@ -584,11 +632,13 @@ const deliver = async (state, { sessionID, type, payload }) => {
   const envelope = cachedEnvelope(state, sessionID, type, payload, now);
   const input = { ...envelope, payload, sessionID };
   if (!state.options.isActive()) return persistForRetry(state, input);
+  if (state.identityMismatch) return persistForRetry(state, input);
   if (now < state.streamUnavailableUntil) return deliverDuringBackoff(state, input);
   const viewerStartedAt = Date.now();
   let viewerStage = "status";
   try {
     await checkViewerAvailability(state, now);
+    if (state.identityMismatch) return persistForRetry(state, input);
     viewerStage = "post";
     await postToViewer(state, envelope.body);
     state.streamUnavailableUntil = 0;
