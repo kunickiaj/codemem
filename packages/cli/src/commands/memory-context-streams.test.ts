@@ -4,6 +4,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
+// Each test starts the CLI from source under tsx, which can take several seconds on a
+// loaded CI runner. The test timeout must exceed the child timeout so a slow child
+// reports its own error instead of failing at Vitest's 5s default.
+const CHILD_TIMEOUT_MS = 15_000;
+const TEST_TIMEOUT_MS = CHILD_TIMEOUT_MS + 5_000;
+
 describe("plain context process streams", () => {
 	it.each([{ subcommand: [] }, { subcommand: ["trace"] }])(
 		"keeps usage errors off stdout for context $subcommand",
@@ -34,7 +40,7 @@ describe("plain context process streams", () => {
 					{
 						cwd: resolve(import.meta.dirname, "../../../.."),
 						encoding: "utf8",
-						timeout: 15_000,
+						timeout: CHILD_TIMEOUT_MS,
 						env: {
 							...process.env,
 							HOME: directory,
@@ -53,51 +59,56 @@ describe("plain context process streams", () => {
 				rmSync(directory, { recursive: true, force: true });
 			}
 		},
+		TEST_TIMEOUT_MS,
 	);
 });
 
 describe("internal ledger command boundary", () => {
-	it("dispatches the ledger callback and rejects malformed stdin as a usage error", () => {
-		// Arrange: keep the legacy ledger report style and use only a test-owned database.
-		const directory = mkdtempSync(join(tmpdir(), "codemem-ledger-command-"));
-		const configPath = join(directory, "config.json");
-		writeFileSync(configPath, "{}");
-		try {
-			// Act: pipe malformed JSON through the parsed command and shared store helper.
-			const result = spawnSync(
-				process.execPath,
-				[
-					"--import",
-					"tsx",
-					"--conditions",
-					"source",
-					resolve(import.meta.dirname, "../index.ts"),
-					"prompt-pack-ledger",
-					"--db-path",
-					join(directory, "test.sqlite"),
-				],
-				{
-					cwd: resolve(import.meta.dirname, "../../../.."),
-					input: "not-json",
-					encoding: "utf8",
-					timeout: 15_000,
-					env: {
-						...process.env,
-						HOME: directory,
-						CODEMEM_CONFIG: configPath,
-						CODEMEM_PROJECT: "",
-						NO_COLOR: "1",
+	it(
+		"dispatches the ledger callback and rejects malformed stdin as a usage error",
+		() => {
+			// Arrange: keep the legacy ledger report style and use only a test-owned database.
+			const directory = mkdtempSync(join(tmpdir(), "codemem-ledger-command-"));
+			const configPath = join(directory, "config.json");
+			writeFileSync(configPath, "{}");
+			try {
+				// Act: pipe malformed JSON through the parsed command and shared store helper.
+				const result = spawnSync(
+					process.execPath,
+					[
+						"--import",
+						"tsx",
+						"--conditions",
+						"source",
+						resolve(import.meta.dirname, "../index.ts"),
+						"prompt-pack-ledger",
+						"--db-path",
+						join(directory, "test.sqlite"),
+					],
+					{
+						cwd: resolve(import.meta.dirname, "../../../.."),
+						input: "not-json",
+						encoding: "utf8",
+						timeout: CHILD_TIMEOUT_MS,
+						env: {
+							...process.env,
+							HOME: directory,
+							CODEMEM_CONFIG: configPath,
+							CODEMEM_PROJECT: "",
+							NO_COLOR: "1",
+						},
 					},
-				},
-			);
-			// Assert: failure must come from ledger validation, not broken callback dispatch.
-			const output = result.stdout + result.stderr;
-			expect(result.error).toBeUndefined();
-			expect(result.status).toBe(2);
-			expect(output).toContain("internal ledger metadata must be valid JSON");
-			expect(output).not.toContain("run is not a function");
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
+				);
+				// Assert: failure must come from ledger validation, not broken callback dispatch.
+				const output = result.stdout + result.stderr;
+				expect(result.error).toBeUndefined();
+				expect(result.status).toBe(2);
+				expect(output).toContain("internal ledger metadata must be valid JSON");
+				expect(output).not.toContain("run is not a function");
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
 });

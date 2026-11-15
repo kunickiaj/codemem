@@ -14,6 +14,9 @@ let sessionId: number;
 const occurredAt = "2026-09-21T10:00:00.000Z";
 
 beforeEach(() => {
+	// Recovery ingest does not assert vectors. Loading the real embedding runtime
+	// costs about a second locally and exceeded the 5s test timeout on loaded CI runners.
+	vi.stubEnv("CODEMEM_EMBEDDING_DISABLED", "1");
 	dir = mkdtempSync(join(tmpdir(), "codemem-history-ingest-"));
 	const path = join(dir, "test.sqlite");
 	const db = connect(path);
@@ -46,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.unstubAllEnvs();
 	store.close();
 	rmSync(dir, { recursive: true, force: true });
 });
