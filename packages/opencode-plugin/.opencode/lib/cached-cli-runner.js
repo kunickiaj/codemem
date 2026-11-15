@@ -117,7 +117,7 @@ export const probeCliCandidate = async ({ path, nodePath, expectedVersion, boots
     try {
       const candidate = readCandidate(location.manifestPath, { nodePath, expectedVersion, executable: location.executable });
       const result = await executeFile(candidate.command, [...candidate.args, "--version"], {
-        timeout: remaining, maxBuffer: MAX_OUTPUT_BYTES, killSignal: "SIGKILL",
+        timeout: remaining, maxBuffer: MAX_OUTPUT_BYTES, killSignal: "SIGKILL", windowsHide: true,
       });
       if (result.stdout.trim() === candidate.version && isCachedCliCurrent(candidate)) return candidate;
     } catch { /* An unusable candidate must not select an unverified command. */ }
@@ -128,7 +128,7 @@ export const probeCliCandidate = async ({ path, nodePath, expectedVersion, boots
 const runProbe = async ({ command, args, cwd, env, timeout, execute, expectedVersion }) => {
   try {
     const result = await execute(command, args, {
-      cwd, env, timeout, maxBuffer: MAX_OUTPUT_BYTES, killSignal: "SIGKILL",
+      cwd, env, timeout, maxBuffer: MAX_OUTPUT_BYTES, killSignal: "SIGKILL", windowsHide: true,
     });
     const candidate = JSON.parse(result.stdout);
     if (!candidate || !isAbsolute(candidate.command) || candidate.args?.length !== 1

@@ -2218,6 +2218,7 @@ const detectRunner = ({ cwd, envRunner }) => {
       // catch below falls back to npx. Without this, stderr leaks to the
       // terminal on every OpenCode startup for npx-only installs.
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     // Use a newer global CLI only when it remains on the plugin's release
     // channel. This prevents both channel crossing and fallback to an older pin
@@ -2904,7 +2905,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
         cwd,
         env: process.env,
         detached: true,
-        stdio: "ignore",
+        stdio: "ignore", windowsHide: true,
       });
       child.once("spawn", () => {
         viewerStarted = true;
@@ -3885,7 +3886,7 @@ export const createCodememRuntime = async ({ location, host, hostGeneration = nu
       encoding: "utf-8",
       // Suppress "fatal: not a git repository" when the working directory is
       // not a git repo. The catch below leaves version as "unknown".
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
     }).trim();
   } catch {
     // Ignore - version will remain 'unknown'
