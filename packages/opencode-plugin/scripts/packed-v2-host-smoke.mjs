@@ -205,46 +205,44 @@ async function startProvider(projectDir) {
 					)?.function?.name
 				: undefined;
 		if (!hasToolResult && selectedTool) {
-			response.write(
-				`data: ${JSON.stringify({
-					id: "chatcmpl-contract-tool",
-					object: "chat.completion.chunk",
-					created: 0,
-					model: "contract-model",
-					choices: [
-						{
-							index: 0,
-							delta: {
-								role: "assistant",
-								tool_calls: [
-									{
-										index: 0,
-										id: requestFailure ? "call-contract-error" : "call-contract-completed",
-										type: "function",
-										function: {
-											name: selectedTool,
-										arguments: JSON.stringify(
-											requestLintFeedback
-												? {
-													filePath: lintTarget,
-													oldString: "export const lintFeedbackHostSmoke = 1;",
-													newString: "export const lintFeedbackHostSmoke: any = 1;",
-												}
-												: {
-													path: requestFailure
-														? join(projectDir, "missing-contract-file")
-														: join(projectDir, "package.json"),
-												},
-										),
-										},
-									},
-								],
-							},
-							finish_reason: null,
+			let toolArguments = {
+				path: requestFailure
+					? join(projectDir, "missing-contract-file")
+					: join(projectDir, "package.json"),
+			};
+			if (requestLintFeedback) {
+				toolArguments = {
+					filePath: lintTarget,
+					oldString: "export const lintFeedbackHostSmoke = 1;",
+					newString: "export const lintFeedbackHostSmoke: any = 1;",
+				};
+			}
+			// Built outside the template literal: CodeQL's JavaScript extractor
+			// fails to parse this object when it is inlined in `${...}`.
+			const toolCallChunk = {
+				id: "chatcmpl-contract-tool",
+				object: "chat.completion.chunk",
+				created: 0,
+				model: "contract-model",
+				choices: [
+					{
+						index: 0,
+						delta: {
+							role: "assistant",
+							tool_calls: [
+								{
+									index: 0,
+									id: requestFailure ? "call-contract-error" : "call-contract-completed",
+									type: "function",
+									function: { name: selectedTool, arguments: JSON.stringify(toolArguments) },
+								},
+							],
 						},
-					],
-				})}\n\n`,
-			);
+						finish_reason: null,
+					},
+				],
+			};
+			response.write(`data: ${JSON.stringify(toolCallChunk)}\n\n`);
 			response.write(
 				`data: ${JSON.stringify({
 					id: "chatcmpl-contract-tool",

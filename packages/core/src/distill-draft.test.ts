@@ -8,6 +8,7 @@ import {
 	draftDistillRule,
 	renderUnifiedDiff,
 	sanitizeRuleLine,
+	stripSurroundingQuotes,
 } from "./distill-draft.js";
 
 function candidate(overrides: Partial<DistillCandidate> = {}): DistillCandidate {
@@ -48,6 +49,17 @@ describe("distill draft", () => {
 		expect(sanitizeRuleLine("SKIP")).toBeNull();
 		expect(sanitizeRuleLine("   ")).toBeNull();
 		expect(sanitizeRuleLine(null)).toBeNull();
+	});
+
+	it("strips surrounding quote runs but keeps inner quotes", () => {
+		expect(stripSurroundingQuotes("`\"'Use `pnpm` here.'\"`")).toBe("Use `pnpm` here.");
+		expect(stripSurroundingQuotes('"""')).toBe("");
+		expect(stripSurroundingQuotes("plain")).toBe("plain");
+	});
+
+	it("strips a very long trailing quote run from model output", () => {
+		const rule = sanitizeRuleLine(`Keep tags on main.${'"'.repeat(50_000)}`);
+		expect(rule).toBe("Keep tags on main.");
 	});
 
 	it("caps very long rules", () => {

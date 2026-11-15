@@ -90,13 +90,22 @@ export const parseBackendUpdatePolicy = (value) => {
   return "notify";
 };
 
+// Same result as /@[^/]+$/.test(value) without the regex, which backtracks
+// quadratically on long "@" runs: some "@" in the last path segment must be
+// followed by at least one character.
+const endsWithRefSuffix = (value) => {
+  const refStart = value.indexOf("@", value.lastIndexOf("/") + 1);
+  return refStart !== -1 && refStart < value.length - 1;
+};
+
 const isPinnedGitSource = (runnerFrom) => {
   const source = String(runnerFrom || "").trim();
   if (!source) return false;
   if (!(source.startsWith("git+") || source.includes(".git"))) {
     return false;
   }
-  const withoutQuery = source.replace(/[?#].*$/, "");
+  const queryStart = source.search(/[?#]/);
+  const withoutQuery = queryStart === -1 ? source : source.slice(0, queryStart);
   if (withoutQuery.includes(".git@")) {
     return true;
   }
@@ -110,9 +119,9 @@ const isPinnedGitSource = (runnerFrom) => {
     if (path.includes(".git@")) {
       return true;
     }
-    return /@[^/]+$/.test(path);
+    return endsWithRefSuffix(path);
   } catch {
-    return /@[^/]+$/.test(withoutQuery);
+    return endsWithRefSuffix(withoutQuery);
   }
 };
 
