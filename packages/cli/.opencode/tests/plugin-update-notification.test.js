@@ -222,6 +222,10 @@ describe("@codemem/opencode-plugin exports", () => {
 		const { __testUtils } = await import("../plugins/codemem.js");
 
 		expect(__testUtils.detectRunner({ cwd: "/tmp/codemem", envRunner: "" })).toBe("codemem");
+		expect(execSyncMock).toHaveBeenCalledWith(
+			"codemem --version",
+			expect.objectContaining({ windowsHide: true }),
+		);
 	});
 
 	test.each([OLDER, CROSS_CHANNEL])(
@@ -516,7 +520,11 @@ describe("OpenCode startup release notifications", () => {
 				"--config",
 				"/tmp/codemem/config.json",
 			],
-			expect.objectContaining({ cwd: "/tmp/codemem", detached: true }),
+			expect.objectContaining({ cwd: "/tmp/codemem", detached: true, windowsHide: true }),
+		);
+		expect(execSyncMock).toHaveBeenCalledWith(
+			"git rev-parse --short HEAD",
+			expect.objectContaining({ windowsHide: true }),
 		);
 		const installIndex = spawnMock.mock.calls.findIndex(
 			isPairedInstallCall,
@@ -656,6 +664,7 @@ describe("OpenCode startup release notifications", () => {
 				cwd: "/tmp/codemem",
 				env: process.env,
 				stdio: ["pipe", "pipe", "pipe"],
+				windowsHide: true,
 			},
 		);
 		expect(

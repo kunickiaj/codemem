@@ -118,7 +118,9 @@ export const runChildCommand = (cmd, options = {}, defaults = {}) => {
       resolve({ exitCode: null, stdout: "", stderr: "aborted", aborted: true });
       return;
     }
-    const proc = nodeSpawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = nodeSpawn(command, args, {
+      cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    });
     const output = collectOutput(proc);
     const stdinFailure = writeStdin(proc, stdinText);
     if (stdinFailure) {

@@ -302,10 +302,11 @@ test.each(["malformed", "timeout", "output overflow"])(
 				timeout: options.timeout,
 				maxBuffer: options.maxBuffer,
 				killSignal: options.killSignal,
+				windowsHide: options.windowsHide,
 			})),
 		).toEqual([
-			{ timeout: 5_000, maxBuffer: 16_384, killSignal: "SIGKILL" },
-			{ timeout: 60_000, maxBuffer: 16_384, killSignal: "SIGKILL" },
+			{ timeout: 5_000, maxBuffer: 16_384, killSignal: "SIGKILL", windowsHide: true },
+			{ timeout: 60_000, maxBuffer: 16_384, killSignal: "SIGKILL", windowsHide: true },
 		]);
 	},
 );
