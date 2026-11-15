@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-11-15
+
+### Fixed
+
+- The OpenCode plugin no longer opens a visible console window on Windows for each child process it starts during plugin load and use. ([#2745])
+- OpenCode capture pauses after the Viewer rejects events with `viewer_identity_mismatch` instead of retrying forever. Saved events are kept, and OpenCode shows one warning explaining how to align the Viewer and OpenCode environments. Restart both after fixing the environment. ([#2744])
+- Health shows offline or sleeping devices as "Waiting for devices" instead of reporting failed receives. Transfer errors and trust, scope, or version rejections still need attention. Receive errors stored before the upgrade clear after the next successful receive. ([#2746])
+- Long runs of quote characters in distill rules or judge verdicts, and long plugin source strings, no longer cause slow regular-expression matching. Plugin event IDs always use `crypto.randomUUID()`. ([#2748])
+
 ## [0.49.0] - 2026-11-14
 
 ### Added
@@ -373,7 +382,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.1...HEAD
+[0.49.1]: https://github.com/kunickiaj/codemem/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0
 [0.49.0-beta.7]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...v0.49.0-beta.7
 [0.49.0-beta.6]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.5...v0.49.0-beta.6
@@ -563,3 +573,7 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2739]: https://github.com/kunickiaj/codemem/pull/2739
 [#2740]: https://github.com/kunickiaj/codemem/pull/2740
 [#2741]: https://github.com/kunickiaj/codemem/pull/2741
+[#2744]: https://github.com/kunickiaj/codemem/pull/2744
+[#2745]: https://github.com/kunickiaj/codemem/pull/2745
+[#2746]: https://github.com/kunickiaj/codemem/pull/2746
+[#2748]: https://github.com/kunickiaj/codemem/pull/2748
