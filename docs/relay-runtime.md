@@ -62,7 +62,7 @@ The Devices page reports sync between the device serving the viewer and each lis
 
 Select **View setup issues** to load the affected devices or Team invitations, recorded reasons, and required actions. Expand an issue's **Technical details** to see its error code and reference ID. Device names appear only when the reference matches one inventory entry.
 
-Coordinator enrollment alone does not confirm device pairing or assign an Identity. Manual pairing requires access to both devices and acceptance of each device's pairing payload on the other device. The relay health probe also uses a coordinator enrollment. The device inventory currently lacks a service-role field, so a probe enrollment can appear in device setup. Do not pair or reassign a relay probe to clear a device setup warning.
+Coordinator enrollment alone does not confirm device pairing or assign an Identity. Manual pairing requires access to both devices and acceptance of each device's pairing payload on the other device. The relay health probe also uses a coordinator enrollment. The coordinator labels its configured probe device with `service_role: "relay_health_probe"` in the admin device list, and Devices then lists it under **Service devices** without pairing, Identity setup, or availability counts. The label comes from the coordinator's own probe setting, so renaming a person's device can't hide it. A coordinator that predates the label still shows the probe as **Pairing required**. Don't pair or reassign a relay probe to clear that warning. Upgrade the coordinator instead.
 
 ## Device relay configuration
 

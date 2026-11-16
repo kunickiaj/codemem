@@ -279,19 +279,16 @@ describe("device Identity binding", () => {
 		expect(result).toMatchObject({ status: "applied", writeCount: 2 });
 	});
 
-	it("rejects coordinator-only devices until they are paired", () => {
-		inventoryInput.coordinator.enrollments = [enrollment("device-coordinator")];
+	it.each([
+		["coordinator-only devices until they are paired", {}, "device_pairing_required"],
+		["coordinator service devices", { service_role: "relay_health_probe" }, "device_service_role"],
+	] as const)("rejects %s", (_label, extra, errorCode) => {
+		inventoryInput.coordinator.enrollments = [{ ...enrollment("device-coordinator"), ...extra }];
+		const binding = { deviceId: "device-coordinator", targetIdentityId: "identity-local" };
 		const result = previewDeviceIdentityBindings(db, inventoryInput, {
-			bindings: [
-				{
-					deviceId: "device-coordinator",
-					targetIdentityId: "identity-local",
-					confirmed: true,
-				},
-			],
+			bindings: [{ ...binding, confirmed: true }],
 		});
-
-		expect(result).toMatchObject({ status: "conflict", errorCode: "device_pairing_required" });
+		expect(result).toMatchObject({ status: "conflict", errorCode });
 	});
 
 	it("rejects stale, conflicted, incomplete, and truncated evidence", () => {

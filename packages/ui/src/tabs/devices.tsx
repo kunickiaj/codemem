@@ -29,6 +29,7 @@ import {
 import {
 	deviceIdentityAttentionItems,
 	deviceIdentitySetupGate,
+	serviceDeviceItems,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
@@ -439,6 +440,8 @@ export function deviceIdentitySetupError(error: unknown): string {
 		binding_write_stale:
 			"Device information changed after review. Refresh Devices, review the current details, and try again.",
 		device_pairing_required: "Pair this device before assigning an Identity.",
+		device_service_role:
+			"Service devices run coordinator checks and can't be assigned an Identity.",
 		device_rebind_confirmation_required:
 			"Reassignment requires a separate confirmation of the previous and target Identities.",
 		device_inventory_incomplete:
@@ -2300,7 +2303,10 @@ function DevicesView({
 			/>
 		</>
 	) : null;
-	const hasOtherInventoryItems = (options.inventory?.items ?? []).some((item) => !item.isLocal);
+	const hasOtherInventoryItems = (options.inventory?.items ?? []).some(
+		(item) => !item.isLocal && item.state !== "service",
+	);
+	const serviceDevices = <ServiceDevices items={serviceDeviceItems(options.inventory)} />;
 	const coordinatorUnavailable =
 		options.inventory?.coordinatorEvidence.availability === "unavailable" &&
 		options.inventory.coordinatorEvidence.safeErrorCode !== "coordinator_not_configured";
@@ -2326,13 +2332,8 @@ function DevicesView({
 				{inventoryWorkflow}
 				{configuredFallbackWorkflow}
 				{hasOtherInventoryItems ? null : <DevicesEmptyState onOpenPairing={onOpenPairing} />}
-				{projection.revokedDeviceCount > 0 ? (
-					<p className="small" role="status">
-						{projection.revokedDeviceCount.toLocaleString()} revoked{" "}
-						{projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not included in the
-						active list.
-					</p>
-				) : null}
+				{serviceDevices}
+				<RevokedDeviceNote count={projection.revokedDeviceCount} />
 			</>
 		);
 	}
@@ -2350,14 +2351,42 @@ function DevicesView({
 				intent={intent}
 				options={options}
 			/>
-			{projection.revokedDeviceCount > 0 ? (
-				<p className="small" role="status">
-					{projection.revokedDeviceCount.toLocaleString()} revoked{" "}
-					{projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not included in the
-					active list.
-				</p>
-			) : null}
+			{serviceDevices}
+			<RevokedDeviceNote count={projection.revokedDeviceCount} />
 		</>
+	);
+}
+
+function RevokedDeviceNote({ count }: { count: number }) {
+	if (count === 0) return null;
+	return (
+		<p className="small" role="status">
+			{count.toLocaleString()} revoked {count === 1 ? "device is" : "devices are"} not included in
+			the active list.
+		</p>
+	);
+}
+
+function ServiceDevices({ items }: { items: DeviceIdentityInventoryItemV1[] }) {
+	if (items.length === 0) return null;
+	return (
+		<section aria-labelledby="service-devices-heading" className="devices-service-devices">
+			<h3 id="service-devices-heading">Service devices</h3>
+			<p className="small">
+				The coordinator runs these devices to check sync health. They don't need pairing or an
+				Identity.
+			</p>
+			<ul>
+				{items.map((item) => (
+					<li className="peer-card peer-card--padded" key={item.deviceId}>
+						<div className="peer-title">
+							<strong>{item.displayName}</strong>
+							<span className="badge actor-badge">Service device</span>
+						</div>
+					</li>
+				))}
+			</ul>
+		</section>
 	);
 }
 

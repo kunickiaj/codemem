@@ -4,6 +4,7 @@ import {
 	type CoordinatorRequestVerifier,
 	type CoordinatorRuntimeDeps,
 	createCoordinatorApp,
+	type RelayHealthProbeEnrollment,
 } from "./coordinator-api.js";
 import type { CoordinatorDeviceRevocationContext } from "./coordinator-device-revocation-route.js";
 import type { CoordinatorRelayAdmissionRuntimeOptions } from "./coordinator-relay-admission-route.js";
@@ -29,6 +30,8 @@ export interface CreateD1CoordinatorAppOptions {
 	 * Worker that forwards samples to a Durable Object. Ignored when `relayHealth` is enabled.
 	 */
 	relayHealthInstrumentation?: RelayHealthServerHook;
+	/** Configured relay health probe enrollments, labeled as service devices in admin listings. */
+	relayHealthProbes?: readonly RelayHealthProbeEnrollment[];
 	recipientInviteCoordinatorId?: string;
 	browserAuth?:
 		| Exclude<CoordinatorAppBrowserAuthOptions, { kind: "ready" }>
@@ -45,6 +48,9 @@ export function createD1CoordinatorApp(
 	};
 	return createCoordinatorApp({
 		relayHealth: createD1HealthMonitor(opts.relayHealth, db) ?? opts.relayHealthInstrumentation,
+		relayHealthProbes: opts.relayHealth?.enabled
+			? [{ groupId: opts.relayHealth.groupId, deviceId: opts.relayHealth.probeDeviceId }]
+			: opts.relayHealthProbes,
 		storeFactory: () => new D1CoordinatorStore(db),
 		deviceRevocation: opts.deviceRevocation,
 		recipientInviteCoordinatorId: opts.recipientInviteCoordinatorId,
