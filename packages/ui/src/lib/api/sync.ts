@@ -880,7 +880,8 @@ export type DeviceIdentityInventoryStateV1 =
 	| "setup_required"
 	| "pairing_required"
 	| "conflicted"
-	| "service";
+	| "service"
+	| "retired";
 
 export interface DeviceIdentityInventoryItemV1 {
 	version: 1;

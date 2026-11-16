@@ -282,12 +282,11 @@ describe("device Identity binding", () => {
 	it.each([
 		["coordinator-only devices until they are paired", {}, "device_pairing_required"],
 		["coordinator service devices", { service_role: "relay_health_probe" }, "device_service_role"],
+		["retired devices", { revoked: true }, "device_retired"],
 	] as const)("rejects %s", (_label, extra, errorCode) => {
-		inventoryInput.coordinator.enrollments = [{ ...enrollment("device-coordinator"), ...extra }];
-		const binding = { deviceId: "device-coordinator", targetIdentityId: "identity-local" };
-		const result = previewDeviceIdentityBindings(db, inventoryInput, {
-			bindings: [{ ...binding, confirmed: true }],
-		});
+		inventoryInput.coordinator.enrollments = [{ ...enrollment("coord"), ...extra }];
+		const binding = { deviceId: "coord", targetIdentityId: "identity-local", confirmed: true };
+		const result = previewDeviceIdentityBindings(db, inventoryInput, { bindings: [binding] });
 		expect(result).toMatchObject({ status: "conflict", errorCode });
 	});
 

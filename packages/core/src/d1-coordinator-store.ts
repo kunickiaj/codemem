@@ -2029,6 +2029,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		return this.deviceRevocations.listDeviceRevocations(input);
 	}
 
+	async listRevokedSubjects() {
+		return this.deviceRevocations.listRevokedSubjects();
+	}
+
 	async recordAuthorizedNonce(input: CoordinatorRecordAuthorizedNonceInput) {
 		return this.deviceRevocations.recordAuthorizedNonce(input);
 	}

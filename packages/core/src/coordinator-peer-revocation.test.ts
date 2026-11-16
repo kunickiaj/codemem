@@ -202,6 +202,28 @@ describe("coordinator peer revocation refresh", () => {
 		expect(pairedPeerIds()).toEqual([active.deviceId, retired.deviceId].toSorted());
 	});
 
+	it("marks revoked enrollments in the admin device list", async () => {
+		await revoke(retired);
+		const app = createBetterSqliteCoordinatorApp({
+			dbPath: coordinatorDbPath,
+			runtime: { adminSecret: () => "admin", now: () => new Date().toISOString() },
+		});
+
+		const response = await app.request(`${COORDINATOR}/v1/admin/devices?group_id=group-a`, {
+			headers: { "X-Codemem-Coordinator-Admin": "admin" },
+		});
+
+		const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+		const marks = Object.fromEntries(
+			body.items.map((item) => [item.device_id, item.revoked ?? false]),
+		);
+		expect(marks).toEqual({
+			[localDeviceId]: false,
+			[retired.deviceId]: true,
+			[active.deviceId]: false,
+		});
+	});
+
 	it("ignores revoked IDs the device didn't ask about", async () => {
 		const app = createBetterSqliteCoordinatorApp({ dbPath: coordinatorDbPath });
 		routeFetchTo({

@@ -3634,6 +3634,55 @@ describe("guarded nonce API result mapping", () => {
 	}
 });
 
+describe("coordinator admin device revocation marks", () => {
+	const enrollment = (deviceId: string): CoordinatorEnrollment => ({
+		group_id: "g1",
+		device_id: deviceId,
+		public_key: `pk-${deviceId}`,
+		fingerprint: `fp-${deviceId}`,
+		identity_id: null,
+		display_name: deviceId,
+		enabled: 1,
+		created_at: "2026-03-28T00:00:00Z",
+	});
+
+	async function listing(overrides: Partial<CoordinatorStoreInterface>) {
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => [enrollment("retired"), enrollment("active")]),
+			...overrides,
+		});
+		const res = await createSharingAdminApp(() => store).request("/v1/admin/devices?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+		const body = (await res.json()) as { items: Array<Record<string, unknown>> };
+		return Object.fromEntries(body.items.map((item) => [item.device_id, item.revoked ?? false]));
+	}
+
+	it("marks enrollments whose device ID is revoked", async () => {
+		const marks = await listing({
+			listRevokedSubjects: vi.fn(async () => [
+				{ subject_kind: "device_id" as const, subject_value: "retired" },
+			]),
+		});
+
+		expect(marks).toEqual({ retired: true, active: false });
+	});
+
+	it.each([
+		["a store without the read", {}],
+		[
+			"a failed revocation read",
+			{
+				listRevokedSubjects: vi.fn(async () => {
+					throw new Error("device_revocation_incomplete");
+				}),
+			},
+		],
+	])("leaves enrollments unmarked for %s", async (_label, overrides) => {
+		expect(await listing(overrides)).toEqual({ retired: false, active: false });
+	});
+});
+
 describe("coordinator admin device service roles", () => {
 	it("labels only the configured relay health probe as a service device", async () => {
 		const enrollment = (deviceId: string, displayName: string, groupId = "g1") => ({

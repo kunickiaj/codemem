@@ -29,6 +29,7 @@ import {
 import {
 	deviceIdentityAttentionItems,
 	deviceIdentitySetupGate,
+	revokedDeviceTotal,
 	serviceDeviceItems,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
@@ -329,10 +330,19 @@ export function projectDevices(
 		);
 	return {
 		devices,
-		revokedDeviceCount: intent.identityDevices.filter(
-			(device) => device.status === "revoked" && identityNames.has(device.identityId),
-		).length,
+		revokedDeviceCount: revokedCount(intent, identityNames, inventory),
 	};
+}
+
+function revokedCount(
+	intent: RecipientPolicyIntentGraphV1,
+	identityNames: Map<string, string>,
+	inventory: DeviceIdentityInventoryV1 | undefined,
+): number {
+	const intentRevoked = intent.identityDevices
+		.filter((device) => device.status === "revoked" && identityNames.has(device.identityId))
+		.map((device) => device.deviceId);
+	return revokedDeviceTotal(inventory, intentRevoked);
 }
 
 function devicePresentation(
@@ -442,6 +452,7 @@ export function deviceIdentitySetupError(error: unknown): string {
 		device_pairing_required: "Pair this device before assigning an Identity.",
 		device_service_role:
 			"Service devices run coordinator checks and can't be assigned an Identity.",
+		device_retired: "This device was retired and can't be assigned an Identity.",
 		device_rebind_confirmation_required:
 			"Reassignment requires a separate confirmation of the previous and target Identities.",
 		device_inventory_incomplete:
@@ -2304,7 +2315,7 @@ function DevicesView({
 		</>
 	) : null;
 	const hasOtherInventoryItems = (options.inventory?.items ?? []).some(
-		(item) => !item.isLocal && item.state !== "service",
+		(item) => !item.isLocal && item.state !== "service" && item.state !== "retired",
 	);
 	const serviceDevices = <ServiceDevices items={serviceDeviceItems(options.inventory)} />;
 	const coordinatorUnavailable =

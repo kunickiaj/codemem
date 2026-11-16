@@ -12,7 +12,9 @@ export type DeviceIdentityInventoryState =
 	| "pairing_required"
 	| "conflicted"
 	/** Coordinator infrastructure such as a relay health probe; never paired or assigned. */
-	| "service";
+	| "service"
+	/** Revoked coordinator-wide by device ID or key; counted as revoked, never set up again. */
+	| "retired";
 
 export type DeviceIdentityInventorySource =
 	| "local_device"
@@ -101,6 +103,7 @@ interface Evidence {
 	enrollmentEnabled: boolean | null;
 	pairingProof: boolean;
 	serviceDevice: boolean;
+	revoked: boolean;
 }
 
 function clean(value: unknown): string | null {
@@ -137,6 +140,7 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 		enrollmentEnabled: null,
 		pairingProof: true,
 		serviceDevice: false,
+		revoked: false,
 	};
 }
 
@@ -157,6 +161,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		enrollmentEnabled: null,
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
 		serviceDevice: false,
+		revoked: false,
 	};
 }
 
@@ -176,6 +181,7 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		enrollmentEnabled: null,
 		pairingProof: false,
 		serviceDevice: false,
+		revoked: false,
 	};
 }
 
@@ -196,6 +202,7 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 		enrollmentEnabled: value.enabled === 1,
 		pairingProof: false,
 		serviceDevice: value.service_role === "relay_health_probe",
+		revoked: value.revoked === true,
 	};
 }
 
@@ -277,6 +284,8 @@ function inventoryState(
 	group: Evidence[],
 	facts: { conflicted: boolean; activeBindings: Evidence[] },
 ): DeviceIdentityInventoryState {
+	// Revocation is final, so it outranks every setup or review state.
+	if (group.some((item) => item.revoked)) return "retired";
 	// Conflicting evidence stays visible for review, even for a coordinator-labeled device.
 	if (facts.conflicted) return "conflicted";
 	// Any local, peer, or binding evidence means a person-managed device, so it stays visible.
@@ -290,6 +299,16 @@ function inventoryState(
 			(item.source === "sync_peer" && !item.pairingProof),
 	);
 	return hasCoordinatorEvidence && !hasPairingProof ? "pairing_required" : "setup_required";
+}
+
+/** One unbound suggestion, never for devices that can't be set up. */
+function suggestedIdentity(
+	state: DeviceIdentityInventoryState,
+	activeBindings: Evidence[],
+	suggestedIdentityIds: Set<string>,
+): string | null {
+	if (state === "service" || state === "retired" || activeBindings.length > 0) return null;
+	return suggestedIdentityIds.size === 1 ? ([...suggestedIdentityIds][0] ?? null) : null;
 }
 
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
@@ -353,10 +372,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 			state === "configured" && bindingIdentityIds.size === 1
 				? ([...bindingIdentityIds][0] ?? null)
 				: null,
-		suggestedIdentityId:
-			state !== "service" && activeBindings.length === 0 && suggestedIdentityIds.size === 1
-				? ([...suggestedIdentityIds][0] ?? null)
-				: null,
+		suggestedIdentityId: suggestedIdentity(state, activeBindings, suggestedIdentityIds),
 		validatedFingerprint: fingerprints.size === 1 ? ([...fingerprints][0] ?? null) : null,
 		isLocal: group.some((item) => item.isLocal),
 		sources,
