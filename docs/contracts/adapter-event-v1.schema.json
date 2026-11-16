@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "codemem://schemas/adapter-event-v1",
-  "title": "CodeMem Adapter Event V1",
+  "title": "codemem Adapter Event V1",
   "type": "object",
   "additionalProperties": false,
   "required": [

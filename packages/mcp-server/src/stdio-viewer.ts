@@ -52,7 +52,7 @@ export function resolveCliPath(): string | null {
 	return "codemem";
 }
 
-/** Check for a live CodeMem viewer via the shared core probe contract. */
+/** Check for a live codemem viewer via the shared core probe contract. */
 export async function isViewerHealthy(options: ViewerProbeOptions = {}): Promise<boolean> {
 	const host = options.host ?? process.env.CODEMEM_VIEWER_HOST ?? DEFAULT_VIEWER_HOST;
 	const rawPort = options.port ?? process.env.CODEMEM_VIEWER_PORT ?? DEFAULT_VIEWER_PORT;

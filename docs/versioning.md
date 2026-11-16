@@ -1,6 +1,6 @@
-# CodeMem Versioning Policy
+# Codemem Versioning Policy
 
-CodeMem uses one shared semantic version stream across its npm packages.
+Codemem uses one shared semantic version stream across its npm packages.
 
 ## Canonical packages
 
