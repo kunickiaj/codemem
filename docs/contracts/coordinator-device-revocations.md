@@ -343,6 +343,18 @@ Unconfirmed backend responses or discovery failures return the fixed
 This is a fresh discovery snapshot, not a permanent permission or immediate
 revocation of already cached direct-peer trust.
 
+## Revoked marks in admin device listings
+
+`GET /v1/admin/devices` adds `revoked: true` to each enrollment whose device ID or
+canonical key matches a revocation subject. The coordinator reads all subjects in
+one bounded query and fails open: a missing store method, a failed read, or more
+than 5,000 subjects leaves enrollments unmarked, as older coordinators return them.
+The viewer keeps the mark only when it is exactly `true`. The device inventory then
+reports `retired` for any evidence group with a marked enrollment. That state
+outranks setup and review states, suggests no Identity, rejects binding with
+`device_retired`, and counts the device in Devices' revoked total instead of
+listing it.
+
 ## Pinned-peer revocation check
 
 `POST /v1/peers/revocations?group_id=<group>` lets an enrolled, enabled device ask

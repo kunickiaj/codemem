@@ -619,6 +619,39 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.querySelector(".devices-heading-count")?.textContent).toBe("· 1");
 	});
 
+	it("counts a retired device as revoked instead of listing it", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "retired", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		expect(document.querySelector(".devices-table-row")).toBeNull();
+		// The intent fixture already holds one revoked device, so the retired one makes two.
+		expect(document.body.textContent).toContain(
+			"2 revoked devices are not included in the active list.",
+		);
+		expect(document.querySelector('[aria-label="Pair Work Laptop"]')).toBeNull();
+	});
+
+	it("doesn't count another person's retired coordinator-only device", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("someone-else", "Teammate laptop", "retired", {
+					sources: ["coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		// Only the intent fixture's own revoked device is counted.
+		expect(document.body.textContent).toContain(
+			"1 revoked device is not included in the active list.",
+		);
+		expect(document.body.textContent).not.toContain("Teammate laptop");
+	});
+
 	it("does not render conflicted binding evidence as a configured device", () => {
 		state.pendingDeviceIdentityFocus = "device-address-fingerprint-secret";
 		mount(intent(), reconciliation(), {

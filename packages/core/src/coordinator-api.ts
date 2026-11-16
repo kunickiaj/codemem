@@ -44,6 +44,7 @@ import {
 	DEVICE_BINDING_PATH,
 	registerCoordinatorDeviceSetupRoutes,
 } from "./coordinator-device-setup-http.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
@@ -798,6 +799,41 @@ function withServiceRoles(
 			? { ...enrollment, service_role: "relay_health_probe" }
 			: enrollment,
 	);
+}
+
+/**
+ * Marks enrollments whose device ID or key is revoked coordinator-wide. A failed
+ * read leaves them unmarked, which matches older coordinators.
+ */
+async function withRevocationMarks(
+	store: CoordinatorStore,
+	enrollments: CoordinatorEnrollment[],
+): Promise<CoordinatorEnrollment[]> {
+	if (enrollments.length === 0 || !store.listRevokedSubjects) return enrollments;
+	try {
+		const subjects = await store.listRevokedSubjects();
+		if (subjects.length === 0) return enrollments;
+		const revoked = new Set(subjects.map((row) => `${row.subject_kind}\n${row.subject_value}`));
+		return await Promise.all(
+			enrollments.map(async (enrollment) => {
+				const keyId = await ed25519KeyIdForRevocation(enrollment.public_key);
+				const isRevoked =
+					revoked.has(`device_id\n${enrollment.device_id}`) ||
+					(keyId !== null && revoked.has(`ed25519_key\n${keyId}`));
+				return isRevoked ? { ...enrollment, revoked: true } : enrollment;
+			}),
+		);
+	} catch {
+		return enrollments;
+	}
+}
+
+async function adminDeviceListing(
+	store: CoordinatorStore,
+	enrollments: CoordinatorEnrollment[],
+	relayHealthProbes: readonly RelayHealthProbeEnrollment[] = [],
+): Promise<CoordinatorEnrollment[]> {
+	return withRevocationMarks(store, withServiceRoles(enrollments, relayHealthProbes));
 }
 
 export function createCoordinatorApp(
@@ -1787,7 +1823,7 @@ export function createCoordinatorApp(
 		const store = createStore();
 		try {
 			const items = await store.listEnrolledDevices(groupId, includeDisabled);
-			return c.json({ items: withServiceRoles(items, opts.relayHealthProbes) });
+			return c.json({ items: await adminDeviceListing(store, items, opts.relayHealthProbes) });
 		} finally {
 			await store.close();
 		}

@@ -47,6 +47,8 @@ export interface CoordinatorEnrollment {
 	ownership_identity_id?: string;
 	/** Set by the coordinator for its own configured infrastructure devices, never by callers. */
 	service_role?: CoordinatorServiceRole;
+	/** Set in admin listings when this device ID or key is revoked coordinator-wide. */
+	revoked?: true;
 }
 
 export type CoordinatorServiceRole = "relay_health_probe";

@@ -56,6 +56,14 @@ describe("remote device list service role", () => {
 		expect(device?.service_role).toBe("relay_health_probe");
 	});
 
+	it("keeps the coordinator's revoked mark only when it is exactly true", async () => {
+		const [marked] = await listWith(undefined, { revoked: true });
+		const [loose] = await listWith(undefined, { revoked: "yes" });
+
+		expect(marked?.revoked).toBe(true);
+		expect(loose).not.toHaveProperty("revoked");
+	});
+
 	it("drops an unknown service role", async () => {
 		const [device] = await listWith(undefined, { service_role: "admin" });
 

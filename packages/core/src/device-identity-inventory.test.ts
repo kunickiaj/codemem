@@ -111,6 +111,30 @@ describe("device inventory service devices", () => {
 	});
 });
 
+describe("device inventory retired devices", () => {
+	it("marks a revoked enrollment retired even with an active binding and conflicting keys", () => {
+		const result = projectDeviceIdentityInventory({
+			...coordinatorOnly([
+				enrollment("laptop", "key-a", { revoked: true, identity_id: "identity-a" }),
+				enrollment("laptop", "key-b", { group_id: "group-b" }),
+			]),
+			bindings: [
+				{
+					deviceId: "laptop",
+					displayName: "Laptop",
+					identityId: "identity-a",
+					status: "active",
+					identityStatus: "active",
+				},
+			],
+		});
+
+		expect(result.items).toMatchObject([
+			{ deviceId: "laptop", state: "retired", identityId: null, suggestedIdentityId: null },
+		]);
+	});
+});
+
 describe("device inventory missing-name provenance", () => {
 	it.each([null, "Enrolled device", "Peer device", "Registered device"])(
 		"preserves an explicit label %s but skips a missing enrollment label",
