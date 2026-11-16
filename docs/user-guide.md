@@ -868,6 +868,19 @@ coordinator/database pair are required, not a browser owner or Team role. Defaul
 configuration to preview and explicitly confirm revocation. See the [activation contract](contracts/coordinator-device-revocations.md#optional-configured-operator-http-routes)
 for runtime composition and request limits.
 
+### What stops syncing when you remove a device
+
+Each removal action reaches a different set of devices. Coordinator changes reach other devices when they next refresh coordinator permissions. A direct pairing exists on each device that made it, and only that device can remove it.
+
+| Action | Where it applies | What stops | What keeps syncing |
+| --- | --- | --- | --- |
+| Remove a Team member or exclude a device from a Team | Every device that refreshes that Team's permissions | That Team's Projects, for the removed Identity or device | Access granted directly or through another Team |
+| Disable or remove a coordinator group enrollment | The coordinator and every peer that refreshes that group | Projects shared through that group. Peers discovered only through the coordinator also drop the device after the refresh. | Other groups' Projects. Direct pairings on any device keep syncing unscoped memories. |
+| Revoke a device globally (operator) | The whole coordinator database | Coordinator discovery, enrollment, and Project delivery for that device ID and key | Direct pairings on any device. Cached permissions until each peer refreshes. |
+| Unpair from this device | Only the device you use | Every exchange between this device and that peer | Other devices' pairings with that peer. If both devices still share a coordinator-managed Project, the next refresh pairs them again. |
+
+Your own devices and devices that joined through an invitation are paired directly, so removing their coordinator enrollment does not stop their direct sync. To stop all sync for a retired device, remove its enrollment from every group first, so no shared Project pairs it again, then unpair it on each device that paired with it. A device ID and key that are revoked globally can't enroll again, so a retired machine needs a fresh device identity to rejoin. No action deletes memories already copied to the retired device.
+
 ## Advanced operator and compatibility guidance
 
 **Sharing is the primary supported Team experience.** Use **Sharing → Teams** for Team membership, Team names, Identity relationships, and inherited Project access. Use **Projects** to choose exact Project recipients.
