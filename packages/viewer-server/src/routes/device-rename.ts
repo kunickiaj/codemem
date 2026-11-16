@@ -1,4 +1,5 @@
 import {
+	type CoordinatorEnrollment,
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorRenameDeviceAction,
@@ -10,11 +11,19 @@ import { Hono } from "hono";
 
 type CoordinatorConfig = ReturnType<typeof readCoordinatorSyncConfig>;
 
-async function enrolledGroups(config: CoordinatorConfig, deviceId: string): Promise<string[]> {
+/** Every enrollment in every coordinator group, or a thrown error when that can't be read. */
+export async function listAllEnrollments(
+	config: CoordinatorConfig,
+	options: { includeArchived?: boolean } = {},
+): Promise<CoordinatorEnrollment[]> {
 	const remoteUrl = config.syncCoordinatorUrl || null;
 	const adminSecret = config.syncCoordinatorAdminSecret || null;
 	if (!remoteUrl || !adminSecret) throw new Error("coordinator_unavailable");
-	const groups = await coordinatorListGroupsAction({ remoteUrl, adminSecret });
+	const groups = await coordinatorListGroupsAction({
+		remoteUrl,
+		adminSecret,
+		includeArchived: options.includeArchived === true,
+	});
 	if (groups.length > 25) throw new Error("coordinator_evidence_too_large");
 	const devices = (
 		await Promise.all(
@@ -29,7 +38,17 @@ async function enrolledGroups(config: CoordinatorConfig, deviceId: string): Prom
 		)
 	).flat();
 	if (devices.length > 500) throw new Error("coordinator_evidence_too_large");
-	const matches = devices.filter((device) => device.device_id === deviceId);
+	return devices;
+}
+
+/** Every coordinator group enrolling this device, or a thrown error when that can't be read. */
+export async function enrolledGroups(
+	config: CoordinatorConfig,
+	deviceId: string,
+): Promise<string[]> {
+	const matches = (await listAllEnrollments(config)).filter(
+		(device) => device.device_id === deviceId,
+	);
 	const keys = new Set(matches.map((device) => `${device.public_key}:${device.fingerprint}`));
 	if (keys.size > 1) throw new Error("device_enrollment_conflict");
 	return [...new Set(matches.map((device) => device.group_id))].sort();
