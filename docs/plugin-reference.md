@@ -162,7 +162,7 @@ contains no prompt, memory content, IDs, or paths.
 
 ## Claude marketplace install
 
-CodeMem's Claude integration is hook-first and distributed through a Claude plugin marketplace source in this repo (`.claude-plugin/marketplace.json`).
+Codemem's Claude integration is hook-first and distributed through a Claude plugin marketplace source in this repo (`.claude-plugin/marketplace.json`).
 
 In Claude Code, add the marketplace and install the plugin:
 
@@ -793,7 +793,7 @@ Failure semantics:
 
 ## Project label normalization
 
-When ingesting plugin payloads, CodeMem stores a normalized project label instead of a full path.
+When ingesting plugin payloads, codemem stores a normalized project label instead of a full path.
 
 - Path-like labels are reduced to the basename (for example, `/home/user/projects/example` -> `example`).
 - Windows-style paths are normalized with Windows path rules on every OS runtime.
