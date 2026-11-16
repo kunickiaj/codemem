@@ -429,6 +429,13 @@ export {
 	loadDeviceIdentityInventorySnapshot,
 	projectDeviceIdentityInventory,
 } from "./device-identity-inventory.js";
+export {
+	type RetireTarget,
+	type RetireTargetError,
+	removeRevokedPeers,
+	resolveRetireTarget,
+	retireDeviceLocally,
+} from "./device-retirement.js";
 export { withDiagnosticStoreSnapshot } from "./diagnostic-store-snapshot.js";
 export type {
 	ArtifactKind,

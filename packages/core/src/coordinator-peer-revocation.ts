@@ -1,7 +1,6 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { CoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
-import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
 import { buildBaseUrl, requestJson } from "./sync-http-client.js";
@@ -136,28 +135,4 @@ export async function fetchRevokedPinnedPeers(
 	} catch {
 		return { status: "failed", revoked: [] };
 	}
-}
-
-/** Deletes each revoked peer's pairing and replication cursors, whatever its trust source. */
-export function removeRevokedPeers(
-	db: Database,
-	localDeviceId: string,
-	peerDeviceIds: string[],
-): number {
-	if (peerDeviceIds.length === 0) return 0;
-	return db
-		.transaction(() => {
-			let removed = 0;
-			for (const peerDeviceId of peerDeviceIds) {
-				// Content sync stops, but retirement controls still need this peer's pinned key.
-				retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId });
-				db.prepare("DELETE FROM replication_cursors WHERE peer_device_id = ?").run(peerDeviceId);
-				db.prepare("DELETE FROM replication_cursors_v2 WHERE peer_device_id = ?").run(peerDeviceId);
-				removed += db
-					.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?")
-					.run(peerDeviceId).changes;
-			}
-			return removed;
-		})
-		.immediate();
 }
