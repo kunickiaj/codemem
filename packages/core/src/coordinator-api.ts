@@ -59,6 +59,7 @@ import {
 	CoordinatorMembershipError,
 	SCOPE_MEMBERSHIP_EFFECT_CONFLICT,
 } from "./coordinator-membership-effects.js";
+import { registerCoordinatorPeerRevocationCheckRoute } from "./coordinator-peer-revocation-route.js";
 import {
 	type CoordinatorRelayAdmissionOptions,
 	registerCoordinatorRelayAdmissionRoute,
@@ -315,6 +316,12 @@ function registerCoordinatorRuntimeRoutes(
 		adminSecret: opts.runtime.adminSecret.bind(opts.runtime),
 		rateLimitedResponse: (c, key, authenticated) =>
 			deps.rateLimitedResponse(c, key, { authenticated }),
+	});
+	registerCoordinatorPeerRevocationCheckRoute(app, {
+		...deps,
+		storeFactory: () => createStore(),
+		authorizeRequest: (store, request) =>
+			authorizeRequest(store, opts.runtime, opts.requestVerifier, request),
 	});
 	registerOptionalCoordinatorAuth(app, opts, deps);
 }

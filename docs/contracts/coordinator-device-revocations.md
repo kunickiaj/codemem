@@ -341,7 +341,37 @@ The public route authenticates and rate-limits the requester before discovery.
 Unconfirmed backend responses or discovery failures return the fixed
 `peer_discovery_unavailable` error with HTTP 503, without database diagnostics.
 This is a fresh discovery snapshot, not a permanent permission or immediate
-revocation of already cached direct-peer trust. Project membership authority,
+revocation of already cached direct-peer trust.
+
+## Pinned-peer revocation check
+
+`POST /v1/peers/revocations?group_id=<group>` lets an enrolled, enabled device ask
+which peers it already pinned are revoked. The request uses the same device
+signature, nonce admission, and rate limits as `/v1/peers`, with the JSON body
+`{ "peers": [{ "device_id": "...", "public_key": "..." }] }` and at most 25 peers.
+Each peer costs one revocation read, and the limit keeps a request within D1's
+per-request query budget. Each entry checks both subjects, so a revoked device ID
+with any key and a revoked key under any device ID both match. The reply is
+`{ "version": 1, "revoked": [<device IDs from the request>] }`.
+
+Any enrolled device can learn whether a device ID or key it names is revoked
+anywhere in the coordinator database, including devices outside its own groups.
+The reply carries no revocation evidence, actor, or time. Device IDs use the same
+rules as revocation subjects. Malformed lists return `400 peers_invalid`, and a
+failed revocation read returns `503 peer_revocation_unavailable`.
+
+The sync daemon runs this check at the start of each coordinator refresh, before
+presence and peer lookups, because those fail when any one group rejects the
+device. It checks every
+`sync_peers` row with a stored key and any trust provenance, skipping rows whose
+IDs or keys the coordinator would reject. It tries each configured group until one
+authorizes the request, so a disabled or removed enrollment in one group doesn't
+block the check. It deletes each confirmed peer's row and both replication cursor
+tables in one transaction, and ignores IDs it didn't send. Any other failure keeps
+every pairing for the next refresh. A 404 means the coordinator predates the check.
+Other failures log one sync daemon warning until the result changes. Retained
+memory retirement trust stays, so retirement controls can still ask the revoked
+device to delete retired memories. Project membership authority,
 removed-device ownership evidence, and public revocation management remain separate.
 
 ## Current scope authorization foundation

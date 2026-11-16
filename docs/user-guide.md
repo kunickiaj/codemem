@@ -860,8 +860,9 @@ Disabling a device enrollment for one coordinator group revokes future delivery 
 Configured coordinator runtimes can expose operator-only global device revocation
 through a JSON HTTP preview and digest-confirmed commit. This blocks the device ID
 with any key and its canonical signing key with any device ID across the selected
-database; it does not rewrite account links, browser sessions, grants, stored data,
-or manual peer trust. The coordinator-wide admin secret and a trusted configured
+database; it does not rewrite account links, browser sessions, grants, or stored data.
+Peers that refresh from the coordinator then remove their pairings with the revoked
+device, as described below. The coordinator-wide admin secret and a trusted configured
 coordinator/database pair are required, not a browser owner or Team role. Default
 `coordinator serve` does not activate this capability. The maintained
 [`coordinator device revoke` CLI](#operator-device-revocation) uses saved operator
@@ -876,10 +877,10 @@ Each removal action reaches a different set of devices. Coordinator changes reac
 | --- | --- | --- | --- |
 | Remove a Team member or exclude a device from a Team | Every device that refreshes that Team's permissions | That Team's Projects, for the removed Identity or device | Access granted directly or through another Team |
 | Disable or remove a coordinator group enrollment | The coordinator and every peer that refreshes that group | Projects shared through that group. Peers discovered only through the coordinator also drop the device after the refresh. | Other groups' Projects. Direct pairings on any device keep syncing unscoped memories. |
-| Revoke a device globally (operator) | The whole coordinator database | Coordinator discovery, enrollment, and Project delivery for that device ID and key | Direct pairings on any device. Cached permissions until each peer refreshes. |
+| Revoke a device globally (operator) | The whole coordinator database and every peer that refreshes from it | Coordinator discovery, enrollment, Project delivery, and every pairing with that device ID or key, including direct ones | Peers that don't use this coordinator, or haven't refreshed yet |
 | Unpair from this device | Only the device you use | Every exchange between this device and that peer | Other devices' pairings with that peer. If both devices still share a coordinator-managed Project, the next refresh pairs them again. |
 
-Your own devices and devices that joined through an invitation are paired directly, so removing their coordinator enrollment does not stop their direct sync. To stop all sync for a retired device, remove its enrollment from every group first, so no shared Project pairs it again, then unpair it on each device that paired with it. A device ID and key that are revoked globally can't enroll again, so a retired machine needs a fresh device identity to rejoin. No action deletes memories already copied to the retired device.
+Your own devices and devices that joined through an invitation are paired directly, so removing their coordinator enrollment does not stop their direct sync. Global revocation does: each peer that uses the coordinator asks it which of its paired devices are revoked during its next coordinator refresh, then deletes those pairings and their sync progress. If the coordinator can't answer, for example during an outage or before it's upgraded, peers keep their pairings and check again on the next refresh. A device ID and key that are revoked globally can't enroll again, so a retired machine needs a fresh device identity to rejoin. No action deletes memories already copied to the retired device.
 
 ## Advanced operator and compatibility guidance
 
