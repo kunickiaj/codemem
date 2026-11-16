@@ -99,7 +99,13 @@ it("serves repeated modern discovery and calls, preserves tool errors, and recov
 		expect(first.result).toEqual(repeated.result);
 		expect(first.result).toMatchObject({ supportedVersions: ["2026-07-28"] });
 		const listed = await fixture.request("tools/list");
-		expect(listed.result?.tools).toHaveLength(14);
+		expect(listed.result?.tools).toHaveLength(15);
+		const sessions = await fixture.request("tools/call", {
+			name: "memory_session_search",
+			arguments: { query: "absent" },
+		});
+		expect(sessions.error).toBeUndefined();
+		expect(sessions.result?.structuredContent).toMatchObject({ results: [], returned: 0 });
 		const unknown = await fixture.request("tools/call", { name: "no_such_tool", arguments: {} });
 		expect(unknown.error).toMatchObject({ code: -32602 });
 		const invalid = await fixture.request("tools/call", {
@@ -136,6 +142,13 @@ it("falls back to legacy initialize on the same connection after a modern discov
 			{ legacy: true },
 		);
 		expect(initialized.result).toMatchObject({ protocolVersion: "2025-11-25" });
+		const sessions = await fixture.request(
+			"tools/call",
+			{ name: "memory_session_search", arguments: { query: "absent" } },
+			{ legacy: true },
+		);
+		expect(sessions.error).toBeUndefined();
+		expect(sessions.result?.structuredContent).toMatchObject({ results: [], returned: 0 });
 		const result = await fixture.request(
 			"tools/call",
 			{ name: "memory_schema", arguments: {} },

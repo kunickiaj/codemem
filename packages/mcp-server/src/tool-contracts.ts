@@ -44,6 +44,21 @@ const indexMemorySchema = z
 	})
 	.passthrough();
 
+// Raw Pi transcript hit (core PiSessionSearchMatch). Only user/assistant text
+// is ever extracted, so no memory or tool-payload fields exist here.
+const sessionSearchMatchSchema = z
+	.object({
+		source: z.literal("pi"),
+		session_id: z.string(),
+		project: z.string().nullable(),
+		role: z.enum(["user", "assistant"]),
+		timestamp: z.string().nullable(),
+		snippet: z.string(),
+		snippet_truncated: z.boolean(),
+		full_length: z.number().int(),
+	})
+	.passthrough();
+
 const errorDetailSchema = z
 	.object({
 		code: z.string(),
@@ -108,6 +123,14 @@ const stringListSectionSchema = z
 export const toolOutputSchemas = {
 	memory_search: z.object({ items: z.array(searchMemorySchema) }),
 	memory_search_index: z.object({ items: z.array(indexMemorySchema) }),
+	memory_session_search: z.object({
+		query: z.string(),
+		query_truncated: z.boolean(),
+		results: z.array(sessionSearchMatchSchema),
+		returned: z.number().int(),
+		total_matches: z.number().int(),
+		truncated: z.boolean(),
+	}),
 	memory_explain: z.object({
 		items: z.array(explainItemSchema),
 		missing_ids: z.array(z.number().int()),
@@ -226,6 +249,8 @@ const externalReadAnnotations = {
 export const toolAnnotations = {
 	memory_search: localReadAnnotations,
 	memory_search_index: localReadAnnotations,
+	// Pure local SQL read over already-stored Pi raw events; no model or network.
+	memory_session_search: localReadAnnotations,
 	memory_explain: localReadAnnotations,
 	memory_recent: localReadAnnotations,
 	memory_pack: externalReadAnnotations,

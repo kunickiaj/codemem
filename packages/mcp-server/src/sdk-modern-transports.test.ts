@@ -217,7 +217,13 @@ it.each(["legacy", "modern"] as const)(
 					).result?.protocolVersion,
 				).toBe("2025-11-25");
 			}
-			expect((await request("tools/list")).result?.tools).toHaveLength(14);
+			expect((await request("tools/list")).result?.tools).toHaveLength(15);
+			const sessions = await request("tools/call", {
+				name: "memory_session_search",
+				arguments: { query: "absent" },
+			});
+			expect(sessions.error).toBeUndefined();
+			expect(sessions.result?.structuredContent).toMatchObject({ results: [], returned: 0 });
 			expect(
 				(await request("tools/call", { name: "no_such_tool", arguments: {} })).error?.code,
 			).toBe(-32602);

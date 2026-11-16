@@ -48,6 +48,29 @@ const malformedOutputs: ReadonlyArray<{
 			},
 		},
 	},
+	{
+		label: "session search role and truncation flags",
+		schema: toolOutputSchemas.memory_session_search,
+		fixture: {
+			query: "fixture",
+			query_truncated: false,
+			results: [
+				{
+					source: "pi",
+					session_id: "pi-sess-1",
+					project: null,
+					role: "system",
+					timestamp: null,
+					snippet: "fixture",
+					snippet_truncated: "no",
+					full_length: 7,
+				},
+			],
+			returned: 1,
+			total_matches: 1,
+			truncated: false,
+		},
+	},
 ];
 
 describe("MCP tool output schemas", () => {

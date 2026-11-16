@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ensureViewer,
 	isViewerHealthy,
@@ -35,6 +35,12 @@ function createSpawnMock(options: { throws?: boolean } = {}) {
 }
 
 describe("MCP viewer probe", () => {
+	beforeEach(() => {
+		// These probes mock fetch; isolate their fixed URL from the operator's viewer configuration.
+		vi.stubEnv("CODEMEM_VIEWER_HOST", "127.0.0.1");
+		vi.stubEnv("CODEMEM_VIEWER_PORT", "38888");
+	});
+	afterEach(() => vi.unstubAllEnvs());
 	it.each([
 		["healthy", { service: "codemem-viewer", ready: true }],
 		["degraded", { service: "codemem-viewer", ready: false }],

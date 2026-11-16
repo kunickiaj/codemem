@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- MCP clients can use `memory_session_search` to search stored Pi user/assistant transcripts with the same bounded results and project/session filters as Pi's existing native tool. Pi tool-mode defaults and OpenCode's native tool catalog are unchanged.
+
 ## [0.49.1] - 2026-11-15
 
 ### Fixed

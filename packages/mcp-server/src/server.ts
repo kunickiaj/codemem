@@ -6,6 +6,7 @@ import type { CodememMcpServerOptions, ToolRegistrationContext } from "./tool-co
 import { registerDistillTools } from "./tools/distill.js";
 import { registerItemTools } from "./tools/items.js";
 import { registerLearnTools } from "./tools/learn.js";
+import { registerSessionSearchTools } from "./tools/pi-session-search.js";
 import { registerSchemaTools } from "./tools/schema.js";
 import { registerSearchTools } from "./tools/search.js";
 import { registerTimelineTools } from "./tools/timeline.js";
@@ -38,6 +39,7 @@ export function createCodememMcpServer(
 	};
 
 	registerSearchTools(server, context);
+	registerSessionSearchTools(server, context);
 	registerTimelineTools(server, context);
 	registerDistillTools(server, context);
 	registerItemTools(server, context);

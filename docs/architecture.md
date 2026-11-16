@@ -11,7 +11,7 @@ codemem has five main pieces: **adapters** that capture shell/runtime activity, 
 | Observer | Produces typed observations and session summaries from transcripts | `packages/core/src/observer-output.ts`, `packages/core/src/observer-output-schema.ts`, `packages/core/src/ingest-xml-parser.ts` |
 | Store | SQLite persistence for sessions, memories, artifacts, embeddings | `packages/core/src/store.ts`, `packages/core/src/schema.ts` |
 | Viewer | Local web UI + JSON APIs for stats, sessions, and memory items | `packages/viewer-server/src/`, `packages/ui/src/` |
-| MCP server | Exposes memory tools (search, timeline, pack, remember, forget) to OpenCode | `packages/mcp-server/src/` |
+| MCP server | Exposes memory tools (search, timeline, pack, remember, forget) plus stored Pi session search to OpenCode and other MCP clients | `packages/mcp-server/src/` |
 | CLI | Ties everything together: ingest, serve, search, export/import, sync | `packages/cli/src/` |
 
 The viewer trust model is intentionally local-first: it is designed for loopback access from the same machine, with
@@ -77,7 +77,7 @@ Support tiers describe operational expectations for each adapter path:
 | OpenCode 1 plugin | Supported | Primary reference adapter for lifecycle events and injection behavior. Minimum host 1.18.29. |
 | OpenCode 2 plugin | Beta | Same package, `setup()` entrypoint, validated on the exact stable `@opencode/cli@2.0.24` and `@opencode/plugin@2.0.24` releases. Captures conversation, tool, terminal usage, and lifecycle activity with bounded cleanup and keeps the hyphenated `mem-status`, `mem-recent`, and `mem-stats` tool IDs. `session.context` performs automatic recall only when the latest user message has a non-empty, non-whitespace ID; retries and tool continuations replay retained context byte-for-byte, while compaction, title, and generate hooks stay isolated. Disable with `CODEMEM_PLUGIN_IGNORE=1` or return to OpenCode 1 without a database migration. |
 | Claude hooks/plugin | Supported | Hook-first queue path with CLI/runtime fallback and parity slices tracked in adapter stack PRs. |
-| pi extension | Supported | Minimum host 1.1.0 (below 2.0). Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 15 native `memory_*` tools including `memory_session_search` (MCP remains at 14); session search on CLI, viewer REST, and the native tool plus explicit `codemem session import` history backfill; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
+| pi extension | Supported | Minimum host 1.1.0 (below 2.0). Thin pi-package (`packages/pi-extension`, `packages/core/src/pi-hooks.ts`): extension → `POST /api/pi-hooks` alias → canonical ingest envelope (`source: "pi"`) → observer → memories; injection into request-copy user messages on the `context` event without modifying the system prompt or saved session; 15 native `memory_*` tools including `memory_session_search` (the codemem MCP server also registers `memory_session_search`); session search on CLI, viewer REST, the native tool, and the MCP tool plus explicit `codemem session import` history backfill; observe-only compaction boundary; fork/resume-aware streams; Git-root project identity. Observer derivation from pi config is API-key-only in v1 (OAuth → explicit `unconfigured (oauth-only)`). |
 | Codex plugin (hooks + MCP) | Supported | Functional capture pipeline (`plugins/codex/`, `packages/core/src/codex-hooks.ts`) dogfooded end-to-end: edge normalization → `POST /api/raw-events` → observer → memories. Prompt-time injection is present and env-gated but not fully validated on strict models. |
 | Windsurf integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
 | Cursor integration | Experimental | Planned via shared adapter contract after OpenCode/Claude stabilization. |
@@ -464,7 +464,9 @@ at short caps. Serialized responses are capped at 50,000 characters, including J
 query echoes. The `query` echo preserves the original input when it fits the response budget,
 otherwise it becomes a bounded prefix. Aggregate `truncated` is true when matching input, the
 echo, results, or the recency scan are shortened. The response shape is the shared contract across
-the CLI (`codemem session search`), the viewer REST route, and the pi-extension native tool.
+the CLI (`codemem session search`), the viewer REST route, the pi-extension native tool, and the
+codemem MCP `memory_session_search` tool. Only raw user/assistant transcript text can match: a term
+stored only in metadata or in an extracted memory never does.
 
 Both primitives are exposed on the CLI. `codemem session import` walks
 `~/.pi/agent/sessions/**/*.jsonl` (honors `PI_CODING_AGENT_DIR`), streaming per-file progress;
