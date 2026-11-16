@@ -29,6 +29,7 @@ import { createOwnerBrowser } from "./owner-browser.js";
 import { handleOwnerEntrypoint } from "./owner-entrypoint.js";
 import { publicRelayAdmission, type RelayAdmissionOptions } from "./relay-admission-options.js";
 import { RELAY_ADMISSION_PATH, RELAY_INFO_PATH } from "./relay-config.js";
+import { relayHealthProbesFor } from "./relay-health-config.js";
 import { type RelayHealthContext, relayHealthInstrumentation } from "./relay-health-link.js";
 import {
 	handleRelayAdmissionSetup,
@@ -85,10 +86,19 @@ async function relayAppOptions(
 	request: Request,
 	env: CloudflareCoordinatorEnv,
 	ctx: RelayHealthContext | undefined,
-): Promise<Pick<CreateD1CoordinatorAppOptions, "relayAdmission" | "relayHealthInstrumentation">> {
+): Promise<
+	Pick<
+		CreateD1CoordinatorAppOptions,
+		"relayAdmission" | "relayHealthInstrumentation" | "relayHealthProbes"
+	>
+> {
 	return {
 		relayAdmission: await relayAdmissionFor(request, env),
 		relayHealthInstrumentation: relayHealthInstrumentation(request, env, ctx),
+		relayHealthProbes: relayHealthProbesFor(
+			request,
+			env as unknown as Readonly<Record<string, unknown>>,
+		),
 	};
 }
 

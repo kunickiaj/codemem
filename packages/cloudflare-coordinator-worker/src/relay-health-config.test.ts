@@ -4,6 +4,7 @@ import {
 	createProbeSigner,
 	readRelayHealthConfig,
 	relayHealthClock,
+	relayHealthProbesFor,
 } from "./relay-health-config.js";
 import {
 	RelayHealthSampleBudget,
@@ -22,6 +23,26 @@ const valid = {
 	CODEMEM_RELAY_HEALTH_PROBE_KEY: "AAECAw==",
 	CODEMEM_RELAY_HEALTH_SCOPES: JSON.stringify({ "group-a": "scope-a", "group-b": "scope-b" }),
 };
+
+describe("relay health probe service label", () => {
+	const listing = (method = "GET", path = "/v1/admin/devices?group_id=group-a") =>
+		new Request(`https://coordinator.example.test${path}`, { method });
+
+	it("names the configured probe in each monitored group for the admin device listing", () => {
+		expect(relayHealthProbesFor(listing(), valid)).toEqual([
+			{ groupId: "group-a", deviceId: "probe" },
+			{ groupId: "group-b", deviceId: "probe" },
+		]);
+	});
+
+	it.each([
+		["another route", listing("GET", "/v1/peers?group_id=group-a"), valid],
+		["an enrollment write", listing("POST", "/v1/admin/devices"), valid],
+		["missing health settings", listing(), { ...valid, CODEMEM_RELAY_HEALTH_PROBE_DEVICE: "" }],
+	])("returns nothing for %s", (_label, request, env) => {
+		expect(relayHealthProbesFor(request, env)).toBeUndefined();
+	});
+});
 
 describe("relay health config", () => {
 	it("maps every configured group to its synthetic scope on the HTTPS origin", () => {

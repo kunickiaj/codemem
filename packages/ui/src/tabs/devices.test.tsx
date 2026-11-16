@@ -600,6 +600,25 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("2 unknown");
 	});
 
+	it("lists service devices separately without pairing or availability counts", () => {
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("pair-device", "Pair device", "pairing_required"),
+				inventoryItem("relay-probe", "Relay health probe", "service", {
+					sources: ["coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		const services = document.querySelector('[aria-labelledby="service-devices-heading"]');
+		expect(services?.textContent).toContain("Relay health probe");
+		expect(services?.textContent).toContain("Service device");
+		expect(document.querySelector('[aria-label="Pair Relay health probe"]')).toBeNull();
+		expect(document.querySelector("#device-identity-card-relay-probe")).toBeNull();
+		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("1 unknown");
+		expect(document.querySelector(".devices-heading-count")?.textContent).toBe("· 1");
+	});
+
 	it("does not render conflicted binding evidence as a configured device", () => {
 		state.pendingDeviceIdentityFocus = "device-address-fingerprint-secret";
 		mount(intent(), reconciliation(), {

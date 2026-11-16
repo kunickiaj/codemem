@@ -1,7 +1,14 @@
 import type { DeviceIdentityInventoryItemV1, DeviceIdentityInventoryV1 } from "./api/sync";
 
 export function deviceNeedsIdentityAttention(item: DeviceIdentityInventoryItemV1): boolean {
-	return item.state !== "configured";
+	return item.state !== "configured" && item.state !== "service";
+}
+
+/** Coordinator infrastructure devices, listed apart from people's devices. */
+export function serviceDeviceItems(
+	inventory: DeviceIdentityInventoryV1 | undefined,
+): DeviceIdentityInventoryItemV1[] {
+	return inventory?.items.filter((item) => item.state === "service") ?? [];
 }
 
 export function deviceIdentityAttentionItems(

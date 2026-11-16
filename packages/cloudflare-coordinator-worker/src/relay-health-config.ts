@@ -79,6 +79,21 @@ export function readRelayHealthConfig(
 }
 
 /**
+ * The configured probe enrollment in each monitored group, for the admin device
+ * listing that labels it as a service device. Other requests skip parsing the config.
+ */
+export function relayHealthProbesFor(
+	request: Request,
+	env: Readonly<Record<string, unknown>>,
+): { groupId: string; deviceId: string }[] | undefined {
+	if (request.method !== "GET" || new URL(request.url).pathname !== "/v1/admin/devices")
+		return undefined;
+	const config = readRelayHealthConfig(env);
+	if (!config) return undefined;
+	return [...config.scopes.keys()].map((groupId) => ({ groupId, deviceId: config.probeDeviceId }));
+}
+
+/**
  * The Cloudflare host clock, treated as verified UTC by operator decision. The
  * error bound is an assumption, not a measurement: Cloudflare publishes no skew
  * figure. Workers timers also stand still during compute, which the bound absorbs.

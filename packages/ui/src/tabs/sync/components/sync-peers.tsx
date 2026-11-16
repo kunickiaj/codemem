@@ -142,7 +142,13 @@ type SyncPeerCardProps = {
 };
 
 export interface AdvancedDeviceIdentityView {
-	status: "configured" | "setup_required" | "pairing_required" | "conflicted" | "unavailable";
+	status:
+		| "configured"
+		| "setup_required"
+		| "pairing_required"
+		| "conflicted"
+		| "service"
+		| "unavailable";
 	summary: string;
 	detail: string;
 	actionLabel: string;
@@ -195,6 +201,14 @@ export function advancedDeviceIdentityView(
 			summary: "Identity setup is blocked until pairing is complete.",
 			detail: "Pairing establishes sync trust; it does not establish device ownership.",
 			actionLabel: "Review setup in Devices",
+		};
+	}
+	if (item?.state === "service") {
+		return {
+			status: "service",
+			summary: "Service device. It runs coordinator checks and has no Identity.",
+			detail: "The coordinator manages this device. It does not need pairing or Identity setup.",
+			actionLabel: "View in Devices",
 		};
 	}
 	if (item?.state === "conflicted") {

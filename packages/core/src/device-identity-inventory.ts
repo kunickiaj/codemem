@@ -10,7 +10,9 @@ export type DeviceIdentityInventoryState =
 	| "configured"
 	| "setup_required"
 	| "pairing_required"
-	| "conflicted";
+	| "conflicted"
+	/** Coordinator infrastructure such as a relay health probe; never paired or assigned. */
+	| "service";
 
 export type DeviceIdentityInventorySource =
 	| "local_device"
@@ -98,6 +100,7 @@ interface Evidence {
 	bindingAuthoritative: boolean;
 	enrollmentEnabled: boolean | null;
 	pairingProof: boolean;
+	serviceDevice: boolean;
 }
 
 function clean(value: unknown): string | null {
@@ -133,6 +136,7 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: true,
+		serviceDevice: false,
 	};
 }
 
@@ -152,6 +156,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
+		serviceDevice: false,
 	};
 }
 
@@ -170,6 +175,7 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		bindingAuthoritative: true,
 		enrollmentEnabled: null,
 		pairingProof: false,
+		serviceDevice: false,
 	};
 }
 
@@ -189,6 +195,7 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: value.enabled === 1,
 		pairingProof: false,
+		serviceDevice: value.service_role === "relay_health_probe",
 	};
 }
 
@@ -266,6 +273,25 @@ function preferredDisplayName(group: Evidence[]): string {
 	return "Unnamed device";
 }
 
+function inventoryState(
+	group: Evidence[],
+	facts: { conflicted: boolean; activeBindings: Evidence[] },
+): DeviceIdentityInventoryState {
+	// Conflicting evidence stays visible for review, even for a coordinator-labeled device.
+	if (facts.conflicted) return "conflicted";
+	// Any local, peer, or binding evidence means a person-managed device, so it stays visible.
+	if (group.every((item) => item.source === "coordinator_enrollment" && item.serviceDevice))
+		return "service";
+	if (facts.activeBindings.length > 0) return "configured";
+	const hasPairingProof = group.some((item) => item.pairingProof);
+	const hasCoordinatorEvidence = group.some(
+		(item) =>
+			item.source === "coordinator_enrollment" ||
+			(item.source === "sync_peer" && !item.pairingProof),
+	);
+	return hasCoordinatorEvidence && !hasPairingProof ? "pairing_required" : "setup_required";
+}
+
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
 	const fingerprints = new Set(
@@ -312,20 +338,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 			? "coordinator_enrollment_disabled"
 			: null,
 	].filter((code): code is string => code != null);
-	const hasPairingProof = group.some((item) => item.pairingProof);
-	const hasCoordinatorEvidence = group.some(
-		(item) =>
-			item.source === "coordinator_enrollment" ||
-			(item.source === "sync_peer" && !item.pairingProof),
-	);
-	const state: DeviceIdentityInventoryState =
-		conflictCodes.length > 0
-			? "conflicted"
-			: activeBindings.length > 0
-				? "configured"
-				: hasCoordinatorEvidence && !hasPairingProof
-					? "pairing_required"
-					: "setup_required";
+	const state = inventoryState(group, { conflicted: conflictCodes.length > 0, activeBindings });
 	const selected = SOURCE_ORDER.map((source) => preferred(group, source)).find(
 		(item): item is Evidence => item != null,
 	);
@@ -341,7 +354,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 				? ([...bindingIdentityIds][0] ?? null)
 				: null,
 		suggestedIdentityId:
-			activeBindings.length === 0 && suggestedIdentityIds.size === 1
+			state !== "service" && activeBindings.length === 0 && suggestedIdentityIds.size === 1
 				? ([...suggestedIdentityIds][0] ?? null)
 				: null,
 		validatedFingerprint: fingerprints.size === 1 ? ([...fingerprints][0] ?? null) : null,

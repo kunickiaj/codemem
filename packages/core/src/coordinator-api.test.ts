@@ -3633,3 +3633,44 @@ describe("guarded nonce API result mapping", () => {
 		});
 	}
 });
+
+describe("coordinator admin device service roles", () => {
+	it("labels only the configured relay health probe as a service device", async () => {
+		const enrollment = (deviceId: string, displayName: string, groupId = "g1") => ({
+			group_id: groupId,
+			device_id: deviceId,
+			public_key: `pk-${deviceId}`,
+			fingerprint: `fp-${deviceId}`,
+			identity_id: null,
+			display_name: displayName,
+			enabled: 1,
+			created_at: "2026-03-28T00:00:00Z",
+		});
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => [
+				enrollment("probe-1", "Relay health probe"),
+				// A person's device named like the probe must stay a person's device.
+				enrollment("laptop", "Relay health probe"),
+				// Device IDs are caller-chosen, so the probe's ID in an unmonitored group is not the probe.
+				enrollment("probe-1", "Relay health probe", "g2"),
+			]),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+			relayHealthProbes: [{ groupId: "g1", deviceId: "probe-1" }],
+		});
+
+		const res = await app.request("/v1/admin/devices?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+
+		const body = (await res.json()) as { items: Array<Record<string, unknown>> };
+		expect(body.items.map((item) => [item.group_id, item.device_id, item.service_role])).toEqual([
+			["g1", "probe-1", "relay_health_probe"],
+			["g1", "laptop", undefined],
+			["g2", "probe-1", undefined],
+		]);
+	});
+});
