@@ -72,6 +72,8 @@ The repository-only scope includes `packages/ui/playwright*.config.ts`, `package
 
 This hook is contributor tooling only. Neither the repository wrapper nor `src/lint-feedback.ts` is included in the published `@codemem/opencode-plugin` package, so installing codemem does not activate it. Restart OpenCode after changing the checkout's plugin configuration.
 
+If the plugin fails to load because a development dependency such as `@babel/parser` is missing, its error names the package and the recovery steps. Run `pnpm install --frozen-lockfile` from the repository root, then reload OpenCode. If the running OpenCode service still reports the same missing package, run `opencode service restart`. Restarting interrupts every session that uses the shared service.
+
 The Biome pilot is the repository's bounded lint experiment. It covers package `src` trees, the canonical published OpenCode runtime under `packages/opencode-plugin/.opencode`, the two checkout plugin entrypoints, selected adapter hooks, package JSON, and root TypeScript configuration. The OpenCode runtime keeps its existing two-space formatting for package stability; Biome still applies lint rules, including the complexity-15 and 50-line production thresholds.
 
 The tracked JS/TS inventory at the 0.45.0 baseline is:

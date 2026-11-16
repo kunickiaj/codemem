@@ -80,7 +80,7 @@ pnpm run codemem service restart
 
 ## Repository lint feedback
 
-The checkout-local `.opencode/plugins/lint-feedback.js` reports new or worsened Biome diagnostics after supported OpenCode edit tools. It is contributor tooling and is excluded from the published plugin. See the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback) for hook coverage and limitations.
+The checkout-local `.opencode/plugins/lint-feedback.js` reports new or worsened Biome diagnostics after supported OpenCode edit tools. It is contributor tooling and is excluded from the published plugin. See the [plugin reference](docs/plugin-reference.md#repository-only-lint-feedback) for hook coverage, limitations, and missing-dependency recovery.
 
 Shell-driven edits need an explicit checkpoint:
 
