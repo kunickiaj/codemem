@@ -348,6 +348,7 @@ vi.mock("./coordinator-runtime.js", () => ({
 	readCoordinatorSyncConfig: vi.fn().mockReturnValue({}),
 	refreshAuthorizedCoordinatorPeerTrust: vi.fn().mockResolvedValue({ peers: [], trusted: 0 }),
 	registerCoordinatorPresence: vi.fn().mockResolvedValue(null),
+	removeCoordinatorRevokedPeers: vi.fn().mockResolvedValue({ revoked: 0, status: "checked" }),
 }));
 
 vi.mock("./scope-membership-cache.js", () => ({
@@ -1209,5 +1210,41 @@ describe("getSyncDaemonPhase / setSyncDaemonPhase", () => {
 		setSyncDaemonPhase(db, "needs_attention");
 		setSyncDaemonOk(db);
 		expect(getSyncDaemonPhase(db)).toBeNull();
+	});
+});
+
+describe("refreshCoordinatorForDaemon revocation check", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+
+	afterEach(() => {
+		db.close();
+	});
+
+	it("removes revoked pairings even when presence fails for a configured group", async () => {
+		const {
+			coordinatorEnabled,
+			readCoordinatorSyncConfig,
+			registerCoordinatorPresence,
+			removeCoordinatorRevokedPeers,
+		} = await import("./coordinator-runtime.js");
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "http://coord",
+			syncCoordinatorGroups: ["disabled-group", "team"],
+		} as never);
+		vi.mocked(registerCoordinatorPresence).mockRejectedValueOnce(
+			new Error("coordinator presence failed (401: device_disabled)"),
+		);
+
+		await expect(refreshCoordinatorForDaemon(db, ":memory:", "/tmp/keys")).rejects.toThrow(
+			"device_disabled",
+		);
+		expect(removeCoordinatorRevokedPeers).toHaveBeenCalledTimes(1);
 	});
 });

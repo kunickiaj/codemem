@@ -6,6 +6,11 @@ import {
 	normalizeAddress,
 } from "./address-utils.js";
 import {
+	fetchRevokedPinnedPeers,
+	type PeerRevocationCheckStatus,
+	removeRevokedPeers,
+} from "./coordinator-peer-revocation.js";
+import {
 	type CoordinatorReciprocalApproval,
 	CoordinatorReciprocalApprovalRequestChangedError,
 } from "./coordinator-store-contract.js";
@@ -911,6 +916,24 @@ export async function refreshAuthorizedCoordinatorPeerTrust(
 	refreshStoredCoordinatorPeerAddresses(store.db, peers);
 	const trusted = reconcileCoordinatorPeerTrust(store.db, localDeviceId, peers);
 	return { peers, trusted };
+}
+
+/**
+ * Deletes pairings with devices the coordinator revoked. It runs on its own, so
+ * a group that rejects presence or peer lookups can't block it. An unknown answer
+ * keeps every pairing until a later check succeeds.
+ */
+export async function removeCoordinatorRevokedPeers(
+	store: PresenceStoreLike,
+	config: CoordinatorSyncConfig,
+	options?: { keysDir?: string },
+): Promise<{ revoked: number; status: PeerRevocationCheckStatus }> {
+	if (!coordinatorEnabled(config)) return { revoked: 0, status: "unsupported" };
+	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
+	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
+	const check = await fetchRevokedPinnedPeers(store, config, { localDeviceId, keysDir });
+	const revoked = removeRevokedPeers(store.db, localDeviceId, check.revoked);
+	return { revoked, status: check.status };
 }
 
 /**

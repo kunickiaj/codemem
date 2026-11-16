@@ -3674,3 +3674,103 @@ describe("coordinator admin device service roles", () => {
 		]);
 	});
 });
+
+describe("POST /v1/peers/revocations", () => {
+	const caller: CoordinatorEnrollment = {
+		group_id: "g1",
+		device_id: "device-a",
+		public_key: "pk-a",
+		fingerprint: "fp-a",
+		identity_id: null,
+		display_name: "Laptop",
+		enabled: 1,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+	const revokedRecord = {
+		subject_kind: "device_id" as const,
+		subject_value: "retired",
+		revocation_id: "revocation-1",
+		evidence_group_id: "g1",
+		evidence_device_id: "retired",
+		evidence_public_key: "pk-retired",
+		evidence_fingerprint: "fp-retired",
+		actor_id: null,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+
+	function checkApp(overrides: Partial<CoordinatorStoreInterface> = {}) {
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => caller),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
+			listDeviceRevocations: vi.fn(async (input: { deviceId?: string }) =>
+				input.deviceId === "retired" ? [revokedRecord] : [],
+			),
+			...overrides,
+		});
+		return { store, app: createSharingAdminApp(() => store) };
+	}
+
+	function check(app: ReturnType<typeof createSharingAdminApp>, body: unknown) {
+		return app.request("/v1/peers/revocations?group_id=g1", {
+			method: "POST",
+			headers: { ...authHeaders(), "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("returns only the asked-about peers the coordinator has revoked", async () => {
+		const { app, store } = checkApp();
+
+		const response = await check(app, {
+			peers: [
+				{ device_id: "retired", public_key: "pk-retired" },
+				{ device_id: "active", public_key: "pk-active" },
+			],
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ version: 1, revoked: ["retired"] });
+		expect(store.listDeviceRevocations).toHaveBeenCalledWith({
+			deviceId: "active",
+			publicKey: "pk-active",
+		});
+	});
+
+	it("rejects a request without a valid device signature", async () => {
+		const { app, store } = checkApp({ getEnrollment: vi.fn(async () => null) });
+
+		const response = await check(app, { peers: [{ device_id: "retired", public_key: "pk" }] });
+
+		expect(response.status).toBe(401);
+		expect(store.listDeviceRevocations).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a missing peer list", {}],
+		["a peer without a key", { peers: [{ device_id: "retired" }] }],
+		[
+			"too many peers",
+			{ peers: Array.from({ length: 26 }, (_, i) => ({ device_id: `d${i}`, public_key: "pk" })) },
+		],
+	])("rejects %s", async (_label, body) => {
+		const { app } = checkApp();
+
+		const response = await check(app, body);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "peers_invalid" });
+	});
+
+	it("reports the check as unavailable when the revocation read fails", async () => {
+		const { app } = checkApp({
+			listDeviceRevocations: vi.fn(async () => {
+				throw new Error("device_revocation_incomplete");
+			}),
+		});
+
+		const response = await check(app, { peers: [{ device_id: "retired", public_key: "pk" }] });
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: "peer_revocation_unavailable" });
+	});
+});
