@@ -115,6 +115,21 @@ const syncRequestCases = {
 		"/api/sync/recipient-policy/v1/devices/device/rename",
 		() => syncApi.renameKnownDevice("device", "Renamed"),
 	),
+	previewDeviceRetirement: syncRequestCase("POST", "/api/sync/devices/device/retire/preview", () =>
+		syncApi.previewDeviceRetirement("device"),
+	),
+	retireDevice: syncRequestCase("POST", "/api/sync/devices/device/retire", () =>
+		syncApi.retireDevice({
+			device_id: "device",
+			display_name: "Device",
+			enrollment_device_id: "device",
+			alias_device_ids: ["device"],
+			group_id: "group",
+			coordinator_id: "coordinator",
+			key_id: "key",
+			expected_digest: "digest",
+		}),
+	),
 	acceptDiscoveredPeer: syncRequestCase("POST", "/api/sync/peers/accept-discovered", () =>
 		syncApi.acceptDiscoveredPeer("peer"),
 	),
@@ -2137,7 +2152,7 @@ describe("viewer-server", () => {
 			for (const [, request] of cases)
 				outcomes.push(...(await Promise.allSettled([request.invoke()])));
 			expect(exportedWrappers.sort()).toEqual(Object.keys(syncRequestCases).sort());
-			expect(cases).toHaveLength(55);
+			expect(cases).toHaveLength(57);
 			expect(fetchMock).toHaveBeenCalledTimes(cases.length);
 			expect(outcomes.map((outcome) => outcome.status)).toEqual(cases.map(() => "rejected"));
 			expect(requests).toEqual(cases.map(([, { method, path }]) => ({ method, path })));
