@@ -36,6 +36,7 @@ import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { RenameDevicePanel } from "./device-rename";
+import { type DeviceRetirementApi, runDeviceRetirement } from "./device-retire";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -94,6 +95,7 @@ export interface DevicesRendererOptions {
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	renameDevice?: typeof renameKnownDevice;
+	retirementApi?: DeviceRetirementApi;
 	coordinatorEnrollmentIssueCount?: number;
 }
 
@@ -544,9 +546,11 @@ function previewMatchesBindings(
 
 const DEVICE_COMMIT_STATUS_ID = "devices-commit-status";
 
-function setDeviceCommitStatus(message: string): void {
+function setDeviceCommitStatus(message: string, tone: "success" | "warning" = "success"): void {
 	const status = document.getElementById(DEVICE_COMMIT_STATUS_ID);
-	if (status) status.textContent = message;
+	if (!status) return;
+	status.textContent = message;
+	status.dataset.tone = tone;
 }
 
 function SetupRecoveryAction({
@@ -595,6 +599,32 @@ function SetupRecoveryAction({
 				</button>
 			</div>
 		</>
+	);
+}
+
+/** Lets a person retire an unused enrolled device without pairing or setting it up first. */
+function SetupCardRetire({
+	item,
+	options,
+}: {
+	item: DeviceIdentityInventoryItemV1;
+	options: DevicesRendererOptions;
+}) {
+	const device = { deviceId: item.deviceId, displayName: item.displayName };
+	const [action] = deviceRetireMenuAction(device, item, options);
+	if (!action || item.isLocal) return null;
+	return (
+		<div className="device-identity-card-actions">
+			<button
+				aria-label={action.ariaLabel}
+				className="settings-button"
+				disabled={action.disabled}
+				onClick={action.onSelect}
+				type="button"
+			>
+				Retire device…
+			</button>
+		</div>
 	);
 }
 
@@ -914,6 +944,7 @@ function SetupWorkflow({
 										onOpenPairing={onOpenPairing}
 									/>
 								)}
+								<SetupCardRetire item={item} options={options} />
 							</article>
 						</li>
 					);
@@ -1358,6 +1389,57 @@ function deviceNavigationMenuAction(
 	];
 }
 
+function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () => void): MenuAction {
+	return {
+		// The form cannot accept input while the device list is unavailable.
+		disabled: options.inventoryUnavailable === true || options.refreshError === true,
+		label: "Rename device…",
+		onSelect: onRename,
+	};
+}
+
+/** Retirement needs coordinator evidence for a person's device other than this one. */
+type RetireTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
+
+function deviceRetireMenuAction(
+	device: RetireTarget,
+	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
+	options: DevicesRendererOptions,
+): MenuAction[] {
+	if (
+		!inventoryItem?.sources.includes("coordinator_enrollment") ||
+		inventoryItem.state === "service" ||
+		inventoryItem.isLocal ||
+		directLocalDeviceId(options) === device.deviceId
+	)
+		return [];
+	return [
+		{
+			ariaLabel: `Retire ${device.displayName}`,
+			disabled: identityMutationsBlocked(options),
+			label: "Retire device…",
+			onSelect: () => void retireFromMenu(device, options),
+		},
+	];
+}
+
+async function retireFromMenu(device: RetireTarget, options: DevicesRendererOptions) {
+	const outcome = await runDeviceRetirement(device, options.retirementApi);
+	if (!outcome) return;
+	setDeviceCommitStatus(outcome.message, outcome.tone);
+	if (!outcome.refresh) return;
+	// Refreshing remounts Devices and clears the status, so restore it afterward.
+	const refreshed = await options.onCommitted?.();
+	if (refreshed === false)
+		setDeviceCommitStatus(
+			`${outcome.message} Refreshing Devices failed. Refresh to see current state.`,
+			"warning",
+		);
+	else setDeviceCommitStatus(outcome.message, outcome.tone);
+	// The retired device's row is gone, so its menu can't keep focus.
+	document.getElementById("devices-heading")?.focus();
+}
+
 function DeviceRowMenu({
 	device,
 	canReassign,
@@ -1393,12 +1475,8 @@ function DeviceRowMenu({
 			label: "Device details",
 			onSelect: onDetails,
 		},
-		{
-			// The form cannot accept input while the device list is unavailable.
-			disabled: options.inventoryUnavailable === true || options.refreshError === true,
-			label: "Rename device…",
-			onSelect: onRename,
-		},
+		deviceRenameMenuAction(options, onRename),
+		...deviceRetireMenuAction(device, inventoryItem, options),
 		...(inventoryItem && canReassign
 			? [
 					{
