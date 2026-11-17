@@ -152,6 +152,8 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerTombstoneSequence(test);
 	registerTombstoneMatchTriggers(test);
 	registerEnrollmentChangeTriggers(test);
+	registerEnableWithoutKeyId(test);
+	registerRowIdRule(test);
 	registerEnrollmentMoveTriggers(test);
 	registerCollisionTriggers(test);
 }
@@ -337,6 +339,80 @@ function registerTombstoneMatchTriggers(test: RemovalTest) {
 			{ group_id: alias.groupId, enabled: 0 },
 			{ group_id: aliasElsewhere.groupId, enabled: 1 },
 		]);
+	});
+}
+
+function registerEnableWithoutKeyId(test: RemovalTest) {
+	test("A21 enabling an enrollment that has no key ID aborts once a tombstone exists", async ({
+		fixture: f,
+	}) => {
+		// Arrange: two disabled rows from before the key ID column. One shares the removed key.
+		const removed = { ...(await target(f)), key: opaqueKey(`${f.prefix}-removed`) };
+		const alias = { ...removed, deviceId: `${f.prefix}-alias` };
+		const other = { ...(await target(f, "other")), key: opaqueKey(`${f.prefix}-other`) };
+		await f.store.createGroup(removed.groupId);
+		for (const enrollment of [alias, other]) await legacyInsert(f, enrollment);
+		await f.exec("UPDATE enrolled_devices SET enabled = 0 WHERE device_id LIKE ?", `${f.prefix}%`);
+		await insertTombstone(f, removed);
+		const enable = "UPDATE enrolled_devices SET enabled = 1 WHERE device_id = ?";
+		const enableWithKeyId =
+			"UPDATE enrolled_devices SET enabled = 1, key_id = ? WHERE device_id = ?";
+		// Act and assert: a null key ID cannot be compared with a tombstone, so neither row is enabled.
+		for (const enrollment of [alias, other]) {
+			await expect(f.exec(enable, enrollment.deviceId)).rejects.toThrow(
+				/enrollment_key_id_required/u,
+			);
+		}
+		// Act and assert: with the key ID stated, the removed key is refused and the other is enabled.
+		await expect(f.exec(enableWithKeyId, alias.key.keyId, alias.deviceId)).rejects.toThrow(
+			/device_removed/u,
+		);
+		await f.exec(enableWithKeyId, other.key.keyId, other.deviceId);
+		expect(
+			await f.rows(
+				"SELECT device_id, enabled, key_id FROM enrolled_devices WHERE device_id LIKE ? ORDER BY device_id",
+				`${f.prefix}%`,
+			),
+		).toEqual([
+			{ device_id: alias.deviceId, enabled: 0, key_id: null },
+			{ device_id: other.deviceId, enabled: 1, key_id: "" },
+		]);
+	});
+}
+
+function registerRowIdRule(test: RemovalTest) {
+	test("A24 an enrollment cannot take a row ID below 1 by insert or by update", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const first = await target(f, "first");
+		const second = await target(f, "second");
+		await currentInsert(f, first);
+		const insert = `INSERT INTO enrolled_devices(rowid, group_id, device_id, public_key,
+			fingerprint, enabled, created_at, key_id) VALUES (?, ?, ?, 'k', 'f', 1, 'now', '')`;
+		// Act and assert: an automatic row ID reads as -1 before insert and must match no row.
+		for (const rowId of [-1, 0]) {
+			await expect(f.exec(insert, rowId, first.groupId, `${f.prefix}-raw`)).rejects.toThrow(
+				/enrollment_rowid/u,
+			);
+			for (const name of ["rowid", "_rowid_", "oid"]) {
+				await expect(
+					f.exec(
+						`UPDATE enrolled_devices SET ${name} = ? WHERE device_id = ?`,
+						rowId,
+						first.deviceId,
+					),
+				).rejects.toThrow(/enrollment_rowid/u);
+			}
+		}
+		// Assert: a later insert with an automatic row ID still succeeds.
+		await currentInsert(f, second);
+		const rows = await f.rows<{ row_id: number; device_id: string }>(
+			"SELECT rowid AS row_id, device_id FROM enrolled_devices WHERE device_id LIKE ? ORDER BY rowid",
+			`${f.prefix}%`,
+		);
+		expect(rows.map((row) => row.device_id)).toEqual([first.deviceId, second.deviceId]);
+		expect(rows.every((row) => row.row_id >= 1)).toBe(true);
 	});
 }
 

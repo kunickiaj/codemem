@@ -222,6 +222,14 @@ WHEN NEW.rowid < 1
 BEGIN
   SELECT RAISE(ABORT, 'enrollment_rowid');
 END;`,
+	`-- A row moved below 1 would match the -1 that every later automatic insert reads before
+-- insert, and the collision check would abort that insert. No column list, as below.
+CREATE TRIGGER IF NOT EXISTS enrolled_devices_rowid_update
+BEFORE UPDATE ON enrolled_devices
+WHEN NEW.rowid < 1
+BEGIN
+  SELECT RAISE(ABORT, 'enrollment_rowid');
+END;`,
 	`-- No column list: a list would miss an update that names the row ID as _rowid_ or oid.
 CREATE TRIGGER IF NOT EXISTS enrolled_devices_update_collision
 BEFORE UPDATE ON enrolled_devices
@@ -243,14 +251,17 @@ WHEN NOT EXISTS (
 BEGIN
   SELECT RAISE(ABORT, 'enrollment_delete_requires_removal');
 END;`,
-	`CREATE TRIGGER IF NOT EXISTS enrolled_devices_removal_enable
+	`-- A null key ID matches no tombstone by key, so a row from before the column is not
+-- enabled until its writer states the key ID, as an insert must.
+CREATE TRIGGER IF NOT EXISTS enrolled_devices_removal_enable
 BEFORE UPDATE OF enabled ON enrolled_devices
-WHEN NEW.enabled = 1 AND EXISTS (
-  SELECT 1 FROM coordinator_device_removals t
-  WHERE t.group_id = NEW.group_id AND ${NEW_ROW_TOMBSTONE_MATCH_SQL}
-)
+WHEN NEW.enabled = 1
 BEGIN
-  SELECT RAISE(ABORT, 'device_removed');
+  SELECT RAISE(ABORT, 'enrollment_key_id_required')
+    WHERE NEW.key_id IS NULL AND EXISTS (SELECT 1 FROM coordinator_device_removals);
+  SELECT RAISE(ABORT, 'device_removed')
+    WHERE EXISTS (SELECT 1 FROM coordinator_device_removals t
+      WHERE t.group_id = NEW.group_id AND ${NEW_ROW_TOMBSTONE_MATCH_SQL});
 END;`,
 ]);
 
@@ -262,6 +273,7 @@ export const ENROLLMENT_REMOVAL_TRIGGER_NAMES: readonly string[] = Object.freeze
 	"enrolled_devices_key_id_stale",
 	"enrolled_devices_insert_collision",
 	"enrolled_devices_rowid",
+	"enrolled_devices_rowid_update",
 	"enrolled_devices_update_collision",
 	"enrolled_devices_removal_delete",
 	"enrolled_devices_removal_enable",
