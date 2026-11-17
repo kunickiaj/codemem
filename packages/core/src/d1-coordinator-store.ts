@@ -853,13 +853,13 @@ interface RecipientInviteGuard {
 	unpinned?: AuthLinkStatement[];
 }
 
-/** The guards, the writes and the eligibility confirmation in one batch. First write's changes. */
+/** The guards, the writes and the eligibility confirmation in one batch. Changes of each write. */
 async function confirmRecipientInviteBatch(
 	db: D1DatabaseLike,
 	statements: D1PreparedStatementLike[],
 	guard: RecipientInviteGuard,
 	guards: AuthLinkStatement[],
-): Promise<number> {
+): Promise<number[]> {
 	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
 	const lead = guards.map(({ sql, values }) => db.prepare(sql).bind(...values));
 	const results = await db.batch([
@@ -877,15 +877,14 @@ async function confirmRecipientInviteBatch(
 		| undefined;
 	if (legacyDeviceWriteChanges(confirmation) !== 0 || confirmation?.results?.[0]?.confirmed !== 1)
 		throw new Error("device_ownership_authorization_unavailable");
-	for (const result of writes) legacyDeviceWriteChanges(result);
-	return writes.length ? legacyDeviceWriteChanges(writes[0]) : 0;
+	return writes.map(legacyDeviceWriteChanges);
 }
 
 async function runRecipientInviteBatch(
 	db: D1DatabaseLike,
 	statements: D1PreparedStatementLike[],
 	guard: RecipientInviteGuard,
-): Promise<number> {
+): Promise<number[]> {
 	if (!db.batch) throw new Error("device_ownership_authorization_unavailable");
 	try {
 		return await confirmRecipientInviteBatch(db, statements, guard, guard.guards ?? []);
@@ -896,7 +895,7 @@ async function runRecipientInviteBatch(
 				() => true,
 				() => false,
 			);
-			if (unpinned) return 0;
+			if (unpinned) return statements.map(() => 0);
 		}
 		await guard.assertEligible({ requireBinding: false });
 		throw new Error("device_ownership_authorization_unavailable");
@@ -926,7 +925,7 @@ async function repairBoundRecipientInviteIdentity(
 	opts: CoordinatorConsumeRecipientInviteInput,
 	invite: CoordinatorInvite,
 	guard: Omit<RecipientInviteGuard, "guards" | "unpinned">,
-	firstWrite: { winningChanges: number; consistency: NegativeOwnerGuards },
+	firstWrite: { winningChanges: number; consistency: NegativeOwnerGuards; keyId: string | null },
 ): Promise<AuthLinkStatement[]> {
 	validateRecipientInviteBinding(invite, opts, { requireBinding: true });
 	// A zero-row token UPDATE (including another invocation's winner) did
@@ -935,17 +934,19 @@ async function repairBoundRecipientInviteIdentity(
 		firstWrite.winningChanges === 1
 			? firstWrite.consistency.retainedGuards
 			: firstWrite.consistency.guards;
-	const repaired = await runRecipientInviteBatch(
+	const stored = storedKeyIdWrite(firstWrite.keyId);
+	const [repaired] = await runRecipientInviteBatch(
 		db,
 		[
 			db
 				.prepare(
-					`UPDATE enrolled_devices SET identity_id = ?
+					`UPDATE enrolled_devices SET identity_id = ?${stored.sql.assignment}
 		WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
 		AND public_key = ? AND fingerprint = ? AND ${guard.sql}`,
 				)
 				.bind(
 					opts.identityId,
+					...stored.values,
 					invite.group_id,
 					opts.deviceId,
 					opts.publicKey,
@@ -1084,16 +1085,17 @@ async function prepareProjectInviteGuards(
 
 function prepareBoundProjectInviteIdentityRepair(
 	db: D1DatabaseLike,
-	opts: CoordinatorConsumeProjectInviteInput,
-	invite: CoordinatorInvite,
-	guard: ReturnType<typeof projectInviteGuardEvidence>,
+	write: ProjectInviteConsume,
 ): D1PreparedStatementLike {
+	const { opts, invite, guard } = write;
+	const stored = storedKeyIdWrite(write.keyId);
 	return db
-		.prepare(`UPDATE enrolled_devices SET identity_id = ?
+		.prepare(`UPDATE enrolled_devices SET identity_id = ?${stored.sql.assignment}
 		WHERE group_id = ? AND device_id = ? AND identity_id IS NULL AND enabled = 1
 		AND public_key = ? AND fingerprint = ? AND ${guard.boundEligibilitySql}`)
 		.bind(
 			opts.recipientActorId,
+			...stored.values,
 			invite.group_id,
 			opts.deviceId,
 			opts.publicKey,
@@ -1136,25 +1138,379 @@ function projectInviteEnrollmentValues(
 async function runProjectInviteBatch(
 	db: D1DatabaseLike,
 	statements: D1PreparedStatementLike[],
-	initial: CoordinatorInvite,
-	opts: CoordinatorConsumeProjectInviteInput,
-	guard: Awaited<ReturnType<typeof prepareProjectInviteGuards>>,
-	enrollmentValues: string[],
+	options: {
+		initial: CoordinatorInvite;
+		guard: Awaited<ReturnType<typeof prepareProjectInviteGuards>>;
+		enrollmentValues: string[];
+	},
 ): Promise<boolean> {
-	// A retry repairs only its pinned enrollment; fresh enrollment requires this batch's consume winner.
-	if (initial.consumed_at)
-		statements.splice(1, 1, prepareBoundProjectInviteIdentityRepair(db, opts, initial, guard));
-	const changed = await runRecipientInviteBatch(db, statements, {
+	const { initial, guard, enrollmentValues } = options;
+	const changes = await runRecipientInviteBatch(db, statements, {
 		sql: `${guard.boundEligibilitySql} AND ${PROJECT_INVITE_ENROLLMENT_SQL}`,
 		values: [...guard.boundEligibilityValues, ...enrollmentValues],
 		assertEligible: guard.assertEligible,
 	});
-	return !initial.consumed_at && changed === 1;
+	return !initial.consumed_at && inviteConsumeWon(changes);
 }
 
 /** The fragments and the bound value that store `keyId`, or nothing when it is null. */
 function storedKeyIdWrite(keyId: string | null): { sql: RemovalColumnSql; values: string[] } {
 	return { sql: enrollmentKeyIdSql(keyId !== null), values: keyId === null ? [] : [keyId] };
+}
+
+/** The joining device has an enrollment in the invitation's group. Bind the device ID. */
+const INVITE_DEVICE_ENROLLED_SQL = `EXISTS (SELECT 1 FROM enrolled_devices e
+	WHERE e.group_id = coordinator_invites.group_id AND e.device_id = ?)`;
+
+/**
+ * The token write and the enrollment write of a first acceptance, as four
+ * statements of the atomic batch. No read made before the batch picks between
+ * insert and update, and the enrollment table takes no ON CONFLICT clause:
+ *
+ * 1. consume the invitation while the group has no row for the device
+ * 2. insert the enrollment, when statement 1 changed a row
+ * 3. consume the invitation while the group has a row for the device, or write
+ *    the same values again when statement 2 inserted that row and the consumed
+ *    invitation still holds this acceptance's binding and bound eligibility
+ * 4. update the enrollment, when statement 3 changed a row
+ *
+ * Statements 1 and 3 cannot both consume. Statement 4 therefore changes a row
+ * exactly when this batch won the token and the enrollment is written, which is
+ * what the statements after it read from changes(). An acceptance that lost the
+ * token writes no enrollment in either form.
+ */
+function prepareInviteConsumeAndEnroll(
+	db: D1DatabaseLike,
+	write: {
+		deviceId: string;
+		/** Assignments of the token write. */
+		consume: { sql: string; values: unknown[] };
+		/** Selects the invitation row; the same in statements 1 and 3. */
+		invite: { sql: string; values: unknown[] };
+		/** Every condition of the token write on an unconsumed invitation. */
+		open: { sql: string; values: unknown[] };
+		/**
+		 * Every condition of the rewrite in statement 3: the invitation is consumed and
+		 * bound to exactly this acceptance, and the bound eligibility still holds.
+		 * Statement 3 owns this guard; changes() of statement 2 alone authorizes nothing.
+		 */
+		bound: { sql: string; values: unknown[] };
+		insert: D1PreparedStatementLike;
+		update: D1PreparedStatementLike;
+	},
+): D1PreparedStatementLike[] {
+	const { deviceId, consume, invite, open, bound } = write;
+	return [
+		db
+			.prepare(`UPDATE coordinator_invites SET ${consume.sql}
+			WHERE ${invite.sql} AND ${open.sql} AND NOT ${INVITE_DEVICE_ENROLLED_SQL}`)
+			.bind(...consume.values, ...invite.values, ...open.values, deviceId),
+		write.insert,
+		db
+			.prepare(`UPDATE coordinator_invites SET ${consume.sql}
+			WHERE ${invite.sql} AND (
+				(changes() = 1 AND ${bound.sql})
+				OR (${open.sql} AND ${INVITE_DEVICE_ENROLLED_SQL}))`)
+			.bind(...consume.values, ...invite.values, ...bound.values, ...open.values, deviceId),
+		write.update,
+	];
+}
+
+/** True when either token write of prepareInviteConsumeAndEnroll consumed the invitation. */
+function inviteConsumeWon(changes: readonly number[]): boolean {
+	return changes[0] === 1 || changes[2] === 1;
+}
+
+interface RecipientInviteConsume {
+	invite: CoordinatorInvite;
+	opts: CoordinatorConsumeRecipientInviteInput;
+	digest: string;
+	consumedAt: string;
+	identityId: string;
+	/** Null on a schema without the key ID column. */
+	keyId: string | null;
+	eligibilitySql: string;
+	eligibilityValues: unknown[];
+	boundEligibilitySql: string;
+	boundEligibilityValues: unknown[];
+}
+
+function prepareRecipientInviteConsume(
+	db: D1DatabaseLike,
+	write: RecipientInviteConsume,
+): D1PreparedStatementLike[] {
+	const { invite, opts, digest, consumedAt, identityId } = write;
+	const tuple = [opts.deviceId, opts.publicKey, opts.fingerprint, identityId];
+	return prepareInviteConsumeAndEnroll(db, {
+		deviceId: opts.deviceId,
+		consume: {
+			sql: `token = ?, consumed_at = ?, bound_device_id = ?,
+			bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
+			recipient_display_name = ?, recipient_device_display_name = ?`,
+			values: [
+				`consumed:${invite.invite_id}`,
+				consumedAt,
+				...tuple,
+				opts.recipientDisplayName ?? null,
+				opts.deviceDisplayName ?? null,
+			],
+		},
+		invite: {
+			sql: "(token_digest = ? OR token = ?) AND invite_id = ? AND group_id = ?",
+			values: [digest, opts.token, invite.invite_id, invite.group_id],
+		},
+		open: {
+			sql: `consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
+			AND reviewed_intent_json = ? AND reviewed_preview_digest = ?
+			AND ((invite_kind = 'team_member' AND assigned_identity_id = ?)
+				OR (invite_kind = 'add_device' AND target_identity_id = ?))
+			AND NOT EXISTS (
+				SELECT 1 FROM enrolled_devices e
+				WHERE e.group_id = coordinator_invites.group_id AND e.device_id = ?
+					AND (e.public_key <> ? OR e.fingerprint <> ?
+						OR (e.identity_id IS NOT NULL AND e.identity_id <> ?))
+			)
+			AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+				AND g.archived_at IS NULL)
+			AND ${write.eligibilitySql}`,
+			values: [
+				consumedAt,
+				opts.inviteKind,
+				invite.reviewed_intent_json,
+				invite.reviewed_preview_digest,
+				identityId,
+				identityId,
+				...tuple,
+				...write.eligibilityValues,
+			],
+		},
+		bound: {
+			sql: `consumed_at IS NOT NULL AND revoked_at IS NULL AND invite_kind = ?
+			AND bound_device_id = ? AND bound_public_key = ? AND bound_fingerprint = ?
+			AND recipient_actor_id = ?
+			AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+				AND g.archived_at IS NULL)
+			AND ${write.boundEligibilitySql}`,
+			values: [opts.inviteKind, ...tuple, ...write.boundEligibilityValues],
+		},
+		...prepareRecipientInviteEnrollment(db, write),
+	});
+}
+
+/** The insert and the update of prepareInviteConsumeAndEnroll for a recipient invitation. */
+function prepareRecipientInviteEnrollment(db: D1DatabaseLike, write: RecipientInviteConsume) {
+	const { invite, opts, digest } = write;
+	const boundInviteSql = `(i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
+		AND i.invite_id = ? AND i.group_id = ?
+		AND i.bound_public_key = ? AND i.bound_fingerprint = ?
+		AND i.recipient_actor_id = ?`;
+	const boundInviteValues = [
+		digest,
+		opts.token,
+		opts.deviceId,
+		invite.invite_id,
+		invite.group_id,
+		opts.publicKey,
+		opts.fingerprint,
+		write.identityId,
+	];
+	const { sql: keyIdSql, values: keyIdValues } = storedKeyIdWrite(write.keyId);
+	const insert = db
+		.prepare(`INSERT INTO enrolled_devices(
+			group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled,
+			created_at${keyIdSql.column}
+		) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
+			i.recipient_actor_id, i.recipient_device_display_name, 1, ?${keyIdSql.value}
+		FROM coordinator_invites i
+		JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
+		WHERE ${boundInviteSql} AND changes() = 1
+			AND NOT EXISTS (SELECT 1 FROM enrolled_devices e
+				WHERE e.group_id = i.group_id AND e.device_id = i.bound_device_id)
+			AND ${write.boundEligibilitySql}`)
+		.bind(write.consumedAt, ...keyIdValues, ...boundInviteValues, ...write.boundEligibilityValues);
+	// The key text is pinned, so the key ID written here is the ID of the stored key.
+	const update = db
+		.prepare(`UPDATE enrolled_devices SET
+			identity_id = COALESCE(identity_id, ?),
+			display_name = COALESCE(display_name, ?), enabled = 1${keyIdSql.assignment}
+		WHERE group_id = ? AND device_id = ? AND public_key = ? AND fingerprint = ?
+			AND (identity_id IS NULL OR identity_id = ?) AND changes() = 1
+			AND EXISTS (SELECT 1 FROM coordinator_invites i
+				JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
+				WHERE ${boundInviteSql})
+			AND ${write.boundEligibilitySql}`)
+		.bind(
+			write.identityId,
+			opts.deviceDisplayName ?? null,
+			...keyIdValues,
+			invite.group_id,
+			opts.deviceId,
+			opts.publicKey,
+			opts.fingerprint,
+			write.identityId,
+			...boundInviteValues,
+			...write.boundEligibilityValues,
+		);
+	return { insert, update };
+}
+
+interface ProjectInviteConsume {
+	invite: CoordinatorInvite;
+	opts: CoordinatorConsumeProjectInviteInput;
+	digest: string;
+	consumedAt: string;
+	/** Null on a schema without the key ID column. */
+	keyId: string | null;
+	guard: {
+		eligibilitySql: string;
+		eligibilityValues: unknown[];
+		boundEligibilitySql: string;
+		boundEligibilityValues: unknown[];
+	};
+}
+
+const PROJECT_INVITE_CONSUME_SQL = `token = ?, consumed_at = ?, bound_device_id = ?,
+	bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
+	recipient_display_name = ?, recipient_device_display_name = ?,
+	trust_state = 'pending_inviter_device'`;
+const PROJECT_INVITE_OPEN_SQL = `consumed_at IS NULL
+	AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+		AND g.archived_at IS NULL)
+	AND revoked_at IS NULL AND expires_at > ?`;
+
+function projectInviteConsumeValues(write: ProjectInviteConsume): unknown[] {
+	const { invite, opts, consumedAt } = write;
+	return [
+		`consumed:${invite.invite_id}`,
+		consumedAt,
+		opts.deviceId,
+		opts.publicKey,
+		opts.fingerprint,
+		opts.recipientActorId,
+		opts.recipientDisplayName,
+		opts.deviceDisplayName,
+	];
+}
+
+/** The Project counterpart of prepareRecipientInviteConsume. */
+function prepareProjectInviteConsume(
+	db: D1DatabaseLike,
+	write: ProjectInviteConsume,
+): D1PreparedStatementLike[] {
+	const { opts, digest, consumedAt, guard } = write;
+	return prepareInviteConsumeAndEnroll(db, {
+		deviceId: opts.deviceId,
+		consume: { sql: PROJECT_INVITE_CONSUME_SQL, values: projectInviteConsumeValues(write) },
+		invite: { sql: "(token_digest = ? OR token = ?)", values: [digest, opts.token] },
+		open: {
+			sql: `${PROJECT_INVITE_OPEN_SQL} AND ${guard.eligibilitySql}`,
+			values: [consumedAt, ...guard.eligibilityValues],
+		},
+		bound: {
+			sql: `consumed_at IS NOT NULL AND revoked_at IS NULL
+			AND bound_device_id = ? AND bound_public_key = ? AND bound_fingerprint = ?
+			AND recipient_actor_id = ?
+			AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+				AND g.archived_at IS NULL)
+			AND ${guard.boundEligibilitySql}`,
+			values: [
+				opts.deviceId,
+				opts.publicKey,
+				opts.fingerprint,
+				opts.recipientActorId,
+				...guard.boundEligibilityValues,
+			],
+		},
+		...prepareProjectInviteEnrollment(db, write),
+	});
+}
+
+/**
+ * A retry repairs only its pinned enrollment. Fresh enrollment requires the
+ * consume winner of this batch.
+ */
+function prepareProjectInviteTokenAndEnrollment(
+	db: D1DatabaseLike,
+	write: ProjectInviteConsume,
+): D1PreparedStatementLike[] {
+	if (!write.invite.consumed_at) return prepareProjectInviteConsume(db, write);
+	return [
+		prepareProjectInviteRetryConsume(db, write),
+		prepareBoundProjectInviteIdentityRepair(db, write),
+	];
+}
+
+/**
+ * The token write of a retry. The invitation is already consumed, so it changes no
+ * row; the retry then repairs only its pinned enrollment.
+ */
+function prepareProjectInviteRetryConsume(
+	db: D1DatabaseLike,
+	write: ProjectInviteConsume,
+): D1PreparedStatementLike {
+	return db
+		.prepare(`UPDATE coordinator_invites SET ${PROJECT_INVITE_CONSUME_SQL}
+			WHERE (token_digest = ? OR token = ?) AND ${PROJECT_INVITE_OPEN_SQL}
+			AND ${write.guard.eligibilitySql}`)
+		.bind(
+			...projectInviteConsumeValues(write),
+			write.digest,
+			write.opts.token,
+			write.consumedAt,
+			...write.guard.eligibilityValues,
+		);
+}
+
+/** The insert and the update of prepareInviteConsumeAndEnroll for a Project invitation. */
+function prepareProjectInviteEnrollment(db: D1DatabaseLike, write: ProjectInviteConsume) {
+	const { invite, opts, digest, guard } = write;
+	const { sql: keyIdSql, values: keyIdValues } = storedKeyIdWrite(write.keyId);
+	const insert = db
+		.prepare(`INSERT INTO enrolled_devices(
+			group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled,
+			created_at${keyIdSql.column}
+		) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
+			i.recipient_actor_id, i.recipient_device_display_name, 1, ?${keyIdSql.value}
+			FROM coordinator_invites i
+			JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
+			WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ? AND changes() = 1
+			AND NOT EXISTS (SELECT 1 FROM enrolled_devices e
+				WHERE e.group_id = i.group_id AND e.device_id = i.bound_device_id)
+			AND ${guard.boundEligibilitySql}`)
+		.bind(
+			write.consumedAt,
+			...keyIdValues,
+			digest,
+			opts.token,
+			opts.deviceId,
+			...guard.boundEligibilityValues,
+		);
+	// The key text is pinned, so the key ID written here is the ID of the stored key.
+	const update = db
+		.prepare(`UPDATE enrolled_devices SET
+			identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1${keyIdSql.assignment}
+		WHERE group_id = ? AND device_id = ? AND public_key = ?
+			AND (identity_id IS NULL OR identity_id = ?) AND changes() = 1
+			AND EXISTS (SELECT 1 FROM coordinator_invites i
+				JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
+				WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
+					AND i.group_id = ?)
+			AND ${guard.boundEligibilitySql}`)
+		.bind(
+			opts.recipientActorId,
+			opts.deviceDisplayName,
+			...keyIdValues,
+			invite.group_id,
+			opts.deviceId,
+			opts.publicKey,
+			opts.recipientActorId,
+			digest,
+			opts.token,
+			opts.deviceId,
+			invite.group_id,
+			...guard.boundEligibilityValues,
+		);
+	return { insert, update };
 }
 
 export class D1CoordinatorStore implements CoordinatorStore {
@@ -2324,8 +2680,6 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorRecipientInviteAcceptance> {
 		const _opts = { ...input };
 		const consumedAt = normalizeInviteExpiresAt(_opts.now);
-		const recipientDisplayName = _opts.recipientDisplayName ?? null;
-		const deviceDisplayName = _opts.deviceDisplayName ?? null;
 		validateRecipientOwnerInput(_opts);
 		const digest = await tokenDigest(_opts.token);
 		const initial = structuredClone(await this.getInviteByTokenForInspection(_opts.token));
@@ -2368,82 +2722,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (!initial.consumed_at) {
 			if (!this.db.batch)
 				throw new Error("D1 batch support is required for atomic invite consume.");
-			changed = await runRecipientInviteBatch(
+			const changes = await runRecipientInviteBatch(
 				this.db,
 				[
-					this.db
-						.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
-						bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
-						recipient_display_name = ?, recipient_device_display_name = ?
-						WHERE (token_digest = ? OR token = ?) AND consumed_at IS NULL
-						AND invite_id = ? AND group_id = ?
-						AND revoked_at IS NULL AND expires_at > ? AND invite_kind = ?
-						AND reviewed_intent_json = ? AND reviewed_preview_digest = ?
-						AND ((invite_kind = 'team_member' AND assigned_identity_id = ?)
-							OR (invite_kind = 'add_device' AND target_identity_id = ?))
-						AND NOT EXISTS (
-							SELECT 1 FROM enrolled_devices e
-							WHERE e.group_id = coordinator_invites.group_id AND e.device_id = ?
-								AND (e.public_key <> ? OR e.fingerprint <> ?
-									OR (e.identity_id IS NOT NULL AND e.identity_id <> ?))
-						)
-						AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
-							AND g.archived_at IS NULL)
-						AND ${eligibilitySql}`)
-						.bind(
-							`consumed:${initial.invite_id}`,
-							consumedAt,
-							_opts.deviceId,
-							_opts.publicKey,
-							_opts.fingerprint,
-							authoritativeIdentityId,
-							recipientDisplayName,
-							deviceDisplayName,
-							digest,
-							_opts.token,
-							initial.invite_id,
-							initial.group_id,
-							consumedAt,
-							_opts.inviteKind,
-							initial.reviewed_intent_json,
-							initial.reviewed_preview_digest,
-							authoritativeIdentityId,
-							authoritativeIdentityId,
-							_opts.deviceId,
-							_opts.publicKey,
-							_opts.fingerprint,
-							authoritativeIdentityId,
-							...eligibilityValues,
-						),
-					this.db
-						.prepare(`INSERT INTO enrolled_devices(
-						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-					) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
-						i.recipient_actor_id, i.recipient_device_display_name, 1, ? FROM coordinator_invites i
-					JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
-					WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ?
-						AND i.invite_id = ? AND i.group_id = ? AND changes() = 1
-						AND i.bound_public_key = ? AND i.bound_fingerprint = ?
-						AND i.recipient_actor_id = ?
-						AND ${boundEligibilitySql}
-					ON CONFLICT(group_id, device_id) DO UPDATE SET
-						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-						display_name = COALESCE(enrolled_devices.display_name, excluded.display_name),
-						enabled = 1
-					WHERE enrolled_devices.identity_id IS NULL
-						OR enrolled_devices.identity_id = excluded.identity_id`)
-						.bind(
-							consumedAt,
-							digest,
-							_opts.token,
-							_opts.deviceId,
-							initial.invite_id,
-							initial.group_id,
-							_opts.publicKey,
-							_opts.fingerprint,
-							authoritativeIdentityId,
-							...boundEligibilityValues,
-						),
+					...prepareRecipientInviteConsume(this.db, {
+						invite: initial,
+						opts: _opts,
+						digest,
+						consumedAt,
+						identityId: authoritativeIdentityId,
+						keyId: await this.storedKeyId(_opts.publicKey),
+						eligibilitySql,
+						eligibilityValues,
+						boundEligibilitySql,
+						boundEligibilityValues,
+					}),
 					// Enrollment follows the winning token write. Keep bootstrap writes on
 					// that changes() chain; a loser still needs its full pin during repair.
 					this.db
@@ -2496,6 +2789,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					unpinned: consistency.retainedGuards,
 				},
 			);
+			changed = inviteConsumeWon(changes) ? 1 : 0;
 		}
 		await assertEligible({ requireBinding: false });
 		const currentGroup = await this.getGroup(initial.group_id);
@@ -2529,7 +2823,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			_opts,
 			saved,
 			{ sql: boundEligibilitySql, values: boundEligibilityValues, assertEligible },
-			{ winningChanges: changed, consistency },
+			{ winningChanges: changed, consistency, keyId: await this.storedKeyId(_opts.publicKey) },
 		);
 		await assertEligible({ requireBinding: true });
 		const enrollment = await this.getEnrollment(saved.group_id, _opts.deviceId);
@@ -2590,52 +2884,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const guard = await prepareProjectInviteGuards(this.db, initial, _opts);
 		const grantId = tokenUrlSafe(12);
 		const enrollmentValues = projectInviteEnrollmentValues(initial, _opts);
+		const consume: ProjectInviteConsume = {
+			invite: initial,
+			opts: _opts,
+			digest,
+			consumedAt,
+			keyId: await this.storedKeyId(_opts.publicKey),
+			guard,
+		};
 		const statements = [
-			this.db
-				.prepare(`UPDATE coordinator_invites SET token = ?, consumed_at = ?, bound_device_id = ?,
-					bound_public_key = ?, bound_fingerprint = ?, recipient_actor_id = ?,
-					recipient_display_name = ?, recipient_device_display_name = ?,
-					trust_state = 'pending_inviter_device'
-					WHERE (token_digest = ? OR token = ?) AND consumed_at IS NULL
-					AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
-						AND g.archived_at IS NULL)
-					AND revoked_at IS NULL AND expires_at > ? AND ${guard.eligibilitySql}`)
-				.bind(
-					`consumed:${initial.invite_id}`,
-					consumedAt,
-					_opts.deviceId,
-					_opts.publicKey,
-					_opts.fingerprint,
-					_opts.recipientActorId,
-					_opts.recipientDisplayName,
-					_opts.deviceDisplayName,
-					digest,
-					_opts.token,
-					consumedAt,
-					...guard.eligibilityValues,
-				),
-			this.db
-				.prepare(`INSERT INTO enrolled_devices(
-					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-				) SELECT i.group_id, i.bound_device_id, i.bound_public_key, i.bound_fingerprint,
-					i.recipient_actor_id, i.recipient_device_display_name, 1, ? FROM coordinator_invites i
-					JOIN groups g ON g.group_id = i.group_id AND g.archived_at IS NULL
-					WHERE (i.token_digest = ? OR i.token = ?) AND i.bound_device_id = ? AND changes() = 1
-					AND ${guard.boundEligibilitySql}
-				ON CONFLICT(group_id, device_id) DO UPDATE SET
-					identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-					display_name = excluded.display_name, enabled = 1
-					WHERE (enrolled_devices.identity_id IS NULL
-					OR enrolled_devices.identity_id = excluded.identity_id)
-					AND ${guard.boundEligibilitySql}`)
-				.bind(
-					consumedAt,
-					digest,
-					_opts.token,
-					_opts.deviceId,
-					...guard.boundEligibilityValues,
-					...guard.boundEligibilityValues,
-				),
+			...prepareProjectInviteTokenAndEnrollment(this.db, consume),
 			this.db
 				.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 					trust_state = 'bootstrap_grant_created'
@@ -2683,14 +2941,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					...enrollmentValues,
 				),
 		];
-		const accepted = await runProjectInviteBatch(
-			this.db,
-			statements,
+		const accepted = await runProjectInviteBatch(this.db, statements, {
 			initial,
-			_opts,
 			guard,
 			enrollmentValues,
-		);
+		});
 		// This is a post-commit denial, not a claim that the committed batch was rolled back.
 		await guard.assertEligible({ requireBinding: false });
 		const currentGroup = await this.getGroup(initial.group_id);
