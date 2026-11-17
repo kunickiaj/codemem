@@ -16,15 +16,19 @@
 
 ## Summary
 
-A person using codemem manages four things: their devices, the people they
+The model a person holds is short. There are Teams, and Teams have members.
+A Project is shared with a Team, or with one person. Each member's devices
+receive the Projects shared with that member.
+
+A person manages four things under that model: their devices, the people they
 share with, Teams, and which Projects are shared with whom. Each of the four
 gets one stored model, one home in the Viewer, and one set of actions.
 
-Today the Viewer shows that model while sync enforces an older one. This ADR
-closes the gap in two steps. The first step makes every screen truthful about
-what it can change and moves the actions that exist only under Advanced into
-the screens where people look for them. The second step moves enforcement onto
-the Project-first model and migrates existing installs automatically.
+Today the Viewer shows that model while sync enforces an older one built on
+Spaces. This ADR retires Space as a separate concept. The sharing boundary
+becomes the Project itself, existing installs are migrated automatically, and
+the actions that exist only under Advanced move into the screens where people
+look for them.
 
 ## Context
 
@@ -113,10 +117,27 @@ read at sync time. A background reconciler turns them into Space memberships
 Coordinator connection settings live in Settings. Advanced keeps diagnostics
 and tools for people who operate a self-hosted coordinator.
 
-### 2. Every shared Project has its own Space, and Space is not a user choice
+### 2. The sharing boundary is the Project, and Space is retired as a concept
 
-A shared Project maps to exactly one `managed_project` Space. Recipient edges
-are then enforced for every shared Project through the existing reconciler.
+Space was introduced as a hard wall between kinds of work, such as personal
+and employer Projects, with Teams owning Spaces and devices granted access to
+each Space. Project-first sharing replaced that way of thinking for users
+without replacing it in enforcement. This decision finishes the replacement.
+
+A shared Project has exactly one boundary of its own. Its members are the
+devices of the people and Teams the Project is shared with, and nothing else
+can add or remove a member. No boundary holds more than one Project. The
+mechanism underneath is the existing coordinator membership check with its
+key-bound proof, stored as a `managed_project` scope. It has no name in the
+product and no screen of its own.
+
+There is no wall above the Project inside one install. Sharing a Project with
+the wrong Team is prevented by the recipient review, as in any sharing product.
+People who need strict separation between, for example, employer and personal
+work use separate coordinators or profiles, as ADR 0005 Section 1 describes.
+
+Recipient edges are then enforced for every shared Project through the
+existing reconciler.
 
 - New shares already provision this Space. That path is unchanged.
 - Existing Projects in a `team`, `team_default`, `org`, or `client` Space are
@@ -132,6 +153,9 @@ are then enforced for every shared Project through the existing reconciler.
 - "Space", "Sharing domain", and "scope" leave user-facing copy. Projects shows
   who receives a Project. The control now labelled "Advanced Space assignment"
   is replaced by the recipient controls.
+- A person and a Team stay two choices in the recipient picker. Whether a
+  single person is stored as a Team of one is an implementation choice for the
+  recipient-policy contract and does not change this ADR.
 
 This satisfies ADR 0001 Decision 3 by construction. The cutover stays
 per-Project, and the granted device set equals the set that had access before.
@@ -242,7 +266,9 @@ no new ones are created.
   were shared before Spaces existed.
 - Assigning recipients to such a Project moves its memories, including those
   created on the same person's other devices and those under Project entries
-  with no stable identity.
+  with no stable identity. These memories are held back from sync today, so
+  moving them starts delivering them. The Project asks for one confirmation
+  that states how many memories will start being delivered.
 - Memories created by other people's devices cannot be moved from this device.
   They no longer keep the upgrade notice open. The notice clears once this
   device has no movable memories left.
@@ -274,40 +300,44 @@ test.
 
 ## Sequencing
 
-**First release (0.50): truthful screens.** No change to what sync enforces.
+All ten decisions ship in 0.50. Leaving the older model in charge of
+enforcement for another release would keep the contradictions this ADR
+removes. The order inside the release follows the dependencies:
 
-- Devices: own pairing form, approve discovered devices and join requests,
-  single rename, Remove and Block (Decision 5).
-- Sharing: people management with revoking deactivation (Decision 6), Create
-  Team (Decision 7), one invitation entry and no new enrollment-only codes
-  (Decision 8).
-- Projects: older shared data visible (Decision 9, first bullet).
-- Read-only access controls on devices without the admin secret, and a visible
-  state for Projects whose recipients are not yet enforced (Principle 3).
-- One name for the sharing boundary in copy, pending its removal.
+1. Device removal and blocking (Decision 5), people management with revoking
+   deactivation (Decision 6), Create Team (Decision 7), and one invitation
+   entry (Decision 8). These do not depend on the migration.
+2. Per-Project boundary migration (Decision 2), with read-only access controls
+   on devices without the admin secret (Decision 4) and older shared data in
+   Projects (Decision 9).
+3. Retirement of the default grant and the pairing filter (Decision 3), after
+   the migration has run.
+4. Devices shows the Projects each device receives, including through a Team,
+   from the same derivation the reconciler uses.
+5. Advanced reduced to diagnostics and operator tools (Decision 10).
 
-**Following releases: enforcement.**
+The migration ships through a beta cycle before a stable release. It has
+upgrade tests against databases from each generation and a per-Project
+rollback to the previous enforcement.
 
-- Per-Project Space migration (Decision 2), then retirement of the default
-  Space grant and the pairing filter (Decision 3).
-- Self-withdrawal protocol (Decision 4).
-- Remaining Advanced removals (Decision 10).
+## Deferred, and why
 
-## Open questions
+Each item below needs a new security protocol. None of them leaves an older
+model deciding who receives a Project.
 
-- **First device of a new coordinator.** ADR 0005 open decision A covers
-  first-owner bootstrap. Owner enrollment exists in the CLI. The Viewer has no
-  route for it. Flow 2 on a brand-new coordinator depends on this.
-- **Team rows are stored per device.** Members can see different Team rosters.
-  If Teams are the main sharing unit, the coordinator may need to hold them.
-- **Devices does not show access a device receives through a Team.** It needs
-  a per-device effective-access read model from the existing derivation.
-- **Relay and Space kinds.** Relay carries `managed_project` and `team` Spaces.
-  Decision 2 makes this moot for shared Projects. Until the migration runs,
-  devices that share only a default Space have no relay path.
-- **Automatic reassignment of older shared data.** Whether Decision 9 can move
-  memories without a per-Project confirmation, given that already-delivered
-  copies remain on other devices.
+- **The coordinator half of self-withdrawal.** In 0.50 a device that leaves a
+  Team or stops receiving a Project stops syncing that data at once and
+  records the decision locally. Removing its coordinator membership without
+  the admin secret needs the signed route in Decision 4.
+- **First-owner setup of a new coordinator from the Viewer.** ADR 0005 open
+  decision A covers the bootstrap protocol. Until then the first device of a
+  new coordinator is enrolled with the CLI, and the Viewer covers everything
+  after that, including Create Team.
+- **One Team roster held by the coordinator.** Team rows are stored per device
+  today, so members can see different rosters. The roster on the device that
+  holds the admin secret is the one that is enforced, and Sharing says so on
+  other devices. Because Teams are the main unit of sharing under this ADR,
+  this is the first follow-up.
 
 ## Consequences
 
@@ -326,8 +356,12 @@ test.
   that returns a Project to its previous enforcement.
 - The reversible removal changes the coordinator revocation contract and needs
   a security review.
-- Until the enforcement releases ship, some Projects show a "not yet enforced"
-  state that did not appear before.
+- The release that carries this ADR is large. Other planned reliability work
+  moves to later releases to make room for it.
+- An install loses the ability to wall off a group of Projects from a group of
+  people inside one coordinator. Separate coordinators or profiles replace it.
+- Until the migration has run on an install, devices that share only a group
+  default Space have no relay path, because relay does not carry that kind.
 - Removing Coordinator administration actions from the Viewer leaves operators
   of self-hosted coordinators with the CLI for group and enrollment repair.
 
@@ -343,6 +377,24 @@ flows, and the older models would keep gating sync where no one can see them.
 Rejected. Two ways to decide who receives a Project is the confusion this ADR
 removes. Recipient edges cannot be enforced for a Project that shares a Space
 with other Projects.
+
+### Keep a work and personal wall above Projects inside one install
+
+Rejected. A category on each Project that restricts its recipients would bring
+back a second rule about who can receive what. The model people hold is Teams,
+members, and Projects shared with them. Separate coordinators or profiles
+already provide strict separation.
+
+### Remove the membership mechanism and check recipients directly at sync time
+
+Rejected. The result for users is the same as one boundary per Project. It
+would require rewriting the sync protocol and its key-bound proofs, which is
+the most security-sensitive code in the project.
+
+### Make the screens truthful first and change enforcement in a later release
+
+Rejected. Screens that say a Project's recipients are not yet enforced are
+accurate and still leave the older model in charge.
 
 ### Keep permanent revocation as the only device removal
 
