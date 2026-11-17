@@ -2,6 +2,7 @@ import { expect } from "vitest";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	compareIdentityGroupGrantRevisions,
 	IDENTITY_GROUP_GRANT_INSERT_SQL,
@@ -51,10 +52,15 @@ async function revoke(f: GrantFixture, evidence: CoordinatorAuthControllerReview
 async function reinstate(f: GrantFixture) {
 	const r = f.review;
 	// Direct fixture SQL simulates legacy/manual reinstatement, not an authorized enrollment API.
+	await changeEnrollmentKey(
+		f.exec,
+		{ publicKey: r.publicKey, fingerprint: r.fingerprint },
+		"group_id = ? AND device_id = ?",
+		r.groupId,
+		r.deviceId,
+	);
 	await f.exec(
-		"UPDATE enrolled_devices SET enabled = 1, public_key = ?, fingerprint = ?, identity_id = NULL WHERE group_id = ? AND device_id = ?",
-		r.publicKey,
-		r.fingerprint,
+		"UPDATE enrolled_devices SET enabled = 1, identity_id = NULL WHERE group_id = ? AND device_id = ?",
 		r.groupId,
 		r.deviceId,
 	);
@@ -350,9 +356,10 @@ function registerKeyRaces(test: GrantTest, guarded: Guarded) {
 			const racing = guarded(f, async (query) => {
 				if (called || query !== IDENTITY_GROUP_GRANT_INSERT_SQL) return;
 				called = true;
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-					CANONICAL_PUBLIC_KEY,
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: null },
+					"group_id = ? AND device_id = ?",
 					f.review.groupId,
 					f.review.deviceId,
 				);

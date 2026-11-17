@@ -7,6 +7,10 @@ import type {
 } from "./coordinator-device-revocation-test-harness.js";
 import { ACCEPTED_ALIASES, NODE_ONLY_ALIASES } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	removeDeviceWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type { RecipientWriteHook } from "./coordinator-recipient-revocation-test-harness.js";
 import type { CoordinatorReviewJoinRequestInput } from "./coordinator-store-contract.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
@@ -58,7 +62,8 @@ async function revokeTuple(
 ) {
 	await f.store.enrollDevice(tuple.groupId, tuple);
 	expect(await f.store.createDeviceRevocation(tuple)).toMatchObject({ kind: "revoked" });
-	await f.store.removeDevice(tuple.groupId, tuple.deviceId);
+	// The enrollment existed only to be revoked. A recorded removal would refuse later enrollments.
+	await removeDeviceWithoutTombstone(f.exec, tuple.groupId, tuple.deviceId);
 	if (subject)
 		await f.exec("DELETE FROM coordinator_device_revocations WHERE subject_kind != ?", subject);
 }
@@ -197,10 +202,10 @@ function registerSeedRevocations(test: JoinTest) {
 			// Arrange: clean opaque recipient prevents an accidental receiver denial.
 			const { seed, options } = await pendingJoin(f, "clean-legacy-recipient");
 			await revokeTuple(f, f.input, "ed25519_key");
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-				alias.publicKey,
-				fingerprintPublicKey(alias.publicKey),
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: alias.publicKey, fingerprint: fingerprintPublicKey(alias.publicKey) },
+				"device_id = ?",
 				seed.deviceId,
 			);
 			const before = await joinSnapshot(f);
@@ -253,10 +258,10 @@ async function changeSeed(f: RevocationFixture, seed: JoinSeed, scenario: string
 		case "seed revoked":
 			return f.store.createDeviceRevocation(seed);
 		case "seed rotates":
-			return f.exec(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-				"rotated-clean-key",
-				fingerprintPublicKey("rotated-clean-key"),
+			return changeEnrollmentKey(
+				f.exec,
+				{ publicKey: "rotated-clean-key", fingerprint: fingerprintPublicKey("rotated-clean-key") },
+				"device_id = ?",
 				seed.deviceId,
 			);
 		default:
@@ -547,10 +552,10 @@ async function changeJoinGate(
 	if (scenario === "recipient revoked") return revokeTuple(f);
 	if (scenario === "seed rotates onto revoked key") {
 		await revokeTuple(f, f.input, "ed25519_key");
-		return f.exec(
-			"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-			f.input.publicKey,
-			fingerprintPublicKey(f.input.publicKey),
+		return changeEnrollmentKey(
+			f.exec,
+			{ publicKey: f.input.publicKey, fingerprint: fingerprintPublicKey(f.input.publicKey) },
+			"device_id = ?",
 			seed.deviceId,
 		);
 	}

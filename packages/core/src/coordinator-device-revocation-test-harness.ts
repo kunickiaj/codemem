@@ -7,6 +7,10 @@ import {
 	MALFORMED_KEYS,
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 
 export type RevocationFixture = {
 	store: Store;
@@ -468,9 +472,10 @@ function registerNonceSuccess(test: RevocationTest) {
 		// Arrange
 		await enrollRevocation(f);
 		await f.store.createDeviceRevocation(f.input);
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			"new-fixture-key",
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: "new-fixture-key", fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			f.input.groupId,
 			f.input.deviceId,
 		);
@@ -499,24 +504,48 @@ function registerNonceSuccess(test: RevocationTest) {
 	});
 }
 function registerNonceState(test: RevocationTest) {
-	const changes = [
+	// SQL fixtures contain only this test's disposable rows.
+	const changes: {
+		name: string;
+		status: string;
+		apply: (f: RevocationFixture) => Promise<unknown>;
+	}[] = [
 		{
 			name: "changed key",
-			sql: "UPDATE enrolled_devices SET public_key = 'different-key'",
 			status: "unknown_device",
+			apply: (f) =>
+				changeEnrollmentKey(
+					f.exec,
+					{ publicKey: "different-key", fingerprint: null },
+					"device_id = ?",
+					f.input.deviceId,
+				),
 		},
 		{
 			name: "disabled device",
-			sql: "UPDATE enrolled_devices SET enabled = 0",
 			status: "device_disabled",
+			apply: (f) =>
+				f.exec("UPDATE enrolled_devices SET enabled = 0 WHERE device_id = ?", f.input.deviceId),
 		},
-		{ name: "removed device", sql: "DELETE FROM enrolled_devices", status: "unknown_device" },
+		{
+			name: "removed device",
+			status: "unknown_device",
+			apply: (f) => deleteEnrollmentWithoutTombstone(f.exec, "device_id = ?", f.input.deviceId),
+		},
 		{
 			name: "archived group",
-			sql: "UPDATE groups SET archived_at = '2026-10-06T00:00:00.000Z'",
 			status: "group_archived",
+			apply: (f) =>
+				f.exec(
+					"UPDATE groups SET archived_at = '2026-10-06T00:00:00.000Z' WHERE group_id = ?",
+					f.input.groupId,
+				),
 		},
-		{ name: "removed group", sql: "DELETE FROM groups", status: "group_not_found" },
+		{
+			name: "removed group",
+			status: "group_not_found",
+			apply: (f) => f.exec("DELETE FROM groups WHERE group_id = ?", f.input.groupId),
+		},
 	];
 	for (const change of changes) {
 		test(`rejects ${change.name} at nonce insertion with no consumed nonce`, async ({
@@ -524,11 +553,7 @@ function registerNonceState(test: RevocationTest) {
 		}) => {
 			// Arrange
 			await enrollRevocation(f);
-			// SQL fixtures contain only this test's disposable rows.
-			await f.exec(
-				`${change.sql} WHERE ${change.sql.includes("groups") ? "group_id" : "device_id"} = ?`,
-				change.sql.includes("groups") ? f.input.groupId : f.input.deviceId,
-			);
+			await change.apply(f);
 			// Act
 			const result = await f.store.recordAuthorizedNonce(nonceInput(f));
 			// Assert

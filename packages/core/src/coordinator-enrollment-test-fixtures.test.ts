@@ -8,6 +8,7 @@ import {
 	d1EnrollmentExec,
 	deleteEnrollmentWithoutTombstone,
 	removeDeviceWithoutTombstone,
+	replaceEnrollment,
 	seedEnrollment,
 } from "./coordinator-enrollment-test-fixtures.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -127,12 +128,27 @@ describe.each([
 		expect(stored()).toEqual([
 			{ public_key: "opaque-key", fingerprint: "stated-fingerprint", key_id: "" },
 		]);
+		await changeEnrollmentKey(
+			f.target,
+			{ publicKey: f.key.publicKey, fingerprint: null },
+			"device_id = 'd1'",
+		);
+		expect(stored()).toEqual([
+			{ public_key: f.key.publicKey, fingerprint: "stated-fingerprint", key_id: f.key.keyId },
+		]);
 		expect(
 			f.rows("SELECT 1 FROM enrolled_devices WHERE device_id = 'd2' AND key_id <> ''"),
 		).toEqual([]);
 		f.db.close();
 	});
+});
 
+describe.each([
+	["SQLite", "installed"],
+	["SQLite", "absent"],
+	["D1", "installed"],
+	["D1", "absent"],
+] as const)("%s enrollment seeds with the enrollment triggers %s", (backend, triggers) => {
 	it("seedEnrollment stores the key ID, so the seed passes once a tombstone exists", async () => {
 		// Arrange
 		const f = await setup(backend, triggers);
@@ -164,6 +180,35 @@ describe.each([
 			},
 		]);
 		f.expectRaw(() => rawSeed.run(), /enrollment_key_id_required/u);
+		f.db.close();
+	});
+
+	it("replaceEnrollment puts the seed in place of the enrollment of that group and device", async () => {
+		// Arrange
+		const f = await setup(backend, triggers);
+		const replace = f.db.prepare(
+			`INSERT OR REPLACE INTO enrolled_devices(group_id, device_id, public_key, fingerprint,
+				enabled, created_at, key_id) VALUES ('g1', 'd1', 'opaque raw', 'fp', 1, 'then', '')`,
+		);
+		// Act: once over an existing row, once where the group has none.
+		await replaceEnrollment(f.target, {
+			groupId: "g1",
+			deviceId: "d1",
+			publicKey: f.key.publicKey,
+		});
+		await replaceEnrollment(f.target, { groupId: "g1", deviceId: "d3", publicKey: "opaque d3" });
+		// Assert
+		expect(
+			f.rows(
+				"SELECT device_id, public_key, key_id FROM enrolled_devices WHERE group_id = 'g1' ORDER BY device_id",
+			),
+		).toEqual([
+			{ device_id: "d1", public_key: f.key.publicKey, key_id: f.key.keyId },
+			{ device_id: "d2", public_key: "opaque d2", key_id: "" },
+			{ device_id: "d3", public_key: "opaque d3", key_id: "" },
+		]);
+		expect(f.rows("SELECT 1 FROM coordinator_device_removals")).toEqual([]);
+		f.expectRaw(() => replace.run(), /enrollment_collision/u);
 		f.db.close();
 	});
 

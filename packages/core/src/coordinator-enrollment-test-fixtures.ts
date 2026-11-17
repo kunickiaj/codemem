@@ -223,12 +223,15 @@ export function enrollmentTestKeyId(publicKey: string): string {
  * UPDATE sets `public_key`, `fingerprint` and `key_id` together. The UPDATE
  * before it moves `key_id` off its value, because the stale-key trigger cannot
  * tell a restated key ID from one that was left alone. No trigger is dropped.
- * The fingerprint defaults to that of the new key text. `where` is the
- * condition after WHERE and must not read `key_id`.
+ * The fingerprint defaults to that of the new key text. A null fingerprint keeps
+ * the stored one, for a test that must change the key text and nothing else:
+ * one that pins the key against drift apart from the fingerprint, or whose
+ * fixture fingerprint is evidence on its own. `where` is the condition after
+ * WHERE and must not read `key_id`.
  */
 export function changeEnrollmentKey<T extends Target>(
 	target: T,
-	key: { publicKey: string; fingerprint?: string },
+	key: { publicKey: string; fingerprint?: string | null },
 	where = "",
 	...values: unknown[]
 ): Result<T> {
@@ -240,10 +243,11 @@ export function changeEnrollmentKey<T extends Target>(
 				values,
 			},
 			{
-				sql: `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?, key_id = ?${whereSql(where)}`,
+				sql: `UPDATE enrolled_devices SET public_key = ?, fingerprint = COALESCE(?, fingerprint),
+					key_id = ?${whereSql(where)}`,
 				values: [
 					key.publicKey,
-					key.fingerprint ?? fingerprintPublicKey(key.publicKey),
+					key.fingerprint === undefined ? fingerprintPublicKey(key.publicKey) : key.fingerprint,
 					enrollmentTestKeyId(key.publicKey),
 					...values,
 				],
@@ -265,31 +269,48 @@ export interface EnrollmentSeed {
 	createdAt?: string;
 }
 
+function seedStatement(seed: EnrollmentSeed): EnrollmentTestStatement {
+	return {
+		sql: `INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint,
+			identity_id, display_name, enabled, created_at, key_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		values: [
+			seed.groupId,
+			seed.deviceId,
+			seed.publicKey,
+			seed.fingerprint ?? fingerprintPublicKey(seed.publicKey),
+			seed.identityId ?? null,
+			seed.displayName ?? null,
+			seed.enabled === false ? 0 : 1,
+			seed.createdAt ?? "2026-01-01T00:00:00.000Z",
+			enrollmentTestKeyId(seed.publicKey),
+		],
+	};
+}
+
 /**
  * A raw enrollment seed with the key ID a writer would store. An enrollment
  * without a key ID is refused once any tombstone exists, so a seed that may run
  * after a removal goes through here.
  */
 export function seedEnrollment<T extends Target>(target: T, seed: EnrollmentSeed): Result<T> {
+	return runPlan(target, { triggers: [], writes: [seedStatement(seed)] });
+}
+
+/**
+ * What a raw `INSERT OR REPLACE` seed did: the enrollment of that group and
+ * device, if any, gives way to the seed. The collision triggers refuse the
+ * REPLACE form, so this deletes without a tombstone and then inserts.
+ */
+export function replaceEnrollment<T extends Target>(target: T, seed: EnrollmentSeed): Result<T> {
 	return runPlan(target, {
-		triggers: [],
+		triggers: [ENROLLMENT_DELETE_TRIGGER],
 		writes: [
 			{
-				sql: `INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint,
-					identity_id, display_name, enabled, created_at, key_id)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				values: [
-					seed.groupId,
-					seed.deviceId,
-					seed.publicKey,
-					seed.fingerprint ?? fingerprintPublicKey(seed.publicKey),
-					seed.identityId ?? null,
-					seed.displayName ?? null,
-					seed.enabled === false ? 0 : 1,
-					seed.createdAt ?? "2026-01-01T00:00:00.000Z",
-					enrollmentTestKeyId(seed.publicKey),
-				],
+				sql: "DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
+				values: [seed.groupId, seed.deviceId],
 			},
+			seedStatement(seed),
 		],
 	});
 }

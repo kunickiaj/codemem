@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { guardedGrantD1 } from "./coordinator-identity-grant-revocation-test-harness.js";
 import type {
 	contractHarness,
@@ -195,9 +196,10 @@ function registerDenials(test: Test) {
 				await revoke(f, who, mode === "opaque" ? "opaque-bootstrap-key" : UNRELATED_PUBLIC_KEY);
 				if (mode === "removed") await f.store.removeDevice(f.review.groupId, participant(f, who));
 				if (mode === "replaced key")
-					await f.exec(
-						"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-						CANONICAL_PUBLIC_KEY,
+					await changeEnrollmentKey(
+						f.exec,
+						{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: null },
+						"group_id = ? AND device_id = ?",
 						f.review.groupId,
 						participant(f, who),
 					);
@@ -223,9 +225,15 @@ function registerDenials(test: Test) {
 				// Fixture SQL represents legacy rows, bypassing the already-tested enrollment admission guard.
 				await enroll(f, "seed");
 				await enroll(f, "worker");
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey, fingerprint: null },
+					"group_id = ? AND device_id = ?",
+					f.review.groupId,
+					participant(f, who),
+				);
 				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ?, enabled = ? WHERE group_id = ? AND device_id = ?",
-					publicKey,
+					"UPDATE enrolled_devices SET enabled = ? WHERE group_id = ? AND device_id = ?",
 					mode === "disabled" ? 0 : 1,
 					f.review.groupId,
 					participant(f, who),
@@ -311,9 +319,10 @@ function registerRevocationRaces(test: Test, guarded: Guarded) {
 async function changeTuple(f: GrantFixture, who: Participant, change: string) {
 	if (change === "removal") return f.store.removeDevice(f.review.groupId, participant(f, who));
 	if (change === "appearance") return enroll(f, who, CANONICAL_PUBLIC_KEY);
-	await f.exec(
-		"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-		CANONICAL_PUBLIC_KEY,
+	await changeEnrollmentKey(
+		f.exec,
+		{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: null },
+		"group_id = ? AND device_id = ?",
 		f.review.groupId,
 		participant(f, who),
 	);

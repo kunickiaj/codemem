@@ -5,6 +5,7 @@ import {
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	contractHarness,
 	GrantFixture,
@@ -48,9 +49,10 @@ async function revoke(f: GrantFixture, options: { idOnly?: boolean; alias?: bool
 			fingerprint: f.review.fingerprint,
 		});
 	if (options.idOnly)
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			publicKey,
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey, fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			f.review.groupId,
 			deviceId,
 		);
@@ -63,9 +65,10 @@ async function revoke(f: GrantFixture, options: { idOnly?: boolean; alias?: bool
 		}),
 	).toMatchObject({ kind: "revoked" });
 	if (options.idOnly) {
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			CANONICAL_PUBLIC_KEY,
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			f.review.groupId,
 			deviceId,
 		);
@@ -111,8 +114,10 @@ function registerCompatibility(test: Test) {
 }
 async function compatibilityState(f: GrantFixture, mode: string) {
 	if (mode === "opaque")
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = 'opaque-legacy-key' WHERE group_id = ?",
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: "opaque-legacy-key", fingerprint: null },
+			"group_id = ?",
 			f.review.groupId,
 		);
 	if (mode === "disabled")
@@ -173,9 +178,10 @@ function registerAliases(test: Test) {
 			// Arrange: fingerprint and textual metadata are not key identity.
 			await seedPeers(f);
 			await revoke(f, { alias: true });
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = 'different-metadata' WHERE group_id = ? AND device_id = ?",
-				alias.publicKey,
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: alias.publicKey, fingerprint: "different-metadata" },
+				"group_id = ? AND device_id = ?",
 				f.review.groupId,
 				peerId(f, "target"),
 			);
@@ -312,16 +318,26 @@ async function mutate(f: GrantFixture, mode: (typeof mutations)[number]) {
 		return;
 	}
 	if (mode === "rotate then revoke old key") {
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			UNRELATED_PUBLIC_KEY,
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			f.review.groupId,
 			peerId(f, "target"),
 		);
 		return revoke(f, { alias: true });
 	}
+	if (mode === "key") {
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+			"group_id = ? AND device_id = ?",
+			f.review.groupId,
+			peerId(f, "target"),
+		);
+		return;
+	}
 	const fields = {
-		key: ["public_key", UNRELATED_PUBLIC_KEY],
 		fingerprint: ["fingerprint", "changed"],
 		"identity from null": ["identity_id", "changed"],
 		"identity to null": ["identity_id", null],

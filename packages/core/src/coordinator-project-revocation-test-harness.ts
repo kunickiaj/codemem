@@ -6,6 +6,11 @@ import type {
 } from "./coordinator-device-revocation-test-harness.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
 import {
+	changeEnrollmentKey,
+	removeDeviceWithoutTombstone,
+	replaceEnrollment,
+} from "./coordinator-enrollment-test-fixtures.js";
+import {
 	type RecipientWriteHook,
 	recipientGuardedD1,
 	recipientSnapshot,
@@ -96,7 +101,8 @@ export async function revokeProjectReceiver(
 	const existing = await f.store.getEnrollment(tuple.groupId, tuple.deviceId, true);
 	if (!existing) await f.store.enrollDevice(tuple.groupId, tuple);
 	expect(await f.store.createDeviceRevocation(tuple)).toMatchObject({ kind: "revoked" });
-	if (!existing) await f.store.removeDevice(tuple.groupId, tuple.deviceId);
+	// The enrollment existed only to be revoked. A recorded removal would refuse later enrollments.
+	if (!existing) await removeDeviceWithoutTombstone(f.exec, tuple.groupId, tuple.deviceId);
 }
 
 type Stage = "first" | "retry" | "repair" | "recovery";
@@ -292,10 +298,14 @@ function registerInviterDenials(test: ProjectTest) {
 				publicKey: f.input.publicKey,
 				fingerprint: fingerprintPublicKey(f.input.publicKey),
 			});
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: `${f.input.publicKey} current-seed-comment` },
+				"device_id = ?",
+				setup.seed.deviceId,
+			);
 			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ?, enabled = 0 WHERE device_id = ?",
-				`${f.input.publicKey} current-seed-comment`,
-				fingerprintPublicKey(`${f.input.publicKey} current-seed-comment`),
+				"UPDATE enrolled_devices SET enabled = 0 WHERE device_id = ?",
 				setup.seed.deviceId,
 			);
 			const before = await recipientSnapshot(f);
@@ -349,10 +359,10 @@ function registerPinnedInviterGate(test: ProjectTest, guarded: Guarded) {
 					if (state === "removed") await f.store.removeDevice(seed.groupId, seed.deviceId);
 					else {
 						const key = "opaque-clean-rotated-seed";
-						await f.exec(
-							"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-							key,
-							fingerprintPublicKey(key),
+						await changeEnrollmentKey(
+							f.exec,
+							{ publicKey: key, fingerprint: fingerprintPublicKey(key) },
+							"device_id = ?",
 							seed.deviceId,
 						);
 					}
@@ -407,7 +417,9 @@ function registerFirstGate(test: ProjectTest, guarded: Guarded) {
 				input.publicKey = "opaque-clean-receiver";
 				input.fingerprint = fingerprintPublicKey(input.publicKey);
 			}
-			if (subject.includes("appears")) await f.store.removeDevice(seed.groupId, seed.deviceId);
+			// The first gate enrolls the seed again, which a recorded removal would refuse.
+			if (subject.includes("appears"))
+				await removeDeviceWithoutTombstone(f.exec, seed.groupId, seed.deviceId);
 			let called = false;
 			let atGate: unknown[][] = [];
 			const racing = guarded(f, async (writes, phase) => {
@@ -457,15 +469,13 @@ async function changeFirstGate(
 	}
 	if (!subject.includes("rotation") && !subject.includes("appears")) return;
 	const key = subject.startsWith("clean") ? "opaque-clean-rotated-seed" : f.input.publicKey;
-	await f.exec(
-		"INSERT OR REPLACE INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at) VALUES (?,?,?,?,?,1,?)",
-		seed.groupId,
-		seed.deviceId,
-		key,
-		fingerprintPublicKey(key),
-		seed.identityId,
-		input.now,
-	);
+	await replaceEnrollment(f.exec, {
+		groupId: seed.groupId,
+		deviceId: seed.deviceId,
+		publicKey: key,
+		identityId: seed.identityId,
+		createdAt: input.now,
+	});
 }
 
 function registerStateRaces(test: ProjectTest, guarded: Guarded) {

@@ -12,6 +12,7 @@ import {
 	revocationHarness,
 	revocationInput,
 } from "./coordinator-device-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 function restoreTombstones(db: ReturnType<typeof setupStore>["db"], rows: unknown[]) {
@@ -143,7 +144,7 @@ describe("D1 nonce write races", () => {
 				const mutations = {
 					revoked: () => restoreTombstones(f.db, tombstones),
 					"changed key": () =>
-						f.db.prepare("UPDATE enrolled_devices SET public_key = 'new-key'").run(),
+						changeEnrollmentKey(f.db, { publicKey: "new-key", fingerprint: null }),
 					disabled: () => f.db.prepare("UPDATE enrolled_devices SET enabled = 0").run(),
 					archived: () => f.db.prepare("UPDATE groups SET archived_at = '2026-10-06'").run(),
 				};
