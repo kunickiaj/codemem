@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
+import { saveSyncChannelCompletedBoundary } from "../../../core/src/sync-channel-progress.js";
 import {
 	diagnosticDatabaseSnapshot,
 	diagnosticKeySnapshot,
@@ -457,48 +458,6 @@ describe("formatSyncAttempt", () => {
 		expect(peers?.helpInformation()).toContain("remove");
 	});
 
-	it("removes a peer by exact name", async () => {
-		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-test-"));
-		const dbPath = join(tmpDbDir, "mem.sqlite");
-		const rawDb = connect(dbPath);
-		initTestSchema(rawDb);
-		rawDb.close();
-		const store = new MemoryStore(dbPath);
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const prevExitCode = process.exitCode;
-		process.exitCode = undefined;
-		try {
-			store.db
-				.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
-				.run("peer-1", "work", new Date().toISOString());
-			store.db
-				.prepare(
-					"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
-				)
-				.run("peer-1", "cursor-1", "cursor-1", new Date().toISOString());
-			const peers = syncCommand.commands.find((command) => command.name() === "peers");
-			const remove = peers?.commands.find((command) => command.name() === "remove");
-			await remove?.parseAsync(["work", "--db-path", dbPath, "--json"], { from: "user" });
-			expect(logSpy).toHaveBeenCalledWith(
-				JSON.stringify({ ok: true, peer_device_id: "peer-1", name: "work" }, null, 2),
-			);
-			const row = store.db
-				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
-				.get("peer-1");
-			const cursor = store.db
-				.prepare("SELECT peer_device_id FROM replication_cursors WHERE peer_device_id = ?")
-				.get("peer-1");
-			expect(row).toBeUndefined();
-			expect(cursor).toBeUndefined();
-			expect(process.exitCode).toBeUndefined();
-		} finally {
-			logSpy.mockRestore();
-			store.close();
-			rmSync(tmpDbDir, { recursive: true, force: true });
-			process.exitCode = prevExitCode;
-		}
-	});
-
 	it("signs bootstrap status and snapshot requests for the selected peer", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-bootstrap-auth-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
@@ -788,4 +747,164 @@ describe("sync config mutation errors", () => {
 			}
 		});
 	}
+});
+
+/** A paired, bound device with sync progress in both cursor tables. */
+function seedRemovablePeer(dbPath: string) {
+	const rawDb = connect(dbPath);
+	initTestSchema(rawDb);
+	rawDb.close();
+	const store = new MemoryStore(dbPath);
+	const now = new Date().toISOString();
+	store.db
+		.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES (?, ?, ?)")
+		.run("peer-1", "work", now);
+	store.db
+		.prepare(
+			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		)
+		.run("peer-1", "cursor-1", "cursor-1", now);
+	store.db
+		.prepare(
+			"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		)
+		.run("peer-1", "scope-a", "cursor-2", now);
+	store.db
+		.prepare(
+			`INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance,
+			 revision, migration_state, idempotency_key, created_at, updated_at)
+			 VALUES ('peer-1', 'identity-a', 'Work', 'active', 'test', '1', 'user_managed', 'binding:peer-1', ?, ?)`,
+		)
+		.run(now, now);
+	saveSyncChannelCompletedBoundary(store.db, {
+		peerDeviceId: "peer-1",
+		scopeId: "scope-a",
+		boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
+	});
+	return store;
+}
+
+function removedPeerState(store: MemoryStore) {
+	const count = (table: string) =>
+		store.db.prepare(`SELECT COUNT(*) FROM ${table} WHERE peer_device_id = 'peer-1'`).pluck().get();
+	return {
+		pairings: count("sync_peers"),
+		cursors: count("replication_cursors"),
+		cursorsV2: count("replication_cursors_v2"),
+		channelProgress: count("sync_channel_progress"),
+		binding: store.db
+			.prepare("SELECT status FROM identity_devices WHERE device_id = 'peer-1'")
+			.pluck()
+			.get(),
+	};
+}
+
+async function runPeersRemove(args: string[]) {
+	const peers = syncCommand.commands.find((command) => command.name() === "peers");
+	const remove = peers?.commands.find((command) => command.name() === "remove");
+	await remove?.parseAsync(args, { from: "user" });
+}
+
+const REMOVE_NOTICE =
+	"Other devices still sync with work until they remove it too. If the coordinator still lists work, this device pairs with it again at the next refresh.";
+
+describe("sync peers remove", () => {
+	it("K1: removes a peer by exact name from both cursor tables, ends its binding, and returns the counts as JSON", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const store = seedRemovablePeer(dbPath);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await runPeersRemove(["work", "--db-path", dbPath, "--json"]);
+
+			expect(logSpy).toHaveBeenCalledWith(
+				JSON.stringify(
+					{
+						ok: true,
+						peer_device_id: "peer-1",
+						name: "work",
+						removed: {
+							sync_peers: 1,
+							replication_cursors: 1,
+							replication_cursors_v2: 1,
+							sync_channel_progress: 1,
+							identity_devices: 1,
+						},
+						notice: REMOVE_NOTICE,
+					},
+					null,
+					2,
+				),
+			);
+			expect(removedPeerState(store)).toEqual({
+				pairings: 0,
+				cursors: 0,
+				cursorsV2: 0,
+				channelProgress: 0,
+				binding: "removed",
+			});
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+			process.exitCode = prevExitCode;
+		}
+	});
+
+	it("K1: prints the counts and the notice that other devices still sync with the removed peer", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-notice-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const store = seedRemovablePeer(dbPath);
+		const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		try {
+			await runPeersRemove(["peer-1", "--db-path", dbPath]);
+
+			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(rendered).toContain(REMOVE_NOTICE);
+			expect(rendered).toContain("pairing: 1");
+			expect(rendered).toContain("sync progress rows: 3");
+			expect(rendered).toContain("Identity bindings ended: 1");
+			expect(removedPeerState(store).pairings).toBe(0);
+		} finally {
+			writeSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
+	});
+	it("reports a failed removal as JSON, exits nonzero, and changes nothing", async () => {
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-failure-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const store = seedRemovablePeer(dbPath);
+		store.db.exec(`CREATE TRIGGER fail_peer_delete BEFORE DELETE ON sync_peers
+			BEGIN SELECT RAISE(ABORT, 'peer delete failed'); END`);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const prevExitCode = process.exitCode;
+		process.exitCode = undefined;
+		try {
+			await runPeersRemove(["work", "--db-path", dbPath, "--json"]);
+
+			expect(logSpy).toHaveBeenCalledWith(
+				JSON.stringify({
+					error: "peer_remove_failed",
+					message: "Could not remove peer work. Nothing was changed.",
+				}),
+			);
+			expect(process.exitCode).toBe(1);
+			expect(removedPeerState(store)).toEqual({
+				pairings: 1,
+				cursors: 1,
+				cursorsV2: 1,
+				channelProgress: 1,
+				binding: "active",
+			});
+		} finally {
+			logSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+			process.exitCode = prevExitCode;
+		}
+	});
 });

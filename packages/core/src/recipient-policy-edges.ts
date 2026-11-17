@@ -102,7 +102,8 @@ const CONTROL_CHARACTER = /\p{Cc}/u;
 const MAX_CHANGES = 500;
 const MAX_PROJECTS = 500;
 const MAX_RECIPIENTS = 200;
-const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
+// `removed` is a binding that device removal ended. It is known and grants nothing.
+const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked", "removed"]);
 
 function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;

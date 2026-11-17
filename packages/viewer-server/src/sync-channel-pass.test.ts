@@ -86,6 +86,12 @@ function unrelatedProgress(f: Fixture) {
 		.all(f.remote.localDeviceId, SCOPE);
 }
 function seedUnrelatedProgress(f: Fixture) {
+	// Progress is saved only for a paired peer.
+	f.client.db
+		.prepare(
+			"INSERT OR IGNORE INTO sync_peers(peer_device_id, created_at) VALUES ('unrelated-peer', ?)",
+		)
+		.run("2026-01-01T00:00:00Z");
 	for (const [peerDeviceId, scopeId] of [
 		["unrelated-peer", SCOPE],
 		[f.remote.localDeviceId, "another-scope"],

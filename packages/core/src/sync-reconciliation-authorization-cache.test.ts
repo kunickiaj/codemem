@@ -8,7 +8,7 @@ import {
 	reconcileStalePeerReceivedRows,
 	setReplicationCursor,
 } from "./sync-replication.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { initTestSchema, insertTestPeer, insertTestSession } from "./test-utils.js";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const LOCAL = "device-local";
@@ -25,6 +25,7 @@ function createFixture() {
 		db = new Database(":memory:");
 		initTestSchema(db);
 		sessionId = insertTestSession(db);
+		insertTestPeer(db, PEER);
 		nextKey = 0;
 	});
 

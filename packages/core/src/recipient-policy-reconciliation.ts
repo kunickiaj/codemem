@@ -258,7 +258,8 @@ export interface RecipientPolicyDenyOverlayRecord {
 	updatedAt: string;
 }
 
-const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked"]);
+// `removed` is a binding that device removal ended. It is known and grants nothing.
+const KNOWN_DEVICE_STATUSES = new Set(["active", "revoked", "removed"]);
 const DEFAULT_COMPLETED_STEP_RETENTION_PER_KIND = 256;
 const MAX_PENDING_REVOCATION_REFRESH_STEPS = 64;
 const MAX_RECONCILIATION_STEP_KEY_UTF16_UNITS = 1_024;

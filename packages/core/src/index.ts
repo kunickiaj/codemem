@@ -930,6 +930,12 @@ export {
 	buildMemoryPackWithTraceAsync,
 	estimateTokens,
 } from "./pack.js";
+export {
+	type PairingRemoval,
+	type PairingRemovalCounts,
+	type PairingRemovalInput,
+	removePairingState,
+} from "./pairing-removal.js";
 export type { PiFlushSignal, PiHookAdapterEvent, PiHookRawEventEnvelope } from "./pi-hooks.js";
 export {
 	buildIngestPayloadFromPiEvent,

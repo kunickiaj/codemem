@@ -13,6 +13,20 @@ export function initTestSchema(db: Database): void {
 	bootstrapSchema(db);
 }
 
+/** Insert a pairing. Sync progress is written only for a peer that has one. */
+export function insertTestPeer(db: Database, peerDeviceId: string): void {
+	db.prepare("INSERT OR IGNORE INTO sync_peers(peer_device_id, created_at) VALUES (?, ?)").run(
+		peerDeviceId,
+		new Date().toISOString(),
+	);
+}
+
+/** The full test schema plus a pairing for each peer the test writes sync progress for. */
+export function initTestSchemaWithPeers(db: Database, peerDeviceIds: string[]): void {
+	initTestSchema(db);
+	for (const peerDeviceId of peerDeviceIds) insertTestPeer(db, peerDeviceId);
+}
+
 /**
  * Insert a minimal test session and return its ID.
  */

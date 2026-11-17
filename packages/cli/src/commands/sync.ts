@@ -24,9 +24,11 @@ import {
 	MemoryStore,
 	mdnsEnabled,
 	mutateCodememConfigFile,
+	type PairingRemovalCounts,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
+	removePairingState,
 	requestJson,
 	resolveDbPath,
 	runSyncPass,
@@ -1041,6 +1043,48 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 	}
 });
 
+function reportPeerRemoved(
+	match: { peer_device_id: string; name: string | null },
+	removed: PairingRemovalCounts,
+	options: { json: boolean },
+): void {
+	const label = match.name || match.peer_device_id;
+	const notice = [
+		`Other devices still sync with ${label} until they remove it too.`,
+		`If the coordinator still lists ${label}, this device pairs with it again at the next refresh.`,
+	].join(" ");
+	if (options.json) {
+		const payload = {
+			ok: true,
+			peer_device_id: match.peer_device_id,
+			name: match.name,
+			removed: {
+				sync_peers: removed.syncPeers,
+				replication_cursors: removed.replicationCursors,
+				replication_cursors_v2: removed.replicationCursorsV2,
+				sync_channel_progress: removed.syncChannelProgress,
+				identity_devices: removed.identityDevices,
+			},
+			notice,
+		};
+		console.log(JSON.stringify(payload, null, 2));
+		return;
+	}
+	p.intro("codemem sync peers remove");
+	p.log.success(`Removed peer ${label}`);
+	const progressRows =
+		removed.replicationCursors + removed.replicationCursorsV2 + removed.syncChannelProgress;
+	p.log.message(
+		[
+			`  pairing: ${removed.syncPeers}`,
+			`  sync progress rows: ${progressRows}`,
+			`  Identity bindings ended: ${removed.identityDevices}`,
+		].join("\n"),
+	);
+	p.log.warn(notice);
+	p.outro(match.peer_device_id);
+}
+
 const peersRemoveCmd = new Command("remove")
 	.configureHelp(helpStyle)
 	.description("Remove a sync peer by device id or exact name")
@@ -1070,24 +1114,25 @@ peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; js
 			process.exitCode = 1;
 			return;
 		}
-		d.delete(schema.replicationCursors)
-			.where(eq(schema.replicationCursors.peer_device_id, match.peer_device_id))
-			.run();
-		d.delete(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, match.peer_device_id))
-			.run();
-		const payload = {
-			ok: true,
-			peer_device_id: match.peer_device_id,
-			name: match.name,
-		};
-		if (opts.json) {
-			console.log(JSON.stringify(payload, null, 2));
+		const label = match.name || match.peer_device_id;
+		let removed: PairingRemovalCounts;
+		try {
+			removed = removePairingState(store.db, {
+				localDeviceId: store.deviceId,
+				reason: "local",
+				deviceIds: [match.peer_device_id],
+			});
+		} catch {
+			const message = `Could not remove peer ${label}. Nothing was changed.`;
+			if (opts.json) {
+				emitJsonError("peer_remove_failed", message);
+				return;
+			}
+			p.log.error(message);
+			process.exitCode = 1;
 			return;
 		}
-		p.intro("codemem sync peers remove");
-		p.log.success(`Removed peer ${match.name || match.peer_device_id}`);
-		p.outro(match.peer_device_id);
+		reportPeerRemoved(match, removed, { json: opts.json === true });
 	} finally {
 		store.close();
 	}

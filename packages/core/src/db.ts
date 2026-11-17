@@ -37,6 +37,7 @@ import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
+import { deleteOrphanReplicationCursorsOnce } from "./replication-cursor-orphan-cleanup.js";
 import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import {
 	canAutoBootstrapSchema,
@@ -1107,6 +1108,22 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	if (!compatAlreadyApplied) {
 		promoteLegacySchemaVersion(db);
 		markSchemaCompatApplied(db);
+	}
+	deleteLeftoverReplicationCursors(db);
+}
+
+function deleteLeftoverReplicationCursors(db: DatabaseType): void {
+	try {
+		deleteOrphanReplicationCursorsOnce(db);
+	} catch (error) {
+		// The transaction rolled back and recorded nothing, so the next open retries.
+		// Only the SQLite result code is printed: no path, statement, or row data.
+		const code = (error as { code?: unknown } | null)?.code;
+		console.warn(
+			`[codemem] could not delete sync progress left by removed pairings (${
+				typeof code === "string" ? code : "unknown error"
+			}); the next start retries`,
+		);
 	}
 }
 

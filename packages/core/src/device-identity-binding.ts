@@ -4,6 +4,7 @@ import {
 	type DeviceIdentityInventoryItemV1,
 	listDeviceIdentityInventory,
 } from "./device-identity-inventory.js";
+import { invalidateIncludedTeamDecisions } from "./identity-device-assignment.js";
 import {
 	isActiveUnmergedActor,
 	isActiveUnmergedLocalActor,
@@ -186,6 +187,47 @@ function reviewedItemEvidence(item: DeviceIdentityInventoryItemV1): Record<strin
 	};
 }
 
+/**
+ * The bindings that device removal ended, among the devices under review. The
+ * inventory leaves an ended binding out, so a device that was bound, removed,
+ * and paired again looks exactly as it did before its first bind. Without this
+ * evidence the new confirmation would digest to the first commit and be read as
+ * a stale retry of it. The end time makes a confirmation after each removal a
+ * commit of its own.
+ */
+function endedBindingEvidence(
+	db: Database,
+	selectedItems: DeviceIdentityInventoryItemV1[],
+): Array<{ deviceId: string; status: string; endedAt: string }> {
+	const ended = db.prepare(
+		"SELECT status, updated_at FROM identity_devices WHERE device_id = ? AND status = 'removed'",
+	);
+	const deviceIds = [...new Set(selectedItems.flatMap((item) => item.evidenceDeviceIds))];
+	return deviceIds.toSorted().flatMap((deviceId) => {
+		const row = ended.get(deviceId) as { status: string; updated_at: string } | undefined;
+		return row ? [{ deviceId, status: row.status, endedAt: row.updated_at }] : [];
+	});
+}
+
+function reviewedDigest(
+	db: Database,
+	reviewed: {
+		selectedItems: DeviceIdentityInventoryItemV1[];
+		inventory: ReturnType<typeof listDeviceIdentityInventory>;
+		request: DeviceIdentityBindingPreviewRequestV1;
+	},
+): string {
+	const endedBindings = endedBindingEvidence(db, reviewed.selectedItems);
+	return digest("device-identity-binding-preview-v1", {
+		selectedItems: reviewed.selectedItems.map(reviewedItemEvidence),
+		coordinatorAvailability: reviewed.inventory.coordinatorEvidence.availability,
+		inventoryTruncated: reviewed.inventory.truncated,
+		request: JSON.parse(normalizedRequest(reviewed.request)),
+		// Present only when a binding ended, so every other digest is what it was before.
+		...(endedBindings.length > 0 ? { endedBindings } : {}),
+	});
+}
+
 export function previewDeviceIdentityBindings(
 	db: Database,
 	inventoryInput: DeviceIdentityInventoryInput,
@@ -242,12 +284,7 @@ export function previewDeviceIdentityBindings(
 		if ("status" in planned) return planned;
 		outcomes.push(planned);
 	}
-	const reviewedInventoryDigest = digest("device-identity-binding-preview-v1", {
-		selectedItems: selectedItems.map(reviewedItemEvidence),
-		coordinatorAvailability: inventory.coordinatorEvidence.availability,
-		inventoryTruncated: inventory.truncated,
-		request: JSON.parse(normalizedRequest(request)),
-	});
+	const reviewedInventoryDigest = reviewedDigest(db, { selectedItems, inventory, request });
 	return {
 		version: DEVICE_IDENTITY_BINDING_VERSION,
 		status: "ready",
@@ -344,6 +381,107 @@ function exactRetry(
 	};
 }
 
+interface BindingRowValues {
+	revision: string;
+	commitDigest: string;
+	idempotencyKey: string;
+	now: string;
+}
+
+export interface EndedBindingReactivation {
+	deviceId: string;
+	targetIdentityId: string;
+	displayName: string;
+	provenance: string;
+	revision: string;
+	migrationState: string;
+	sourceFingerprint: string | null;
+	idempotencyKey: string;
+	now: string;
+}
+
+/**
+ * The one write that makes a binding that device removal ended active again.
+ * Its callers are an explicit bind in Devices, a coordinator enrollment the
+ * current snapshot lists, and an invitation the device just accepted. The row
+ * is reused, so per-Team decisions for the same Identity still apply. A
+ * different Identity raises `assignment_version` through the table's trigger
+ * and returns reviewed-Team inclusions to unresolved, as any reassignment does.
+ * Returns null when the device has no ended binding.
+ */
+export function reactivateEndedBindingInTransaction(
+	db: Database,
+	input: EndedBindingReactivation,
+): { assignmentVersion: number; previousIdentityId: string } | null {
+	if (!db.inTransaction) throw new Error("binding_reactivation_transaction_required");
+	const ended = currentBinding(db, input.deviceId);
+	if (ended?.status !== "removed") return null;
+	db.prepare(
+		`UPDATE identity_devices SET identity_id = ?, display_name = ?, status = 'active',
+		 provenance = ?, revision = ?, migration_state = ?, source_fingerprint = ?,
+		 idempotency_key = ?, updated_at = ?
+		 WHERE device_id = ? AND status = 'removed'`,
+	).run(
+		input.targetIdentityId,
+		input.displayName,
+		input.provenance,
+		input.revision,
+		input.migrationState,
+		input.sourceFingerprint,
+		input.idempotencyKey,
+		input.now,
+		input.deviceId,
+	);
+	if (ended.identity_id !== input.targetIdentityId) {
+		invalidateIncludedTeamDecisions(db, input.deviceId, input.now);
+	}
+	const assignmentVersion = currentBinding(db, input.deviceId)?.assignment_version ?? 0;
+	wakeRecipientPoliciesForIdentities(db, [ended.identity_id, input.targetIdentityId], input.now);
+	return { assignmentVersion, previousIdentityId: ended.identity_id };
+}
+
+/** Binds a device that has no binding, or only one that device removal ended. */
+function bindDevice(
+	db: Database,
+	outcome: DeviceIdentityBindingOutcomeV1,
+	before: StoredBinding | undefined,
+	row: BindingRowValues,
+): void {
+	if (before && before.status !== "removed") {
+		throw new BindingWriteBoundaryError("conflict", "binding_write_conflict");
+	}
+	if (before) {
+		const reactivated = reactivateEndedBindingInTransaction(db, {
+			deviceId: outcome.deviceId,
+			targetIdentityId: outcome.targetIdentityId,
+			displayName: outcome.displayName,
+			provenance: "user_confirmed_identity_setup",
+			revision: row.revision,
+			migrationState: "user_managed",
+			sourceFingerprint: row.commitDigest,
+			idempotencyKey: row.idempotencyKey,
+			now: row.now,
+		});
+		if (!reactivated) throw new BindingWriteBoundaryError("stale", "binding_write_stale");
+		return;
+	}
+	db.prepare(
+		`INSERT INTO identity_devices(
+		 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+		 source_fingerprint, idempotency_key, created_at, updated_at
+		 ) VALUES (?, ?, ?, 'active', 'user_confirmed_identity_setup', ?, 'user_managed', ?, ?, ?, ?)`,
+	).run(
+		outcome.deviceId,
+		outcome.targetIdentityId,
+		outcome.displayName,
+		row.revision,
+		row.commitDigest,
+		row.idempotencyKey,
+		row.now,
+		row.now,
+	);
+}
+
 function writeBinding(
 	db: Database,
 	context: DeviceIdentityBindingContext,
@@ -352,9 +490,6 @@ function writeBinding(
 	now: string,
 ): void {
 	const before = currentBinding(db, outcome.deviceId);
-	if (outcome.action === "bind" && before) {
-		throw new BindingWriteBoundaryError("conflict", "binding_write_conflict");
-	}
 	if (
 		outcome.action === "rebind" &&
 		(before?.status !== "active" || before.identity_id !== outcome.previousIdentityId)
@@ -390,21 +525,7 @@ function writeBinding(
 			throw new BindingWriteBoundaryError("stale", "binding_rebind_stale");
 		}
 	} else if (outcome.action === "bind") {
-		db.prepare(
-			`INSERT INTO identity_devices(
-			 device_id, identity_id, display_name, status, provenance, revision, migration_state,
-			 source_fingerprint, idempotency_key, created_at, updated_at
-			 ) VALUES (?, ?, ?, 'active', 'user_confirmed_identity_setup', ?, 'user_managed', ?, ?, ?, ?)`,
-		).run(
-			outcome.deviceId,
-			outcome.targetIdentityId,
-			outcome.displayName,
-			revision,
-			commitDigest,
-			idempotencyKey,
-			now,
-			now,
-		);
+		bindDevice(db, outcome, before, { revision, commitDigest, idempotencyKey, now });
 	}
 	const after = currentBinding(db, outcome.deviceId);
 	if (after?.status !== "active" || after.identity_id !== outcome.targetIdentityId) {

@@ -77,7 +77,8 @@ export type PolicyTeamDeviceEligibilityResult =
 
 const MODES = new Set<string>(POLICY_TEAM_DEVICE_ELIGIBILITY_MODES);
 const DECISIONS = new Set<string>(POLICY_TEAM_DEVICE_DECISIONS);
-const DEVICE_STATUSES = new Set(["active", "revoked"]);
+// `removed` is a binding that device removal ended. It is known and grants nothing.
+const DEVICE_STATUSES = new Set(["active", "revoked", "removed"]);
 const INACTIVE_MEMBERSHIP_STATUSES = new Set(["pending", "revoked"]);
 // Surface authority-shape and principal-integrity failures before mutable
 // decision/device facts so callers expose the most security-relevant cause.

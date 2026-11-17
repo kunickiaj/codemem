@@ -19,7 +19,7 @@ import {
 	parseSyncScopeRequest,
 	syncScopeResetRequiredPayload,
 } from "./sync-scope-protocol.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, insertTestPeer } from "./test-utils.js";
 
 describe("sync scope protocol compatibility", () => {
 	it("treats omitted scope_id as legacy compatibility mode", () => {
@@ -658,6 +658,7 @@ describe("authorized per-peer scope diagnostics", () => {
 		insertScope("empty-work");
 		grantMembership("empty-work", LOCAL_DEVICE);
 		grantMembership("empty-work", PEER_DEVICE);
+		insertTestPeer(db, PEER_DEVICE);
 		setReplicationCursor(
 			db,
 			PEER_DEVICE,

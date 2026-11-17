@@ -55,6 +55,40 @@ export function clearSyncChannelProgress(
 	);
 }
 
+function syncChannelProgressExists(db: Database): boolean {
+	return (
+		db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_channel_progress'",
+			)
+			.get() !== undefined
+	);
+}
+
+/**
+ * Deletes a removed peer's progress in every scope. A device that never ran the
+ * channel pass has no table, and removing a pairing does not install one.
+ */
+export function deletePeerSyncChannelProgress(db: Database, peerDeviceId: string): number {
+	if (!syncChannelProgressExists(db)) return 0;
+	return db.prepare("DELETE FROM sync_channel_progress WHERE peer_device_id = ?").run(peerDeviceId)
+		.changes;
+}
+
+/** Deletes progress whose peer has no pairing. Does nothing when the table was never installed. */
+export function deleteUnpairedSyncChannelProgress(db: Database): number {
+	if (!syncChannelProgressExists(db)) return 0;
+	return db
+		.prepare(
+			// NOT IN matches nothing when any pairing has a NULL device ID, which old schemas allow.
+			`DELETE FROM sync_channel_progress AS progress
+			 WHERE NOT EXISTS (
+			  SELECT 1 FROM sync_peers peer WHERE peer.peer_device_id = progress.peer_device_id
+			 )`,
+		)
+		.run().changes;
+}
+
 export function hasCompletedSyncChannelBoundary(
 	progress: SyncChannelProgress | null,
 	boundary: SyncChannelBoundary,
@@ -67,13 +101,20 @@ export function hasCompletedSyncChannelBoundary(
 	);
 }
 
+/*
+ * A channel pass saves progress after network I/O, and the peer can be removed
+ * meanwhile. Each write requires the pairing in the same statement, so a pass that
+ * outlives its pairing cannot put progress back. A skipped write is not an error.
+ */
+const PAIRING_EXISTS = "EXISTS (SELECT 1 FROM sync_peers WHERE peer_device_id = ?)";
+
 /** Save only after durable pull success. A changed peer boundary invalidates its outbound ACK. */
 export function saveSyncChannelCompletedBoundary(db: Database, target: ProgressTarget): void {
 	ensureSyncChannelProgress(db);
 	const { peerDeviceId, scopeId, boundary } = target;
 	db.prepare(`INSERT INTO sync_channel_progress
 		(peer_device_id, scope_id, generation, snapshot_id, baseline_cursor, last_acked_cursor)
-		VALUES (?, ?, ?, ?, ?, NULL)
+		SELECT ?, ?, ?, ?, ?, NULL WHERE ${PAIRING_EXISTS}
 		ON CONFLICT (peer_device_id, scope_id) DO UPDATE SET
 		last_acked_cursor = CASE WHEN generation = excluded.generation
 			AND snapshot_id = excluded.snapshot_id AND baseline_cursor IS excluded.baseline_cursor
@@ -85,6 +126,7 @@ export function saveSyncChannelCompletedBoundary(db: Database, target: ProgressT
 		boundary.generation,
 		boundary.snapshot_id,
 		boundary.baseline_cursor,
+		peerDeviceId,
 	);
 }
 
@@ -97,7 +139,8 @@ export function saveSyncChannelOutboundAck(
 	const result = db
 		.prepare(`UPDATE sync_channel_progress SET last_acked_cursor = ?
 		WHERE peer_device_id = ? AND scope_id = ? AND generation = ? AND snapshot_id = ?
-		AND baseline_cursor IS ? AND (last_acked_cursor IS NULL OR last_acked_cursor <= ?)`)
+		AND baseline_cursor IS ? AND (last_acked_cursor IS NULL OR last_acked_cursor <= ?)
+		AND ${PAIRING_EXISTS}`)
 		.run(
 			cursor,
 			peerDeviceId,
@@ -106,6 +149,10 @@ export function saveSyncChannelOutboundAck(
 			boundary.snapshot_id,
 			boundary.baseline_cursor,
 			cursor,
+			peerDeviceId,
 		);
-	if (result.changes !== 1) throw new Error("channel progress changed");
+	if (result.changes === 1) return;
+	// A peer removed during the pass has no progress to acknowledge against.
+	if (!db.prepare(`SELECT ${PAIRING_EXISTS}`).pluck().get(peerDeviceId)) return;
+	throw new Error("channel progress changed");
 }
