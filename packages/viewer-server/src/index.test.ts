@@ -185,6 +185,9 @@ const syncRequestCases = {
 			confirmedViewerAccessDeltaDigest: "viewer-delta",
 		}),
 	),
+	createRecipientPolicyTeam: syncRequestCase("POST", "/api/sync/recipient-policy/v1/teams", () =>
+		syncApi.createRecipientPolicyTeam("Platform"),
+	),
 	renameRecipientPolicyTeam: syncRequestCase(
 		"PATCH",
 		"/api/sync/recipient-policy/v1/teams/team",
@@ -2152,7 +2155,7 @@ describe("viewer-server", () => {
 			for (const [, request] of cases)
 				outcomes.push(...(await Promise.allSettled([request.invoke()])));
 			expect(exportedWrappers.sort()).toEqual(Object.keys(syncRequestCases).sort());
-			expect(cases).toHaveLength(57);
+			expect(cases).toHaveLength(58);
 			expect(fetchMock).toHaveBeenCalledTimes(cases.length);
 			expect(outcomes.map((outcome) => outcome.status)).toEqual(cases.map(() => "rejected"));
 			expect(requests).toEqual(cases.map(([, { method, path }]) => ({ method, path })));

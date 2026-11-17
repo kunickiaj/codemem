@@ -16,6 +16,24 @@ export const RECIPIENT_POLICY_TEAM_RENAME_ERROR_CODES = [
 export type RecipientPolicyTeamRenameErrorCode =
 	(typeof RECIPIENT_POLICY_TEAM_RENAME_ERROR_CODES)[number];
 
+export const RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES = [
+	"team_name_invalid",
+	"team_name_taken",
+	"team_creator_unavailable",
+	"team_create_admin_required",
+	"team_create_coordinator_required",
+	"team_create_failed",
+] as const;
+
+export type RecipientPolicyTeamCreateErrorCode =
+	(typeof RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES)[number];
+
+export interface RecipientPolicyTeamCreateResultV1 {
+	version: 1;
+	teamId: string;
+	displayName: string;
+}
+
 export interface RecipientPolicyTeamRenameResultV1 {
 	version: 1;
 	teamId: string;

@@ -227,7 +227,7 @@ import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
 import { deviceRoutes } from "./device-retire.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
 
-type StoreFactory = () => MemoryStore;
+export type StoreFactory = () => MemoryStore;
 export type DeviceIdentityCoordinatorEvidenceLoader =
 	() => Promise<DeviceIdentityCoordinatorEvidence>;
 export interface SyncRoutesOptions {
@@ -481,7 +481,9 @@ async function inspectPairingInvite(c: Context, next: () => Promise<void>) {
 
 type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
 
-function coordinatorAdminStatusPayload(config = readCoordinatorSyncConfig()) {
+export function coordinatorAdminStatusPayload(
+	config: ReturnType<typeof readCoordinatorSyncConfig> = readCoordinatorSyncConfig(),
+) {
 	const groups = config.syncCoordinatorGroups;
 	const activeGroup = groups[0] ?? null;
 	const hasUrl = Boolean(config.syncCoordinatorUrl);
@@ -658,7 +660,7 @@ function recipientInviteCreationUnavailable(
 	return null;
 }
 
-async function parseViewerJsonBody(
+export async function parseViewerJsonBody(
 	c: Context,
 	options: { allowEmpty?: boolean } = {},
 ): Promise<Record<string, unknown> | null> {
@@ -3312,7 +3314,7 @@ function isPendingCaptureActorConflict(error: unknown): error is Error {
 }
 
 /** False leaves the conflict untouched; callers must check before claiming or merging identity. */
-function ensureLocalActorRecord(store: MemoryStore): boolean {
+export function ensureLocalActorRecord(store: MemoryStore): boolean {
 	return store.db
 		.transaction(() => {
 			// A stale process must not re-flag the Identity a local switch retired.

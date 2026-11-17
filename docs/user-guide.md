@@ -717,6 +717,8 @@ For an unfamiliar Project, open **Details** to check its **Project match source*
 
 While you edit an enrolled device's display name, background polling leaves the rename form alone. It resumes after you leave the form; saving a rename and choosing **Retry** still request current coordinator data. An outage continues to disable changes until the data loads again.
 
+To start a new Team, open **Sharing → Teams** and choose **Create Team**. Enter a name that no other active Team uses. You become the Team's admin, with all of your devices included. The new Team shares nothing until you add Projects to it, and you can then invite people from **Invitations**. Create Team is available only on a device that holds the coordinator admin secret and has a coordinator URL and group set in **Settings**. On other devices the button is disabled and says which of those is missing. The Team uses the coordinator group this device is already configured with.
+
 To rename an active Team, open **Sharing → Teams**, choose **Team settings**, and save a human-readable Team name. For Teams completed through legacy setup and still linked to the configured coordinator group, this one action updates both names; local Teams update only their policy metadata. If that exact Team and coordinator group has repeated completed setup records, all of those historical summaries receive the new name while remaining completed. Renaming never changes Team membership, device decisions, or Project access. If the connected service cannot be updated, the local name remains unchanged; retry the same name after the connection recovers.
 
 ### Set up an existing Team

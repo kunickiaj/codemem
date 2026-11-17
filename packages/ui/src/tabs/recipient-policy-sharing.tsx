@@ -10,6 +10,7 @@ import type {
 	LegacyTeamSetupPendingCandidateSummaryV1,
 	LegacyTeamSetupSummaryResponseV1,
 	RecipientPolicyIntentGraphV1,
+	RecipientPolicyTeamCreateResultV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
 import {
@@ -30,6 +31,7 @@ import {
 	RecipientPolicyPersonSettings,
 } from "./recipient-policy-person-settings";
 import type { ReceivedProjectShare } from "./recipient-policy-projects";
+import { type CoordinatorAccess, RecipientPolicyTeamCreate } from "./recipient-policy-team-create";
 import { RecipientPolicyTeamSettings } from "./recipient-policy-team-settings";
 
 export interface RecipientPolicySharingOptions {
@@ -45,6 +47,10 @@ export interface RecipientPolicySharingOptions {
 	onPeopleChanged?: () => Promise<unknown> | unknown;
 	/** True only when this device holds the coordinator admin secret. */
 	accessChangesAllowed?: boolean;
+	/** What this device can do on the coordinator; decides whether Create Team is available. */
+	coordinatorAccess?: CoordinatorAccess;
+	onTeamCreated?: () => Promise<unknown> | unknown;
+	createTeam?: (displayName: string) => Promise<RecipientPolicyTeamCreateResultV1>;
 	personActions?: PersonSettingsActions;
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 	coordinatorEnrollmentIssueCount?: number;
@@ -298,6 +304,17 @@ function SharingTabPanel({
 	);
 }
 
+function createTeamControl(options: RecipientPolicySharingOptions) {
+	return (
+		<RecipientPolicyTeamCreate
+			access={options.coordinatorAccess ?? "unknown"}
+			createTeam={options.createTeam}
+			onCreated={options.onTeamCreated}
+			refreshFailed={options.refreshError === true}
+		/>
+	);
+}
+
 function SharingTabPanelContent({
 	accountView,
 	active,
@@ -341,6 +358,7 @@ function SharingTabPanelContent({
 			return (
 				<TeamsView
 					accountView={accountView}
+					createTeamControl={createTeamControl(options)}
 					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
@@ -493,6 +511,7 @@ function teamMemberNames(
 
 function TeamsView({
 	accountView,
+	createTeamControl,
 	devices,
 	disableMutations,
 	intent,
@@ -501,6 +520,7 @@ function TeamsView({
 	renameTeam,
 }: {
 	accountView: AccountView | null;
+	createTeamControl: ComponentChildren;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
@@ -509,6 +529,92 @@ function TeamsView({
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 }) {
 	const activeTeams = intent.teams.filter((team) => team.status === "active");
+	if (activeTeams.length === 0) {
+		return (
+			<>
+				<p className="small recipient-policy-sharing-empty" role="status">
+					No Teams yet. Create one to share Projects with a group of people.
+				</p>
+				{createTeamControl}
+			</>
+		);
+	}
+
+	return (
+		<>
+			{createTeamControl}
+			<TeamCards
+				accountView={accountView}
+				activeTeams={activeTeams}
+				devices={devices}
+				disableMutations={disableMutations}
+				intent={intent}
+				onTeamRenamed={onTeamRenamed}
+				projects={projects}
+				renameTeam={renameTeam}
+			/>
+		</>
+	);
+}
+
+function teamCardFacts(
+	teamId: string,
+	context: {
+		accountView: AccountView | null;
+		activeIdentitiesById: Map<string, RecipientPolicyIntentGraphV1["identities"][number]>;
+		devices: SharingDevice[];
+		intent: RecipientPolicyIntentGraphV1;
+		projectsById: Map<string, RecipientPolicyManagementProject>;
+	},
+) {
+	const { accountView, activeIdentitiesById, devices, intent, projectsById } = context;
+	const memberIds = [
+		...new Set(
+			intent.teamMemberships
+				.filter(
+					(membership) =>
+						membership.status === "active" &&
+						membership.teamId === teamId &&
+						activeIdentitiesById.has(membership.identityId),
+				)
+				.map((membership) => membership.identityId),
+		),
+	];
+	const projectNames = activeProjectNames(
+		intent.projectRecipients
+			.filter(
+				(edge) =>
+					edge.status === "active" && edge.recipientKind === "team" && edge.teamId === teamId,
+			)
+			.map((edge) => edge.canonicalProjectIdentity),
+		projectsById,
+	);
+	return {
+		activeDeviceCount: devices.filter((device) => memberIds.includes(device.identityId)).length,
+		memberNames: teamMemberNames(memberIds, activeIdentitiesById, accountView),
+		projectNames,
+	};
+}
+
+function TeamCards({
+	accountView,
+	activeTeams,
+	devices,
+	disableMutations,
+	intent,
+	onTeamRenamed,
+	projects,
+	renameTeam,
+}: {
+	accountView: AccountView | null;
+	activeTeams: RecipientPolicyIntentGraphV1["teams"];
+	devices: SharingDevice[];
+	disableMutations: boolean;
+	intent: RecipientPolicyIntentGraphV1;
+	onTeamRenamed?: () => Promise<unknown> | unknown;
+	projects: RecipientPolicyManagementProject[];
+	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
+}) {
 	const activeIdentitiesById = new Map(
 		intent.identities
 			.filter((identity) => identity.status === "active")
@@ -517,44 +623,16 @@ function TeamsView({
 	const projectsById = new Map(
 		projects.map((project) => [project.canonicalProjectIdentity, project]),
 	);
-	if (activeTeams.length === 0) {
-		return (
-			<p className="small recipient-policy-sharing-empty" role="status">
-				No active Teams are available for Project sharing.
-			</p>
-		);
-	}
-
 	return (
 		<div className="recipient-policy-sharing-grid recipient-policy-sharing-responsive-grid">
 			{activeTeams.map((team, index) => {
-				const memberIds = [
-					...new Set(
-						intent.teamMemberships
-							.filter(
-								(membership) =>
-									membership.status === "active" &&
-									membership.teamId === team.teamId &&
-									activeIdentitiesById.has(membership.identityId),
-							)
-							.map((membership) => membership.identityId),
-					),
-				];
-				const memberNames = teamMemberNames(memberIds, activeIdentitiesById, accountView);
-				const activeDeviceCount = devices.filter((device) =>
-					memberIds.includes(device.identityId),
-				).length;
-				const projectNames = activeProjectNames(
-					intent.projectRecipients
-						.filter(
-							(edge) =>
-								edge.status === "active" &&
-								edge.recipientKind === "team" &&
-								edge.teamId === team.teamId,
-						)
-						.map((edge) => edge.canonicalProjectIdentity),
+				const { activeDeviceCount, memberNames, projectNames } = teamCardFacts(team.teamId, {
+					accountView,
+					activeIdentitiesById,
+					devices,
+					intent,
 					projectsById,
-				);
+				});
 				const titleId = `recipient-policy-sharing-team-title-${index}`;
 				return (
 					<article

@@ -1223,6 +1223,16 @@ export {
 	resolveRecipientPolicyReview,
 	resolveRecipientPolicyReviewBulk,
 } from "./recipient-policy-review.js";
+export type {
+	CreateRecipientPolicyTeamInput,
+	RecipientPolicyTeamCreateErrorCode,
+	RecipientPolicyTeamCreateResultV1,
+} from "./recipient-policy-team-create.js";
+export {
+	createRecipientPolicyTeam,
+	RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES,
+	RecipientPolicyTeamCreateError,
+} from "./recipient-policy-team-create.js";
 export type { ConfiguredCoordinatorGroupV1 } from "./recipient-policy-team-metadata.js";
 export {
 	claimRecipientPolicyActorMutations,
