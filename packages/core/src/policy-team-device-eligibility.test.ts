@@ -248,13 +248,40 @@ describe("normal Team device exclusions", () => {
 });
 
 describe("Identity integrity with Team exclusions", () => {
+	it("blocks an excluded device's pending member Identity rather than issuing partial grants", () => {
+		// Arrange: exclusion must not conceal invalid Identity facts.
+		const input = {
+			teamId: "team-a",
+			mode: "person_all_devices",
+			identities: [
+				{ identityId: "identity-a", status: "pending", mergedIntoIdentityId: null },
+				{ identityId: "identity-b", status: "active", mergedIntoIdentityId: null },
+			],
+			memberships: identities.map(({ identityId }) => ({ identityId, status: "active" })),
+			devices,
+			decisions: [{ deviceId: "device-a", decision: "excluded", assignmentVersion: 0 }],
+		};
+
+		// Act
+		const result = derivePolicyTeamDeviceEligibility(input);
+
+		// Assert
+		expect(result).toEqual({
+			status: "blocked",
+			blocked: [{ code: "team_member_identity_not_active", referenceId: "identity-a" }],
+		});
+	});
+});
+
+describe("Withdrawn Team members", () => {
 	it.each([
-		{ status: "deactivated", mergedIntoIdentityId: null, code: "team_member_identity_not_active" },
-		{ status: "active", mergedIntoIdentityId: "identity-b", code: "team_member_identity_merged" },
+		{ label: "deactivated", status: "deactivated", mergedIntoIdentityId: null },
+		{ label: "merged", status: "merged", mergedIntoIdentityId: "identity-b" },
+		{ label: "merge-marked", status: "active", mergedIntoIdentityId: "identity-b" },
 	])(
-		"blocks excluded devices' $status member Identity rather than issuing partial grants",
-		({ status, mergedIntoIdentityId, code }) => {
-			// Arrange: exclusion must not conceal invalid Identity facts.
+		"drops a $label member and its devices while the Team stays eligible",
+		({ status, mergedIntoIdentityId }) => {
+			// Arrange: identity-a withdrew; identity-b is still an active member.
 			const input = {
 				teamId: "team-a",
 				mode: "person_all_devices",
@@ -264,16 +291,55 @@ describe("Identity integrity with Team exclusions", () => {
 				],
 				memberships: identities.map(({ identityId }) => ({ identityId, status: "active" })),
 				devices,
-				decisions: [{ deviceId: "device-a", decision: "excluded", assignmentVersion: 0 }],
+				decisions: [],
 			};
 
 			// Act
 			const result = derivePolicyTeamDeviceEligibility(input);
 
 			// Assert
-			expect(result).toEqual({ status: "blocked", blocked: [{ code, referenceId: "identity-a" }] });
+			expect(result).toEqual({
+				status: "eligible",
+				activeMemberIdentityIds: ["identity-b"],
+				eligibleDeviceIds: ["device-b"],
+				blocked: [],
+			});
 		},
 	);
+
+	it("drops a deactivated reviewed member even when its device is included", () => {
+		const result = derivePolicyTeamDeviceEligibility({
+			teamId: "team-a",
+			mode: "reviewed_allowlist",
+			identities: [{ identityId: "identity-a", status: "deactivated", mergedIntoIdentityId: null }],
+			memberships: [{ identityId: "identity-a", status: "reviewed_active" }],
+			devices,
+			decisions: [{ deviceId: "device-a", decision: "included", assignmentVersion: 0 }],
+		});
+
+		expect(result).toEqual({
+			status: "eligible",
+			activeMemberIdentityIds: [],
+			eligibleDeviceIds: [],
+			blocked: [],
+		});
+	});
+
+	it("still blocks a withdrawn member's malformed membership status", () => {
+		const result = derivePolicyTeamDeviceEligibility({
+			teamId: "team-a",
+			mode: "person_all_devices",
+			identities: [{ identityId: "identity-a", status: "deactivated", mergedIntoIdentityId: null }],
+			memberships: [{ identityId: "identity-a", status: "future_status" }],
+			devices,
+			decisions: [],
+		});
+
+		expect(result).toEqual({
+			status: "blocked",
+			blocked: [{ code: "team_membership_mode_invalid", referenceId: "team-a:identity-a" }],
+		});
+	});
 });
 
 describe("Team eligibility validation", () => {
@@ -558,20 +624,9 @@ describe("Team eligibility validation", () => {
 			"team_member_identity_not_active",
 		],
 		[
-			"deactivated",
-			[{ identityId: "identity-a", status: "deactivated", mergedIntoIdentityId: null }],
+			"unknown-status",
+			[{ identityId: "identity-a", status: "suspended", mergedIntoIdentityId: null }],
 			"team_member_identity_not_active",
-		],
-		[
-			"merged",
-			[
-				{
-					identityId: "identity-a",
-					status: "active",
-					mergedIntoIdentityId: "identity-b",
-				},
-			],
-			"team_member_identity_merged",
 		],
 	] as const)("blocks a $label active Team-member identity", (_label, identityFacts, code) => {
 		const result = derivePolicyTeamDeviceEligibility({

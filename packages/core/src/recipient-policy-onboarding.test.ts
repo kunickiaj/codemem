@@ -365,24 +365,29 @@ it("omits an excluded incoming device's Team sources while retaining direct and 
 	}
 });
 
+function seededOnboardingDatabase(): InstanceType<typeof Database> {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	insertActor(db, "identity-a", "Ada");
+	insertActor(db, "identity-b", "Bea");
+	insertProject(db, PROJECT_A, "alpha", 2);
+	insertProject(db, PROJECT_B, "beta", 1);
+	insertProject(db, PROJECT_C, "gamma", 3);
+	insertTeam(db, "team-a", "Core Team");
+	insertTeam(db, "team-b", "Docs Team");
+	insertRecipient(db, PROJECT_A, "team", "team-a");
+	insertRecipient(db, PROJECT_B, "team", "team-a");
+	insertRecipient(db, PROJECT_B, "identity", "identity-a");
+	insertRecipient(db, PROJECT_C, "team", "team-b");
+	insertMembership(db, "team-a", "identity-a");
+	return db;
+}
+
 describe("recipient-policy onboarding", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		initTestSchema(db);
-		insertActor(db, "identity-a", "Ada");
-		insertActor(db, "identity-b", "Bea");
-		insertProject(db, PROJECT_A, "alpha", 2);
-		insertProject(db, PROJECT_B, "beta", 1);
-		insertProject(db, PROJECT_C, "gamma", 3);
-		insertTeam(db, "team-a", "Core Team");
-		insertTeam(db, "team-b", "Docs Team");
-		insertRecipient(db, PROJECT_A, "team", "team-a");
-		insertRecipient(db, PROJECT_B, "team", "team-a");
-		insertRecipient(db, PROJECT_B, "identity", "identity-a");
-		insertRecipient(db, PROJECT_C, "team", "team-b");
-		insertMembership(db, "team-a", "identity-a");
+		db = seededOnboardingDatabase();
 	});
 
 	afterEach(() => db.close());
@@ -1379,7 +1384,7 @@ describe("recipient-policy onboarding", () => {
 
 	it("does not inherit Projects from a blocked person-wide Team", () => {
 		insertMembership(db, "team-a", "identity-b");
-		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+		db.prepare("UPDATE actors SET status = 'pending' WHERE actor_id = 'identity-b'").run();
 
 		expect(previewRecipientPolicyOnboarding(db, baseRequest()).projects).toEqual([
 			expect.objectContaining({
@@ -2646,5 +2651,31 @@ describe("recipient-policy onboarding repository inference", () => {
 
 	it("canonicalizes a stale cwd in direct-project onboarding", () => {
 		expectStaleCwdDirectOnboardingCanonicalized();
+	});
+});
+
+describe("recipient-policy onboarding with a withdrawn Team member", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = seededOnboardingDatabase();
+	});
+
+	afterEach(() => db.close());
+
+	it("still inherits a person-wide Team's Projects after another member is deactivated", () => {
+		// Arrange: identity-b is deactivated; the onboarding person's Team stays usable.
+		insertMembership(db, "team-a", "identity-b");
+		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+
+		// Act
+		const projects = previewRecipientPolicyOnboarding(db, baseRequest()).projects;
+
+		// Assert
+		expect(projects.map((project) => project.canonicalProjectIdentity)).toContain(PROJECT_A);
+		expect(deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A)).toMatchObject({
+			status: "eligible",
+			blocked: [],
+		});
 	});
 });

@@ -2227,94 +2227,12 @@ describe("legacy Team candidate discovery", () => {
 			},
 		],
 		[
-			"an invite-provenance member with no roster device is deactivated",
-			(db2: InstanceType<typeof Database>, teamId: string) => {
-				db2
-					.prepare(
-						`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-						 VALUES ('identity-invited', 'Invited', 0, 'deactivated', ?, ?)`,
-					)
-					.run(NOW, NOW);
-				db2
-					.prepare(
-						`INSERT INTO policy_team_memberships(
-						 team_id, identity_id, role, status, provenance, revision, migration_state,
-						 idempotency_key, created_at, updated_at
-						 ) VALUES (?, 'identity-invited', 'member', 'reviewed_active', 'coordinator_invite',
-						 'r1', 'user_managed', 'invited-membership', ?, ?)`,
-					)
-					.run(teamId, NOW, NOW);
-			},
+			"an invite-provenance member with no roster device is still pending",
+			(db2: InstanceType<typeof Database>, teamId: string) =>
+				insertInvitedMember(db2, teamId, "pending"),
 		],
 	] as const)("preserves terminal completion when %s", (_label, mutate) => {
-		db.prepare(
-			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-			 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
-		).run(NOW, NOW);
-		db.prepare(
-			`INSERT INTO identity_devices(
-				device_id, identity_id, display_name, status, provenance, revision,
-				migration_state, assignment_version, idempotency_key, created_at, updated_at
-			 ) VALUES ('device-a', 'identity-a', 'Laptop', 'active', 'test', 'r1',
-				'completed', 2, 'device-a', ?, ?)`,
-		).run(NOW, NOW);
-		const [initial] = discoverLegacyTeamCandidates(db, options());
-		const draft = db
-			.prepare(
-				`SELECT attempt_id, candidate_id, roster_fingerprint
-				 FROM legacy_team_setup_drafts WHERE candidate_id = ?`,
-			)
-			.get(initial?.candidateRef) as {
-			attempt_id: string;
-			candidate_id: string;
-			roster_fingerprint: string;
-		};
-		const teamId = deterministicPolicyTeamId(draft.candidate_id);
-		db.prepare(
-			`UPDATE legacy_team_setup_draft_devices
-			 SET decision = 'included', target_identity_id = 'identity-a'
-			 WHERE attempt_id = ?`,
-		).run(draft.attempt_id);
-		db.prepare(
-			`INSERT INTO policy_teams(
-				team_id, display_name, status, device_eligibility_mode, provenance,
-				revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
-			 ) VALUES (?, 'Engineering', 'active', 'reviewed_allowlist', 'reviewed_team_candidate',
-				'revision-1', 'completed', ?, 'team-setup-test', ?, ?)`,
-		).run(teamId, draft.roster_fingerprint, NOW, NOW);
-		db.prepare(
-			`INSERT INTO policy_team_memberships(
-				team_id, identity_id, role, status, provenance, revision, migration_state,
-				idempotency_key, created_at, updated_at
-			 ) VALUES (?, 'identity-a', 'member', 'reviewed_active', 'reviewed_active', 'r1',
-				'completed', 'ready-membership', ?, ?)`,
-		).run(teamId, NOW, NOW);
-		db.prepare(
-			`INSERT INTO policy_team_device_decisions(
-				team_id, device_id, decision, assignment_version, provenance, revision,
-				created_at, updated_at
-			 ) VALUES (?, 'device-a', 'included', 2, 'reviewed_team_setup', 'r1', ?, ?)`,
-		).run(teamId, NOW, NOW);
-		db.prepare(
-			`INSERT INTO project_recipients(
-				canonical_project_identity, recipient_kind, recipient_id, status, provenance,
-				policy_revision, migration_state, idempotency_key, created_at, updated_at
-			 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', 'r1', 'completed',
-				'ready-edge', ?, ?)`,
-		).run(PROJECT_ID, teamId, NOW, NOW);
-		db.prepare(
-			`UPDATE legacy_team_setup_drafts
-			 SET state = 'completed', completed_team_id = ?, completed_at = ?, updated_at = ?
-			 WHERE attempt_id = ?`,
-		).run(teamId, NOW, NOW, draft.attempt_id);
-
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
-
-		mutate(db, teamId);
-		expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("needs_setup");
-		expect(latestLegacyTeamSetupAttempt(db, draft.candidate_id)?.attemptId).toBe(draft.attempt_id);
-		expect(getLegacyTeamSetupDraft(db, draft.candidate_id)?.state).toBe("completed");
-		expect(isLegacyTeamCandidateSelectable(db, draft.candidate_id)).toBe(true);
+		expectCompletionStatusAfter(db, mutate, "needs_setup");
 	});
 
 	it("replaces a malformed completion without a terminal Team", () => {
@@ -2341,3 +2259,119 @@ describe("legacy Team candidate discovery", () => {
 		expect(getLegacyTeamSetupDraft(db, initial.candidateRef)?.state).toBe("needs_setup");
 	});
 });
+
+describe("completed Team setup with a withdrawn member", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		seedCandidateFixture(db);
+	});
+
+	afterEach(() => db.close());
+
+	it("stays ready when an invited member with no roster device is deactivated", () => {
+		expectCompletionStatusAfter(
+			db,
+			(db2, teamId) => insertInvitedMember(db2, teamId, "deactivated"),
+			"ready",
+		);
+	});
+});
+
+function insertInvitedMember(
+	db2: InstanceType<typeof Database>,
+	teamId: string,
+	status: "pending" | "deactivated",
+): void {
+	db2
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-invited', 'Invited', 0, ?, ?, ?)`,
+		)
+		.run(status, NOW, NOW);
+	db2
+		.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES (?, 'identity-invited', 'member', 'reviewed_active', 'coordinator_invite',
+			 'r1', 'user_managed', 'invited-membership', ?, ?)`,
+		)
+		.run(teamId, NOW, NOW);
+}
+
+function expectCompletionStatusAfter(
+	db: InstanceType<typeof Database>,
+	mutate: (db2: InstanceType<typeof Database>, teamId: string) => unknown,
+	expectedStatus: "ready" | "needs_setup",
+): void {
+	db.prepare(
+		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
+	).run(NOW, NOW);
+	db.prepare(
+		`INSERT INTO identity_devices(
+			device_id, identity_id, display_name, status, provenance, revision,
+			migration_state, assignment_version, idempotency_key, created_at, updated_at
+		 ) VALUES ('device-a', 'identity-a', 'Laptop', 'active', 'test', 'r1',
+			'completed', 2, 'device-a', ?, ?)`,
+	).run(NOW, NOW);
+	const [initial] = discoverLegacyTeamCandidates(db, options());
+	const draft = db
+		.prepare(
+			`SELECT attempt_id, candidate_id, roster_fingerprint
+			 FROM legacy_team_setup_drafts WHERE candidate_id = ?`,
+		)
+		.get(initial?.candidateRef) as {
+		attempt_id: string;
+		candidate_id: string;
+		roster_fingerprint: string;
+	};
+	const teamId = deterministicPolicyTeamId(draft.candidate_id);
+	db.prepare(
+		`UPDATE legacy_team_setup_draft_devices
+		 SET decision = 'included', target_identity_id = 'identity-a'
+		 WHERE attempt_id = ?`,
+	).run(draft.attempt_id);
+	db.prepare(
+		`INSERT INTO policy_teams(
+			team_id, display_name, status, device_eligibility_mode, provenance,
+			revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'Engineering', 'active', 'reviewed_allowlist', 'reviewed_team_candidate',
+			'revision-1', 'completed', ?, 'team-setup-test', ?, ?)`,
+	).run(teamId, draft.roster_fingerprint, NOW, NOW);
+	db.prepare(
+		`INSERT INTO policy_team_memberships(
+			team_id, identity_id, role, status, provenance, revision, migration_state,
+			idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'identity-a', 'member', 'reviewed_active', 'reviewed_active', 'r1',
+			'completed', 'ready-membership', ?, ?)`,
+	).run(teamId, NOW, NOW);
+	db.prepare(
+		`INSERT INTO policy_team_device_decisions(
+			team_id, device_id, decision, assignment_version, provenance, revision,
+			created_at, updated_at
+		 ) VALUES (?, 'device-a', 'included', 2, 'reviewed_team_setup', 'r1', ?, ?)`,
+	).run(teamId, NOW, NOW);
+	db.prepare(
+		`INSERT INTO project_recipients(
+			canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+			policy_revision, migration_state, idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'team', ?, 'active', 'reviewed_team_setup', 'r1', 'completed',
+			'ready-edge', ?, ?)`,
+	).run(PROJECT_ID, teamId, NOW, NOW);
+	db.prepare(
+		`UPDATE legacy_team_setup_drafts
+		 SET state = 'completed', completed_team_id = ?, completed_at = ?, updated_at = ?
+		 WHERE attempt_id = ?`,
+	).run(teamId, NOW, NOW, draft.attempt_id);
+
+	expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe("ready");
+
+	mutate(db, teamId);
+	expect(discoverLegacyTeamCandidates(db, options())[0]?.status).toBe(expectedStatus);
+	expect(latestLegacyTeamSetupAttempt(db, draft.candidate_id)?.attemptId).toBe(draft.attempt_id);
+	expect(getLegacyTeamSetupDraft(db, draft.candidate_id)?.state).toBe("completed");
+	expect(isLegacyTeamCandidateSelectable(db, draft.candidate_id)).toBe(true);
+}

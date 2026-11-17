@@ -133,12 +133,7 @@ describe("strict recipient-policy effective-device derivation", () => {
 	it.each([
 		["missing", undefined, "identity_missing"],
 		["pending", { identityId: "identity-a", status: "pending" }, "identity_not_active"],
-		[
-			"merged",
-			{ identityId: "identity-a", status: "active", mergedIntoIdentityId: "identity-b" },
-			"identity_merged",
-		],
-		["deactivated", { identityId: "identity-a", status: "deactivated" }, "identity_not_active"],
+		["unknown-status", { identityId: "identity-a", status: "suspended" }, "identity_not_active"],
 	] as const)("blocks the whole Project for a %s direct identity", (_label, replacement, code) => {
 		const input = graph();
 		input.identities = input.identities.filter((identity) => identity.identityId !== "identity-a");
@@ -300,6 +295,128 @@ describe("strict recipient-policy effective-device derivation", () => {
 			code: "identity_device_invalid",
 			referenceId: "device-b",
 		});
+	});
+});
+
+const WITHDRAWN_IDENTITY_STATES = [
+	["deactivated", { status: "deactivated", mergedIntoIdentityId: null }],
+	["merged", { status: "merged", mergedIntoIdentityId: "identity-b" }],
+	["merge-marked", { status: "active", mergedIntoIdentityId: "identity-b" }],
+] as const;
+
+describe("withdrawn Identities in effective-device derivation", () => {
+	it.each(WITHDRAWN_IDENTITY_STATES)(
+		"gives a %s direct identity no devices and keeps other recipients eligible",
+		(_label, state) => {
+			// Arrange: identity-a is a direct recipient; identity-b reaches the Project via team-a.
+			const input = graph();
+			input.identities[0] = { identityId: "identity-a", ...state };
+
+			// Act
+			const result = deriveRecipientPolicyEffectiveDevices(input);
+
+			// Assert
+			expect(result).toMatchObject({ status: "eligible", blocked: [] });
+			expect(result.devices.map((device) => device.deviceId)).toEqual(["device-b"]);
+		},
+	);
+
+	it.each(WITHDRAWN_IDENTITY_STATES)(
+		"gives a %s Team member no devices and keeps the other members eligible",
+		(_label, state) => {
+			// Arrange: identity-c is a withdrawn member of team-a beside active identity-b.
+			const input = graph();
+			input.identities.push({ identityId: "identity-c", ...state });
+			input.teamMemberships.push({ teamId: "team-a", identityId: "identity-c", status: "active" });
+			input.identityDevices.push({
+				identityId: "identity-c",
+				deviceId: "device-c",
+				status: "active",
+				assignmentVersion: 0,
+			});
+
+			// Act
+			const result = deriveRecipientPolicyEffectiveDevices(input);
+
+			// Assert
+			expect(result).toMatchObject({ status: "eligible", blocked: [] });
+			expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a", "device-b"]);
+		},
+	);
+});
+
+describe("withdrawn Identity edge cases in effective-device derivation", () => {
+	it("gives a deactivated reviewed Team member no devices even with an included decision", () => {
+		const input = graph();
+		input.teams[0] = {
+			teamId: "team-a",
+			status: "active",
+			deviceEligibilityMode: "reviewed_allowlist",
+		};
+		input.teamMemberships = [
+			{ teamId: "team-a", identityId: "identity-b", status: "reviewed_active" },
+		];
+		input.identities[1] = {
+			identityId: "identity-b",
+			status: "deactivated",
+			mergedIntoIdentityId: null,
+		};
+		input.teamDeviceDecisions = [
+			{ teamId: "team-a", deviceId: "device-b", decision: "included", assignmentVersion: 0 },
+		];
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result).toMatchObject({ status: "eligible", blocked: [] });
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-a"]);
+	});
+
+	it("does not pass a merged recipient's access to the surviving Identity", () => {
+		// Arrange: identity-a was merged into identity-c, which no edge names.
+		const input = graph();
+		input.identities[0] = {
+			identityId: "identity-a",
+			status: "merged",
+			mergedIntoIdentityId: "identity-c",
+		};
+		input.identities.push({
+			identityId: "identity-c",
+			status: "active",
+			mergedIntoIdentityId: null,
+		});
+		input.identityDevices[0] = {
+			identityId: "identity-c",
+			deviceId: "device-a",
+			status: "active",
+			assignmentVersion: 1,
+		};
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result).toMatchObject({ status: "eligible", blocked: [] });
+		expect(result.devices.map((device) => device.deviceId)).toEqual(["device-b"]);
+	});
+
+	it("still blocks the Project for a missing Team member beside a withdrawn one", () => {
+		const input = graph();
+		input.identities[1] = {
+			identityId: "identity-b",
+			status: "deactivated",
+			mergedIntoIdentityId: null,
+		};
+		input.teamMemberships.push({
+			teamId: "team-a",
+			identityId: "identity-orphan",
+			status: "active",
+		});
+
+		const result = deriveRecipientPolicyEffectiveDevices(input);
+
+		expect(result.status).toBe("blocked");
+		expect(result.devices).toEqual([]);
+		expect(result.blocked).toEqual([
+			{ code: "team_member_identity_missing", referenceId: "identity-orphan" },
+		]);
 	});
 });
 
