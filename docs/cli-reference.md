@@ -181,8 +181,8 @@ than a tool execution result. See the [MCP result contract](plugin-reference.md#
 
 Protocol support alone does not make cross-project pooling safe. Codemem
 still needs each caller's directory to scope searches, assign write-session
-paths, and read project context. Keep OpenCode pooling disabled until that
-caller-context integration is available.
+paths, and read project context. Pool codemem in OpenCode only with the
+shared-server configuration described below.
 
 ### Shared stdio server
 
@@ -199,8 +199,8 @@ has the same effect, and any other value except `process` stops startup.
 The database, config file, actor identity, and embedding settings still come
 from the server process, so projects that need different ones need separate
 servers. The default, `--caller-context process`, is the existing behavior.
-The host must supply the argument. Do not enable OpenCode pooling for codemem
-until the codemem OpenCode plugin supports it.
+The host must supply the argument. On OpenCode 2 the codemem plugin does; see
+[Shared MCP server](plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in).
 
 ### Memory export visibility
 
