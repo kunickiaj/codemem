@@ -65,9 +65,9 @@ The map in `codemem-lvgba.15` and `codemem-lvgba.14` holds. Reading the code for
 
 P1 to P3 must land with tests before the migration can be enabled anywhere. P4 and P5 decide how often the summary appears and are needed before the migration is on by default.
 
-- **P1. Snapshot apply must reconcile by `import_key` across scopes.** When a snapshot item's `import_key` already exists under another scope, the receiver replaces that copy only when all of these hold: the snapshot clock is newer, the receiver and the serving peer are each authorized in both scopes, and a migration record the receiver has read covers the move. A record covers the move when the existing copy carries its source scope and the item carries its boundary. A record that has been rolled back covers the opposite direction. In every other case the receiver skips the item. Requiring the serving peer to be authorized in the source scope stops a device that was added to the boundary later from pulling another Project's memories out of that scope. A peer that is authorized in both scopes can already replace or rewrite a copy in the source scope through an ordinary snapshot, so the rule gives it nothing new.
+- **P1. Snapshot apply must reconcile by `import_key` across scopes.** When a snapshot item's `import_key` already exists under another scope, the receiver replaces that copy only when all of these hold: the snapshot clock is newer, the receiver is authorized in both scopes, a migration record the receiver has read covers the move, and the serving peer is either the device that authored the existing copy or is itself authorized in both scopes. Authorized here means the key-bound check the scoped protocol already applies to the requested scope (`packages/core/src/sync-scope-protocol.ts:109-129`), run for both scopes against the peer's authenticated key. A bare membership row is not enough. A record covers the move when the existing copy carries its source scope and the item carries its boundary. A record that has been rolled back covers the opposite direction. In every other case the receiver skips the item. Requiring the serving peer to be authorized in the source scope stops a device that was added to the boundary later from pulling another Project's memories out of that scope. A peer that is authorized in both scopes can already replace or rewrite a copy in the source scope through an ordinary snapshot, so the rule gives it nothing new. The cost is a delay in one case, described in [Section 7](#7-multi-device-ordering).
 - **P2. The reconciler needs a hold for migrated Projects.** For a Project with a migration record, the reconciler computes its plan and issues no grant, revoke, or deny overlay until one pass has seen an empty plan or the admin has confirmed the summary. The hold is stored in the migration's own table under the boundary ID. The reconciler checks it after it has resolved the Project's boundary and before it writes anything, including the deny overlays it stages ahead of a revoke (`recipient-policy-reconciler.ts:1496-1513`). Existing code can replace a Project's authority row when it merges an alias (`recipient-policy-reconciler.ts:1857-1879`), which is why the hold does not live on that row.
-- **P3. The coordinator needs additive resources:** readiness records, migration records, and two operations that each run as one transaction (commit and roll back). It also checks every later membership change on a boundary that has a migration record: the request must carry the record's current generation and come from the device the record names as managing the Project, and the record must be `committed`. The check runs in the same transaction as the membership write. A request without a generation is refused, which is what an older admin device sends. The client detects all of this through a capability. A coordinator without it makes every Project wait.
+- **P3. The coordinator needs additive resources:** readiness records, migration records, and three operations that each run as one transaction (commit, roll back, and take over). It also checks every later membership change on a boundary that has a migration record: the request must carry the record's current generation and come from the device the record names as managing the Project, and the record must be `committed`. The check runs in the same transaction as the membership write. A request without a generation is refused, which is what an older admin device sends. The client detects all of this through a capability. A coordinator without it makes every Project wait.
 - **P4. Device-to-Identity bindings must exist for older pairings.** ADR 0007 Decision 6 converts `sync_peers.actor_id` and `claimed_local_actor` into bindings (`codemem-lvgba.27`). Without it, the summary asks whose device each one is.
 - **P5. An admin device must be able to manage a Project it receives and has never opened.** It needs the Project's identity to record recipients. A boundary member learns it from a peer over the existing sync channel and checks it against the boundary ID, which is a hash of that identity. Without P5 such a Project still moves with the same devices, but it gets no Team recipient, and the default grant keeps running for its group ([Section 10](#10-decision-3-retirements)).
 
@@ -177,6 +177,8 @@ A Team edge means devices that later join the Team receive the Project. That is 
 
 The admin device that records the edges writes itself into the record as the device that manages the Project's recipients, with a compare-and-set. Other admin devices show the recipients read-only until the coordinator holds one roster (`codemem-lvgba.35`).
 
+Any admin device can take over. Projects on another admin device shows *Managed from device* with the action **Manage from this device**. **Take over** is one coordinator transaction that names the new managing device and advances the record's generation. Requests from the previous device then carry an old generation and are refused. The new device sets the hold again and records recipients as above, from its own tables. Its "Keep off" list starts empty, so a device that was kept off shows up as a "will start receiving" line with the default Keep off. Nothing changes until the admin confirms, and confirming the defaults keeps the boundary's members as they are. This is also how a Project recovers when the managing device is lost or removed.
+
 ### Order of writes
 
 | # | Step | Where | Atomic unit | A crash after it leaves | Resume |
@@ -267,7 +269,7 @@ Rules for every line:
 - One Confirm applies all answered lines. A line can be expanded to answer per Project.
 - An answer is stored in `recipient_policy_review_resolutions` with the line's fingerprint and the deciding Identity and device, as ADR 0001 Decision 4 requires. The hold then clears for the Projects it covers, and the reconciler applies exactly what the line said.
 - No choice sends the user to Advanced, the CLI, or diagnostics.
-- A device that is not the managing admin device shows the recipients read-only and says which device has changes to confirm.
+- A device that is not the managing admin device shows the recipients read-only and says which device has changes to confirm. An admin device also offers **Manage from this device**.
 
 "Keep off" is a recorded choice that one device does not receive one Project, although its person does. It is what ADR 0007 Decision 3 calls the absence of a device from a Project's boundary, and what Decision 4 calls a device that stops receiving a Project. Projects shows it on the recipient's row, and the admin can change it there later.
 
@@ -275,7 +277,7 @@ Rules for every line:
 
 Both are rare, and both appear as lines in the same summary. Until answered, the Project stays where it is and syncs as before.
 
-When the admin picks one setup in the first case, the commit copies that setup's devices, and the record also names the other setup so that devices move their memories from both. A device that is only in the other setup is not in the boundary. It keeps the copies it has and receives nothing new, which is what the line states.
+When the admin picks one setup in the first case, the commit request names that setup as the source scope, lists the other setup as an additional source, and carries the fingerprint of the stored answer. The coordinator then applies the commit's conditions with one difference: every other source scope that a readiness record lists for the boundary must be named in the request. It copies the devices of the chosen setup only, and the record names both setups so that devices move their memories from both. A device that is only in the other setup is not in the boundary. It keeps the copies it has and receives nothing new, which is what the line states.
 
 | Line | Shown when | Choices |
 | --- | --- | --- |
@@ -350,6 +352,8 @@ Boundary members that are authorized in the source scope keep their boundary mem
 
 **Two admin devices.** Both send the same commit. The coordinator applies the first and returns the stored record to the second. Neither sends a device list, so they cannot disagree about the members. The first admin device that knows the Project becomes the one that manages its recipients, and the other shows them read-only.
 
+**The managing admin device is lost.** Until another admin device takes over, the boundary keeps its members and nothing is granted or revoked. A recipient's new device is not added during that time. Another admin device takes over from Projects, as described under [Choosing recipients](#choosing-recipients).
+
 **A member that updated and went offline.** The commit proceeds, because its readiness record is at the coordinator. Its memories stay in the source scope until it returns. They are delivered then exactly as they would have been, since every device authorized in the source scope is also in the boundary. On return it adopts and moves them.
 
 **A member that has not updated.** Every Project in its scope waits. Other scopes are unaffected. The admin device shows the device's name and last contact and offers Remove device.
@@ -360,7 +364,7 @@ Boundary members that are authorized in the source scope keep their boundary mem
 
 **A device that joins the source scope after the commit.** It receives whatever is still stamped with that scope and nothing that has moved. It receives a migrated Project only as a recipient.
 
-**An author that is offline when another device first pulls the boundary.** The pulling device can hold an older copy under the source scope while another device holds the moved one. P1 lets the snapshot replace the older copy, because the record covers the move.
+**An author that is offline when another device first pulls the boundary.** The pulling device can hold an older copy under the source scope while another device holds the moved one. P1 lets the snapshot replace the older copy when the serving device was also in the older setup. When the serving device was added to the Project later, the pulling device keeps its older copy until it reaches the author or any device from the older setup. Every device that could deliver the update before the migration still can, so no delivery that existed is lost. The newer device is an extra source that this one memory cannot use yet.
 
 **Authors that no longer exist.** Memories a retired device authored stay under the source scope on every device that holds them. Nobody can move them. They stay readable because the source scope is never revoked or archived. A device that becomes a recipient of the Project later does not receive them.
 
@@ -489,58 +493,64 @@ The implementer writes these before the code. The first group pins behavior the 
 7. `sync-bootstrap` (P1): with a committed record, a device that holds a memory under the source scope and pulls the boundary snapshot ends with one row, stamped with the boundary, at the newer revision, with the origin device unchanged. This holds when the serving peer is the author and when it is another device authorized in both scopes.
 8. `sync-bootstrap` (P1): a snapshot item whose `import_key` exists under another scope is skipped when there is no record, when the record is for another boundary, and when the serving peer is not authorized in the scope of the existing copy.
 9. `sync-bootstrap` (P1): a device added to a boundary after the migration serves a memory of another Project from the same source scope, stamped with the boundary. The receiver keeps its copy in the source scope.
-10. `sync-bootstrap` (P1): with a rolled-back record, a snapshot of the source scope replaces a copy stamped with the boundary.
-11. `recipient-policy-reconciler` (P2): with the hold set and a plan that has effects, no coordinator call is made, no deny overlay is written, and the plan is available to the summary. The hold survives the merge of an alias row with a higher generation.
-12. `recipient-policy-reconciler` (P2): an empty plan clears the hold. A confirmed summary clears it, and the reconciler then issues exactly the confirmed effects. Reading a record with a new generation sets it again.
-13. Coordinator store contract (P3), SQLite and D1: a readiness record is accepted only from its own device key and only for a source scope that device is authorized in. It is discarded when that device posts presence without the feature.
-14. Coordinator store contract (P3), SQLite and D1: commit creates the scope, the memberships, and the record together, and the members equal the source scope's authorized devices with the same roles. Commit writes nothing when an authorized device has no readiness record, when no readiness record lists the boundary, when another readiness record lists it under a different source scope, or when the boundary already exists without a migration record, with or without active members.
-15. Coordinator store contract (P3), SQLite and D1: a device revoked from the source scope before the commit is not in the boundary. A repeated commit returns the stored record and changes no membership.
-16. P5: a boundary member learns the Project's identity from a peer, rejects an identity that does not hash to the boundary ID, and can then record recipients.
-17. Coordinator store contract (P3), SQLite and D1: a grant or revoke on a migrated boundary is refused when it carries no generation, an older generation, or comes from a device other than the managing one, and when the record is rolled back.
+10. `sync-bootstrap` (P1): a serving peer with a membership row in the source scope and no valid key-bound proof for its authenticated key is treated as not authorized there, and the item is skipped.
+11. `sync-bootstrap` (P1): a device added to the boundary later serves a newer revision of a memory that did move. The receiver keeps its older copy, and then takes the newer one from the author, including an author that is no longer authorized in the source scope, or from any device authorized in both scopes.
+12. `sync-bootstrap` (P1): with a rolled-back record, a snapshot of the source scope replaces a copy stamped with the boundary.
+13. `recipient-policy-reconciler` (P2): with the hold set and a plan that has effects, no coordinator call is made, no deny overlay is written, and the plan is available to the summary. The hold survives the merge of an alias row with a higher generation.
+14. `recipient-policy-reconciler` (P2): an empty plan clears the hold. A confirmed summary clears it, and the reconciler then issues exactly the confirmed effects. Reading a record with a new generation sets it again.
+15. Coordinator store contract (P3), SQLite and D1: a readiness record is accepted only from its own device key and only for a source scope that device is authorized in. It is discarded when that device posts presence without the feature.
+16. Coordinator store contract (P3), SQLite and D1: commit creates the scope, the memberships, and the record together, and the members equal the source scope's authorized devices with the same roles. Commit writes nothing when an authorized device has no readiness record, when no readiness record lists the boundary, when another readiness record lists it under a different source scope, or when the boundary already exists without a migration record, with or without active members.
+17. Coordinator store contract (P3), SQLite and D1: a device revoked from the source scope before the commit is not in the boundary. A repeated commit returns the stored record and changes no membership.
+18. P5: a boundary member learns the Project's identity from a peer, rejects an identity that does not hash to the boundary ID, and can then record recipients.
+19. Coordinator store contract (P3), SQLite and D1: a grant or revoke on a migrated boundary is refused when it carries no generation, an older generation, or comes from a device other than the managing one, and when the record is rolled back.
+20. Coordinator store contract (P3), SQLite and D1: take over names a new managing device and advances the generation. A request from the previous managing device is then refused, and one from the new device is accepted.
+21. Coordinator store contract (P3), SQLite and D1: a commit that lists an additional source needs a stored answer, is refused when a readiness record lists a source the request does not name, and copies the devices of the chosen source only.
 
 ### Procedure and crash recovery
 
-18. One test per row of the [order of writes](#order-of-writes): stop after the step, restart, and reach the same end state.
-19. The coordinator call log for a full migration contains no write to a source scope.
-20. A device that no longer maps the Project moves its old memories and gets no mapping.
-21. A device that never held the Project gets no mapping and moves nothing.
-22. Memories in `legacy-shared-review`, `local-default`, and other scopes are not moved.
-23. An admin device that is not a member of the source scope commits, is not a member of the boundary, and receives nothing.
+22. One test per row of the [order of writes](#order-of-writes): stop after the step, restart, and reach the same end state.
+23. The coordinator call log for a full migration contains no write to a source scope.
+24. A device that no longer maps the Project moves its old memories and gets no mapping.
+25. A device that never held the Project gets no mapping and moves nothing.
+26. Memories in `legacy-shared-review`, `local-default`, and other scopes are not moved.
+27. An admin device that is not a member of the source scope commits, is not a member of the boundary, and receives nothing.
 
 ### The summary
 
-24. A Project whose recipients derive exactly the boundary's members produces no summary line and the hold clears.
-25. One test per line kind in [Section 4](#the-summary): the line appears, and each choice has the effect the preview named.
-26. Confirming every default changes no device's access. This includes a person kept as a recipient who has another device outside the boundary: that device gets its own line and stays out.
-27. A line with no default keeps its Projects held until it is answered, and Confirm applies the other lines.
-28. "Keep off" keeps the device out of the boundary across later reconciler passes, and changing it in Projects grants the device.
-29. A device that is not the managing admin device shows recipients read-only and offers no choice.
-30. A confirmed line returns only when its fingerprint changes.
-31. The two cases that do not move by themselves produce their line, change nothing until answered, and each answer has the previewed effect.
+28. A Project whose recipients derive exactly the boundary's members produces no summary line and the hold clears.
+29. One test per line kind in [Section 4](#the-summary): the line appears, and each choice has the effect the preview named.
+30. Confirming every default changes no device's access. This includes a person kept as a recipient who has another device outside the boundary: that device gets its own line and stays out.
+31. A line with no default keeps its Projects held until it is answered, and Confirm applies the other lines.
+32. "Keep off" keeps the device out of the boundary across later reconciler passes, and changing it in Projects grants the device.
+33. A device that is not the managing admin device shows recipients read-only and offers no choice.
+34. After a takeover the hold is set on the new device, a device that was kept off appears as a line defaulting to Keep off, and confirming the defaults changes no membership.
+35. With the managing device gone, a recipient's new device is not granted. After another admin device takes over and confirms, it is.
+36. A confirmed line returns only when its fingerprint changes.
+37. The two cases that do not move by themselves produce their line, change nothing until answered, and each answer has the previewed effect.
 
 ### End to end, through `syncOnce`
 
-32. The fixture matrix in [Section 8](#fixtures), one test per row.
-33. A partly moved Project delivers every memory to the same devices as before.
-34. A device blocked by a filter holds the same keys before and after, including after authors write new memories and after it pulls fresh snapshots of both scopes.
-35. Two admin devices commit the same Project. One record results, and neither reconciler issues an effect.
-36. A member offline across the commit adopts on return and ends with one row per key.
+38. The fixture matrix in [Section 8](#fixtures), one test per row.
+39. A partly moved Project delivers every memory to the same devices as before.
+40. A device blocked by a filter holds the same keys before and after, including after authors write new memories and after it pulls fresh snapshots of both scopes.
+41. Two admin devices commit the same Project. One record results, and neither reconciler issues an effect.
+42. A member offline across the commit adopts on return and ends with one row per key.
 
 ### Rollback
 
-37. Rollback restores each device's saved mappings and returns every memory to the source scope. Per-device holdings equal the pre-migration holdings plus memories written since.
-38. Rollback revokes a device that was included after the migration and no device that is authorized in the source scope.
-39. After rollback, a device that holds a peer-authored memory still stamped with the boundary can still read it.
-40. The rollback preview names a device that was removed from the boundary and is still authorized in the source scope.
-41. A second migration after a rollback commits a new generation, and the boundary's members again equal the source scope's authorized devices.
-42. A reconciler pass on the managing device that runs after the rollback and before that device reads the record grants nothing, and a device the rollback removed stays out.
-43. A memory moved from a second older setup returns to that setup on rollback.
+43. Rollback restores each device's saved mappings and returns every memory to the source scope. Per-device holdings equal the pre-migration holdings plus memories written since.
+44. Rollback revokes a device that was included after the migration and no device that is authorized in the source scope.
+45. After rollback, a device that holds a peer-authored memory still stamped with the boundary can still read it.
+46. The rollback preview names a device that was removed from the boundary and is still authorized in the source scope.
+47. A second migration after a rollback commits a new generation, and the boundary's members again equal the source scope's authorized devices.
+48. A reconciler pass on the managing device that runs after the rollback and before that device reads the record grants nothing, and a device the rollback removed stays out.
+49. A memory moved from a second older setup returns to that setup on rollback.
 
 ### Decision 3
 
-44. Approving a join request grants no default scope once every Project in the group's default scope has committed and has its Team recipient. It still grants while one Project lacks one.
-45. A person added to the Team after the migration receives the Projects that came from the default scope.
-46. The migration writes no pairing filter and no global filter key.
+50. Approving a join request grants no default scope once every Project in the group's default scope has committed and has its Team recipient. It still grants while one Project lacks one.
+51. A person added to the Team after the migration receives the Projects that came from the default scope.
+52. The migration writes no pairing filter and no global filter key.
 
 Validation for each stack layer is the focused tests above. The stack tip runs `pnpm run check` and the Docker scenarios `legacy-team-migration`, `project-sharing`, and `sharing-domains`.
 
@@ -570,7 +580,7 @@ On 2026-11-16 the owner decided twelve questions about the first design, with th
 3. **A Project split between a boundary and its old scope.** Memories from retired authors stay in the old scope. A recipient added later does not receive them, and a recipient removed later keeps receiving them if still authorized there. `codemem-lvgba.28` needs the same rule for this as for filters.
 4. **A Project no admin device receives.** It moves with the same devices, and nobody can change its recipients until an admin device receives it. The Viewer needs a way for an admin to add themselves to such a Project. The report stage counts these.
 5. **A recipient who has not accepted an invitation** blocks the existing derivation for the whole Project. With the hold this changes no access. It also produces no summary line, so the Project keeps the copied devices until the invitation is accepted or removed. `codemem-lvgba.21` covers the related stall for deactivated people.
-6. **Review.** The review budget of one pass and one correction pass is spent. The correction pass asked for changes, and the fixes for its findings have not been reviewed. The [review record](#review-record) lists them. Another pass needs the owner's direction.
+6. **Review.** Three passes have run, the third at the owner's direction. Each asked for changes. The fixes made after the third pass have not been reviewed, and one of its findings is recorded as a limit and needs the owner's decision. The [review record](#review-record) lists them.
 7. **Rollback of a Project that was moved from two older setups.** Rollback keeps boundary members that are authorized in the setup the admin picked. A memory that came from the other setup and whose author is offline stays readable to them until that author returns.
 
 ## Review record
@@ -583,21 +593,32 @@ One adversarial review ran on the first design with a model from a different ven
 | --- | --- | --- |
 | 1 | Clearing filters exposed memories left in the source scope to a device outside the boundary. | The migration no longer clears filters. The finding is recorded as a requirement on `codemem-lvgba.28` in [Section 10](#what-retiring-filters-needs). |
 | 2 | A grant request from an abandoned plan could arrive after another admin device committed a different plan. | Removed by construction. The migration sends no grants and no device list. The coordinator copies the members inside the commit. |
-| 3 | A device revoked from the source scope between verify and commit stayed in the boundary. | Removed by construction. The coordinator reads the members in the same transaction that writes the boundary. Test 15 covers it. |
-| 4 | The snapshot rule accepted a cross-scope item only from the memory's author, so another device could not deliver a newer revision while the author was offline. | Fixed. P1 accepts the item when a migration record covers the move. Test 7 covers it. |
-| 5 | Suspected: rollback revoked boundary memberships before received copies had returned to the source scope. | Fixed. Rollback revokes only members that are not authorized in the source scope. Tests 38 and 39 cover it. |
+| 3 | A device revoked from the source scope between verify and commit stayed in the boundary. | Removed by construction. The coordinator reads the members in the same transaction that writes the boundary. Test 17 covers it. |
+| 4 | The snapshot rule accepted a cross-scope item only from the memory's author, so another device could not deliver a newer revision while the author was offline. | Fixed for devices from the older setup. P1 accepts the item when a migration record covers the move and the serving device is the author or is authorized in both scopes. The third pass found the remaining case, listed below. Test 7 covers it. |
+| 5 | Suspected: rollback revoked boundary memberships before received copies had returned to the source scope. | Fixed. Rollback revokes only members that are not authorized in the source scope. Tests 44 and 45 cover it. |
 | 6 | Suspected: a device that only received a Project had no entry in what devices published. | No longer applies. The design does not depend on what a receiving device holds. |
 
 ### Second pass, 2026-11-17
 
-The same reviewer ran the one correction pass on this revision, with the owner's new definition of access given as decided. It closed or moved all six first-pass items and confirmed that the transactional commit removes findings 2 and 3. It found four new sequences and one suspected one, and its verdict was again to request changes. The fixes below were made afterward and have not been reviewed.
+The same reviewer ran the one correction pass on this revision, with the owner's new definition of access given as decided. It closed or moved all six first-pass items and confirmed that the transactional commit removes findings 2 and 3. It found four new sequences and one suspected one, and its verdict was again to request changes. The third pass reviewed the fixes below.
 
 | # | Finding | Disposition |
 | --- | --- | --- |
-| 1 | The commit reused an existing boundary that had no active member. Devices can still hold memories stamped with such a boundary from an earlier share, and granting it again made them readable and deliverable to the source scope's devices. | Fixed. The commit never reuses a boundary that exists without a migration record. That case is a summary line ([Migration record](#migration-record)). Test 14 covers it. |
-| 2 | After a rollback removed a device, the reconciler on the managing admin device could grant it again before that device had read the record. | Fixed. Every membership change on a migrated boundary carries the record's generation and is checked inside the coordinator's transaction, and all changes are refused once the record is rolled back (P3, [Section 6](#6-per-project-rollback)). Tests 17 and 42 cover it. |
+| 1 | The commit reused an existing boundary that had no active member. Devices can still hold memories stamped with such a boundary from an earlier share, and granting it again made them readable and deliverable to the source scope's devices. | Fixed. The commit never reuses a boundary that exists without a migration record. That case is a summary line ([Migration record](#migration-record)). Test 16 covers it. |
+| 2 | After a rollback removed a device, the reconciler on the managing admin device could grant it again before that device had read the record. | Fixed. Every membership change on a migrated boundary carries the record's generation and is checked inside the coordinator's transaction, and all changes are refused once the record is rolled back (P3, [Section 6](#6-per-project-rollback)). Tests 19 and 48 cover it. |
 | 3 | The snapshot rule checked the two scopes and no Project. A device added to a boundary later, with no access to the source scope, could serve a memory of another Project stamped with the boundary. The receiver would move it, and would lose it when the first Project stopped being shared with it. | Fixed differently from the reviewer's suggestion. P1 now requires the serving peer to be authorized in both scopes, which removes the device in the traced sequence. The reviewer suggested checking that both copies belong to the record's Project. A device that only received a Project has its name and no canonical identity, so it cannot make that check without project names or their hashes at the coordinator. Tests 8 and 9 cover the rule. |
-| 4 | Confirming every default could change access in two ways: keeping a person added that person's other devices, and the line for a deactivated person defaulted to Stop. | Fixed. The summary shows the combined result of all choices and adds "will start receiving" lines for devices a choice brings in, each defaulting to Keep off. The deactivated-person line has no default ([The summary](#the-summary)). Tests 26 and 27 cover it. |
-| 5 | Suspected: merging a Project alias can replace the authority row, which is where the draft kept the hold. The reconciler could then stage a deny overlay and revoke a device before the summary was confirmed. | Fixed. The hold is stored in the migration's own table under the boundary ID and is checked before any write (P2). Test 11 covers it. |
+| 4 | Confirming every default could change access in two ways: keeping a person added that person's other devices, and the line for a deactivated person defaulted to Stop. | Fixed. The summary shows the combined result of all choices and adds "will start receiving" lines for devices a choice brings in, each defaulting to Keep off. The deactivated-person line has no default ([The summary](#the-summary)). Tests 30 and 31 cover it. |
+| 5 | Suspected: merging a Project alias can replace the authority row, which is where the draft kept the hold. The reconciler could then stage a deny overlay and revoke a device before the summary was confirmed. | Fixed. The hold is stored in the migration's own table under the boundary ID and is checked before any write (P2). Test 13 covers it. |
 
 The reviewer also named three places where the draft was too thin to trace: how the hold is implemented, what the coordinator checks in a readiness record beyond its signer, and where memories return on rollback when a record names more than one source scope. P2, [Readiness record](#readiness-record), and [Section 6](#6-per-project-rollback) now state each one.
+
+### Third pass, 2026-11-17
+
+The owner authorized one more pass, limited to the five fixes above and the three contracts the second pass called too thin. The reviewer closed findings 1, 2, 4, and 5. It found that the source supports the claim that a peer authorized in both scopes gains nothing from the snapshot rule. It found two sequences that the fixes introduced, one suspected one, and one contract still incomplete. Its verdict was again to request changes. What follows was done afterward and has not been reviewed.
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| A | The snapshot rule from finding 3 refuses a newer revision from a device that was added to the Project later and was never in the older setup. A device that holds the older copy waits for the author or a device from the older setup. A fresh install of the same device would get the newer revision at once. | Recorded as a limit, against the reviewer's rating of blocking. Every device that could deliver the update before the migration still can, so no delivery that existed is lost ([Section 7](#7-multi-device-ordering)). The rule also now accepts the memory's author whether or not it is still in the older setup. The reviewer's fix is a move record signed by the author that travels with each snapshot item, which adds per-memory signatures to the sync protocol. The owner decides whether the delay is acceptable. Test 11 pins the behavior. |
+| B | The check from finding 2 accepts membership changes only from the managing device. If that device is lost, nobody can grant a recipient's replacement device. | Fixed. Any admin device can take over in one coordinator transaction that advances the generation and sets the hold again ([Choosing recipients](#choosing-recipients)). Tests 20, 34, and 35 cover it. |
+| C | Suspected: if the snapshot rule checked a bare membership row for the serving peer, a peer without valid key-bound proof in the source scope could pass. | Fixed. P1 names the key-bound check against the peer's authenticated key for both scopes. Test 10 covers it. |
+| D | The commit for a Project moved from two older setups was not specified, because the automatic commit refuses a second source. | Fixed. [Two cases](#two-cases-where-a-project-does-not-move-by-itself) states the request and how the conditions change. Test 21 covers it. |
