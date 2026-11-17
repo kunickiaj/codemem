@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). The owner accepted decisions 7 and 8 on 2026-11-17. Three details of the sign-in ceremony wait for the owner. Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). The owner accepted decisions 7 and 8 and the details of the sign-in ceremony on 2026-11-17. No owner decision is open. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -660,10 +660,11 @@ The owner decided these on 2026-11-16.
    owner then chose sign-in: a device of a verified Identity needs no
    invitation. Section 1 describes the ceremony.
 
-   Three details of that ceremony are this design's choices and wait for the
-   owner's confirmation. The device returns only to groups it was removed
-   from. A device with a Google account link cannot use an invitation at all.
-   The notice on other devices and the daily limit match rebinding.
+   The owner confirmed three details of that ceremony on 2026-11-17. The
+   device returns only to groups it was removed from. A device with a Google
+   account link cannot use an invitation at all. Each rejoin shows on the
+   Identity's other devices with a Remove action, and rejoins are limited per
+   Identity per day, as rebinding is.
 2. **Any invitation created after the removal can bring a device back.** That
    includes an add-device invitation from the same person's other device. The
    alternative was to require an invitation created with the admin secret,
