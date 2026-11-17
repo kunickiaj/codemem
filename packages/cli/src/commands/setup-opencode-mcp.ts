@@ -195,6 +195,62 @@ export function removeManagedOpencodeMcp(
 	return cleanup;
 }
 
+const POOLED_FLAGS = ["--caller-context", "required"] as const;
+const POOLED_PROTOCOL = "2026-07-28";
+const POOLED_FIELDS = new Set(["type", "command", "cwd", "protocol", "pool"]);
+
+/**
+ * The entry `--opencode-mcp pooled` writes: one server process that every
+ * project directory shares. OpenCode shares a process only between identical
+ * entries, so the working directory is fixed rather than per project.
+ */
+export function buildOpencodePooledMcpEntry(
+	launcher: OpencodeMcpLauncher,
+	cwd: string,
+): Record<string, unknown> {
+	return {
+		type: "local",
+		command: [launcher.command, ...launcher.args, ...POOLED_FLAGS],
+		cwd,
+		protocol: POOLED_PROTOCOL,
+		pool: true,
+	};
+}
+
+/**
+ * True for an entry `--opencode-mcp pooled` wrote and the user has not
+ * customized. `cwd` is the directory setup writes; any other working directory
+ * is the user's choice and makes the entry theirs.
+ */
+export function isManagedPooledOpencodeMcpEntry(entry: unknown, cwd: string): boolean {
+	if (!isRecord(entry) || entry.type !== "local" || entry.pool !== true) return false;
+	if (entry.protocol !== POOLED_PROTOCOL || entry.cwd !== cwd) return false;
+	if (Object.keys(entry).some((key) => !POOLED_FIELDS.has(key))) return false;
+	const command = entry.command;
+	if (!Array.isArray(command) || command.length <= POOLED_FLAGS.length) return false;
+	const launcher = command.slice(0, -POOLED_FLAGS.length);
+	return (
+		isExactStringArray(command.slice(-POOLED_FLAGS.length), POOLED_FLAGS) &&
+		isManagedOpencodeMcpCommand(launcher)
+	);
+}
+
+function isServerEntry(value: unknown): boolean {
+	return isRecord(value) && ("type" in value || "command" in value || "url" in value);
+}
+
+/**
+ * Names of servers defined directly under `mcp`, the OpenCode 1 layout. A
+ * pooled entry needs `mcp.servers`, which that layout would read as a server
+ * named "servers". OpenCode 2 settings that sit beside `mcp.servers`, such as
+ * `mcp.timeout`, are not servers.
+ */
+export function listV1OpencodeMcpServers(config: Record<string, unknown>): string[] {
+	const mcp = config.mcp;
+	if (!isRecord(mcp)) return [];
+	return Object.keys(mcp).filter((name) => isServerEntry(mcp[name]));
+}
+
 /** The stdio entry `--opencode-mcp stdio` writes, in the file's config shape. */
 export function buildOpencodeStdioMcpEntry(
 	shape: OpencodeMcpShape,

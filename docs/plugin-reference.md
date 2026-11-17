@@ -456,8 +456,9 @@ with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 OpenCode 2.2.6 and later can share one MCP server process across project
 directories (`pool: true`). A shared `codemem mcp` process runs in one fixed
 directory, so it has to be told which project each call came from. Start it
-with `--caller-context required` and give every project the same entry, for
-example in the global OpenCode config:
+with `--caller-context required` and give every project the same entry.
+`codemem setup --opencode-only --opencode-mcp pooled` writes it to the global
+OpenCode config:
 
 ```json
 {
@@ -479,7 +480,13 @@ The plugin adds the calling session's directory, the host's `CODEMEM_PROJECT`
 value, the session ID, and a call ID to each memory tool call, and removes that
 argument from the schema the model sees. Searches, writes, sharing scopes,
 distill context, and retrieval counts then match what a per-project server
-would produce. `codemem setup` does not write this entry.
+would produce.
+
+Setup writes the shared entry only when asked. It replaces a codemem entry it
+wrote before, refuses to replace one you customized unless you pass `--force`,
+and refuses a config that defines other servers directly under `mcp` (the
+OpenCode 1 layout). `codemem setup --opencode-only --opencode-mcp stdio`
+restores the per-project entry.
 
 - The plugin must be loaded in every project that uses the entry. Without it,
   each memory tool call fails with `caller_context_required`. The server never
