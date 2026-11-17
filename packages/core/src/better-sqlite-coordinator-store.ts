@@ -154,6 +154,11 @@ import {
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
+	DEVICE_REMOVAL_COLUMNS,
+	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+	DEVICE_REMOVAL_SCHEMA_SQL,
+} from "./coordinator-device-removal.js";
+import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
@@ -711,9 +716,36 @@ function initializeSchema(db: DatabaseType): void {
 	db.transaction(() => installAccountConnectionSchemaSync(reader)).immediate();
 }
 
+function hasDeviceRemovalSchemaSync(db: DatabaseType): boolean {
+	return db.prepare(DEVICE_REMOVAL_SCHEMA_READINESS_SQL).pluck().get() === 1;
+}
+
 /**
- * The schema earlier releases created on open: V2 authentication without account
- * management. Exported for tests that build databases those releases left behind.
+ * Device removal storage: tombstones and the invitation and enrollment columns.
+ * A current database is only read. Existing rows then get their key ID, which
+ * SQL cannot compute. The enrollment triggers are not installed here yet; see
+ * ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS.
+ */
+function initializeDeviceRemovalSchema(db: DatabaseType): void {
+	const ready = () => hasDeviceRemovalSchemaSync(db);
+	if (!ready()) {
+		db.transaction(() => {
+			if (ready()) return;
+			for (const { table, column, sql } of DEVICE_REMOVAL_COLUMNS) {
+				const present = db
+					.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?")
+					.get(table, column);
+				if (!present) db.exec(sql);
+			}
+			db.exec(DEVICE_REMOVAL_SCHEMA_SQL);
+		}).immediate();
+	}
+}
+
+/**
+ * Everything startup installs apart from account management: the V2 authentication
+ * schema earlier releases created on open, and device removal storage. Exported for
+ * tests that build databases without account management.
  */
 export function initializeBaseSchema(db: DatabaseType): void {
 	db.exec(IDENTITY_GROUP_GRANT_SCHEMA_SQL);
@@ -993,6 +1025,8 @@ export function initializeBaseSchema(db: DatabaseType): void {
 			SET invite_kind = CASE WHEN operation_id IS NOT NULL THEN 'project_share' ELSE 'legacy_enrollment' END
 			WHERE invite_kind IS NULL;`,
 	);
+	// Every enrollment writer needs this storage, whatever the account schema state.
+	initializeDeviceRemovalSchema(db);
 }
 
 export function connectCoordinator(

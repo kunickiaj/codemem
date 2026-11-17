@@ -51,7 +51,9 @@ it("takes a fresh native D1 database from the numbered chain alone to the curren
 	await applyD1Migrations(db, env.TEST_MIGRATIONS);
 	// Assert: no export, baseline or out-of-band install was needed.
 	expect(await stage()).toBe("current");
-	expect((await ledger()).slice(-3)).toEqual(stageNames);
+	// The three stages are consecutive. Later migrations do not change the auth stage.
+	const applied = await ledger();
+	expect(applied.slice(applied.indexOf(stageNames[0] ?? "")).slice(0, 3)).toEqual(stageNames);
 });
 
 it("upgrades an existing V2 deployment and keeps every link, proof and audit row", async () => {
