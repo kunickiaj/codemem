@@ -27,11 +27,16 @@ type ProjectShareAcceptance = Omit<ImportInviteResult, "status"> & {
 	type?: "project_share";
 };
 type RecipientAcceptance = {
-	kind: CreateKind;
+	/** "connection" is an older code that only connects this device to a coordinator group. */
+	kind: CreateKind | "connection";
 	restartRequired: boolean;
 	detail: string;
 	deliveryPending: boolean;
+	approvalPending?: boolean;
 };
+
+const CONNECTION_ONLY_NOTE =
+	"This older code only connects this device to a coordinator group. It shares no Projects and adds you to no Team. Accept it only if you trust who sent it.";
 
 /**
  * Machine identifiers (device ids, identity ids, uuid fragments) make terrible
@@ -416,11 +421,23 @@ function ProjectShareResultMessage({
 	);
 }
 
+const ACCEPTANCE_TITLES: Record<RecipientAcceptance["kind"], string> = {
+	team_member: "Team invitation accepted",
+	add_device: "Device added",
+	connection: "Device connected",
+};
+
+function acceptanceTitle(result: RecipientAcceptance): string {
+	if (result.approvalPending) return "Join request sent";
+	return ACCEPTANCE_TITLES[result.kind];
+}
+
 function RecipientAcceptanceResult({ result }: { result: RecipientAcceptance }) {
-	const title = result.kind === "team_member" ? "Team invitation accepted" : "Device added";
+	const title = acceptanceTitle(result);
+	const showDetail = result.restartRequired || result.kind === "connection";
 	const describedBy =
 		[
-			result.restartRequired ? "recipient-invitation-result-detail" : null,
+			showDetail ? "recipient-invitation-result-detail" : null,
 			result.deliveryPending ? "recipient-invitation-result-delivery" : null,
 		]
 			.filter(Boolean)
@@ -438,9 +455,7 @@ function RecipientAcceptanceResult({ result }: { result: RecipientAcceptance }) 
 			</span>
 			<div className="recipient-policy-invitation-result-copy">
 				<h3 id="recipient-invitation-result-title">{title}</h3>
-				{result.restartRequired ? (
-					<p id="recipient-invitation-result-detail">{result.detail}</p>
-				) : null}
+				{showDetail ? <p id="recipient-invitation-result-detail">{result.detail}</p> : null}
 				{result.deliveryPending ? (
 					<p className="small" id="recipient-invitation-result-delivery">
 						Existing shared Projects do not sync to this device until the Project owner’s device
@@ -458,20 +473,17 @@ function request(kind: CreateKind, targetId: string): RecipientInvitePreviewRequ
 		: { kind, target_identity_id: targetId };
 }
 
-function requestAdvancedSyncNavigation(): void {
-	window.dispatchEvent(new CustomEvent("codemem:navigate-advanced-sync"));
-}
-
-function OlderInviteCodesButton() {
-	return (
-		<button
-			className="recipient-policy-sharing-pointer sync-subview-link"
-			onClick={requestAdvancedSyncNavigation}
-			type="button"
-		>
-			Older invite codes →
-		</button>
-	);
+/**
+ * Devices reviews pairing codes in the join form it shares with Advanced. Filling
+ * that form and switching to Devices hands the code over without retyping it.
+ */
+function openPairingReviewInDevices(code: string): void {
+	const field = document.getElementById("syncJoinInvite") as HTMLTextAreaElement | null;
+	if (field) {
+		field.value = code;
+		field.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+	window.location.hash = "devices";
 }
 
 function useInvitationResultFocus(
@@ -646,7 +658,7 @@ async function createRecipientInvitation(state: InvitationState): Promise<void> 
 
 function inspectionStatus(result: InspectInviteResult): string {
 	if (result.kind === "pair") {
-		return "Open Devices, then Accept a pairing payload, to review and accept this device.";
+		return "This is a device pairing code. Review it in Devices before trusting that device.";
 	}
 	if (result.kind === "add_device") {
 		if ((result.onboarding?.projects?.length ?? 0) > 0) {
@@ -658,7 +670,7 @@ function inspectionStatus(result: InspectInviteResult): string {
 	if (result.kind === "project_share_invite") {
 		return "Review ready. Confirm the exact Projects before accepting.";
 	}
-	return "Open Advanced, then Sync, to review and import this legacy invitation.";
+	return "Review ready. Confirm before accepting.";
 }
 
 function applyInspectedNames(state: InvitationState, result: InspectInviteResult): void {
@@ -700,19 +712,14 @@ async function inspectRecipientInvitation(state: InvitationState): Promise<void>
 	}
 }
 
-type AcceptableInspection = Exclude<InspectInviteResult, { kind: "legacy_team_invite" | "pair" }>;
+type AcceptableInspection = Exclude<InspectInviteResult, { kind: "pair" }>;
 
 function canAcceptInvitation(
 	state: InvitationState,
 	inspected: InspectInviteResult,
 ): inspected is AcceptableInspection {
 	if (state.busy || state.accepting.current) return false;
-	if (
-		state.recipientAcceptance ||
-		inspected.kind === "legacy_team_invite" ||
-		inspected.kind === "pair"
-	)
-		return false;
+	if (state.recipientAcceptance || inspected.kind === "pair") return false;
 	if (inspected.kind === "project_share_invite" && !(inspected.projects?.length ?? 0)) return false;
 	if (
 		inspected.kind === "project_share_invite" &&
@@ -734,6 +741,9 @@ async function importInspectedInvitation(
 	state: InvitationState,
 	inspected: AcceptableInspection,
 ): Promise<ImportInviteResult> {
+	if (inspected.kind === "legacy_team_invite") {
+		return api.importCoordinatorInvite(state.invite.trim(), {}, inspected.kind);
+	}
 	if (inspected.kind === "project_share_invite") {
 		return api.importCoordinatorInvite(
 			state.invite.trim(),
@@ -757,6 +767,19 @@ async function importInspectedInvitation(
 	);
 }
 
+function connectionAcceptanceFor(result: ImportInviteResult): RecipientAcceptance {
+	const approvalPending = result.status === "pending";
+	return {
+		kind: "connection",
+		restartRequired: false,
+		approvalPending,
+		detail: approvalPending
+			? "An admin of that coordinator group must approve this device. Nothing was shared, and you were not added to a Team."
+			: "This device is connected to the coordinator group. Nothing was shared, and you were not added to a Team.",
+		deliveryPending: false,
+	};
+}
+
 function recipientAcceptanceFor(
 	inspected: Extract<AcceptableInspection, { kind: "team_member" | "add_device" }>,
 	result: ImportInviteResult,
@@ -775,6 +798,19 @@ function recipientAcceptanceFor(
 	};
 }
 
+const ACCEPT_FAILURE_FALLBACKS: Record<AcceptableInspection["kind"], string> = {
+	project_share_invite:
+		"Unable to accept this Project invitation. Ask the owner to create a new invitation, then try again.",
+	legacy_team_invite:
+		"This device was not connected. Check that it can reach the coordinator and accept again, or ask for a new code.",
+	team_member: "Unable to accept this invitation.",
+	add_device: "Unable to accept this invitation.",
+};
+
+function acceptFailureFallback(kind: AcceptableInspection["kind"]): string {
+	return ACCEPT_FAILURE_FALLBACKS[kind];
+}
+
 async function acceptRecipientInvitation(state: InvitationState): Promise<void> {
 	const inspected = state.inspected;
 	if (!inspected || !canAcceptInvitation(state, inspected)) return;
@@ -786,17 +822,15 @@ async function acceptRecipientInvitation(state: InvitationState): Promise<void> 
 		const result = await importInspectedInvitation(state, inspected);
 		if (inspected.kind === "project_share_invite") {
 			state.setProjectAcceptance(normalizeProjectShareAcceptance(result));
+		} else if (inspected.kind === "legacy_team_invite") {
+			state.setRecipientAcceptance(connectionAcceptanceFor(result));
 		} else {
 			state.setRecipientAcceptance(recipientAcceptanceFor(inspected, result));
 		}
 		state.setStatus("");
 	} catch (cause) {
 		state.accepting.current = false;
-		const fallback =
-			inspected.kind === "project_share_invite"
-				? "Unable to accept this Project invitation. Ask the owner to create a new invitation, then try again."
-				: "Unable to accept this invitation.";
-		state.setError(errorMessage(cause, fallback));
+		state.setError(errorMessage(cause, acceptFailureFallback(inspected.kind)));
 		state.setStatus("");
 	} finally {
 		state.setBusy(false);
@@ -889,7 +923,6 @@ function InvitationLanding({
 				>
 					Review an invite
 				</button>
-				<OlderInviteCodesButton />
 			</article>
 			{dialog}
 		</div>
@@ -1026,11 +1059,28 @@ function InvitationDialogMessages({
 					</button>
 				</div>
 			) : null}
-			{state.inspected?.kind === "legacy_team_invite" ? (
-				<p>Open Advanced, then Sync, to review and import this legacy invitation.</p>
+			{state.inspected?.kind === "legacy_team_invite" && !state.recipientAcceptance ? (
+				<p>{CONNECTION_ONLY_NOTE}</p>
 			) : null}
 			{state.inspected?.kind === "pair" ? (
-				<p>Open Devices, then Accept a pairing payload, to review and accept this device.</p>
+				<div>
+					<p>
+						Devices shows the device this code belongs to so you can check it before trusting it. In
+						Devices, choose Pair a device. The code is already filled in.
+					</p>
+					<button
+						className="settings-button"
+						onClick={() => {
+							const code = state.invite.trim();
+							// Close first so the dialog does not cover Devices.
+							state.setMode(null);
+							openPairingReviewInDevices(code);
+						}}
+						type="button"
+					>
+						Review in Devices
+					</button>
+				</div>
 			) : null}
 			<p aria-live="polite" className="small" role="status">
 				{state.status}
@@ -1122,7 +1172,9 @@ function acceptInvitationActionButton(
 	actions: InvitationActions,
 ): ComponentChildren {
 	const recipientPreview =
-		state.inspected?.kind === "team_member" || state.inspected?.kind === "add_device";
+		state.inspected?.kind === "team_member" ||
+		state.inspected?.kind === "add_device" ||
+		state.inspected?.kind === "legacy_team_invite";
 	const projectShareInvite = state.inspected?.kind === "project_share_invite";
 	if (
 		state.recipientAcceptance ||

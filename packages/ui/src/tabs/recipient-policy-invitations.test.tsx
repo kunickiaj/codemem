@@ -1,6 +1,6 @@
 import { type ComponentChildren, render } from "preact";
 import { act } from "preact/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const dialogSpy = vi.hoisted(() => vi.fn());
 const openProjectShare = vi.hoisted(() => vi.fn());
@@ -190,24 +190,6 @@ function mount(graph = intent) {
 	if (!element) throw new Error("mount missing");
 	act(() => render(<RecipientPolicyInvitations intent={graph} />, element));
 }
-
-describe("recipient-policy invitation navigation", () => {
-	it("requests Advanced Sync navigation for older invite codes", () => {
-		document.body.innerHTML = '<div id="mount"></div>';
-		const onNavigateAdvancedSync = vi.fn();
-		window.addEventListener("codemem:navigate-advanced-sync", onNavigateAdvancedSync, {
-			once: true,
-		});
-		mount();
-
-		act(() => button("Older invite codes →").click());
-
-		expect(onNavigateAdvancedSync).toHaveBeenCalledOnce();
-		const element = document.getElementById("mount");
-		if (element) act(() => render(null, element));
-		document.body.innerHTML = "";
-	});
-});
 
 beforeEach(() => {
 	document.body.innerHTML = '<div id="mount"></div>';
@@ -1209,62 +1191,103 @@ it("moves focus to the heading and restores it after Radix keyboard close", () =
 	expect(document.activeElement).toBe(trigger);
 });
 
-it(
-	"keeps direct Project review and legacy import routed to their established journeys",
-	verifiesLegacyImportRouting,
-);
-
-async function verifiesLegacyImportRouting() {
-	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
+async function reviewInvitationCode(code: string): Promise<Element> {
 	mount();
-	act(() => button("Share exact Projects").click());
-	expect(openProjectShare).toHaveBeenCalledOnce();
 	act(() => button("Review invitation").click());
 	const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
 	if (!textarea) throw new Error("textarea missing");
 	act(() => {
-		textarea.value = "legacy";
+		textarea.value = code;
 		textarea.dispatchEvent(new Event("input", { bubbles: true }));
 	});
 	const dialog = document.querySelector('[role="dialog"]');
 	if (!dialog) throw new Error("dialog missing");
 	act(() => button("Review invitation", dialog).click());
-	await vi.waitFor(() =>
-		expect(dialog.textContent).toContain(
-			"Open Advanced, then Sync, to review and import this legacy invitation",
-		),
-	);
-	expect(dialog.textContent).not.toContain("coordinator administration");
-	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
-		"Open Advanced, then Sync, to review and import this legacy invitation.",
-	);
-	expect(dialog.textContent).not.toContain("Open Devices");
-	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
+	await vi.waitFor(() => expect(dialog.querySelector('[role="status"]')?.textContent).toBeTruthy());
+	return dialog;
 }
 
-it("routes manual pairing to Devices without enabling invitation acceptance", async () => {
+it("keeps direct Project sharing on its own journey", () => {
+	mount();
+	act(() => button("Share exact Projects").click());
+	expect(openProjectShare).toHaveBeenCalledOnce();
+});
+
+async function acceptanceResult(): Promise<HTMLElement> {
+	await vi.waitFor(() =>
+		expect(document.getElementById("recipient-invitation-result")).not.toBeNull(),
+	);
+	return document.getElementById("recipient-invitation-result") as HTMLElement;
+}
+
+it("accepts an older connection-only code and says it shares nothing", async () => {
+	// Arrange
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
+	vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "joined", type: "team_join" });
+	const dialog = await reviewInvitationCode("older-code");
+	expect(dialog.textContent).toContain(
+		"This older code only connects this device to a coordinator group. It shares no Projects and adds you to no Team.",
+	);
+
+	// Act
+	await act(async () => button("Accept invitation", dialog).click());
+
+	// Assert
+	const result = await acceptanceResult();
+	expect(api.importCoordinatorInvite).toHaveBeenCalledWith("older-code", {}, "legacy_team_invite");
+	expect(result.querySelector("h3")?.textContent).toBe("Device connected");
+	expect(result.textContent).toContain("Nothing was shared, and you were not added to a Team.");
+	expect(document.querySelector('[role="dialog"]')?.textContent).not.toMatch(
+		/Advanced|legacy|enrollment/,
+	);
+});
+
+it("names the next step when an older code can't be accepted and keeps retry available", async () => {
+	// Arrange: the coordinator became unreachable after the review.
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
+	vi.mocked(api.importCoordinatorInvite).mockRejectedValue(new Error("fetch failed"));
+	const dialog = await reviewInvitationCode("older-code");
+
+	// Act
+	await act(async () => button("Accept invitation", dialog).click());
+
+	// Assert
+	await vi.waitFor(() =>
+		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
+			"This device was not connected. Check that it can reach the coordinator and accept again, or ask for a new code.",
+		),
+	);
+	expect(button("Accept invitation", dialog).disabled).toBe(false);
+});
+
+it("reports an older code that waits for an admin's approval", async () => {
+	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({ kind: "legacy_team_invite" });
+	vi.mocked(api.importCoordinatorInvite).mockResolvedValue({ status: "pending" });
+	const dialog = await reviewInvitationCode("older-code");
+
+	await act(async () => button("Accept invitation", dialog).click());
+
+	const result = await acceptanceResult();
+	expect(result.querySelector("h3")?.textContent).toBe("Join request sent");
+	expect(result.textContent).toContain(
+		"An admin of that coordinator group must approve this device.",
+	);
+});
+
+it("routes a pairing code to Devices without enabling invitation acceptance", async () => {
 	vi.mocked(api.inspectCoordinatorInvite).mockResolvedValue({
 		kind: "pair",
 		device_id: "peer",
 		fingerprint: "fingerprint",
 		addresses: ["http://peer.example.test"],
 	});
-	mount();
-	act(() => button("Review invitation").click());
-	const textarea = document.querySelector<HTMLTextAreaElement>("textarea");
-	if (!textarea) throw new Error("textarea missing");
-	act(() => {
-		textarea.value = "pairing";
-		textarea.dispatchEvent(new Event("input", { bubbles: true }));
-	});
-	const dialog = document.querySelector('[role="dialog"]');
-	if (!dialog) throw new Error("dialog missing");
-	act(() => button("Review invitation", dialog).click());
-	await vi.waitFor(() =>
-		expect(dialog.textContent).toContain("Open Devices, then Accept a pairing payload"),
-	);
+	const joinField = document.createElement("textarea");
+	joinField.id = "syncJoinInvite";
+	document.body.appendChild(joinField);
+	const dialog = await reviewInvitationCode("pairing");
+
 	expect(dialog.querySelector('[role="status"]')?.textContent).toBe(
-		"Open Devices, then Accept a pairing payload, to review and accept this device.",
+		"This is a device pairing code. Review it in Devices before trusting that device.",
 	);
 	expect(dialog.textContent).not.toMatch(/Open Advanced|legacy invitation/);
 	expect(
@@ -1272,6 +1295,10 @@ it("routes manual pairing to Devices without enabling invitation acceptance", as
 			(item) => !item.disabled && item.textContent?.startsWith("Accept"),
 		),
 	).toBe(false);
+	act(() => button("Review in Devices", dialog).click());
+	expect(joinField.value).toBe("pairing");
+	expect(window.location.hash).toBe("#devices");
+	expect(document.querySelector('[role="dialog"]')).toBeNull();
 	expect(api.importCoordinatorInvite).not.toHaveBeenCalled();
 });
 
