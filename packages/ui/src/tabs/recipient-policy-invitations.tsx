@@ -17,6 +17,18 @@ import { projectIdentityMemorySummaryGroups } from "../lib/project-identity-pres
 import { openProjectShareFlow } from "./project-sharing";
 
 type CreateKind = "team_member" | "add_device";
+
+const OPEN_INVITATION_CREATE_EVENT = "codemem:open-invitation-create";
+let pendingInvitationCreate: CreateKind | null = null;
+
+/**
+ * Opens the invitation creator, even if Sharing has not mounted yet. Advanced
+ * screens use this so new invitations are always Team or add-device invitations.
+ */
+export function requestInvitationCreate(kind: CreateKind): void {
+	pendingInvitationCreate = kind;
+	window.dispatchEvent(new CustomEvent<CreateKind>(OPEN_INVITATION_CREATE_EVENT, { detail: kind }));
+}
 type DialogMode = "create" | "accept";
 type ProjectShareInvite = Extract<InspectInviteResult, { kind: "project_share_invite" }>;
 type ProjectShareAcceptance = Omit<ImportInviteResult, "status"> & {
@@ -1312,11 +1324,36 @@ function InvitationDialog({
 	);
 }
 
+function useInvitationCreateRequests(
+	controls: InvitationControls,
+	hasTargets: (kind: CreateKind) => boolean,
+) {
+	useEffect(() => {
+		const openCreate = (kind: CreateKind) => {
+			pendingInvitationCreate = null;
+			// Without a Team or person to invite to, the landing explains what to do first.
+			if (!hasTargets(kind)) return;
+			controls.chooseKind(kind);
+			controls.open(
+				"create",
+				document.getElementById("recipient-policy-sharing-tab-invitations") ?? document.body,
+			);
+		};
+		const onRequest = (event: Event) => openCreate((event as CustomEvent<CreateKind>).detail);
+		window.addEventListener(OPEN_INVITATION_CREATE_EVENT, onRequest);
+		if (pendingInvitationCreate) openCreate(pendingInvitationCreate);
+		return () => window.removeEventListener(OPEN_INVITATION_CREATE_EVENT, onRequest);
+	});
+}
+
 export function RecipientPolicyInvitations({ intent }: { intent: RecipientPolicyIntentGraphV1 }) {
 	const teams = intent.teams.filter((team) => team.status === "active");
 	const identities = intent.identities.filter((identity) => identity.status === "active");
 	const state = useInvitationState(teams);
 	const controls = useInvitationControls(state, teams, identities);
+	useInvitationCreateRequests(controls, (kind) =>
+		kind === "team_member" ? teams.length > 0 : identities.length > 0,
+	);
 	const actions = useInvitationActions(state);
 	const dialog = state.mode ? (
 		<InvitationDialog

@@ -7,6 +7,7 @@
 import { Fragment, h, render } from "preact";
 import { RadixTabs } from "../../components/primitives/radix-tabs";
 import * as api from "../../lib/api";
+import { openSharingFrom } from "../../lib/sharing-handoff";
 import { state } from "../../lib/state";
 import { renderDevicesPanel } from "./components/devices-panel";
 import { renderGroupsPanel } from "./components/groups-panel";
@@ -46,7 +47,6 @@ import {
 const {
 	createGroupFromAdminPanel,
 	runGroupAction,
-	createInviteFromAdminPanel,
 	reviewJoinRequestFromAdminPanel,
 	runDeviceAction,
 } = createCoordinatorAdminActions({
@@ -66,7 +66,6 @@ function renderShell() {
 	const targetGroupRecord = currentAdminTargetGroupRecord();
 	const targetArchived = Boolean(targetGroupRecord?.archived_at);
 	const groupsFresh = surfacesAreFresh(coordinatorAdminState.recovery, "status", "groups");
-	const invitesFresh = groupsFresh && !targetArchived;
 	const joinRequestsMatchTarget = adminSnapshotTargetMatchesCurrent(
 		coordinatorAdminState.joinRequestsSnapshotTarget,
 	);
@@ -264,12 +263,7 @@ function renderShell() {
 						renderShell,
 						reloadData: () => void loadCoordinatorAdminData(),
 					}),
-					renderInvitesPanel({
-						summary,
-						fresh: invitesFresh,
-						createInvite: () => void createInviteFromAdminPanel(),
-						renderShell,
-					}),
+					renderInvitesPanel({ createInvite: () => openSharingFrom("invite") }),
 					renderJoinRequestsPanel({
 						summary,
 						fresh: joinRequestsFresh,

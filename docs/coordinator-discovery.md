@@ -242,7 +242,7 @@ For a direct share:
 
 When an existing Identity adds another device, create an add-device invitation and review the exact Projects inherited from that Identity's direct and Team access. Acceptance cannot add unrelated Projects or remove existing exclusions.
 
-The coordinator remains the authority for the invite and access steps, but its groups, devices, Spaces, grants, and project mappings are advanced administration—not normal teammate setup. Legacy coordinator invites and manual pairing remain compatible, but do not grant project access by themselves.
+The coordinator remains the authority for the invite and access steps, but its groups, devices, Spaces, grants, and project mappings are advanced administration—not normal teammate setup. The Viewer no longer creates connection-only coordinator invites. Advanced and Coordinator Administration send you to **Sharing**, where invitations are Team or add-device invitations. Older connection-only codes and manual pairing still work, but they don't grant Project access by themselves.
 
 ## Sharing-domain membership and revocation
 

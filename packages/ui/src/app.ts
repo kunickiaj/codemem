@@ -32,6 +32,7 @@ import { friendlyError } from "./lib/form";
 import { initializeViewerIcons } from "./lib/icons";
 import { isReadTimeout, type ReadRequestOptions, waitForAbort } from "./lib/read-request";
 import { createRefreshSessionOwner, type RefreshSession } from "./lib/refresh-session";
+import { SHARING_HANDOFF_EVENT, type SharingHandoff } from "./lib/sharing-handoff";
 import {
 	type AdvancedSection,
 	ALL_TAB_IDS,
@@ -75,6 +76,7 @@ import {
 } from "./tabs/health";
 import { mountLegacyTeamSetupDialog, openLegacyTeamSetup } from "./tabs/legacy-team-setup-dialog";
 import { initProjectsTab, loadProjectsData } from "./tabs/projects";
+import { requestInvitationCreate } from "./tabs/recipient-policy-invitations";
 import { isPersonSettingsDialogOpen } from "./tabs/recipient-policy-person-settings";
 import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
 import { requestSharingNavigation } from "./tabs/recipient-policy-sharing";
@@ -471,6 +473,15 @@ function initTabs() {
 		requestSharingNavigation("teams");
 		switchTab("sharing", { canonicalHash: true });
 		queueMicrotask(() => document.getElementById("tabBtn-sharing")?.focus());
+	});
+	window.addEventListener(SHARING_HANDOFF_EVENT, (event) => {
+		const target = (event as CustomEvent<SharingHandoff>).detail;
+		requestSharingNavigation(target === "create_team" ? "teams" : "invitations");
+		switchTab("sharing", { canonicalHash: true });
+		// Focus Sharing first so keyboard users land there even if no dialog opens;
+		// an invitation dialog that does open moves focus into itself.
+		document.getElementById("tabBtn-sharing")?.focus();
+		if (target === "invite") requestInvitationCreate("team_member");
 	});
 	$("advancedSharingLink")?.addEventListener("click", (event) => {
 		event.preventDefault();
