@@ -685,36 +685,27 @@ describe("recipient-policy edge changes", () => {
 		}
 	});
 
-	it.each([
-		["pending", "pending", null, "team_member_identity_not_active"],
-		["deactivated", "deactivated", null, "team_member_identity_not_active"],
-		["merged", "active", "identity-a", "team_member_identity_merged"],
-	] as const)(
-		"blocks $label Team members identically in preview and authoritative derivation",
-		(_label, status, mergedIntoIdentityId, code) => {
-			const db = seedGraph();
-			insertProjectRecipient(db, PROJECT_A, "team-a", "team");
-			db.prepare(
-				`UPDATE actors SET status = ?, merged_into_actor_id = ?
-				 WHERE actor_id = 'identity-b'`,
-			).run(status, mergedIntoIdentityId);
+	it("blocks pending Team members identically in preview and authoritative derivation", () => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		db.prepare("UPDATE actors SET status = 'pending' WHERE actor_id = 'identity-b'").run();
 
-			const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
-			let previewError: unknown;
-			try {
-				previewRecipientPolicyEdges(db, {
-					version: 1,
-					changes: [teamChange(PROJECT_A, "team-a")],
-				});
-			} catch (error) {
-				previewError = error;
-			}
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+		let previewError: unknown;
+		try {
+			previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [teamChange(PROJECT_A, "team-a")],
+			});
+		} catch (error) {
+			previewError = error;
+		}
 
-			expect(authoritative.status).toBe("blocked");
-			expect(authoritative.blocked[0]).toEqual({ code, referenceId: "identity-b" });
-			expect(previewError).toMatchObject({ status: "invalid", errorCode: code });
-		},
-	);
+		const code = "team_member_identity_not_active";
+		expect(authoritative.status).toBe("blocked");
+		expect(authoritative.blocked[0]).toEqual({ code, referenceId: "identity-b" });
+		expect(previewError).toMatchObject({ status: "invalid", errorCode: code });
+	});
 
 	it.each(["", " device-a", "device-a ", "device-a\n"])(
 		"blocks malformed Team device ID %j identically in preview and authoritative derivation",
@@ -1515,4 +1506,35 @@ describe("recipient-policy edge repository merging", () => {
 			),
 		).toEqual(["device-a", "device-b"]);
 	});
+});
+
+describe("withdrawn Team members in recipient-policy edges", () => {
+	it.each([
+		["deactivated", "deactivated", null],
+		["merged", "merged", "identity-a"],
+		["merge-marked", "active", "identity-a"],
+	] as const)(
+		"drops %s Team members identically in preview and authoritative derivation",
+		(_label, status, mergedIntoIdentityId) => {
+			// Arrange: identity-b withdrew; identity-a remains an active Team member.
+			const db = seedGraph();
+			insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+			db.prepare(
+				`UPDATE actors SET status = ?, merged_into_actor_id = ?
+				 WHERE actor_id = 'identity-b'`,
+			).run(status, mergedIntoIdentityId);
+
+			// Act
+			const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+			const preview = previewRecipientPolicyEdges(db, {
+				version: 1,
+				changes: [teamChange(PROJECT_A, "team-a")],
+			});
+
+			// Assert
+			expect(authoritative).toMatchObject({ status: "eligible", blocked: [] });
+			expect(authoritative.devices.map(({ deviceId }) => deviceId)).toEqual(["device-a"]);
+			expect(preview.effectiveDevices.map(({ deviceId }) => deviceId)).toEqual(["device-a"]);
+		},
+	);
 });

@@ -1,5 +1,8 @@
 import type { Database } from "./db.js";
-import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
+import {
+	derivePolicyTeamDeviceEligibility,
+	isWithdrawnPolicyIdentity,
+} from "./policy-team-device-eligibility.js";
 import { denyOverlayRow } from "./recipient-policy-deny-overlay.js";
 
 import {
@@ -297,16 +300,28 @@ function block(
 	blocked.set(`${code}\u0000${referenceId}`, { code, referenceId });
 }
 
-function activeIdentityCode(
+/**
+ * Returns whether an Identity's devices receive the Project. A deactivated or
+ * merged Identity has no devices, so revocation proceeds for them. A missing or
+ * otherwise inactive Identity blocks the Project until its state is resolved.
+ */
+function canExpandIdentity(
+	blocked: Map<string, RecipientPolicyDerivationBlock>,
+	identityId: string,
 	identity: RecipientPolicyDerivationIdentity | undefined,
-	missing: RecipientPolicyDerivationBlockCode,
-	inactive: RecipientPolicyDerivationBlockCode,
-	merged: RecipientPolicyDerivationBlockCode,
-): RecipientPolicyDerivationBlockCode | null {
-	if (!identity) return missing;
-	if (identity.status === "merged" || identity.mergedIntoIdentityId) return merged;
-	if (identity.status !== "active") return inactive;
-	return null;
+	[missing, inactive]: readonly [
+		RecipientPolicyDerivationBlockCode,
+		RecipientPolicyDerivationBlockCode,
+	],
+): boolean {
+	if (isWithdrawnPolicyIdentity(identity)) return false;
+	if (!identity) {
+		block(blocked, missing, identityId);
+		return false;
+	}
+	if (identity.status === "active") return true;
+	block(blocked, inactive, identityId);
+	return false;
 }
 
 function addEffectiveDevice(
@@ -407,18 +422,10 @@ export function deriveRecipientPolicyEffectiveDevices(
 	const expandIdentity = (
 		identityId: string,
 		source: RecipientPolicyEffectiveDeviceSource,
-		codes: readonly [
-			RecipientPolicyDerivationBlockCode,
-			RecipientPolicyDerivationBlockCode,
-			RecipientPolicyDerivationBlockCode,
-		],
+		codes: readonly [RecipientPolicyDerivationBlockCode, RecipientPolicyDerivationBlockCode],
 		allowedDeviceIds?: ReadonlySet<string>,
 	): void => {
-		const identityCode = activeIdentityCode(identities.get(identityId), ...codes);
-		if (identityCode) {
-			block(blocked, identityCode, identityId);
-			return;
-		}
+		if (!canExpandIdentity(blocked, identityId, identities.get(identityId), codes)) return;
 		for (const device of devicesByIdentity.get(identityId) ?? []) {
 			if (!KNOWN_DEVICE_STATUSES.has(device.status)) {
 				block(blocked, "identity_device_invalid", device.deviceId);
@@ -461,7 +468,6 @@ export function deriveRecipientPolicyEffectiveDevices(
 			expandIdentity(recipient.recipientId, { kind: "direct_identity" }, [
 				"identity_missing",
 				"identity_not_active",
-				"identity_merged",
 			]);
 			continue;
 		}
@@ -505,11 +511,7 @@ export function deriveRecipientPolicyEffectiveDevices(
 			expandIdentity(
 				identityId,
 				{ kind: "team_membership", teamId: team.teamId },
-				[
-					"team_member_identity_missing",
-					"team_member_identity_not_active",
-					"team_member_identity_merged",
-				],
+				["team_member_identity_missing", "team_member_identity_not_active"],
 				eligibleDeviceIds,
 			);
 		}

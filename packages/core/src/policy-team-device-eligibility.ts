@@ -96,6 +96,23 @@ function compareText(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/**
+ * A deactivated or merged Identity has withdrawn from sharing. It contributes no
+ * devices to any Team or Project, so its devices lose access instead of the whole
+ * policy stalling. A merged Identity's access never passes to the survivor through
+ * a leftover edge or membership; the merge itself moves those to the survivor.
+ */
+export function isWithdrawnPolicyIdentity(
+	identity: { status: string; mergedIntoIdentityId?: string | null } | undefined,
+): boolean {
+	if (!identity) return false;
+	return (
+		identity.status === "deactivated" ||
+		identity.status === "merged" ||
+		Boolean(identity.mergedIntoIdentityId)
+	);
+}
+
 export function isPolicyTeamMembershipActiveForMode(mode: string, status: string): boolean {
 	return (
 		(mode === "person_all_devices" && status === "active") ||
@@ -177,8 +194,10 @@ export function derivePolicyTeamDeviceEligibility(
 			addBlock("team_member_identity_missing", identityId);
 			continue;
 		}
-		if (identity.status === "merged" || identity.mergedIntoIdentityId) {
-			addBlock("team_member_identity_merged", identityId);
+		if (isWithdrawnPolicyIdentity(identity)) {
+			// Deleting the current entry is safe during Set iteration. The member's
+			// devices are skipped below, so the Team stays eligible for everyone else.
+			activeMembers.delete(identityId);
 			continue;
 		}
 		if (identity.status !== "active") {

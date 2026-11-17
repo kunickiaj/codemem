@@ -1871,3 +1871,101 @@ describe("recipient-policy reconciler executor", () => {
 		]);
 	});
 });
+
+describe("recipient-policy reconciler with withdrawn people", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertPolicyGraph(db);
+	});
+
+	afterEach(() => db.close());
+
+	it("revokes a deactivated person's devices and keeps everyone else's access", async () => {
+		// Arrange: identity-b was a direct recipient whose device holds membership.
+		insertDirectRecipient(db, "identity-b", "device-b");
+		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+		const { effects, members } = harness(["device-keep", "device-new", "device-b"]);
+
+		// Act
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-deactivated" },
+			effects,
+		);
+
+		// Assert
+		expect(outcome).toMatchObject({ revokedDeviceIds: ["device-b"], grantedDeviceIds: [] });
+		expect(outcome.safeErrorCode).toBeNull();
+		expect(vi.mocked(effects.revoke).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"device-b",
+		]);
+		expect([...members].toSorted()).toEqual(["device-keep", "device-new"]);
+	});
+
+	it("keeps reconciling the surviving Identity when a merged one still has an edge", async () => {
+		// Arrange: identity-c merged into identity-b, but an edge still names identity-c.
+		insertDirectRecipient(db, "identity-b", "device-b");
+		insertDirectRecipient(db, "identity-c", "device-c", "merged");
+		db.prepare(
+			"UPDATE actors SET merged_into_actor_id = 'identity-b' WHERE actor_id = 'identity-c'",
+		).run();
+		const { effects, members } = harness(["device-keep", "device-new", "device-b", "device-c"]);
+
+		// Act
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-merged" },
+			effects,
+		);
+
+		// Assert
+		expect(outcome).toMatchObject({ revokedDeviceIds: ["device-c"], grantedDeviceIds: [] });
+		expect(outcome.safeErrorCode).toBeNull();
+		expect([...members].toSorted()).toEqual(["device-b", "device-keep", "device-new"]);
+	});
+
+	it("still revokes nothing while a pending recipient blocks the Project", async () => {
+		insertDirectRecipient(db, "identity-b", "device-b", "pending");
+		const { effects } = harness(["device-keep", "device-new", "device-old"]);
+
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-pending" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_desired_state_invalid",
+		});
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+});
+
+function insertDirectRecipient(
+	db: InstanceType<typeof Database>,
+	identityId: string,
+	deviceId: string,
+	status = "active",
+): void {
+	const now = new Date(BASE_TIME).toISOString();
+	db.prepare(
+		`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+		 VALUES (?, ?, 0, ?, ?, ?)`,
+	).run(identityId, identityId, status, now, now);
+	db.prepare(
+		`INSERT INTO identity_devices(
+		 device_id, identity_id, display_name, status, provenance, revision, migration_state,
+		 idempotency_key, created_at, updated_at
+		 ) VALUES (?, ?, ?, 'active', 'test', '1', 'native', ?, ?, ?)`,
+	).run(deviceId, identityId, deviceId, `device:${deviceId}`, now, now);
+	db.prepare(
+		`INSERT INTO project_recipients(
+		 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		 policy_revision, migration_state, idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'identity', ?, 'active', 'test', '1', 'native', ?, ?, ?)`,
+	).run(PROJECT, identityId, `recipient:${identityId}`, now, now);
+}
