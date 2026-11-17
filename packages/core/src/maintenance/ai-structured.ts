@@ -1,9 +1,9 @@
 /* AI-powered structured-content backfill for older memories.
  *
  * Concurrency: each adopted result is written in its own transaction with a
- * `WHERE id = ? AND rev = ?` guard against the revision read before the
+ * `WHERE id = ? AND rev IS ?` guard against the revision read before the
  * observer call, so an edit that lands while the observer is running is not
- * overwritten. `memory_concept_refs` is rebuilt in the same transaction so
+ * overwritten. `IS` keeps legacy rows with a NULL `rev` eligible. `memory_concept_refs` is rebuilt in the same transaction so
  * the concept index matches the stored concepts or neither changes.
  *
  * Replication: the backfill is local-only maintenance. It does not bump `rev`
@@ -95,7 +95,7 @@ interface ParsedStructuredBackfill {
 
 type StructuredBackfillRow = {
 	id: number;
-	rev: number;
+	rev: number | null;
 	kind: string;
 	title: string;
 	body_text: string;
@@ -293,7 +293,7 @@ function writeStructuredBackfill(
 	return db.transaction(() => {
 		const result = db
 			.prepare(
-				"UPDATE memory_items SET narrative = ?, facts = ?, concepts = ?, updated_at = ? WHERE id = ? AND rev = ?",
+				"UPDATE memory_items SET narrative = ?, facts = ?, concepts = ?, updated_at = ? WHERE id = ? AND rev IS ?",
 			)
 			.run(
 				next.narrative,

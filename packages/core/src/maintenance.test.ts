@@ -2273,6 +2273,26 @@ describe("aiBackfillStructuredContent revision fencing", () => {
 		}
 	});
 
+	it("backfills legacy rows whose revision is NULL", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(db, seedSession(db), "change", "Legacy rev", "Body text.");
+			db.prepare("UPDATE memory_items SET rev = NULL WHERE id = ?").run(id);
+			const observer = makeObserver(
+				JSON.stringify({ narrative: "Filled narrative.", facts: ["Fact"], concepts: ["pattern"] }),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer });
+
+			expect(result).toMatchObject({ updated: 1, staleWrites: 0 });
+			expect(readStructuredRow(db, id).narrative).toBe("Filled narrative.");
+			expect(conceptRefs(db, id)).toEqual(["pattern"]);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("does not adopt observer output when the memory revision changes during the call", async () => {
 		const db = new Database(":memory:");
 		try {
