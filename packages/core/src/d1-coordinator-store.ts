@@ -107,6 +107,11 @@ import {
 } from "./coordinator-bootstrap-grant-issuance.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
+	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+	inviteInsertSql,
+	joinRequestRemovalSeqSql,
+} from "./coordinator-device-removal.js";
+import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
 	type CoordinatorRecordAuthorizedNonceInput,
@@ -1160,6 +1165,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly accountOwnerTarget: AccountOwnerTargetOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
+	private removalSchemaSeen = false;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1198,6 +1204,19 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			authBackend,
 			options.authClock,
 		);
+	}
+	/**
+	 * Whether migration 0048 is applied, so that writers can store key IDs and
+	 * removal sequences. Until then they write what they wrote before it. Read at
+	 * most once per store after it is first seen.
+	 */
+	private async hasRemovalSchema(): Promise<boolean> {
+		if (this.removalSchemaSeen) return true;
+		const row = await firstRow<{ ready: number }>(
+			this.db.prepare(DEVICE_REMOVAL_SCHEMA_READINESS_SQL),
+		);
+		this.removalSchemaSeen = row?.ready === 1;
+		return this.removalSchemaSeen;
 	}
 	/**
 	 * ADR 0005 Section 8 rebind storage; null until migration 0038 is applied.
@@ -2089,6 +2108,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			existing: CoordinatorInvite,
 		): Promise<CoordinatorInvite> => {
 			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
 			await runChanges(
 				this.db
 					.prepare(`UPDATE coordinator_invites
@@ -2118,14 +2138,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		}
 		try {
 			await this.db
-				.prepare(`INSERT INTO coordinator_invites(
-				invite_id, group_id, token, policy, expires_at, created_at, created_by,
-				team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
-				token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
-				pending_person_id, project_summaries_json, project_intent_json, trust_state,
-				invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
-				reviewed_preview_digest, reviewed_intent_json
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				.prepare(inviteInsertSql(await this.hasRemovalSchema()))
 				.bind(
 					inviteId,
 					_opts.groupId,
@@ -2705,10 +2718,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorJoinRequest> {
 		const now = nowISO();
 		const requestId = tokenUrlSafe(12);
+		const hasRemovalSchema = await this.hasRemovalSchema();
+		const removalSeq = joinRequestRemovalSeqSql(hasRemovalSchema);
+		const removalSeqValues = hasRemovalSchema
+			? [_opts.groupId, _opts.token, await tokenDigest(_opts.token)]
+			: [];
 		await this.db
 			.prepare(`INSERT INTO coordinator_join_requests(
-				request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)`)
+				request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
+				created_at, reviewed_at, reviewed_by${removalSeq.column}
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value})`)
 			.bind(
 				requestId,
 				_opts.groupId,
@@ -2718,6 +2737,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				_opts.displayName ?? null,
 				_opts.token,
 				now,
+				...removalSeqValues,
 			)
 			.run();
 		const row = await firstRow<CoordinatorJoinRequest>(

@@ -157,6 +157,8 @@ import {
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
 	DEVICE_REMOVAL_SCHEMA_SQL,
+	inviteInsertSql,
+	joinRequestRemovalSeqSql,
 } from "./coordinator-device-removal.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -1086,6 +1088,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly accountOwnerTarget: AccountOwnerTargetOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
+	private removalSchemaSeen = false;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1132,6 +1135,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			authBackend,
 			options.authClock,
 		);
+	}
+	/**
+	 * Whether writers can store key IDs and removal sequences. A file opened only as
+	 * existing may predate that storage; once seen, it never goes away.
+	 */
+	private hasRemovalSchema(): boolean {
+		if (!this.removalSchemaSeen) this.removalSchemaSeen = hasDeviceRemovalSchemaSync(this.db);
+		return this.removalSchemaSeen;
 	}
 	/** ADR 0005 Section 8 rebind storage; null before its tables exist. */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
@@ -2033,6 +2044,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 		const renewOperationInvite = (existing: CoordinatorInvite): CoordinatorInvite => {
 			if (!existing.revoked_at && existing.expires_at > now) return existing;
+			// A renewal keeps issued_after_removal_seq: it does not move the invitation past a later removal.
 			this.db
 				.prepare(`UPDATE coordinator_invites
 					SET token = ?, token_digest = ?, expires_at = ?, created_at = ?, created_by = ?,
@@ -2060,14 +2072,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 		try {
 			this.db
-				.prepare(`INSERT INTO coordinator_invites(
-					invite_id, group_id, token, policy, expires_at, created_at, created_by,
-					team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
-					token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
-					pending_person_id, project_summaries_json, project_intent_json, trust_state,
-					invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
-					reviewed_preview_digest, reviewed_intent_json
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+				.prepare(inviteInsertSql(this.hasRemovalSchema()))
 				.run(
 					inviteId,
 					opts.groupId,
@@ -2772,10 +2777,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	): Promise<CoordinatorJoinRequest> {
 		const now = nowISO();
 		const requestId = tokenUrlSafe(12);
+		const hasRemovalSchema = this.hasRemovalSchema();
+		const removalSeq = joinRequestRemovalSeqSql(hasRemovalSchema);
+		const removalSeqValues = hasRemovalSchema
+			? [opts.groupId, opts.token, tokenDigest(opts.token)]
+			: [];
 		this.db
 			.prepare(`INSERT INTO coordinator_join_requests(
-					request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
-				) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL)`)
+					request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
+					created_at, reviewed_at, reviewed_by${removalSeq.column}
+				) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value})`)
 			.run(
 				requestId,
 				opts.groupId,
@@ -2785,6 +2796,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				opts.displayName ?? null,
 				opts.token,
 				now,
+				...removalSeqValues,
 			);
 		const row = this.db
 			.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
