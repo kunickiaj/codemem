@@ -10,6 +10,7 @@ import {
 } from "../../core/src/coordinator-auth-link-revocation-test-harness.js";
 import { revocationInput } from "../../core/src/coordinator-device-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 account-link revocation", () => {
@@ -43,8 +44,14 @@ describe("native D1 account-link revocation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(
+				env.COORDINATOR_DB,
+				"group_id IN (?, ?)",
+				input.groupId,
+				`${input.groupId}-seed`,
+			);
 			await env.COORDINATOR_DB.batch(
-				linkRevocationTables.map((table) => {
+				linkRevocationTables.filter((table) => table !== "enrolled_devices").map((table) => {
 					let column = "group_id";
 					let value = input.groupId;
 					if (table === "coordinator_device_revocations") column = "evidence_group_id";

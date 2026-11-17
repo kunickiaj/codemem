@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinator";
 import { expect, it } from "vitest";
 import { config, input, NOW, seedEnrollmentSql } from "./device-claim-eligibility-fixture.js";
+import { changeEnrollmentKey, d1EnrollmentExec } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 it("native D1 device claim advances, rejects a changed key, and cancels/recreates without authority writes", async () => {
 	// Arrange: existing worker-pool setup applies TEST_MIGRATIONS. The browser start also
@@ -13,6 +14,11 @@ it("native D1 device claim advances, rejects a changed key, and cancels/recreate
 	const transaction = { purpose: "link" as const, attemptId: request.attemptId, browserStartHash: request.browserStartHash, stateHash: "3".repeat(64), binderHash: "4".repeat(64), nonce: "n".repeat(43), pkceVerifier: "p".repeat(43) };
 	const tables = (await env.COORDINATOR_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('_cf_METADATA','coordinator_auth_link_attempts','coordinator_auth_browser_transactions','coordinator_auth_account_connection_orders') ORDER BY name").all<{ name: string }>()).results;
 	const snapshot = async () => Promise.all(tables.map(async ({ name }) => (await env.COORDINATOR_DB.prepare(`SELECT * FROM "${name}"`).all()).results));
+	// The raw seed has no key ID. Restating its key stores one, so that the key change and its
+	// reversal below leave the enrollment exactly as this snapshot has it.
+	const exec = d1EnrollmentExec(env.COORDINATOR_DB);
+	const setKey = (publicKey: string) => changeEnrollmentKey(exec, { publicKey, fingerprint: null }, "device_id='device-a'");
+	await setKey(input.signer.publicKey);
 	const before = await snapshot();
 	// Act / Assert: trusted metadata, no Google network verification or finalization.
 	expect(await store.createAuthLinkAttempt(request, config)).toMatchObject({ kind: "created" });
@@ -22,10 +28,10 @@ it("native D1 device claim advances, rejects a changed key, and cancels/recreate
 	const browser = { attemptId: request.attemptId, ...bound };
 	expect(await store.recordAuthLinkOidcVerified({ ...browser, account: { issuer: config.issuer, subject: "trusted-test-google-subject" } }, config)).toMatchObject({ kind: "applied", status: { state: "oidc_verified" } });
 	expect(await snapshot()).toEqual(before);
-	await env.COORDINATOR_DB.prepare("UPDATE enrolled_devices SET public_key=public_key || ' changed' WHERE device_id='device-a'").run();
+	await setKey(`${input.signer.publicKey} changed`);
 	expect(await store.confirmAuthLinkAttempt({ ...browser, completionSecretHash: "d".repeat(64) }, config)).toMatchObject({ kind: "rejected" });
 	expect(await store.readAuthLinkCompletionDestination(browser, config)).toBeNull();
-	await env.COORDINATOR_DB.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id='device-a'").bind(input.signer.publicKey).run();
+	await setKey(input.signer.publicKey);
 	expect(await store.failAuthLinkAttempt({ attemptId: request.attemptId, requester: { kind: "device", signer: input.signer }, reason: "cancelled" }, config)).toMatchObject({ kind: "applied", status: { state: "failed" } });
 	expect(await store.createAuthLinkAttempt({ ...request, attemptId: "fresh-attempt", runtimeVerifierHash: "1".repeat(64), browserStartHash: "2".repeat(64) }, config)).toMatchObject({ kind: "created", status: { state: "pending" } });
 	expect(await snapshot()).toEqual(before);

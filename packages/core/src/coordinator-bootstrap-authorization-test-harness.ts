@@ -431,6 +431,23 @@ function registerFinalRevocations(test: Test, database: DatabaseFixture, isFinal
 		);
 	}
 }
+/** Sets one column of the participant's enrollment to a value no check has seen. */
+async function driftParticipantColumn(f: GrantFixture, who: "seed" | "worker", column: string) {
+	const participant = [f.review.groupId, bootstrapParticipant(f, who)] as const;
+	if (column === "public_key")
+		return changeEnrollmentKey(
+			f.exec,
+			{ publicKey: "clean-drift", fingerprint: null },
+			"group_id = ? AND device_id = ?",
+			...participant,
+		);
+	return f.exec(
+		`UPDATE enrolled_devices SET ${column} = ? WHERE group_id = ? AND device_id = ?`,
+		"clean-drift",
+		...participant,
+	);
+}
+
 function registerFinalEnrollmentDrift(test: Test, database: DatabaseFixture, isFinal: FinalQuery) {
 	for (const who of ["seed", "worker"] as const) {
 		test.for(["public_key", "fingerprint", "identity_id", "removal", "disabled", "enabled"])(
@@ -456,12 +473,7 @@ function registerFinalEnrollmentDrift(test: Test, database: DatabaseFixture, isF
 						);
 						return;
 					}
-					await f.exec(
-						`UPDATE enrolled_devices SET ${field} = ? WHERE group_id = ? AND device_id = ?`,
-						"clean-drift",
-						f.review.groupId,
-						bootstrapParticipant(f, who),
-					);
+					await driftParticipantColumn(f, who, field);
 				});
 				// Act
 				const result = await store.getBootstrapGrantAuthorization(request(grant.grant_id));

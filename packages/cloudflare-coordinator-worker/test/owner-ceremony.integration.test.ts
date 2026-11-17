@@ -28,6 +28,7 @@ import {
 	snapshot,
 	verified,
 } from "./owner-ceremony-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 const unavailable = { kind: "rejected", error: "owner_enrollment_unavailable" };
 const unknown = { kind: "rejected", error: "owner_enrollment_unknown" };
@@ -425,7 +426,7 @@ test.for(["retained", "removed", "disabled", "revoked", "wrong-secret", "wrong-s
 		const c = await confirmed(f);
 		const first = await f.api.finalize(c.input);
 		expect(first.kind).toBe("finalized");
-		if (mode === "removed") await exec("DELETE FROM enrolled_devices");
+		if (mode === "removed") await deleteEnrollmentWithoutTombstone(exec);
 		if (mode === "disabled") await exec("UPDATE enrolled_devices SET enabled = 0");
 		if (mode === "revoked")
 			await exec("UPDATE coordinator_auth_account_links SET revoked_at_ms = ? WHERE coordinator_id = ? AND link_id = ?", NOW, config.coordinatorId, "link-a");

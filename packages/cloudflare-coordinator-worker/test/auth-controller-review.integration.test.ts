@@ -7,6 +7,7 @@ import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-au
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
 import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 const NOW = 1791028800000;
 const PATH = "/v1/admin/auth-controller-reviews";
 const secret = "fixture-admin-secret";
@@ -20,10 +21,10 @@ afterEach(async () => {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 	vi.restoreAllMocks();
 	for (const f of fixtures.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", f.input.group_id);
 		await env.COORDINATOR_DB.batch([
 			...["link_audit_log", "link_attempts", "controller_attestations"].map((table) => env.COORDINATOR_DB.prepare(`DELETE FROM coordinator_auth_${table} WHERE coordinator_id = ?`).bind(f.config.coordinatorId)),
 			env.COORDINATOR_DB.prepare("DELETE FROM request_nonces WHERE device_id = ?").bind(f.deviceId),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(f.input.group_id),
 			env.COORDINATOR_DB.prepare("DELETE FROM coordinator_invites WHERE group_id = ?").bind(f.input.group_id),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.input.group_id),
 		]);

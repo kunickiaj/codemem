@@ -5,6 +5,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { afterEach, expect, it } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const NOW = 1_791_028_800_000;
 const profile = {
@@ -20,11 +21,11 @@ const tables = "link_profiles account_profiles sessions session_receipts link_au
 
 afterEach(async () => {
 	for (const f of owned.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", f.groupId);
 		await env.COORDINATOR_DB.batch([
 			...tables.map((name) => env.COORDINATOR_DB.prepare(
 				`DELETE FROM coordinator_auth_${name} WHERE coordinator_id = ?`,
 			).bind(f.coordinatorId)),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(f.groupId),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.groupId),
 		]);
 	}

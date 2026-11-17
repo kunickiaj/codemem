@@ -8,6 +8,7 @@ import {
 } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { IDENTITY_GROUP_GRANT_RETRY_SQL } from "../../core/src/coordinator-identity-group-grant.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 identity group grant contract", () => {
@@ -37,11 +38,11 @@ describe("native D1 identity group grant contract", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id LIKE ?", `${review.groupId}%`);
 			await env.COORDINATOR_DB.batch([
 				...["coordinator_identity_group_grants", "coordinator_auth_controller_attestations", "coordinator_scope_membership_effect_receipts"].map((table) =>
 					env.COORDINATOR_DB.prepare(`DELETE FROM ${table} WHERE coordinator_id = ? OR coordinator_id = ?`)
 						.bind(review.coordinatorId, `${review.coordinatorId}-other`)),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id LIKE ?").bind(`${review.groupId}%`),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id LIKE ?").bind(`${review.groupId}%`),
 			]);
 		}

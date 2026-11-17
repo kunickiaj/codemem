@@ -6,6 +6,7 @@ import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { type LifecycleFixture, registerOwnershipWriterLifecycle } from "../../core/src/shared-ownership-writer-lifecycle-test-harness.js";
 import { disposeNativeAuthFixture } from "./owner-ceremony-test-fixtures.js";
 import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", () => {
   const test = revocationHarness(async use => {
@@ -39,7 +40,8 @@ describe("native D1 cross-writer lifecycle (pool fixture, not cold restart)", ()
     } finally {
       fetch.mockRestore(); vi.useRealTimers();
       await disposeNativeAuthFixture();
-      await env.COORDINATOR_DB.batch(["DELETE FROM coordinator_identity_group_grants", "DELETE FROM coordinator_bootstrap_grants", "DELETE FROM coordinator_join_requests", "DELETE FROM coordinator_invites", "DELETE FROM coordinator_device_revocations", "DELETE FROM enrolled_devices", "DELETE FROM groups WHERE group_id LIKE 'ownership-native%'"].map(sql => env.COORDINATOR_DB.prepare(sql)));
+      await resetEnrollments(env.COORDINATOR_DB);
+      await env.COORDINATOR_DB.batch(["DELETE FROM coordinator_identity_group_grants", "DELETE FROM coordinator_bootstrap_grants", "DELETE FROM coordinator_join_requests", "DELETE FROM coordinator_invites", "DELETE FROM coordinator_device_revocations", "DELETE FROM groups WHERE group_id LIKE 'ownership-native%'"].map(sql => env.COORDINATOR_DB.prepare(sql)));
     }
   });
   registerOwnershipWriterLifecycle(test);

@@ -11,6 +11,7 @@ import {
 } from "../../core/src/coordinator-project-revocation-test-harness.js";
 import { recipientTables } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 project revocation", () => {
@@ -36,8 +37,9 @@ describe("native D1 project revocation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", input.groupId);
 			await env.COORDINATOR_DB.batch([
-				...recipientTables.map((table) =>
+				...recipientTables.filter((table) => table !== "enrolled_devices").map((table) =>
 					env.COORDINATOR_DB.prepare(
 						`DELETE FROM ${table} WHERE ${table === "coordinator_device_revocations" ? "evidence_group_id" : "group_id"} = ?`,
 					).bind(input.groupId),

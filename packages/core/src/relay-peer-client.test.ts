@@ -403,6 +403,7 @@ describe("relay peer trust and independent admission", () => {
 			// Arrange.
 			const f = await fixture();
 			if (condition === "rotated-key")
+				// Raw on purpose: this minimal participant schema has no key_id column and never gets the enrollment triggers.
 				f.db
 					.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = 'source'")
 					.run(f.identities.target.expectedPin);

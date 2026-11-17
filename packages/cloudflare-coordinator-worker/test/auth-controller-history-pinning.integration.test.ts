@@ -10,6 +10,7 @@ import {
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifiers.js";
 import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const db = env.COORDINATOR_DB;
 const timestamp = "2026-10-01T00:00:00.000Z";
@@ -25,6 +26,7 @@ afterEach(async () => {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 	vi.restoreAllMocks();
 	for (const f of fixtures.splice(0)) {
+		await resetEnrollments(db, "group_id = ?", f.review.groupId);
 		await db.batch([
 			...f.historyGroups.map((group) =>
 				db
@@ -34,7 +36,6 @@ afterEach(async () => {
 			db
 				.prepare("DELETE FROM coordinator_auth_controller_attestations WHERE coordinator_id = ?")
 				.bind(f.review.coordinatorId),
-			db.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(f.review.groupId),
 			db.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.review.groupId),
 		]);
 	}

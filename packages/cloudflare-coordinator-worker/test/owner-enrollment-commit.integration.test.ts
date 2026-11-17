@@ -20,6 +20,7 @@ import {
 	pendingOwner,
 } from "../../core/src/coordinator-owner-enrollment-test-harness.js";
 import { NOW, resetCeremony, seedNativeOwnerAuthority } from "./owner-ceremony-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 const tables = [
 	"coordinator_owner_enrollment_attempts",
@@ -334,7 +335,7 @@ test.for(["retained", "removed", "forged"])(
 		expect(await commitOwnerEnrollment(f.input)).toBe(true);
 		const receipt = await finalRow();
 		if (mode === "removed") {
-			await exec("DELETE FROM enrolled_devices");
+			await deleteEnrollmentWithoutTombstone(exec);
 			await exec("DELETE FROM coordinator_owner_enrollment_audit_log");
 		}
 		if (mode === "forged") receipt.confirmation_hash = "9".repeat(64);
@@ -361,7 +362,11 @@ test("native D1 commit on a schema without device removal storage enrolls every 
 	// Arrange: the schema as it was before migration 0048, which is applied again afterwards.
 	const migration = env.TEST_MIGRATIONS.find(({ name }) => name === DEVICE_REMOVAL_MIGRATION_NAME);
 	if (!migration) throw new Error("Missing device removal migration");
+	const triggers = await env.COORDINATOR_DB.prepare(
+		"SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'enrolled_devices' AND name LIKE 'enrolled_devices_%'",
+	).all<{ name: string; sql: string }>();
 	for (const sql of [
+		...triggers.results.map(({ name }) => `DROP TRIGGER ${name}`),
 		"DROP TABLE coordinator_device_removals",
 		"ALTER TABLE enrolled_devices DROP COLUMN key_id",
 		"ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq",
@@ -385,6 +390,10 @@ test("native D1 commit on a schema without device removal storage enrolls every 
 		expect(enrolled.some((row) => "key_id" in row)).toBe(false);
 		expect(await readOwnerEnrollmentReceipt(f.input.backend, await finalRow())).toBe(true);
 	} finally {
-		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+		await env.COORDINATOR_DB.batch(
+			[...migration.queries, ...triggers.results.map(({ sql }) => sql)].map((sql) =>
+				env.COORDINATOR_DB.prepare(sql),
+			),
+		);
 	}
 });

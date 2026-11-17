@@ -5,6 +5,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
 type Review = Parameters<D1CoordinatorStore["createAuthControllerAttestation"]>[0];
@@ -29,14 +30,12 @@ function hash() {
 
 afterEach(async () => {
 	for (const review of owned.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", review.groupId);
 		await env.COORDINATOR_DB.batch([
 			...[...otherTables, attempts].map((table) =>
 				env.COORDINATOR_DB.prepare(`DELETE FROM ${table} WHERE coordinator_id = ?`).bind(
 					review.coordinatorId,
 				),
-			),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(
-				review.groupId,
 			),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
 		]);

@@ -20,6 +20,8 @@ import {
 } from "../../core/src/relay-admission-participant-nonce-test-fixtures.js";
 import { buildRelayAdmissionNonceStatement } from "../../core/src/relay-admission-participant-nonce.js";
 import { readRelayAdmissionReadinessStamp } from "../../core/src/relay-admission-readiness.js";
+import { resetEnrollments } from "./enrollment-reset.js";
+import { changeEnrollmentKey, d1EnrollmentExec } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 // Actual migrated, disposable local D1. No coordinator constructor or SQL shim.
 const db = env.COORDINATOR_DB;
@@ -67,10 +69,10 @@ describe("relay participant nonce compiler on native local D1", () => {
 	beforeEach(async () => {
 		authorityId = (++sequence).toString(16).padStart(64, "0");
 		groupId = `participant-nonce-${sequence}`;
+		await resetEnrollments(db);
 		await db.batch([
 			db.prepare("DELETE FROM request_nonces"),
 			db.prepare("DELETE FROM coordinator_device_revocations"),
-			db.prepare("DELETE FROM enrolled_devices"),
 			db.prepare("DELETE FROM groups"),
 		]);
 	});
@@ -141,10 +143,18 @@ describe("relay participant nonce compiler on native local D1", () => {
 			// Arrange
 			const f = await seed();
 			// Act: column names are a static test allowlist.
-			await db
-				.prepare(`UPDATE enrolled_devices SET ${column}=?1 WHERE device_id=?2`)
-				.bind(value, deviceId)
-				.run();
+			if (column === "public_key")
+				await changeEnrollmentKey(
+					d1EnrollmentExec(db),
+					{ publicKey: String(value), fingerprint: null },
+					"device_id=?",
+					deviceId,
+				);
+			else
+				await db
+					.prepare(`UPDATE enrolled_devices SET ${column}=?1 WHERE device_id=?2`)
+					.bind(value, deviceId)
+					.run();
 			const row = await prepare(f).first();
 			// Assert
 			expect(row).toBeNull();

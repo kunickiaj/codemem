@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { coordinatorListDevicesAction } from "../../core/src/coordinator-actions.js";
+import { changeEnrollmentKey } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import {
 	LEGACY_SETUP,
 	type LinkedLegacySetupFixture,
@@ -220,10 +221,12 @@ describe("coordinator-owned capability trust constraints", () => {
 
 	it("requires the producer's ownership binding to match the actual canonical enrollment key", async () => {
 		// Arrange: an old ownership binding for the same device cannot prove its current key.
-		fixture.coordinator.db
-			.prepare(`UPDATE enrolled_devices
-			SET public_key = ?, fingerprint = ? WHERE device_id = ?`)
-			.run(fixture.keyA.publicKey, fixture.keyA.fingerprint, fixture.keyB.deviceId);
+		changeEnrollmentKey(
+			fixture.coordinator.db,
+			{ publicKey: fixture.keyA.publicKey, fingerprint: fixture.keyA.fingerprint },
+			"device_id = ?",
+			fixture.keyB.deviceId,
+		);
 		// Act
 		const result = await probe();
 		// Assert

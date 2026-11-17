@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	changeEnrollmentKey,
+	numberedEnrollmentExec,
+} from "./coordinator-enrollment-test-fixtures.js";
+import {
 	buildTraversalNonceStatement,
 	buildTraversalStateStatement,
 	readTraversalStateReceipt,
@@ -315,10 +319,19 @@ function registerParticipantDrift(create: Create) {
 			if (!row) throw new Error("missing participant");
 			const value = column === "enabled" ? 0 : "changed";
 			// Identifiers come only from the literal six-column allowlist.
-			await f.db.run(
-				`UPDATE enrolled_devices SET ${column}=?1 WHERE group_id=?2 AND device_id=?3`,
-				[value, row.group_id, row.device_id],
-			);
+			if (column === "public_key")
+				await changeEnrollmentKey(
+					numberedEnrollmentExec((sql, values) => f.db.run(sql, values)),
+					{ publicKey: "changed", fingerprint: null },
+					"group_id=? AND device_id=?",
+					row.group_id,
+					row.device_id,
+				);
+			else
+				await f.db.run(
+					`UPDATE enrolled_devices SET ${column}=?1 WHERE group_id=?2 AND device_id=?3`,
+					[value, row.group_id, row.device_id],
+				);
 
 			const results = await Promise.all([
 				f.db.returning(statements.nonce),

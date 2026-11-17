@@ -12,6 +12,7 @@ import {
 } from "../../core/src/relay-admission-decision-test-fixtures.js";
 import { RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS } from "../../core/src/relay-admission-metadata-schema.js";
 import { PARTICIPANT_REVOCATION_INSERT } from "../../core/src/relay-admission-participant-nonce-test-fixtures.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 // This file uses the existing migrated local D1 binding, never a remote database.
 const db = env.COORDINATOR_DB;
@@ -63,10 +64,10 @@ describe("private relay admission on native local D1", () => {
 		for (const sql of RELAY_ADMISSION_METADATA_SCHEMA_STATEMENTS) await db.prepare(sql).run();
 	});
 	beforeEach(async () => {
+		await resetEnrollments(db);
 		await db.batch([
 			db.prepare("DELETE FROM request_nonces"),
 			db.prepare("DELETE FROM coordinator_device_revocations"),
-			db.prepare("DELETE FROM enrolled_devices"),
 			db.prepare("DELETE FROM groups"),
 		]);
 	});

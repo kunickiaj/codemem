@@ -11,6 +11,7 @@ import {
 	registerRecipientWriteGuards,
 } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 recipient revocation", () => {
@@ -36,6 +37,7 @@ describe("native D1 recipient revocation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", input.groupId);
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare(
 					"DELETE FROM coordinator_bootstrap_grants WHERE group_id = ?",
@@ -46,9 +48,6 @@ describe("native D1 recipient revocation", () => {
 				env.COORDINATOR_DB.prepare(
 					"DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?",
 				).bind(input.groupId),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(
-					input.groupId,
-				),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(input.groupId),
 			]);
 		}

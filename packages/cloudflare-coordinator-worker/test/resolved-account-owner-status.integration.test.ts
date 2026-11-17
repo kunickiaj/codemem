@@ -22,6 +22,10 @@ import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifie
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { changeFixture, config, NOW, input as origin } from "./account-change-fixture.js";
 import { resetCeremony } from "./owner-ceremony-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
 const now = new Date(NOW).toISOString();
@@ -653,7 +657,7 @@ it.each(["device_id", "ed25519_key"] as const)(
 it("native removed source enrollment/group, later authentic weak labels and original OTHER-key retirement preserve A", async () => {
 	// Arrange
 	const f = await setup();
-	await exec("DELETE FROM enrolled_devices WHERE group_id='retained-source'");
+	await deleteEnrollmentWithoutTombstone(exec, "group_id='retained-source'");
 	await exec("DELETE FROM groups WHERE group_id='retained-source'");
 	await history(f.signer, "later-history", "identity-later");
 	await projectLabel(f);
@@ -769,25 +773,33 @@ it.each(["source revocation", "requester changed", "new strong B"] as const)(
 		undisclosed(result);
 		expect(await snapshot()).toEqual(afterMutation);
 		if (race === "requester changed") {
-			for (const assignment of [
-				"public_key=public_key || ' changed-text'",
-				"fingerprint='wrong-fingerprint'",
-				"enabled=0",
-			] as const) {
-				// Arrange: restore exact current signer, then race one field at the final SELECT.
-				await exec(
-					"UPDATE enrolled_devices SET enabled=1,public_key=?,fingerprint=? WHERE group_id=? AND device_id=?",
-					f.signer.publicKey,
-					f.signer.fingerprint,
-					f.signer.groupId,
-					f.signer.deviceId,
+			const current = [f.signer.groupId, f.signer.deviceId] as const;
+			const restoreSigner = async () => {
+				await changeEnrollmentKey(
+					exec,
+					{ publicKey: f.signer.publicKey, fingerprint: f.signer.fingerprint },
+					"group_id=? AND device_id=?",
+					...current,
 				);
+				await exec("UPDATE enrolled_devices SET enabled=1 WHERE group_id=? AND device_id=?", ...current);
+			};
+			// The first race gives the key another text form, as public_key || ' changed-text' did.
+			for (const assignment of ["public_key", "fingerprint='wrong-fingerprint'", "enabled=0"] as const) {
+				// Arrange: restore exact current signer, then race one field at the final SELECT.
+				await restoreSigner();
 				f.hooks.final = async () => {
-					await exec(
-						`UPDATE enrolled_devices SET ${assignment} WHERE group_id=? AND device_id=?`,
-						f.signer.groupId,
-						f.signer.deviceId,
-					);
+					if (assignment === "public_key")
+						await changeEnrollmentKey(
+							exec,
+							{ publicKey: `${f.signer.publicKey} changed-text`, fingerprint: null },
+							"group_id=? AND device_id=?",
+							...current,
+						);
+					else
+						await exec(
+							`UPDATE enrolled_devices SET ${assignment} WHERE group_id=? AND device_id=?`,
+							...current,
+						);
 					afterMutation = await snapshot();
 				};
 				// Act
@@ -797,13 +809,7 @@ it.each(["source revocation", "requester changed", "new strong B"] as const)(
 				expect(await snapshot()).toEqual(afterMutation);
 			}
 			// Arrange: current-group archival is independent of source-group retention.
-			await exec(
-				"UPDATE enrolled_devices SET enabled=1,public_key=?,fingerprint=? WHERE group_id=? AND device_id=?",
-				f.signer.publicKey,
-				f.signer.fingerprint,
-				f.signer.groupId,
-				f.signer.deviceId,
-			);
+			await restoreSigner();
 			f.hooks.final = async () => {
 				await exec("UPDATE groups SET archived_at=? WHERE group_id=?", now, f.signer.groupId);
 				afterMutation = await snapshot();

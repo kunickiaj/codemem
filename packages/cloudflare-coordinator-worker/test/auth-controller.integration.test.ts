@@ -2,6 +2,8 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { env } from "cloudflare:workers";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
+import { resetEnrollments } from "./enrollment-reset.js";
+import { d1EnrollmentExec, removeDeviceWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 type ReviewInput = Parameters<D1CoordinatorStore["createAuthControllerAttestation"]>[0];
 type Attestation = NonNullable<
@@ -13,13 +15,11 @@ const fixtures: ReviewInput[] = [];
 afterEach(async () => {
 	// Delete only this file's fixtures, including tombstones intentionally retained by removal.
 	for (const review of fixtures.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", review.groupId);
 		await env.COORDINATOR_DB.batch([
 			env.COORDINATOR_DB.prepare(
 				"DELETE FROM coordinator_auth_controller_attestations WHERE coordinator_id = ?",
 			).bind(review.coordinatorId),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(
-				review.groupId,
-			),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
 		]);
 	}
@@ -157,7 +157,13 @@ it("retains revoked tuples across removal and reenrollment and prevents receipt 
 		review.coordinatorId,
 		review.attestationId,
 	);
-	const removed = await store.removeDevice(review.groupId, review.deviceId);
+	// The device enrolls again below, which a recorded removal would refuse.
+	await removeDeviceWithoutTombstone(
+		d1EnrollmentExec(env.COORDINATOR_DB),
+		review.groupId,
+		review.deviceId,
+	);
+	const removed = (await store.getEnrollment(review.groupId, review.deviceId, true)) === null;
 	const afterRemoval = await readAttestations(review.coordinatorId);
 	await store.enrollDevice(review.groupId, {
 		deviceId: review.deviceId,

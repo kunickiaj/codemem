@@ -3,6 +3,7 @@ import { describe, expect, vi } from "vitest";
 import { bootstrapRevocationTables, guardedBootstrapD1, registerBootstrapReceiptFailures, registerBootstrapRevocationContract, registerBootstrapStatementGuards } from "../../core/src/coordinator-bootstrap-revocation-test-harness.js";
 import { contractHarness } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 raw bootstrap grant revocation", () => {
@@ -20,10 +21,10 @@ describe("native D1 raw bootstrap grant revocation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(db, "group_id = ?", review.groupId);
 			await db.batch([
 				db.prepare("DELETE FROM coordinator_bootstrap_grants WHERE group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(review.groupId),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
 			]);
 		}

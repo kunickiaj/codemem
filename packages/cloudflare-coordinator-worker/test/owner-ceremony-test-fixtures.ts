@@ -19,6 +19,7 @@ import {
 } from "../../core/src/owner-enrollment-start.js";
 import { pendingKey, seedOwnerAuthority } from "./owner-authority-test-fixture.js";
 import { RELAY_ADMISSION_TABLE_KEYS } from "./relay-admission-table-keys.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 export { pendingKey } from "./owner-authority-test-fixture.js";
 
 // Deliberately do not import the core SQLite fixture into the native worker pool.
@@ -90,12 +91,8 @@ export async function resetCeremony() {
 		"coordinator_owner_enrollment_audit_log",
 	])
 		await exec(`DROP TABLE IF EXISTS ${table}`);
-	for (const table of [
-		"enrolled_devices",
-		"coordinator_identity_group_grants",
-		"coordinator_device_revocations",
-		"groups",
-	])
+	await resetEnrollments(env.COORDINATOR_DB);
+	for (const table of ["coordinator_identity_group_grants", "coordinator_device_revocations", "groups"])
 		await exec(`DELETE FROM ${table}`);
 	for (const name of [
 		"0028_add_device_ownership_bindings.sql",

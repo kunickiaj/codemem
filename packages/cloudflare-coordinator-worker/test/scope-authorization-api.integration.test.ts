@@ -3,6 +3,7 @@ import { describe, expect, vi } from "vitest";
 import { contractHarness } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { registerScopeApiQueryBudget, registerScopeAuthorizationApi, scopeApiNowMs } from "../../core/src/coordinator-scope-authorization-api-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 signed public scope API", () => {
@@ -17,11 +18,11 @@ describe("native D1 signed public scope API", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			vi.restoreAllMocks();
+			await resetEnrollments(db, "group_id = ?", prefix);
 			await db.batch([
 				...['coordinator_scope_membership_effect_receipts', 'coordinator_scope_membership_audit_log', 'coordinator_scope_memberships', 'coordinator_scopes'].map((table) => db.prepare(`DELETE FROM ${table} WHERE scope_id IN (SELECT scope_id FROM coordinator_scopes WHERE group_id = ?)`).bind(prefix)),
 				db.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(prefix),
 				db.prepare("DELETE FROM request_nonces WHERE device_id = ?").bind(`${prefix}-requester`),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(prefix),
 				db.prepare("DELETE FROM groups WHERE group_id = ?").bind(prefix),
 			]);
 		}

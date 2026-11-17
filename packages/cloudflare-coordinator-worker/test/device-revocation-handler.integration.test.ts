@@ -3,6 +3,7 @@ import { describe, expect, vi } from "vitest";
 import { registerDeviceRevocationHandlerContract } from "../../core/src/coordinator-device-revocation-handler-test-harness.js";
 import { revocationHarness, revocationInput, revocationSideEffectTables } from "../../core/src/coordinator-device-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 describe("native D1 inactive operator revocation handler", () => {
 	const test = revocationHarness(async use => {
@@ -21,8 +22,9 @@ describe("native D1 inactive operator revocation handler", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			vi.restoreAllMocks();
+			await resetEnrollments(env.COORDINATOR_DB);
 			await env.COORDINATOR_DB.batch([
-				...tables.filter(table => table !== "sqlite_master").reverse().map(table => env.COORDINATOR_DB.prepare(`DELETE FROM ${table}`)),
+				...tables.filter(table => table !== "sqlite_master" && table !== "enrolled_devices").reverse().map(table => env.COORDINATOR_DB.prepare(`DELETE FROM ${table}`)),
 			]);
 		}
 	});

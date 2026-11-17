@@ -5,6 +5,7 @@ import {
 	registerOwnershipContract,
 } from "../../core/src/coordinator-device-ownership-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 describe("native D1 device ownership schema foundation", () => {
 	const definitionSql =
@@ -41,9 +42,9 @@ describe("native D1 device ownership schema foundation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id = 'ownership-group'");
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare("DELETE FROM presence_records WHERE group_id = 'ownership-group'"),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = 'ownership-group'"),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = 'ownership-group'"),
 			]);
 		}
