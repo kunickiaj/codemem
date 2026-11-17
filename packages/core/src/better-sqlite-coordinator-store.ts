@@ -1930,12 +1930,22 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						if (typeof publicKey !== "string")
 							throw new Error("device_ownership_authorization_unavailable");
 						const keyId = enrollmentRevocationKeyId(publicKey);
+						const stored = this.storedKeyIdWrite(publicKey);
 						const result = this.db
-							.prepare(`UPDATE enrolled_devices SET enabled = 1
+							.prepare(`UPDATE enrolled_devices SET enabled = 1${stored.sql.assignment}
 						WHERE group_id = ? AND device_id = ? AND public_key = ?
 						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 						AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
-							.run(groupId, deviceId, publicKey, deviceId, keyId, deviceId, keyId);
+							.run(
+								...stored.values,
+								groupId,
+								deviceId,
+								publicKey,
+								deviceId,
+								keyId,
+								deviceId,
+								keyId,
+							);
 						if (legacyDeviceWriteChanges({ meta: result }) === 1) return true;
 						const denial = legacyDeviceDenial(
 							this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).get(deviceId, keyId, deviceId, keyId),
