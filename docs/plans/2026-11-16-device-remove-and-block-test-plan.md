@@ -241,8 +241,11 @@ plain device-claim account link.
    for each removed enrollment. Preview reports `rejoin` as `invitation`,
    `sign_in`, or `none` for a device without a binding, with a binding and a
    qualifying link and group, and with a binding and neither.
-5. `GET /v1/admin/devices/removals` lists active tombstones newest first,
-   omits lifted ones and public keys, and sets `truncated` above 500.
+5. `GET /v1/admin/devices/removals` lists active tombstones newest first and
+   omits lifted ones and public keys. With more than 500 it returns
+   `next_before_seq`, and paging with `before_seq` reaches the oldest one.
+   `device_id` returns one device's tombstones. Tombstones of a blocked device
+   are omitted unless `include_blocked=1`. (PR review.)
 6. A coordinator database without the table returns
    `device_removal_unavailable` from the new routes and from the legacy
    removal, and deletes no enrollment.
@@ -291,6 +294,8 @@ plain device-claim account link.
 7. Viewer route: when the removal succeeds and the block commit fails, the
    reply says removed and not blocked, and the device is in the removed list.
 8. Viewer route: when the block preview is unavailable, nothing is removed.
+9. With more than 500 newer active tombstones, Devices still finds D through
+   paging or the `device_id` filter and blocks it. (PR review.)
 
 ## H. Local pairing removal and binding (closes `codemem-l4dd`)
 

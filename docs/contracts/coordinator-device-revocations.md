@@ -541,10 +541,19 @@ context.
   `{ state: "removed", version: 1, removal_id, removal_seq, device_ids, key_id, removals }`,
   where each entry has `group_id`, `device_id`, and `removal_seq`.
 - `GET /v1/admin/devices/removals` returns
-  `{ version: 1, items, truncated }` with at most 500 active tombstones, newest
-  first. Items carry `removal_id`, `removal_seq`, `group_id`, `device_id`,
+  `{ version: 1, items, next_before_seq }` with at most 500 active tombstones,
+  newest first. Items carry `removal_id`, `removal_seq`, `group_id`, `device_id`,
   `fingerprint`, `key_id`, `display_name`, `identity_id`, and `removed_at`. They
-  omit the public key.
+  omit the public key. Three optional query parameters make every active
+  tombstone reachable:
+  - `before_seq` returns tombstones with a lower `removal_seq`. The reply's
+    `next_before_seq` is the value for the next page, or null on the last page.
+  - `device_id` returns only tombstones that match that device ID, so a caller
+    can fetch one device's removals without paging.
+  - `include_blocked=1` includes tombstones whose device ID or key has a
+    revocation subject, each marked `revoked: true`. Without it they are
+    omitted, because a blocked device needs no further action and its
+    tombstones never lift.
 - A coordinator whose schema lacks the table returns
   `503 device_removal_unavailable` from all three routes and from the legacy
   route below.

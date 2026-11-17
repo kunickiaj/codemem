@@ -468,10 +468,19 @@ blocked, and offers Block again from the removed-device list. The operator
 command `codemem coordinator device revoke` keeps revoking without removing.
 
 Because every enrollment delete writes a tombstone (Section 1), a device that
-was ever removed always has an enrollment or an active tombstone to block
-from. Devices lists removed devices from `GET /v1/admin/devices/removals`,
-each with **Block device permanently**, so the user can still reach a device
-that no longer has a pairing. This closes `codemem-e3iox`.
+is removed on 0.50 or later always has an enrollment or an active tombstone to
+block from. Devices lists removed devices from
+`GET /v1/admin/devices/removals`, each with **Block device permanently**, so
+the user can still reach a device that no longer has a pairing. The listing
+returns 500 tombstones at a time, newest first. Devices pages through it and
+can ask for one device by ID, so an older removal stays reachable. Devices
+that are already blocked are left out. This closes `codemem-e3iox` for
+removals made on 0.50 or later.
+
+A device whose enrollment was deleted before 0.50 has no tombstone. The
+coordinator kept nothing about it, so it cannot be reported to peers as
+removed and cannot be blocked from a tombstone. Each device that still pairs
+with it removes it locally.
 
 After a block the lookup reports the device as `revoked`. A peer that already
 dropped the device at removal has nothing left to drop. If someone pairs that
