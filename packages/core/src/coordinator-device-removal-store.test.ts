@@ -16,8 +16,8 @@ import {
 	hasDeviceRemovalSchema,
 } from "./coordinator-device-removal.js";
 import {
-	type RawStatement,
 	REMOVAL_CLOCK_MS,
+	type RemovalChange,
 	registerDeviceRemovalContract,
 	removalDeviceKey,
 	removalHarness,
@@ -59,12 +59,12 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 		const f = setupStore(backend, { authClock: () => REMOVAL_CLOCK_MS });
 		f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 		const prepare = f.db.prepare.bind(f.db);
-		const runOnce = (before: readonly string[], change: readonly RawStatement[]) => {
+		const runOnce = (before: readonly string[], change: RemovalChange) => {
 			let done = false;
 			return (queries: readonly string[]) => {
 				if (done || !queries.some((query) => before.some((text) => query.includes(text)))) return;
 				done = true;
-				for (const { sql, values } of change) prepare(sql).run(...values);
+				change({ prepare });
 			};
 		};
 		try {

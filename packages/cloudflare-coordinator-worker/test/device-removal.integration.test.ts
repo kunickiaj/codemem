@@ -1,3 +1,4 @@
+import { d1EnrollmentExec } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { env } from "cloudflare:workers";
 import { describe, expect, vi } from "vitest";
 import {
@@ -38,7 +39,7 @@ describe("native D1 device removal", () => {
 						if (done || !writes.some(({ query }) => before.some((text) => query.includes(text))))
 							return;
 						done = true;
-						for (const { sql, values } of change) await db.prepare(sql).bind(...values).run();
+						await change(d1EnrollmentExec(db));
 					});
 				},
 			});

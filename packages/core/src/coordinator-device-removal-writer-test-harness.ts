@@ -5,7 +5,6 @@ import {
 	ARRANGED_DISPLAY_NAME,
 	currentInsert,
 	type DeviceKey,
-	deleteEnrollmentWithoutTombstone,
 	type Enrollment,
 	enroll,
 	enrollments,
@@ -14,11 +13,13 @@ import {
 	invitationFixture,
 	legacyInsert,
 	opaqueKey,
+	type RemovalChange,
 	type RemovalFixture,
 	type RemovalTest,
 	removalDeviceKey,
 	target,
 } from "./coordinator-device-removal-test-harness.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -45,7 +46,11 @@ const EXPIRES_AT = "2099-01-01T00:00:00.000Z";
 type Race = "appears" | "disappears";
 
 /** Arranges the state before the operation reads, and the change that follows those reads. */
-async function arrangeRace(f: RemovalFixture, race: Race, enrollment: Enrollment) {
+async function arrangeRace(
+	f: RemovalFixture,
+	race: Race,
+	enrollment: Enrollment,
+): Promise<RemovalChange> {
 	if (race === "appears") return insertDisabledEnrollment(enrollment);
 	await enroll(f, enrollment);
 	await f.exec(
@@ -56,7 +61,13 @@ async function arrangeRace(f: RemovalFixture, race: Race, enrollment: Enrollment
 		enrollment.groupId,
 		enrollment.deviceId,
 	);
-	return deleteEnrollmentWithoutTombstone(enrollment);
+	return (database) =>
+		deleteEnrollmentWithoutTombstone(
+			database,
+			"group_id = ? AND device_id = ?",
+			enrollment.groupId,
+			enrollment.deviceId,
+		);
 }
 
 type Acceptance = {
