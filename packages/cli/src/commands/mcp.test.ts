@@ -127,4 +127,19 @@ describe("mcp command", () => {
 		expect(stdioImportMock).toHaveBeenCalledTimes(1);
 		expect(startHttpMock).not.toHaveBeenCalled();
 	});
+
+	it("passes --caller-context to the stdio server and leaves it unset by default", async () => {
+		const saved = process.env.CODEMEM_MCP_CALLER_CONTEXT;
+		delete process.env.CODEMEM_MCP_CALLER_CONTEXT;
+		try {
+			await mcpCommand.parseAsync([], { from: "user" });
+			expect(process.env.CODEMEM_MCP_CALLER_CONTEXT).toBeUndefined();
+
+			await mcpCommand.parseAsync(["--caller-context", "required"], { from: "user" });
+			expect(process.env.CODEMEM_MCP_CALLER_CONTEXT).toBe("required");
+		} finally {
+			if (saved === undefined) delete process.env.CODEMEM_MCP_CALLER_CONTEXT;
+			else process.env.CODEMEM_MCP_CALLER_CONTEXT = saved;
+		}
+	});
 });

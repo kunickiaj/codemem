@@ -1416,6 +1416,7 @@ function retrievalContext(store: MemoryStore, scopeId: string): ToolRegistration
 		defaultProject: () => "atlas",
 		envProject: () => null,
 		cwd: () => process.cwd(),
+		callIdentity: () => undefined,
 		captureRetrievalLedger: true,
 		retrievalLedgerScopeId: scopeId,
 		retrievalLedgerIdentityMode: "session",
