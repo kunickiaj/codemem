@@ -21,6 +21,7 @@ import {
 import type { Database } from "./db.js";
 import { removeRevokedPeers } from "./device-retirement.js";
 import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
+import { removePairingState } from "./pairing-removal.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -702,7 +703,7 @@ function coordinatorPeerKeyMatchesFingerprint(publicKey: string, fingerprint: st
 	}
 }
 
-/** Delete only policy-derived peer rows after their last fresh shared scope ends. */
+/** Delete only policy-derived peer rows, and their sync progress, after their last fresh shared scope ends. */
 export function revokeUnauthorizedCoordinatorPeerTrust(
 	db: Database,
 	localDeviceId: string,
@@ -745,17 +746,12 @@ function revokeCoordinatorPeerTrust(db: Database, localDeviceId: string): number
 			clean(peer.public_key),
 		);
 		if (sharedScope.state !== "not_authorized") continue;
-		retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId });
-		const result = db
-			.prepare(
-				`DELETE FROM sync_peers
-				 WHERE peer_device_id = ? AND claimed_local_actor = 0
-				 AND actor_id IS NULL AND pending_bootstrap_grant_id IS NULL
-				 AND trust_provenance = 'coordinator_policy'
-				 AND discovered_via_coordinator_id = ? AND discovered_via_group_id = ?`,
-			)
-			.run(peerDeviceId, coordinatorId, groupId);
-		revoked += result.changes;
+		// The device keeps its Identity binding: only this policy-derived pairing ended.
+		revoked += removePairingState(db, {
+			localDeviceId,
+			reason: "policy",
+			pairings: [{ deviceId: peerDeviceId, coordinatorId, groupId }],
+		}).syncPeers;
 	}
 	return revoked;
 }

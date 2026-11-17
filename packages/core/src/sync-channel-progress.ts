@@ -55,6 +55,37 @@ export function clearSyncChannelProgress(
 	);
 }
 
+function syncChannelProgressExists(db: Database): boolean {
+	return (
+		db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sync_channel_progress'",
+			)
+			.get() !== undefined
+	);
+}
+
+/**
+ * Deletes a removed peer's progress in every scope. A device that never ran the
+ * channel pass has no table, and removing a pairing does not install one.
+ */
+export function deletePeerSyncChannelProgress(db: Database, peerDeviceId: string): number {
+	if (!syncChannelProgressExists(db)) return 0;
+	return db.prepare("DELETE FROM sync_channel_progress WHERE peer_device_id = ?").run(peerDeviceId)
+		.changes;
+}
+
+/** Deletes progress whose peer has no pairing. Does nothing when the table was never installed. */
+export function deleteUnpairedSyncChannelProgress(db: Database): number {
+	if (!syncChannelProgressExists(db)) return 0;
+	return db
+		.prepare(
+			`DELETE FROM sync_channel_progress
+			 WHERE peer_device_id NOT IN (SELECT peer_device_id FROM sync_peers)`,
+		)
+		.run().changes;
+}
+
 export function hasCompletedSyncChannelBoundary(
 	progress: SyncChannelProgress | null,
 	boundary: SyncChannelBoundary,

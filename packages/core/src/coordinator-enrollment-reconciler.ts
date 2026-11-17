@@ -3,7 +3,10 @@ import type { CoordinatorConsumedTeamInvite } from "./coordinator-actions.js";
 import { persistCoordinatorEnrollmentReconciliationIssues } from "./coordinator-enrollment-reconciliation-issues.js";
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
-import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
+import {
+	reactivateEndedBindingInTransaction,
+	wakeRecipientPoliciesForIdentities,
+} from "./device-identity-binding.js";
 import { assignIdentityDeviceInTransaction } from "./identity-device-assignment.js";
 import { normalizeIdentityDisplayName } from "./project-invite-identity.js";
 import {
@@ -222,6 +225,58 @@ function adoptReboundDevice(
 		 WHERE device_id = ? AND identity_id = ?`,
 	).run(now, enrollment.device_id, enrollment.identity_id);
 	return moved;
+}
+
+/**
+ * Binds a device that the current snapshot lists and that has no active binding.
+ * A binding that device removal ended is reused, because the coordinator holds
+ * this enrollment now. A snapshot that omits the device never reaches this write.
+ */
+function bindEnrolledDevice(
+	db: Database,
+	input: {
+		groupId: string;
+		identityId: string;
+		enrollment: CoordinatorEnrollment;
+		displayName: string;
+		now: string;
+	},
+): number {
+	const deviceId = input.enrollment.device_id;
+	const stableBinding = {
+		groupId: input.groupId,
+		identityId: input.identityId,
+		deviceId,
+		fingerprint: input.enrollment.fingerprint,
+	};
+	const values = {
+		displayName: input.displayName,
+		provenance: "coordinator_enrollment",
+		revision: coordinatorEnrollmentDigest("coordinator-identity-device-revision-v1", stableBinding),
+		migrationState: "user_managed",
+		sourceFingerprint: coordinatorEnrollmentDigest(
+			"coordinator-identity-device-source-v1",
+			stableBinding,
+		),
+		idempotencyKey: coordinatorEnrollmentDigest(
+			"coordinator-identity-device-idempotency-v1",
+			stableBinding,
+		),
+	};
+	const reactivated = reactivateEndedBindingInTransaction(db, {
+		deviceId,
+		targetIdentityId: input.identityId,
+		...values,
+		now: input.now,
+	});
+	if (reactivated) return reactivated.assignmentVersion;
+	return assignIdentityDeviceInTransaction(db, {
+		deviceId,
+		targetIdentityId: input.identityId,
+		expectation: { kind: "absent" },
+		insert: values,
+		now: input.now,
+	}).assignmentVersion;
 }
 
 export async function reconcileCoordinatorEnrollmentSnapshot(
@@ -490,10 +545,11 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 				"device_display_name",
 			);
 			const displayName = normalizedDisplayName ?? "Unnamed device";
+			// A binding that device removal ended counts as absent: this enrollment binds it again.
 			const existing = db
 				.prepare(
 					`SELECT identity_id, display_name, status, provenance, assignment_version
-					 FROM identity_devices WHERE device_id = ?`,
+					 FROM identity_devices WHERE device_id = ? AND status <> 'removed'`,
 				)
 				.get(enrollment.device_id) as
 				| {
@@ -540,36 +596,14 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 				issue("device", enrollment.device_id, "device_trust_conflict");
 				continue;
 			}
-			const stableBinding = {
+			const assignmentVersion = bindEnrolledDevice(db, {
 				groupId: input.groupId,
 				identityId,
-				deviceId: enrollment.device_id,
-				fingerprint: enrollment.fingerprint,
-			};
-			const assignment = assignIdentityDeviceInTransaction(db, {
-				deviceId: enrollment.device_id,
-				targetIdentityId: identityId,
-				expectation: { kind: "absent" },
-				insert: {
-					displayName,
-					provenance: "coordinator_enrollment",
-					revision: coordinatorEnrollmentDigest(
-						"coordinator-identity-device-revision-v1",
-						stableBinding,
-					),
-					migrationState: "user_managed",
-					sourceFingerprint: coordinatorEnrollmentDigest(
-						"coordinator-identity-device-source-v1",
-						stableBinding,
-					),
-					idempotencyKey: coordinatorEnrollmentDigest(
-						"coordinator-identity-device-idempotency-v1",
-						stableBinding,
-					),
-				},
+				enrollment,
+				displayName,
 				now,
 			});
-			recordActiveRosterDevice(identityId, enrollment.device_id, assignment.assignmentVersion);
+			recordActiveRosterDevice(identityId, enrollment.device_id, assignmentVersion);
 			result.devicesAdded += 1;
 			changedIdentityIds.add(identityId);
 		}

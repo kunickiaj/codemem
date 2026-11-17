@@ -19,6 +19,7 @@ export interface RecipientPolicyIntentGraphV1 {
 	identities: RecipientPolicyIdentityV1[];
 	teams: RecipientPolicyTeamV1[];
 	teamMemberships: RecipientPolicyTeamMembershipV1[];
+	/** Bindings that device removal ended are left out, as if the device had none. */
 	identityDevices: RecipientPolicyIdentityDeviceV1[];
 	projectRecipients: RecipientPolicyProjectRecipientV1[];
 }
@@ -169,7 +170,7 @@ export function listRecipientPolicyIntent(db: Database): RecipientPolicyIntentGr
 	const identityDevices = db
 		.prepare(
 			`SELECT identity_id, device_id, display_name, status FROM identity_devices
-			 ORDER BY identity_id, device_id`,
+			 WHERE status <> 'removed' ORDER BY identity_id, device_id`,
 		)
 		.all()
 		.map((row): RecipientPolicyIdentityDeviceV1 => {

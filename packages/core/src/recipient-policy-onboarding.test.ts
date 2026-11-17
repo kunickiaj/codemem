@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removePairingState } from "./pairing-removal.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import {
@@ -2677,5 +2678,76 @@ describe("recipient-policy onboarding with a withdrawn Team member", () => {
 			status: "eligible",
 			blocked: [],
 		});
+	});
+});
+
+describe("direct Project share over a binding that device removal ended", () => {
+	let db: InstanceType<typeof Database>;
+	const share = (operationId: string) =>
+		db.transaction(() =>
+			commitDirectProjectSharePolicyInTransaction(db, {
+				operationId,
+				inviterIdentityId: "identity-owner",
+				inviterDevices: [
+					{ deviceId: "device-owner", displayName: "Owner laptop" },
+					{ deviceId: "device-owner-spare", displayName: "Owner spare" },
+				],
+				recipientIdentityId: "identity-b",
+				recipientDeviceId: "device-recipient",
+				recipientDevicePublicKey: "recipient-public-key",
+				recipientDeviceDisplayName: "Recipient laptop",
+				canonicalProjectIdentities: [PROJECT_A],
+				now: NOW,
+			}),
+		)();
+	const remove = (deviceId: string) =>
+		removePairingState(db, {
+			localDeviceId: "device-owner",
+			reason: "removed",
+			deviceIds: [deviceId],
+		});
+	const binding = (deviceId: string) =>
+		db
+			.prepare("SELECT identity_id, status, provenance FROM identity_devices WHERE device_id = ?")
+			.get(deviceId);
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertActor(db, "identity-owner", "Owner", true);
+		insertActor(db, "identity-b", "Bea");
+		insertProject(db, PROJECT_A, "alpha", 1);
+		share("share-before-removal");
+	});
+
+	afterEach(() => db.close());
+
+	it("binds the removed device again when it accepts a new invitation, with no binding conflict", () => {
+		remove("device-recipient");
+
+		expect(() => share("share-after-removal")).not.toThrow();
+
+		expect(binding("device-recipient")).toEqual({
+			identity_id: "identity-b",
+			status: "active",
+			provenance: "recipient_invite",
+		});
+	});
+
+	it("does not bind the removed device again when an earlier invitation is replayed", () => {
+		remove("device-recipient");
+
+		expect(() => share("share-before-removal")).toThrow("device_binding_conflict");
+
+		expect(binding("device-recipient")).toMatchObject({ status: "removed" });
+	});
+
+	it("leaves a removed inviter device ended, because the invitation's device list is not a current enrollment", () => {
+		remove("device-owner-spare");
+
+		expect(() => share("share-after-removal")).not.toThrow();
+
+		expect(binding("device-owner-spare")).toMatchObject({ status: "removed" });
+		expect(binding("device-recipient")).toMatchObject({ status: "active" });
 	});
 });

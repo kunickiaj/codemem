@@ -4,11 +4,10 @@ import {
 	type DeviceIdentityInventoryItemV1,
 	listDeviceIdentityInventory,
 } from "./device-identity-inventory.js";
-import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
+import { removePairingState } from "./pairing-removal.js";
 import {
 	canonicalKeyId,
 	listRetiredDeviceAliases,
-	recordRetiredDeviceAliases,
 	retiredAliasApplies,
 } from "./retired-device-aliases.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -190,51 +189,19 @@ export function resolveRetireTarget(
 	};
 }
 
-/** The peer's pinned key, only when its fingerprint matches the stored public key. */
-function validatedPin(
-	db: Database,
-	peerDeviceId: string,
-): { fingerprint: string; keyId: string | null } | null {
-	const row = db
-		.prepare("SELECT public_key, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
-		.get(peerDeviceId) as
-		| { public_key: string | null; pinned_fingerprint: string | null }
-		| undefined;
-	if (!row?.public_key || !row.pinned_fingerprint) return null;
-	if (fingerprintPublicKey(row.public_key) !== row.pinned_fingerprint) return null;
-	return { fingerprint: row.pinned_fingerprint, keyId: canonicalKeyId(row.public_key) };
-}
-
-function removePairing(db: Database, localDeviceId: string, peerDeviceId: string): number {
-	// Content sync stops, but retirement controls still need this peer's pinned key.
-	retainRetirementPeerTrust(db, { localDeviceId, peerDeviceId });
-	db.prepare("DELETE FROM replication_cursors WHERE peer_device_id = ?").run(peerDeviceId);
-	db.prepare("DELETE FROM replication_cursors_v2 WHERE peer_device_id = ?").run(peerDeviceId);
-	return db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(peerDeviceId).changes;
-}
-
 /**
- * Deletes each revoked peer's pairing and cursors, whatever its trust source. The
- * coordinator doesn't say which subject matched, so each pinned key is recorded as
- * a key-only alias that a later pairing with a different key clears.
+ * Deletes each revoked peer's pairing and cursors and ends its binding, whatever its
+ * trust source. The coordinator doesn't say which subject matched, so each pinned key
+ * is recorded as a key-only alias that a later pairing with a different key clears.
  */
 export function removeRevokedPeers(
 	db: Database,
 	localDeviceId: string,
 	peerDeviceIds: string[],
 ): number {
-	const ids = peerDeviceIds.filter((id) => id !== localDeviceId);
-	if (ids.length === 0) return 0;
-	return db
-		.transaction(() => {
-			const aliases = ids.flatMap((deviceId) => {
-				const pin = validatedPin(db, deviceId);
-				return pin ? [{ deviceId, kind: "key" as const, ...pin }] : [];
-			});
-			recordRetiredDeviceAliases(db, aliases);
-			return ids.reduce((removed, id) => removed + removePairing(db, localDeviceId, id), 0);
-		})
-		.immediate();
+	const deviceIds = peerDeviceIds.filter((id) => id !== localDeviceId);
+	if (deviceIds.length === 0) return 0;
+	return removePairingState(db, { localDeviceId, reason: "revoked", deviceIds }).syncPeers;
 }
 
 /**
@@ -256,27 +223,29 @@ function stillPinsRetiredKey(db: Database, deviceId: string, target: RetireTarge
 
 /**
  * After a confirmed coordinator revocation: record every alias that still carries
- * the revoked key, then unpair them. The enrollment's ID is revoked outright.
+ * the revoked key, then unpair them and end their bindings. The enrollment's ID is
+ * revoked outright.
  */
 export function retireDeviceLocally(db: Database, localDeviceId: string, target: RetireTarget) {
 	return db
 		.transaction(() => {
-			const ids = target.aliasDeviceIds.filter(
+			const deviceIds = target.aliasDeviceIds.filter(
 				(id) =>
 					id !== localDeviceId &&
 					(id === target.enrollmentDeviceId || stillPinsRetiredKey(db, id, target)),
 			);
-			recordRetiredDeviceAliases(
-				db,
-				ids.map((deviceId) => ({
+			return removePairingState(db, {
+				localDeviceId,
+				reason: "revoked",
+				deviceIds,
+				retiredAliases: deviceIds.map((deviceId) => ({
 					deviceId,
 					// Only the evidence enrollment's ID is revoked outright; the others lose the key.
 					kind: deviceId === target.enrollmentDeviceId ? ("device_id" as const) : ("key" as const),
 					fingerprint: target.fingerprint,
 					keyId: target.keyId,
 				})),
-			);
-			return ids.reduce((removed, id) => removed + removePairing(db, localDeviceId, id), 0);
+			}).syncPeers;
 		})
 		.immediate();
 }

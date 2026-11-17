@@ -37,6 +37,7 @@ import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
+import { deleteOrphanReplicationCursorsOnce } from "./replication-cursor-orphan-cleanup.js";
 import { ensureRepositoryDiscoveryIndex } from "./repository-discovery-index.js";
 import {
 	canAutoBootstrapSchema,
@@ -1107,6 +1108,15 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	if (!compatAlreadyApplied) {
 		promoteLegacySchemaVersion(db);
 		markSchemaCompatApplied(db);
+	}
+	deleteLeftoverReplicationCursors(db);
+}
+
+function deleteLeftoverReplicationCursors(db: DatabaseType): void {
+	try {
+		deleteOrphanReplicationCursorsOnce(db);
+	} catch {
+		// The transaction rolled back and recorded nothing, so the next open retries.
 	}
 }
 

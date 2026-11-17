@@ -77,7 +77,8 @@ function resolveBindings(db: Database, actorId: string): BindingSets | null {
 	const localActorIsActive = activeActor(db, actorId, bindings.length);
 	for (const binding of bindings) {
 		const deviceId = String(binding.device_id ?? "").trim();
-		if (!deviceId) continue;
+		// A binding that device removal ended counts as no binding at all.
+		if (!deviceId || binding.status === "removed") continue;
 		sets.boundDeviceIds.add(deviceId);
 		if (
 			localActorIsActive &&

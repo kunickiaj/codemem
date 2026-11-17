@@ -60,6 +60,13 @@ function offlineStates() {
 		.map((item) => ({ deviceId: item.deviceId, state: item.state }));
 }
 
+function bindingStatus(deviceId: string) {
+	return db
+		.prepare("SELECT status FROM identity_devices WHERE device_id = ?")
+		.pluck()
+		.get(deviceId);
+}
+
 beforeEach(() => {
 	db = new Database(":memory:");
 	initTestSchema(db);
@@ -120,6 +127,36 @@ describe("retired device aliases", () => {
 
 		expect(offlineStates()).toEqual([{ deviceId: "peer-a", state: "retired" }]);
 		expect(db.prepare("SELECT COUNT(*) FROM sync_peers").pluck().get()).toBe(0);
+	});
+
+	it("H4: ends a revoked peer's binding and deletes its progress in both cursor tables", () => {
+		db.prepare(
+			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at) VALUES ('peer-a', 'c1', ?)",
+		).run(NOW);
+		db.prepare(
+			"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, updated_at) VALUES ('peer-a', 'scope-a', 'c2', ?)",
+		).run(NOW);
+
+		expect(removeRevokedPeers(db, "local", ["peer-a"])).toBe(1);
+
+		expect(bindingStatus("peer-a")).toBe("removed");
+		expect(db.prepare("SELECT COUNT(*) FROM replication_cursors").pluck().get()).toBe(0);
+		expect(db.prepare("SELECT COUNT(*) FROM replication_cursors_v2").pluck().get()).toBe(0);
+		expect(listRetiredDeviceAliases(db).get("peer-a")?.kind).toBe("key");
+	});
+
+	it("ends the binding of an alias that a local retirement unpairs", () => {
+		retireDeviceLocally(db, "local", {
+			aliasDeviceIds: ["peer-a"],
+			displayName: "Old laptop",
+			fingerprint: fingerprintPublicKey(OLD_KEY),
+			keyId: canonicalKeyId(OLD_KEY) as string,
+			groupId: "group-a",
+			enrollmentDeviceId: "peer-a",
+		});
+
+		expect(bindingStatus("peer-a")).toBe("removed");
+		expect(offlineStates()).toEqual([{ deviceId: "peer-a", state: "retired" }]);
 	});
 
 	it("computes the same canonical key ID the coordinator revokes", async () => {

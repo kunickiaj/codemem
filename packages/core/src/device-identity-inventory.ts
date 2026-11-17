@@ -317,6 +317,16 @@ function suggestedIdentity(
 	return suggestedIdentityIds.size === 1 ? ([...suggestedIdentityIds][0] ?? null) : null;
 }
 
+/** A binding that device removal ended is not a revoked binding that needs review. */
+function isRevokedBinding(item: Evidence): boolean {
+	return (
+		item.source === "identity_binding" &&
+		item.bindingAuthoritative &&
+		item.bindingStatus !== "active" &&
+		item.bindingStatus !== "removed"
+	);
+}
+
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
 	const fingerprints = new Set(
@@ -349,14 +359,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 		)
 			? "identity_inactive"
 			: null,
-		group.some(
-			(item) =>
-				item.source === "identity_binding" &&
-				item.bindingAuthoritative &&
-				item.bindingStatus !== "active",
-		)
-			? "identity_binding_revoked"
-			: null,
+		group.some(isRevokedBinding) ? "identity_binding_revoked" : null,
 		group.some(
 			(item) => item.source === "coordinator_enrollment" && item.enrollmentEnabled === false,
 		)
@@ -437,6 +440,17 @@ function bindingRowEvidence(
 	};
 }
 
+/** A binding that device removal ended is absent, unless it still marks a blocked device. */
+function bindingEvidenceRows(
+	rows: unknown[],
+	retired: (deviceId: string) => boolean,
+): DeviceIdentityBindingEvidence[] {
+	return rows
+		.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT + 1)
+		.map((row) => bindingRowEvidence(row as Record<string, unknown>, retired))
+		.filter((binding) => binding.status !== "removed" || binding.retired);
+}
+
 /** Whether this device recorded an ID as retired, given the key now pinned under it. */
 function retiredDeviceCheck(
 	db: Database,
@@ -501,9 +515,7 @@ export function loadDeviceIdentityInventorySnapshot(
 		)
 		.all(input.localDeviceId, DEVICE_IDENTITY_EVIDENCE_LIMIT, DEVICE_IDENTITY_EVIDENCE_LIMIT + 2);
 	const retired = retiredDeviceCheck(db, peers);
-	const bindings = bindingRows
-		.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT + 1)
-		.map((row) => bindingRowEvidence(row as Record<string, unknown>, retired));
+	const bindings = bindingEvidenceRows(bindingRows, retired);
 	return {
 		localDevice: localRow
 			? {

@@ -1,5 +1,8 @@
 import type { Database } from "./db.js";
-import { wakeRecipientPoliciesForIdentities } from "./device-identity-binding.js";
+import {
+	reactivateEndedBindingInTransaction,
+	wakeRecipientPoliciesForIdentities,
+} from "./device-identity-binding.js";
 import {
 	assignIdentityDeviceInTransaction,
 	IdentityDeviceAssignmentError,
@@ -1608,6 +1611,39 @@ function transitionExactProjectDevice(
 	);
 }
 
+/**
+ * A binding that device removal ended counts as absent for the device that just
+ * accepted a new invitation, because the coordinator enrolled that device to
+ * accept it. The invitation that created the ended binding cannot bring it back.
+ * An inviter's device list was fixed when the invitation was created, so an
+ * ended binding in that list stays ended and is not a conflict. Whether such a
+ * device is bound again is decided from a current enrollment snapshot.
+ */
+function bindOverEndedBinding(
+	db: Database,
+	row: IntentRow,
+	ended: Record<string, unknown>,
+): boolean {
+	const expected = { ...row.key, ...row.values };
+	if (expected.provenance !== "recipient_invite") return false;
+	if (ended.idempotency_key === expected.idempotency_key) {
+		throw new Error("device_binding_conflict");
+	}
+	const reactivated = reactivateEndedBindingInTransaction(db, {
+		deviceId: String(expected.device_id),
+		targetIdentityId: String(expected.identity_id),
+		displayName: String(expected.display_name),
+		provenance: String(expected.provenance),
+		revision: String(expected.revision),
+		migrationState: String(expected.migration_state),
+		sourceFingerprint: expected.source_fingerprint ?? null,
+		idempotencyKey: String(expected.idempotency_key),
+		now: String(expected.updated_at),
+	});
+	if (!reactivated) throw new Error("device_binding_conflict");
+	return true;
+}
+
 function applyIdentityDeviceAssignment(
 	db: Database,
 	row: IntentRow,
@@ -1710,6 +1746,22 @@ function applyIdentityDeviceAssignment(
 	}
 }
 
+/** Null when the row is not a device binding, or when it replays a binding this invitation already wrote. */
+function writeIdentityDeviceRow(
+	db: Database,
+	row: IntentRow,
+	match: {
+		idempotencyMatch: Record<string, unknown> | undefined;
+		keyMatch: Record<string, unknown> | undefined;
+		where: { clause: string; parameters: string[] };
+	},
+): boolean | null {
+	if (row.table !== "identity_devices") return null;
+	if (match.keyMatch?.status === "removed") return bindOverEndedBinding(db, row, match.keyMatch);
+	if (match.idempotencyMatch) return null;
+	return applyIdentityDeviceAssignment(db, row, match.keyMatch, match.where);
+}
+
 function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 	const idempotencyMatch = db
 		.prepare(`SELECT * FROM ${row.table} WHERE idempotency_key = ?`)
@@ -1718,9 +1770,8 @@ function validateOrWriteRow(db: Database, row: IntentRow): boolean {
 	const keyMatch = db
 		.prepare(`SELECT * FROM ${row.table} WHERE ${where.clause}`)
 		.get(...where.parameters) as Record<string, unknown> | undefined;
-	if (row.table === "identity_devices" && !idempotencyMatch) {
-		return applyIdentityDeviceAssignment(db, row, keyMatch, where);
-	}
+	const deviceWrite = writeIdentityDeviceRow(db, row, { idempotencyMatch, keyMatch, where });
+	if (deviceWrite !== null) return deviceWrite;
 	const existing = idempotencyMatch ?? keyMatch;
 	if (existing) {
 		const expected = { ...row.key, ...row.values };

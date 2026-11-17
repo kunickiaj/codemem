@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { wakeRecipientPoliciesForProjectIdentities } from "./device-identity-binding.js";
+import { removePairingState } from "./pairing-removal.js";
 import {
 	assertLegacyShareGrantAllowed,
 	type RecipientPolicyReconcilerEffects,
@@ -160,6 +161,30 @@ it("preserves a policy wake committed during an active reconciliation", async ()
 				.pluck()
 				.get(PROJECT),
 		).toBeNull();
+	} finally {
+		db.close();
+	}
+});
+
+it("H12: queues no grant for a device whose binding device removal ended", async () => {
+	const db = new Database(":memory:");
+	initTestSchema(db);
+	insertPolicyGraph(db);
+	removePairingState(db, {
+		localDeviceId: "device-keep",
+		reason: "removed",
+		deviceIds: ["device-new"],
+	});
+	const { effects } = harness(["device-keep"]);
+	try {
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-removed" },
+			effects,
+		);
+
+		expect(outcome).toMatchObject({ grantedDeviceIds: [], revokedDeviceIds: [] });
+		expect(effects.grant).not.toHaveBeenCalled();
 	} finally {
 		db.close();
 	}

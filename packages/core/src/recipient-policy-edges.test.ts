@@ -1538,3 +1538,24 @@ describe("withdrawn Team members in recipient-policy edges", () => {
 		},
 	);
 });
+
+it.each([
+	["direct Identity", () => identityChange(PROJECT_A, "identity-a")],
+	["Team", () => teamChange(PROJECT_A, "team-a")],
+] as const)(
+	"H12: treats a binding that device removal ended as absent for a %s recipient",
+	(_kind, change) => {
+		const db = seedGraph();
+		insertProjectRecipient(db, PROJECT_A, "identity-a");
+		insertProjectRecipient(db, PROJECT_A, "team-a", "team");
+		db.prepare("UPDATE identity_devices SET status = 'removed' WHERE device_id = 'device-a'").run();
+
+		const authoritative = deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT_A);
+
+		expect(authoritative.blocked).toEqual([]);
+		expect(authoritative.devices.map((device) => device.deviceId)).toEqual(["device-b"]);
+		expect(() =>
+			previewRecipientPolicyEdges(db, { version: 1, changes: [change()] }),
+		).not.toThrow();
+	},
+);

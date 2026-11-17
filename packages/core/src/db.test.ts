@@ -324,7 +324,8 @@ describe("connect", () => {
 
 		ensureAdditiveSchemaCompatibility(db);
 
-		expect(transaction).toHaveBeenCalledOnce();
+		// One transaction reinstalls the triggers. The one-time cursor cleanup uses the other.
+		expect(transaction).toHaveBeenCalledTimes(2);
 		expect(
 			db
 				.prepare(
