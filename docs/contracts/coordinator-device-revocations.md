@@ -752,7 +752,8 @@ or missing reply is no answer, and the client then changes nothing.
 
 A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the
-client deletes the pairing and both replication cursor tables and sets the
+client deletes the pairing, both replication cursor tables, and the peer's
+`sync_channel_progress` rows, and sets the
 device's `identity_devices.status` to `removed`, in one transaction. It retains
 memory retirement trust and records no retired alias. For each `revoked` ID it
 does what it does today and also ends the binding. A lookup is complete when

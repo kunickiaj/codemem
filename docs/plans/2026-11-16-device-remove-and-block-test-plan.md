@@ -319,9 +319,9 @@ plain device-claim account link.
 
 New function in `packages/core`, for example `removePairingState`.
 
-1. It deletes the pairing and its rows in `replication_cursors` and
-   `replication_cursors_v2`, sets the binding status to `removed`, and retains
-   retirement trust, for every ID given.
+1. It deletes the pairing and its rows in `replication_cursors`,
+   `replication_cursors_v2`, and `sync_channel_progress`, sets the binding
+   status to `removed`, and retains retirement trust, for every ID given.
 2. A failure in any statement leaves the pairing, both cursor tables, and the
    binding unchanged.
 3. Per-Team device decisions for the device survive, because the binding row is

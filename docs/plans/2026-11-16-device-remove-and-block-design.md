@@ -46,8 +46,12 @@ The owner settled six questions the design depended on. They are listed under
   (`enrolled_devices`).
 - **Pairing:** the row one device keeps about another device it syncs with
   (`sync_peers`), including the pinned key.
-- **Sync progress:** the two cursor tables that record how far a pairing has
-  synced (`replication_cursors` and `replication_cursors_v2`).
+- **Sync progress:** the tables that record how far a pairing has synced. They
+  are the two cursor tables (`replication_cursors` and
+  `replication_cursors_v2`) and `sync_channel_progress`, which holds what a
+  peer has acknowledged over the relay channel. Implementation found the third
+  table. Wherever this note says "both cursor tables", the third goes with
+  them.
 - **Binding:** the local row that says a device belongs to an Identity
   (`identity_devices`).
 - **Removal tombstone:** a new coordinator row that records one deleted
@@ -398,7 +402,8 @@ binding from Google sign-in is immutable and stays.
 
 For a device the coordinator lists, a binding becomes active again only
 through the write that binds a newly enrolled device, from an enrollment the
-coordinator currently holds. A removed device can be enrolled again only by
+coordinator currently holds. That write treats an ended binding as absent and
+reuses its row. A removed device can be enrolled again only by
 lifting its tombstone, so the binding cannot return while the removal stands.
 Devices refuses to bind a device that the lookup reports as removed. For a
 device that was removed locally only, pairing it again in Devices is the
