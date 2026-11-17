@@ -160,10 +160,12 @@ import {
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
 	LEGACY_ENROLLMENT_DENIAL_SQL,
+	type LegacyEnrollmentStatement,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
-	legacyEnrollmentWriteStatement,
+	legacyEnrollmentWriteStatements,
+	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import {
@@ -1171,7 +1173,8 @@ const INVITE_DEVICE_ENROLLED_SQL = `EXISTS (SELECT 1 FROM enrolled_devices e
  * 1. consume the invitation while the group has no row for the device
  * 2. insert the enrollment, when statement 1 changed a row
  * 3. consume the invitation while the group has a row for the device, or write
- *    the same values again when statement 2 inserted that row
+ *    the same values again when statement 2 inserted that row and the consumed
+ *    invitation still holds this acceptance's binding and bound eligibility
  * 4. update the enrollment, when statement 3 changed a row
  *
  * Statements 1 and 3 cannot both consume. Statement 4 therefore changes a row
@@ -1189,11 +1192,17 @@ function prepareInviteConsumeAndEnroll(
 		invite: { sql: string; values: unknown[] };
 		/** Every condition of the token write on an unconsumed invitation. */
 		open: { sql: string; values: unknown[] };
+		/**
+		 * Every condition of the rewrite in statement 3: the invitation is consumed and
+		 * bound to exactly this acceptance, and the bound eligibility still holds.
+		 * Statement 3 owns this guard; changes() of statement 2 alone authorizes nothing.
+		 */
+		bound: { sql: string; values: unknown[] };
 		insert: D1PreparedStatementLike;
 		update: D1PreparedStatementLike;
 	},
 ): D1PreparedStatementLike[] {
-	const { deviceId, consume, invite, open } = write;
+	const { deviceId, consume, invite, open, bound } = write;
 	return [
 		db
 			.prepare(`UPDATE coordinator_invites SET ${consume.sql}
@@ -1203,9 +1212,9 @@ function prepareInviteConsumeAndEnroll(
 		db
 			.prepare(`UPDATE coordinator_invites SET ${consume.sql}
 			WHERE ${invite.sql} AND (
-				(changes() = 1 AND consumed_at IS NOT NULL AND bound_device_id = ?)
+				(changes() = 1 AND ${bound.sql})
 				OR (${open.sql} AND ${INVITE_DEVICE_ENROLLED_SQL}))`)
-			.bind(...consume.values, ...invite.values, deviceId, ...open.values, deviceId),
+			.bind(...consume.values, ...invite.values, ...bound.values, ...open.values, deviceId),
 		write.update,
 	];
 }
@@ -1277,6 +1286,15 @@ function prepareRecipientInviteConsume(
 				...tuple,
 				...write.eligibilityValues,
 			],
+		},
+		bound: {
+			sql: `consumed_at IS NOT NULL AND revoked_at IS NULL AND invite_kind = ?
+			AND bound_device_id = ? AND bound_public_key = ? AND bound_fingerprint = ?
+			AND recipient_actor_id = ?
+			AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+				AND g.archived_at IS NULL)
+			AND ${write.boundEligibilitySql}`,
+			values: [opts.inviteKind, ...tuple, ...write.boundEligibilityValues],
 		},
 		...prepareRecipientInviteEnrollment(db, write),
 	});
@@ -1390,6 +1408,21 @@ function prepareProjectInviteConsume(
 		open: {
 			sql: `${PROJECT_INVITE_OPEN_SQL} AND ${guard.eligibilitySql}`,
 			values: [consumedAt, ...guard.eligibilityValues],
+		},
+		bound: {
+			sql: `consumed_at IS NOT NULL AND revoked_at IS NULL
+			AND bound_device_id = ? AND bound_public_key = ? AND bound_fingerprint = ?
+			AND recipient_actor_id = ?
+			AND EXISTS (SELECT 1 FROM groups g WHERE g.group_id = coordinator_invites.group_id
+				AND g.archived_at IS NULL)
+			AND ${guard.boundEligibilitySql}`,
+			values: [
+				opts.deviceId,
+				opts.publicKey,
+				opts.fingerprint,
+				opts.recipientActorId,
+				...guard.boundEligibilityValues,
+			],
 		},
 		...prepareProjectInviteEnrollment(db, write),
 	});
@@ -2209,7 +2242,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			const currentKeyId =
 				currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey);
 			const source = [currentPublicKey, _groupId, deviceId, _groupId, deviceId, currentPublicKey];
-			const write = legacyEnrollmentWriteStatement({
+			const writes = legacyEnrollmentWriteStatements({
 				groupId: _groupId,
 				deviceId,
 				publicKey,
@@ -2222,11 +2255,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				currentKeyId,
 				storeKeyId: await this.hasRemovalSchema(),
 			});
-			const result = await this.db
-				.prepare(write.sql)
-				.bind(...write.values)
-				.run();
-			if (legacyDeviceWriteChanges(result) === 1) return;
+			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(writes))) return;
 			const denial = await firstRow<unknown>(
 				this.db
 					.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
@@ -2236,6 +2265,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
+	}
+
+	/**
+	 * One statement runs alone. Two statements, a key ID reset and the key text
+	 * write that follows it, run as one atomic batch, so a failing second statement
+	 * rolls the reset back.
+	 */
+	private async runLegacyEnrollmentWrites(writes: LegacyEnrollmentStatement[]): Promise<number[]> {
+		const statements = writes.map(({ sql, values }) => this.db.prepare(sql).bind(...values));
+		if (statements.length === 1) return [legacyDeviceWriteChanges(await statements[0]?.run())];
+		if (!this.db.batch) throw new Error("device_ownership_authorization_unavailable");
+		const results = await this.db.batch(statements);
+		if (results.length !== statements.length)
+			throw new Error("device_ownership_authorization_unavailable");
+		return results.map(legacyDeviceWriteChanges);
 	}
 
 	async listEnrolledDevices(
@@ -3235,9 +3279,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		];
 		// changes() carries this batch's CAS, not a timestamp that another reviewer can share.
 		// CASE raises a SQL error on trigger-side drift rather than committing a zero-row sibling.
-		const statements = [
-			this.prepareJoinApprovalEnrollment(row, guard, approvedSql, approvedValues, keyId),
-		];
+		const statements = this.prepareJoinApprovalEnrollment(
+			row,
+			guard,
+			approvedSql,
+			approvedValues,
+			keyId,
+		);
 		if (grant && grantId) {
 			statements.push(
 				this.db
@@ -3273,11 +3321,14 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	/**
-	 * The enrollment write of the winning approval: an UPDATE of the captured row,
-	 * or an INSERT when no row was captured. The source guard pins that captured
-	 * enrollment in the review transition and again in this statement, as it did
-	 * for the former upsert. When the enrollment appeared, disappeared, or changed
-	 * key since the read, the transition changes no row and the request stays pending.
+	 * The enrollment write of the winning approval: an INSERT when no row was
+	 * captured, an UPDATE of the captured row, and two UPDATEs for a key text change
+	 * that keeps the key ID value (see changesKeyTextOnly). The source guard pins
+	 * the captured enrollment in the review transition and again in every statement
+	 * here, as it did for the former upsert. When the enrollment appeared,
+	 * disappeared, or changed key since the read, the transition changes no row and
+	 * the request stays pending. Each statement reads changes() of the one before
+	 * it and raises when its own guard fails, which rolls the whole batch back.
 	 */
 	private prepareJoinApprovalEnrollment(
 		row: CoordinatorJoinRequest & { public_key: string },
@@ -3285,45 +3336,51 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		approvedSql: string,
 		approvedValues: unknown[],
 		keyId: string | null,
-	): D1PreparedStatementLike {
+	): D1PreparedStatementLike[] {
 		const currentSql = `${approvedSql} AND ${guard.sourceSql}`;
 		const currentValues = [...approvedValues, ...guard.sourceValues];
 		const hasEnrollment = guard.sourceValues[0] !== null;
 		const { sql: keyIdSql, values: keyIdValues } = storedKeyIdWrite(keyId);
-		if (hasEnrollment) {
-			// The CASE tests changes() first, so only the batch that won the review can raise.
-			// A null key keeps the stored text; see keepsStoredKeyText. The confirmation then refuses.
-			return this.db
-				.prepare(`UPDATE enrolled_devices SET public_key = COALESCE(?, public_key),
-				fingerprint = COALESCE(?, fingerprint), display_name = ?, enabled = 1${keyIdSql.assignment}
-				WHERE group_id = ? AND device_id = ?
-				AND CASE WHEN changes() <> 1 THEN 0 WHEN ${currentSql} THEN 1
-					ELSE json('join_review_incomplete') END`)
-				.bind(
-					guard.keepStoredKeyText ? null : row.public_key,
-					guard.keepStoredKeyText ? null : row.fingerprint,
-					row.display_name ?? null,
-					...keyIdValues,
-					row.group_id,
-					row.device_id,
-					...currentValues,
-				);
-		}
-		return this.db
-			.prepare(`INSERT INTO enrolled_devices(
+		if (!hasEnrollment) {
+			return [
+				this.db
+					.prepare(`INSERT INTO enrolled_devices(
 			group_id, device_id, public_key, fingerprint, display_name, enabled, created_at${keyIdSql.column})
 			SELECT ?, ?, ?, ?, ?, 1, ?${keyIdSql.value} FROM (SELECT 1 WHERE changes() = 1) AS winner
 			WHERE CASE WHEN ${currentSql} THEN 1 ELSE json('join_review_incomplete') END`)
+					.bind(
+						row.group_id,
+						row.device_id,
+						row.public_key,
+						row.fingerprint,
+						row.display_name ?? null,
+						nowISO(),
+						...keyIdValues,
+						...currentValues,
+					),
+			];
+		}
+		// The CASE tests changes() first, so only the batch that won the review can raise.
+		const winnerSql = `group_id = ? AND device_id = ?
+				AND CASE WHEN changes() <> 1 THEN 0 WHEN ${currentSql} THEN 1
+					ELSE json('join_review_incomplete') END`;
+		const winnerValues = [row.group_id, row.device_id, ...currentValues];
+		const update = this.db
+			.prepare(`UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
+				display_name = ?, enabled = 1${keyIdSql.assignment}
+				WHERE ${winnerSql}`)
 			.bind(
-				row.group_id,
-				row.device_id,
 				row.public_key,
 				row.fingerprint,
 				row.display_name ?? null,
-				nowISO(),
 				...keyIdValues,
-				...currentValues,
+				...winnerValues,
 			);
+		if (keyId === null || !guard.changesKeyTextOnly) return [update];
+		const reset = this.db
+			.prepare(`UPDATE enrolled_devices SET key_id = '' WHERE ${winnerSql}`)
+			.bind(...winnerValues);
+		return [reset, update];
 	}
 
 	private prepareJoinApprovalConfirmation(

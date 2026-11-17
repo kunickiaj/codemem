@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import type { AuthLinkBackend, AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
 import { ed25519KeyIdForRevocation } from "../../core/src/coordinator-ed25519-key-id-compat.js";
+import { DEVICE_REMOVAL_MIGRATION_NAME } from "../../core/src/coordinator-device-removal.js";
 import { UNRELATED_PUBLIC_KEY } from "../../core/src/coordinator-enrollment-revocation-test-harness.js";
 import {
 	COORDINATOR_OWNER_ENROLLMENT_AUDIT_SCHEMA_SQL,
@@ -353,3 +354,37 @@ test.for(["retained", "removed", "forged"])(
 		expect(await effects()).toEqual(before);
 	},
 );
+
+test("native D1 commit on a schema without device removal storage enrolls every pinned group as before", async ({
+	writer: f,
+}) => {
+	// Arrange: the schema as it was before migration 0048, which is applied again afterwards.
+	const migration = env.TEST_MIGRATIONS.find(({ name }) => name === DEVICE_REMOVAL_MIGRATION_NAME);
+	if (!migration) throw new Error("Missing device removal migration");
+	for (const sql of [
+		"DROP TABLE coordinator_device_removals",
+		"ALTER TABLE enrolled_devices DROP COLUMN key_id",
+		"ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq",
+		"ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq",
+	])
+		await exec(sql);
+	try {
+		// Act
+		const committed = await commitOwnerEnrollment(f.input);
+		// Assert: the enrollment insert names no key ID column.
+		expect(committed).toBe(true);
+		const enrolled = (await rows("enrolled_devices")) as Record<string, unknown>[];
+		expect(enrolled).toMatchObject(
+			["group-a", "group-b"].map((group_id) => ({
+				group_id,
+				device_id: f.row.device_id,
+				public_key: f.row.public_key,
+				enabled: 1,
+			})),
+		);
+		expect(enrolled.some((row) => "key_id" in row)).toBe(false);
+		expect(await readOwnerEnrollmentReceipt(f.input.backend, await finalRow())).toBe(true);
+	} finally {
+		await env.COORDINATOR_DB.batch(migration.queries.map((sql) => env.COORDINATOR_DB.prepare(sql)));
+	}
+});

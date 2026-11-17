@@ -71,6 +71,14 @@ BEFORE DELETE ON coordinator_device_removals
 BEGIN
   SELECT RAISE(ABORT, 'device_removal_immutable');
 END;
+
+-- An automatic removal_seq reads as -1 before insert. Positive values keep that from matching a row.
+CREATE TRIGGER IF NOT EXISTS coordinator_device_removals_rowid
+AFTER INSERT ON coordinator_device_removals
+WHEN NEW.removal_seq < 1
+BEGIN
+  SELECT RAISE(ABORT, 'device_removal_rowid');
+END;
 `;
 
 /** Additive columns of existing tables. Rows that predate a column keep null. */
@@ -89,17 +97,31 @@ export const DEVICE_REMOVAL_COLUMNS: readonly { table: string; column: string; s
 
 export const DEVICE_REMOVAL_MIGRATION_NAME = "0048_add_device_removals.sql";
 
-/** `ready` is 1 when the tombstone table, its index and triggers, and the three columns exist. */
+/** Every trigger of DEVICE_REMOVAL_SCHEMA_SQL. Readiness requires each of them by name. */
+export const DEVICE_REMOVAL_TRIGGER_NAMES: readonly string[] = Object.freeze([
+	"coordinator_device_removals_insert",
+	"coordinator_device_removals_update",
+	"coordinator_device_removals_delete",
+	"coordinator_device_removals_rowid",
+]);
+
+const hasColumnSql = ({ table, column }: { table: string; column: string }) =>
+	`EXISTS (SELECT 1 FROM pragma_table_info('${table}') WHERE name = '${column}')`;
+
+/**
+ * `ready` is 1 when the tombstone table, its active-tombstone index, each of its
+ * triggers, and the three columns exist. Every object is required by name, so
+ * an object that a later release adds next to them does not change the answer.
+ */
 export const DEVICE_REMOVAL_SCHEMA_READINESS_SQL = `SELECT (
-	(SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'
-		AND name GLOB 'coordinator_device_removals_*') = 3
-	AND (SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
-		AND name = 'idx_coordinator_device_removals_active') = 1
-	AND (SELECT COUNT(*) FROM pragma_table_info('enrolled_devices') WHERE name = 'key_id') = 1
-	AND (SELECT COUNT(*) FROM pragma_table_info('coordinator_invites')
-		WHERE name = 'issued_after_removal_seq') = 1
-	AND (SELECT COUNT(*) FROM pragma_table_info('coordinator_join_requests')
-		WHERE name = 'issued_after_removal_seq') = 1) AS ready`;
+	EXISTS (SELECT 1 FROM sqlite_master
+		WHERE type = 'table' AND name = 'coordinator_device_removals')
+	AND EXISTS (SELECT 1 FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_coordinator_device_removals_active')
+	AND ${DEVICE_REMOVAL_TRIGGER_NAMES.map(
+		(name) => `EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = '${name}')`,
+	).join("\n\tAND ")}
+	AND ${DEVICE_REMOVAL_COLUMNS.map(hasColumnSql).join("\n\tAND ")}) AS ready`;
 
 /** Whether migration 0048, or SQLite initialization, has installed device removal storage. */
 export async function hasDeviceRemovalSchema(
@@ -149,13 +171,25 @@ const NEW_ROW_TOMBSTONE_MATCH_SQL = `t.lifted_at IS NULL AND (
       OR (NEW.key_id = '' AND t.public_key = NEW.public_key))`;
 
 /**
- * Every character that String.prototype.trim removes, as an ltrim character set. The
- * key parser trims before it reads the key type, so the stale-key trigger does too.
+ * Every character that String.prototype.trim removes, and that the key parser
+ * splits tokens on, as one SQL string.
  */
-const KEY_TEXT_LEADING_SPACE_SQL = `char(${[
+const KEY_TEXT_SPACE_SQL = `char(${[
 	9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201,
 	8202, 8232, 8233, 8239, 8287, 12288, 65279,
 ].join(", ")})`;
+
+/**
+ * True when the key parser takes `text` for an SSH Ed25519 key, well formed or
+ * not: after the leading space is trimmed, the text is exactly `ssh-ed25519` or
+ * starts with it followed by a space character. The comparison is case
+ * sensitive, as the parser's is.
+ */
+function readsAsEd25519Sql(text: string): string {
+	const trimmed = `ltrim(${text}, ${KEY_TEXT_SPACE_SQL})`;
+	return `substr(${trimmed}, 1, 11) = 'ssh-ed25519' AND (length(${trimmed}) = 11
+    OR instr(${KEY_TEXT_SPACE_SQL}, substr(${trimmed}, 12, 1)) > 0)`;
+}
 
 /**
  * Checks on `enrolled_devices` that hold for every writer, including an older
@@ -192,13 +226,13 @@ END;`,
 	`-- A writer that changes key text without restating the key ID would leave an ID that no
 -- longer describes the key, and tombstones match by that ID. An opaque key has no ID to
 -- go stale and is matched by its text, so a change from one opaque text to another passes.
--- A restated ID with an equal value cannot be told from an ID that was left alone, so a
--- change of text within one canonical key is refused too. Writers keep the stored text then.
+-- A text is opaque unless, as the key parser reads it, its first token is exactly
+-- ssh-ed25519. A restated ID with an equal value cannot be told from an ID that was left
+-- alone, so a writer that keeps the ID value resets it to the empty string first.
 CREATE TRIGGER IF NOT EXISTS enrolled_devices_key_id_stale
 BEFORE UPDATE OF public_key ON enrolled_devices
 WHEN NEW.public_key IS NOT OLD.public_key AND NEW.key_id IS OLD.key_id
-  AND NOT (NEW.key_id IS ''
-    AND substr(lower(ltrim(NEW.public_key, ${KEY_TEXT_LEADING_SPACE_SQL})), 1, 11) <> 'ssh-ed25519')
+  AND NOT (NEW.key_id IS '' AND NOT (${readsAsEd25519Sql("NEW.public_key")}))
 BEGIN
   SELECT RAISE(ABORT, 'enrollment_key_id_stale');
 END;`,

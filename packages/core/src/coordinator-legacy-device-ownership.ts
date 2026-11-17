@@ -90,34 +90,48 @@ group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled
 ) SELECT ?, ?, ?, ?, ?, ?, 1, ?${keyId.value}
 WHERE ${LEGACY_ENROLLMENT_GUARD_SQL}`;
 
-/**
- * A captured enrollment: the source match holds only while the row keeps the captured key.
- * A null key or fingerprint keeps the stored one.
- */
-const legacyEnrollmentUpdateSql = (
-	keyId: RemovalColumnSql,
-) => `UPDATE enrolled_devices SET public_key = COALESCE(?, public_key),
-fingerprint = COALESCE(?, fingerprint),
-identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1${keyId.assignment}
-WHERE group_id = ? AND device_id = ? AND public_key = ?
+/** The captured row, an Identity that does not conflict, then the shared guard. */
+const LEGACY_ENROLLMENT_ROW_GUARD_SQL = `public_key = ?
 AND (? IS NULL OR identity_id IS NULL OR identity_id = ?)
 AND ${LEGACY_ENROLLMENT_GUARD_SQL}`;
 
+/** A captured enrollment: the source match holds only while the row keeps the captured key. */
+const legacyEnrollmentUpdateSql = (
+	keyId: RemovalColumnSql,
+) => `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
+identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1${keyId.assignment}
+WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL}`;
+
+/** First statement of a key text change that keeps the stored key ID value. */
+const LEGACY_KEY_ID_RESET_SQL = `UPDATE enrolled_devices SET key_id = ''
+WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL}`;
+
 /**
- * True when an incoming key is the stored canonical key in another text form,
- * such as another comment. The stored key ID would then be restated with an
- * equal value, which the stale-key trigger cannot tell from an ID that was
- * left alone, so a writer keeps the stored key text and fingerprint instead.
+ * Second statement of that change. It writes only when the reset before it changed
+ * the row, and it carries every guard again. A guard that fails here raises, so the
+ * transaction or batch rolls the reset back and no row keeps the empty key ID.
  */
-export function keepsStoredKeyText(key: {
+const LEGACY_KEY_TEXT_UPDATE_SQL = `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
+identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1, key_id = ?
+WHERE group_id = ? AND device_id = ?
+AND CASE WHEN changes() <> 1 THEN 0 WHEN ${LEGACY_ENROLLMENT_ROW_GUARD_SQL} THEN 1
+ELSE json('enrollment_key_text_incomplete') END`;
+
+/**
+ * True when a write replaces the stored key text and the stored `key_id` value
+ * stays the same: another text form of one canonical key, or one opaque key in
+ * place of another. The stale-key trigger refuses a key text change whose key ID
+ * it cannot see change, so such a write first resets the key ID to the empty
+ * string and then writes the new text with the recomputed ID.
+ */
+export function changesKeyTextOnly(key: {
 	publicKey: string;
 	keyId: string | null;
 	currentPublicKey: string | null;
 	currentKeyId: string | null;
 }): boolean {
-	return (
-		key.keyId !== null && key.keyId === key.currentKeyId && key.publicKey !== key.currentPublicKey
-	);
+	if (key.currentPublicKey === null || key.publicKey === key.currentPublicKey) return false;
+	return enrollmentKeyIdColumn(key.keyId) === enrollmentKeyIdColumn(key.currentKeyId);
 }
 
 export interface LegacyEnrollmentWrite {
@@ -137,16 +151,23 @@ export interface LegacyEnrollmentWrite {
 	storeKeyId: boolean;
 }
 
-/**
- * One statement: an UPDATE when an enrollment was captured, an INSERT when none
- * was. The enrollment triggers abort an insert over an existing row, so this
- * table takes no ON CONFLICT clause. Both forms pin the captured source, and a
- * source that moved leaves the statement without effect.
- */
-export function legacyEnrollmentWriteStatement(input: LegacyEnrollmentWrite): {
+export interface LegacyEnrollmentStatement {
 	sql: string;
 	values: (string | null)[];
-} {
+}
+
+/**
+ * The enrollment write: an INSERT when no enrollment was captured, an UPDATE
+ * when one was, and two UPDATEs for a key text change that keeps the key ID
+ * value (see changesKeyTextOnly). The enrollment triggers abort an insert over
+ * an existing row, so this table takes no ON CONFLICT clause. Every statement
+ * pins the captured source, and a source that moved leaves it without effect.
+ * The caller runs the statements in order in one transaction or atomic batch
+ * and reads the outcome with legacyEnrollmentWritten.
+ */
+export function legacyEnrollmentWriteStatements(
+	input: LegacyEnrollmentWrite,
+): LegacyEnrollmentStatement[] {
 	const { groupId, deviceId, currentPublicKey } = input;
 	const guards = [
 		deviceId,
@@ -165,38 +186,44 @@ export function legacyEnrollmentWriteStatement(input: LegacyEnrollmentWrite): {
 	const keyIdSql = enrollmentKeyIdSql(input.storeKeyId);
 	const keyIdValues = input.storeKeyId ? [enrollmentKeyIdColumn(input.keyId)] : [];
 	if (currentPublicKey === null) {
-		return {
-			sql: legacyEnrollmentInsertSql(keyIdSql),
-			values: [
-				groupId,
-				deviceId,
-				input.publicKey,
-				input.fingerprint,
-				input.identityId,
-				input.displayName,
-				input.createdAt,
-				...keyIdValues,
-				...guards,
-			],
-		};
+		return [
+			{
+				sql: legacyEnrollmentInsertSql(keyIdSql),
+				values: [
+					groupId,
+					deviceId,
+					input.publicKey,
+					input.fingerprint,
+					input.identityId,
+					input.displayName,
+					input.createdAt,
+					...keyIdValues,
+					...guards,
+				],
+			},
+		];
 	}
-	const keepText = keepsStoredKeyText(input);
-	return {
-		sql: legacyEnrollmentUpdateSql(keyIdSql),
-		values: [
-			keepText ? null : input.publicKey,
-			keepText ? null : input.fingerprint,
-			input.identityId,
-			input.displayName,
-			...keyIdValues,
-			groupId,
-			deviceId,
-			currentPublicKey,
-			input.identityId,
-			input.identityId,
-			...guards,
-		],
-	};
+	const row = [groupId, deviceId, currentPublicKey, input.identityId, input.identityId, ...guards];
+	const assignments = [input.publicKey, input.fingerprint, input.identityId, input.displayName];
+	if (input.storeKeyId && changesKeyTextOnly(input)) {
+		return [
+			{ sql: LEGACY_KEY_ID_RESET_SQL, values: row },
+			{ sql: LEGACY_KEY_TEXT_UPDATE_SQL, values: [...assignments, ...keyIdValues, ...row] },
+		];
+	}
+	return [
+		{ sql: legacyEnrollmentUpdateSql(keyIdSql), values: [...assignments, ...keyIdValues, ...row] },
+	];
+}
+
+/**
+ * True when every statement of the write changed its row, false when none did.
+ * Anything else is not a result this writer can produce.
+ */
+export function legacyEnrollmentWritten(changes: readonly number[]): boolean {
+	if (changes.every((count) => count === 1)) return true;
+	if (changes.every((count) => count === 0)) return false;
+	throw new Error("device_ownership_authorization_unavailable");
 }
 
 export function captureLegacyEnrollmentPublicKey(row: unknown): string | null {

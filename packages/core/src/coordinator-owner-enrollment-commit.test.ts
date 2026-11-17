@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	commitOwnerEnrollment,
 	type OwnerAttempt,
@@ -14,6 +15,7 @@ import {
 	commitProofMessage,
 } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import { commitWriterFixture } from "./coordinator-owner-enrollment-historical-test-fixture.js";
+import { createD1AuthLinkBackend } from "./d1-coordinator-store.js";
 
 const test = it.extend<{ writer: CommitWriterFixture }>({
 	writer: async ({ task: _task }, use) => {
@@ -95,6 +97,34 @@ test("private confirmed writer commits ownership, every pinned group, audit and 
 	expect(JSON.stringify(f.effects())).not.toContain(f.secret);
 	expect(await readOwnerEnrollmentReceipt(f.backend, receipt)).toBe(true);
 });
+
+test.for(["SQLite", "D1"] as const)(
+	"%s commit on a schema without device removal storage enrolls every pinned group as before",
+	async (backend, { writer: f }) => {
+		// Arrange: the schema as it was before migration 0048 and before SQLite initialization added it.
+		f.db.exec(`DROP TABLE coordinator_device_removals;
+		ALTER TABLE enrolled_devices DROP COLUMN key_id;
+		ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq;
+		ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq;`);
+		const input = f.input();
+		if (backend === "D1") input.backend = createD1AuthLinkBackend(sqliteD1(f.db));
+		// Act
+		const committed = await commitOwnerEnrollment(input);
+		// Assert: the enrollment insert names no key ID column.
+		expect(committed).toBe(true);
+		const rows = f.rows("enrolled_devices") as Record<string, unknown>[];
+		expect(rows).toMatchObject(
+			["group-a", "group-b"].map((group_id) => ({
+				group_id,
+				device_id: f.row.device_id,
+				public_key: f.key.publicKey,
+				enabled: 1,
+			})),
+		);
+		expect(rows.some((row) => "key_id" in row)).toBe(false);
+		expect(await readOwnerEnrollmentReceipt(f.backend, f.finalRow())).toBe(true);
+	},
+);
 
 test.for(["signature", "other-key", "secret", "malformed-secret", "early", "deadline", "revision"])(
 	"private final proof denies %s with no durable changes",

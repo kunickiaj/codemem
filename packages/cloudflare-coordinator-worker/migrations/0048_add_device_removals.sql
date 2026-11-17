@@ -71,3 +71,11 @@ BEFORE DELETE ON coordinator_device_removals
 BEGIN
   SELECT RAISE(ABORT, 'device_removal_immutable');
 END;
+
+-- An automatic removal_seq reads as -1 before insert. Positive values keep that from matching a row.
+CREATE TRIGGER IF NOT EXISTS coordinator_device_removals_rowid
+AFTER INSERT ON coordinator_device_removals
+WHEN NEW.removal_seq < 1
+BEGIN
+  SELECT RAISE(ABORT, 'device_removal_rowid');
+END;

@@ -214,6 +214,7 @@ export async function target(f: RemovalFixture, name = "d", group = "g1"): Promi
 export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerLegacyInsertShape(test);
 	registerTombstoneRules(test);
+	registerTombstoneSequence(test);
 	registerSingleGroupRemoval(test);
 	registerRemovalAvailability(test);
 	registerInvitationSequence(test);
@@ -251,6 +252,28 @@ function registerLegacyInsertShape(test: RemovalTest) {
 				key_id: null,
 			},
 		]);
+	});
+}
+
+function registerTombstoneSequence(test: RemovalTest) {
+	test("A9 a tombstone cannot take a removal sequence below 1", async ({ fixture: f }) => {
+		// Arrange
+		const removed = await target(f);
+		const later = await target(f, "later");
+		const insert = `INSERT INTO coordinator_device_removals(removal_seq, removal_id, group_id,
+			device_id, public_key, fingerprint, removed_at) VALUES (?, 'raw', ?, ?, 'k', 'f', 'now')`;
+		// Act and assert: an automatic sequence reads as -1 before insert and must match no row.
+		for (const seq of [-1, 0]) {
+			await expect(f.exec(insert, seq, removed.groupId, removed.deviceId)).rejects.toThrow(
+				/device_removal_rowid/u,
+			);
+		}
+		await insertTombstone(f, removed);
+		await insertTombstone(f, later);
+		// Assert
+		const recorded = await tombstones(f);
+		expect(recorded.map((row) => row.device_id)).toEqual([removed.deviceId, later.deviceId]);
+		expect(recorded.every((row) => row.removal_seq >= 1)).toBe(true);
 	});
 }
 
@@ -644,23 +667,33 @@ function registerEnrollmentChangeTriggers(test: RemovalTest) {
 		]);
 	});
 
-	test("A22 an opaque key may change its text, but not to a text that reads as Ed25519", async ({
+	test("A22 an opaque key may change its text, but not to a text the key parser reads as Ed25519", async ({
 		fixture: f,
 	}) => {
 		// Arrange: an opaque key has no key ID that could go stale.
 		const enrolled = { ...(await target(f)), key: opaqueKey(`${f.prefix}-first`) };
-		const other = opaqueKey(`${f.prefix}-second`);
 		await currentInsert(f, enrolled);
 		const setKey = "UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?";
-		// Act
-		await f.exec(setKey, other.publicKey, enrolled.deviceId);
-		// Assert: leading space of any kind and letter case do not hide the key type.
-		for (const text of ["ssh-ed25519 not-a-key", "\u00a0\t SSH-ED25519 AAAA", "ssh-ed25519"]) {
+		const opaque = [
+			opaqueKey(`${f.prefix}-second`).publicKey,
+			"SSH-ED25519 AAAA",
+			"ssh-ed25519-cert-v01@openssh.com AAAA",
+			"ssh-ed25519x",
+		];
+		// Act: the parser takes only the exact, case-sensitive first token for Ed25519.
+		for (const text of opaque) await f.exec(setKey, text, enrolled.deviceId);
+		// Assert: leading space of any kind does not hide that token.
+		for (const text of [
+			"ssh-ed25519 not-a-key",
+			"\u00a0\t ssh-ed25519\tAAAA",
+			"ssh-ed25519\u3000AAAA",
+			"ssh-ed25519",
+		]) {
 			await expect(f.exec(setKey, text, enrolled.deviceId)).rejects.toThrow(
 				/enrollment_key_id_stale/u,
 			);
 		}
-		expect(await enrollments(f)).toMatchObject([{ public_key: other.publicKey, key_id: "" }]);
+		expect(await enrollments(f)).toMatchObject([{ public_key: opaque.at(-1), key_id: "" }]);
 	});
 }
 

@@ -10,6 +10,7 @@ import {
 	enroll,
 	enrollments,
 	insertDisabledEnrollment,
+	insertTombstone,
 	invitationFixture,
 	legacyInsert,
 	opaqueKey,
@@ -20,6 +21,7 @@ import {
 } from "./coordinator-device-removal-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
+import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
  * Enrollment writers under the enrollment triggers: what they write when the
@@ -31,6 +33,7 @@ export function registerEnrollmentWriterContract(test: RemovalTest) {
 	registerPinnedWriterRaces(test);
 	registerKeyIdOnUpdate(test);
 	registerKeyTextChanges(test);
+	registerKeyTextChangeFailures(test);
 }
 
 const INVITE_CONSUME = ["UPDATE coordinator_invites SET token"];
@@ -245,31 +248,133 @@ function registerKeyIdOnUpdate(test: RemovalTest) {
 	});
 }
 
+/** The same canonical key as another key text, with the fingerprint of that text. */
+function otherTextForm(enrollment: Enrollment): Enrollment {
+	const publicKey = `${enrollment.key.publicKey} another-comment`;
+	return {
+		...enrollment,
+		key: { ...enrollment.key, publicKey, fingerprint: fingerprintPublicKey(publicKey) },
+	};
+}
+
+function storedKey({ key }: Enrollment) {
+	return { public_key: key.publicKey, fingerprint: key.fingerprint, key_id: key.keyId };
+}
+
+/** A pending join request of the device, with the key text it presents now. */
+async function requestToJoin(f: RemovalFixture, joining: Enrollment): Promise<string> {
+	const invite = await f.store.createInvite({
+		groupId: joining.groupId,
+		policy: "approval_required",
+		expiresAt: EXPIRES_AT,
+	});
+	const request = await f.store.createJoinRequest({
+		groupId: joining.groupId,
+		deviceId: joining.deviceId,
+		publicKey: joining.key.publicKey,
+		fingerprint: joining.key.fingerprint,
+		token: invite.token,
+	});
+	return request.request_id;
+}
+
+function registerKeyTextChangeFailures(test: RemovalTest) {
+	for (const writer of ["admin enrollment", "join approval"] as const) {
+		test(`a key text change by ${writer} whose second statement fails leaves the original enrollment`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: the key ID reset passes, and the write of the new text then aborts.
+			const enrolled = await target(f);
+			const recommented = otherTextForm(enrolled);
+			await enroll(f, enrolled);
+			const requestId = await requestToJoin(f, recommented);
+			const before = await enrollmentRow(f, enrolled);
+			await f.exec(`CREATE TRIGGER removal_fixture_fail_key_text
+				BEFORE UPDATE OF fingerprint ON enrolled_devices
+				WHEN NEW.fingerprint IS NOT OLD.fingerprint
+				BEGIN SELECT RAISE(ABORT, 'fixture key text failure'); END`);
+			try {
+				// Act
+				const pending =
+					writer === "admin enrollment"
+						? enroll(f, recommented)
+						: f.store.reviewJoinRequest({ requestId, approved: true });
+				// Assert: no row keeps the empty key ID of the first statement. Each store
+				// reports a failed enrollment statement of an approval in its own way.
+				await expect(pending).rejects.toThrow(
+					/^(device_ownership_authorization_unavailable|join_review_incomplete)$/u,
+				);
+				expect(
+					await f.rows(
+						"SELECT status FROM coordinator_join_requests WHERE request_id = ?",
+						requestId,
+					),
+				).toEqual([{ status: "pending" }]);
+				expect(await enrollmentRow(f, enrolled)).toEqual(before);
+				expect(before).toMatchObject([storedKey(enrolled)]);
+			} finally {
+				await f.exec("DROP TRIGGER IF EXISTS removal_fixture_fail_key_text");
+			}
+		});
+	}
+
+	// The first case stops at the write of the new text, whose key ID a tombstone holds.
+	// The second has no key ID, so the same write is matched by its text.
+	for (const form of ["another text form of its key", "another opaque key"] as const) {
+		test(`A19 a key text change to ${form} that an active tombstone holds aborts and leaves the enrollment`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: another device ID was removed elsewhere under the text this device now presents.
+			const first = await target(f);
+			const opaque = form === "another opaque key";
+			const enrolled = opaque ? { ...first, key: opaqueKey(`${f.prefix}-first`) } : first;
+			const changed = opaque
+				? { ...first, key: opaqueKey(`${f.prefix}-second`) }
+				: otherTextForm(first);
+			await enroll(f, enrolled);
+			await insertTombstone(f, {
+				...changed,
+				groupId: `${f.prefix}-g9`,
+				deviceId: `${f.prefix}-alias`,
+			});
+			const before = await enrollmentRow(f, enrolled);
+			// Act
+			const pending = enroll(f, changed);
+			// Assert
+			await expect(pending).rejects.toThrow("device_ownership_authorization_unavailable");
+			expect(await enrollmentRow(f, enrolled)).toEqual(before);
+			expect(before).toMatchObject([storedKey(enrolled)]);
+		});
+	}
+}
+
 function registerKeyTextChanges(test: RemovalTest) {
-	test("A26 an admin enrollment keeps the stored key text when the same key arrives in another form", async ({
+	test("A26 an admin enrollment with another text form of the same key rewrites the key text, fingerprint and key ID", async ({
+		fixture: f,
+	}) => {
+		// Arrange: a device whose public key file lost or gained its comment.
+		const enrolled = await target(f);
+		const recommented = otherTextForm(enrolled);
+		await enroll(f, enrolled);
+		// Act
+		await enroll(f, recommented);
+		// Assert: presence checks the fingerprint of the stored text, so both must follow.
+		expect(await enrollmentRow(f, enrolled)).toMatchObject([storedKey(recommented)]);
+	});
+
+	test("A26 a join approval of an enrolled device with another text form of its key completes", async ({
 		fixture: f,
 	}) => {
 		// Arrange
 		const enrolled = await target(f);
-		const recommented = {
-			...enrolled,
-			key: { ...enrolled.key, publicKey: `${enrolled.key.publicKey} another-comment` },
-		};
+		const recommented = otherTextForm(enrolled);
 		await enroll(f, enrolled);
-		await f.exec("UPDATE enrolled_devices SET enabled = 0 WHERE device_id = ?", enrolled.deviceId);
-		// Act: the stale-key trigger would refuse the new text, so the writer does not write it.
-		await enroll(f, recommented);
-		// Assert: everything else the writer does still happens.
-		expect(await enrollmentRow(f, enrolled)).toEqual([
-			{
-				public_key: enrolled.key.publicKey,
-				fingerprint: enrolled.key.fingerprint,
-				key_id: enrolled.key.keyId,
-				identity_id: null,
-				enabled: 1,
-				created_at: expect.any(String),
-			},
-		]);
+		const requestId = await requestToJoin(f, recommented);
+		// Act
+		const review = await f.store.reviewJoinRequest({ requestId, approved: true });
+		// Assert
+		expect(review?.status).toBe("approved");
+		expect(await enrollmentRow(f, enrolled)).toMatchObject([storedKey(recommented)]);
 	});
 
 	test("A26 an admin enrollment replaces one opaque key with another", async ({ fixture: f }) => {

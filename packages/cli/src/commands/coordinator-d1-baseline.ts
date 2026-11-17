@@ -1,4 +1,8 @@
-import { coordinatorAuthStageBaselineSql, coordinatorD1BaselineMigrations } from "@codemem/core";
+import {
+	coordinatorAuthStageBaselineSql,
+	coordinatorD1BaselineMigrations,
+	coordinatorD1ConditionalBaselineMigrations,
+} from "@codemem/core";
 import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addJsonOption } from "../shared-options.js";
@@ -11,6 +15,13 @@ interface Options {
 	json?: boolean;
 }
 
+/** Names the migrations that the statement records only when their storage exists. */
+function conditionalMigrationsText(stage: Stage): string {
+	const conditional = coordinatorD1ConditionalBaselineMigrations(stage);
+	if (conditional.length === 0) return "";
+	return `-- Also records ${conditional.join(", ")} when the storage it adds already exists.\n-- Without that storage it stays unrecorded, and wrangler d1 migrations apply runs it.\n`;
+}
+
 function exportBaseline(options: Options): void {
 	const statement = coordinatorAuthStageBaselineSql(options.stage);
 	const migrations = coordinatorD1BaselineMigrations(options.stage);
@@ -18,8 +29,10 @@ function exportBaseline(options: Options): void {
 		process.stdout.write(`${JSON.stringify({ statement, migrations, applied: false })}\n`);
 		return;
 	}
+	const conditional = coordinatorD1ConditionalBaselineMigrations(options.stage);
+	const always = migrations.filter((name) => !conditional.includes(name));
 	process.stdout.write(
-		`-- Records ${migrations.length} migrations, ${migrations[0]} through ${migrations.at(-1)}, in the existing d1_migrations ledger\n-- only if auth-stage ${options.stage} readiness and the remaining table and column names match.\n-- The inventory does not check types, constraints, indexes, triggers or row validity. Compare the schema before applying.\n-- Otherwise it records nothing or fails to compile. "no such table: d1_migrations" means the ledger must be created first.\n-- Nothing has been applied.\n${statement};\n`,
+		`-- Records ${always.length} migrations, ${always[0]} through ${always.at(-1)}, in the existing d1_migrations ledger\n-- only if auth-stage ${options.stage} readiness and the remaining table and column names match.\n${conditionalMigrationsText(options.stage)}-- The inventory does not check types, constraints, indexes, triggers or row validity. Compare the schema before applying.\n-- Otherwise it records nothing or fails to compile. "no such table: d1_migrations" means the ledger must be created first.\n-- Nothing has been applied.\n${statement};\n`,
 	);
 }
 

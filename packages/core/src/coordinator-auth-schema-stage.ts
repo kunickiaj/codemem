@@ -111,6 +111,18 @@ export function coordinatorD1BaselineMigrations(
 	return COORDINATOR_D1_MIGRATION_NAMES.slice(0, last + 1);
 }
 
+/**
+ * The migrations of coordinatorD1BaselineMigrations(stage) that the baseline statement
+ * records only when their own storage exists. Without it they stay unrecorded and the
+ * next `wrangler d1 migrations apply` runs them.
+ */
+export function coordinatorD1ConditionalBaselineMigrations(
+	stage: "v2" | "prior_extension" | "current",
+): readonly string[] {
+	const conditional = Object.keys(POST_STAGE_MIGRATION_READINESS_SQL);
+	return coordinatorD1BaselineMigrations(stage).filter((name) => conditional.includes(name));
+}
+
 const POST_STAGE_GUARD_SQL = Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
 	.map(([name, readiness]) => `(column1 <> ${quote(name)} OR (${readiness}))`)
 	.join(" AND ");

@@ -213,7 +213,8 @@ import {
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
-	legacyEnrollmentWriteStatement,
+	legacyEnrollmentWriteStatements,
+	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import {
@@ -1510,7 +1511,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const currentKeyId =
 				currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey);
 			const source = [currentPublicKey, groupId, deviceId, groupId, deviceId, currentPublicKey];
-			const write = legacyEnrollmentWriteStatement({
+			const writes = legacyEnrollmentWriteStatements({
 				groupId,
 				deviceId,
 				publicKey,
@@ -1523,8 +1524,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				currentKeyId,
 				storeKeyId: this.hasRemovalSchema(),
 			});
-			const result = this.db.prepare(write.sql).run(...write.values);
-			if (legacyDeviceWriteChanges({ meta: result }) === 1) return;
+			// The caller's immediate transaction rolls a first statement back when a later one fails.
+			const changes = writes.map(({ sql, values }) =>
+				legacyDeviceWriteChanges({ meta: this.db.prepare(sql).run(...values) }),
+			);
+			if (legacyEnrollmentWritten(changes)) return;
 			const denial = this.db
 				.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
 				.get(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source);

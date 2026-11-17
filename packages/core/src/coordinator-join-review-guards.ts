@@ -1,7 +1,7 @@
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
 import {
+	changesKeyTextOnly,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
-	keepsStoredKeyText,
 	LEGACY_ENROLLMENT_SOURCE_MATCH_SQL,
 } from "./coordinator-legacy-device-ownership.js";
 import type {
@@ -50,8 +50,8 @@ export function joinReviewGuardEvidence(
  WHERE se.group_id = ? AND se.device_id = ? AND se.public_key = ?
  AND se.fingerprint = ? AND se.enabled = 1))`;
 	return {
-		/** The request restates the enrolled canonical key in another text form. */
-		keepStoredKeyText: keepsStoredKeyText({
+		/** The request replaces the enrolled key text and keeps the stored key ID value. */
+		changesKeyTextOnly: changesKeyTextOnly({
 			publicKey: row.public_key,
 			keyId: keys.recipient,
 			currentPublicKey,
