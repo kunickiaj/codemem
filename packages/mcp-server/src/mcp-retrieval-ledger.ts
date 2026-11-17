@@ -307,7 +307,29 @@ function safeCompleteInvocation(
 	}
 }
 
-export async function withMcpRetrieval<T>(
+/** Prefer the host's session and call identity over the transport's when the caller supplied them. */
+function withCallIdentity(
+	context: ToolRegistrationContext,
+	input: McpRetrievalInput,
+): McpRetrievalInput {
+	const identity = context.callIdentity();
+	if (!identity) return input;
+	return { ...input, requestId: identity.requestId, sourceSessionId: identity.sessionId };
+}
+
+type Retrieve<T> = (
+	filters: MemoryFilters | undefined,
+) => McpRetrievalResult<T> | Promise<McpRetrievalResult<T>>;
+
+export function withMcpRetrieval<T>(
+	context: ToolRegistrationContext,
+	input: McpRetrievalInput,
+	retrieve: Retrieve<T>,
+) {
+	return retrieveAndRecord(context, withCallIdentity(context, input), retrieve);
+}
+
+async function retrieveAndRecord<T>(
 	context: ToolRegistrationContext,
 	input: McpRetrievalInput,
 	retrieve: (

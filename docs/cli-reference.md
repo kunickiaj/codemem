@@ -184,6 +184,24 @@ still needs each caller's directory to scope searches, assign write-session
 paths, and read project context. Keep OpenCode pooling disabled until that
 caller-context integration is available.
 
+### Shared stdio server
+
+`codemem mcp --caller-context required` runs a stdio server that several
+project directories can share. Every tool then declares one extra argument,
+`_codemem_caller`, carrying the caller's absolute directory, its
+`CODEMEM_PROJECT` value or `null`, the host session ID, and the host's ID for
+the call. The server uses those values where a private server uses its own
+working directory and environment, and records retrievals under the host
+session. A call without the argument fails with `caller_context_required`; the
+server never substitutes its own directory. `CODEMEM_MCP_CALLER_CONTEXT=required`
+has the same effect, and any other value except `process` stops startup.
+
+The database, config file, actor identity, and embedding settings still come
+from the server process, so projects that need different ones need separate
+servers. The default, `--caller-context process`, is the existing behavior.
+The host must supply the argument. Do not enable OpenCode pooling for codemem
+until the codemem OpenCode plugin supports it.
+
 ### Memory export visibility
 
 Exports include only memories readable under the device's current Sharing domain authority and exclude sessions with no exportable memories. If any memory in a session is inaccessible, including inactive or deleted history, exports omit that session's prompts, summaries, and metadata and retain only a numeric ID, an opaque stable session key, and a redaction marker so readable memories can still be imported. Project, date, and activity filters do not reduce authority for otherwise readable session records.

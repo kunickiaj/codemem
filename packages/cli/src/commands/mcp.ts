@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { helpStyle } from "../help-style.js";
 import { addDbOption, type DbOpts, resolveDbOpt } from "../shared-options.js";
 
@@ -8,6 +8,18 @@ const mcpCmd = new Command("mcp")
 	.summary("Run an MCP server");
 
 addDbOption(mcpCmd);
+mcpCmd.addOption(
+	new Option(
+		"--caller-context <mode>",
+		"where each call's directory comes from: this process, or an argument the host plugin must add (for a server shared by several directories)",
+	)
+		.choices(["process", "required"])
+		.default("process"),
+);
+
+interface McpStdioOpts extends DbOpts {
+	callerContext: "process" | "required";
+}
 
 interface McpHttpOpts extends DbOpts {
 	host?: string;
@@ -59,9 +71,13 @@ mcpHttpCmd.action(async () => {
 
 mcpCmd.addCommand(mcpHttpCmd);
 
-export const mcpCommand = mcpCmd.action(async (opts: DbOpts) => {
+export const mcpCommand = mcpCmd.action(async (opts: McpStdioOpts) => {
 	const dbPath = resolveDbOpt(opts);
 	if (dbPath) process.env.CODEMEM_DB = dbPath;
+	// The flag wins over an inherited variable so the command line alone decides.
+	if (mcpCmd.getOptionValueSource("callerContext") === "cli") {
+		process.env.CODEMEM_MCP_CALLER_CONTEXT = opts.callerContext;
+	}
 	try {
 		await import("@codemem/mcp/stdio");
 	} catch (err) {

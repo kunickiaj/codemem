@@ -15,6 +15,17 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import { createCodememMcpServer } from "./server.js";
 import { ensureViewer } from "./stdio-viewer.js";
+import type { CodememMcpServerOptions } from "./tool-context.js";
+
+export const CALLER_CONTEXT_ENV = "CODEMEM_MCP_CALLER_CONTEXT";
+
+/** An unrecognized value stops startup; it must never mean "use this process's directory". */
+function callerContextMode(): NonNullable<CodememMcpServerOptions["callerContext"]> {
+	const value = process.env[CALLER_CONTEXT_ENV]?.trim();
+	if (!value || value === "process") return "process";
+	if (value === "required") return "required";
+	throw new Error(`${CALLER_CONTEXT_ENV} must be "process" or "required", got "${value}"`);
+}
 
 function createStdioShutdown(close: () => Promise<void>) {
 	let shutdownPromise: Promise<void> | undefined;
@@ -40,6 +51,7 @@ function createStdioShutdown(close: () => Promise<void>) {
 }
 
 async function main() {
+	const callerContext = callerContextMode();
 	const dbPath = resolveDbPath();
 	const store = new MemoryStore(dbPath);
 	let server: StdioServerHandle | undefined;
@@ -70,7 +82,7 @@ async function main() {
 		// The SDK may discard a discovery probe and create a legacy server. Only
 		// the connection owner closes the shared store, never an individual instance.
 		const transport = new StdioServerTransport();
-		server = serveStdio(() => createCodememMcpServer(store), {
+		server = serveStdio(() => createCodememMcpServer(store, { callerContext }), {
 			legacy: "serve",
 			transport,
 			onerror: (error) => {

@@ -10,6 +10,13 @@ export interface CodememMcpServerOptions {
 	 * shared server can act on behalf of a caller in another directory.
 	 */
 	cwd?: string;
+	/**
+	 * Where a call's directory, project override, session, and request identity
+	 * come from. `process` (default) uses this process and the options above.
+	 * `required` is for a process shared by several directories: each call must
+	 * carry the caller argument, and a call without it fails.
+	 */
+	callerContext?: "process" | "required";
 	captureRetrievalLedger?: boolean;
 	retrievalLedgerScopeId?: string;
 	/** Stateless transports retain request-level retry dedupe; sessions count each dispatched call. */
@@ -27,6 +34,8 @@ export interface ToolRegistrationContext {
 	defaultProject: () => string | null;
 	envProject: () => string | null;
 	cwd: () => string;
+	/** Host session and call identity of the running call, when the caller supplied them. */
+	callIdentity: () => { sessionId: string; requestId: string } | undefined;
 	captureRetrievalLedger: boolean;
 	retrievalLedgerScopeId: string;
 	retrievalLedgerIdentityMode: "session" | "stateless";
