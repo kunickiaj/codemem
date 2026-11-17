@@ -72,8 +72,7 @@ describe.each(["SQLite", "D1"] as const)("%s owned-device enrollment prerequisit
 			const db = databases.get(f);
 			if (!db) throw new Error("Missing fixture database");
 			return recipientGuardedD1(sqliteD1(db), async (writes) => {
-				if (writes.some(({ query }) => query.includes("INSERT INTO enrolled_devices")))
-					await hook();
+				if (writes.some(({ query }) => isEnrollmentRowWrite(query))) await hook();
 			});
 		});
 	for (const operation of ["enroll", "enable"] as const) {
@@ -130,10 +129,7 @@ async function d1Interleaving(operation: "enroll" | "enable", subject: "ID" | "k
 		await f.store.setDeviceEnabled(ownedGroup, ownedEnrollment.deviceId, false);
 		const before = f.db.prepare("SELECT * FROM enrolled_devices").all();
 		const beforeWrite = vi.fn((sql: string) => {
-			if (
-				!sql.includes("INSERT INTO enrolled_devices") &&
-				!sql.includes("UPDATE enrolled_devices SET enabled")
-			)
+			if (!isEnrollmentRowWrite(sql) && !sql.includes("UPDATE enrolled_devices SET enabled"))
 				return;
 			f.db
 				.prepare(
@@ -176,7 +172,7 @@ it("SQLite observes captured current-key ownership inserted at its final upsert"
 		const before = f.db.prepare("SELECT * FROM enrolled_devices").all();
 		const prepare = f.db.prepare.bind(f.db);
 		spy = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
-			if (sql.includes("INSERT INTO enrolled_devices"))
+			if (isEnrollmentRowWrite(sql))
 				prepare(
 					"INSERT INTO coordinator_device_ownership_bindings (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at) VALUES (?,?,?,?,?,?,?,?)",
 				).run(...Object.values(ownedRow));
@@ -186,7 +182,7 @@ it("SQLite observes captured current-key ownership inserted at its final upsert"
 		const pending = f.store.enrollDevice(ownedGroup, aliasReplacement);
 		// Assert: the injected binding may roll back inside SQLite's transaction; enrollment must not change.
 		await expect(pending).rejects.toThrow(new RegExp(`^${OWNED_DENIAL}$`));
-		expect(spy.mock.calls.some(([sql]) => sql.includes("INSERT INTO enrolled_devices"))).toBe(true);
+		expect(spy.mock.calls.some(([sql]) => isEnrollmentRowWrite(sql))).toBe(true);
 		expect(prepare("SELECT * FROM enrolled_devices").all()).toEqual(before);
 	} finally {
 		spy?.mockRestore();
@@ -349,10 +345,7 @@ function receiptDb(db: D1DatabaseLike, receipt: unknown): D1DatabaseLike {
 				},
 				async run() {
 					const result = await statement.run();
-					if (
-						sql.includes("INSERT INTO enrolled_devices") ||
-						sql.includes("UPDATE enrolled_devices SET enabled")
-					)
+					if (isEnrollmentRowWrite(sql) || sql.includes("UPDATE enrolled_devices SET enabled"))
 						return receipt as Awaited<ReturnType<D1PreparedStatementLike["run"]>>;
 					return result;
 				},
@@ -475,11 +468,15 @@ describe("SQLite shared enrollment callers", () => {
 	}
 });
 
-function isEnrollmentWrite(sql: string) {
+/** The enrollment write: an insert, or an update of the row that was read first. */
+function isEnrollmentRowWrite(sql: string) {
 	return (
 		sql.includes("INSERT INTO enrolled_devices") ||
-		sql.includes("UPDATE enrolled_devices SET enabled = 1")
+		sql.includes("UPDATE enrolled_devices SET public_key")
 	);
+}
+function isEnrollmentWrite(sql: string) {
+	return isEnrollmentRowWrite(sql) || sql.includes("UPDATE enrolled_devices SET enabled = 1");
 }
 function isolatedBinding(subject: "ID" | "key") {
 	return {

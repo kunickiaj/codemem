@@ -17,6 +17,10 @@ import {
 	COORDINATOR_D1_BASE_INVENTORY,
 	COORDINATOR_D1_MIGRATION_NAMES,
 } from "./coordinator-d1-schema-inventory.js";
+import {
+	DEVICE_REMOVAL_MIGRATION_NAME,
+	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+} from "./coordinator-device-removal.js";
 
 /**
  * Coordinator auth schema stages that numbered D1 migrations move between, in order:
@@ -85,13 +89,31 @@ const STAGE_LAST_MIGRATION: Readonly<Record<"v2" | "prior_extension" | "current"
 	current: COORDINATOR_AUTH_STAGE_MIGRATIONS.accountUnlink,
 };
 
-/** Every numbered migration, from 0001, that a database at `stage` already contains. */
+/**
+ * Migrations numbered after the last auth stage. They do not change the stage, so a
+ * current database may or may not contain one. A baseline records each of them only
+ * when its own readiness query finds its storage.
+ */
+const POST_STAGE_MIGRATION_READINESS_SQL: Readonly<Record<string, string>> = Object.freeze({
+	[DEVICE_REMOVAL_MIGRATION_NAME]: DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+});
+
+/**
+ * Every numbered migration, from 0001, that a baseline of a database at `stage` can
+ * record. For `current` the list ends with the migrations after the last auth stage,
+ * which the baseline statement records only when their storage exists.
+ */
 export function coordinatorD1BaselineMigrations(
 	stage: "v2" | "prior_extension" | "current",
 ): readonly string[] {
+	if (stage === "current") return COORDINATOR_D1_MIGRATION_NAMES;
 	const last = COORDINATOR_D1_MIGRATION_NAMES.indexOf(STAGE_LAST_MIGRATION[stage]);
 	return COORDINATOR_D1_MIGRATION_NAMES.slice(0, last + 1);
 }
+
+const POST_STAGE_GUARD_SQL = Object.entries(POST_STAGE_MIGRATION_READINESS_SQL)
+	.map(([name, readiness]) => `(column1 <> ${quote(name)} OR (${readiness}))`)
+	.join(" AND ");
 
 // Check every V2 table for every stage, without relying on the narrower V2 readiness query.
 // Group column names per table to avoid repeating long names near D1's statement-size limit.
@@ -107,7 +129,9 @@ const BASE_INVENTORY_SQL = `NOT EXISTS (SELECT 1 FROM (VALUES ${Object.entries(
  * One explicit statement that records, in Wrangler's existing `d1_migrations` ledger, every
  * numbered migration from 0001 through `stage`. It re-checks auth-stage readiness and the
  * remaining table and column names in the same statement. Failed checks write nothing
- * (or fail to compile), and names already recorded are skipped. A missing ledger
+ * (or fail to compile), and names already recorded are skipped. A migration numbered
+ * after the last auth stage is recorded only when its storage exists; otherwise it is
+ * left for `wrangler d1 migrations apply`. A missing ledger
  * fails with `no such table: d1_migrations`. Nothing runs it automatically.
  */
 export function coordinatorAuthStageBaselineSql(
@@ -115,7 +139,7 @@ export function coordinatorAuthStageBaselineSql(
 	ledger = "d1_migrations",
 ): string {
 	const names = coordinatorD1BaselineMigrations(stage);
-	return `INSERT INTO ${ledger} (name) SELECT column1 FROM (VALUES ${names.map((n) => `(${quote(n)})`).join(",")}) WHERE (${STAGE_GUARD_SQL[stage]}) AND ${BASE_INVENTORY_SQL} AND column1 NOT IN (SELECT name FROM ${ledger})`;
+	return `INSERT INTO ${ledger} (name) SELECT column1 FROM (VALUES ${names.map((n) => `(${quote(n)})`).join(",")}) WHERE (${STAGE_GUARD_SQL[stage]}) AND ${BASE_INVENTORY_SQL} AND ${POST_STAGE_GUARD_SQL} AND column1 NOT IN (SELECT name FROM ${ledger})`;
 }
 
 const statementFile = (header: string[], statements: readonly string[]) =>

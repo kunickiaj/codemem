@@ -35,6 +35,7 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_device_ownership_bindings",
 	"coordinator_device_rebind_attempts",
 	"coordinator_device_rebind_audit_log",
+	"coordinator_device_removals",
 	"coordinator_device_revocations",
 	"coordinator_headless_link_code_limits",
 	"coordinator_headless_link_provenance",

@@ -78,7 +78,12 @@ describe("numbered auth-stage migrations", () => {
 		// Assert: the committed files cannot drift from the shared statement arrays.
 		for (const [name, text] of Object.entries(COORDINATOR_AUTH_STAGE_MIGRATION_SQL))
 			expect(migrationText(name)).toBe(text);
-		expect(numbered.slice(-3)).toEqual([authorityCutover, accountConnections, accountUnlink]);
+		// The three stages are consecutive. Later migrations do not change the auth stage.
+		expect(numbered.slice(numbered.indexOf(authorityCutover)).slice(0, 3)).toEqual([
+			authorityCutover,
+			accountConnections,
+			accountUnlink,
+		]);
 	});
 
 	it("take a fresh database from the chain alone to the current schema at each recognized stage", async () => {
@@ -246,6 +251,20 @@ describe("guarded ledger baseline", () => {
 		expect(coordinatorD1BaselineMigrations("v2")).toEqual(
 			numbered.slice(0, numbered.indexOf(authorityCutover) + 1),
 		);
+	});
+
+	it("leaves a migration after the last auth stage for apply when its storage is missing", async () => {
+		// Arrange: a current database that the chain built before device removal storage existed.
+		const db = chainThrough(accountUnlink);
+		db.exec(ledger);
+		expect(await stage(db)).toBe("current");
+		// Act
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		// Assert: the baseline stops at the last stage, and the next apply runs cleanly.
+		expect(names(db)).toEqual(numbered.slice(0, numbered.indexOf(accountUnlink) + 1));
+		for (const name of numbered.filter((n) => n > accountUnlink)) apply(db, name);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered);
 	});
 
 	it.each([

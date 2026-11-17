@@ -79,6 +79,7 @@ describe("D1 enrollment write interleavings", () => {
 					const beforeWrite = vi.fn((sql: string) => {
 						if (
 							!sql.includes("INSERT INTO enrolled_devices") &&
+							!sql.includes("UPDATE enrolled_devices SET public_key") &&
 							!sql.includes("UPDATE enrolled_devices SET enabled")
 						)
 							return;
@@ -208,6 +209,7 @@ describe("SQLite atomic enrollment guards", () => {
 				const spy = vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
 					if (
 						sql.includes("INSERT INTO enrolled_devices") ||
+						sql.includes("UPDATE enrolled_devices SET public_key") ||
 						sql.includes("UPDATE enrolled_devices SET enabled = 1")
 					) {
 						prepare(

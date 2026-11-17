@@ -69,6 +69,7 @@ test("private confirmed writer commits ownership, every pinned group, audit and 
 				group_id,
 				device_id: f.row.device_id,
 				public_key: f.key.publicKey,
+				key_id: f.row.key_id,
 				enabled: 1,
 			}),
 		),

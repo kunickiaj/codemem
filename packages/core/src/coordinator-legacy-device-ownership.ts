@@ -1,3 +1,8 @@
+import {
+	enrollmentKeyIdColumn,
+	enrollmentKeyIdSql,
+	type RemovalColumnSql,
+} from "./coordinator-device-removal.js";
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
 import type { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import type {
@@ -73,22 +78,126 @@ THEN 'device_ownership_requires_verified_identity'
 WHEN NOT ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL} THEN 'device_ownership_authorization_unavailable'
 ELSE 'invite_identity_conflict' END AS denial`;
 
-export const LEGACY_ENROLLMENT_WRITE_SQL = `INSERT INTO enrolled_devices(
-group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-) SELECT ?, ?, ?, ?, ?, ?, 1, ?
-WHERE NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+/** Incoming revocation, incoming ownership, captured current ownership, then source tuple. */
+const LEGACY_ENROLLMENT_GUARD_SQL = `NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
 AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-AND ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL}
-ON CONFLICT(group_id, device_id) DO UPDATE SET
-public_key = excluded.public_key, fingerprint = excluded.fingerprint,
-identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-display_name = excluded.display_name, enabled = 1
-WHERE (excluded.identity_id IS NULL OR enrolled_devices.identity_id IS NULL
-OR enrolled_devices.identity_id = excluded.identity_id)
-AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-AND enrolled_devices.public_key = ?`;
+AND ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL}`;
+
+/** No captured enrollment: the source match holds only while no row exists. */
+const legacyEnrollmentInsertSql = (keyId: RemovalColumnSql) => `INSERT INTO enrolled_devices(
+group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at${keyId.column}
+) SELECT ?, ?, ?, ?, ?, ?, 1, ?${keyId.value}
+WHERE ${LEGACY_ENROLLMENT_GUARD_SQL}`;
+
+/**
+ * A captured enrollment: the source match holds only while the row keeps the captured key.
+ * A null key or fingerprint keeps the stored one.
+ */
+const legacyEnrollmentUpdateSql = (
+	keyId: RemovalColumnSql,
+) => `UPDATE enrolled_devices SET public_key = COALESCE(?, public_key),
+fingerprint = COALESCE(?, fingerprint),
+identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1${keyId.assignment}
+WHERE group_id = ? AND device_id = ? AND public_key = ?
+AND (? IS NULL OR identity_id IS NULL OR identity_id = ?)
+AND ${LEGACY_ENROLLMENT_GUARD_SQL}`;
+
+/**
+ * True when an incoming key is the stored canonical key in another text form,
+ * such as another comment. The stored key ID would then be restated with an
+ * equal value, which the stale-key trigger cannot tell from an ID that was
+ * left alone, so a writer keeps the stored key text and fingerprint instead.
+ */
+export function keepsStoredKeyText(key: {
+	publicKey: string;
+	keyId: string | null;
+	currentPublicKey: string | null;
+	currentKeyId: string | null;
+}): boolean {
+	return (
+		key.keyId !== null && key.keyId === key.currentKeyId && key.publicKey !== key.currentPublicKey
+	);
+}
+
+export interface LegacyEnrollmentWrite {
+	groupId: string;
+	deviceId: string;
+	publicKey: string;
+	fingerprint: string;
+	identityId: string | null;
+	displayName: string | null;
+	createdAt: string;
+	/** Canonical key ID of the incoming key, or null for a key that is not SSH Ed25519. */
+	keyId: string | null;
+	/** Public key of the enrollment read before this write, or null when none existed. */
+	currentPublicKey: string | null;
+	currentKeyId: string | null;
+	/** False on a schema without the `key_id` column, where the key ID is not stored. */
+	storeKeyId: boolean;
+}
+
+/**
+ * One statement: an UPDATE when an enrollment was captured, an INSERT when none
+ * was. The enrollment triggers abort an insert over an existing row, so this
+ * table takes no ON CONFLICT clause. Both forms pin the captured source, and a
+ * source that moved leaves the statement without effect.
+ */
+export function legacyEnrollmentWriteStatement(input: LegacyEnrollmentWrite): {
+	sql: string;
+	values: (string | null)[];
+} {
+	const { groupId, deviceId, currentPublicKey } = input;
+	const guards = [
+		deviceId,
+		input.keyId,
+		deviceId,
+		input.keyId,
+		deviceId,
+		input.currentKeyId,
+		currentPublicKey,
+		groupId,
+		deviceId,
+		groupId,
+		deviceId,
+		currentPublicKey,
+	];
+	const keyIdSql = enrollmentKeyIdSql(input.storeKeyId);
+	const keyIdValues = input.storeKeyId ? [enrollmentKeyIdColumn(input.keyId)] : [];
+	if (currentPublicKey === null) {
+		return {
+			sql: legacyEnrollmentInsertSql(keyIdSql),
+			values: [
+				groupId,
+				deviceId,
+				input.publicKey,
+				input.fingerprint,
+				input.identityId,
+				input.displayName,
+				input.createdAt,
+				...keyIdValues,
+				...guards,
+			],
+		};
+	}
+	const keepText = keepsStoredKeyText(input);
+	return {
+		sql: legacyEnrollmentUpdateSql(keyIdSql),
+		values: [
+			keepText ? null : input.publicKey,
+			keepText ? null : input.fingerprint,
+			input.identityId,
+			input.displayName,
+			...keyIdValues,
+			groupId,
+			deviceId,
+			currentPublicKey,
+			input.identityId,
+			input.identityId,
+			...guards,
+		],
+	};
+}
 
 export function captureLegacyEnrollmentPublicKey(row: unknown): string | null {
 	if (row === null) return null;
