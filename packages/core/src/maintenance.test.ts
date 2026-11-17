@@ -1828,54 +1828,90 @@ describe("backfillMemoryDedupKeys", () => {
 // AI structured-content backfill
 // ---------------------------------------------------------------------------
 
-describe("aiBackfillStructuredContent", () => {
-	function seedMemory(
-		db: Database,
-		sessionId: number,
-		kind: string,
-		title: string,
-		body: string,
-		narrative: string | null = null,
-		facts: string | null = null,
-		concepts: string | null = null,
-	): number {
-		const now = new Date().toISOString();
-		const info = db
-			.prepare(
-				`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
-				 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
-				 narrative, facts, concepts)
-				 VALUES (?, ?, ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?, ?, ?)`,
-			)
-			.run(sessionId, kind, title, body, now, now, narrative, facts, concepts);
-		return Number(info.lastInsertRowid);
-	}
+function seedStructuredMemory(
+	db: Database,
+	sessionId: number,
+	kind: string,
+	title: string,
+	body: string,
+	narrative: string | null = null,
+	facts: string | null = null,
+	concepts: string | null = null,
+): number {
+	const now = new Date().toISOString();
+	const info = db
+		.prepare(
+			`INSERT INTO memory_items(session_id, kind, title, body_text, confidence,
+			 tags_text, active, created_at, updated_at, metadata_json, rev, visibility,
+			 narrative, facts, concepts)
+			 VALUES (?, ?, ?, ?, 0.5, '', 1, ?, ?, '{}', 1, 'shared', ?, ?, ?)`,
+		)
+		.run(sessionId, kind, title, body, now, now, narrative, facts, concepts);
+	return Number(info.lastInsertRowid);
+}
 
-	function makeObserver(raw: string) {
-		let parsed: Record<string, unknown> | null = null;
-		try {
-			parsed = JSON.parse(raw) as Record<string, unknown>;
-		} catch {
-			parsed = null;
-		}
-		return {
-			observe: async () => ({ raw, parsed: null, provider: "openai", model: "gpt-5.4" }),
-			observeStructuredJson: async () => ({
+function seedSession(db: Database): number {
+	return Number(
+		db
+			.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
+			.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
+	);
+}
+
+function seedConceptRefs(db: Database, memoryId: number, concepts: string[]): void {
+	const insert = db.prepare("INSERT INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)");
+	for (const concept of concepts) insert.run(memoryId, concept);
+}
+
+function conceptRefs(db: Database, memoryId: number): string[] {
+	return (
+		db
+			.prepare("SELECT concept FROM memory_concept_refs WHERE memory_id = ? ORDER BY concept")
+			.all(memoryId) as Array<{ concept: string }>
+	).map((ref) => ref.concept);
+}
+
+function readStructuredRow(db: Database, id: number) {
+	return db
+		.prepare("SELECT narrative, facts, concepts, rev, updated_at FROM memory_items WHERE id = ?")
+		.get(id) as {
+		narrative: string | null;
+		facts: string | null;
+		concepts: string | null;
+		rev: number;
+		updated_at: string;
+	};
+}
+
+function makeObserver(raw: string, options: { onObserve?: () => void } = {}) {
+	let parsed: Record<string, unknown> | null = null;
+	try {
+		parsed = JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		parsed = null;
+	}
+	return {
+		observe: async () => ({ raw, parsed: null, provider: "openai", model: "gpt-5.4" }),
+		observeStructuredJson: async () => {
+			options.onObserve?.();
+			return {
 				raw,
 				parsed,
 				provider: "openai",
 				model: "gpt-5.4",
 				usedStructuredOutputs: true,
-			}),
-			getStatus: () => ({
-				provider: "openai",
-				model: "gpt-5.4",
-				runtime: "responses_api",
-				auth: { source: "test", type: "api_direct" as const, hasToken: true },
-			}),
-		};
-	}
+			};
+		},
+		getStatus: () => ({
+			provider: "openai",
+			model: "gpt-5.4",
+			runtime: "responses_api",
+			auth: { source: "test", type: "api_direct" as const, hasToken: true },
+		}),
+	};
+}
 
+describe("aiBackfillStructuredContent", () => {
 	it("fills missing structured fields from observer output", async () => {
 		const db = new Database(":memory:");
 		try {
@@ -1885,7 +1921,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(
+			const id = seedStructuredMemory(
 				db,
 				sessionId,
 				"change",
@@ -1912,6 +1948,7 @@ describe("aiBackfillStructuredContent", () => {
 				JSON.stringify(["The widget was implemented", "Documentation was updated"]),
 			);
 			expect(row.concepts).toBe(JSON.stringify(["what-changed", "pattern"]));
+			expect(conceptRefs(db, id)).toEqual(["pattern", "what-changed"]);
 		} finally {
 			db.close();
 		}
@@ -1926,7 +1963,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(
+			const id = seedStructuredMemory(
 				db,
 				sessionId,
 				"change",
@@ -1968,7 +2005,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(
+			const id = seedStructuredMemory(
 				db,
 				sessionId,
 				"discovery",
@@ -2010,7 +2047,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(
+			const id = seedStructuredMemory(
 				db,
 				sessionId,
 				"bugfix",
@@ -2051,7 +2088,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			seedMemory(db, sessionId, "feature", "Bad JSON", "Body text");
+			seedStructuredMemory(db, sessionId, "feature", "Bad JSON", "Body text");
 
 			const observer = makeObserver("not json at all");
 			const result = await aiBackfillStructuredContent(db, { observer });
@@ -2077,7 +2114,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			seedMemory(db, sessionId, "feature", "Schema invalid", "Body text");
+			seedStructuredMemory(db, sessionId, "feature", "Schema invalid", "Body text");
 
 			const observer = makeObserver(JSON.stringify({ foo: "bar" }));
 			const result = await aiBackfillStructuredContent(db, { observer });
@@ -2128,7 +2165,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(
+			const id = seedStructuredMemory(
 				db,
 				sessionId,
 				"feature",
@@ -2166,7 +2203,7 @@ describe("aiBackfillStructuredContent", () => {
 					.prepare("INSERT INTO sessions(started_at, project) VALUES (?, ?)")
 					.run("2026-01-01T00:00:00Z", "test").lastInsertRowid,
 			);
-			const id = seedMemory(db, sessionId, "decision", "Dry run", "Decided a thing.");
+			const id = seedStructuredMemory(db, sessionId, "decision", "Dry run", "Decided a thing.");
 
 			const observer = makeObserver(
 				JSON.stringify({
@@ -2194,6 +2231,193 @@ describe("aiBackfillStructuredContent", () => {
 			expect(row.narrative).toBeNull();
 			expect(row.facts).toBeNull();
 			expect(row.concepts).toBeNull();
+			expect(conceptRefs(db, id)).toEqual([]);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("aiBackfillStructuredContent revision fencing", () => {
+	it("skips without writing when observer output matches stored content", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(
+				db,
+				seedSession(db),
+				"change",
+				"Already structured",
+				"Body text.",
+				"Same narrative.",
+				JSON.stringify(["Same fact"]),
+				JSON.stringify(["pattern"]),
+			);
+			seedConceptRefs(db, id, ["pattern"]);
+			const before = readStructuredRow(db, id);
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: "Same narrative.",
+					facts: ["Same fact"],
+					concepts: ["pattern"],
+				}),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer, overwrite: true });
+
+			expect(result).toMatchObject({ checked: 1, updated: 0, skipped: 1, failed: 0 });
+			expect(readStructuredRow(db, id)).toEqual(before);
+			expect(conceptRefs(db, id)).toEqual(["pattern"]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("backfills legacy rows whose revision is NULL", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(db, seedSession(db), "change", "Legacy rev", "Body text.");
+			db.prepare("UPDATE memory_items SET rev = NULL WHERE id = ?").run(id);
+			const observer = makeObserver(
+				JSON.stringify({ narrative: "Filled narrative.", facts: ["Fact"], concepts: ["pattern"] }),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer });
+
+			expect(result).toMatchObject({ updated: 1, staleWrites: 0 });
+			expect(readStructuredRow(db, id).narrative).toBe("Filled narrative.");
+			expect(conceptRefs(db, id)).toEqual(["pattern"]);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("does not adopt observer output when the memory revision changes during the call", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(
+				db,
+				seedSession(db),
+				"bugfix",
+				"Edited mid-backfill",
+				"Fixed a bug.",
+				"Old narrative.",
+				JSON.stringify(["Old fact"]),
+				JSON.stringify(["gotcha"]),
+			);
+			seedConceptRefs(db, id, ["gotcha"]);
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: "Observer narrative.",
+					facts: ["Observer fact"],
+					concepts: ["problem-solution"],
+				}),
+				{
+					onObserve: () => {
+						db.prepare("UPDATE memory_items SET narrative = ?, rev = rev + 1 WHERE id = ?").run(
+							"User edit.",
+							id,
+						);
+					},
+				},
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer, overwrite: true });
+
+			expect(result).toMatchObject({
+				checked: 1,
+				updated: 0,
+				skipped: 0,
+				failed: 0,
+				staleWrites: 1,
+			});
+			const row = readStructuredRow(db, id);
+			expect(row).toMatchObject({
+				narrative: "User edit.",
+				facts: JSON.stringify(["Old fact"]),
+				concepts: JSON.stringify(["gotcha"]),
+				rev: 2,
+			});
+			expect(conceptRefs(db, id)).toEqual(["gotcha"]);
+		} finally {
+			db.close();
+		}
+	});
+});
+
+describe("aiBackfillStructuredContent concept references", () => {
+	it("replaces concept references with the stored concepts on overwrite", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(
+				db,
+				seedSession(db),
+				"bugfix",
+				"Reference replacement",
+				"Fixed a bug.",
+				"Old narrative.",
+				JSON.stringify(["Old fact"]),
+				JSON.stringify(["gotcha", "pattern"]),
+			);
+			seedConceptRefs(db, id, ["gotcha", "pattern"]);
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: "New narrative.",
+					facts: ["New fact"],
+					concepts: ["problem-solution", "pattern"],
+				}),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer, overwrite: true });
+
+			expect(result).toMatchObject({ updated: 1, failed: 0, staleWrites: 0 });
+			const row = readStructuredRow(db, id);
+			expect(row.concepts).toBe(JSON.stringify(["problem-solution", "pattern"]));
+			// Local-only maintenance: the backfill does not bump rev or record a
+			// replication op, matching the behavior before revision fencing.
+			expect(row.rev).toBe(1);
+			expect(conceptRefs(db, id)).toEqual(["pattern", "problem-solution"]);
+			const ops = db.prepare("SELECT COUNT(*) AS n FROM replication_ops").get() as { n: number };
+			expect(ops.n).toBe(0);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rolls back the row and its references when the reference refresh fails", async () => {
+		const db = new Database(":memory:");
+		try {
+			initTestSchema(db);
+			const id = seedStructuredMemory(
+				db,
+				seedSession(db),
+				"bugfix",
+				"Rollback",
+				"Fixed a bug.",
+				"Old narrative.",
+				JSON.stringify(["Old fact"]),
+				JSON.stringify(["gotcha"]),
+			);
+			seedConceptRefs(db, id, ["gotcha"]);
+			const before = readStructuredRow(db, id);
+			db.exec(`CREATE TRIGGER fail_concept_ref_insert BEFORE INSERT ON memory_concept_refs
+				BEGIN SELECT RAISE(ABORT, 'injected concept ref failure'); END`);
+			const observer = makeObserver(
+				JSON.stringify({
+					narrative: "New narrative.",
+					facts: ["New fact"],
+					concepts: ["problem-solution"],
+				}),
+			);
+
+			const result = await aiBackfillStructuredContent(db, { observer, overwrite: true });
+
+			expect(result).toMatchObject({ checked: 1, updated: 0, failed: 1, staleWrites: 0 });
+			expect(readStructuredRow(db, id)).toEqual(before);
+			expect(conceptRefs(db, id)).toEqual(["gotcha"]);
 		} finally {
 			db.close();
 		}

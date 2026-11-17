@@ -1004,7 +1004,7 @@ export function createBackfillStructuredCommand(name = "structured"): Command {
 				const action = opts.dryRun ? "Would update" : "Updated";
 				p.intro("codemem maintenance backfill structured");
 				p.log.success(
-					`${action} ${result.updated} memories (skipped ${result.skipped}, failed ${result.failed})`,
+					`${action} ${result.updated} memories (skipped ${result.skipped}, failed ${result.failed}, changed during processing ${result.staleWrites})`,
 				);
 				p.outro(`Checked ${result.checked} memories`);
 			} catch (error) {

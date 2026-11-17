@@ -1,4 +1,13 @@
 /* AI-powered structured-content backfill for older memories.
+ *
+ * Concurrency: each adopted result is written in its own transaction with a
+ * `WHERE id = ? AND rev IS ?` guard against the revision read before the
+ * observer call, so an edit that lands while the observer is running is not
+ * overwritten. `IS` keeps legacy rows with a NULL `rev` eligible. `memory_concept_refs` is rebuilt in the same transaction so
+ * the concept index matches the stored concepts or neither changes.
+ *
+ * Replication: the backfill is local-only maintenance. It does not bump `rev`
+ * or record a replication op, so peers do not receive backfilled fields.
  */
 
 import type { Database } from "../db.js";
@@ -14,6 +23,7 @@ import {
 	observerBaseUrlForProviderOverride,
 } from "../observer-client.js";
 import { OBSERVER_CONCEPT_SET, OBSERVER_CONCEPTS } from "../observer-concepts.js";
+import { normalizeConcept } from "../ref-populate.js";
 import { SecretScanner } from "../secret-scanner.js";
 import { isSummaryLikeMemory } from "../summary-memory.js";
 
@@ -50,6 +60,8 @@ export interface AIBackfillStructuredContentResult {
 	updated: number;
 	skipped: number;
 	failed: number;
+	/** Rows whose revision changed during the observer call, so output was discarded. */
+	staleWrites: number;
 	samples?: Array<{
 		id: number;
 		kind: string;
@@ -83,6 +95,7 @@ interface ParsedStructuredBackfill {
 
 type StructuredBackfillRow = {
 	id: number;
+	rev: number | null;
 	kind: string;
 	title: string;
 	body_text: string;
@@ -261,6 +274,48 @@ function parseStructuredBackfillResponse(raw: string | null): ParsedStructuredBa
 	return { narrative, facts, concepts };
 }
 
+interface StructuredBackfillWrite {
+	narrative: string | null;
+	facts: string[];
+	concepts: string[];
+}
+
+/**
+ * Adopt one backfill result if the row still has the revision read before the
+ * observer call. Returns false when a concurrent write changed the revision.
+ * Throws (rolling back the row and its references) if any statement fails.
+ */
+function writeStructuredBackfill(
+	db: Database,
+	row: Pick<StructuredBackfillRow, "id" | "rev">,
+	next: StructuredBackfillWrite,
+): boolean {
+	return db.transaction(() => {
+		const result = db
+			.prepare(
+				"UPDATE memory_items SET narrative = ?, facts = ?, concepts = ?, updated_at = ? WHERE id = ? AND rev IS ?",
+			)
+			.run(
+				next.narrative,
+				JSON.stringify(next.facts),
+				JSON.stringify(next.concepts),
+				new Date().toISOString(),
+				row.id,
+				row.rev,
+			);
+		if (result.changes === 0) return false;
+		db.prepare("DELETE FROM memory_concept_refs WHERE memory_id = ?").run(row.id);
+		const insertRef = db.prepare(
+			"INSERT OR IGNORE INTO memory_concept_refs (memory_id, concept) VALUES (?, ?)",
+		);
+		for (const concept of next.concepts) {
+			const normalized = normalizeConcept(concept);
+			if (normalized) insertRef.run(row.id, normalized);
+		}
+		return true;
+	})();
+}
+
 /**
  * AI-powered backfill for older non-session-summary memories that still lack
  * structured content (`narrative`, `facts`, `concepts`). Uses GPT-5.4 via the
@@ -278,7 +333,7 @@ export async function aiBackfillStructuredContent(
 		: `(narrative IS NULL OR LENGTH(narrative) = 0 OR facts IS NULL OR LENGTH(facts) <= 2 OR concepts IS NULL OR LENGTH(concepts) <= 2)`;
 	const rows = db
 		.prepare(
-			`SELECT id, kind, title, body_text, metadata_json, narrative, facts, concepts
+			`SELECT id, rev, kind, title, body_text, metadata_json, narrative, facts, concepts
 			 FROM memory_items
 			 WHERE active = 1
 			   AND kind IN (${placeholders})
@@ -313,10 +368,8 @@ export async function aiBackfillStructuredContent(
 	let updated = 0;
 	let skipped = 0;
 	let failed = 0;
+	let staleWrites = 0;
 	const samples: NonNullable<AIBackfillStructuredContentResult["samples"]> = [];
-	const updateStmt = db.prepare(
-		"UPDATE memory_items SET narrative = ?, facts = ?, concepts = ?, updated_at = ? WHERE id = ?",
-	);
 
 	try {
 		for (const row of eligibleRows) {
@@ -368,29 +421,18 @@ export async function aiBackfillStructuredContent(
 					JSON.stringify(nextFacts) !== JSON.stringify(existingFacts) ||
 					JSON.stringify(nextConcepts) !== JSON.stringify(existingConcepts);
 
+				const next = { narrative: nextNarrative, facts: nextFacts, concepts: nextConcepts };
 				if (!changed) {
 					skipped++;
-				} else {
-					if (opts.dryRun && samples.length < 10) {
-						samples.push({
-							id: row.id,
-							kind: row.kind,
-							title: row.title,
-							narrative: nextNarrative,
-							facts: nextFacts,
-							concepts: nextConcepts,
-						});
-					}
-					if (!opts.dryRun) {
-						updateStmt.run(
-							nextNarrative,
-							JSON.stringify(nextFacts),
-							JSON.stringify(nextConcepts),
-							new Date().toISOString(),
-							row.id,
-						);
+				} else if (opts.dryRun) {
+					if (samples.length < 10) {
+						samples.push({ id: row.id, kind: row.kind, title: row.title, ...next });
 					}
 					updated++;
+				} else if (writeStructuredBackfill(db, row, next)) {
+					updated++;
+				} else {
+					staleWrites++;
 				}
 			} catch {
 				failed++;
@@ -408,12 +450,13 @@ export async function aiBackfillStructuredContent(
 					updated,
 					skipped,
 					failed,
+					staleWrites,
 				},
 			});
 		}
 
 		completeMaintenanceJob(db, AI_BACKFILL_JOB_KIND, {
-			message: `Processed ${checked} memories: ${updated} updated, ${skipped} skipped, ${failed} failed`,
+			message: `Processed ${checked} memories: ${updated} updated, ${skipped} skipped, ${failed} failed, ${staleWrites} changed during processing`,
 			progressCurrent: checked,
 			progressTotal: total,
 			metadata: {
@@ -424,6 +467,7 @@ export async function aiBackfillStructuredContent(
 				updated,
 				skipped,
 				failed,
+				staleWrites,
 			},
 		});
 	} catch (error) {
@@ -440,5 +484,12 @@ export async function aiBackfillStructuredContent(
 		throw error;
 	}
 
-	return { checked, updated, skipped, failed, ...(opts.dryRun ? { samples } : {}) };
+	return {
+		checked,
+		updated,
+		skipped,
+		failed,
+		staleWrites,
+		...(opts.dryRun ? { samples } : {}),
+	};
 }
