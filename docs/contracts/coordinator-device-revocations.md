@@ -640,11 +640,12 @@ All of these hold in the statements that write:
   such a history, and an operator resolves it.
 - an attempt-bound OIDC sign-in resolves, by issuer and subject, to a live
   account link of the binding's `identity_id` under that coordinator ID. The
-  link must pass the authority decision that owner enrollment already applies:
-  an attestation-backed link, or the exact explicitly qualified device-claim
-  link. Whether a plain device-claim link may also restore the device its
-  binding names is an open decision in the design note. Until the owner decides
-  it, such a link is refused.
+  link is an attestation-backed link, an explicitly qualified device-claim
+  link, or a plain device-claim link. The owner accepted the plain device-claim
+  link on 2026-11-17 for this ceremony only. Here it authorizes one thing: the
+  return of the device that the ownership binding already names. It remains
+  refused for owner enrollment of another device, for Identity-group grants,
+  and for invitations.
 - a signature over the attempt verifies against the `public_key` of an own
   tombstone. The signature has its own purpose label and is not a signed
   coordinator request.
@@ -654,12 +655,17 @@ All of these hold in the statements that write:
 - the Identity's rejoin count for the day is under the limit.
 
 A group is a **destination** when an own tombstone names it, it is not archived,
-an active Identity-group grant exists for the binding's Identity in that group
-under the coordinator ID, and the existing owner-enrollment exclusion check does
-not exclude the device there. This is the check that owner enrollment applies to
-a fresh device. A group whose grant was revoked, or that never had one, is not a
-destination. Whether a group that never had a grant row for the Identity may
-also be a destination is an open decision in the design note.
+the existing owner-enrollment exclusion check does not exclude the device there,
+and one of these holds for the binding's Identity in that group under the
+coordinator ID:
+
+- an active Identity-group grant exists
+- no Identity-group grant row exists, in any status.
+
+A group with a revoked grant row is never a destination. The owner accepted the
+second case on 2026-11-17. A group without a grant row has no coordinator record
+of which Identities belong to it, so the coordinator cannot tell that a person
+left such a group, and the rejoin restores the enrollment the removal took.
 
 One SQLite transaction or one atomic D1 batch finalizes the attempt, sets
 `lifted_at` on every active tombstone whose `key_id` equals the binding's,
@@ -681,9 +687,10 @@ which its own review checks:
 
 - The attempt, the confirmation, and the signature bind the exact own
   tombstones by `removal_seq` and tuple, the tombstones to be lifted, the
-  destinations with their grant revisions, and the account link's generation.
-  The final statements compare all of them again. A later removal, a changed
-  grant, or a replaced link makes the attempt fail.
+  destinations with their grant revision or the absence of a grant row, and the
+  account link's generation and kind. The final statements compare all of them
+  again. A later removal, a grant row that changed or appeared, or a replaced
+  link makes the attempt fail.
 - Finalization is single use. A retry of a finalized attempt returns the stored
   receipt and writes nothing. It never repairs an enrollment or lifts a later
   tombstone. Status and recovery reads write nothing.

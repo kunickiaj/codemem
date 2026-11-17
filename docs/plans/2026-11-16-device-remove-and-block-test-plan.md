@@ -176,8 +176,8 @@ Inviter rule:
 
 These wait for the ceremony's protocol and its security review. D has an
 ownership binding to Identity I under coordinator ID A and was removed from
-groups 1 and 2. I has an active Identity-group grant in both groups and an
-account link that owner enrollment accepts.
+groups 1 and 2. I has an active Identity-group grant in both groups and a
+plain device-claim account link.
 
 1. A sign-in that resolves to I's account link, a signature by K over the
    attempt, and the browser confirmation lift every active tombstone of K,
@@ -207,15 +207,15 @@ account link that owner enrollment accepts.
     their next sync.
 13. I's grant for group 2 is revoked before the confirmation: only group 1
     gets an enrollment. It is revoked between confirmation and commit: the
-    commit fails and writes nothing. A group with no grant row gets no
-    enrollment. With no qualifying group the ceremony is refused. (Third
-    review. The no-grant case changes with owner decision 8.)
+    commit fails and writes nothing. With no qualifying group the ceremony is
+    refused. (Third review.)
 14. D also has an active tombstone under an older key K0 from a single-group
     removal: the ceremony is refused and enrolls nothing. (Third review.)
 15. Device ID E shares K and has its own tombstone: that tombstone is lifted
     and E is not enrolled. (Third review.)
-16. A plain device-claim link is refused, and a link that owner enrollment
-    accepts succeeds. (Changes with owner decision 7.)
+16. A plain device-claim link, an attestation-backed link, and a qualified
+    device-claim link each succeed. A revoked link and a link of another
+    Identity are refused. (Owner decision 7.)
 17. An attempt confirmed for removal 1 cannot lift removal 2 after the device
     rejoined and was removed again. A link replaced after the attempt started
     makes the commit fail. (Third review.)
@@ -223,6 +223,12 @@ account link that owner enrollment accepts.
     and does not lift a later tombstone. Status reads write nothing.
 19. A signed coordinator request that returns `device_removed` is not accepted
     as the rejoin signature.
+20. A group that never had a grant row for I gets an enrollment. A grant row
+    for that group that appears between confirmation and commit, active or
+    revoked, makes the commit fail. (Owner decision 8.)
+21. A plain device-claim link still cannot authorize owner enrollment of a
+    fresh device, an Identity-group grant, or an invitation. (Owner decision
+    7.)
 
 ## D. Coordinator routes
 

@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). Decisions 7 and 8 and three details of the sign-in ceremony wait for the owner. Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). The owner accepted decisions 7 and 8 on 2026-11-17. Three details of the sign-in ceremony wait for the owner. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -286,9 +286,9 @@ The ceremony reuses the three proofs of the existing rebind ceremony in ADR
 
 1. **The account.** A Google sign-in bound to the attempt, whose issuer and
    subject resolve to a live account link of the Identity in the device's
-   ownership binding. The link must be one that owner enrollment accepts
-   today. A plain device-claim link is refused until the owner decides
-   otherwise (decision 7).
+   ownership binding. A plain device-claim link, which is what a device gets
+   when it signs in through the Viewer without an administrator's review,
+   counts for this ceremony (decision 7).
 2. **The key.** A signature over the attempt by the device key. The
    coordinator verifies it against the public key stored in the device's
    tombstone, whose canonical key ID equals the binding's.
@@ -301,14 +301,12 @@ under, that an active tombstone records exactly that device ID and key, and
 that no block matches. It refuses when an active tombstone records the device
 ID with another key. A coordinator with no trusted coordinator ID refuses.
 
-The device returns only to groups where its Identity still has standing. A
-group qualifies when a tombstone with the device's own ID and key names it, it
-is not archived, and the Identity has an active Identity-group grant there.
-An Identity-group grant is the coordinator's record that an Identity may have
-devices in a group, and owner enrollment already requires one for a new
-device. A group whose grant was revoked after the removal does not qualify.
-Neither does a group that never had a grant, until the owner decides
-otherwise (decision 8).
+The device returns only to groups where its Identity has not lost its
+standing. An Identity-group grant is the coordinator's record that an Identity
+may have devices in a group. A group qualifies when a tombstone with the
+device's own ID and key names it, it is not archived, and the Identity either
+has an active grant there or never had a grant row there (decision 8). A group
+whose grant was revoked does not qualify.
 
 One transaction then finalizes the attempt, sets the lift columns on every
 active tombstone of the device's key, writes one enrollment with the binding's
@@ -369,11 +367,10 @@ not part of this design.
   link can neither sign in to rejoin nor use an invitation. The same holds
   when no group it was removed from qualifies. Its holder sets it up as a new
   device.
-- As written, sign-in rejoin works only where the Identity has an
-  Identity-group grant and an account link that owner enrollment accepts.
-  Grants are created when a Team invitation is accepted or by an operator
-  command, so many devices that signed in through the Viewer have neither.
-  Decisions 7 and 8 determine how many devices can use it.
+- In a group that never had a grant for an Identity, the coordinator cannot
+  tell that a person has left. A removed device of that person returns there
+  when the person signs in. It receives no Project memories from that alone,
+  because scope memberships come from current recipient policy.
 
 ## 2. What ends the Identity binding
 
@@ -686,28 +683,30 @@ The owner decided these on 2026-11-16.
 6. **A removed machine must run 0.50 to rejoin,** because lifting requires a
    signed join request or the sign-in ceremony.
 
-The third security review raised two questions about sign-in rejoin that the
-owner has not decided. Until then the contract takes the stricter answer for
-both.
+The third security review raised two questions about sign-in rejoin. The owner
+decided both on 2026-11-17.
 
-7. **Which account links can bring a device back.** Owner enrollment accepts
-   a link that an administrator reviewed, or one explicitly qualified for
-   owner enrollment. It refuses a plain device-claim link, which is what a
+7. **A plain device-claim link can bring its device back.** Owner enrollment
+   accepts a link that an administrator reviewed, or one explicitly qualified
+   for owner enrollment. It refuses a plain device-claim link, which is what a
    device gets when it signs in through the Viewer without a review. ADR 0005
-   Section 8 lets such a link authorize rebinding and nothing else. The
-   contract refuses it for rejoin. Recommended: accept a plain device-claim
-   link for rejoin, because the ceremony can only restore the device that the
-   ownership binding already names, in groups it was removed from. Without
-   this, most devices that signed in through the Viewer cannot rejoin by
-   signing in.
-8. **Groups with no Identity-group grant.** The contract returns a device
-   only to groups where its Identity has an active grant. Recommended: also
-   return it to a group that never had a grant row for the Identity, and keep
-   refusing a group whose grant was revoked. A group without a grant row has
-   no coordinator record of who belongs to it, so the removed enrollment is
-   the only record there is, and the rejoin restores what the removal took.
+   Section 8 lets such a link authorize rebinding and nothing else. The owner
+   accepted it for rejoin as well, because the ceremony can only restore the
+   device that the ownership binding already names, in groups it was removed
+   from. The alternative left most devices that signed in through the Viewer
+   unable to rejoin by signing in.
+8. **A device returns to a group that never had a grant for its Identity.** A
+   group whose grant was revoked still refuses it. A group without a grant row
+   has no coordinator record of who belongs to it, so the removed enrollment
+   is the only record there is, and the rejoin restores what the removal took.
    The cost is that the coordinator cannot tell that a person left such a
-   group.
+   group. The alternative returned a device only to groups with an active
+   grant.
+
+Decision 7 adds a second use of a plain device-claim link. ADR 0005 Section 8
+and the "Operator-only consumers" rule in the account-link protocol name
+rebinding as the only one. Both need that sentence when the sign-in protocol
+is written.
 
 ADR 0007 Decision 5 says a removed machine rejoins by accepting a new
 invitation. Decision 1 above adds sign-in for a device of a verified Identity.
@@ -797,7 +796,9 @@ The third pass also listed requirements for the sign-in protocol, which the
 contract now states: bind the attempt to the exact tombstones, groups, grant
 revisions, and account link, finalize once, make every write depend on one
 winning statement, and check blocks and grants in the final statements. It
-left two authority questions for the owner, recorded as decisions 7 and 8.
+left two authority questions for the owner. The owner then accepted the wider
+answer for both, as decisions 7 and 8. The pass reviewed the stricter answers,
+so the review of the sign-in protocol must examine both decisions.
 
 No review has checked the changes from the third pass, or the two changes
 made for the pull request review: the `enrolled` answer in the lookup and the
