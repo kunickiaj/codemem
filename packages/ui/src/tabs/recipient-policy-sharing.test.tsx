@@ -1294,7 +1294,7 @@ function testRecipientFocusedStates() {
 		expect(tab("Identities").getAttribute("aria-selected")).toBe("true");
 		expect(visiblePanel().textContent).toContain("No active Identities are available");
 		clickTab("Teams");
-		expect(visiblePanel().textContent).toContain("No active Teams are available");
+		expect(visiblePanel().textContent).toContain("No Teams yet");
 	});
 
 	it("keeps loaded Sharing cards visible during a failed background refresh", () => {
@@ -1629,7 +1629,7 @@ function testRecipientFocusedMigrationSurface() {
 		expect(action?.textContent).toBe("Review and migrate");
 		expect(action?.getAttribute("aria-label")).toBe("Review and migrate SRE: 6 devices, 1 Project");
 		expect(document.body.textContent).toContain(
-			"No active Teams are available for Project sharing",
+			"No Teams yet. Create one to share Projects with a group of people.",
 		);
 		expect(document.body.outerHTML).not.toMatch(
 			/opaque-scope-backed-candidate|coordinator[_ -]?id/i,

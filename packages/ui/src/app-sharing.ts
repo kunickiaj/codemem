@@ -15,6 +15,7 @@ import {
 	mountRecipientPolicySharing,
 	type RecipientPolicySharingOptions,
 } from "./tabs/recipient-policy-sharing";
+import type { CoordinatorAccess } from "./tabs/recipient-policy-team-create";
 
 const EMPTY_RECIPIENT_POLICY_INTENT: api.RecipientPolicyIntentGraphV1 = {
 	version: 1,
@@ -80,7 +81,7 @@ interface RecipientPolicySharingLoaderOptions {
 
 interface RecipientPolicySharingLoaderState {
 	loadRevision: number;
-	accessChangesAllowed: boolean;
+	coordinatorAccess: CoordinatorAccess;
 	latestLoad: Promise<boolean> | null;
 	coordinatorEnrollmentIssueCount: number;
 	lastDeviceInventory: Awaited<ReturnType<typeof api.loadDeviceIdentityInventory>> | undefined;
@@ -111,7 +112,7 @@ interface SharingLoadData {
 function createRecipientPolicySharingLoaderState(): RecipientPolicySharingLoaderState {
 	return {
 		loadRevision: 0,
-		accessChangesAllowed: false,
+		coordinatorAccess: "unknown",
 		latestLoad: null,
 		coordinatorEnrollmentIssueCount: 0,
 		lastDeviceInventory: undefined,
@@ -130,22 +131,33 @@ function sharedSharingOptions(
 ): RecipientPolicySharingOptions {
 	const { options, state } = context;
 	return {
-		accessChangesAllowed: state.accessChangesAllowed,
+		accessChangesAllowed: state.coordinatorAccess === "ready",
+		coordinatorAccess: state.coordinatorAccess,
 		coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
 		deviceInventory: state.lastDeviceInventory,
 		deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
 		onOpenTeamSetup: options.onOpenTeamSetup,
 		onPeopleChanged: () => refresh(),
 		onReviewDevices: options.onReviewDevices,
+		onTeamCreated: () => refresh(),
 		onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
 	};
 }
 
-/** Access changes apply only on a device that holds the coordinator admin secret. */
-function canChangeAccess(status: unknown): boolean {
-	if (!status || typeof status !== "object") return false;
+/**
+ * Access changes and Team creation apply only on a device that holds the coordinator
+ * admin secret and has a coordinator URL and group configured.
+ */
+function coordinatorAccessFromStatus(result: PromiseSettledResult<unknown>): CoordinatorAccess {
+	if (result.status !== "fulfilled") return "unknown";
+	const status = result.value;
+	if (!status || typeof status !== "object") return "unknown";
 	const value = status as { readiness?: unknown; has_admin_secret?: unknown };
-	return value.readiness === "ready" && value.has_admin_secret === true;
+	if (value.readiness === "ready" && value.has_admin_secret === true) return "ready";
+	if (value.readiness === "partial" && value.has_admin_secret !== true) {
+		return "admin_secret_missing";
+	}
+	return "coordinator_missing";
 }
 
 function createInitialTeamSetupRenderer(
@@ -231,8 +243,7 @@ function updateSharingLoaderAvailability(
 	adminStatusResult: PromiseSettledResult<unknown>,
 ): void {
 	const { state } = context;
-	state.accessChangesAllowed =
-		adminStatusResult.status === "fulfilled" && canChangeAccess(adminStatusResult.value);
+	state.coordinatorAccess = coordinatorAccessFromStatus(adminStatusResult);
 	state.lastDeviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
 	if (deviceInventoryResult.status === "fulfilled") {
 		state.lastDeviceInventory = deviceInventoryResult.value;

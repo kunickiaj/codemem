@@ -965,3 +965,54 @@ describe("Sharing people management access", () => {
 		expect(loadIntent).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe("Sharing Team creation access", () => {
+	function loaderWith(loadCoordinatorAdminStatus: () => Promise<unknown>) {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const mountSharing = vi.fn();
+		const loadIntent = vi.fn().mockResolvedValue(intent);
+		const load = createRecipientPolicySharingLoader({
+			loadCoordinatorAdminStatus: vi.fn(loadCoordinatorAdminStatus),
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent,
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadSyncStatus: vi.fn().mockResolvedValue({}),
+			loadTeamSetupSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [] }),
+			mountSharing,
+		});
+		return { load, loadIntent, lastOptions: () => mountSharing.mock.calls.at(-1)?.[3] };
+	}
+
+	it.each([
+		[{ readiness: "ready", has_admin_secret: true }, "ready"],
+		[{ readiness: "partial", has_admin_secret: false }, "admin_secret_missing"],
+		[{ readiness: "partial", has_admin_secret: true }, "coordinator_missing"],
+		[{ readiness: "not_configured", has_admin_secret: false }, "coordinator_missing"],
+		[null, "unknown"],
+	])("maps admin status %j to %s", async (status, expected) => {
+		const { load, lastOptions } = loaderWith(async () => status);
+
+		await load();
+
+		expect(lastOptions()?.coordinatorAccess).toBe(expected);
+	});
+
+	it("reports unknown access when the admin status cannot be read", async () => {
+		const { load, lastOptions } = loaderWith(async () => {
+			throw new Error("status unavailable");
+		});
+
+		await load();
+
+		expect(lastOptions()?.coordinatorAccess).toBe("unknown");
+	});
+
+	it("reloads Sharing after a Team is created", async () => {
+		const { load, loadIntent, lastOptions } = loaderWith(async () => ({}));
+		await load();
+
+		await lastOptions()?.onTeamCreated?.();
+
+		expect(loadIntent).toHaveBeenCalledTimes(2);
+	});
+});

@@ -4,6 +4,7 @@
  * /api/sync/* or /api/sync/run/* on the viewer. */
 
 import {
+	RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES,
 	RECIPIENT_POLICY_TEAM_RENAME_ERROR_CODES,
 	type RecipientPolicyEdgeChangeV1,
 	type RecipientPolicyEdgeCommitOutcomeV1,
@@ -17,6 +18,8 @@ import {
 	type RecipientPolicyEdgePreviewResponseV1,
 	type RecipientPolicyEdgeRecipientRefV1,
 	type RecipientPolicyEdgeSelectedRecipientV1,
+	type RecipientPolicyTeamCreateErrorCode,
+	type RecipientPolicyTeamCreateResultV1,
 	type RecipientPolicyTeamRenameErrorCode,
 	type RecipientPolicyTeamRenameResultV1,
 } from "@codemem/core/recipient-policy-contract";
@@ -38,6 +41,8 @@ export type {
 	RecipientPolicyEdgePreviewResponseV1,
 	RecipientPolicyEdgeRecipientRefV1,
 	RecipientPolicyEdgeSelectedRecipientV1,
+	RecipientPolicyTeamCreateErrorCode,
+	RecipientPolicyTeamCreateResultV1,
 	RecipientPolicyTeamRenameErrorCode,
 	RecipientPolicyTeamRenameResultV1,
 };
@@ -159,6 +164,59 @@ export async function renameRecipientPolicyTeam(input: {
 		typeof payload.linkedCoordinatorGroupRenamed !== "boolean"
 	) {
 		throw new RecipientPolicyTeamRenameApiError(response.status, "team_rename_failed");
+	}
+	return payload;
+}
+
+/**
+ * `outcomeKnown` is false when the request may have reached the server but no
+ * readable answer came back, so the Team might exist.
+ */
+export class RecipientPolicyTeamCreateApiError extends Error {
+	constructor(
+		readonly statusCode: number,
+		readonly errorCode: RecipientPolicyTeamCreateErrorCode,
+		readonly outcomeKnown: boolean,
+	) {
+		super(errorCode);
+		this.name = "RecipientPolicyTeamCreateApiError";
+	}
+}
+
+const TEAM_CREATE_ERROR_CODES = new Set<string>(RECIPIENT_POLICY_TEAM_CREATE_ERROR_CODES);
+
+export async function createRecipientPolicyTeam(
+	displayName: string,
+): Promise<RecipientPolicyTeamCreateResultV1> {
+	let response: Response;
+	try {
+		response = await fetch("/api/sync/recipient-policy/v1/teams", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ displayName }),
+		});
+	} catch {
+		throw new RecipientPolicyTeamCreateApiError(0, "team_create_failed", false);
+	}
+	const { payload } = await readJsonPayload<RecipientPolicyTeamCreateResultV1>(response);
+	if (!response.ok) {
+		const code =
+			payload && typeof payload === "object" && "error" in payload ? String(payload.error) : "";
+		if (TEAM_CREATE_ERROR_CODES.has(code)) {
+			throw new RecipientPolicyTeamCreateApiError(
+				response.status,
+				code as RecipientPolicyTeamCreateErrorCode,
+				true,
+			);
+		}
+		throw new RecipientPolicyTeamCreateApiError(response.status, "team_create_failed", false);
+	}
+	if (
+		payload?.version !== 1 ||
+		typeof payload.teamId !== "string" ||
+		typeof payload.displayName !== "string"
+	) {
+		throw new RecipientPolicyTeamCreateApiError(response.status, "team_create_failed", false);
 	}
 	return payload;
 }

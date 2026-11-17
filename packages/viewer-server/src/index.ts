@@ -45,6 +45,7 @@ import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { type SyncRoutesOptions, syncRoutes } from "./routes/sync.js";
 import { type ViewerTargetStore, viewerTargetQueryGuard } from "./routes/target-validation.js";
+import { teamCreateRoutes } from "./routes/team-create.js";
 import {
 	type LegacyTeamCompletionDependencies,
 	type LegacyTeamConfiguredGroupSnapshotLoader,
@@ -332,6 +333,7 @@ export function createApp(opts?: AppOptions) {
 			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 		}),
 	);
+	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
 	app.route(
 		"/",
 		teamSetupRoutes({
