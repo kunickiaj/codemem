@@ -387,13 +387,16 @@ export function previewDeviceRetirement(deviceId: string): Promise<DeviceRetirem
 	return retirementRequest(`/api/sync/devices/${encodeURIComponent(deviceId)}/retire/preview`);
 }
 
-export function retireDevice(
+export async function retireDevice(
 	preview: DeviceRetirementPreview,
 ): Promise<{ state: "retired"; unpaired_here: boolean }> {
-	return retirementRequest(
+	const receipt = await retirementRequest<{ state?: unknown; unpaired_here?: unknown }>(
 		`/api/sync/devices/${encodeURIComponent(preview.device_id)}/retire`,
 		preview,
 	);
+	// Without a receipt the commit may or may not have happened, so it isn't reported as done.
+	if (receipt?.state !== "retired") throw new DeviceRetirementError("retire_response_invalid");
+	return { state: "retired", unpaired_here: receipt.unpaired_here === true };
 }
 
 export async function renameKnownDevice(deviceId: string, name: string): Promise<void> {
