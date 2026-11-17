@@ -1,7 +1,8 @@
 /**
- * Pins the thin-host tool contracts (@codemem/memory-tools) to the MCP server
- * registrations. Any change to a tool name, description, argument, default, or
- * bound must land in both places in the same PR.
+ * Pins the shared thin-host tool contracts (@codemem/memory-tools) to their MCP
+ * registrations. Shared names, descriptions, arguments, defaults, and bounds
+ * must land in both places. Pi raw session search is an explicit MCP-only
+ * addition; it does not expand the thin-host/OpenCode native catalog.
  */
 
 import type { MemoryStore } from "@codemem/core";
@@ -78,8 +79,11 @@ describe("memory tool contract parity with the MCP server", () => {
 		await client.close();
 	});
 
-	it("declares exactly the fourteen MCP tools", () => {
-		expect(listed.map((tool) => tool.name).toSorted()).toEqual([...MEMORY_TOOL_NAMES].toSorted());
+	it("declares exactly the shared tools plus MCP-only Pi session search", () => {
+		expect(MEMORY_TOOL_NAMES).not.toContain("memory_session_search");
+		expect(listed.map((tool) => tool.name).toSorted()).toEqual(
+			[...MEMORY_TOOL_NAMES, "memory_session_search"].toSorted(),
+		);
 	});
 
 	for (const contract of listMemoryToolContracts()) {

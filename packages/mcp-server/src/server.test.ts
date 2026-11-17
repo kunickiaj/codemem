@@ -27,6 +27,7 @@ describe("createCodememMcpServer", () => {
 			"memory_schema",
 			"memory_search",
 			"memory_search_index",
+			"memory_session_search",
 			"memory_timeline",
 		]);
 	});
