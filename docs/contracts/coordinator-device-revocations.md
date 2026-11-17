@@ -435,14 +435,41 @@ exact key text is compared instead.
 inserts the invitation to `COALESCE(MAX(removal_seq), 0)` over all tombstones.
 Invitations that predate the column keep null.
 
+`enrolled_devices.key_id` holds the canonical key ID of the enrollment's key, or
+an empty string for an opaque key. Every enrollment writer stores it from the key
+ID it already derives for the revocation check. The migration fills existing
+rows, and null means a row is not filled yet. The removal routes and the
+`removed` list are unavailable while any enrollment has a null `key_id`.
+
+### Enrollment triggers
+
+Three triggers on `enrolled_devices` apply to every writer, including an older
+codemem that opens a migrated SQLite coordinator database directly:
+
+- `BEFORE INSERT`, and `BEFORE UPDATE` of `device_id`, `public_key`, or `key_id`:
+  abort when an active tombstone matches the new device ID or `key_id`. Abort
+  when the new `key_id` is null and any tombstone exists. Abort when an update
+  changes `public_key` and leaves `key_id` unchanged.
+- `BEFORE DELETE`: abort unless an active tombstone holds the row's `group_id`,
+  `device_id`, and `public_key`.
+- `BEFORE UPDATE` of `enabled` to 1: abort when an active tombstone of the same
+  group matches the row.
+
+The removal operation inserts a tombstone before it deletes the enrollment. A
+lift sets the lift columns before it inserts the enrollment. The triggers are a
+second check behind the statement checks below. They do not evaluate
+invitations.
+
 ### Removal operation
 
 `removeDeviceEnrollments` is the only store operation that deletes an enrollment.
-In one SQLite immediate transaction, or one D1 batch whose statements each pin
-the previewed tuples, it:
+Its target set is every enrollment, in any group, whose `device_id` is one of the
+named device IDs or whose `key_id` equals the single non-empty `key_id` of those
+enrollments. In one SQLite immediate transaction, or one D1 batch whose
+statements each select that set again and pin the previewed tuples, it:
 
-1. checks that the enrollments of the named device IDs still equal the previewed
-   tuples, and writes nothing otherwise
+1. checks that the target set still equals the previewed tuples and that no
+   enrollment has a null `key_id`, and writes nothing otherwise
 2. inserts one tombstone for each enrollment
 3. deletes each enrollment and its presence row
 4. deletes reciprocal approvals that name the device
@@ -458,6 +485,15 @@ membership left active would authorize again when the device re-enrolls, and pee
 caches refuse a member that returns at the epoch at which they recorded its
 revocation.
 
+The single-group form used by the legacy route targets one `group_id` and
+`device_id` and does not expand by key.
+
+`grantScopeMembership` changes with this operation. On both stores the statement
+that inserts or updates the membership requires an enabled enrollment of that
+device in the scope's group, in the same statement. The effect receipt and audit
+row are written only when that statement changed a row. A grant that read the
+enrollment before a removal therefore writes nothing after it.
+
 Account links, browser sessions, Identity-group grants, ownership bindings,
 invitations, and stored memories are not rewritten.
 
@@ -471,8 +507,9 @@ context.
 - Preview accepts exactly `{ "device_ids": [...] }` with one to eight device
   IDs under the controller identifier rules. It reads every enrollment of those
   IDs in every group, archived or not. It returns `404 removal_target_not_enrolled`
-  when none exists, `409 removal_target_conflict` when the enrollments carry more
-  than one canonical key or differing opaque key text, and
+  when none exists and `409 removal_target_conflict` when those enrollments carry
+  more than one canonical key or differing opaque key text. It then adds every
+  enrollment with the same `key_id` under another device ID, and returns
   `409 removal_target_too_large` above 50 enrollments. Success is
   `{ state: "ready", version: 1, device_ids, key_id, enrollments, expected_digest }`.
   Each enrollment entry has `group_id`, `device_id`, `fingerprint`,
@@ -480,8 +517,9 @@ context.
 - The SHA-256 digest binds an action and version domain, the sorted device IDs,
   and each sorted enrollment tuple with its canonical key ID. It is not a secret
   or an access token.
-- Commit accepts exactly `device_ids` and `expected_digest`. A mismatch returns
-  `409 removal_preview_stale`. Success is
+- Commit accepts exactly `device_ids` and `expected_digest`. A mismatch,
+  including an enrollment of the same key that appeared after the preview,
+  returns `409 removal_preview_stale`. Success is
   `{ state: "removed", version: 1, removal_id, removal_seq, device_ids, key_id, removals }`,
   where each entry has `group_id`, `device_id`, and `removal_seq`.
 - `GET /v1/admin/devices/removals` returns
@@ -505,10 +543,12 @@ recipient and Project invitation consumption and their bound retries, join
 approval, and owner enrollment. Rebinding and device-claim binding change
 existing enrollments only and gain no check.
 
-- A statement with no invitation, or with an enrollment-only invitation or join
-  request, is denied when an active tombstone matches the device ID or key and
-  either its `group_id` is the group being written or no enrollment in any
-  group has that device ID or key text.
+- A statement that creates an enrollment with no invitation, or with an
+  enrollment-only invitation or join request, is denied while an active
+  tombstone in any group matches the device ID or key. A remaining enrollment of
+  that device or key in another group is no exception.
+- `setDeviceEnabled(..., true)` is denied when an active tombstone of the same
+  group matches the enrollment.
 - A statement that acts on a `team_member`, `add_device`, or Project share
   invitation is denied when any tombstone, active or lifted, in any group, that
   matches the device ID or key has a `removal_seq` above the
@@ -540,9 +580,9 @@ joining device ID or key and the checks above pass. A lift also requires:
   the body, which contains the token.
 
 One SQLite transaction or one atomic D1 batch consumes the invitation, writes the
-enrollment, and sets `lifted_at` and `lifted_by_invite_id` on each active
-tombstone of the invitation's group that matches the joining device ID or key.
-Tombstones of other groups stay active. On D1 each of those
+enrollment, and sets `lifted_at` and `lifted_by_invite_id` on every active
+tombstone, in any group, that matches the joining device ID or key. On D1 each
+of those
 statements repeats the checks, and a later repair or recovery commit never
 lifts. An acceptance that passes the checks and fails the lift requirements
 returns `403 device_removed` and consumes nothing.
@@ -568,9 +608,12 @@ may omit `public_key`, and then only the device ID is checked. The reply becomes
 `{ "version": 1, "revoked": [...], "removed": [...], "removal_seq": <integer> }`.
 
 - A requested entry is in `removed` when an active tombstone matches it and no
-  enrollment in any group has that device ID, the requested key text, or the
-  tombstone's key text. An entry in `revoked` is never also in `removed`.
-- `removal_seq` is the highest `removal_seq` in the table, or 0.
+  enrollment in any group has that tombstone's `key_id`. For an opaque key the
+  exact key text is compared. An enrollment of the same device ID under another
+  key does not keep the entry out of `removed`. An entry in `revoked` is never
+  also in `removed`.
+- `removal_seq` is the highest `removal_seq` in the table, or 0, read in the same
+  statement batch as the entries.
 - The reply carries no tombstone evidence, actor, or time. Any enrolled device
   can learn whether a device ID or key it names is removed anywhere in the
   coordinator database.
@@ -581,10 +624,12 @@ and the client keeps every pairing. For each `removed` ID that it sent, the
 client deletes the pairing and both replication cursor tables and sets the
 device's `identity_devices.status` to `removed`, in one transaction. It retains
 memory retirement trust and records no retired alias. For each `revoked` ID it
-does what it does today and also ends the binding. After applying a reply it
-stores `removal_seq` and advertises it as `applied_removal_seq` in the
-`capabilities` of its next presence update, with the sync feature
-`peer_removal_check`.
+does what it does today and also ends the binding. A lookup is complete when
+every batch of the client's entries returned 200 and was applied. After a
+complete lookup the client stores the lowest `removal_seq` among its replies and
+advertises it as `applied_removal_seq` in the `capabilities` of its next presence
+update, with the sync feature `peer_removal_check`. An incomplete lookup leaves
+the stored value unchanged.
 
 ### Signed requests from a removed device
 
@@ -618,6 +663,10 @@ are unchanged.
   presence advertises no `applied_removal_seq`.
 - A removed device on a version that cannot sign `/v1/join` cannot lift its
   removal.
+- An older CLI that opens a migrated SQLite coordinator database directly is
+  stopped by the enrollment triggers. Its enrollment fails once any tombstone
+  exists, and its removal always fails. An older Worker on a migrated D1 schema
+  keeps enrolling until the first tombstone exists.
 - This adds no push delivery and no offline expiry. A peer that cannot reach the
   coordinator keeps its pairing until a later check succeeds.
 

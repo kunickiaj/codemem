@@ -43,6 +43,33 @@ New harness `coordinator-device-removal-test-harness.ts`.
 11. The legacy single-group removal writes a tombstone for that enrollment.
 12. A new invitation records the current highest `removal_seq`. An invitation
     row from before the migration reads as null.
+13. Every enrollment writer stores `key_id`. The migration fills existing rows,
+    with an empty string for an opaque key.
+14. Removing D with K also removes an enrollment of K under another device ID
+    that the request did not name, including one whose key text differs.
+15. An enrollment of K under a new device ID that is inserted between preview
+    and commit returns `removal_preview_stale` and writes nothing. A fresh
+    preview lists both device IDs and its commit removes both. (Review
+    finding 2.)
+16. While any enrollment has a null `key_id`, preview and commit return
+    `device_removal_unavailable`.
+17. A D1 membership grant that read the enrollment before the removal and
+    writes after it creates no membership, no receipt, and no audit row, for a
+    scope with no earlier membership and for a grant with a higher epoch.
+    (Review finding 3.)
+
+Enrollment triggers, run as raw SQL against a migrated database (review
+finding 4):
+
+18. The pre-0.50 enrollment insert, without `key_id`, aborts once any tombstone
+    exists and succeeds before.
+19. An insert of D or of K aborts while their tombstone is active and succeeds
+    after a lift.
+20. A plain delete of an enrollment aborts. The removal operation's delete
+    succeeds.
+21. Setting `enabled` to 1 aborts when an active tombstone of the same group
+    matches the row.
+22. An update that changes `public_key` and leaves `key_id` unchanged aborts.
 
 ## B. Removal checks on enrollment writers (SQLite and D1)
 
@@ -52,7 +79,7 @@ after D was removed from every group:
 1. Admin enroll and upsert of D with K.
 2. Admin enroll of a new device ID with K.
 3. Admin enroll of D with a new key.
-4. `setDeviceEnabled(true)` on a row re-created by direct SQL.
+4. `setDeviceEnabled(true)` for D changes no row.
 5. Join approval of a request created before the removal.
 6. Join approval of a request created after the removal from an enrollment-only
    code.
@@ -68,27 +95,33 @@ after D was removed from every group:
 Per-group cases:
 
 12. D removed from group 1 by the single-group removal and still enrolled in
-    group 2: admin enroll into group 1 is refused, admin enroll into a third
-    group succeeds, and an invitation that predates the removal is refused in
-    every group.
+    group 2: admin enroll into group 1 and into a third group are both
+    refused, enable and disable still work in group 2, and an invitation that
+    predates the removal is refused in every group.
+
+Claims that mix a removed device with another enrollment (review finding 1).
+D with K is removed from every group, and X with key L stays enrolled:
+
+13. An enrollment-only code for a group where D has no tombstone, presented as
+    device ID D with key L, is refused and changes no enrollment.
+14. The same code presented as a new device ID with key K is refused.
+15. After both attempts the lookup still reports D with K as `removed`.
 
 Inviter rule:
 
-13. An `add_device` invitation that D issued before its removal is refused for
+16. An `add_device` invitation that D issued before its removal is refused for
     a device that was never removed.
-14. A Project invitation that D issued before its removal is refused, and its
+17. A Project invitation that D issued before its removal is refused, and its
     bootstrap grant cannot authorize.
-15. An invitation issued by a device that was removed and has rejoined is
+18. An invitation issued by a device that was removed and has rejoined is
     refused when it predates that removal, and accepted when it was issued
     after the rejoin.
 
 ## C. Lifting a removal (SQLite and D1)
 
 1. A signed join by D with K and a `team_member` invitation created after the
-   removal enrolls D in the invitation's group and sets `lifted_at` and
-   `lifted_by_invite_id` on that group's active tombstones of D and K.
-   Tombstones in other groups stay active, and admin enroll into those groups
-   is still refused.
+   removal enrolls D in the invitation's group only and sets `lifted_at` and
+   `lifted_by_invite_id` on every active tombstone of D and K, in all groups.
 2. The same with an `add_device` invitation from an enrolled device of the same
    Identity.
 3. The lift restores no scope membership and no enrollment in another group.
@@ -105,11 +138,15 @@ Inviter rule:
    refused and writes no enrollment.
 10. An `add_device` invitation whose inviter was disabled or blocked after
     issuing cannot lift.
-11. Two concurrent lifts with two valid invitations produce one enrollment and
-    one consumed invitation.
-12. After a lift, disable and enable work for D in the lifted group, and admin
-    enroll works in a group where D has no tombstone.
-13. A device with an ownership binding is refused with
+11. Two concurrent lifts with two valid invitations for one group produce one
+    enrollment, and each tombstone is lifted once.
+12. After a lift, disable, enable, and admin enroll into another group work
+    for D as for any enrolled device. An invitation that predates the removal
+    is still refused.
+13. A new invitation presented as device ID D with another key, signed by that
+    key, is refused. A new invitation presented with K and signed by another
+    key is refused.
+14. A device with an ownership binding is refused with
     `device_ownership_requires_verified_identity`. This test changes with the
     owner's decision 1.
 
@@ -139,6 +176,9 @@ Inviter rule:
 5. A blocked and removed device appears only in `revoked`.
 6. An entry without `public_key` is checked by device ID.
 7. Twenty-five entries stay within the D1 query budget.
+8. An enrollment of device ID D under another key, inserted by fixture, does
+   not keep D with K out of `removed`.
+9. `removal_seq` and the entries come from one statement batch.
 
 ## F. Signed requests from a removed device
 
@@ -153,11 +193,18 @@ Inviter rule:
    The block succeeds and returns both subjects.
 2. A preview made against the enrollment, committed after the removal, returns
    `revocation_preview_stale`.
-3. A lifted tombstone with no current enrollment is not evidence.
+3. After a lift, a block request for a group where the device has a lifted
+   tombstone and no enrollment returns `revocation_target_unavailable`.
 4. After the block, a signed join with a new invitation returns
    `device_revoked`, and the tombstone stays unlifted.
 5. Viewer route: Remove, then Block from the removed-device list, succeeds end
    to end.
+6. Viewer route: Block on an enrolled device previews the block, runs the
+   removal, then commits the block against the tombstone. No enrollment row is
+   left.
+7. Viewer route: when the removal succeeds and the block commit fails, the
+   reply says removed and not blocked, and the device is in the removed list.
+8. Viewer route: when the block preview is unavailable, nothing is removed.
 
 ## H. Local pairing removal and binding (closes `codemem-l4dd`)
 
@@ -182,7 +229,7 @@ New function in `packages/core`, for example `removePairingState`.
 9. A reply without `removed` or `removal_seq` is invalid and keeps every
    pairing.
 10. IDs the client did not send are ignored.
-11. After applying a reply the next presence update carries
+11. After a complete lookup the next presence update carries
     `applied_removal_seq` and the `peer_removal_check` feature.
 12. An ended binding is absent from the reconciler's device list, and the
     reconciler queues no grant for it.
@@ -190,6 +237,10 @@ New function in `packages/core`, for example `removePairingState`.
     corrected by the next refresh.
 14. On the removed device, `device_removed` from every configured group stops
     outbound sync to coordinator-discovered peers and deletes nothing.
+15. With 30 pairings, a removal recorded between the first and second request
+    leaves `applied_removal_seq` below that removal's number until the next
+    complete lookup. A lookup whose second request fails leaves it unchanged.
+    (Review question.)
 
 ## I. Viewer server
 
@@ -247,6 +298,9 @@ New function in `packages/core`, for example `removePairingState`.
    tombstone's number as not yet checked in.
 4. A join without signature headers from a removed device returns
    `device_removed`.
+5. The 0.49 local-database forms of `codemem coordinator device enroll` and
+   `remove`, replayed as their SQL against a migrated database with one
+   tombstone, fail and change nothing.
 
 ## M. End-to-end
 

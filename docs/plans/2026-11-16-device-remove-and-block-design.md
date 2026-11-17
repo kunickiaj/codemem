@@ -25,10 +25,15 @@ The unreleased "Retire device" action becomes two actions in Devices.
 - **Block device permanently** is today's revocation of the device ID and key.
   Nothing lifts it. It also works on a device that was removed first.
 
-Remove needs one new coordinator table, one column on invitations, two admin
-routes, one admin listing, and two more fields in the lookup that peers
-already run at each refresh. Block needs one change: it accepts a removal tombstone as
-evidence when the enrollment is gone.
+Remove needs one new coordinator table, one column each on invitations and
+enrollments, three triggers on enrollments, two admin routes, one admin
+listing, and two more fields in the lookup that peers already run at each
+refresh. Block needs one change: it accepts a removal tombstone as evidence
+when the enrollment is gone.
+
+An independent security review found four ways around the first draft. Their
+fixes are part of this text and are listed under
+[Security review](#security-review).
 
 Six decisions need the owner. They are listed under
 [Decisions requested](#decisions-requested).
@@ -72,6 +77,28 @@ enforce both rules, as they do for ownership bindings.
 inserts an invitation sets it to the highest `removal_seq` that exists at that
 moment, or 0. Invitations created before the upgrade keep null.
 
+`enrolled_devices` gains `key_id`, the canonical key ID of the enrollment's
+key, or an empty string for a key that is not SSH Ed25519. Every enrollment
+writer already derives this ID for the revocation check and now stores it. The
+migration fills it for existing rows. With it, one SQL statement can find
+every enrollment of a key under any device ID or key text.
+
+Three triggers on `enrolled_devices` make the database refuse writes that
+would defeat a removal, whichever program issues them:
+
+- An insert, or an update of the device ID or key, aborts when an active
+  tombstone matches the new device ID or key ID. It also aborts when it
+  supplies no `key_id` and any tombstone exists.
+- A delete aborts unless an active tombstone already holds that row's group,
+  device ID, and key.
+- An update that enables a row aborts when an active tombstone of the same
+  group matches it.
+
+The removal operation inserts the tombstone before it deletes the enrollment,
+and a lift sets the lift columns before it inserts the enrollment, so both
+pass. An older codemem that opens the coordinator database directly cannot
+re-enroll a removed device or delete an enrollment without a tombstone.
+
 ### Removal route
 
 `POST /v1/admin/devices/removal-preview` and `POST /v1/admin/devices/removal`
@@ -81,14 +108,17 @@ so every coordinator with an admin secret can remove a device.
 
 - Preview takes `{ "device_ids": [...] }` with one to eight IDs. One machine
   can be enrolled under several device IDs that share a key, and the Viewer
-  sends that whole set, as Retire does today. The coordinator reads every
+  sends the set it knows, as Retire does today. The coordinator reads every
   enrollment of those IDs in every group, including archived groups. It
   refuses with `409 removal_target_conflict` when they carry more than one
-  key, and with `404 removal_target_not_enrolled` when none exists. The reply
-  lists the enrollments and a digest over them.
-- Commit takes the same IDs and the digest. In one transaction it checks that
-  the enrollments still match the digest, then for each enrollment inserts a
-  tombstone and deletes the enrollment and its presence row. In the same
+  key, and with `404 removal_target_not_enrolled` when none exists. It then
+  adds every enrollment that has the same `key_id` under any other device ID.
+  The reply lists all of these enrollments and a digest over them.
+- Commit takes the same IDs and the digest. In one transaction it selects the
+  enrollments by the same rule, device ID or `key_id`, and checks that this
+  complete set still matches the digest. An enrollment of the same key that
+  appeared after the preview makes the commit stale. Then for each enrollment
+  it inserts a tombstone and deletes the enrollment and its presence row. In the same
   transaction it deletes the device's reciprocal approvals, revokes each of
   its active scope memberships through the existing revoke operation, revokes
   bootstrap grants that name it as seed or worker, and denies its pending join
@@ -105,9 +135,17 @@ rejoins, and it would leave that group's cache stale on every peer. After a
 rejoin the device gets only what the reconciler grants from current recipient
 policy.
 
+Membership grants need one change that the first draft took for granted. On
+D1 a grant reads the enrollment and then writes the membership in a separate
+step, so a grant that was already running could write an active membership
+after the removal. The statement that writes a membership now requires an
+enabled enrollment of that device in the scope's group, and the grant's
+receipt and audit row depend on that statement.
+
 The legacy `POST /v1/admin/devices/remove`, which older Viewers and the CLI
 call for one group, uses the same store operation for that single enrollment.
-From 0.50 no code path deletes an enrollment without writing a tombstone.
+From 0.50 no code path deletes an enrollment without writing a tombstone, and
+the delete trigger enforces it.
 
 ### How peers learn
 
@@ -121,14 +159,17 @@ becomes:
 ```
 
 - A requested device is `removed` when an active tombstone matches its device
-  ID or its key, and the coordinator holds no enrollment for that device ID or
-  that key text in any group. A device removed from one group by an operator
-  and still enrolled in another is not reported.
+  ID or its key, and no enrollment in any group has that tombstone's `key_id`.
+  A device removed from one group by an operator and still enrolled in another
+  with the same key is not reported. An enrollment of the same device ID under
+  a different key does not hide the removal.
 - `revoked` wins when both apply.
-- `removal_seq` is the coordinator's highest removal number. The peer stores
-  it after it has applied the reply, and advertises it in its next presence
-  update as `applied_removal_seq`. Section 7 uses this to show which devices
-  have applied a removal.
+- `removal_seq` is the coordinator's highest removal number. A peer with more
+  than 25 entries sends several requests. After it has applied every reply of
+  one complete lookup, it stores the lowest `removal_seq` among those replies
+  and advertises it in its next presence update as `applied_removal_seq`. A
+  removal recorded between two requests is therefore never counted as applied.
+  Section 7 uses this to show which devices have applied a removal.
 - An entry may omit `public_key`. The peer sends every pairing with a stored
   key, as today, and also every device ID that has an active local binding
   and no pairing.
@@ -176,10 +217,10 @@ authorize a later write.
 
 When they hold, one transaction consumes the invitation, writes the enrollment
 in the invitation's group, and sets `lifted_at` and `lifted_by_invite_id` on
-the active tombstones of that group that match the device ID or key.
-Tombstones in other groups stay active, so the device returns to the
-invitation's group only. Nothing else comes back. Scope memberships and
-pairings are created only by the paths that create them for a new device.
+every active tombstone that matches the device ID or key. Nothing else comes
+back. Scope memberships, pairings, and enrollments in other groups are created
+only by the paths that create them for a new device, and an invitation that
+predates the removal stays refused in every group.
 
 A retry of a consumed invitation by the device it is bound to never lifts a
 tombstone. The lift happens only in the transaction that first consumes the
@@ -191,14 +232,16 @@ Two rules apply outside lifting.
 - An invitation whose inviter device has a tombstone numbered above the
   invitation is refused for every acceptor, including a device that was never
   removed. Today a missing inviter only skips the bootstrap grant.
-- Every path that creates or enables an enrollment without one of those
-  invitations refuses with `403 device_removed` when an active tombstone
-  matches the device ID or key and either belongs to the group being written
-  or the device has no enrollment left in any group. That covers admin enroll
-  and upsert, enable, join-request approval, enrollment-only codes, and owner
-  enrollment. These statements already carry the revocation check. Rebinding
-  and device-claim binding change existing enrollments only, so they have
-  nothing to act on for a removed device.
+- Every path that creates an enrollment without one of those invitations
+  refuses with `403 device_removed` while an active tombstone in any group
+  matches the device ID or key. There is no exception for a device that is
+  still enrolled elsewhere. That covers admin enroll and upsert, join-request
+  approval, enrollment-only codes, and owner enrollment. These statements
+  already carry the revocation check, and the insert trigger backs them.
+  Rebinding and device-claim binding change existing enrollments only, so they
+  have nothing to act on for a removed device. Enable also acts on an existing
+  enrollment, and it is refused when an active tombstone of the same group
+  matches that enrollment.
 
 ### Why a stale or replayed invitation cannot lift a removal
 
@@ -212,7 +255,9 @@ Two rules apply outside lifting.
 | A captured signed join request sent again | The invitation is consumed by then. The signature cannot move to another invitation because the token is inside the signed body. |
 | An invitation from before the coordinator upgrade | Condition 2. Its number is null. |
 | A valid new invitation presented by someone who does not hold the removed key | Condition 5. |
-| Admin upsert, enable, join approval, or an enrollment-only code | Refused in a group whose tombstone is active, and in every group while the device has no enrollment left. |
+| Admin upsert, join approval, or an enrollment-only code, in any group | Refused while a tombstone is active. |
+| The removed device ID claimed with another key, or the removed key under a new device ID, through any of those paths | Refused. A tombstone matches by device ID or by key. |
+| A second enrollment created only to make the coordinator stop reporting the removal | The lookup counts only enrollments of the tombstone's own key, and creating one needs a lift signed by that key. |
 
 ### Limits
 
@@ -260,8 +305,9 @@ explicit decision that binds it.
 The local step waits for a coordinator refresh already running in the same
 process and starts a new refresh when it finishes. A refresh in another
 process can still apply a peer list fetched before the removal. The next
-lookup corrects that, and the coordinator refuses membership grants for a
-device with no enrollment during the gap.
+lookup corrects that. During the gap the coordinator writes no membership for
+the device, because the membership statement requires its enrollment
+(Section 1).
 
 ## 3. A device the coordinator does not list
 
@@ -299,8 +345,14 @@ tombstone for the same group and device ID, which holds the same four fields.
 The digest also binds which kind of evidence was used, so a preview made
 against an enrollment does not commit against a tombstone without a new
 preview. A lifted tombstone is never evidence, because a lifted tombstone
-means the device has an enrollment in that group again or a newer tombstone
-there.
+means the device has an enrollment again or a newer tombstone.
+
+Block from Devices runs the removal first and the revocation second. A blocked
+device then has no enrollment rows left, and it has tombstones whose number
+Section 7 compares against each peer. If the removal succeeds and the
+revocation does not, Devices says that the device is removed and not yet
+blocked, and offers Block again from the removed-device list. The operator
+command `codemem coordinator device revoke` keeps revoking without removing.
 
 Because every enrollment delete writes a tombstone (Section 1), a device that
 was ever removed always has an enrollment or an active tombstone to block
@@ -367,7 +419,7 @@ The CLI keeps the operator tools for group and enrollment repair.
 | Command | Behavior in 0.50 |
 | --- | --- |
 | `codemem coordinator device list` | Unchanged. `--removed` lists active tombstones. |
-| `codemem coordinator device remove <group> <device>` | Removes one group's enrollment and writes its tombstone. |
+| `codemem coordinator device remove <group> <device>` | Removes one group's enrollment and writes its tombstone. Until an invitation lifts that tombstone, the device cannot be enrolled into any group without an invitation. |
 | `codemem coordinator device disable <group> <device>` | Unchanged. |
 | `codemem coordinator device enable <group> <device>` | New, because the Viewer's Enable leaves. |
 | `codemem coordinator device revoke <group> <device>` | Unchanged, and now works after a removal. |
@@ -384,9 +436,10 @@ without the user seeing it.
 | 0.50 Viewer, older coordinator | The removal routes return 404. Remove refuses, changes nothing, and says the coordinator must be updated first. It never falls back to deleting the enrollment, because that would leave direct pairings syncing and report success. Local-only removal stays available only for a device the coordinator does not list. |
 | 0.50 peer, older coordinator | The lookup returns 404 and pairings stay, as today. An older coordinator cannot record a removal, so there is nothing to miss. |
 | Older peer, 0.50 coordinator | The older peer never runs the lookup. At its next permission refresh it stops exchanging memories in coordinator-managed Projects with the removed device, because the coordinator no longer lists that device as a member. Its direct pairing stays and still carries memories outside those Projects. The Viewer names this peer (below). |
-| Older Viewer or CLI, 0.50 coordinator | Its per-group Remove now writes a tombstone. When the last enrollment goes, 0.50 peers drop their pairings. Its Enable and enroll cannot bring a removed device back. |
+| Older Viewer or CLI calling a 0.50 coordinator over HTTP | Its per-group Remove now writes a tombstone. When the last enrollment of the key goes, 0.50 peers drop their pairings. Its Enable and enroll cannot bring a removed device back. |
+| Older CLI opening a migrated coordinator database directly | The triggers refuse its enroll once any tombstone exists, because it supplies no `key_id`. They refuse its remove, because it writes no tombstone. Both fail with a constraint error and change nothing. |
 | Older codemem on the removed machine | It cannot sign a join request, so it cannot lift its removal until it updates. The join fails with `device_removed`. |
-| Coordinator schema not yet migrated | The removal routes return `503 device_removal_unavailable`. They never delete an enrollment without a tombstone. On D1 the migration is applied before the Worker that uses it. |
+| Coordinator schema not yet migrated, or `key_id` not yet filled for every enrollment | The removal routes return `503 device_removal_unavailable`. They never delete an enrollment without a tombstone. On D1 the migration and the `key_id` fill are applied before the Worker that uses them. An older Worker keeps enrolling devices on the migrated schema until the first removal is recorded. |
 
 **Showing who has applied a removal.** Each 0.50 device advertises
 `applied_removal_seq` in presence (Section 1). For a removed device, Devices
@@ -494,8 +547,9 @@ The device inventory state `retired` keeps its internal name and is shown as
 
 ## Implementation order after approval
 
-1. Coordinator: tombstone table, invitation column, removal store operation,
-   and the removal check in every enrollment writer, on SQLite and D1.
+1. Coordinator: tombstone table, invitation and enrollment columns, triggers,
+   removal store operation, the removal check in every enrollment writer, and
+   the enrollment requirement in the membership statement, on SQLite and D1.
 2. Coordinator: removal routes, listing, lookup reply, `device_removed` for a
    removed device's signed requests, signed join.
 3. Core: the one pairing-removal function, binding end, lookup handling, and
@@ -507,3 +561,25 @@ The device inventory state `retired` keeps its internal name and is shown as
 
 Each step starts from the tests in the test plan. Nothing here is deployed to
 a live coordinator without its own approval.
+
+## Security review
+
+One independent review on 2026-11-16, by a reviewer on a model from a
+different vendor, examined the first draft for one question: can a removed or
+blocked device regain access, or can anyone lift a removal they should not.
+It found no path that lifts a block. It confirmed four paths around a removal
+and raised two questions. All six changed this design.
+
+| Finding | Severity | Change |
+| --- | --- | --- |
+| The draft let a path without an invitation enroll a removed device ID when any enrollment shared the incoming device ID or key. An enrolled device could claim the removed ID with its own key through an enrollment-only code, hide the removal from peers, and let the removed device re-enroll. | High | Paths without an invitation refuse every match of an active tombstone, with no exception. The lookup counts only enrollments of the tombstone's own key. |
+| A device could enroll a second device ID with the same key between preview and commit. The removal then left that enrollment in place and peers never dropped the key. | High | `enrolled_devices.key_id`. Preview and commit cover every enrollment of the key, and a new one makes the commit stale. |
+| On D1 a membership grant already in progress could write an active membership after the removal, which would authorize again after a rejoin. | Medium | The membership statement requires an enabled enrollment, and the receipt depends on it. |
+| An older CLI that opens the coordinator database directly could enroll a removed device or delete an enrollment without a tombstone. | Medium | Triggers on `enrolled_devices`. |
+| With more than 25 pairings, a peer could advertise a removal as applied when it had asked about that device before the removal. | Question | The peer advertises the lowest number among the replies of one complete lookup. |
+| A block without a prior removal had no number to compare against peers. | Question | Block from Devices runs the removal first. |
+
+The review read the three documents, ADR 0005 Section 5, ADR 0007, and the
+coordinator, invitation, membership, lookup, daemon, binding, and CLI source.
+It did not inspect every account-link writer or run any test, and no second
+review has checked the changes above.
