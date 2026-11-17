@@ -8,6 +8,15 @@ export interface PersonSettingsActions {
 	rename: (identityId: string, displayName: string) => Promise<unknown>;
 	merge: (survivingIdentityId: string, duplicateIdentityId: string) => Promise<unknown>;
 	deactivate: (identityId: string) => Promise<unknown>;
+	/** Reads current coordinator status; Sharing's copy can be stale while this dialog is open. */
+	canChangeAccess: () => Promise<boolean>;
+}
+
+/** Access changes apply only on a ready device that holds the coordinator admin secret. */
+export function canChangePersonAccess(status: unknown): boolean {
+	if (!status || typeof status !== "object") return false;
+	const value = status as { readiness?: unknown; has_admin_secret?: unknown };
+	return value.readiness === "ready" && value.has_admin_secret === true;
 }
 
 export interface PersonMergeTarget {
@@ -43,6 +52,7 @@ const DEFAULT_ACTIONS: PersonSettingsActions = {
 		),
 	deactivate: async (identityId) =>
 		confirmed(await api.deactivateActor(identityId), (body) => body.ok === true),
+	canChangeAccess: async () => canChangePersonAccess(await api.loadCoordinatorAdminStatus()),
 };
 
 type Stage =
@@ -104,6 +114,26 @@ const STALE_PERSON: PersonActionFailure = {
 	text: "This person was already removed or merged. Nothing changed. Refresh Sharing to see the current list.",
 	outcomeKnown: true,
 };
+
+/** Thrown before a merge or removal starts, so nothing changed. */
+class AccessCheckFailure extends Error {}
+
+const ACCESS_CHECK_FAILED =
+	"codemem couldn't check whether this device can change who receives Projects. Nothing changed. Try again.";
+
+/**
+ * Sharing pauses its refresh while this dialog is open, so the access status it
+ * passed in can be stale. Read it again right before the change.
+ */
+async function requireAccess(canChangeAccess: () => Promise<boolean>): Promise<void> {
+	let allowed: boolean;
+	try {
+		allowed = await canChangeAccess();
+	} catch {
+		throw new AccessCheckFailure(ACCESS_CHECK_FAILED);
+	}
+	if (!allowed) throw new AccessCheckFailure(ACCESS_CHANGE_REASON);
+}
 
 function rejected(text: string): PersonActionFailure {
 	return { text, outcomeKnown: true };
@@ -307,6 +337,22 @@ function usePersonAction(onSuccess: (message: string) => void) {
 }
 
 function accessChangeRequest(
+	stage: Extract<Stage, { kind: "confirm-merge" | "confirm-remove" }>,
+	person: { actions: PersonSettingsActions; displayName: string; identityId: string },
+) {
+	const request = unguardedAccessChange(stage, person);
+	return {
+		action: async () => {
+			await requireAccess(person.actions.canChangeAccess);
+			return request.action();
+		},
+		success: request.success,
+		failure: (cause: unknown) =>
+			cause instanceof AccessCheckFailure ? rejected(cause.message) : request.failure(cause),
+	};
+}
+
+function unguardedAccessChange(
 	stage: Extract<Stage, { kind: "confirm-merge" | "confirm-remove" }>,
 	person: { actions: PersonSettingsActions; displayName: string; identityId: string },
 ) {

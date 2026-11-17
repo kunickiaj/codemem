@@ -39,6 +39,7 @@ function actions(overrides: Partial<PersonSettingsActions> = {}): PersonSettings
 		rename: vi.fn().mockResolvedValue({}),
 		merge: vi.fn().mockResolvedValue({}),
 		deactivate: vi.fn().mockResolvedValue({}),
+		canChangeAccess: vi.fn().mockResolvedValue(true),
 		...overrides,
 	};
 }
@@ -85,6 +86,14 @@ function button(label: string): HTMLButtonElement {
 	return match;
 }
 
+/** Clicks a button whose action is async and lets its pending work settle. */
+async function press(label: string) {
+	await act(async () => {
+		button(label).click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
 function type(element: HTMLInputElement | HTMLSelectElement, value: string, event = "input") {
 	act(() => {
 		element.value = value;
@@ -119,7 +128,7 @@ describe("person settings rename", () => {
 
 		// Act
 		type(nameInput(), "Brian Smith");
-		await act(async () => button("Save name").click());
+		await press("Save name");
 
 		// Assert
 		expect(personActions.rename).toHaveBeenCalledWith("identity-brian", "Brian Smith");
@@ -152,7 +161,7 @@ describe("person settings merge", () => {
 		type(mergeSelect(), "identity-casey", "change");
 		act(() => button("Review merge").click());
 		expect(document.body.textContent).toContain("Merge Brian into Casey?");
-		await act(async () => button("Merge people").click());
+		await press("Merge people");
 		act(() => button("Done").click());
 
 		expect(personActions.merge).toHaveBeenCalledWith("identity-casey", "identity-brian");
@@ -168,7 +177,7 @@ describe("person settings merge", () => {
 
 		type(mergeSelect(), "identity-casey", "change");
 		act(() => button("Review merge").click());
-		await act(async () => button("Merge people").click());
+		await press("Merge people");
 
 		expect(document.querySelector('[role="alert"]')?.textContent).toBe(
 			"Brian and Casey have different roles or invitation states in the same Team, so they can't be merged. Nothing changed. Keep them separate, or remove Brian if that entry is no longer used.",
@@ -200,7 +209,7 @@ describe("person settings removal", () => {
 		expect(document.body.textContent).toContain(
 			"Brian's devices stop receiving every Project shared with Brian",
 		);
-		await act(async () => button("Remove person").click());
+		await press("Remove person");
 		act(() => button("Done").click());
 
 		expect(personActions.deactivate).toHaveBeenCalledWith("identity-brian");
@@ -233,7 +242,7 @@ describe("person settings when access changes become unavailable", () => {
 
 		// Act
 		rerender(next);
-		await act(async () => button("Remove person").click());
+		await press("Remove person");
 
 		// Assert
 		expect(button("Remove person").disabled).toBe(true);
@@ -247,10 +256,56 @@ describe("person settings when access changes become unavailable", () => {
 		act(() => button("Review merge").click());
 
 		rerender({ accessChangesAllowed: false });
-		await act(async () => button("Merge people").click());
+		await press("Merge people");
 
 		expect(personActions.merge).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain("coordinator admin secret");
+	});
+});
+
+describe("person settings rechecks access when the change is confirmed", () => {
+	it("changes nothing when this device can no longer change access", async () => {
+		// Arrange: Sharing last saw the admin secret, but it is gone now.
+		const onChanged = vi.fn();
+		const personActions = actions({ canChangeAccess: vi.fn().mockResolvedValue(false) });
+		mount({ actions: personActions, onChanged });
+		type(mergeSelect(), "identity-casey", "change");
+		act(() => button("Review merge").click());
+
+		// Act
+		await press("Merge people");
+		act(() => button("Close").click());
+
+		// Assert
+		expect(personActions.canChangeAccess).toHaveBeenCalledOnce();
+		expect(personActions.merge).not.toHaveBeenCalled();
+		expect(onChanged).not.toHaveBeenCalled();
+	});
+
+	it("changes nothing and asks to try again when access can't be checked", async () => {
+		const personActions = actions({
+			canChangeAccess: vi.fn().mockRejectedValue(new TypeError("network error")),
+		});
+		mount({ actions: personActions });
+		act(() => button("Remove Brian").click());
+
+		await press("Remove person");
+
+		expect(personActions.deactivate).not.toHaveBeenCalled();
+		expect(document.body.textContent).toContain(
+			"codemem couldn't check whether this device can change who receives Projects. Nothing changed.",
+		);
+	});
+
+	it("does not recheck access to rename", async () => {
+		const personActions = actions();
+		mount({ actions: personActions });
+		type(nameInput(), "Brian Lee");
+
+		await press("Save name");
+
+		expect(personActions.canChangeAccess).not.toHaveBeenCalled();
+		expect(personActions.rename).toHaveBeenCalledOnce();
 	});
 });
 
@@ -265,7 +320,7 @@ describe("person settings with an unconfirmed outcome", () => {
 
 		// Act
 		act(() => button("Remove Brian").click());
-		await act(async () => button("Remove person").click());
+		await press("Remove person");
 		act(() => button("Close").click());
 
 		// Assert
@@ -280,7 +335,7 @@ describe("person settings with an unconfirmed outcome", () => {
 		mount({ actions: personActions, onChanged });
 
 		act(() => button("Remove Brian").click());
-		await act(async () => button("Remove person").click());
+		await press("Remove person");
 		act(() => button("Close").click());
 
 		expect(onChanged).not.toHaveBeenCalled();
@@ -291,35 +346,29 @@ describe("person settings when the server response can't be read", () => {
 	afterEach(() => vi.unstubAllGlobals());
 
 	function respond(body: string) {
+		const ready = '{"readiness":"ready","has_admin_secret":true}';
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => new Response(body, { status: 200 })),
+			vi.fn(
+				async (url: string) =>
+					new Response(url.includes("/coordinator/admin/status") ? ready : body, { status: 200 }),
+			),
 		);
-	}
-
-	/** Lets the stubbed fetch and response read settle. */
-	async function settle() {
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
 	}
 
 	const steps: Record<string, () => Promise<void>> = {
 		rename: async () => {
 			type(nameInput(), "  Brian   Lee ");
-			await act(async () => button("Save name").click());
-			await settle();
+			await press("Save name");
 		},
 		merge: async () => {
 			type(mergeSelect(), "identity-casey", "change");
 			act(() => button("Review merge").click());
-			await act(async () => button("Merge people").click());
-			await settle();
+			await press("Merge people");
 		},
 		removal: async () => {
 			act(() => button("Remove Brian").click());
-			await act(async () => button("Remove person").click());
-			await settle();
+			await press("Remove person");
 		},
 	};
 
