@@ -3,6 +3,8 @@
  * D1 ledger baseline needs no migration directory at run time. Tests compare both against
  * the migration files. Generated from a database built from 0001 through 0045;
  * 0046 and 0047 add columns and objects checked by the auth-stage readiness queries.
+ * 0048 adds device removal storage. It follows the last auth stage, and a baseline
+ * records it only when that storage exists.
  */
 export const COORDINATOR_D1_MIGRATION_NAMES: readonly string[] = Object.freeze([
 	"0001_init.sql",
@@ -53,6 +55,7 @@ export const COORDINATOR_D1_MIGRATION_NAMES: readonly string[] = Object.freeze([
 	"0045_cut_over_auth_link_authority.sql",
 	"0046_add_account_connections.sql",
 	"0047_add_account_unlink.sql",
+	"0048_add_device_removals.sql",
 ]);
 
 /** Every V2 table and column, including auth tables, required by every baseline stage. */

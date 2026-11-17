@@ -98,6 +98,9 @@ export async function legacyOwnerKeyMetadata(
  * owner checks reuse them instead of repeatedly expanding their JSON inputs.
  * Join requested enrollments directly by group/device; a left-joined enrollment
  * CTE can materialize all groups sharing a key even with NOT MATERIALIZED.
+ * The enrollment CTE names its columns: `e.*` would add the stored
+ * `enrolled_devices.key_id`, which is null until filled, ahead of the key ID
+ * derived for this statement, and every `key_id` reference would read the stored one.
  */
 export const LEGACY_OWNER_INPUT_SQL = `WITH legacy_owner_input(manifest, group_id, keys) AS (
  VALUES (?, ?, ?)
@@ -107,7 +110,8 @@ export const LEGACY_OWNER_INPUT_SQL = `WITH legacy_owner_input(manifest, group_i
  json_extract(value, '$.fingerprint') AS fingerprint
  FROM legacy_owner_input p, json_each(p.keys)
 ), legacy_owner_enrollments AS NOT MATERIALIZED (
- SELECT e.*, k.key_id FROM enrolled_devices e JOIN legacy_owner_keys k
+ SELECT e.group_id, e.device_id, e.public_key, e.fingerprint, e.identity_id, e.display_name,
+ e.enabled, e.created_at, k.key_id FROM enrolled_devices e JOIN legacy_owner_keys k
  ON k.public_key = e.public_key AND k.fingerprint = e.fingerprint AND k.key_id IS NOT NULL
 ), legacy_owner_requested AS MATERIALIZED (
  SELECT json_extract(d.value, '$.device_id') AS device_id,

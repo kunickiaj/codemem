@@ -169,6 +169,7 @@ export {
 	type CoordinatorAuthSchemaStage,
 	coordinatorAuthStageBaselineSql,
 	coordinatorD1BaselineMigrations,
+	coordinatorD1ConditionalBaselineMigrations,
 	readCoordinatorAuthSchemaStage,
 } from "./coordinator-auth-schema-stage.js";
 export { parseBootstrapExpiry } from "./coordinator-bootstrap-grant-authorization.js";
