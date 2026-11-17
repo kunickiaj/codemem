@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). A second security review then changed five points. One of them narrows decision 1 and waits for the owner's confirmation. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -26,13 +26,13 @@ The unreleased "Retire device" action becomes two actions in Devices.
   Nothing lifts it. It also works on a device that was removed first.
 
 Remove needs one new coordinator table, one column each on invitations and
-enrollments, three triggers on enrollments, two admin routes, one admin
-listing, and two more fields in the lookup that peers already run at each
-refresh. Block needs one change: it accepts a removal tombstone as evidence
-when the enrollment is gone.
+enrollments, triggers on enrollments, two admin routes, one admin listing, and
+two more fields in the lookup that peers already run at each refresh. Block
+needs one change: it accepts a removal tombstone as evidence when the
+enrollment is gone.
 
-An independent security review found four ways around the first draft. Their
-fixes are part of this text and are listed under
+Two passes of an independent security review found nine ways around earlier
+drafts. Their fixes are part of this text and are listed under
 [Security review](#security-review).
 
 The owner settled six questions the design depended on. They are listed under
@@ -83,21 +83,28 @@ writer already derives this ID for the revocation check and now stores it. The
 migration fills it for existing rows. With it, one SQL statement can find
 every enrollment of a key under any device ID or key text.
 
-Three triggers on `enrolled_devices` make the database refuse writes that
-would defeat a removal, whichever program issues them:
+Triggers on `enrolled_devices` make the database refuse writes that would
+defeat a removal, whichever program issues them:
 
-- An insert, or an update of the device ID or key, aborts when an active
-  tombstone matches the new device ID or key ID. It also aborts when it
+- An insert, or an update of the group, device ID, or key, aborts when an
+  active tombstone matches the new device ID or key. A key that is not SSH
+  Ed25519 is compared by its exact text. The same write aborts when it
   supplies no `key_id` and any tombstone exists.
+- An insert aborts when a row with the same group and device ID, or the same
+  row ID, already exists. An update that moves a row onto another row's group
+  and device ID aborts. Without this rule SQLite's replace-on-conflict deletes
+  the other row without running its delete trigger.
 - A delete aborts unless an active tombstone already holds that row's group,
   device ID, and key.
 - An update that enables a row aborts when an active tombstone of the same
   group matches it.
 
-The removal operation inserts the tombstone before it deletes the enrollment,
-and a lift sets the lift columns before it inserts the enrollment, so both
-pass. An older codemem that opens the coordinator database directly cannot
-re-enroll a removed device or delete an enrollment without a tombstone.
+Because of the second rule, 0.50 writers update an existing enrollment with an
+`UPDATE` and insert only when no row exists. They no longer use an upsert on
+this table. The removal operation inserts the tombstone before it deletes the
+enrollment, and a lift sets the lift columns before it inserts the enrollment,
+so both pass. An older codemem that opens the coordinator database directly
+cannot re-enroll a removed device or delete an enrollment without a tombstone.
 
 ### Removal route
 
@@ -170,6 +177,13 @@ becomes:
   and advertises it in its next presence update as `applied_removal_seq`. A
   removal recorded between two requests is therefore never counted as applied.
   Section 7 uses this to show which devices have applied a removal.
+- The stored number is valid only for the pairings and bindings the lookup
+  asked about. The peer keeps a local counter that every new or reactivated
+  pairing or binding increases in its own transaction. A lookup notes the
+  counter when it reads its entries and stores the number only if the counter
+  is unchanged when it finishes. Any later new pairing or binding sets the
+  stored number to 0, and the peer advertises 0 until a complete lookup has
+  covered the new entry.
 - An entry may omit `public_key`. The peer sends every pairing with a stored
   key, as today, and also every device ID that has an active local binding
   and no pairing.
@@ -217,11 +231,16 @@ authorize a later write.
 7. **For a device linked to a Google account, its own Identity.** A device
    with a coordinator ownership binding is refused by every invitation path
    today. When it lifts a removal, it is accepted only with an `add_device`
-   invitation whose target Identity is the Identity in the binding, when one
-   binding row holds both the joining device ID and the joining key, and when
-   the inviter's enrollment still has that Identity. The enrollment is written
-   with the binding's Identity. A `team_member` or Project invitation, or a
-   join that is not a lift, stays refused for such a device.
+   invitation whose target Identity is the Identity in the binding, and when
+   one binding row holds both the joining device ID and the joining key. The
+   inviter device must have its own ownership binding to that same Identity.
+   An enrollment that merely carries the Identity is not enough, because a
+   Project invitation lets the accepting device name any Identity for its
+   enrollment. Both bindings must belong to the coordinator ID the request
+   runs under, and a coordinator with no trusted coordinator ID refuses this
+   case. The enrollment is written with the binding's Identity. A
+   `team_member` or Project invitation, or a join that is not a lift, stays
+   refused for such a device.
 
 When they hold, one transaction consumes the invitation, writes the enrollment
 in the invitation's group, and sets `lifted_at` and `lifted_by_invite_id` on
@@ -235,8 +254,13 @@ tombstone. The lift happens only in the transaction that first consumes the
 invitation. A retry is still checked against condition 2, so it cannot enroll
 a device that was removed after it accepted.
 
-Two rules apply outside lifting.
+Three rules apply outside lifting.
 
+- Condition 2 applies to every kind of invitation at every acceptance,
+  including an enrollment-only code and the invitation behind a join request.
+  A lift ends the active tombstones in all groups, so without this rule a
+  device that rejoined one group could use an old enrollment-only code to
+  enter another.
 - An invitation whose inviter device has a tombstone numbered above the
   invitation is refused for every acceptor, including a device that was never
   removed. Today a missing inviter only skips the bootstrap grant.
@@ -264,6 +288,7 @@ Two rules apply outside lifting.
 | An invitation from before the coordinator upgrade | Condition 2. Its number is null. |
 | A valid new invitation presented by someone who does not hold the removed key | Condition 5. |
 | Admin upsert, join approval, or an enrollment-only code, in any group | Refused while a tombstone is active. |
+| An enrollment-only code from before the removal, used for another group after the device rejoined one | Condition 2 applies to every kind of invitation. |
 | The removed device ID claimed with another key, or the removed key under a new device ID, through any of those paths | Refused. A tombstone matches by device ID or by key. |
 | A second enrollment created only to make the coordinator stop reporting the removal | The lookup counts only enrollments of the tombstone's own key, and creating one needs a lift signed by that key. |
 
@@ -360,8 +385,11 @@ against an enrollment does not commit against a tombstone without a new
 preview. A lifted tombstone is never evidence, because a lifted tombstone
 means the device has an enrollment again or a newer tombstone.
 
-Block from Devices runs the removal first and the revocation second. A blocked
-device then has no enrollment rows left, and it has tombstones whose number
+Block from Devices runs the removal first and the revocation second. It first
+previews the block against the enrollment to confirm that the coordinator can
+block at all, and removes nothing if it cannot. After the removal it previews
+again, now against the tombstone, and commits that preview. A blocked device
+then has no enrollment rows left, and it has tombstones whose number
 Section 7 compares against each peer. If the removal succeeds and the
 revocation does not, Devices says that the device is removed and not yet
 blocked, and offers Block again from the removed-device list. The operator
@@ -475,6 +503,14 @@ Remove and of Block.
   Memories already on {name} stay there, and memories it already sent stay on
   your devices. Your other devices keep syncing with each other. To bring
   {name} back, create a new invitation in Sharing and accept it on {name}."
+- Shown only for a device linked to a Google account, when another device is
+  signed in to that account: "{name} is signed in to a Google account. To
+  bring it back, create the invitation on another device that is signed in to
+  the same account."
+- Shown only for a device linked to a Google account, when no other device is
+  signed in to that account: "{name} is the only device signed in to its
+  Google account. If you remove it, it cannot be added back until another
+  device signs in to that account."
 - Shown only when it applies: "{n} devices run an older version of codemem and
   keep syncing with {name} until they update: {list}."
 - Link under the body: "Lost or stolen? Block it permanently instead."
@@ -537,6 +573,13 @@ The owner accepted these on 2026-11-16.
    once its enrollments are gone, and implementation starts by confirming
    that. Condition 7 in Section 1 opens one path for a lift. The alternative
    was a new Google sign-in ceremony on the removed device.
+
+   The second security review narrowed this after the owner accepted it. The
+   inviter must itself be signed in to the same Google account, which the
+   coordinator sees as the inviter's own ownership binding. A person whose
+   only signed-in device is the removed one cannot bring it back until another
+   of their devices signs in. The Remove confirmation says so. This narrowing
+   waits for the owner's confirmation.
 2. **Any invitation created after the removal can bring a device back.** That
    includes an add-device invitation from the same person's other device. The
    alternative was to require an invitation created with the admin secret,
@@ -575,10 +618,14 @@ a live coordinator without its own approval.
 
 ## Security review
 
-One independent review on 2026-11-16, by a reviewer on a model from a
-different vendor, examined the first draft for one question: can a removed or
-blocked device regain access, or can anyone lift a removal they should not.
-It found no path that lifts a block. It confirmed four paths around a removal
+A reviewer on a model from a different vendor examined this design twice on
+2026-11-16 for one question: can a removed or blocked device regain access, or
+can anyone lift a removal they should not. Neither pass found a path that
+lifts a block.
+
+### First pass
+
+The first pass read the first draft. It confirmed four paths around a removal
 and raised two questions. All six changed this design.
 
 | Finding | Severity | Change |
@@ -590,8 +637,27 @@ and raised two questions. All six changed this design.
 | With more than 25 pairings, a peer could advertise a removal as applied when it had asked about that device before the removal. | Question | The peer advertises the lowest number among the replies of one complete lookup. |
 | A block without a prior removal had no number to compare against peers. | Question | Block from Devices runs the removal first. |
 
-The review read the three documents, ADR 0005 Section 5, ADR 0007, and the
+The first pass read the three documents, ADR 0005 Section 5, ADR 0007, and the
 coordinator, invitation, membership, lookup, daemon, binding, and CLI source.
-It did not inspect every account-link writer or run any test. No review has
-checked the changes above, or condition 7 in Section 1, which the owner
-accepted after the review.
+It did not inspect every account-link writer or run any test.
+
+### Second pass
+
+The second pass read only the changes from the first pass and condition 7. It
+confirmed that the fixes for the first three findings close them. It found
+five further paths, and all five changed this design.
+
+| Finding | Severity | Change |
+| --- | --- | --- |
+| Condition 7 required only that the inviter's enrollment carry the Identity. A Project invitation lets the accepting device name any Identity, so the holder of a removed Google-linked device could enroll a fresh device under that Identity and invite the removed one back. | High | The inviter needs its own ownership binding to the Identity. |
+| Condition 7 did not compare coordinator IDs, so a binding kept from another coordinator ID could authorize the lift. | Medium | Both bindings must belong to the request's coordinator ID. |
+| A lift ends tombstones in every group. A device that rejoined one group could then use an enrollment-only code from before its removal to enter another. | Medium | Condition 2 applies to every kind of invitation. |
+| The triggers missed an update that moves an enrollment to another group, and SQLite's replace-on-conflict, which deletes a row without running its delete trigger. | Medium | The triggers cover the group column and refuse colliding inserts and updates. 0.50 writers stop using upserts on enrollments. |
+| A peer could advertise a removal as applied and then regain the pairing from an older peer list applied by another process, or gain one the lookup never asked about. | Medium | A local counter withdraws the advertised number whenever a pairing or binding is added. |
+
+The second pass also noted that the coordinator does not know whether an
+Identity was merged or deactivated on a device. It could not show access from
+that, and this design does not change it.
+
+No review has checked the five changes from the second pass. The reviewer ran
+no tests of this design, because nothing is implemented.

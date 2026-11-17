@@ -433,7 +433,8 @@ exact key text is compared instead.
 
 `coordinator_invites.issued_after_removal_seq` is set by the statement that
 inserts the invitation to `COALESCE(MAX(removal_seq), 0)` over all tombstones.
-Invitations that predate the column keep null.
+Invitations that predate the column keep null. A join request copies the value
+of its invitation when it is created.
 
 `enrolled_devices.key_id` holds the canonical key ID of the enrollment's key, or
 an empty string for an opaque key. Every enrollment writer stores it from the key
@@ -443,22 +444,31 @@ rows, and null means a row is not filled yet. The removal routes and the
 
 ### Enrollment triggers
 
-Three triggers on `enrolled_devices` apply to every writer, including an older
-codemem that opens a migrated SQLite coordinator database directly:
+Triggers on `enrolled_devices` apply to every writer, including an older codemem
+that opens a migrated SQLite coordinator database directly:
 
-- `BEFORE INSERT`, and `BEFORE UPDATE` of `device_id`, `public_key`, or `key_id`:
-  abort when an active tombstone matches the new device ID or `key_id`. Abort
-  when the new `key_id` is null and any tombstone exists. Abort when an update
-  changes `public_key` and leaves `key_id` unchanged.
+- `BEFORE INSERT`, and `BEFORE UPDATE` of `group_id`, `device_id`, `public_key`,
+  or `key_id`: abort when an active tombstone matches the new device ID or
+  `key_id`. When the new `key_id` is empty, the new `public_key` text is
+  compared with each active tombstone's `public_key` instead. Abort when the
+  new `key_id` is null and any tombstone exists. Abort when an update changes
+  `public_key` and leaves `key_id` unchanged.
+- `BEFORE INSERT`: abort when a row with the same `group_id` and `device_id`, or
+  the same `rowid`, exists. `BEFORE UPDATE` of `group_id`, `device_id`, or
+  `rowid`: abort when another row has the new values. With recursive triggers
+  off, conflict replacement deletes the other row without firing its delete
+  trigger, as the ownership binding schema already notes.
 - `BEFORE DELETE`: abort unless an active tombstone holds the row's `group_id`,
   `device_id`, and `public_key`.
 - `BEFORE UPDATE` of `enabled` to 1: abort when an active tombstone of the same
   group matches the row.
 
-The removal operation inserts a tombstone before it deletes the enrollment. A
-lift sets the lift columns before it inserts the enrollment. The triggers are a
-second check behind the statement checks below. They do not evaluate
-invitations.
+Enrollment writers therefore use an `UPDATE` for an existing row and an insert
+only when no row exists. They use no `ON CONFLICT` clause and no `OR REPLACE` on
+this table. The removal operation inserts a tombstone before it deletes the
+enrollment. A lift sets the lift columns before it inserts the enrollment. The
+triggers are a second check behind the statement checks below. They do not
+evaluate invitations.
 
 ### Removal operation
 
@@ -549,8 +559,9 @@ existing enrollments only and gain no check.
   that device or key in another group is no exception.
 - `setDeviceEnabled(..., true)` is denied when an active tombstone of the same
   group matches the enrollment.
-- A statement that acts on a `team_member`, `add_device`, or Project share
-  invitation is denied when any tombstone, active or lifted, in any group, that
+- A statement that acts on an invitation of any kind, including an
+  enrollment-only invitation and a join request, is denied when any tombstone,
+  active or lifted, in any group, that
   matches the device ID or key has a `removal_seq` above the
   invitation's `issued_after_removal_seq`. A null value is below every
   `removal_seq`.
@@ -599,11 +610,18 @@ The existing ownership check refuses a device that has a coordinator ownership
 binding (`device_ownership_requires_verified_identity`). A lift is the one
 exception, and only when all of these hold in the statements that write:
 
+- the request runs under a server-trusted coordinator ID. A coordinator without
+  one refuses.
 - the invitation kind is `add_device`
 - one ownership binding row has both the joining `device_id` and the joining
   canonical `key_id`, and no other binding row matches either of them
+- that binding's `coordinator_id` equals the trusted coordinator ID
 - the invitation's `target_identity_id` equals that binding's `identity_id`
-- the inviter's current enrollment has that same `identity_id`
+- the inviter device has its own ownership binding with the inviter's current
+  `device_id` and canonical `key_id`, the same `identity_id`, and the same
+  `coordinator_id`. The `identity_id` on the inviter's enrollment is not
+  sufficient, because Project invitation acceptance writes a caller-supplied
+  Identity to the enrollment.
 - every lift requirement above holds, including the signature by the joining
   key.
 
@@ -640,6 +658,13 @@ complete lookup the client stores the lowest `removal_seq` among its replies and
 advertises it as `applied_removal_seq` in the `capabilities` of its next presence
 update, with the sync feature `peer_removal_check`. An incomplete lookup leaves
 the stored value unchanged.
+
+The stored value covers only the entries the lookup sent. The client keeps a
+local generation counter that every insert or reactivation of a pairing or
+binding increments in its own transaction, and the same transaction sets the
+stored `applied_removal_seq` to 0. A lookup reads the counter in the transaction
+that reads its entries, and stores its result only when the counter is unchanged
+in the storing transaction.
 
 ### Signed requests from a removed device
 

@@ -70,6 +70,16 @@ finding 4):
 21. Setting `enabled` to 1 aborts when an active tombstone of the same group
     matches the row.
 22. An update that changes `public_key` and leaves `key_id` unchanged aborts.
+23. After a single-group removal from group 1, an update that moves the
+    surviving group 2 enrollment into group 1 aborts. No delete can then use
+    the old tombstone. (Second review.)
+24. With recursive triggers off, `INSERT OR REPLACE` and `UPDATE OR REPLACE`
+    that collide with another enrollment by group and device ID or by row ID
+    abort and leave that enrollment in place. (Second review.)
+25. An insert of an opaque key whose text equals an active tombstone's key
+    aborts.
+26. Every 0.50 enrollment writer still works for a device that is already
+    enrolled in the group, without an upsert.
 
 ## B. Removal checks on enrollment writers (SQLite and D1)
 
@@ -107,13 +117,21 @@ D with K is removed from every group, and X with key L stays enrolled:
 14. The same code presented as a new device ID with key K is refused.
 15. After both attempts the lookup still reports D with K as `removed`.
 
+Old codes after a lift (second review). D is removed from groups 1 and 2 and
+rejoins group 1 with a new invitation:
+
+16. An enrollment-only code for group 2 that predates the removal is refused
+    and writes no enrollment.
+17. A join request for group 2 made from such a code is refused at approval.
+18. An enrollment-only code for group 2 created after the removal enrolls D.
+
 Inviter rule:
 
-16. An `add_device` invitation that D issued before its removal is refused for
+19. An `add_device` invitation that D issued before its removal is refused for
     a device that was never removed.
-17. A Project invitation that D issued before its removal is refused, and its
+20. A Project invitation that D issued before its removal is refused, and its
     bootstrap grant cannot authorize.
-18. An invitation issued by a device that was removed and has rejoined is
+21. An invitation issued by a device that was removed and has rejoined is
     refused when it predates that removal, and accepted when it was issued
     after the rejoin.
 
@@ -150,15 +168,24 @@ Devices with an ownership binding (owner decision 1):
 
 14. A removed device whose binding names Identity I lifts with a signed join
     and an `add_device` invitation that targets I, issued after the removal by
-    an enrolled device of I. The enrollment has Identity I and the binding row
-    is unchanged.
+    a device that has its own ownership binding to I under the same
+    coordinator ID. The enrollment has Identity I and the binding row is
+    unchanged.
 15. The same device is refused with `device_ownership_requires_verified_identity`
     when the invitation is `team_member` or a Project share, when it targets
-    another Identity, when the inviter's enrollment no longer has Identity I,
-    when the join is unsigned, and when the joining device ID or key differs
-    from the binding's.
+    another Identity, when the join is unsigned, and when the joining device
+    ID or key differs from the binding's.
 16. An owned device with no active tombstone is refused by an `add_device`
     invitation, as today.
+17. An inviter that was enrolled through a Project invitation with
+    `recipient_actor_id` set to I, and has no ownership binding, creates an
+    `add_device` invitation for I. The removed device is refused, and no
+    tombstone is lifted. (Second review.)
+18. A removed device whose binding belongs to coordinator ID A is refused
+    under coordinator ID B when every other condition holds, and on a
+    coordinator with no trusted coordinator ID. (Second review.)
+19. An inviter whose ownership binding names another Identity, or whose key
+    differs from its binding, is refused.
 
 ## D. Coordinator routes
 
@@ -210,8 +237,8 @@ Devices with an ownership binding (owner decision 1):
 5. Viewer route: Remove, then Block from the removed-device list, succeeds end
    to end.
 6. Viewer route: Block on an enrolled device previews the block, runs the
-   removal, then commits the block against the tombstone. No enrollment row is
-   left.
+   removal, previews the block again against the tombstone, and commits that
+   second preview. No enrollment row is left.
 7. Viewer route: when the removal succeeds and the block commit fails, the
    reply says removed and not blocked, and the device is in the removed list.
 8. Viewer route: when the block preview is unavailable, nothing is removed.
@@ -254,6 +281,14 @@ New function in `packages/core`, for example `removePairingState`.
 16. The upgrade cleanup deletes cursor rows in both tables for a device with no
     pairing and leaves every row of a paired device. A failure deletes
     nothing. (Owner decision 4.)
+17. A pairing or binding that is created or reactivated after a complete
+    lookup sets the stored `applied_removal_seq` to 0 in the same transaction,
+    and the next presence update advertises 0. (Second review.)
+18. A pairing created while a lookup is running stops that lookup from storing
+    its number. (Second review.)
+19. A checked device whose pairing another process restores from an older peer
+    list is not advertised as applied, and the next lookup drops it again.
+    (Second review.)
 
 ## I. Viewer server
 
@@ -283,6 +318,9 @@ New function in `packages/core`, for example `removePairingState`.
 2. Each confirmation renders the copy in Section 8 of the design, with the
    cancel button focused.
 3. The older-version line appears only when such devices exist, and names them.
+   The two Google account lines appear only for a device with an ownership
+   binding, one when another device has a binding to the same Identity and the
+   other when none has.
 4. The local-only confirmation and result name the other devices.
 5. The removed-device list shows each tombstone with Block device permanently.
 6. Coordinator administration has no Remove, Disable, Enable, or Rename, and
