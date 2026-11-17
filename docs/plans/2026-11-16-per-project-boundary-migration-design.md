@@ -67,9 +67,9 @@ P1 to P3 must land with tests before the migration can be enabled anywhere. P4 a
 
 - **P1. Snapshot apply must reconcile by `import_key` across scopes.** When a snapshot item's `import_key` already exists under another scope, the receiver replaces that copy only when all of these hold: the snapshot clock is newer, the receiver is authorized in both scopes, a migration record the receiver has read covers the move, and the serving peer is either the device that authored the existing copy or is itself authorized in both scopes. Authorized here means the key-bound check the scoped protocol already applies to the requested scope (`packages/core/src/sync-scope-protocol.ts:109-129`), run for both scopes against the peer's authenticated key. A bare membership row is not enough. A record covers the move when the existing copy carries its source scope and the item carries its boundary. A record that has been rolled back covers the opposite direction. In every other case the receiver skips the item. Requiring the serving peer to be authorized in the source scope stops a device that was added to the boundary later from pulling another Project's memories out of that scope. A peer that is authorized in both scopes can already replace or rewrite a copy in the source scope through an ordinary snapshot, so the rule gives it nothing new. The cost is a delay in one case, described in [Section 7](#7-multi-device-ordering).
 - **P2. The reconciler needs a hold for migrated Projects.** For a Project with a migration record, the reconciler computes its plan and issues no grant, revoke, or deny overlay until one pass has seen an empty plan or the admin has confirmed the summary. The hold is stored in the migration's own table under the boundary ID. The reconciler checks it after it has resolved the Project's boundary and before it writes anything, including the deny overlays it stages ahead of a revoke (`recipient-policy-reconciler.ts:1496-1513`). Existing code can replace a Project's authority row when it merges an alias (`recipient-policy-reconciler.ts:1857-1879`), which is why the hold does not live on that row.
-- **P3. The coordinator needs additive resources:** readiness records, migration records, and three operations that each run as one transaction (commit, roll back, and take over). It also checks every later membership change on a boundary that has a migration record: the request must carry the record's current generation and come from the device the record names as managing the Project, and the record must be `committed`. The check runs in the same transaction as the membership write. A request without a generation is refused, which is what an older admin device sends. The client detects all of this through a capability. A coordinator without it makes every Project wait.
+- **P3. The coordinator needs additive resources:** readiness records, migration records, and four operations that each run as one transaction (commit, attach, roll back, and take over). It also checks every later membership change on a boundary that has a migration record: the request must carry the record's current generation and come from the device the record names as managing the Project, and the record must be `committed`. The check runs in the same transaction as the membership write. A request without a generation is refused, which is what an older admin device sends. The client detects all of this through a capability. A coordinator without it makes every Project wait.
 - **P4. Device-to-Identity bindings must exist for older pairings.** ADR 0007 Decision 6 converts `sync_peers.actor_id` and `claimed_local_actor` into bindings (`codemem-lvgba.27`). Without it, the summary asks whose device each one is.
-- **P5. An admin device must be able to manage a Project it receives and has never opened.** It needs the Project's identity to record recipients. A boundary member learns it from a peer over the existing sync channel and checks it against the boundary ID, which is a hash of that identity. Without P5 such a Project still moves with the same devices, but it gets no Team recipient, and the default grant keeps running for its group ([Section 10](#10-decision-3-retirements)).
+- **P5. An admin device must be able to manage a Project it receives and has never opened.** It needs the Project's identity to record recipients. A boundary member learns it from a peer over the existing sync channel and checks it against the boundary ID, which is a hash of that identity. Without P5 such a Project still moves with the same devices, but it gets no Team recipient, so a person who joins the Team later does not receive it ([Section 10](#10-decision-3-retirements)).
 
 ## 1. Inventory
 
@@ -165,15 +165,22 @@ The device sends no device list. The coordinator reads the members and writes th
 
 ### Choosing recipients
 
-After the commit, an admin device that knows the Project records recipient edges for it. It tries three candidates in order and takes the first whose derived devices equal the boundary's members, using `deriveRecipientPolicyEffectiveDevices`, the derivation the reconciler uses.
+After the commit, an admin device that knows the Project records recipient edges for it. It answers two questions separately.
+
+**Who receives the Project now.** It tries three candidates in order and takes the first whose derived devices equal the boundary's members, using `deriveRecipientPolicyEffectiveDevices`, the derivation the reconciler uses.
 
 1. The Project's existing active edges. Legacy Team setup wrote these for its Projects.
-2. One Team edge, when the source scope is the group's `team_default` scope, the default grant is on for that group on this device, and exactly one active policy Team is linked to the group.
+2. One Team edge, when the Project came from a default scope with the default grant on and exactly one active policy Team is linked to the group.
 3. One direct edge per Identity bound to a device in the boundary.
 
 If none matches exactly, it keeps the closest candidate in that order. The difference becomes lines in the summary, and the hold in P2 stops the reconciler from acting on it.
 
-A Team edge means devices that later join the Team receive the Project. That is what the default grant did for approved joiners, so the migration records one only where that grant was on. In a scope that was granted by hand, nobody received a Project by joining, and direct edges per person carry today's access.
+**Whether people who join later receive it.** Where the Project came from the group's `team_default` scope and the default grant is on for that group on this device, an approved joiner received the Project. After the move, a membership in the default scope no longer delivers it. Only a Team recipient does. So in that case the Project must end up with a Team edge, whichever candidate matched above.
+
+- If exactly one active policy Team is linked to the group and the edges do not name it, the device adds the Team edge. When every device of the Team is already in the boundary, this changes nobody's access and nothing is asked. Otherwise the summary shows the Team's other devices as "will start receiving" lines.
+- If no policy Team is linked to the group, the summary shows the line about new members in [Section 4](#the-summary).
+
+In a scope that was granted by hand, nobody received a Project by joining, and direct edges per person carry today's access.
 
 The admin device that records the edges writes itself into the record as the device that manages the Project's recipients, with a compare-and-set. Other admin devices show the recipients read-only until the coordinator holds one roster (`codemem-lvgba.35`).
 
@@ -259,6 +266,7 @@ One summary exists per install, on an admin device, in Projects. It gains lines 
 | *Device* receives *N* Projects and belongs to nobody | A device in the boundary has no person | **Pick a person**, or name a new one. **Remove device.** | No default. The line stays until answered. |
 | *Person* is not listed for *N* Projects their devices receive | The Project's recipients do not name a person whose device is in the boundary | **Keep sharing with *person*** adds them as a recipient. **Stop** removes their devices. | Keep sharing |
 | *Device* is listed under two people | The coordinator names one person for a device and this device's records name another | **It belongs to *person*,** one choice per person. **Remove device.** | No default |
+| New members of *group* received *N* Projects automatically, and will not after this update | The Projects came from a default scope with the default grant on, and no Team is linked to the group | **Create a Team for this group and share these Projects with it,** which is the Create Team action from ADR 0007 Decision 7. **New members get nothing until I share with them.** | No default |
 | *Person* was deactivated and their devices receive *N* Projects | A deactivated person's device is in the boundary | **Stop** removes their devices, as ADR 0007 Decision 6 intends. **Reactivate *person*.** | No default |
 
 Rules for every line:
@@ -277,12 +285,14 @@ Rules for every line:
 
 Both are rare, and both appear as lines in the same summary. Until answered, the Project stays where it is and syncs as before.
 
-When the admin picks one setup in the first case, the commit request names that setup as the source scope, lists the other setup as an additional source, and carries the fingerprint of the stored answer. The coordinator then applies the commit's conditions with one difference: every other source scope that a readiness record lists for the boundary must be named in the request. It copies the devices of the chosen setup only, and the record names both setups so that devices move their memories from both. A device that is only in the other setup is not in the boundary. It keeps the copies it has and receives nothing new, which is what the line states.
+When the admin picks one setup in the first case, the commit request names that setup as the source scope, lists the other setup as an additional source, and carries the fingerprint of the stored answer. The coordinator then applies the commit's conditions with one difference: every other source scope that a readiness record lists for the boundary must be named in the request. It copies the devices of the chosen setup only, and the record names both setups so that devices in the boundary move their memories from both. A device that is only in the other setup is not in the boundary and cannot move anything into it. Its own memories stay in that setup and keep reaching that setup's devices as before. It keeps the copies it has and receives nothing new from the devices that moved. The line states both facts and names those devices. To bring such a device in, the admin adds its person as a recipient.
+
+When the admin picks **Move the rest** in the second case, the admin device sends an **attach** request with the boundary ID, the source scope, and the fingerprint of the stored answer. In one transaction the coordinator stores a `committed` record for the existing boundary, names the requesting device as the one that manages it, and changes no membership. The hold is set. Devices that are authorized in the boundary and keep the Project in the source scope then adopt and move their own memories, as in steps 3 and 4. A device that is only in the source scope is not in the boundary. Its own memories stay where they are, and it receives nothing new from the devices that moved. Rolling back an attached record revokes nobody, because the boundary's members were never copied from the source scope.
 
 | Line | Shown when | Choices |
 | --- | --- | --- |
-| *Project* is shared in two older setups | Devices map the same Project to different source scopes | **Share with only *one list*,** one choice per setup. It names the devices that stop receiving the other part, or says that no device changes when both setups have the same devices. **Leave it as it is.** |
-| *Project* is already shared with *people*, and *N* devices hold part of it in an older setup | The Project's boundary already exists without a migration record, with or without members, and some device still keeps the Project in a source scope | **Move the rest to the people it is shared with,** which names the devices that start and stop receiving those memories. **Leave the older part where it is.** |
+| *Project* is shared in two older setups | Devices map the same Project to different source scopes | **Share with only *one list*,** one choice per setup. It names the devices that stop receiving the other part and the devices whose own memories stay behind in the other setup, or says that no device changes when both setups have the same devices. **Leave it as it is.** |
+| *Project* is already shared with *people*, and *N* devices hold part of it in an older setup | The Project's boundary already exists without a migration record, with or without members, and some device still keeps the Project in a source scope | **Move the rest to the people it is shared with,** which names the devices that start receiving those memories, the devices that stop, and the devices whose own memories stay behind. **Leave the older part where it is.** |
 
 ### Waiting
 
@@ -404,7 +414,9 @@ Every fixture asserts the same things after the migration: the boundary's member
 | `g5-identity-conflict` | Account era. One enrollment is bound to a different Identity than the local binding. | That device receives the Project. | A boundary that includes it. One summary line asks which person it belongs to. The reconciler issues nothing until it is answered. |
 | `g5-older-coordinator` | Account era, with a coordinator that lacks the capability. | As the source scope allows. | Waiting for the coordinator. Access unchanged. |
 | `mixed-older-member` | `g4-team-setup` with one device that has no readiness record. | As above. | Waiting for that device. Access unchanged. |
-| `admin-receives-only` | A default scope whose admin device never opened one member's Project. | The admin device receives it. | A boundary with the same devices. With P5, the Team edge is recorded and the default grant stops. Without P5, no edge is recorded and the default grant keeps running. |
+| `admin-receives-only` | A default scope whose admin device never opened one member's Project. | The admin device receives it. | A boundary with the same devices. With P5, the Team edge is recorded. Without P5, no edge is recorded, and a person who joins the Team later does not receive the Project. |
+| `g4-default-scope-existing-edges` | Recipient policy. A default scope with the default grant on and one linked policy Team. The Project already has direct edges that derive exactly the scope's devices. | Every device receives the Project, and an approved joiner would. | The direct edges are kept and the Team edge is added. Nothing is asked. A person added to the Team afterward receives the Project. |
+| `g3-default-scope-no-team` | Spaces. Two people, a default scope with the default grant on, no policy Team. | Every device receives the Projects, and an approved joiner would. | Boundaries with the same devices and direct edges. The summary shows the line about new members, with no default. |
 | `admin-outside-scope` | A scope made by hand that does not include the admin device. | The admin device receives nothing of its Projects. | Boundaries with the scope's devices. The admin device is no member and still receives nothing. |
 
 ## 9. Rollout
@@ -446,6 +458,7 @@ All of these hold:
 - No `import_key` has more than one row on any device.
 - Search results for migrated Projects were the same before and after on every device.
 - P4 and P5 have landed.
+- The rule that limits a migrated Project's leftover memories to its boundary members has landed with `codemem-lvgba.28` ([Section 10](#what-retiring-filters-needs)).
 - The design has had the security review ADR 0007 requires for this change.
 - The manual check of a large database that the scoped sync postmortem made a release gate has been run on a migrated install.
 
@@ -456,7 +469,7 @@ The two retirements cannot both run in the migration pass.
 | Part | When | Why |
 | --- | --- | --- |
 | Carry the effect of the default grant | In the migration pass | Devices that joined through it are members and are copied. A Team recipient carries its effect for later joiners. |
-| Stop the default grant on join | In the migration pass, per group, once every Project in the group's default scope has committed and has its Team recipient | After that, a membership in the default scope delivers nothing new. Stopping earlier would leave a new Team member without Projects they would have received. The approving device clears its own preference row. An older admin device can still grant until it updates. |
+| Stop the default grant on join | In the migration pass, per group, once every Project in the group's default scope has committed | Once a Project has moved, a membership in the default scope no longer delivers it, so the grant carries nothing for that Project. Its Team recipient decides what a new member receives ([Choosing recipients](#choosing-recipients)). The grant keeps running while some Project in the default scope has not moved, and stops with the last one. The approving device clears its own preference row. An older admin device can still grant until it updates. |
 | Carry the effect of pairing filters | In the migration pass, by leaving them in force | A filter follows the project name, so it keeps blocking after the move (Finding 2). |
 | Retire pairing filters | A later step, `codemem-lvgba.28`, with its own design | See below |
 | Delete the filter columns, the group filter template, `syncProjectAllowed`, the default scope, and its preference | The release after filters are retired | The constraint is additive schema only, and older peers still evaluate filters. |
@@ -467,7 +480,7 @@ Retiring a filter means turning it into something the recipient model can show. 
 
 - Each device has to publish which devices its filters block for which Projects, since only it knows.
 - A filter is per sender and "Keep off" is per device. A device that some senders block and others do not needs a line where the admin picks one.
-- Memories that stay under a source scope are still served to every member of that scope. Once a filter is gone, the sender needs a rule that serves a migrated Project's leftover memories only to that Project's boundary members. An adversarial review of the first design found this path, and the retired-author case in [Section 7](#7-multi-device-ordering) makes it permanent.
+- Memories that stay under a source scope are still served to every member of that scope. The sender needs a rule that serves a migrated Project's leftover memories only to that Project's boundary members. An adversarial review of the first design found this path for filters, and the retired-author case in [Section 7](#7-multi-device-ordering) makes it permanent. The same rule is what makes Stop reach those memories when a recipient is removed after the migration. To apply it, every device has to tell which leftover memories belong to which Project. A device that only received a Project knows its name and nothing else, so the migration record will need each Project's names, as keyed hashes.
 
 Until then, the device that holds a filter shows it in Devices as an older setting that limits what it sends, so the path stops being invisible.
 
@@ -548,9 +561,18 @@ The implementer writes these before the code. The first group pins behavior the 
 
 ### Decision 3
 
-50. Approving a join request grants no default scope once every Project in the group's default scope has committed and has its Team recipient. It still grants while one Project lacks one.
+50. Approving a join request grants no default scope once every Project in the group's default scope has committed. It still grants while one Project has not moved.
 51. A person added to the Team after the migration receives the Projects that came from the default scope.
 52. The migration writes no pairing filter and no global filter key.
+
+### Added after the pull request review
+
+53. A Project from a default scope with the default grant on, whose existing direct edges derive exactly the boundary's members, also gets the Team edge. A person added to the Team afterward receives it.
+54. The same case with no linked Team shows the line about new members, with no default, and changes no device's access.
+55. The default grant stops when the last Project in the default scope commits and keeps running before that.
+56. Two older setups: an author that is only in the setup the admin did not pick keeps its own memories there, they keep reaching that setup's devices, and the line names it.
+57. Coordinator store contract (P3), SQLite and D1: attach stores a committed record for an existing boundary, changes no membership, needs a stored answer, and is refused when the boundary has a migration record already.
+58. After an attach, boundary members that keep the Project in the source scope move their own memories. A device that is only in the source scope keeps its memories there. Rolling the record back revokes nobody.
 
 Validation for each stack layer is the focused tests above. The stack tip runs `pnpm run check` and the Docker scenarios `legacy-team-migration`, `project-sharing`, and `sharing-domains`.
 
@@ -578,7 +600,7 @@ On 2026-11-16 the owner decided twelve questions about the first design, with th
 
 1. **Legacy Team setup still writes mappings into older scopes.** A Team setup finished after its group has migrated would map Projects to a source scope again. It has to target boundaries, or wait for the migration. ADR 0007 Decision 7 owns that flow.
 2. **A filter behind the recipient list.** Until `codemem-lvgba.28`, a blocked device appears as a recipient. The design shows the filter on the device that holds it. Whether that is enough for 0.50 depends on how many installs have a filter, which the report stage measures.
-3. **A Project split between a boundary and its old scope.** Memories from retired authors stay in the old scope. A recipient added later does not receive them, and a recipient removed later keeps receiving them if still authorized there. `codemem-lvgba.28` needs the same rule for this as for filters.
+3. **A Project split between a boundary and its old scope.** Memories from retired authors stay in the old scope. A recipient added later does not receive them. A recipient removed later can still pull them from the old scope while their device is authorized there, so Stop does not reach them. The rule that closes this is deferred to `codemem-lvgba.28`, and the migration is not on by default without it ([Section 9](#condition-for-turning-it-on-by-default)). Until then, the preview for Stop says so when this device still holds memories of the Project in the older setup.
 4. **A Project no admin device receives.** It moves with the same devices, and nobody can change its recipients until an admin device receives it. The Viewer needs a way for an admin to add themselves to such a Project. The report stage counts these.
 5. **A recipient who has not accepted an invitation** blocks the existing derivation for the whole Project. With the hold this changes no access. It also produces no summary line, so the Project keeps the copied devices until the invitation is accepted or removed. `codemem-lvgba.21` covers the related stall for deactivated people.
 6. **Review.** Three passes have run, the third at the owner's direction. Each asked for changes. The fixes made after the third pass have not been reviewed. The [review record](#review-record) lists them. The failing tests in the [test plan](#test-plan) pin the snapshot rule and the coordinator's generation check, and ADR 0007 requires a security review before the migration is on by default.
@@ -623,3 +645,15 @@ The owner authorized one more pass, limited to the five fixes above and the thre
 | B | The check from finding 2 accepts membership changes only from the managing device. If that device is lost, nobody can grant a recipient's replacement device. | Fixed. Any admin device can take over in one coordinator transaction that advances the generation and sets the hold again ([Choosing recipients](#choosing-recipients)). Tests 20, 34, and 35 cover it. |
 | C | Suspected: if the snapshot rule checked a bare membership row for the serving peer, a peer without valid key-bound proof in the source scope could pass. | Fixed. P1 names the key-bound check against the peer's authenticated key for both scopes. Test 10 covers it. |
 | D | The commit for a Project moved from two older setups was not specified, because the automatic commit refuses a second source. | Fixed. [Two cases](#two-cases-where-a-project-does-not-move-by-itself) states the request and how the conditions change. Test 21 covers it. |
+
+### Automated review threads on the pull request, 2026-11-17
+
+An automated reviewer left five threads on the pull request across four commits. Two were written against text that the 2026-11-17 revision removed.
+
+| Thread | Disposition |
+| --- | --- |
+| Recipient removals do not reach memories left in the source scope. | Deferred to `codemem-lvgba.28`, with a gate. The finding is correct and was already listed under [Still open](#still-open). The rule that closes it needs each Project's names in the migration record and belongs with filter retirement, which needs the same rule. The migration is not on by default without it. |
+| Lifting a filter that uses an include list has to add the Project's names. | No longer applies to this design, which does not change filters. Recorded on `codemem-lvgba.28`, where an include list has to be handled when a filter is retired. |
+| An author that is only in the setup the admin did not pick cannot move its memories. | Fixed. Those memories stay in that setup, and the line says so ([Two cases](#two-cases-where-a-project-does-not-move-by-itself)). Test 56. |
+| Existing edges that match exactly won over the Team edge, so later joiners in a default scope received nothing. | Fixed. A Project from a default scope with the default grant on always ends with a Team edge, or with a line about new members when no Team exists. The claim that keeping the default grant running preserved delivery was wrong and is removed ([Choosing recipients](#choosing-recipients), [Section 10](#10-decision-3-retirements)). Tests 53 to 55. |
+| "Move the rest" had no commit path, because the commit refuses an existing boundary. | Fixed. An attach transaction stores a record for the existing boundary and changes no membership ([Two cases](#two-cases-where-a-project-does-not-move-by-itself)). Tests 57 and 58. |
