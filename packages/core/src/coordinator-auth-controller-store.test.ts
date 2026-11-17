@@ -23,6 +23,10 @@ import {
 	setupStore,
 	sqliteD1,
 } from "./coordinator-auth-store-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	removeDeviceWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 function setIdentity(db: SqliteDatabase, identity: string | null) {
@@ -848,9 +852,13 @@ function registerD1ReadRaceTests(test: ReturnType<typeof it.extend<{ fixture: Fi
 		// Arrange
 		await enroll(store);
 		const replaceKey = vi.fn().mockImplementationOnce(() => {
-			db.prepare(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
-			).run("replacement-key", "c".repeat(64), "group-a", "device-a");
+			changeEnrollmentKey(
+				db,
+				{ publicKey: "replacement-key", fingerprint: "c".repeat(64) },
+				"group_id = ? AND device_id = ?",
+				"group-a",
+				"device-a",
+			);
 		});
 		const racing = new D1CoordinatorStore(
 			sqliteD1(db, {
@@ -982,8 +990,8 @@ function registerPersistenceTests(
 		await enroll(store);
 		await store.createAuthControllerAttestation(review());
 		await store.revokeAuthControllerAttestation("coordinator-a", "attestation-a");
-		// Act
-		await store.removeDevice("group-a", "device-a");
+		// Act: the device enrolls again below, which a recorded removal would refuse.
+		removeDeviceWithoutTombstone(db, "group-a", "device-a");
 		const repeatedRevocation = await store.revokeAuthControllerAttestation(
 			"coordinator-a",
 			"attestation-a",

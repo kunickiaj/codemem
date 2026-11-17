@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import { backendTest } from "./coordinator-auth-link-test-fixtures.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	history,
 	originalController,
@@ -175,9 +176,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 	}) => {
 		// Arrange
 		const h = await setupResolved(f, kind);
-		f.db.exec(
-			"DELETE FROM enrolled_devices WHERE group_id='old-source-group'; DELETE FROM groups WHERE group_id='old-source-group'",
-		);
+		deleteEnrollmentWithoutTombstone(f.db, "group_id='old-source-group'");
+		f.db.exec("DELETE FROM groups WHERE group_id='old-source-group'");
 		history(f, "later-history", "identity-later");
 		projectLabel(f);
 		// Act

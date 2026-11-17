@@ -8,6 +8,7 @@ import {
 	ownershipHarness,
 } from "./coordinator-device-ownership-test-harness.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { pendingJoin } from "./coordinator-join-revocation-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientGuardedD1 } from "./coordinator-recipient-revocation-test-harness.js";
@@ -281,9 +282,12 @@ describe("D1 captured inputs and write receipts", () => {
 			await insertOwnership(fixture(f));
 			const beforeWrite = vi.fn((sql: string) => {
 				if (sql.includes("UPDATE enrolled_devices SET enabled"))
-					f.db
-						.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?")
-						.run(ownedEnrollment.publicKey, target.deviceId);
+					changeEnrollmentKey(
+						f.db,
+						{ publicKey: ownedEnrollment.publicKey, fingerprint: null },
+						"device_id = ?",
+						target.deviceId,
+					);
 			});
 			const store = new D1CoordinatorStore(sqliteD1(f.db, { beforeWrite }));
 			// Act

@@ -15,6 +15,7 @@ import {
 } from "./coordinator-auth-device-claim-eligibility.js";
 import { type Fixture, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { isDeviceClaimBindingConflict } from "./coordinator-device-claim-binding.js";
+import { changeEnrollmentKeySql } from "./coordinator-enrollment-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 let f: Fixture;
@@ -50,7 +51,10 @@ for (const kind of ["SQLite", "D1"] as const) {
 			],
 			[
 				"a canonical-key alias with NULL Identity",
-				`UPDATE enrolled_devices SET public_key='${input.signer.publicKey} same-key-alias',identity_id=NULL WHERE device_id='unrelated-device'`,
+				`${changeEnrollmentKeySql(
+					{ publicKey: `${input.signer.publicKey} same-key-alias`, fingerprint: null },
+					"device_id='unrelated-device'",
+				)} UPDATE enrolled_devices SET identity_id=NULL WHERE device_id='unrelated-device'`,
 			],
 			[
 				"a fingerprint mismatch in another group",

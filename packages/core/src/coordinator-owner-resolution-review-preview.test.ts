@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import { backendTest, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { review } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	controllerTable,
 	resolutionTable,
@@ -116,9 +117,12 @@ for (const kind of ["SQLite", "D1"] as const) {
 			f.db.prepare("UPDATE groups SET archived_at='archived' WHERE group_id=?").run(signer.groupId);
 		},
 		"malformed stored current key": (f) => {
-			f.db
-				.prepare("UPDATE enrolled_devices SET public_key='invalid' WHERE device_id=?")
-				.run(signer.deviceId);
+			changeEnrollmentKey(
+				f.db,
+				{ publicKey: "invalid", fingerprint: null },
+				"device_id=?",
+				signer.deviceId,
+			);
 		},
 		"unclassified current label": (f) => {
 			f.db

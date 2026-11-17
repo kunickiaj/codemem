@@ -13,6 +13,7 @@ import {
 	review,
 	setupStore,
 } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 
 const PATH = "/v1/admin/auth-controller-reviews";
 const secret = "fixture-admin-secret";
@@ -382,7 +383,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			// Arrange
 			const app = appFor(f);
 			const old = await (await request(app)).json();
-			f.db.exec("UPDATE enrolled_devices SET public_key = 'replacement-key'");
+			changeEnrollmentKey(f.db, { publicKey: "replacement-key", fingerprint: null });
 			const before = snapshot(f);
 			// Act
 			const stale = await request(app, { ...input, confirm_evidence_digest: old.evidence_digest });
@@ -617,7 +618,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 			const preview = await (await request(app)).json();
 			const create = f.store.createAuthControllerAttestation.bind(f.store);
 			vi.spyOn(f.store, "createAuthControllerAttestation").mockImplementation(async (value) => {
-				f.db.exec("UPDATE enrolled_devices SET public_key = 'key-changed-after-preview'");
+				changeEnrollmentKey(f.db, { publicKey: "key-changed-after-preview", fingerprint: null });
 				return create(value);
 			});
 			// Act

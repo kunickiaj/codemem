@@ -8,6 +8,10 @@ import {
 } from "./coordinator-bootstrap-authorization-test-harness.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	contractHarness,
 	GrantFixture,
@@ -66,7 +70,7 @@ const failures = [
 ] as const;
 async function change(f: GrantFixture, grantId: string, mode: string) {
 	if (mode === "missing group") {
-		await f.exec("DELETE FROM enrolled_devices WHERE group_id = ?", f.review.groupId);
+		await deleteEnrollmentWithoutTombstone(f.exec, "group_id = ?", f.review.groupId);
 		await f.exec("DELETE FROM groups WHERE group_id = ?", f.review.groupId);
 	}
 	if (mode === "archived") await f.store.archiveGroup(f.review.groupId);
@@ -93,9 +97,10 @@ async function changeParticipant(f: GrantFixture, mode: string, who: "seed" | "w
 	let revokedId = deviceId;
 	if (mode === `${who} ID revoked`) {
 		publicKey = `opaque-id-${who}`;
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			publicKey,
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey, fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			f.review.groupId,
 			deviceId,
 		);
@@ -227,10 +232,10 @@ function registerSeedAdmissionDenials(test: Test) {
 			const grant = await authorizationFixture(f);
 			await changeParticipant(f, `seed ${mode} revoked`, "seed");
 			if (mode === "ID")
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
-					CANONICAL_PUBLIC_KEY,
-					f.review.fingerprint,
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: f.review.fingerprint },
+					"group_id = ? AND device_id = ?",
 					f.review.groupId,
 					grant.seed_device_id,
 				);
@@ -312,9 +317,10 @@ function registerDriftLookup(test: Test) {
 						grant.grant_id,
 					);
 				if (mode.endsWith("key drift"))
-					await f.exec(
-						"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-						UNRELATED_PUBLIC_KEY,
+					await changeEnrollmentKey(
+						f.exec,
+						{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+						"group_id = ? AND device_id = ?",
 						f.review.groupId,
 						grant.seed_device_id,
 					);

@@ -1,7 +1,9 @@
+import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { backendTest, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { review as ordinaryReview } from "./coordinator-auth-store-test-fixtures.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { appendToEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import {
 	backendFor,
@@ -52,7 +54,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		["request group", "UPDATE groups SET archived_at='changed' WHERE group_id='group-a'"],
 		[
 			"key text",
-			"UPDATE enrolled_devices SET public_key=public_key || ' changed' WHERE device_id='current-laptop'",
+			(db: Database) => appendToEnrollmentKey(db, " changed", "device_id='current-laptop'"),
 		],
 		["link generation", "UPDATE coordinator_auth_account_links SET created_at_ms=created_at_ms+1"],
 		["link disconnect", "DELETE FROM coordinator_auth_account_links"],
@@ -72,7 +74,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 			const review = await buildReview(f);
 			let injected: ReturnType<typeof snapshot> | undefined;
 			h.hooks.beforeBatch = () => {
-				f.db.exec(mutation);
+				if (typeof mutation === "string") f.db.exec(mutation);
+				else mutation(f.db);
 				injected = snapshot(f);
 			};
 			// Act / Assert

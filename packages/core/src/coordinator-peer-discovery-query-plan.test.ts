@@ -2,6 +2,10 @@ import type { Database } from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
+import {
 	CAPTURE_PEER_ENROLLMENTS_SQL,
 	type CapturedPeerEnrollment,
 	READ_CURRENT_PEERS_SQL,
@@ -99,9 +103,11 @@ describe("captured-peer query ordering", () => {
 			const candidates = capture(db);
 			insertEnrollment(db, "uncaptured");
 			insertEnrollment(db, "active", "other-group");
-			db.prepare(
-				"UPDATE enrolled_devices SET public_key = 'replacement-key' WHERE device_id = 'changed-key'",
-			).run();
+			changeEnrollmentKey(
+				db,
+				{ publicKey: "replacement-key", fingerprint: null },
+				"device_id = 'changed-key'",
+			);
 			db.prepare(
 				"UPDATE enrolled_devices SET fingerprint = 'replacement-fingerprint' WHERE device_id = 'changed-fingerprint'",
 			).run();
@@ -112,7 +118,7 @@ describe("captured-peer query ordering", () => {
 				"UPDATE enrolled_devices SET identity_id = NULL WHERE device_id = 'cleared-identity'",
 			).run();
 			db.prepare("UPDATE enrolled_devices SET enabled = 0 WHERE device_id = 'disabled'").run();
-			db.prepare("DELETE FROM enrolled_devices WHERE device_id = 'removed'").run();
+			deleteEnrollmentWithoutTombstone(db, "device_id = 'removed'");
 			db.prepare(
 				"UPDATE enrolled_devices SET display_name = 'Renamed after capture' WHERE group_id = 'group-a' AND device_id = 'active'",
 			).run();

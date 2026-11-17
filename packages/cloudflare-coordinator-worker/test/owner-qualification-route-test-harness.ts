@@ -1,3 +1,4 @@
+import { changeEnrollmentKey } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { expect, vi } from "vitest";
 import type { AuthLinkBackend } from "../../core/src/coordinator-auth-link.js";
 import { EXPECTED_KEY_ID } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
@@ -629,7 +630,11 @@ async function raceMutation(f: Fixture, mutation: string) {
 		);
 	if (mutation === "link") await f.end();
 	if (mutation === "enrollment")
-		await f.exec(`UPDATE enrolled_devices SET public_key='${otherKey}' WHERE device_id='device-a'`);
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: otherKey, fingerprint: null },
+			"device_id='device-a'",
+		);
 }
 function registerFaultTests(test: Test) {
 	test.for(["lost-write-response", "adapter-postcommit-read", "http-response"])(

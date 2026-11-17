@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { SchemaFixture } from "./coordinator-auth-browser-migration-test-harness.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import type { CoordinatorOwnerEnrollmentQualificationRow } from "./coordinator-owner-enrollment-qualification-schema.js";
 
 export const QUALIFICATION_TABLE = "coordinator_owner_enrollment_qualifications";
@@ -142,7 +143,7 @@ function registerRetention(test: Test) {
 		await seedQualification(f, { ...q, revoked_at_ms: 300 });
 		const before = await qualificationRows(f);
 		// Act
-		await f.exec("DELETE FROM enrolled_devices WHERE device_id = ?", q.device_id);
+		await deleteEnrollmentWithoutTombstone(f.exec, "device_id = ?", q.device_id);
 		await f.exec(
 			"DELETE FROM coordinator_auth_controller_attestations WHERE attestation_id = ?",
 			q.controller_attestation_id,

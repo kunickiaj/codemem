@@ -19,6 +19,7 @@ import {
 	type Test,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, enroll, review, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKeySql } from "./coordinator-enrollment-test-fixtures.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 async function secondConfirmed(
@@ -246,7 +247,7 @@ function registerD1Tests(test: Test) {
 			await advance(f, "confirmed");
 			const before = snapshot(f);
 			const mutate = {
-				key: "UPDATE enrolled_devices SET public_key = 'replacement-key'",
+				key: changeEnrollmentKeySql({ publicKey: "replacement-key", fingerprint: null }),
 				disabled: "UPDATE enrolled_devices SET enabled = 0",
 				archive: "UPDATE groups SET archived_at = '2026-10-02T00:00:00Z'",
 			};

@@ -21,6 +21,7 @@ import {
 	type LinkFixture,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { changeEnrollmentKeySql } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson,
 	normalizeCoordinatorLegacyTeamCompletionManifest,
@@ -282,11 +283,17 @@ const invalidEvidence = [
 	],
 	[
 		"same key under another device",
-		`UPDATE enrolled_devices SET public_key='${aliasKey}' WHERE device_id='unrelated-device'`,
+		changeEnrollmentKeySql(
+			{ publicKey: aliasKey, fingerprint: null },
+			"device_id='unrelated-device'",
+		),
 	],
 	[
 		"same key under another Identity",
-		`UPDATE enrolled_devices SET public_key='${aliasKey}',identity_id='other' WHERE device_id='unrelated-device'`,
+		`${changeEnrollmentKeySql(
+			{ publicKey: aliasKey, fingerprint: null },
+			"device_id='unrelated-device'",
+		)} UPDATE enrolled_devices SET identity_id='other' WHERE device_id='unrelated-device'`,
 	],
 ] as const;
 

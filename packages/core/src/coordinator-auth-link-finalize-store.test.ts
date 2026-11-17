@@ -24,6 +24,7 @@ import {
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { type Backend, review } from "./coordinator-auth-store-test-fixtures.js";
+import { removeDeviceWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 
 const liveChanges = [
 	"missing",
@@ -182,7 +183,8 @@ function registerBindingTests(test: Test) {
 		// Arrange
 		await authorize(f);
 		await advance(f, "confirmed");
-		await f.store.removeDevice(signer.groupId, signer.deviceId);
+		// The device enrolls again with another key, which a recorded removal would refuse.
+		removeDeviceWithoutTombstone(f.db, signer.groupId, signer.deviceId);
 		await f.store.enrollDevice(signer.groupId, {
 			...signer,
 			publicKey: "replacement-key",

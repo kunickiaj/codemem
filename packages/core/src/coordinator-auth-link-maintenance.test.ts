@@ -49,6 +49,7 @@ import {
 	signInInput,
 } from "./coordinator-auth-session-test-fixtures.js";
 import type { Backend } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 
 function registerCapacity(test: Test, v2: Test) {
 	test("eight parallel creates admit two per device and exact retries keep their TTL", async ({
@@ -409,9 +410,7 @@ function registerBoundaries(test: Test, v2: Test) {
 		await f.store.createAuthLinkAttempt(numberedAttempt(1), f.cfg);
 		await f.store.createAuthLinkAttempt(numberedAttempt(2), f.cfg);
 		const rotated = { ...signer, publicKey: "fixture-rotated-key", fingerprint: "7".repeat(64) };
-		f.db
-			.prepare("UPDATE enrolled_devices SET public_key = ?, fingerprint = ?")
-			.run(rotated.publicKey, rotated.fingerprint);
+		changeEnrollmentKey(f.db, { publicKey: rotated.publicKey, fingerprint: rotated.fingerprint });
 		f.db
 			.prepare(
 				"UPDATE coordinator_auth_controller_attestations SET public_key = ?, fingerprint = ?",

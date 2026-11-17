@@ -1,6 +1,7 @@
 import { expect } from "vitest";
 import type { LinkFixture } from "./coordinator-auth-link-test-fixtures.js";
 import { backendTest } from "./coordinator-auth-link-test-fixtures.js";
+import { appendToEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { revoke } from "./coordinator-legacy-owner-resolution-commit-test-fixtures.js";
 import {
 	deterministicReviewTests,
@@ -78,11 +79,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 		[
 			"current raw key changed",
 			(f: LinkFixture) =>
-				f.db
-					.prepare(
-						"UPDATE enrolled_devices SET public_key=public_key || ' changed-text' WHERE device_id=?",
-					)
-					.run(signer.deviceId),
+				appendToEnrollmentKey(f.db, " changed-text", "device_id=?", signer.deviceId),
 		],
 		[
 			"current fingerprint changed",

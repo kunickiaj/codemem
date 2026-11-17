@@ -11,6 +11,7 @@ import {
 	signer,
 	sourceRef,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 
 beforeEach(() => {
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
@@ -27,7 +28,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		async (state, { f }) => {
 			// Arrange
 			const input = await collectInput(f);
-			if (state === "missing") f.db.prepare("DELETE FROM enrolled_devices").run();
+			if (state === "missing") deleteEnrollmentWithoutTombstone(f.db);
 			if (state === "disabled") f.db.prepare("UPDATE enrolled_devices SET enabled=0").run();
 			if (state === "archived")
 				f.db

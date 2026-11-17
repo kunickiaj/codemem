@@ -6,6 +6,10 @@ import {
 	MALFORMED_KEYS,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	contractHarness,
 	GrantFixture,
@@ -81,6 +85,15 @@ async function update(
 	value: unknown,
 	options: { member?: boolean } = {},
 ) {
+	if (table === "enrolled_devices" && field === "public_key") {
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: String(value), fingerprint: null },
+			"device_id = ?",
+			deviceId(f, "a"),
+		);
+		return;
+	}
 	await f.exec(
 		`UPDATE ${table} SET ${field} = ? WHERE ${options.member ? "device_id" : "scope_id"} = ?`,
 		value,
@@ -293,7 +306,7 @@ function registerEnrollmentKeys(test: Test) {
 		// Arrange
 		await seed(f);
 		if (mode === "missing")
-			await f.exec("DELETE FROM enrolled_devices WHERE device_id = ?", deviceId(f, "a"));
+			await deleteEnrollmentWithoutTombstone(f.exec, "device_id = ?", deviceId(f, "a"));
 		else if (mode === "disabled")
 			await update(f, "enrolled_devices", "enabled", 0, { member: true });
 		else if (mode === "wrong group") {
@@ -451,11 +464,12 @@ function registerMemberDrifts(test: Test, database: Database) {
 						if (mode === "new grant") await addMember(f, "c");
 						else if (mode.startsWith("late"))
 							await tombstone(f, mode === "late ID" ? "device_id" : "ed25519_key");
-						else
+						else if (mode === "remove member")
 							await f.exec(
-								`DELETE FROM ${mode === "remove member" ? "coordinator_scope_memberships" : "enrolled_devices"} WHERE device_id = ?`,
+								"DELETE FROM coordinator_scope_memberships WHERE device_id = ?",
 								deviceId(f, "a"),
 							);
+						else await deleteEnrollmentWithoutTombstone(f.exec, "device_id = ?", deviceId(f, "a"));
 					},
 				}),
 			);
@@ -510,9 +524,10 @@ function registerHashCapture(test: Test, database: Database) {
 		let fired = false;
 		const guard = hashGuard(f, async () => {
 			fired = true;
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
-				UNRELATED_PUBLIC_KEY,
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+				"device_id = ?",
 				deviceId(f, "b"),
 			);
 		});
@@ -546,9 +561,10 @@ function registerHashCapture(test: Test, database: Database) {
 			for (const row of captured) {
 				if (row.device_id !== deviceId(f, "b") || !("public_key" in row)) continue;
 				row.public_key = UNRELATED_PUBLIC_KEY;
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
-					row.public_key,
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+					"device_id = ?",
 					row.device_id,
 				);
 			}

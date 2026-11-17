@@ -7,6 +7,7 @@ import {
 	rebindFixture,
 	TARGET,
 } from "./coordinator-device-rebind-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 
 let f: RebindFixture;
 afterEach(async () => {
@@ -33,9 +34,12 @@ describe.each<Backend>(["SQLite", "D1"])("%s enrollment ownership for admins", (
 		f = await rebindFixture(kind);
 		await commitDeviceRebind(f.input());
 		// Act: the device re-enrolls in this group with a new key.
-		f.db
-			.prepare("UPDATE enrolled_devices SET public_key = ? WHERE group_id = ?")
-			.run(`ssh-ed25519 ${Buffer.alloc(51, 1).toString("base64")}`, GROUPS[0]);
+		changeEnrollmentKey(
+			f.db,
+			{ publicKey: `ssh-ed25519 ${Buffer.alloc(51, 1).toString("base64")}`, fingerprint: null },
+			"group_id = ?",
+			GROUPS[0],
+		);
 		// Assert
 		expect(await ownership()).toEqual([undefined]);
 	});

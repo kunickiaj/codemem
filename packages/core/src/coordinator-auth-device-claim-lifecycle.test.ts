@@ -20,6 +20,7 @@ import {
 	TABLES,
 	TTL,
 } from "./coordinator-auth-link-test-fixtures.js";
+import { changeEnrollmentKeySql } from "./coordinator-enrollment-test-fixtures.js";
 
 // Trusted metadata only: no Google JWT verification or ownership commit.
 const request = () =>
@@ -141,7 +142,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 	test.for([
 		[
 			"pending",
-			"UPDATE enrolled_devices SET public_key=public_key || ' changed' WHERE device_id='device-a'",
+			changeEnrollmentKeySql(
+				{ publicKey: `${input.signer.publicKey} changed`, fingerprint: null },
+				"device_id='device-a'",
+			),
 		],
 		[
 			"browser_claimed",

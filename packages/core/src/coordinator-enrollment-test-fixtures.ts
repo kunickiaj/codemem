@@ -218,6 +218,35 @@ export function enrollmentTestKeyId(publicKey: string): string {
 	return createHash("sha256").update(parsed.blob).digest("hex");
 }
 
+export interface EnrollmentKeyChange {
+	publicKey: string;
+	/** Defaults to the fingerprint of the new key text. Null keeps the stored one. */
+	fingerprint?: string | null;
+}
+
+function keyChangeStatements(
+	key: EnrollmentKeyChange,
+	where: string,
+	values: unknown[],
+): EnrollmentTestStatement[] {
+	return [
+		{
+			sql: `UPDATE enrolled_devices SET key_id = 'changing by the test'${whereSql(where)}`,
+			values,
+		},
+		{
+			sql: `UPDATE enrolled_devices SET public_key = ?, fingerprint = COALESCE(?, fingerprint),
+				key_id = ?${whereSql(where)}`,
+			values: [
+				key.publicKey,
+				key.fingerprint === undefined ? fingerprintPublicKey(key.publicKey) : key.fingerprint,
+				enrollmentTestKeyId(key.publicKey),
+				...values,
+			],
+		},
+	];
+}
+
 /**
  * A raw key change that passes the enrollment triggers, as a writer's does: one
  * UPDATE sets `public_key`, `fingerprint` and `key_id` together. The UPDATE
@@ -231,29 +260,56 @@ export function enrollmentTestKeyId(publicKey: string): string {
  */
 export function changeEnrollmentKey<T extends Target>(
 	target: T,
-	key: { publicKey: string; fingerprint?: string | null },
+	key: EnrollmentKeyChange,
 	where = "",
 	...values: unknown[]
 ): Result<T> {
-	return runPlan(target, {
-		triggers: [],
-		writes: [
-			{
-				sql: `UPDATE enrolled_devices SET key_id = 'changing by the test'${whereSql(where)}`,
-				values,
-			},
-			{
-				sql: `UPDATE enrolled_devices SET public_key = ?, fingerprint = COALESCE(?, fingerprint),
-					key_id = ?${whereSql(where)}`,
-				values: [
-					key.publicKey,
-					key.fingerprint === undefined ? fingerprintPublicKey(key.publicKey) : key.fingerprint,
-					enrollmentTestKeyId(key.publicKey),
-					...values,
-				],
-			},
-		],
-	});
+	return runPlan(target, { triggers: [], writes: keyChangeStatements(key, where, values) });
+}
+
+/**
+ * `public_key || suffix` for the enrollments that `where` selects: each stored
+ * key text gains the suffix, which for an SSH key is another text form of the
+ * same key. The fingerprint stays. It reads the rows first, so it takes a
+ * better-sqlite3 database only.
+ */
+export function appendToEnrollmentKey(
+	db: {
+		prepare(sql: string): {
+			run(...values: unknown[]): unknown;
+			all(...values: unknown[]): unknown[];
+		};
+	},
+	suffix: string,
+	where = "",
+	...values: unknown[]
+): void {
+	const rows = db
+		.prepare(`SELECT rowid AS row_id, public_key FROM enrolled_devices${whereSql(where)}`)
+		.all(...values) as { row_id: number; public_key: string }[];
+	for (const row of rows)
+		changeEnrollmentKey(
+			db,
+			{ publicKey: `${row.public_key}${suffix}`, fingerprint: null },
+			"rowid = ?",
+			row.row_id,
+		);
+}
+
+const sqlLiteral = (value: unknown) =>
+	value === null ? "NULL" : `'${String(value).replaceAll("'", "''")}'`;
+
+/**
+ * The same key change as SQL text, for a table of SQL strings that a test runs
+ * with `exec`. `where` is written out in full, and the key values become literals.
+ */
+export function changeEnrollmentKeySql(key: EnrollmentKeyChange, where = ""): string {
+	return keyChangeStatements(key, where, [])
+		.map(({ sql, values }) => {
+			const literals = values.map(sqlLiteral);
+			return `${sql.replace(/\?/gu, () => literals.shift() ?? "?")};`;
+		})
+		.join("\n");
 }
 
 export interface EnrollmentSeed {

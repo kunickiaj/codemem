@@ -27,6 +27,7 @@ import {
 	CANONICAL_PUBLIC_KEY,
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson as canonical,
 	normalizeCoordinatorLegacyTeamCompletionManifest as normalize,
@@ -416,7 +417,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 	}
 	const mutations: Record<string, (f: LinkFixture) => void | Promise<void>> = {
 		"missing enrollment": (f) => {
-			f.db.prepare("DELETE FROM enrolled_devices WHERE device_id=?").run(signer.deviceId);
+			deleteEnrollmentWithoutTombstone(f.db, "device_id=?", signer.deviceId);
 		},
 		"disabled enrollment": (f) => {
 			f.db.prepare("UPDATE enrolled_devices SET enabled=0 WHERE device_id=?").run(signer.deviceId);

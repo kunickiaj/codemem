@@ -27,6 +27,10 @@ import {
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import {
+	changeEnrollmentKeySql,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
+import {
 	canonicalCoordinatorLegacyTeamCompletionManifestJson as canonical,
 	normalizeCoordinatorLegacyTeamCompletionManifest as normalize,
 } from "./coordinator-legacy-team-completion.js";
@@ -146,9 +150,7 @@ async function retainedAliasController(
 	expect(created.kind).toBe("created");
 	if (created.kind === "rejected") throw new Error("synthetic retained controller rejected");
 	// Its public key is now present only in the trusted immutable controller receipt.
-	f.db
-		.prepare("DELETE FROM enrolled_devices WHERE group_id=? AND device_id=?")
-		.run("group-b", device.deviceId);
+	deleteEnrollmentWithoutTombstone(f.db, "group_id=? AND device_id=?", "group-b", device.deviceId);
 	return created.attestation;
 }
 
@@ -208,7 +210,7 @@ function history(f: LinkFixture, group: string, identity: string | null, alias =
 async function seed(f: LinkFixture) {
 	// Persisted DEVICE_CLAIM genesis is trusted fixture proof, not a Google/OIDC ceremony.
 	f.db.exec(seedEnrollmentSql);
-	f.db.exec("DELETE FROM enrolled_devices WHERE device_id='unrelated-device'");
+	deleteEnrollmentWithoutTombstone(f.db, "device_id='unrelated-device'");
 	f.db.exec(seedClaimSql);
 	f.db.exec(`INSERT INTO coordinator_auth_account_links
 		(coordinator_id,link_id,issuer,subject,identity_id,attempt_id,auth_config_revision,
@@ -460,9 +462,12 @@ for (const kind of ["SQLite", "D1"] as const) {
 			subject: "unrelated-key",
 			identityId: "identity-b",
 		});
-		f.db
-			.prepare("DELETE FROM enrolled_devices WHERE group_id=? AND device_id=?")
-			.run(retained.group_id, retained.device_id);
+		deleteEnrollmentWithoutTombstone(
+			f.db,
+			"group_id=? AND device_id=?",
+			retained.group_id,
+			retained.device_id,
+		);
 		const before = snapshot(f, ["coordinator_auth_controller_attestations"]);
 		const app = appFor(f);
 		// Act
@@ -790,7 +795,10 @@ for (const kind of ["SQLite", "D1"] as const) {
 		["disabled laptop", "UPDATE enrolled_devices SET enabled=0 WHERE device_id='current-laptop'"],
 		[
 			"malformed key",
-			"UPDATE enrolled_devices SET public_key='bad-key' WHERE device_id='current-laptop'",
+			changeEnrollmentKeySql(
+				{ publicKey: "bad-key", fingerprint: null },
+				"device_id='current-laptop'",
+			),
 		],
 		[
 			"foreign enrollment",

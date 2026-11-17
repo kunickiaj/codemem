@@ -12,6 +12,7 @@ import type {
 } from "./coordinator-device-revocation-test-harness.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { removeDeviceWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { pendingJoin } from "./coordinator-join-revocation-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
@@ -109,9 +110,10 @@ async function transition(f: RevocationFixture, action: Transition) {
 		`${f.input.deviceId}-seed`,
 	);
 	if (action === "remove" || action === "last group recreate") {
-		await f.store.removeDevice(f.input.groupId, f.input.deviceId);
+		// The writers under test enroll the device again, which a recorded removal would refuse.
+		await removeDeviceWithoutTombstone(f.exec, f.input.groupId, f.input.deviceId);
 		if (action === "last group recreate") {
-			await f.store.removeDevice(f.input.groupId, `${f.input.deviceId}-seed`);
+			await removeDeviceWithoutTombstone(f.exec, f.input.groupId, `${f.input.deviceId}-seed`);
 			await f.exec("DELETE FROM groups WHERE group_id = ?", f.input.groupId);
 			await f.store.createGroup(f.input.groupId);
 		}

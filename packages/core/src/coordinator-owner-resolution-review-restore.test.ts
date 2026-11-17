@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { expect } from "vitest";
 import { backendTest } from "./coordinator-auth-link-test-fixtures.js";
 import { review } from "./coordinator-auth-store-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import {
 	buildReview,
@@ -283,7 +284,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			});
 			const selected = location === "same group" ? selection : await anotherGroup(f);
 			if (location === "deleted source group") {
-				f.db.prepare("DELETE FROM enrolled_devices WHERE group_id=?").run(fact.controller.group_id);
+				deleteEnrollmentWithoutTombstone(f.db, "group_id=?", fact.controller.group_id);
 				f.db.prepare("DELETE FROM groups WHERE group_id=?").run(fact.controller.group_id);
 			}
 			const before = snapshot(f);

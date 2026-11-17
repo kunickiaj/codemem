@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { CoordinatorAuthControllerReviewInput } from "./coordinator-auth-controller.js";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import type { CoordinatorIdentityGroupGrantStore } from "./coordinator-identity-group-grant.js";
 
 export type GrantFixture = {
@@ -84,9 +85,10 @@ async function changeAuthority(f: GrantFixture, change: (typeof authorityChanges
 	}
 	if (change === "archived group") await store.archiveGroup(r.groupId);
 	if (change === "wrong key")
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-			"replacement-key",
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: "replacement-key", fingerprint: null },
+			"group_id = ? AND device_id = ?",
 			r.groupId,
 			r.deviceId,
 		);

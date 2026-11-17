@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect } from "vitest";
 import { backendTest, NOW } from "./coordinator-auth-link-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	controllerTable,
 	history,
@@ -88,7 +89,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			const h = await setupReview(f, kind, false);
 			const original = await originalController(f, sourceGroup);
 			if (sourceGroup !== signer.groupId) {
-				f.db.prepare("DELETE FROM enrolled_devices WHERE group_id=?").run(sourceGroup);
+				deleteEnrollmentWithoutTombstone(f.db, "group_id=?", sourceGroup);
 				f.db.prepare("DELETE FROM groups WHERE group_id=?").run(sourceGroup);
 			}
 			f.db

@@ -20,6 +20,7 @@ import {
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { EXPECTED_KEY_ID } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 
 function digest(reader: CoordinatorDeviceOwnershipEvidence, snapshot: unknown) {
@@ -254,9 +255,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 		const reader = new CoordinatorDeviceOwnershipEvidence(evidenceBackend(f, backend), cfg);
 		const old = await captured(reader, await collectInput(f));
 		const publicKey = `${signer.publicKey} synthetic-comment`;
-		f.db
-			.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id=?")
-			.run(publicKey, signer.deviceId);
+		changeEnrollmentKey(f.db, { publicKey, fingerprint: null }, "device_id=?", signer.deviceId);
 		const input = await collectInput(f);
 		input.actualSigner.publicKey = publicKey;
 		input.verifiedHistory = await f.store.captureAuthControllerLegacyHistory({

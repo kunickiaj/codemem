@@ -21,6 +21,7 @@ import {
 	rebindFixture,
 	TARGET,
 } from "./coordinator-device-rebind-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 let f: RebindFixture;
@@ -341,7 +342,7 @@ function registerDurableReceipt(kind: Backend) {
 		const committed = await commitDeviceRebind(f.input());
 		if (committed.kind !== "committed") throw new Error("expected a commit");
 		// Act: an admin removes the device from one group after the commit.
-		f.db.exec("DELETE FROM enrolled_devices WHERE group_id = 'group-a'");
+		deleteEnrollmentWithoutTombstone(f.db, "group_id = 'group-a'");
 		const status = await readDeviceRebindReceipt(f.backend, COORDINATOR, f.attempt.attempt_id);
 		const retry = await commitDeviceRebind(f.input());
 		// Assert

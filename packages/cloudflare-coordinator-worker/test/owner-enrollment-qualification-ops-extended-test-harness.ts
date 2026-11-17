@@ -1,3 +1,4 @@
+import { changeEnrollmentKey, deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { expect } from "vitest";
 import { readConnectionSchemaState } from "../../core/src/coordinator-account-connection-schema.js";
 import { EXPECTED_KEY_ID } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
@@ -66,7 +67,7 @@ function registerRevokeClockRollback(test: Test) {
 		const pair = { qualificationId: created.qualificationId, linkId: "claim-a" };
 		const before = (await f.rows())[0];
 		const createdAt = Number(before?.created_at_ms);
-		await f.exec("DELETE FROM enrolled_devices");
+		await deleteEnrollmentWithoutTombstone(f.exec);
 		const protectedBefore = await f.snapshot();
 		// Act
 		f.clock(createdAt - 1);
@@ -441,7 +442,11 @@ const mutations: Mutation[] = [
 	[
 		"changed enrollment key",
 		(f) =>
-			f.exec(`UPDATE enrolled_devices SET public_key='${otherKey}' WHERE device_id='device-a'`),
+			changeEnrollmentKey(
+				f.exec,
+				{ publicKey: otherKey, fingerprint: null },
+				"device_id='device-a'",
+			),
 	],
 	[
 		"changed enrollment actor",
