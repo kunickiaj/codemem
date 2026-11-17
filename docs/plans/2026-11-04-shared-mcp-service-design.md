@@ -1,7 +1,9 @@
 # Plugin-native memory tools for OpenCode
 
-**Status:** Approved direction. Reviewed twice on 2026-11-04; this revision
-incorporates the correction review's findings.
+**Status:** Superseded as the direction for OpenCode by the pooled MCP
+decision of 2026-11-16, recorded in [Pooled MCP decision](#pooled-mcp-decision-2026-11-16)
+below. The plugin-native tools this document describes shipped as an opt-in and
+stay that way. The rest of the document is kept as the record of that design.
 
 **Date:** 2026-11-04
 
@@ -9,6 +11,101 @@ incorporates the correction review's findings.
 serves them over the viewer's HTTP routes, with the CLI as fallback. `codemem
 setup` stops installing the per-project `codemem mcp` MCP entry for OpenCode.
 The stdio MCP server stays for every other host.
+
+## Pooled MCP decision (2026-11-16)
+
+**Decision:** codemem 0.50 supports OpenCode's pooled MCP connections as an
+opt-in. One `codemem mcp` process serves every project directory, and MCP
+stays the one tool surface codemem maintains across hosts. Plugin-native tools
+are not turned on by default and are not removed in 0.50.
+
+**Why the direction changed.** Native tools need a separate tool
+implementation per host: registration for two OpenCode plugin APIs, a generated
+copy of the tool contracts, a viewer route, a CLI fallback, and parity tests.
+OpenCode 2.2.6 added pooling, which removes the per-project process cost while
+keeping the standard MCP server. The alternative rejected below as "Inject
+`project` into MCP calls from `execute.before`" was rejected because it did not
+reach Code Mode calls. On OpenCode 2.2.6 that no longer holds: both
+`execute.before` and a wrapped tool `execute` run for calls made inside Code
+Mode blocks.
+
+**Context contract.** A pooled process has one fixed working directory, gets no
+roots, and receives only `ai.opencode/sessionID` in tool-call metadata. Started
+with `codemem mcp --caller-context required`, the server declares a
+`_codemem_caller` argument on every tool:
+
+| Field | Source | Used for |
+| --- | --- | --- |
+| `directory` | The plugin instance's directory, which is the calling session's location | Default read project, write-session directory and sharing scope, distill `AGENTS.md` lookup |
+| `env_project` | `CODEMEM_PROJECT` of the OpenCode process, or `null` | Project override |
+| `session_id` | The host session | Retrieval-ledger stream |
+| `request_id` | Host call ID, a per-plugin-instance nonce, and a sequence number | Retrieval-ledger identity: a redelivered call records once |
+
+The OpenCode 2 plugin fills the argument in for tools of the server named
+`codemem` and removes it from the schema the model sees. Each call runs with an
+immutable context. A call without the argument fails with
+`caller_context_required`. The server never uses its own directory or
+environment for a caller. A per-project server, the HTTP server, and every
+other host are unchanged.
+
+**Pool identity.** OpenCode shares a process only between entries with the same
+command, working directory, environment, protocol, and timeouts. The database,
+config file, actor identity, and embedding settings belong to the process, so
+projects that differ in any of them get separate processes.
+
+**Supported hosts.** OpenCode 2.2.6 and later, verified on 2.2.6 and 2.3.0.
+OpenCode 1 and all other hosts keep one stdio process per project.
+
+**Measured on 2026-11-16** with five projects, the built CLI, Node 26.13.1,
+macOS arm64, embeddings disabled, OpenCode 2.2.6, right after each project's
+first write and search:
+
+| | Per-project stdio | Pooled | Plugin-native |
+| --- | --- | --- | --- |
+| codemem MCP processes | 5 | 1 | 0 |
+| Physical footprint, total | 1,133 MiB | 235 MiB | 0 |
+| RSS, total, across runs | 795–1,306 MiB | 127–269 MiB | 0 |
+| MCP ready, first project | 631 ms | 631 ms | n/a |
+| MCP ready, later projects | 453–490 ms | 94–116 ms | n/a |
+| First turn in a project (write and search) | 163–211 ms | 181–211 ms | 251–278 ms, 498 ms for the first project |
+| Same turn repeated in the session | 114–128 ms | 113–125 ms | 99–109 ms |
+| Turn with no tool call | 41–56 ms | 39–50 ms | 40–43 ms |
+
+Physical footprint is the memory that is released when the process exits, and
+it was stable between runs. RSS also counts shared pages and varied widely.
+The viewer and its maintenance worker add about 455 MiB in every mode. Once a
+session is warm, the three modes answer a tool call in about the same time; the
+difference is the number of processes and how quickly a new project is ready.
+
+**Opt in and roll back.** `codemem setup --opencode-only --opencode-mcp pooled`
+writes the shared entry. `--opencode-mcp stdio`, still the default, restores
+one process per project. Neither direction migrates data.
+
+**Tradeoffs accepted.**
+
+- Every project that uses the shared entry must load the codemem plugin.
+  Without it, memory tools return an error.
+- The server cannot prove the argument came from the plugin. A project that
+  shares the process without the plugin could have a model supply it. That
+  grants nothing a model cannot already do with an explicit `project` filter on
+  the same database.
+- When the shared process exits, OpenCode marks the server failed in every
+  project that used it and does not restart it. Reconnecting is manual.
+- Wrapping MCP tools through `tool.transform` is observed host behavior that
+  the plugin API permits but does not promise for MCP tools.
+
+**Before pooled becomes the default:** a period of daily use, an answer for
+recovery after the shared process exits, and the pooled host smoke running in
+CI. The workspace pins an OpenCode version without pooling, so the smoke
+currently needs a newer binary supplied by hand.
+
+**Not verified:** cancellation driven from the host (the server-side case is
+tested), several OpenCode processes at once, a write in flight at the moment the
+process exits, and whether the host ever redelivers a dispatched call.
+
+**Later, as separate decisions:** retiring the plugin-native OpenCode tools once
+pooled has passed the items above, and proposing per-call location metadata to
+OpenCode, which would remove the plugin requirement.
 
 ## Problem
 
@@ -360,6 +457,6 @@ Each step is independently shippable and within the ~1,000-line guideline.
 | Thin stdio shim per project proxying to the viewer | Still one Node process per project (~30 MiB baseline); saves under half the cost. |
 | Separate `codemem mcp http` daemon beside the viewer | Same cwd problem, duplicated lifecycle. |
 | Remote MCP entry with no context, rely on explicit `project` args | `buildFilters(args, null)` applies no project filter when the model omits `project`; silent all-projects reads. |
-| Inject `project` into MCP calls from `execute.before` | Does not reach calls made inside Code Mode `execute` blocks. |
+| Inject `project` into MCP calls from `execute.before` | Does not reach calls made inside Code Mode `execute` blocks. (True when written; no longer true on OpenCode 2.2.6. See the pooled MCP decision.) |
 | MCP roots | Legacy protocol only, deprecated upstream, unusable with stateless requests. |
 | Shrink per-process memory | Worth doing independently; does not change the O(worktrees) shape. |
