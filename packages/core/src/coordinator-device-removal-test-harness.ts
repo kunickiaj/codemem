@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
+import { ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS } from "./coordinator-device-removal.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -16,7 +17,15 @@ export type RemovalFixture = {
 	/** Raw SQL write. Rejects when a trigger or constraint aborts the statement. */
 	exec: (sql: string, ...values: unknown[]) => Promise<void>;
 	rows: <T = Record<string, unknown>>(sql: string, ...values: unknown[]) => Promise<T[]>;
+	/**
+	 * A store on the same database that runs `change` once, immediately before
+	 * its first write whose SQL contains one of `before`. On D1 that is before
+	 * the batch that holds the write, so after every read the operation made first.
+	 */
+	interleave: (before: readonly string[], change: readonly RawStatement[]) => Store;
 };
+
+export type RawStatement = { sql: string; values: unknown[] };
 
 /** The injected store clock of every fixture. */
 export const REMOVAL_CLOCK_MS = Date.UTC(2026, 10, 17, 12, 0, 0);
@@ -53,6 +62,15 @@ export function opaqueKey(label: string): DeviceKey {
 }
 
 export type Enrollment = { groupId: string; deviceId: string; key: DeviceKey };
+
+export async function enroll(f: RemovalFixture, target: Enrollment): Promise<void> {
+	if (!(await f.store.getGroup(target.groupId))) await f.store.createGroup(target.groupId);
+	await f.store.enrollDevice(target.groupId, {
+		deviceId: target.deviceId,
+		publicKey: target.key.publicKey,
+		fingerprint: target.key.fingerprint,
+	});
+}
 
 /** The enrollment insert of releases before the key ID column existed. */
 export function legacyInsert(f: RemovalFixture, target: Enrollment): Promise<void> {
@@ -108,6 +126,50 @@ function liftTombstones(f: RemovalFixture, deviceId: string): Promise<void> {
 	);
 }
 
+/**
+ * The state a removal before 0.50 left: the enrollment is gone and no tombstone
+ * records it. Only the delete trigger is dropped and re-created around the delete.
+ */
+export function deleteEnrollmentWithoutTombstone(target: Enrollment): RawStatement[] {
+	const trigger = ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS.find((sql) =>
+		sql.includes("enrolled_devices_removal_delete"),
+	);
+	if (!trigger) throw new Error("Missing enrollment delete trigger");
+	return [
+		{ sql: "DROP TRIGGER IF EXISTS enrolled_devices_removal_delete", values: [] },
+		{
+			sql: "DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
+			values: [target.groupId, target.deviceId],
+		},
+		{ sql: trigger, values: [] },
+	];
+}
+
+/** Marks an enrollment that a test arranged, in a column that every writer sets. */
+export const ARRANGED_DISPLAY_NAME = "arranged by the test";
+/** The creation time of every arranged enrollment. A writer's insert never uses it. */
+export const ARRANGED_CREATED_AT = "2026-11-17T00:00:00.000Z";
+
+/** A disabled enrollment with no Identity, as another writer could add it at any moment. */
+export function insertDisabledEnrollment(target: Enrollment): RawStatement[] {
+	return [
+		{
+			sql: `INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint,
+				display_name, enabled, created_at, key_id)
+				VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+			values: [
+				target.groupId,
+				target.deviceId,
+				target.key.publicKey,
+				target.key.fingerprint,
+				ARRANGED_DISPLAY_NAME,
+				ARRANGED_CREATED_AT,
+				target.key.keyId,
+			],
+		},
+	];
+}
+
 type Tombstone = {
 	removal_seq: number;
 	removal_id: string;
@@ -157,6 +219,7 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerRowIdRule(test);
 	registerEnrollmentMoveTriggers(test);
 	registerCollisionTriggers(test);
+	registerExistingEnrollmentWriters(test);
 }
 
 function registerLegacyInsertShape(test: RemovalTest) {
@@ -615,5 +678,55 @@ function registerCollisionTriggers(test: RemovalTest) {
 				`${f.prefix}%`,
 			),
 		).toEqual(before);
+	});
+}
+
+function registerExistingEnrollmentWriters(test: RemovalTest) {
+	test("A26 enrollment writers still work for a device already enrolled in the group", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const enrolled = await target(f);
+		const rotated = { ...enrolled, key: await removalDeviceKey(`${f.prefix}-rotated`) };
+		const expiresAt = "2099-01-01T00:00:00.000Z";
+		await enroll(f, enrolled);
+		// Act: the same tuple again, a new key, then a join approval back to the first key.
+		await enroll(f, enrolled);
+		await enroll(f, rotated);
+		const afterAdmin = await enrollments(f);
+		const invite = await f.store.createInvite({
+			groupId: enrolled.groupId,
+			policy: "approval_required",
+			expiresAt,
+		});
+		const request = await f.store.createJoinRequest({
+			groupId: enrolled.groupId,
+			deviceId: enrolled.deviceId,
+			publicKey: enrolled.key.publicKey,
+			fingerprint: enrolled.key.fingerprint,
+			token: invite.token,
+		});
+		const review = await f.store.reviewJoinRequest({
+			requestId: request.request_id,
+			approved: true,
+		});
+		// Assert: one row throughout, with the key ID of its current key.
+		expect(afterAdmin).toEqual([
+			{
+				group_id: enrolled.groupId,
+				device_id: enrolled.deviceId,
+				public_key: rotated.key.publicKey,
+				key_id: rotated.key.keyId,
+			},
+		]);
+		expect(review?.status).toBe("approved");
+		expect(await enrollments(f)).toEqual([
+			{
+				group_id: enrolled.groupId,
+				device_id: enrolled.deviceId,
+				public_key: enrolled.key.publicKey,
+				key_id: enrolled.key.keyId,
+			},
+		]);
 	});
 }
