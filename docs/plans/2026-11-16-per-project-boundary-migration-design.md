@@ -175,7 +175,7 @@ After the commit, an admin device that knows the Project records recipient edges
 
 If none matches exactly, it keeps the closest candidate in that order. The difference becomes lines in the summary, and the hold in P2 stops the reconciler from acting on it.
 
-**Whether people who join later receive it.** Where the Project came from the group's `team_default` scope and the default grant is on for that group on this device, an approved joiner received the Project. After the move, a membership in the default scope no longer delivers it. Only a Team recipient does. So in that case the Project must end up with a Team edge, whichever candidate matched above.
+**Whether people who join later receive it.** Where the Project came from the group's `team_default` scope and the default grant is on for that group on this device, or was on until this migration stopped it, an approved joiner received the Project. After the move, a membership in the default scope no longer delivers it. Only a Team recipient does. So in that case the Project must end up with a Team edge, whichever candidate matched above.
 
 - If exactly one active policy Team is linked to the group and the edges do not name it, the device adds the Team edge. When every device of the Team is already in the boundary, this changes nobody's access and nothing is asked. Otherwise the summary shows the Team's other devices as "will start receiving" lines.
 - If no policy Team is linked to the group, the summary shows the line about new members in [Section 4](#the-summary).
@@ -310,7 +310,7 @@ These states ask nothing and clear without a decision.
 
 ### The admin device
 
-The migration runs in the sync daemon's maintenance pass, after the coordinator refresh, next to recipient reconciliation (`packages/viewer-server/src/application/coordinator-maintenance.ts`). For each boundary that a readiness record lists and that has no committed record, the admin device sends a commit. It runs when the rollout flag is `on`, the device holds the admin secret, and the coordinator advertises the capability.
+The migration runs in the sync daemon's maintenance pass, after the coordinator refresh, next to recipient reconciliation (`packages/viewer-server/src/application/coordinator-maintenance.ts`). For each boundary that a readiness record lists and that has no migration record at all, the admin device sends a commit. A Project that was rolled back is never picked up by this pass. It moves again only when an admin chooses **Move this Project again** in Projects, or runs `codemem sync migration run`. It runs when the rollout flag is `on`, the device holds the admin secret, and the coordinator advertises the capability.
 
 An admin device that is not a member of a source scope can still commit for it. It becomes no member of the boundary and receives nothing. The Project moves with the same devices, and its recipients stay as recorded until an admin device that receives the Project manages them.
 
@@ -353,7 +353,7 @@ Boundary members that are authorized in the source scope keep their boundary mem
 ### What rollback cannot undo
 
 - Each memory's revision is higher, and the op log holds the moves. Content is unchanged.
-- The boundary scope, the record, and the memberships of devices that are in the source scope stay at the coordinator. A later migration of the same Project commits a new generation on top of them.
+- The boundary scope, the record, and the memberships of devices that are in the source scope stay at the coordinator. A later migration of the same Project commits a new generation on top of them. That happens only when an admin asks for it ([Section 5](#the-admin-device)).
 - A device that the admin included after the migration received data. Its copies are deleted when its membership ends, if it cooperates. A device that never syncs again keeps them.
 - Devices that policy trust paired because they shared the boundary stay paired while they share any other boundary. A pairing that the user made by hand is never removed.
 - "Keep off" choices and recipient edits stay recorded and have no effect while the Project is rolled back.
@@ -469,7 +469,7 @@ The two retirements cannot both run in the migration pass.
 | Part | When | Why |
 | --- | --- | --- |
 | Carry the effect of the default grant | In the migration pass | Devices that joined through it are members and are copied. A Team recipient carries its effect for later joiners. |
-| Stop the default grant on join | In the migration pass, per group, once every Project in the group's default scope has committed | Once a Project has moved, a membership in the default scope no longer delivers it, so the grant carries nothing for that Project. Its Team recipient decides what a new member receives ([Choosing recipients](#choosing-recipients)). The grant keeps running while some Project in the default scope has not moved, and stops with the last one. The approving device clears its own preference row. An older admin device can still grant until it updates. |
+| Stop the default grant on join | In the migration pass, per group, once every Project in the group's default scope has committed | Once a Project has moved, a membership in the default scope no longer delivers it, so the grant carries nothing for that Project. Its Team recipient decides what a new member receives ([Choosing recipients](#choosing-recipients)). The grant keeps running while some Project in the default scope has not moved, and stops with the last one. The approving device turns the grant off in its preference row and records there that the migration stopped it. A Project that turns up in the default scope later, through a pattern mapping, is then treated like the ones before it and gets its Team recipient. An older admin device can still grant until it updates. |
 | Carry the effect of pairing filters | In the migration pass, by leaving them in force | A filter follows the project name, so it keeps blocking after the move (Finding 2). |
 | Retire pairing filters | A later step, `codemem-lvgba.28`, with its own design | See below |
 | Delete the filter columns, the group filter template, `syncProjectAllowed`, the default scope, and its preference | The release after filters are retired | The constraint is additive schema only, and older peers still evaluate filters. |
@@ -574,6 +574,9 @@ The implementer writes these before the code. The first group pins behavior the 
 57. Coordinator store contract (P3), SQLite and D1: attach stores a committed record for an existing boundary, changes no membership, needs a stored answer, and is refused when the boundary has a migration record already.
 58. After an attach, boundary members that keep the Project in the source scope move their own memories. A device that is only in the source scope keeps its memories there. Rolling the record back revokes nobody.
 
+59. After a rollback, the maintenance pass sends no commit for that Project, even when every device has restored its mapping and published readiness. An explicit request commits a new generation.
+60. A Project that appears in a default scope after the migration stopped the group's default grant still gets the Team edge.
+
 Validation for each stack layer is the focused tests above. The stack tip runs `pnpm run check` and the Docker scenarios `legacy-team-migration`, `project-sharing`, and `sharing-domains`.
 
 ## Owner decisions
@@ -648,7 +651,7 @@ The owner authorized one more pass, limited to the five fixes above and the thre
 
 ### Automated review threads on the pull request, 2026-11-17
 
-An automated reviewer left five threads on the pull request across four commits. Two were written against text that the 2026-11-17 revision removed.
+An automated reviewer left seven threads on the pull request across five commits. Two were written against text that the 2026-11-17 revision removed.
 
 | Thread | Disposition |
 | --- | --- |
@@ -657,3 +660,5 @@ An automated reviewer left five threads on the pull request across four commits.
 | An author that is only in the setup the admin did not pick cannot move its memories. | Fixed. Those memories stay in that setup, and the line says so ([Two cases](#two-cases-where-a-project-does-not-move-by-itself)). Test 56. |
 | Existing edges that match exactly won over the Team edge, so later joiners in a default scope received nothing. | Fixed. A Project from a default scope with the default grant on always ends with a Team edge, or with a line about new members when no Team exists. The claim that keeping the default grant running preserved delivery was wrong and is removed ([Choosing recipients](#choosing-recipients), [Section 10](#10-decision-3-retirements)). Tests 53 to 55. |
 | "Move the rest" had no commit path, because the commit refuses an existing boundary. | Fixed. An attach transaction stores a record for the existing boundary and changes no membership ([Two cases](#two-cases-where-a-project-does-not-move-by-itself)). Tests 57 and 58. |
+| With the rollout flag on, a rolled-back Project was picked up and moved again by the next maintenance pass. | Fixed. The pass skips any boundary that has a migration record. Moving a rolled-back Project again needs an explicit request ([Section 5](#the-admin-device)). Test 59. |
+| A Project found in a default scope after the default grant was stopped got no Team edge, because recipient selection required the grant to be on. | Fixed. The preference row records that the migration stopped the grant, and recipient selection treats that like on ([Choosing recipients](#choosing-recipients), [Section 10](#10-decision-3-retirements)). Test 60. |
