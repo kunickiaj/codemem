@@ -9,6 +9,7 @@ import {
   MEMORY_TOOL_NAMESPACE,
   MEMORY_TOOL_NAMESPACE_DESCRIPTION,
 } from "./memory-tools.js";
+import { addCallerToPooledMcpTools, createCallSequence } from "./pooled-mcp-caller.js";
 import { createCodememRuntime } from "./runtime.js";
 import { registerV2NotificationBridge } from "./v2-notification-bridge.js";
 import { readV2SessionOwnership } from "./v2-session-location.js";
@@ -478,8 +479,11 @@ const registerV2Tools = async (context, runtime, isActive) => {
   const mcpObserver = memoryTools
     ? await observeV2McpPrecedence(context, memoryTools, gate, isActive)
     : null;
+  const nextSequence = createCallSequence();
   const tools = await context.tool.transform((editor) => {
     if (!isActive()) return;
+    // A shared codemem MCP server needs this instance's directory on each call.
+    addCallerToPooledMcpTools(editor, { directory: context.location.directory, nextSequence });
     for (const [name, definition] of Object.entries(runtime.tools)) {
       editor.add(createV2Tool(name, definition, { isActive }));
     }

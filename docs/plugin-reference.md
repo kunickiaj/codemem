@@ -451,6 +451,52 @@ These are plugin tools callable by the agent/runtime, not user-facing slash
 commands. OpenCode 2 registers the same hyphenated IDs through `tool.transform`
 with `codemode: false`; a packed-host smoke test verifies the IDs are preserved.
 
+### Shared MCP server on OpenCode 2 (opt-in)
+
+OpenCode 2.2.6 and later can share one MCP server process across project
+directories (`pool: true`). A shared `codemem mcp` process runs in one fixed
+directory, so it has to be told which project each call came from. Start it
+with `--caller-context required` and give every project the same entry, for
+example in the global OpenCode config:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "codemem": {
+        "type": "local",
+        "command": ["codemem", "mcp", "--caller-context", "required"],
+        "cwd": "/absolute/path/that/exists",
+        "protocol": "2026-07-28",
+        "pool": true
+      }
+    }
+  }
+}
+```
+
+The plugin adds the calling session's directory, the host's `CODEMEM_PROJECT`
+value, the session ID, and a call ID to each memory tool call, and removes that
+argument from the schema the model sees. Searches, writes, sharing scopes,
+distill context, and retrieval counts then match what a per-project server
+would produce. `codemem setup` does not write this entry.
+
+- The plugin must be loaded in every project that uses the entry. Without it,
+  each memory tool call fails with `caller_context_required`. The server never
+  falls back to its own directory.
+- Name the entry `codemem`. The plugin sends caller details only to that
+  server's tools.
+- `CODEMEM_PROJECT` in the entry's `environment` has no effect on a shared
+  server. The plugin sends the value from the OpenCode process's own
+  environment, which is the same for every project.
+- OpenCode shares a process only between entries with the same command,
+  `cwd`, `environment`, protocol, and timeouts. Projects that set a different
+  `CODEMEM_DB` or `CODEMEM_CONFIG` in `environment` get their own process.
+- If the shared process exits, OpenCode marks the server failed in every
+  project that used it and removes its tools until you reconnect it from
+  `/mcps`. Calls made in between fail and are not replayed.
+- OpenCode 1 has no pooling. Keep the per-project entry there.
+
 ### Built-in memory tools (experimental, opt-in)
 
 Set `CODEMEM_OPENCODE_NATIVE_TOOLS=1` (or `true`/`yes`) to have the plugin
