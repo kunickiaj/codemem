@@ -164,7 +164,7 @@ coordinator refresh, before any sync in that cycle. This check landed after
 becomes:
 
 ```json
-{ "version": 1, "revoked": ["..."], "removed": ["..."], "removal_seq": 42 }
+{ "version": 1, "revoked": ["..."], "removed": ["..."], "enrolled": ["..."], "removal_seq": 42 }
 ```
 
 - A requested device is `removed` when an active tombstone matches its device
@@ -173,6 +173,9 @@ becomes:
   with the same key is not reported. An enrollment of the same device ID under
   a different key does not hide the removal.
 - `revoked` wins when both apply.
+- A requested device is `enrolled` when any enrollment in any group, enabled
+  or disabled, has its device ID or its key. Section 3 uses this to decide
+  whether a removal must go through the coordinator.
 - `removal_seq` is the coordinator's highest removal number. A peer with more
   than 25 entries sends several requests. After it has applied every reply of
   one complete lookup, it stores the lowest `removal_seq` among those replies
@@ -194,9 +197,9 @@ The lookup already has the properties a removal signal needs. It runs before
 presence and peer discovery, so a group that rejects this device cannot block
 it. An enrolled, enabled device signs it. The peer acts only on IDs it sent.
 Any failure keeps pairings and logs a warning, so a failing coordinator cannot
-make devices drop each other. The one new exposure is that an enrolled device
-can learn whether a device ID or key it names was removed. It can already
-learn whether that device is blocked.
+make devices drop each other. The new exposure is that an enrolled device can learn whether a device ID or
+key it names is enrolled or was removed anywhere on the coordinator. It can
+already learn whether that device is blocked.
 
 For each `removed` ID the peer runs one transaction: delete the pairing, both
 cursor tables, and end the binding (Section 2). It keeps the pinned key for
@@ -296,7 +299,10 @@ no block matches. A coordinator with no trusted coordinator ID refuses.
 One transaction then finalizes the attempt, sets the lift columns on every
 active tombstone that matches the device ID or key, writes an enrollment with
 the binding's Identity in each unarchived group that one of those tombstones
-names, and writes an audit event. The device returns to the groups it was
+names, and writes an audit event. When every one of those groups is archived,
+the ceremony refuses and writes nothing. Lifting the tombstones without
+writing an enrollment would leave nothing to block the device from, because
+Block takes an enrollment or an active tombstone as evidence. The device returns to the groups it was
 removed from and to no others. Scope memberships are not restored. The
 reconciler grants what current recipient policy gives that Identity.
 
@@ -346,8 +352,9 @@ not part of this design.
   device. A person can therefore bring their own removed device back without
   an administrator. To stop a person, remove that person from the Team.
 - A Google-linked device whose Identity no longer has an active account link
-  can neither sign in to rejoin nor use an invitation. Its holder sets it up
-  as a new device.
+  can neither sign in to rejoin nor use an invitation. The same holds when
+  every group it was removed from is archived. Its holder sets it up as a new
+  device.
 
 ## 2. What ends the Identity binding
 
@@ -389,17 +396,21 @@ the device, because the membership statement requires its enrollment
 
 ## 3. A device the coordinator does not list
 
-Remove has one entry in Devices. What it does depends on what this device can
-confirm.
+Remove has one entry in Devices. What it does depends on what the coordinator
+says about the device. The Viewer asks through the signed lookup from
+Section 1, whose reply also says whether the coordinator holds any enrollment
+for a device ID or key, in any group, enabled or disabled. The signed peer
+listing cannot answer this, because it shows only enabled devices in the
+caller's own group.
 
-| Situation | Behavior |
+| What this device learns | Behavior |
 | --- | --- |
-| Coordinator configured, admin secret present, device enrolled | Coordinator removal (Section 1), then the local step. |
-| No coordinator configured, or the admin listing shows no enrollment and no active tombstone for the device | Local-only removal. |
-| Admin listing shows an active tombstone | The device is already removed. Run the local step and say so. |
-| No admin secret, and the signed peer listing for this device's groups includes the device | Remove is disabled. The control says an administrator's device removes it. |
-| No admin secret, and the signed peer listing succeeds without the device | Local-only removal. |
-| The coordinator cannot be reached | Refuse and say to try again. The Viewer does not guess. |
+| No coordinator is configured | Local-only removal. |
+| The lookup says the device is enrolled, and this device has the admin secret | Coordinator removal (Section 1), then the local step. |
+| The lookup says the device is enrolled, and this device has no admin secret | Remove is disabled. The control says an administrator's device removes it. |
+| The lookup says the device is removed or blocked | The device is already removed. Run the local step and say so. |
+| The lookup says the device is not enrolled, removed, or blocked | Local-only removal. |
+| The lookup gives no answer: the coordinator cannot be reached, predates the lookup, or does not list this device | Refuse and say why. The Viewer does not guess. An operator can still run `codemem sync peers remove`. |
 
 Local-only removal runs one function in one transaction: delete the pairing,
 delete its rows in both cursor tables, end the binding, and keep the pinned
@@ -519,7 +530,7 @@ without the user seeing it.
 
 | Mix | Behavior |
 | --- | --- |
-| 0.50 Viewer, older coordinator | The removal routes return 404. Remove refuses, changes nothing, and says the coordinator must be updated first. It never falls back to deleting the enrollment, because that would leave direct pairings syncing and report success. Local-only removal stays available only for a device the coordinator does not list. |
+| 0.50 Viewer, older coordinator | The removal routes return 404. Remove refuses, changes nothing, and says the coordinator must be updated first. It never falls back to deleting the enrollment, because that would leave direct pairings syncing and report success. The Viewer offers no local-only removal either, because an older coordinator cannot confirm that it holds no enrollment for the device. `codemem sync peers remove` still works. |
 | 0.50 peer, older coordinator | The lookup returns 404 and pairings stay, as today. An older coordinator cannot record a removal, so there is nothing to miss. |
 | Older peer, 0.50 coordinator | The older peer never runs the lookup. At its next permission refresh it stops exchanging memories in coordinator-managed Projects with the removed device, because the coordinator no longer lists that device as a member. Its direct pairing stays and still carries memories outside those Projects. The Viewer names this peer (below). |
 | Older Viewer or CLI calling a 0.50 coordinator over HTTP | Its per-group Remove now writes a tombstone. When the last enrollment of the key goes, 0.50 peers drop their pairings. Its Enable and enroll cannot bring a removed device back. |
@@ -595,6 +606,9 @@ Remove and of Block.
   {name}."
 - Older coordinator: "This coordinator needs an update before it can remove a
   device. Nothing was changed."
+- No answer from the coordinator: "codemem couldn't check {name} with the
+  coordinator, so nothing was changed. Try again when the coordinator is
+  reachable."
 - On the removed device, with no Google account link: "This device was removed
   from sharing. Its memories are still here. To rejoin, accept a new
   invitation."

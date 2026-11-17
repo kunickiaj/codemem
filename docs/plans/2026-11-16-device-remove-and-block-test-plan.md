@@ -192,7 +192,10 @@ groups 1 and 2.
 6. A device with a binding and no active tombstone is refused. A device with a
    tombstone and no binding is refused.
 7. A blocked device is refused with `device_revoked`.
-8. An archived group gets no enrollment, and its tombstone is still lifted.
+8. With one archived and one unarchived group, only the unarchived group gets
+   an enrollment and both tombstones are lifted. With every group archived
+   the ceremony is refused, no tombstone is lifted, the device stays in the
+   removal listing, and a block from its tombstone succeeds. (PR review.)
 9. An exact retry returns the same receipt. A status read resolves a lost
    reply.
 10. A block recorded between the confirmation and the commit makes the commit
@@ -219,7 +222,7 @@ groups 1 and 2.
 
 ## E. Pinned-peer check
 
-1. The reply always has `revoked`, `removed`, and `removal_seq`.
+1. The reply always has `revoked`, `removed`, `enrolled`, and `removal_seq`.
 2. D is `removed` after removal from all groups, by device ID with any key and
    by K under an unknown device ID.
 3. D removed from one group and still enrolled in another is not `removed`.
@@ -230,6 +233,10 @@ groups 1 and 2.
 8. An enrollment of device ID D under another key, inserted by fixture, does
    not keep D with K out of `removed`.
 9. `removal_seq` and the entries come from one statement batch.
+10. A device with only a disabled enrollment, a device enrolled only in a group
+    the caller is not in, and a device enrolled only in an archived group are
+    each `enrolled`. A device with no enrollment is not. (PR review.)
+11. The route issues the same number of statements for 1 entry and for 25.
 
 ## F. Signed requests from a removed device
 
@@ -309,15 +316,18 @@ New function in `packages/core`, for example `removePairingState`.
 1. Remove preview and commit for an enrolled device call the coordinator
    routes, then the local function, and return the list of devices that have
    and have not applied the removal.
-2. Remove for a device with no enrollment and no tombstone runs the local-only
-   path and returns the notice flag.
-3. Remove for a device with an active tombstone runs the local step and reports
-   it as already removed.
-4. Without the admin secret, a device in the signed peer listing returns
-   `coordinator_admin_required` and changes nothing.
-5. Without the admin secret, a device absent from a successful peer listing
-   runs the local-only path.
-6. An unreachable coordinator returns an error and changes nothing.
+2. Remove for a device the lookup lists in none of its arrays runs the
+   local-only path and returns the notice flag.
+3. Remove for a device the lookup lists as `removed` or `revoked` runs the
+   local step and reports it as already removed.
+4. Without the admin secret, a device the lookup lists as `enrolled` returns
+   `coordinator_admin_required` and changes nothing. This holds for a disabled
+   enrollment and for an enrollment in a group this device is not in, where
+   the signed peer listing shows nothing. (PR review.)
+5. With no coordinator configured, Remove runs the local-only path.
+6. An unreachable coordinator, a 404 from the lookup, and a lookup that every
+   group refuses each return an error and change nothing, with and without
+   the admin secret.
 7. A 404 from the coordinator's removal route returns
    `coordinator_update_required`, changes nothing locally, and never calls the
    legacy removal.

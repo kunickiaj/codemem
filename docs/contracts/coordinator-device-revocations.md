@@ -642,7 +642,10 @@ One SQLite transaction or one atomic D1 batch finalizes the attempt, sets
 `lifted_at` on every active tombstone that matches the device ID or key, inserts
 an enrollment with the binding's `identity_id` and the tombstone's key tuple into
 each unarchived group named by one of those tombstones, and writes an audit
-event. `lifted_by_invite_id` stays null, and a new `lifted_by_attempt_id` column
+event. When none of those groups is unarchived, the ceremony returns a fixed
+refusal and writes nothing, so the tombstones stay active and remain evidence
+for a revocation. A lift by sign-in therefore always leaves at least one
+enrollment. `lifted_by_invite_id` stays null, and a new `lifted_by_attempt_id` column
 records the attempt. The binding row is not changed. No scope membership, grant,
 or enrollment in another group is written.
 
@@ -658,21 +661,32 @@ exists, and this section does not change it.
 
 `POST /v1/peers/revocations` keeps its request rules, with one change: an entry
 may omit `public_key`, and then only the device ID is checked. The reply becomes
-`{ "version": 1, "revoked": [...], "removed": [...], "removal_seq": <integer> }`.
+`{ "version": 1, "revoked": [...], "removed": [...], "enrolled": [...], "removal_seq": <integer> }`.
 
 - A requested entry is in `removed` when an active tombstone matches it and no
   enrollment in any group has that tombstone's `key_id`. For an opaque key the
   exact key text is compared. An enrollment of the same device ID under another
   key does not keep the entry out of `removed`. An entry in `revoked` is never
   also in `removed`.
+- A requested entry is in `enrolled` when any enrollment in any group, archived
+  or not, enabled or disabled, has its device ID, the `key_id` of its key, or
+  for an opaque key its exact key text. `enrolled` is independent of the other
+  two arrays. Signed peer discovery cannot answer this question, because it
+  returns only enabled enrollments of the caller's group.
 - `removal_seq` is the highest `removal_seq` in the table, or 0, read in the same
   statement batch as the entries.
-- The reply carries no tombstone evidence, actor, or time. Any enrolled device
-  can learn whether a device ID or key it names is removed anywhere in the
-  coordinator database.
-- The per-request read stays within D1's query budget for 25 entries.
+- The reply carries no enrollment or tombstone evidence, group, actor, or time.
+  Any enrolled device can learn whether a device ID or key it names is enrolled
+  or removed anywhere in the coordinator database.
+- The route reads revocations, tombstones, and enrollments with a fixed number
+  of statements that take the entries as one JSON parameter, so 25 entries stay
+  within D1's per-request query budget.
 
-A client requires both arrays and the integer. A reply without them is invalid,
+A client that decides how to remove a device treats an entry as absent from the
+coordinator only when a 200 reply lists it in none of the three arrays. A failed
+or missing reply is no answer, and the client then changes nothing.
+
+A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the
 client deletes the pairing and both replication cursor tables and sets the
 device's `identity_devices.status` to `removed`, in one transaction. It retains
