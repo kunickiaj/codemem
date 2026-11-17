@@ -329,7 +329,7 @@ function testRecipientFocusedNavigation() {
 		expect(visiblePanel().textContent).toContain("Invite a teammate");
 		expect(visiblePanel().textContent).toContain("Add a device");
 		expect(visiblePanel().textContent).toContain("Share specific projects");
-		expect(visiblePanel().textContent).toContain("Older invite codes →");
+		expect(visiblePanel().textContent).not.toContain("Older invite codes");
 	});
 
 	it("selects Teams when the first successfully loaded intent has active Teams", () => {

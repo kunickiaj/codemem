@@ -777,6 +777,14 @@ Project access uses canonical project identity, not a display name. Selecting `c
 
 The invite is single-use, expires, and is limited to the reviewed Projects. It names one Identity, not a Team, and the recipient cannot add Projects during acceptance. Existing and future selected-Project memories arrive after setup; unrelated Projects remain absent.
 
+### Accept any invitation in Sharing
+
+Open **Sharing → Invitations → Review an invite** and paste any code you received. Sharing reviews it and shows what accepting it does:
+
+- **Team, add-device, and Project invitations** show the Projects you will receive before you accept.
+- **A device pairing code** belongs in **Devices**. Choose **Review in Devices**, then **Pair a device**. The code is already filled in, so you can check the other device before trusting it.
+- **An older connection-only code** connects this device to a coordinator group. It shares no Projects and adds you to no Team. If the group needs an admin's approval, Sharing says the join request was sent. These codes are no longer created, and codemem stops accepting them in the release after the last one can expire.
+
 ### Add a device for an existing Identity
 
 Create an **Add device** invitation from the existing Identity. Before sending it, review the exact Projects the new device will receive:
