@@ -407,15 +407,28 @@ key:
 - no active tombstone has that `device_id` with another key
 - no revocation subject matches the `device_id` or `key_id`
 - the start signature verifies against the tombstone's stored `public_key`
-- `timestamp_ms` is within five minutes of the coordinator clock
-- no attempt for this `device_id` is in a state before `finalized` and
-  unexpired, other than one with the same `attempt_id` and identical fields.
+- `timestamp_ms` is within five minutes of the coordinator clock.
 
 Every failure of this list returns the same `403 device_rejoin_unavailable`,
 so a caller that does not hold the key learns nothing about bindings,
 tombstones, or blocks. Each request consumes the unauthenticated rate-limit
-budget before the body is read, and an admitted request consumes a budget keyed
-by the device ID.
+budget before the body is read. An admitted start consumes a budget keyed by
+the device ID together with the client address, so one source cannot spend
+another's budget.
+
+Attempts for one device do not exclude each other. A device may have up to 20
+unexpired attempts that are not finalized. A start beyond that expires the
+oldest one that has not reached `oidc_verified`. An attempt that reached
+`oidc_verified` has proven the account and is never expired by a start. When
+all 20 have proven the account, the start returns `409` with reason `retry`.
+A start also deletes that device's attempts that expired or failed more than
+24 hours ago, so the table stays small.
+
+The key alone can therefore not reserve the ceremony. Someone who holds a copy
+of the key and no access to the Google account cannot finish a rejoin. They can
+slow the owner's rejoin only by starting attempts from many addresses faster
+than the owner can sign in. A copied key is a compromised key, and the owner's
+remedy is to block the device and set it up as a new one.
 
 #### Routes
 
@@ -464,11 +477,16 @@ At confirmation it stores, and hashes into `confirmation`:
 
 - `attempt_id` and `removal_digest`
 - the account link's `link_id`, authority kind (`controller_attestation`,
-  `qualified_device_claim` or `device_claim`) and revision
+  `qualified_device_claim` or `device_claim`) and `generation`, the integer
+  that `coordinator_auth_account_links` already increments for each new link of
+  an Identity
 - the destinations, each as `group_id` and the Identity-group grant `revision`,
-  or null where the Identity has no grant row for that group
+  or null where the Identity has no grant row for that group and the own
+  tombstone of that group records the binding's Identity
 - the groups named by an own tombstone that are not destinations, each with its
-  reason: `archived`, `grant_revoked` or `excluded`.
+  reason: `archived`, `grant_revoked`, `excluded` or `identity_changed`. The
+  last one is a group with no grant row whose own tombstone records another
+  Identity or none.
 
 `confirmation_view` returns the destinations and the non-destination groups
 with their reasons, so the device can show the same list the browser showed.
@@ -482,8 +500,13 @@ with their reasons, so the device can show the same list the browser showed.
    a live account link under the trusted coordinator ID. The link's Identity
    must equal the binding's `identity_id`. The link must be attestation-backed,
    a qualified device-claim link, or a bare device-claim link. Its liveness is
-   decided as for rebinding, including its configuration and revocation
-   barriers.
+   the full lifecycle check in `authLinkLiveGenerationSql`: the link is the
+   current generation, it is neither revoked nor ended, and no link or
+   connection of that Identity was ever revoked. A revoked earlier link of the
+   Identity therefore refuses the rejoin even when a newer link is current.
+   The rebind ceremony's own link check is narrower and is not the model here.
+   The same check runs again at confirmation and in the winning finalize
+   statement.
 3. The confirmation page names the Google account, the Identity, the device
    with its key fingerprint, the groups the device returns to, and the groups
    it does not return to with the reason. It states that Team and Project
@@ -496,11 +519,21 @@ with their reasons, so the device can show the same list the browser showed.
 
 #### Finalize
 
+The browser steps inherit every rule of this document's browser ceremony
+without change: the browser binder cookie and the transaction hash are matched
+at the callback and at confirmation, state, nonce and PKCE bind the Google
+round trip, form posts are checked for origin and CSRF, and the loopback
+address is a literal loopback. The attempt records the coordinator ID, origin,
+issuer and `auth_config_revision` at start, and every later step requires them
+to equal the coordinator's current values.
+
 Finalize verifies the signature against the tombstone's stored `public_key`,
 then runs one SQLite immediate transaction or one atomic D1 batch. A single
 winning statement moves the attempt from `confirmed` to `finalized` only when
 all of these still hold, each compared with the pinned value:
 
+- the attempt's `created_at_ms <= now < expires_at_ms`, and its coordinator ID,
+  origin, issuer and `auth_config_revision` equal the current configuration
 - the completion secret hash and the confirmation hash
 - the binding row, and the absence of any other binding for the device ID or
   key
@@ -508,10 +541,12 @@ all of these still hold, each compared with the pinned value:
   `removal_seq` values, all still active, and no active tombstone with a higher
   `removal_seq` that matches the device ID or key
 - no active tombstone has the device ID with another key
-- the account link: same `link_id`, kind and revision, still live
+- the account link: same `link_id`, kind and `generation`, and live under the
+  full lifecycle check
 - every destination: the group is not archived, the exclusion check passes, and
   the grant row has the pinned revision and is active, or no grant row exists
-  where none was pinned
+  where none was pinned and the own tombstone of that group records the
+  binding's Identity
 - at least one destination
 - no revocation subject matches the device ID or key
 - fewer than three rejoin audit rows for the Identity in the last 24 hours.
@@ -555,10 +590,23 @@ The device clears its local removed state, resumes coordinator refreshes, and
 pairs again through the paths a newly enrolled device uses. It keeps its
 memories and sync history.
 
-`GET /v1/peers` and `GET /v1/admin/devices` add `rejoined_at_ms` to an
-enrollment that a rejoin wrote within the last seven days. Devices shows such a
-device as "Rejoined by Google sign-in", next to Remove and Block. This is the
-notice ADR 0005 Section 8 requires for rebinding, applied to rejoin.
+Two channels tell other devices about a rejoin. Neither expires with time, so
+a device that was offline still learns of it. This is the notice ADR 0005
+Section 8 requires for rebinding, applied to rejoin.
+
+- `GET /v1/peers` and `GET /v1/admin/devices` add `rejoined_at_ms` to an
+  enrollment that a rejoin wrote, for as long as that enrollment exists.
+  Devices shows such a device as "Rejoined by Google sign-in", next to Remove
+  and Block, until the user dismisses the notice on that device.
+- `GET /v1/auth/rejoin-events?group_id=...&after=<event cursor>` is a signed
+  route for an enrolled device that has its own ownership binding. It returns
+  the rejoin audit events of the binding's Identity across all groups, oldest
+  first, at most 50, each with `event_id`, `device_id`, `group_ids` and
+  `finalized_at_ms`, and the cursor for the next read. A device stores the last
+  cursor it has shown. A caller without an ownership binding gets an empty
+  list, because the Identity on an enrollment alone is not proof.
+
+Both are display evidence and authorize nothing.
 
 #### Storage
 

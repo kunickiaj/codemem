@@ -670,9 +670,13 @@ and one of these holds for the binding's Identity in that group under the
 coordinator ID:
 
 - an active Identity-group grant exists
-- no Identity-group grant row exists, in any status.
+- no Identity-group grant row exists, in any status, and the own tombstone of
+  that group records an `identity_id` equal to the binding's Identity.
 
-A group with a revoked grant row is never a destination. The owner accepted the
+A group with a revoked grant row is never a destination. A group with no grant
+row whose tombstone records another Identity, or none, is not a destination
+either. A device that changed Identity after it left a group does not return to
+that group without an active grant for its new Identity. The owner accepted the
 second case on 2026-11-17. A group without a grant row has no coordinator record
 of which Identities belong to it, so the coordinator cannot tell that a person
 left such a group, and the rejoin restores the enrollment the removal took.
