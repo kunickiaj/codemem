@@ -4,6 +4,7 @@
 
 **Status:** Accepted for product boundaries; protocol and implementation gates remain open.
 Amended 2026-10-26 by [Section 8](#8-sign-in-sets-the-devices-identity-amended-2026-10-26).
+Amended 2026-11-17 by [ADR 0007](0007-one-sync-and-sharing-model-per-concept.md) Decision 5: a removed device can return, and Section 8 gains the rejoin ceremony.
 
 **Amends:** [ADR 0004](0004-authenticated-identity-and-live-relay-boundaries.md) (specific decisions listed below)
 
@@ -131,6 +132,10 @@ that ceremony, not from the login.
 
 - Revoked memberships, revoked devices, and exclusions stay as tombstones.
   Re-adding needs a new explicit decision, not an enrollment upsert.
+- (Amended 2026-11-17 by ADR 0007 Decision 5.) Removing a device is a fourth
+  action. It takes the device out of every group and leaves a removal record
+  that a new invitation, or the owner's confirmed sign-in on that device, can
+  end. A revoked device stays revoked.
 - Where required auth applies, legacy enrollment must not silently restore
   access that a tombstone removed (no silent legacy downgrade).
 - Already-delivered copies are not erased remotely. A peer that learns of a
@@ -212,6 +217,13 @@ healthy.
   operator-only consumer rule in the account-link protocol for this ceremony
   only. A device-claim link still can't authorize fresh-device enrollment,
   invitations, or grants without the existing qualification.
+- (Amended 2026-11-17.) An active device-claim link may also authorize the
+  rejoin of a removed device, and only of the device that the ownership
+  binding already names. The
+  [account-link protocol](../contracts/coordinator-auth-protocol.md#device-rejoin-routes)
+  defines that ceremony. It needs the same three proofs as rebinding, with the
+  device key checked against the removal record because the device has no
+  enrollment.
 - The device then switches locally: the local actor and this device's binding
   change in one transaction, then the configured Identity follows. The old
   local actor stops being the local actor but stays an active, unmerged

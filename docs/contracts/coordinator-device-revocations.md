@@ -632,9 +632,10 @@ owner sign-in below.
 
 A device with a coordinator ownership binding lifts its removal through a
 ceremony that follows the rebind ceremony in the
-[account-link protocol](coordinator-auth-protocol.md). The wire protocol is not
-written yet. It is added to that contract and security-reviewed before any code.
-This section fixes what the ceremony must prove and what it writes.
+[account-link protocol](coordinator-auth-protocol.md). Its wire protocol is
+[Device rejoin routes](coordinator-auth-protocol.md#device-rejoin-routes) in
+that contract. This section fixes what the ceremony must prove and what it
+writes.
 
 All of these hold in the statements that write:
 

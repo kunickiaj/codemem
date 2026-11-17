@@ -323,12 +323,11 @@ ceremony lifts the removal. Each rejoin appears on the Identity's other
 devices at their next sync with a Remove action, and rejoins are limited to a
 small number per Identity per day, as rebinding is.
 
-This ceremony does not exist yet. The closest code is the rebind ceremony,
-which changes existing enrollments and verifies against the enrolled key. Its
-wire protocol belongs in the
-[account-link protocol](../contracts/coordinator-auth-protocol.md) and needs
-its own security review before any code, as ADR 0005 requires for every new
-ceremony.
+This ceremony does not exist in code yet. The closest code is the rebind
+ceremony, which changes existing enrollments and verifies against the enrolled
+key. Its wire protocol is
+[Device rejoin routes](../contracts/coordinator-auth-protocol.md#device-rejoin-routes)
+in the account-link protocol.
 
 A device that signs in for the first time, with no binding and no tombstone,
 is the fresh-device enrollment of ADR 0005 Section 2. Today that exists only
@@ -714,13 +713,11 @@ decided both on 2026-11-17.
    grant.
 
 Decision 7 adds a second use of a plain device-claim link. ADR 0005 Section 8
-and the "Operator-only consumers" rule in the account-link protocol name
-rebinding as the only one. Both need that sentence when the sign-in protocol
-is written.
+and the "Operator-only consumers" rule in the account-link protocol were
+amended on 2026-11-17 to name it.
 
-ADR 0007 Decision 5 says a removed machine rejoins by accepting a new
-invitation. Decision 1 above adds sign-in for a device of a verified Identity.
-The ADR needs that sentence in its own change.
+ADR 0007 Decision 5 and ADR 0005 Sections 5 and 8 were amended on 2026-11-17
+to say that a removed device of a verified Identity rejoins by signing in.
 
 ## Implementation order
 
