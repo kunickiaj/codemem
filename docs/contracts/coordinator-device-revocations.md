@@ -6,6 +6,11 @@ migration is enabled. Existing public writers and effective authorization reads
 check revocation as inventoried below. Durable handler tests cover SQLite and
 native D1; mounted runtime tests cover trusted context, transport, and store lifetime.
 
+**Planned for 0.50:** [Device removals](#device-removals-planned-for-050) specifies
+a removal that a new invitation can lift, next to the permanent revocation this
+document already describes. That section is a reviewed design and is not
+implemented. Every other section describes current behavior.
+
 ## Subjects and scope
 
 `coordinator_device_revocations` keeps immutable subjects of two kinds:
@@ -39,7 +44,8 @@ The method is a trusted internal capability, not an authenticated endpoint.
 Future management callers must authorize the operator separately; an enrollment
 actor hint is not sufficient ownership proof. Removal of the current tuple
 prevents creation and exact retry. Already-removed device evidence needs a
-separately reviewed path; retained records can still be queried.
+separately reviewed path; retained records can still be queried. The planned
+path is [revocation from a removal tombstone](#revocation-from-a-removal-tombstone).
 Legacy identifiers longer than the 256-character subject limit remain eligible
 for signed admission, but this primitive cannot create their device-ID tombstone.
 Management must define a reviewed key-only or equivalent path before claiming
@@ -385,6 +391,235 @@ Other failures log one sync daemon warning until the result changes. Retained
 memory retirement trust stays, so retirement controls can still ask the revoked
 device to delete retired memories. Project membership authority,
 removed-device ownership evidence, and public revocation management remain separate.
+
+No release contains this check. It landed after 0.49.1, so the planned section
+below changes its reply before the first release that ships it.
+
+## Device removals (planned for 0.50)
+
+**Status:** design for owner approval, from
+[the removal design note](../plans/2026-11-16-device-remove-and-block-design.md).
+Nothing in this section is implemented. The
+[test plan](../plans/2026-11-16-device-remove-and-block-test-plan.md) lists the
+tests that come first.
+
+A removal deletes a device's enrollments and records why they are gone. Unlike a
+revocation subject, a removal can be lifted, and only by an invitation created
+after it. Revocation always takes precedence over removal.
+
+### Removal tombstones
+
+`coordinator_device_removals` holds one row for each deleted enrollment:
+
+- `removal_seq`: an `INTEGER PRIMARY KEY AUTOINCREMENT`. It is the only value
+  that orders a removal against an invitation.
+- `removal_id`: server-generated, shared by the rows of one removal request.
+- `group_id`, `device_id`, `public_key`, `fingerprint`: the exact enrollment
+  tuple at removal, including a disabled enrollment.
+- `key_id`: the canonical Ed25519 key ID, or null for an opaque key.
+- `identity_id`, `display_name`, `actor_id`: listing and audit metadata. None of
+  them is ownership proof.
+- `removed_at`: server time for display. No decision reads it.
+- `lifted_at`, `lifted_by_invite_id`: null while the tombstone is active.
+
+A partial unique index allows one active tombstone for each `group_id` and
+`device_id`. Triggers reject every delete, and every update except one that sets
+both lift columns on a row where both are null. Tombstones apply to the whole
+coordinator database, like revocation subjects, and have no expiry.
+
+A tombstone **matches** a device ID and key when its `device_id` equals the
+device ID, or its `key_id` equals the key's canonical ID. For an opaque key the
+exact key text is compared instead.
+
+`coordinator_invites.issued_after_removal_seq` is set by the statement that
+inserts the invitation to `COALESCE(MAX(removal_seq), 0)` over all tombstones.
+Invitations that predate the column keep null.
+
+### Removal operation
+
+`removeDeviceEnrollments` is the only store operation that deletes an enrollment.
+In one SQLite immediate transaction, or one D1 batch whose statements each pin
+the previewed tuples, it:
+
+1. checks that the enrollments of the named device IDs still equal the previewed
+   tuples, and writes nothing otherwise
+2. inserts one tombstone for each enrollment
+3. deletes each enrollment and its presence row
+4. deletes reciprocal approvals that name the device
+5. revokes each active scope membership of the device through the existing
+   membership revocation, which advances the epoch and writes the audit row
+6. revokes unexpired bootstrap grants that name the device as seed or worker
+7. marks the device's pending join requests denied.
+
+A backend exception or an incomplete result returns the fixed error
+`device_removal_incomplete`. The outcome may be unknown, and the caller reads the
+removal listing before it retries. Step 5 is required for correctness. A
+membership left active would authorize again when the device re-enrolls, and peer
+caches refuse a member that returns at the epoch at which they recorded its
+revocation.
+
+Account links, browser sessions, Identity-group grants, ownership bindings,
+invitations, and stored memories are not rewritten.
+
+### Removal routes
+
+`POST /v1/admin/devices/removal-preview` and `POST /v1/admin/devices/removal`
+use the same admin-secret verification and rate limits as the other
+`/v1/admin/devices` routes. They do not require the `deviceRevocation` operator
+context.
+
+- Preview accepts exactly `{ "device_ids": [...] }` with one to eight device
+  IDs under the controller identifier rules. It reads every enrollment of those
+  IDs in every group, archived or not. It returns `404 removal_target_not_enrolled`
+  when none exists, `409 removal_target_conflict` when the enrollments carry more
+  than one canonical key or differing opaque key text, and
+  `409 removal_target_too_large` above 50 enrollments. Success is
+  `{ state: "ready", version: 1, device_ids, key_id, enrollments, expected_digest }`.
+  Each enrollment entry has `group_id`, `device_id`, `fingerprint`,
+  `display_name`, and `identity_id`. Preview writes nothing.
+- The SHA-256 digest binds an action and version domain, the sorted device IDs,
+  and each sorted enrollment tuple with its canonical key ID. It is not a secret
+  or an access token.
+- Commit accepts exactly `device_ids` and `expected_digest`. A mismatch returns
+  `409 removal_preview_stale`. Success is
+  `{ state: "removed", version: 1, removal_id, removal_seq, device_ids, key_id, removals }`,
+  where each entry has `group_id`, `device_id`, and `removal_seq`.
+- `GET /v1/admin/devices/removals` returns
+  `{ version: 1, items, truncated }` with at most 500 active tombstones, newest
+  first. Items carry `removal_id`, `removal_seq`, `group_id`, `device_id`,
+  `fingerprint`, `key_id`, `display_name`, `identity_id`, and `removed_at`. They
+  omit the public key.
+- A coordinator whose schema lacks the table returns
+  `503 device_removal_unavailable` from all three routes and from the legacy
+  route below.
+
+The legacy `POST /v1/admin/devices/remove` keeps its `{ group_id, device_id }`
+body and its reply. It calls the same operation for that one enrollment without
+a preview.
+
+### Removal checks on enrollment writers
+
+Every statement that creates or enables an enrollment carries a removal check
+next to its revocation check: direct enrollment and upsert, `setDeviceEnabled`,
+recipient and Project invitation consumption and their bound retries, join
+approval, and owner enrollment. Rebinding and device-claim binding change
+existing enrollments only and gain no check.
+
+- A statement with no invitation, or with an enrollment-only invitation or join
+  request, is denied when an active tombstone matches the device ID or key and
+  either its `group_id` is the group being written or no enrollment in any
+  group has that device ID or key text.
+- A statement that acts on a `team_member`, `add_device`, or Project share
+  invitation is denied when any tombstone, active or lifted, in any group, that
+  matches the device ID or key has a `removal_seq` above the
+  invitation's `issued_after_removal_seq`. A null value is below every
+  `removal_seq`.
+- A statement that acts on an invitation with a recorded inviter device is
+  denied when any tombstone that matches the inviter's device ID or key has a
+  `removal_seq` above the invitation's value. This applies to every acceptor.
+
+Denial is `403 device_removed`, except that the inviter case returns the
+existing invalid-invitation error for that invitation kind and account-link
+routes keep their masked denial. `device_revoked` takes precedence when both
+apply. A zero-row write never becomes success through a later read.
+
+### Lifting a removal
+
+An acceptance is a **lift** when an active tombstone in any group matches the
+joining device ID or key and the checks above pass. A lift also requires:
+
+- the invitation kind is `team_member`, `add_device`, or Project share
+- the invitation is unconsumed. A retry of a consumed invitation never lifts.
+- a recorded inviter device is currently enrolled and enabled in the
+  invitation's group, and no revocation subject matches it
+- every active tombstone whose `device_id` equals the joining device ID records
+  the joining key
+- the `POST /v1/join` request carries the signed-request headers, the header
+  device ID equals the body `device_id`, and the signature verifies against the
+  body `public_key` within the verifier's freshness window. The signature covers
+  the body, which contains the token.
+
+One SQLite transaction or one atomic D1 batch consumes the invitation, writes the
+enrollment, and sets `lifted_at` and `lifted_by_invite_id` on each active
+tombstone of the invitation's group that matches the joining device ID or key.
+Tombstones of other groups stay active. On D1 each of those
+statements repeats the checks, and a later repair or recovery commit never
+lifts. An acceptance that passes the checks and fails the lift requirements
+returns `403 device_removed` and consumes nothing.
+
+The signed join records no nonce, because the device has no enrollment to admit
+it against. A repeated request finds the invitation consumed, and a consumed
+invitation cannot lift.
+
+A lift enrolls the device in the invitation's group only. It restores no scope
+membership, grant, or enrollment in another group. Enrollment-only invitations
+and join requests never lift.
+
+The existing ownership check still refuses a device that has a coordinator
+ownership binding (`device_ownership_requires_verified_identity`). Whether a
+lift may admit such a device through an `add_device` invitation for the
+binding's own Identity is an open decision in the design note. Until it is
+decided, this contract does not change that check.
+
+### Removed peers in the pinned-peer check
+
+`POST /v1/peers/revocations` keeps its request rules, with one change: an entry
+may omit `public_key`, and then only the device ID is checked. The reply becomes
+`{ "version": 1, "revoked": [...], "removed": [...], "removal_seq": <integer> }`.
+
+- A requested entry is in `removed` when an active tombstone matches it and no
+  enrollment in any group has that device ID, the requested key text, or the
+  tombstone's key text. An entry in `revoked` is never also in `removed`.
+- `removal_seq` is the highest `removal_seq` in the table, or 0.
+- The reply carries no tombstone evidence, actor, or time. Any enrolled device
+  can learn whether a device ID or key it names is removed anywhere in the
+  coordinator database.
+- The per-request read stays within D1's query budget for 25 entries.
+
+A client requires both arrays and the integer. A reply without them is invalid,
+and the client keeps every pairing. For each `removed` ID that it sent, the
+client deletes the pairing and both replication cursor tables and sets the
+device's `identity_devices.status` to `removed`, in one transaction. It retains
+memory retirement trust and records no retired alias. For each `revoked` ID it
+does what it does today and also ends the binding. After applying a reply it
+stores `removal_seq` and advertises it as `applied_removal_seq` in the
+`capabilities` of its next presence update, with the sync feature
+`peer_removal_check`.
+
+### Signed requests from a removed device
+
+When a signed request names a group and device ID with no enrollment and an
+active tombstone, the coordinator verifies the signature against the tombstone's
+`public_key`. A valid signature returns `403 device_removed`. Anything else
+returns `unknown_device` as today, so only the key holder learns of the removal.
+No nonce is recorded and no route handler runs.
+
+### Revocation from a removal tombstone
+
+The operator preview and commit keep their request bodies. When no enrollment
+exists for the requested group and device ID, they read the active tombstone for
+that pair and use its four-field tuple as evidence. `createDeviceRevocation`
+accepts that tuple when the active tombstone still holds it. The digest
+additionally binds the evidence kind, `enrollment` or `removal_tombstone`, and a
+change between preview and commit returns `revocation_preview_stale`. A lifted
+tombstone is never evidence, and an enrollment in the requested group always
+takes precedence over a tombstone. The Ed25519 requirement and the two-subject result
+are unchanged.
+
+### Compatibility
+
+- A coordinator without these routes returns 404. A client then reports that the
+  coordinator must be updated and changes nothing. It never substitutes the
+  legacy enrollment delete.
+- A peer that predates the check never reads `removed`. It stops exchanging
+  coordinator-managed scopes with the removed device at its next authorization
+  refresh, because the device has no enrollment and its memberships are revoked.
+  Its direct pairing remains. Administrators see such peers because their
+  presence advertises no `applied_removal_seq`.
+- A removed device on a version that cannot sign `/v1/join` cannot lift its
+  removal.
+- This adds no push delivery and no offline expiry. A peer that cannot reach the
+  coordinator keeps its pairing until a later check succeeds.
 
 ## Current scope authorization foundation
 
