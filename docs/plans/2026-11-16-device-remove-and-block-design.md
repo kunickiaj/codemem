@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). A second security review then changed five points. One of them narrows decision 1 and waits for the owner's confirmation. Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). A second security review then changed five points, and the owner replaced decision 1 with rejoin by Google sign-in. Three details of that ceremony wait for the owner's confirmation, and it has had no security review. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -21,7 +21,8 @@ The unreleased "Retire device" action becomes two actions in Devices.
   removal tombstone for each one. Other devices delete their pairing and sync
   progress with it and end its Identity binding at their next coordinator
   refresh. The same machine returns by accepting an invitation created after
-  the removal.
+  the removal. A machine that is signed in to a Google account returns by
+  signing in on it again, with no invitation.
 - **Block device permanently** is today's revocation of the device ID and key.
   Nothing lifts it. It also works on a device that was removed first.
 
@@ -29,7 +30,8 @@ Remove needs one new coordinator table, one column each on invitations and
 enrollments, triggers on enrollments, two admin routes, one admin listing, and
 two more fields in the lookup that peers already run at each refresh. Block
 needs one change: it accepts a removal tombstone as evidence when the
-enrollment is gone.
+enrollment is gone. Rejoining by Google sign-in needs a new ceremony, modeled
+on the existing rebind ceremony.
 
 Two passes of an independent security review found nine ways around earlier
 drafts. Their fixes are part of this text and are listed under
@@ -67,7 +69,7 @@ enrollment.
 | `key_id` | The canonical Ed25519 key ID. Null for a key that is not SSH Ed25519. |
 | `identity_id`, `display_name`, `actor_id` | Listing and audit only. None of them is proof of ownership. |
 | `removed_at` | Server time, for display. Never used to decide access. |
-| `lifted_at`, `lifted_by_invite_id` | Null while the tombstone is active. Set once, together, when an invitation lifts it. |
+| `lifted_at`, `lifted_by_invite_id`, `lifted_by_attempt_id` | Null while the tombstone is active. A lift sets the time and one of the other two, once: the invitation, or the sign-in attempt. |
 
 At most one active tombstone exists for a group and device ID. Rows are never
 deleted, and the only allowed update sets the two lift columns once. Triggers
@@ -228,19 +230,9 @@ authorize a later write.
    token, so the signature belongs to this invitation.
 6. **Not blocked.** No revocation matches the device ID or key. This existing
    check is evaluated first.
-7. **For a device linked to a Google account, its own Identity.** A device
-   with a coordinator ownership binding is refused by every invitation path
-   today. When it lifts a removal, it is accepted only with an `add_device`
-   invitation whose target Identity is the Identity in the binding, and when
-   one binding row holds both the joining device ID and the joining key. The
-   inviter device must have its own ownership binding to that same Identity.
-   An enrollment that merely carries the Identity is not enough, because a
-   Project invitation lets the accepting device name any Identity for its
-   enrollment. Both bindings must belong to the coordinator ID the request
-   runs under, and a coordinator with no trusted coordinator ID refuses this
-   case. The enrollment is written with the binding's Identity. A
-   `team_member` or Project invitation, or a join that is not a lift, stays
-   refused for such a device.
+7. **No Google account link.** A device with a coordinator ownership binding
+   is refused by every invitation path, as it is today. It rejoins by signing
+   in, as the next section describes.
 
 When they hold, one transaction consumes the invitation, writes the enrollment
 in the invitation's group, and sets `lifted_at` and `lifted_by_invite_id` on
@@ -275,6 +267,56 @@ Three rules apply outside lifting.
   enrollment, and it is refused when an active tombstone of the same group
   matches that enrollment.
 
+### Rejoining by signing in with Google
+
+A device that was signed in to a Google account has an ownership binding: an
+immutable coordinator row that ties its device ID and key to one Identity. The
+owner decided that such a device needs no invitation to return. Its owner
+signs in with Google on that device and confirms. This follows ADR 0005
+Section 2, where a verified owner adds a device without an administrator or a
+second device.
+
+The ceremony reuses the three proofs of the existing rebind ceremony in ADR
+0005 Section 8, bound to one short-lived attempt:
+
+1. **The account.** A Google sign-in bound to the attempt, whose issuer and
+   subject resolve to the active account link of the Identity in the device's
+   ownership binding.
+2. **The key.** A signature over the attempt by the device key. The
+   coordinator verifies it against the public key stored in the device's
+   tombstone, whose canonical key ID equals the binding's.
+3. **The confirmation.** A browser page that names the Google account, the
+   Identity, the device, and the groups it returns to.
+
+The coordinator also requires that one binding row holds both the device ID
+and the key, that the binding belongs to the coordinator ID the request runs
+under, that an active tombstone records that same device ID and key, and that
+no block matches. A coordinator with no trusted coordinator ID refuses.
+
+One transaction then finalizes the attempt, sets the lift columns on every
+active tombstone that matches the device ID or key, writes an enrollment with
+the binding's Identity in each unarchived group that one of those tombstones
+names, and writes an audit event. The device returns to the groups it was
+removed from and to no others. Scope memberships are not restored. The
+reconciler grants what current recipient policy gives that Identity.
+
+Signing in alone changes nothing, as ADR 0005 requires. Only the confirmed
+ceremony lifts the removal. Each rejoin appears on the Identity's other
+devices at their next sync with a Remove action, and rejoins are limited to a
+small number per Identity per day, as rebinding is.
+
+This ceremony does not exist yet. The closest code is the rebind ceremony,
+which changes existing enrollments and verifies against the enrolled key. Its
+wire protocol belongs in the
+[account-link protocol](../contracts/coordinator-auth-protocol.md) and needs
+its own security review before any code, as ADR 0005 requires for every new
+ceremony.
+
+A device that signs in for the first time, with no binding and no tombstone,
+is the fresh-device enrollment of ADR 0005 Section 2. Today that exists only
+as an operator-run CLI flow. Offering it in the Viewer is separate work and
+not part of this design.
+
 ### Why a stale or replayed invitation cannot lift a removal
 
 | Attempt | What stops it |
@@ -300,9 +342,12 @@ Three rules apply outside lifting.
   states it for Block. The Block confirmation says so when unused invitations
   exist, and they can be revoked in Sharing.
 - An add-device invitation is created by any enrolled device of the same
-  Identity. A person with a second enrolled device can therefore bring a
-  removed device back without an administrator. To stop a person, remove that
-  person from the Team.
+  Identity, and a person with a Google account can sign in on a removed
+  device. A person can therefore bring their own removed device back without
+  an administrator. To stop a person, remove that person from the Team.
+- A Google-linked device whose Identity no longer has an active account link
+  can neither sign in to rejoin nor use an invitation. Its holder sets it up
+  as a new device.
 
 ## 2. What ends the Identity binding
 
@@ -479,7 +524,7 @@ without the user seeing it.
 | Older peer, 0.50 coordinator | The older peer never runs the lookup. At its next permission refresh it stops exchanging memories in coordinator-managed Projects with the removed device, because the coordinator no longer lists that device as a member. Its direct pairing stays and still carries memories outside those Projects. The Viewer names this peer (below). |
 | Older Viewer or CLI calling a 0.50 coordinator over HTTP | Its per-group Remove now writes a tombstone. When the last enrollment of the key goes, 0.50 peers drop their pairings. Its Enable and enroll cannot bring a removed device back. |
 | Older CLI opening a migrated coordinator database directly | The triggers refuse its enroll once any tombstone exists, because it supplies no `key_id`. They refuse its remove, because it writes no tombstone. Both fail with a constraint error and change nothing. |
-| Older codemem on the removed machine | It cannot sign a join request, so it cannot lift its removal until it updates. The join fails with `device_removed`. |
+| Older codemem on the removed machine | It cannot sign a join request and has no sign-in rejoin, so it cannot lift its removal until it updates. A join fails with `device_removed`. |
 | Coordinator schema not yet migrated, or `key_id` not yet filled for every enrollment | The removal routes return `503 device_removal_unavailable`. They never delete an enrollment without a tombstone. On D1 the migration and the `key_id` fill are applied before the Worker that uses them. An older Worker keeps enrolling devices on the migrated schema until the first removal is recorded. |
 
 **Showing who has applied a removal.** Each 0.50 device advertises
@@ -501,16 +546,13 @@ Remove and of Block.
 - Body: "Your devices stop syncing with {name}. Devices that are online stop
   within a few minutes. A device that is offline stops when it next connects.
   Memories already on {name} stay there, and memories it already sent stay on
-  your devices. Your other devices keep syncing with each other. To bring
-  {name} back, create a new invitation in Sharing and accept it on {name}."
-- Shown only for a device linked to a Google account, when another device is
-  signed in to that account: "{name} is signed in to a Google account. To
-  bring it back, create the invitation on another device that is signed in to
-  the same account."
-- Shown only for a device linked to a Google account, when no other device is
-  signed in to that account: "{name} is the only device signed in to its
-  Google account. If you remove it, it cannot be added back until another
-  device signs in to that account."
+  your devices. Your other devices keep syncing with each other."
+- Last sentence of the body, for a device with no Google account link: "To
+  bring {name} back, create a new invitation in Sharing and accept it on
+  {name}."
+- Last sentence of the body, for a device linked to a Google account: "To
+  bring {name} back, sign in with Google on {name}. Whoever can sign in to
+  that account on {name} can bring it back."
 - Shown only when it applies: "{n} devices run an older version of codemem and
   keep syncing with {name} until they update: {list}."
 - Link under the body: "Lost or stolen? Block it permanently instead."
@@ -553,8 +595,12 @@ Remove and of Block.
   {name}."
 - Older coordinator: "This coordinator needs an update before it can remove a
   device. Nothing was changed."
-- On the removed device: "This device was removed from sharing. Its memories
-  are still here. To rejoin, accept a new invitation."
+- On the removed device, with no Google account link: "This device was removed
+  from sharing. Its memories are still here. To rejoin, accept a new
+  invitation."
+- On the removed device, linked to a Google account: "This device was removed
+  from sharing. Its memories are still here. To rejoin, sign in with Google."
+  The button is **Sign in to rejoin**.
 - Unknown outcome: "The coordinator didn't confirm. Refresh Devices to see
   whether {name} was removed before you try again."
 
@@ -564,22 +610,23 @@ The device inventory state `retired` keeps its internal name and is shown as
 
 ## Owner decisions
 
-The owner accepted these on 2026-11-16.
+The owner decided these on 2026-11-16.
 
-1. **Devices linked to a Google account can rejoin by invitation.** A device
-   with a coordinator ownership binding is refused by the invitation paths
-   today (`device_ownership_requires_verified_identity`). The source
-   inspection for this design found no other path that enrolls such a device
-   once its enrollments are gone, and implementation starts by confirming
-   that. Condition 7 in Section 1 opens one path for a lift. The alternative
-   was a new Google sign-in ceremony on the removed device.
+1. **Devices linked to a Google account rejoin by signing in.** A device with
+   a coordinator ownership binding is refused by the invitation paths today
+   (`device_ownership_requires_verified_identity`). The source inspection for
+   this design found no path that enrolls such a device once its enrollments
+   are gone, and implementation starts by confirming that. The owner first
+   accepted an invitation for the device's own Identity. The second security
+   review showed that the inviter's authority could be forged, and its fix
+   left a person whose only signed-in device was removed with no way back. The
+   owner then chose sign-in: a device of a verified Identity needs no
+   invitation. Section 1 describes the ceremony.
 
-   The second security review narrowed this after the owner accepted it. The
-   inviter must itself be signed in to the same Google account, which the
-   coordinator sees as the inviter's own ownership binding. A person whose
-   only signed-in device is the removed one cannot bring it back until another
-   of their devices signs in. The Remove confirmation says so. This narrowing
-   waits for the owner's confirmation.
+   Three details of that ceremony are this design's choices and wait for the
+   owner's confirmation. The device returns to the groups it was removed from.
+   A device with a Google account link cannot use an invitation at all. The
+   notice on other devices and the daily limit match rebinding.
 2. **Any invitation created after the removal can bring a device back.** That
    includes an add-device invitation from the same person's other device. The
    alternative was to require an invitation created with the admin secret,
@@ -597,7 +644,11 @@ The owner accepted these on 2026-11-16.
 5. **Remove refuses the device you are using.** ADR 0007 defers the signed
    self-withdrawal route.
 6. **A removed machine must run 0.50 to rejoin,** because lifting requires a
-   signed join request.
+   signed join request or the sign-in ceremony.
+
+ADR 0007 Decision 5 says a removed machine rejoins by accepting a new
+invitation. Decision 1 above adds sign-in for a device of a verified Identity.
+The ADR needs that sentence in its own change.
 
 ## Implementation order
 
@@ -606,12 +657,16 @@ The owner accepted these on 2026-11-16.
    the enrollment requirement in the membership statement, on SQLite and D1.
 2. Coordinator: removal routes, listing, lookup reply, `device_removed` for a
    removed device's signed requests, signed join.
-3. Core: the one pairing-removal function, binding end, lookup handling, and
+3. Rejoin by sign-in: the protocol in the account-link contract, its security
+   review, then the coordinator ceremony and the Viewer flow. Until this step
+   ships, Remove tells the user that a Google-linked device cannot be brought
+   back yet.
+4. Core: the one pairing-removal function, binding end, lookup handling, and
    `applied_removal_seq`.
-4. Block: tombstone evidence.
-5. Viewer and CLI: the two actions, removed-device list, copy, and removal of
+5. Block: tombstone evidence.
+6. Viewer and CLI: the two actions, removed-device list, copy, and removal of
    the old actions.
-6. User guide and CLI reference.
+7. User guide and CLI reference.
 
 Each step starts from the tests in the test plan. Nothing here is deployed to
 a live coordinator without its own approval.
@@ -643,14 +698,16 @@ It did not inspect every account-link writer or run any test.
 
 ### Second pass
 
-The second pass read only the changes from the first pass and condition 7. It
-confirmed that the fixes for the first three findings close them. It found
-five further paths, and all five changed this design.
+The second pass read only the changes from the first pass and the rule the
+owner had then accepted for Google-linked devices: an add-device invitation
+for the device's own Identity. It confirmed that the fixes for the first three
+findings close them. It found five further paths, and all five changed this
+design.
 
 | Finding | Severity | Change |
 | --- | --- | --- |
-| Condition 7 required only that the inviter's enrollment carry the Identity. A Project invitation lets the accepting device name any Identity, so the holder of a removed Google-linked device could enroll a fresh device under that Identity and invite the removed one back. | High | The inviter needs its own ownership binding to the Identity. |
-| Condition 7 did not compare coordinator IDs, so a binding kept from another coordinator ID could authorize the lift. | Medium | Both bindings must belong to the request's coordinator ID. |
+| The invitation rule for Google-linked devices required only that the inviter's enrollment carry the Identity. A Project invitation lets the accepting device name any Identity, so the holder of a removed Google-linked device could enroll a fresh device under that Identity and invite the removed one back. | High | The invitation rule was withdrawn. A Google-linked device rejoins by signing in, which has no inviter. |
+| The same rule did not compare coordinator IDs, so a binding kept from another coordinator ID could authorize the lift. | Medium | The sign-in ceremony requires the binding to belong to the request's coordinator ID. |
 | A lift ends tombstones in every group. A device that rejoined one group could then use an enrollment-only code from before its removal to enter another. | Medium | Condition 2 applies to every kind of invitation. |
 | The triggers missed an update that moves an enrollment to another group, and SQLite's replace-on-conflict, which deletes a row without running its delete trigger. | Medium | The triggers cover the group column and refuse colliding inserts and updates. 0.50 writers stop using upserts on enrollments. |
 | A peer could advertise a removal as applied and then regain the pairing from an older peer list applied by another process, or gain one the lookup never asked about. | Medium | A local counter withdraws the advertised number whenever a pairing or binding is added. |
@@ -659,5 +716,6 @@ The second pass also noted that the coordinator does not know whether an
 Identity was merged or deactivated on a device. It could not show access from
 that, and this design does not change it.
 
-No review has checked the five changes from the second pass. The reviewer ran
-no tests of this design, because nothing is implemented.
+No review has checked the changes from the second pass or the sign-in
+ceremony, which the owner chose after it. The reviewer ran no tests of this
+design, because nothing is implemented.

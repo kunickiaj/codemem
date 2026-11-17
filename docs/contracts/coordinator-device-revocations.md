@@ -404,8 +404,9 @@ Nothing in this section is implemented. The
 tests that come first.
 
 A removal deletes a device's enrollments and records why they are gone. Unlike a
-revocation subject, a removal can be lifted, and only by an invitation created
-after it. Revocation always takes precedence over removal.
+revocation subject, a removal can be lifted. An invitation created after it
+lifts it, or, for a device with an ownership binding, its owner's sign-in.
+Revocation always takes precedence over removal.
 
 ### Removal tombstones
 
@@ -420,11 +421,12 @@ after it. Revocation always takes precedence over removal.
 - `identity_id`, `display_name`, `actor_id`: listing and audit metadata. None of
   them is ownership proof.
 - `removed_at`: server time for display. No decision reads it.
-- `lifted_at`, `lifted_by_invite_id`: null while the tombstone is active.
+- `lifted_at`, `lifted_by_invite_id`, `lifted_by_attempt_id`: null while the
+  tombstone is active. A lift sets `lifted_at` and exactly one of the other two.
 
 A partial unique index allows one active tombstone for each `group_id` and
 `device_id`. Triggers reject every delete, and every update except one that sets
-both lift columns on a row where both are null. Tombstones apply to the whole
+the lift columns that way on a row where all three are null. Tombstones apply to the whole
 coordinator database, like revocation subjects, and have no expiry.
 
 A tombstone **matches** a device ID and key when its `device_id` equals the
@@ -606,28 +608,51 @@ A lift enrolls the device in the invitation's group only. It restores no scope
 membership, grant, or enrollment in another group. Enrollment-only invitations
 and join requests never lift.
 
-The existing ownership check refuses a device that has a coordinator ownership
-binding (`device_ownership_requires_verified_identity`). A lift is the one
-exception, and only when all of these hold in the statements that write:
+The existing ownership check is unchanged. A device that has a coordinator
+ownership binding is refused by every invitation path, lift or not, with
+`device_ownership_requires_verified_identity`. Its removal is lifted only by the
+owner sign-in below.
+
+### Lifting a removal by owner sign-in
+
+A device with a coordinator ownership binding lifts its removal through a
+ceremony that follows the rebind ceremony in the
+[account-link protocol](coordinator-auth-protocol.md). The wire protocol is not
+written yet. It is added to that contract and security-reviewed before any code.
+This section fixes what the ceremony must prove and what it writes.
+
+All of these hold in the statements that write:
 
 - the request runs under a server-trusted coordinator ID. A coordinator without
   one refuses.
-- the invitation kind is `add_device`
-- one ownership binding row has both the joining `device_id` and the joining
-  canonical `key_id`, and no other binding row matches either of them
-- that binding's `coordinator_id` equals the trusted coordinator ID
-- the invitation's `target_identity_id` equals that binding's `identity_id`
-- the inviter device has its own ownership binding with the inviter's current
-  `device_id` and canonical `key_id`, the same `identity_id`, and the same
-  `coordinator_id`. The `identity_id` on the inviter's enrollment is not
-  sufficient, because Project invitation acceptance writes a caller-supplied
-  Identity to the enrollment.
-- every lift requirement above holds, including the signature by the joining
-  key.
+- one ownership binding row has both the device ID and the canonical key ID, no
+  other binding row matches either of them, and the binding's `coordinator_id`
+  equals the trusted coordinator ID
+- an active tombstone has that device ID and that `key_id`
+- an attempt-bound OIDC sign-in resolves, by issuer and subject, to the active
+  account link of the binding's `identity_id` under that coordinator ID
+- a signature over the attempt verifies against the `public_key` of that
+  tombstone
+- the browser confirmation for the attempt was given. It names the account, the
+  Identity, the device, and the groups to be written.
+- no revocation subject matches the device ID or key
+- the Identity's rejoin count for the day is under the limit.
 
-The enrollment is written with the binding's `identity_id`. The binding row is
-not changed. An owned device that presents a `team_member` or Project
-invitation, or whose acceptance is not a lift, is refused as today.
+One SQLite transaction or one atomic D1 batch finalizes the attempt, sets
+`lifted_at` on every active tombstone that matches the device ID or key, inserts
+an enrollment with the binding's `identity_id` and the tombstone's key tuple into
+each unarchived group named by one of those tombstones, and writes an audit
+event. `lifted_by_invite_id` stays null, and a new `lifted_by_attempt_id` column
+records the attempt. The binding row is not changed. No scope membership, grant,
+or enrollment in another group is written.
+
+A browser session alone, a sign-in without the signature, and a signature
+without the sign-in each write nothing. An exact retry returns the same receipt.
+An unknown outcome is resolved by reading the attempt's status.
+
+A device with no ownership binding cannot use this ceremony. A first sign-in on
+a device with no binding and no tombstone is the owner enrollment that already
+exists, and this section does not change it.
 
 ### Removed peers in the pinned-peer check
 

@@ -164,28 +164,42 @@ Inviter rule:
 13. A new invitation presented as device ID D with another key, signed by that
     key, is refused. A new invitation presented with K and signed by another
     key is refused.
-Devices with an ownership binding (owner decision 1):
+14. A removed device with an ownership binding is refused by a signed join
+    with a new `team_member`, `add_device`, or Project invitation, with
+    `device_ownership_requires_verified_identity`. No tombstone is lifted.
+    This includes an `add_device` invitation from an inviter that was enrolled
+    through a Project invitation with `recipient_actor_id` set to the device's
+    Identity. (Second review.)
 
-14. A removed device whose binding names Identity I lifts with a signed join
-    and an `add_device` invitation that targets I, issued after the removal by
-    a device that has its own ownership binding to I under the same
-    coordinator ID. The enrollment has Identity I and the binding row is
-    unchanged.
-15. The same device is refused with `device_ownership_requires_verified_identity`
-    when the invitation is `team_member` or a Project share, when it targets
-    another Identity, when the join is unsigned, and when the joining device
-    ID or key differs from the binding's.
-16. An owned device with no active tombstone is refused by an `add_device`
-    invitation, as today.
-17. An inviter that was enrolled through a Project invitation with
-    `recipient_actor_id` set to I, and has no ownership binding, creates an
-    `add_device` invitation for I. The removed device is refused, and no
-    tombstone is lifted. (Second review.)
-18. A removed device whose binding belongs to coordinator ID A is refused
-    under coordinator ID B when every other condition holds, and on a
-    coordinator with no trusted coordinator ID. (Second review.)
-19. An inviter whose ownership binding names another Identity, or whose key
-    differs from its binding, is refused.
+## C2. Rejoining by sign-in (SQLite and D1, owner decision 1)
+
+These wait for the ceremony's protocol and its security review. D has an
+ownership binding to Identity I under coordinator ID A and was removed from
+groups 1 and 2.
+
+1. A sign-in that resolves to I's active account link, a signature by K over
+   the attempt, and the browser confirmation lift every active tombstone of D
+   and K, enroll D with Identity I in groups 1 and 2, set
+   `lifted_by_attempt_id`, and write one audit event. The binding row is
+   unchanged, and no scope membership is written.
+2. A sign-in without the signature, a signature without the sign-in, and both
+   without the confirmation each write nothing.
+3. A sign-in that resolves to another Identity, or to no active link, is
+   refused.
+4. A signature by a key other than the tombstone's is refused.
+5. A binding that belongs to coordinator ID B is refused under A, and a
+   coordinator with no trusted coordinator ID refuses. (Second review.)
+6. A device with a binding and no active tombstone is refused. A device with a
+   tombstone and no binding is refused.
+7. A blocked device is refused with `device_revoked`.
+8. An archived group gets no enrollment, and its tombstone is still lifted.
+9. An exact retry returns the same receipt. A status read resolves a lost
+   reply.
+10. A block recorded between the confirmation and the commit makes the commit
+    fail and write nothing.
+11. The rejoin above the daily limit for I is refused.
+12. The Identity's other devices show the rejoin with a Remove action after
+    their next sync.
 
 ## D. Coordinator routes
 
@@ -318,9 +332,9 @@ New function in `packages/core`, for example `removePairingState`.
 2. Each confirmation renders the copy in Section 8 of the design, with the
    cancel button focused.
 3. The older-version line appears only when such devices exist, and names them.
-   The two Google account lines appear only for a device with an ownership
-   binding, one when another device has a binding to the same Identity and the
-   other when none has.
+   The body ends with the sign-in sentence for a device with an ownership
+   binding and with the invitation sentence for any other device. The removed
+   device shows **Sign in to rejoin** only when it has an ownership binding.
 4. The local-only confirmation and result name the other devices.
 5. The removed-device list shows each tombstone with Block device permanently.
 6. Coordinator administration has no Remove, Disable, Enable, or Rename, and
