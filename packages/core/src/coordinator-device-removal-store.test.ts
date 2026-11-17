@@ -6,6 +6,7 @@ import {
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_SCHEMA_SQL,
 	DEVICE_REMOVAL_TRIGGER_NAMES,
+	ENROLLMENT_REMOVAL_TRIGGERS_SQL,
 	hasDeviceRemovalSchema,
 } from "./coordinator-device-removal.js";
 import {
@@ -39,6 +40,7 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	let sequence = 0;
 	const test = removalHarness(async (use) => {
 		const f = setupStore(backend, { authClock: () => REMOVAL_CLOCK_MS });
+		f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 		const prepare = f.db.prepare.bind(f.db);
 		try {
 			await use({
@@ -56,6 +58,8 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	});
 	registerDeviceRemovalContract(test);
 });
+
+it.todo("schema initialization and a numbered migration install the enrollment triggers");
 
 describe("device removal storage readiness", () => {
 	const ready = (db: Database.Database) =>
