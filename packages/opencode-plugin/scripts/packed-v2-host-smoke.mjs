@@ -577,6 +577,7 @@ try {
 	for (const excludedSource of [
 		"lint-feedback.ts",
 		"lint-feedback-core.ts",
+		"lint-feedback-loader.ts",
 		"lint-feedback-v2.ts",
 	]) {
 		assert(

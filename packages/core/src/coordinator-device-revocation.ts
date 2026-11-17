@@ -58,7 +58,17 @@ export interface CoordinatorDeviceRevocationStore {
 	recordAuthorizedNonce(
 		input: CoordinatorRecordAuthorizedNonceInput,
 	): Promise<CoordinatorAuthorizedNonceResult>;
+	/** Every revoked subject, for marking listings. Stores without it report no revocations. */
+	listRevokedSubjects?(): Promise<CoordinatorRevokedSubject[]>;
 }
+
+export interface CoordinatorRevokedSubject {
+	readonly subject_kind: "device_id" | "ed25519_key";
+	readonly subject_value: string;
+}
+
+/** Above this many subjects the read throws, and listings stay unmarked rather than read further. */
+export const REVOKED_SUBJECT_LIST_LIMIT = 5_000;
 
 export const DEVICE_REVOCATION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_device_revocations (
@@ -272,6 +282,21 @@ export class DeviceRevocationOperations implements CoordinatorDeviceRevocationSt
 				})
 				.catch(incompleteResult),
 		);
+	}
+
+	async listRevokedSubjects(): Promise<CoordinatorRevokedSubject[]> {
+		const rows = resultRows<CoordinatorRevokedSubject>(
+			await this.backend
+				.all({
+					sql: `SELECT subject_kind, subject_value FROM coordinator_device_revocations
+ORDER BY subject_kind, subject_value LIMIT ?`,
+					values: [String(REVOKED_SUBJECT_LIST_LIMIT + 1)],
+					read: true,
+				})
+				.catch(incompleteResult),
+		);
+		if (rows.length > REVOKED_SUBJECT_LIST_LIMIT) throw new Error("device_revocation_incomplete");
+		return rows;
 	}
 
 	async recordAuthorizedNonce(

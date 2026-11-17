@@ -14,6 +14,7 @@ import {
 	readCoordinatorSyncConfig,
 	refreshAuthorizedCoordinatorPeerTrust,
 	registerCoordinatorPresence,
+	removeCoordinatorRevokedPeers,
 } from "./coordinator-runtime.js";
 
 import type { Database } from "./db.js";
@@ -230,12 +231,27 @@ export async function refreshCoordinatorForDaemon(
 ): Promise<CoordinatorDaemonRefresh> {
 	const config = readCoordinatorSyncConfig();
 	if (!coordinatorEnabled(config)) return { refreshed: false, peers: null };
+	// First, because presence and peer lookups throw when any one group rejects this device.
+	const revocations = await removeCoordinatorRevokedPeers({ db, dbPath }, config, { keysDir });
+	warnOnRevocationCheckChange(revocations.status);
 	await registerCoordinatorPresence({ db, dbPath }, config, { keysDir });
 	await refreshConfiguredScopeMembershipCache(db, config, { keysDir, dbPath });
 	const { peers } = await refreshAuthorizedCoordinatorPeerTrust({ db, dbPath }, config, {
 		keysDir,
 	});
 	return { refreshed: true, peers };
+}
+
+let lastRevocationCheck: string | null = null;
+
+/** One warning per change, so a lasting failure doesn't log on every tick. */
+function warnOnRevocationCheckChange(status: string): void {
+	if (status === lastRevocationCheck) return;
+	lastRevocationCheck = status;
+	if (status !== "failed") return;
+	console.warn(
+		"[codemem] coordinator peer revocation check failed; pairings with revoked devices stay until a later refresh succeeds",
+	);
 }
 
 /**

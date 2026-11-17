@@ -5,8 +5,9 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function listWith(ownership: unknown) {
+function listWith(ownership: unknown, extra: Record<string, unknown> = {}) {
 	const item = {
+		...extra,
 		group_id: "group-a",
 		device_id: "device-d",
 		public_key: "pk-d",
@@ -45,5 +46,27 @@ describe("remote device list ownership", () => {
 		// Assert
 		expect(device).toBeDefined();
 		expect(device).not.toHaveProperty("ownership_identity_id");
+	});
+});
+
+describe("remote device list service role", () => {
+	it("keeps the relay health probe role the coordinator reports", async () => {
+		const [device] = await listWith(undefined, { service_role: "relay_health_probe" });
+
+		expect(device?.service_role).toBe("relay_health_probe");
+	});
+
+	it("keeps the coordinator's revoked mark only when it is exactly true", async () => {
+		const [marked] = await listWith(undefined, { revoked: true });
+		const [loose] = await listWith(undefined, { revoked: "yes" });
+
+		expect(marked?.revoked).toBe(true);
+		expect(loose).not.toHaveProperty("revoked");
+	});
+
+	it("drops an unknown service role", async () => {
+		const [device] = await listWith(undefined, { service_role: "admin" });
+
+		expect(device).not.toHaveProperty("service_role");
 	});
 });

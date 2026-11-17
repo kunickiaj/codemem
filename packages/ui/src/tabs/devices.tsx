@@ -29,11 +29,14 @@ import {
 import {
 	deviceIdentityAttentionItems,
 	deviceIdentitySetupGate,
+	revokedDeviceTotal,
+	serviceDeviceItems,
 } from "../lib/device-identity-inventory";
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { RenameDevicePanel } from "./device-rename";
+import { type DeviceRetirementApi, runDeviceRetirement } from "./device-retire";
 
 export type DeviceAvailabilityState = "available" | "offline" | "unknown";
 export type DevicesNavigationTarget =
@@ -92,6 +95,7 @@ export interface DevicesRendererOptions {
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	renameDevice?: typeof renameKnownDevice;
+	retirementApi?: DeviceRetirementApi;
 	coordinatorEnrollmentIssueCount?: number;
 }
 
@@ -328,10 +332,19 @@ export function projectDevices(
 		);
 	return {
 		devices,
-		revokedDeviceCount: intent.identityDevices.filter(
-			(device) => device.status === "revoked" && identityNames.has(device.identityId),
-		).length,
+		revokedDeviceCount: revokedCount(intent, identityNames, inventory),
 	};
+}
+
+function revokedCount(
+	intent: RecipientPolicyIntentGraphV1,
+	identityNames: Map<string, string>,
+	inventory: DeviceIdentityInventoryV1 | undefined,
+): number {
+	const intentRevoked = intent.identityDevices
+		.filter((device) => device.status === "revoked" && identityNames.has(device.identityId))
+		.map((device) => device.deviceId);
+	return revokedDeviceTotal(inventory, intentRevoked);
 }
 
 function devicePresentation(
@@ -439,6 +452,9 @@ export function deviceIdentitySetupError(error: unknown): string {
 		binding_write_stale:
 			"Device information changed after review. Refresh Devices, review the current details, and try again.",
 		device_pairing_required: "Pair this device before assigning an Identity.",
+		device_service_role:
+			"Service devices run coordinator checks and can't be assigned an Identity.",
+		device_retired: "This device was retired and can't be assigned an Identity.",
 		device_rebind_confirmation_required:
 			"Reassignment requires a separate confirmation of the previous and target Identities.",
 		device_inventory_incomplete:
@@ -530,9 +546,11 @@ function previewMatchesBindings(
 
 const DEVICE_COMMIT_STATUS_ID = "devices-commit-status";
 
-function setDeviceCommitStatus(message: string): void {
+function setDeviceCommitStatus(message: string, tone: "success" | "warning" = "success"): void {
 	const status = document.getElementById(DEVICE_COMMIT_STATUS_ID);
-	if (status) status.textContent = message;
+	if (!status) return;
+	status.textContent = message;
+	status.dataset.tone = tone;
 }
 
 function SetupRecoveryAction({
@@ -581,6 +599,32 @@ function SetupRecoveryAction({
 				</button>
 			</div>
 		</>
+	);
+}
+
+/** Lets a person retire an unused enrolled device without pairing or setting it up first. */
+function SetupCardRetire({
+	item,
+	options,
+}: {
+	item: DeviceIdentityInventoryItemV1;
+	options: DevicesRendererOptions;
+}) {
+	const device = { deviceId: item.deviceId, displayName: item.displayName };
+	const [action] = deviceRetireMenuAction(device, item, options);
+	if (!action || item.isLocal) return null;
+	return (
+		<div className="device-identity-card-actions">
+			<button
+				aria-label={action.ariaLabel}
+				className="settings-button"
+				disabled={action.disabled}
+				onClick={action.onSelect}
+				type="button"
+			>
+				Retire device…
+			</button>
+		</div>
 	);
 }
 
@@ -900,6 +944,7 @@ function SetupWorkflow({
 										onOpenPairing={onOpenPairing}
 									/>
 								)}
+								<SetupCardRetire item={item} options={options} />
 							</article>
 						</li>
 					);
@@ -1344,6 +1389,57 @@ function deviceNavigationMenuAction(
 	];
 }
 
+function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () => void): MenuAction {
+	return {
+		// The form cannot accept input while the device list is unavailable.
+		disabled: options.inventoryUnavailable === true || options.refreshError === true,
+		label: "Rename device…",
+		onSelect: onRename,
+	};
+}
+
+/** Retirement needs coordinator evidence for a person's device other than this one. */
+type RetireTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
+
+function deviceRetireMenuAction(
+	device: RetireTarget,
+	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
+	options: DevicesRendererOptions,
+): MenuAction[] {
+	if (
+		!inventoryItem?.sources.includes("coordinator_enrollment") ||
+		inventoryItem.state === "service" ||
+		inventoryItem.isLocal ||
+		directLocalDeviceId(options) === device.deviceId
+	)
+		return [];
+	return [
+		{
+			ariaLabel: `Retire ${device.displayName}`,
+			disabled: identityMutationsBlocked(options),
+			label: "Retire device…",
+			onSelect: () => void retireFromMenu(device, options),
+		},
+	];
+}
+
+async function retireFromMenu(device: RetireTarget, options: DevicesRendererOptions) {
+	const outcome = await runDeviceRetirement(device, options.retirementApi);
+	if (!outcome) return;
+	setDeviceCommitStatus(outcome.message, outcome.tone);
+	if (!outcome.refresh) return;
+	// Refreshing remounts Devices and clears the status, so restore it afterward.
+	const refreshed = await options.onCommitted?.();
+	if (refreshed === false)
+		setDeviceCommitStatus(
+			`${outcome.message} Refreshing Devices failed. Refresh to see current state.`,
+			"warning",
+		);
+	else setDeviceCommitStatus(outcome.message, outcome.tone);
+	// The retired device's row is gone, so its menu can't keep focus.
+	document.getElementById("devices-heading")?.focus();
+}
+
 function DeviceRowMenu({
 	device,
 	canReassign,
@@ -1379,12 +1475,8 @@ function DeviceRowMenu({
 			label: "Device details",
 			onSelect: onDetails,
 		},
-		{
-			// The form cannot accept input while the device list is unavailable.
-			disabled: options.inventoryUnavailable === true || options.refreshError === true,
-			label: "Rename device…",
-			onSelect: onRename,
-		},
+		deviceRenameMenuAction(options, onRename),
+		...deviceRetireMenuAction(device, inventoryItem, options),
 		...(inventoryItem && canReassign
 			? [
 					{
@@ -2300,7 +2392,10 @@ function DevicesView({
 			/>
 		</>
 	) : null;
-	const hasOtherInventoryItems = (options.inventory?.items ?? []).some((item) => !item.isLocal);
+	const hasOtherInventoryItems = (options.inventory?.items ?? []).some(
+		(item) => !item.isLocal && item.state !== "service" && item.state !== "retired",
+	);
+	const serviceDevices = <ServiceDevices items={serviceDeviceItems(options.inventory)} />;
 	const coordinatorUnavailable =
 		options.inventory?.coordinatorEvidence.availability === "unavailable" &&
 		options.inventory.coordinatorEvidence.safeErrorCode !== "coordinator_not_configured";
@@ -2326,13 +2421,8 @@ function DevicesView({
 				{inventoryWorkflow}
 				{configuredFallbackWorkflow}
 				{hasOtherInventoryItems ? null : <DevicesEmptyState onOpenPairing={onOpenPairing} />}
-				{projection.revokedDeviceCount > 0 ? (
-					<p className="small" role="status">
-						{projection.revokedDeviceCount.toLocaleString()} revoked{" "}
-						{projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not included in the
-						active list.
-					</p>
-				) : null}
+				{serviceDevices}
+				<RevokedDeviceNote count={projection.revokedDeviceCount} />
 			</>
 		);
 	}
@@ -2350,14 +2440,42 @@ function DevicesView({
 				intent={intent}
 				options={options}
 			/>
-			{projection.revokedDeviceCount > 0 ? (
-				<p className="small" role="status">
-					{projection.revokedDeviceCount.toLocaleString()} revoked{" "}
-					{projection.revokedDeviceCount === 1 ? "device is" : "devices are"} not included in the
-					active list.
-				</p>
-			) : null}
+			{serviceDevices}
+			<RevokedDeviceNote count={projection.revokedDeviceCount} />
 		</>
+	);
+}
+
+function RevokedDeviceNote({ count }: { count: number }) {
+	if (count === 0) return null;
+	return (
+		<p className="small" role="status">
+			{count.toLocaleString()} revoked {count === 1 ? "device is" : "devices are"} not included in
+			the active list.
+		</p>
+	);
+}
+
+function ServiceDevices({ items }: { items: DeviceIdentityInventoryItemV1[] }) {
+	if (items.length === 0) return null;
+	return (
+		<section aria-labelledby="service-devices-heading" className="devices-service-devices">
+			<h3 id="service-devices-heading">Service devices</h3>
+			<p className="small">
+				The coordinator runs these devices to check sync health. They don't need pairing or an
+				Identity.
+			</p>
+			<ul>
+				{items.map((item) => (
+					<li className="peer-card peer-card--padded" key={item.deviceId}>
+						<div className="peer-title">
+							<strong>{item.displayName}</strong>
+							<span className="badge actor-badge">Service device</span>
+						</div>
+					</li>
+				))}
+			</ul>
+		</section>
 	);
 }
 

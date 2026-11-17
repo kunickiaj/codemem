@@ -1,5 +1,6 @@
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEVICE_IDENTITY_INVENTORY_VERSION = 1 as const;
@@ -10,7 +11,11 @@ export type DeviceIdentityInventoryState =
 	| "configured"
 	| "setup_required"
 	| "pairing_required"
-	| "conflicted";
+	| "conflicted"
+	/** Coordinator infrastructure such as a relay health probe; never paired or assigned. */
+	| "service"
+	/** Revoked coordinator-wide by device ID or key; counted as revoked, never set up again. */
+	| "retired";
 
 export type DeviceIdentityInventorySource =
 	| "local_device"
@@ -33,6 +38,8 @@ export interface DeviceIdentityPeerEvidence {
 	suggestedIdentityId: string | null;
 	trustProvenance: string | null;
 	claimedLocalActor: boolean;
+	/** This device recorded the ID as retired and the pairing still pins the retired key. */
+	retired?: boolean;
 }
 
 export interface DeviceIdentityBindingEvidence {
@@ -41,6 +48,8 @@ export interface DeviceIdentityBindingEvidence {
 	identityId: string;
 	status: string;
 	identityStatus: string | null;
+	/** This device recorded the ID as retired, so the binding reads retired without the coordinator. */
+	retired?: boolean;
 }
 
 export interface DeviceIdentityCoordinatorEvidence {
@@ -98,6 +107,8 @@ interface Evidence {
 	bindingAuthoritative: boolean;
 	enrollmentEnabled: boolean | null;
 	pairingProof: boolean;
+	serviceDevice: boolean;
+	revoked: boolean;
 }
 
 function clean(value: unknown): string | null {
@@ -133,6 +144,8 @@ function localEvidence(value: DeviceIdentityLocalDeviceEvidence): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: true,
+		serviceDevice: false,
+		revoked: false,
 	};
 }
 
@@ -152,6 +165,8 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: null,
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
+		serviceDevice: false,
+		revoked: value.retired === true,
 	};
 }
 
@@ -170,6 +185,9 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		bindingAuthoritative: true,
 		enrollmentEnabled: null,
 		pairingProof: false,
+		serviceDevice: false,
+		// This device confirmed the retirement, so it holds even when the coordinator is unreachable.
+		revoked: value.retired === true,
 	};
 }
 
@@ -189,6 +207,8 @@ function enrollmentEvidence(value: CoordinatorEnrollment): Evidence {
 		bindingAuthoritative: false,
 		enrollmentEnabled: value.enabled === 1,
 		pairingProof: false,
+		serviceDevice: value.service_role === "relay_health_probe",
+		revoked: value.revoked === true,
 	};
 }
 
@@ -266,6 +286,37 @@ function preferredDisplayName(group: Evidence[]): string {
 	return "Unnamed device";
 }
 
+function inventoryState(
+	group: Evidence[],
+	facts: { conflicted: boolean; activeBindings: Evidence[] },
+): DeviceIdentityInventoryState {
+	// Revocation is final, so it outranks every setup or review state.
+	if (group.some((item) => item.revoked)) return "retired";
+	// Conflicting evidence stays visible for review, even for a coordinator-labeled device.
+	if (facts.conflicted) return "conflicted";
+	// Any local, peer, or binding evidence means a person-managed device, so it stays visible.
+	if (group.every((item) => item.source === "coordinator_enrollment" && item.serviceDevice))
+		return "service";
+	if (facts.activeBindings.length > 0) return "configured";
+	const hasPairingProof = group.some((item) => item.pairingProof);
+	const hasCoordinatorEvidence = group.some(
+		(item) =>
+			item.source === "coordinator_enrollment" ||
+			(item.source === "sync_peer" && !item.pairingProof),
+	);
+	return hasCoordinatorEvidence && !hasPairingProof ? "pairing_required" : "setup_required";
+}
+
+/** One unbound suggestion, never for devices that can't be set up. */
+function suggestedIdentity(
+	state: DeviceIdentityInventoryState,
+	activeBindings: Evidence[],
+	suggestedIdentityIds: Set<string>,
+): string | null {
+	if (state === "service" || state === "retired" || activeBindings.length > 0) return null;
+	return suggestedIdentityIds.size === 1 ? ([...suggestedIdentityIds][0] ?? null) : null;
+}
+
 function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 	const deviceIds = [...new Set(group.map((item) => item.deviceId))].toSorted();
 	const fingerprints = new Set(
@@ -312,20 +363,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 			? "coordinator_enrollment_disabled"
 			: null,
 	].filter((code): code is string => code != null);
-	const hasPairingProof = group.some((item) => item.pairingProof);
-	const hasCoordinatorEvidence = group.some(
-		(item) =>
-			item.source === "coordinator_enrollment" ||
-			(item.source === "sync_peer" && !item.pairingProof),
-	);
-	const state: DeviceIdentityInventoryState =
-		conflictCodes.length > 0
-			? "conflicted"
-			: activeBindings.length > 0
-				? "configured"
-				: hasCoordinatorEvidence && !hasPairingProof
-					? "pairing_required"
-					: "setup_required";
+	const state = inventoryState(group, { conflicted: conflictCodes.length > 0, activeBindings });
 	const selected = SOURCE_ORDER.map((source) => preferred(group, source)).find(
 		(item): item is Evidence => item != null,
 	);
@@ -340,10 +378,7 @@ function projectGroup(group: Evidence[]): DeviceIdentityInventoryItemV1 {
 			state === "configured" && bindingIdentityIds.size === 1
 				? ([...bindingIdentityIds][0] ?? null)
 				: null,
-		suggestedIdentityId:
-			activeBindings.length === 0 && suggestedIdentityIds.size === 1
-				? ([...suggestedIdentityIds][0] ?? null)
-				: null,
+		suggestedIdentityId: suggestedIdentity(state, activeBindings, suggestedIdentityIds),
 		validatedFingerprint: fingerprints.size === 1 ? ([...fingerprints][0] ?? null) : null,
 		isLocal: group.some((item) => item.isLocal),
 		sources,
@@ -385,6 +420,36 @@ function bindingDisplayName(value: Record<string, unknown>): string {
 	)
 		return "";
 	return name;
+}
+
+function bindingRowEvidence(
+	value: Record<string, unknown>,
+	retired: (deviceId: string) => boolean,
+): DeviceIdentityBindingEvidence {
+	const deviceId = String(value.device_id ?? "");
+	return {
+		deviceId,
+		displayName: bindingDisplayName(value),
+		identityId: String(value.identity_id ?? ""),
+		status: String(value.status ?? ""),
+		identityStatus: clean(value.identity_status),
+		retired: retired(deviceId),
+	};
+}
+
+/** Whether this device recorded an ID as retired, given the key now pinned under it. */
+function retiredDeviceCheck(
+	db: Database,
+	peers: DeviceIdentityPeerEvidence[],
+): (deviceId: string) => boolean {
+	const aliases = listRetiredDeviceAliases(db);
+	const pins = new Map(
+		peers.map((peer) => [
+			peer.deviceId,
+			{ publicKey: peer.publicKey, fingerprint: peer.pinnedFingerprint },
+		]),
+	);
+	return (deviceId) => retiredAliasApplies(aliases.get(deviceId), pins.get(deviceId) ?? null);
 }
 
 export function loadDeviceIdentityInventorySnapshot(
@@ -435,18 +500,10 @@ export function loadDeviceIdentityInventorySnapshot(
 			 END, device.device_id LIMIT ?`,
 		)
 		.all(input.localDeviceId, DEVICE_IDENTITY_EVIDENCE_LIMIT, DEVICE_IDENTITY_EVIDENCE_LIMIT + 2);
+	const retired = retiredDeviceCheck(db, peers);
 	const bindings = bindingRows
 		.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT + 1)
-		.map((row): DeviceIdentityBindingEvidence => {
-			const value = row as Record<string, unknown>;
-			return {
-				deviceId: String(value.device_id ?? ""),
-				displayName: bindingDisplayName(value),
-				identityId: String(value.identity_id ?? ""),
-				status: String(value.status ?? ""),
-				identityStatus: clean(value.identity_status),
-			};
-		});
+		.map((row) => bindingRowEvidence(row as Record<string, unknown>, retired));
 	return {
 		localDevice: localRow
 			? {
@@ -456,7 +513,7 @@ export function loadDeviceIdentityInventorySnapshot(
 					fingerprint: localRow.fingerprint,
 				}
 			: null,
-		peers,
+		peers: peers.map((peer) => ({ ...peer, retired: retired(peer.deviceId) })),
 		bindings,
 		coordinator: input.coordinator,
 		localEvidenceTruncated:

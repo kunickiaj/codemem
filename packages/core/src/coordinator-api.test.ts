@@ -3633,3 +3633,193 @@ describe("guarded nonce API result mapping", () => {
 		});
 	}
 });
+
+describe("coordinator admin device revocation marks", () => {
+	const enrollment = (deviceId: string): CoordinatorEnrollment => ({
+		group_id: "g1",
+		device_id: deviceId,
+		public_key: `pk-${deviceId}`,
+		fingerprint: `fp-${deviceId}`,
+		identity_id: null,
+		display_name: deviceId,
+		enabled: 1,
+		created_at: "2026-03-28T00:00:00Z",
+	});
+
+	async function listing(overrides: Partial<CoordinatorStoreInterface>) {
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => [enrollment("retired"), enrollment("active")]),
+			...overrides,
+		});
+		const res = await createSharingAdminApp(() => store).request("/v1/admin/devices?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+		const body = (await res.json()) as { items: Array<Record<string, unknown>> };
+		return Object.fromEntries(body.items.map((item) => [item.device_id, item.revoked ?? false]));
+	}
+
+	it("marks enrollments whose device ID is revoked", async () => {
+		const marks = await listing({
+			listRevokedSubjects: vi.fn(async () => [
+				{ subject_kind: "device_id" as const, subject_value: "retired" },
+			]),
+		});
+
+		expect(marks).toEqual({ retired: true, active: false });
+	});
+
+	it.each([
+		["a store without the read", {}],
+		[
+			"a failed revocation read",
+			{
+				listRevokedSubjects: vi.fn(async () => {
+					throw new Error("device_revocation_incomplete");
+				}),
+			},
+		],
+	])("leaves enrollments unmarked for %s", async (_label, overrides) => {
+		expect(await listing(overrides)).toEqual({ retired: false, active: false });
+	});
+});
+
+describe("coordinator admin device service roles", () => {
+	it("labels only the configured relay health probe as a service device", async () => {
+		const enrollment = (deviceId: string, displayName: string, groupId = "g1") => ({
+			group_id: groupId,
+			device_id: deviceId,
+			public_key: `pk-${deviceId}`,
+			fingerprint: `fp-${deviceId}`,
+			identity_id: null,
+			display_name: displayName,
+			enabled: 1,
+			created_at: "2026-03-28T00:00:00Z",
+		});
+		const store = createMockStore({
+			listEnrolledDevices: vi.fn(async () => [
+				enrollment("probe-1", "Relay health probe"),
+				// A person's device named like the probe must stay a person's device.
+				enrollment("laptop", "Relay health probe"),
+				// Device IDs are caller-chosen, so the probe's ID in an unmonitored group is not the probe.
+				enrollment("probe-1", "Relay health probe", "g2"),
+			]),
+		});
+		const app = createCoordinatorApp({
+			storeFactory: () => store,
+			runtime: { adminSecret: () => "test-secret", now: () => "2026-03-28T00:00:00Z" },
+			requestVerifier: allowRequest,
+			relayHealthProbes: [{ groupId: "g1", deviceId: "probe-1" }],
+		});
+
+		const res = await app.request("/v1/admin/devices?group_id=g1", {
+			headers: { "X-Codemem-Coordinator-Admin": "test-secret" },
+		});
+
+		const body = (await res.json()) as { items: Array<Record<string, unknown>> };
+		expect(body.items.map((item) => [item.group_id, item.device_id, item.service_role])).toEqual([
+			["g1", "probe-1", "relay_health_probe"],
+			["g1", "laptop", undefined],
+			["g2", "probe-1", undefined],
+		]);
+	});
+});
+
+describe("POST /v1/peers/revocations", () => {
+	const caller: CoordinatorEnrollment = {
+		group_id: "g1",
+		device_id: "device-a",
+		public_key: "pk-a",
+		fingerprint: "fp-a",
+		identity_id: null,
+		display_name: "Laptop",
+		enabled: 1,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+	const revokedRecord = {
+		subject_kind: "device_id" as const,
+		subject_value: "retired",
+		revocation_id: "revocation-1",
+		evidence_group_id: "g1",
+		evidence_device_id: "retired",
+		evidence_public_key: "pk-retired",
+		evidence_fingerprint: "fp-retired",
+		actor_id: null,
+		created_at: "2026-03-28T00:00:00Z",
+	};
+
+	function checkApp(overrides: Partial<CoordinatorStoreInterface> = {}) {
+		const store = createMockStore({
+			getEnrollment: vi.fn(async () => caller),
+			getGroup: vi.fn(async () => sharingGroupFixture()),
+			listDeviceRevocations: vi.fn(async (input: { deviceId?: string }) =>
+				input.deviceId === "retired" ? [revokedRecord] : [],
+			),
+			...overrides,
+		});
+		return { store, app: createSharingAdminApp(() => store) };
+	}
+
+	function check(app: ReturnType<typeof createSharingAdminApp>, body: unknown) {
+		return app.request("/v1/peers/revocations?group_id=g1", {
+			method: "POST",
+			headers: { ...authHeaders(), "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	it("returns only the asked-about peers the coordinator has revoked", async () => {
+		const { app, store } = checkApp();
+
+		const response = await check(app, {
+			peers: [
+				{ device_id: "retired", public_key: "pk-retired" },
+				{ device_id: "active", public_key: "pk-active" },
+			],
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ version: 1, revoked: ["retired"] });
+		expect(store.listDeviceRevocations).toHaveBeenCalledWith({
+			deviceId: "active",
+			publicKey: "pk-active",
+		});
+	});
+
+	it("rejects a request without a valid device signature", async () => {
+		const { app, store } = checkApp({ getEnrollment: vi.fn(async () => null) });
+
+		const response = await check(app, { peers: [{ device_id: "retired", public_key: "pk" }] });
+
+		expect(response.status).toBe(401);
+		expect(store.listDeviceRevocations).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a missing peer list", {}],
+		["a peer without a key", { peers: [{ device_id: "retired" }] }],
+		[
+			"too many peers",
+			{ peers: Array.from({ length: 26 }, (_, i) => ({ device_id: `d${i}`, public_key: "pk" })) },
+		],
+	])("rejects %s", async (_label, body) => {
+		const { app } = checkApp();
+
+		const response = await check(app, body);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error: "peers_invalid" });
+	});
+
+	it("reports the check as unavailable when the revocation read fails", async () => {
+		const { app } = checkApp({
+			listDeviceRevocations: vi.fn(async () => {
+				throw new Error("device_revocation_incomplete");
+			}),
+		});
+
+		const response = await check(app, { peers: [{ device_id: "retired", public_key: "pk" }] });
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: "peer_revocation_unavailable" });
+	});
+});

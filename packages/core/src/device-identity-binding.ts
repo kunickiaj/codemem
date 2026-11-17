@@ -146,6 +146,8 @@ function outcome(
 	selection: DeviceIdentityBindingSelectionV1,
 	deviceId: string,
 ): DeviceIdentityBindingOutcomeV1 | DeviceIdentityBindingPreviewV1 {
+	if (item.state === "service") return failure("conflict", "device_service_role");
+	if (item.state === "retired") return failure("conflict", "device_retired");
 	if (item.state === "pairing_required") return failure("conflict", "device_pairing_required");
 	if (item.state === "conflicted") return failure("conflict", "device_evidence_conflict");
 	if (item.state === "configured" && item.identityId !== selection.targetIdentityId) {

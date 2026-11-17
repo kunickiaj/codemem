@@ -600,6 +600,58 @@ describe("Devices focus and inventory", function devicesFocusAndInventoryTests()
 		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("2 unknown");
 	});
 
+	it("lists service devices separately without pairing or availability counts", () => {
+		mount(intent({ identityDevices: [] }), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("pair-device", "Pair device", "pairing_required"),
+				inventoryItem("relay-probe", "Relay health probe", "service", {
+					sources: ["coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		const services = document.querySelector('[aria-labelledby="service-devices-heading"]');
+		expect(services?.textContent).toContain("Relay health probe");
+		expect(services?.textContent).toContain("Service device");
+		expect(document.querySelector('[aria-label="Pair Relay health probe"]')).toBeNull();
+		expect(document.querySelector("#device-identity-card-relay-probe")).toBeNull();
+		expect(document.querySelector(".devices-summary-counts")?.textContent).toContain("1 unknown");
+		expect(document.querySelector(".devices-heading-count")?.textContent).toBe("· 1");
+	});
+
+	it("counts a retired device as revoked instead of listing it", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "retired", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		expect(document.querySelector(".devices-table-row")).toBeNull();
+		// The intent fixture already holds one revoked device, so the retired one makes two.
+		expect(document.body.textContent).toContain(
+			"2 revoked devices are not included in the active list.",
+		);
+		expect(document.querySelector('[aria-label="Pair Work Laptop"]')).toBeNull();
+	});
+
+	it("doesn't count another person's retired coordinator-only device", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("someone-else", "Teammate laptop", "retired", {
+					sources: ["coordinator_enrollment"],
+				}),
+			]),
+		});
+
+		// Only the intent fixture's own revoked device is counted.
+		expect(document.body.textContent).toContain(
+			"1 revoked device is not included in the active list.",
+		);
+		expect(document.body.textContent).not.toContain("Teammate laptop");
+	});
+
 	it("does not render conflicted binding evidence as a configured device", () => {
 		state.pendingDeviceIdentityFocus = "device-address-fingerprint-secret";
 		mount(intent(), reconciliation(), {
@@ -3268,5 +3320,133 @@ describe("Device setup errors", () => {
 		expect(
 			deviceIdentitySetupError(new DeviceIdentityBindingApiError(status, code, null)),
 		).toContain(expected);
+	});
+});
+
+function retirementPreview(deviceId: string) {
+	return {
+		device_id: deviceId,
+		display_name: "",
+		enrollment_device_id: deviceId,
+		alias_device_ids: [deviceId],
+		group_id: "group-a",
+		coordinator_id: "https://coordinator.example.test",
+		key_id: "b".repeat(64),
+		expected_digest: "a".repeat(64),
+	};
+}
+
+describe("Device retirement menu", () => {
+	function configuredWorkLaptop(sources: DeviceIdentityInventoryV1["items"][number]["sources"]) {
+		return inventory([
+			inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+				sources,
+				validatedFingerprint: "fingerprint",
+			}),
+		]);
+	}
+
+	function retireAction() {
+		const row = document.getElementById("device-identity-card-device-address-fingerprint-secret");
+		return [
+			...openActionMenu(row ?? document).querySelectorAll<HTMLButtonElement>(".feed-menu-item"),
+		].find((button) => button.textContent === "Retire device…");
+	}
+
+	it("retires a coordinator-enrolled device after confirmation and refreshes Devices", async () => {
+		const preview = retirementPreview("device-address-fingerprint-secret");
+		const retirementApi = {
+			preview: vi.fn(async () => preview),
+			commit: vi.fn(async () => ({ unpaired_here: true })),
+			confirm: vi.fn(async () => true),
+		};
+		const onCommitted = vi.fn(async () => true);
+		mount(intent(), reconciliation(), {
+			inventory: configuredWorkLaptop(["identity_binding", "coordinator_enrollment"]),
+			retirementApi,
+			onCommitted,
+		});
+
+		const action = retireAction();
+		expect(action?.disabled).toBe(false);
+		await act(async () => action?.click());
+
+		await vi.waitFor(() => expect(onCommitted).toHaveBeenCalledOnce());
+		expect(retirementApi.confirm).toHaveBeenCalledWith(
+			expect.objectContaining({ title: "Retire Work Laptop?", confirmLabel: "Retire device" }),
+		);
+		expect(retirementApi.commit).toHaveBeenCalledExactlyOnceWith(preview);
+		expect(document.getElementById("devices-commit-status")?.textContent).toContain(
+			"Work Laptop is retired.",
+		);
+		expect(document.getElementById("devices-commit-status")?.dataset.tone).toBe("success");
+		expect(document.activeElement).toBe(document.getElementById("devices-heading"));
+	});
+
+	it("keeps the retirement message and warns when refreshing Devices fails", async () => {
+		const status = () => document.getElementById("devices-commit-status");
+		const retirementApi = {
+			preview: vi.fn(async () => retirementPreview("device-address-fingerprint-secret")),
+			commit: vi.fn(async () => ({ unpaired_here: true })),
+			confirm: vi.fn(async () => true),
+		};
+		// The production refresh remounts Devices, which clears the status first.
+		const onCommitted = vi.fn(async () => {
+			const node = status();
+			if (node) node.textContent = "";
+			return false;
+		});
+		mount(intent(), reconciliation(), {
+			inventory: configuredWorkLaptop(["identity_binding", "coordinator_enrollment"]),
+			retirementApi,
+			onCommitted,
+		});
+
+		const action = retireAction();
+		await act(async () => action?.click());
+
+		await vi.waitFor(() => expect(status()?.textContent).toContain("Refreshing Devices failed."));
+		expect(status()?.textContent).toContain("Work Laptop is retired.");
+		expect(status()?.dataset.tone).toBe("warning");
+	});
+
+	it("offers retirement on a pairing-required card without pairing first", async () => {
+		const retirementApi = {
+			preview: vi.fn(async () => retirementPreview("old-tablet")),
+			commit: vi.fn(async () => ({ unpaired_here: false })),
+			confirm: vi.fn(async () => true),
+		};
+		mount(intent(), reconciliation(), {
+			inventory: inventory([inventoryItem("old-tablet", "Old tablet", "pairing_required")]),
+			retirementApi,
+			onCommitted: vi.fn(async () => true),
+		});
+
+		const button = document.querySelector<HTMLButtonElement>('[aria-label="Retire Old tablet"]');
+		await act(async () => button?.click());
+
+		await vi.waitFor(() => expect(retirementApi.commit).toHaveBeenCalledOnce());
+		expect(retirementApi.preview).toHaveBeenCalledWith("old-tablet");
+	});
+
+	it("doesn't offer retirement for an alias of this device", () => {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem("device-address-fingerprint-secret", "Work Laptop", "configured", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+					isLocal: true,
+				}),
+			]),
+		});
+
+		expect(document.querySelector('[aria-label="Retire Work Laptop"]')).toBeNull();
+	});
+
+	it("doesn't offer retirement without coordinator enrollment evidence", () => {
+		mount(intent(), reconciliation(), {
+			inventory: configuredWorkLaptop(["identity_binding", "sync_peer"]),
+		});
+
+		expect(retireAction()).toBeUndefined();
 	});
 });

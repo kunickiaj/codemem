@@ -45,7 +45,13 @@ export interface CoordinatorEnrollment {
 	presence_capabilities?: Record<string, unknown>;
 	/** The Identity this exact device key is bound to, when the coordinator holds one binding. */
 	ownership_identity_id?: string;
+	/** Set by the coordinator for its own configured infrastructure devices, never by callers. */
+	service_role?: CoordinatorServiceRole;
+	/** Set in admin listings when this device ID or key is revoked coordinator-wide. */
+	revoked?: true;
 }
+
+export type CoordinatorServiceRole = "relay_health_probe";
 
 export interface CoordinatorInvite {
 	invite_id: string;

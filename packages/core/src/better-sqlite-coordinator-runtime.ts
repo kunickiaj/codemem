@@ -51,6 +51,9 @@ export function createBetterSqliteCoordinatorApp(
 	const relayHealth = createSqliteHealthMonitor(opts.relayHealth, dbPath);
 	return createCoordinatorApp({
 		relayHealth,
+		relayHealthProbes: healthGroups(opts.relayHealth)
+			.filter((group) => group.enabled)
+			.map((group) => ({ groupId: group.groupId, deviceId: group.probeDeviceId })),
 		storeFactory: (options) => new BetterSqliteCoordinatorStore(dbPath, options),
 		deviceRevocation: opts.deviceRevocation,
 		runtime,

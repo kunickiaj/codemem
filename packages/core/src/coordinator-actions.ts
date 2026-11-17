@@ -1421,6 +1421,8 @@ function remoteEnrollmentExtras(record: Record<string, unknown>): Partial<Coordi
 	const extras: Partial<CoordinatorEnrollment> = {};
 	if (isCanonicalCoordinatorIdentifier(record.ownership_identity_id))
 		extras.ownership_identity_id = record.ownership_identity_id;
+	if (record.service_role === "relay_health_probe") extras.service_role = record.service_role;
+	if (record.revoked === true) extras.revoked = true;
 	const capabilities = record.presence_capabilities;
 	if (
 		typeof record.presence_expires_at !== "string" ||

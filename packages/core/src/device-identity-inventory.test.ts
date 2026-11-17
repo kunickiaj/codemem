@@ -42,6 +42,99 @@ function snapshot(
 	};
 }
 
+function coordinatorOnly(enrollments: CoordinatorEnrollment[]) {
+	return snapshot({ coordinator: { availability: "available", safeErrorCode: null, enrollments } });
+}
+
+describe("device inventory service devices", () => {
+	it("classifies a coordinator-labeled relay probe as a service device", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([
+				enrollment("probe", "probe-key", {
+					display_name: "Relay health probe",
+					identity_id: "identity-unreviewed",
+					service_role: "relay_health_probe",
+				}),
+			]),
+		);
+
+		expect(result.items).toMatchObject([
+			{ deviceId: "probe", state: "service", identityId: null, suggestedIdentityId: null },
+		]);
+	});
+
+	it.each([
+		["a disabled enrollment", [{ enabled: 0 }], "coordinator_enrollment_disabled"],
+		["two keys under the same ID", [{}, { public_key: "other-key" }], "fingerprint_conflict"],
+	])("keeps %s for a labeled probe in review", (_label, rows, conflictCode) => {
+		const enrollments = rows.map((row, index) => {
+			const publicKey = row.public_key ?? "probe-key";
+			return enrollment("probe", publicKey, {
+				group_id: `group-${index}`,
+				service_role: "relay_health_probe",
+				enabled: row.enabled ?? 1,
+			});
+		});
+
+		const result = projectDeviceIdentityInventory(coordinatorOnly(enrollments));
+
+		expect(result.items).toMatchObject([{ state: "conflicted", conflictCodes: [conflictCode] }]);
+	});
+
+	it("keeps a probe-named enrollment without the coordinator label in pairing_required", () => {
+		const result = projectDeviceIdentityInventory(
+			coordinatorOnly([enrollment("laptop", "laptop-key", { display_name: "Relay health probe" })]),
+		);
+
+		expect(result.items).toMatchObject([{ deviceId: "laptop", state: "pairing_required" }]);
+	});
+
+	it("keeps a service-labeled enrollment visible when a person's sync peer shares its key", () => {
+		const result = projectDeviceIdentityInventory({
+			...coordinatorOnly([
+				enrollment("laptop", "shared-key", { service_role: "relay_health_probe" }),
+			]),
+			peers: [
+				{
+					deviceId: "laptop",
+					displayName: "Laptop",
+					publicKey: "shared-key",
+					pinnedFingerprint: fingerprintPublicKey("shared-key"),
+					suggestedIdentityId: null,
+					trustProvenance: "manual_pairing",
+					claimedLocalActor: false,
+				},
+			],
+		});
+
+		expect(result.items).toMatchObject([{ deviceId: "laptop", state: "setup_required" }]);
+	});
+});
+
+describe("device inventory retired devices", () => {
+	it("marks a revoked enrollment retired even with an active binding and conflicting keys", () => {
+		const result = projectDeviceIdentityInventory({
+			...coordinatorOnly([
+				enrollment("laptop", "key-a", { revoked: true, identity_id: "identity-a" }),
+				enrollment("laptop", "key-b", { group_id: "group-b" }),
+			]),
+			bindings: [
+				{
+					deviceId: "laptop",
+					displayName: "Laptop",
+					identityId: "identity-a",
+					status: "active",
+					identityStatus: "active",
+				},
+			],
+		});
+
+		expect(result.items).toMatchObject([
+			{ deviceId: "laptop", state: "retired", identityId: null, suggestedIdentityId: null },
+		]);
+	});
+});
+
 describe("device inventory missing-name provenance", () => {
 	it.each([null, "Enrolled device", "Peer device", "Registered device"])(
 		"preserves an explicit label %s but skips a missing enrollment label",

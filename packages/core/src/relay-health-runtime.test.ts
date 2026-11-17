@@ -128,6 +128,29 @@ describe("relay health through the SQLite coordinator factory", () => {
 			})),
 		);
 	});
+	it("labels the configured probe device in the admin device list", async () => {
+		const f = healthFixture();
+		const app = createBetterSqliteCoordinatorApp({
+			dbPath,
+			runtime: { now: () => new Date(f.now()).toISOString(), adminSecret: () => "admin" },
+			relayHealth: {
+				...f.options,
+				enabled: true,
+				authorityId: METADATA_CONTEXT.authority,
+				onMonitor: () => undefined,
+			},
+		});
+
+		const response = await app.request("/v1/admin/devices?group_id=group-a", {
+			headers: { "X-Codemem-Coordinator-Admin": "admin" },
+		});
+
+		const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+		expect(body.items).toMatchObject([
+			{ device_id: f.options.probeDeviceId, service_role: "relay_health_probe" },
+		]);
+	});
+
 	it("does not count unknown devices or invalid signatures as server successes", async () => {
 		// Arrange
 		const f = setup();

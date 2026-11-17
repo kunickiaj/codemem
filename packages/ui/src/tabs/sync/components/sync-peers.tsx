@@ -142,7 +142,14 @@ type SyncPeerCardProps = {
 };
 
 export interface AdvancedDeviceIdentityView {
-	status: "configured" | "setup_required" | "pairing_required" | "conflicted" | "unavailable";
+	status:
+		| "configured"
+		| "setup_required"
+		| "pairing_required"
+		| "conflicted"
+		| "service"
+		| "retired"
+		| "unavailable";
 	summary: string;
 	detail: string;
 	actionLabel: string;
@@ -153,6 +160,23 @@ function identityName(identityId: string | null, actors: SyncActor[]): string {
 	const actor = actors.find((candidate) => candidate.actor_id === identityId);
 	return String(actor?.display_name || actor?.actor_display_name || "the selected Identity");
 }
+
+/** Devices the coordinator manages or revoked, which never get pairing or Identity setup. */
+const NO_SETUP_VIEWS: Record<"service" | "retired", AdvancedDeviceIdentityView> = {
+	service: {
+		status: "service",
+		summary: "Service device. It runs coordinator checks and has no Identity.",
+		detail: "The coordinator manages this device. It does not need pairing or Identity setup.",
+		actionLabel: "View in Devices",
+	},
+	retired: {
+		status: "retired",
+		summary: "Retired device. The coordinator revoked it.",
+		detail:
+			"Other devices drop their pairing with it at their next coordinator refresh. A retired device ID and key can't be set up again.",
+		actionLabel: "See the revoked-device count in Devices",
+	},
+};
 
 export function advancedDeviceIdentityView(
 	item: DeviceIdentityInventoryItemV1 | undefined,
@@ -197,6 +221,7 @@ export function advancedDeviceIdentityView(
 			actionLabel: "Review setup in Devices",
 		};
 	}
+	if (item?.state === "service" || item?.state === "retired") return NO_SETUP_VIEWS[item.state];
 	if (item?.state === "conflicted") {
 		return {
 			status: "conflicted",
