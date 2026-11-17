@@ -4,6 +4,7 @@
 
 ### Added
 
+- OpenCode 2.2.6 and later can share one `codemem mcp` process across all projects instead of starting one per project directory. Run `codemem setup --opencode-only --opencode-mcp pooled` to opt in, and the same command with `--opencode-mcp stdio` to go back. Searches, writes, and sharing scopes still follow the project each call came from. Every project must load the codemem plugin, and the default is unchanged. See [Shared MCP server](docs/plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in). ([#2765], [#2766], [#2768])
 - MCP clients can use `memory_session_search` to search stored Pi user/assistant transcripts with the same bounded results and project/session filters as Pi's existing native tool. Pi tool-mode defaults and OpenCode's native tool catalog are unchanged.
 
 ## [0.49.1] - 2026-11-15
@@ -581,3 +582,6 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 [#2745]: https://github.com/kunickiaj/codemem/pull/2745
 [#2746]: https://github.com/kunickiaj/codemem/pull/2746
 [#2748]: https://github.com/kunickiaj/codemem/pull/2748
+[#2765]: https://github.com/kunickiaj/codemem/pull/2765
+[#2766]: https://github.com/kunickiaj/codemem/pull/2766
+[#2768]: https://github.com/kunickiaj/codemem/pull/2768
