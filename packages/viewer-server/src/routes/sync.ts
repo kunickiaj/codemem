@@ -6497,6 +6497,138 @@ async function removeLocalPeerRoute(
 	});
 }
 
+export interface RecipientInvitationOutcome {
+	httpStatus: 200 | 400 | 409;
+	body: Record<string, unknown>;
+}
+
+function recipientInvitationTarget(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	kind: RecipientInviteKind,
+): string {
+	const targetId =
+		kind === "team_member"
+			? optionalViewerStrictString(body, "policy_team_id")
+			: optionalViewerStrictString(body, "target_identity_id");
+	if (!targetId) throw new Error("recipient_invite_metadata_invalid");
+	if (kind === "add_device" && targetId !== store.actorId) {
+		throw new Error("invite_identity_conflict");
+	}
+	return targetId;
+}
+
+/**
+ * Previews a Team or add-device invitation from this device: the Projects it
+ * shares and the digest that `createRecipientInvitation` must be given. The
+ * Viewer route and `codemem coordinator invitation create --review` share it.
+ */
+export function previewRecipientInvitation(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+): RecipientInvitationOutcome {
+	try {
+		const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+		const status = coordinatorAdminStatusPayload(readCoordinatorSyncConfig());
+		const unavailable = recipientInviteCreationUnavailable(status, kind);
+		if (unavailable) return unavailable;
+		const targetId = recipientInvitationTarget(store, body, kind);
+		const preview = recipientInviteOnboardingPreview(
+			store,
+			body,
+			recipientInvitePreviewId(kind, targetId),
+		);
+		return { httpStatus: 200, body: { kind, preview } };
+	} catch (error) {
+		return {
+			httpStatus: 400,
+			body: { error: error instanceof Error ? error.message : "recipient_invite_invalid" },
+		};
+	}
+}
+
+async function issueRecipientInvitation(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+	kind: RecipientInviteKind,
+	targetId: string,
+	preview: ReturnType<typeof recipientInviteOnboardingPreview>,
+) {
+	const config = readCoordinatorSyncConfig();
+	const status = coordinatorAdminStatusPayload(config);
+	const reviewedIntent = recipientInviteReviewedIntent(store, kind, targetId, preview);
+	const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
+	const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
+	const ttlHours = parseInviteTtlHours(body.ttl_hours);
+	if (!groupId) throw new Error("group_id_required");
+	if (ttlHours == null) throw new Error("ttl_hours_invalid");
+	// Initial owner enrollments intentionally remain Identity-unbound, so an explicitly
+	// admin-configured owner selects admin issuance up front. Non-admin devices use the
+	// signed Identity-bound endpoint; failures never fall back across this boundary.
+	const useAdminIssuance = kind === "team_member" || status.has_admin_secret;
+	if (useAdminIssuance) {
+		return coordinatorCreateInviteAction({
+			groupId,
+			coordinatorUrl: config.syncCoordinatorUrl || null,
+			policy: "auto_admit",
+			ttlHours,
+			createdBy: store.actorId,
+			remoteUrl: config.syncCoordinatorUrl || null,
+			adminSecret: config.syncCoordinatorAdminSecret || null,
+			inviteKind: kind,
+			policyTeamId: kind === "team_member" ? targetId : null,
+			targetIdentityId: kind === "add_device" ? targetId : null,
+			inviterDeviceId: kind === "add_device" ? preview.binding.deviceId : null,
+			reviewedPreviewDigest,
+			reviewedIntent,
+		});
+	}
+	return coordinatorCreateAddDeviceInviteAction({
+		groupId,
+		coordinatorUrl: config.syncCoordinatorUrl || null,
+		ttlHours,
+		deviceId: preview.binding.deviceId,
+		keysDir: syncKeysDir(),
+		remoteUrl: config.syncCoordinatorUrl || null,
+		reviewedPreviewDigest,
+		reviewedIntent,
+	});
+}
+
+/**
+ * Creates a Team or add-device invitation once the caller passes the digest from
+ * a current preview. These are the only invitations this device creates.
+ */
+export async function createRecipientInvitation(
+	store: MemoryStore,
+	body: Record<string, unknown>,
+): Promise<RecipientInvitationOutcome> {
+	try {
+		const kind = recipientInviteKind(body.kind ?? body.invite_kind);
+		const status = coordinatorAdminStatusPayload(readCoordinatorSyncConfig());
+		const unavailable = recipientInviteCreationUnavailable(status, kind);
+		if (unavailable) return unavailable;
+		const targetId = recipientInvitationTarget(store, body, kind);
+		const preview = recipientInviteOnboardingPreview(
+			store,
+			body,
+			recipientInvitePreviewId(kind, targetId),
+		);
+		const reviewedDigest = optionalViewerStrictString(body, "reviewed_onboarding_digest");
+		if (!reviewedDigest) throw new Error("reviewed_onboarding_digest_required");
+		if (reviewedDigest !== preview.reviewedOnboardingDigest) {
+			return { httpStatus: 409, body: { error: "reviewed_onboarding_stale", preview } };
+		}
+		const invite = await issueRecipientInvitation(store, body, kind, targetId, preview);
+		return { httpStatus: 200, body: { ok: true, kind, preview, invite } };
+	} catch (error) {
+		return {
+			httpStatus: 400,
+			body: { error: error instanceof Error ? error.message : "recipient_invite_failed" },
+		};
+	}
+}
+
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
@@ -7122,108 +7254,17 @@ export function syncRoutes(
 	});
 
 	app.post("/api/sync/recipient-policy/v1/invites/preview", async (c) => {
-		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "request_invalid" }, 400);
-		try {
-			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
-			const config = readCoordinatorSyncConfig();
-			const status = coordinatorAdminStatusPayload(config);
-			const unavailable = recipientInviteCreationUnavailable(status, kind);
-			if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
-			const targetId =
-				kind === "team_member"
-					? optionalViewerStrictString(body, "policy_team_id")
-					: optionalViewerStrictString(body, "target_identity_id");
-			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
-			if (kind === "add_device" && targetId !== store.actorId) {
-				throw new Error("invite_identity_conflict");
-			}
-			const preview = recipientInviteOnboardingPreview(
-				store,
-				body,
-				recipientInvitePreviewId(kind, targetId),
-			);
-			return c.json({ kind, preview });
-		} catch (error) {
-			return c.json(
-				{ error: error instanceof Error ? error.message : "recipient_invite_invalid" },
-				400,
-			);
-		}
+		const outcome = previewRecipientInvitation(getStore(), body);
+		return c.json(outcome.body, outcome.httpStatus);
 	});
 
 	app.post("/api/sync/recipient-policy/v1/invites", async (c) => {
-		const store = getStore();
 		const body = await parseViewerJsonBody(c);
 		if (!body) return c.json({ error: "request_invalid" }, 400);
-		try {
-			const kind = recipientInviteKind(body.kind ?? body.invite_kind);
-			const config = readCoordinatorSyncConfig();
-			const status = coordinatorAdminStatusPayload(config);
-			const unavailable = recipientInviteCreationUnavailable(status, kind);
-			if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
-			const targetId =
-				kind === "team_member"
-					? optionalViewerStrictString(body, "policy_team_id")
-					: optionalViewerStrictString(body, "target_identity_id");
-			if (!targetId) throw new Error("recipient_invite_metadata_invalid");
-			if (kind === "add_device" && targetId !== store.actorId) {
-				throw new Error("invite_identity_conflict");
-			}
-			const preview = recipientInviteOnboardingPreview(
-				store,
-				body,
-				recipientInvitePreviewId(kind, targetId),
-			);
-			const reviewedDigest = optionalViewerStrictString(body, "reviewed_onboarding_digest");
-			if (!reviewedDigest) throw new Error("reviewed_onboarding_digest_required");
-			if (reviewedDigest !== preview.reviewedOnboardingDigest) {
-				return c.json({ error: "reviewed_onboarding_stale", preview }, 409);
-			}
-			const reviewedIntent = recipientInviteReviewedIntent(store, kind, targetId, preview);
-			const reviewedPreviewDigest = await recipientReviewedIntentDigest(reviewedIntent);
-			const groupId = resolveCoordinatorAdminGroup(optionalViewerString(body, "group_id"), status);
-			const ttlHours = parseInviteTtlHours(body.ttl_hours);
-			if (!groupId) throw new Error("group_id_required");
-			if (ttlHours == null) throw new Error("ttl_hours_invalid");
-			// Initial owner enrollments intentionally remain Identity-unbound, so an explicitly
-			// admin-configured owner selects admin issuance up front. Non-admin devices use the
-			// signed Identity-bound endpoint; failures never fall back across this boundary.
-			const useAdminIssuance = kind === "team_member" || status.has_admin_secret;
-			const result = useAdminIssuance
-				? await coordinatorCreateInviteAction({
-						groupId,
-						coordinatorUrl: config.syncCoordinatorUrl || null,
-						policy: "auto_admit",
-						ttlHours,
-						createdBy: store.actorId,
-						remoteUrl: config.syncCoordinatorUrl || null,
-						adminSecret: config.syncCoordinatorAdminSecret || null,
-						inviteKind: kind,
-						policyTeamId: kind === "team_member" ? targetId : null,
-						targetIdentityId: kind === "add_device" ? targetId : null,
-						inviterDeviceId: kind === "add_device" ? preview.binding.deviceId : null,
-						reviewedPreviewDigest,
-						reviewedIntent,
-					})
-				: await coordinatorCreateAddDeviceInviteAction({
-						groupId,
-						coordinatorUrl: config.syncCoordinatorUrl || null,
-						ttlHours,
-						deviceId: preview.binding.deviceId,
-						keysDir: syncKeysDir(),
-						remoteUrl: config.syncCoordinatorUrl || null,
-						reviewedPreviewDigest,
-						reviewedIntent,
-					});
-			return c.json({ ok: true, kind, preview, invite: result });
-		} catch (error) {
-			return c.json(
-				{ error: error instanceof Error ? error.message : "recipient_invite_failed" },
-				400,
-			);
-		}
+		const outcome = await createRecipientInvitation(getStore(), body);
+		return c.json(outcome.body, outcome.httpStatus);
 	});
 
 	app.post("/api/sync/recipient-policy/v1/migrate", async (c) => {

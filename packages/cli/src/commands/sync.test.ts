@@ -405,7 +405,7 @@ describe("formatSyncAttempt", () => {
 		expect(help).toContain("bind port");
 	});
 
-	it("allows positional group ids for create-invite and list-join-requests", () => {
+	it("creates Team or add-device invitations and keeps a positional group for list-join-requests", () => {
 		const coordinator = syncCommand.commands.find((command) => command.name() === "coordinator");
 		const createInvite = coordinator?.commands
 			.find((command) => command.name() === "invitation")
@@ -413,9 +413,9 @@ describe("formatSyncAttempt", () => {
 		const listRequests = coordinator?.commands
 			.find((command) => command.name() === "request")
 			?.commands.find((command) => command.name() === "list");
-		expect(createInvite?.registeredArguments[0]?.required).toBe(false);
+		expect(createInvite?.registeredArguments).toEqual([]);
+		expect(createInvite?.helpInformation()).toMatch(/--team <team>[\s\S]*--add-device/);
 		expect(listRequests?.registeredArguments[0]?.required).toBe(false);
-		expect(createInvite?.helpInformation()).toContain("[group]");
 		expect(listRequests?.helpInformation()).toContain("[group]");
 	});
 

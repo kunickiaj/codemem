@@ -787,7 +787,7 @@ Open **Sharing → Invitations → Review an invite** and paste any code you rec
 
 - **Team, add-device, and Project invitations** show the Projects you will receive before you accept.
 - **A device pairing code** belongs in **Devices**. Choose **Review in Devices**, then **Pair a device**. The code is already filled in, so you can check the other device before trusting it.
-- **An older connection-only code** connects this device to a coordinator group. It shares no Projects and adds you to no Team. If the group needs an admin's approval, Sharing says the join request was sent. These codes are no longer created, and codemem stops accepting them in the release after the last one can expire.
+- **An older connection-only code** connects this device to a coordinator group. It shares no Projects and adds you to no Team. If the group needs an admin's approval, Sharing says the join request was sent. codemem 0.50 no longer creates these codes, and 0.51 stops accepting them. If someone sends you one after you upgrade to 0.51, ask them for a Team invitation instead.
 
 ### Stop receiving a Project on this device
 

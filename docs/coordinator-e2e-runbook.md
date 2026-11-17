@@ -166,43 +166,46 @@ Use a coordinator URL the teammate device can actually reach.
 If you create an invite with a LAN-only, localhost, or Tailnet-only URL, codemem now warns about that, but it will not
 block you because private-network deployments can still be valid.
 
-## 3. Create and share an invite
+## 3. Create and share an invitation
 
-On the admin device:
+On the admin device, create a Team in **Sharing → Teams** if it has none, then create the
+invitation in **Sharing → Invitations** or from the CLI. The CLI uses the admin device's own
+memory database and config. Review the Projects the invitation shares, then create it with the
+digest the review prints:
 
 ```fish
-codemem coordinator invitation create my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation create --team "Platform" --review
+codemem coordinator invitation create --team "Platform" --reviewed-onboarding-digest <digest>
 ```
 
 This returns:
 
-- a pasteable encoded invite string
+- a pasteable encoded invitation string
 - a link form of the same payload
 - optional warnings if the coordinator URL looks network-scoped
 
-Share the encoded invite with the teammate device.
+Share the encoded invitation with the teammate device.
 
 ## 4. Join from the teammate device
 
-On the teammate device:
-
-```fish
-codemem coordinator invitation accept <encoded-invite>
-```
+On the teammate device, paste the invitation in the viewer under **Sharing**, review the Projects
+it shares, and accept it. Team invitations must be accepted in the viewer.
 
 Expected result:
 
 - `sync_coordinator_url` is configured automatically
 - `sync_coordinator_group` is configured automatically
-- if the invite uses `auto_admit`, enrollment completes immediately
-- if the invite uses `approval_required`, the teammate sees a pending state until approval
+- enrollment completes immediately, because Team invitations admit the device automatically
 
-The invite import path now uses a more reasonable timeout than the old brittle 3-second default, but if it still times
-out, check reachability of the invite’s `coordinator_url` from the teammate machine before doing anything else.
+The invitation import path now uses a more reasonable timeout than the old brittle 3-second
+default, but if it still times out, check reachability of the invitation's `coordinator_url` from
+the teammate machine before doing anything else.
 
 ## 5. Approve join requests if needed
 
-If the invite policy is `approval_required`, on the admin host:
+Older connection-only codes created before 0.50 can still be imported with
+`codemem coordinator invitation accept <encoded-invite>`. If such a code's policy is
+`approval_required`, approve the join request on the admin host:
 
 ```fish
 codemem coordinator request list my-team --db-path ~/.codemem/coordinator.sqlite

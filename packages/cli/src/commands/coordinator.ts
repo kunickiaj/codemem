@@ -14,7 +14,6 @@ import { readFileSync } from "node:fs";
 import * as p from "@clack/prompts";
 import {
 	coordinatorCreateGroupAction,
-	coordinatorCreateInviteAction,
 	coordinatorCreateScopeAction,
 	coordinatorDisableDeviceAction,
 	coordinatorEnrollDeviceAction,
@@ -55,6 +54,7 @@ import { buildCoordinatorD1BaselineCommand } from "./coordinator-d1-baseline.js"
 import { buildCoordinatorDiagnoseTeamSetupCommand } from "./coordinator-diagnose-team-setup.js";
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
+import { buildCoordinatorInvitationCreateCommand } from "./coordinator-invitation-create.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
 import { buildCoordinatorQualifyOwnerCommand } from "./coordinator-qualify-owner.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
@@ -1210,71 +1210,9 @@ export function buildCoordinatorCommand(): Command {
 	);
 	grant.addCommand(revokeBootstrapGrantCmd);
 
-	// ---- create-invite ----
+	// ---- invitation create ----
 
-	const createInviteCmd = new Command("create")
-		.configureHelp(helpStyle)
-		.description("Create a coordinator group invitation")
-		.argument("[group]", "group id")
-		.option("--group <group>", "group id")
-		.option("--coordinator-url <url>", "coordinator URL override")
-		.option("--policy <policy>", "invite policy", "auto_admit")
-		.option("--ttl-hours <hours>", "invitation lifetime in hours", "24")
-		.option("--remote-url <url>", "remote coordinator URL override")
-		.option("--admin-secret <secret>", "remote coordinator admin secret override");
-	addDbOption(createInviteCmd);
-	addJsonOption(createInviteCmd);
-	createInviteCmd.action(
-		async (
-			groupArg: string | undefined,
-			opts: {
-				group?: string;
-				coordinatorUrl?: string;
-				policy?: string;
-				ttlHours?: string;
-				db?: string;
-				dbPath?: string;
-				remoteUrl?: string;
-				adminSecret?: string;
-				json?: boolean;
-			},
-		) => {
-			try {
-				const ttlHours = Number.parseInt(String(opts.ttlHours ?? "24"), 10);
-				const groupId = String(opts.group ?? "").trim() || String(groupArg ?? "").trim();
-				const result = await coordinatorCreateInviteAction({
-					groupId,
-					coordinatorUrl: opts.coordinatorUrl?.trim() || null,
-					policy: String(opts.policy ?? "auto_admit").trim(),
-					ttlHours,
-					createdBy: null,
-					dbPath: resolveDbOpt(opts) ?? null,
-					remoteUrl: opts.remoteUrl?.trim() || null,
-					adminSecret: opts.adminSecret?.trim() || null,
-				});
-				if (opts.json) {
-					console.log(JSON.stringify(result, null, 2));
-					return;
-				}
-				p.intro("codemem coordinator invitation create");
-				p.log.success(`Invite created for ${groupId}`);
-				if (typeof result.link === "string") p.log.message(`- link: ${result.link}`);
-				if (typeof result.encoded === "string") p.log.message(`- invite: ${result.encoded}`);
-				for (const warning of Array.isArray(result.warnings) ? result.warnings : []) {
-					p.log.warn(String(warning));
-				}
-				p.outro("Invite ready");
-			} catch (err) {
-				if (opts.json) {
-					emitJsonError("create_invite_failed", err instanceof Error ? err.message : String(err));
-					return;
-				}
-				p.log.error(err instanceof Error ? err.message : String(err));
-				process.exitCode = 1;
-			}
-		},
-	);
-	invitation.addCommand(createInviteCmd);
+	invitation.addCommand(buildCoordinatorInvitationCreateCommand());
 
 	// ---- import-invite ----
 

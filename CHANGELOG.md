@@ -7,6 +7,10 @@
 - OpenCode 2.2.6 and later can share one `codemem mcp` process across all projects instead of starting one per project directory. Run `codemem setup --opencode-only --opencode-mcp pooled` to opt in, and the same command with `--opencode-mcp stdio` to go back. Searches, writes, and sharing scopes still follow the project each call came from. Every project must load the codemem plugin, and the default is unchanged. See [Shared MCP server](docs/plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in). ([#2765], [#2766], [#2768])
 - MCP clients can use `memory_session_search` to search stored Pi user/assistant transcripts with the same bounded results and project/session filters as Pi's existing native tool. Pi tool-mode defaults and OpenCode's native tool catalog are unchanged.
 
+### Changed
+
+- `codemem coordinator invitation create` now creates Team or add-device invitations from a Team admin's own device and no longer creates connection-only codes. Run it with `--team <name>` or `--add-device` and `--review` to see the Projects the invitation shares, then again with `--reviewed-onboarding-digest <digest>` to create it. The old `invitation create <group>` form fails with that guidance. To connect a device without sharing Projects, use `codemem coordinator device enroll`. Older connection-only codes can still be imported in 0.50, and 0.51 stops accepting them. See [Invite-driven enrollment](docs/coordinator-deployment.md#invite-driven-enrollment-recommended).
+
 ## [0.49.1] - 2026-11-15
 
 ### Fixed
