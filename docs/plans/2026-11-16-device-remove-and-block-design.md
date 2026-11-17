@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). A second security review then changed five points, and the owner replaced decision 1 with rejoin by Google sign-in. Three details of that ceremony wait for the owner's confirmation, and it has had no security review. Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). Decisions 7 and 8 and three details of the sign-in ceremony wait for the owner. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -33,8 +33,8 @@ needs one change: it accepts a removal tombstone as evidence when the
 enrollment is gone. Rejoining by Google sign-in needs a new ceremony, modeled
 on the existing rebind ceremony.
 
-Two passes of an independent security review found nine ways around earlier
-drafts. Their fixes are part of this text and are listed under
+Three passes of an independent security review found thirteen ways around
+earlier drafts. Their fixes are part of this text and are listed under
 [Security review](#security-review).
 
 The owner settled six questions the design depended on. They are listed under
@@ -93,8 +93,9 @@ defeat a removal, whichever program issues them:
   Ed25519 is compared by its exact text. The same write aborts when it
   supplies no `key_id` and any tombstone exists.
 - An insert aborts when a row with the same group and device ID, or the same
-  row ID, already exists. An update that moves a row onto another row's group
-  and device ID aborts. Without this rule SQLite's replace-on-conflict deletes
+  row ID, already exists. Any update that moves a row onto another row's group
+  and device ID or row ID aborts, whichever name the statement uses for the
+  row ID. Without this rule SQLite's replace-on-conflict deletes
   the other row without running its delete trigger.
 - A delete aborts unless an active tombstone already holds that row's group,
   device ID, and key.
@@ -184,7 +185,8 @@ becomes:
   Section 7 uses this to show which devices have applied a removal.
 - The stored number is valid only for the pairings and bindings the lookup
   asked about. The peer keeps a local counter that every new or reactivated
-  pairing or binding increases in its own transaction. A lookup notes the
+  pairing or binding increases in its own transaction. A change of the key a
+  pairing pins increases it too. A lookup notes the
   counter when it reads its entries and stores the number only if the counter
   is unchanged when it finishes. Any later new pairing or binding sets the
   stored number to 0, and the peer advertises 0 until a complete lookup has
@@ -283,8 +285,10 @@ The ceremony reuses the three proofs of the existing rebind ceremony in ADR
 0005 Section 8, bound to one short-lived attempt:
 
 1. **The account.** A Google sign-in bound to the attempt, whose issuer and
-   subject resolve to the active account link of the Identity in the device's
-   ownership binding.
+   subject resolve to a live account link of the Identity in the device's
+   ownership binding. The link must be one that owner enrollment accepts
+   today. A plain device-claim link is refused until the owner decides
+   otherwise (decision 7).
 2. **The key.** A signature over the attempt by the device key. The
    coordinator verifies it against the public key stored in the device's
    tombstone, whose canonical key ID equals the binding's.
@@ -293,18 +297,28 @@ The ceremony reuses the three proofs of the existing rebind ceremony in ADR
 
 The coordinator also requires that one binding row holds both the device ID
 and the key, that the binding belongs to the coordinator ID the request runs
-under, that an active tombstone records that same device ID and key, and that
-no block matches. A coordinator with no trusted coordinator ID refuses.
+under, that an active tombstone records exactly that device ID and key, and
+that no block matches. It refuses when an active tombstone records the device
+ID with another key. A coordinator with no trusted coordinator ID refuses.
+
+The device returns only to groups where its Identity still has standing. A
+group qualifies when a tombstone with the device's own ID and key names it, it
+is not archived, and the Identity has an active Identity-group grant there.
+An Identity-group grant is the coordinator's record that an Identity may have
+devices in a group, and owner enrollment already requires one for a new
+device. A group whose grant was revoked after the removal does not qualify.
+Neither does a group that never had a grant, until the owner decides
+otherwise (decision 8).
 
 One transaction then finalizes the attempt, sets the lift columns on every
-active tombstone that matches the device ID or key, writes an enrollment with
-the binding's Identity in each unarchived group that one of those tombstones
-names, and writes an audit event. When every one of those groups is archived,
-the ceremony refuses and writes nothing. Lifting the tombstones without
-writing an enrollment would leave nothing to block the device from, because
-Block takes an enrollment or an active tombstone as evidence. The device returns to the groups it was
-removed from and to no others. Scope memberships are not restored. The
-reconciler grants what current recipient policy gives that Identity.
+active tombstone of the device's key, writes one enrollment with the binding's
+Identity, device ID, and key in each qualifying group, and writes an audit
+event. A tombstone of another device ID that shares the key is ended and never
+enrolled. When no group qualifies, the ceremony refuses and writes nothing.
+Lifting the tombstones without writing an enrollment would leave nothing to
+block the device from, because Block takes an enrollment or an active
+tombstone as evidence. Scope memberships are not restored. The reconciler
+grants what current recipient policy gives that Identity.
 
 Signing in alone changes nothing, as ADR 0005 requires. Only the confirmed
 ceremony lifts the removal. Each rejoin appears on the Identity's other
@@ -351,10 +365,15 @@ not part of this design.
   Identity, and a person with a Google account can sign in on a removed
   device. A person can therefore bring their own removed device back without
   an administrator. To stop a person, remove that person from the Team.
-- A Google-linked device whose Identity no longer has an active account link
-  can neither sign in to rejoin nor use an invitation. The same holds when
-  every group it was removed from is archived. Its holder sets it up as a new
+- A Google-linked device whose Identity no longer has a qualifying account
+  link can neither sign in to rejoin nor use an invitation. The same holds
+  when no group it was removed from qualifies. Its holder sets it up as a new
   device.
+- As written, sign-in rejoin works only where the Identity has an
+  Identity-group grant and an account link that owner enrollment accepts.
+  Grants are created when a Team invitation is accepted or by an operator
+  command, so many devices that signed in through the Viewer have neither.
+  Decisions 7 and 8 determine how many devices can use it.
 
 ## 2. What ends the Identity binding
 
@@ -561,9 +580,16 @@ Remove and of Block.
 - Last sentence of the body, for a device with no Google account link: "To
   bring {name} back, create a new invitation in Sharing and accept it on
   {name}."
-- Last sentence of the body, for a device linked to a Google account: "To
-  bring {name} back, sign in with Google on {name}. Whoever can sign in to
-  that account on {name} can bring it back."
+- Last sentence of the body, for a device linked to a Google account that can
+  rejoin by sign-in: "To bring {name} back, sign in with Google on {name}.
+  Whoever can sign in to that account on {name} can bring it back."
+- Last sentence of the body, for a device linked to a Google account that
+  cannot rejoin by sign-in: "{name} is linked to a Google account and cannot
+  be added back after you remove it. It would have to be set up as a new
+  device."
+
+The removal preview says which of the three sentences applies, from the same
+checks the rejoin would run.
 - Shown only when it applies: "{n} devices run an older version of codemem and
   keep syncing with {name} until they update: {list}."
 - Link under the body: "Lost or stolen? Block it permanently instead."
@@ -638,9 +664,9 @@ The owner decided these on 2026-11-16.
    invitation. Section 1 describes the ceremony.
 
    Three details of that ceremony are this design's choices and wait for the
-   owner's confirmation. The device returns to the groups it was removed from.
-   A device with a Google account link cannot use an invitation at all. The
-   notice on other devices and the daily limit match rebinding.
+   owner's confirmation. The device returns only to groups it was removed
+   from. A device with a Google account link cannot use an invitation at all.
+   The notice on other devices and the daily limit match rebinding.
 2. **Any invitation created after the removal can bring a device back.** That
    includes an add-device invitation from the same person's other device. The
    alternative was to require an invitation created with the admin secret,
@@ -659,6 +685,29 @@ The owner decided these on 2026-11-16.
    self-withdrawal route.
 6. **A removed machine must run 0.50 to rejoin,** because lifting requires a
    signed join request or the sign-in ceremony.
+
+The third security review raised two questions about sign-in rejoin that the
+owner has not decided. Until then the contract takes the stricter answer for
+both.
+
+7. **Which account links can bring a device back.** Owner enrollment accepts
+   a link that an administrator reviewed, or one explicitly qualified for
+   owner enrollment. It refuses a plain device-claim link, which is what a
+   device gets when it signs in through the Viewer without a review. ADR 0005
+   Section 8 lets such a link authorize rebinding and nothing else. The
+   contract refuses it for rejoin. Recommended: accept a plain device-claim
+   link for rejoin, because the ceremony can only restore the device that the
+   ownership binding already names, in groups it was removed from. Without
+   this, most devices that signed in through the Viewer cannot rejoin by
+   signing in.
+8. **Groups with no Identity-group grant.** The contract returns a device
+   only to groups where its Identity has an active grant. Recommended: also
+   return it to a group that never had a grant row for the Identity, and keep
+   refusing a group whose grant was revoked. A group without a grant row has
+   no coordinator record of who belongs to it, so the removed enrollment is
+   the only record there is, and the rejoin restores what the removal took.
+   The cost is that the coordinator cannot tell that a person left such a
+   group.
 
 ADR 0007 Decision 5 says a removed machine rejoins by accepting a new
 invitation. Decision 1 above adds sign-in for a device of a verified Identity.
@@ -730,6 +779,28 @@ The second pass also noted that the coordinator does not know whether an
 Identity was merged or deactivated on a device. It could not show access from
 that, and this design does not change it.
 
-No review has checked the changes from the second pass or the sign-in
-ceremony, which the owner chose after it. The reviewer ran no tests of this
-design, because nothing is implemented.
+### Third pass
+
+The owner asked for a third pass. It read the changes from the second pass and
+the sign-in ceremony. It confirmed that the enrollment-only code finding is
+closed and that the withdrawn invitation rule is gone. It found four further
+paths, and all four changed this design.
+
+| Finding | Severity | Change |
+| --- | --- | --- |
+| Sign-in rejoin enrolled the device in every group a tombstone named. A group where the Identity's grant was revoked after the removal got its enrollment back. | High | A group qualifies only with an active Identity-group grant. |
+| The ceremony proved one device ID and key and then acted on every tombstone that matched the device ID or the key. A device with an older tombstone under another key, or another device ID that shared the key, could be enrolled without proof. | High | Enrollments use only the binding's device ID and key. An active tombstone of the device ID under another key makes the ceremony refuse. |
+| The collision trigger named the row ID column, and SQLite accepts two other names for it. | Medium | The trigger has no column list. |
+| The local counter ignored a change of the key an existing pairing pins. | Medium | A key change increases the counter. |
+
+The third pass also listed requirements for the sign-in protocol, which the
+contract now states: bind the attempt to the exact tombstones, groups, grant
+revisions, and account link, finalize once, make every write depend on one
+winning statement, and check blocks and grants in the final statements. It
+left two authority questions for the owner, recorded as decisions 7 and 8.
+
+No review has checked the changes from the third pass, or the two changes
+made for the pull request review: the `enrolled` answer in the lookup and the
+refusal when no group qualifies. The sign-in protocol gets its own review when
+it is written. The reviewer ran SQLite checks of the proposed triggers and no
+tests of this design, because nothing is implemented.

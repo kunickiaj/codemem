@@ -75,7 +75,8 @@ finding 4):
     the old tombstone. (Second review.)
 24. With recursive triggers off, `INSERT OR REPLACE` and `UPDATE OR REPLACE`
     that collide with another enrollment by group and device ID or by row ID
-    abort and leave that enrollment in place. (Second review.)
+    abort and leave that enrollment in place. The update case is repeated
+    with the row ID named `_rowid_` and `oid`. (Second and third review.)
 25. An insert of an opaque key whose text equals an active tombstone's key
     aborts.
 26. Every 0.50 enrollment writer still works for a device that is already
@@ -175,13 +176,14 @@ Inviter rule:
 
 These wait for the ceremony's protocol and its security review. D has an
 ownership binding to Identity I under coordinator ID A and was removed from
-groups 1 and 2.
+groups 1 and 2. I has an active Identity-group grant in both groups and an
+account link that owner enrollment accepts.
 
-1. A sign-in that resolves to I's active account link, a signature by K over
-   the attempt, and the browser confirmation lift every active tombstone of D
-   and K, enroll D with Identity I in groups 1 and 2, set
-   `lifted_by_attempt_id`, and write one audit event. The binding row is
-   unchanged, and no scope membership is written.
+1. A sign-in that resolves to I's account link, a signature by K over the
+   attempt, and the browser confirmation lift every active tombstone of K,
+   enroll D with Identity I in groups 1 and 2, set `lifted_by_attempt_id`, and
+   write one audit event. The binding row is unchanged, and no scope
+   membership is written.
 2. A sign-in without the signature, a signature without the sign-in, and both
    without the confirmation each write nothing.
 3. A sign-in that resolves to another Identity, or to no active link, is
@@ -203,6 +205,24 @@ groups 1 and 2.
 11. The rejoin above the daily limit for I is refused.
 12. The Identity's other devices show the rejoin with a Remove action after
     their next sync.
+13. I's grant for group 2 is revoked before the confirmation: only group 1
+    gets an enrollment. It is revoked between confirmation and commit: the
+    commit fails and writes nothing. A group with no grant row gets no
+    enrollment. With no qualifying group the ceremony is refused. (Third
+    review. The no-grant case changes with owner decision 8.)
+14. D also has an active tombstone under an older key K0 from a single-group
+    removal: the ceremony is refused and enrolls nothing. (Third review.)
+15. Device ID E shares K and has its own tombstone: that tombstone is lifted
+    and E is not enrolled. (Third review.)
+16. A plain device-claim link is refused, and a link that owner enrollment
+    accepts succeeds. (Changes with owner decision 7.)
+17. An attempt confirmed for removal 1 cannot lift removal 2 after the device
+    rejoined and was removed again. A link replaced after the attempt started
+    makes the commit fail. (Third review.)
+18. A retry of a finalized attempt returns the stored receipt, writes nothing,
+    and does not lift a later tombstone. Status reads write nothing.
+19. A signed coordinator request that returns `device_removed` is not accepted
+    as the rejoin signature.
 
 ## D. Coordinator routes
 
@@ -212,7 +232,9 @@ groups 1 and 2.
 3. Preview returns `removal_target_not_enrolled`, `removal_target_conflict`,
    and `removal_target_too_large` in their cases and writes nothing.
 4. Commit returns the receipt with `removal_id`, `removal_seq`, and one entry
-   for each removed enrollment.
+   for each removed enrollment. Preview reports `rejoin` as `invitation`,
+   `sign_in`, or `none` for a device without a binding, with a binding and a
+   qualifying link and group, and with a binding and neither.
 5. `GET /v1/admin/devices/removals` lists active tombstones newest first,
    omits lifted ones and public keys, and sets `truncated` above 500.
 6. A coordinator database without the table returns
@@ -304,7 +326,9 @@ New function in `packages/core`, for example `removePairingState`.
     nothing. (Owner decision 4.)
 17. A pairing or binding that is created or reactivated after a complete
     lookup sets the stored `applied_removal_seq` to 0 in the same transaction,
-    and the next presence update advertises 0. (Second review.)
+    and the next presence update advertises 0. A coordinator key rotation that
+    changes an existing pairing's pinned key does the same. (Second and third
+    review.)
 18. A pairing created while a lookup is running stops that lookup from storing
     its number. (Second review.)
 19. A checked device whose pairing another process restores from an older peer
@@ -342,8 +366,8 @@ New function in `packages/core`, for example `removePairingState`.
 2. Each confirmation renders the copy in Section 8 of the design, with the
    cancel button focused.
 3. The older-version line appears only when such devices exist, and names them.
-   The body ends with the sign-in sentence for a device with an ownership
-   binding and with the invitation sentence for any other device. The removed
+   The body ends with the invitation, sign-in, or cannot-be-added-back
+   sentence that the preview's `rejoin` value selects. The removed
    device shows **Sign in to rejoin** only when it has an ownership binding.
 4. The local-only confirmation and result name the other devices.
 5. The removed-device list shows each tombstone with Block device permanently.

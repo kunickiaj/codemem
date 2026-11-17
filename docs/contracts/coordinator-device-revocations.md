@@ -456,10 +456,12 @@ that opens a migrated SQLite coordinator database directly:
   new `key_id` is null and any tombstone exists. Abort when an update changes
   `public_key` and leaves `key_id` unchanged.
 - `BEFORE INSERT`: abort when a row with the same `group_id` and `device_id`, or
-  the same `rowid`, exists. `BEFORE UPDATE` of `group_id`, `device_id`, or
-  `rowid`: abort when another row has the new values. With recursive triggers
-  off, conflict replacement deletes the other row without firing its delete
-  trigger, as the ownership binding schema already notes.
+  the same `rowid`, exists. `BEFORE UPDATE`, with no column list: abort when
+  another row has the new `group_id` and `device_id` or the new `rowid`. A
+  column list would miss an update that names the row ID as `_rowid_` or `oid`.
+  With recursive triggers off, conflict replacement deletes the other row
+  without firing its delete trigger, as the ownership binding schema already
+  notes.
 - `BEFORE DELETE`: abort unless an active tombstone holds the row's `group_id`,
   `device_id`, and `public_key`.
 - `BEFORE UPDATE` of `enabled` to 1: abort when an active tombstone of the same
@@ -523,7 +525,11 @@ context.
   more than one canonical key or differing opaque key text. It then adds every
   enrollment with the same `key_id` under another device ID, and returns
   `409 removal_target_too_large` above 50 enrollments. Success is
-  `{ state: "ready", version: 1, device_ids, key_id, enrollments, expected_digest }`.
+  `{ state: "ready", version: 1, device_ids, key_id, enrollments, rejoin, expected_digest }`.
+  `rejoin` is `invitation` for a device with no ownership binding, `sign_in`
+  when the binding, account link, and at least one destination group would pass
+  the sign-in checks below at this moment, and `none` otherwise. It is advice
+  for the confirmation text and authorizes nothing.
   Each enrollment entry has `group_id`, `device_id`, `fingerprint`,
   `display_name`, and `identity_id`. Preview writes nothing.
 - The SHA-256 digest binds an action and version domain, the sorted device IDs,
@@ -628,30 +634,67 @@ All of these hold in the statements that write:
 - one ownership binding row has both the device ID and the canonical key ID, no
   other binding row matches either of them, and the binding's `coordinator_id`
   equals the trusted coordinator ID
-- an active tombstone has that device ID and that `key_id`
-- an attempt-bound OIDC sign-in resolves, by issuer and subject, to the active
-  account link of the binding's `identity_id` under that coordinator ID
-- a signature over the attempt verifies against the `public_key` of that
-  tombstone
+- at least one active tombstone has exactly that device ID and that `key_id`.
+  These are the **own tombstones**.
+- no active tombstone has that device ID with another key. The ceremony refuses
+  such a history, and an operator resolves it.
+- an attempt-bound OIDC sign-in resolves, by issuer and subject, to a live
+  account link of the binding's `identity_id` under that coordinator ID. The
+  link must pass the authority decision that owner enrollment already applies:
+  an attestation-backed link, or the exact explicitly qualified device-claim
+  link. Whether a plain device-claim link may also restore the device its
+  binding names is an open decision in the design note. Until the owner decides
+  it, such a link is refused.
+- a signature over the attempt verifies against the `public_key` of an own
+  tombstone. The signature has its own purpose label and is not a signed
+  coordinator request.
 - the browser confirmation for the attempt was given. It names the account, the
   Identity, the device, and the groups to be written.
 - no revocation subject matches the device ID or key
 - the Identity's rejoin count for the day is under the limit.
 
+A group is a **destination** when an own tombstone names it, it is not archived,
+an active Identity-group grant exists for the binding's Identity in that group
+under the coordinator ID, and the existing owner-enrollment exclusion check does
+not exclude the device there. This is the check that owner enrollment applies to
+a fresh device. A group whose grant was revoked, or that never had one, is not a
+destination. Whether a group that never had a grant row for the Identity may
+also be a destination is an open decision in the design note.
+
 One SQLite transaction or one atomic D1 batch finalizes the attempt, sets
-`lifted_at` on every active tombstone that matches the device ID or key, inserts
-an enrollment with the binding's `identity_id` and the tombstone's key tuple into
-each unarchived group named by one of those tombstones, and writes an audit
-event. When none of those groups is unarchived, the ceremony returns a fixed
+`lifted_at` on every active tombstone whose `key_id` equals the binding's,
+inserts one enrollment for each destination with the binding's `identity_id`,
+the binding's device ID, and the key tuple of the own tombstone, and writes an
+audit event. A tombstone of another device ID that shares the key is lifted and
+never enrolled. When there is no destination, the ceremony returns a fixed
 refusal and writes nothing, so the tombstones stay active and remain evidence
 for a revocation. A lift by sign-in therefore always leaves at least one
-enrollment. `lifted_by_invite_id` stays null, and a new `lifted_by_attempt_id` column
-records the attempt. The binding row is not changed. No scope membership, grant,
-or enrollment in another group is written.
+enrollment. `lifted_by_invite_id` stays null, and a new `lifted_by_attempt_id`
+column records the attempt. The binding row is not changed. No scope membership,
+grant, or enrollment in a group that is not a destination is written.
 
 A browser session alone, a sign-in without the signature, and a signature
-without the sign-in each write nothing. An exact retry returns the same receipt.
-An unknown outcome is resolved by reading the attempt's status.
+without the sign-in each write nothing.
+
+The protocol that implements this section must also meet these requirements,
+which its own review checks:
+
+- The attempt, the confirmation, and the signature bind the exact own
+  tombstones by `removal_seq` and tuple, the tombstones to be lifted, the
+  destinations with their grant revisions, and the account link's generation.
+  The final statements compare all of them again. A later removal, a changed
+  grant, or a replaced link makes the attempt fail.
+- Finalization is single use. A retry of a finalized attempt returns the stored
+  receipt and writes nothing. It never repairs an enrollment or lifts a later
+  tombstone. Status and recovery reads write nothing.
+- On D1, finalization, lifts, enrollments, the audit event, and the daily-limit
+  count depend on one winning statement. A write that changes no row aborts
+  every dependent write.
+- The revocation check and the destination check run in the final statements,
+  so a block or a grant revocation between confirmation and finalization stops
+  the rejoin.
+- Only the store operation of a finalized attempt sets `lifted_by_attempt_id`.
+  The lift-column trigger protects the row's shape and is not authorization.
 
 A device with no ownership binding cannot use this ceremony. A first sign-in on
 a device with no binding and no tombstone is the owner enrollment that already
@@ -699,9 +742,11 @@ update, with the sync feature `peer_removal_check`. An incomplete lookup leaves
 the stored value unchanged.
 
 The stored value covers only the entries the lookup sent. The client keeps a
-local generation counter that every insert or reactivation of a pairing or
-binding increments in its own transaction, and the same transaction sets the
-stored `applied_removal_seq` to 0. A lookup reads the counter in the transaction
+local generation counter. Every write that changes what a lookup would send
+increments it in its own transaction: an insert of a pairing or binding, a
+reactivation of a binding, and an update of a pairing's device ID, `public_key`,
+or `pinned_fingerprint`, which includes a coordinator key rotation. The same
+transaction sets the stored `applied_removal_seq` to 0. A lookup reads the counter in the transaction
 that reads its entries, and stores its result only when the counter is unchanged
 in the storing transaction.
 
