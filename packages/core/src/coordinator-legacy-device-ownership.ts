@@ -118,6 +118,17 @@ AND CASE WHEN changes() <> 1 THEN 0 WHEN ${LEGACY_ENROLLMENT_ROW_GUARD_SQL} THEN
 ELSE json('enrollment_key_text_incomplete') END`;
 
 /**
+ * Third statement of that change, a read in the same transaction or batch. A row
+ * that still passes every guard still has the captured key text, so the rewrite
+ * did not change it: a trigger suppressed the reset or the rewrite without an
+ * error. The read then raises, which rolls the reset back before anything commits.
+ * A count read after a D1 batch would come too late for that.
+ */
+const LEGACY_KEY_TEXT_COMPLETE_SQL = `SELECT CASE WHEN EXISTS (SELECT 1 FROM enrolled_devices
+WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL})
+THEN json('enrollment_key_text_incomplete') ELSE 1 END AS complete`;
+
+/**
  * True when a write replaces the stored key text and the stored `key_id` value
  * stays the same: another text form of one canonical key, or one opaque key in
  * place of another. The stale-key trigger refuses a key text change whose key ID
@@ -154,16 +165,19 @@ export interface LegacyEnrollmentWrite {
 export interface LegacyEnrollmentStatement {
 	sql: string;
 	values: (string | null)[];
+	/** A read that raises on an incomplete write. It changes no row and has no count. */
+	assertion?: true;
 }
 
 /**
  * The enrollment write: an INSERT when no enrollment was captured, an UPDATE
- * when one was, and two UPDATEs for a key text change that keeps the key ID
- * value (see changesKeyTextOnly). The enrollment triggers abort an insert over
- * an existing row, so this table takes no ON CONFLICT clause. Every statement
- * pins the captured source, and a source that moved leaves it without effect.
- * The caller runs the statements in order in one transaction or atomic batch
- * and reads the outcome with legacyEnrollmentWritten.
+ * when one was, and two UPDATEs followed by a completion assertion for a key
+ * text change that keeps the key ID value (see changesKeyTextOnly). The
+ * enrollment triggers abort an insert over an existing row, so this table takes
+ * no ON CONFLICT clause. Every statement pins the captured source, and a source
+ * that moved leaves it without effect. The caller runs the statements in order
+ * in one transaction or atomic batch and reads the outcome of the writes with
+ * legacyEnrollmentWritten.
  */
 export function legacyEnrollmentWriteStatements(
 	input: LegacyEnrollmentWrite,
@@ -209,6 +223,7 @@ export function legacyEnrollmentWriteStatements(
 		return [
 			{ sql: LEGACY_KEY_ID_RESET_SQL, values: row },
 			{ sql: LEGACY_KEY_TEXT_UPDATE_SQL, values: [...assignments, ...keyIdValues, ...row] },
+			{ sql: LEGACY_KEY_TEXT_COMPLETE_SQL, values: row, assertion: true },
 		];
 	}
 	return [
@@ -217,8 +232,9 @@ export function legacyEnrollmentWriteStatements(
 }
 
 /**
- * True when every statement of the write changed its row, false when none did.
- * Anything else is not a result this writer can produce.
+ * True when every write changed its row, false when none did. Anything else is
+ * not a result this writer can produce. The completion assertion has already
+ * rolled back a reset that its rewrite did not follow.
  */
 export function legacyEnrollmentWritten(changes: readonly number[]): boolean {
 	if (changes.every((count) => count === 1)) return true;

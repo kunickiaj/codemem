@@ -34,6 +34,7 @@ export function registerEnrollmentWriterContract(test: RemovalTest) {
 	registerKeyIdOnUpdate(test);
 	registerKeyTextChanges(test);
 	registerKeyTextChangeFailures(test);
+	registerSuppressedKeyTextRewrites(test);
 }
 
 const INVITE_CONSUME = ["UPDATE coordinator_invites SET token"];
@@ -276,6 +277,58 @@ async function requestToJoin(f: RemovalFixture, joining: Enrollment): Promise<st
 		token: invite.token,
 	});
 	return request.request_id;
+}
+
+function registerSuppressedKeyTextRewrites(test: RemovalTest) {
+	for (const writer of ["admin enrollment", "join approval"] as const) {
+		test(`a key text change by ${writer} whose rewrite a trigger suppresses is rolled back with its key ID reset`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: the reset changes the row, and the rewrite then changes none without an error.
+			const enrolled = await target(f);
+			const recommented = otherTextForm(enrolled);
+			const seed = await target(f, "seed");
+			await enroll(f, enrolled);
+			await enroll(f, seed);
+			const requestId = await requestToJoin(f, recommented);
+			const before = await enrollmentRow(f, enrolled);
+			await f.exec(`CREATE TRIGGER removal_fixture_ignore_key_text
+				BEFORE UPDATE OF public_key ON enrolled_devices
+				WHEN NEW.public_key IS NOT OLD.public_key
+				BEGIN SELECT RAISE(IGNORE); END`);
+			try {
+				// Act
+				const pending =
+					writer === "admin enrollment"
+						? enroll(f, recommented)
+						: f.store.reviewJoinRequest({
+								requestId,
+								approved: true,
+								bootstrapGrant: { seedDeviceId: seed.deviceId, expiresAt: EXPIRES_AT },
+							});
+				// Assert: the writer fails closed, and nothing of the sequence is kept.
+				await expect(pending).rejects.toThrow(
+					/^(device_ownership_authorization_unavailable|join_review_incomplete)$/u,
+				);
+				expect(await enrollmentRow(f, enrolled)).toEqual(before);
+				expect(before).toMatchObject([storedKey(enrolled)]);
+				expect(
+					await f.rows(
+						"SELECT status FROM coordinator_join_requests WHERE request_id = ?",
+						requestId,
+					),
+				).toEqual([{ status: "pending" }]);
+				expect(
+					await f.rows(
+						"SELECT grant_id FROM coordinator_bootstrap_grants WHERE worker_device_id = ?",
+						enrolled.deviceId,
+					),
+				).toEqual([]);
+			} finally {
+				await f.exec("DROP TRIGGER IF EXISTS removal_fixture_ignore_key_text");
+			}
+		});
+	}
 }
 
 function registerKeyTextChangeFailures(test: RemovalTest) {

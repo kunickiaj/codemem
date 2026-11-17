@@ -1524,10 +1524,14 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				currentKeyId,
 				storeKeyId: this.hasRemovalSchema(),
 			});
-			// The caller's immediate transaction rolls a first statement back when a later one fails.
-			const changes = writes.map(({ sql, values }) =>
-				legacyDeviceWriteChanges({ meta: this.db.prepare(sql).run(...values) }),
-			);
+			// The caller's immediate transaction rolls a first statement back when a later one,
+			// or the completion assertion, fails.
+			const changes: number[] = [];
+			for (const { sql, values, assertion } of writes) {
+				const statement = this.db.prepare(sql);
+				if (assertion) statement.get(...values);
+				else changes.push(legacyDeviceWriteChanges({ meta: statement.run(...values) }));
+			}
 			if (legacyEnrollmentWritten(changes)) return;
 			const denial = this.db
 				.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)

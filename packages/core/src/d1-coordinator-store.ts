@@ -2268,9 +2268,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	}
 
 	/**
-	 * One statement runs alone. Two statements, a key ID reset and the key text
-	 * write that follows it, run as one atomic batch, so a failing second statement
-	 * rolls the reset back.
+	 * One statement runs alone. A key text change, with its key ID reset, its
+	 * rewrite, and its completion assertion, runs as one atomic batch. The assertion
+	 * raises inside the batch, so a reset that the rewrite did not follow never commits.
 	 */
 	private async runLegacyEnrollmentWrites(writes: LegacyEnrollmentStatement[]): Promise<number[]> {
 		const statements = writes.map(({ sql, values }) => this.db.prepare(sql).bind(...values));
@@ -2279,7 +2279,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const results = await this.db.batch(statements);
 		if (results.length !== statements.length)
 			throw new Error("device_ownership_authorization_unavailable");
-		return results.map(legacyDeviceWriteChanges);
+		return results.filter((_, index) => !writes[index]?.assertion).map(legacyDeviceWriteChanges);
 	}
 
 	async listEnrolledDevices(
@@ -3305,6 +3305,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					),
 			);
 		}
+		// After a key ID reset, the confirmation requires the rewritten row with its key ID.
+		const resetKeyId = keyId !== null && guard.changesKeyTextOnly ? keyId : null;
 		statements.push(
 			this.prepareJoinApprovalConfirmation(
 				row,
@@ -3315,6 +3317,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				enrolledValues,
 				grant,
 				grantId,
+				resetKeyId,
 			),
 		);
 		return statements;
@@ -3328,7 +3331,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	 * here, as it did for the former upsert. When the enrollment appeared,
 	 * disappeared, or changed key since the read, the transition changes no row and
 	 * the request stays pending. Each statement reads changes() of the one before
-	 * it and raises when its own guard fails, which rolls the whole batch back.
+	 * it and raises when its own guard fails, which rolls the whole batch back. A
+	 * rewrite that changes no row without raising leaves the reset to the
+	 * confirmation, which raises unless the rewritten row exists.
 	 */
 	private prepareJoinApprovalEnrollment(
 		row: CoordinatorJoinRequest & { public_key: string },
@@ -3392,15 +3397,28 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		enrolledValues: unknown[],
 		grant: CoordinatorCreateBootstrapGrantInput | null,
 		grantId: string | null,
+		resetKeyId: string | null,
 	): D1PreparedStatementLike {
-		const completeSql = `${enrolledSql} AND (? IS NULL OR EXISTS (
+		// The enrollment this approval leaves behind when it reset the key ID first:
+		// the incoming key text and fingerprint with the recomputed key ID, enabled.
+		const rewritten = resetKeyId !== null;
+		const rewrittenSql = rewritten
+			? ` AND EXISTS (SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?
+			AND public_key = ? AND fingerprint = ? AND key_id = ? AND enabled = 1)`
+			: "";
+		const rewrittenValues = rewritten
+			? [row.group_id, row.device_id, row.public_key, row.fingerprint, resetKeyId]
+			: [];
+		const completeSql = `${enrolledSql}${rewrittenSql} AND (? IS NULL OR EXISTS (
 			SELECT 1 FROM coordinator_bootstrap_grants WHERE grant_id = ? AND group_id = ?
 			AND seed_device_id = ? AND worker_device_id = ? AND expires_at = ? AND revoked_at IS NULL))`;
 		// A zero changes() chain must not commit a newly owned/revoked target after CAS.
 		// Missing effects/receipts still report incomplete, not a fictional atomic rollback.
+		// A reset key ID is the exception: its approval commits only with the rewritten
+		// row, so a rewrite that a trigger suppressed raises here and rolls the reset back.
 		const zeroChainSql = `NOT EXISTS (SELECT 1 FROM coordinator_join_requests
 			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ? AND reviewed_by IS ?)
-			OR (${guard.eligibilitySql})`;
+			OR ((${guard.eligibilitySql})${rewrittenSql})`;
 		return this.db
 			.prepare(`SELECT CASE WHEN changes() = 0 THEN
 			CASE WHEN ${zeroChainSql} THEN 1 ELSE json('join_review_incomplete') END
@@ -3410,7 +3428,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				reviewedAt,
 				reviewedBy,
 				...guard.eligibilityValues,
+				...rewrittenValues,
 				...enrolledValues,
+				...rewrittenValues,
 				grantId,
 				grantId,
 				row.group_id,

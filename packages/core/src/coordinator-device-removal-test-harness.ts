@@ -216,6 +216,7 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerTombstoneRules(test);
 	registerTombstoneSequence(test);
 	registerSingleGroupRemoval(test);
+	registerSuppressedRemovalWrites(test);
 	registerRemovalAvailability(test);
 	registerInvitationSequence(test);
 	registerKeyIdStorage(test);
@@ -337,6 +338,64 @@ function registerTombstoneRules(test: RemovalTest) {
 			{ lifted_at: null },
 		]);
 	});
+}
+
+function registerSuppressedRemovalWrites(test: RemovalTest) {
+	// A trigger that makes one write of the removal change no row without an error.
+	const suppressed = {
+		"tombstone insert": "BEFORE INSERT ON coordinator_device_removals",
+		"enrollment delete": "BEFORE DELETE ON enrolled_devices",
+		"presence delete": "BEFORE DELETE ON presence_records",
+		"reciprocal approval delete": "BEFORE DELETE ON coordinator_reciprocal_approvals",
+	} as const;
+	for (const [write, event] of Object.entries(suppressed)) {
+		test(`A11 a removal whose ${write} a trigger suppresses records no tombstone and deletes nothing`, async ({
+			fixture: f,
+		}) => {
+			// Arrange
+			const removed = await target(f);
+			const peer = await target(f, "peer");
+			await enroll(f, removed);
+			await enroll(f, peer);
+			await f.store.upsertPresence({
+				groupId: removed.groupId,
+				deviceId: removed.deviceId,
+				addresses: ["http://127.0.0.1:9000"],
+				ttlS: 300,
+			});
+			await f.store.createReciprocalApproval({
+				groupId: removed.groupId,
+				requestingDeviceId: removed.deviceId,
+				requestedDeviceId: peer.deviceId,
+			});
+			const dependent = () =>
+				Promise.all([
+					enrollments(f),
+					f.rows("SELECT device_id FROM presence_records WHERE device_id = ?", removed.deviceId),
+					f.rows(
+						"SELECT request_id FROM coordinator_reciprocal_approvals WHERE requesting_device_id = ?",
+						removed.deviceId,
+					),
+				]);
+			const before = await dependent();
+			await f.exec(`CREATE TRIGGER removal_fixture_ignore_write ${event}
+				BEGIN SELECT RAISE(IGNORE); END`);
+			try {
+				// Act
+				const pending = f.store.removeEnrollment({
+					groupId: removed.groupId,
+					deviceId: removed.deviceId,
+				});
+				// Assert: neither a tombstone without its deletes nor a delete without its tombstone.
+				await expect(pending).rejects.toThrow("device_removal_incomplete");
+				expect(await tombstones(f)).toEqual([]);
+				expect(await dependent()).toEqual(before);
+				expect(before.map((rows) => rows.length)).toEqual([2, 1, 1]);
+			} finally {
+				await f.exec("DROP TRIGGER IF EXISTS removal_fixture_ignore_write");
+			}
+		});
+	}
 }
 
 function registerSingleGroupRemoval(test: RemovalTest) {

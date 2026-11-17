@@ -464,6 +464,21 @@ const NO_UNFILLED_KEY_ID_SQL = "NOT EXISTS (SELECT 1 FROM enrolled_devices WHERE
 const OWN_TOMBSTONE_SQL = `EXISTS (SELECT 1 FROM coordinator_device_removals t
 WHERE t.removal_id = ? AND t.group_id = ? AND t.device_id = ? AND t.lifted_at IS NULL)`;
 
+/**
+ * A read in the same transaction or batch as the writes. It raises when this
+ * removal wrote its tombstone and a row that the removal deletes is still there,
+ * because a trigger suppressed that delete without an error. The whole removal
+ * then rolls back, so no tombstone is committed next to a surviving enrollment.
+ * Each delete requires the tombstone, so no row is deleted without one. Bind the
+ * removal ID, the group ID and device ID four times, and the device ID once more.
+ */
+const REMOVAL_COMPLETE_SQL = `SELECT CASE WHEN ${OWN_TOMBSTONE_SQL} AND (
+EXISTS (SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?)
+OR EXISTS (SELECT 1 FROM presence_records WHERE group_id = ? AND device_id = ?)
+OR EXISTS (SELECT 1 FROM coordinator_reciprocal_approvals WHERE group_id = ?
+  AND (requesting_device_id = ? OR requested_device_id = ?)))
+THEN json('device_removal_incomplete') ELSE 1 END AS complete`;
+
 /** The tombstone precedes the enrollment delete, which the delete trigger requires. */
 function singleRemovalStatements(
 	input: Required<CoordinatorRemoveEnrollmentInput>,
@@ -493,6 +508,11 @@ AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQ
 		{
 			sql: `DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND ${OWN_TOMBSTONE_SQL}`,
 			values: [...target, ...own],
+		},
+		{
+			sql: REMOVAL_COMPLETE_SQL,
+			values: [...own, ...target, ...target, input.groupId, input.deviceId, input.deviceId],
+			read: true,
 		},
 		{
 			sql: `SELECT removal_seq, group_id, device_id FROM coordinator_device_removals
@@ -573,8 +593,9 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		const results = await this.backend.batch(statements).catch(removalBackendFailure);
 		if (results.length !== statements.length) return incompleteResult();
 		const writes = results.slice(0, 4).map(resultChanges);
-		const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[4]);
-		const state = resultRows<{ unfilled: number; enrolled: number }>(results[5])[0];
+		if (resultRows<{ complete: number }>(results[4])[0]?.complete !== 1) return incompleteResult();
+		const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[5]);
+		const state = resultRows<{ unfilled: number; enrolled: number }>(results[6])[0];
 		if (!state) return incompleteResult();
 		if (removals.length === 0) {
 			if (writes.some((count) => count !== 0)) return incompleteResult();
