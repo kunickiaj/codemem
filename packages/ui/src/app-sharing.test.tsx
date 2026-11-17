@@ -915,3 +915,53 @@ describe("Sharing aggregate refresh ownership", () => {
 		await expect(operation).resolves.toBe(true);
 	});
 });
+
+describe("Sharing people management access", () => {
+	function loaderWith(loadCoordinatorAdminStatus: () => Promise<unknown>) {
+		document.body.innerHTML = '<div id="recipientPolicySharingMount"></div>';
+		const mountSharing = vi.fn();
+		const loadIntent = vi.fn().mockResolvedValue(intent);
+		const load = createRecipientPolicySharingLoader({
+			loadCoordinatorAdminStatus: vi.fn(loadCoordinatorAdminStatus),
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent,
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadSyncStatus: vi.fn().mockResolvedValue({}),
+			loadTeamSetupSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [] }),
+			mountSharing,
+		});
+		const lastOptions = () => mountSharing.mock.calls.at(-1)?.[3];
+		return { load, loadIntent, lastOptions };
+	}
+
+	it.each([
+		["holds the admin secret", { readiness: "ready", has_admin_secret: true }, true],
+		["lacks the admin secret", { readiness: "ready", has_admin_secret: false }, false],
+		["is not fully configured", { readiness: "partial", has_admin_secret: true }, false],
+	])("allows access changes only when this device %s", async (_label, status, expected) => {
+		const { load, lastOptions } = loaderWith(async () => status);
+
+		await load();
+
+		expect(lastOptions()?.accessChangesAllowed).toBe(expected);
+	});
+
+	it("keeps access changes disabled when the admin status cannot be read", async () => {
+		const { load, lastOptions } = loaderWith(async () => {
+			throw new Error("status unavailable");
+		});
+
+		await load();
+
+		expect(lastOptions()?.accessChangesAllowed).toBe(false);
+	});
+
+	it("reloads Sharing after a person changes", async () => {
+		const { load, loadIntent, lastOptions } = loaderWith(async () => ({}));
+		await load();
+
+		await lastOptions()?.onPeopleChanged?.();
+
+		expect(loadIntent).toHaveBeenCalledTimes(2);
+	});
+});

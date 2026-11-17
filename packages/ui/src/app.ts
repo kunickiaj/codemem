@@ -75,6 +75,7 @@ import {
 } from "./tabs/health";
 import { mountLegacyTeamSetupDialog, openLegacyTeamSetup } from "./tabs/legacy-team-setup-dialog";
 import { initProjectsTab, loadProjectsData } from "./tabs/projects";
+import { isPersonSettingsDialogOpen } from "./tabs/recipient-policy-person-settings";
 import { toRecipientPolicyManagementProjects } from "./tabs/recipient-policy-projects";
 import { requestSharingNavigation } from "./tabs/recipient-policy-sharing";
 import { initSettings, isSettingsOpen, loadConfigData, openSettings } from "./tabs/settings";
@@ -868,12 +869,10 @@ function appendTabRefreshTasks(
 		);
 	}
 	if (refreshTab === "sharing") {
-		promises.push(
-			loadRecipientPolicySharingData({
-				awaitTeamSetupSummary: true,
-				signal: session.signal,
-			}).then(recordBooleanResult),
-		);
+		const load = isPersonSettingsDialogOpen()
+			? Promise.resolve(true)
+			: loadRecipientPolicySharingData({ awaitTeamSetupSummary: true, signal: session.signal });
+		promises.push(load.then(recordBooleanResult));
 	}
 	if (refreshTab === "devices") {
 		promises.push(

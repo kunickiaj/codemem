@@ -786,6 +786,16 @@ Create an **Add device** invitation from the existing Identity. Before sending i
 
 The recipient accepts on the new device. Codemem links it to the same Identity, establishes the required trust, and starts initial sync for the reviewed Projects.
 
+### Rename, merge, or remove a person
+
+Open **Sharing → Identities** and choose **Person settings** on the person's card. The person this device belongs to has no Person settings.
+
+- **Name** changes the name shown for that person in codemem.
+- **Merge duplicates** combines two entries for the same person. The entry you opened moves its devices, Team memberships, and shared Projects to the person you choose, then leaves Sharing. Merging stops if the two entries have different roles or invitation states in the same Team, or if a Project is shared with one and stopped for the other.
+- **Remove person** stops that person's devices from receiving every Project shared with them, directly or through a Team. Memories already on those devices stay there. Neither merge nor removal can be undone.
+
+Merging and removal change who receives Projects. They work only on a device that holds the coordinator admin secret. On other devices the controls are disabled and say so. People are created by invitations and shares; Sharing has no separate step to create one.
+
 ### Devices, status, and recovery
 
 **Devices** shows every known device and whether its Identity ownership is configured. It does not infer ownership from pairing, coordinator membership, device names, or historical associations. It also does not infer per-device Team access from Identity membership; use Team policy administration when you need to review authoritative device decisions. Both direct and Team access remain limited to exact canonical Projects selected in Sharing.

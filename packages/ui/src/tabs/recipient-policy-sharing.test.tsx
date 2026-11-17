@@ -1744,3 +1744,80 @@ describe("Sharing Team setup recovery blockers", () => {
 		);
 	});
 });
+
+function localDeviceInventory(identityId: string): DeviceIdentityInventoryV1 {
+	return {
+		version: 1,
+		items: [
+			{
+				version: 1,
+				deviceId: "device-adam-1",
+				evidenceDeviceIds: [],
+				displayName: "Adam’s Mac",
+				state: "configured",
+				identityId,
+				suggestedIdentityId: null,
+				validatedFingerprint: null,
+				isLocal: true,
+				sources: ["local_device"],
+				conflictCodes: [],
+			},
+		],
+		coordinatorEvidence: { availability: "available", safeErrorCode: null },
+		truncated: false,
+	};
+}
+
+describe("Sharing person settings", () => {
+	registerRecipientFocusedSharingLifecycle();
+
+	function personSettingsLabels(): string[] {
+		return [...visiblePanel().querySelectorAll<HTMLButtonElement>("button")]
+			.filter((button) => button.textContent === "Person settings")
+			.map((button) => button.getAttribute("aria-label") ?? "");
+	}
+
+	it("offers person settings for other people but not for the person on this device", () => {
+		mount(intent(), { deviceInventory: localDeviceInventory("identity-adam") });
+		clickTab("Identities");
+
+		expect(personSettingsLabels()).toEqual(["Person settings for Brian"]);
+	});
+
+	it("lists everyone else as a merge target and marks the person on this device", () => {
+		mount(intent(), {
+			accessChangesAllowed: true,
+			deviceInventory: localDeviceInventory("identity-adam"),
+		});
+		clickTab("Identities");
+
+		act(() =>
+			visiblePanel()
+				.querySelector<HTMLButtonElement>('[aria-label="Person settings for Brian"]')
+				?.click(),
+		);
+		const options = [
+			...document.querySelectorAll<HTMLOptionElement>(
+				"#recipient-policy-person-merge-target option",
+			),
+		].map((option) => option.textContent);
+
+		expect(options).toEqual(["Choose a person", "Adam (you)"]);
+	});
+
+	it("keeps removal disabled when Sharing does not report admin access", () => {
+		mount(intent(), { deviceInventory: localDeviceInventory("identity-adam") });
+		clickTab("Identities");
+
+		act(() =>
+			visiblePanel()
+				.querySelector<HTMLButtonElement>('[aria-label="Person settings for Brian"]')
+				?.click(),
+		);
+		const remove = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+			(button) => button.textContent === "Remove Brian",
+		);
+
+		expect(remove?.disabled).toBe(true);
+	});
+});

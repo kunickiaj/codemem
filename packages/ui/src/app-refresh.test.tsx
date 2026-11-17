@@ -456,6 +456,40 @@ describe("app refresh session wiring", () => {
 	});
 });
 
+describe("Sharing refresh with person settings open", () => {
+	beforeEach(() => setupRefreshAppTest({ tab: "sharing" }));
+	afterEach(() => {
+		vi.clearAllTimers();
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		document.body.innerHTML = "";
+		window.location.hash = "";
+	});
+
+	it("waits to refresh Sharing until person settings closes", async () => {
+		// Objective: a merge or removal result stays readable; a refresh would drop the person's card and its dialog.
+		// Arrange
+		const dialog = document.createElement("div");
+		dialog.id = "recipientPolicyPersonSettingsDialog";
+		document.body.append(dialog);
+		mocks.loadRecipientPolicySharingData.mockClear();
+
+		// Act
+		await elapse(5_100);
+
+		// Assert
+		expect(mocks.loadRecipientPolicySharingData).not.toHaveBeenCalled();
+		expect(document.getElementById("refreshStatus")?.dataset.refreshState).not.toBe("error");
+
+		// Act
+		dialog.remove();
+		await elapse(5_100);
+
+		// Assert
+		expect(mocks.loadRecipientPolicySharingData).toHaveBeenCalled();
+	});
+});
+
 describe("app refresh deadlines", () => {
 	beforeEach(() => setupRefreshAppTest());
 	afterEach(() => {
