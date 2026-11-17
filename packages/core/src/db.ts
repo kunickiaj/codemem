@@ -1115,8 +1115,15 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 function deleteLeftoverReplicationCursors(db: DatabaseType): void {
 	try {
 		deleteOrphanReplicationCursorsOnce(db);
-	} catch {
+	} catch (error) {
 		// The transaction rolled back and recorded nothing, so the next open retries.
+		// Only the SQLite result code is printed: no path, statement, or row data.
+		const code = (error as { code?: unknown } | null)?.code;
+		console.warn(
+			`[codemem] could not delete sync progress left by removed pairings (${
+				typeof code === "string" ? code : "unknown error"
+			}); the next start retries`,
+		);
 	}
 }
 

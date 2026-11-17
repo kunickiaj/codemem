@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import { deleteOrphanReplicationCursorsOnce } from "./replication-cursor-orphan-cleanup.js";
 import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
@@ -16,11 +16,11 @@ function addCursors(deviceId: string) {
 	db.prepare(
 		"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, updated_at) VALUES (?, 'scope-a', 'c2', ?)",
 	).run(deviceId, NOW);
-	saveSyncChannelCompletedBoundary(db, {
-		peerDeviceId: deviceId,
-		scopeId: "scope-a",
-		boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
-	});
+	// Written directly: the channel pass refuses to save progress for a peer with no pairing.
+	db.prepare(
+		`INSERT OR REPLACE INTO sync_channel_progress(peer_device_id, scope_id, generation, snapshot_id)
+		 VALUES (?, 'scope-a', 1, 'snapshot-1')`,
+	).run(deviceId);
 }
 
 function cursorDeviceIds(table: string) {
@@ -34,6 +34,12 @@ beforeEach(() => {
 	db = new Database(":memory:");
 	initTestSchema(db);
 	db.prepare("INSERT INTO sync_peers(peer_device_id, created_at) VALUES ('paired', ?)").run(NOW);
+	// Installs the channel progress table, as a first channel pass does.
+	saveSyncChannelCompletedBoundary(db, {
+		peerDeviceId: "paired",
+		scopeId: "scope-a",
+		boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
+	});
 	addCursors("paired");
 	addCursors("unpaired");
 });
@@ -45,6 +51,20 @@ describe("deleteOrphanReplicationCursorsOnce", () => {
 		const counts = deleteOrphanReplicationCursorsOnce(db);
 
 		expect(counts).toEqual({
+			replicationCursors: 1,
+			replicationCursorsV2: 1,
+			syncChannelProgress: 1,
+		});
+		for (const table of PROGRESS_TABLES) expect(cursorDeviceIds(table)).toEqual(["paired"]);
+	});
+
+	it("H16: still deletes unpaired progress when an old database holds a pairing with a NULL device ID", () => {
+		// Databases from before the NOT NULL constraint could store such a row.
+		db.exec(`DROP TABLE sync_peers;
+			CREATE TABLE sync_peers (peer_device_id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+			INSERT INTO sync_peers VALUES (NULL, '${NOW}'), ('paired', '${NOW}')`);
+
+		expect(deleteOrphanReplicationCursorsOnce(db)).toEqual({
 			replicationCursors: 1,
 			replicationCursorsV2: 1,
 			syncChannelProgress: 1,
@@ -87,12 +107,20 @@ describe("deleteOrphanReplicationCursorsOnce", () => {
 		});
 	});
 
-	it("H16: opening a database runs the cleanup, and a failing cleanup does not stop the open", () => {
+	it("H16: opening a database runs the cleanup, and a failing cleanup warns once without stopping the open", () => {
 		db.exec(`CREATE TRIGGER fail_scoped_cursor_delete BEFORE DELETE ON replication_cursors_v2
 			BEGIN SELECT RAISE(ABORT, 'cursor delete failed'); END`);
 
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
 		expect(() => ensureAdditiveSchemaCompatibility(db)).not.toThrow();
 		expect(cursorDeviceIds("replication_cursors")).toEqual(["paired", "unpaired"]);
+		expect(warn.mock.calls).toEqual([
+			[
+				"[codemem] could not delete sync progress left by removed pairings (SQLITE_CONSTRAINT_TRIGGER); the next start retries",
+			],
+		]);
+		warn.mockRestore();
 
 		db.exec("DROP TRIGGER fail_scoped_cursor_delete");
 		ensureAdditiveSchemaCompatibility(db);

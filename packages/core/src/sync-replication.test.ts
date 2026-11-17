@@ -34,7 +34,7 @@ import {
 	setSyncResetState,
 	summarizeInboundScopeRejections,
 } from "./sync-replication.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { initTestSchema, initTestSchemaWithPeers, insertTestSession } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -94,12 +94,14 @@ describe("chunkOpsBySize", () => {
 // Cursor operations (require DB)
 // ---------------------------------------------------------------------------
 
+const CURSOR_TEST_PEERS = ["peer-1", "peer-2", "peer-3", "peer-scoped", "peer-legacy"];
+
 describe("replication cursors", () => {
 	let db: InstanceType<typeof Database>;
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
+		initTestSchemaWithPeers(db, CURSOR_TEST_PEERS);
 	});
 
 	afterEach(() => {
@@ -2546,7 +2548,7 @@ describe("applyReplicationOps", () => {
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
+		initTestSchemaWithPeers(db, ["dev-remote"]);
 	});
 
 	afterEach(() => {
@@ -4308,7 +4310,7 @@ describe("bootstrap snapshot round-trip parity", () => {
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
+		initTestSchemaWithPeers(db, ["target-peer"]);
 		sessionId = insertTestSession(db);
 		setSyncResetState(
 			db,

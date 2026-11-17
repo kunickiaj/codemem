@@ -671,31 +671,34 @@ function seedDefaultReplicationCursorFromLegacy(db: Database): void {
 	`);
 }
 
+/*
+ * A sync pass writes its position after network I/O, and the peer can be removed
+ * meanwhile. Each write therefore requires the pairing in the same statement, so a
+ * pass that outlives its pairing cannot put sync progress back.
+ */
+const PAIRING_EXISTS = "EXISTS (SELECT 1 FROM sync_peers WHERE peer_device_id = ?)";
+
 function mirrorDefaultReplicationCursorToLegacy(
 	db: Database,
 	peerDeviceId: string,
 	options: { lastApplied?: string | null; lastAcked?: string | null },
 	updatedAt: string,
 ): void {
-	const lastApplied = options.lastApplied ?? null;
-	const lastAcked = options.lastAcked ?? null;
-	const d = drizzle(db, { schema });
-	d.insert(schema.replicationCursors)
-		.values({
-			peer_device_id: peerDeviceId,
-			last_applied_cursor: lastApplied,
-			last_acked_cursor: lastAcked,
-			updated_at: updatedAt,
-		})
-		.onConflictDoUpdate({
-			target: schema.replicationCursors.peer_device_id,
-			set: {
-				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursors.last_applied_cursor})`,
-				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursors.last_acked_cursor})`,
-				updated_at: sql`excluded.updated_at`,
-			},
-		})
-		.run();
+	db.prepare(
+		`INSERT INTO replication_cursors
+			(peer_device_id, last_applied_cursor, last_acked_cursor, updated_at)
+		 SELECT ?, ?, ?, ? WHERE ${PAIRING_EXISTS}
+		 ON CONFLICT(peer_device_id) DO UPDATE SET
+			last_applied_cursor = COALESCE(excluded.last_applied_cursor, last_applied_cursor),
+			last_acked_cursor = COALESCE(excluded.last_acked_cursor, last_acked_cursor),
+			updated_at = excluded.updated_at`,
+	).run(
+		peerDeviceId,
+		options.lastApplied ?? null,
+		options.lastAcked ?? null,
+		updatedAt,
+		peerDeviceId,
+	);
 }
 
 /**
@@ -733,7 +736,8 @@ export function getReplicationCursor(
 }
 
 /**
- * Insert or update the replication cursor for a peer device.
+ * Insert or update the replication cursor for a paired peer device. Writes
+ * nothing when the peer has no pairing, which is not an error for the caller.
  *
  * Uses COALESCE on update so callers can set only one of the two cursors
  * without clobbering the other.
@@ -750,30 +754,24 @@ export function setReplicationCursor(
 	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
 		seedDefaultReplicationCursorFromLegacy(db);
 	}
-	const lastApplied = options.lastApplied ?? null;
-	const lastAcked = options.lastAcked ?? null;
-
-	const d = drizzle(db, { schema });
-	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers.
-	// Drizzle's onConflictDoUpdate doesn't support COALESCE(excluded.col, col)
-	// natively, so we use raw SQL for the SET expressions.
-	d.insert(schema.replicationCursorsV2)
-		.values({
-			peer_device_id: peerDeviceId,
-			scope_id: effectiveScopeId,
-			last_applied_cursor: lastApplied,
-			last_acked_cursor: lastAcked,
-			updated_at: now,
-		})
-		.onConflictDoUpdate({
-			target: [schema.replicationCursorsV2.peer_device_id, schema.replicationCursorsV2.scope_id],
-			set: {
-				last_applied_cursor: sql`COALESCE(excluded.last_applied_cursor, ${schema.replicationCursorsV2.last_applied_cursor})`,
-				last_acked_cursor: sql`COALESCE(excluded.last_acked_cursor, ${schema.replicationCursorsV2.last_acked_cursor})`,
-				updated_at: sql`excluded.updated_at`,
-			},
-		})
-		.run();
+	// One statement: no gap between the pairing check and the write, and no race
+	// between concurrent sync workers. COALESCE keeps the cursor a caller left unset.
+	db.prepare(
+		`INSERT INTO replication_cursors_v2
+			(peer_device_id, scope_id, last_applied_cursor, last_acked_cursor, updated_at)
+		 SELECT ?, ?, ?, ?, ? WHERE ${PAIRING_EXISTS}
+		 ON CONFLICT(peer_device_id, scope_id) DO UPDATE SET
+			last_applied_cursor = COALESCE(excluded.last_applied_cursor, last_applied_cursor),
+			last_acked_cursor = COALESCE(excluded.last_acked_cursor, last_acked_cursor),
+			updated_at = excluded.updated_at`,
+	).run(
+		peerDeviceId,
+		effectiveScopeId,
+		options.lastApplied ?? null,
+		options.lastAcked ?? null,
+		now,
+		peerDeviceId,
+	);
 	if (effectiveScopeId === DEFAULT_SYNC_SCOPE_ID) {
 		mirrorDefaultReplicationCursorToLegacy(db, peerDeviceId, options, now);
 	}

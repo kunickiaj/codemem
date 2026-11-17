@@ -33,8 +33,11 @@ function alreadyRan(db: Database): boolean {
 function deleteOrphans(db: Database, table: string): number {
 	return db
 		.prepare(
-			`DELETE FROM ${table}
-			 WHERE peer_device_id NOT IN (SELECT peer_device_id FROM sync_peers)`,
+			// NOT IN matches nothing when any pairing has a NULL device ID, which old schemas allow.
+			`DELETE FROM ${table} AS progress
+			 WHERE NOT EXISTS (
+			  SELECT 1 FROM sync_peers peer WHERE peer.peer_device_id = progress.peer_device_id
+			 )`,
 		)
 		.run().changes;
 }

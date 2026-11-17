@@ -15,6 +15,7 @@ import {
 	isStrictRecipientPolicyId,
 } from "./recipient-policy-identifiers.js";
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
+import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import {
 	planInviteDeviceDecisionTransition,
 	planInviteMembershipTransition,
@@ -225,6 +226,37 @@ function adoptReboundDevice(
 		 WHERE device_id = ? AND identity_id = ?`,
 	).run(now, enrollment.device_id, enrollment.identity_id);
 	return moved;
+}
+
+/**
+ * A blocked device can keep an enrollment row, because blocking does not remove
+ * the enrollment. Binding it again would undo what the block ended at every
+ * refresh. Its ended binding therefore stays ended while the listing marks the
+ * row revoked, or while this device's retired alias for the ID still applies. A
+ * key-only alias stops applying once the ID is paired under a different key.
+ */
+function blockedDeviceKeepsEndedBinding(db: Database, enrollment: CoordinatorEnrollment): boolean {
+	const deviceId = enrollment.device_id;
+	if (typeof deviceId !== "string") return false;
+	const ended = db
+		.prepare("SELECT 1 FROM identity_devices WHERE device_id = ? AND status = 'removed'")
+		.get(deviceId);
+	if (!ended) return false;
+	if (enrollment.revoked === true) return true;
+	const pin = db
+		.prepare("SELECT public_key, pinned_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+		.get(deviceId) as { public_key: string | null; pinned_fingerprint: string | null } | undefined;
+	return retiredAliasApplies(
+		listRetiredDeviceAliases(db).get(deviceId),
+		pin ? { publicKey: pin.public_key, fingerprint: pin.pinned_fingerprint } : null,
+	);
+}
+
+function bindableEnrollments(
+	db: Database,
+	enrollments: CoordinatorEnrollment[],
+): CoordinatorEnrollment[] {
+	return enrollments.filter((enrollment) => !blockedDeviceKeepsEndedBinding(db, enrollment));
 }
 
 /**
@@ -514,7 +546,7 @@ export async function reconcileCoordinatorEnrollmentSnapshot(
 			}
 		}
 
-		for (const enrollment of input.enrollments) {
+		for (const enrollment of bindableEnrollments(db, input.enrollments)) {
 			const identityId = enrollment.identity_id;
 			if (identityId == null || identityId === "") continue;
 			if (

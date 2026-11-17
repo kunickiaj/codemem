@@ -5,8 +5,13 @@ import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delive
 import { getRetirementPeer } from "./memory-retirement-trust.js";
 import { removePairingState } from "./pairing-removal.js";
 import { listRetiredDeviceAliases } from "./retired-device-aliases.js";
-import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
+import {
+	getSyncChannelProgress,
+	saveSyncChannelCompletedBoundary,
+	saveSyncChannelOutboundAck,
+} from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-11-17T00:00:00.000Z";
@@ -286,5 +291,61 @@ describe("coordinator-policy pairing cleanup", () => {
 
 		expect(state("policy-peer")).toEqual({ ...REMOVED, binding: "active" });
 		expect(state("peer-a")).toEqual(UNTOUCHED);
+	});
+});
+
+describe("sync progress writes from a pass that outlives its pairing", () => {
+	const boundary = { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null };
+	const NO_PROGRESS = { cursors: 0, cursorsV2: 0, channelProgress: 0 };
+
+	beforeEach(() => {
+		removePairingState(db, { localDeviceId: LOCAL, reason: "local", deviceIds: ["peer-a"] });
+	});
+
+	it("setReplicationCursor writes nothing for the removed peer and still writes for a paired peer", () => {
+		setReplicationCursor(db, "peer-a", { lastApplied: "late" }, "scope-a");
+		setReplicationCursor(db, "peer-a", { lastApplied: "late", lastAcked: "late" });
+		setReplicationCursor(db, "peer-keep", { lastApplied: "next" }, "scope-a");
+		setReplicationCursor(db, "peer-keep", { lastAcked: "next-default" });
+
+		expect(state("peer-a")).toMatchObject(NO_PROGRESS);
+		expect(getReplicationCursor(db, "peer-keep", "scope-a")[0]).toBe("next");
+		expect(getReplicationCursor(db, "peer-keep")).toEqual(["c1", "next-default"]);
+	});
+
+	it("saveSyncChannelCompletedBoundary writes nothing for the removed peer and still writes for a paired peer", () => {
+		const next = { ...boundary, generation: 2 };
+
+		saveSyncChannelCompletedBoundary(db, { peerDeviceId: "peer-a", scopeId: "scope-a", boundary });
+		saveSyncChannelCompletedBoundary(db, {
+			peerDeviceId: "peer-keep",
+			scopeId: "scope-a",
+			boundary: next,
+		});
+
+		expect(state("peer-a")).toMatchObject(NO_PROGRESS);
+		expect(getSyncChannelProgress(db, "peer-keep", "scope-a")).toMatchObject({ generation: 2 });
+	});
+
+	it("saveSyncChannelOutboundAck skips the removed peer without an error and still saves for a paired peer", () => {
+		const ack = (peerDeviceId: string) =>
+			saveSyncChannelOutboundAck(db, { peerDeviceId, scopeId: "scope-a", boundary, cursor: "ack" });
+
+		expect(() => ack("peer-a")).not.toThrow();
+		ack("peer-keep");
+
+		expect(state("peer-a")).toMatchObject(NO_PROGRESS);
+		expect(getSyncChannelProgress(db, "peer-keep", "scope-a")?.last_acked_cursor).toBe("ack");
+	});
+
+	it("saveSyncChannelOutboundAck still reports changed progress for a paired peer", () => {
+		expect(() =>
+			saveSyncChannelOutboundAck(db, {
+				peerDeviceId: "peer-keep",
+				scopeId: "scope-a",
+				boundary: { ...boundary, generation: 9 },
+				cursor: "ack",
+			}),
+		).toThrow("channel progress changed");
 	});
 });

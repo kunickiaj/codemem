@@ -149,49 +149,49 @@ describe("a binding that device removal ended", () => {
 	});
 });
 
+const OTHER_IDENTITY = "identity-b";
+const TEAM_PROJECT = "project-team";
+
+function enrollment(deviceId: string, identityId: string, publicKey: string) {
+	return {
+		group_id: "group-a",
+		device_id: deviceId,
+		public_key: publicKey,
+		fingerprint: fingerprintPublicKey(publicKey),
+		identity_id: identityId,
+		display_name: "Peer",
+		enabled: 1,
+		created_at: NOW,
+	};
+}
+
+/** The local device's own enrollment proves the local Identity, as the reconciler requires. */
+function reconcile(peerEnrollments: ReturnType<typeof enrollment>[]) {
+	return reconcileCoordinatorEnrollmentSnapshot(db, {
+		coordinatorId: "https://coord.example.test",
+		groupId: "group-a",
+		localDeviceId: LOCAL,
+		now: NOW,
+		consumedTeamInvites: [],
+		enrollments: [enrollment(LOCAL, IDENTITY, "local-key"), ...peerEnrollments],
+	});
+}
+
+function effectiveDeviceIds(project: string) {
+	return deriveRecipientPolicyEffectiveDevicesFromDatabase(db, project).devices.map(
+		(device) => device.deviceId,
+	);
+}
+
+function fullBinding() {
+	return db
+		.prepare(
+			"SELECT identity_id, status, provenance, assignment_version FROM identity_devices WHERE device_id = ?",
+		)
+		.get(PEER);
+}
+
 describe("a coordinator enrollment snapshot after device removal", () => {
-	const OTHER_IDENTITY = "identity-b";
-	const TEAM_PROJECT = "project-team";
-
-	function enrollment(deviceId: string, identityId: string, publicKey: string) {
-		return {
-			group_id: "group-a",
-			device_id: deviceId,
-			public_key: publicKey,
-			fingerprint: fingerprintPublicKey(publicKey),
-			identity_id: identityId,
-			display_name: "Peer",
-			enabled: 1,
-			created_at: NOW,
-		};
-	}
-
-	/** The local device's own enrollment proves the local Identity, as the reconciler requires. */
-	function reconcile(peerEnrollments: ReturnType<typeof enrollment>[]) {
-		return reconcileCoordinatorEnrollmentSnapshot(db, {
-			coordinatorId: "https://coord.example.test",
-			groupId: "group-a",
-			localDeviceId: LOCAL,
-			now: NOW,
-			consumedTeamInvites: [],
-			enrollments: [enrollment(LOCAL, IDENTITY, "local-key"), ...peerEnrollments],
-		});
-	}
-
-	function effectiveDeviceIds(project: string) {
-		return deriveRecipientPolicyEffectiveDevicesFromDatabase(db, project).devices.map(
-			(device) => device.deviceId,
-		);
-	}
-
-	function fullBinding() {
-		return db
-			.prepare(
-				"SELECT identity_id, status, provenance, assignment_version FROM identity_devices WHERE device_id = ?",
-			)
-			.get(PEER);
-	}
-
 	/** A Team that excludes the peer and receives its own Project. */
 	function excludePeerFromTeam() {
 		db.prepare(
@@ -232,11 +232,21 @@ describe("a coordinator enrollment snapshot after device removal", () => {
 		expect(effectiveDeviceIds(TEAM_PROJECT)).not.toContain(PEER);
 	});
 
-	it("binds a device listed under another Identity to that Identity with an incremented assignment version", async () => {
+	it("binds a device listed under another Identity to that Identity with an incremented assignment version and resets its reviewed-Team inclusion", async () => {
 		db.prepare(
 			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
 			 VALUES (?, 'Bea', 0, 'active', ?, ?)`,
 		).run(OTHER_IDENTITY, NOW, NOW);
+		db.prepare(
+			`INSERT INTO policy_teams(team_id, display_name, status, device_eligibility_mode, provenance,
+			 revision, migration_state, source_fingerprint, idempotency_key, created_at, updated_at)
+			 VALUES ('team-reviewed', 'Reviewed', 'active', 'reviewed_allowlist', 'test', '1', 'native',
+			 'completed-setup', 'team:reviewed', ?, ?)`,
+		).run(NOW, NOW);
+		db.prepare(
+			`INSERT INTO policy_team_device_decisions(team_id, device_id, decision, provenance,
+			 revision, created_at, updated_at) VALUES ('team-reviewed', ?, 'included', 'test', '1', ?, ?)`,
+		).run(PEER, NOW, NOW);
 		remove();
 
 		const result = await reconcile([enrollment(PEER, OTHER_IDENTITY, PEER_KEY)]);
@@ -248,6 +258,17 @@ describe("a coordinator enrollment snapshot after device removal", () => {
 			provenance: "coordinator_enrollment",
 			assignment_version: 1,
 		});
+		// The reviewed Team included the device under its former Identity.
+		expect(
+			db
+				.prepare(
+					`SELECT decision.decision, team.source_fingerprint
+					 FROM policy_team_device_decisions decision
+					 JOIN policy_teams team ON team.team_id = decision.team_id
+					 WHERE decision.device_id = ?`,
+				)
+				.get(PEER),
+		).toEqual({ decision: "unresolved", source_fingerprint: null });
 		expect(effectiveDeviceIds(PROJECT)).not.toContain(PEER);
 	});
 
@@ -271,5 +292,39 @@ describe("a coordinator enrollment snapshot after device removal", () => {
 			code: "device_trust_conflict",
 		});
 		expect(binding()).toEqual({ identity_id: IDENTITY, status: "removed" });
+	});
+});
+
+describe("a blocked device that keeps an enrollment row", () => {
+	it("leaves the binding ended when the snapshot marks the listed device as revoked", async () => {
+		remove();
+
+		const result = await reconcile([{ ...enrollment(PEER, IDENTITY, PEER_KEY), revoked: true }]);
+
+		expect(result.issues).toEqual([]);
+		expect(binding()).toEqual({ identity_id: IDENTITY, status: "removed" });
+	});
+
+	it("leaves the binding ended while this device's retired alias for the device still applies", async () => {
+		removePairingState(db, { localDeviceId: LOCAL, reason: "revoked", deviceIds: [PEER] });
+
+		const result = await reconcile([enrollment(PEER, IDENTITY, PEER_KEY)]);
+
+		expect(result.issues).toEqual([]);
+		expect(binding()).toEqual({ identity_id: IDENTITY, status: "removed" });
+	});
+
+	it("binds the device again once it is paired under a different key, which clears a key-only alias", async () => {
+		removePairingState(db, { localDeviceId: LOCAL, reason: "revoked", deviceIds: [PEER] });
+		const newKey = "replacement-key";
+		db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, name, public_key, pinned_fingerprint, created_at)
+			 VALUES (?, 'Peer', ?, ?, ?)`,
+		).run(PEER, newKey, fingerprintPublicKey(newKey), NOW);
+
+		const result = await reconcile([enrollment(PEER, IDENTITY, newKey)]);
+
+		expect(result.issues).toEqual([]);
+		expect(binding()).toEqual({ identity_id: IDENTITY, status: "active" });
 	});
 });

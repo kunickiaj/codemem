@@ -2682,8 +2682,11 @@ describe("recipient-policy onboarding with a withdrawn Team member", () => {
 });
 
 describe("direct Project share over a binding that device removal ended", () => {
+	const REMOVED_AT = "2026-07-22T00:00:00.000Z";
+	const AFTER_REMOVAL = "2026-07-22T00:00:01.000Z";
 	let db: InstanceType<typeof Database>;
-	const share = (operationId: string) =>
+	/** `consumedAt` is the coordinator's consumption time for the invitation. */
+	const share = (operationId: string, consumedAt: string = NOW) =>
 		db.transaction(() =>
 			commitDirectProjectSharePolicyInTransaction(db, {
 				operationId,
@@ -2697,7 +2700,7 @@ describe("direct Project share over a binding that device removal ended", () => 
 				recipientDevicePublicKey: "recipient-public-key",
 				recipientDeviceDisplayName: "Recipient laptop",
 				canonicalProjectIdentities: [PROJECT_A],
-				now: NOW,
+				now: consumedAt,
 			}),
 		)();
 	const remove = (deviceId: string) =>
@@ -2712,6 +2715,8 @@ describe("direct Project share over a binding that device removal ended", () => 
 			.get(deviceId);
 
 	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date(REMOVED_AT));
 		db = new Database(":memory:");
 		initTestSchema(db);
 		insertActor(db, "identity-owner", "Owner", true);
@@ -2720,12 +2725,15 @@ describe("direct Project share over a binding that device removal ended", () => 
 		share("share-before-removal");
 	});
 
-	afterEach(() => db.close());
+	afterEach(() => {
+		db.close();
+		vi.useRealTimers();
+	});
 
-	it("binds the removed device again when it accepts a new invitation, with no binding conflict", () => {
+	it("binds the removed device again when it accepts an invitation consumed after the removal", () => {
 		remove("device-recipient");
 
-		expect(() => share("share-after-removal")).not.toThrow();
+		expect(() => share("share-after-removal", AFTER_REMOVAL)).not.toThrow();
 
 		expect(binding("device-recipient")).toEqual({
 			identity_id: "identity-b",
@@ -2734,7 +2742,7 @@ describe("direct Project share over a binding that device removal ended", () => 
 		});
 	});
 
-	it("does not bind the removed device again when an earlier invitation is replayed", () => {
+	it("does not bind the removed device again when the invitation that bound it is replayed", () => {
 		remove("device-recipient");
 
 		expect(() => share("share-before-removal")).toThrow("device_binding_conflict");
@@ -2742,10 +2750,52 @@ describe("direct Project share over a binding that device removal ended", () => 
 		expect(binding("device-recipient")).toMatchObject({ status: "removed" });
 	});
 
+	it("refuses a second invitation that was consumed before the removal and left the binding unchanged", () => {
+		share("share-second-before-removal", "2026-07-21T13:00:00.000Z");
+		remove("device-recipient");
+
+		expect(() => share("share-second-before-removal", "2026-07-21T13:00:00.000Z")).toThrow(
+			"device_binding_conflict",
+		);
+
+		expect(binding("device-recipient")).toMatchObject({ status: "removed" });
+	});
+
+	it.each([
+		["equal to the removal time", REMOVED_AT],
+		["without an offset", "2026-07-23T00:00:00"],
+		["unreadable", "soon"],
+	])("refuses an invitation whose consumption time is %s", (_case, consumedAt) => {
+		remove("device-recipient");
+
+		expect(() => share("share-after-removal", consumedAt)).toThrow("device_binding_conflict");
+
+		expect(binding("device-recipient")).toMatchObject({ status: "removed" });
+	});
+
+	it("refuses when the time the binding ended is missing", () => {
+		remove("device-recipient");
+		db.prepare(
+			"UPDATE identity_devices SET updated_at = '' WHERE device_id = 'device-recipient'",
+		).run();
+
+		expect(() => share("share-after-removal", AFTER_REMOVAL)).toThrow("device_binding_conflict");
+	});
+
+	it("reports a constraint failure of the reactivation write as a binding conflict", () => {
+		remove("device-recipient");
+		db.exec(`CREATE TRIGGER fail_reactivation BEFORE UPDATE OF status ON identity_devices
+			WHEN NEW.status = 'active' BEGIN SELECT RAISE(ABORT, 'constraint failed'); END`);
+
+		expect(() => share("share-after-removal", AFTER_REMOVAL)).toThrow("device_binding_conflict");
+
+		expect(binding("device-recipient")).toMatchObject({ status: "removed" });
+	});
+
 	it("leaves a removed inviter device ended, because the invitation's device list is not a current enrollment", () => {
 		remove("device-owner-spare");
 
-		expect(() => share("share-after-removal")).not.toThrow();
+		expect(() => share("share-after-removal", AFTER_REMOVAL)).not.toThrow();
 
 		expect(binding("device-owner-spare")).toMatchObject({ status: "removed" });
 		expect(binding("device-recipient")).toMatchObject({ status: "active" });

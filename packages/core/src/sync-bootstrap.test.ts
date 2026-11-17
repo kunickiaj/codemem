@@ -19,7 +19,7 @@ import {
 	setReplicationCursor,
 	setSyncResetState,
 } from "./sync-replication.js";
-import { initTestSchema, insertTestSession } from "./test-utils.js";
+import { initTestSchema, initTestSchemaWithPeers, insertTestSession } from "./test-utils.js";
 import type { SyncMemorySnapshotItem, SyncResetRequired } from "./types.js";
 import { VECTOR_MODEL_MIGRATION_JOB } from "./vector-migration.js";
 
@@ -112,7 +112,7 @@ describe("applyBootstrapSnapshot", () => {
 
 	beforeEach(() => {
 		db = new Database(":memory:");
-		initTestSchema(db);
+		initTestSchemaWithPeers(db, ["peer-1"]);
 		sessionId = insertTestSession(db);
 		// Set initial sync state so the function can bump it
 		setSyncResetState(db, {
@@ -817,7 +817,7 @@ it("preserves v2 auth for public callers that omit recipientId", async () => {
 
 it("uses recipient-bound v3 auth for the upgraded call shape", async () => {
 	const db = new Database(":memory:");
-	initTestSchema(db);
+	initTestSchemaWithPeers(db, ["peer-1"]);
 	const keysDir = mkdtempSync(join(tmpdir(), "codemem-bootstrap-keys-"));
 	const [deviceId] = ensureDeviceIdentity(db, { keysDir });
 	const resetInfo = makeResetInfo();

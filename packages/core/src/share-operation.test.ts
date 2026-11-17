@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removePairingState } from "./pairing-removal.js";
 import { previewRecipientPolicyEdges } from "./recipient-policy-edges.js";
 import {
 	inviteTokenDigest,
@@ -1010,5 +1011,74 @@ describe("share-operation persistence", () => {
 				},
 			]),
 		).toThrow("operation_intent_invalid");
+	});
+});
+
+describe("acceptance replay after the recipient device is removed", () => {
+	const REMOVED_AT = "2026-07-22T00:00:00.000Z";
+	let db: InstanceType<typeof Database>;
+	let second: ReturnType<typeof planShareOperation>;
+	const secondAcceptance = (consumedAt: string) => acceptanceInput(second, { consumedAt });
+	const recipientState = () => ({
+		binding: db
+			.prepare("SELECT status FROM identity_devices WHERE device_id = 'device-brian'")
+			.pluck()
+			.get(),
+		pairings: db
+			.prepare("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = 'device-brian'")
+			.pluck()
+			.get(),
+	});
+
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date(REMOVED_AT));
+		db = new Database(":memory:");
+		initTestSchema(db);
+		db.prepare(`INSERT INTO actors(
+			actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at
+		) VALUES ('actor-adam', 'Adam', 1, 'active', NULL, ?, ?)`).run(createdAt, createdAt);
+		const first = plan();
+		persistShareOperation(db, first, {
+			inviteId: "invite-1",
+			tokenDigest: inviteTokenDigest("token-1"),
+		});
+		reconcileShareOperationAcceptance(db, acceptanceInput(first));
+		second = plan({
+			person: { kind: "existing", personId: "actor-brian", displayName: "Brian" },
+			createdAt: "2026-07-20T14:00:00.000Z",
+		});
+		persistShareOperation(db, second, {
+			inviteId: "invite-2",
+			tokenDigest: inviteTokenDigest("token-2"),
+		});
+		// Accepted before the removal: the binding already exists, so its row is unchanged.
+		reconcileShareOperationAcceptance(db, secondAcceptance("2026-07-20T15:00:00.000Z"));
+		removePairingState(db, {
+			localDeviceId: "device-a",
+			reason: "removed",
+			deviceIds: ["device-brian"],
+		});
+	});
+
+	afterEach(() => {
+		db.close();
+		vi.useRealTimers();
+	});
+
+	it("refuses an invitation consumed before the removal and recreates neither the binding nor the pairing", () => {
+		expect(recipientState()).toEqual({ binding: "removed", pairings: 0 });
+
+		expect(() =>
+			reconcileShareOperationAcceptance(db, secondAcceptance("2026-07-20T15:00:00.000Z")),
+		).toThrow("device_binding_conflict");
+
+		expect(recipientState()).toEqual({ binding: "removed", pairings: 0 });
+	});
+
+	it("binds and pairs the device again for an invitation consumed after the removal", () => {
+		reconcileShareOperationAcceptance(db, secondAcceptance("2026-07-22T00:00:01.000Z"));
+
+		expect(recipientState()).toEqual({ binding: "active", pairings: 1 });
 	});
 });

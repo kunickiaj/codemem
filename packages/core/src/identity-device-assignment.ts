@@ -92,6 +92,54 @@ function requireExpectedAssignment(
 }
 
 /**
+ * A device that moved to another Identity loses reviewed-Team inclusion until
+ * those Teams are reviewed again.
+ */
+export function invalidateIncludedTeamDecisions(
+	db: Database,
+	deviceId: string,
+	now: string,
+): { invalidatedDecisionCount: number; invalidatedTeamCount: number } {
+	const affectedTeams = db
+		.prepare(
+			`SELECT d.team_id
+			 FROM policy_team_device_decisions d
+			 JOIN policy_teams t ON t.team_id = d.team_id
+			 WHERE d.device_id = ?
+			   AND d.decision = 'included'
+			   AND t.device_eligibility_mode = 'reviewed_allowlist'`,
+		)
+		.all(deviceId) as Array<{ team_id: string }>;
+	const invalidatedDecisions = db
+		.prepare(
+			`UPDATE policy_team_device_decisions
+			 SET decision = 'unresolved', updated_at = ?
+			 WHERE device_id = ?
+			   AND decision = 'included'
+			   AND team_id IN (
+			     SELECT team_id FROM policy_teams
+			     WHERE device_eligibility_mode = 'reviewed_allowlist'
+			   )`,
+		)
+		.run(now, deviceId);
+
+	for (const team of affectedTeams) {
+		// Clear the stale completion fingerprint so compatibility diagnostics and
+		// older non-terminal migration records fail closed after reassignment.
+		db.prepare(
+			`UPDATE policy_teams
+			 SET source_fingerprint = NULL, updated_at = ?
+			 WHERE team_id = ?`,
+		).run(now, team.team_id);
+	}
+
+	return {
+		invalidatedDecisionCount: invalidatedDecisions.changes,
+		invalidatedTeamCount: affectedTeams.length,
+	};
+}
+
+/**
  * Applies one canonical device assignment mutation inside the caller's transaction.
  * Reassignments revoke reviewed-Team inclusion until those Teams are reviewed again.
  */
@@ -185,43 +233,9 @@ export function assignIdentityDeviceInTransaction(
 		};
 	}
 
-	const affectedTeams = db
-		.prepare(
-			`SELECT d.team_id
-			 FROM policy_team_device_decisions d
-			 JOIN policy_teams t ON t.team_id = d.team_id
-			 WHERE d.device_id = ?
-			   AND d.decision = 'included'
-			   AND t.device_eligibility_mode = 'reviewed_allowlist'`,
-		)
-		.all(input.deviceId) as Array<{ team_id: string }>;
-	const invalidatedDecisions = db
-		.prepare(
-			`UPDATE policy_team_device_decisions
-			 SET decision = 'unresolved', updated_at = ?
-			 WHERE device_id = ?
-			   AND decision = 'included'
-			   AND team_id IN (
-			     SELECT team_id FROM policy_teams
-			     WHERE device_eligibility_mode = 'reviewed_allowlist'
-			   )`,
-		)
-		.run(now, input.deviceId);
-
-	for (const team of affectedTeams) {
-		// Clear the stale completion fingerprint so compatibility diagnostics and
-		// older non-terminal migration records fail closed after reassignment.
-		db.prepare(
-			`UPDATE policy_teams
-			 SET source_fingerprint = NULL, updated_at = ?
-			 WHERE team_id = ?`,
-		).run(now, team.team_id);
-	}
-
 	return {
 		assignmentVersion: after.assignment_version,
 		changed: true,
-		invalidatedDecisionCount: invalidatedDecisions.changes,
-		invalidatedTeamCount: affectedTeams.length,
+		...invalidateIncludedTeamDecisions(db, input.deviceId, now),
 	};
 }

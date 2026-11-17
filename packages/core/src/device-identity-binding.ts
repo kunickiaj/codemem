@@ -4,6 +4,7 @@ import {
 	type DeviceIdentityInventoryItemV1,
 	listDeviceIdentityInventory,
 } from "./device-identity-inventory.js";
+import { invalidateIncludedTeamDecisions } from "./identity-device-assignment.js";
 import {
 	isActiveUnmergedActor,
 	isActiveUnmergedLocalActor,
@@ -368,9 +369,9 @@ export interface EndedBindingReactivation {
  * Its callers are an explicit bind in Devices, a coordinator enrollment the
  * current snapshot lists, and an invitation the device just accepted. The row
  * is reused, so per-Team decisions for the same Identity still apply. A
- * different Identity raises `assignment_version` through the table's trigger,
- * which stops earlier Team inclusions from carrying over. Returns null when the
- * device has no ended binding.
+ * different Identity raises `assignment_version` through the table's trigger
+ * and returns reviewed-Team inclusions to unresolved, as any reassignment does.
+ * Returns null when the device has no ended binding.
  */
 export function reactivateEndedBindingInTransaction(
 	db: Database,
@@ -395,6 +396,9 @@ export function reactivateEndedBindingInTransaction(
 		input.now,
 		input.deviceId,
 	);
+	if (ended.identity_id !== input.targetIdentityId) {
+		invalidateIncludedTeamDecisions(db, input.deviceId, input.now);
+	}
 	const assignmentVersion = currentBinding(db, input.deviceId)?.assignment_version ?? 0;
 	wakeRecipientPoliciesForIdentities(db, [ended.identity_id, input.targetIdentityId], input.now);
 	return { assignmentVersion, previousIdentityId: ended.identity_id };
