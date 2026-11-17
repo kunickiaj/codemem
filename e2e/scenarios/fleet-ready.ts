@@ -2,6 +2,7 @@ import { assert, assertStatus } from "../lib/assert.js";
 import {
 	ADMIN_SECRET,
 	CLI_PREFIX,
+	enrollPeerDevice,
 	fetchCoordinatorSnapshot,
 	parseJson,
 	readPeerIdentity,
@@ -248,15 +249,6 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 		);
 		assertStatus(enrollSeed.status, 0, `failed to enroll seed peer in ${swarm.coordinator_group}`);
 
-		const inviteResult = ctx.compose.exec(
-			seedService,
-			[...CLI_PREFIX, "coordinator", "invitation", "create", swarm.coordinator_group, "--policy", "approval_required", "--json"],
-			`10-create-invite-${swarm.id}`,
-			120_000,
-		);
-		assertStatus(inviteResult.status, 0, `failed to create invite for ${swarm.id}`);
-		const invitePayload = parseJson<{ encoded: string }>(inviteResult.stdout, `invite-${swarm.id}`);
-
 		for (const worker of swarm.workers) {
 			const service = worker.runtime.service;
 			assert(service, `worker '${worker.id}' missing compose service`);
@@ -275,25 +267,6 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 				`11-write-config-${worker.id}`,
 			);
 			updateFleetNodeStatus(nodes, worker.id, "joining", `Preparing join for coordinator group '${swarm.coordinator_group}'.`);
-			const importResult = ctx.compose.exec(
-				service,
-				[
-					...CLI_PREFIX,
-					"coordinator",
-					"invitation", "accept",
-					invitePayload.encoded,
-					"--db-path",
-					"/data/mem.sqlite",
-					"--keys-dir",
-					"/keys",
-					"--config",
-					"/config/codemem.json",
-					"--json",
-				],
-				`12-import-invite-${worker.id}`,
-				120_000,
-			);
-			assertStatus(importResult.status, 0, `failed to import invite on ${worker.id}`);
 			const enableWorker = ctx.compose.exec(
 				service,
 				[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "5"],
@@ -301,32 +274,14 @@ export async function runFleetReadyScenario(ctx: ScenarioContext): Promise<void>
 				120_000,
 			);
 			assertStatus(enableWorker.status, 0, `failed to enable sync on ${worker.id}`);
-			const joinRequestsResult = ctx.compose.exec(
+			// Readiness only needs each worker in its coordinator group, so an admin enrolls it directly.
+			const workerIdentity = readPeerIdentity(ctx, service, `14-identity-${worker.id}`);
+			enrollPeerDevice(ctx, {
+				groupId: swarm.coordinator_group,
+				identity: workerIdentity,
+				artifactName: `15-enroll-${worker.id}`,
 				coordinatorService,
-				[...CLI_PREFIX, "coordinator", "request", "list", swarm.coordinator_group, "--db-path", "/data/coordinator.sqlite", "--json"],
-				`14-list-join-requests-${worker.id}`,
-				120_000,
-			);
-			assertStatus(joinRequestsResult.status, 0, `failed to list join requests for ${worker.id}`);
-			const joinRequests = parseJson<Array<{ request_id: string }>>(joinRequestsResult.stdout, `join-requests-${worker.id}`);
-			const requestId = joinRequests[joinRequests.length - 1]?.request_id;
-			assert(requestId, `missing join request id for ${worker.id}`);
-			const approveResult = ctx.compose.exec(
-				coordinatorService,
-				[
-					...CLI_PREFIX,
-					"coordinator",
-					"request", "approve",
-					"--db-path",
-					"/data/coordinator.sqlite",
-					"--json",
-					"--",
-					requestId,
-				],
-				`15-approve-${worker.id}`,
-				120_000,
-			);
-			assertStatus(approveResult.status, 0, `failed to approve join request for ${worker.id}`);
+			});
 			updateFleetNodeStatus(nodes, worker.id, "joined", `Joined coordinator group '${swarm.coordinator_group}'.`);
 		}
 	}
