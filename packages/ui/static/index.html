@@ -1530,6 +1530,13 @@
       .recipient-policy-team-settings-dialog .form-field { display: grid; gap: var(--sp-2); margin-top: var(--sp-4); }
       .recipient-policy-team-settings-dialog .form-field span { font-weight: var(--font-weight-semibold); }
       .recipient-policy-team-settings-dialog input { width: 100%; }
+      .recipient-policy-person-settings-dialog section { display: grid; gap: var(--sp-2); justify-items: start; }
+      .recipient-policy-person-settings-dialog section + section { margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+      .recipient-policy-person-settings-dialog section h3 { margin: 0; }
+      .recipient-policy-person-settings-dialog section p { margin: 0; }
+      .recipient-policy-person-settings-dialog .form-field { width: 100%; margin-top: var(--sp-2); }
+      .recipient-policy-person-settings-dialog select { width: 100%; }
+      .recipient-policy-person-settings-dialog section .recipient-policy-team-settings-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
       .recipient-policy-team-settings-actions { justify-content: flex-end; flex-wrap: wrap; }
       .legacy-team-setup-dialog .modal-card { width: min(680px, calc(100vw - 32px)); }
       .legacy-team-setup-steps {
@@ -5326,7 +5333,7 @@
           <button class="settings-button" id="syncActorCreateButton">Create person</button>
         </div>
         <div class="actor-list" id="syncActorsList"></div>
-        <div class="sync-skeleton" id="syncActorsSkeleton" role="status" aria-label="Loading actors">
+        <div class="sync-skeleton" id="syncActorsSkeleton" role="status" aria-label="Loading people">
           <div class="sync-skeleton-line long"></div>
           <div class="sync-skeleton-line medium"></div>
         </div>

@@ -200,14 +200,14 @@ describe("Advanced device Identity ownership", () => {
 			summary: "Authoritative Identity: Confirmed Person.",
 			actionLabel: "Review or rebind in Devices",
 		});
-		expect(view.detail).toContain("active identity_devices binding");
+		expect(view.detail).toContain("owner was confirmed in Devices");
 	});
 
-	it("labels sync_peers.actor_id as a suggestion until setup is confirmed", () => {
+	it("labels the Advanced person as a suggestion until setup is confirmed", () => {
 		const view = advancedDeviceIdentityView(undefined, "identity-hint", state.lastSyncActors);
 
 		expect(view.summary).toBe("Suggested Identity: Suggested Person.");
-		expect(view.detail).toContain("sync_peers.actor_id is only a suggestion or hint");
+		expect(view.detail).toContain("only a suggestion until you confirm the owner");
 		expect(view.actionLabel).toBe("Set up Identity in Devices");
 	});
 
@@ -219,7 +219,7 @@ describe("Advanced device Identity ownership", () => {
 			summary: "Authoritative Identity status is temporarily unavailable.",
 			actionLabel: "Review Identity in Devices",
 		});
-		expect(view.detail).toContain("suggestions or provenance only");
+		expect(view.detail).toContain("The person shown in Advanced is only a suggestion");
 	});
 
 	it("does not infer missing ownership from an incomplete inventory", () => {

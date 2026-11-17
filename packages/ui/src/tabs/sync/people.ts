@@ -52,8 +52,8 @@ export function renderSyncActors() {
 	const actors = actorVisibility.visibleActors;
 	if (actorMeta) {
 		actorMeta.textContent = actors.length
-			? "Manage Identity names here. Confirm authoritative device ownership in Devices."
-			: "No named people yet. Create an Identity here, then confirm device ownership in Devices.";
+			? "Rename, merge, and remove people in Sharing. Set which person owns a device in Devices."
+			: "No other people yet. People appear after you share a Project or invite someone to a Team.";
 		if (actorVisibility.hiddenLocalDuplicateCount > 0) {
 			actorMeta.textContent += ` ${actorVisibility.hiddenLocalDuplicateCount} unresolved duplicate ${actorVisibility.hiddenLocalDuplicateCount === 1 ? "entry is" : "entries are"} hidden here until reviewed in Needs attention.`;
 		}
@@ -79,7 +79,7 @@ export function renderSyncActors() {
 		onDeactivate: async (actorId) => {
 			try {
 				await api.deactivateActor(actorId);
-				showGlobalNotice("Person removed. Assigned devices have been unassigned.");
+				showGlobalNotice("Person removed. Their devices stop receiving shared Projects.");
 				await _loadSyncData();
 			} catch (error) {
 				showGlobalNotice(friendlyError(error, "Failed to remove person."), "warning");

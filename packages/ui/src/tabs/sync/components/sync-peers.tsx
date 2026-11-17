@@ -200,7 +200,7 @@ export function advancedDeviceIdentityView(
 			status: "unavailable",
 			summary: "Authoritative Identity status is temporarily unavailable.",
 			detail:
-				"Refresh before relying on ownership details. Advanced actor_id values remain suggestions or provenance only.",
+				"Refresh before relying on ownership details. The person shown in Advanced is only a suggestion.",
 			actionLabel: "Review Identity in Devices",
 		};
 	}
@@ -209,7 +209,7 @@ export function advancedDeviceIdentityView(
 			status: "configured",
 			summary: `Authoritative Identity: ${identityName(item.identityId, actors)}.`,
 			detail:
-				"This result comes from an active identity_devices binding. Advanced actor_id values are not authoritative ownership.",
+				"This device's owner was confirmed in Devices. The person shown in Advanced does not decide ownership.",
 			actionLabel: "Review or rebind in Devices",
 		};
 	}
@@ -227,7 +227,7 @@ export function advancedDeviceIdentityView(
 			status: "conflicted",
 			summary: "Identity ownership needs review.",
 			detail:
-				"Conflicting device evidence failed closed. Advanced actor_id values cannot resolve ownership.",
+				"Device records disagree about who owns this device, so no owner is shown. Choose the owner in Devices.",
 			actionLabel: "Review conflict in Devices",
 		};
 	}
@@ -237,8 +237,7 @@ export function advancedDeviceIdentityView(
 		summary: suggestedIdentityId
 			? `Suggested Identity: ${identityName(suggestedIdentityId, actors)}.`
 			: "No authoritative Identity binding is configured.",
-		detail:
-			"sync_peers.actor_id is only a suggestion or hint until you confirm an identity_devices binding in Devices.",
+		detail: "The person shown here is only a suggestion until you confirm the owner in Devices.",
 		actionLabel: "Set up Identity in Devices",
 	};
 }

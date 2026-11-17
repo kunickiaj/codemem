@@ -69,7 +69,7 @@ function SyncActorRow({
 	}, [actorId, count, hiddenLocalDuplicateCount, label, mergeTargetKeys]);
 
 	const mergeNote = !mergeTargets.length
-		? "No other people are available yet. Create another person first if you need to merge duplicates."
+		? "No other people are listed yet."
 		: actorMergeNote(mergeTargetId, actorId);
 	const mergeOptions = [
 		{ label: "Merge into person", value: "" },
@@ -187,7 +187,7 @@ function SyncActorRow({
 								const confirmed = await openSyncConfirmDialog({
 									title: `Remove ${label}?`,
 									description:
-										"This deactivates the person and unassigns their devices. Existing memories keep their current attribution.",
+										"Their devices stop receiving every Project shared with them, directly or through a Team. Memories already on those devices stay there. This can't be undone.",
 									confirmLabel: "Remove person",
 									cancelLabel: "Keep",
 									tone: "danger",
@@ -249,7 +249,7 @@ function SyncActorsList({
 	if (!actors.length) {
 		return (
 			<SyncEmptyState
-				detail="Create a named person here for legacy provenance, then confirm device Identity ownership in Devices."
+				detail="People appear here after you share a Project or invite someone to a Team."
 				title="No people set up yet."
 			/>
 		);

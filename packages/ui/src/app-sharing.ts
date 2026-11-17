@@ -52,6 +52,7 @@ async function loadRecipientPolicyProjects(
 }
 
 interface RecipientPolicySharingLoaderDependencies {
+	loadCoordinatorAdminStatus: typeof api.loadCoordinatorAdminStatus;
 	loadDeviceInventory: typeof api.loadDeviceIdentityInventory;
 	loadIntent: typeof api.loadRecipientPolicyIntent;
 	loadProjects: (options?: ReadRequestOptions) => Promise<RecipientPolicyProjectInventory>;
@@ -62,6 +63,7 @@ interface RecipientPolicySharingLoaderDependencies {
 }
 
 const defaultDependencies: RecipientPolicySharingLoaderDependencies = {
+	loadCoordinatorAdminStatus: api.loadCoordinatorAdminStatus,
 	loadDeviceInventory: api.loadDeviceIdentityInventory,
 	loadIntent: api.loadRecipientPolicyIntent,
 	loadProjects: loadRecipientPolicyProjects,
@@ -78,6 +80,7 @@ interface RecipientPolicySharingLoaderOptions {
 
 interface RecipientPolicySharingLoaderState {
 	loadRevision: number;
+	accessChangesAllowed: boolean;
 	latestLoad: Promise<boolean> | null;
 	coordinatorEnrollmentIssueCount: number;
 	lastDeviceInventory: Awaited<ReturnType<typeof api.loadDeviceIdentityInventory>> | undefined;
@@ -108,6 +111,7 @@ interface SharingLoadData {
 function createRecipientPolicySharingLoaderState(): RecipientPolicySharingLoaderState {
 	return {
 		loadRevision: 0,
+		accessChangesAllowed: false,
 		latestLoad: null,
 		coordinatorEnrollmentIssueCount: 0,
 		lastDeviceInventory: undefined,
@@ -120,22 +124,41 @@ function createRecipientPolicySharingLoaderState(): RecipientPolicySharingLoader
 	};
 }
 
+function sharedSharingOptions(
+	context: RecipientPolicySharingLoaderContext,
+	refresh: RecipientPolicySharingRefresh,
+): RecipientPolicySharingOptions {
+	const { options, state } = context;
+	return {
+		accessChangesAllowed: state.accessChangesAllowed,
+		coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
+		deviceInventory: state.lastDeviceInventory,
+		deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
+		onOpenTeamSetup: options.onOpenTeamSetup,
+		onPeopleChanged: () => refresh(),
+		onReviewDevices: options.onReviewDevices,
+		onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
+	};
+}
+
+/** Access changes apply only on a device that holds the coordinator admin secret. */
+function canChangeAccess(status: unknown): boolean {
+	if (!status || typeof status !== "object") return false;
+	const value = status as { readiness?: unknown; has_admin_secret?: unknown };
+	return value.readiness === "ready" && value.has_admin_secret === true;
+}
+
 function createInitialTeamSetupRenderer(
 	context: RecipientPolicySharingLoaderContext,
 	refresh: RecipientPolicySharingRefresh,
 	sharingMount: HTMLElement,
 ): () => void {
 	return () => {
-		const { dependencies, options, state } = context;
+		const { dependencies, state } = context;
 		const cached = state.lastSuccessfulData;
 		const sharingOptions: RecipientPolicySharingOptions = cached
 			? {
-					coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
-					deviceInventory: state.lastDeviceInventory,
-					deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
-					onOpenTeamSetup: options.onOpenTeamSetup,
-					onReviewDevices: options.onReviewDevices,
-					onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
+					...sharedSharingOptions(context, refresh),
 					received: cached.inventory.received,
 					...(state.lastRequiredRefreshError ? { refreshError: true } : {}),
 					teamSetupSummary: state.teamSetupSummary,
@@ -205,8 +228,11 @@ function updateSharingLoaderAvailability(
 		Awaited<ReturnType<typeof api.loadDeviceIdentityInventory>>
 	>,
 	syncStatusResult: PromiseSettledResult<Awaited<ReturnType<typeof api.loadSyncStatus>>>,
+	adminStatusResult: PromiseSettledResult<unknown>,
 ): void {
 	const { state } = context;
+	state.accessChangesAllowed =
+		adminStatusResult.status === "fulfilled" && canChangeAccess(adminStatusResult.value);
 	state.lastDeviceInventoryUnavailable = deviceInventoryResult.status === "rejected";
 	if (deviceInventoryResult.status === "fulfilled") {
 		state.lastDeviceInventory = deviceInventoryResult.value;
@@ -224,7 +250,7 @@ function buildSharingLoadData(
 	inventoryResult: PromiseSettledResult<RecipientPolicyProjectInventory>,
 	intentResult: PromiseSettledResult<api.RecipientPolicyIntentGraphV1>,
 ): SharingLoadData {
-	const { options, state } = context;
+	const { state } = context;
 	const loadSucceeded =
 		inventoryResult.status === "fulfilled" && intentResult.status === "fulfilled";
 	state.lastRequiredRefreshError = !loadSucceeded;
@@ -235,15 +261,7 @@ function buildSharingLoadData(
 		return {
 			projects: inventory.manageable,
 			intent,
-			options: {
-				coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
-				deviceInventory: state.lastDeviceInventory,
-				deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
-				onOpenTeamSetup: options.onOpenTeamSetup,
-				onReviewDevices: options.onReviewDevices,
-				onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
-				received: inventory.received,
-			},
+			options: { ...sharedSharingOptions(context, refresh), received: inventory.received },
 			loadSucceeded: true,
 		};
 	}
@@ -253,12 +271,7 @@ function buildSharingLoadData(
 			projects: cached.inventory.manageable,
 			intent: cached.intent,
 			options: {
-				coordinatorEnrollmentIssueCount: state.coordinatorEnrollmentIssueCount,
-				deviceInventory: state.lastDeviceInventory,
-				deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
-				onOpenTeamSetup: options.onOpenTeamSetup,
-				onReviewDevices: options.onReviewDevices,
-				onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),
+				...sharedSharingOptions(context, refresh),
 				received: cached.inventory.received,
 				refreshError: true,
 			},
@@ -320,23 +333,34 @@ async function loadRecipientPolicySharingData(
 	const isCurrent = () => !refreshOptions.signal?.aborted && revision === state.loadRevision;
 	const managementMount = document.getElementById("recipientPolicyManagementMount");
 	const teamSetup = beginTeamSetupLoad(context, refresh, sharingMount, refreshOptions, isCurrent);
-	const [inventoryResult, intentResult, deviceInventoryResult, syncStatusResult] =
-		await Promise.allSettled([
-			dependencies.loadProjects({ signal: refreshOptions.signal }),
-			dependencies.loadIntent({ signal: refreshOptions.signal }),
-			dependencies.loadDeviceInventory({ signal: refreshOptions.signal }),
-			dependencies.loadSyncStatus(false, "", {
-				includeJoinRequests: false,
-				signal: refreshOptions.signal,
-			}),
-		]);
+	const [
+		inventoryResult,
+		intentResult,
+		deviceInventoryResult,
+		syncStatusResult,
+		adminStatusResult,
+	] = await Promise.allSettled([
+		dependencies.loadProjects({ signal: refreshOptions.signal }),
+		dependencies.loadIntent({ signal: refreshOptions.signal }),
+		dependencies.loadDeviceInventory({ signal: refreshOptions.signal }),
+		dependencies.loadSyncStatus(false, "", {
+			includeJoinRequests: false,
+			signal: refreshOptions.signal,
+		}),
+		dependencies.loadCoordinatorAdminStatus({ signal: refreshOptions.signal }),
+	]);
 	if (!isCurrent()) {
 		if (refreshOptions.signal?.aborted) return false;
 		if (!waitsForTeamSetupSummary(refreshOptions)) return state.latestLoad ?? false;
 		await teamSetup.summaryPromise;
 		return false;
 	}
-	updateSharingLoaderAvailability(context, deviceInventoryResult, syncStatusResult);
+	updateSharingLoaderAvailability(
+		context,
+		deviceInventoryResult,
+		syncStatusResult,
+		adminStatusResult,
+	);
 	const data = buildSharingLoadData(context, refresh, inventoryResult, intentResult);
 	const renderSharing = renderSharingLoad(context, refresh, sharingMount, managementMount, data);
 	teamSetup.setRenderer(renderSharing);

@@ -24,6 +24,11 @@ import {
 	openRecipientPolicyManagement,
 	type RecipientPolicyManagementProject,
 } from "./recipient-policy-management";
+import {
+	type PersonMergeTarget,
+	type PersonSettingsActions,
+	RecipientPolicyPersonSettings,
+} from "./recipient-policy-person-settings";
 import type { ReceivedProjectShare } from "./recipient-policy-projects";
 import { RecipientPolicyTeamSettings } from "./recipient-policy-team-settings";
 
@@ -37,6 +42,10 @@ export interface RecipientPolicySharingOptions {
 	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
 	onTeamRenamed?: () => Promise<unknown> | unknown;
+	onPeopleChanged?: () => Promise<unknown> | unknown;
+	/** True only when this device holds the coordinator admin secret. */
+	accessChangesAllowed?: boolean;
+	personActions?: PersonSettingsActions;
 	renameTeam?: typeof import("../lib/api/sync").renameRecipientPolicyTeam;
 	coordinatorEnrollmentIssueCount?: number;
 	teamSetupSummary?: LegacyTeamSetupSummaryResponseV1;
@@ -347,6 +356,8 @@ function SharingTabPanelContent({
 					devices={devices}
 					disableMutations={options.refreshError === true}
 					intent={intent}
+					localIdentityIds={localIdentityIds(accountView, options.deviceInventory)}
+					people={peopleManagement(options)}
 					projects={projects}
 				/>
 			);
@@ -711,17 +722,111 @@ function identityDirectProjectNames(
 	);
 }
 
+/** The person this device belongs to, from the signed-in account or the local device record. */
+function localIdentityIds(
+	accountView: AccountView | null,
+	inventory?: DeviceIdentityInventoryV1,
+): Set<string> {
+	const ids = new Set<string>();
+	if (accountView?.local?.identityId) ids.add(accountView.local.identityId);
+	for (const item of inventory?.items ?? []) {
+		if (item.isLocal && item.identityId) ids.add(item.identityId);
+	}
+	return ids;
+}
+
+function personMergeTargets(
+	identityId: string,
+	activeIdentities: RecipientPolicyIntentGraphV1["identities"],
+	localIds: Set<string>,
+	accountView: AccountView | null,
+): PersonMergeTarget[] {
+	return activeIdentities
+		.filter((candidate) => candidate.identityId !== identityId)
+		.map((candidate) => {
+			const name = verifiedGoogleLabel(accountView, candidate.identityId) || candidate.displayName;
+			return {
+				identityId: candidate.identityId,
+				label: localIds.has(candidate.identityId) ? `${name} (you)` : name,
+			};
+		});
+}
+
+interface PeopleManagement {
+	accessChangesAllowed: boolean;
+	actions?: PersonSettingsActions;
+	onChanged?: () => Promise<unknown> | unknown;
+}
+
+function peopleManagement(options: RecipientPolicySharingOptions): PeopleManagement {
+	return {
+		accessChangesAllowed: options.accessChangesAllowed === true,
+		actions: options.personActions,
+		onChanged: options.onPeopleChanged,
+	};
+}
+
+function IdentityCardActions({
+	disabled,
+	identity,
+	label,
+	others,
+	people,
+}: {
+	disabled: boolean;
+	identity: RecipientPolicyIntentGraphV1["identities"][number];
+	label: string;
+	/** Everyone listed in Sharing, used to offer merge targets. */
+	others: {
+		accountView: AccountView | null;
+		activeIdentities: RecipientPolicyIntentGraphV1["identities"];
+		localIds: Set<string>;
+	};
+	/** Null for the person this device belongs to, who can't be merged away or removed here. */
+	people: PeopleManagement | null;
+}) {
+	return (
+		<div className="recipient-policy-sharing-card-actions">
+			<RecipientActions
+				disabled={disabled}
+				displayName={label}
+				recipient={{ recipientKind: "identity", identityId: identity.identityId }}
+			/>
+			{people ? (
+				<RecipientPolicyPersonSettings
+					accessChangesAllowed={people.accessChangesAllowed}
+					actions={people.actions}
+					disabled={disabled}
+					displayName={identity.displayName}
+					identityId={identity.identityId}
+					mergeTargets={personMergeTargets(
+						identity.identityId,
+						others.activeIdentities,
+						others.localIds,
+						others.accountView,
+					)}
+					onChanged={people.onChanged}
+				/>
+			) : null}
+		</div>
+	);
+}
+
 function IdentitiesView({
 	accountView,
 	devices,
 	disableMutations,
 	intent,
+	localIdentityIds: localIds,
+	people,
 	projects,
 }: {
 	accountView: AccountView | null;
 	devices: SharingDevice[];
 	disableMutations: boolean;
 	intent: RecipientPolicyIntentGraphV1;
+	localIdentityIds: Set<string>;
+	people: PeopleManagement;
 	projects: RecipientPolicyManagementProject[];
 }) {
 	const activeIdentities = intent.identities.filter((identity) => identity.status === "active");
@@ -765,10 +870,12 @@ function IdentitiesView({
 									{verifiedLabel ? "Verified Google account" : "Local identity"}
 								</Chip>
 							</div>
-							<RecipientActions
+							<IdentityCardActions
 								disabled={disableMutations}
-								displayName={verifiedLabel || identity.displayName}
-								recipient={{ recipientKind: "identity", identityId: identity.identityId }}
+								identity={identity}
+								label={verifiedLabel || identity.displayName}
+								people={localIds.has(identity.identityId) ? null : people}
+								others={{ accountView, activeIdentities, localIds }}
 							/>
 						</div>
 						{verifiedLabel ? (
