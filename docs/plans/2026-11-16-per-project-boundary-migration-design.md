@@ -674,7 +674,7 @@ The owner accepted these on 2026-11-16, with one condition: every item that asks
 
 ## Still open
 
-1. **How an admin device learns a Project it does not hold (P5).** Reports carry hashes, so the admin device has no identity or name to show in Projects or to key recipient edges on. Either the author's report carries the canonical identity and display name in clear, as legacy Team completion manifests already do, or it carries them sealed to the admin devices' keys.
+1. **How an admin device learns a Project it does not hold (P5).** Reports carry hashes, so the admin device has no identity or name to show in Projects or to key recipient edges on. Either the author's report carries the canonical identity and display name in clear, or it carries them sealed to the admin devices' keys. Legacy Team completion manifests carry digests of Project identities, so the coordinator holds no Project identity in clear today.
 2. **"Keep it off *device*" depends on the local withdrawal in `codemem-lvgba.25`.** Without it, a person whose filter keeps one Project off one of their own devices can only include the device or keep the older setup.
 3. **A boundary member that has withdrawn holds coordinator authorization it does not use.** The coordinator half of withdrawal is deferred (`codemem-lvgba.33`). Until it exists, what keeps the Project off that device is the device's own record.
 4. **The changes made after the adversarial review, and after the owner's decisions, have not been reviewed.** One correction review remains in the review budget.
