@@ -1,4 +1,6 @@
+import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 
 /**
  * Removal tombstones. One row records each deleted enrollment and stays active
@@ -350,4 +352,271 @@ WHERE i.group_id = ? AND (i.token = ? OR i.token_digest = ?) LIMIT 1)`,
  */
 export function enrollmentKeyIdColumn(keyId: string | null): string {
 	return keyId ?? "";
+}
+
+export const DEVICE_REMOVAL_FILL_DEFAULT_LIMIT = 200;
+export const DEVICE_REMOVAL_FILL_MAX_LIMIT = 500;
+
+export const ENROLLMENT_KEY_ID_UNFILLED_SQL = `SELECT rowid AS row_id, public_key
+FROM enrolled_devices WHERE key_id IS NULL ORDER BY rowid LIMIT ?`;
+
+/**
+ * Bind one JSON array of `{ row_id, public_key, key_id }` twice. The key text is
+ * pinned, so a row whose key changed after the read stays unfilled.
+ */
+export const ENROLLMENT_KEY_ID_FILL_SQL = `UPDATE enrolled_devices SET key_id = (
+  SELECT json_extract(j.value, '$.key_id') FROM json_each(?) j
+  WHERE json_extract(j.value, '$.row_id') = enrolled_devices.rowid
+    AND json_extract(j.value, '$.public_key') = enrolled_devices.public_key)
+WHERE key_id IS NULL AND EXISTS (
+  SELECT 1 FROM json_each(?) j
+  WHERE json_extract(j.value, '$.row_id') = enrolled_devices.rowid
+    AND json_extract(j.value, '$.public_key') = enrolled_devices.public_key)`;
+
+export interface UnfilledEnrollmentKey {
+	row_id: number;
+	public_key: string;
+}
+
+export function enrollmentKeyIdFillLimit(limit: unknown): number {
+	if (limit === undefined) return DEVICE_REMOVAL_FILL_DEFAULT_LIMIT;
+	if (!Number.isSafeInteger(limit) || (limit as number) < 1) throw new Error("invalid_input");
+	return Math.min(limit as number, DEVICE_REMOVAL_FILL_MAX_LIMIT);
+}
+
+export interface CoordinatorFillEnrollmentKeyIdsResult {
+	/** Rows filled by this call. */
+	readonly filled: number;
+	/** True when unfilled rows remain after this call. */
+	readonly remaining: boolean;
+}
+
+export interface CoordinatorRemoveEnrollmentInput {
+	groupId: string;
+	deviceId: string;
+	/** Audit metadata only; it proves nothing about ownership. */
+	actorId?: string | null;
+}
+
+export interface CoordinatorDeviceRemovalEntry {
+	readonly removal_seq: number;
+	readonly group_id: string;
+	readonly device_id: string;
+}
+
+export type CoordinatorRemoveEnrollmentResult =
+	| { kind: "removed"; removal_id: string; removals: CoordinatorDeviceRemovalEntry[] }
+	| { kind: "not_enrolled" };
+
+export interface CoordinatorDeviceRemovalStore {
+	/** Fills `enrolled_devices.key_id` for at most `limit` unfilled rows. */
+	fillEnrollmentKeyIds(options?: {
+		limit?: number;
+	}): Promise<CoordinatorFillEnrollmentKeyIdsResult>;
+	/** Removes one enrollment of one group and records its tombstone. No expansion by key. */
+	removeEnrollment(
+		input: CoordinatorRemoveEnrollmentInput,
+	): Promise<CoordinatorRemoveEnrollmentResult>;
+}
+
+interface RemovalStatement {
+	sql: string;
+	values: (string | number | null)[];
+	read?: boolean;
+}
+
+export interface DeviceRemovalBackend {
+	/** All statements, including reads, execute in one transaction. */
+	batch(statements: RemovalStatement[]): Promise<unknown[]>;
+	all(statement: RemovalStatement): Promise<unknown>;
+}
+
+function incompleteResult(): never {
+	throw new Error("device_removal_incomplete");
+}
+
+/** A schema without the tombstone table or the key ID column cannot record a removal. */
+function removalBackendFailure(error: unknown): never {
+	const message = error instanceof Error ? error.message : "";
+	if (/no such table: coordinator_device_removals|no such column: (e\.)?key_id/u.test(message))
+		throw new Error("device_removal_unavailable");
+	throw new Error("device_removal_incomplete");
+}
+
+function resultRows<T>(result: unknown): T[] {
+	if (
+		!result ||
+		typeof result !== "object" ||
+		("success" in result && result.success === false) ||
+		!("results" in result) ||
+		!Array.isArray(result.results)
+	)
+		return incompleteResult();
+	return result.results as T[];
+}
+
+function resultChanges(result: unknown): number {
+	if (
+		!result ||
+		typeof result !== "object" ||
+		("success" in result && result.success === false) ||
+		!("meta" in result) ||
+		!result.meta ||
+		typeof result.meta !== "object" ||
+		!("changes" in result.meta) ||
+		!Number.isSafeInteger(result.meta.changes) ||
+		(result.meta.changes as number) < 0
+	)
+		return incompleteResult();
+	return result.meta.changes as number;
+}
+
+const NO_UNFILLED_KEY_ID_SQL = "NOT EXISTS (SELECT 1 FROM enrolled_devices WHERE key_id IS NULL)";
+/** Bind the removal ID, group ID, and device ID, in that order. */
+const OWN_TOMBSTONE_SQL = `EXISTS (SELECT 1 FROM coordinator_device_removals t
+WHERE t.removal_id = ? AND t.group_id = ? AND t.device_id = ? AND t.lifted_at IS NULL)`;
+
+/**
+ * A read in the same transaction or batch as the writes. It raises when this
+ * removal wrote its tombstone and a row that the removal deletes is still there,
+ * because a trigger suppressed that delete without an error. The whole removal
+ * then rolls back, so no tombstone is committed next to a surviving enrollment.
+ * Each delete requires the tombstone, so no row is deleted without one. Bind the
+ * removal ID, the group ID and device ID four times, and the device ID once more.
+ */
+const REMOVAL_COMPLETE_SQL = `SELECT CASE WHEN ${OWN_TOMBSTONE_SQL} AND (
+EXISTS (SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?)
+OR EXISTS (SELECT 1 FROM presence_records WHERE group_id = ? AND device_id = ?)
+OR EXISTS (SELECT 1 FROM coordinator_reciprocal_approvals WHERE group_id = ?
+  AND (requesting_device_id = ? OR requested_device_id = ?)))
+THEN json('device_removal_incomplete') ELSE 1 END AS complete`;
+
+/** The tombstone precedes the enrollment delete, which the delete trigger requires. */
+function singleRemovalStatements(
+	input: Required<CoordinatorRemoveEnrollmentInput>,
+	removalId: string,
+	now: string,
+): RemovalStatement[] {
+	const target = [input.groupId, input.deviceId];
+	const own = [removalId, ...target];
+	return [
+		{
+			sql: `INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key,
+fingerprint, key_id, identity_id, display_name, actor_id, removed_at)
+SELECT ?, e.group_id, e.device_id, e.public_key, e.fingerprint, NULLIF(e.key_id, ''),
+e.identity_id, e.display_name, ?, ? FROM enrolled_devices e
+WHERE e.group_id = ? AND e.device_id = ? AND ${NO_UNFILLED_KEY_ID_SQL}`,
+			values: [removalId, input.actorId, now, ...target],
+		},
+		{
+			sql: `DELETE FROM presence_records WHERE group_id = ? AND device_id = ? AND ${OWN_TOMBSTONE_SQL}`,
+			values: [...target, ...own],
+		},
+		{
+			sql: `DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ?
+AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQL}`,
+			values: [input.groupId, input.deviceId, input.deviceId, ...own],
+		},
+		{
+			sql: `DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND ${OWN_TOMBSTONE_SQL}`,
+			values: [...target, ...own],
+		},
+		{
+			sql: REMOVAL_COMPLETE_SQL,
+			values: [...own, ...target, ...target, input.groupId, input.deviceId, input.deviceId],
+			read: true,
+		},
+		{
+			sql: `SELECT removal_seq, group_id, device_id FROM coordinator_device_removals
+WHERE removal_id = ? ORDER BY removal_seq`,
+			values: [removalId],
+			read: true,
+		},
+		{
+			sql: `SELECT (SELECT COUNT(*) FROM enrolled_devices WHERE key_id IS NULL) AS unfilled,
+(SELECT COUNT(*) FROM enrolled_devices WHERE group_id = ? AND device_id = ?) AS enrolled`,
+			values: target,
+			read: true,
+		},
+	];
+}
+
+function captureRemoval(input: unknown): Required<CoordinatorRemoveEnrollmentInput> {
+	const source = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+	const { groupId, deviceId } = source;
+	const actorId = source.actorId ?? null;
+	if (
+		typeof groupId !== "string" ||
+		typeof deviceId !== "string" ||
+		(actorId !== null && !isAuthControllerId(actorId))
+	)
+		throw new Error("invalid_input");
+	return { groupId, deviceId, actorId };
+}
+
+/** Internal storage capability. The caller authenticates the administrator. */
+export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
+	constructor(
+		private readonly backend: DeviceRemovalBackend,
+		private readonly clock: () => number = Date.now,
+	) {}
+
+	async fillEnrollmentKeyIds(
+		options: { limit?: number } = {},
+	): Promise<CoordinatorFillEnrollmentKeyIdsResult> {
+		const limit = enrollmentKeyIdFillLimit(options.limit);
+		const unfilled = resultRows<UnfilledEnrollmentKey>(
+			await this.backend
+				.all({ sql: ENROLLMENT_KEY_ID_UNFILLED_SQL, values: [limit + 1], read: true })
+				.catch(removalBackendFailure),
+		);
+		const page = unfilled.slice(0, limit);
+		if (page.length === 0) return { filled: 0, remaining: false };
+		const entries = await Promise.all(
+			page.map(async (row) => ({
+				row_id: row.row_id,
+				public_key: row.public_key,
+				key_id: enrollmentKeyIdColumn(await ed25519KeyIdForRevocation(row.public_key)),
+			})),
+		);
+		const json = JSON.stringify(entries);
+		const results = await this.backend
+			.batch([{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] }])
+			.catch(removalBackendFailure);
+		if (results.length !== 1) return incompleteResult();
+		const filled = resultChanges(results[0]);
+		return { filled, remaining: unfilled.length > limit || filled < page.length };
+	}
+
+	/**
+	 * Single-group removal: one enrollment, no expansion by key. It refuses with
+	 * `device_removal_unavailable` while any enrollment has an unfilled key ID.
+	 */
+	async removeEnrollment(
+		raw: CoordinatorRemoveEnrollmentInput,
+	): Promise<CoordinatorRemoveEnrollmentResult> {
+		const input = captureRemoval(raw);
+		const removalId = globalThis.crypto.randomUUID();
+		const statements = singleRemovalStatements(
+			input,
+			removalId,
+			new Date(this.clock()).toISOString(),
+		);
+		const results = await this.backend.batch(statements).catch(removalBackendFailure);
+		if (results.length !== statements.length) return incompleteResult();
+		const writes = results.slice(0, 4).map(resultChanges);
+		if (resultRows<{ complete: number }>(results[4])[0]?.complete !== 1) return incompleteResult();
+		const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[5]);
+		const state = resultRows<{ unfilled: number; enrolled: number }>(results[6])[0];
+		if (!state) return incompleteResult();
+		if (removals.length === 0) {
+			if (writes.some((count) => count !== 0)) return incompleteResult();
+			if (state.enrolled > 0 && state.unfilled > 0) throw new Error("device_removal_unavailable");
+			if (state.enrolled > 0) return incompleteResult();
+			return { kind: "not_enrolled" };
+		}
+		if (removals.length !== 1 || writes[0] !== 1 || writes[3] !== 1 || state.enrolled !== 0)
+			return incompleteResult();
+		return { kind: "removed", removal_id: removalId, removals };
+	}
 }

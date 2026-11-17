@@ -1,4 +1,5 @@
 import type { CoordinatorAuthSchemaStore } from "./coordinator-auth-schema.js";
+import type { CoordinatorDeviceRemovalStore } from "./coordinator-device-removal.js";
 import type { CoordinatorDeviceRevocationStore } from "./coordinator-device-revocation.js";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
@@ -533,6 +534,7 @@ export interface CoordinatorListReciprocalApprovalsInput {
 
 export interface CoordinatorStore
 	extends CoordinatorDeviceRevocationStore,
+		CoordinatorDeviceRemovalStore,
 		Partial<CoordinatorAuthSchemaStore> {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;

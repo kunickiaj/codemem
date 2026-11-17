@@ -215,7 +215,11 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerLegacyInsertShape(test);
 	registerTombstoneRules(test);
 	registerTombstoneSequence(test);
+	registerSingleGroupRemoval(test);
+	registerSuppressedRemovalWrites(test);
+	registerRemovalAvailability(test);
 	registerInvitationSequence(test);
+	registerKeyIdStorage(test);
 	registerTombstoneMatchTriggers(test);
 	registerEnrollmentChangeTriggers(test);
 	registerEnableWithoutKeyId(test);
@@ -338,6 +342,149 @@ function registerTombstoneRules(test: RemovalTest) {
 	});
 }
 
+function registerSuppressedRemovalWrites(test: RemovalTest) {
+	// A trigger that makes one write of the removal change no row without an error.
+	const suppressed = {
+		"tombstone insert": "BEFORE INSERT ON coordinator_device_removals",
+		"enrollment delete": "BEFORE DELETE ON enrolled_devices",
+		"presence delete": "BEFORE DELETE ON presence_records",
+		"reciprocal approval delete": "BEFORE DELETE ON coordinator_reciprocal_approvals",
+	} as const;
+	for (const [write, event] of Object.entries(suppressed)) {
+		test(`A11 a removal whose ${write} a trigger suppresses records no tombstone and deletes nothing`, async ({
+			fixture: f,
+		}) => {
+			// Arrange
+			const removed = await target(f);
+			const peer = await target(f, "peer");
+			await enroll(f, removed);
+			await enroll(f, peer);
+			await f.store.upsertPresence({
+				groupId: removed.groupId,
+				deviceId: removed.deviceId,
+				addresses: ["http://127.0.0.1:9000"],
+				ttlS: 300,
+			});
+			await f.store.createReciprocalApproval({
+				groupId: removed.groupId,
+				requestingDeviceId: removed.deviceId,
+				requestedDeviceId: peer.deviceId,
+			});
+			const dependent = () =>
+				Promise.all([
+					enrollments(f),
+					f.rows("SELECT device_id FROM presence_records WHERE device_id = ?", removed.deviceId),
+					f.rows(
+						"SELECT request_id FROM coordinator_reciprocal_approvals WHERE requesting_device_id = ?",
+						removed.deviceId,
+					),
+				]);
+			const before = await dependent();
+			await f.exec(`CREATE TRIGGER removal_fixture_ignore_write ${event}
+				BEGIN SELECT RAISE(IGNORE); END`);
+			try {
+				// Act
+				const pending = f.store.removeEnrollment({
+					groupId: removed.groupId,
+					deviceId: removed.deviceId,
+				});
+				// Assert: neither a tombstone without its deletes nor a delete without its tombstone.
+				await expect(pending).rejects.toThrow("device_removal_incomplete");
+				expect(await tombstones(f)).toEqual([]);
+				expect(await dependent()).toEqual(before);
+				expect(before.map((rows) => rows.length)).toEqual([2, 1, 1]);
+			} finally {
+				await f.exec("DROP TRIGGER IF EXISTS removal_fixture_ignore_write");
+			}
+		});
+	}
+}
+
+function registerSingleGroupRemoval(test: RemovalTest) {
+	test("A11 A20 the single-group removal writes a tombstone before its delete, and a plain delete aborts", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const removed = await target(f);
+		const kept = { ...removed, groupId: `${f.prefix}-g2` };
+		await enroll(f, removed);
+		await enroll(f, kept);
+		await f.store.upsertPresence({
+			groupId: removed.groupId,
+			deviceId: removed.deviceId,
+			addresses: ["http://127.0.0.1:9000"],
+			ttlS: 300,
+		});
+		// Act
+		const plainDelete = f.exec(
+			"DELETE FROM enrolled_devices WHERE device_id = ?",
+			removed.deviceId,
+		);
+		await expect(plainDelete).rejects.toThrow(/enrollment_delete_requires_removal/u);
+		const result = await f.store.removeEnrollment({
+			groupId: removed.groupId,
+			deviceId: removed.deviceId,
+			actorId: "fixture-operator",
+		});
+		const missing = await f.store.removeEnrollment({
+			groupId: removed.groupId,
+			deviceId: `${f.prefix}-ghost`,
+		});
+		// Assert: one tombstone with the exact tuple; the other group is untouched.
+		expect(missing).toEqual({ kind: "not_enrolled" });
+		const recorded = await tombstones(f);
+		expect(recorded).toHaveLength(1);
+		expect(result).toEqual({
+			kind: "removed",
+			removal_id: recorded[0]?.removal_id,
+			removals: [
+				{
+					removal_seq: recorded[0]?.removal_seq,
+					group_id: removed.groupId,
+					device_id: removed.deviceId,
+				},
+			],
+		});
+		expect(recorded[0]).toMatchObject({
+			group_id: removed.groupId,
+			device_id: removed.deviceId,
+			public_key: removed.key.publicKey,
+			fingerprint: removed.key.fingerprint,
+			key_id: removed.key.keyId,
+			actor_id: "fixture-operator",
+			removed_at: new Date(REMOVAL_CLOCK_MS).toISOString(),
+			lifted_at: null,
+		});
+		expect(recorded[0]?.removal_id).toMatch(/^[0-9a-f-]{36}$/u);
+		expect(await enrollments(f)).toMatchObject([{ group_id: kept.groupId }]);
+		expect(
+			await f.rows("SELECT 1 FROM presence_records WHERE device_id = ?", removed.deviceId),
+		).toEqual([]);
+	});
+}
+
+function registerRemovalAvailability(test: RemovalTest) {
+	test("A16 the single-group removal is unavailable while any enrollment has no key ID", async ({
+		fixture: f,
+	}) => {
+		// Arrange: another enrollment as an older release wrote it before any tombstone existed.
+		const removed = await target(f);
+		const unfilled = await target(f, "unfilled");
+		await enroll(f, removed);
+		await legacyInsert(f, unfilled);
+		// Act
+		const removal = { groupId: removed.groupId, deviceId: removed.deviceId };
+		const pending = f.store.removeEnrollment(removal);
+		// Assert
+		await expect(pending).rejects.toThrow("device_removal_unavailable");
+		expect(await tombstones(f)).toEqual([]);
+		expect(await enrollments(f)).toHaveLength(2);
+		// Act: filling the key IDs makes the removal available.
+		expect(await f.store.fillEnrollmentKeyIds()).toEqual({ filled: 1, remaining: false });
+		expect(await f.store.removeEnrollment(removal)).toMatchObject({ kind: "removed" });
+	});
+}
+
 async function highestRemovalSeq(f: RemovalFixture): Promise<number> {
 	const rows = await f.rows<{ seq: number }>(
 		"SELECT COALESCE(MAX(removal_seq), 0) AS seq FROM coordinator_device_removals",
@@ -414,6 +561,73 @@ function registerInvitationSequence(test: RemovalTest) {
 				{ request_id: oldRequest.request_id, seq: null },
 			]),
 		);
+	});
+}
+
+function registerKeyIdStorage(test: RemovalTest) {
+	test("A13 enrollment writers store the key ID, and filling covers rows that lack one", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const admin = await target(f, "admin");
+		const opaque = { ...(await target(f, "opaque")), key: opaqueKey(`${f.prefix}-opaque`) };
+		const joined = await target(f, "joined");
+		const expiresAt = "2099-01-01T00:00:00.000Z";
+		// Act: admin enrollment with both key kinds, then a join approval.
+		await enroll(f, admin);
+		await enroll(f, opaque);
+		const invite = await f.store.createInvite({
+			groupId: admin.groupId,
+			policy: "approval_required",
+			expiresAt,
+		});
+		const request = await f.store.createJoinRequest({
+			groupId: joined.groupId,
+			deviceId: joined.deviceId,
+			publicKey: joined.key.publicKey,
+			fingerprint: joined.key.fingerprint,
+			token: invite.token,
+		});
+		await f.store.reviewJoinRequest({ requestId: request.request_id, approved: true });
+		// Assert
+		expect(await enrollments(f)).toEqual([
+			{
+				group_id: admin.groupId,
+				device_id: admin.deviceId,
+				public_key: admin.key.publicKey,
+				key_id: admin.key.keyId,
+			},
+			{
+				group_id: joined.groupId,
+				device_id: joined.deviceId,
+				public_key: joined.key.publicKey,
+				key_id: joined.key.keyId,
+			},
+			{
+				group_id: opaque.groupId,
+				device_id: opaque.deviceId,
+				public_key: opaque.key.publicKey,
+				key_id: "",
+			},
+		]);
+		// Arrange: rows as the migration leaves them, with no key ID.
+		await f.exec(
+			"UPDATE enrolled_devices SET key_id = NULL WHERE device_id LIKE ?",
+			`${f.prefix}%`,
+		);
+		// Act
+		const one = await f.store.fillEnrollmentKeyIds({ limit: 1 });
+		const rest = await f.store.fillEnrollmentKeyIds();
+		const none = await f.store.fillEnrollmentKeyIds();
+		// Assert
+		expect(one).toEqual({ filled: 1, remaining: true });
+		expect(rest.remaining).toBe(false);
+		expect(none).toEqual({ filled: 0, remaining: false });
+		expect((await enrollments(f)).map((row) => row.key_id)).toEqual([
+			admin.key.keyId,
+			joined.key.keyId,
+			"",
+		]);
 	});
 }
 
@@ -619,6 +833,35 @@ function registerEnrollmentChangeTriggers(test: RemovalTest) {
 }
 
 function registerEnrollmentMoveTriggers(test: RemovalTest) {
+	test("A19 a tombstone elsewhere stops a real change of an enrollment and not a restatement", async ({
+		fixture: f,
+	}) => {
+		// Arrange: the device is removed from group 1 and stays enrolled in group 2.
+		const removed = await target(f);
+		const survivor = { ...removed, groupId: `${f.prefix}-g2` };
+		const next = await removalDeviceKey(`${f.prefix}-next`);
+		await enroll(f, removed);
+		await enroll(f, survivor);
+		await f.store.removeEnrollment({ groupId: removed.groupId, deviceId: removed.deviceId });
+		const before = await enrollments(f);
+		// Act: writers that name the checked columns without changing them.
+		await enroll(f, survivor);
+		await f.exec(
+			`UPDATE enrolled_devices SET group_id = group_id, device_id = device_id,
+				public_key = public_key, key_id = key_id WHERE device_id = ?`,
+			survivor.deviceId,
+		);
+		const rotated = f.exec(
+			"UPDATE enrolled_devices SET public_key = ?, key_id = ? WHERE device_id = ?",
+			next.publicKey,
+			next.keyId,
+			survivor.deviceId,
+		);
+		// Assert: a new key for the removed device ID is a real change.
+		await expect(rotated).rejects.toThrow(/device_removed/u);
+		expect(await enrollments(f)).toEqual(before);
+	});
+
 	test("A25 an update to an opaque key whose text equals an active tombstone's key aborts", async ({
 		fixture: f,
 	}) => {
@@ -636,6 +879,27 @@ function registerEnrollmentMoveTriggers(test: RemovalTest) {
 		// Assert: the stale-key rule lets the opaque change through, and the text match stops it.
 		await expect(pending).rejects.toThrow(/device_removed/u);
 		expect(await enrollments(f)).toMatchObject([{ public_key: other.key.publicKey }]);
+	});
+
+	test("A23 after a single-group removal, moving the surviving enrollment into that group aborts", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const removed = await target(f);
+		const survivor = { ...removed, groupId: `${f.prefix}-g2` };
+		await enroll(f, removed);
+		await enroll(f, survivor);
+		await f.store.removeEnrollment({ groupId: removed.groupId, deviceId: removed.deviceId });
+		// Act
+		const moved = f.exec(
+			"UPDATE enrolled_devices SET group_id = ? WHERE group_id = ? AND device_id = ?",
+			removed.groupId,
+			survivor.groupId,
+			survivor.deviceId,
+		);
+		// Assert: no delete can then use the old tombstone on a moved row.
+		await expect(moved).rejects.toThrow(/device_removed/u);
+		expect(await enrollments(f)).toMatchObject([{ group_id: survivor.groupId }]);
 	});
 }
 
