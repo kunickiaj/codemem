@@ -1,134 +1,40 @@
-/* Coordinator-admin invites panel — renders the "Create teammate invite"
- * surface. Pulls invite form state from coordinatorAdminState and the
- * latest generated invite from `state.lastTeamInvite`. Takes the
- * `createInvite` callback and the shared `renderShell` as deps so the
- * RadixSelect onValueChange can trigger a re-render. */
+/* Coordinator-admin invites panel. New invitations are created in Sharing, so
+ * this panel hands off to it. A code generated here before that change stays
+ * visible so it can still be copied, along with the read-only Project sharing
+ * operations. */
 
 import { h } from "preact";
-import { RadixSelect } from "../../../components/primitives/radix-select";
 import { RadixTabsContent } from "../../../components/primitives/radix-tabs";
 import { TextArea } from "../../../components/primitives/text-area";
-import { TextInput } from "../../../components/primitives/text-input";
 import { copyToClipboard } from "../../../lib/dom";
 import { state } from "../../../lib/state";
-import { coordinatorAdminState } from "../data/state";
-import type { CoordinatorAdminSummary } from "../data/summary";
-import { currentAdminTargetGroup } from "../data/target-group";
 
 export interface InvitesPanelDeps {
-	summary: CoordinatorAdminSummary;
-	fresh: boolean;
+	/** Opens the invitation creator in Sharing. */
 	createInvite: () => void;
-	renderShell: () => void;
 }
 
-export function renderInvitesPanel(deps: InvitesPanelDeps) {
-	const { summary, fresh, createInvite, renderShell } = deps;
-	const status = state.lastCoordinatorAdminStatus;
-	const activeGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
-	const effectiveGroup = coordinatorAdminState.inviteGroup.trim() || activeGroup;
+export function renderInvitesPanel({ createInvite }: InvitesPanelDeps) {
 	const output = String(state.lastTeamInvite?.encoded || "").trim();
 	const warnings = Array.isArray(state.lastTeamInvite?.warnings)
 		? state.lastTeamInvite?.warnings
 		: [];
-	const inviteDisabled = !fresh || coordinatorAdminState.invitePending;
 	return h(
 		RadixTabsContent,
 		{ className: "coordinator-admin-panel", value: "invites" },
-		h("h3", null, "Legacy coordinator invites"),
+		h("h3", null, "Invitations"),
 		h(
 			"p",
 			{ class: "peer-submeta" },
-			fresh
-				? "Legacy coordinator invites enroll a device in the selected group for discovery. They do not add policy Team membership or grant Project access; use Sharing for both."
-				: summary.readiness === "ready"
-					? "Legacy invite creation is disabled until current coordinator status and group data are available. Previously generated invites remain available to copy."
-					: "Finish coordinator setup first. Legacy invite creation stays disabled until the local configuration is ready.",
+			"Invitations are created in Sharing. They add people to a Team or add a device for a person, and share only the Projects shown in their review.",
 		),
 		h(
-			"form",
-			{
-				class: "coordinator-admin-form",
-				onSubmit: (event: Event) => {
-					event.preventDefault();
-					if (inviteDisabled) return;
-					createInvite();
-				},
-			},
+			"div",
+			{ class: "section-actions" },
 			h(
-				"div",
-				{ class: "coordinator-admin-form-grid" },
-				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "Coordinator group"),
-					h(TextInput, {
-						class: "peer-scope-input",
-						disabled: !fresh,
-						onInput: (event) => {
-							coordinatorAdminState.inviteGroup = String(
-								(event.currentTarget as HTMLInputElement).value || "",
-							);
-							renderShell();
-						},
-						placeholder: activeGroup || "group-alpha",
-						type: "text",
-						value: coordinatorAdminState.inviteGroup,
-					}),
-				),
-				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "Join policy"),
-					h(RadixSelect, {
-						ariaLabel: "Invite join policy",
-						disabled: !fresh,
-						id: "coordinatorAdminInvitePolicy",
-						onValueChange: (value) => {
-							coordinatorAdminState.invitePolicy =
-								value === "approval_required" ? "approval_required" : "auto_admit";
-							renderShell();
-						},
-						options: [
-							{ value: "auto_admit", label: "Auto-admit to coordinator group" },
-							{ value: "approval_required", label: "Require approval to join group" },
-						],
-						value: coordinatorAdminState.invitePolicy,
-					}),
-				),
-				h(
-					"label",
-					{ class: "coordinator-admin-field" },
-					h("span", null, "Expires in (hours)"),
-					h(TextInput, {
-						class: "peer-scope-input",
-						disabled: !fresh,
-						min: "1",
-						onInput: (event) => {
-							coordinatorAdminState.inviteTtlHours = String(
-								(event.currentTarget as HTMLInputElement).value || "",
-							);
-						},
-						type: "number",
-						value: coordinatorAdminState.inviteTtlHours,
-					}),
-				),
-			),
-			h(
-				"div",
-				{ class: "section-actions" },
-				h(
-					"button",
-					{
-						class: "settings-button",
-						disabled: inviteDisabled,
-						type: "submit",
-					},
-					coordinatorAdminState.invitePending ? "Creating…" : "Create legacy coordinator invite",
-				),
-				effectiveGroup
-					? h("span", { class: "peer-submeta" }, "Using the selected coordinator group")
-					: null,
+				"button",
+				{ class: "settings-button", onClick: () => createInvite(), type: "button" },
+				"Create an invitation in Sharing",
 			),
 		),
 		output

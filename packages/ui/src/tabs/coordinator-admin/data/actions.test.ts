@@ -224,129 +224,6 @@ describe("coordinator admin actions", () => {
 		});
 	});
 
-	it("states that a legacy coordinator invite does not grant Sharing access", async () => {
-		mocks.createCoordinatorInvite.mockResolvedValue({ token: "invite-token", warnings: [] });
-		coordinatorAdminState.inviteGroup = "team-alpha";
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
-
-		await actions.createInviteFromAdminPanel();
-
-		expect(mocks.createCoordinatorInvite).toHaveBeenCalledWith({
-			group_id: "team-alpha",
-			policy: "auto_admit",
-			ttl_hours: 24,
-		});
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Legacy coordinator invite created. It does not grant Sharing Project access.",
-			"success",
-		);
-	});
-
-	it.each([
-		[
-			"Group not found: private-group-id",
-			"This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.",
-		],
-		[
-			"Remote coordinator request failed (404): group_not_found",
-			"This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.",
-		],
-		[
-			"group_archived: private-group-id",
-			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
-		],
-		[
-			"Group is archived: private-group-id",
-			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
-		],
-		[
-			"Remote coordinator request failed (409): group_archived",
-			"This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.",
-		],
-	] as const)("preserves actionable invite guidance for %s", async (message, expected) => {
-		mocks.createCoordinatorInvite.mockRejectedValue(new Error(message));
-		coordinatorAdminState.inviteGroup = "private-group-id";
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
-
-		await actions.createInviteFromAdminPanel();
-
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(expected, "warning");
-		expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain("private-group-id");
-	});
-
-	it.each([new Error("private coordinator detail"), "group_archived"])(
-		"keeps generic recovery guidance for an unknown invite failure (%o)",
-		async (cause) => {
-			mocks.createCoordinatorInvite.mockRejectedValue(cause);
-			coordinatorAdminState.inviteGroup = "team-alpha";
-			const actions = createCoordinatorAdminActions({
-				renderShell: vi.fn(),
-				reloadData: vi.fn().mockResolvedValue(undefined),
-			});
-
-			await actions.createInviteFromAdminPanel();
-
-			expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-				"Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.",
-				"warning",
-			);
-			expect(mocks.showGlobalNotice.mock.calls.flat().join(" ")).not.toContain(
-				"private coordinator detail",
-			);
-		},
-	);
-
-	it("does not restore an invite returned after coordinator data is superseded", async () => {
-		const invite = deferred<{ token: string; warnings: string[] }>();
-		mocks.createCoordinatorInvite.mockReturnValueOnce(invite.promise);
-		coordinatorAdminState.inviteGroup = "team-alpha";
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
-		const action = actions.createInviteFromAdminPanel();
-		await vi.waitFor(() => expect(mocks.createCoordinatorInvite).toHaveBeenCalled());
-		beginCoordinatorAdminLoadGeneration();
-		coordinatorAdminState.inviteGroup = "";
-		invite.resolve({ token: "stale-invite", warnings: ["stale warning"] });
-
-		await action;
-
-		expect(state.lastTeamInvite).toBeNull();
-		expect(coordinatorAdminState.inviteGroup).toBe("");
-		expect(mocks.showGlobalNotice).not.toHaveBeenCalled();
-	});
-
-	it("keeps an invite returned after an ordinary refresh for the same coordinator and group", async () => {
-		const invite = deferred<{ token: string; warnings: string[] }>();
-		mocks.createCoordinatorInvite.mockReturnValueOnce(invite.promise);
-		coordinatorAdminState.inviteGroup = "team-alpha";
-		const actions = createCoordinatorAdminActions({
-			renderShell: vi.fn(),
-			reloadData: vi.fn().mockResolvedValue(undefined),
-		});
-		const action = actions.createInviteFromAdminPanel();
-		await vi.waitFor(() => expect(mocks.createCoordinatorInvite).toHaveBeenCalled());
-		beginCoordinatorAdminLoadGeneration();
-		const result = { token: "current-invite", warnings: [] };
-		invite.resolve(result);
-
-		await action;
-
-		expect(state.lastTeamInvite).toBe(result);
-		expect(coordinatorAdminState.inviteGroup).toBe("team-alpha");
-		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
-			"Legacy coordinator invite created. It does not grant Sharing Project access.",
-			"success",
-		);
-	});
-
 	it("does not restore setup guidance returned after coordinator data is superseded", async () => {
 		const group = deferred<{
 			group: { group_id: string; display_name: string };
@@ -502,9 +379,9 @@ describe("coordinator admin actions", () => {
 			reloadData: vi.fn().mockResolvedValue(undefined),
 		});
 
-		await actions.createInviteFromAdminPanel();
+		await actions.createGroupFromAdminPanel();
 
-		expect(mocks.createCoordinatorInvite).not.toHaveBeenCalled();
+		expect(mocks.createCoordinatorAdminGroup).not.toHaveBeenCalled();
 		expect(mocks.showGlobalNotice).toHaveBeenCalledWith(
 			"Coordinator data changed or is refreshing. Wait for recovery to finish, then try again.",
 			"warning",

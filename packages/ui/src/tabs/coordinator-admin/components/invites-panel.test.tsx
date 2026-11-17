@@ -1,10 +1,9 @@
 import type { ComponentChildren, VNode } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { state } from "../../../lib/state";
-import { coordinatorAdminState } from "../data/state";
 import { renderInvitesPanel } from "./invites-panel";
 
-describe("legacy coordinator invite panel", () => {
+describe("coordinator administration invitations panel", () => {
 	type TestNode = VNode<{
 		children?: ComponentChildren;
 		class?: string;
@@ -59,7 +58,6 @@ describe("legacy coordinator invite panel", () => {
 				},
 			},
 		];
-		coordinatorAdminState.invitePending = false;
 	});
 
 	afterEach(() => {
@@ -67,52 +65,34 @@ describe("legacy coordinator invite panel", () => {
 		state.lastTeamInvite = null;
 	});
 
-	it("labels coordinator invites as legacy and reflects project sharing read-only", () => {
-		const text = textContent(
-			renderInvitesPanel({
-				createInvite: vi.fn(),
-				fresh: true,
-				renderShell: vi.fn(),
-				summary: { detail: "", readiness: "ready", title: "Ready" },
-			}),
-		);
+	it("hands invitation creation to Sharing and keeps Project sharing read-only", () => {
+		// Arrange
+		const createInvite = vi.fn();
+		const panel = renderInvitesPanel({ createInvite });
+		const button = nodes(panel).find(
+			(node) =>
+				node.type === "button" &&
+				textContent(node.props.children) === "Create an invitation in Sharing",
+		) as VNode<{ onClick?: () => void }> | undefined;
 
-		expect(text).toContain("Legacy coordinator invites");
-		expect(text).toContain("do not add policy Team membership or grant Project access");
-		expect(text).toContain("Brian");
-		expect(text).toContain("codemem");
-		expect(text).toContain("Up to date");
-		expect(text).not.toContain("Share project");
+		// Act
+		button?.props.onClick?.();
+
+		// Assert
+		expect(createInvite).toHaveBeenCalledOnce();
+		expect(textContent(panel)).toContain("Invitations are created in Sharing.");
+		expect(textContent(panel)).toContain("Brian");
+		expect(textContent(panel)).toContain("Up to date");
+		expect(textContent(panel)).not.toMatch(/legacy|Legacy|enroll/);
 	});
 
-	it("keeps a previously generated invite copyable while fresh-state mutations are disabled", () => {
+	it("keeps a previously generated code copyable", () => {
 		state.lastTeamInvite = { encoded: "retained-invite", warnings: [] };
-		const panel = renderInvitesPanel({
-			createInvite: vi.fn(),
-			fresh: false,
-			renderShell: vi.fn(),
-			summary: { detail: "Ready", readiness: "ready", title: "Ready" },
-		});
-		const panelNodes = nodes(panel);
-		const copy = panelNodes.find((node) => node.props.class === "settings-button sync-action-copy");
-		const create = panelNodes.find(
-			(node) => textContent(node.props.children) === "Create legacy coordinator invite",
+		const panel = renderInvitesPanel({ createInvite: vi.fn() });
+		const copy = nodes(panel).find(
+			(node) => node.props.class === "settings-button sync-action-copy",
 		);
 
-		expect(textContent(panel)).toContain("Previously generated invites remain available to copy");
 		expect(copy?.props.disabled).not.toBe(true);
-		expect(create?.props.disabled).toBe(true);
-	});
-
-	it("uses setup guidance when coordinator administration is not configured", () => {
-		const panel = renderInvitesPanel({
-			createInvite: vi.fn(),
-			fresh: false,
-			renderShell: vi.fn(),
-			summary: { detail: "Setup", readiness: "not_configured", title: "Setup required" },
-		});
-
-		expect(textContent(panel)).toContain("Finish coordinator setup first");
-		expect(textContent(panel)).not.toContain("data are unavailable");
 	});
 });

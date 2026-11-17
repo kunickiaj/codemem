@@ -1,5 +1,6 @@
 /* Wires up the three top-level buttons on the team-sync card:
- * Create invite, Join team, and Sync now. Also runs an initial paint
+ * Join team and Sync now. Creating Teams and invitations happens in
+ * Sharing (see sync-disclosure.tsx). Also runs an initial paint
  * of the Radix disclosure + invite policy select so the controls are
  * populated on first render. Kept separate from the render pipeline so
  * the render path can stay pure with respect to DOM listeners. */
@@ -17,11 +18,9 @@ import { state } from "../../../../lib/state";
 import { openProjectShareFlow } from "../../../project-sharing";
 import type { SyncActionFeedback } from "../../components/sync-inline-feedback";
 import { summarizeSyncRunResult } from "../../view-model";
-import { teamSyncState } from "../data/state";
 import {
 	renderAdminSetupDisclosure,
 	renderInvitePolicySelect,
-	setInviteOutputVisibility,
 	setJoinFeedbackVisibility,
 } from "../helpers/invite-panel-dom";
 
@@ -35,18 +34,6 @@ function projectInviteSummary(
 		)
 		.join(", ");
 	return `${inspected.inviter_name || "A teammate"} invited you${inspected.team_name ? ` through ${inspected.team_name}` : ""} to share ${projectNames || "selected projects"}.`;
-}
-
-function showInviteCreatedNotice(warnings: unknown[]) {
-	if (!warnings.length) {
-		showGlobalNotice(
-			"Invite created. Copy the text above and share it with your teammate.",
-			"success",
-		);
-		return;
-	}
-	const count = warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`;
-	showGlobalNotice(`Invite created. Copy it above and review ${count}.`, "warning");
 }
 
 type JoinResult = Awaited<ReturnType<typeof api.importCoordinatorInvite>>;
@@ -98,14 +85,6 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 	const syncShareProjectsButton = document.getElementById(
 		"syncShareProjectsButton",
 	) as HTMLButtonElement | null;
-	const syncCreateInviteButton = document.getElementById(
-		"syncCreateInviteButton",
-	) as HTMLButtonElement | null;
-	const syncInviteGroup = document.getElementById("syncInviteGroup") as HTMLInputElement | null;
-	const syncInviteTtl = document.getElementById("syncInviteTtl") as HTMLInputElement | null;
-	const syncInviteOutput = document.getElementById(
-		"syncInviteOutput",
-	) as HTMLTextAreaElement | null;
 	const syncJoinButton = document.getElementById("syncJoinButton") as HTMLButtonElement | null;
 	const syncJoinInvite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement | null;
 	const projectInviteReview = document.getElementById(
@@ -192,58 +171,6 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 		if (projectInviteReview) projectInviteReview.hidden = true;
 		clearPairingReview();
 		if (syncJoinButton) syncJoinButton.textContent = "Review invite";
-	});
-
-	syncCreateInviteButton?.addEventListener("click", async () => {
-		if (!syncCreateInviteButton || !syncInviteGroup || !syncInviteTtl || !syncInviteOutput) return;
-		if (syncCreateInviteButton.disabled) return;
-		const groupName = syncInviteGroup.value.trim();
-		const ttlValue = Number(syncInviteTtl.value);
-		let valid = true;
-		if (!groupName) {
-			valid = markFieldError(syncInviteGroup, "Team name is required.");
-		} else {
-			clearFieldError(syncInviteGroup);
-		}
-		if (!ttlValue || ttlValue < 1) {
-			valid = markFieldError(syncInviteTtl, "Must be at least 1 hour.");
-		} else {
-			clearFieldError(syncInviteTtl);
-		}
-		if (!valid) return;
-		syncCreateInviteButton.disabled = true;
-		syncCreateInviteButton.textContent = "Creating\u2026";
-		try {
-			const result = await api.createCoordinatorInvite({
-				group_id: groupName,
-				policy: teamSyncState.invitePolicy,
-				ttl_hours: ttlValue || 24,
-			});
-			state.lastTeamInvite = result;
-			setInviteOutputVisibility();
-			syncInviteOutput.value = String(result.encoded || "");
-			syncInviteOutput.hidden = false;
-			syncInviteOutput.focus();
-			syncInviteOutput.select();
-			const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-			showInviteCreatedNotice(warnings);
-		} catch (error) {
-			showGlobalNotice(
-				friendlyError(
-					error,
-					"Failed to create invite. Check the team name, invite lifetime, and coordinator reachability, then try again.",
-				),
-				"warning",
-			);
-			syncCreateInviteButton.textContent = "Retry";
-			syncCreateInviteButton.disabled = false;
-			return;
-		} finally {
-			if (syncCreateInviteButton.disabled) {
-				syncCreateInviteButton.disabled = false;
-				syncCreateInviteButton.textContent = "Create invite";
-			}
-		}
 	});
 
 	// Cmd/Ctrl+Enter inside the invite textarea triggers Accept. Bare Enter

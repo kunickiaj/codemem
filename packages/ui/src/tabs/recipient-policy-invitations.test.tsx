@@ -54,7 +54,10 @@ vi.mock("./project-sharing", () => ({ openProjectShareFlow: openProjectShare }))
 
 import * as api from "../lib/api";
 import type { RecipientOnboardingPreviewV1, RecipientPolicyIntentGraphV1 } from "../lib/api/sync";
-import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
+import {
+	RecipientPolicyInvitations,
+	requestInvitationCreate,
+} from "./recipient-policy-invitations";
 
 const escapedName = '<img src=x onerror="alert(1)">';
 const intent: RecipientPolicyIntentGraphV1 = {
@@ -1315,3 +1318,33 @@ function verifiesCloseButtonStructure() {
 	expect(closeButton.querySelector(".modal-close-button-label")?.textContent).toBe("Close");
 	expect(closeButton.textContent).not.toContain("×");
 }
+
+it("opens the Team invitation creator when another screen requests it before Sharing mounts", () => {
+	requestInvitationCreate("team_member");
+
+	mount();
+
+	const dialog = document.querySelector('[role="dialog"]');
+	expect(dialog?.querySelector("#recipient-invitation-title")?.textContent).toBe(
+		"Create invitation",
+	);
+	expect(dialog?.querySelector("#recipient-invitation-target")).not.toBeNull();
+});
+
+it("opens the invitation creator when requested after Sharing has mounted", () => {
+	mount();
+
+	act(() => requestInvitationCreate("add_device"));
+
+	expect(document.querySelector("#recipient-invitation-title")?.textContent).toBe(
+		"Create invitation",
+	);
+});
+
+it("stays on the landing when there is no Team to invite to", () => {
+	mount({ ...intent, teams: [] });
+
+	act(() => requestInvitationCreate("team_member"));
+
+	expect(document.querySelector('[role="dialog"]')).toBeNull();
+});

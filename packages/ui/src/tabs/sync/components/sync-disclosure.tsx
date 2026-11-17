@@ -2,8 +2,7 @@ import * as Collapsible from "@radix-ui/react-collapsible";
 import type { ComponentChildren } from "preact";
 import { createPortal } from "preact/compat";
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
-import { TextArea } from "../../../components/primitives/text-area";
-import { TextInput } from "../../../components/primitives/text-input";
+import { openSharingFrom } from "../../../lib/sharing-handoff";
 import { renderIntoSyncMount } from "./render-root";
 
 type SyncDisclosureProps = {
@@ -105,49 +104,28 @@ function TeamSetupDisclosure({ open, onOpenChange }: TeamSetupDisclosureProps) {
 			<h3 className="settings-group-title" style={{ marginTop: "12px" }}>
 				Create a team
 			</h3>
-			<div className="section-meta">Generate an invite to share with teammates.</div>
+			<div className="section-meta">
+				Teams and invitations are created in Sharing. A Team invitation shares only the Projects you
+				add to that Team.
+			</div>
 			<div className="actor-create-row">
-				<label htmlFor="syncInviteGroup" className="sr-only">
-					Team name
-				</label>
-				<TextInput
-					className="peer-scope-input"
-					id="syncInviteGroup"
-					placeholder="Team name (e.g. my-team)"
-					type="text"
-				/>
-				<label htmlFor="syncInvitePolicy" className="sr-only">
-					Join policy
-				</label>
-				<div className="sync-radix-select-host sync-actor-select-host" id="syncInvitePolicyMount" />
-				<div className="sync-ttl-group">
-					<label htmlFor="syncInviteTtl">Expires in</label>
-					<TextInput
-						className="peer-scope-input"
-						defaultValue="24"
-						id="syncInviteTtl"
-						min="1"
-						style={{ width: "64px" }}
-						type="number"
-					/>
-					<span>hours</span>
-				</div>
-				<button className="settings-button" id="syncCreateInviteButton" type="button">
-					Create invite
+				<button
+					className="settings-button"
+					id="syncCreateTeamInSharing"
+					onClick={() => openSharingFrom("create_team")}
+					type="button"
+				>
+					Create a Team in Sharing
+				</button>
+				<button
+					className="settings-button"
+					id="syncInviteInSharing"
+					onClick={() => openSharingFrom("invite")}
+					type="button"
+				>
+					Invite someone in Sharing
 				</button>
 			</div>
-			<label htmlFor="syncInviteOutput" className="sr-only">
-				Generated invite
-			</label>
-			<TextArea
-				className="feed-search"
-				id="syncInviteOutput"
-				placeholder="Invite will appear here"
-				readOnly
-				hidden
-			/>
-			<div className="peer-meta" id="syncInviteAdminHint" />
-			<div className="peer-meta" id="syncInviteWarnings" hidden />
 		</SyncDisclosure>
 	);
 }

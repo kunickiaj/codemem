@@ -17,7 +17,6 @@ import {
 	coordinatorGroupPresentationName,
 	coordinatorUrlForMatching,
 	currentAdminSnapshotTarget,
-	currentAdminTargetGroup,
 	setAdminTargetGroup,
 } from "./target-group";
 
@@ -26,17 +25,6 @@ const DEVICE_RENAME_ERROR_MESSAGES = new Map([
 	["display_name_invalid", "Enter a valid device name and retry."],
 	["display_name_too_long", "The device name is too long. Use a shorter name and retry."],
 ]);
-
-function safeInviteCreationError(cause: unknown): string {
-	const message = cause instanceof Error ? cause.message : "";
-	if (message.includes("group_archived") || message.includes("Group is archived")) {
-		return "This legacy coordinator group is archived. Choose an active group or refresh coordinator groups.";
-	}
-	if (message.includes("group_not_found") || message.includes("Group not found")) {
-		return "This legacy coordinator group no longer exists. Choose an active group or refresh coordinator groups.";
-	}
-	return "Could not create the legacy coordinator invite. Sharing policy is unchanged; check coordinator recovery status and retry.";
-}
 
 function isMissingJoinRequestError(cause: unknown): boolean {
 	if (!(cause instanceof Error)) return false;
@@ -69,7 +57,6 @@ export interface CoordinatorAdminActions {
 		displayName: string,
 		kind: "rename" | "archive" | "unarchive",
 	) => Promise<void>;
-	createInviteFromAdminPanel: () => Promise<void>;
 	reviewJoinRequestFromAdminPanel: (requestId: string, action: "approve" | "deny") => Promise<void>;
 	runDeviceAction: (
 		deviceId: string,
@@ -323,57 +310,6 @@ export function createCoordinatorAdminActions(
 		}
 	}
 
-	async function createInviteFromAdminPanel() {
-		if (!requireFresh("status", "groups")) return;
-		if (coordinatorAdminState.invitePending) return;
-		const status = state.lastCoordinatorAdminStatus;
-		const operationCoordinatorUrl = coordinatorUrlForMatching(status?.coordinator_url);
-		const defaultGroup = currentAdminTargetGroup() || String(status?.active_group || "").trim();
-		const groupId = coordinatorAdminState.inviteGroup.trim() || defaultGroup;
-		const ttlHours = Number(coordinatorAdminState.inviteTtlHours);
-		if (!groupId) {
-			showGlobalNotice("Choose a coordinator group before creating a legacy invite.", "warning");
-			return;
-		}
-		if (!Number.isFinite(ttlHours) || ttlHours < 1) {
-			showGlobalNotice("Invite lifetime must be at least 1 hour.", "warning");
-			return;
-		}
-		coordinatorAdminState.invitePending = true;
-		renderShell();
-		try {
-			const result = await api.createCoordinatorInvite({
-				group_id: groupId,
-				policy: coordinatorAdminState.invitePolicy,
-				ttl_hours: ttlHours,
-			});
-			const currentStatus = state.lastCoordinatorAdminStatus;
-			const currentDefaultGroup =
-				currentAdminTargetGroup() || String(currentStatus?.active_group || "").trim();
-			const currentGroup = coordinatorAdminState.inviteGroup.trim() || currentDefaultGroup;
-			if (
-				coordinatorUrlForMatching(currentStatus?.coordinator_url) !== operationCoordinatorUrl ||
-				currentGroup !== groupId
-			) {
-				return;
-			}
-			state.lastTeamInvite = result;
-			coordinatorAdminState.inviteGroup = groupId;
-			const warnings = Array.isArray(result.warnings) ? result.warnings : [];
-			showGlobalNotice(
-				warnings.length
-					? `Invite created. Review ${warnings.length === 1 ? "the warning" : `${warnings.length} warnings`} before sharing it.`
-					: "Legacy coordinator invite created. It does not grant Sharing Project access.",
-				warnings.length ? "warning" : "success",
-			);
-		} catch (cause) {
-			showGlobalNotice(safeInviteCreationError(cause), "warning");
-		} finally {
-			coordinatorAdminState.invitePending = false;
-			renderShell();
-		}
-	}
-
 	async function reviewJoinRequestFromAdminPanel(requestId: string, action: "approve" | "deny") {
 		if (!adminSnapshotTargetMatchesCurrent(coordinatorAdminState.joinRequestsSnapshotTarget))
 			return;
@@ -560,7 +496,6 @@ export function createCoordinatorAdminActions(
 	return {
 		createGroupFromAdminPanel,
 		runGroupAction,
-		createInviteFromAdminPanel,
 		reviewJoinRequestFromAdminPanel,
 		runDeviceAction,
 	};
