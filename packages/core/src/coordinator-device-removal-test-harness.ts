@@ -5,6 +5,9 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
  * Numbers in test names are the entries of group A in the removal test plan.
+ * Every fixture installs ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS itself, because
+ * schema initialization and migration 0048 do not install them yet, and starts
+ * with no tombstone and no enrollment.
  */
 export type RemovalFixture = {
 	store: Store;
@@ -44,7 +47,40 @@ export async function removalDeviceKey(label: string): Promise<DeviceKey> {
 	return { publicKey, fingerprint: fingerprintPublicKey(publicKey), keyId };
 }
 
+export function opaqueKey(label: string): DeviceKey {
+	const publicKey = `opaque-fixture-key ${label}`;
+	return { publicKey, fingerprint: fingerprintPublicKey(publicKey), keyId: "" };
+}
+
 export type Enrollment = { groupId: string; deviceId: string; key: DeviceKey };
+
+/** The enrollment insert of releases before the key ID column existed. */
+export function legacyInsert(f: RemovalFixture, target: Enrollment): Promise<void> {
+	return f.exec(
+		`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+		VALUES (?, ?, ?, ?, 1, '2026-11-17T00:00:00.000Z')`,
+		target.groupId,
+		target.deviceId,
+		target.key.publicKey,
+		target.key.fingerprint,
+	);
+}
+
+export function currentInsert(
+	f: RemovalFixture,
+	target: Enrollment,
+	verb = "INSERT",
+): Promise<void> {
+	return f.exec(
+		`${verb} INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at, key_id)
+		VALUES (?, ?, ?, ?, 1, '2026-11-17T00:00:00.000Z', ?)`,
+		target.groupId,
+		target.deviceId,
+		target.key.publicKey,
+		target.key.fingerprint,
+		target.key.keyId,
+	);
+}
 
 export function insertTombstone(
 	f: RemovalFixture,
@@ -94,6 +130,14 @@ function tombstones(f: RemovalFixture): Promise<Tombstone[]> {
 	);
 }
 
+export function enrollments(f: RemovalFixture) {
+	return f.rows<{ group_id: string; device_id: string; public_key: string; key_id: string | null }>(
+		`SELECT group_id, device_id, public_key, key_id FROM enrolled_devices
+		WHERE device_id LIKE ? ORDER BY group_id, device_id`,
+		`${f.prefix}%`,
+	);
+}
+
 export async function target(f: RemovalFixture, name = "d", group = "g1"): Promise<Enrollment> {
 	return {
 		groupId: `${f.prefix}-${group}`,
@@ -103,8 +147,41 @@ export async function target(f: RemovalFixture, name = "d", group = "g1"): Promi
 }
 
 export function registerDeviceRemovalContract(test: RemovalTest) {
+	registerLegacyInsertShape(test);
 	registerTombstoneRules(test);
 	registerTombstoneSequence(test);
+	registerTombstoneMatchTriggers(test);
+	registerEnrollmentChangeTriggers(test);
+	registerEnrollmentMoveTriggers(test);
+	registerCollisionTriggers(test);
+}
+
+function registerLegacyInsertShape(test: RemovalTest) {
+	test("A18 the pre-0.50 enrollment insert succeeds before any tombstone and aborts after one exists", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const before = await target(f, "before");
+		const removed = await target(f, "removed");
+		const after = await target(f, "after");
+		await f.store.createGroup(before.groupId);
+		expect(await f.rows("SELECT 1 FROM coordinator_device_removals")).toEqual([]);
+		// Act
+		await legacyInsert(f, before);
+		await insertTombstone(f, removed);
+		await liftTombstones(f, removed.deviceId);
+		const pending = legacyInsert(f, after);
+		// Assert: a lifted tombstone still requires every later insert to state its key ID.
+		await expect(pending).rejects.toThrow(/enrollment_key_id_required/u);
+		expect(await enrollments(f)).toEqual([
+			{
+				group_id: before.groupId,
+				device_id: before.deviceId,
+				public_key: before.key.publicKey,
+				key_id: null,
+			},
+		]);
+	});
 }
 
 function registerTombstoneSequence(test: RemovalTest) {
@@ -188,5 +265,199 @@ function registerTombstoneRules(test: RemovalTest) {
 			{ removal_seq: first?.removal_seq, lifted_by_invite_id: "fixture-invite" },
 			{ lifted_at: null },
 		]);
+	});
+}
+
+function registerTombstoneMatchTriggers(test: RemovalTest) {
+	test("A19 an insert of a removed device ID or key aborts while the tombstone is active and succeeds after a lift", async ({
+		fixture: f,
+	}) => {
+		// Arrange: the same device ID under another key, and the same key under another ID.
+		const removed = await target(f);
+		const sameId = { ...removed, key: await removalDeviceKey(`${f.prefix}-new-key`) };
+		const sameKey = { ...removed, deviceId: `${f.prefix}-alias`, groupId: `${f.prefix}-g2` };
+		const recommented = {
+			...sameKey,
+			key: { ...removed.key, publicKey: `${removed.key.publicKey} comment` },
+		};
+		await f.store.createGroup(removed.groupId);
+		await insertTombstone(f, removed);
+		// Act and assert
+		for (const blocked of [removed, sameId, sameKey, recommented]) {
+			await expect(currentInsert(f, blocked)).rejects.toThrow(/device_removed/u);
+		}
+		expect(await enrollments(f)).toEqual([]);
+		// Act
+		await liftTombstones(f, removed.deviceId);
+		await currentInsert(f, sameId);
+		await currentInsert(f, recommented);
+		// Assert
+		expect(await enrollments(f)).toHaveLength(2);
+	});
+
+	test("A25 an insert of an opaque key whose text equals an active tombstone's key aborts", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const removed = { ...(await target(f)), key: opaqueKey(f.prefix) };
+		const sameText = { ...removed, deviceId: `${f.prefix}-alias` };
+		const otherText = { ...sameText, key: opaqueKey(`${f.prefix}-other`) };
+		await insertTombstone(f, removed);
+		// Act
+		const pending = currentInsert(f, sameText);
+		// Assert: an opaque tombstone has no key ID, so only the exact text matches.
+		await expect(pending).rejects.toThrow(/device_removed/u);
+		expect((await tombstones(f))[0]?.key_id).toBeNull();
+		await currentInsert(f, otherText);
+		expect(await enrollments(f)).toMatchObject([{ public_key: otherText.key.publicKey }]);
+	});
+
+	test("A21 enabling an enrollment aborts when an active tombstone of the same group matches it", async ({
+		fixture: f,
+	}) => {
+		// Arrange: two device IDs share a key in two groups; one ID is removed from group 1.
+		const removed = await target(f);
+		const alias = { ...removed, deviceId: `${f.prefix}-alias` };
+		const aliasElsewhere = { ...alias, groupId: `${f.prefix}-g2` };
+		for (const enrollment of [removed, alias, aliasElsewhere]) await currentInsert(f, enrollment);
+		await f.exec("UPDATE enrolled_devices SET enabled = 0 WHERE device_id = ?", alias.deviceId);
+		await insertTombstone(f, removed);
+		const enable = "UPDATE enrolled_devices SET enabled = 1 WHERE group_id = ? AND device_id = ?";
+		// Act
+		const sameGroup = f.exec(enable, alias.groupId, alias.deviceId);
+		// Assert
+		await expect(sameGroup).rejects.toThrow(/device_removed/u);
+		await f.exec(enable, aliasElsewhere.groupId, aliasElsewhere.deviceId);
+		expect(
+			await f.rows(
+				"SELECT group_id, enabled FROM enrolled_devices WHERE device_id = ? ORDER BY group_id",
+				alias.deviceId,
+			),
+		).toEqual([
+			{ group_id: alias.groupId, enabled: 0 },
+			{ group_id: aliasElsewhere.groupId, enabled: 1 },
+		]);
+	});
+}
+
+function registerEnrollmentChangeTriggers(test: RemovalTest) {
+	test("A22 an update that changes an Ed25519 key and leaves the key ID unchanged aborts", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const enrolled = await target(f);
+		const next = await removalDeviceKey(`${f.prefix}-next`);
+		await currentInsert(f, enrolled);
+		const setKey = "UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?";
+		const setBoth = "UPDATE enrolled_devices SET public_key = ?, key_id = ? WHERE device_id = ?";
+		// Act and assert: a new key without its ID, and the same key in another text form.
+		await expect(f.exec(setKey, next.publicKey, enrolled.deviceId)).rejects.toThrow(
+			/enrollment_key_id_stale/u,
+		);
+		await expect(
+			f.exec(setBoth, `${enrolled.key.publicKey} comment`, enrolled.key.keyId, enrolled.deviceId),
+		).rejects.toThrow(/enrollment_key_id_stale/u);
+		// Act: the key and its ID together.
+		await f.exec(setBoth, next.publicKey, next.keyId, enrolled.deviceId);
+		// Assert
+		expect(await enrollments(f)).toMatchObject([
+			{ public_key: next.publicKey, key_id: next.keyId },
+		]);
+	});
+
+	test("A22 an opaque key may change its text, but not to a text the key parser reads as Ed25519", async ({
+		fixture: f,
+	}) => {
+		// Arrange: an opaque key has no key ID that could go stale.
+		const enrolled = { ...(await target(f)), key: opaqueKey(`${f.prefix}-first`) };
+		await currentInsert(f, enrolled);
+		const setKey = "UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?";
+		const opaque = [
+			opaqueKey(`${f.prefix}-second`).publicKey,
+			"SSH-ED25519 AAAA",
+			"ssh-ed25519-cert-v01@openssh.com AAAA",
+			"ssh-ed25519x",
+		];
+		// Act: the parser takes only the exact, case-sensitive first token for Ed25519.
+		for (const text of opaque) await f.exec(setKey, text, enrolled.deviceId);
+		// Assert: leading space of any kind does not hide that token.
+		for (const text of [
+			"ssh-ed25519 not-a-key",
+			"\u00a0\t ssh-ed25519\tAAAA",
+			"ssh-ed25519\u3000AAAA",
+			"ssh-ed25519",
+		]) {
+			await expect(f.exec(setKey, text, enrolled.deviceId)).rejects.toThrow(
+				/enrollment_key_id_stale/u,
+			);
+		}
+		expect(await enrollments(f)).toMatchObject([{ public_key: opaque.at(-1), key_id: "" }]);
+	});
+}
+
+function registerEnrollmentMoveTriggers(test: RemovalTest) {
+	test("A25 an update to an opaque key whose text equals an active tombstone's key aborts", async ({
+		fixture: f,
+	}) => {
+		// Arrange: both keys are opaque, so both rows carry an empty key ID.
+		const removed = { ...(await target(f)), key: opaqueKey(`${f.prefix}-removed`) };
+		const other = { ...(await target(f, "other")), key: opaqueKey(`${f.prefix}-other`) };
+		await currentInsert(f, other);
+		await insertTombstone(f, removed);
+		// Act
+		const pending = f.exec(
+			"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
+			removed.key.publicKey,
+			other.deviceId,
+		);
+		// Assert: the stale-key rule lets the opaque change through, and the text match stops it.
+		await expect(pending).rejects.toThrow(/device_removed/u);
+		expect(await enrollments(f)).toMatchObject([{ public_key: other.key.publicKey }]);
+	});
+}
+
+function registerCollisionTriggers(test: RemovalTest) {
+	test("A24 replacing inserts and updates that collide with another enrollment abort and leave it in place", async ({
+		fixture: f,
+	}) => {
+		// Arrange: recursive triggers are off by default, so a replacement would skip the delete trigger.
+		const first = await target(f, "first");
+		const second = await target(f, "second");
+		await currentInsert(f, first);
+		await currentInsert(f, second);
+		const before = await f.rows(
+			"SELECT rowid AS row_id, * FROM enrolled_devices WHERE device_id LIKE ? ORDER BY rowid",
+			`${f.prefix}%`,
+		);
+		const firstRowId = before[0]?.row_id;
+		const replacement = { ...first, key: second.key };
+		const collisions: [string, unknown[]][] = [
+			[
+				`INSERT OR REPLACE INTO enrolled_devices(rowid, group_id, device_id, public_key,
+					fingerprint, enabled, created_at, key_id) VALUES (?, ?, ?, 'k', 'f', 1, 'now', '')`,
+				[firstRowId, first.groupId, `${f.prefix}-third`],
+			],
+			...["rowid", "_rowid_", "oid"].map((name): [string, unknown[]] => [
+				`UPDATE OR REPLACE enrolled_devices SET ${name} = ? WHERE device_id = ?`,
+				[firstRowId, second.deviceId],
+			]),
+			[
+				"UPDATE OR REPLACE enrolled_devices SET device_id = ? WHERE device_id = ?",
+				[first.deviceId, second.deviceId],
+			],
+		];
+		// Act and assert
+		await expect(currentInsert(f, replacement, "INSERT OR REPLACE")).rejects.toThrow(
+			/enrollment_collision/u,
+		);
+		for (const [sql, values] of collisions) {
+			await expect(f.exec(sql, ...values)).rejects.toThrow(/enrollment_collision/u);
+		}
+		expect(
+			await f.rows(
+				"SELECT rowid AS row_id, * FROM enrolled_devices WHERE device_id LIKE ? ORDER BY rowid",
+				`${f.prefix}%`,
+			),
+		).toEqual(before);
 	});
 }
