@@ -147,7 +147,8 @@ existing reconciler.
   memories with the existing delete-then-upsert reassignment.
 - The migration runs on a device that holds the admin secret. Other devices
   show the Project as waiting for that device.
-- A Project whose current recipients cannot be determined keeps its current
+- A Project whose current recipients cannot be determined, or whose current
+  access cannot be expressed as boundary membership, keeps its current
   enforcement and appears in Projects as one review item. It is never widened
   to make it fit.
 - "Space", "Sharing domain", and "scope" leave user-facing copy. Projects shows
@@ -168,11 +169,20 @@ cut over automatically, without a manual review step.
   group's default Space. Devices that hold access through a default Space keep
   it until Decision 2 has migrated every Project in that Space. The default
   Space and its preference are removed after that.
-- **Project filter on a pairing.** Filters are converted during the same
-  migration. A filter that excludes a Project becomes the absence of that
-  device from the Project's Space. The filter columns, the group filter
-  template, and the sync-time check are removed once no pairing carries a
-  filter.
+- **Project filter on a pairing.** A filter is stored on one device and applies
+  to one pairing, and a device can also carry a filter for all its pairings in
+  its configuration. Boundary membership applies to a device across all its
+  pairings, so a filter converts without changing access only when every
+  device that could send the Project to that device blocks it. In that case
+  the device is left out of the Project's boundary. Any other filter that
+  blocks a Project the device would otherwise receive has no equivalent in
+  boundary membership. The Project keeps its filters and current enforcement
+  and becomes a review item under Decision 2, where the user chooses whether
+  that device receives the Project. The migration never removes a device from
+  a Project because one pairing blocked it, and never drops a filter that
+  still blocks something. The filter columns, the configuration filter, the
+  group filter template, and the sync-time check are removed once no device
+  carries a filter.
 
 Neither is removed before its migration exists and has run.
 
