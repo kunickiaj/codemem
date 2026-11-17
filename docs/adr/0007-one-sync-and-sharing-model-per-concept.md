@@ -2,7 +2,7 @@
 
 **Date:** 2026-11-16
 
-**Status:** Proposed
+**Status:** Accepted
 
 **Amends:** [ADR 0001](0001-project-recipient-policy-boundaries.md) (Decisions 3, 5, and 6) and [ADR 0005](0005-authenticated-identity-device-and-membership-lifecycle.md) (Section 5)
 
