@@ -109,20 +109,23 @@ function recordInviteReconciliationFailure(
 	const retryable =
 		!TERMINAL_RECONCILIATION_ERRORS.has(message) &&
 		(status == null || status === 408 || status === 429 || status >= 500);
-	store.db
-		.prepare(`UPDATE share_operation_steps SET
-			status = CASE WHEN ? = 1 THEN 'pending' ELSE 'failed' END,
-			attempt_count = attempt_count + 1, last_attempt_at = ?, safe_error_code = ?, updated_at = ?
-			WHERE operation_id = ? AND step_key = 'invite_consumption'`)
-		.run(retryable ? 1 : 0, now, safeErrorCode, now, operationId);
 	const outcome = retryable ? "retry_scheduled" : "needs_attention";
-	store.db
-		.prepare("UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ?")
-		.run(
-			outcome === "needs_attention" ? "needs_attention" : "waiting_for_acceptance",
-			now,
-			operationId,
-		);
+	// The step and the operation must agree, so commit both failure-state rows together.
+	store.db.transaction(() => {
+		store.db
+			.prepare(`UPDATE share_operation_steps SET
+				status = CASE WHEN ? = 1 THEN 'pending' ELSE 'failed' END,
+				attempt_count = attempt_count + 1, last_attempt_at = ?, safe_error_code = ?, updated_at = ?
+				WHERE operation_id = ? AND step_key = 'invite_consumption'`)
+			.run(retryable ? 1 : 0, now, safeErrorCode, now, operationId);
+		store.db
+			.prepare("UPDATE share_operations SET state = ?, updated_at = ? WHERE operation_id = ?")
+			.run(
+				outcome === "needs_attention" ? "needs_attention" : "waiting_for_acceptance",
+				now,
+				operationId,
+			);
+	})();
 	return outcome;
 }
 
