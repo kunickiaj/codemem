@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Three security review passes changed the design, as listed under [Security review](#security-review). The owner accepted decisions 7 and 8 and the details of the sign-in ceremony on 2026-11-17. No owner decision is open. Not implemented.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). The owner then replaced decision 1 with rejoin by Google sign-in. Four security review passes changed the design, as listed under [Security review](#security-review). The owner accepted decisions 7 and 8 and the details of the sign-in ceremony on 2026-11-17. No owner decision is open. Not implemented.
 
 **Date:** 2026-11-16
 
@@ -33,7 +33,7 @@ needs one change: it accepts a removal tombstone as evidence when the
 enrollment is gone. Rejoining by Google sign-in needs a new ceremony, modeled
 on the existing rebind ceremony.
 
-Three passes of an independent security review found thirteen ways around
+Four passes of an independent security review found sixteen ways around
 earlier drafts. Their fixes are part of this text and are listed under
 [Security review](#security-review).
 
@@ -46,8 +46,12 @@ The owner settled six questions the design depended on. They are listed under
   (`enrolled_devices`).
 - **Pairing:** the row one device keeps about another device it syncs with
   (`sync_peers`), including the pinned key.
-- **Sync progress:** the two cursor tables that record how far a pairing has
-  synced (`replication_cursors` and `replication_cursors_v2`).
+- **Sync progress:** the tables that record how far a pairing has synced. They
+  are the two cursor tables (`replication_cursors` and
+  `replication_cursors_v2`) and `sync_channel_progress`, which holds what a
+  peer has acknowledged over the relay channel. Implementation found the third
+  table. Wherever this note says "both cursor tables", the third goes with
+  them.
 - **Binding:** the local row that says a device belongs to an Identity
   (`identity_devices`).
 - **Removal tombstone:** a new coordinator row that records one deleted
@@ -306,7 +310,9 @@ standing. An Identity-group grant is the coordinator's record that an Identity
 may have devices in a group. A group qualifies when a tombstone with the
 device's own ID and key names it, it is not archived, and the Identity either
 has an active grant there or never had a grant row there (decision 8). A group
-whose grant was revoked does not qualify.
+whose grant was revoked does not qualify. The second case applies only when
+the device was enrolled in that group under the same Identity when it was
+removed. A device that changed Identity afterwards needs an active grant.
 
 One transaction then finalizes the attempt, sets the lift columns on every
 active tombstone of the device's key, writes one enrollment with the binding's
@@ -323,12 +329,11 @@ ceremony lifts the removal. Each rejoin appears on the Identity's other
 devices at their next sync with a Remove action, and rejoins are limited to a
 small number per Identity per day, as rebinding is.
 
-This ceremony does not exist yet. The closest code is the rebind ceremony,
-which changes existing enrollments and verifies against the enrolled key. Its
-wire protocol belongs in the
-[account-link protocol](../contracts/coordinator-auth-protocol.md) and needs
-its own security review before any code, as ADR 0005 requires for every new
-ceremony.
+This ceremony does not exist in code yet. The closest code is the rebind
+ceremony, which changes existing enrollments and verifies against the enrolled
+key. Its wire protocol is
+[Device rejoin routes](../contracts/coordinator-auth-protocol.md#device-rejoin-routes)
+in the account-link protocol.
 
 A device that signs in for the first time, with no binding and no tombstone,
 is the fresh-device enrollment of ADR 0005 Section 2. Today that exists only
@@ -397,7 +402,8 @@ binding from Google sign-in is immutable and stays.
 
 For a device the coordinator lists, a binding becomes active again only
 through the write that binds a newly enrolled device, from an enrollment the
-coordinator currently holds. A removed device can be enrolled again only by
+coordinator currently holds. That write treats an ended binding as absent and
+reuses its row. A removed device can be enrolled again only by
 lifting its tombstone, so the binding cannot return while the removal stands.
 Devices refuses to bind a device that the lookup reports as removed. For a
 device that was removed locally only, pairing it again in Devices is the
@@ -711,16 +717,17 @@ decided both on 2026-11-17.
    is the only record there is, and the rejoin restores what the removal took.
    The cost is that the coordinator cannot tell that a person left such a
    group. The alternative returned a device only to groups with an active
-   grant.
+   grant. The fourth security review narrowed this to a device that was
+   removed from the group under the same Identity it has now. Otherwise a
+   device could change Identity to get around a grant that was revoked for its
+   earlier Identity.
 
 Decision 7 adds a second use of a plain device-claim link. ADR 0005 Section 8
-and the "Operator-only consumers" rule in the account-link protocol name
-rebinding as the only one. Both need that sentence when the sign-in protocol
-is written.
+and the "Operator-only consumers" rule in the account-link protocol were
+amended on 2026-11-17 to name it.
 
-ADR 0007 Decision 5 says a removed machine rejoins by accepting a new
-invitation. Decision 1 above adds sign-in for a device of a verified Identity.
-The ADR needs that sentence in its own change.
+ADR 0007 Decision 5 and ADR 0005 Sections 5 and 8 were amended on 2026-11-17
+to say that a removed device of a verified Identity rejoins by signing in.
 
 ## Implementation order
 
@@ -810,8 +817,23 @@ left two authority questions for the owner. The owner then accepted the wider
 answer for both, as decisions 7 and 8. The pass reviewed the stricter answers,
 so the review of the sign-in protocol must examine both decisions.
 
-No review has checked the changes from the third pass, or the two changes
-made for the pull request review: the `enrolled` answer in the lookup and the
-refusal when no group qualifies. The sign-in protocol gets its own review when
-it is written. The reviewer ran SQLite checks of the proposed triggers and no
-tests of this design, because nothing is implemented.
+### Fourth pass
+
+The fourth pass read the sign-in wire protocol in the account-link contract,
+owner decisions 7 and 8, and every design change the third pass had not seen.
+It confirmed the third-pass fixes and found no path that lifts a block. It
+found three problems in the protocol, and all three changed it.
+
+| Finding | Severity | Change |
+| --- | --- | --- |
+| Decision 8 let a device return to a group with no grant row for its Identity. A device could change Identity after leaving a group and so avoid a grant that was revoked for its earlier Identity. | Medium | The no-grant case requires that the removal record for that group names the same Identity. |
+| The protocol allowed one open attempt for each device, and starting one needs only the device key. Someone with a copy of the key could keep that slot occupied and stop the owner from rejoining. | Medium | Attempts no longer exclude each other. A start can expire only attempts that have not proven the Google account. |
+| The rejoin notice was a marker that expired after seven days, so a device that was offline longer never saw it. | Medium | The marker lasts as long as the enrollment, and a signed route returns rejoin events from a cursor. |
+
+It also asked for three clarifications, now in the protocol: the account link
+must pass the full lifecycle check and not the narrower one rebinding uses,
+the browser and attempt rules that rebinding inherits are stated, and expired
+attempts are cleaned up.
+
+No review has checked the changes from the fourth pass. The reviewer ran
+SQLite checks of the proposed triggers and no tests of this design.

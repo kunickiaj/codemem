@@ -223,12 +223,30 @@ plain device-claim account link.
     and does not lift a later tombstone. Status reads write nothing.
 19. A signed coordinator request that returns `device_removed` is not accepted
     as the rejoin signature.
-20. A group that never had a grant row for I gets an enrollment. A grant row
-    for that group that appears between confirmation and commit, active or
-    revoked, makes the commit fail. (Owner decision 8.)
+20. A group that never had a grant row for I gets an enrollment when D's
+    tombstone there records Identity I. A grant row for that group that
+    appears between confirmation and commit, active or revoked, makes the
+    commit fail. (Owner decision 8.)
 21. A plain device-claim link still cannot authorize owner enrollment of a
     fresh device, an Identity-group grant, or an invitation. (Owner decision
     7.)
+22. D is enrolled under Identity J in groups 1 and 2, is removed from group 1,
+    J's grant for group 1 is revoked, D rebinds to I, and D is removed from
+    group 2. Sign-in rejoin under I does not enroll D in group 1, and reports
+    it as `identity_changed`. (Fourth review.)
+23. A key-only attempt that was started and abandoned does not stop a second
+    attempt for the same device. With 20 open attempts, a new start expires
+    the oldest one that has not reached `oidc_verified` and never one that
+    has. (Fourth review.)
+24. A link whose Identity has an earlier revoked link is refused at the
+    callback, at confirmation, and at finalize, even though the current link
+    is not revoked. (Fourth review.)
+25. An attempt past `expires_at_ms`, or started under an earlier
+    `auth_config_revision`, cannot finalize.
+26. `rejoined_at_ms` is still returned eight days after the rejoin. The events
+    route returns the event to a device with an ownership binding to I that
+    was offline for eight days, returns nothing to a device without a binding,
+    and returns nothing new after the stored cursor. (Fourth review.)
 
 ## D. Coordinator routes
 
@@ -301,9 +319,9 @@ plain device-claim account link.
 
 New function in `packages/core`, for example `removePairingState`.
 
-1. It deletes the pairing and its rows in `replication_cursors` and
-   `replication_cursors_v2`, sets the binding status to `removed`, and retains
-   retirement trust, for every ID given.
+1. It deletes the pairing and its rows in `replication_cursors`,
+   `replication_cursors_v2`, and `sync_channel_progress`, sets the binding
+   status to `removed`, and retains retirement trust, for every ID given.
 2. A failure in any statement leaves the pairing, both cursor tables, and the
    binding unchanged.
 3. Per-Team device decisions for the device survive, because the binding row is

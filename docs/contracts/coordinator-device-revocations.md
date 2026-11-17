@@ -632,9 +632,10 @@ owner sign-in below.
 
 A device with a coordinator ownership binding lifts its removal through a
 ceremony that follows the rebind ceremony in the
-[account-link protocol](coordinator-auth-protocol.md). The wire protocol is not
-written yet. It is added to that contract and security-reviewed before any code.
-This section fixes what the ceremony must prove and what it writes.
+[account-link protocol](coordinator-auth-protocol.md). Its wire protocol is
+[Device rejoin routes](coordinator-auth-protocol.md#device-rejoin-routes) in
+that contract. This section fixes what the ceremony must prove and what it
+writes.
 
 All of these hold in the statements that write:
 
@@ -669,9 +670,13 @@ and one of these holds for the binding's Identity in that group under the
 coordinator ID:
 
 - an active Identity-group grant exists
-- no Identity-group grant row exists, in any status.
+- no Identity-group grant row exists, in any status, and the own tombstone of
+  that group records an `identity_id` equal to the binding's Identity.
 
-A group with a revoked grant row is never a destination. The owner accepted the
+A group with a revoked grant row is never a destination. A group with no grant
+row whose tombstone records another Identity, or none, is not a destination
+either. A device that changed Identity after it left a group does not return to
+that group without an active grant for its new Identity. The owner accepted the
 second case on 2026-11-17. A group without a grant row has no coordinator record
 of which Identities belong to it, so the coordinator cannot tell that a person
 left such a group, and the rejoin restores the enrollment the removal took.
@@ -747,7 +752,8 @@ or missing reply is no answer, and the client then changes nothing.
 
 A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the
-client deletes the pairing and both replication cursor tables and sets the
+client deletes the pairing, both replication cursor tables, and the peer's
+`sync_channel_progress` rows, and sets the
 device's `identity_devices.status` to `removed`, in one transaction. It retains
 memory retirement trust and records no retired alias. For each `revoked` ID it
 does what it does today and also ends the binding. A lookup is complete when

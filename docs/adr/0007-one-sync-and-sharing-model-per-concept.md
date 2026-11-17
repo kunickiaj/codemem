@@ -208,7 +208,10 @@ Neither is removed before its migration exists and has run.
   The Identity-to-device binding ends. The coordinator records a removal
   tombstone for the device in every group. The same machine can rejoin by
   accepting a new invitation, which is the new explicit decision that ADR 0005
-  Section 5 requires.
+  Section 5 requires. A machine whose owner signed in to it with Google
+  rejoins by signing in on it again and confirming, with no invitation
+  (amended 2026-11-17). That confirmed sign-in is the explicit decision for
+  such a device, and an invitation is refused for it.
 - **Block device permanently** is for a lost or compromised machine. It is the
   existing immutable revocation of the device ID and key. The confirmation
   states that it cannot be undone and that the machine needs a new device
@@ -225,7 +228,7 @@ Neither is removed before its migration exists and has run.
   stores, is the only rename. The other two rename actions are removed.
 
 This amends ADR 0005 Section 5 by adding a fourth action, a removal that a new
-invitation can supersede. The coordinator revocation contract needs a matching
+invitation or the owner's confirmed sign-in can supersede. The coordinator revocation contract needs a matching
 change and a security review.
 
 ### 6. People are managed in Sharing, and deactivation revokes
