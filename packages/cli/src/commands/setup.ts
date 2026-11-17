@@ -48,9 +48,13 @@ import {
 	writeJsonConfigWithBackup,
 } from "./setup-config.js";
 import {
+	buildOpencodePooledMcpEntry,
 	buildOpencodeStdioMcpEntry,
+	describeUnmanagedOpencodeMcpEntry,
 	isLegacyUvOpencodeCommand,
+	isManagedPooledOpencodeMcpEntry,
 	isSinglePackageNpxOpencodeCommand,
+	listV1OpencodeMcpServers,
 	locateOpencodeMcpEntries,
 	removeManagedOpencodeMcp,
 	usesV2OpencodeMcpShape,
@@ -253,6 +257,12 @@ function installStdioMcp(
 	const config = loadOpencodeConfigOrLog(configPath);
 	if (config == null) return false;
 
+	// A shared entry that setup wrote is replaced, so this mode also undoes pooled.
+	for (const { container } of locateOpencodeMcpEntries(config)) {
+		if (isManagedPooledOpencodeMcpEntry(container.codemem, opencodeConfigDir())) {
+			delete container.codemem;
+		}
+	}
 	// Auto-upgrade legacy uvx-based MCP entries.
 	const migrated = migrateLegacyOpencodeMcp(config);
 	const hasEntry = locateOpencodeMcpEntries(config).length > 0;
@@ -280,6 +290,68 @@ function installStdioMcp(
 		return false;
 	}
 
+	return true;
+}
+
+/** Why the pooled entry cannot replace what the config holds, or null when it can. */
+function pooledMcpBlocker(config: Record<string, unknown>, force: boolean): string | null {
+	const otherV1Servers = listV1OpencodeMcpServers(config).filter((name) => name !== "codemem");
+	if (otherV1Servers.length > 0) {
+		return `it defines MCP servers directly under "mcp" (${otherV1Servers.join(", ")}), the OpenCode 1 layout. A shared server needs OpenCode 2's "mcp.servers"`;
+	}
+	if (force) return null;
+	for (const { container, label } of locateOpencodeMcpEntries(config)) {
+		const entry = container.codemem;
+		if (isManagedPooledOpencodeMcpEntry(entry, opencodeConfigDir())) continue;
+		const reason = describeUnmanagedOpencodeMcpEntry(entry);
+		if (reason != null) return `${label} is customized (${reason}). Use --force to replace it`;
+	}
+	return null;
+}
+
+/** `--opencode-mcp pooled`: one codemem MCP process shared by every project directory. */
+function installPooledMcp(
+	force: boolean,
+	{ createBackup = true }: { createBackup?: boolean } = {},
+): boolean {
+	const configPath = resolveOpencodeConfigPath(opencodeConfigDir());
+	const config = loadOpencodeConfigOrLog(configPath);
+	if (config == null) return false;
+	const blocker = pooledMcpBlocker(config, force);
+	if (blocker != null) {
+		p.log.error(`Did not write a shared MCP entry to ${configPath} because ${blocker}.`);
+		return false;
+	}
+
+	const entry = buildOpencodePooledMcpEntry(codememMcpLauncher(), opencodeConfigDir());
+	const existing = locateOpencodeMcpEntries(config);
+	const unchanged =
+		existing.length === 1 &&
+		existing[0]?.shape === "v2" &&
+		JSON.stringify(existing[0].container.codemem) === JSON.stringify(entry);
+	if (unchanged) {
+		p.log.info(`Shared MCP entry already exists in ${configPath}`);
+		return true;
+	}
+	for (const { container } of existing) delete container.codemem;
+	const mcp = (config.mcp ?? {}) as Record<string, unknown>;
+	config.mcp = mcp;
+	const servers = (mcp.servers ?? {}) as Record<string, unknown>;
+	mcp.servers = servers;
+	servers.codemem = entry;
+
+	try {
+		writeJsonConfig(configPath, config, { createBackup });
+	} catch (err) {
+		p.log.error(
+			`Failed to write ${configPath}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return false;
+	}
+	p.log.success(`Shared MCP entry installed: ${configPath}`);
+	p.log.info(
+		"OpenCode 2.2.6 or later starts one codemem MCP process for all projects. Each project must load the codemem plugin. Run setup with --opencode-mcp stdio to return to one process per project.",
+	);
 	return true;
 }
 
@@ -1393,8 +1465,8 @@ type SetupCommandOpts = {
 // but is not offered until a plugin release registers the replacement memory
 // tools; without them, removing the entry leaves OpenCode with no memory tools.
 // The change that ships those tools adds it here and makes it the default.
-const OPENCODE_MCP_MODES = ["stdio"] as const;
-type OpencodeMcpMode = "stdio" | "native";
+const OPENCODE_MCP_MODES = ["stdio", "pooled"] as const;
+type OpencodeMcpMode = "stdio" | "pooled" | "native";
 const DEFAULT_OPENCODE_MCP_MODE: OpencodeMcpMode = "stdio";
 
 function maybeInstallPi(opts: SetupCommandOpts, onlyFlag: boolean, force: boolean): boolean {
@@ -1413,11 +1485,13 @@ export function installOpencodeSetup(force: boolean, opencodeMcp: string | undef
 	if (!pluginResult.ok) return false;
 	// The plugin write already backed up the original file; keep that backup.
 	const createBackup = !pluginResult.wrote;
-	if ((opencodeMcp ?? DEFAULT_OPENCODE_MCP_MODE) === "native") {
+	const mode = opencodeMcp ?? DEFAULT_OPENCODE_MCP_MODE;
+	if (mode === "native") {
 		p.log.step("Checking OpenCode MCP config...");
 		return removeOpencodeMcp({ createBackup });
 	}
 	p.log.step("Installing OpenCode MCP config...");
+	if (mode === "pooled") return installPooledMcp(force, { createBackup });
 	return installStdioMcp(force, { createBackup });
 }
 
@@ -1476,7 +1550,10 @@ export const setupCommand = new Command("setup")
 	.option("--claude-only", "only install for Claude Code")
 	.option("--codex-only", "only install for Codex")
 	.option("--pi-only", "only install for pi")
-	.option("--opencode-mcp <mode>", "OpenCode MCP transport (stdio only)")
+	.option(
+		"--opencode-mcp <mode>",
+		"OpenCode MCP server: stdio (one process per project, default) or pooled (one shared process, OpenCode 2.2.6+)",
+	)
 	.option("--pi-mcp", "install the Pi MCP adapter (requires pi-mcp-adapter)")
 	.option(
 		"--pi-extension-path <path>",

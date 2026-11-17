@@ -379,6 +379,146 @@ describe("codemem setup --opencode-mcp stdio", () => {
 	});
 });
 
+describe("codemem setup --opencode-mcp pooled", () => {
+	const pooledEntry = () => ({
+		type: "local",
+		command: [...NPX_COMMAND, "--caller-context", "required"],
+		cwd: join(home, ".config", "opencode"),
+		protocol: "2026-07-28",
+		pool: true,
+	});
+
+	it("writes one shared entry under mcp.servers on a fresh config", async () => {
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({ servers: { codemem: pooledEntry() } });
+		expect(logs.success.join("\n")).toContain("Shared MCP entry installed");
+	});
+
+	it("replaces managed stdio entries in both layouts and keeps other servers", async () => {
+		seed({
+			mcp: {
+				codemem: { type: "local", command: ["codemem", "mcp"], enabled: true },
+				servers: {
+					docs: { type: "remote", url: "https://mcp.example.com/mcp" },
+					codemem: { type: "local", command: NPX_COMMAND },
+				},
+			},
+		});
+
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			servers: {
+				docs: { type: "remote", url: "https://mcp.example.com/mcp" },
+				codemem: pooledEntry(),
+			},
+		});
+	});
+
+	it("is idempotent", async () => {
+		await runSetup("--opencode-mcp", "pooled");
+		const first = readRaw();
+
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(readRaw()).toBe(first);
+		expect(logs.info.join("\n")).toContain("Shared MCP entry already exists");
+	});
+
+	it("leaves a customized entry in place and reports failure unless forced", async () => {
+		const custom = {
+			type: "local",
+			command: ["codemem", "mcp"],
+			environment: { CODEMEM_DB: "/data/team.sqlite" },
+		};
+		const original = seed({ mcp: { servers: { codemem: custom } } });
+
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(readRaw()).toBe(original);
+		expect(process.exitCode).toBe(1);
+		expect(logs.error.join("\n")).toContain("it sets environment variables");
+
+		await runSetup("--opencode-mcp", "pooled", "--force");
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({ servers: { codemem: pooledEntry() } });
+	});
+
+	it("refuses a config that defines other servers in the OpenCode 1 layout", async () => {
+		const original = seed({
+			mcp: { docs: { type: "remote", url: "https://mcp.example.com/mcp", enabled: true } },
+		});
+
+		await runSetup("--opencode-mcp", "pooled", "--force");
+
+		expect(readRaw()).toBe(original);
+		expect(process.exitCode).toBe(1);
+		expect(logs.error.join("\n")).toContain("OpenCode 1 layout");
+	});
+
+	it("keeps OpenCode 2 settings that sit beside mcp.servers", async () => {
+		seed({
+			mcp: {
+				timeout: { startup: 45000 },
+				servers: { docs: { type: "remote", url: "https://mcp.example.com/mcp" } },
+			},
+		});
+
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			timeout: { startup: 45000 },
+			servers: {
+				docs: { type: "remote", url: "https://mcp.example.com/mcp" },
+				codemem: pooledEntry(),
+			},
+		});
+	});
+
+	it("refuses an OpenCode 1 server that happens to be named servers", async () => {
+		const original = seed({
+			mcp: { servers: { type: "remote", url: "https://mcp.example.com/mcp", enabled: true } },
+		});
+
+		await runSetup("--opencode-mcp", "pooled");
+
+		expect(readRaw()).toBe(original);
+		expect(logs.error.join("\n")).toContain("OpenCode 1 layout");
+	});
+
+	it("is undone by --opencode-mcp stdio, which restores a per-project entry", async () => {
+		await runSetup("--opencode-mcp", "pooled");
+
+		await runSetup("--opencode-mcp", "stdio");
+
+		expect(loadJsoncConfig(configPath).mcp).toEqual({
+			servers: { codemem: { type: "local", command: NPX_COMMAND } },
+		});
+	});
+
+	it("treats a shared entry with a different working directory as customized", async () => {
+		const custom = { ...pooledEntry(), cwd: "/srv/codemem" };
+		const original = seed({ mcp: { servers: { codemem: custom } } });
+
+		await runSetup("--opencode-mcp", "stdio");
+		expect(readRaw()).toBe(original);
+
+		await runSetup("--opencode-mcp", "pooled");
+		expect(readRaw()).toBe(original);
+		expect(logs.error.join("\n")).toContain("it sets a working directory");
+	});
+
+	it("leaves a shared entry the user customized when switching back to stdio", async () => {
+		const custom = { ...pooledEntry(), environment: { CODEMEM_DB: "/data/team.sqlite" } };
+		const original = seed({ mcp: { servers: { codemem: custom } } });
+
+		await runSetup("--opencode-mcp", "stdio");
+
+		expect(readRaw()).toBe(original);
+	});
+});
+
 describe("codemem setup (OpenCode) — default keeps customized uv launchers", () => {
 	const CUSTOM_UVX = [
 		"uvx",

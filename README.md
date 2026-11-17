@@ -476,7 +476,7 @@ This updates your OpenCode config to install the plugin and register the MCP ser
 
 Pi registers the same memory tools natively by default and does not need MCP. See [Pi extension](docs/plugin-reference.md#pi-extension).
 
-By default OpenCode starts one `codemem mcp` process for each project directory. OpenCode 2.2.6 and later can share one process across projects (`pool: true`) when the server runs as `codemem mcp --caller-context required` and every project loads the codemem plugin, which tells the server which project each call came from. This is opt-in; see [Shared MCP server](docs/plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in) for the entry and its limits.
+By default OpenCode starts one `codemem mcp` process for each project directory. OpenCode 2.2.6 and later can share one process across projects (`pool: true`) when the server runs as `codemem mcp --caller-context required` and every project loads the codemem plugin, which tells the server which project each call came from. This is opt-in: run `codemem setup --opencode-only --opencode-mcp pooled` to write the shared entry, and the same command with `--opencode-mcp stdio` (the default) to go back. See [Shared MCP server](docs/plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in) for the entry and its limits.
 
 The standalone `codemem-mcp-ts` binary runs the same stdio server used by `codemem mcp`. Viewer autostart is on by default for both invocation paths; set `CODEMEM_VIEWER=0` or `CODEMEM_VIEWER_AUTO=0` to disable. MCP autostart and the `serve start`/`stop`/`restart` lifecycle identify a running viewer through `GET /api/health` (service discriminator `codemem-viewer`), with one bounded `GET /api/stats` compatibility probe when an older viewer returns `404`.
 

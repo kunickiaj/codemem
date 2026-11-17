@@ -1351,6 +1351,15 @@ UV/UVX-based so both packages resolve in one runtime. Other custom MCP commands
 remain unchanged. Claude marketplace installs bundle MCP configuration and need
 no separate setup command.
 
+`codemem setup --opencode-only` writes an MCP entry that starts one
+`codemem mcp` process per project directory (`--opencode-mcp stdio`, the
+default). On OpenCode 2.2.6 and later, `--opencode-mcp pooled` writes one
+shared entry instead, so every project uses the same process. It replaces an
+entry setup wrote earlier and leaves a customized one alone unless you pass
+`--force`. Every project must load the codemem plugin. Rerun setup with
+`--opencode-mcp stdio` to go back. See
+[Shared MCP server](plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in).
+
 For a smaller keyword-only install, use `npm install -g codemem --omit=optional`
 and set `CODEMEM_EMBEDDING_DISABLED=1` in every Codemem process. The flag is
 required because npm also omits sqlite-vec's optional platform package.
