@@ -556,7 +556,7 @@ Validation for each stack layer is the focused tests above. The stack tip runs `
 
 ## Owner decisions
 
-On 2026-11-16 the owner decided twelve questions about the first design, with the condition that every review item be actionable. On 2026-11-17 the owner chose the simpler experience in the [Summary](#summary). The table shows where each decision stands.
+On 2026-11-16 the owner decided twelve questions about the first design, with the condition that every review item be actionable. On 2026-11-17 the owner chose the simpler experience in the [Summary](#summary) and decided one question from the third review pass. The table shows where each decision stands.
 
 | # | Question | Where it stands |
 | --- | --- | --- |
@@ -572,6 +572,7 @@ On 2026-11-16 the owner decided twelve questions about the first design, with th
 | 10 | Source scopes and rolled-back boundaries | Stands. Source scopes are never archived, and a rolled-back boundary keeps its members that are in the source scope. |
 | 11 | A manual change to a source scope after commit | Replaced. It does not reach the migrated Project and raises no question. The Viewer stops offering such edits. |
 | 12 | Rollback window | Replaced. Rollback has no window. |
+| 13 | A newer revision offered by a device that was added to the Project later | Decided 2026-11-17. A device that holds the older copy waits for the author or a device from the older setup. No signed move record is added to the sync protocol. |
 
 ## Still open
 
@@ -580,7 +581,7 @@ On 2026-11-16 the owner decided twelve questions about the first design, with th
 3. **A Project split between a boundary and its old scope.** Memories from retired authors stay in the old scope. A recipient added later does not receive them, and a recipient removed later keeps receiving them if still authorized there. `codemem-lvgba.28` needs the same rule for this as for filters.
 4. **A Project no admin device receives.** It moves with the same devices, and nobody can change its recipients until an admin device receives it. The Viewer needs a way for an admin to add themselves to such a Project. The report stage counts these.
 5. **A recipient who has not accepted an invitation** blocks the existing derivation for the whole Project. With the hold this changes no access. It also produces no summary line, so the Project keeps the copied devices until the invitation is accepted or removed. `codemem-lvgba.21` covers the related stall for deactivated people.
-6. **Review.** Three passes have run, the third at the owner's direction. Each asked for changes. The fixes made after the third pass have not been reviewed, and one of its findings is recorded as a limit and needs the owner's decision. The [review record](#review-record) lists them.
+6. **Review.** Three passes have run, the third at the owner's direction. Each asked for changes. The fixes made after the third pass have not been reviewed. The [review record](#review-record) lists them. The failing tests in the [test plan](#test-plan) pin the snapshot rule and the coordinator's generation check, and ADR 0007 requires a security review before the migration is on by default.
 7. **Rollback of a Project that was moved from two older setups.** Rollback keeps boundary members that are authorized in the setup the admin picked. A memory that came from the other setup and whose author is offline stays readable to them until that author returns.
 
 ## Review record
@@ -618,7 +619,7 @@ The owner authorized one more pass, limited to the five fixes above and the thre
 
 | # | Finding | Disposition |
 | --- | --- | --- |
-| A | The snapshot rule from finding 3 refuses a newer revision from a device that was added to the Project later and was never in the older setup. A device that holds the older copy waits for the author or a device from the older setup. A fresh install of the same device would get the newer revision at once. | Recorded as a limit, against the reviewer's rating of blocking. Every device that could deliver the update before the migration still can, so no delivery that existed is lost ([Section 7](#7-multi-device-ordering)). The rule also now accepts the memory's author whether or not it is still in the older setup. The reviewer's fix is a move record signed by the author that travels with each snapshot item, which adds per-memory signatures to the sync protocol. The owner decides whether the delay is acceptable. Test 11 pins the behavior. |
+| A | The snapshot rule from finding 3 refuses a newer revision from a device that was added to the Project later and was never in the older setup. A device that holds the older copy waits for the author or a device from the older setup. A fresh install of the same device would get the newer revision at once. | Accepted by the owner as a limit on 2026-11-17. The reviewer rated it blocking. Every device that could deliver the update before the migration still can, so no delivery that existed is lost ([Section 7](#7-multi-device-ordering)). The rule also now accepts the memory's author whether or not it is still in the older setup. The reviewer's fix is a move record signed by the author that travels with each snapshot item, which adds per-memory signatures to the sync protocol. The owner chose the delay. Test 11 pins the behavior. |
 | B | The check from finding 2 accepts membership changes only from the managing device. If that device is lost, nobody can grant a recipient's replacement device. | Fixed. Any admin device can take over in one coordinator transaction that advances the generation and sets the hold again ([Choosing recipients](#choosing-recipients)). Tests 20, 34, and 35 cover it. |
 | C | Suspected: if the snapshot rule checked a bare membership row for the serving peer, a peer without valid key-bound proof in the source scope could pass. | Fixed. P1 names the key-bound check against the peer's authenticated key for both scopes. Test 10 covers it. |
 | D | The commit for a Project moved from two older setups was not specified, because the automatic commit refuses a second source. | Fixed. [Two cases](#two-cases-where-a-project-does-not-move-by-itself) states the request and how the conditions change. Test 21 covers it. |
