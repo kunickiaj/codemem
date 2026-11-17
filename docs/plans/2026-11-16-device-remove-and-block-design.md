@@ -1,6 +1,6 @@
 # Remove device and Block device permanently
 
-**Status:** Proposed. Waiting for owner approval. No production code exists for this design.
+**Status:** Accepted by the owner on 2026-11-16, with the six decisions recorded under [Owner decisions](#owner-decisions). Not implemented.
 
 **Date:** 2026-11-16
 
@@ -35,8 +35,8 @@ An independent security review found four ways around the first draft. Their
 fixes are part of this text and are listed under
 [Security review](#security-review).
 
-Six decisions need the owner. They are listed under
-[Decisions requested](#decisions-requested).
+The owner settled six questions the design depended on. They are listed under
+[Owner decisions](#owner-decisions).
 
 ## Terms
 
@@ -214,6 +214,14 @@ authorize a later write.
    token, so the signature belongs to this invitation.
 6. **Not blocked.** No revocation matches the device ID or key. This existing
    check is evaluated first.
+7. **For a device linked to a Google account, its own Identity.** A device
+   with a coordinator ownership binding is refused by every invitation path
+   today. When it lifts a removal, it is accepted only with an `add_device`
+   invitation whose target Identity is the Identity in the binding, when one
+   binding row holds both the joining device ID and the joining key, and when
+   the inviter's enrollment still has that Identity. The enrollment is written
+   with the binding's Identity. A `team_member` or Project invitation, or a
+   join that is not a lift, stays refused for such a device.
 
 When they hold, one transaction consumes the invitation, writes the enrollment
 in the invitation's group, and sets `lifted_at` and `lifted_by_invite_id` on
@@ -336,6 +344,11 @@ tables. All four call the one function, and only the policy cleanup skips
 ending the binding. This closes `codemem-l4dd`.
 `sync_attempts` and `sync_scope_rejections` stay, because they are history for
 Advanced diagnostics and hold neither trust nor sync position.
+
+Earlier versions left cursor rows behind. The first start on 0.50 deletes, in
+one transaction, every row in either cursor table whose device has no pairing.
+Such a row has no peer to sync with, so deleting it cannot move a live
+pairing's position.
 
 ## 4. Block after a prior removal
 
@@ -513,39 +526,37 @@ The device inventory state `retired` keeps its internal name and is shown as
 "Blocked". A device with an active tombstone gets a new state, shown as
 "Removed".
 
-## Decisions requested
+## Owner decisions
 
-1. **Devices linked to a Google account.** A device with a coordinator
-   ownership binding is refused by the invitation paths today
-   (`device_ownership_requires_verified_identity`). The source inspection for
-   this design found no other path that enrolls such a device once its
-   enrollments are gone, and implementation starts by confirming that. Without
-   a change, Remove would be permanent for these devices. Recommended: when lifting a removal, accept an
-   `add_device` invitation for an owned device if the invitation targets the
-   Identity in the ownership binding and the joining device ID and key both
-   equal the binding's. Conditions 1 to 6 still apply. The alternative is a
-   fresh Google sign-in on the removed device, which needs a new ceremony.
-2. **Who may bring a device back.** Recommended: any valid invitation created
-   after the removal, including an add-device invitation from the same
-   person's other device. The alternative is to require an invitation created
-   with the admin secret, which stops a teammate from undoing an
-   administrator's removal and also stops a person from re-adding their own
-   device without an administrator.
-3. **Offline peers.** Recommended for 0.50: show which devices have not
-   applied a removal, and keep the current behavior for devices that cannot
-   reach the coordinator. The alternative is to pause sync with
+The owner accepted these on 2026-11-16.
+
+1. **Devices linked to a Google account can rejoin by invitation.** A device
+   with a coordinator ownership binding is refused by the invitation paths
+   today (`device_ownership_requires_verified_identity`). The source
+   inspection for this design found no other path that enrolls such a device
+   once its enrollments are gone, and implementation starts by confirming
+   that. Condition 7 in Section 1 opens one path for a lift. The alternative
+   was a new Google sign-in ceremony on the removed device.
+2. **Any invitation created after the removal can bring a device back.** That
+   includes an add-device invitation from the same person's other device. The
+   alternative was to require an invitation created with the admin secret,
+   which would also stop a person from re-adding their own device without an
+   administrator.
+3. **0.50 shows which devices have not applied a removal and adds no offline
+   expiry.** A device that cannot reach the coordinator keeps its pairing
+   until a later lookup succeeds. The alternative was to pause sync with
    coordinator-linked peers after 24 hours without a successful lookup, which
-   also stops sync between two devices that are both away from the coordinator
-   for longer than that.
-4. **Leftover cursor rows from earlier versions.** Recommended: a one-time
-   cleanup at upgrade that deletes cursor rows whose device has no pairing.
-   `codemem-l4dd` requires approval before any such purge.
-5. **Removing the device you are using.** Recommended: refuse in 0.50, as
-   Retire does. ADR 0007 defers the signed self-withdrawal route.
-6. **Signed join for older machines.** Recommended: a removed machine must run
-   0.50 to rejoin, because lifting requires a signed join request.
+   would also stop sync between two devices that are both away from the
+   coordinator for longer than that.
+4. **The upgrade deletes leftover cursor rows once.** A cursor row in either
+   table whose device has no pairing is deleted at the first start on 0.50.
+   This is the purge that `codemem-l4dd` required approval for.
+5. **Remove refuses the device you are using.** ADR 0007 defers the signed
+   self-withdrawal route.
+6. **A removed machine must run 0.50 to rejoin,** because lifting requires a
+   signed join request.
 
-## Implementation order after approval
+## Implementation order
 
 1. Coordinator: tombstone table, invitation and enrollment columns, triggers,
    removal store operation, the removal check in every enrollment writer, and
@@ -581,5 +592,6 @@ and raised two questions. All six changed this design.
 
 The review read the three documents, ADR 0005 Section 5, ADR 0007, and the
 coordinator, invitation, membership, lookup, daemon, binding, and CLI source.
-It did not inspect every account-link writer or run any test, and no second
-review has checked the changes above.
+It did not inspect every account-link writer or run any test. No review has
+checked the changes above, or condition 7 in Section 1, which the owner
+accepted after the review.

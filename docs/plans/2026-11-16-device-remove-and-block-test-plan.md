@@ -146,9 +146,19 @@ Inviter rule:
 13. A new invitation presented as device ID D with another key, signed by that
     key, is refused. A new invitation presented with K and signed by another
     key is refused.
-14. A device with an ownership binding is refused with
-    `device_ownership_requires_verified_identity`. This test changes with the
-    owner's decision 1.
+Devices with an ownership binding (owner decision 1):
+
+14. A removed device whose binding names Identity I lifts with a signed join
+    and an `add_device` invitation that targets I, issued after the removal by
+    an enrolled device of I. The enrollment has Identity I and the binding row
+    is unchanged.
+15. The same device is refused with `device_ownership_requires_verified_identity`
+    when the invitation is `team_member` or a Project share, when it targets
+    another Identity, when the inviter's enrollment no longer has Identity I,
+    when the join is unsigned, and when the joining device ID or key differs
+    from the binding's.
+16. An owned device with no active tombstone is refused by an `add_device`
+    invitation, as today.
 
 ## D. Coordinator routes
 
@@ -241,6 +251,9 @@ New function in `packages/core`, for example `removePairingState`.
     leaves `applied_removal_seq` below that removal's number until the next
     complete lookup. A lookup whose second request fails leaves it unchanged.
     (Review question.)
+16. The upgrade cleanup deletes cursor rows in both tables for a device with no
+    pairing and leaves every row of a paired device. A failure deletes
+    nothing. (Owner decision 4.)
 
 ## I. Viewer server
 

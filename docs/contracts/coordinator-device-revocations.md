@@ -397,7 +397,7 @@ below changes its reply before the first release that ships it.
 
 ## Device removals (planned for 0.50)
 
-**Status:** design for owner approval, from
+**Status:** design accepted by the owner on 2026-11-16, from
 [the removal design note](../plans/2026-11-16-device-remove-and-block-design.md).
 Nothing in this section is implemented. The
 [test plan](../plans/2026-11-16-device-remove-and-block-test-plan.md) lists the
@@ -595,11 +595,21 @@ A lift enrolls the device in the invitation's group only. It restores no scope
 membership, grant, or enrollment in another group. Enrollment-only invitations
 and join requests never lift.
 
-The existing ownership check still refuses a device that has a coordinator
-ownership binding (`device_ownership_requires_verified_identity`). Whether a
-lift may admit such a device through an `add_device` invitation for the
-binding's own Identity is an open decision in the design note. Until it is
-decided, this contract does not change that check.
+The existing ownership check refuses a device that has a coordinator ownership
+binding (`device_ownership_requires_verified_identity`). A lift is the one
+exception, and only when all of these hold in the statements that write:
+
+- the invitation kind is `add_device`
+- one ownership binding row has both the joining `device_id` and the joining
+  canonical `key_id`, and no other binding row matches either of them
+- the invitation's `target_identity_id` equals that binding's `identity_id`
+- the inviter's current enrollment has that same `identity_id`
+- every lift requirement above holds, including the signature by the joining
+  key.
+
+The enrollment is written with the binding's `identity_id`. The binding row is
+not changed. An owned device that presents a `team_member` or Project
+invitation, or whose acceptance is not a lift, is refused as today.
 
 ### Removed peers in the pinned-peer check
 
