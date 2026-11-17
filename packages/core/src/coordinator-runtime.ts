@@ -8,7 +8,6 @@ import {
 import {
 	fetchRevokedPinnedPeers,
 	type PeerRevocationCheckStatus,
-	removeRevokedPeers,
 } from "./coordinator-peer-revocation.js";
 import {
 	type CoordinatorReciprocalApproval,
@@ -20,6 +19,7 @@ import {
 	readCoordinatorSyncConfig,
 } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
+import { removeRevokedPeers } from "./device-retirement.js";
 import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";

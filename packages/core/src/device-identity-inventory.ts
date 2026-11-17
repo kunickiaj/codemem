@@ -1,5 +1,6 @@
 import type { CoordinatorEnrollment } from "./coordinator-store-contract.js";
 import type { Database } from "./db.js";
+import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 export const DEVICE_IDENTITY_INVENTORY_VERSION = 1 as const;
@@ -37,6 +38,8 @@ export interface DeviceIdentityPeerEvidence {
 	suggestedIdentityId: string | null;
 	trustProvenance: string | null;
 	claimedLocalActor: boolean;
+	/** This device recorded the ID as retired and the pairing still pins the retired key. */
+	retired?: boolean;
 }
 
 export interface DeviceIdentityBindingEvidence {
@@ -45,6 +48,8 @@ export interface DeviceIdentityBindingEvidence {
 	identityId: string;
 	status: string;
 	identityStatus: string | null;
+	/** This device recorded the ID as retired, so the binding reads retired without the coordinator. */
+	retired?: boolean;
 }
 
 export interface DeviceIdentityCoordinatorEvidence {
@@ -161,7 +166,7 @@ function peerEvidence(value: DeviceIdentityPeerEvidence): Evidence {
 		enrollmentEnabled: null,
 		pairingProof: clean(value.trustProvenance) !== "coordinator_policy" || value.claimedLocalActor,
 		serviceDevice: false,
-		revoked: false,
+		revoked: value.retired === true,
 	};
 }
 
@@ -181,7 +186,8 @@ function bindingEvidence(value: DeviceIdentityBindingEvidence): Evidence {
 		enrollmentEnabled: null,
 		pairingProof: false,
 		serviceDevice: false,
-		revoked: false,
+		// This device confirmed the retirement, so it holds even when the coordinator is unreachable.
+		revoked: value.retired === true,
 	};
 }
 
@@ -416,6 +422,36 @@ function bindingDisplayName(value: Record<string, unknown>): string {
 	return name;
 }
 
+function bindingRowEvidence(
+	value: Record<string, unknown>,
+	retired: (deviceId: string) => boolean,
+): DeviceIdentityBindingEvidence {
+	const deviceId = String(value.device_id ?? "");
+	return {
+		deviceId,
+		displayName: bindingDisplayName(value),
+		identityId: String(value.identity_id ?? ""),
+		status: String(value.status ?? ""),
+		identityStatus: clean(value.identity_status),
+		retired: retired(deviceId),
+	};
+}
+
+/** Whether this device recorded an ID as retired, given the key now pinned under it. */
+function retiredDeviceCheck(
+	db: Database,
+	peers: DeviceIdentityPeerEvidence[],
+): (deviceId: string) => boolean {
+	const aliases = listRetiredDeviceAliases(db);
+	const pins = new Map(
+		peers.map((peer) => [
+			peer.deviceId,
+			{ publicKey: peer.publicKey, fingerprint: peer.pinnedFingerprint },
+		]),
+	);
+	return (deviceId) => retiredAliasApplies(aliases.get(deviceId), pins.get(deviceId) ?? null);
+}
+
 export function loadDeviceIdentityInventorySnapshot(
 	db: Database,
 	input: DeviceIdentityInventoryInput,
@@ -464,18 +500,10 @@ export function loadDeviceIdentityInventorySnapshot(
 			 END, device.device_id LIMIT ?`,
 		)
 		.all(input.localDeviceId, DEVICE_IDENTITY_EVIDENCE_LIMIT, DEVICE_IDENTITY_EVIDENCE_LIMIT + 2);
+	const retired = retiredDeviceCheck(db, peers);
 	const bindings = bindingRows
 		.slice(0, DEVICE_IDENTITY_EVIDENCE_LIMIT + 1)
-		.map((row): DeviceIdentityBindingEvidence => {
-			const value = row as Record<string, unknown>;
-			return {
-				deviceId: String(value.device_id ?? ""),
-				displayName: bindingDisplayName(value),
-				identityId: String(value.identity_id ?? ""),
-				status: String(value.status ?? ""),
-				identityStatus: clean(value.identity_status),
-			};
-		});
+		.map((row) => bindingRowEvidence(row as Record<string, unknown>, retired));
 	return {
 		localDevice: localRow
 			? {
@@ -485,7 +513,7 @@ export function loadDeviceIdentityInventorySnapshot(
 					fingerprint: localRow.fingerprint,
 				}
 			: null,
-		peers,
+		peers: peers.map((peer) => ({ ...peer, retired: retired(peer.deviceId) })),
 		bindings,
 		coordinator: input.coordinator,
 		localEvidenceTruncated:
