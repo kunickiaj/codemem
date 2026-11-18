@@ -15,7 +15,6 @@ import {
 } from "./repository-mapping-aliases.js";
 import { resolveProjectScope, type ScopeMapping } from "./scope-resolution.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
-import { buildBaseUrl } from "./sync-http-client.js";
 import { canonicalWorkspaceIdentity, type WorkspaceIdentityInput } from "./workspace-identity.js";
 
 /** Local adoption state, supplied by the caller that records adoption or rollback. */
@@ -26,6 +25,7 @@ export interface BoundaryReadinessObservation {
 }
 
 export interface BoundaryReadinessInventoryInput {
+	/** The cache authority ID returned by refreshScopeMembershipCache, not a remote address. */
 	coordinatorId: string;
 	groupId: string;
 	deviceId: string;
@@ -42,7 +42,7 @@ interface ProjectRow {
 }
 
 interface CountRow extends ProjectRow {
-	scope_id: string;
+	scope_id: string | null;
 	own_rows: number;
 }
 
@@ -85,7 +85,7 @@ function sourceScopeIds(db: Database, input: BoundaryReadinessInventoryInput): S
 		 AND scope_id NOT IN ('local-default', 'legacy-shared-review')`,
 		)
 		.pluck()
-		.all(buildBaseUrl(input.coordinatorId), input.groupId) as string[];
+		.all(input.coordinatorId.trim(), input.groupId) as string[];
 	// Archived scopes still describe where local data sits. Admission and commit
 	// use current coordinator authorization, not this cached status.
 	return new Set(rows);
@@ -201,7 +201,7 @@ function ownRows(db: Database, deviceId: string): CountRow[] {
 			`SELECT s.cwd, s.git_remote, s.git_branch, COALESCE(mi.project, s.project) AS project,
 		 s.metadata_json, mi.workspace_id, mi.scope_id, COUNT(*) AS own_rows
 		 FROM memory_items mi JOIN sessions s ON s.id = mi.session_id
-		 WHERE mi.active = 1 AND mi.deleted_at IS NULL AND mi.scope_id IS NOT NULL
+		 WHERE mi.active = 1 AND mi.deleted_at IS NULL
 		 AND COALESCE(mi.origin_device_id, '') IN ('', 'local', ?)
 		 AND ${LOCAL_SESSIONS_SQL}
 		 GROUP BY s.id, mi.scope_id, mi.workspace_id, COALESCE(mi.project, s.project)`,
@@ -214,7 +214,7 @@ function ownRowIdentity(row: CountRow, inventory: Inventory): string | null {
 	const cwd = normalizeRepositoryWorkspaceIdentity(row.cwd);
 	const ambiguous = identity.source === "cwd" && cwd && inventory.ambiguousWorkspaces.has(cwd);
 	if (identity.source === "unmapped" || ambiguous) {
-		if (inventory.sourceIds.has(row.scope_id)) {
+		if (inventory.sourceIds.has(row.scope_id ?? "")) {
 			throw new Error("boundary_readiness_identity_unavailable");
 		}
 		return null;
@@ -224,6 +224,9 @@ function ownRowIdentity(row: CountRow, inventory: Inventory): string | null {
 
 function countOwnRows(memoryRows: readonly CountRow[], inventory: Inventory): void {
 	for (const row of memoryRows) {
+		// Unstamped rows supply workspace identity above, but belong to neither
+		// a source scope nor a boundary and must not be counted as moved data.
+		if (row.scope_id === null) continue;
 		const inSource = inventory.sourceIds.has(row.scope_id);
 		if (!inSource && !row.scope_id.startsWith("managed-project:")) continue;
 		const identity = ownRowIdentity(row, inventory);

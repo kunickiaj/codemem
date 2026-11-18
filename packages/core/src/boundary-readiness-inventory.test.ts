@@ -84,7 +84,7 @@ function session(
 
 function memory(
 	sessionId: number,
-	scopeId = SOURCE,
+	scopeId: string | null = SOURCE,
 	options: {
 		origin?: string | null;
 		workspaceId?: string | null;
@@ -112,7 +112,7 @@ function memory(
 
 function inventory(observations: BoundaryReadinessObservation[] = []) {
 	return buildBoundaryReadinessInventory(db, {
-		coordinatorId: `${COORDINATOR}/`,
+		coordinatorId: COORDINATOR,
 		groupId: GROUP,
 		deviceId: LOCAL,
 		observations,
@@ -147,6 +147,13 @@ describe("workspace-only mapped Projects", () => {
 		memory(session({ identity: null, cwd: null }), "local-default", { workspaceId });
 
 		expect(inventory()).toEqual({ projects: [mapped], omittedProjects: 0 });
+	});
+
+	it("discovers an unstamped workspace-only Project without counting or stamping its row", () => {
+		memory(session({ identity: null, cwd: null }), null, { workspaceId });
+
+		expect(inventory()).toEqual({ projects: [mapped], omittedProjects: 0 });
+		expect(db.prepare("SELECT scope_id FROM memory_items").pluck().get()).toBeNull();
 	});
 
 	it("includes the mapped scope and the older stamped scope", () => {
@@ -337,6 +344,54 @@ describe("the device's own rows", () => {
 		memory(session({ identity: null }));
 
 		expect(() => inventory()).toThrow("boundary_readiness_identity_unavailable");
+	});
+});
+
+describe("cache authority selection", () => {
+	it.each(["local", "coord-a"])("preserves non-URL cache authority %s", (coordinatorId) => {
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ?").run(coordinatorId);
+		mapping(PROJECT);
+		memory(session());
+
+		const result = buildBoundaryReadinessInventory(db, {
+			coordinatorId,
+			groupId: GROUP,
+			deviceId: LOCAL,
+		});
+
+		expect(result).toEqual({
+			projects: [{ ...waiting, own_rows_in_source: 1 }],
+			omittedProjects: 0,
+		});
+	});
+
+	it("preserves an explicitly recorded URL authority without removing its trailing slash", () => {
+		const coordinatorId = `${COORDINATOR}/explicit/`;
+		db.prepare("UPDATE replication_scopes SET coordinator_id = ?").run(coordinatorId);
+		mapping(PROJECT);
+		memory(session());
+
+		expect(
+			buildBoundaryReadinessInventory(db, {
+				coordinatorId,
+				groupId: GROUP,
+				deviceId: LOCAL,
+			}).projects,
+		).toEqual([{ ...waiting, own_rows_in_source: 1 }]);
+	});
+
+	it("does not treat a non-URL authority as an address for another cache entry", () => {
+		db.prepare("UPDATE replication_scopes SET coordinator_id = 'http://coord-a'").run();
+		mapping(PROJECT);
+		memory(session());
+
+		expect(
+			buildBoundaryReadinessInventory(db, {
+				coordinatorId: "coord-a",
+				groupId: GROUP,
+				deviceId: LOCAL,
+			}).projects,
+		).toEqual([]);
 	});
 });
 

@@ -130,6 +130,9 @@ probe checkouts, create schema, modify mappings or send requests.
   against locally recorded Projects, without a Viewer page limit.
 - Own active memories also supply workspace IDs when the session has no checkout
   or repository identity. They use the same mapping resolver and identity precedence.
+- Unstamped memories supply identity evidence without contributing to source or
+  boundary counters. Scope selection matches the recorded cache authority ID,
+  including explicit non-URL IDs and the local coordinator's `local` ID.
 - Own rows under an older scope count even when the mapping has changed. Private
   rows count because they move with the Project while remaining private. Inactive,
   deleted and peer-authored rows do not count.
