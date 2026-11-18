@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordCoordinatorDeviceRemoved } from "./coordinator-removal-notice.js";
 import { columnExists, connect } from "./db.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
+import { recordRetiredDeviceAliases } from "./retired-device-aliases.js";
 import {
 	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
@@ -23,6 +24,7 @@ import {
 import * as syncIdentity from "./sync-identity.js";
 import { ensureDeviceIdentity, resolveKeyPaths } from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
+import { updatePeerAddresses } from "./sync-peer-addresses.js";
 import * as reachabilityPass from "./sync-reachability-pass.js";
 
 import { initTestSchema } from "./test-utils.js";
@@ -1250,6 +1252,31 @@ describe("refreshCoordinatorForDaemon revocation check", () => {
 	});
 });
 
+function prepareExplicitPairingTest(db: InstanceType<typeof Database>, condition: string) {
+	db.prepare(
+		"UPDATE sync_peers SET trust_provenance = 'coordinator_policy' WHERE peer_device_id = ?",
+	).run("coordinator-peer");
+	updatePeerAddresses(db, "coordinator-peer", ["http://127.0.0.1:7337"], {
+		pinnedFingerprint: "fp",
+		publicKey: "fixture-public-key",
+		replaceTrust: true,
+	});
+	if (condition === "new pin")
+		db.prepare("UPDATE sync_peers SET pinned_fingerprint = ? WHERE peer_device_id = ?").run(
+			"different-fp",
+			"coordinator-peer",
+		);
+	if (condition === "unchanged pin" || condition === "new pin") return;
+	recordRetiredDeviceAliases(db, [
+		{
+			deviceId: condition === "blocked ID" ? "coordinator-peer" : "retired-alias",
+			kind: condition === "blocked key alias" ? "key" : "device_id",
+			fingerprint: "fp",
+			keyId: condition === "key from blocked ID" ? "fixture-blocked-key-id" : null,
+		},
+	]);
+}
+
 describe("syncDaemonTick while this device is removed from sharing", () => {
 	const COORDINATOR = "https://coordinator.example.test";
 	let db: InstanceType<typeof Database>;
@@ -1335,4 +1362,33 @@ describe("syncDaemonTick while this device is removed from sharing", () => {
 
 		expect(runSyncPass).toHaveBeenCalledTimes(2);
 	});
+
+	it.each([
+		"unchanged pin",
+		"new pin",
+		"blocked ID",
+		"blocked key alias",
+		"key from blocked ID",
+	] as const)(
+		"H14: explicit Pair resumes eligible attempts without overriding %s",
+		async (condition) => {
+			prepareExplicitPairingTest(db, condition);
+			recordCoordinatorDeviceRemoved(db, {
+				coordinatorId: COORDINATOR,
+				groupIds: ["group-a", "group-b"],
+			});
+
+			await syncDaemonTick(db);
+
+			const attempts = vi.mocked(runSyncPass).mock.calls.map(([, id]) => id);
+			expect(attempts.includes("coordinator-peer")).toBe(condition === "unchanged pin");
+			expect(attempts).toContain("manual-peer");
+			expect(
+				db
+					.prepare("SELECT trust_provenance FROM sync_peers WHERE peer_device_id = ?")
+					.pluck()
+					.get("coordinator-peer"),
+			).toBe("coordinator_policy");
+		},
+	);
 });

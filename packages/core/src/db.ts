@@ -47,6 +47,7 @@ import {
 	ensureRawEventCaptureContextSchema,
 	ensureRetrievalLedgerSchema,
 	ensureSchemaBootstrapped,
+	ensureSyncPeerExplicitPairingColumns,
 	ensureSyncPeerSignatureStateSchema,
 } from "./schema-bootstrap.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
@@ -1056,6 +1057,7 @@ function ensureRecipientPolicyWakeColumn(db: DatabaseType): void {
 function ensureAlwaysOnSchemaCompatibility(db: DatabaseType): void {
 	ensureRawEventFlushClaimSchema(db);
 	ensureVectorCorpusEpoch(db);
+	ensureSyncPeerExplicitPairingColumns(db);
 	if (tableExists(db, "sync_peers") && !columnExists(db, "sync_peers", "manual_addresses_json")) {
 		try {
 			db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");

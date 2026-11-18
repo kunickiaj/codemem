@@ -46,17 +46,36 @@ export function loadSuccessfulPeerAddress(db: Database, peerDeviceId: string): s
 	return row?.last_success_address ?? null;
 }
 
+interface PeerAddressOptions {
+	name?: string;
+	pinnedFingerprint?: string;
+	publicKey?: string;
+	replaceTrust?: boolean;
+	coordinatorCandidates?: boolean;
+}
+
+function explicitPairingEvidence(addresses: string[], now: string, options?: PeerAddressOptions) {
+	// Pair replaces a pin with manual addresses. Bootstrap replaces a pin without
+	// addresses, and discovery supplies candidates, not a manual pair.
+	if (
+		!options?.replaceTrust ||
+		options.coordinatorCandidates ||
+		addresses.length === 0 ||
+		!options.pinnedFingerprint ||
+		!options.publicKey
+	)
+		return {};
+	return {
+		explicit_pairing_fingerprint: options.pinnedFingerprint,
+		explicit_pairing_saved_at: now,
+	};
+}
+
 export function updatePeerAddresses(
 	db: Database,
 	peerDeviceId: string,
 	addresses: string[],
-	options?: {
-		name?: string;
-		pinnedFingerprint?: string;
-		publicKey?: string;
-		replaceTrust?: boolean;
-		coordinatorCandidates?: boolean;
-	},
+	options?: PeerAddressOptions,
 ): string[] {
 	const existingAddresses = loadPeerAddresses(db, peerDeviceId);
 	const storedManual = loadManualPeerAddresses(db, peerDeviceId);
@@ -79,6 +98,7 @@ export function updatePeerAddresses(
 	}
 	const now = new Date().toISOString();
 	const addressesJson = JSON.stringify(merged);
+	const explicitEvidence = explicitPairingEvidence(addresses, now, options);
 
 	// Atomic UPSERT — avoids TOCTOU race with concurrent sync workers
 	const d = drizzle(db, { schema });
@@ -92,6 +112,7 @@ export function updatePeerAddresses(
 			manual_addresses_json: JSON.stringify(manual),
 			created_at: now,
 			last_seen_at: now,
+			...explicitEvidence,
 		})
 		.onConflictDoUpdate({
 			target: schema.syncPeers.peer_device_id,
@@ -106,6 +127,7 @@ export function updatePeerAddresses(
 				addresses_json: sql`excluded.addresses_json`,
 				manual_addresses_json: sql`excluded.manual_addresses_json`,
 				last_seen_at: sql`excluded.last_seen_at`,
+				...explicitEvidence,
 			},
 		})
 		.run();

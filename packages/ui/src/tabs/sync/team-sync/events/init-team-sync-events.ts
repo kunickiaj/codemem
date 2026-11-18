@@ -37,6 +37,7 @@ function projectInviteSummary(
 }
 
 type JoinResult = Awaited<ReturnType<typeof api.importCoordinatorInvite>>;
+const PAIRING_SAVED = "Pairing saved on this device. Team and Project access is unchanged.";
 
 function projectJoinFeedback(result: JoinResult): SyncActionFeedback {
 	const fields = result as { detail?: unknown; restart_required?: unknown; setup_state?: unknown };
@@ -55,17 +56,8 @@ function projectJoinFeedback(result: JoinResult): SyncActionFeedback {
 }
 
 function joinFeedback(result: JoinResult): SyncActionFeedback {
-	const fields = result as { type?: unknown; peer_device_id?: unknown };
-	if (fields.type === "project_share") return projectJoinFeedback(result);
-	if (fields.type === "pair") {
-		const peerId = String(fields.peer_device_id ?? "").trim();
-		return {
-			message: peerId
-				? `Paired with device ${peerId.slice(0, 8)}. It will appear in People & devices.`
-				: "Paired the device. It will appear in People & devices.",
-			tone: "success",
-		};
-	}
+	if (result.type === "project_share") return projectJoinFeedback(result);
+	if (result.type === "pair") return { message: PAIRING_SAVED, tone: "success" };
 	return {
 		message:
 			result.status === "pending"
@@ -73,6 +65,22 @@ function joinFeedback(result: JoinResult): SyncActionFeedback {
 				: "Joined the team.",
 		tone: "success",
 	};
+}
+
+function reviewedInviteAction(kind: api.InspectInviteResult["kind"] | undefined) {
+	return kind === "pair" ? "Save pairing" : "Accept invite";
+}
+
+function pendingInviteAction(kind: api.InspectInviteResult["kind"] | undefined) {
+	return kind === "pair" ? "Saving\u2026" : "Accepting\u2026";
+}
+
+function joinRefreshFailure(result: JoinResult, error: unknown): SyncActionFeedback {
+	const message =
+		result.type === "pair"
+			? "Pairing saved on this device. Refresh to see the pairing. Team and Project access is unchanged."
+			: "Accepted the invite, but this view has not refreshed yet.";
+	return { message: friendlyError(error, message), tone: "warning" };
 }
 
 export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: () => Promise<void>) {
@@ -215,7 +223,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 				return;
 			}
 			inspectedInviteValue = inviteValue;
-			syncJoinButton.textContent = "Accept invite";
+			syncJoinButton.textContent = reviewedInviteAction(inspectedInviteKind);
 			return;
 		}
 		const identity =
@@ -245,7 +253,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			}
 		}
 		syncJoinButton.disabled = true;
-		syncJoinButton.textContent = "Accepting\u2026";
+		syncJoinButton.textContent = pendingInviteAction(inspectedInviteKind);
 		try {
 			const result = await api.importCoordinatorInvite(inviteValue, identity, inspectedInviteKind);
 			state.lastTeamJoin = result;
@@ -261,13 +269,7 @@ export function initTeamSyncEvents(refreshCallback: () => void, loadSyncData: ()
 			try {
 				await loadSyncData();
 			} catch (error) {
-				feedback = {
-					message: friendlyError(
-						error,
-						"Accepted the invite, but this view has not refreshed yet.",
-					),
-					tone: "warning",
-				};
+				feedback = joinRefreshFailure(result, error);
 				state.syncJoinFlowFeedback = feedback;
 				setJoinFeedbackVisibility();
 			}

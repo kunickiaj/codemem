@@ -617,6 +617,8 @@ export async function buildSyncStatusResponse(
 const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.public_key, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
+	       CASE WHEN p.explicit_pairing_fingerprint = p.pinned_fingerprint
+	            THEN p.explicit_pairing_saved_at END AS pairing_saved_at,
 	       p.runtime_version, p.runtime_version_observed_at,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
 	       p.actor_id, p.discovered_via_coordinator_id, p.discovered_via_group_id,

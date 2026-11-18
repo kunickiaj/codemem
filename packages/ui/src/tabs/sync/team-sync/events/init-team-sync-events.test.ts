@@ -73,6 +73,7 @@ describe("pairing preview and project sharing entry", () => {
 			addresses: ["http://peer.example.test:7337", "<script>alert(1)</script>"],
 		};
 		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce(preview);
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({ ok: true, type: "pair" });
 		initTeamSyncEvents(
 			() => {},
 			async () => {},
@@ -82,7 +83,7 @@ describe("pairing preview and project sharing entry", () => {
 		const review = document.getElementById("syncPairingReview") as HTMLDivElement;
 		invite.value = "pairing";
 		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept invite"));
+		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
 		expect(review.hidden).toBe(false);
 		expect(document.getElementById("syncPairingDeviceId")?.textContent).toBe(preview.device_id);
 		expect(document.getElementById("syncPairingFingerprint")?.textContent).toBe(
@@ -97,8 +98,40 @@ describe("pairing preview and project sharing entry", () => {
 		button.click();
 		await vi.waitFor(() => expect(invite.value).toBe(""));
 		expect(api.importCoordinatorInvite).toHaveBeenCalledWith("pairing", undefined, "pair");
+		expect(state.syncJoinFlowFeedback?.message).toBe(
+			"Pairing saved on this device. Team and Project access is unchanged.",
+		);
 		expect(review.hidden).toBe(true);
 		expect(document.getElementById("syncPairingDeviceId")?.textContent).toBe("");
+	});
+
+	it("reports a saved pairing when the view fails to refresh", async () => {
+		vi.mocked(api.inspectCoordinatorInvite).mockResolvedValueOnce({
+			kind: "pair",
+			device_id: "fixture-peer",
+			fingerprint: "fixture-pin",
+			addresses: ["http://127.0.0.1:7337"],
+		});
+		vi.mocked(api.importCoordinatorInvite).mockResolvedValueOnce({ ok: true, type: "pair" });
+		initTeamSyncEvents(
+			() => {},
+			async () => {
+				throw new Error("fixture refresh failure");
+			},
+		);
+		const invite = document.getElementById("syncJoinInvite") as HTMLTextAreaElement;
+		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
+		invite.value = "pairing";
+		button.click();
+		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
+		button.click();
+		await vi.waitFor(() =>
+			expect(state.syncJoinFlowFeedback).toMatchObject({
+				message:
+					"Pairing saved on this device. Refresh to see the pairing. Team and Project access is unchanged.",
+				tone: "warning",
+			}),
+		);
 	});
 
 	it("keeps failed inspection non-actionable on repeated clicks", async () => {
@@ -288,7 +321,7 @@ describe("stale invite review results", () => {
 		const button = document.getElementById("syncJoinButton") as HTMLButtonElement;
 		invite.value = "pairing";
 		button.click();
-		await vi.waitFor(() => expect(button.textContent).toBe("Accept invite"));
+		await vi.waitFor(() => expect(button.textContent).toBe("Save pairing"));
 		invite.value = "different";
 		invite.dispatchEvent(new Event("input", { bubbles: true }));
 		expect((document.getElementById("syncPairingReview") as HTMLDivElement).hidden).toBe(true);

@@ -26,6 +26,8 @@ export interface PeerSyncHealth {
 	state: "exchange_succeeded" | "not_verified" | "stale" | "needs_attention";
 	send: DirectionSyncHealth;
 	receive: DirectionSyncHealth;
+	/** Safe category for an unresolved refusal, without the diagnostic error text. */
+	authorization_failure?: "trust" | "scope";
 	/** Latest successful locally initiated sync, independent of inbound activity. */
 	last_successful_connection?: { transport: "direct" | "relay" | null; at: string | null };
 }
@@ -35,6 +37,7 @@ interface LatestAttempt {
 	ok: number;
 	finished_at: string | null;
 	failure_category: string | null;
+	pairing_saved_at: string | null;
 }
 
 interface SuccessfulConnection {
@@ -58,6 +61,14 @@ function timestamp(value: string | null): number | null {
 	if (!value) return null;
 	const parsed = Date.parse(value);
 	return Number.isFinite(parsed) ? parsed : null;
+}
+
+function currentPairingRefusal(attempt: LatestAttempt | undefined) {
+	const category = attempt?.failure_category;
+	if (category !== "trust" && category !== "scope") return undefined;
+	const paired = timestamp(attempt?.pairing_saved_at ?? null);
+	const finished = timestamp(attempt?.finished_at ?? null);
+	return paired !== null && finished !== null && finished >= paired ? category : undefined;
 }
 
 function safeReasonCode(value: string | null | undefined): string | null {
@@ -134,30 +145,43 @@ export function readPeerSyncHealth(
 	// directional observations exist. Unreachable retries cannot resolve those
 	// failures, so only a newer successful exchange supersedes them.
 	const latest = store.db.prepare(`
-		SELECT p.peer_device_id, a.ok, a.finished_at, a.failure_category FROM sync_peers p
+		SELECT p.peer_device_id, a.ok, a.finished_at, a.failure_category,
+		  CASE WHEN p.explicit_pairing_fingerprint = p.pinned_fingerprint
+		       THEN p.explicit_pairing_saved_at END AS pairing_saved_at
+		FROM sync_peers p
 		JOIN sync_attempts a ON a.id = (
 			SELECT id FROM sync_attempts WHERE peer_device_id = p.peer_device_id
 			AND (ok <> 0 OR failure_category IN ('trust', 'scope', 'compatibility'))
 			ORDER BY started_at DESC, id DESC LIMIT 1
 		)`);
-	const failed = new Map<string, string>();
+	const failed = new Map<string, LatestAttempt>();
 	for (const row of latest.all() as LatestAttempt[]) {
 		if (
 			!row.ok &&
 			row.finished_at &&
 			["trust", "scope", "compatibility"].includes(row.failure_category ?? "")
 		)
-			failed.set(row.peer_device_id, row.finished_at);
+			failed.set(row.peer_device_id, row);
 	}
 	const connections = readLastSuccessfulConnections(store);
 	return new Map(
 		peerIds.map((id) => {
 			const connection = connections.get(id);
 			const transport = connection?.transport;
+			const failure = failed.get(id);
+			const refusal = currentPairingRefusal(failure);
+			const health = peerSyncHealth(activity.get(id), {
+				now,
+				staleAfterMs,
+				failedAt: failure?.finished_at,
+			});
 			return [
 				id,
 				{
-					...peerSyncHealth(activity.get(id), { now, staleAfterMs, failedAt: failed.get(id) }),
+					...health,
+					...(refusal && health.state === "needs_attention"
+						? { authorization_failure: refusal }
+						: {}),
 					last_successful_connection: {
 						transport: transport === "direct" || transport === "relay" ? transport : null,
 						at: connection?.finished_at ?? null,

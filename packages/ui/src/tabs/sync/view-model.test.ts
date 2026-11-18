@@ -21,6 +21,51 @@ import {
 	summarizeSyncRunResult,
 } from "./view-model";
 
+describe("explicit pairing connection status", () => {
+	const pairing_saved_at = "2026-11-18T00:00:00Z";
+
+	it("reports a saved pairing until an exchange verifies it", () => {
+		expect(
+			derivePeerTrustSummary({ pairing_saved_at, status: { peer_state: "unknown" } }),
+		).toMatchObject({ badgeLabel: "Pairing saved", isWarning: false });
+		expect(
+			derivePeerTrustSummary({
+				pairing_saved_at,
+				status: { peer_state: "online", sync_status: "ok" },
+			}),
+		).toMatchObject({ badgeLabel: "Two-way trust", isWarning: false });
+	});
+
+	it.each([
+		["trust", "Connection refused"],
+		["scope", "Space access refused"],
+	] as const)(
+		"shows a current %s refusal without raw diagnostics",
+		(authorization_failure, badgeLabel) => {
+			const direction = {
+				state: "not_verified" as const,
+				last_attempt_at: null,
+				last_success_at: null,
+				operations_24h: null,
+				pending_count: null,
+				reason_code: null,
+			};
+			const peer = {
+				pairing_saved_at,
+				status: { peer_state: "offline" },
+				sync_health: {
+					state: "needs_attention" as const,
+					send: direction,
+					receive: direction,
+					authorization_failure,
+				},
+			};
+			expect(derivePeerTrustSummary(peer)).toMatchObject({ badgeLabel, isWarning: true });
+			expect(derivePeerUiStatus(peer)).toBe("needs-repair");
+		},
+	);
+});
+
 describe("resolveFriendlyDeviceName", () => {
 	it("prefers the explicit local name first", () => {
 		expect(

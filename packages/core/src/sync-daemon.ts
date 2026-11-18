@@ -20,6 +20,7 @@ import {
 import type { Database } from "./db.js";
 import { connect as connectDb, ensureAdditiveSchemaCompatibility, resolveDbPath } from "./db.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
+import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import * as schema from "./schema.js";
 import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.js";
 import type { SecretScanner } from "./secret-scanner.js";
@@ -291,16 +292,46 @@ function coordinatorPeersWhileRemoved(
 		groupIds: config.syncCoordinatorGroups,
 	});
 	if (!state.removed) return new Set();
+	const retired = listRetiredDeviceAliases(db);
+	// The two-subject Block operation records its enrollment ID and canonical key in one row.
+	const blockedKeys = [...retired.values()]
+		.filter((alias) => alias.kind === "key" || alias.keyId !== null)
+		.map((alias) => ({ ...alias, kind: "key" as const }));
+	const explicitPin = tableColumnExists(db, "sync_peers", "explicit_pairing_fingerprint")
+		? "explicit_pairing_fingerprint"
+		: "NULL AS explicit_pairing_fingerprint";
 	// Writers store the configured URL as typed or in its normalized form, so compare normalized.
 	const discovered = db
 		.prepare(
-			`SELECT peer_device_id, discovered_via_coordinator_id FROM sync_peers
+			`SELECT peer_device_id, discovered_via_coordinator_id, pinned_fingerprint, public_key,
+			 ${explicitPin} FROM sync_peers
 			 WHERE discovered_via_coordinator_id IS NOT NULL`,
 		)
-		.all() as Array<{ peer_device_id: string; discovered_via_coordinator_id: string }>;
+		.all() as Array<{
+		peer_device_id: string;
+		discovered_via_coordinator_id: string;
+		pinned_fingerprint: string | null;
+		public_key: string | null;
+		explicit_pairing_fingerprint: string | null;
+	}>;
 	return new Set(
 		discovered
-			.filter((peer) => buildBaseUrl(peer.discovered_via_coordinator_id) === coordinatorId)
+			.filter((peer) => {
+				if (buildBaseUrl(peer.discovered_via_coordinator_id) !== coordinatorId) return false;
+				if (
+					!peer.pinned_fingerprint ||
+					peer.explicit_pairing_fingerprint !== peer.pinned_fingerprint
+				)
+					return true;
+				const pin = {
+					publicKey: peer.public_key,
+					fingerprint: peer.pinned_fingerprint,
+				};
+				return (
+					retiredAliasApplies(retired.get(peer.peer_device_id), pin) ||
+					blockedKeys.some((alias) => retiredAliasApplies(alias, pin))
+				);
+			})
 			.map((peer) => peer.peer_device_id),
 	);
 }
