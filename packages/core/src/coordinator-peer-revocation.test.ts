@@ -132,8 +132,7 @@ function refresh() {
 }
 
 describe("coordinator peer revocation refresh", () => {
-	// Needs the coordinator slice: the route in this repository still replies { version, revoked }.
-	it.skip("removes a directly paired device that the coordinator revoked", async () => {
+	it("removes a directly paired device that the coordinator revoked", async () => {
 		await revoke(retired);
 		routeFetchTo(createBetterSqliteCoordinatorApp({ dbPath: coordinatorDbPath }));
 
@@ -171,8 +170,7 @@ describe("coordinator peer revocation refresh", () => {
 		expect(pairedPeerIds()).toEqual([active.deviceId, retired.deviceId].toSorted());
 	});
 
-	// Needs the coordinator slice: the route in this repository still replies { version, revoked }.
-	it.skip("uses the next configured group when this device isn't enrolled in the first", async () => {
+	it("uses the next configured group when this device isn't enrolled in the first", async () => {
 		await revoke(retired);
 		routeFetchTo(createBetterSqliteCoordinatorApp({ dbPath: coordinatorDbPath }));
 		const config = readCoordinatorSyncConfig({
