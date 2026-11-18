@@ -35,6 +35,7 @@ import {
 import { registerEnrollmentWriterContract } from "./coordinator-device-removal-writer-test-harness.js";
 import { revocationInput } from "./coordinator-device-revocation-test-harness.js";
 import { registerMembershipEnrollmentContract } from "./coordinator-membership-enrollment-test-harness.js";
+import { registerPeerRemovalQueryContract } from "./coordinator-peer-removal-query-test-harness.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import {
 	recipientGuardedD1,
@@ -145,6 +146,7 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	registerDeviceRemovalCommitContract(test);
 	registerDeviceRemovalListContract(test);
 	registerMembershipEnrollmentContract(test);
+	registerPeerRemovalQueryContract(test);
 });
 
 describe("D1 coordinator between migrations 0048 and 0049", () => {

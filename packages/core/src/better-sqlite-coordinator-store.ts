@@ -8,6 +8,7 @@ import type { CoordinatorRemoveDeviceEnrollmentsInput } from "./coordinator-devi
 import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-removal-list.js";
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
+import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -2074,6 +2075,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async listDeviceRemovals(options?: CoordinatorListDeviceRemovalsInput) {
 		return this.deviceRemovals.listDeviceRemovals(options);
+	}
+
+	async lookupPeerRemovals(input: CoordinatorPeerRemovalLookupInput) {
+		return this.deviceRemovals.lookupPeerRemovals(input);
 	}
 
 	async removeDeviceEnrollments(input: CoordinatorRemoveDeviceEnrollmentsInput) {
