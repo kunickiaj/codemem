@@ -592,6 +592,33 @@ longer remove a device, and it can no longer enroll a device that is already enr
 removal exists. Apply `0049` in the same window as the 0.50 Worker deploy. A SQLite coordinator installs the same
 triggers the first time 0.50 opens its file, so an older binary pointed at that file fails the same way.
 
+Before resuming writers on D1, fill the key IDs of enrollments that predate `0048`.
+The migration leaves them null because SQL cannot compute the Ed25519 key ID.
+Device removal remains unavailable until every enrollment has a key ID. SQLite fills
+them on startup, but a D1 upgrade needs this admin request to the newly deployed Worker:
+
+```fish
+curl --fail-with-body --request POST \
+  --header "X-Codemem-Coordinator-Admin: $CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET" \
+  --header 'Content-Type: application/json' \
+  --data '{"limit":500}' \
+  "$CODEMEM_SYNC_COORDINATOR_URL/v1/admin/devices/key-id-fill"
+```
+
+Use the coordinator URL and admin secret already configured for the deployment.
+Do not paste the secret into a command, save it in a request file, or enable verbose
+HTTP logging. The response is
+`{ version: 1, filled, blocked, skipped, remaining, next }`. Each request fills at most
+500 rows. While `remaining` is true, repeat with `{"limit":500,"after":NEXT}`, replacing
+`NEXT` with the previous response's integer `next`. Add `blocked` and `skipped` across
+the pages. If any row was skipped because another writer changed it, restart from
+the first page after pausing that writer. A blocked row matches an active removal
+and keeps removal unavailable. Inspect that enrollment before changing it.
+When the pass has no blocked or skipped rows and `remaining` is false, removal is
+available. Requests are safe to repeat and never lift a removal or delete an enrollment.
+Missing removal storage returns `503 device_removal_unavailable`. Other failures
+return `500 device_removal_incomplete`.
+
 To run an older Worker after `0049`, drop the nine `enrolled_devices_*` triggers that `0049` created. An older Worker
 does not enforce the removals recorded so far, so a removed device can then be enrolled again. When 0.50 returns, it
 reports device removal as unavailable until the triggers are back. Every statement of `0049` is

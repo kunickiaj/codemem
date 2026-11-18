@@ -47,6 +47,7 @@ import {
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import type { InvitePayload } from "./coordinator-invites.js";
 import { encodeInvitePayload, inviteLink } from "./coordinator-invites.js";
+import { registerCoordinatorKeyIdFillRoute } from "./coordinator-key-id-fill-api.js";
 import type { CoordinatorLegacyTeamCompletionManifestV1 } from "./coordinator-legacy-team-completion.js";
 import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
@@ -323,6 +324,11 @@ function registerCoordinatorRuntimeRoutes(
 		storeFactory: () => createStore(),
 		authorizeRequest: (store, request) =>
 			authorizeRequest(store, opts.runtime, opts.requestVerifier, request),
+	});
+	registerCoordinatorKeyIdFillRoute(app, {
+		...deps,
+		storeFactory: () => createStore(),
+		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});
 	registerOptionalCoordinatorAuth(app, opts, deps);
 }
