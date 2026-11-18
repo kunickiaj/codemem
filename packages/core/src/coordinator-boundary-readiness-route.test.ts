@@ -201,6 +201,7 @@ describe("POST /v1/boundary-readiness when the store cannot take the record", ()
 		["invalid_input", 400, "readiness_record_invalid"],
 		["boundary_readiness_too_large", 413, "boundary_readiness_too_large"],
 		["database is locked", 503, "boundary_readiness_unavailable"],
+		["boundary_readiness_authorization_unavailable", 503, "boundary_readiness_unavailable"],
 	])("answers a store failure of %s with %i", async (message, status, error) => {
 		const { app } = readinessApp({
 			putBoundaryReadiness: vi.fn(async () => {

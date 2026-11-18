@@ -48,7 +48,7 @@ A body that names another `device_id` or `group_id` is refused.
 | 400 | `readiness_record_invalid`, `readiness_version_unsupported`, `device_id_mismatch`, `group_id_mismatch`, `group_id_required`, `invalid_json` | Nothing stored. |
 | 401, 403, 409 | The usual signed-request errors | Nothing stored. |
 | 413 | `body_too_large`, `boundary_readiness_too_large` | The record is over the size limit. The stored record stays. |
-| 503 | `boundary_readiness_unavailable` | The coordinator's database has no readiness storage yet (migration `0050`), or the write failed. |
+| 503 | `boundary_readiness_unavailable` | The coordinator's database has no readiness storage yet (migration `0050`), a scope's authorization could not be read, or the write failed. The stored record stays. |
 | 404 | | A coordinator from before this route. A device reads it as "not updated yet". |
 
 An entry is stored only when both of these hold. Otherwise it is listed in
@@ -58,21 +58,37 @@ An entry is stored only when both of these hold. Otherwise it is listed in
 - The device is authorized in the source scope when the record arrives, by the
   same read that authorizes scope sync (`source_scope_not_authorized`).
 
+A read that could not run is not a refusal. The coordinator then stores nothing
+and answers 503, and the device sends the record again.
+
 ## Size limit
 
-The limit is the UTF-8 size of `projects` as compact JSON: 256 KiB, about 1,300
-Projects. The request body limit is that plus 4 KiB. The store and the request
-use the same number, so a record a device can build always fits one request.
-Presence requests keep their 64 KiB limit, which is why a record does not travel
-in the presence body.
+A record has two limits. Its `projects` take at most 256 KiB as compact JSON in
+UTF-8, which is about 1,300 Projects and fewer with long IDs. It names at most 64
+source scopes, because each one the device is a member of costs an authorization
+read. The request body limit is the size limit plus 4 KiB. The store and the
+request use the same numbers, so a record a device can build always fits one
+request. Presence requests keep their 64 KiB limit, which is why a record does
+not travel in the presence body.
 
-A device with more Projects than fit lists the ones that still wait first, sends
-the ones that fit, and sends the number it left out as `omitted_projects`. The
-coordinator stores that number. The device then counts as having a record, and an
-admin device can see that some of its Projects are not listed yet. Projects that
-have moved drop out of a device's list, which brings the omitted ones into a
-later record. `fitBoundaryReadinessProjects` in
+A device with more Projects than fit sends the ones that fit and the number it
+left out as `omitted_projects`. `fitBoundaryReadinessProjects` in
 `packages/core/src/coordinator-boundary-readiness.ts` is the cut both sides use.
+
+## What a record does not show
+
+Reading a record returns three facts about what it leaves out.
+
+| Field | Meaning |
+| --- | --- |
+| `omitted_projects` | Projects the device left out to fit the limit. |
+| `invalid_boundary_entries` | Entries left out for a malformed boundary ID. A correct build sends none. |
+| `unauthorized_source_scope_ids` | Source scopes the record named and the device was not authorized in when it arrived. |
+
+`complete` is false when either count is above zero. A record that is not
+complete shows that the device runs the migration code and nothing about what it
+holds. It must never be read as "the device does not hold the Projects it left
+out".
 
 ## Discard on presence
 
@@ -92,6 +108,17 @@ After a discard the coordinator accepts a first sequence again.
   moment it decides.
 - Removing a device or an enrollment does not delete its record. The same rule
   covers it.
+- A device whose record is not complete is treated like a device with no record
+  when a boundary is created: every Project of each source scope it is authorized
+  in waits. Attaching to an existing boundary only needs to know that the device
+  runs the code, so it accepts such a record.
+- A record is also treated as not complete when the device is authorized, at the
+  moment of the decision, in one of its `unauthorized_source_scope_ids`.
+- A record sent just before a downgrade can arrive after the discard. A reader
+  counts a record only when the device's stored presence lists the feature.
+
+The reader's own SQL must apply these rules in the transaction that decides. The
+design lists them as tests 63 to 66.
 
 ## Storage
 
