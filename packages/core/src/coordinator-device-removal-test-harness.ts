@@ -1,8 +1,12 @@
 import { expect, it } from "vitest";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
-import { ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS } from "./coordinator-device-removal.js";
 import type { RevocationFixture } from "./coordinator-device-revocation-test-harness.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	type EnrollmentTestExec,
+	type EnrollmentTestSqlite,
+	seedEnrollment,
+} from "./coordinator-enrollment-test-fixtures.js";
 import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -25,10 +29,14 @@ export type RemovalFixture = {
 	 * its first write whose SQL contains one of `before`. On D1 that is before
 	 * the batch that holds the write, so after every read the operation made first.
 	 */
-	interleave: (before: readonly string[], change: readonly RawStatement[]) => Store;
+	interleave: (before: readonly string[], change: RemovalChange) => Store;
 };
 
-export type RawStatement = { sql: string; values: unknown[] };
+/**
+ * A raw change that the fixture runs on its own database through the enrollment
+ * test helpers: synchronously on better-sqlite3, awaited on native D1.
+ */
+export type RemovalChange = (database: EnrollmentTestSqlite | EnrollmentTestExec) => unknown;
 
 /** The injected store clock of every fixture. */
 export const REMOVAL_CLOCK_MS = Date.UTC(2026, 10, 17, 12, 0, 0);
@@ -129,48 +137,23 @@ function liftTombstones(f: RemovalFixture, deviceId: string): Promise<void> {
 	);
 }
 
-/**
- * The state a removal before 0.50 left: the enrollment is gone and no tombstone
- * records it. Only the delete trigger is dropped and re-created around the delete.
- */
-export function deleteEnrollmentWithoutTombstone(target: Enrollment): RawStatement[] {
-	const trigger = ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS.find((sql) =>
-		sql.includes("enrolled_devices_removal_delete"),
-	);
-	if (!trigger) throw new Error("Missing enrollment delete trigger");
-	return [
-		{ sql: "DROP TRIGGER IF EXISTS enrolled_devices_removal_delete", values: [] },
-		{
-			sql: "DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
-			values: [target.groupId, target.deviceId],
-		},
-		{ sql: trigger, values: [] },
-	];
-}
-
 /** Marks an enrollment that a test arranged, in a column that every writer sets. */
 export const ARRANGED_DISPLAY_NAME = "arranged by the test";
 /** The creation time of every arranged enrollment. A writer's insert never uses it. */
 export const ARRANGED_CREATED_AT = "2026-11-17T00:00:00.000Z";
 
 /** A disabled enrollment with no Identity, as another writer could add it at any moment. */
-export function insertDisabledEnrollment(target: Enrollment): RawStatement[] {
-	return [
-		{
-			sql: `INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint,
-				display_name, enabled, created_at, key_id)
-				VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
-			values: [
-				target.groupId,
-				target.deviceId,
-				target.key.publicKey,
-				target.key.fingerprint,
-				ARRANGED_DISPLAY_NAME,
-				ARRANGED_CREATED_AT,
-				target.key.keyId,
-			],
-		},
-	];
+export function insertDisabledEnrollment(target: Enrollment): RemovalChange {
+	return (database) =>
+		seedEnrollment(database, {
+			groupId: target.groupId,
+			deviceId: target.deviceId,
+			publicKey: target.key.publicKey,
+			fingerprint: target.key.fingerprint,
+			displayName: ARRANGED_DISPLAY_NAME,
+			enabled: false,
+			createdAt: ARRANGED_CREATED_AT,
+		});
 }
 
 type Tombstone = {
