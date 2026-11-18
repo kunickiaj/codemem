@@ -12,6 +12,13 @@ import {
 	removalDependentStatements,
 } from "./coordinator-device-removal-dependents.js";
 import {
+	type CoordinatorDeviceRemovalListResult,
+	type CoordinatorListDeviceRemovalsInput,
+	captureRemovalList,
+	removalListPage,
+	removalListStatement,
+} from "./coordinator-device-removal-list.js";
+import {
 	byCodeUnit,
 	type CoordinatorDeviceRemovalPreviewInput,
 	type CoordinatorDeviceRemovalPreviewResult,
@@ -566,6 +573,10 @@ export interface CoordinatorDeviceRemovalStore {
 	removeDeviceEnrollments(
 		input: CoordinatorRemoveDeviceEnrollmentsInput,
 	): Promise<CoordinatorRemoveDeviceEnrollmentsResult>;
+	/** Active removal history, newest first. Requires the same readiness as removal. */
+	listDeviceRemovals(
+		options?: CoordinatorListDeviceRemovalsInput,
+	): Promise<CoordinatorDeviceRemovalListResult>;
 }
 
 interface RemovalStatement {
@@ -779,6 +790,24 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		private readonly backend: DeviceRemovalBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
+
+	async listDeviceRemovals(
+		raw: CoordinatorListDeviceRemovalsInput = {},
+	): Promise<CoordinatorDeviceRemovalListResult> {
+		const options = captureRemovalList(raw);
+		// Read readiness and the filtered page in the same transaction or batch.
+		const results = await this.backend
+			.batch([
+				{ sql: `SELECT (${REMOVAL_AVAILABLE_SQL}) AS available`, values: [], read: true },
+				removalListStatement(options),
+			])
+			.catch(removalBackendFailure);
+		if (results.length !== 2) return incompleteResult();
+		const state = resultRows<{ available: number }>(results[0])[0];
+		if (state?.available === 0) throw new Error("device_removal_unavailable");
+		if (state?.available !== 1) return incompleteResult();
+		return removalListPage(resultRows(results[1]), options);
+	}
 
 	async fillEnrollmentKeyIds(
 		options: CoordinatorFillEnrollmentKeyIdsOptions = {},

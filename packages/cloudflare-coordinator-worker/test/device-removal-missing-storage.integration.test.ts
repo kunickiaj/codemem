@@ -23,6 +23,11 @@ beforeAll(async () => {
 
 describe("native D1 without device removal storage", () => {
 	const db = env.COORDINATOR_DB;
+	it("D6 removal listing is unavailable before migration 0048", async () => {
+		await expect(new D1CoordinatorStore(db).listDeviceRemovals()).rejects.toThrow(
+			"device_removal_unavailable",
+		);
+	});
 	const fixture = (name: string) => ({
 		store: new D1CoordinatorStore(db),
 		input: revocationInput(`no-storage-${name}`),
