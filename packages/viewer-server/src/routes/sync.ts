@@ -3853,7 +3853,9 @@ async function acceptDiscoveredPeer(
 	const seed = existing
 		? null
 		: newPairingScopeSeed(store, { coordinatorUrl, groupId, override: input.scopeOverride });
-	if (seed && newPairingFiltersRefused(store, config, seed)) return NEW_PAIRING_FILTERS_REFUSED;
+	if (seed && newPairingFiltersRefused(store, config, seed, input.peerDeviceId)) {
+		return NEW_PAIRING_FILTERS_REFUSED;
+	}
 	await createCoordinatorReciprocalApproval(store, config, {
 		groupId,
 		requestedDeviceId: input.peerDeviceId,
@@ -3865,21 +3867,20 @@ async function acceptDiscoveredPeer(
 	const now = new Date().toISOString();
 	const result = store.db.transaction(() => {
 		if (!existing) {
-			d.insert(schema.syncPeers)
-				.values({
-					peer_device_id: input.peerDeviceId,
-					name: nextName,
-					pinned_fingerprint: nextFingerprint || null,
-					public_key: nextPublicKey,
-					addresses_json: addressesJson,
-					projects_include_json: seed?.include ?? null,
-					projects_exclude_json: seed?.exclude ?? null,
-					created_at: now,
-					last_seen_at: now,
-					discovered_via_coordinator_id: coordinatorUrl,
-					discovered_via_group_id: groupId,
-				})
-				.run();
+			const created = storeNewPairing(store, config, {
+				peer_device_id: input.peerDeviceId,
+				name: nextName,
+				pinned_fingerprint: nextFingerprint || null,
+				public_key: nextPublicKey,
+				addresses_json: addressesJson,
+				projects_include_json: seed?.include ?? null,
+				projects_exclude_json: seed?.exclude ?? null,
+				created_at: now,
+				last_seen_at: now,
+				discovered_via_coordinator_id: coordinatorUrl,
+				discovered_via_group_id: groupId,
+			});
+			if (created !== "saved") return pairingCreationError(created);
 			return {
 				ok: true as const,
 				peer_device_id: input.peerDeviceId,
@@ -6427,8 +6428,10 @@ function newPairingFiltersRefused(
 	store: MemoryStore,
 	config: ReturnType<typeof readCoordinatorSyncConfig>,
 	own: { include: string | null; exclude: string | null },
+	peerDeviceId: string,
 ): boolean {
 	return newPairingFiltersNeedAdmin(store.db, {
+		peerDeviceId,
 		include: own.include === null ? null : parseJsonList(own.include),
 		exclude: own.exclude === null ? null : parseJsonList(own.exclude),
 		mayWiden: readPeerProjectFilterAuthority(() => config),
@@ -6440,8 +6443,18 @@ const NEW_PAIRING_FILTERS_REFUSED = {
 	status: 403,
 	error: "access_change_needs_admin_device",
 	detail:
-		"The filters this pairing would start with send Projects that the shared filters hold back. Only an administrator's device can do that.",
+		"These filters would make this pairing receive more Projects. Only an administrator's device can do that.",
 };
+
+function pairingCreationError(reason: "exists" | "needs_admin_device") {
+	if (reason === "needs_admin_device") return NEW_PAIRING_FILTERS_REFUSED;
+	return {
+		ok: false as const,
+		status: 409,
+		error: "peer_conflict",
+		detail: "The pairing changed while it was being accepted. Review it again.",
+	};
+}
 
 /**
  * The filters a newly discovered pairing starts with. The group's template
@@ -6475,8 +6488,6 @@ function newPairingScopeSeed(
 	};
 }
 
-const MANUAL_PAIRING_ROUTE = "/api/coordinator/admin/groups/:group_id/enroll-peer";
-
 /** A manual pairing's own filter list as the enroll route stores it: null when absent or empty. */
 function manualPairingFilterList(value: unknown): string | null {
 	if (!Array.isArray(value)) return null;
@@ -6484,28 +6495,184 @@ function manualPairingFilterList(value: unknown): string | null {
 	return cleaned.length === 0 ? null : JSON.stringify(cleaned);
 }
 
-/**
- * Refuses a manual pairing whose own filters send Projects that the shared
- * filters hold back, before the enroll route stores it. It reads the body the
- * way that route does. The comparison is against configuration, which no
- * database write changes, so it needs no second check inside the insert.
- */
-function manualPairingFilterGate(getStore: StoreFactory) {
-	return async (c: Context, next: () => Promise<void>) => {
-		const body = c.req.method === "POST" ? await parseViewerJsonBody(c) : null;
-		const manual =
-			String(body?.mode ?? "")
-				.trim()
-				.toLowerCase() === "manual";
-		if (!body || !manual) return next();
-		const own = {
-			include: manualPairingFilterList(body.projects_include),
-			exclude: manualPairingFilterList(body.projects_exclude),
-		};
-		if (newPairingFiltersRefused(getStore(), readCoordinatorSyncConfig(), own)) {
-			return c.json({ error: "access_change_needs_admin_device" }, 403);
+/** The duplicate check, retained-filter check, and insert share one write lock. */
+function storeNewPairing(
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	row: typeof schema.syncPeers.$inferInsert,
+): "saved" | "exists" | "needs_admin_device" {
+	return store.db
+		.transaction(() => {
+			if (peerProjectFilterRow(store, row.peer_device_id)) return "exists" as const;
+			const own = {
+				include: row.projects_include_json ?? null,
+				exclude: row.projects_exclude_json ?? null,
+			};
+			if (newPairingFiltersRefused(store, config, own, row.peer_device_id)) {
+				return "needs_admin_device" as const;
+			}
+			drizzle(store.db, { schema }).insert(schema.syncPeers).values(row).run();
+			return "saved" as const;
+		})
+		.immediate();
+}
+
+function manualPairingRow(body: Record<string, unknown>) {
+	const publicKey = String(body.peer_public_key ?? "").trim();
+	const fingerprint = String(body.fingerprint ?? "").trim() || fingerprintPublicKey(publicKey);
+	const addresses = Array.isArray(body.peer_addresses) ? body.peer_addresses : [];
+	const now = new Date().toISOString();
+	return {
+		peer_device_id: String(body.peer_device_id ?? "").trim(),
+		name: String(body.name ?? "").trim() || null,
+		public_key: publicKey,
+		pinned_fingerprint: fingerprint,
+		addresses_json: JSON.stringify(
+			mergeAddresses([], addresses.map((item) => String(item ?? "").trim()).filter(Boolean)),
+		),
+		projects_include_json: manualPairingFilterList(body.projects_include),
+		projects_exclude_json: manualPairingFilterList(body.projects_exclude),
+		created_at: now,
+		last_seen_at: now,
+		discovered_via_coordinator_id: null,
+		discovered_via_group_id: null,
+	};
+}
+
+function acceptManualPairing(
+	c: Context,
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	body: Record<string, unknown>,
+): Response {
+	const row = manualPairingRow(body);
+	if (!row.peer_device_id || !row.public_key) {
+		return c.json({ error: "peer_device_id_and_public_key_required" }, 400);
+	}
+	if (fingerprintPublicKey(row.public_key) !== row.pinned_fingerprint) {
+		return c.json({ error: "fingerprint_mismatch" }, 400);
+	}
+	let created: ReturnType<typeof storeNewPairing>;
+	try {
+		created = storeNewPairing(store, config, row);
+	} catch (error) {
+		const message = error instanceof Error ? error.message.toLowerCase() : "";
+		if (!message.includes("unique") && !message.includes("primary key")) throw error;
+		created = "exists";
+	}
+	if (created === "needs_admin_device") {
+		return c.json({ error: "access_change_needs_admin_device" }, 403);
+	}
+	if (created === "exists") {
+		return c.json({ error: "peer_exists", detail: "Peer is already enrolled." }, 409);
+	}
+	return c.json({
+		ok: true,
+		peer_device_id: row.peer_device_id,
+		created: true,
+		updated: false,
+		name: row.name,
+		group_id: null,
+	});
+}
+
+interface PeerEnrollmentRequest {
+	body: Record<string, unknown>;
+	groupId: string;
+	mode: "manual" | "discovered";
+	scopeOverride: AcceptDiscoveredPeerOptions["scopeOverride"];
+}
+
+/** Undefined inherits the template. Null or an empty list explicitly clears it. */
+function enrollmentFilterOverride(value: unknown): string[] | null | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return null;
+	if (!Array.isArray(value)) return undefined;
+	const values = value.map((item) => String(item ?? "").trim()).filter(Boolean);
+	return values.length === 0 ? null : values;
+}
+
+async function parsePeerEnrollment(c: Context): Promise<PeerEnrollmentRequest | Response> {
+	const groupId = String(c.req.param("group_id") ?? "").trim();
+	if (!groupId) return c.json({ error: "group_id required" }, 400);
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json<Record<string, unknown>>();
+	} catch {
+		return c.json({ error: "invalid_json" }, 400);
+	}
+	const mode = String(body.mode ?? "")
+		.trim()
+		.toLowerCase();
+	if (mode && mode !== "manual" && mode !== "discovered") {
+		return c.json(
+			{ error: "invalid_mode", detail: `mode must be 'discovered' or 'manual', got ${mode}` },
+			400,
+		);
+	}
+	const include = enrollmentFilterOverride(body.projects_include);
+	const exclude = enrollmentFilterOverride(body.projects_exclude);
+	const scopeOverride =
+		include === undefined && exclude === undefined
+			? undefined
+			: { projects_include: include, projects_exclude: exclude };
+	return { body, groupId, mode: mode === "manual" ? "manual" : "discovered", scopeOverride };
+}
+
+async function acceptDiscoveredEnrollment(
+	c: Context,
+	store: MemoryStore,
+	request: PeerEnrollmentRequest,
+): Promise<Response> {
+	const { body } = request;
+	const peerDeviceId = String(body.peer_device_id ?? body.discovered_device_id ?? "").trim();
+	const fingerprint = String(body.fingerprint ?? "").trim();
+	if (!peerDeviceId || !fingerprint) {
+		return c.json({ error: "peer_device_id_and_fingerprint_required" }, 400);
+	}
+	try {
+		const result = await acceptDiscoveredPeer(store, {
+			peerDeviceId,
+			fingerprint,
+			expectedGroupId: request.groupId,
+			scopeOverride: request.scopeOverride,
+		});
+		if (result.ok) return c.json(result);
+		return c.json(
+			{
+				error: result.error,
+				detail: result.detail,
+				...(result.reason ? { reason: result.reason } : {}),
+			},
+			result.status as 400 | 403 | 404 | 409,
+		);
+	} catch (error) {
+		return c.json(
+			{
+				error: "coordinator_lookup_failed",
+				detail: error instanceof Error ? error.message : String(error),
+			},
+			502,
+		);
+	}
+}
+
+function peerEnrollmentHandler(getStore: StoreFactory) {
+	return async (c: Context): Promise<Response> => {
+		const config = readCoordinatorSyncConfig();
+		const status = coordinatorAdminStatusPayload(config);
+		if (status.readiness === "not_configured") {
+			return c.json({ error: "coordinator_not_configured", status }, 400);
 		}
-		return next();
+		const request = await parsePeerEnrollment(c);
+		if (request instanceof Response) return request;
+		const store = getStore();
+		if (request.mode === "manual") return acceptManualPairing(c, store, config, request.body);
+		// Discovery contacts the coordinator. Manual pairing remains local.
+		if (!status.has_admin_secret) {
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
+		}
+		return acceptDiscoveredEnrollment(c, store, request);
 	};
 }
 
@@ -9293,171 +9460,7 @@ export function syncRoutes(
 	//     optional name/fingerprint/addresses; :group_id path param is
 	//     ignored and both discovery columns are left null.
 	// See docs/plans/2026-04-22-multi-team-coordinator-groups-design.md.
-	app.use(MANUAL_PAIRING_ROUTE, manualPairingFilterGate(getStore));
-	app.post("/api/coordinator/admin/groups/:group_id/enroll-peer", async (c) => {
-		const config = readCoordinatorSyncConfig();
-		const status = coordinatorAdminStatusPayload(config);
-		if (status.readiness === "not_configured") {
-			return c.json({ error: "coordinator_not_configured", status }, 400);
-		}
-		// Admin-secret gating happens inside the discovered branch below —
-		// manual pairing only writes a local sync_peers row and doesn't need
-		// coordinator-admin privileges, matching the pre-existing /peers/accept
-		// path.
-		const rawGroupId = String(c.req.param("group_id") ?? "").trim();
-		if (!rawGroupId) return c.json({ error: "group_id required" }, 400);
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid_json" }, 400);
-		}
-		const rawMode = String(body.mode ?? "")
-			.trim()
-			.toLowerCase();
-		if (rawMode && rawMode !== "manual" && rawMode !== "discovered") {
-			return c.json(
-				{ error: "invalid_mode", detail: `mode must be 'discovered' or 'manual', got ${rawMode}` },
-				400,
-			);
-		}
-		const mode: "discovered" | "manual" = rawMode === "manual" ? "manual" : "discovered";
-		// Per-field normalization: distinguish "caller did not specify" from
-		// "caller set empty". `undefined` = inherit (template); `null` or empty
-		// array = explicit clear; non-empty array = use as-is.
-		const normalizeOverride = (value: unknown): string[] | null | undefined => {
-			if (value === undefined) return undefined;
-			if (value === null) return null;
-			if (!Array.isArray(value)) return undefined;
-			const cleaned = value
-				.map((item) => String(item ?? "").trim())
-				.filter((item) => item.length > 0);
-			return cleaned.length === 0 ? null : cleaned;
-		};
-		const overrideInclude = normalizeOverride(body.projects_include);
-		const overrideExclude = normalizeOverride(body.projects_exclude);
-		const scopeOverride =
-			overrideInclude === undefined && overrideExclude === undefined
-				? undefined
-				: { projects_include: overrideInclude, projects_exclude: overrideExclude };
-		const store = getStore();
-
-		if (mode === "manual") {
-			const peerDeviceId = String(body.peer_device_id ?? "").trim();
-			const publicKey = String(body.peer_public_key ?? "").trim();
-			const name = String(body.name ?? "").trim() || null;
-			const requestedFingerprint = String(body.fingerprint ?? "").trim();
-			const addressesInput = Array.isArray(body.peer_addresses) ? body.peer_addresses : [];
-			const addresses = mergeAddresses(
-				[],
-				addressesInput.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0),
-			);
-			if (!peerDeviceId || !publicKey) {
-				return c.json({ error: "peer_device_id_and_public_key_required" }, 400);
-			}
-			const fingerprint = requestedFingerprint || fingerprintPublicKey(publicKey);
-			if (fingerprintPublicKey(publicKey) !== fingerprint) {
-				return c.json({ error: "fingerprint_mismatch" }, 400);
-			}
-			const manualInclude =
-				overrideInclude && overrideInclude.length > 0 ? JSON.stringify(overrideInclude) : null;
-			const manualExclude =
-				overrideExclude && overrideExclude.length > 0 ? JSON.stringify(overrideExclude) : null;
-			const now = new Date().toISOString();
-			const d = drizzle(store.db, { schema });
-			// Wrap the duplicate check + insert in a transaction so two concurrent
-			// enrolls for the same peer cannot both clear the check. SQLite
-			// serializes transactions on the write lock, so the second one sees
-			// the committed row and returns 409 instead of racing past.
-			try {
-				const created = store.db.transaction(() => {
-					const existing = d
-						.select({ peer_device_id: schema.syncPeers.peer_device_id })
-						.from(schema.syncPeers)
-						.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-						.get();
-					if (existing) return false;
-					d.insert(schema.syncPeers)
-						.values({
-							peer_device_id: peerDeviceId,
-							name,
-							pinned_fingerprint: fingerprint,
-							public_key: publicKey,
-							addresses_json: JSON.stringify(addresses),
-							projects_include_json: manualInclude,
-							projects_exclude_json: manualExclude,
-							created_at: now,
-							last_seen_at: now,
-							discovered_via_coordinator_id: null,
-							discovered_via_group_id: null,
-						})
-						.run();
-					return true;
-				})();
-				if (!created) {
-					return c.json({ error: "peer_exists", detail: "Peer is already enrolled." }, 409);
-				}
-			} catch (error) {
-				// Primary-key constraint collision is the expected race signal; the
-				// first writer wins, the second gets "peer_exists".
-				const msg = error instanceof Error ? error.message.toLowerCase() : "";
-				if (msg.includes("unique") || msg.includes("primary key")) {
-					return c.json({ error: "peer_exists", detail: "Peer is already enrolled." }, 409);
-				}
-				throw error;
-			}
-			return c.json({
-				ok: true,
-				peer_device_id: peerDeviceId,
-				created: true,
-				updated: false,
-				name,
-				group_id: null,
-			});
-		}
-
-		// Discovered mode calls out to the coordinator for reciprocal approval,
-		// so it needs the admin secret. Manual mode never leaves this process.
-		if (!status.has_admin_secret) {
-			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
-		}
-		const peerDeviceId = String(body.peer_device_id ?? body.discovered_device_id ?? "").trim();
-		const fingerprint = String(body.fingerprint ?? "").trim();
-		if (!peerDeviceId || !fingerprint) {
-			return c.json({ error: "peer_device_id_and_fingerprint_required" }, 400);
-		}
-		try {
-			const result = await acceptDiscoveredPeer(store, {
-				peerDeviceId,
-				fingerprint,
-				expectedGroupId: rawGroupId,
-				scopeOverride,
-			});
-			if (result.ok) {
-				return c.json(result);
-			}
-			return c.json(
-				{
-					error: result.error,
-					detail: result.detail,
-					...(result.reason ? { reason: result.reason } : {}),
-				},
-				result.status as 400 | 404 | 409,
-			);
-		} catch (error) {
-			// acceptDiscoveredPeer shells out to the coordinator for reciprocal
-			// approval and can throw on timeout / network / auth failures. Map
-			// those to a structured 502 so clients get the same shape as the
-			// legacy /api/sync/peers/accept-discovered path.
-			return c.json(
-				{
-					error: "coordinator_lookup_failed",
-					detail: error instanceof Error ? error.message : String(error),
-				},
-				502,
-			);
-		}
-	});
+	app.post("/api/coordinator/admin/groups/:group_id/enroll-peer", peerEnrollmentHandler(getStore));
 
 	// Local-only preferences for a coordinator group — project-scope template
 	// + auto-seed toggle applied when peers are enrolled through the group.

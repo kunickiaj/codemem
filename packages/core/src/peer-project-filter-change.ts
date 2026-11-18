@@ -68,18 +68,22 @@ function runtimeFilterConfigReadable(): boolean {
 }
 
 /**
- * Whether a new pairing may not start with these filters of its own, because
- * they would send it Projects that the shared filters hold back and this device
- * may not widen. A pairing with no filters of its own inherits the shared ones,
- * which is never a change.
+ * Whether replacement lists would exceed a removed pairing's retained filters,
+ * or the shared defaults when none were retained. NULL lists restore retained
+ * restrictions through the insert trigger, or inherit the shared defaults.
  */
 export function newPairingFiltersNeedAdmin(
 	db: Database,
-	own: { include: string[] | null; exclude: string[] | null; mayWiden: boolean },
+	own: {
+		peerDeviceId: string;
+		include: string[] | null;
+		exclude: string[] | null;
+		mayWiden: boolean;
+	},
 ): boolean {
 	if (!runtimeFilterConfigReadable()) return true;
 	if (own.mayWiden || (own.include === null && own.exclude === null)) return false;
-	return !peerProjectFiltersOnlyNarrow(effectiveSyncProjectFilters(db, null), {
+	return !peerProjectFiltersOnlyNarrow(effectiveSyncProjectFilters(db, own.peerDeviceId), {
 		include: own.include ?? [],
 		exclude: own.exclude ?? [],
 	});

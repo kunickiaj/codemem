@@ -237,32 +237,31 @@ describe("POST /api/sync/peers/scope", () => {
 	});
 });
 
+const NEW_PEER = "peer-new";
+// The route only fingerprints the key text, so any stable string serves here.
+const KEY = "ssh-ed25519 fixture-key-for-a-manual-pairing";
+
+function enroll(filters: Record<string, unknown>) {
+	return createApp({ storeFactory: () => store }).request(
+		"/api/coordinator/admin/groups/g1/enroll-peer",
+		{
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				mode: "manual",
+				peer_device_id: NEW_PEER,
+				peer_public_key: KEY,
+				fingerprint: fingerprintPublicKey(KEY),
+				peer_addresses: ["127.0.0.1:1"],
+				...filters,
+			}),
+		},
+	);
+}
+const paired = () =>
+	store.db.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ?").get(NEW_PEER) !== undefined;
+
 describe("a new manual pairing with filters of its own", () => {
-	const NEW_PEER = "peer-new";
-	// The route only fingerprints the key text, so any stable string serves here.
-	const KEY = "ssh-ed25519 fixture-key-for-a-manual-pairing";
-
-	function enroll(filters: Record<string, unknown>) {
-		return createApp({ storeFactory: () => store }).request(
-			"/api/coordinator/admin/groups/g1/enroll-peer",
-			{
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					mode: "manual",
-					peer_device_id: NEW_PEER,
-					peer_public_key: KEY,
-					fingerprint: fingerprintPublicKey(KEY),
-					peer_addresses: ["127.0.0.1:1"],
-					...filters,
-				}),
-			},
-		);
-	}
-	const paired = () =>
-		store.db.prepare("SELECT 1 FROM sync_peers WHERE peer_device_id = ?").get(NEW_PEER) !==
-		undefined;
-
 	it("is refused without the admin secret when it sends a Project the shared filters hold back", async () => {
 		configure({ ...COORDINATOR, sync_projects_exclude: ["secret"] });
 
@@ -298,5 +297,82 @@ describe("a new manual pairing with filters of its own", () => {
 
 		expect(response.status).toBe(200);
 		expect(paired()).toBe(true);
+	});
+});
+
+describe("recreating a pairing with retained restrictions", () => {
+	it("refuses explicit widening after the same pairing was removed", async () => {
+		configure(COORDINATOR);
+		store.db
+			.prepare(
+				`INSERT INTO sync_peers(peer_device_id, projects_include_json, created_at)
+				 VALUES (?, '["work"]', '2026-11-18T00:00:00Z')`,
+			)
+			.run(NEW_PEER);
+		store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(NEW_PEER);
+
+		const response = await enroll({ projects_include: ["play"] });
+
+		expect(response.status).toBe(403);
+		expect(paired()).toBe(false);
+	});
+
+	it("checks retained restrictions inside the creation transaction", async () => {
+		configure(COORDINATOR);
+		store.db
+			.prepare(
+				`INSERT INTO peer_project_filter_retention(peer_device_id, projects_include_json)
+				 VALUES (?, '["work"]')`,
+			)
+			.run(NEW_PEER);
+		const prepare = store.db.prepare.bind(store.db);
+		let checked = false;
+		const spy = vi.spyOn(store.db, "prepare").mockImplementation((sql) => {
+			if (sql.includes("FROM peer_project_filter_retention")) {
+				checked = true;
+				expect(store.db.inTransaction).toBe(true);
+			}
+			return prepare(sql);
+		});
+		try {
+			const response = await enroll({ projects_include: ["play"] });
+
+			expect(response.status).toBe(403);
+			expect(checked).toBe(true);
+			expect(paired()).toBe(false);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("restores a removed pairing's restriction when its payload is imported", async () => {
+		configure(COORDINATOR);
+		store.db
+			.prepare(
+				`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint,
+				 projects_include_json, created_at) VALUES (?, ?, ?, '["work"]', '2026-11-18T00:00:00Z')`,
+			)
+			.run(NEW_PEER, KEY, fingerprintPublicKey(KEY));
+		store.db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(NEW_PEER);
+
+		const response = await createApp({ storeFactory: () => store }).request(
+			"/api/sync/invites/import",
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					invite: JSON.stringify({
+						device_id: NEW_PEER,
+						public_key: KEY,
+						fingerprint: fingerprintPublicKey(KEY),
+						addresses: ["127.0.0.1:1"],
+					}),
+				}),
+			},
+		);
+
+		expect(response.status).toBe(200);
+		expect(syncProjectAllowed(store.db, "play", NEW_PEER)).toBe(false);
+		expect(syncProjectAllowed(store.db, "work", NEW_PEER)).toBe(true);
 	});
 });
