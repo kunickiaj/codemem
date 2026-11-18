@@ -168,7 +168,11 @@ function applyLocalObservations(inventory: Inventory, identity: string): void {
 	}
 }
 
-function collectMappedProjects(db: Database, inventory: Inventory): void {
+function collectMappedProjects(
+	db: Database,
+	inventory: Inventory,
+	memoryRows: readonly CountRow[],
+): void {
 	const sessions = db
 		.prepare(
 			`SELECT s.cwd, s.git_remote, s.git_branch, s.project, s.metadata_json
@@ -176,6 +180,11 @@ function collectMappedProjects(db: Database, inventory: Inventory): void {
 		)
 		.all(SYNC_BOOTSTRAP_CWD_PREFIX.length, SYNC_BOOTSTRAP_CWD_PREFIX) as ProjectRow[];
 	for (const row of sessions) addMappedProject(inventory, projectInput(row, inventory));
+	// Some local Projects have no session-level identity. Use the workspace
+	// evidence on their own active rows with the same identity precedence.
+	for (const row of memoryRows) {
+		if (row.workspace_id) addMappedProject(inventory, projectInput(row, inventory));
+	}
 	for (const mapping of inventory.mappings) {
 		const workspace = mapping.workspace_identity?.trim();
 		if (!workspace) continue;
@@ -213,8 +222,8 @@ function ownRowIdentity(row: CountRow, inventory: Inventory): string | null {
 	return identity.value;
 }
 
-function countOwnRows(db: Database, inventory: Inventory, deviceId: string): void {
-	for (const row of ownRows(db, deviceId)) {
+function countOwnRows(memoryRows: readonly CountRow[], inventory: Inventory): void {
+	for (const row of memoryRows) {
 		const inSource = inventory.sourceIds.has(row.scope_id);
 		if (!inSource && !row.scope_id.startsWith("managed-project:")) continue;
 		const identity = ownRowIdentity(row, inventory);
@@ -249,8 +258,9 @@ export function buildBoundaryReadinessInventory(
 	return db
 		.transaction(() => {
 			const inventory = readInventory(db, input);
-			collectMappedProjects(db, inventory);
-			countOwnRows(db, inventory, input.deviceId);
+			const memoryRows = ownRows(db, input.deviceId);
+			collectMappedProjects(db, inventory, memoryRows);
+			countOwnRows(memoryRows, inventory);
 			const projects = [...inventory.projects.values()]
 				.map((project) => ({
 					...project,

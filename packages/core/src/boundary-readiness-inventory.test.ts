@@ -87,6 +87,7 @@ function memory(
 	scopeId = SOURCE,
 	options: {
 		origin?: string | null;
+		workspaceId?: string | null;
 		visibility?: string;
 		active?: number;
 		deletedAt?: string | null;
@@ -94,8 +95,8 @@ function memory(
 ) {
 	db.prepare(
 		`INSERT INTO memory_items(session_id, kind, title, body_text, created_at, updated_at,
-		 scope_id, origin_device_id, visibility, active, deleted_at)
-		 VALUES (?, 'discovery', 'local title', 'local body', ?, ?, ?, ?, ?, ?, ?)`,
+		 scope_id, origin_device_id, visibility, active, deleted_at, workspace_id)
+		 VALUES (?, 'discovery', 'local title', 'local body', ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		sessionId,
 		NOW,
@@ -105,6 +106,7 @@ function memory(
 		options.visibility ?? "shared",
 		options.active ?? 1,
 		options.deletedAt ?? null,
+		options.workspaceId ?? null,
 	);
 }
 
@@ -133,6 +135,59 @@ beforeEach(() => {
 	scope(BOUNDARY, { kind: "managed_project" });
 });
 afterEach(() => db.close());
+
+describe("workspace-only mapped Projects", () => {
+	const workspaceId = "shared:workspace-only";
+	const boundaryId = managedProjectScopeId(GROUP, workspaceId);
+	const mapped = { ...waiting, source_scope_id: SECOND, boundary_scope_id: boundaryId };
+
+	beforeEach(() => mapping(null, SECOND, "shared:*"));
+
+	it("includes the mapped scope while the own row remains in local-default", () => {
+		memory(session({ identity: null, cwd: null }), "local-default", { workspaceId });
+
+		expect(inventory()).toEqual({ projects: [mapped], omittedProjects: 0 });
+	});
+
+	it("includes the mapped scope and the older stamped scope", () => {
+		memory(session({ identity: null, cwd: null }), SOURCE, { workspaceId });
+
+		const result = inventory();
+
+		expect(result.projects).toEqual(
+			expect.arrayContaining([
+				mapped,
+				{ ...waiting, boundary_scope_id: boundaryId, own_rows_in_source: 1 },
+			]),
+		);
+		expect(result.projects).toHaveLength(2);
+		expect(result.omittedProjects).toBe(0);
+	});
+
+	it.each([
+		{ name: "peer-authored", options: { origin: "peer-other" } },
+		{ name: "inactive", options: { active: 0 } },
+		{ name: "deleted", options: { deletedAt: NOW } },
+	])("does not discover a Project from $name workspace evidence", ({ options }) => {
+		memory(session({ identity: null, cwd: null }), "local-default", { workspaceId, ...options });
+
+		expect(inventory().projects).toEqual([]);
+	});
+
+	it("does not discover a Project from a received session's workspace", () => {
+		const received = session({ identity: null, cwd: null, tool: "sync_replication" });
+		memory(received, "local-default", { workspaceId });
+
+		expect(inventory().projects).toEqual([]);
+	});
+
+	it("keeps repository identity ahead of the memory's workspace fallback", () => {
+		mapping(PROJECT);
+		memory(session(), SOURCE, { workspaceId });
+
+		expect(inventory().projects).toEqual([{ ...waiting, own_rows_in_source: 1 }]);
+	});
+});
 
 describe("Projects mapped to older setups", () => {
 	it("lists an exact mapping even when the device has no memories or sessions", () => {

@@ -128,6 +128,8 @@ probe checkouts, create schema, modify mappings or send requests.
 
 - Exact mappings count even when no memories exist. Pattern mappings are resolved
   against locally recorded Projects, without a Viewer page limit.
+- Own active memories also supply workspace IDs when the session has no checkout
+  or repository identity. They use the same mapping resolver and identity precedence.
 - Own rows under an older scope count even when the mapping has changed. Private
   rows count because they move with the Project while remaining private. Inactive,
   deleted and peer-authored rows do not count.
