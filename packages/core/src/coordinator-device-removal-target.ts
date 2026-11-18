@@ -44,7 +44,7 @@ export type CoordinatorDeviceRemovalPreviewResult =
 	| { kind: "rejected"; error: CoordinatorDeviceRemovalRefusal };
 
 /** Code unit order, which does not depend on the database's collation. */
-function byCodeUnit(a: string, b: string): number {
+export function byCodeUnit(a: string, b: string): number {
 	if (a < b) return -1;
 	if (a > b) return 1;
 	return 0;
@@ -70,7 +70,7 @@ export function captureRemovalDeviceIds(input: unknown): string[] {
  * non-empty key ID of a named enrollment, under any device ID. An opaque key has
  * an empty key ID and adds nothing.
  */
-const TARGET_SET_SQL = `WITH ids AS (SELECT value AS device_id FROM json_each(?)),
+export const TARGET_SET_SQL = `WITH ids AS (SELECT value AS device_id FROM json_each(?)),
 named AS (SELECT * FROM enrolled_devices WHERE device_id IN (SELECT device_id FROM ids)),
 targets AS (SELECT e.* FROM enrolled_devices e
   WHERE e.device_id IN (SELECT device_id FROM ids)

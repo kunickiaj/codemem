@@ -21,6 +21,7 @@ import {
 	hasDeviceRemovalSchema,
 	storedTriggerSql,
 } from "./coordinator-device-removal.js";
+import { registerDeviceRemovalCommitContract } from "./coordinator-device-removal-commit-test-harness.js";
 import { registerDeviceRemovalDependentsContract } from "./coordinator-device-removal-dependents-test-harness.js";
 import { registerDeviceRemovalPreviewContract } from "./coordinator-device-removal-preview-test-harness.js";
 import {
@@ -139,6 +140,7 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	registerEnrollmentWriterContract(test);
 	registerDeviceRemovalPreviewContract(test);
 	registerDeviceRemovalDependentsContract(test);
+	registerDeviceRemovalCommitContract(test);
 });
 
 describe("D1 coordinator between migrations 0048 and 0049", () => {

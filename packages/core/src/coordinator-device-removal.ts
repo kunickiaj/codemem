@@ -1,10 +1,18 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
+	type CoordinatorRemoveDeviceEnrollmentsInput,
+	type CoordinatorRemoveDeviceEnrollmentsResult,
+	captureRemovalCommit,
+	removalCommitRefusal,
+	removalCommitStatements,
+} from "./coordinator-device-removal-commit.js";
+import {
 	membershipRevocationsMatch,
 	removalDependentStatements,
 } from "./coordinator-device-removal-dependents.js";
 import {
+	byCodeUnit,
 	type CoordinatorDeviceRemovalPreviewInput,
 	type CoordinatorDeviceRemovalPreviewResult,
 	type CoordinatorDeviceRemovalRefusal,
@@ -554,6 +562,10 @@ export interface CoordinatorDeviceRemovalStore {
 	previewDeviceRemoval(
 		input: CoordinatorDeviceRemovalPreviewInput,
 	): Promise<CoordinatorDeviceRemovalPreviewResult>;
+	/** Removes exactly the previewed expanded set and its dependent authority atomically. */
+	removeDeviceEnrollments(
+		input: CoordinatorRemoveDeviceEnrollmentsInput,
+	): Promise<CoordinatorRemoveDeviceEnrollmentsResult>;
 }
 
 interface RemovalStatement {
@@ -718,6 +730,49 @@ function captureRemoval(input: unknown): Required<CoordinatorRemoveEnrollmentInp
 	return { groupId, deviceId, actorId };
 }
 
+function committedRemovalResult(
+	results: unknown[],
+	target: DeviceRemovalTarget,
+	removalId: string,
+): CoordinatorRemoveDeviceEnrollmentsResult {
+	if (results.length !== 12) return incompleteResult();
+	const writes = results.slice(0, 9).map(resultChanges);
+	if (
+		writes[0] !== target.rows.length ||
+		writes[3] !== target.rows.length ||
+		!membershipRevocationsMatch(writes.slice(4))
+	)
+		return incompleteResult();
+	if (
+		resultRows<{ complete: number }>(results[9])[0]?.complete !== 1 ||
+		resultRows<{ available: number }>(results[11])[0]?.available !== 1
+	)
+		return incompleteResult();
+	const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[10]).sort(
+		(a, b) => byCodeUnit(a.group_id, b.group_id) || byCodeUnit(a.device_id, b.device_id),
+	);
+	if (
+		removals.length !== target.rows.length ||
+		removals.some(
+			(row, i) =>
+				row.group_id !== target.rows[i]?.group_id ||
+				row.device_id !== target.rows[i]?.device_id ||
+				!Number.isSafeInteger(row.removal_seq) ||
+				row.removal_seq < 1,
+		) ||
+		new Set(removals.map((row) => row.removal_seq)).size !== removals.length
+	)
+		return incompleteResult();
+	return {
+		kind: "removed",
+		removal_id: removalId,
+		removal_seq: Math.max(...removals.map((row) => row.removal_seq)),
+		device_ids: target.deviceIds,
+		key_id: target.keyId,
+		removals,
+	};
+}
+
 /** Internal storage capability. The caller authenticates the administrator. */
 export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 	constructor(
@@ -837,5 +892,33 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 			rejoin: target.bound ? "none" : "invitation",
 			expected_digest: await deviceRemovalDigest(target),
 		};
+	}
+
+	async removeDeviceEnrollments(
+		raw: CoordinatorRemoveDeviceEnrollmentsInput,
+	): Promise<CoordinatorRemoveDeviceEnrollmentsResult> {
+		const input = captureRemovalCommit(raw);
+		const target = await this.readTarget({ deviceIds: input.deviceIds });
+		if (typeof target === "string" || (await deviceRemovalDigest(target)) !== input.expectedDigest)
+			return { kind: "rejected", error: "removal_preview_stale" };
+		const removalId = globalThis.crypto.randomUUID();
+		const statements = removalCommitStatements(
+			target,
+			{
+				removalId,
+				actorId: input.actorId,
+				now: new Date(this.clock()).toISOString(),
+			},
+			REMOVAL_AVAILABLE_SQL,
+		);
+		try {
+			return committedRemovalResult(await this.backend.batch(statements), target, removalId);
+		} catch (error) {
+			const refusal = removalCommitRefusal(error);
+			if (refusal === "removal_preview_stale")
+				return { kind: "rejected", error: "removal_preview_stale" };
+			if (refusal === "device_removal_unavailable") throw new Error(refusal);
+			return removalBackendFailure(error);
+		}
 	}
 }
