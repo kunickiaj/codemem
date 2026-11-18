@@ -150,6 +150,7 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerLegacyInsertShape(test);
 	registerTombstoneRules(test);
 	registerTombstoneSequence(test);
+	registerInvitationSequence(test);
 	registerTombstoneMatchTriggers(test);
 	registerEnrollmentChangeTriggers(test);
 	registerEnableWithoutKeyId(test);
@@ -267,6 +268,85 @@ function registerTombstoneRules(test: RemovalTest) {
 			{ removal_seq: first?.removal_seq, lifted_by_invite_id: "fixture-invite" },
 			{ lifted_at: null },
 		]);
+	});
+}
+
+async function highestRemovalSeq(f: RemovalFixture): Promise<number> {
+	const rows = await f.rows<{ seq: number }>(
+		"SELECT COALESCE(MAX(removal_seq), 0) AS seq FROM coordinator_device_removals",
+	);
+	return rows[0]?.seq ?? -1;
+}
+
+async function inviteRemovalSeq(f: RemovalFixture, inviteId: string) {
+	const rows = await f.rows<{ seq: number | null }>(
+		"SELECT issued_after_removal_seq AS seq FROM coordinator_invites WHERE invite_id = ?",
+		inviteId,
+	);
+	return rows[0]?.seq;
+}
+
+function registerInvitationSequence(test: RemovalTest) {
+	test("A12 a new invitation records the highest removal sequence and an older row reads null", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const removed = await target(f);
+		await f.store.createGroup(removed.groupId);
+		const expiresAt = "2099-01-01T00:00:00.000Z";
+		const startSeq = await highestRemovalSeq(f);
+		// Act
+		const first = await f.store.createInvite({
+			groupId: removed.groupId,
+			policy: "auto_admit",
+			expiresAt,
+		});
+		await insertTombstone(f, removed);
+		const second = await f.store.createInvite({
+			groupId: removed.groupId,
+			policy: "approval_required",
+			expiresAt,
+		});
+		await f.exec(
+			`INSERT INTO coordinator_invites(invite_id, group_id, token, policy, expires_at, created_at)
+			VALUES (?, ?, ?, 'auto_admit', ?, '2026-01-01T00:00:00.000Z')`,
+			`${f.prefix}-old-invite`,
+			removed.groupId,
+			`${f.prefix}-old-token`,
+			expiresAt,
+		);
+		const request = await f.store.createJoinRequest({
+			groupId: removed.groupId,
+			deviceId: `${f.prefix}-joiner`,
+			publicKey: "joiner-key",
+			fingerprint: "joiner-fingerprint",
+			token: second.token,
+		});
+		const oldRequest = await f.store.createJoinRequest({
+			groupId: removed.groupId,
+			deviceId: `${f.prefix}-old-joiner`,
+			publicKey: "old-joiner-key",
+			fingerprint: "old-joiner-fingerprint",
+			token: `${f.prefix}-old-token`,
+		});
+		// Assert
+		const endSeq = await highestRemovalSeq(f);
+		expect(endSeq).toBeGreaterThan(startSeq);
+		expect(await inviteRemovalSeq(f, first.invite_id)).toBe(startSeq);
+		expect(await inviteRemovalSeq(f, second.invite_id)).toBe(endSeq);
+		expect(await inviteRemovalSeq(f, `${f.prefix}-old-invite`)).toBeNull();
+		expect(
+			await f.rows(
+				`SELECT request_id, issued_after_removal_seq AS seq FROM coordinator_join_requests
+				WHERE group_id = ? ORDER BY created_at, device_id`,
+				removed.groupId,
+			),
+		).toEqual(
+			expect.arrayContaining([
+				{ request_id: request.request_id, seq: endSeq },
+				{ request_id: oldRequest.request_id, seq: null },
+			]),
+		);
 	});
 }
 

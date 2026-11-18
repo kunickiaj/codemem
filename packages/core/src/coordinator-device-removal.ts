@@ -132,6 +132,31 @@ export async function hasDeviceRemovalSchema(
 	return row?.ready === 1;
 }
 
+/**
+ * SQL fragments with which a writer stores one extra column. On a coordinator
+ * schema without device removal storage they are empty, so every enrollment and
+ * invitation writer keeps working there exactly as before.
+ */
+export interface RemovalColumnSql {
+	/** `, column` for an INSERT column list. */
+	readonly column: string;
+	/** `, value` for the matching position of the INSERT values. */
+	readonly value: string;
+	/** `, column = value` for an UPDATE. */
+	readonly assignment: string;
+}
+
+const NO_REMOVAL_COLUMN: RemovalColumnSql = Object.freeze({
+	column: "",
+	value: "",
+	assignment: "",
+});
+
+function removalColumnSql(ready: boolean, column: string, value: string): RemovalColumnSql {
+	if (!ready) return NO_REMOVAL_COLUMN;
+	return { column: `, ${column}`, value: `, ${value}`, assignment: `, ${column} = ${value}` };
+}
+
 /** An active tombstone that matches the NEW enrollment row of a trigger. */
 const NEW_ROW_TOMBSTONE_MATCH_SQL = `t.lifted_at IS NULL AND (
       t.device_id = NEW.device_id
@@ -278,3 +303,38 @@ export const ENROLLMENT_REMOVAL_TRIGGER_NAMES: readonly string[] = Object.freeze
 	"enrolled_devices_removal_delete",
 	"enrolled_devices_removal_enable",
 ]);
+
+/**
+ * The one statement that inserts an invitation, on both stores. With removal
+ * storage it also records, as `issued_after_removal_seq`, the highest removal
+ * sequence at that moment, or 0. It takes 24 bound values in column order.
+ */
+export function inviteInsertSql(hasRemovalSchema: boolean): string {
+	const removalSeq = removalColumnSql(
+		hasRemovalSchema,
+		"issued_after_removal_seq",
+		"COALESCE((SELECT MAX(removal_seq) FROM coordinator_device_removals), 0)",
+	);
+	return `INSERT INTO coordinator_invites(
+	invite_id, group_id, token, policy, expires_at, created_at, created_by,
+	team_name_snapshot, revoked_at, operation_id, reviewed_project_set_digest,
+	token_digest, inviter_actor_id, inviter_display_name, inviter_device_id,
+	pending_person_id, project_summaries_json, project_intent_json, trust_state,
+	invite_kind, policy_team_id, target_identity_id, assigned_identity_id,
+	reviewed_preview_digest, reviewed_intent_json${removalSeq.column}
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	${removalSeq.value})`;
+}
+
+/**
+ * `issued_after_removal_seq` of a new join request, copied from its invitation.
+ * When ready, bind the group ID, the plaintext token, and its digest, in that order.
+ */
+export function joinRequestRemovalSeqSql(ready: boolean): RemovalColumnSql {
+	return removalColumnSql(
+		ready,
+		"issued_after_removal_seq",
+		`(SELECT i.issued_after_removal_seq FROM coordinator_invites i
+WHERE i.group_id = ? AND (i.token = ? OR i.token_digest = ?) LIMIT 1)`,
+	);
+}
