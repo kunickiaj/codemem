@@ -120,6 +120,7 @@ import {
 	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import type { CoordinatorRemoveDeviceEnrollmentsInput } from "./coordinator-device-removal-commit.js";
+import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-removal-list.js";
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -2409,6 +2410,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async previewDeviceRemoval(input: CoordinatorDeviceRemovalPreviewInput) {
 		return this.deviceRemovals.previewDeviceRemoval(input);
+	}
+
+	async listDeviceRemovals(options?: CoordinatorListDeviceRemovalsInput) {
+		return this.deviceRemovals.listDeviceRemovals(options);
 	}
 
 	async removeDeviceEnrollments(input: CoordinatorRemoveDeviceEnrollmentsInput) {
