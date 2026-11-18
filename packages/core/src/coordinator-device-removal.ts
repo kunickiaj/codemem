@@ -500,6 +500,41 @@ export interface UnfilledEnrollmentKey {
 	public_key: string;
 }
 
+/** D1 permits 2 MB per value; leave headroom while counting exact serialized UTF-8. */
+const ENROLLMENT_FILL_MAX_JSON_BYTES = 1_000_000;
+async function enrollmentKeyFillPage(rows: UnfilledEnrollmentKey[], limit: number) {
+	const entries: string[] = [];
+	const encoder = new TextEncoder();
+	let bytes = 2;
+	let consumed = 0;
+	let next: number | null = null;
+	for (const row of rows.slice(0, limit)) {
+		const entry = JSON.stringify({
+			row_id: row.row_id,
+			public_key: row.public_key,
+			key_id: enrollmentKeyIdColumn(await ed25519KeyIdForRevocation(row.public_key)),
+		});
+		const size = encoder.encode(entry).byteLength;
+		if (size + 2 <= ENROLLMENT_FILL_MAX_JSON_BYTES) {
+			const cost = size + (entries.length > 0 ? 1 : 0);
+			// Leave an ordinary row for the next page, never advance past it.
+			if (bytes + cost > ENROLLMENT_FILL_MAX_JSON_BYTES) break;
+			bytes += cost;
+			entries.push(entry);
+		}
+		// An individually oversized row stays null but must not obstruct later rows.
+		consumed++;
+		next = row.row_id;
+	}
+	return {
+		json: `[${entries.join(",")}]`,
+		included: entries.length,
+		consumed,
+		next,
+		remaining: rows.length > consumed,
+	};
+}
+
 export function enrollmentKeyIdFillLimit(limit: unknown): number {
 	if (limit === undefined) return DEVICE_REMOVAL_FILL_DEFAULT_LIMIT;
 	if (!Number.isSafeInteger(limit) || (limit as number) < 1) throw new Error("invalid_input");
@@ -513,9 +548,9 @@ function enrollmentKeyIdFillStart(after: unknown): number {
 }
 
 export interface CoordinatorFillEnrollmentKeyIdsOptions {
-	/** Rows to read in this call, at most. */
+	/** Rows to consume at most. The serialized byte limit can end a page earlier. */
 	limit?: number;
-	/** `next` of the call before, to continue after the rows that call read. */
+	/** `next` of the call before, to continue after the rows that call consumed. */
 	after?: number | null;
 }
 
@@ -523,19 +558,19 @@ export interface CoordinatorFillEnrollmentKeyIdsResult {
 	/** Rows filled by this call. */
 	readonly filled: number;
 	/**
-	 * Rows this call read and could not fill because an active tombstone matches
+	 * Rows sent by this call that SQL could not fill because an active tombstone matches
 	 * them. They keep a null key ID, and removal stays unavailable while they exist.
 	 */
 	readonly blocked: number;
 	/**
-	 * Rows this call read that another write changed before the fill, so this call
-	 * neither filled them nor found them blocked. A later pass reads any that are
-	 * still unfilled.
+	 * Consumed rows too large for an empty byte-bounded page, or changed by another
+	 * write before the fill. Oversized rows stay null and need operator inspection;
+	 * a blind rerun does not fix them. A later pass can retry rows changed by a writer.
 	 */
 	readonly skipped: number;
-	/** True when unfilled rows remain after the rows this call read. */
+	/** True when unfilled rows remain beyond the consumed cursor, not before it. */
 	readonly remaining: boolean;
-	/** The last row this call read, to pass as `after`. Null when it read no row. */
+	/** The last consumed row, including oversized skips. Null when none was consumed. */
 	readonly next: number | null;
 }
 
@@ -846,17 +881,16 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 				.all({ sql: ENROLLMENT_KEY_ID_UNFILLED_SQL, values: [after, limit + 1], read: true })
 				.catch(removalBackendFailure),
 		);
-		const page = unfilled.slice(0, limit);
-		const last = page.at(-1);
-		if (!last) return { filled: 0, blocked: 0, skipped: 0, remaining: false, next: null };
-		const entries = await Promise.all(
-			page.map(async (row) => ({
-				row_id: row.row_id,
-				public_key: row.public_key,
-				key_id: enrollmentKeyIdColumn(await ed25519KeyIdForRevocation(row.public_key)),
-			})),
-		);
-		const json = JSON.stringify(entries);
+		const page = await enrollmentKeyFillPage(unfilled, limit);
+		if (page.included === 0)
+			return {
+				filled: 0,
+				blocked: 0,
+				skipped: page.consumed,
+				remaining: page.remaining,
+				next: page.next,
+			};
+		const { json } = page;
 		const results = await this.backend
 			.batch([
 				{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] },
@@ -867,14 +901,14 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		const filled = resultChanges(results[0]);
 		const blocked = resultRows<{ blocked: number }>(results[1])[0]?.blocked;
 		if (!Number.isSafeInteger(blocked)) return incompleteResult();
-		const skipped = page.length - filled - (blocked as number);
+		const skipped = page.consumed - filled - (blocked as number);
 		if (skipped < 0) return incompleteResult();
 		return {
 			filled,
 			blocked: blocked as number,
 			skipped,
-			remaining: unfilled.length > limit,
-			next: last.row_id,
+			remaining: page.remaining,
+			next: page.next,
 		};
 	}
 

@@ -1,15 +1,16 @@
 import type { Context } from "hono";
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
+import type { CoordinatorPeerRemovalLookupResult } from "./coordinator-peer-removal-query.js";
 import type { CoordinatorEnrollment, CoordinatorStore } from "./coordinator-store-contract.js";
 
 export const PEER_REVOCATION_CHECK_PATH = "/v1/peers/revocations";
-/** Each peer costs one revocation read, so this keeps a request within D1's per-request query limit. */
+/** Snapshot reads have fixed cost. Preserve the existing request cardinality limit. */
 export const PEER_REVOCATION_CHECK_MAX_PEERS = 25;
 const MAX_BODY_BYTES = 64 * 1024;
 
 export interface PeerRevocationCheckPeer {
 	device_id: string;
-	public_key: string;
+	public_key?: string;
 }
 
 interface SignedRequest {
@@ -51,34 +52,54 @@ export function parsePeerRevocationCheckPeers(value: unknown): PeerRevocationChe
 		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
 		const { device_id: deviceId, public_key: publicKey } = entry as Record<string, unknown>;
 		// The same identifier rule as the revocation store, so a valid request can't fail the read.
-		if (!isAuthControllerId(deviceId) || typeof publicKey !== "string" || publicKey.length === 0)
+		if (!isAuthControllerId(deviceId)) return null;
+		if (
+			publicKey !== undefined &&
+			(typeof publicKey !== "string" ||
+				publicKey.length === 0 ||
+				publicKey.length > 4096 ||
+				publicKey.includes("\0"))
+		)
 			return null;
-		if (publicKey.length > 4096 || publicKey.includes("\0")) return null;
-		peers.push({ device_id: deviceId, public_key: publicKey });
+		if (publicKey === undefined) peers.push({ device_id: deviceId });
+		else peers.push({ device_id: deviceId, public_key: publicKey });
 	}
 	return peers;
 }
 
-async function revokedPeerIds(
-	store: CoordinatorStore,
+function validIds(value: unknown, requested: Set<string>): boolean {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(id: unknown, i: number) =>
+				typeof id === "string" && requested.has(id) && (i === 0 || value[i - 1] < id),
+		)
+	);
+}
+
+/** Refuse a broken store contract rather than replying with partial data or evidence. */
+function completeSnapshot(
+	raw: unknown,
 	peers: PeerRevocationCheckPeer[],
-): Promise<string[]> {
-	const revoked = new Set<string>();
-	for (const peer of peers) {
-		// Either subject revokes the pair: the device ID with any key, or the key under any ID.
-		const records = await store.listDeviceRevocations({
-			deviceId: peer.device_id,
-			publicKey: peer.public_key,
-		});
-		if (records.length > 0) revoked.add(peer.device_id);
-	}
-	return [...revoked].toSorted();
+): CoordinatorPeerRemovalLookupResult {
+	if (!raw || typeof raw !== "object") throw new Error("peer_revocation_unavailable");
+	const value = raw as Record<string, unknown>;
+	const requested = new Set(peers.map((peer) => peer.device_id));
+	if (
+		!Number.isSafeInteger(value.removal_seq) ||
+		(value.removal_seq as number) < 0 ||
+		!["revoked", "removed", "enrolled"].every((field) => validIds(value[field], requested))
+	)
+		throw new Error("peer_revocation_unavailable");
+	const result = raw as CoordinatorPeerRemovalLookupResult;
+	if (result.removed.some((id) => result.revoked.includes(id)))
+		throw new Error("peer_revocation_unavailable");
+	return result;
 }
 
 /**
- * Lets an enrolled device ask which of the peers it pinned are revoked
- * coordinator-wide. The answer is a yes or no for each device ID or key the
- * caller names, without revocation evidence, actor, or time.
+ * Lets an enrolled device read coordinator-wide revocation, removal and
+ * enrollment state for only the IDs or keys it names, without evidence.
  */
 export function registerCoordinatorPeerRevocationCheckRoute(
 	app: PeerRevocationApp,
@@ -94,6 +115,8 @@ export function registerCoordinatorPeerRevocationCheckRoute(
 			const denied = await authorizeCheck(c, deps, store, { groupId, raw });
 			if (denied) return denied;
 			return await checkResponse(c, store, deps.parseJsonObject(raw)?.peers);
+		} catch {
+			return c.json({ error: "peer_revocation_unavailable" }, 503);
 		} finally {
 			await store.close();
 		}
@@ -133,7 +156,17 @@ async function checkResponse(
 	const peers = parsePeerRevocationCheckPeers(rawPeers);
 	if (!peers) return c.json({ error: "peers_invalid" }, 400);
 	try {
-		return c.json({ version: 1, revoked: await revokedPeerIds(store, peers) });
+		// One page per authenticated, valid request. Only the subsequent snapshot
+		// decides readiness; fill counters alone never authorize a complete answer.
+		await store.fillEnrollmentKeyIds({ limit: 200 });
+		const snapshot = completeSnapshot(
+			await store.lookupPeerRemovals({
+				peers: peers.map((peer) => ({ deviceId: peer.device_id, publicKey: peer.public_key })),
+			}),
+			peers,
+		);
+		const { revoked, removed, enrolled, removal_seq } = snapshot;
+		return c.json({ version: 1, revoked, removed, enrolled, removal_seq });
 	} catch {
 		return c.json({ error: "peer_revocation_unavailable" }, 503);
 	}
