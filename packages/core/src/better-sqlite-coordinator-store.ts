@@ -4,6 +4,7 @@ import type {
 	CoordinatorAuthLinkHeadlessCreateInput,
 	CoordinatorAuthLinkHeadlessFinalizeInput,
 } from "./coordinator-auth-link-headless.js";
+import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -2062,6 +2063,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
 		return this.deviceRemovals.removeEnrollment(input);
+	}
+
+	async previewDeviceRemoval(input: CoordinatorDeviceRemovalPreviewInput) {
+		return this.deviceRemovals.previewDeviceRemoval(input);
 	}
 
 	async fillEnrollmentKeyIds(options?: CoordinatorFillEnrollmentKeyIdsOptions) {

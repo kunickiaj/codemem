@@ -119,6 +119,7 @@ import {
 	type RemovalColumnSql,
 	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
+import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
 	type CoordinatorListDeviceRevocationsInput,
@@ -2403,6 +2404,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
 		return this.deviceRemovals.removeEnrollment(input);
+	}
+
+	async previewDeviceRemoval(input: CoordinatorDeviceRemovalPreviewInput) {
+		return this.deviceRemovals.previewDeviceRemoval(input);
 	}
 
 	/** Bounded, so an operator route can call it until nothing remains. */
