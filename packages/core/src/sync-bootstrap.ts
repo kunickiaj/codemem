@@ -11,7 +11,7 @@
  *    bump generation
  */
 
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, type SQL, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { ApiSyncMemorySnapshotPageResponse } from "./api-types.js";
 import type { Database } from "./db.js";
@@ -21,6 +21,10 @@ import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js"
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
+import {
+	type CrossScopeSnapshotContext,
+	crossScopeSnapshotContext,
+} from "./snapshot-cross-scope-reconcile.js";
 import { buildAuthHeaders, buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import { SYNC_BOOTSTRAP_CWD_PREFIX } from "./sync-bootstrap-constants.js";
 import { LOCAL_SYNC_CAPABILITY, SYNC_CAPABILITY_HEADER } from "./sync-capability.js";
@@ -428,6 +432,144 @@ function insertSnapshotItem(
 	return { applied: true, embeddable: !isDeleted && isEmbeddableSnapshotPayload(payload) };
 }
 
+/** Copies of the item's memory that this device holds in the scope being merged. */
+function copiesInSnapshotScope(
+	d: ReturnType<typeof drizzle>,
+	item: SyncMemorySnapshotItem,
+	scopePredicate: SQL | undefined,
+): ExistingSnapshotRow[] {
+	return d
+		.select({
+			id: schema.memoryItems.id,
+			rev: schema.memoryItems.rev,
+			updated_at: schema.memoryItems.updated_at,
+			metadata_json: schema.memoryItems.metadata_json,
+		})
+		.from(schema.memoryItems)
+		.where(
+			and(
+				eq(schema.memoryItems.import_key, item.entity_id),
+				scopePredicate,
+				ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
+			),
+		)
+		.all();
+}
+
+interface SnapshotTarget {
+	db: Database;
+	d: ReturnType<typeof drizzle>;
+	peerDeviceId: string;
+	scopeId: string | null;
+	scanner: SecretScanner;
+	result: BootstrapResult;
+	crossScope: CrossScopeSnapshotContext;
+}
+
+function snapshotTarget(
+	db: Database,
+	peerDeviceId: string,
+	scopeId: string | null,
+	scanner: SecretScanner,
+	result: BootstrapResult,
+): SnapshotTarget {
+	return {
+		db,
+		d: drizzle(db, { schema }),
+		peerDeviceId,
+		scopeId,
+		scanner,
+		result,
+		crossScope: crossScopeSnapshotContext(db, peerDeviceId),
+	};
+}
+
+/**
+ * The memories a scope holds before a first pull clears it. Read only when this
+ * device has a migration record, the one case in which an item can be held back.
+ */
+function keysHeldInScope(target: SnapshotTarget): Set<string> {
+	if (!target.scopeId || !target.crossScope.hasRecords) return new Set();
+	const keys = target.db
+		.prepare(
+			`SELECT DISTINCT import_key FROM memory_items
+			 WHERE scope_id = ? AND import_key IS NOT NULL AND COALESCE(visibility, '') != 'private'`,
+		)
+		.pluck()
+		.all(target.scopeId) as string[];
+	return new Set(keys);
+}
+
+/** Keeps the creating device of a copy the item replaces, when the item does not name one. */
+function withReplacedOrigin(
+	item: SyncMemorySnapshotItem,
+	replacedOriginDeviceId: string | null,
+): SyncMemorySnapshotItem {
+	const payload = replacedOriginDeviceId ? parseSnapshotPayload(item) : null;
+	if (!payload || typeof payload.origin_device_id === "string") return item;
+	return {
+		...item,
+		payload_json: JSON.stringify({ ...payload, origin_device_id: replacedOriginDeviceId }),
+	};
+}
+
+/** Inserts one item and records its receipt. Returns 1 when the new row can be embedded. */
+function addSnapshotItem(
+	target: SnapshotTarget,
+	item: SyncMemorySnapshotItem,
+	replacedOriginDeviceId: string | null,
+): number {
+	const inserted = insertSnapshotItem(
+		target.d,
+		withReplacedOrigin(item, replacedOriginDeviceId),
+		target.scopeId,
+		target.scanner,
+	);
+	if (!inserted.applied) return 0;
+	recordForeignMemoryRevision(target.db, item.entity_id, "bootstrap");
+	target.result.applied++;
+	recordSnapshotReceipt(target.db, target.peerDeviceId, item, target.scopeId);
+	return inserted.embeddable ? 1 : 0;
+}
+
+interface CopiesInOtherScopes {
+	/** The copy this device holds stays, and the item is not added. */
+	keepExisting: boolean;
+	deleted: number;
+	originDeviceId: string | null;
+}
+
+/**
+ * Settles copies of the item's memory that this device holds under another
+ * scope. Only a migration record makes this do anything. See
+ * `snapshot-cross-scope-reconcile.ts`.
+ */
+function settleCopiesInOtherScopes(
+	target: SnapshotTarget,
+	item: SyncMemorySnapshotItem,
+): CopiesInOtherScopes {
+	const untouched = { keepExisting: false, deleted: 0, originDeviceId: null };
+	if (!target.scopeId) return untouched;
+	const decision = target.crossScope.decide(item, target.scopeId);
+	if (decision.kind === "apply") return untouched;
+	if (decision.kind === "keep_existing") return { ...untouched, keepExisting: true };
+	return {
+		keepExisting: false,
+		deleted: deleteReplacedRows(target.db, decision.memoryIds),
+		originDeviceId: decision.originDeviceId,
+	};
+}
+
+/** Removes rows a snapshot item is about to replace. Returns how many were removed. */
+function deleteReplacedRows(db: Database, memoryIds: number[]): number {
+	if (memoryIds.length === 0) return 0;
+	snapshotSessionExportKeysForMemoryIds(db, memoryIds);
+	return drizzle(db, { schema })
+		.delete(schema.memoryItems)
+		.where(inArray(schema.memoryItems.id, memoryIds))
+		.run().changes;
+}
+
 function clearScopedAckedCursor(db: Database, peerDeviceId: string, scopeId: string): void {
 	drizzle(db, { schema })
 		.update(schema.replicationCursorsV2)
@@ -471,7 +613,6 @@ export function applyBootstrapSnapshot(
 	validateSnapshotScopes(items, bootstrapScopeId);
 
 	db.transaction(() => {
-		const d = drizzle(db, { schema });
 		let embeddableApplied = 0;
 
 		// 1. Delete local sync-eligible memories only for an explicit bootstrap scope.
@@ -482,6 +623,8 @@ export function applyBootstrapSnapshot(
 		//   to avoid leaving stale rows that could create duplicate import_keys.
 		// - The dirty-local gate in sync-pass ensures we only reach here when
 		//   no unsynced shared changes exist.
+		const target = snapshotTarget(db, peerDeviceId, bootstrapScopeId, activeScanner, result);
+		const heldInScope = keysHeldInScope(target);
 		if (bootstrapScopeId) {
 			result.deleted = deleteSyncedMemoriesInScope(db, bootstrapScopeId);
 		}
@@ -490,12 +633,11 @@ export function applyBootstrapSnapshot(
 		bootstrapSessionCache.clear();
 
 		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
-			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
-			if (!inserted.applied) continue;
-			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
-			if (inserted.embeddable) embeddableApplied++;
-			result.applied++;
-			recordSnapshotReceipt(db, peerDeviceId, item, bootstrapScopeId);
+			const heldElsewhere = settleCopiesInOtherScopes(target, item);
+			// A copy this scope held before it was cleared is put back. Only a first copy is held back.
+			if (heldElsewhere.keepExisting && !heldInScope.has(item.entity_id)) continue;
+			result.deleted += heldElsewhere.deleted;
+			embeddableApplied += addSnapshotItem(target, item, heldElsewhere.originDeviceId);
 		}
 
 		// 3. Update replication cursor to baseline_cursor. For scoped null-baseline
@@ -625,47 +767,25 @@ export function mergeBootstrapSnapshot(
 			);
 
 	db.transaction(() => {
-		const d = drizzle(db, { schema });
 		let embeddableApplied = 0;
 		bootstrapSessionCache.clear();
 
+		const target = snapshotTarget(db, peerDeviceId, bootstrapScopeId, activeScanner, result);
 		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
 			if (!parseSnapshotPayload(item)) continue;
-			const existingRows = d
-				.select({
-					id: schema.memoryItems.id,
-					rev: schema.memoryItems.rev,
-					updated_at: schema.memoryItems.updated_at,
-					metadata_json: schema.memoryItems.metadata_json,
-				})
-				.from(schema.memoryItems)
-				.where(
-					and(
-						eq(schema.memoryItems.import_key, item.entity_id),
-						mergeScopePredicate,
-						ne(sql`COALESCE(${schema.memoryItems.visibility}, '')`, "private"),
-					),
-				)
-				.all();
+			const existingRows = copiesInSnapshotScope(target.d, item, mergeScopePredicate);
 
 			if (!shouldReplaceExistingSnapshotRows(existingRows, item)) continue;
+			const heldElsewhere = settleCopiesInOtherScopes(target, item);
+			// A copy already in this scope is still brought up to date. Only a first copy is held back.
+			if (heldElsewhere.keepExisting && existingRows.length === 0) continue;
+			result.deleted += heldElsewhere.deleted;
 
-			const existingIds = existingRows.map((row) => row.id);
-			if (existingIds.length > 0) {
-				snapshotSessionExportKeysForMemoryIds(db, existingIds);
-				const deleteResult = d
-					.delete(schema.memoryItems)
-					.where(inArray(schema.memoryItems.id, existingIds))
-					.run();
-				result.deleted += deleteResult.changes;
-			}
-
-			const inserted = insertSnapshotItem(d, item, bootstrapScopeId, activeScanner);
-			if (!inserted.applied) continue;
-			recordForeignMemoryRevision(db, item.entity_id, "bootstrap");
-			if (inserted.embeddable) embeddableApplied++;
-			result.applied++;
-			recordSnapshotReceipt(db, peerDeviceId, item, bootstrapScopeId);
+			result.deleted += deleteReplacedRows(
+				db,
+				existingRows.map((row) => row.id),
+			);
+			embeddableApplied += addSnapshotItem(target, item, heldElsewhere.originDeviceId);
 		}
 
 		advanceMergedSnapshotBoundary(db, peerDeviceId, resetInfo, options);
