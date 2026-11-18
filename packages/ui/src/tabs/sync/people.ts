@@ -12,6 +12,7 @@ import type { SyncActionFeedback } from "./components/sync-inline-feedback";
 import { renderLegacyClaimsSlice } from "./components/sync-legacy-claims";
 import { canManageLegacyCoordinatorSpaces, renderSyncPeersList } from "./components/sync-peers";
 import { hideSkeleton, isPeerScopeReviewPending, shouldClearStalePeersFeedback } from "./helpers";
+import { peerRemovalFeedback } from "./peer-removal-feedback";
 import { openSyncConfirmDialog } from "./sync-dialogs";
 import {
 	deriveVisiblePeopleActors,
@@ -193,11 +194,8 @@ export function renderSyncPeers() {
 		},
 		onRemove: async (peerId, label) => {
 			try {
-				await api.deletePeer(peerId);
-				const feedback = {
-					message: `Removed peer ${label}.`,
-					tone: "success" as const,
-				} satisfies SyncActionFeedback;
+				const result = await api.deletePeer(peerId);
+				const feedback = peerRemovalFeedback(result, { label });
 				state.syncPeerFeedbackById.delete(peerId);
 				// Tag the section feedback with the removed peer id so a
 				// subsequent re-pair of the same device can detect and clear
