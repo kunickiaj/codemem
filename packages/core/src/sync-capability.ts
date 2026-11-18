@@ -17,12 +17,20 @@ export const SYNC_FEATURES = [
 	"memory_scope_retirement_v1",
 	"relay",
 	"relay_aware",
+	"peer_removal_check",
 ] as const;
 // Retirement is recognized but not advertised until snapshot and admission gates are complete.
 // `relay_aware` marks a build that reports `relay` truthfully, so a peer can tell "this device
 // runs no relay client" from "this device predates the `relay` feature". `relay` itself is
 // advertised only by a viewer that runs a relay client; see `setLocalSyncFeature`.
-export const LOCAL_SYNC_FEATURES: SyncFeature[] = ["reassign_scope", "relay_aware"];
+// `peer_removal_check` marks a build that asks the coordinator about removed peers at each
+// refresh and reports `applied_removal_seq` in presence. A build without it never drops a
+// removed peer's pairing. The list stays sorted, as `setLocalSyncFeature` keeps it.
+export const LOCAL_SYNC_FEATURES: SyncFeature[] = [
+	"peer_removal_check",
+	"reassign_scope",
+	"relay_aware",
+];
 
 /**
  * Turn a locally advertised feature on or off for this process. The viewer calls

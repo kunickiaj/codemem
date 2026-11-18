@@ -6,9 +6,14 @@ import {
 	normalizeAddress,
 } from "./address-utils.js";
 import {
-	fetchRevokedPinnedPeers,
+	fetchPeerRemovalLookup,
+	type PeerRemovalLookup,
 	type PeerRevocationCheckStatus,
 } from "./coordinator-peer-revocation.js";
+import {
+	clearCoordinatorDeviceRemoved,
+	recordCoordinatorDeviceRemoved,
+} from "./coordinator-removal-notice.js";
 import {
 	type CoordinatorReciprocalApproval,
 	CoordinatorReciprocalApprovalRequestChangedError,
@@ -22,6 +27,7 @@ import type { Database } from "./db.js";
 import { removeRevokedPeers } from "./device-retirement.js";
 import { retainRetirementPeerTrust } from "./memory-retirement-trust.js";
 import { removePairingState } from "./pairing-removal.js";
+import { readAppliedRemovalSeq, storeAppliedRemovalSeq } from "./peer-removal-check-state.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache.js";
 import type { MemoryStore } from "./store.js";
 import { buildAuthHeaders } from "./sync-auth.js";
@@ -255,6 +261,8 @@ export async function registerCoordinatorPresence(
 		capabilities: {
 			sync_capability: LOCAL_SYNC_CAPABILITY,
 			sync_features: LOCAL_SYNC_FEATURES,
+			// 0 until a complete lookup has covered every pairing and binding this device has now.
+			applied_removal_seq: readAppliedRemovalSeq(store.db),
 		},
 	};
 	const responses: Record<string, unknown>[] = [];
@@ -914,22 +922,55 @@ export async function refreshAuthorizedCoordinatorPeerTrust(
 	return { peers, trusted };
 }
 
+/** The removed device's own side: which groups answered `device_removed`, or that one accepted it. */
+function recordRemovalNotice(db: Database, coordinatorId: string, lookup: PeerRemovalLookup): void {
+	if (lookup.status === "checked") {
+		clearCoordinatorDeviceRemoved(db, coordinatorId);
+		return;
+	}
+	recordCoordinatorDeviceRemoved(db, { coordinatorId, groupIds: lookup.removedFromGroups });
+}
+
 /**
- * Deletes pairings with devices the coordinator revoked. It runs on its own, so
- * a group that rejects presence or peer lookups can't block it. An unknown answer
- * keeps every pairing until a later check succeeds.
+ * Applies the coordinator's answer about this device's pairings and bound
+ * devices: a blocked or removed device loses its pairing, its sync progress, and
+ * its binding. It runs on its own, so a group that rejects presence or peer
+ * lookups can't block it. An unknown answer keeps every pairing until a later
+ * check succeeds. After a complete lookup the coordinator's removal number is
+ * stored for the next presence update, unless a pairing or binding was added
+ * while the lookup ran.
  */
 export async function removeCoordinatorRevokedPeers(
 	store: PresenceStoreLike,
 	config: CoordinatorSyncConfig,
 	options?: { keysDir?: string },
-): Promise<{ revoked: number; status: PeerRevocationCheckStatus }> {
-	if (!coordinatorEnabled(config)) return { revoked: 0, status: "unsupported" };
+): Promise<{
+	revoked: number;
+	removed: number;
+	/** Devices the coordinator still holds an enrollment for. Nothing here acts on them. */
+	enrolled: string[];
+	status: PeerRevocationCheckStatus;
+}> {
+	if (!coordinatorEnabled(config))
+		return { revoked: 0, removed: 0, enrolled: [], status: "unsupported" };
 	const keysDir = options?.keysDir ?? (process.env.CODEMEM_KEYS_DIR?.trim() || undefined);
 	const [localDeviceId] = ensureDeviceIdentity(store.db, { keysDir });
-	const check = await fetchRevokedPinnedPeers(store, config, { localDeviceId, keysDir });
-	const revoked = removeRevokedPeers(store.db, localDeviceId, check.revoked);
-	return { revoked, status: check.status };
+	const lookup = await fetchPeerRemovalLookup(store, config, { localDeviceId, keysDir });
+	recordRemovalNotice(store.db, buildBaseUrl(config.syncCoordinatorUrl), lookup);
+	const revoked = removeRevokedPeers(store.db, localDeviceId, lookup.revoked);
+	const removed = removePairingState(store.db, {
+		localDeviceId,
+		reason: "removed",
+		deviceIds: lookup.removed.filter((deviceId) => deviceId !== localDeviceId),
+	}).syncPeers;
+	// Every reply is applied by now, which is what makes the lookup complete.
+	if (lookup.removalSeq !== null && lookup.generation !== null) {
+		storeAppliedRemovalSeq(store.db, {
+			generation: lookup.generation,
+			removalSeq: lookup.removalSeq,
+		});
+	}
+	return { revoked, removed, enrolled: lookup.enrolled, status: lookup.status };
 }
 
 /**

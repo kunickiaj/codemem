@@ -283,7 +283,15 @@ export type {
 	CoordinatorOwnerReviewLocalOptions,
 } from "./coordinator-owner-review-local.js";
 export { readCoordinatorOwnerReviewLocalEvidence } from "./coordinator-owner-review-local.js";
+export {
+	type PeerRemovalAnswer,
+	queryPeerRemoval,
+} from "./coordinator-peer-revocation.js";
 export { relayAdmissionNamespaces } from "./coordinator-relay-admission-route.js";
+export {
+	type CoordinatorRemovalState,
+	readCoordinatorRemovalState,
+} from "./coordinator-removal-notice.js";
 export type {
 	ResolvedAccountOwnerReceiptReference,
 	ResolvedAccountOwnerStatus,

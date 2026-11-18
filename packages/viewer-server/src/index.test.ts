@@ -10134,7 +10134,7 @@ describe("viewer-server", () => {
 				// Assert
 				expect(ordinary.status).toBe(200);
 				expect((await ordinary.json()) as Record<string, unknown>).toMatchObject({
-					sync_features: ["reassign_scope", "relay_aware"],
+					sync_features: ["peer_removal_check", "reassign_scope", "relay_aware"],
 				});
 				expect(refreshOnly.status).toBe(200);
 				expect(featureOnly.status).toBe(200);
