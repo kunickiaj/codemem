@@ -14,6 +14,10 @@ import {
 	AUTH_LINK_LEGACY_AUTHORITY_SCHEMA_SQL,
 } from "./coordinator-auth-link-authority-upgrade.js";
 import {
+	BOUNDARY_READINESS_MIGRATION_NAME,
+	BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
+} from "./coordinator-boundary-readiness.js";
+import {
 	COORDINATOR_D1_BASE_INVENTORY,
 	COORDINATOR_D1_MIGRATION_NAMES,
 } from "./coordinator-d1-schema-inventory.js";
@@ -99,6 +103,7 @@ const STAGE_LAST_MIGRATION: Readonly<Record<"v2" | "prior_extension" | "current"
 const POST_STAGE_MIGRATION_READINESS_SQL: Readonly<Record<string, string>> = Object.freeze({
 	[DEVICE_REMOVAL_MIGRATION_NAME]: DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
 	[ENROLLMENT_REMOVAL_MIGRATION_NAME]: ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL,
+	[BOUNDARY_READINESS_MIGRATION_NAME]: BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
 });
 
 /**

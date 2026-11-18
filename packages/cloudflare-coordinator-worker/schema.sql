@@ -598,6 +598,31 @@ BEGIN
       OR (NEW.key_id = '' AND t.public_key = NEW.public_key)));
 END;
 
+-- Readiness records (migration 0050). Mirror of
+-- packages/core/src/coordinator-boundary-readiness.ts.
+CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness (
+  group_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  record_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (group_id, device_id)
+);
+
+CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness_projects (
+  group_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  boundary_scope_id TEXT NOT NULL,
+  source_scope_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  own_rows_in_source INTEGER NOT NULL,
+  own_rows_in_boundary INTEGER NOT NULL,
+  PRIMARY KEY (group_id, device_id, boundary_scope_id, source_scope_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_coordinator_boundary_readiness_projects_boundary
+  ON coordinator_boundary_readiness_projects(group_id, boundary_scope_id);
+
 CREATE TABLE IF NOT EXISTS coordinator_reciprocal_approvals (
   request_id TEXT PRIMARY KEY,
   group_id TEXT NOT NULL,

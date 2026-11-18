@@ -682,8 +682,9 @@ every migration from `0001` and fail on the first change that already exists. Re
 
    The statement records every numbered migration from `0001` through that stage's last migration (`0045` for `v2`,
    `0046` for `prior_extension`, `0047` for `current`). For `current` it also records `0048` when the device removal
-   storage that `0048` adds already exists, and `0049` when the enrollment triggers that `0049` adds already exist.
-   Each is checked on its own. A migration whose objects are missing stays unrecorded and the next
+   storage that `0048` adds already exists, `0049` when its enrollment triggers already exist,
+   and `0050` when its readiness record storage already exists. Each is checked on its own.
+   A migration whose objects are missing stays unrecorded and the next
    `migrations apply` runs it. The statement requires that stage's auth readiness checks to pass and
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in
    purge floors. This inventory does not validate column types, constraints, indexes, triggers or row validity.

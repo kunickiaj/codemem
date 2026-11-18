@@ -134,6 +134,17 @@ The record tells the coordinator two things: this device runs code that handles 
 
 The coordinator accepts an entry only when the device is authorized in the named source scope and the boundary ID has the `managed-project:` form. A device can name a boundary for a Project it does not have. The result is an empty boundary with the source scope's own members, which no device adopts and which changes nobody's access.
 
+What the coordinator stores (`packages/core/src/coordinator-boundary-readiness.ts`, coordinator migration `0050`):
+
+- One record per device and group, replaced as a whole. A record replaces the stored one only when its `sequence` is higher. Otherwise the coordinator answers with the stored sequence, so a device that lost its counter can move past it.
+- A record with no Projects is valid. It says the device runs code that handles a boundary.
+- An entry that fails the two checks above is left out and named in the answer. The rest of the record is stored.
+- A device with no enabled enrollment in the group is refused.
+- A record lists at most 1,000 Projects, and one Project can appear once per source scope.
+- A coordinator that has not applied migration `0050` answers that readiness records are unavailable, and every Project waits.
+
+The device is checked against the source scope when the record arrives. It can leave that scope afterwards, and its record stays until its next one. The commit therefore counts only records of devices that are authorized in the source scope at the moment of the commit.
+
 ## 2. The per-Project procedure
 
 ### Roles

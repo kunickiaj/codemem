@@ -148,6 +148,14 @@ import {
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
 import {
+	BOUNDARY_READINESS_SCHEMA_SQL,
+	BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
+	type BoundaryReadinessDeviceInput,
+	BoundaryReadinessOperations,
+	boundaryReadinessScopeCheck,
+	type PutBoundaryReadinessInput,
+} from "./coordinator-boundary-readiness.js";
+import {
 	COORDINATOR_DEVICE_OWNERSHIP_SCHEMA_SQL,
 	upgradeDeviceOwnershipTriggersSql,
 } from "./coordinator-device-ownership-schema.js";
@@ -752,6 +760,12 @@ function namingRemovalRefusal<T>(write: () => T): T {
 	}
 }
 
+/** Readiness record storage. A database that already has it is only read. */
+function initializeBoundaryReadinessSchema(db: DatabaseType): void {
+	if (db.prepare(BOUNDARY_READINESS_STORAGE_PRESENT_SQL).pluck().get() === 1) return;
+	db.exec(BOUNDARY_READINESS_SCHEMA_SQL);
+}
+
 function hasDeviceRemovalSchemaSync(db: DatabaseType): boolean {
 	return db.prepare(DEVICE_REMOVAL_SCHEMA_READINESS_SQL).pluck().get() === 1;
 }
@@ -1122,6 +1136,7 @@ export function initializeBaseSchema(db: DatabaseType): void {
 	);
 	// Every enrollment writer needs this storage, whatever the account schema state.
 	initializeDeviceRemovalSchema(db);
+	initializeBoundaryReadinessSchema(db);
 }
 
 export function connectCoordinator(
@@ -1183,6 +1198,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
+	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1210,6 +1226,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 		this.deviceRevocations = new DeviceRevocationOperations(ledgerBackend, options.authClock);
 		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
+		this.boundaryReadiness = new BoundaryReadinessOperations(
+			ledgerBackend,
+			boundaryReadinessScopeCheck(this),
+			options.authClock,
+		);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
@@ -2087,6 +2108,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 
 	async fillEnrollmentKeyIds(options?: CoordinatorFillEnrollmentKeyIdsOptions) {
 		return this.deviceRemovals.fillEnrollmentKeyIds(options);
+	}
+
+	async putBoundaryReadiness(input: PutBoundaryReadinessInput) {
+		return this.boundaryReadiness.putBoundaryReadiness(input);
+	}
+
+	async getBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
+		return this.boundaryReadiness.getBoundaryReadiness(input);
+	}
+
+	async discardBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
+		return this.boundaryReadiness.discardBoundaryReadiness(input);
 	}
 
 	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {

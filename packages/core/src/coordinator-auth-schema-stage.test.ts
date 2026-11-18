@@ -13,6 +13,7 @@ import {
 	coordinatorD1BaselineMigrations,
 	readCoordinatorAuthSchemaStage,
 } from "./coordinator-auth-schema-stage.js";
+import { BOUNDARY_READINESS_MIGRATION_NAME } from "./coordinator-boundary-readiness.js";
 import {
 	COORDINATOR_D1_BASE_INVENTORY,
 	COORDINATOR_D1_MIGRATION_NAMES,
@@ -191,6 +192,23 @@ const qualificationObjects = (source: Database.Database) =>
 			name === "coordinator_owner_enrollment_qualifications" ||
 			name.startsWith("owner_enrollment_qualification_"),
 	);
+
+describe("ledger baseline of migrations after the last auth stage", () => {
+	it("records each migration after the last auth stage by its own storage", () => {
+		// Arrange: device removal storage exists, readiness storage does not.
+		const db = chainThrough(DEVICE_REMOVAL_MIGRATION_NAME);
+		db.exec(ledger);
+		// Act
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		// Assert
+		expect(names(db)).toEqual(
+			numbered.slice(0, numbered.indexOf(DEVICE_REMOVAL_MIGRATION_NAME) + 1),
+		);
+		apply(db, BOUNDARY_READINESS_MIGRATION_NAME);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered);
+	});
+});
 
 describe("guarded ledger baseline", () => {
 	it("baselines a fresh Worker schema without prerequisite repairs", () => {
