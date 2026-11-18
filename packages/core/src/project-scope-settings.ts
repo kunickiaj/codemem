@@ -969,6 +969,34 @@ function resolveProjectScopeMappingDraft(
 	};
 }
 
+/**
+ * Whether saving these mappings can only narrow who receives Projects: every
+ * target is local-only, and no existing mapping changes what it matches or its
+ * precedence, because that could let the Projects it covered fall through to a
+ * broader shared mapping. Input the route would reject passes through unchanged.
+ */
+export function projectScopeMappingSavesOnlyNarrow(
+	db: Database,
+	inputs: UpsertProjectScopeMappingInput[],
+): boolean {
+	return inputs.every((input) => {
+		if (clean(input.scope_id) !== LOCAL_DEFAULT_SCOPE_ID) return false;
+		let draft: ProjectScopeMappingDraft;
+		try {
+			draft = resolveProjectScopeMappingDraft(db, input);
+		} catch {
+			return true;
+		}
+		const existing = draft.existing;
+		return (
+			!existing ||
+			(existing.workspace_identity === draft.workspaceIdentity &&
+				existing.project_pattern === draft.projectPattern &&
+				existing.priority === draft.priority)
+		);
+	});
+}
+
 interface SourceOwnedMemoryScopeRow {
 	id: number;
 	import_key: string | null;

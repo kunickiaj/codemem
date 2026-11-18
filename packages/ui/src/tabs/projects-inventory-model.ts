@@ -65,6 +65,8 @@ export interface ProjectsInventoryViewModel {
 		total: number;
 		hasMore: boolean;
 	};
+	/** False on a device that can't change who receives Projects; then only local-only is offered. */
+	accessChangesAllowed: boolean;
 	scopeGroups: Array<{ key: string; label: string; scopes: SharingDomainScope[] }>;
 	statusOptions: Array<{ label: string; value: string }>;
 }

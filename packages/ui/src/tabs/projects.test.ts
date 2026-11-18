@@ -3213,6 +3213,39 @@ describe("Projects cached recipient presentation", () => {
 		);
 	});
 
+	it("keeps an existing mapping's pattern when moving the Project to local-only", async () => {
+		// Arrange: the mapping's pattern differs from the name the Project now shows.
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage(
+				[
+					project({
+						mapping_id: 7,
+						resolution_reason: "exact_mapping",
+						resolved_scope_id: "client-work-a",
+						display_project: "renamed-api",
+					}),
+				],
+				{ limit: 50 },
+			),
+		);
+		initProjectsTab(vi.fn());
+		await loadProjectsData();
+		const row = document.querySelector<HTMLElement>("[data-project-workspace-identity]");
+		const menu = openActionMenu(row ?? document);
+		await flushAsyncWork();
+
+		// Act
+		menu.querySelector<HTMLButtonElement>('[role="menuitem"]:nth-child(3)')?.click();
+		await vi.waitFor(() => expect(api.saveSharingDomainProjectMapping).toHaveBeenCalled());
+
+		// Assert: no pattern is sent, so the save can't read as a change to what it matches.
+		const [request] = vi.mocked(api.saveSharingDomainProjectMapping).mock.calls[0] ?? [];
+		expect(request).toMatchObject({ id: 7, scope_id: "local-default" });
+		expect(request).not.toHaveProperty("project_pattern");
+		// The inventory may show a repository identity for a mapping stored under a cwd.
+		expect(request).not.toHaveProperty("workspace_identity");
+	});
+
 	it("keeps expanded project details open after refresh", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
 			inventoryPage([project()], { limit: 50 }),
@@ -4592,5 +4625,48 @@ describe("Projects refresh cancellation", () => {
 
 		resolveTeamSetup({ version: 1, candidates: [] });
 		await expect(operation).resolves.toBe(false);
+	});
+});
+
+describe("Projects recipient changes need the admin secret", () => {
+	it.each([
+		[{ readiness: "ready", has_admin_secret: true }, true],
+		[{ readiness: "partial", has_admin_secret: false }, false],
+	])("lets the recipient dialog change access for status %j: %s", async (status, allowed) => {
+		// Arrange
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue(status);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+		initProjectsTab(() => {});
+
+		// Act
+		await loadProjectsData();
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(recipientPolicyManagement.mountRecipientPolicyManagement).mock.calls.at(-1)?.[3],
+			).toMatchObject({ accessChangesAllowed: allowed }),
+		);
+	});
+
+	it.each([
+		[{ readiness: "ready", has_admin_secret: true }, true],
+		[{ readiness: "partial", has_admin_secret: false }, false],
+	])("offers shared Spaces only with access for status %j: %s", async (status, allowed) => {
+		// Arrange
+		vi.mocked(api.loadCoordinatorAdminStatus).mockResolvedValue(status);
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+		initProjectsTab(() => {});
+
+		// Act
+		await loadProjectsData();
+
+		// Assert
+		await vi.waitFor(() =>
+			expect(getProjectsInventoryController().getViewModel().accessChangesAllowed).toBe(allowed),
+		);
+		const offered = getProjectsInventoryController()
+			.getViewModel()
+			.scopeGroups.flatMap((group) => group.scopes.map((scope) => scope.scope_id));
+		expect(offered.some((scopeId) => scopeId !== "local-default")).toBe(allowed);
+		expect(offered).toContain("local-default");
 	});
 });

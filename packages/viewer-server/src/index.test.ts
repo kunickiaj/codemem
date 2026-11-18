@@ -1729,7 +1729,7 @@ it("wakes affected recipient policies after an actor merge", async () => {
 });
 
 it("wakes recipient policies after single and bulk Project remaps", async () => {
-	const { app, ensureStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 	try {
 		const store = ensureStore();
 		const now = new Date().toISOString();
@@ -1836,7 +1836,7 @@ it("wakes recipient policies after single and bulk Project remaps", async () => 
 });
 
 it("wakes old-scope siblings when an ID-less remap uses a normalized identity", async () => {
-	const { app, ensureStore, cleanup } = createTestApp();
+	const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 	try {
 		const store = ensureStore();
 		const now = new Date().toISOString();
@@ -9193,7 +9193,7 @@ describe("viewer-server", () => {
 		});
 
 		it("previews and applies legacy shared review reassignment explicitly", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -9297,7 +9297,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects stale legacy shared review confirmation when the group changes", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -9368,7 +9368,7 @@ describe("viewer-server", () => {
 		});
 
 		it("reports inbound-only legacy shared review groups without offering reassignment capacity", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -9430,7 +9430,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects legacy shared review reassignment when the local device lacks target membership", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -9478,7 +9478,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects local-default as a legacy shared review reassignment target", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
@@ -13607,7 +13607,7 @@ describe("viewer-server", () => {
 		});
 
 		it("updates local Sharing domain project mappings without granting extra membership", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const requestBehindPublication = (request: () => Promise<Response>) =>
@@ -14106,7 +14106,7 @@ describe("viewer-server", () => {
 		});
 
 		it("serves and resolves recipient-policy review without mutating protected state", async () => {
-			const { app, ensureStore, getStore, cleanup } = createTestApp();
+			const { app, ensureStore, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const projectId = "https://git.example.invalid/acme/review-route.git";
@@ -14318,7 +14318,7 @@ describe("viewer-server", () => {
 		});
 
 		it("serves safe recipient intent and strictly validates per-Project migration", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
@@ -14468,7 +14468,7 @@ describe("viewer-server", () => {
 		});
 
 		it("returns a structured response when recipient-policy migration cannot acquire its writer lock", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			let competing: InstanceType<typeof Database> | null = null;
 			try {
 				const store = ensureStore();
@@ -14493,7 +14493,7 @@ describe("viewer-server", () => {
 		});
 
 		it("returns a generic recipient-policy migration failure without leaking details", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const prepare = store.db.prepare.bind(store.db);
@@ -14518,7 +14518,7 @@ describe("viewer-server", () => {
 		});
 
 		it("strictly previews and commits safe recipient-policy edge changes", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = "2026-07-21T12:00:00.000Z";
@@ -14728,7 +14728,7 @@ describe("viewer-server", () => {
 		});
 
 		it("serializes Team recipient-edge commits behind Team publication", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			let releaseTeamMutation: () => void = () => undefined;
 			const teamMutationGate = new Promise<void>((resolve) => {
 				releaseTeamMutation = resolve;
@@ -14784,7 +14784,7 @@ describe("viewer-server", () => {
 		});
 
 		it("does not queue identity-only recipient-edge commits behind Team publication", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			let releaseTeamMutation: () => void = () => undefined;
 			const teamMutationGate = new Promise<void>((resolve) => {
 				releaseTeamMutation = resolve;
@@ -14840,7 +14840,7 @@ describe("viewer-server", () => {
 		});
 
 		it("acquires recipient-edge Team serializers in stable identity order", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			let releaseLastTeam: () => void = () => undefined;
 			const lastTeamGate = new Promise<void>((resolve) => {
 				releaseLastTeam = resolve;
@@ -14899,7 +14899,7 @@ describe("viewer-server", () => {
 		});
 
 		it("returns retryable 503 when recipient-policy commit cannot acquire the write lock", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			let competing: InstanceType<typeof Database> | null = null;
 			try {
 				const store = ensureStore();
@@ -14964,7 +14964,7 @@ describe("viewer-server", () => {
 		});
 
 		it("returns searchable project inventory for the Projects screen", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
@@ -15078,7 +15078,7 @@ describe("viewer-server", () => {
 		});
 
 		it("preflights bulk project mappings before writing any mappings", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -15242,7 +15242,7 @@ describe("viewer-server", () => {
 		});
 
 		it("requires confirmation before saving risky Sharing domain mappings", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -15335,7 +15335,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects bulk project mappings before writing any partial updates", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -15377,7 +15377,7 @@ describe("viewer-server", () => {
 		});
 
 		it("blocks unmapped projects from non-local Sharing domain assignment", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const now = new Date().toISOString();
@@ -15449,7 +15449,7 @@ describe("viewer-server", () => {
 		});
 
 		it("requires confirmation before reassigning an existing project mapping", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				const store = ensureStore();
 				const sessionId = insertTestSession(store.db);
@@ -21446,7 +21446,7 @@ describe("repository Project cleanup inference", () => {
 
 describe("legacy shared review repository inference", () => {
 	it("groups and reassigns historical cwd-only repository memories", async () => {
-		const { app, ensureStore, cleanup } = createTestApp();
+		const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
 		try {
 			const store = ensureStore();
 			const now = new Date().toISOString();
@@ -21712,6 +21712,357 @@ describe("Team setup refuses some new names", () => {
 
 			expect(response.status).toBe(400);
 			expect(people()).toEqual(["Alex Rivera"]);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+/** createTestApp options for a ready device that holds the coordinator admin secret. */
+const ADMIN_APP = { readCoordinatorConfig: adminCoordinatorConfig };
+
+function adminCoordinatorConfig() {
+	return core.readCoordinatorSyncConfig({
+		sync_coordinator_url: "https://coord.example.test",
+		sync_coordinator_groups: ["group-admin"],
+		sync_coordinator_admin_secret: "fixture-admin-secret",
+	});
+}
+
+describe("Project mapping changes need a device with the admin secret", () => {
+	const memberConfig = () =>
+		core.readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+		});
+	const send = (
+		app: ReturnType<typeof createTestApp>["app"],
+		method: string,
+		path: string,
+		body?: unknown,
+	) =>
+		app.request(path, {
+			method,
+			headers: { "Content-Type": "application/json" },
+			...(body === undefined ? {} : { body: JSON.stringify(body) }),
+		});
+
+	it.each([
+		[
+			"PUT",
+			"/api/sync/sharing-domains/project-mappings",
+			{ project_pattern: "git:x", scope_id: "scope-team" },
+		],
+		[
+			"PUT",
+			"/api/sync/sharing-domains/project-mappings/bulk",
+			{
+				mappings: [
+					{ project_pattern: "git:x", scope_id: "local-default" },
+					{ project_pattern: "git:y", scope_id: "scope-team" },
+				],
+			},
+		],
+		["DELETE", "/api/sync/sharing-domains/project-mappings/1", undefined],
+	])("refuses %s %s on a device without the admin secret", async (method, path, body) => {
+		const { app, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const response = await send(app, method, path, body);
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "access_change_needs_admin_device" });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it.each([
+		[
+			"/api/sync/sharing-domains/project-mappings",
+			{ project_pattern: "git:x", scope_id: "local-default" },
+		],
+		[
+			"/api/sync/sharing-domains/project-mappings/bulk",
+			{ mappings: [{ project_pattern: "git:x", scope_id: "local-default" }] },
+		],
+	])("lets any device move a Project to local-only through %s", async (path, body) => {
+		const { app, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const response = await send(app, "PUT", path, body);
+
+			expect(response.status).not.toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("Project mapping saves that only look local", () => {
+	const memberConfig = () =>
+		core.readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+		});
+	const put = (app: ReturnType<typeof createTestApp>["app"], path: string, body: unknown) =>
+		app.request(path, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	it.each([
+		["an empty mappings list", { project_pattern: "git:x", scope_id: "scope-team", mappings: [] }],
+		[
+			"a local-only mappings list",
+			{
+				project_pattern: "git:x",
+				scope_id: "scope-team",
+				mappings: [{ project_pattern: "git:x", scope_id: "local-default" }],
+			},
+		],
+	])("checks the single-save target even with %s", async (_label, body) => {
+		const { app, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const response = await put(app, "/api/sync/sharing-domains/project-mappings", body);
+
+			expect(response.status).toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("rechecks a save that a concurrent save made stale", async () => {
+		// Arrange: the next mapping ID is predictable, so a second request can target it.
+		const { app, cleanup, ensureStore } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const db = ensureStore().db;
+			const nextId =
+				Number(
+					db.prepare("SELECT COALESCE(MAX(id), 0) FROM project_scope_mappings").pluck().get(),
+				) + 1;
+
+			// Act: both pass the gate while mapping nextId does not exist yet.
+			const [first, second] = await Promise.all([
+				put(app, "/api/sync/sharing-domains/project-mappings", {
+					workspace_identity: "git:b",
+					project_pattern: "git:b",
+					scope_id: "local-default",
+				}),
+				put(app, "/api/sync/sharing-domains/project-mappings", {
+					id: nextId,
+					workspace_identity: "git:a",
+					project_pattern: "git:a",
+					scope_id: "local-default",
+				}),
+			]);
+
+			// Assert: the first pin stays on Project B.
+			expect(first.status).toBe(200);
+			expect(second.status).not.toBe(200);
+			expect(
+				db
+					.prepare("SELECT workspace_identity FROM project_scope_mappings WHERE id = ?")
+					.pluck()
+					.get(nextId),
+			).toBe("git:b");
+		} finally {
+			cleanup();
+		}
+	});
+
+	it.each([
+		["pattern", { project_pattern: "git:other" }],
+		["priority", { priority: -5 }],
+	])("refuses re-pointing an existing local mapping's %s", async (_label, change) => {
+		// Arrange: a local-only pin that could expose its Project if moved.
+		const { app, cleanup, ensureStore } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const now = "2026-11-18T00:00:00.000Z";
+			const id = Number(
+				ensureStore()
+					.db.prepare(
+						`INSERT INTO project_scope_mappings(
+						 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+						 ) VALUES ('git:x', 'git:x', 'local-default', 10, 'user', ?, ?)`,
+					)
+					.run(now, now).lastInsertRowid,
+			);
+
+			// Act
+			const response = await put(app, "/api/sync/sharing-domains/project-mappings", {
+				id,
+				workspace_identity: "git:x",
+				project_pattern: "git:x",
+				scope_id: "local-default",
+				priority: 10,
+				...change,
+			});
+
+			// Assert
+			expect(response.status).toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("recipient access changes need a device with the admin secret", () => {
+	const routes = [
+		"/api/sync/recipient-policy/v1/edges/commit",
+		"/api/sync/recipient-policy/v1/review/resolve",
+		"/api/sync/recipient-policy/v1/review/resolve-bulk",
+		"/api/sync/recipient-policy/v1/migrate",
+		"/api/sync/legacy-shared-review/reassign",
+	];
+	const memberConfig = () =>
+		core.readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+		});
+
+	it.each(routes)("refuses %s on a device without the admin secret", async (route) => {
+		const { app, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const response = await app.request(route, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ version: 1 }),
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "access_change_needs_admin_device" });
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("still lets any device run a dry-run migration", async () => {
+		const { app, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const response = await app.request("/api/sync/recipient-policy/v1/migrate", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ dryRun: true }),
+			});
+
+			expect(response.status).not.toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it.each(routes)("checks the request itself on an admin device for %s", async (route) => {
+		const { app, cleanup } = createTestApp(ADMIN_APP);
+		try {
+			const response = await app.request(route, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ version: 1 }),
+			});
+
+			expect(response.status).not.toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("Local-only saves to an existing mapping on a device without the admin secret", () => {
+	const memberConfig = () =>
+		core.readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+		});
+	const path = "/api/sync/sharing-domains/project-mappings";
+	const put = (app: ReturnType<typeof createTestApp>["app"], body: unknown) =>
+		app.request(path, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	/** A shared mapping as stored, and its ID. */
+	function seedSharedMapping(
+		store: MemoryStore,
+		workspaceIdentity: string,
+		pattern: string,
+	): number {
+		const now = new Date().toISOString();
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at)
+				 VALUES ('scope-team', 'Team', 'team', 'coordinator', 1, 'active', ?, ?)`,
+			)
+			.run(now, now);
+		return Number(
+			store.db
+				.prepare(
+					`INSERT INTO project_scope_mappings(workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at)
+					 VALUES (?, ?, 'scope-team', 0, 'user', ?, ?)`,
+				)
+				.run(workspaceIdentity, pattern, now, now).lastInsertRowid,
+		);
+	}
+
+	/** The Projects tab's save for an existing mapping, then its confirmation. */
+	async function saveLocalOnly(app: ReturnType<typeof createTestApp>["app"], id: number) {
+		const challenge = await put(app, { id, scope_id: "local-default" });
+		const { required_guardrail_tokens: tokens } = (await challenge.json()) as {
+			required_guardrail_tokens: string[];
+		};
+		return put(app, { id, scope_id: "local-default", confirmed_guardrail_tokens: tokens });
+	}
+
+	function storedMapping(store: MemoryStore, id: number) {
+		return store.db
+			.prepare(
+				"SELECT workspace_identity, project_pattern, scope_id FROM project_scope_mappings WHERE id = ?",
+			)
+			.get(id);
+	}
+
+	it("keeps a pattern that differs from the Project's name", async () => {
+		const { app, ensureStore, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const store = ensureStore();
+			const id = seedSharedMapping(store, "git:example/api", "old-api-name");
+
+			const saved = await saveLocalOnly(app, id);
+
+			expect(saved.status).toBe(200);
+			expect(storedMapping(store, id)).toEqual({
+				workspace_identity: "git:example/api",
+				project_pattern: "old-api-name",
+				scope_id: "local-default",
+			});
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("keeps a cwd identity after the Project gained a repository identity", async () => {
+		const { app, ensureStore, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			// Arrange: stored under the cwd; the inventory now names the Project by its repository.
+			const store = ensureStore();
+			const id = seedSharedMapping(store, "/work/acme/service", "/work/acme/service");
+
+			// Act: restating the repository identity re-points the mapping, which needs the admin device.
+			const repointed = await put(app, {
+				id,
+				workspace_identity: "https://github.com/acme/service.git",
+				scope_id: "local-default",
+			});
+			const saved = await saveLocalOnly(app, id);
+
+			// Assert
+			expect(repointed.status).toBe(403);
+			expect(saved.status).toBe(200);
+			expect(storedMapping(store, id)).toEqual({
+				workspace_identity: "/work/acme/service",
+				project_pattern: "/work/acme/service",
+				scope_id: "local-default",
+			});
 		} finally {
 			cleanup();
 		}

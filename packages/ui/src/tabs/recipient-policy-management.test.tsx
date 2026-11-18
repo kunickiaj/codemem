@@ -183,7 +183,12 @@ function mount(
 ) {
 	const element = document.getElementById("mount");
 	if (!element) throw new Error("mount missing");
-	act(() => mountRecipientPolicyManagement(element, projectInventory, graph, options));
+	act(() =>
+		mountRecipientPolicyManagement(element, projectInventory, graph, {
+			accessChangesAllowed: true,
+			...options,
+		}),
+	);
 }
 
 function checkbox(label: string): HTMLInputElement {
@@ -1543,6 +1548,63 @@ describe("recipient policy management dialog", () => {
 		expect(document.body.textContent).not.toContain("already present");
 		expect(document.querySelector(".recipient-policy-management-result summary")?.textContent).toBe(
 			"Technical details",
+		);
+	});
+});
+
+describe("recipient access on a device without the admin secret", () => {
+	const READ_ONLY =
+		"Only a device that holds the coordinator admin secret can change who receives Projects. You can see current access here. Make changes on that device.";
+
+	it("shows current access but disables every change", () => {
+		// Arrange
+		mount(intent(), { accessChangesAllowed: false });
+
+		// Act
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-manage", projectId: "git:codemem" });
+		});
+
+		// Assert
+		expect(document.body.textContent).toContain(READ_ONLY);
+		expect(document.body.textContent).toContain("Current access, as this device last saw it.");
+		expect(checkbox("ExampleCo").disabled).toBe(true);
+		expect(actionButton("Review changes").disabled).toBe(true);
+	});
+
+	it("doesn't claim to show current access in an additions-only dialog", () => {
+		mount(intent(), { accessChangesAllowed: false });
+
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:api"] });
+		});
+
+		expect(document.body.textContent).toContain(
+			"Only a device that holds the coordinator admin secret can change who receives Projects. Make changes on that device.",
+		);
+		expect(document.body.textContent).not.toContain("current access");
+		expect(document.body.textContent).not.toContain("Current access");
+		expect(checkbox("ExampleCo").disabled).toBe(true);
+	});
+
+	it("explains a save the server refuses for that reason", async () => {
+		// Arrange: access looked available, but the server says otherwise.
+		vi.mocked(api.commitRecipientPolicyEdges).mockRejectedValue(
+			new Error("access_change_needs_admin_device"),
+		);
+		mount();
+		act(() => {
+			openRecipientPolicyManagement({ mode: "project-add", projectIds: ["git:api"] });
+		});
+		act(() => checkbox("ExampleCo").click());
+		await reviewSelection();
+
+		// Act
+		await confirmChanges();
+
+		// Assert
+		expect(document.body.textContent).toContain(
+			READ_ONLY.replace(" You can see current access here.", " Nothing changed."),
 		);
 	});
 });

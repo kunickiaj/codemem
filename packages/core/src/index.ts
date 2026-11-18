@@ -1075,6 +1075,7 @@ export {
 	listProjectScopeInventory,
 	listProjectScopeSettingsMappings,
 	listSharingDomainSettingsScopes,
+	projectScopeMappingSavesOnlyNarrow,
 	reassignProjectScopeInventoryProject,
 	upsertProjectScopeSettingsMapping,
 	upsertProjectScopeSettingsMappings,

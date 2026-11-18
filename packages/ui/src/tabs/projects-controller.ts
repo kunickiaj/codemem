@@ -329,10 +329,12 @@ async function refreshProjectCoordinatorGroupNames(): Promise<void> {
 				? (payload as typeof state.lastCoordinatorAdminStatus)
 				: null;
 	} catch {
+		setProjectAccessChangesAllowed(false);
 		state.lastProjectCoordinatorAdminGroups = [];
 		coordinatorGroupNamesCurrent = false;
 		return;
 	}
+	setProjectAccessChangesAllowed(status?.readiness === "ready" && status.has_admin_secret === true);
 	if (status?.readiness !== "ready" || !status.has_admin_secret) {
 		state.lastProjectCoordinatorAdminGroups = [];
 		coordinatorGroupNamesCurrent = false;
@@ -397,6 +399,23 @@ function groupedAssignableScopes(): Array<{
 	return [...groups.entries()].map(([key, group]) => ({ key, ...group }));
 }
 
+/**
+ * Which mapping a save writes. An existing mapping is named by its ID alone and
+ * keeps what it matches, its pattern and workspace identity, because a Space
+ * change shouldn't re-point it and a device without the admin secret may only
+ * narrow. Its stored identity can differ from the inventory's: a mapping saved
+ * under a cwd still matches once the Project has a repository identity. A new
+ * mapping matches the Project's identity and name.
+ */
+function mappingTarget(project: ProjectScopeInventoryProject) {
+	if (project.mapping_id && project.resolution_reason === "exact_mapping")
+		return { id: project.mapping_id };
+	return {
+		project_pattern: project.display_project,
+		workspace_identity: project.workspace_identity,
+	};
+}
+
 async function saveProjectMapping(
 	project: ProjectScopeInventoryProject,
 	scopeId: string,
@@ -404,15 +423,11 @@ async function saveProjectMapping(
 ) {
 	try {
 		await api.saveSharingDomainProjectMapping({
-			...(project.mapping_id && project.resolution_reason === "exact_mapping"
-				? { id: project.mapping_id }
-				: {}),
+			...mappingTarget(project),
 			...(confirmedGuardrailTokens.length > 0
 				? { confirmed_guardrail_tokens: confirmedGuardrailTokens }
 				: {}),
-			project_pattern: project.display_project,
 			scope_id: scopeId,
-			workspace_identity: project.workspace_identity,
 		});
 		pendingConfirmations.delete(project.workspace_identity);
 		draftDomainSelections.delete(project.workspace_identity);
@@ -431,10 +446,7 @@ async function saveProjectMapping(
 			refreshProjects?.();
 			return;
 		}
-		showGlobalNotice(
-			error instanceof Error ? error.message : "Unable to update project Space.",
-			"warning",
-		);
+		showGlobalNotice(mappingErrorMessage(error, "Unable to update project Space."), "warning");
 	}
 }
 
@@ -447,12 +459,8 @@ async function saveProjectClusterMapping(
 	try {
 		await api.saveSharingDomainProjectMappings({
 			mappings: assignable.map((project) => ({
-				...(project.mapping_id && project.resolution_reason === "exact_mapping"
-					? { id: project.mapping_id }
-					: {}),
-				project_pattern: project.display_project,
+				...mappingTarget(project),
 				scope_id: scopeId,
-				workspace_identity: project.workspace_identity,
 			})),
 		});
 		showGlobalNotice(
@@ -470,7 +478,7 @@ function projectClusterMappingError(error: unknown): string {
 	if (error instanceof api.SharingDomainGuardrailConfirmationError) {
 		return "One or more identities in this group need review before bulk assignment. Expand the group and save those identities directly.";
 	}
-	if (error instanceof Error) return error.message;
+	if (error instanceof Error) return mappingErrorMessage(error, error.message);
 	return "Unable to update project Spaces.";
 }
 
@@ -498,7 +506,7 @@ async function removeProjectMapping(project: ProjectScopeInventoryProject) {
 		}
 		pendingRemovalConfirmations.delete(project.mapping_id);
 		showGlobalNotice(
-			error instanceof Error ? error.message : "Unable to remove project Space assignment.",
+			mappingErrorMessage(error, "Unable to remove project Space assignment."),
 			"warning",
 		);
 	}
@@ -856,13 +864,33 @@ function projectsInventoryViewModel(): ProjectsInventoryViewModel {
 			total: latestInventoryResult.total,
 			hasMore: latestInventoryResult.has_more,
 		},
-		scopeGroups: groupedAssignableScopes().map((group) => ({
-			key: group.key,
-			label: group.label,
-			scopes: [...group.scopes],
-		})),
+		accessChangesAllowed: projectAccessChangesAllowed,
+		scopeGroups: offeredScopeGroups(),
 		statusOptions: STATUS_OPTIONS.map(([value, label]) => ({ label, value })),
 	};
+}
+
+/** Without access, a Project can only be kept local-only, which narrows who receives it. */
+function offeredScopeGroups(): ProjectsInventoryViewModel["scopeGroups"] {
+	return groupedAssignableScopes()
+		.map((group) => ({
+			key: group.key,
+			label: group.label,
+			scopes: group.scopes.filter(
+				(scope) => projectAccessChangesAllowed || scope.scope_id === "local-default",
+			),
+		}))
+		.filter((group) => group.scopes.length > 0);
+}
+
+const ACCESS_CHANGE_REFUSED =
+	"Only a device that holds the coordinator admin secret can share this Project more widely. Nothing changed. Make the change on that device, or keep the Project local-only here.";
+
+function mappingErrorMessage(error: unknown, fallback: string): string {
+	if (!(error instanceof Error)) return fallback;
+	return error.message === "access_change_needs_admin_device"
+		? ACCESS_CHANGE_REFUSED
+		: error.message;
 }
 
 function hideProjectInventorySkeleton() {
@@ -993,6 +1021,16 @@ function loadProjectInventoryPage(
 	});
 }
 
+/** Whether this device can change who receives Projects; false until the coordinator status is read. */
+let projectAccessChangesAllowed = false;
+let lastProjectManagementMount: Parameters<typeof mountProjectRecipientManagement> | null = null;
+
+function setProjectAccessChangesAllowed(allowed: boolean): void {
+	if (allowed === projectAccessChangesAllowed) return;
+	projectAccessChangesAllowed = allowed;
+	if (lastProjectManagementMount) mountProjectRecipientManagement(...lastProjectManagementMount);
+}
+
 function mountProjectRecipientManagement(
 	projects: ProjectScopeInventoryProject[],
 	intent: RecipientPolicyIntentGraphV1,
@@ -1000,7 +1038,9 @@ function mountProjectRecipientManagement(
 ) {
 	const mount = el<HTMLDivElement>("recipientPolicyManagementMount");
 	if (!mount) return;
+	lastProjectManagementMount = [projects, intent, loadError];
 	mountRecipientPolicyManagement(mount, toRecipientPolicyManagementProjects(projects), intent, {
+		accessChangesAllowed: projectAccessChangesAllowed,
 		loadError,
 		onCommitted: (result) => {
 			if (result.status === "applied") selectedProjectIds.clear();
