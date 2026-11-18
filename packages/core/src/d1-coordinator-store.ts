@@ -107,7 +107,10 @@ import {
 } from "./coordinator-bootstrap-grant-issuance.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
+	type CoordinatorRemoveEnrollmentInput,
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+	type DeviceRemovalBackend,
+	DeviceRemovalOperations,
 	enrollmentKeyIdColumn,
 	enrollmentKeyIdSql,
 	inviteInsertSql,
@@ -1531,6 +1534,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly accountOwnerTarget: AccountOwnerTargetOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
+	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1538,22 +1542,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	constructor(db: D1DatabaseLike, options: CoordinatorAuthLinkOptions = {}) {
 		this.db = db;
-		this.deviceRevocations = new DeviceRevocationOperations(
-			{
-				all: (statement) =>
-					db
-						.prepare(statement.sql)
-						.bind(...statement.values)
-						.all(),
-				batch: async (statements) => {
-					if (!db.batch) throw new Error("device_revocation_atomic_batch_required");
-					return db.batch(
-						statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
-					);
-				},
+		const ledgerBackend: DeviceRemovalBackend = {
+			all: (statement) =>
+				db
+					.prepare(statement.sql)
+					.bind(...statement.values)
+					.all(),
+			batch: async (statements) => {
+				if (!db.batch) throw new Error("device_revocation_atomic_batch_required");
+				return db.batch(
+					statements.map((statement) => db.prepare(statement.sql).bind(...statement.values)),
+				);
 			},
-			options.authClock,
-		);
+		};
+		this.deviceRevocations = new DeviceRevocationOperations(ledgerBackend, options.authClock);
+		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
@@ -2407,6 +2410,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		// The enrolled_devices delete is the last statement; its changes() tells us
 		// whether the device existed, preserving the boolean return contract.
 		return batchResultChanges(results[2]) > 0;
+	}
+
+	/**
+	 * Single-group removal in one atomic batch: the tombstone first, then the
+	 * presence row, reciprocal approvals, and the enrollment, each only when this
+	 * batch wrote the tombstone. removeDevice does not use it yet.
+	 */
+	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
+		return this.deviceRemovals.removeEnrollment(input);
+	}
+
+	/** Bounded, so an operator route can call it until nothing remains. */
+	async fillEnrollmentKeyIds(options?: { limit?: number }) {
+		return this.deviceRemovals.fillEnrollmentKeyIds(options);
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {

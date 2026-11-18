@@ -154,14 +154,21 @@ import {
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
+	type CoordinatorRemoveEnrollmentInput,
 	DEVICE_REMOVAL_COLUMNS,
+	DEVICE_REMOVAL_FILL_MAX_LIMIT,
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
 	DEVICE_REMOVAL_SCHEMA_SQL,
+	type DeviceRemovalBackend,
+	DeviceRemovalOperations,
+	ENROLLMENT_KEY_ID_FILL_SQL,
+	ENROLLMENT_KEY_ID_UNFILLED_SQL,
 	enrollmentKeyIdColumn,
 	enrollmentKeyIdSql,
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
 	type RemovalColumnSql,
+	type UnfilledEnrollmentKey,
 } from "./coordinator-device-removal.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -746,6 +753,35 @@ function initializeDeviceRemovalSchema(db: DatabaseType): void {
 			db.exec(DEVICE_REMOVAL_SCHEMA_SQL);
 		}).immediate();
 	}
+	fillEnrollmentKeyIdsSync(db);
+}
+
+/**
+ * Rows written before the column existed, or by an older release since. A row
+ * that cannot be filled stays unfilled, and removal stays unavailable, so that
+ * opening the database never fails here.
+ */
+function fillEnrollmentKeyIdsSync(db: DatabaseType): void {
+	const unfilled = db.prepare(ENROLLMENT_KEY_ID_UNFILLED_SQL);
+	if (unfilled.all(1).length === 0) return;
+	try {
+		db.transaction(() => {
+			const fill = db.prepare(ENROLLMENT_KEY_ID_FILL_SQL);
+			for (;;) {
+				const rows = unfilled.all(DEVICE_REMOVAL_FILL_MAX_LIMIT) as UnfilledEnrollmentKey[];
+				if (rows.length === 0) return;
+				const json = JSON.stringify(
+					rows.map((row) => ({
+						...row,
+						key_id: enrollmentKeyIdColumn(enrollmentRevocationKeyId(row.public_key)),
+					})),
+				);
+				if (fill.run(json, json).changes !== rows.length) return;
+			}
+		}).immediate();
+	} catch {
+		// Left unfilled; see above.
+	}
 }
 
 /**
@@ -1092,6 +1128,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private readonly accountLinkStatus: AccountLinkStatusOperations;
 	private readonly accountOwnerTarget: AccountOwnerTargetOperations;
 	private readonly deviceRevocations: DeviceRevocationOperations;
+	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
@@ -1103,24 +1140,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	) {
 		this.path = path ?? DEFAULT_COORDINATOR_DB_PATH;
 		this.db = connectCoordinator(this.path, options);
-		this.deviceRevocations = new DeviceRevocationOperations(
-			{
-				all: async (statement) => ({
-					results: this.db.prepare(statement.sql).all(...statement.values),
-				}),
-				batch: async (statements) =>
-					this.db
-						.transaction(() =>
-							statements.map((statement) => {
-								const prepared = this.db.prepare(statement.sql);
-								if (statement.read) return { results: prepared.all(...statement.values) };
-								return { meta: { changes: prepared.run(...statement.values).changes } };
-							}),
-						)
-						.immediate(),
-			},
-			options.authClock,
-		);
+		const ledgerBackend: DeviceRemovalBackend = {
+			all: async (statement) => ({
+				results: this.db.prepare(statement.sql).all(...statement.values),
+			}),
+			batch: async (statements) =>
+				this.db
+					.transaction(() =>
+						statements.map((statement) => {
+							const prepared = this.db.prepare(statement.sql);
+							if (statement.read) return { results: prepared.all(...statement.values) };
+							return { meta: { changes: prepared.run(...statement.values).changes } };
+						}),
+					)
+					.immediate(),
+		};
+		this.deviceRevocations = new DeviceRevocationOperations(ledgerBackend, options.authClock);
+		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);
 		this.assertAuthSchemaReady = () => assertCoordinatorAuthSchema(rawAuthBackend);
 		this.schemaBackend = rawAuthBackend;
@@ -1983,6 +2019,18 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			return result.changes > 0;
 		});
 		return removeAll();
+	}
+
+	/**
+	 * Single-group removal that writes the tombstone before it deletes the enrollment
+	 * and its rows. removeDevice does not use it yet.
+	 */
+	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
+		return this.deviceRemovals.removeEnrollment(input);
+	}
+
+	async fillEnrollmentKeyIds(options?: { limit?: number }) {
+		return this.deviceRemovals.fillEnrollmentKeyIds(options);
 	}
 
 	async recordNonce(deviceId: string, nonce: string, createdAt: string): Promise<boolean> {
