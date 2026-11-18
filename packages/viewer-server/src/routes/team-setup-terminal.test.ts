@@ -130,6 +130,123 @@ async function readyDraftThroughSummary(
 	});
 }
 
+/**
+ * A completed Team whose setup-owned Project recipient was later deleted, plus a
+ * newer review attempt. Opening Team setup repairs that recipient.
+ */
+async function completedTeamMissingItsRecipient(
+	store: MemoryStore,
+	app: ReturnType<typeof teamSetupRoutes>,
+) {
+	const projectIdentity = "https://example.test/terminal-project.git";
+	store.db
+		.prepare(
+			`INSERT INTO replication_scopes(
+				 scope_id, label, kind, authority_type, coordinator_id, group_id,
+				 membership_epoch, status, created_at, updated_at
+				 ) VALUES ('scope-terminal', 'Terminal', 'team', 'coordinator', ?, ?, 1,
+				 'active', ?, ?)`,
+		)
+		.run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	const sessionId = Number(
+		store.db
+			.prepare(
+				`INSERT INTO sessions(started_at, project, git_remote)
+					 VALUES (?, 'terminal-project', ?)`,
+			)
+			.run(NOW, projectIdentity).lastInsertRowid,
+	);
+	store.db
+		.prepare(
+			`INSERT INTO memory_items(
+				 session_id, kind, title, body_text, active, created_at, updated_at,
+				 visibility, project, scope_id
+				 ) VALUES (?, 'discovery', 'Terminal Project', 'body', 1, ?, ?, 'shared',
+				 'terminal-project', 'scope-terminal')`,
+		)
+		.run(sessionId, NOW, NOW);
+	store.db
+		.prepare(
+			`INSERT INTO project_scope_mappings(
+				 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
+				 ) VALUES (?, ?, 'scope-terminal', 1000, 'reviewed_team_setup', ?, ?)`,
+		)
+		.run(projectIdentity, projectIdentity, NOW, NOW);
+	expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
+	let completed = getLegacyTeamSetupDraft(store.db, CANDIDATE_REF);
+	if (!completed) throw new Error("initial Team setup draft missing");
+	expect(
+		store.db
+			.prepare(
+				`SELECT source_project_identity, resolved_project_identity, target_scope_id
+					 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
+			)
+			.get(completed.attemptId),
+	).toEqual({
+		source_project_identity: projectIdentity,
+		resolved_project_identity: projectIdentity,
+		target_scope_id: "scope-terminal",
+	});
+	store.db
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+				 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
+		)
+		.run(NOW, NOW);
+	const device = completed.devices[0];
+	if (!device) throw new Error("initial Team setup device missing");
+	completed = setLegacyTeamSetupDeviceAssignment(store.db, {
+		attemptId: completed.attemptId,
+		deviceRef: device.deviceRef,
+		targetIdentityId: "identity-a",
+		expectation: device.expectation,
+		now: NOW,
+	});
+	completed = setLegacyTeamSetupDeviceDecision(store.db, {
+		attemptId: completed.attemptId,
+		deviceRef: device.deviceRef,
+		decision: "included",
+		now: NOW,
+	});
+	const review = inspectLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: completed.attemptId,
+	});
+	const completion = await finishLegacyTeamSetupActivation(store.db, {
+		candidateRef: CANDIDATE_REF,
+		attemptId: completed.attemptId,
+		finishDigest: review.finishDigest,
+		confirmedAccessDeltaDigest: review.accessDeltaDigest,
+		loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
+		loadProjectInventory: () =>
+			legacyTeamCandidateProjectInventory(
+				store.db,
+				{ localActorId: store.actorId, localDeviceId: store.deviceId },
+				CANDIDATE_REF,
+			),
+		validateLockedPreview: () => true,
+		now: NOW,
+	});
+	const teamId = completion.teamId;
+	store.db
+		.prepare(
+			`DELETE FROM project_recipients
+				 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+		)
+		.run(projectIdentity, teamId);
+	const newerAttemptId = "legacy-team-attempt:00000000-0000-4000-8000-000000000099";
+	store.db
+		.prepare(
+			`INSERT INTO legacy_team_setup_drafts(
+				 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
+				 roster_fingerprint, projection_fingerprint, created_at, updated_at
+				 ) VALUES (?, ?, ?, ?, 'needs_setup', 'Migration Team', 'new-roster',
+				 'new-projection', ?, ?)`,
+		)
+		.run(newerAttemptId, CANDIDATE_REF, COORDINATOR_ID, GROUP_ID, NOW, NOW);
+	return { projectIdentity, teamId, newerAttemptId };
+}
+
 describe("Team setup terminal migration routing", () => {
 	it("publishes before activating the immutable winner", async () => {
 		const store = new MemoryStore(":memory:");
@@ -2313,6 +2430,8 @@ describe("Team setup terminal migration routing", () => {
 		const app = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			// Reopening a completed Team is discovery of it, which needs the admin device.
+			readCoordinatorConfig: completionConfig().readConfig,
 			completionDependencies: null,
 		});
 		try {
@@ -2378,115 +2497,15 @@ describe("Team setup terminal migration routing", () => {
 		const app = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			// Repairing a completed Team's recipients needs a device that could finish setup.
+			readCoordinatorConfig: completionConfig().readConfig,
 			completionDependencies: null,
 		});
 		try {
-			const projectIdentity = "https://example.test/terminal-project.git";
-			store.db
-				.prepare(
-					`INSERT INTO replication_scopes(
-					 scope_id, label, kind, authority_type, coordinator_id, group_id,
-					 membership_epoch, status, created_at, updated_at
-					 ) VALUES ('scope-terminal', 'Terminal', 'team', 'coordinator', ?, ?, 1,
-					 'active', ?, ?)`,
-				)
-				.run(COORDINATOR_ID, GROUP_ID, NOW, NOW);
-			const sessionId = Number(
-				store.db
-					.prepare(
-						`INSERT INTO sessions(started_at, project, git_remote)
-						 VALUES (?, 'terminal-project', ?)`,
-					)
-					.run(NOW, projectIdentity).lastInsertRowid,
+			const { projectIdentity, teamId, newerAttemptId } = await completedTeamMissingItsRecipient(
+				store,
+				app,
 			);
-			store.db
-				.prepare(
-					`INSERT INTO memory_items(
-					 session_id, kind, title, body_text, active, created_at, updated_at,
-					 visibility, project, scope_id
-					 ) VALUES (?, 'discovery', 'Terminal Project', 'body', 1, ?, ?, 'shared',
-					 'terminal-project', 'scope-terminal')`,
-				)
-				.run(sessionId, NOW, NOW);
-			store.db
-				.prepare(
-					`INSERT INTO project_scope_mappings(
-					 workspace_identity, project_pattern, scope_id, priority, source, created_at, updated_at
-					 ) VALUES (?, ?, 'scope-terminal', 1000, 'reviewed_team_setup', ?, ?)`,
-				)
-				.run(projectIdentity, projectIdentity, NOW, NOW);
-			expect((await app.request("/api/sync/team-setup/v1")).status).toBe(200);
-			let completed = getLegacyTeamSetupDraft(store.db, CANDIDATE_REF);
-			if (!completed) throw new Error("initial Team setup draft missing");
-			expect(
-				store.db
-					.prepare(
-						`SELECT source_project_identity, resolved_project_identity, target_scope_id
-						 FROM legacy_team_setup_draft_projects WHERE attempt_id = ?`,
-					)
-					.get(completed.attemptId),
-			).toEqual({
-				source_project_identity: projectIdentity,
-				resolved_project_identity: projectIdentity,
-				target_scope_id: "scope-terminal",
-			});
-			store.db
-				.prepare(
-					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
-					 VALUES ('identity-a', 'Person A', 0, 'active', ?, ?)`,
-				)
-				.run(NOW, NOW);
-			const device = completed.devices[0];
-			if (!device) throw new Error("initial Team setup device missing");
-			completed = setLegacyTeamSetupDeviceAssignment(store.db, {
-				attemptId: completed.attemptId,
-				deviceRef: device.deviceRef,
-				targetIdentityId: "identity-a",
-				expectation: device.expectation,
-				now: NOW,
-			});
-			completed = setLegacyTeamSetupDeviceDecision(store.db, {
-				attemptId: completed.attemptId,
-				deviceRef: device.deviceRef,
-				decision: "included",
-				now: NOW,
-			});
-			const review = inspectLegacyTeamSetupActivation(store.db, {
-				candidateRef: CANDIDATE_REF,
-				attemptId: completed.attemptId,
-			});
-			const completion = await finishLegacyTeamSetupActivation(store.db, {
-				candidateRef: CANDIDATE_REF,
-				attemptId: completed.attemptId,
-				finishDigest: review.finishDigest,
-				confirmedAccessDeltaDigest: review.accessDeltaDigest,
-				loadFreshRoster: async () => SNAPSHOTS[0]?.devices ?? [],
-				loadProjectInventory: () =>
-					legacyTeamCandidateProjectInventory(
-						store.db,
-						{ localActorId: store.actorId, localDeviceId: store.deviceId },
-						CANDIDATE_REF,
-					),
-				validateLockedPreview: () => true,
-				now: NOW,
-			});
-			const teamId = completion.teamId;
-			store.db
-				.prepare(
-					`DELETE FROM project_recipients
-					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
-				)
-				.run(projectIdentity, teamId);
-			const newerAttemptId = "legacy-team-attempt:00000000-0000-4000-8000-000000000099";
-			store.db
-				.prepare(
-					`INSERT INTO legacy_team_setup_drafts(
-					 attempt_id, candidate_id, coordinator_id, group_id, state, display_name,
-					 roster_fingerprint, projection_fingerprint, created_at, updated_at
-					 ) VALUES (?, ?, ?, ?, 'needs_setup', 'Migration Team', 'new-roster',
-					 'new-projection', ?, ?)`,
-				)
-				.run(newerAttemptId, CANDIDATE_REF, COORDINATOR_ID, GROUP_ID, NOW, NOW);
 
 			const summary = await app.request("/api/sync/team-setup/v1");
 			expect(summary.status).toBe(200);
@@ -2501,6 +2520,39 @@ describe("Team setup terminal migration routing", () => {
 					)
 					.get(projectIdentity, teamId),
 			).toEqual({ status: "active", provenance: "reviewed_team_setup" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("repairs nothing for a completed Team on a device without the admin secret", async () => {
+		const store = new MemoryStore(":memory:");
+		const app = teamSetupRoutes({
+			getStore: () => store,
+			loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+			completionDependencies: null,
+		});
+		try {
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, app);
+			const wakesBefore = store.db
+				.prepare("SELECT COUNT(*) FROM recipient_policy_authority_states")
+				.pluck()
+				.get();
+
+			const summary = await app.request("/api/sync/team-setup/v1");
+
+			expect(summary.status).toBe(200);
+			expect(
+				store.db
+					.prepare(
+						`SELECT 1 FROM project_recipients
+						 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+					)
+					.get(projectIdentity, teamId),
+			).toBeUndefined();
+			expect(
+				store.db.prepare("SELECT COUNT(*) FROM recipient_policy_authority_states").pluck().get(),
+			).toBe(wakesBefore);
 		} finally {
 			store.close();
 		}
