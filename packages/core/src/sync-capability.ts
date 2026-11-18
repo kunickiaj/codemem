@@ -18,8 +18,11 @@ export const SYNC_FEATURES = [
 	"relay",
 	"relay_aware",
 	"peer_removal_check",
+	"project_boundary_migration_v1",
 ] as const;
 // Retirement is recognized but not advertised until snapshot and admission gates are complete.
+// `project_boundary_migration_v1` is recognized so a coordinator can read it from presence. No
+// build advertises it until the device side of the per-Project boundary migration exists.
 // `relay_aware` marks a build that reports `relay` truthfully, so a peer can tell "this device
 // runs no relay client" from "this device predates the `relay` feature". `relay` itself is
 // advertised only by a viewer that runs a relay client; see `setLocalSyncFeature`.

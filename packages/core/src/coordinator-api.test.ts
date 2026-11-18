@@ -213,6 +213,9 @@ function createMockStore(
 			},
 		),
 		listGroupPeers: vi.fn(async (_: string, __: string): Promise<CoordinatorPeerRecord[]> => []),
+		putBoundaryReadiness: vi.fn(async () => ({ kind: "unavailable" as const })),
+		getBoundaryReadiness: vi.fn(async () => null),
+		discardBoundaryReadiness: vi.fn(async () => false),
 		createBootstrapGrant: vi.fn(async () => {
 			throw new Error("not implemented");
 		}),
