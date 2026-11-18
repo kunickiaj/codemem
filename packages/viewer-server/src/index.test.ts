@@ -554,6 +554,22 @@ function fixtureMemoryOrigin(options: {
 	return "fixture-foreign-device";
 }
 
+/**
+ * A test app for the Team setup API fixtures (coordinator "localhost:8787/", group
+ * "group-alpha") on a device that could finish setup, which saving drafts needs.
+ */
+function createTeamSetupAdminApp(options: AppOptions) {
+	return createTestApp({
+		readCoordinatorConfig: () =>
+			core.readCoordinatorSyncConfig({
+				sync_coordinator_url: "localhost:8787/",
+				sync_coordinator_groups: ["group-alpha"],
+				sync_coordinator_admin_secret: "test-secret",
+			}),
+		...options,
+	});
+}
+
 function insertTestMemory(
 	store: MemoryStore,
 	options: {
@@ -3143,8 +3159,8 @@ describe("viewer-server", () => {
 		});
 
 		it("resolves an older Project choice beyond 500 newer duplicate sessions", async () => {
-			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
+				loadLegacyTeamConfiguredGroupSnapshots: snapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -3204,8 +3220,8 @@ describe("viewer-server", () => {
 		});
 
 		it("fails closed when 501 distinct Project mapping choices remain", async () => {
-			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
+				loadLegacyTeamConfiguredGroupSnapshots: snapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -3344,7 +3360,7 @@ describe("viewer-server", () => {
 						})) ?? [],
 				},
 			];
-			const { app, cleanup } = createTestApp({
+			const { app, cleanup } = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: async () => conflictingSnapshots,
 			});
 			try {
@@ -3361,8 +3377,8 @@ describe("viewer-server", () => {
 		});
 
 		it("sets an explicit ambiguous Project mapping using only opaque refs", async () => {
-			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
+				loadLegacyTeamConfiguredGroupSnapshots: snapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -3438,8 +3454,8 @@ describe("viewer-server", () => {
 		});
 
 		it("fails closed when Project mapping metadata exceeds its row budget", async () => {
-			const { app, ensureStore, cleanup } = createTestApp({
-				loadLegacyTeamConfiguredGroupSnapshots: async () => snapshots,
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
+				loadLegacyTeamConfiguredGroupSnapshots: snapshots,
 			});
 			try {
 				const store = ensureStore();
@@ -3756,7 +3772,7 @@ describe("viewer-server", () => {
 						})
 					: Promise.resolve(currentSnapshots),
 			);
-			const { app, ensureStore, cleanup } = createTestApp({
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
@@ -3825,7 +3841,7 @@ describe("viewer-server", () => {
 						})
 					: Promise.resolve(snapshots),
 			);
-			const { app, ensureStore, cleanup } = createTestApp({
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
@@ -3873,7 +3889,7 @@ describe("viewer-server", () => {
 		it("keeps an active review attempt stable across read-only summary and detail loads", async () => {
 			let currentSnapshots = snapshots;
 			const loadSnapshots = vi.fn(async () => currentSnapshots);
-			const { app, ensureStore, cleanup } = createTestApp({
+			const { app, ensureStore, cleanup } = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
@@ -3918,7 +3934,7 @@ describe("viewer-server", () => {
 
 		it("returns bounded validation, unknown-candidate, roster, and size errors", async () => {
 			const loadSnapshots = vi.fn(async () => snapshots);
-			const testApp = createTestApp({
+			const testApp = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
 			});
 			try {
@@ -4020,7 +4036,7 @@ describe("viewer-server", () => {
 				oversized.cleanup();
 			}
 
-			const directOversized = createTestApp({
+			const directOversized = createTeamSetupAdminApp({
 				loadLegacyTeamConfiguredGroupSnapshots: async (options) => {
 					if (options?.candidateRef) throw new Error("legacy_team_setup_roster_too_large");
 					return snapshots;
@@ -21156,14 +21172,14 @@ describe("viewer-server", () => {
 			}
 		});
 
-		it("reads and writes local coordinator group preferences without admin secret", async () => {
+		it("reads coordinator group preferences without the admin secret but refuses to save them", async () => {
 			const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
 			const prevConfig = process.env.CODEMEM_CONFIG;
 			const prevSecret = process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 			try {
 				process.env.CODEMEM_CONFIG = configPath;
-				// No admin secret: preferences are a local-only setting and must
-				// remain reachable without coordinator-admin privileges.
+				// No admin secret: the defaults stay readable, but they seed new pairings'
+				// Project filters and default grants, so only the admin device saves them.
 				delete process.env.CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET;
 				writeFileSync(
 					configPath,
@@ -21194,14 +21210,11 @@ describe("viewer-server", () => {
 							auto_seed_scope: false,
 						}),
 					});
-					expect(saved.status).toBe(200);
-					expect(await saved.json()).toMatchObject({
-						preferences: {
-							projects_include: ["work/*"],
-							auto_seed_scope: false,
-							default_space_scope_id: null,
-							auto_grant_default_space_on_join: false,
-						},
+					expect(saved.status).toBe(400);
+					expect(await saved.json()).toMatchObject({ error: "coordinator_admin_secret_missing" });
+					const after = await app.request("/api/coordinator/admin/groups/team-a/preferences");
+					expect(await after.json()).toMatchObject({
+						preferences: { auto_seed_scope: true, updated_at: null },
 					});
 				} finally {
 					cleanup();
@@ -22177,6 +22190,52 @@ describe("Local-only saves to an existing mapping on a device without the admin 
 			});
 		} finally {
 			cleanup();
+		}
+	});
+});
+
+describe("Coordinator group defaults need the admin secret", () => {
+	it("refuses a preferences save when the admin secret goes away while the body arrives", async () => {
+		const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+		const prevConfig = process.env.CODEMEM_CONFIG;
+		const adminConfig = {
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_group: "team-a",
+			sync_coordinator_admin_secret: "fixture-admin-secret",
+		};
+		try {
+			process.env.CODEMEM_CONFIG = configPath;
+			writeFileSync(configPath, JSON.stringify(adminConfig));
+			const { app, cleanup } = createTestApp();
+			try {
+				// The route checks before reading the body; the secret is gone by the write.
+				const encoded = new TextEncoder().encode(JSON.stringify({ auto_seed_scope: false }));
+				const body = new ReadableStream<Uint8Array>({
+					pull(controller) {
+						const { sync_coordinator_admin_secret: _removed, ...rest } = adminConfig;
+						writeFileSync(configPath, JSON.stringify(rest));
+						controller.enqueue(encoded);
+						controller.close();
+					},
+				});
+				const saved = await app.request("/api/coordinator/admin/groups/team-a/preferences", {
+					method: "PUT",
+					headers: { "Content-Type": "application/json" },
+					body,
+					duplex: "half",
+				} as RequestInit);
+				const after = await app.request("/api/coordinator/admin/groups/team-a/preferences");
+
+				expect(saved.status).toBe(400);
+				expect(await after.json()).toMatchObject({
+					preferences: { auto_seed_scope: true, updated_at: null },
+				});
+			} finally {
+				cleanup();
+			}
+		} finally {
+			if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+			else process.env.CODEMEM_CONFIG = prevConfig;
 		}
 	});
 });

@@ -641,6 +641,42 @@ function removeConfiguredCoordinatorGroup(groupId: string): string[] {
 	return nextGroups;
 }
 
+function normalizePreferenceList(value: unknown): string[] | null | undefined {
+	if (value === undefined) return undefined;
+	if (value === null) return null;
+	if (!Array.isArray(value)) return undefined;
+	const cleaned = value.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0);
+	return cleaned.length === 0 ? null : cleaned;
+}
+
+function optionalBoolean(value: unknown): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
+}
+
+/** Reads a coordinator group preferences save the way its route always has. */
+function parseGroupPreferenceInput(body: Record<string, unknown>) {
+	const autoGrantDefaultSpace = optionalBoolean(body.auto_grant_default_space_on_join);
+	const defaultSpaceScopeId =
+		body.default_space_scope_id === undefined
+			? undefined
+			: optionalViewerString(body, "default_space_scope_id");
+	if (autoGrantDefaultSpace === true && !defaultSpaceScopeId)
+		return { error: "default_space_scope_id_required_for_auto_grant" } as const;
+	return {
+		projects_include: normalizePreferenceList(body.projects_include),
+		projects_exclude: normalizePreferenceList(body.projects_exclude),
+		auto_seed_scope: optionalBoolean(body.auto_seed_scope),
+		default_space_scope_id: defaultSpaceScopeId,
+		auto_grant_default_space_on_join: autoGrantDefaultSpace,
+	};
+}
+
+/** The configured coordinator is still `coordinatorId`, and this device still holds its admin secret. */
+function sameAdminCoordinator(coordinatorId: string): boolean {
+	const status = coordinatorAdminStatusPayload(readCoordinatorSyncConfig());
+	return status.coordinator_url === coordinatorId && !coordinatorAdminUnavailable(status);
+}
+
 /**
  * Viewer coordinator actions run only against the configured coordinator with the
  * admin secret. Without a URL, the shared actions would fall back to a coordinator
@@ -9332,9 +9368,10 @@ export function syncRoutes(
 	app.put("/api/coordinator/admin/groups/:group_id/preferences", async (c) => {
 		const config = readCoordinatorSyncConfig();
 		const status = coordinatorAdminStatusPayload(config);
-		if (status.readiness === "not_configured") {
-			return c.json({ error: "coordinator_not_configured", status }, 400);
-		}
+		// These defaults seed new pairings' Project filters and default grants, so
+		// only the device with the admin secret saves them. Reading stays open.
+		const unavailable = coordinatorAdminUnavailable(status);
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 		const groupId = String(c.req.param("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id required", status }, 400);
 		const coordinatorId = status.coordinator_url;
@@ -9345,43 +9382,17 @@ export function syncRoutes(
 		} catch {
 			return c.json({ error: "invalid_json", status }, 400);
 		}
-		const normalizeList = (value: unknown): string[] | null | undefined => {
-			if (value === undefined) return undefined;
-			if (value === null) return null;
-			if (!Array.isArray(value)) return undefined;
-			const cleaned = value
-				.map((item) => String(item ?? "").trim())
-				.filter((item) => item.length > 0);
-			return cleaned.length === 0 ? null : cleaned;
-		};
-		const autoSeed = typeof body.auto_seed_scope === "boolean" ? body.auto_seed_scope : undefined;
-		const autoGrantDefaultSpace =
-			typeof body.auto_grant_default_space_on_join === "boolean"
-				? body.auto_grant_default_space_on_join
-				: undefined;
-		const defaultSpaceScopeId =
-			body.default_space_scope_id === undefined
-				? undefined
-				: optionalViewerString(body, "default_space_scope_id");
-		if (autoGrantDefaultSpace === true && !defaultSpaceScopeId) {
-			return c.json(
-				{
-					error: "default_space_scope_id_required_for_auto_grant",
-					status,
-				},
-				400,
-			);
-		}
+		const input = parseGroupPreferenceInput(body);
+		if ("error" in input) return c.json({ error: input.error, status }, 400);
+		// Reading the body waited; check again right before the synchronous write.
+		if (!sameAdminCoordinator(coordinatorId))
+			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);
 		const store = getStore();
 		try {
 			const preferences = upsertCoordinatorGroupPreference(store.db, {
 				coordinator_id: coordinatorId,
 				group_id: groupId,
-				projects_include: normalizeList(body.projects_include),
-				projects_exclude: normalizeList(body.projects_exclude),
-				auto_seed_scope: autoSeed,
-				default_space_scope_id: defaultSpaceScopeId,
-				auto_grant_default_space_on_join: autoGrantDefaultSpace,
+				...input,
 			});
 			return c.json({ preferences, status });
 		} catch (error) {

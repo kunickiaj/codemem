@@ -731,6 +731,8 @@ If a Team needs device setup, **Sharing** lists it under **Teams to finish setti
 4. In the final review, check the server-provided list of people, included and excluded devices, Project mappings, and every access change. Nothing changes while you are reviewing or saving choices.
 5. Choose **Finish Team setup** only when the review is correct. The first valid finish becomes the shared result for that Team. Codemem applies the confirmed Team, device decisions, Project mappings, and access changes together. If it cannot complete every change, it applies none.
 
+Only a device that holds the coordinator admin secret can save setup choices or finish setup, because those choices decide who receives each Project. On other devices, opening a saved setup shows that it has to be finished on the device with the admin secret, and nothing can be changed there.
+
 Setup can become stale when devices, Project mappings, or access change while you are reviewing. Refresh the Team, review the updates, and finish again; new or changed devices need a fresh decision. Your unchanged saved choices remain available for review.
 
 When you first open a saved stale review, Codemem revalidates it once so you can continue without an initial Retry click. If revalidation fails, the dialog shows the error and keeps Retry available. Reads used only to check a completed setup do not refresh the review automatically.

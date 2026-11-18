@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
@@ -1247,7 +1248,13 @@ function projectMutationAtomically<Mutation, Projection>(
 	mutate: () => Mutation,
 	project: (mutation: Mutation) => Projection,
 ): Projection {
-	return store.db.transaction(() => project(mutate())).immediate();
+	return store.db
+		.transaction(() => {
+			const mayEdit = draftEditAuthority.getStore();
+			if (mayEdit && !mayEdit()) throw new Error("team_setup_admin_required");
+			return project(mutate());
+		})
+		.immediate();
 }
 
 export const __teamSetupTestHooks = {
@@ -1521,7 +1528,8 @@ function viewerSafePreview(
 	};
 }
 
-function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 409 | 503 {
+function errorStatus(code: LegacyTeamSetupActivationErrorCode): 400 | 403 | 409 | 503 {
+	if (code === "team_setup_admin_required") return 403;
 	if (code === "team_setup_roster_unavailable" || code === "team_setup_completion_unavailable")
 		return 503;
 	if (code === "team_setup_failed") return 503;
@@ -1542,7 +1550,7 @@ function apiErrorCode(error: unknown): LegacyTeamSetupActivationErrorCode {
 function teamSetupFailure(
 	error: unknown,
 	route: string,
-): { code: LegacyTeamSetupActivationErrorCode; status: 400 | 409 | 503 } {
+): { code: LegacyTeamSetupActivationErrorCode; status: 400 | 403 | 409 | 503 } {
 	const code = apiErrorCode(error);
 	const check = legacyTeamSetupFailureCheck(error);
 	console.warn(`[team-setup] route=${route} apiCode=${code}${check ? ` check=${check}` : ""}`);
@@ -1819,26 +1827,42 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+interface DraftPreview {
+	preview: ReturnType<typeof inspectLegacyTeamSetupActivation> | null;
+	unavailableReason: LegacyTeamSetupUnavailableReasonV1 | null;
+}
+
+function draftPreview(
+	store: MemoryStore,
+	draft: LegacyTeamSetupDraftView,
+	options: { editable?: boolean },
+): DraftPreview {
+	if (draft.state === "completed") return { preview: null, unavailableReason: null };
+	// A device that can't save draft edits sees the draft with every action off.
+	if (options.editable === false)
+		return { preview: null, unavailableReason: "team_setup_admin_required" };
+	try {
+		const preview = inspectLegacyTeamSetupActivation(store.db, {
+			candidateRef: draft.candidateRef,
+			attemptId: draft.attemptId,
+		});
+		return { preview, unavailableReason: null };
+	} catch (error) {
+		const code = apiErrorCode(error);
+		if (code === "team_setup_failed") throw error;
+		if (code === "team_setup_projection_changed")
+			return { preview: null, unavailableReason: "team_setup_conflict" };
+		return { preview: null, unavailableReason: code === "team_setup_incomplete" ? null : code };
+	}
+}
+
 function detailResponse(
 	store: MemoryStore,
 	draft: LegacyTeamSetupDraftView,
 	candidate: LegacyTeamCandidateView = candidateFromDraft(draft),
+	options: { editable?: boolean } = {},
 ): LegacyTeamSetupDetailResponseV1 {
-	let unavailableReason: LegacyTeamSetupUnavailableReasonV1 | null = null;
-	let preview: ReturnType<typeof inspectLegacyTeamSetupActivation> | null = null;
-	if (draft.state !== "completed") {
-		try {
-			preview = inspectLegacyTeamSetupActivation(store.db, {
-				candidateRef: draft.candidateRef,
-				attemptId: draft.attemptId,
-			});
-		} catch (error) {
-			const code = apiErrorCode(error);
-			if (code === "team_setup_failed") throw error;
-			if (code === "team_setup_projection_changed") unavailableReason = "team_setup_conflict";
-			else if (code !== "team_setup_incomplete") unavailableReason = code;
-		}
-	}
+	const { preview, unavailableReason } = draftPreview(store, draft, options);
 	if (preview) requireLegacyTeamSetupAccessDeltaWithinLimit(preview.accessDelta);
 	const safeDraft = viewerSafeDraft(store, draft);
 	const safePreview = preview ? viewerSafePreview(draft, safeDraft, preview) : null;
@@ -1984,6 +2008,52 @@ function saveDeviceAssignment(
 	}
 }
 
+interface CompletionAuthorization {
+	config: ReturnType<typeof readCoordinatorSyncConfig>;
+	remoteUrl: string;
+	configuredCoordinatorId: string;
+	currentGroupIds: Set<string>;
+}
+
+// Endpoint equivalence only: candidate identity stays bound to the persisted
+// coordinator string and is never rewritten from configuration.
+function authorizesGroup(
+	authorization: CompletionAuthorization,
+	group: LegacyTeamCandidateGroupDescriptor,
+): boolean {
+	return (
+		authorization.currentGroupIds.has(group.groupId) &&
+		normalizedCoordinatorId(group.coordinatorId) === authorization.configuredCoordinatorId
+	);
+}
+
+/**
+ * Draft edits decide who will receive Projects once the Team is set up, so only a
+ * device that could finish setup saves them (ADR 0007 Decision 4). Reading a draft
+ * stays open to any device. The routes check on entry, and the write transaction
+ * checks again, because body parsing and lock waits come in between.
+ */
+const draftEditAuthority = new AsyncLocalStorage<() => boolean>();
+
+const DRAFT_EDIT_ROUTES = [
+	["PUT", "/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/assignment"],
+	["PUT", "/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/decision"],
+	["DELETE", "/api/sync/team-setup/v1/:candidateRef/devices/:deviceRef/decision"],
+	["PUT", "/api/sync/team-setup/v1/:candidateRef/projects/:projectRef/mapping"],
+	["POST", "/api/sync/team-setup/v1/:candidateRef/refresh"],
+] as const;
+
+function installDraftEditGate(app: Hono, mayEdit: (candidateRef: string) => boolean): void {
+	for (const [method, path] of DRAFT_EDIT_ROUTES) {
+		app.on(method, path, async (c, next) => {
+			const candidateRef = c.req.param("candidateRef") ?? "";
+			if (!mayEdit(candidateRef))
+				return c.json({ error: "team_setup_admin_required" as const }, 403);
+			await draftEditAuthority.run(() => mayEdit(candidateRef), next);
+		});
+	}
+}
+
 export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	const app = new Hono();
 	const loadSnapshots =
@@ -2017,13 +2087,6 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			? defaultCompletionDependencies
 			: options.completionDependencies;
 
-	interface CompletionAuthorization {
-		config: ReturnType<typeof readCoordinatorSyncConfig>;
-		remoteUrl: string;
-		configuredCoordinatorId: string;
-		currentGroupIds: Set<string>;
-	}
-
 	/**
 	 * Reads the live coordinator configuration and the groups it currently
 	 * authorizes. Returns null when completion I/O is not configured or current
@@ -2048,17 +2111,17 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		return { config, remoteUrl, configuredCoordinatorId, currentGroupIds };
 	}
 
-	// Endpoint equivalence only: candidate identity stays bound to the persisted
-	// coordinator string and is never rewritten from configuration.
-	function authorizesGroup(
-		authorization: CompletionAuthorization,
-		group: LegacyTeamCandidateGroupDescriptor,
-	): boolean {
-		return (
-			authorization.currentGroupIds.has(group.groupId) &&
-			normalizedCoordinatorId(group.coordinatorId) === authorization.configuredCoordinatorId
-		);
+	function hasDraftEditAuthority(store: MemoryStore, candidateRef: string): boolean {
+		const authorization = currentCompletionAuthorization();
+		const group = persistedCompletionGroup(store, candidateRef);
+		return Boolean(authorization && (!group || authorizesGroup(authorization, group)));
 	}
+	const detailAccess = (store: MemoryStore, candidateRef: string) => ({
+		editable: hasDraftEditAuthority(store, candidateRef),
+	});
+	installDraftEditGate(app, (candidateRef) =>
+		hasDraftEditAuthority(options.getStore(), candidateRef),
+	);
 
 	/**
 	 * Configuration may change while completion-list or roster requests are in
@@ -2669,7 +2732,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			}
 			if (completionGroups) candidate = candidateFromDraft(draft);
 
-			return c.json(detailResponse(store, draft, candidate));
+			return c.json(detailResponse(store, draft, candidate, detailAccess(store, candidateRef)));
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
 			return c.json({ error: failure.code }, failure.status);

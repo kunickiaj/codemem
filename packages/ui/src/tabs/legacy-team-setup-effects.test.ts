@@ -227,6 +227,7 @@ describe("initial Team setup refresh exclusions", () => {
 		{ state: "unavailable", unavailableReason: "team_setup_roster_changed" },
 		{ state: "unavailable", unavailableReason: "team_setup_conflict" },
 		{ state: "unavailable", unavailableReason: "team_setup_completion_unavailable" },
+		{ state: "unavailable", unavailableReason: "team_setup_admin_required" },
 	])("does not refresh ordinary detail %j", async (detail) => {
 		const loadedView = detail as LegacyTeamSetupViewV1;
 		const deps = dependencies({ loadDetail: vi.fn().mockResolvedValue(loadedView) });

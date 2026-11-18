@@ -3731,3 +3731,19 @@ describe("Team setup after a name the server says is already listed", () => {
 		expect(finish).not.toHaveBeenCalled();
 	});
 });
+
+describe("Team setup on a device without the admin secret", () => {
+	it("explains that another device has to finish setup", async () => {
+		// Arrange
+		setup(vi.fn().mockResolvedValue(detail({ conflictState: "team_setup_admin_required" })));
+
+		// Act
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+
+		// Assert
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"Only a device that holds the coordinator admin secret can set up this Team. Nothing changed. Finish setting it up on that device.",
+		);
+		expect(document.body.textContent).not.toContain("team_setup_admin_required");
+	});
+});

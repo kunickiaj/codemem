@@ -1227,7 +1227,10 @@ export type LegacyTeamSetupViewV1 =
 			state: "unavailable";
 			unavailableReason: LegacyTeamSetupErrorCode;
 			actions: {
-				refresh: { enabled: true; blockedReason: null };
+				// Off only when this device can't save setup changes.
+				refresh:
+					| { enabled: true; blockedReason: null }
+					| { enabled: false; blockedReason: "setup_unavailable" };
 				finish: { enabled: false; blockedReason: "setup_unavailable" };
 			};
 	  })
@@ -1262,6 +1265,7 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
 	| "team_setup_person_listed"
+	| "team_setup_admin_required"
 	| "team_setup_failed";
 
 export type LegacyTeamSetupErrorReason =
@@ -1283,6 +1287,7 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
 	"team_setup_person_listed",
+	"team_setup_admin_required",
 	"team_setup_failed",
 ]);
 export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReason>([
@@ -1553,6 +1558,11 @@ function hasDisabledItemActions(
 	);
 }
 
+function unavailableRefreshMatches(reason: string, refresh: LegacyTeamSetupActionGateV1): boolean {
+	if (reason !== "team_setup_admin_required") return refresh.enabled;
+	return !refresh.enabled && refresh.blockedReason === "setup_unavailable";
+}
+
 export function isLegacyTeamSetupView(value: unknown): value is LegacyTeamSetupDetailResponseV1 {
 	if (!isJsonRecord(value)) return false;
 	const validBase =
@@ -1611,7 +1621,7 @@ export function isLegacyTeamSetupView(value: unknown): value is LegacyTeamSetupD
 			hasExactJsonKeys(value, [...baseKeys, "unavailableReason"]) &&
 			typeof value.unavailableReason === "string" &&
 			LEGACY_TEAM_SETUP_ERROR_CODES.has(value.unavailableReason as LegacyTeamSetupErrorCode) &&
-			actions.refresh.enabled === true &&
+			unavailableRefreshMatches(value.unavailableReason, actions.refresh) &&
 			actions.finish.enabled === false &&
 			actions.finish.blockedReason === "setup_unavailable" &&
 			hasDisabledItemActions(devices, projects, "setup_unavailable")
