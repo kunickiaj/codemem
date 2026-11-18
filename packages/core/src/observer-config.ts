@@ -248,6 +248,7 @@ export const CODEMEM_CONFIG_ENV_OVERRIDES: Record<string, string> = {
 	sync_coordinator_timeout_s: "CODEMEM_SYNC_COORDINATOR_TIMEOUT_S",
 	sync_coordinator_presence_ttl_s: "CODEMEM_SYNC_COORDINATOR_PRESENCE_TTL_S",
 	sync_coordinator_admin_secret: "CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
+	sync_boundary_migration: "CODEMEM_SYNC_BOUNDARY_MIGRATION",
 	sync_relay_enabled: "CODEMEM_SYNC_RELAY_ENABLED",
 	sync_relay_service_key: "CODEMEM_SYNC_RELAY_SERVICE_KEY",
 	sync_retention_enabled: "CODEMEM_SYNC_RETENTION_ENABLED",

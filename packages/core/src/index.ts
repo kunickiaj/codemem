@@ -375,6 +375,10 @@ export {
 	RECIPROCAL_APPROVAL_REQUEST_CHANGED,
 	recipientInviteAuthoritativeIdentityId,
 } from "./coordinator-store-contract.js";
+export {
+	type BoundaryMigrationMode,
+	readBoundaryMigrationMode,
+} from "./coordinator-sync-config.js";
 export type { Database } from "./db.js";
 export {
 	assertSchemaReady,

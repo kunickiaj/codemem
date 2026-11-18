@@ -74,6 +74,25 @@ Backward compatibility:
 - when `sync_coordinator_groups` is set, the first entry becomes the legacy single-group value for compatibility with
   older surfaces
 
+### Boundary migration rollout setting
+
+`sync_boundary_migration` has the environment override
+`CODEMEM_SYNC_BOUNDARY_MIGRATION` and defaults to `off`.
+
+| Value | Planned behavior |
+| --- | --- |
+| `off` | Leave existing sharing setups unchanged. |
+| `report` | Publish readiness and report proposed changes without committing them. |
+| `on` | Run the per-Project boundary migration. |
+
+The configuration reader is available, but these modes do not activate migration
+work yet. Setting `on` does not advertise readiness or move data until the device
+can adopt a migration record and move its own memories.
+
+Values are case-insensitive and trimmed. Invalid nonempty settings select `off`.
+An empty environment value leaves the saved setting in effect, as with other sync
+settings.
+
 ## Built-in coordinator service
 
 The preferred self-hosted deployment path is the first-party TypeScript coordinator service shipped in the main
