@@ -15,6 +15,7 @@ import {
 } from "./coordinator-device-revocation-test-harness.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
@@ -151,10 +152,10 @@ function registerAliases(test: ControllerTest) {
 		}) => {
 			// Arrange: a different device's revocation has the same crypto identity, not the same metadata.
 			await enrollRevocation(f);
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
-				publicKey,
-				"d".repeat(64),
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey, fingerprint: "d".repeat(64) },
+				"group_id = ? AND device_id = ?",
 				f.input.groupId,
 				f.input.deviceId,
 			);
@@ -396,9 +397,10 @@ function registerReplacementGates(test: ControllerTest, guarded: Guarded) {
 				if (stage === "insert")
 					expect(await f.rows("coordinator_auth_controller_attestations")).toEqual([]);
 				await revoke(f, "key");
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-					UNRELATED_PUBLIC_KEY,
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+					"group_id = ? AND device_id = ?",
 					input.groupId,
 					input.deviceId,
 				);

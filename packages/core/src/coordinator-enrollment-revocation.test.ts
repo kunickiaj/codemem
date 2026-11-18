@@ -9,6 +9,7 @@ import {
 	registerEnrollmentRevocationContract,
 	UNRELATED_PUBLIC_KEY,
 } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
@@ -129,9 +130,12 @@ describe("D1 public-key capture", () => {
 			await f.store.setDeviceEnabled(target.groupId, target.deviceId, false);
 			const beforeWrite = vi.fn((sql: string) => {
 				if (!sql.includes("UPDATE enrolled_devices SET enabled")) return;
-				f.db
-					.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?")
-					.run(input.publicKey, target.deviceId);
+				changeEnrollmentKey(
+					f.db,
+					{ publicKey: input.publicKey, fingerprint: null },
+					"device_id = ?",
+					target.deviceId,
+				);
 			});
 			const racing = new D1CoordinatorStore(sqliteD1(f.db, { beforeWrite }));
 			// Act

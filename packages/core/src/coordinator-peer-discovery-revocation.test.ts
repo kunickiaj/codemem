@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { review, setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { EXPECTED_KEY_ID } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type { GrantFixture } from "./coordinator-identity-group-grant-test-harness.js";
 import { contractHarness } from "./coordinator-identity-group-grant-test-harness.js";
 import {
@@ -22,7 +26,16 @@ function sqliteDrift(
 ) {
 	const args = [fixture.review.groupId, peerId(fixture, "target")];
 	if (field === "remove") {
-		prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?").run(...args);
+		deleteEnrollmentWithoutTombstone({ prepare }, "group_id = ? AND device_id = ?", ...args);
+		return;
+	}
+	if (field === "public_key") {
+		changeEnrollmentKey(
+			{ prepare },
+			{ publicKey: "drift-group", fingerprint: null },
+			"group_id = ? AND device_id = ?",
+			...args,
+		);
 		return;
 	}
 	if (field.startsWith("revoke")) {

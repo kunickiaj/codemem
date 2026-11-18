@@ -9,6 +9,7 @@ import {
 } from "./coordinator-device-revocation-test-harness.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	D1CoordinatorStore,
 	type D1DatabaseLike,
@@ -850,20 +851,37 @@ function registerUnknownReceipt(test: Test, guarded: Guarded) {
 	});
 }
 function registerDrift(test: Test, guarded: Guarded) {
+	const set = (sql: string, value: string | number) => (f: LinkRevocationFixture) =>
+		f.exec(sql, value, f.input.groupId);
 	const changes = {
-		key: ["UPDATE enrolled_devices SET public_key = ? WHERE group_id = ?", UNRELATED_PUBLIC_KEY],
-		fingerprint: ["UPDATE enrolled_devices SET fingerprint = ? WHERE group_id = ?", "8".repeat(64)],
-		Identity: ["UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ?", "identity-other"],
-		sameIdentity: ["UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ?", "identity-a"],
-		disabled: ["UPDATE enrolled_devices SET enabled = ? WHERE group_id = ?", 0],
-		archive: ["UPDATE groups SET archived_at = ? WHERE group_id = ?", "2026-10-06"],
-		receipt: [
+		key: (f: LinkRevocationFixture) =>
+			changeEnrollmentKey(
+				f.exec,
+				{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+				"group_id = ?",
+				f.input.groupId,
+			),
+		fingerprint: set(
+			"UPDATE enrolled_devices SET fingerprint = ? WHERE group_id = ?",
+			"8".repeat(64),
+		),
+		Identity: set(
+			"UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ?",
+			"identity-other",
+		),
+		sameIdentity: set(
+			"UPDATE enrolled_devices SET identity_id = ? WHERE group_id = ?",
+			"identity-a",
+		),
+		disabled: set("UPDATE enrolled_devices SET enabled = ? WHERE group_id = ?", 0),
+		archive: set("UPDATE groups SET archived_at = ? WHERE group_id = ?", "2026-10-06"),
+		receipt: set(
 			"UPDATE coordinator_auth_controller_attestations SET review_receipt_id = ? WHERE group_id = ?",
 			"receipt-other",
-		],
-	} as const;
+		),
+	};
 	for (const stage of ["insert", "retry", "consume"] as const) {
-		for (const [change, [sql, value]] of Object.entries(changes)) {
+		for (const [change, apply] of Object.entries(changes)) {
 			test(`pins ${change} between source capture/hash and atomic ${stage}`, async ({
 				fixture: f,
 			}) => {
@@ -874,7 +892,7 @@ function registerDrift(test: Test, guarded: Guarded) {
 					if (injected || !isGate(query, stage)) return;
 					injected = true;
 					if (change === "key") await revoke(f, "key");
-					await f.exec(sql, value, f.input.groupId);
+					await apply(f);
 				});
 				// Act
 				const result = await perform(racing, i, stage);
@@ -918,9 +936,10 @@ function registerCapture(test: Test, guarded: Guarded) {
 			if (injected || boundary !== "captured" || !query.startsWith("SELECT e.group_id")) return;
 			injected = true;
 			await revoke(f, "key");
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ?",
-				UNRELATED_PUBLIC_KEY,
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+				"group_id = ?",
 				f.input.groupId,
 			);
 		});

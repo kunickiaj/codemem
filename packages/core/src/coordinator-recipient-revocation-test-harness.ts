@@ -6,6 +6,11 @@ import type {
 } from "./coordinator-device-revocation-test-harness.js";
 import { ACCEPTED_ALIASES, NODE_ONLY_ALIASES } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	removeDeviceWithoutTombstone,
+	replaceEnrollment,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type { CoordinatorConsumeRecipientInviteInput } from "./coordinator-store-contract.js";
 import {
 	D1CoordinatorStore,
@@ -86,7 +91,8 @@ export async function revokeRecipient(
 	const enrollment = await f.store.getEnrollment(tuple.groupId, tuple.deviceId, true);
 	if (!enrollment) await f.store.enrollDevice(tuple.groupId, tuple);
 	expect(await f.store.createDeviceRevocation(tuple)).toMatchObject({ kind: "revoked" });
-	if (!enrollment) await f.store.removeDevice(tuple.groupId, tuple.deviceId);
+	// The enrollment existed only to be revoked. A recorded removal would refuse later enrollments.
+	if (!enrollment) await removeDeviceWithoutTombstone(f.exec, tuple.groupId, tuple.deviceId);
 }
 
 export function registerRecipientRevocationContract(test: RecipientTest) {
@@ -245,10 +251,10 @@ function registerInviterDenials(test: RecipientTest) {
 				// Arrange: invite-time key is unrelated; only the current inviter key is denied.
 				const { input, seed } = await recipientInvite(f, kind);
 				await revokeRecipient(f, input);
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-					alias.publicKey,
-					fingerprintPublicKey(alias.publicKey),
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: alias.publicKey, fingerprint: fingerprintPublicKey(alias.publicKey) },
+					"device_id = ?",
 					seed.deviceId,
 				);
 				await f.store.setDeviceEnabled(seed.groupId, seed.deviceId, false);
@@ -396,22 +402,21 @@ function registerUnrevokedTupleGuards(
 		}) => {
 			// Arrange
 			const { input, seed } = await recipientInvite(f, "add_device");
-			if (absent) await f.store.removeDevice(seed.groupId, seed.deviceId);
+			// The hook below enrolls the seed again, which a recorded removal would refuse.
+			if (absent) await removeDeviceWithoutTombstone(f.exec, seed.groupId, seed.deviceId);
 			let called = false;
 			let atGate: unknown[][] = [];
 			const racing = guarded(f, async (writes, phase) => {
 				if (called || phase !== "batch" || !writes.some((w) => w.query.includes("consumed_at =")))
 					return;
 				called = true;
-				await f.exec(
-					"INSERT OR REPLACE INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at) VALUES (?,?,?,?,?,1,?)",
-					seed.groupId,
-					seed.deviceId,
-					"clean-rotated-seed",
-					fingerprintPublicKey("clean-rotated-seed"),
-					seed.identityId,
-					input.now,
-				);
+				await replaceEnrollment(f.exec, {
+					groupId: seed.groupId,
+					deviceId: seed.deviceId,
+					publicKey: "clean-rotated-seed",
+					identityId: seed.identityId,
+					createdAt: input.now,
+				});
 				atGate = await recipientSnapshot(f);
 			});
 			// Act
@@ -451,7 +456,9 @@ function registerFirstWriteGuards(
 					"DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?",
 					f.input.groupId,
 				);
-				if (subject === "missing seed") await f.store.removeDevice(seed.groupId, seed.deviceId);
+				// The first gate enrolls the seed again, which a recorded removal would refuse.
+				if (subject === "missing seed")
+					await removeDeviceWithoutTombstone(f.exec, seed.groupId, seed.deviceId);
 				const candidate = { ...input };
 				if (subject === "rotation" || subject === "missing seed") {
 					candidate.deviceId = `${input.deviceId}-clean`;
@@ -530,15 +537,14 @@ async function changeFirstGate(
 		);
 	}
 	if (subject !== "rotation" && subject !== "missing seed") return;
-	await f.exec(
-		"INSERT OR REPLACE INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at) VALUES (?,?,?,?,?,1,?)",
-		seed.groupId,
-		seed.deviceId,
-		input.publicKey,
-		input.fingerprint,
-		seed.identityId,
-		input.now,
-	);
+	await replaceEnrollment(f.exec, {
+		groupId: seed.groupId,
+		deviceId: seed.deviceId,
+		publicKey: input.publicKey,
+		fingerprint: input.fingerprint,
+		identityId: seed.identityId,
+		createdAt: input.now,
+	});
 }
 
 // Keep real prepared statements and transactional batch execution; only intercept execution.

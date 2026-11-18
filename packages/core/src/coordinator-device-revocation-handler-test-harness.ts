@@ -20,6 +20,7 @@ import {
 	publicKeyFromWire,
 	wireBytes,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 
 const secret = "fixture-operator-secret";
 const coordinator = "fixture-coordinator";
@@ -324,9 +325,10 @@ function registerKeys(test: Test) {
 		}) => {
 			// Arrange: SQL injects legacy metadata without trusting enrollment validation.
 			await enrollRevocation(f);
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-				publicKey,
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey, fingerprint: null },
+				"group_id = ? AND device_id = ?",
 				f.input.groupId,
 				f.input.deviceId,
 			);
@@ -441,16 +443,21 @@ function registerDigestDrift(test: Test) {
 }
 
 async function changeEvidence(f: RevocationFixture, change: string) {
-	if (change === "key" || change === "fingerprint") {
-		const field = change === "key" ? "public_key" : "fingerprint";
-		const value = change === "key" ? `${f.input.publicKey} alias` : "different-fingerprint";
-		await f.exec(
-			`UPDATE enrolled_devices SET ${field} = ? WHERE group_id = ? AND device_id = ?`,
-			value,
-			f.input.groupId,
-			f.input.deviceId,
+	const target = [f.input.groupId, f.input.deviceId];
+	// The fingerprint stays, so that only the key text changes.
+	if (change === "key")
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: `${f.input.publicKey} alias`, fingerprint: null },
+			"group_id = ? AND device_id = ?",
+			...target,
 		);
-	}
+	if (change === "fingerprint")
+		await f.exec(
+			"UPDATE enrolled_devices SET fingerprint = ? WHERE group_id = ? AND device_id = ?",
+			"different-fingerprint",
+			...target,
+		);
 	if (change === "group" || change === "device") {
 		f.input[change === "group" ? "groupId" : "deviceId"] += "-other";
 		if (change === "group") await f.store.createGroup(f.input.groupId);
@@ -525,6 +532,24 @@ function registerRaces(test: Test) {
 		expect(enrollment?.public_key).toBe("changed-object-key");
 	});
 }
+async function driftAfterReread(f: RevocationFixture, mutation: "key" | "fingerprint" | "remove") {
+	const target = [f.input.groupId, f.input.deviceId] as const;
+	if (mutation === "remove") return f.store.removeDevice(...target);
+	// The fingerprint stays, so that only the key text changes.
+	if (mutation === "key")
+		return changeEnrollmentKey(
+			f.exec,
+			{ publicKey: `${f.input.publicKey} rotated`, fingerprint: null },
+			"group_id = ? AND device_id = ?",
+			...target,
+		);
+	return f.exec(
+		"UPDATE enrolled_devices SET fingerprint = ? WHERE group_id = ? AND device_id = ?",
+		"new-fingerprint",
+		...target,
+	);
+}
+
 function registerAtomicRace(test: Test) {
 	for (const mutation of ["key", "fingerprint", "remove"] as const) {
 		test(`atomic primitive denies ${mutation} drift after handler reread`, async ({
@@ -538,14 +563,7 @@ function registerAtomicRace(test: Test) {
 			const write = vi
 				.spyOn(f.store, "createDeviceRevocation")
 				.mockImplementation(async (tuple) => {
-					if (mutation === "remove") await f.store.removeDevice(f.input.groupId, f.input.deviceId);
-					else
-						await f.exec(
-							`UPDATE enrolled_devices SET ${mutation === "key" ? "public_key" : "fingerprint"} = ? WHERE group_id = ? AND device_id = ?`,
-							mutation === "key" ? `${f.input.publicKey} rotated` : "new-fingerprint",
-							f.input.groupId,
-							f.input.deviceId,
-						);
+					await driftAfterReread(f, mutation);
 					return original(tuple);
 				});
 			// Act
