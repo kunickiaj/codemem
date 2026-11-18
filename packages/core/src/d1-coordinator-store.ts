@@ -108,8 +108,11 @@ import {
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
+	enrollmentKeyIdColumn,
+	enrollmentKeyIdSql,
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
+	type RemovalColumnSql,
 } from "./coordinator-device-removal.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -154,10 +157,12 @@ import {
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
 	LEGACY_ENROLLMENT_DENIAL_SQL,
-	LEGACY_ENROLLMENT_WRITE_SQL,
+	type LegacyEnrollmentStatement,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
+	legacyEnrollmentWriteStatements,
+	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import {
@@ -1147,6 +1152,11 @@ async function runProjectInviteBatch(
 	return !initial.consumed_at && changed === 1;
 }
 
+/** The fragments and the bound value that store `keyId`, or nothing when it is null. */
+function storedKeyIdWrite(keyId: string | null): { sql: RemovalColumnSql; values: string[] } {
+	return { sql: enrollmentKeyIdSql(keyId !== null), values: keyId === null ? [] : [keyId] };
+}
+
 export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly accountChangeBackend: AuthLinkBackend;
 	private readonly controllerBackend: AuthLinkBackend;
@@ -1217,6 +1227,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		this.removalSchemaSeen = row?.ready === 1;
 		return this.removalSchemaSeen;
+	}
+	/** The `key_id` value an enrollment writer stores, or null before migration 0048. */
+	private async storedKeyId(publicKey: string): Promise<string | null> {
+		if (!(await this.hasRemovalSchema())) return null;
+		return enrollmentKeyIdColumn(await ed25519KeyIdForRevocation(publicKey));
 	}
 	/**
 	 * ADR 0005 Section 8 rebind storage; null until migration 0038 is applied.
@@ -1868,31 +1883,20 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			const currentKeyId =
 				currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey);
 			const source = [currentPublicKey, _groupId, deviceId, _groupId, deviceId, currentPublicKey];
-			const result = await this.db
-				.prepare(LEGACY_ENROLLMENT_WRITE_SQL)
-				.bind(
-					_groupId,
-					deviceId,
-					publicKey,
-					fingerprint,
-					identityId ?? null,
-					displayName ?? null,
-					nowISO(),
-					deviceId,
-					keyId,
-					deviceId,
-					keyId,
-					deviceId,
-					currentKeyId,
-					...source,
-					deviceId,
-					keyId,
-					deviceId,
-					currentKeyId,
-					currentPublicKey,
-				)
-				.run();
-			if (legacyDeviceWriteChanges(result) === 1) return;
+			const writes = legacyEnrollmentWriteStatements({
+				groupId: _groupId,
+				deviceId,
+				publicKey,
+				fingerprint,
+				identityId: identityId ?? null,
+				displayName: displayName ?? null,
+				createdAt: nowISO(),
+				keyId,
+				currentPublicKey,
+				currentKeyId,
+				storeKeyId: await this.hasRemovalSchema(),
+			});
+			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(writes))) return;
 			const denial = await firstRow<unknown>(
 				this.db
 					.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
@@ -1902,6 +1906,21 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
+	}
+
+	/**
+	 * One statement runs alone. A key text change, with its key ID reset, its
+	 * rewrite, and its completion assertion, runs as one atomic batch. The assertion
+	 * raises inside the batch, so a reset that the rewrite did not follow never commits.
+	 */
+	private async runLegacyEnrollmentWrites(writes: LegacyEnrollmentStatement[]): Promise<number[]> {
+		const statements = writes.map(({ sql, values }) => this.db.prepare(sql).bind(...values));
+		if (statements.length === 1) return [legacyDeviceWriteChanges(await statements[0]?.run())];
+		if (!this.db.batch) throw new Error("device_ownership_authorization_unavailable");
+		const results = await this.db.batch(statements);
+		if (results.length !== statements.length)
+			throw new Error("device_ownership_authorization_unavailable");
+		return results.filter((_, index) => !writes[index]?.assertion).map(legacyDeviceWriteChanges);
 	}
 
 	async listEnrolledDevices(
@@ -2814,6 +2833,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				_opts.reviewedBy ?? null,
 				bootstrapGrantInput,
 				bootstrapGrantId,
+				await this.storedKeyId(row.public_key),
 			),
 		);
 		if (!(await this.executeJoinApprovalBatch(statements, { requestId: _opts.requestId, guard })))
@@ -2961,6 +2981,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		reviewedBy: string | null,
 		grant: CoordinatorCreateBootstrapGrantInput | null,
 		grantId: string | null,
+		keyId: string | null,
 	): D1PreparedStatementLike[] {
 		const approvedSql = `${guard.eligibilitySql} AND EXISTS (SELECT 1 FROM coordinator_join_requests
 			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ? AND reviewed_by IS ?)`;
@@ -2976,29 +2997,13 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		];
 		// changes() carries this batch's CAS, not a timestamp that another reviewer can share.
 		// CASE raises a SQL error on trigger-side drift rather than committing a zero-row sibling.
-		const statements = [
-			this.db
-				.prepare(`INSERT INTO enrolled_devices(
-			group_id, device_id, public_key, fingerprint, display_name, enabled, created_at)
-			SELECT ?, ?, ?, ?, ?, 1, ? FROM (SELECT 1 WHERE changes() = 1) AS winner
-			WHERE CASE WHEN ${approvedSql} AND ${guard.sourceSql} THEN 1 ELSE json('join_review_incomplete') END
-			ON CONFLICT(group_id, device_id) DO UPDATE SET public_key = excluded.public_key,
-			fingerprint = excluded.fingerprint, display_name = excluded.display_name, enabled = 1
-			WHERE CASE WHEN ${guard.eligibilitySql} AND ${guard.sourceSql}
-			THEN 1 ELSE json('join_review_incomplete') END`)
-				.bind(
-					row.group_id,
-					row.device_id,
-					row.public_key,
-					row.fingerprint,
-					row.display_name ?? null,
-					nowISO(),
-					...approvedValues,
-					...guard.sourceValues,
-					...guard.eligibilityValues,
-					...guard.sourceValues,
-				),
-		];
+		const statements = this.prepareJoinApprovalEnrollment(
+			row,
+			guard,
+			approvedSql,
+			approvedValues,
+			keyId,
+		);
 		if (grant && grantId) {
 			statements.push(
 				this.db
@@ -3018,6 +3023,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					),
 			);
 		}
+		// After a key ID reset, the confirmation requires the rewritten row with its key ID.
+		const resetKeyId = keyId !== null && guard.changesKeyTextOnly ? keyId : null;
 		statements.push(
 			this.prepareJoinApprovalConfirmation(
 				row,
@@ -3028,9 +3035,75 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				enrolledValues,
 				grant,
 				grantId,
+				resetKeyId,
 			),
 		);
 		return statements;
+	}
+
+	/**
+	 * The enrollment write of the winning approval: an INSERT when no row was
+	 * captured, an UPDATE of the captured row, and two UPDATEs for a key text change
+	 * that keeps the key ID value (see changesKeyTextOnly). The source guard pins
+	 * the captured enrollment in the review transition and again in every statement
+	 * here, as it did for the former upsert. When the enrollment appeared,
+	 * disappeared, or changed key since the read, the transition changes no row and
+	 * the request stays pending. Each statement reads changes() of the one before
+	 * it and raises when its own guard fails, which rolls the whole batch back. A
+	 * rewrite that changes no row without raising leaves the reset to the
+	 * confirmation, which raises unless the rewritten row exists.
+	 */
+	private prepareJoinApprovalEnrollment(
+		row: CoordinatorJoinRequest & { public_key: string },
+		guard: ReturnType<typeof joinReviewGuardEvidence>,
+		approvedSql: string,
+		approvedValues: unknown[],
+		keyId: string | null,
+	): D1PreparedStatementLike[] {
+		const currentSql = `${approvedSql} AND ${guard.sourceSql}`;
+		const currentValues = [...approvedValues, ...guard.sourceValues];
+		const hasEnrollment = guard.sourceValues[0] !== null;
+		const { sql: keyIdSql, values: keyIdValues } = storedKeyIdWrite(keyId);
+		if (!hasEnrollment) {
+			return [
+				this.db
+					.prepare(`INSERT INTO enrolled_devices(
+			group_id, device_id, public_key, fingerprint, display_name, enabled, created_at${keyIdSql.column})
+			SELECT ?, ?, ?, ?, ?, 1, ?${keyIdSql.value} FROM (SELECT 1 WHERE changes() = 1) AS winner
+			WHERE CASE WHEN ${currentSql} THEN 1 ELSE json('join_review_incomplete') END`)
+					.bind(
+						row.group_id,
+						row.device_id,
+						row.public_key,
+						row.fingerprint,
+						row.display_name ?? null,
+						nowISO(),
+						...keyIdValues,
+						...currentValues,
+					),
+			];
+		}
+		// The CASE tests changes() first, so only the batch that won the review can raise.
+		const winnerSql = `group_id = ? AND device_id = ?
+				AND CASE WHEN changes() <> 1 THEN 0 WHEN ${currentSql} THEN 1
+					ELSE json('join_review_incomplete') END`;
+		const winnerValues = [row.group_id, row.device_id, ...currentValues];
+		const update = this.db
+			.prepare(`UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
+				display_name = ?, enabled = 1${keyIdSql.assignment}
+				WHERE ${winnerSql}`)
+			.bind(
+				row.public_key,
+				row.fingerprint,
+				row.display_name ?? null,
+				...keyIdValues,
+				...winnerValues,
+			);
+		if (keyId === null || !guard.changesKeyTextOnly) return [update];
+		const reset = this.db
+			.prepare(`UPDATE enrolled_devices SET key_id = '' WHERE ${winnerSql}`)
+			.bind(...winnerValues);
+		return [reset, update];
 	}
 
 	private prepareJoinApprovalConfirmation(
@@ -3042,15 +3115,28 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		enrolledValues: unknown[],
 		grant: CoordinatorCreateBootstrapGrantInput | null,
 		grantId: string | null,
+		resetKeyId: string | null,
 	): D1PreparedStatementLike {
-		const completeSql = `${enrolledSql} AND (? IS NULL OR EXISTS (
+		// The enrollment this approval leaves behind when it reset the key ID first:
+		// the incoming key text and fingerprint with the recomputed key ID, enabled.
+		const rewritten = resetKeyId !== null;
+		const rewrittenSql = rewritten
+			? ` AND EXISTS (SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?
+			AND public_key = ? AND fingerprint = ? AND key_id = ? AND enabled = 1)`
+			: "";
+		const rewrittenValues = rewritten
+			? [row.group_id, row.device_id, row.public_key, row.fingerprint, resetKeyId]
+			: [];
+		const completeSql = `${enrolledSql}${rewrittenSql} AND (? IS NULL OR EXISTS (
 			SELECT 1 FROM coordinator_bootstrap_grants WHERE grant_id = ? AND group_id = ?
 			AND seed_device_id = ? AND worker_device_id = ? AND expires_at = ? AND revoked_at IS NULL))`;
 		// A zero changes() chain must not commit a newly owned/revoked target after CAS.
 		// Missing effects/receipts still report incomplete, not a fictional atomic rollback.
+		// A reset key ID is the exception: its approval commits only with the rewritten
+		// row, so a rewrite that a trigger suppressed raises here and rolls the reset back.
 		const zeroChainSql = `NOT EXISTS (SELECT 1 FROM coordinator_join_requests
 			WHERE request_id = ? AND status = 'approved' AND reviewed_at = ? AND reviewed_by IS ?)
-			OR (${guard.eligibilitySql})`;
+			OR ((${guard.eligibilitySql})${rewrittenSql})`;
 		return this.db
 			.prepare(`SELECT CASE WHEN changes() = 0 THEN
 			CASE WHEN ${zeroChainSql} THEN 1 ELSE json('join_review_incomplete') END
@@ -3060,7 +3146,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				reviewedAt,
 				reviewedBy,
 				...guard.eligibilityValues,
+				...rewrittenValues,
 				...enrolledValues,
+				...rewrittenValues,
 				grantId,
 				grantId,
 				row.group_id,

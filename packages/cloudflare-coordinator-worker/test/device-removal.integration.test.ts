@@ -5,6 +5,10 @@ import {
 	registerDeviceRemovalContract,
 	removalHarness,
 } from "../../core/src/coordinator-device-removal-test-harness.js";
+import { registerEnrollmentWriterContract } from "../../core/src/coordinator-device-removal-writer-test-harness.js";
+import {
+	recipientGuardedD1,
+} from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { dropEnrollmentRemovalTriggers, resetDeviceRemovals } from "./device-removal-reset.js";
 
@@ -24,6 +28,15 @@ describe("native D1 device removal", () => {
 				},
 				rows: async <T>(sql: string, ...values: unknown[]) =>
 					(await db.prepare(sql).bind(...values).all<T>()).results,
+				interleave: (before, change) => {
+					let done = false;
+					return recipientGuardedD1(db, async (writes) => {
+						if (done || !writes.some(({ query }) => before.some((text) => query.includes(text))))
+							return;
+						done = true;
+						for (const { sql, values } of change) await db.prepare(sql).bind(...values).run();
+					});
+				},
 			});
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
@@ -32,4 +45,5 @@ describe("native D1 device removal", () => {
 		}
 	});
 	registerDeviceRemovalContract(test);
+	registerEnrollmentWriterContract(test);
 });

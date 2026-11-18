@@ -60,7 +60,7 @@ describe("native D1 owned enrollment prerequisites (retained-binding fixtures, n
 	registerOwnedEnrollmentContract(test);
 	registerStoredKeyRaces(test, (_f, hook) =>
 		recipientGuardedD1(env.COORDINATOR_DB, async (writes) => {
-			if (writes.some(({ query }) => query.includes("INSERT INTO enrolled_devices"))) await hook();
+			if (writes.some(({ query }) => isEnrollmentRowWrite(query))) await hook();
 		}),
 	);
 	for (const operation of ["enroll", "enable"] as const) {
@@ -82,7 +82,7 @@ describe("native D1 owned enrollment prerequisites (retained-binding fixtures, n
 					if (
 						writes.some(
 							({ query }) =>
-								query.includes("INSERT INTO enrolled_devices") ||
+								isEnrollmentRowWrite(query) ||
 								query.includes("UPDATE enrolled_devices SET enabled"),
 						)
 					)
@@ -105,3 +105,11 @@ describe("native D1 owned enrollment prerequisites (retained-binding fixtures, n
 		}
 	}
 });
+
+/** The enrollment write: an insert, or an update of the row that was read first. */
+function isEnrollmentRowWrite(query: string) {
+	return (
+		query.includes("INSERT INTO enrolled_devices") ||
+		query.includes("UPDATE enrolled_devices SET public_key")
+	);
+}

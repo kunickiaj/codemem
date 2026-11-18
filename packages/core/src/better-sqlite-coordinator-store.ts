@@ -200,10 +200,11 @@ import {
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
 	LEGACY_DEVICE_DENIAL_SQL,
 	LEGACY_ENROLLMENT_DENIAL_SQL,
-	LEGACY_ENROLLMENT_WRITE_SQL,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
+	legacyEnrollmentWriteStatements,
+	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
 } from "./coordinator-legacy-device-ownership.js";
 import {
@@ -1460,30 +1461,28 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const currentKeyId =
 				currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey);
 			const source = [currentPublicKey, groupId, deviceId, groupId, deviceId, currentPublicKey];
-			const result = this.db
-				.prepare(LEGACY_ENROLLMENT_WRITE_SQL)
-				.run(
-					groupId,
-					deviceId,
-					publicKey,
-					fingerprint,
-					identityId ?? null,
-					displayName ?? null,
-					nowISO(),
-					deviceId,
-					keyId,
-					deviceId,
-					keyId,
-					deviceId,
-					currentKeyId,
-					...source,
-					deviceId,
-					keyId,
-					deviceId,
-					currentKeyId,
-					currentPublicKey,
-				);
-			if (legacyDeviceWriteChanges({ meta: result }) === 1) return;
+			const writes = legacyEnrollmentWriteStatements({
+				groupId,
+				deviceId,
+				publicKey,
+				fingerprint,
+				identityId: identityId ?? null,
+				displayName: displayName ?? null,
+				createdAt: nowISO(),
+				keyId,
+				currentPublicKey,
+				currentKeyId,
+				storeKeyId: this.hasRemovalSchema(),
+			});
+			// The caller's immediate transaction rolls a first statement back when a later one,
+			// or the completion assertion, fails.
+			const changes: number[] = [];
+			for (const { sql, values, assertion } of writes) {
+				const statement = this.db.prepare(sql);
+				if (assertion) statement.get(...values);
+				else changes.push(legacyDeviceWriteChanges({ meta: statement.run(...values) }));
+			}
+			if (legacyEnrollmentWritten(changes)) return;
 			const denial = this.db
 				.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
 				.get(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source);

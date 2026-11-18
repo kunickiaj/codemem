@@ -1,7 +1,13 @@
-import { readdirSync, readFileSync } from "node:fs";
-import type Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
-import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import Database from "better-sqlite3";
+import { describe, expect, it, vi } from "vitest";
+import {
+	BetterSqliteCoordinatorStore,
+	initializeBaseSchema,
+} from "./better-sqlite-coordinator-store.js";
+import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_SCHEMA_SQL,
@@ -10,10 +16,14 @@ import {
 	hasDeviceRemovalSchema,
 } from "./coordinator-device-removal.js";
 import {
+	type RawStatement,
 	REMOVAL_CLOCK_MS,
 	registerDeviceRemovalContract,
+	removalDeviceKey,
 	removalHarness,
 } from "./coordinator-device-removal-test-harness.js";
+import { registerEnrollmentWriterContract } from "./coordinator-device-removal-writer-test-harness.js";
+import { recipientGuardedD1 } from "./coordinator-recipient-revocation-test-harness.js";
 
 const normalize = (sql: string) => sql.replace(/\s+/gu, " ").trim();
 
@@ -42,6 +52,14 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 		const f = setupStore(backend, { authClock: () => REMOVAL_CLOCK_MS });
 		f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 		const prepare = f.db.prepare.bind(f.db);
+		const runOnce = (before: readonly string[], change: readonly RawStatement[]) => {
+			let done = false;
+			return (queries: readonly string[]) => {
+				if (done || !queries.some((query) => before.some((text) => query.includes(text)))) return;
+				done = true;
+				for (const { sql, values } of change) prepare(sql).run(...values);
+			};
+		};
 		try {
 			await use({
 				store: f.store,
@@ -50,13 +68,28 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 					prepare(sql).run(...values);
 				},
 				rows: async <T>(sql: string, ...values: unknown[]) => prepare(sql).all(...values) as T[],
+				interleave: (before, change) => {
+					const run = runOnce(before, change);
+					if (backend === "D1")
+						return recipientGuardedD1(sqliteD1(f.db), async (writes) =>
+							run(writes.map(({ query }) => query)),
+						);
+					// One connection: the change runs inside the store's own immediate transaction.
+					vi.spyOn(f.db, "prepare").mockImplementation((sql) => {
+						run([sql]);
+						return prepare(sql);
+					});
+					return f.store;
+				},
 			});
 		} finally {
+			vi.restoreAllMocks();
 			await f.store.close();
 			if (f.db.open) f.db.close();
 		}
 	});
 	registerDeviceRemovalContract(test);
+	registerEnrollmentWriterContract(test);
 });
 
 it.todo("schema initialization and a numbered migration install the enrollment triggers");
@@ -95,3 +128,78 @@ describe("device removal storage readiness", () => {
 		}
 	});
 });
+
+const DROP_REMOVAL_STORAGE_SQL = `DROP TABLE coordinator_device_removals;
+	ALTER TABLE enrolled_devices DROP COLUMN key_id;
+	ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq;
+	ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq;`;
+
+describe.each(["SQLite", "D1"] as const)(
+	"%s coordinator without device removal storage",
+	(backend) => {
+		/** The schema as it was before migration 0048, or before SQLite initialization added it. */
+		function setupWithoutRemovalStorage() {
+			if (backend === "D1") {
+				const f = setupStore("D1");
+				f.db.exec(DROP_REMOVAL_STORAGE_SQL);
+				return { ...f, cleanup: () => f.db.close() };
+			}
+			const directory = mkdtempSync(join(tmpdir(), "codemem-removal-"));
+			const path = join(directory, "coordinator.sqlite");
+			const created = new Database(path);
+			initializeBaseSchema(created);
+			created.exec(DROP_REMOVAL_STORAGE_SQL);
+			created.close();
+			const store = new BetterSqliteCoordinatorStore(path, { existingOnly: true });
+			return {
+				store,
+				db: store.db,
+				cleanup: () => {
+					if (store.db.open) store.db.close();
+					rmSync(directory, { recursive: true, force: true });
+				},
+			};
+		}
+
+		it("stores the key ID from the same store as soon as the storage exists", async () => {
+			// Arrange: the store's first write found no storage and wrote without a key ID.
+			const f = setupWithoutRemovalStorage();
+			const key = await removalDeviceKey("storage-appears");
+			const enrollment = (deviceId: string) => ({
+				deviceId,
+				publicKey: key.publicKey,
+				fingerprint: key.fingerprint,
+			});
+			try {
+				await f.store.createGroup("g1");
+				await f.store.enrollDevice("g1", enrollment("before"));
+				// Act: the migration runs while the store stays open.
+				for (const { sql } of DEVICE_REMOVAL_COLUMNS) f.db.exec(sql);
+				f.db.exec(DEVICE_REMOVAL_SCHEMA_SQL);
+				await f.store.enrollDevice("g1", enrollment("after"));
+				await f.store.enrollDevice("g1", enrollment("before"));
+				const invite = await f.store.createInvite({
+					groupId: "g1",
+					policy: "auto_admit",
+					expiresAt: "2099-01-01T00:00:00.000Z",
+				});
+				// Assert: no write after the migration takes the form without the columns.
+				expect(
+					f.db.prepare("SELECT device_id, key_id FROM enrolled_devices ORDER BY device_id").all(),
+				).toEqual([
+					{ device_id: "after", key_id: key.keyId },
+					{ device_id: "before", key_id: key.keyId },
+				]);
+				expect(
+					f.db
+						.prepare("SELECT issued_after_removal_seq FROM coordinator_invites WHERE invite_id = ?")
+						.pluck()
+						.get(invite.invite_id),
+				).toBe(0);
+			} finally {
+				await f.store.close();
+				f.cleanup();
+			}
+		});
+	},
+);

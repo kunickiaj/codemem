@@ -74,6 +74,7 @@ function registerNativeRevocationRaces(test: ReturnType<typeof revocationHarness
 				const hook = vi.fn(async (sql: string) => {
 					if (
 						!sql.includes("INSERT INTO enrolled_devices") &&
+						!sql.includes("UPDATE enrolled_devices SET public_key") &&
 						!sql.includes("UPDATE enrolled_devices SET enabled")
 					)
 						return;

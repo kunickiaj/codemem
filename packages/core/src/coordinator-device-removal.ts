@@ -157,6 +157,11 @@ function removalColumnSql(ready: boolean, column: string, value: string): Remova
 	return { column: `, ${column}`, value: `, ${value}`, assignment: `, ${column} = ${value}` };
 }
 
+/** `enrolled_devices.key_id` from `value`, by default one bound parameter. */
+export function enrollmentKeyIdSql(ready: boolean, value = "?"): RemovalColumnSql {
+	return removalColumnSql(ready, "key_id", value);
+}
+
 /** An active tombstone that matches the NEW enrollment row of a trigger. */
 const NEW_ROW_TOMBSTONE_MATCH_SQL = `t.lifted_at IS NULL AND (
       t.device_id = NEW.device_id
@@ -337,4 +342,12 @@ export function joinRequestRemovalSeqSql(ready: boolean): RemovalColumnSql {
 		`(SELECT i.issued_after_removal_seq FROM coordinator_invites i
 WHERE i.group_id = ? AND (i.token = ? OR i.token_digest = ?) LIMIT 1)`,
 	);
+}
+
+/**
+ * `enrolled_devices.key_id` for a canonical key ID: the ID itself, or an empty
+ * string for a key that is not SSH Ed25519. Null is reserved for unfilled rows.
+ */
+export function enrollmentKeyIdColumn(keyId: string | null): string {
+	return keyId ?? "";
 }
