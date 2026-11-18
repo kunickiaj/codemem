@@ -635,6 +635,11 @@ function removeConfiguredCoordinatorGroup(groupId: string): string[] {
 	return nextGroups;
 }
 
+/**
+ * Viewer coordinator actions run only against the configured coordinator with the
+ * admin secret. Without a URL, the shared actions would fall back to a coordinator
+ * database on this machine, which only the CLI should administer.
+ */
 function coordinatorAdminUnavailable(status: ReturnType<typeof coordinatorAdminStatusPayload>): {
 	body: Record<string, unknown>;
 	httpStatus: 400;
@@ -6106,6 +6111,71 @@ function createActorMutationPreflightRoutes(getStore: StoreFactory) {
 	return app;
 }
 
+/** Creates an older connection-only invitation through the configured coordinator. */
+async function createCoordinatorInviteRoute(c: Context) {
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json<Record<string, unknown>>();
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	const groupId = String(body.group_id ?? "").trim();
+	const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
+	const policy = String(body.policy ?? "auto_admit").trim();
+	const ttlHours = parseInviteTtlHours(body.ttl_hours);
+	if (!groupId) return c.json({ error: "group_id required" }, 400);
+	if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
+		return c.json({ error: "coordinator_url must be string" }, 400);
+	}
+	if (!["auto_admit", "approval_required"].includes(policy)) {
+		return c.json({ error: "policy must be auto_admit or approval_required" }, 400);
+	}
+	if (ttlHours == null) return c.json({ error: "ttl_hours must be an integer >= 1" }, 400);
+	const config = readCoordinatorSyncConfig();
+	const unavailable = coordinatorAdminUnavailable(coordinatorAdminStatusPayload(config));
+	if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+	try {
+		const result = await coordinatorCreateInviteAction({
+			groupId,
+			coordinatorUrl,
+			policy,
+			ttlHours,
+			createdBy: null,
+			remoteUrl: config.syncCoordinatorUrl || null,
+			adminSecret: config.syncCoordinatorAdminSecret || null,
+		});
+		return c.json(result);
+	} catch (error) {
+		return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+	}
+}
+
+async function revokeBootstrapGrantRoute(c: Context) {
+	let body: Record<string, unknown>;
+	try {
+		body = await c.req.json<Record<string, unknown>>();
+	} catch {
+		return c.json({ error: "invalid json" }, 400);
+	}
+	const grantId = String(body.grant_id ?? "").trim();
+	if (!grantId) return c.json({ error: "grant_id_required" }, 400);
+	const config = readCoordinatorSyncConfig();
+	const unavailable = coordinatorAdminUnavailable(coordinatorAdminStatusPayload(config));
+	if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
+	try {
+		const ok = await coordinatorRevokeBootstrapGrantAction({
+			grantId,
+			remoteUrl: config.syncCoordinatorUrl || null,
+			adminSecret: config.syncCoordinatorAdminSecret || null,
+		});
+		if (!ok) return c.json({ error: "grant_not_found" }, 404);
+		return c.json({ ok: true, grant_id: grantId });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "unknown";
+		return c.json({ error: message }, 500);
+	}
+}
+
 async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
 	const limit = Math.max(1, queryInt(c.req.query("limit"), 50));
 	const offset = Math.max(0, queryInt(c.req.query("offset"), 0));
@@ -7865,41 +7935,7 @@ export function syncRoutes(
 		}
 	});
 
-	app.post("/api/sync/invites/create", async (c) => {
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const groupId = String(body.group_id ?? "").trim();
-		const coordinatorUrl = body.coordinator_url == null ? null : String(body.coordinator_url ?? "");
-		const policy = String(body.policy ?? "auto_admit").trim();
-		const ttlHours = parseInviteTtlHours(body.ttl_hours);
-		if (!groupId) return c.json({ error: "group_id required" }, 400);
-		if (body.coordinator_url != null && typeof body.coordinator_url !== "string") {
-			return c.json({ error: "coordinator_url must be string" }, 400);
-		}
-		if (!["auto_admit", "approval_required"].includes(policy)) {
-			return c.json({ error: "policy must be auto_admit or approval_required" }, 400);
-		}
-		if (ttlHours == null) return c.json({ error: "ttl_hours must be an integer >= 1" }, 400);
-		try {
-			const config = readCoordinatorSyncConfig();
-			const result = await coordinatorCreateInviteAction({
-				groupId,
-				coordinatorUrl,
-				policy,
-				ttlHours,
-				createdBy: null,
-				remoteUrl: config.syncCoordinatorUrl || null,
-				adminSecret: config.syncCoordinatorAdminSecret || null,
-			});
-			return c.json(result);
-		} catch (error) {
-			return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
-		}
-	});
+	app.post("/api/sync/invites/create", createCoordinatorInviteRoute);
 
 	app.post("/api/sync/invites/inspect", async (c) => {
 		const store = getStore();
@@ -9124,6 +9160,8 @@ export function syncRoutes(
 		const groupId = String(c.req.query("group_id") ?? "").trim();
 		if (!groupId) return c.json({ error: "group_id_required" }, 400);
 		const config = readCoordinatorSyncConfig();
+		const unavailable = coordinatorAdminUnavailable(coordinatorAdminStatusPayload(config));
+		if (unavailable) return c.json(unavailable.body, unavailable.httpStatus);
 		try {
 			const items = await coordinatorListBootstrapGrantsAction({
 				groupId,
@@ -9137,29 +9175,7 @@ export function syncRoutes(
 		}
 	});
 
-	app.post("/api/sync/bootstrap-grants/revoke", async (c) => {
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const grantId = String(body.grant_id ?? "").trim();
-		if (!grantId) return c.json({ error: "grant_id_required" }, 400);
-		const config = readCoordinatorSyncConfig();
-		try {
-			const ok = await coordinatorRevokeBootstrapGrantAction({
-				grantId,
-				remoteUrl: config.syncCoordinatorUrl || null,
-				adminSecret: config.syncCoordinatorAdminSecret || null,
-			});
-			if (!ok) return c.json({ error: "grant_not_found" }, 404);
-			return c.json({ ok: true, grant_id: grantId });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "unknown";
-			return c.json({ error: message }, 500);
-		}
-	});
+	app.post("/api/sync/bootstrap-grants/revoke", revokeBootstrapGrantRoute);
 
 	// DELETE /api/sync/peers/:peer_device_id
 	app.delete("/api/sync/peers/:peer_device_id", (c) => {
