@@ -9,7 +9,7 @@ import { buildBaseUrl, requestJson } from "./sync-http-client.js";
 /** Matches the coordinator's per-request limit on `/v1/peers/revocations`. */
 const CHECK_BATCH_SIZE = 25;
 
-/** `unsupported` means the coordinator predates the check; `failed` means no group answered. */
+/** `unsupported` means the coordinator predates the check; `failed` means the answer was unusable. */
 export type PeerRevocationCheckStatus = "checked" | "unsupported" | "failed";
 
 /** A device this device asks the coordinator about. A binding without a pairing has no key to send. */
