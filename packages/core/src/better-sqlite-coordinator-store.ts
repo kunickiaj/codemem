@@ -157,8 +157,11 @@ import {
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
 	DEVICE_REMOVAL_SCHEMA_SQL,
+	enrollmentKeyIdColumn,
+	enrollmentKeyIdSql,
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
+	type RemovalColumnSql,
 } from "./coordinator-device-removal.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -1144,6 +1147,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private hasRemovalSchema(): boolean {
 		if (!this.removalSchemaSeen) this.removalSchemaSeen = hasDeviceRemovalSchemaSync(this.db);
 		return this.removalSchemaSeen;
+	}
+	/**
+	 * How an enrollment writer stores the key ID of `publicKey`: the SQL fragments
+	 * and their one bound value, or nothing on a file without the column.
+	 */
+	private storedKeyIdWrite(publicKey: string): { sql: RemovalColumnSql; values: string[] } {
+		const ready = this.hasRemovalSchema();
+		return {
+			sql: enrollmentKeyIdSql(ready),
+			values: ready ? [enrollmentKeyIdColumn(enrollmentRevocationKeyId(publicKey))] : [],
+		};
 	}
 	/** ADR 0005 Section 8 rebind storage; null before its tables exist. */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
@@ -2341,31 +2355,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (saved.recipient_actor_id !== authoritativeIdentityId)
 					throw new Error("invite_identity_conflict");
 				if (changed === 1) {
-					this.db
-						.prepare(
-							`INSERT INTO enrolled_devices(
-						group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at
-					) SELECT ?, ?, ?, ?, ?, ?, 1, ?
-					WHERE ${authorizationSql}
-					ON CONFLICT(group_id, device_id) DO UPDATE SET
-						public_key = excluded.public_key,
-						fingerprint = excluded.fingerprint,
-						identity_id = COALESCE(enrolled_devices.identity_id, excluded.identity_id),
-						display_name = COALESCE(enrolled_devices.display_name, excluded.display_name),
-						enabled = 1
-					WHERE enrolled_devices.identity_id IS NULL
-							OR enrolled_devices.identity_id = excluded.identity_id`,
-						)
-						.run(
-							invite.group_id,
-							opts.deviceId,
-							opts.publicKey,
-							opts.fingerprint,
-							authoritativeIdentityId,
-							deviceDisplayName,
-							consumedAt,
-							...authorizationValues,
-						);
+					this.writeRecipientEnrollmentSync(invite.group_id, opts, {
+						identityId: authoritativeIdentityId,
+						displayName: deviceDisplayName,
+						createdAt: consumedAt,
+						authorization,
+					});
 				} else {
 					pendingGuards = this.repairRecipientOwnerIdentity(invite, opts, {
 						authorization,
@@ -2428,20 +2423,80 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.immediate();
 	}
 
+	/** Updates the device's enrollment in the group, or inserts it when the group has none. */
+	private writeRecipientEnrollmentSync(
+		groupId: string,
+		opts: CoordinatorConsumeRecipientInviteInput,
+		write: {
+			identityId: string;
+			displayName: string | null;
+			createdAt: string;
+			authorization: AuthLinkStatement;
+		},
+	): void {
+		const { identityId, displayName, authorization } = write;
+		const keyId = this.storedKeyIdWrite(opts.publicKey);
+		const existing = this.db
+			.prepare("SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
+			.get(groupId, opts.deviceId);
+		if (existing) {
+			// The participant check of this transaction found the same key and fingerprint.
+			this.db
+				.prepare(
+					`UPDATE enrolled_devices SET identity_id = COALESCE(identity_id, ?),
+						display_name = COALESCE(display_name, ?), enabled = 1${keyId.sql.assignment}
+					WHERE group_id = ? AND device_id = ? AND public_key = ? AND fingerprint = ?
+						AND (identity_id IS NULL OR identity_id = ?) AND ${authorization.sql}`,
+				)
+				.run(
+					identityId,
+					displayName,
+					...keyId.values,
+					groupId,
+					opts.deviceId,
+					opts.publicKey,
+					opts.fingerprint,
+					identityId,
+					...authorization.values,
+				);
+			return;
+		}
+		this.db
+			.prepare(
+				`INSERT INTO enrolled_devices(
+					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled,
+					created_at${keyId.sql.column}
+				) SELECT ?, ?, ?, ?, ?, ?, 1, ?${keyId.sql.value} WHERE ${authorization.sql}`,
+			)
+			.run(
+				groupId,
+				opts.deviceId,
+				opts.publicKey,
+				opts.fingerprint,
+				identityId,
+				displayName,
+				write.createdAt,
+				...keyId.values,
+				...authorization.values,
+			);
+	}
+
 	private repairRecipientOwnerIdentity(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeRecipientInviteInput,
 		options: { authorization: AuthLinkStatement; consistency: NegativeOwnerGuards },
 	): AuthLinkStatement[] {
 		const { authorization, consistency } = options;
+		const keyId = this.storedKeyIdWrite(opts.publicKey);
 		const repaired = this.db
 			.prepare(
-				`UPDATE enrolled_devices SET identity_id = ?
+				`UPDATE enrolled_devices SET identity_id = ?${keyId.sql.assignment}
 			WHERE group_id = ? AND device_id = ? AND identity_id IS NULL
 			AND public_key = ? AND fingerprint = ? AND ${authorization.sql}`,
 			)
 			.run(
 				opts.identityId,
+				...keyId.values,
 				invite.group_id,
 				opts.deviceId,
 				opts.publicKey,
@@ -2684,18 +2739,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						displayName: opts.deviceDisplayName,
 					});
 				} else {
-					this.db
-						.prepare(`UPDATE enrolled_devices SET identity_id = ?
-						WHERE group_id = ? AND device_id = ? AND identity_id IS NULL AND enabled = 1
-							AND public_key = ? AND fingerprint = ? AND ${guard.boundEligibilitySql}`)
-						.run(
-							opts.recipientActorId,
-							invite.group_id,
-							opts.deviceId,
-							opts.publicKey,
-							opts.fingerprint,
-							...guard.boundEligibilityValues,
-						);
+					this.repairProjectInviteIdentitySync(invite, opts, guard);
 				}
 				const seed = invite.inviter_device_id
 					? (this.db
@@ -2760,6 +2804,28 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				};
 			})
 			.immediate();
+	}
+
+	/** A retry of a consumed Project invitation repairs only its pinned enrollment. */
+	private repairProjectInviteIdentitySync(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeProjectInviteInput,
+		guard: { boundEligibilitySql: string; boundEligibilityValues: unknown[] },
+	): void {
+		const keyId = this.storedKeyIdWrite(opts.publicKey);
+		this.db
+			.prepare(`UPDATE enrolled_devices SET identity_id = ?${keyId.sql.assignment}
+			WHERE group_id = ? AND device_id = ? AND identity_id IS NULL AND enabled = 1
+				AND public_key = ? AND fingerprint = ? AND ${guard.boundEligibilitySql}`)
+			.run(
+				opts.recipientActorId,
+				...keyId.values,
+				invite.group_id,
+				opts.deviceId,
+				opts.publicKey,
+				opts.fingerprint,
+				...guard.boundEligibilityValues,
+			);
 	}
 
 	async listInvites(groupId: string): Promise<CoordinatorInvite[]> {

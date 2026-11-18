@@ -1,20 +1,25 @@
 import { expect } from "vitest";
+import type { Store } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	ARRANGED_CREATED_AT,
 	ARRANGED_DISPLAY_NAME,
 	currentInsert,
+	type DeviceKey,
 	deleteEnrollmentWithoutTombstone,
 	type Enrollment,
 	enroll,
 	enrollments,
 	insertDisabledEnrollment,
 	insertTombstone,
+	invitationFixture,
 	opaqueKey,
 	type RemovalFixture,
 	type RemovalTest,
 	removalDeviceKey,
 	target,
 } from "./coordinator-device-removal-test-harness.js";
+import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
+import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
@@ -23,12 +28,14 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
  * `key_id` and the key text. The fixtures are those of the removal harness.
  */
 export function registerEnrollmentWriterContract(test: RemovalTest) {
+	registerInvitationRaces(test);
 	registerPinnedWriterRaces(test);
 	registerKeyTextChanges(test);
 	registerKeyTextChangeFailures(test);
 	registerSuppressedKeyTextRewrites(test);
 }
 
+const INVITE_CONSUME = ["UPDATE coordinator_invites SET token"];
 const JOIN_TRANSITION = ["UPDATE coordinator_join_requests"];
 const ENROLLMENT_WRITE = ["INSERT INTO enrolled_devices", "UPDATE enrolled_devices SET public_key"];
 const EXPIRES_AT = "2099-01-01T00:00:00.000Z";
@@ -50,6 +57,35 @@ async function arrangeRace(f: RemovalFixture, race: Race, enrollment: Enrollment
 	return deleteEnrollmentWithoutTombstone(enrollment);
 }
 
+type Acceptance = {
+	enrollment: Enrollment;
+	identityId: string;
+	inviteId: string;
+	accept: (store: Store) => Promise<{ status: string }>;
+};
+
+async function teamAcceptance(f: RemovalFixture, key: DeviceKey): Promise<Acceptance> {
+	const fixture = invitationFixture(f, "team", key);
+	const { input, invite } = await recipientInvite(fixture, "team_member");
+	return {
+		enrollment: { groupId: fixture.input.groupId, deviceId: input.deviceId, key },
+		identityId: input.identityId,
+		inviteId: invite.invite_id,
+		accept: (store) => store.consumeRecipientInvite(input),
+	};
+}
+
+async function projectAcceptance(f: RemovalFixture, key: DeviceKey): Promise<Acceptance> {
+	const fixture = invitationFixture(f, "project", key);
+	const { input, invite } = await projectInvite(fixture);
+	return {
+		enrollment: { groupId: fixture.input.groupId, deviceId: input.deviceId, key },
+		identityId: input.recipientActorId,
+		inviteId: invite.invite_id,
+		accept: (store) => store.consumeProjectInvite(input),
+	};
+}
+
 function enrollmentRow(f: RemovalFixture, enrollment: Enrollment) {
 	return f.rows(
 		`SELECT public_key, fingerprint, key_id, identity_id, enabled, created_at
@@ -57,6 +93,47 @@ function enrollmentRow(f: RemovalFixture, enrollment: Enrollment) {
 		enrollment.groupId,
 		enrollment.deviceId,
 	);
+}
+
+function registerInvitationRaces(test: RemovalTest) {
+	const families = { recipient: teamAcceptance, Project: projectAcceptance };
+	for (const [family, arrange] of Object.entries(families)) {
+		for (const race of ["appears", "disappears"] as const) {
+			test(`a ${family} invitation is consumed together with an enrollment write when the enrollment ${race} after the reads`, async ({
+				fixture: f,
+			}) => {
+				// Arrange
+				const key = await removalDeviceKey(`${f.prefix}-joining`);
+				const acceptance = await arrange(f, key);
+				const change = await arrangeRace(f, race, acceptance.enrollment);
+				const racing = f.interleave(INVITE_CONSUME, change);
+				// Act
+				const result = await acceptance.accept(racing);
+				// Assert: the token is consumed and the enrollment of that moment is written. The
+				// row that appeared is updated in place, and the row that disappeared is inserted,
+				// so only the first keeps the arranged creation time.
+				const createdAt =
+					race === "appears" ? ARRANGED_CREATED_AT : expect.not.stringMatching(ARRANGED_CREATED_AT);
+				expect(result.status).toBe("accepted");
+				expect(
+					await f.rows(
+						"SELECT consumed_at IS NOT NULL AS consumed FROM coordinator_invites WHERE invite_id = ?",
+						acceptance.inviteId,
+					),
+				).toEqual([{ consumed: 1 }]);
+				expect(await enrollmentRow(f, acceptance.enrollment)).toEqual([
+					{
+						public_key: key.publicKey,
+						fingerprint: key.fingerprint,
+						key_id: key.keyId,
+						identity_id: acceptance.identityId,
+						enabled: 1,
+						created_at: createdAt,
+					},
+				]);
+			});
+		}
+	}
 }
 
 function registerPinnedWriterRaces(test: RemovalTest) {

@@ -1,7 +1,10 @@
 import { expect, it } from "vitest";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
 import { ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS } from "./coordinator-device-removal.js";
+import type { RevocationFixture } from "./coordinator-device-revocation-test-harness.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
+import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
@@ -220,6 +223,7 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerEnrollmentMoveTriggers(test);
 	registerCollisionTriggers(test);
 	registerExistingEnrollmentWriters(test);
+	registerInvitationWriters(test);
 }
 
 function registerLegacyInsertShape(test: RemovalTest) {
@@ -678,6 +682,70 @@ function registerCollisionTriggers(test: RemovalTest) {
 				`${f.prefix}%`,
 			),
 		).toEqual(before);
+	});
+}
+
+/** The invitation helpers of the revocation harnesses, on this fixture's database. */
+export function invitationFixture(
+	f: RemovalFixture,
+	name: string,
+	key: DeviceKey,
+): RevocationFixture {
+	return {
+		store: f.store,
+		input: {
+			groupId: `${f.prefix}-${name}-group`,
+			deviceId: `${f.prefix}-${name}`,
+			publicKey: key.publicKey,
+			fingerprint: key.fingerprint,
+			actorId: `${f.prefix}-operator`,
+		},
+		exec: f.exec,
+		rows: (table) => f.rows(`SELECT * FROM ${table} ORDER BY rowid`),
+	};
+}
+
+function registerInvitationWriters(test: RemovalTest) {
+	test("A13 A26 invitation acceptance stores the key ID for a first enrollment and keeps an existing one", async ({
+		fixture: f,
+	}) => {
+		// Arrange: a team invitation for a new device, and a Project invitation for an enrolled one.
+		const joining = await removalDeviceKey(`${f.prefix}-joining`);
+		const enrolled = await removalDeviceKey(`${f.prefix}-enrolled`);
+		const team = invitationFixture(f, "team", joining);
+		const project = invitationFixture(f, "project", enrolled);
+		const teamInvite = await recipientInvite(team, "team_member");
+		const projectShare = await projectInvite(project);
+		await f.store.enrollDevice(project.input.groupId, project.input);
+		// Act
+		const accepted = await f.store.consumeRecipientInvite(teamInvite.input);
+		const shared = await f.store.consumeProjectInvite(projectShare.input);
+		const retried = await f.store.consumeRecipientInvite(teamInvite.input);
+		// Assert
+		expect([accepted.status, shared.status, retried.status]).toEqual([
+			"accepted",
+			"accepted",
+			"existing",
+		]);
+		expect(
+			await f.rows(
+				`SELECT device_id, key_id, identity_id FROM enrolled_devices
+				WHERE device_id IN (?, ?) ORDER BY device_id`,
+				team.input.deviceId,
+				project.input.deviceId,
+			),
+		).toEqual([
+			{
+				device_id: project.input.deviceId,
+				key_id: enrolled.keyId,
+				identity_id: projectShare.input.recipientActorId,
+			},
+			{
+				device_id: team.input.deviceId,
+				key_id: joining.keyId,
+				identity_id: teamInvite.input.identityId,
+			},
+		]);
 	});
 }
 

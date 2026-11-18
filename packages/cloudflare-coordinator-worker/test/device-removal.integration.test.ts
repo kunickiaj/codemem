@@ -1,13 +1,17 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, vi } from "vitest";
 import {
+	invitationFixture,
 	REMOVAL_CLOCK_MS,
 	registerDeviceRemovalContract,
+	removalDeviceKey,
 	removalHarness,
 } from "../../core/src/coordinator-device-removal-test-harness.js";
 import { registerEnrollmentWriterContract } from "../../core/src/coordinator-device-removal-writer-test-harness.js";
+import { projectInvite } from "../../core/src/coordinator-project-revocation-test-harness.js";
 import {
 	recipientGuardedD1,
+	recipientInvite,
 } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { dropEnrollmentRemovalTriggers, resetDeviceRemovals } from "./device-removal-reset.js";
@@ -46,4 +50,52 @@ describe("native D1 device removal", () => {
 	});
 	registerDeviceRemovalContract(test);
 	registerEnrollmentWriterContract(test);
+
+	for (const family of ["recipient", "Project"] as const) {
+		// Native D1 gives no view between the statements of a batch, so this reads the
+		// statement itself. The core suite observes the same statement change no row.
+		test(`statement 3 of a first ${family} acceptance carries the binding and the bound eligibility`, async ({
+			fixture: f,
+		}) => {
+			// Arrange
+			const key = await removalDeviceKey(`${f.prefix}-joining`);
+			const invitation = invitationFixture(f, "statement-three", key);
+			const { input } =
+				family === "recipient"
+					? await recipientInvite(invitation, "team_member")
+					: await projectInvite(invitation);
+			const consumes: { query: string; values: readonly unknown[] }[] = [];
+			const recording = recipientGuardedD1(env.COORDINATOR_DB, async (writes, kind) => {
+				if (kind !== "batch") return;
+				consumes.push(
+					...writes.filter(({ query }) => query.includes("UPDATE coordinator_invites SET token")),
+				);
+			});
+			// Act
+			const result =
+				"inviteKind" in input
+					? await recording.consumeRecipientInvite(input)
+					: await recording.consumeProjectInvite(input);
+			// Assert: the rewrite branch is everything between changes() and the unconsumed branch.
+			expect(result.status).toBe("accepted");
+			expect(consumes).toHaveLength(2);
+			const statement = (consumes[1]?.query ?? "").replace(/\s+/gu, " ");
+			const rewrite = statement.slice(
+				statement.indexOf("(changes() = 1 AND"),
+				statement.indexOf("OR (consumed_at IS NULL"),
+			);
+			for (const condition of [
+				"consumed_at IS NOT NULL AND revoked_at IS NULL",
+				"bound_device_id = ? AND bound_public_key = ? AND bound_fingerprint = ? AND recipient_actor_id = ?",
+				"g.archived_at IS NULL",
+				"coordinator_device_revocations",
+				"coordinator_device_ownership_bindings",
+				"bi.bound_public_key = ?",
+			])
+				expect(rewrite).toContain(condition);
+			expect(consumes[1]?.values).toEqual(
+				expect.arrayContaining([input.deviceId, input.publicKey, input.fingerprint]),
+			);
+		});
+	}
 });
