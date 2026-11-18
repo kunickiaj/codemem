@@ -5906,14 +5906,45 @@ function projectSharingByRepository(
 	return sharingByProject;
 }
 
-function deactivateActorAndWakePolicies(store: MemoryStore, actorId: string, now: string): void {
-	store.db
+/**
+ * Removes a person. The gate checked on entry, but the actor lock wait can outlast
+ * that, so the write transaction checks again.
+ */
+function deactivationResponse(
+	c: Context,
+	store: MemoryStore,
+	actorId: string,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	const now = new Date().toISOString();
+	const applied = deactivateActorAndWakePolicies(store, actorId, now, () =>
+		canChangeRecipientAccess(readConfig),
+	);
+	return applied ? c.json({ ok: true }) : c.json(ACCESS_CHANGE_REFUSAL, 403);
+}
+
+/** Inside the merge transaction: still allowed after the lock wait, and no capture conflict. */
+function actorMergeBlocked(store: MemoryStore, readConfig: typeof readCoordinatorSyncConfig) {
+	if (!canChangeRecipientAccess(readConfig))
+		return { ...ACCESS_CHANGE_REFUSAL, status: 403 as const };
+	return pendingCaptureActorMutationFailure(store);
+}
+
+function deactivateActorAndWakePolicies(
+	store: MemoryStore,
+	actorId: string,
+	now: string,
+	stillAllowed: () => boolean,
+): boolean {
+	return store.db
 		.transaction(() => {
+			if (!stillAllowed()) return false;
 			store.db
 				.prepare("UPDATE actors SET status = 'deactivated', updated_at = ? WHERE actor_id = ?")
 				.run(now, actorId);
 			store.db.prepare("UPDATE sync_peers SET actor_id = NULL WHERE actor_id = ?").run(actorId);
 			wakeRecipientPoliciesForIdentities(store.db, [actorId], now);
+			return true;
 		})
 		.immediate();
 }
@@ -6296,6 +6327,8 @@ async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
  * ready device that holds the coordinator admin secret (ADR 0007 Decision 4), so
  * other devices must not save those changes.
  */
+const ACCESS_CHANGE_REFUSAL = { error: "access_change_needs_admin_device" } as const;
+
 function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig): boolean {
 	try {
 		return isCoordinatorAdminDevice(readConfig());
@@ -6358,13 +6391,16 @@ export function installRecipientAccessChangeGate(
 	getStore: () => MemoryStore,
 	readConfig: typeof readCoordinatorSyncConfig = readCoordinatorSyncConfig,
 ): void {
-	const refuse = (c: Context) => c.json({ error: "access_change_needs_admin_device" }, 403);
+	const refuse = (c: Context) => c.json(ACCESS_CHANGE_REFUSAL, 403);
 	const allowed = () => canChangeRecipientAccess(readConfig);
 	// Each of these saves a choice of who receives a Project: recipient edges, review
-	// decisions and the migration that materializes them, and moving held-back
-	// memories into a shared scope.
+	// decisions and the migration that materializes them, moving held-back memories
+	// into a shared scope, and merging or removing a person, which moves or ends
+	// their devices' access. Merge and removal check again inside their writes.
 	for (const path of [
 		"/api/sync/recipient-policy/v1/edges/commit",
+		"/api/sync/actors/merge",
+		"/api/sync/actors/deactivate",
 		"/api/sync/recipient-policy/v1/review/resolve",
 		"/api/sync/recipient-policy/v1/review/resolve-bulk",
 		"/api/sync/legacy-shared-review/reassign",
@@ -7763,8 +7799,8 @@ export function syncRoutes(
 		const now = new Date().toISOString();
 		const result = store.db
 			.transaction(() => {
-				const conflict = pendingCaptureActorMutationFailure(store);
-				if (conflict) return conflict;
+				const blocked = actorMergeBlocked(store, readCoordinatorConfig);
+				if (blocked) return blocked;
 				const primary = d
 					.select()
 					.from(schema.actors)
@@ -8076,9 +8112,7 @@ export function syncRoutes(
 		const actor = d.select().from(schema.actors).where(eq(schema.actors.actor_id, actorId)).get();
 		if (!actor) return c.json({ error: "actor not found" }, 404);
 		if (actor.status !== "active") return c.json({ error: "actor not active" }, 409);
-		const now = new Date().toISOString();
-		deactivateActorAndWakePolicies(store, actorId, now);
-		return c.json({ ok: true });
+		return deactivationResponse(c, store, actorId, readCoordinatorConfig);
 	});
 
 	app.post("/api/sync/legacy-devices/claim", async (c) => {

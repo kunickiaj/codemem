@@ -425,6 +425,16 @@ describe("person settings error messages", () => {
 			"couldn't confirm whether Brian was merged into Casey",
 			false,
 		],
+		[
+			mergeFailure(new Error("access_change_needs_admin_device"), "Brian", "Casey"),
+			"Nothing changed. Make the change on that device.",
+			true,
+		],
+		[
+			removeFailure(new Error("access_change_needs_admin_device"), "Brian"),
+			"Nothing changed. Make the change on that device.",
+			true,
+		],
 		[removeFailure(new Error("actor not active"), "Brian"), "Refresh Sharing", true],
 		[
 			removeFailure(new Error("boom"), "Brian"),
