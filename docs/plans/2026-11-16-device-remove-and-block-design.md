@@ -434,6 +434,14 @@ caller's own group.
 | The lookup says the device is not enrolled, removed, or blocked | Local-only removal. |
 | The lookup gives no answer: the coordinator cannot be reached, predates the lookup, or does not list this device | Refuse and say why. The Viewer does not guess. An operator can still run `codemem sync peers remove`. |
 
+`codemem sync peers remove` and the Viewer's peer removal route always allow
+this device to disconnect. Without the admin secret, when a coordinator is
+configured and has not confirmed that the device is removed, blocked, or not
+enrolled, they delete only the pairing and sync progress. The binding stays
+active and no Project policy is woken. An administrator's device ends the
+binding and removes the device from Projects. Until the lookup client ships,
+the coordinator's answer is unknown.
+
 Local-only removal runs one function in one transaction: delete the pairing,
 delete its rows in both cursor tables, end the binding, and keep the pinned
 key for memory retirement requests. The result tells the user that other
@@ -443,8 +451,8 @@ That function is the only code that deletes a pairing. Four places delete a
 `sync_peers` row today: the Viewer route, `codemem sync peers remove`, the
 revocation drop, and the cleanup of coordinator-policy pairings that lost
 their last shared Project. Only the revocation drop deletes both cursor
-tables. All four call the one function, and only the policy cleanup skips
-ending the binding. This closes `codemem-l4dd`.
+tables. All four call the one function. The policy cleanup and a disconnect
+skip ending the binding. This closes `codemem-l4dd`.
 `sync_attempts` and `sync_scope_rejections` stay, because they are history for
 Advanced diagnostics and hold neither trust nor sync position.
 
@@ -552,7 +560,7 @@ The CLI keeps the operator tools for group and enrollment repair.
 | `codemem coordinator device enable <group> <device>` | New, because the Viewer's Enable leaves. |
 | `codemem coordinator device revoke <group> <device>` | Unchanged, and now works after a removal. |
 | `codemem coordinator device enroll` | Refuses a device with an active tombstone and points to an invitation. |
-| `codemem sync peers remove <peer>` | Local-only removal through the shared function. Prints the notice about other devices. |
+| `codemem sync peers remove <peer>` | Local-only removal through the shared function, or a disconnect that keeps the binding (Section 3). Prints the notice about other devices. |
 
 ## 7. Upgrade behavior
 

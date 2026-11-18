@@ -1,20 +1,30 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, removePairingState } from "@codemem/core";
-import { afterEach, expect, it } from "vitest";
+import { MemoryStore, readCoordinatorSyncConfig, removePairingState } from "@codemem/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { syncScopedChannelOnce } from "../../core/src/sync-channel-pass.js";
 import {
 	getSyncChannelProgress,
 	saveSyncChannelCompletedBoundary,
 } from "../../core/src/sync-channel-progress.js";
 import { getReplicationCursor } from "../../core/src/sync-replication.js";
-import { createApp } from "./index.js";
+import { type AppOptions, createApp } from "./index.js";
 import { SCOPE } from "./sync-channel-dispatch-test-fixtures.js";
 import { passFixture } from "./sync-channel-pass-test-fixtures.js";
 
 type Fixture = Awaited<ReturnType<typeof passFixture>>;
 const cleanups: (() => Promise<void>)[] = [];
+beforeEach(() => {
+	const directory = mkdtempSync(join(tmpdir(), "peer-delete-config-"));
+	const path = join(directory, "config.json");
+	writeFileSync(path, "{}");
+	vi.stubEnv("CODEMEM_CONFIG", path);
+	cleanups.push(async () => {
+		vi.unstubAllEnvs();
+		rmSync(directory, { recursive: true, force: true });
+	});
+});
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -83,60 +93,188 @@ it("H7: remove, then pair the same device ID again: both sides exchange the full
 	expect(titles(f, "remote")).toEqual(everything);
 });
 
-it("DELETE /api/sync/peers/:peer_device_id deletes the pairing and all its sync progress and ends the binding", async () => {
+const NOW = "2026-11-17T00:00:00.000Z";
+const COORDINATOR_URL = "https://coord.example.test";
+
+/** Coordinator settings that do not depend on the environment or a config file. */
+function coordinatorSettings(overrides: { url?: string; adminSecret?: string } = {}) {
+	const groups = overrides.url ? ["group-a"] : [];
+	return () => ({
+		...readCoordinatorSyncConfig({}),
+		syncCoordinatorUrl: overrides.url ?? "",
+		syncCoordinatorGroup: groups[0] ?? "",
+		syncCoordinatorGroups: groups,
+		syncCoordinatorAdminSecret: overrides.adminSecret ?? "",
+	});
+}
+
+const NO_COORDINATOR = coordinatorSettings();
+const WITHOUT_ADMIN_SECRET = coordinatorSettings({ url: COORDINATOR_URL });
+const ADMIN_DEVICE = coordinatorSettings({
+	url: COORDINATOR_URL,
+	adminSecret: "fixture-admin-secret",
+});
+
+/** A paired, bound device with sync progress, and a Project shared with its Identity. */
+function peerDeleteFixture(
+	options: Pick<AppOptions, "readCoordinatorConfig" | "lookupCoordinatorDeviceAnswer">,
+) {
 	const directory = mkdtempSync(join(tmpdir(), "viewer-peer-delete-"));
 	const store = new MemoryStore(join(directory, "mem.sqlite"));
 	cleanups.push(async () => {
 		store.close();
 		rmSync(directory, { recursive: true, force: true });
 	});
-	const now = "2026-11-17T00:00:00.000Z";
 	store.db
 		.prepare("INSERT INTO sync_peers(peer_device_id, name, created_at) VALUES ('peer-1', 'Old', ?)")
-		.run(now);
+		.run(NOW);
 	store.db
 		.prepare(
 			"INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at) VALUES ('peer-1', 'c1', ?)",
 		)
-		.run(now);
+		.run(NOW);
 	store.db
 		.prepare(
 			"INSERT INTO replication_cursors_v2(peer_device_id, scope_id, last_applied_cursor, updated_at) VALUES ('peer-1', 'scope-a', 'c2', ?)",
 		)
-		.run(now);
+		.run(NOW);
 	store.db
 		.prepare(
 			`INSERT INTO identity_devices(device_id, identity_id, display_name, status, provenance,
 			 revision, migration_state, idempotency_key, created_at, updated_at)
 			 VALUES ('peer-1', 'identity-a', 'Old', 'active', 'test', '1', 'user_managed', 'binding:peer-1', ?, ?)`,
 		)
-		.run(now, now);
-
+		.run(NOW, NOW);
 	saveSyncChannelCompletedBoundary(store.db, {
 		peerDeviceId: "peer-1",
 		scopeId: "scope-a",
 		boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
 	});
-
-	const response = await createApp({ storeFactory: () => store }).request(
-		"/api/sync/peers/peer-1",
-		{ method: "DELETE" },
-	);
-
-	expect(response.status).toBe(200);
-	expect(await response.json()).toEqual({ ok: true });
+	store.db
+		.prepare(
+			`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+			 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+			 VALUES ('project-a', 'identity', 'identity-a', 'active', 'test', '1', 'native', 'recipient:a', ?, ?)`,
+		)
+		.run(NOW, NOW);
+	store.db
+		.prepare(
+			`INSERT INTO recipient_policy_authority_states(canonical_project_identity, authority_state,
+			 generation, state_changed_at, last_attempt_at, created_at, updated_at)
+			 VALUES ('project-a', 'active', 1, ?, ?, ?, ?)`,
+		)
+		.run(NOW, NOW, NOW, NOW);
+	const app = createApp({ storeFactory: () => store, ...options });
 	const count = (table: string) =>
 		store.db.prepare(`SELECT COUNT(*) FROM ${table} WHERE peer_device_id = 'peer-1'`).pluck().get();
-	expect([
-		count("sync_peers"),
-		count("replication_cursors"),
-		count("replication_cursors_v2"),
-		count("sync_channel_progress"),
-	]).toEqual([0, 0, 0, 0]);
-	expect(
-		store.db
-			.prepare("SELECT status FROM identity_devices WHERE device_id = 'peer-1'")
-			.pluck()
-			.get(),
-	).toBe("removed");
+	return {
+		remove: () => app.request("/api/sync/peers/peer-1", { method: "DELETE" }),
+		state: () => ({
+			pairingAndProgress: [
+				count("sync_peers"),
+				count("replication_cursors"),
+				count("replication_cursors_v2"),
+				count("sync_channel_progress"),
+			],
+			binding: store.db
+				.prepare("SELECT status FROM identity_devices WHERE device_id = 'peer-1'")
+				.pluck()
+				.get(),
+			// The reconciler clears this when a Project's policy is woken.
+			policyLastAttemptAt: store.db
+				.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states")
+				.pluck()
+				.get(),
+		}),
+	};
+}
+
+const BINDING_ENDED = {
+	pairingAndProgress: [0, 0, 0, 0],
+	binding: "removed",
+	policyLastAttemptAt: null,
+};
+const BINDING_KEPT = {
+	pairingAndProgress: [0, 0, 0, 0],
+	binding: "active",
+	policyLastAttemptAt: NOW,
+};
+const KEPT_REPLY = {
+	ok: true,
+	binding: "kept",
+	remove_from_projects: "needs_admin_device",
+	notice: "The device stays in Projects. An administrator's device can remove it.",
+};
+
+describe("DELETE /api/sync/peers/:peer_device_id", () => {
+	it("keeps the binding with truncated config through the real default reader", async () => {
+		writeFileSync(
+			process.env.CODEMEM_CONFIG as string,
+			'{"sync_coordinator_url":"https://coordinator.invalid"',
+		);
+		const f = peerDeleteFixture({});
+		const response = await f.remove();
+		expect(response.status).toBe(200);
+		expect(f.state()).toEqual(BINDING_KEPT);
+		expect(await response.json()).toEqual(KEPT_REPLY);
+	});
+
+	it("deletes the pairing and all its sync progress and ends the binding when no coordinator is configured", async () => {
+		const f = peerDeleteFixture({ readCoordinatorConfig: NO_COORDINATOR });
+
+		const response = await f.remove();
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
+		expect(f.state()).toEqual(BINDING_ENDED);
+	});
+
+	it("without the admin secret, deletes the pairing and its sync progress, keeps the binding, wakes no Project policy, and says an admin device removes it from Projects", async () => {
+		const f = peerDeleteFixture({ readCoordinatorConfig: WITHOUT_ADMIN_SECRET });
+
+		const response = await f.remove();
+
+		expect(response.status).toBe(200);
+		expect(f.state()).toEqual(BINDING_KEPT);
+		expect(await response.json()).toEqual(KEPT_REPLY);
+	});
+
+	it("without the admin secret, keeps the binding when the coordinator says the device is enrolled", async () => {
+		const f = peerDeleteFixture({
+			readCoordinatorConfig: WITHOUT_ADMIN_SECRET,
+			lookupCoordinatorDeviceAnswer: async () => "enrolled",
+		});
+
+		const response = await f.remove();
+
+		expect(await response.json()).toEqual(KEPT_REPLY);
+		expect(f.state()).toEqual(BINDING_KEPT);
+	});
+
+	it("without the admin secret, ends the binding when the coordinator says the device is removed", async () => {
+		const asked: string[] = [];
+		const f = peerDeleteFixture({
+			readCoordinatorConfig: WITHOUT_ADMIN_SECRET,
+			lookupCoordinatorDeviceAnswer: async (deviceId) => {
+				asked.push(deviceId);
+				return "removed";
+			},
+		});
+
+		const response = await f.remove();
+
+		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
+		expect(asked).toEqual(["peer-1"]);
+		expect(f.state()).toEqual(BINDING_ENDED);
+	});
+
+	it("ends the binding on a device that holds the admin secret", async () => {
+		const f = peerDeleteFixture({ readCoordinatorConfig: ADMIN_DEVICE });
+
+		const response = await f.remove();
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ ok: true, binding: "ended" });
+		expect(f.state()).toEqual(BINDING_ENDED);
+	});
 });

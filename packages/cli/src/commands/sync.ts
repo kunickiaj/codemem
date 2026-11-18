@@ -13,6 +13,7 @@ import {
 	applyBootstrapSnapshot,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	type CoordinatorDeviceAnswerLookup,
 	DeviceIdentityError,
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
@@ -24,11 +25,12 @@ import {
 	MemoryStore,
 	mdnsEnabled,
 	mutateCodememConfigFile,
-	type PairingRemovalCounts,
+	type PeerBindingOutcome,
+	type PeerRemovalResult,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
-	removePairingState,
+	removePeerFromThisDevice,
 	requestJson,
 	resolveDbPath,
 	runSyncPass,
@@ -1043,16 +1045,27 @@ peersCommand.action((opts: { db?: string; dbPath?: string; json?: boolean }) => 
 	}
 });
 
-function reportPeerRemoved(
-	match: { peer_device_id: string; name: string | null },
-	removed: PairingRemovalCounts,
-	options: { json: boolean },
-): void {
-	const label = match.name || match.peer_device_id;
-	const notice = [
+/** What the user is told after a removal, the access sentence first when the binding was kept. */
+function peerRemovalNotices(label: string, binding: PeerBindingOutcome): string[] {
+	const pairingNotice = [
 		`Other devices still sync with ${label} until they remove it too.`,
 		`If the coordinator still lists ${label}, this device pairs with it again at the next refresh.`,
 	].join(" ");
+	if (binding === "ended") return [pairingNotice];
+	return [
+		`${label} was not removed from Projects. An administrator's device can remove it.`,
+		pairingNotice,
+	];
+}
+
+function reportPeerRemoved(
+	match: { peer_device_id: string; name: string | null },
+	result: PeerRemovalResult,
+	options: { json: boolean },
+): void {
+	const label = match.name || match.peer_device_id;
+	const { binding, removed } = result;
+	const notices = peerRemovalNotices(label, binding);
 	if (options.json) {
 		const payload = {
 			ok: true,
@@ -1065,13 +1078,17 @@ function reportPeerRemoved(
 				sync_channel_progress: removed.syncChannelProgress,
 				identity_devices: removed.identityDevices,
 			},
-			notice,
+			binding,
+			...(binding === "kept" ? { remove_from_projects: "needs_admin_device" } : {}),
+			notice: notices.join(" "),
 		};
 		console.log(JSON.stringify(payload, null, 2));
 		return;
 	}
 	p.intro("codemem sync peers remove");
-	p.log.success(`Removed peer ${label}`);
+	p.log.success(
+		binding === "kept" ? `Disconnected this device from ${label}` : `Removed peer ${label}`,
+	);
 	const progressRows =
 		removed.replicationCursors + removed.replicationCursorsV2 + removed.syncChannelProgress;
 	p.log.message(
@@ -1081,17 +1098,20 @@ function reportPeerRemoved(
 			`  Identity bindings ended: ${removed.identityDevices}`,
 		].join("\n"),
 	);
-	p.log.warn(notice);
+	for (const notice of notices) p.log.warn(notice);
 	p.outro(match.peer_device_id);
 }
 
-const peersRemoveCmd = new Command("remove")
-	.configureHelp(helpStyle)
-	.description("Remove a sync peer by device id or exact name")
-	.argument("<peer>", "peer device id or exact name");
-addDbOption(peersRemoveCmd);
-addJsonOption(peersRemoveCmd);
-peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; json?: boolean }) => {
+export interface PeerRemoveDependencies {
+	/** What the coordinator says about the peer. Without it there is no answer. */
+	lookupCoordinatorAnswer?: CoordinatorDeviceAnswerLookup;
+}
+
+export async function removeSyncPeer(
+	peerRef: string,
+	opts: { db?: string; dbPath?: string; json?: boolean },
+	dependencies: PeerRemoveDependencies = {},
+): Promise<void> {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {
 		const d = drizzle(store.db, { schema });
@@ -1115,12 +1135,12 @@ peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; js
 			return;
 		}
 		const label = match.name || match.peer_device_id;
-		let removed: PairingRemovalCounts;
+		let result: PeerRemovalResult;
 		try {
-			removed = removePairingState(store.db, {
+			result = await removePeerFromThisDevice(store.db, {
 				localDeviceId: store.deviceId,
-				reason: "local",
-				deviceIds: [match.peer_device_id],
+				peerDeviceId: match.peer_device_id,
+				lookupCoordinatorAnswer: dependencies.lookupCoordinatorAnswer,
 			});
 		} catch {
 			const message = `Could not remove peer ${label}. Nothing was changed.`;
@@ -1132,11 +1152,21 @@ peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; js
 			process.exitCode = 1;
 			return;
 		}
-		reportPeerRemoved(match, removed, { json: opts.json === true });
+		reportPeerRemoved(match, result, { json: opts.json === true });
 	} finally {
 		store.close();
 	}
-});
+}
+
+const peersRemoveCmd = new Command("remove")
+	.configureHelp(helpStyle)
+	.description("Remove a sync peer by device id or exact name")
+	.argument("<peer>", "peer device id or exact name");
+addDbOption(peersRemoveCmd);
+addJsonOption(peersRemoveCmd);
+peersRemoveCmd.action((peerRef: string, opts: { db?: string; dbPath?: string; json?: boolean }) =>
+	removeSyncPeer(peerRef, opts),
+);
 peersCommand.addCommand(peersRemoveCmd);
 syncCommand.addCommand(peersCommand);
 syncCommand.addCommand(relayKeysCommand);
