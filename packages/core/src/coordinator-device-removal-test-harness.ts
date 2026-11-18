@@ -129,7 +129,7 @@ export function insertTombstone(
 	);
 }
 
-function liftTombstones(f: RemovalFixture, deviceId: string): Promise<void> {
+export function liftTombstones(f: RemovalFixture, deviceId: string): Promise<void> {
 	return f.exec(
 		`UPDATE coordinator_device_removals SET lifted_at = '2026-11-17T01:00:00.000Z',
 			lifted_by_invite_id = 'fixture-invite' WHERE device_id = ? AND lifted_at IS NULL`,
