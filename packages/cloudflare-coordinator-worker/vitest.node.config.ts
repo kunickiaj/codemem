@@ -19,10 +19,12 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		name: "cloudflare-coordinator-worker-node",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 		// PR test selection (`--changed`) runs everything when one of these changes.
 		forceRerunTriggers: [
 			...configDefaults.forceRerunTriggers,
 			"**/vitest.*.config.*",
+			"**/test-environment-isolation.ts",
 			"**/pnpm-lock.yaml",
 			"**/pnpm-workspace.yaml",
 			"**/tsconfig*.json",

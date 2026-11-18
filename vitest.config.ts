@@ -9,6 +9,7 @@ export default defineConfig({
 		forceRerunTriggers: [
 			...configDefaults.forceRerunTriggers,
 			"**/vitest.*.config.*",
+			"**/test-environment-isolation.ts",
 			"**/pnpm-lock.yaml",
 			"**/pnpm-workspace.yaml",
 			"**/tsconfig*.json",
@@ -22,6 +23,7 @@ export default defineConfig({
 				extends: true,
 				test: {
 					name: "e2e-unit",
+					setupFiles: ["./packages/core/src/test-environment-isolation.ts"],
 					environment: "node",
 					include: ["e2e/**/*.test.ts"],
 				},

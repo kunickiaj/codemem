@@ -26,7 +26,7 @@ import {
 } from "@codemem/core";
 import { serve } from "@hono/node-server";
 import Database from "better-sqlite3";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	refreshManagedScopeFixture,
 	seedProvenMixedScopeFixture,
@@ -431,6 +431,41 @@ function mockBrowserDeadlineTimers() {
 	Object.defineProperty(globalThis, "window", { configurable: true, value: timers });
 	return () => Reflect.deleteProperty(globalThis, "window");
 }
+
+// ---------------------------------------------------------------------------
+// Config isolation
+// ---------------------------------------------------------------------------
+
+// These tests run real routes that read the codemem config and environment. An
+// empty config and no coordinator variables keep a route from reaching the
+// coordinator that the developer's own config names. The shared setup file does
+// the same for every test file. This file repeats it because it starts the most
+// routes, so it stays isolated under a config that omits the setup file. A test
+// that needs a config sets CODEMEM_CONFIG itself and restores this one.
+const isolatedConfigDirectory = mkdtempSync(join(tmpdir(), "codemem-viewer-config-test-"));
+const inheritedEnvironment = new Map<string, string | undefined>();
+
+beforeAll(() => {
+	const configPath = join(isolatedConfigDirectory, "config.json");
+	writeFileSync(configPath, "{}\n");
+	for (const name of [
+		"CODEMEM_CONFIG",
+		"CODEMEM_SYNC_COORDINATOR_ADMIN_SECRET",
+		"CODEMEM_SYNC_COORDINATOR_URL",
+	]) {
+		inheritedEnvironment.set(name, process.env[name]);
+		delete process.env[name];
+	}
+	process.env.CODEMEM_CONFIG = configPath;
+});
+
+afterAll(() => {
+	for (const [name, value] of inheritedEnvironment) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
+	rmSync(isolatedConfigDirectory, { recursive: true, force: true });
+});
 
 // ---------------------------------------------------------------------------
 // Test helpers

@@ -45,5 +45,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "core",
+		setupFiles: ["./src/test-environment-isolation.ts"],
 	},
 });

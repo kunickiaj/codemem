@@ -31,6 +31,7 @@ export default defineConfig({
 	},
 	test: {
 		name: "cloudflare-coordinator-worker",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 		include: ["src/**/*.test.ts"],
 	},
 });

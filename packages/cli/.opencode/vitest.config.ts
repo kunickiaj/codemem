@@ -11,7 +11,7 @@ export default defineConfig({
 	test: {
 		name: "cli-plugin",
 		include: [".opencode/tests/**/*.test.js"],
-		setupFiles: [".opencode/tests/setup.js"],
+		setupFiles: ["../core/src/test-environment-isolation.ts", ".opencode/tests/setup.js"],
 		exclude: ["node_modules/**"],
 	},
 });

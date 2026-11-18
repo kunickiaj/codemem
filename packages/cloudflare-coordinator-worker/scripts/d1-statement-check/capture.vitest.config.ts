@@ -26,7 +26,10 @@ export default defineConfig({
 		],
 		// The root config's worker cap does not apply to this standalone config.
 		maxWorkers: process.env.CI ? 3 : undefined,
-		setupFiles: [resolve(import.meta.dirname, "capture-setup.ts")],
+		setupFiles: [
+			resolve(core, "src/test-environment-isolation.ts"),
+			resolve(import.meta.dirname, "capture-setup.ts"),
+		],
 		// Capture needs every test to reach its statements; the suite's own run enforces speed.
 		testTimeout: 60_000,
 		hookTimeout: 60_000,

@@ -8,5 +8,9 @@ export default defineConfig({
 		sourcemap: true,
 		emptyOutDir: true,
 	},
-	test: { name: "embeddings", include: ["src/**/*.test.ts"] },
+	test: {
+		name: "embeddings",
+		include: ["src/**/*.test.ts"],
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
+	},
 });

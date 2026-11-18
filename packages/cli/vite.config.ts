@@ -55,6 +55,7 @@ export default defineConfig({
 	},
 	test: {
 		name: "cli",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 		exclude: [
 			"src/index.smoke.test.ts",
 			"scripts/semantic-worker-installed.test.mjs",
