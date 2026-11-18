@@ -209,23 +209,36 @@ describe("coordinator removal lookup", () => {
 		expect(lookups.map((call) => call.entries.length)).toEqual([25, 5]);
 		expect(readAppliedRemovalSeq(db)).toBe(41);
 	});
+});
 
-	it("H15: a lookup whose second request fails applies nothing and leaves the stored number unchanged", async () => {
-		for (let index = 0; index < 28; index += 1)
-			pair(`peer-extra-${String(index).padStart(2, "0")}`);
-		stubCoordinator(() => valid({ removal_seq: 40 }));
-		await refresh();
-		lookups = [];
-		stubCoordinator((call) =>
-			call.index === 0 ? valid({ removed: ["peer-a"], removal_seq: 44 }) : refused("busy", 503),
-		);
+describe("incomplete and stale coordinator lookups", () => {
+	it.each([
+		[503, "busy", []],
+		[503, "device_removed", []],
+		[403, "device_removed", ["group-a"]],
+	] as const)(
+		"H15: later batch %i %s applies no peer changes but preserves confirmed removal",
+		async (status, code, removedFromGroups) => {
+			for (let index = 0; index < 28; index += 1)
+				pair(`peer-extra-${String(index).padStart(2, "0")}`);
+			stubCoordinator(() => valid({ removal_seq: 40 }));
+			await refresh();
+			lookups = [];
+			stubCoordinator((call) =>
+				call.index === 0
+					? valid({ removed: ["peer-a"], revoked: ["peer-b"], removal_seq: 44 })
+					: refused(code, status),
+			);
 
-		const result = await refresh();
+			const result = await refresh();
 
-		expect(result.status).toBe("failed");
-		expect(pairedIds()).toContain("peer-a");
-		expect(readAppliedRemovalSeq(db)).toBe(40);
-	});
+			expect(result).toMatchObject({ status: "failed", revoked: 0, removed: 0 });
+			expect(pairedIds()).toEqual(expect.arrayContaining(["peer-a", "peer-b"]));
+			expect(bindingStatus("peer-a")).toBe("active");
+			expect(readAppliedRemovalSeq(db)).toBe(40);
+			expect(removalState()).toEqual({ removed: false, removedFromGroups });
+		},
+	);
 
 	it("H18: a pairing created while a lookup is running stops that lookup from storing its number", async () => {
 		stubCoordinator(() => {

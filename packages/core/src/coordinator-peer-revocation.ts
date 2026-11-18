@@ -43,10 +43,7 @@ export type PeerRemovalAnswer =
 	| { answered: false };
 
 class CheckStatusError extends Error {
-	constructor(
-		readonly status: number,
-		readonly code: string,
-	) {
+	constructor(readonly status: number) {
 		super(`peer revocation check failed (${status})`);
 	}
 }
@@ -59,7 +56,12 @@ interface PeerRemovalReply {
 }
 
 type StoreLike = Pick<MemoryStore, "db" | "dbPath">;
-type SignedRequest = { localDeviceId: string; groupId: string; keysDir?: string };
+type SignedRequest = {
+	localDeviceId: string;
+	groupId: string;
+	keysDir?: string;
+	removedFromGroups?: string[];
+};
 
 /** The stored key when the coordinator would accept it. Otherwise the device is asked about by ID only. */
 function usableKey(publicKey: string | null | undefined): string | undefined {
@@ -158,7 +160,9 @@ async function checkBatch(
 		bodyBytes,
 		timeoutS: Math.max(1, config.syncCoordinatorTimeoutS),
 	});
-	if (status !== 200) throw new CheckStatusError(status, String(response?.error ?? ""));
+	if (status === 403 && response?.error === "device_removed")
+		request.removedFromGroups?.push(request.groupId);
+	if (status !== 200) throw new CheckStatusError(status);
 	return parseReply(response, entries);
 }
 
@@ -172,11 +176,11 @@ type FirstAnswer =
  * enrollment in a group still leaves the others, so those answers let the caller
  * try the next group. Any other failure is `failed`, and the caller ends the lookup.
  */
-function groupRefusal(error: unknown): "unsupported" | "device_removed" | "refused" | "failed" {
+function groupRefusal(error: unknown): "unsupported" | "refused" | "failed" {
 	if (!(error instanceof CheckStatusError)) return "failed";
 	if (error.status === 404) return "unsupported";
 	if (error.status !== 401 && error.status !== 403 && error.status !== 409) return "failed";
-	return error.status === 403 && error.code === "device_removed" ? "device_removed" : "refused";
+	return "refused";
 }
 
 /** Finds an authorized group, recording confirmed removals even if a later request fails. */
@@ -185,17 +189,21 @@ async function firstAuthorizedGroup(
 	config: CoordinatorSyncConfig,
 	options: { localDeviceId: string; keysDir?: string },
 	firstBatch: PeerRemovalLookupEntry[],
-	removedFromGroups: string[] = [],
+	removedFromGroups?: string[],
 ): Promise<FirstAnswer> {
 	for (const groupId of config.syncCoordinatorGroups) {
 		try {
-			const reply = await checkBatch(store, config, { ...options, groupId }, firstBatch);
+			const reply = await checkBatch(
+				store,
+				config,
+				{ ...options, groupId, removedFromGroups },
+				firstBatch,
+			);
 			return { kind: "answered", groupId, reply };
 		} catch (error) {
 			const refusal = groupRefusal(error);
 			if (refusal === "failed") throw error;
 			if (refusal === "unsupported") return { kind: "unsupported" };
-			if (refusal === "device_removed") removedFromGroups.push(groupId);
 		}
 	}
 	return { kind: "refused" };
@@ -251,8 +259,9 @@ export async function fetchPeerRemovalLookup(
 			return unanswered("unsupported", generation, removedFromGroups);
 		if (first.kind === "refused") return unanswered("failed", generation, removedFromGroups);
 		const replies = [first.reply];
+		const request = { ...options, groupId: first.groupId, removedFromGroups };
 		for (const batch of laterBatches) {
-			replies.push(await checkBatch(store, config, { ...options, groupId: first.groupId }, batch));
+			replies.push(await checkBatch(store, config, request, batch));
 		}
 		return {
 			status: "checked",
