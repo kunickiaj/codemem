@@ -614,6 +614,8 @@ The implementer writes these before the code. The first group pins behavior the 
 65. Coordinator store contract (P3), SQLite and D1: commit counts a readiness record only when the device's stored presence lists the migration feature.
 66. Coordinator store contract (P3), SQLite and D1: attach accepts a readiness record that is not complete.
 67. Coordinator store contract, SQLite and D1 (in the storage change): a record is not stored when a scope authorization read fails, and the stored record stays. A record with a left-out count or a malformed entry reads as not complete. The source scopes a record was refused for are stored with it.
+68. Device readiness inventory includes exact mappings with no memories, resolved pattern mappings, and own rows in an older scope even after a mapping changes. It merges recorded repository aliases, includes private rows in the counters, and excludes peer-authored and deleted rows. It changes no local state and sends no names or content.
+69. Before readiness is advertised, the sender must prove that an inventory failure removes the group's earlier record by posting presence without the migration feature. An unidentified or ambiguous source Project must not leave an older complete record available.
 
 Validation for each stack layer is the focused tests above. The stack tip runs `pnpm run check` and the Docker scenarios `legacy-team-migration`, `project-sharing`, and `sharing-domains`.
 

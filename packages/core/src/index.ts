@@ -26,6 +26,11 @@ export * from "./attribution-diagnostics.js";
 export * from "./automatic-recall.js";
 export type { CreateBetterSqliteCoordinatorAppOptions } from "./better-sqlite-coordinator-runtime.js";
 export { createBetterSqliteCoordinatorApp } from "./better-sqlite-coordinator-runtime.js";
+export {
+	type BoundaryReadinessInventoryInput,
+	type BoundaryReadinessObservation,
+	buildBoundaryReadinessInventory,
+} from "./boundary-readiness-inventory.js";
 export type {
 	ClaudeHookAdapterEvent,
 	ClaudeHookRawEventEnvelope,
