@@ -3,6 +3,11 @@ import { hasHeadlessLinkProvenance } from "./coordinator-auth-headless-schema.js
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
 import { writeGuarded } from "./coordinator-auth-read-set.js";
 import {
+	enrollmentKeyIdSql,
+	hasDeviceRemovalSchema,
+	type RemovalColumnSql,
+} from "./coordinator-device-removal.js";
+import {
 	ed25519KeyIdForRevocation,
 	parseSshEd25519PublicKeyForRevocation,
 } from "./coordinator-ed25519-key-id-compat.js";
@@ -173,7 +178,9 @@ export async function commitOwnerEnrollment(input: OwnerEnrollmentCommitInput): 
 		update.sql += " AND a.owner_qualification_id IS ?";
 		update.values.push(a.owner_qualification_id ?? null);
 	}
-	const writes = [update, ...dependentWrites(winner, now, grants.length)];
+	// The attempt already holds the canonical key ID; an older schema has no column for it.
+	const keyIdSql = enrollmentKeyIdSql(await hasDeviceRemovalSchema(backend), "a.key_id");
+	const writes = [update, ...dependentWrites(winner, { now, grantCount: grants.length, keyIdSql })];
 	return writeOwnerEnrollment(backend, consistency.guards, writes, winner);
 }
 
@@ -294,7 +301,11 @@ function winningUpdate(
 		],
 	};
 }
-function dependentWrites(winner: string[], now: number, grantCount: number): AuthLinkStatement[] {
+function dependentWrites(
+	winner: string[],
+	options: { now: number; grantCount: number; keyIdSql: RemovalColumnSql },
+): AuthLinkStatement[] {
+	const { now, grantCount, keyIdSql } = options;
 	const binding: AuthLinkStatement = {
 		sql: `INSERT INTO coordinator_device_ownership_bindings
    (device_id,key_id,identity_id,coordinator_id,binding_id,provenance,source_ref,bound_at)
@@ -303,8 +314,8 @@ function dependentWrites(winner: string[], now: number, grantCount: number): Aut
 		values: [new Date(now).toISOString(), ...winner],
 	};
 	const enrollment: AuthLinkStatement = {
-		sql: `INSERT INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at)
-   SELECT r.group_id,a.device_id,a.public_key,a.fingerprint,a.identity_id,1,?
+		sql: `INSERT INTO enrolled_devices (group_id,device_id,public_key,fingerprint,identity_id,enabled,created_at${keyIdSql.column})
+   SELECT r.group_id,a.device_id,a.public_key,a.fingerprint,a.identity_id,1,?${keyIdSql.value}
    FROM coordinator_owner_enrollment_attempts a JOIN json_each(a.grant_revisions_json) p
    JOIN coordinator_identity_group_grants r ON r.coordinator_id = a.coordinator_id AND r.identity_id = a.identity_id
    AND r.group_id = json_extract(p.value,'$.groupId') AND r.revision = json_extract(p.value,'$.revision')

@@ -12,6 +12,7 @@ import {
 	insertDisabledEnrollment,
 	insertTombstone,
 	invitationFixture,
+	legacyInsert,
 	opaqueKey,
 	type RemovalFixture,
 	type RemovalTest,
@@ -30,6 +31,7 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 export function registerEnrollmentWriterContract(test: RemovalTest) {
 	registerInvitationRaces(test);
 	registerPinnedWriterRaces(test);
+	registerKeyIdOnUpdate(test);
 	registerKeyTextChanges(test);
 	registerKeyTextChangeFailures(test);
 	registerSuppressedKeyTextRewrites(test);
@@ -206,6 +208,45 @@ async function enrollmentUntouched(f: RemovalFixture, enrollment: Enrollment) {
 		enrollment.deviceId,
 	);
 	return rows.every((row) => row.display_name === ARRANGED_DISPLAY_NAME);
+}
+
+function registerKeyIdOnUpdate(test: RemovalTest) {
+	test("A13 a writer that updates an enrollment without a key ID fills it", async ({
+		fixture: f,
+	}) => {
+		// Arrange: four enrollments as an earlier release wrote them, one for each writer.
+		const joining = await removalDeviceKey(`${f.prefix}-joining`);
+		const shared = await removalDeviceKey(`${f.prefix}-shared`);
+		const team = await teamAcceptance(f, joining);
+		const project = await projectAcceptance(f, shared);
+		const admin = await target(f, "admin");
+		const disabled = await target(f, "disabled");
+		await f.store.createGroup(admin.groupId);
+		for (const enrollment of [team.enrollment, project.enrollment, admin, disabled])
+			await legacyInsert(f, enrollment);
+		await f.exec("UPDATE enrolled_devices SET enabled = 0 WHERE device_id = ?", disabled.deviceId);
+		// Act
+		await team.accept(f.store);
+		await project.accept(f.store);
+		await enroll(f, admin);
+		await f.store.setDeviceEnabled(disabled.groupId, disabled.deviceId, true);
+		// Assert
+		const stored = await f.rows(
+			"SELECT device_id, key_id FROM enrolled_devices WHERE device_id IN (?, ?, ?, ?)",
+			team.enrollment.deviceId,
+			project.enrollment.deviceId,
+			admin.deviceId,
+			disabled.deviceId,
+		);
+		expect(stored).toEqual(
+			expect.arrayContaining([
+				{ device_id: team.enrollment.deviceId, key_id: joining.keyId },
+				{ device_id: project.enrollment.deviceId, key_id: shared.keyId },
+				{ device_id: admin.deviceId, key_id: admin.key.keyId },
+				{ device_id: disabled.deviceId, key_id: disabled.key.keyId },
+			]),
+		);
+	});
 }
 
 /** The same canonical key as another key text, with the fingerprint of that text. */

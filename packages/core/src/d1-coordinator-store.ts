@@ -2343,12 +2343,22 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				if (typeof publicKey !== "string")
 					throw new Error("device_ownership_authorization_unavailable");
 				const keyId = await ed25519KeyIdForRevocation(publicKey);
+				const stored = storedKeyIdWrite(await this.storedKeyId(publicKey));
 				const result = await this.db
-					.prepare(`UPDATE enrolled_devices SET enabled = 1
+					.prepare(`UPDATE enrolled_devices SET enabled = 1${stored.sql.assignment}
 						WHERE group_id = ? AND device_id = ? AND public_key = ?
 						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
 						AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
-					.bind(_groupId, _deviceId, publicKey, _deviceId, keyId, _deviceId, keyId)
+					.bind(
+						...stored.values,
+						_groupId,
+						_deviceId,
+						publicKey,
+						_deviceId,
+						keyId,
+						_deviceId,
+						keyId,
+					)
 					.run();
 				if (legacyDeviceWriteChanges(result) === 1) return true;
 				const denial = legacyDeviceDenial(
