@@ -17,6 +17,10 @@ import {
 	COORDINATOR_D1_BASE_INVENTORY,
 	COORDINATOR_D1_MIGRATION_NAMES,
 } from "./coordinator-d1-schema-inventory.js";
+import {
+	DEVICE_REMOVAL_MIGRATION_NAME,
+	ENROLLMENT_REMOVAL_MIGRATION_NAME,
+} from "./coordinator-device-removal.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 
 const migrations = new URL("../../cloudflare-coordinator-worker/migrations/", import.meta.url);
@@ -314,4 +318,21 @@ describe("guarded ledger baseline", () => {
 		db.exec(coordinatorAuthStageBaselineSql("v2"));
 		expect(names(db)).toEqual([]);
 	});
+});
+
+it("baselines a database between migrations 0048 and 0049 through 0048 and leaves 0049 for apply", () => {
+	// Arrange: the chain through device removal storage, without the enrollment triggers.
+	const db = chainThrough(DEVICE_REMOVAL_MIGRATION_NAME);
+	db.exec(ledger);
+	// Act
+	db.exec(coordinatorAuthStageBaselineSql("current"));
+	const between = names(db);
+	apply(db, ENROLLMENT_REMOVAL_MIGRATION_NAME);
+	db.exec(coordinatorAuthStageBaselineSql("current"));
+	// Assert
+	expect(between).toEqual(numbered.slice(0, numbered.indexOf(DEVICE_REMOVAL_MIGRATION_NAME) + 1));
+	expect(names(db)).toEqual(
+		numbered.slice(0, numbered.indexOf(ENROLLMENT_REMOVAL_MIGRATION_NAME) + 1),
+	);
+	expect(between).toHaveLength(names(db).length - 1);
 });

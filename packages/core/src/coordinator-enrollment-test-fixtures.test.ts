@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
-import { ENROLLMENT_REMOVAL_TRIGGERS_SQL } from "./coordinator-device-removal.js";
+import { ENROLLMENT_REMOVAL_TRIGGER_NAMES } from "./coordinator-device-removal.js";
 import { removalDeviceKey } from "./coordinator-device-removal-test-harness.js";
 import {
 	appendToEnrollmentKey,
@@ -24,7 +24,9 @@ type Triggers = "installed" | "absent";
 
 async function setup(backend: Backend, triggers: Triggers) {
 	const f = setupStore(backend);
-	if (triggers === "installed") f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
+	// Schema initialization installed them. A database between migrations 0048 and 0049 has none.
+	if (triggers === "absent")
+		for (const name of ENROLLMENT_REMOVAL_TRIGGER_NAMES) f.db.exec(`DROP TRIGGER ${name}`);
 	// The sync path for a better-sqlite3 database, the async path for a D1 database.
 	const target = backend === "SQLite" ? f.db : d1EnrollmentExec(sqliteD1(f.db));
 	const key = await removalDeviceKey("helper-first");

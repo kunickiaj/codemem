@@ -107,6 +107,7 @@ import {
 } from "./coordinator-bootstrap-grant-issuance.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
+	type CoordinatorFillEnrollmentKeyIdsOptions,
 	type CoordinatorRemoveEnrollmentInput,
 	DEVICE_REMOVAL_SCHEMA_READINESS_SQL,
 	type DeviceRemovalBackend,
@@ -2385,44 +2386,24 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 	}
 
-	async removeDevice(_groupId: string, _deviceId: string): Promise<boolean> {
-		// Presence, reciprocal approvals, and the enrollment row must be removed
-		// all-or-nothing. Running them as independent statements can orphan rows
-		// (an enrolled device with no presence/approvals, or vice versa) if any
-		// one statement fails. D1 batch() is the transaction boundary here, the
-		// same convention used for audited membership changes via runAuditedBatch.
-		if (!this.db.batch) {
-			throw new Error("D1 batch support is required for atomic device removal.");
-		}
-		const results = await this.db.batch([
-			this.db
-				.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
-				.bind(_groupId, _deviceId),
-			this.db
-				.prepare(
-					"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
-				)
-				.bind(_groupId, _deviceId, _deviceId),
-			this.db
-				.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-				.bind(_groupId, _deviceId),
-		]);
-		// The enrolled_devices delete is the last statement; its changes() tells us
-		// whether the device existed, preserving the boolean return contract.
-		return batchResultChanges(results[2]) > 0;
+	/**
+	 * Records the removal in one atomic batch: the tombstone first, then the
+	 * presence row, reciprocal approvals, and the enrollment, each only when this
+	 * batch wrote the tombstone. It throws `device_removal_unavailable`, and
+	 * deletes nothing, while migration 0048 or 0049 is not applied or any
+	 * enrollment has no key ID.
+	 */
+	async removeDevice(groupId: string, deviceId: string): Promise<boolean> {
+		const result = await this.deviceRemovals.removeEnrollment({ groupId, deviceId });
+		return result.kind === "removed";
 	}
 
-	/**
-	 * Single-group removal in one atomic batch: the tombstone first, then the
-	 * presence row, reciprocal approvals, and the enrollment, each only when this
-	 * batch wrote the tombstone. removeDevice does not use it yet.
-	 */
 	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
 		return this.deviceRemovals.removeEnrollment(input);
 	}
 
 	/** Bounded, so an operator route can call it until nothing remains. */
-	async fillEnrollmentKeyIds(options?: { limit?: number }) {
+	async fillEnrollmentKeyIds(options?: CoordinatorFillEnrollmentKeyIdsOptions) {
 		return this.deviceRemovals.fillEnrollmentKeyIds(options);
 	}
 

@@ -22,7 +22,7 @@ it("exports the guarded baseline for the named stage without applying it", async
 	});
 });
 
-it("says that 0048 is recorded only when its storage exists", async () => {
+it("says that 0048 and 0049 are each recorded only when their objects exist", async () => {
 	// Arrange
 	const output = vi.spyOn(process.stdout, "write").mockReturnValue(true);
 	// Act
@@ -35,16 +35,16 @@ it("says that 0048 is recorded only when its storage exists", async () => {
 			.split("\n")
 			.filter((line) => line.startsWith("-- ")),
 	);
-	const unconditional = coordinatorD1BaselineMigrations("current").length - 1;
+	const unconditional = coordinatorD1BaselineMigrations("current").length - 2;
 	expect(current?.[0]).toBe(
 		`-- Records ${unconditional} migrations, 0001_init.sql through 0047_add_account_unlink.sql, in the existing d1_migrations ledger`,
 	);
 	expect(current?.slice(2, 4)).toEqual([
-		"-- Also records 0048_add_device_removals.sql when the storage it adds already exists.",
-		"-- Without that storage it stays unrecorded, and wrangler d1 migrations apply runs it.",
+		"-- Also records 0048_add_device_removals.sql and 0049_add_enrollment_removal_triggers.sql, each only when the objects it adds already exist.",
+		"-- A migration without them stays unrecorded, and wrangler d1 migrations apply runs it.",
 	]);
 	expect(prior?.[0]).toMatch(/ through 0046_\S+, in the existing d1_migrations ledger$/u);
-	expect(prior?.join("\n")).not.toContain("0048");
+	expect(prior?.join("\n")).not.toMatch(/0048|0049/u);
 });
 
 it("rejects an unrecognized stage instead of guessing", async () => {

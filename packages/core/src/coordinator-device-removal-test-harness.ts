@@ -13,9 +13,9 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 /**
  * Numbers in test names are the entries of group A in the removal test plan.
- * Every fixture installs ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS itself, because
- * schema initialization and migration 0048 do not install them yet, and starts
- * with no tombstone and no enrollment.
+ * Every fixture is a database as schema initialization or the migrations left
+ * it, with the enrollment triggers installed, and starts with no tombstone and
+ * no enrollment.
  */
 export type RemovalFixture = {
 	store: Store;
@@ -203,6 +203,7 @@ export function registerDeviceRemovalContract(test: RemovalTest) {
 	registerRemovalAvailability(test);
 	registerInvitationSequence(test);
 	registerKeyIdStorage(test);
+	registerBlockedFill(test);
 	registerTombstoneMatchTriggers(test);
 	registerEnrollmentChangeTriggers(test);
 	registerEnableWithoutKeyId(test);
@@ -463,7 +464,13 @@ function registerRemovalAvailability(test: RemovalTest) {
 		expect(await tombstones(f)).toEqual([]);
 		expect(await enrollments(f)).toHaveLength(2);
 		// Act: filling the key IDs makes the removal available.
-		expect(await f.store.fillEnrollmentKeyIds()).toEqual({ filled: 1, remaining: false });
+		expect(await f.store.fillEnrollmentKeyIds()).toEqual({
+			filled: 1,
+			blocked: 0,
+			skipped: 0,
+			remaining: false,
+			next: expect.any(Number),
+		});
 		expect(await f.store.removeEnrollment(removal)).toMatchObject({ kind: "removed" });
 	});
 }
@@ -547,6 +554,9 @@ function registerInvitationSequence(test: RemovalTest) {
 	});
 }
 
+/** The part of a fill result that says every row the call read was filled by it. */
+const NONE_LEFT = { blocked: 0, skipped: 0 };
+
 function registerKeyIdStorage(test: RemovalTest) {
 	test("A13 enrollment writers store the key ID, and filling covers rows that lack one", async ({
 		fixture: f,
@@ -600,17 +610,51 @@ function registerKeyIdStorage(test: RemovalTest) {
 		);
 		// Act
 		const one = await f.store.fillEnrollmentKeyIds({ limit: 1 });
-		const rest = await f.store.fillEnrollmentKeyIds();
+		const rest = await f.store.fillEnrollmentKeyIds({ after: one.next });
 		const none = await f.store.fillEnrollmentKeyIds();
-		// Assert
-		expect(one).toEqual({ filled: 1, remaining: true });
-		expect(rest.remaining).toBe(false);
-		expect(none).toEqual({ filled: 0, remaining: false });
+		// Assert: each call names the last row it read, and the next call continues after it.
+		expect(one).toEqual({ filled: 1, ...NONE_LEFT, remaining: true, next: expect.any(Number) });
+		expect(rest).toMatchObject({ blocked: 0, remaining: false });
+		expect(rest.next).toBeGreaterThan(one.next as number);
+		expect(none).toEqual({ filled: 0, ...NONE_LEFT, remaining: false, next: null });
 		expect((await enrollments(f)).map((row) => row.key_id)).toEqual([
 			admin.key.keyId,
 			joined.key.keyId,
 			"",
 		]);
+	});
+}
+
+function registerBlockedFill(test: RemovalTest) {
+	test("A13 filling leaves a row that an active tombstone matches without a key ID and counts it", async ({
+		fixture: f,
+	}) => {
+		// Arrange: two rows from before any tombstone, then a tombstone elsewhere for one device ID.
+		const blocked = await target(f, "blocked");
+		const free = await target(f, "free");
+		await f.store.createGroup(blocked.groupId);
+		await legacyInsert(f, blocked);
+		await legacyInsert(f, free);
+		await insertTombstone(f, { ...blocked, groupId: `${f.prefix}-g2` });
+		// Act: a pass in pages of one row, then a call that starts again from the first row.
+		const first = await f.store.fillEnrollmentKeyIds({ limit: 1 });
+		const second = await f.store.fillEnrollmentKeyIds({ limit: 1, after: first.next });
+		const again = await f.store.fillEnrollmentKeyIds();
+		const removal = await f.store
+			.removeEnrollment({ groupId: free.groupId, deviceId: free.deviceId })
+			.catch((error: Error) => error.message);
+		// Assert: the pass ends, and the row it could not fill keeps removal unavailable.
+		expect(first).toMatchObject({ filled: 0, blocked: 1, remaining: true });
+		expect(second).toMatchObject({ filled: 1, blocked: 0, remaining: false });
+		expect(again).toEqual({
+			filled: 0,
+			blocked: 1,
+			skipped: 0,
+			remaining: false,
+			next: first.next,
+		});
+		expect((await enrollments(f)).map((row) => row.key_id)).toEqual([null, free.key.keyId]);
+		expect(removal).toBe("device_removal_unavailable");
 	});
 }
 

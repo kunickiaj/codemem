@@ -55,7 +55,7 @@ function registerOrdinaryWrites(test: EnrollmentTest) {
 		});
 		expect(await f.rows("coordinator_device_revocations")).toEqual([]);
 	});
-	test("without revocation, disable/enable and remove/reenroll remain available", async ({
+	test("without revocation, disable/enable and removal remain available, and a removed device cannot reenroll", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -63,15 +63,22 @@ function registerOrdinaryWrites(test: EnrollmentTest) {
 		// Act
 		const disabled = await f.store.setDeviceEnabled(f.input.groupId, f.input.deviceId, false);
 		const enabled = await f.store.setDeviceEnabled(f.input.groupId, f.input.deviceId, true);
+		const reenabled = await f.store.getEnrollment(f.input.groupId, f.input.deviceId);
 		const removed = await f.store.removeDevice(f.input.groupId, f.input.deviceId);
-		await f.store.enrollDevice(f.input.groupId, f.input);
+		const reenrolled = await f.store
+			.enrollDevice(f.input.groupId, f.input)
+			.then(() => "enrolled")
+			.catch((error: Error) => error.message);
 		// Assert
 		expect([disabled, enabled, removed]).toEqual([true, true, true]);
-		expect(await f.store.getEnrollment(f.input.groupId, f.input.deviceId)).toMatchObject({
+		expect(reenabled).toMatchObject({
 			public_key: f.input.publicKey,
 			fingerprint: f.input.fingerprint,
 			enabled: 1,
 		});
+		// The removal's tombstone refuses the insert, and the writer reports its fail-closed error.
+		expect(reenrolled).toBe("device_ownership_authorization_unavailable");
+		expect(await f.store.getEnrollment(f.input.groupId, f.input.deviceId)).toBeNull();
 		expect(await f.rows("coordinator_device_revocations")).toEqual([]);
 	});
 }

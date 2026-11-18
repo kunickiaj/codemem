@@ -1,6 +1,12 @@
 import { d1EnrollmentExec } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { env } from "cloudflare:workers";
-import { describe, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import {
+	ENROLLMENT_REMOVAL_MIGRATION_NAME,
+	ENROLLMENT_REMOVAL_TRIGGERS,
+	ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL,
+	storedTriggerSql,
+} from "../../core/src/coordinator-device-removal.js";
 import {
 	invitationFixture,
 	REMOVAL_CLOCK_MS,
@@ -15,7 +21,39 @@ import {
 	recipientInvite,
 } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
-import { dropEnrollmentRemovalTriggers, resetDeviceRemovals } from "./device-removal-reset.js";
+import {
+	dropEnrollmentRemovalTriggers,
+	installEnrollmentRemovalTriggers,
+	resetDeviceRemovals,
+} from "./device-removal-reset.js";
+
+const ready = () =>
+	env.COORDINATOR_DB.prepare(ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL).first<number>("ready");
+
+// First in the file, so the database is still as the migrations created it.
+it("migration 0049 installs each enrollment trigger with the shared definition", async () => {
+	// Arrange
+	const migration = env.TEST_MIGRATIONS.find(
+		({ name }) => name === ENROLLMENT_REMOVAL_MIGRATION_NAME,
+	);
+	// Act
+	const stored = await env.COORDINATOR_DB.prepare(
+		"SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'enrolled_devices_%' ORDER BY name",
+	).all<{ name: string; sql: string }>();
+	// Assert: nine statements, and nine triggers with exactly those definitions.
+	expect(migration?.queries.map(storedTriggerSql)).toEqual(
+		ENROLLMENT_REMOVAL_TRIGGERS.map(({ sql }) => storedTriggerSql(sql)),
+	);
+	expect(
+		stored.results.map(({ name, sql }) => ({ name, sql: storedTriggerSql(sql) })),
+	).toEqual(
+		ENROLLMENT_REMOVAL_TRIGGERS.map(({ name, sql }) => ({ name, sql: storedTriggerSql(sql) })).sort(
+			(a, b) => a.name.localeCompare(b.name),
+		),
+	);
+	expect(stored.results).toHaveLength(9);
+	expect(await ready()).toBe(1);
+});
 
 let sequence = 0;
 describe("native D1 device removal", () => {
@@ -46,11 +84,34 @@ describe("native D1 device removal", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
-			await dropEnrollmentRemovalTriggers(db);
 		}
 	});
 	registerDeviceRemovalContract(test);
 	registerEnrollmentWriterContract(test);
+
+	test("between migrations 0048 and 0049 an enrollment stores its key ID and cannot be removed", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const key = await removalDeviceKey(`${f.prefix}-between`);
+		const enrollment = { groupId: `${f.prefix}-g1`, deviceId: `${f.prefix}-d1` };
+		await dropEnrollmentRemovalTriggers(env.COORDINATOR_DB);
+		try {
+			await f.store.createGroup(enrollment.groupId);
+			await f.store.enrollDevice(enrollment.groupId, { deviceId: enrollment.deviceId, ...key });
+			// Act
+			const between = { ready: await ready(), removal: f.store.removeEnrollment(enrollment) };
+			// Assert
+			expect(between.ready).toBe(0);
+			await expect(between.removal).rejects.toThrow("device_removal_unavailable");
+			expect(
+				await f.rows("SELECT key_id FROM enrolled_devices WHERE device_id = ?", enrollment.deviceId),
+			).toEqual([{ key_id: key.keyId }]);
+		} finally {
+			await installEnrollmentRemovalTriggers(env.COORDINATOR_DB);
+		}
+		expect(await f.store.removeEnrollment(enrollment)).toMatchObject({ kind: "removed" });
+	});
 
 	for (const family of ["recipient", "Project"] as const) {
 		// Native D1 gives no view between the statements of a batch, so this reads the
