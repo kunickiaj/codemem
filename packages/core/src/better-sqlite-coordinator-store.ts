@@ -154,6 +154,7 @@ import {
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
+	type CoordinatorFillEnrollmentKeyIdsOptions,
 	type CoordinatorRemoveEnrollmentInput,
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_FILL_MAX_LIMIT,
@@ -163,11 +164,13 @@ import {
 	DeviceRemovalOperations,
 	ENROLLMENT_KEY_ID_FILL_SQL,
 	ENROLLMENT_KEY_ID_UNFILLED_SQL,
+	ENROLLMENT_REMOVAL_TRIGGERS,
 	enrollmentKeyIdColumn,
 	enrollmentKeyIdSql,
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
 	type RemovalColumnSql,
+	storedTriggerSql,
 	type UnfilledEnrollmentKey,
 } from "./coordinator-device-removal.js";
 import {
@@ -736,8 +739,8 @@ function hasDeviceRemovalSchemaSync(db: DatabaseType): boolean {
 /**
  * Device removal storage: tombstones and the invitation and enrollment columns.
  * A current database is only read. Existing rows then get their key ID, which
- * SQL cannot compute. The enrollment triggers are not installed here yet; see
- * ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS.
+ * SQL cannot compute, and the enrollment triggers are installed last, so that
+ * the fill of a file from an earlier release runs before they apply.
  */
 function initializeDeviceRemovalSchema(db: DatabaseType): void {
 	const ready = () => hasDeviceRemovalSchemaSync(db);
@@ -754,6 +757,7 @@ function initializeDeviceRemovalSchema(db: DatabaseType): void {
 		}).immediate();
 	}
 	fillEnrollmentKeyIdsSync(db);
+	installEnrollmentRemovalTriggers(db);
 }
 
 /**
@@ -763,25 +767,54 @@ function initializeDeviceRemovalSchema(db: DatabaseType): void {
  */
 function fillEnrollmentKeyIdsSync(db: DatabaseType): void {
 	const unfilled = db.prepare(ENROLLMENT_KEY_ID_UNFILLED_SQL);
-	if (unfilled.all(1).length === 0) return;
+	if (unfilled.all(0, 1).length === 0) return;
 	try {
 		db.transaction(() => {
 			const fill = db.prepare(ENROLLMENT_KEY_ID_FILL_SQL);
+			let after = 0;
 			for (;;) {
-				const rows = unfilled.all(DEVICE_REMOVAL_FILL_MAX_LIMIT) as UnfilledEnrollmentKey[];
-				if (rows.length === 0) return;
+				const rows = unfilled.all(after, DEVICE_REMOVAL_FILL_MAX_LIMIT) as UnfilledEnrollmentKey[];
+				const last = rows.at(-1);
+				if (!last) return;
 				const json = JSON.stringify(
 					rows.map((row) => ({
 						...row,
 						key_id: enrollmentKeyIdColumn(enrollmentRevocationKeyId(row.public_key)),
 					})),
 				);
-				if (fill.run(json, json).changes !== rows.length) return;
+				fill.run(json, json);
+				after = last.row_id;
 			}
 		}).immediate();
 	} catch {
 		// Left unfilled; see above.
 	}
+}
+
+/** True when every enrollment trigger exists with exactly the current definition. */
+function enrollmentRemovalTriggersCurrent(db: DatabaseType): boolean {
+	const stored = db
+		.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+		.pluck();
+	return ENROLLMENT_REMOVAL_TRIGGERS.every(({ name, sql }) => {
+		const current = stored.get(name);
+		return typeof current === "string" && storedTriggerSql(current) === storedTriggerSql(sql);
+	});
+}
+
+/**
+ * A current database is only read. A missing trigger, or one whose stored
+ * definition differs from this release's, is replaced together with the others.
+ */
+function installEnrollmentRemovalTriggers(db: DatabaseType): void {
+	if (enrollmentRemovalTriggersCurrent(db)) return;
+	db.transaction(() => {
+		if (enrollmentRemovalTriggersCurrent(db)) return;
+		for (const { name, sql } of ENROLLMENT_REMOVAL_TRIGGERS) {
+			db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+			db.exec(sql);
+		}
+	}).immediate();
 }
 
 /**
@@ -2001,35 +2034,22 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return result.changes > 0;
 	}
 
+	/**
+	 * Records the removal: the tombstone, then the enrollment and its presence and
+	 * reciprocal approval rows, in one immediate transaction. It throws
+	 * `device_removal_unavailable`, and deletes nothing, while removal storage or
+	 * an enrollment trigger is missing or any enrollment has no key ID.
+	 */
 	async removeDevice(groupId: string, deviceId: string): Promise<boolean> {
-		// Atomic: a partial failure must not leave presence/approval rows
-		// orphaned against a still-enrolled device (or vice versa).
-		const removeAll = this.db.transaction(() => {
-			this.db
-				.prepare("DELETE FROM presence_records WHERE group_id = ? AND device_id = ?")
-				.run(groupId, deviceId);
-			this.db
-				.prepare(
-					"DELETE FROM coordinator_reciprocal_approvals WHERE group_id = ? AND (requesting_device_id = ? OR requested_device_id = ?)",
-				)
-				.run(groupId, deviceId, deviceId);
-			const result = this.db
-				.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-				.run(groupId, deviceId);
-			return result.changes > 0;
-		});
-		return removeAll();
+		const result = await this.deviceRemovals.removeEnrollment({ groupId, deviceId });
+		return result.kind === "removed";
 	}
 
-	/**
-	 * Single-group removal that writes the tombstone before it deletes the enrollment
-	 * and its rows. removeDevice does not use it yet.
-	 */
 	async removeEnrollment(input: CoordinatorRemoveEnrollmentInput) {
 		return this.deviceRemovals.removeEnrollment(input);
 	}
 
-	async fillEnrollmentKeyIds(options?: { limit?: number }) {
+	async fillEnrollmentKeyIds(options?: CoordinatorFillEnrollmentKeyIdsOptions) {
 		return this.deviceRemovals.fillEnrollmentKeyIds(options);
 	}
 

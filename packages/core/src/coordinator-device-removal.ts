@@ -164,11 +164,19 @@ export function enrollmentKeyIdSql(ready: boolean, value = "?"): RemovalColumnSq
 	return removalColumnSql(ready, "key_id", value);
 }
 
+/** An active tombstone `t` that matches an enrollment row with these column expressions. */
+const tombstoneMatchSql = (row: { deviceId: string; keyId: string; publicKey: string }) =>
+	`t.lifted_at IS NULL AND (
+      t.device_id = ${row.deviceId}
+      OR (${row.keyId} <> '' AND t.key_id = ${row.keyId})
+      OR (${row.keyId} = '' AND t.public_key = ${row.publicKey}))`;
+
 /** An active tombstone that matches the NEW enrollment row of a trigger. */
-const NEW_ROW_TOMBSTONE_MATCH_SQL = `t.lifted_at IS NULL AND (
-      t.device_id = NEW.device_id
-      OR (NEW.key_id <> '' AND t.key_id = NEW.key_id)
-      OR (NEW.key_id = '' AND t.public_key = NEW.public_key))`;
+const NEW_ROW_TOMBSTONE_MATCH_SQL = tombstoneMatchSql({
+	deviceId: "NEW.device_id",
+	keyId: "NEW.key_id",
+	publicKey: "NEW.public_key",
+});
 
 /**
  * Every character that String.prototype.trim removes, and that the key parser
@@ -197,10 +205,9 @@ function readsAsEd25519Sql(text: string): string {
  * table and the `key_id` column. They are a second check behind the statement
  * checks of each writer, and they do not evaluate invitations.
  *
- * Schema initialization and migration 0048 do not install them yet. A raw
- * delete of an enrollment, and a raw change to an Ed25519 key that leaves
- * `key_id` alone, both abort under them, and many existing suites arrange their
- * state that way.
+ * SQLite initialization installs them after it has filled the key IDs, and
+ * migration 0049 installs them on D1. Migration 0048 does not, so a D1 database
+ * between the two stores key IDs and cannot record a removal yet.
  */
 export const ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS: readonly string[] = Object.freeze([
 	`CREATE TRIGGER IF NOT EXISTS enrolled_devices_removal_insert
@@ -311,6 +318,42 @@ export const ENROLLMENT_REMOVAL_TRIGGER_NAMES: readonly string[] = Object.freeze
 	"enrolled_devices_removal_enable",
 ]);
 
+/** Each enrollment trigger with its name, in the order of the statements. */
+export const ENROLLMENT_REMOVAL_TRIGGERS: readonly { name: string; sql: string }[] = Object.freeze(
+	ENROLLMENT_REMOVAL_TRIGGER_NAMES.map((name, index) => ({
+		name,
+		sql: ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS[index] as string,
+	})),
+);
+
+export const ENROLLMENT_REMOVAL_MIGRATION_NAME = "0049_add_enrollment_removal_triggers.sql";
+
+/** Every enrollment trigger exists. Removal requires each of them by name. */
+const ENROLLMENT_REMOVAL_TRIGGERS_PRESENT_SQL = ENROLLMENT_REMOVAL_TRIGGER_NAMES.map(
+	(name) => `EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = '${name}')`,
+).join("\n\tAND ");
+
+/**
+ * `ready` is 1 when migration 0049, or SQLite initialization, has installed the
+ * enrollment triggers on top of device removal storage.
+ */
+export const ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL = `SELECT (
+	(${DEVICE_REMOVAL_SCHEMA_READINESS_SQL})
+	AND ${ENROLLMENT_REMOVAL_TRIGGERS_PRESENT_SQL}) AS ready`;
+
+/**
+ * A trigger definition in the form sqlite_master keeps it: no comment lines, no
+ * IF NOT EXISTS, no final semicolon. White space is collapsed for comparison.
+ */
+export function storedTriggerSql(sql: string): string {
+	return sql
+		.replace(/^\s*--.*$/gmu, "")
+		.replace(/\bIF NOT EXISTS\s+/u, "")
+		.replace(/\s+/gu, " ")
+		.trim()
+		.replace(/;$/u, "");
+}
+
 /**
  * The one statement that inserts an invitation, on both stores. With removal
  * storage it also records, as `issued_after_removal_seq`, the highest removal
@@ -357,21 +400,41 @@ export function enrollmentKeyIdColumn(keyId: string | null): string {
 export const DEVICE_REMOVAL_FILL_DEFAULT_LIMIT = 200;
 export const DEVICE_REMOVAL_FILL_MAX_LIMIT = 500;
 
+/** Bind the row ID to start after, then the page size. */
 export const ENROLLMENT_KEY_ID_UNFILLED_SQL = `SELECT rowid AS row_id, public_key
-FROM enrolled_devices WHERE key_id IS NULL ORDER BY rowid LIMIT ?`;
+FROM enrolled_devices WHERE key_id IS NULL AND rowid > ? ORDER BY rowid LIMIT ?`;
+
+const FILL_ENTRY_SQL = `json_extract(j.value, '$.row_id') = enrolled_devices.rowid
+    AND json_extract(j.value, '$.public_key') = enrolled_devices.public_key`;
 
 /**
  * Bind one JSON array of `{ row_id, public_key, key_id }` twice. The key text is
- * pinned, so a row whose key changed after the read stays unfilled.
+ * pinned, so a row whose key changed after the read stays unfilled. A row that
+ * an active tombstone matches stays unfilled too. The tombstone-match trigger
+ * would abort the whole statement for it, and its null key ID keeps removal
+ * unavailable until an operator has looked at that enrollment.
  */
 export const ENROLLMENT_KEY_ID_FILL_SQL = `UPDATE enrolled_devices SET key_id = (
   SELECT json_extract(j.value, '$.key_id') FROM json_each(?) j
-  WHERE json_extract(j.value, '$.row_id') = enrolled_devices.rowid
-    AND json_extract(j.value, '$.public_key') = enrolled_devices.public_key)
+  WHERE ${FILL_ENTRY_SQL})
 WHERE key_id IS NULL AND EXISTS (
   SELECT 1 FROM json_each(?) j
-  WHERE json_extract(j.value, '$.row_id') = enrolled_devices.rowid
-    AND json_extract(j.value, '$.public_key') = enrolled_devices.public_key)`;
+  WHERE ${FILL_ENTRY_SQL}
+    AND NOT EXISTS (SELECT 1 FROM coordinator_device_removals t WHERE ${tombstoneMatchSql({
+			deviceId: "enrolled_devices.device_id",
+			keyId: "json_extract(j.value, '$.key_id')",
+			publicKey: "enrolled_devices.public_key",
+		})}))`;
+
+/**
+ * Bind the same JSON array once, after the fill in the same transaction. A row
+ * of the page that still has its key text and no key ID is one that the fill
+ * left alone because an active tombstone matches it.
+ */
+export const ENROLLMENT_KEY_ID_BLOCKED_SQL = `SELECT COUNT(*) AS blocked
+FROM enrolled_devices WHERE key_id IS NULL AND EXISTS (
+  SELECT 1 FROM json_each(?) j
+  WHERE ${FILL_ENTRY_SQL})`;
 
 export interface UnfilledEnrollmentKey {
 	row_id: number;
@@ -384,11 +447,37 @@ export function enrollmentKeyIdFillLimit(limit: unknown): number {
 	return Math.min(limit as number, DEVICE_REMOVAL_FILL_MAX_LIMIT);
 }
 
+function enrollmentKeyIdFillStart(after: unknown): number {
+	if (after === undefined || after === null) return 0;
+	if (!Number.isSafeInteger(after) || (after as number) < 0) throw new Error("invalid_input");
+	return after as number;
+}
+
+export interface CoordinatorFillEnrollmentKeyIdsOptions {
+	/** Rows to read in this call, at most. */
+	limit?: number;
+	/** `next` of the call before, to continue after the rows that call read. */
+	after?: number | null;
+}
+
 export interface CoordinatorFillEnrollmentKeyIdsResult {
 	/** Rows filled by this call. */
 	readonly filled: number;
-	/** True when unfilled rows remain after this call. */
+	/**
+	 * Rows this call read and could not fill because an active tombstone matches
+	 * them. They keep a null key ID, and removal stays unavailable while they exist.
+	 */
+	readonly blocked: number;
+	/**
+	 * Rows this call read that another write changed before the fill, so this call
+	 * neither filled them nor found them blocked. A later pass reads any that are
+	 * still unfilled.
+	 */
+	readonly skipped: number;
+	/** True when unfilled rows remain after the rows this call read. */
 	readonly remaining: boolean;
+	/** The last row this call read, to pass as `after`. Null when it read no row. */
+	readonly next: number | null;
 }
 
 export interface CoordinatorRemoveEnrollmentInput {
@@ -409,10 +498,14 @@ export type CoordinatorRemoveEnrollmentResult =
 	| { kind: "not_enrolled" };
 
 export interface CoordinatorDeviceRemovalStore {
-	/** Fills `enrolled_devices.key_id` for at most `limit` unfilled rows. */
-	fillEnrollmentKeyIds(options?: {
-		limit?: number;
-	}): Promise<CoordinatorFillEnrollmentKeyIdsResult>;
+	/**
+	 * Fills `enrolled_devices.key_id` for at most `limit` unfilled rows after row
+	 * `after`. A caller repeats it with `after` set to `next` while `remaining` is
+	 * true. The sums of `blocked` and `skipped` over that pass count the rows it did not fill.
+	 */
+	fillEnrollmentKeyIds(
+		options?: CoordinatorFillEnrollmentKeyIdsOptions,
+	): Promise<CoordinatorFillEnrollmentKeyIdsResult>;
 	/** Removes one enrollment of one group and records its tombstone. No expansion by key. */
 	removeEnrollment(
 		input: CoordinatorRemoveEnrollmentInput,
@@ -472,6 +565,9 @@ function resultChanges(result: unknown): number {
 }
 
 const NO_UNFILLED_KEY_ID_SQL = "NOT EXISTS (SELECT 1 FROM enrolled_devices WHERE key_id IS NULL)";
+/** Without the enrollment triggers a writer of an older release could undo a removal. */
+const REMOVAL_AVAILABLE_SQL = `${NO_UNFILLED_KEY_ID_SQL}
+AND ${ENROLLMENT_REMOVAL_TRIGGERS_PRESENT_SQL}`;
 /** Bind the removal ID, group ID, and device ID, in that order. */
 const OWN_TOMBSTONE_SQL = `EXISTS (SELECT 1 FROM coordinator_device_removals t
 WHERE t.removal_id = ? AND t.group_id = ? AND t.device_id = ? AND t.lifted_at IS NULL)`;
@@ -505,7 +601,7 @@ function singleRemovalStatements(
 fingerprint, key_id, identity_id, display_name, actor_id, removed_at)
 SELECT ?, e.group_id, e.device_id, e.public_key, e.fingerprint, NULLIF(e.key_id, ''),
 e.identity_id, e.display_name, ?, ? FROM enrolled_devices e
-WHERE e.group_id = ? AND e.device_id = ? AND ${NO_UNFILLED_KEY_ID_SQL}`,
+WHERE e.group_id = ? AND e.device_id = ? AND ${REMOVAL_AVAILABLE_SQL}`,
 			values: [removalId, input.actorId, now, ...target],
 		},
 		{
@@ -533,7 +629,7 @@ WHERE removal_id = ? ORDER BY removal_seq`,
 			read: true,
 		},
 		{
-			sql: `SELECT (SELECT COUNT(*) FROM enrolled_devices WHERE key_id IS NULL) AS unfilled,
+			sql: `SELECT (${REMOVAL_AVAILABLE_SQL}) AS available,
 (SELECT COUNT(*) FROM enrolled_devices WHERE group_id = ? AND device_id = ?) AS enrolled`,
 			values: target,
 			read: true,
@@ -562,16 +658,18 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 	) {}
 
 	async fillEnrollmentKeyIds(
-		options: { limit?: number } = {},
+		options: CoordinatorFillEnrollmentKeyIdsOptions = {},
 	): Promise<CoordinatorFillEnrollmentKeyIdsResult> {
 		const limit = enrollmentKeyIdFillLimit(options.limit);
+		const after = enrollmentKeyIdFillStart(options.after);
 		const unfilled = resultRows<UnfilledEnrollmentKey>(
 			await this.backend
-				.all({ sql: ENROLLMENT_KEY_ID_UNFILLED_SQL, values: [limit + 1], read: true })
+				.all({ sql: ENROLLMENT_KEY_ID_UNFILLED_SQL, values: [after, limit + 1], read: true })
 				.catch(removalBackendFailure),
 		);
 		const page = unfilled.slice(0, limit);
-		if (page.length === 0) return { filled: 0, remaining: false };
+		const last = page.at(-1);
+		if (!last) return { filled: 0, blocked: 0, skipped: 0, remaining: false, next: null };
 		const entries = await Promise.all(
 			page.map(async (row) => ({
 				row_id: row.row_id,
@@ -581,16 +679,30 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		);
 		const json = JSON.stringify(entries);
 		const results = await this.backend
-			.batch([{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] }])
+			.batch([
+				{ sql: ENROLLMENT_KEY_ID_FILL_SQL, values: [json, json] },
+				{ sql: ENROLLMENT_KEY_ID_BLOCKED_SQL, values: [json], read: true },
+			])
 			.catch(removalBackendFailure);
-		if (results.length !== 1) return incompleteResult();
+		if (results.length !== 2) return incompleteResult();
 		const filled = resultChanges(results[0]);
-		return { filled, remaining: unfilled.length > limit || filled < page.length };
+		const blocked = resultRows<{ blocked: number }>(results[1])[0]?.blocked;
+		if (!Number.isSafeInteger(blocked)) return incompleteResult();
+		const skipped = page.length - filled - (blocked as number);
+		if (skipped < 0) return incompleteResult();
+		return {
+			filled,
+			blocked: blocked as number,
+			skipped,
+			remaining: unfilled.length > limit,
+			next: last.row_id,
+		};
 	}
 
 	/**
 	 * Single-group removal: one enrollment, no expansion by key. It refuses with
-	 * `device_removal_unavailable` while any enrollment has an unfilled key ID.
+	 * `device_removal_unavailable` while any enrollment has an unfilled key ID or
+	 * an enrollment trigger is missing, whether or not the device is enrolled.
 	 */
 	async removeEnrollment(
 		raw: CoordinatorRemoveEnrollmentInput,
@@ -607,11 +719,11 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		const writes = results.slice(0, 4).map(resultChanges);
 		if (resultRows<{ complete: number }>(results[4])[0]?.complete !== 1) return incompleteResult();
 		const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[5]);
-		const state = resultRows<{ unfilled: number; enrolled: number }>(results[6])[0];
+		const state = resultRows<{ available: number; enrolled: number }>(results[6])[0];
 		if (!state) return incompleteResult();
 		if (removals.length === 0) {
 			if (writes.some((count) => count !== 0)) return incompleteResult();
-			if (state.enrolled > 0 && state.unfilled > 0) throw new Error("device_removal_unavailable");
+			if (state.available !== 1) throw new Error("device_removal_unavailable");
 			if (state.enrolled > 0) return incompleteResult();
 			return { kind: "not_enrolled" };
 		}

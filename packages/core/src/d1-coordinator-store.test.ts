@@ -165,8 +165,8 @@ class FailingAuditBatchD1Database extends SqliteD1Database {
 class FailingDeviceRemovalBatchD1Database extends SqliteD1Database {
 	override async batch(statements: D1PreparedStatementLike[]): Promise<unknown[]> {
 		return this.db.transaction(() => {
-			// Run every delete except the final enrolled_devices delete, then fail
-			// mid-batch so the rollback restores all three row types.
+			// Run the tombstone insert and every delete, then fail before the batch
+			// ends so the rollback restores all three row types.
 			const results: unknown[] = [];
 			for (const statement of statements.slice(0, -1)) {
 				if (!(statement instanceof SqliteD1Statement)) {
@@ -751,7 +751,7 @@ describe("D1CoordinatorStore", () => {
 			});
 
 			await expect(failingStore.removeDevice("g1", "d1")).rejects.toThrow(
-				"device removal batch failed",
+				"device_removal_incomplete",
 			);
 
 			// All-or-nothing: the enrollment, presence, and reciprocal approval rows

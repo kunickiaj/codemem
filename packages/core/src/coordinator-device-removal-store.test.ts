@@ -12,8 +12,14 @@ import {
 	DEVICE_REMOVAL_COLUMNS,
 	DEVICE_REMOVAL_SCHEMA_SQL,
 	DEVICE_REMOVAL_TRIGGER_NAMES,
+	DeviceRemovalOperations,
+	ENROLLMENT_REMOVAL_MIGRATION_NAME,
+	ENROLLMENT_REMOVAL_TRIGGER_NAMES,
+	ENROLLMENT_REMOVAL_TRIGGERS,
+	ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL,
 	ENROLLMENT_REMOVAL_TRIGGERS_SQL,
 	hasDeviceRemovalSchema,
+	storedTriggerSql,
 } from "./coordinator-device-removal.js";
 import {
 	REMOVAL_CLOCK_MS,
@@ -53,11 +59,43 @@ it("keeps migration 0048 and the Worker schema aligned with the shared removal S
 	}
 });
 
+it("keeps migration 0049 and the Worker schema aligned with the shared enrollment triggers", () => {
+	// Arrange
+	const worker = new URL("../../cloudflare-coordinator-worker/", import.meta.url);
+	const [schema, migration] = ["schema.sql", `migrations/${ENROLLMENT_REMOVAL_MIGRATION_NAME}`].map(
+		(name) => normalize(readFileSync(new URL(name, worker), "utf8")),
+	);
+	// Assert: nine triggers, each under its own name, and the migration creates nothing else.
+	expect(ENROLLMENT_REMOVAL_TRIGGERS).toHaveLength(9);
+	for (const { name, sql } of ENROLLMENT_REMOVAL_TRIGGERS) {
+		expect(sql).toContain(`CREATE TRIGGER IF NOT EXISTS ${name}\n`);
+		expect(schema).toContain(normalize(sql));
+		expect(migration).toContain(normalize(sql));
+	}
+	expect(migration?.match(/\bCREATE /gu)).toHaveLength(9);
+});
+
+/** Each enrollment trigger as this release defines it, in the form sqlite_master keeps. */
+const CURRENT_ENROLLMENT_TRIGGERS = ENROLLMENT_REMOVAL_TRIGGERS.map(({ name, sql }) => ({
+	name,
+	sql: storedTriggerSql(sql),
+}));
+const storedEnrollmentTriggers = (db: Database.Database) =>
+	ENROLLMENT_REMOVAL_TRIGGER_NAMES.map((name) => {
+		const sql = db
+			.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+			.pluck()
+			.get(name);
+		return { name, sql: typeof sql === "string" ? storedTriggerSql(sql) : null };
+	});
+const dropEnrollmentTriggers = (db: Database.Database) => {
+	for (const name of ENROLLMENT_REMOVAL_TRIGGER_NAMES) db.exec(`DROP TRIGGER ${name}`);
+};
+
 describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend) => {
 	let sequence = 0;
 	const test = removalHarness(async (use) => {
 		const f = setupStore(backend, { authClock: () => REMOVAL_CLOCK_MS });
-		f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 		const prepare = f.db.prepare.bind(f.db);
 		const runOnce = (before: readonly string[], change: RemovalChange) => {
 			let done = false;
@@ -99,7 +137,53 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	registerEnrollmentWriterContract(test);
 });
 
-it.todo("schema initialization and a numbered migration install the enrollment triggers");
+describe("D1 coordinator between migrations 0048 and 0049", () => {
+	it("stores key IDs and records no removal until every enrollment trigger exists", async () => {
+		// Arrange: removal storage without the enrollment triggers.
+		const f = setupStore("D1", { authClock: () => REMOVAL_CLOCK_MS });
+		dropEnrollmentTriggers(f.db);
+		const key = await removalDeviceKey("between-migrations");
+		const ready = () => f.db.prepare(ENROLLMENT_REMOVAL_TRIGGERS_READINESS_SQL).pluck().get();
+		const removal = (deviceId: string) =>
+			f.store.removeEnrollment({ groupId: "g1", deviceId }).then(
+				(result) => result.kind,
+				(error: Error) => error.message,
+			);
+		try {
+			await f.store.createGroup("g1");
+			await f.store.enrollDevice("g1", { deviceId: "d1", ...key });
+			// Act: no trigger, then every trigger but one, for each of them in turn.
+			const none = { ready: ready(), enrolled: await removal("d1"), absent: await removal("d0") };
+			const withoutOne = [];
+			for (const name of ENROLLMENT_REMOVAL_TRIGGER_NAMES) {
+				f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
+				f.db.exec(`DROP TRIGGER ${name}`);
+				withoutOne.push({ ready: ready(), enrolled: await removal("d1") });
+			}
+			const storageReady = await hasDeviceRemovalSchema({
+				first: async <T>({ sql }: { sql: string }) => f.db.prepare(sql).get() as T,
+			});
+			const rows = f.db.prepare("SELECT device_id, key_id FROM enrolled_devices").all();
+			const tombstones = f.db.prepare("SELECT 1 FROM coordinator_device_removals").all();
+			f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
+			// Assert: the writers stored the key ID, and removal waited for migration 0049.
+			const unavailable = { ready: 0, enrolled: "device_removal_unavailable" };
+			expect(none).toEqual({ ...unavailable, absent: "device_removal_unavailable" });
+			expect(withoutOne).toEqual(ENROLLMENT_REMOVAL_TRIGGER_NAMES.map(() => unavailable));
+			expect(storageReady).toBe(true);
+			expect(rows).toEqual([{ device_id: "d1", key_id: key.keyId }]);
+			expect(tombstones).toEqual([]);
+			expect({
+				ready: ready(),
+				enrolled: await removal("d1"),
+				absent: await removal("d0"),
+			}).toEqual({ ready: 1, enrolled: "removed", absent: "not_enrolled" });
+		} finally {
+			await f.store.close();
+			f.db.close();
+		}
+	});
+});
 
 describe("device removal storage readiness", () => {
 	const ready = (db: Database.Database) =>
@@ -208,7 +292,10 @@ describe("D1 first acceptance, statement 3", () => {
 	);
 });
 
-const DROP_REMOVAL_STORAGE_SQL = `DROP TABLE coordinator_device_removals;
+const DROP_REMOVAL_STORAGE_SQL = `${ENROLLMENT_REMOVAL_TRIGGER_NAMES.map(
+	(name) => `DROP TRIGGER ${name};`,
+).join("\n")}
+	DROP TABLE coordinator_device_removals;
 	ALTER TABLE enrolled_devices DROP COLUMN key_id;
 	ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq;
 	ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq;`;
@@ -343,7 +430,10 @@ describe.each(["SQLite", "D1"] as const)(
 				]);
 				await expect(removal).rejects.toThrow("device_removal_unavailable");
 				await expect(fill).rejects.toThrow("device_removal_unavailable");
-				expect(await f.store.removeDevice("g1", "d2")).toBe(true);
+				await expect(f.store.removeDevice("g1", "d2")).rejects.toThrow(
+					"device_removal_unavailable",
+				);
+				expect(f.db.prepare("SELECT COUNT(*) FROM enrolled_devices").pluck().get()).toBe(2);
 			} finally {
 				await f.store.close();
 				f.cleanup();
@@ -394,6 +484,40 @@ describe.each(["SQLite", "D1"] as const)(
 		});
 	},
 );
+
+describe("key ID fill", () => {
+	it("counts a row that another write filled after the read as skipped", async () => {
+		// Arrange: two rows without a key ID, and a writer that fills one between the read and the fill.
+		const db = new Database(":memory:");
+		initializeBaseSchema(db);
+		db.exec(`INSERT INTO groups(group_id, created_at) VALUES ('g1', 'then');
+			INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+			VALUES ('g1', 'd1', 'pk1', 'fp1', 1, 'then'), ('g1', 'd2', 'pk2', 'fp2', 1, 'then')`);
+		const run = (statement: { sql: string; values: unknown[]; read?: boolean }) => {
+			const prepared = db.prepare(statement.sql);
+			if (statement.read) return { results: prepared.all(...statement.values) };
+			return { meta: { changes: prepared.run(...statement.values).changes } };
+		};
+		const operations = new DeviceRemovalOperations({
+			all: async (statement) => ({ results: db.prepare(statement.sql).all(...statement.values) }),
+			batch: async (statements) => {
+				db.exec("UPDATE enrolled_devices SET key_id = '' WHERE device_id = 'd1'");
+				return statements.map(run);
+			},
+		});
+		// Act
+		const result = await operations.fillEnrollmentKeyIds();
+		db.close();
+		// Assert: the pass is over, and the row it did not fill itself is reported.
+		expect(result).toEqual({
+			filled: 1,
+			blocked: 0,
+			skipped: 1,
+			remaining: false,
+			next: expect.any(Number),
+		});
+	});
+});
 
 describe("SQLite schema initialization", () => {
 	it("A13 fills the key ID of enrollments that an earlier release wrote, when the file is opened", async () => {
@@ -456,11 +580,113 @@ describe("SQLite schema initialization", () => {
 				)
 				.pluck()
 				.get();
+			const enrollmentTriggers = storedEnrollmentTriggers(store.db);
 			store.db.close();
-			// Assert
+			// Assert: the fill ran, and the enrollment triggers were installed after it.
 			expect(enrollment).toEqual([{ device_id: "d1", key_id: "" }]);
 			expect(invite).toEqual([{ invite_id: "i1", issued_after_removal_seq: null }]);
 			expect(triggers).toBe(DEVICE_REMOVAL_TRIGGER_NAMES.length);
+			expect(enrollmentTriggers).toEqual(CURRENT_ENROLLMENT_TRIGGERS);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("SQLite initialization of the enrollment triggers", () => {
+	it("installs each enrollment trigger on a new file and only reads a file that has them", () => {
+		// Arrange
+		const directory = mkdtempSync(join(tmpdir(), "codemem-removal-"));
+		const path = join(directory, "coordinator.sqlite");
+		try {
+			// Act
+			const first = new BetterSqliteCoordinatorStore(path);
+			const installed = storedEnrollmentTriggers(first.db);
+			const schemaVersion = first.db.pragma("schema_version", { simple: true });
+			first.db.close();
+			const second = new BetterSqliteCoordinatorStore(path);
+			const reopened = {
+				triggers: storedEnrollmentTriggers(second.db),
+				schemaVersion: second.db.pragma("schema_version", { simple: true }),
+			};
+			second.db.close();
+			// Assert: the second open changed no object of the schema.
+			expect(installed).toEqual(CURRENT_ENROLLMENT_TRIGGERS);
+			expect(reopened).toEqual({ triggers: CURRENT_ENROLLMENT_TRIGGERS, schemaVersion });
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		["one is missing", "DROP TRIGGER enrolled_devices_removal_delete"],
+		[
+			"one has another definition and one is missing",
+			// The enable rule before it required a key ID, and no rule for an updated row ID.
+			`DROP TRIGGER enrolled_devices_rowid_update; DROP TRIGGER enrolled_devices_removal_enable;
+			CREATE TRIGGER enrolled_devices_removal_enable BEFORE UPDATE OF enabled ON enrolled_devices
+			WHEN NEW.enabled = 1 AND OLD.enabled = 0 BEGIN SELECT RAISE(ABORT, 'device_removed') WHERE 0; END`,
+		],
+	])("installs the current definitions again when %s", async (_state, drift) => {
+		// Arrange: a file with one enrollment, and a trigger that another release owns.
+		const directory = mkdtempSync(join(tmpdir(), "codemem-removal-"));
+		const path = join(directory, "coordinator.sqlite");
+		const other = `CREATE TRIGGER enrolled_devices_other AFTER UPDATE ON enrolled_devices
+			BEGIN SELECT 1; END`;
+		try {
+			const first = new BetterSqliteCoordinatorStore(path);
+			await first.createGroup("g1");
+			await first.enrollDevice("g1", { deviceId: "d1", publicKey: "pk1", fingerprint: "fp1" });
+			first.db.exec(`${other}; ${drift}`);
+			const drifted = storedEnrollmentTriggers(first.db);
+			first.db.close();
+			// Act
+			const second = new BetterSqliteCoordinatorStore(path);
+			const triggers = storedEnrollmentTriggers(second.db);
+			const kept = second.db
+				.prepare("SELECT sql FROM sqlite_master WHERE name = 'enrolled_devices_other'")
+				.pluck()
+				.get();
+			const rows = second.db.prepare("SELECT device_id, key_id FROM enrolled_devices").all();
+			second.db.close();
+			// Assert
+			expect(drifted).not.toEqual(CURRENT_ENROLLMENT_TRIGGERS);
+			expect(triggers).toEqual(CURRENT_ENROLLMENT_TRIGGERS);
+			expect(kept).toBe(other);
+			expect(rows).toEqual([{ device_id: "d1", key_id: "" }]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves a row that an active tombstone matches unfilled and installs the triggers", async () => {
+		// Arrange: two rows of an earlier release, and a tombstone elsewhere for one device ID.
+		const directory = mkdtempSync(join(tmpdir(), "codemem-removal-"));
+		const path = join(directory, "coordinator.sqlite");
+		try {
+			const first = new BetterSqliteCoordinatorStore(path);
+			await first.createGroup("g1");
+			dropEnrollmentTriggers(first.db);
+			first.db.exec(`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+				VALUES ('g1', 'removed-elsewhere', 'pk1', 'fp1', 1, 'then'), ('g1', 'd2', 'pk2', 'fp2', 1, 'then');
+				INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key, fingerprint, removed_at)
+				VALUES ('r1', 'g2', 'removed-elsewhere', 'pk9', 'fp9', 'then')`);
+			first.db.close();
+			// Act
+			const second = new BetterSqliteCoordinatorStore(path);
+			const rows = second.db
+				.prepare("SELECT device_id, key_id FROM enrolled_devices ORDER BY device_id")
+				.all();
+			const triggers = storedEnrollmentTriggers(second.db);
+			const removal = second.removeEnrollment({ groupId: "g1", deviceId: "d2" });
+			// Assert: the null key ID keeps removal unavailable.
+			expect(rows).toEqual([
+				{ device_id: "d2", key_id: "" },
+				{ device_id: "removed-elsewhere", key_id: null },
+			]);
+			expect(triggers).toEqual(CURRENT_ENROLLMENT_TRIGGERS);
+			await expect(removal).rejects.toThrow("device_removal_unavailable");
+			second.db.close();
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

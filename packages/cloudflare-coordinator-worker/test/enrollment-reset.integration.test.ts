@@ -1,6 +1,5 @@
 import { env } from "cloudflare:workers";
 import { afterAll, describe, expect, it } from "vitest";
-import { ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS } from "../../core/src/coordinator-device-removal.js";
 import {
 	changeEnrollmentKey,
 	d1EnrollmentExec,
@@ -8,7 +7,10 @@ import {
 	enrollmentTestKeyId,
 	seedEnrollment,
 } from "../../core/src/coordinator-enrollment-test-fixtures.js";
-import { dropEnrollmentRemovalTriggers } from "./device-removal-reset.js";
+import {
+	dropEnrollmentRemovalTriggers,
+	installEnrollmentRemovalTriggers,
+} from "./device-removal-reset.js";
 import { resetEnrollments } from "./enrollment-reset.js";
 
 const db = env.COORDINATOR_DB;
@@ -25,7 +27,7 @@ const tombstone = (deviceId: string) =>
 		.bind(deviceId)
 		.run();
 
-afterAll(() => dropEnrollmentRemovalTriggers(db));
+afterAll(() => installEnrollmentRemovalTriggers(db));
 
 describe.each(["absent", "installed"] as const)(
 	"native D1 enrollment test helpers with the enrollment triggers %s",
@@ -33,8 +35,7 @@ describe.each(["absent", "installed"] as const)(
 		async function arrange() {
 			await dropEnrollmentRemovalTriggers(db);
 			await resetEnrollments(db);
-			if (state === "installed")
-				await db.batch(ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS.map((sql) => db.prepare(sql)));
+			if (state === "installed") await installEnrollmentRemovalTriggers(db);
 			for (const groupId of ["g1", "g2"])
 				for (const deviceId of ["d1", "d2"])
 					await seedEnrollment(exec, { groupId, deviceId, publicKey: `opaque ${deviceId}` });

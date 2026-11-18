@@ -15,11 +15,11 @@ interface Options {
 	json?: boolean;
 }
 
-/** Names the migrations that the statement records only when their storage exists. */
+/** Names the migrations that the statement records only when their objects exist. */
 function conditionalMigrationsText(stage: Stage): string {
 	const conditional = coordinatorD1ConditionalBaselineMigrations(stage);
 	if (conditional.length === 0) return "";
-	return `-- Also records ${conditional.join(", ")} when the storage it adds already exists.\n-- Without that storage it stays unrecorded, and wrangler d1 migrations apply runs it.\n`;
+	return `-- Also records ${conditional.join(" and ")}, each only when the objects it adds already exist.\n-- A migration without them stays unrecorded, and wrangler d1 migrations apply runs it.\n`;
 }
 
 function exportBaseline(options: Options): void {

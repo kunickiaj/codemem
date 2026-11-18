@@ -586,6 +586,17 @@ file leaves the database unchanged there. Remote `wrangler d1 migrations apply` 
 request is atomic, or that it accepts the largest file: `0047` is about 138 KB in nine statements, and its largest
 statement is about 72 KB, under D1's 100 KB statement limit. Try the chain on a copy of the production database first.
 
+`0049` installs triggers on `enrolled_devices` that the writes of a Worker or CLI from before 0.50 do not pass. With
+the triggers installed, an older release can still enroll a new device until the first removal is recorded. It can no
+longer remove a device, and it can no longer enroll a device that is already enrolled in the group, whether or not any
+removal exists. Apply `0049` in the same window as the 0.50 Worker deploy. A SQLite coordinator installs the same
+triggers the first time 0.50 opens its file, so an older binary pointed at that file fails the same way.
+
+To run an older Worker after `0049`, drop the nine `enrolled_devices_*` triggers that `0049` created. An older Worker
+does not enforce the removals recorded so far, so a removed device can then be enrolled again. When 0.50 returns, it
+reports device removal as unavailable until the triggers are back. Every statement of `0049` is
+`CREATE TRIGGER IF NOT EXISTS`, so running that file again with `wrangler d1 execute --file` restores them.
+
 On any error, stop and inspect the database rather than resetting tables, copying data, synthesizing proof, or
 restoring unrelated traffic. Existing sessions remain valid until unlink or administrator revocation.
 
@@ -639,7 +650,8 @@ every migration from `0001` and fail on the first change that already exists. Re
 
    The statement records every numbered migration from `0001` through that stage's last migration (`0045` for `v2`,
    `0046` for `prior_extension`, `0047` for `current`). For `current` it also records `0048` when the device removal
-   storage that `0048` adds already exists. When that storage is missing, `0048` stays unrecorded and the next
+   storage that `0048` adds already exists, and `0049` when the enrollment triggers that `0049` adds already exist.
+   Each is checked on its own. A migration whose objects are missing stays unrecorded and the next
    `migrations apply` runs it. The statement requires that stage's auth readiness checks to pass and
    checks table and column names for the remaining earlier tables, including controller attestations and sign-in
    purge floors. This inventory does not validate column types, constraints, indexes, triggers or row validity.
