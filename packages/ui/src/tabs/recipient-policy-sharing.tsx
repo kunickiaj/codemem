@@ -63,8 +63,8 @@ type PendingTeamSetupStatus = LegacyTeamSetupPendingCandidateSummaryV1["status"]
 
 const TEAM_SETUP_STATUS_LABELS: Record<PendingTeamSetupStatus, string> = {
 	needs_setup: "Ready to review",
-	in_progress: "Migration in progress",
-	stale: "Migration review needs update",
+	in_progress: "Setup in progress",
+	stale: "Setup needs a fresh review",
 };
 
 const TEAM_SETUP_STATUS_CLASSES: Record<PendingTeamSetupStatus, string> = {
@@ -168,8 +168,8 @@ function TeamSetupOverview({
 			aria-labelledby="sharing-team-setup-heading"
 			className="peer-card peer-card--padded recipient-policy-sharing-attention"
 		>
-			<h3 id="sharing-team-setup-heading">Legacy groups to migrate</h3>
-			<p>Review current devices before migrating Team membership or project access.</p>
+			<h3 id="sharing-team-setup-heading">Teams to finish setting up</h3>
+			<p>Confirm who uses each device and which Projects each Team shares, then finish setup.</p>
 			<ul
 				{...EXPLICIT_LIST_ROLE}
 				className="recipient-policy-sharing-team-setup-list"
@@ -193,7 +193,7 @@ function TeamSetupOverview({
 								const safeSummary = `${countLabel(candidate.deviceCount, "device")}, ${countLabel(candidate.projectCount, "Project")}`;
 								const action = candidate.blockingError
 									? "View recovery details"
-									: "Review and migrate";
+									: "Finish setting up";
 								const actionLabel =
 									group.candidates.length > 1
 										? `${action} ${group.displayName} ${ordinal}: ${safeSummary}`
