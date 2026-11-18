@@ -977,6 +977,7 @@ export {
 	type PeerProjectFilters,
 	peerProjectFilterChangeOnlyNarrows,
 	peerProjectFiltersOnlyNarrow,
+	readPeerProjectFilterAuthority,
 	type SetPeerProjectFilterResult,
 	setPeerProjectFilterChecked,
 } from "./peer-project-filter-change.js";

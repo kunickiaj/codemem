@@ -101,6 +101,16 @@ describe("sync pair --accept on a device without the admin secret", () => {
 	beforeEach(() => configure(WITHOUT_SECRET));
 
 	it.each([
+		[{ include: ["work"], exclude: [] }, ["--include", "/repos/work"]],
+		[{ include: [], exclude: ["/repos/secret"] }, ["--exclude", "secret"]],
+		[{ include: ["work", "play"], exclude: ["secret"] }, ["--include", "work"]],
+	])("allows a narrowing change from %o with %o", async (current, flags) => {
+		pairedWith(current);
+
+		expect(await accept(...flags)).toEqual({ ok: true, peer_device_id: PEER });
+	});
+
+	it.each([
 		["--all", ["--all"]],
 		["an exclude list without the excluded Project", ["--exclude", "other"]],
 		["--default", ["--default"]],
@@ -145,6 +155,46 @@ describe("sync pair --accept on a device without the admin secret", () => {
 		expect(result).toEqual({ ok: true, peer_device_id: PEER });
 		expect(sends("secret")).toBe(false);
 		expect(pairingName()).toBe("after");
+	});
+});
+
+describe("sync pair --accept after a coordinator is configured on a device that had none", () => {
+	it("turns widening off once the coordinator's address is set without the admin secret", async () => {
+		pairedWith({ include: [], exclude: ["secret", "other"] });
+		configure({});
+		expect(await accept("--exclude", "secret")).toEqual({ ok: true, peer_device_id: PEER });
+		expect(sends("other")).toBe(true);
+
+		configure({ sync_coordinator_url: COORDINATOR.sync_coordinator_url });
+		const result = await accept("--all");
+
+		expect(result).toEqual({ error: "pairing_failed", message: REFUSED });
+		expect(sends("secret")).toBe(false);
+	});
+});
+
+describe("sync pair filter authority uses the runtime configuration", () => {
+	it.each(["missing.json", "standalone.json"])(
+		"does not gain authority from --config %s",
+		async (name) => {
+			pairedWith({ include: [], exclude: ["secret"] });
+			configure(WITHOUT_SECRET);
+			if (name === "standalone.json") writeFileSync(join(dir, name), "{}");
+
+			const result = await accept("--all", "--config", join(dir, name));
+
+			expect(result).toEqual({ error: "pairing_failed", message: REFUSED });
+			expect(sends("secret")).toBe(false);
+			expect(pairingName()).toBe("before");
+		},
+	);
+
+	it("does not treat damaged configuration as a standalone installation", async () => {
+		pairedWith({ include: [], exclude: ["secret"] });
+		writeFileSync(join(dir, "config.json"), "{");
+
+		expect(await accept("--all")).toEqual({ error: "pairing_failed", message: REFUSED });
+		expect(sends("secret")).toBe(false);
 	});
 });
 

@@ -15,7 +15,6 @@ import {
 	buildDirectPeerAuthHeaders,
 	type CoordinatorDeviceAnswerLookup,
 	DeviceIdentityError,
-	deviceMayWidenPeerProjectFilters,
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
@@ -33,6 +32,7 @@ import {
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
+	readPeerProjectFilterAuthority,
 	removePeerFromThisDevice,
 	requestJson,
 	resolveDbPath,
@@ -406,9 +406,7 @@ let pairRun: { filters: PeerProjectFilterLists | null; mayWiden: boolean } | nul
 function beginPairRun(opts: SyncPairOptions): void {
 	pairRun = {
 		filters: pairFilterChange(opts),
-		mayWiden: deviceMayWidenPeerProjectFilters(
-			readCoordinatorSyncConfig(readCliConfig(opts.config)),
-		),
+		mayWiden: readPeerProjectFilterAuthority(),
 	};
 }
 

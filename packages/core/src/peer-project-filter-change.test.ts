@@ -9,7 +9,7 @@ import {
 	peerProjectFiltersOnlyNarrow,
 	setPeerProjectFilterChecked,
 } from "./peer-project-filter-change.js";
-import { syncProjectAllowed } from "./sync-replication.js";
+import { syncProjectAllowed, syncProjectAllowedByFilters } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const PEER = "peer-1";
@@ -89,11 +89,64 @@ describe("whether new filters send nothing the current ones hold back", () => {
 			"an excluded path replaced by its folder name",
 			filters([], ["/code/secret"]),
 			filters([], ["secret"]),
+			true,
+		],
+		[
+			"an included basename restricted to one path",
+			filters(["work"], []),
+			filters(["/repos/work"], []),
+			true,
+		],
+		[
+			"a redundant exclusion removed while the include list shrinks",
+			filters(["work", "play"], ["secret"]),
+			filters(["work"], []),
+			true,
+		],
+		[
+			"one included path expanded to every matching basename",
+			filters(["/repos/work"], []),
+			filters(["work"], []),
+			false,
+		],
+		[
+			"an exclusion narrowed from every basename to one path",
+			filters([], ["secret"]),
+			filters([], ["/repos/secret"]),
 			false,
 		],
 	])("%s: %o to %o only narrows: %s", (_name, current, next, expected) => {
 		expect(peerProjectFiltersOnlyNarrow(current, next)).toBe(expected);
 	});
+});
+
+it("agrees with delivery across literal, basename, slash and backslash cases", () => {
+	const lists = [[], ["work"], ["/repos/work"], ["work", "play"], ["secret"], ["work/"]];
+	const values = [
+		"",
+		"work",
+		"work/",
+		"work\\",
+		"/repos/work",
+		"/else/work",
+		"\\else\\work",
+		"play",
+		"/else/play",
+		"secret",
+		"/else/secret",
+		"unknown",
+		"/else/unknown",
+	];
+	const filters = lists.flatMap((include) => lists.map((exclude) => ({ include, exclude })));
+	for (const current of filters) {
+		for (const next of filters) {
+			const widens = values.some(
+				(value) =>
+					syncProjectAllowedByFilters(value, next) && !syncProjectAllowedByFilters(value, current),
+			);
+			expect(peerProjectFiltersOnlyNarrow(current, next)).toBe(!widens);
+		}
+	}
 });
 
 describe("a device that may not widen what a pairing receives", () => {
@@ -143,6 +196,16 @@ describe("a device that may not widen what a pairing receives", () => {
 		expect(sends("work")).toBe(true);
 	});
 
+	it("compares the trimmed lists that delivery will read after storage", () => {
+		pairingFilters({ include: ["work"], exclude: [] });
+
+		expect(save({ include: [" play ", ""], exclude: [] })).toBe("needs_admin_device");
+		expect(sends("play")).toBe(false);
+		expect(save({ include: [" /repos/work ", ""], exclude: [] })).toBe("saved");
+		expect(sends("/repos/work")).toBe(true);
+		expect(sends("/else/work")).toBe(false);
+	});
+
 	it("can go back to the shared filters when they send no more than the pairing's own", () => {
 		globalFilters({ include: ["work"], exclude: ["secret"] });
 		pairingFilters({ include: ["work", "play"], exclude: ["secret"] });
@@ -184,6 +247,11 @@ describe("which device may widen what a pairing receives", () => {
 			false,
 		],
 		["a device with the secret and no group", { ...coordinator, syncCoordinatorGroups: [] }, false],
+		[
+			"a device with only the coordinator's address",
+			{ ...coordinator, syncCoordinatorGroups: [], syncCoordinatorAdminSecret: "" },
+			false,
+		],
 	])("%s: %o may widen: %s", (_name, config, expected) => {
 		expect(deviceMayWidenPeerProjectFilters(config)).toBe(expected);
 	});
@@ -201,11 +269,12 @@ describe("filters a new pairing starts with", () => {
 
 	it("are refused when they send a Project the shared filters hold back", () => {
 		expect(refused([], [])).toBe(true);
-		expect(refused(["work"], null)).toBe(true);
+		expect(refused(["secret"], null)).toBe(true);
 	});
 
 	it("are accepted when they hold back at least what the shared filters do", () => {
 		expect(refused(["work"], ["secret"])).toBe(false);
+		expect(refused(["work"], null)).toBe(false);
 		expect(refused(null, ["secret", "other"])).toBe(false);
 	});
 
