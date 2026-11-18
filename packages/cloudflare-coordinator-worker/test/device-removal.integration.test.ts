@@ -14,6 +14,7 @@ import {
 	removalDeviceKey,
 	removalHarness,
 } from "../../core/src/coordinator-device-removal-test-harness.js";
+import { registerDeviceRemovalPreviewContract } from "../../core/src/coordinator-device-removal-preview-test-harness.js";
 import { registerEnrollmentWriterContract } from "../../core/src/coordinator-device-removal-writer-test-harness.js";
 import { projectInvite } from "../../core/src/coordinator-project-revocation-test-harness.js";
 import {
@@ -88,6 +89,7 @@ describe("native D1 device removal", () => {
 	});
 	registerDeviceRemovalContract(test);
 	registerEnrollmentWriterContract(test);
+	registerDeviceRemovalPreviewContract(test);
 
 	test("between migrations 0048 and 0049 an enrollment stores its key ID and cannot be removed", async ({
 		fixture: f,
@@ -101,9 +103,11 @@ describe("native D1 device removal", () => {
 			await f.store.enrollDevice(enrollment.groupId, { deviceId: enrollment.deviceId, ...key });
 			// Act
 			const between = { ready: await ready(), removal: f.store.removeEnrollment(enrollment) };
+			const preview = f.store.previewDeviceRemoval({ deviceIds: [enrollment.deviceId] });
 			// Assert
 			expect(between.ready).toBe(0);
 			await expect(between.removal).rejects.toThrow("device_removal_unavailable");
+			await expect(preview).rejects.toThrow("device_removal_unavailable");
 			expect(
 				await f.rows("SELECT key_id FROM enrolled_devices WHERE device_id = ?", enrollment.deviceId),
 			).toEqual([{ key_id: key.keyId }]);

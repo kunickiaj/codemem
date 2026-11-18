@@ -1,5 +1,17 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+import {
+	type CoordinatorDeviceRemovalPreviewInput,
+	type CoordinatorDeviceRemovalPreviewResult,
+	type CoordinatorDeviceRemovalRefusal,
+	captureRemovalDeviceIds,
+	type DeviceRemovalTarget,
+	deviceRemovalDigest,
+	type RemovalTargetState,
+	readRemovalTarget,
+	removalPreviewEnrollments,
+	removalTargetStatements,
+} from "./coordinator-device-removal-target.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 
 /**
@@ -531,6 +543,13 @@ export interface CoordinatorDeviceRemovalStore {
 	removeEnrollment(
 		input: CoordinatorRemoveEnrollmentInput,
 	): Promise<CoordinatorRemoveEnrollmentResult>;
+	/**
+	 * Reads which enrollments a removal of these device IDs would delete, in any
+	 * group and under any device ID that holds the same key, and writes nothing.
+	 */
+	previewDeviceRemoval(
+		input: CoordinatorDeviceRemovalPreviewInput,
+	): Promise<CoordinatorDeviceRemovalPreviewResult>;
 }
 
 interface RemovalStatement {
@@ -751,5 +770,40 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		if (removals.length !== 1 || writes[0] !== 1 || writes[3] !== 1 || state.enrolled !== 0)
 			return incompleteResult();
 		return { kind: "removed", removal_id: removalId, removals };
+	}
+
+	/**
+	 * The target set, read in one transaction or batch. It throws
+	 * `device_removal_unavailable` under the conditions of a removal, whether or
+	 * not a device is enrolled, and `device_removal_incomplete` for reads that do
+	 * not describe one consistent set.
+	 */
+	private async readTarget(
+		raw: unknown,
+	): Promise<CoordinatorDeviceRemovalRefusal | DeviceRemovalTarget> {
+		const deviceIds = captureRemovalDeviceIds(raw);
+		const statements = removalTargetStatements(deviceIds, REMOVAL_AVAILABLE_SQL);
+		const results = await this.backend.batch(statements).catch(removalBackendFailure);
+		if (results.length !== statements.length) return incompleteResult();
+		const state = resultRows<RemovalTargetState>(results[0])[0];
+		if (state?.available === 0) throw new Error("device_removal_unavailable");
+		return readRemovalTarget(deviceIds, state, resultRows(results[1])) ?? incompleteResult();
+	}
+
+	async previewDeviceRemoval(
+		raw: CoordinatorDeviceRemovalPreviewInput,
+	): Promise<CoordinatorDeviceRemovalPreviewResult> {
+		const target = await this.readTarget(raw);
+		if (typeof target === "string") return { kind: "rejected", error: target };
+		return {
+			kind: "ready",
+			device_ids: target.deviceIds,
+			key_id: target.keyId,
+			enrollments: removalPreviewEnrollments(target.rows),
+			// A device with an ownership binding is refused by every invitation. Its return
+			// by owner sign-in is not built, so `sign_in` is never advised yet.
+			rejoin: target.bound ? "none" : "invitation",
+			expected_digest: await deviceRemovalDigest(target),
+		};
 	}
 }

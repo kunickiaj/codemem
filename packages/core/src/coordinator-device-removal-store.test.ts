@@ -21,6 +21,7 @@ import {
 	hasDeviceRemovalSchema,
 	storedTriggerSql,
 } from "./coordinator-device-removal.js";
+import { registerDeviceRemovalPreviewContract } from "./coordinator-device-removal-preview-test-harness.js";
 import {
 	REMOVAL_CLOCK_MS,
 	type RemovalChange,
@@ -135,6 +136,7 @@ describe.each(["SQLite", "D1"] as const)("%s device removal contract", (backend)
 	});
 	registerDeviceRemovalContract(test);
 	registerEnrollmentWriterContract(test);
+	registerDeviceRemovalPreviewContract(test);
 });
 
 describe("D1 coordinator between migrations 0048 and 0049", () => {
@@ -149,16 +151,30 @@ describe("D1 coordinator between migrations 0048 and 0049", () => {
 				(result) => result.kind,
 				(error: Error) => error.message,
 			);
+		const preview = () =>
+			f.store.previewDeviceRemoval({ deviceIds: ["d1"] }).then(
+				(result) => result.kind,
+				(error: Error) => error.message,
+			);
 		try {
 			await f.store.createGroup("g1");
 			await f.store.enrollDevice("g1", { deviceId: "d1", ...key });
 			// Act: no trigger, then every trigger but one, for each of them in turn.
-			const none = { ready: ready(), enrolled: await removal("d1"), absent: await removal("d0") };
+			const none = {
+				ready: ready(),
+				enrolled: await removal("d1"),
+				preview: await preview(),
+				absent: await removal("d0"),
+			};
 			const withoutOne = [];
 			for (const name of ENROLLMENT_REMOVAL_TRIGGER_NAMES) {
 				f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 				f.db.exec(`DROP TRIGGER ${name}`);
-				withoutOne.push({ ready: ready(), enrolled: await removal("d1") });
+				withoutOne.push({
+					ready: ready(),
+					enrolled: await removal("d1"),
+					preview: await preview(),
+				});
 			}
 			const storageReady = await hasDeviceRemovalSchema({
 				first: async <T>({ sql }: { sql: string }) => f.db.prepare(sql).get() as T,
@@ -167,7 +183,11 @@ describe("D1 coordinator between migrations 0048 and 0049", () => {
 			const tombstones = f.db.prepare("SELECT 1 FROM coordinator_device_removals").all();
 			f.db.exec(ENROLLMENT_REMOVAL_TRIGGERS_SQL);
 			// Assert: the writers stored the key ID, and removal waited for migration 0049.
-			const unavailable = { ready: 0, enrolled: "device_removal_unavailable" };
+			const unavailable = {
+				ready: 0,
+				enrolled: "device_removal_unavailable",
+				preview: "device_removal_unavailable",
+			};
 			expect(none).toEqual({ ...unavailable, absent: "device_removal_unavailable" });
 			expect(withoutOne).toEqual(ENROLLMENT_REMOVAL_TRIGGER_NAMES.map(() => unavailable));
 			expect(storageReady).toBe(true);
@@ -417,6 +437,7 @@ describe.each(["SQLite", "D1"] as const)(
 					await f.store.reviewJoinRequest({ requestId: joiner.request_id, approved: true }),
 				];
 				const removal = f.store.removeEnrollment({ groupId: "g1", deviceId: "d1" });
+				const preview = f.store.previewDeviceRemoval({ deviceIds: ["d1"] });
 				const fill = f.store.fillEnrollmentKeyIds();
 				// Assert
 				expect(reviews.map((review) => review?.status)).toEqual(["approved", "approved"]);
@@ -429,6 +450,7 @@ describe.each(["SQLite", "D1"] as const)(
 					{ device_id: "d2", public_key: first.publicKey },
 				]);
 				await expect(removal).rejects.toThrow("device_removal_unavailable");
+				await expect(preview).rejects.toThrow("device_removal_unavailable");
 				await expect(fill).rejects.toThrow("device_removal_unavailable");
 				await expect(f.store.removeDevice("g1", "d2")).rejects.toThrow(
 					"device_removal_unavailable",
