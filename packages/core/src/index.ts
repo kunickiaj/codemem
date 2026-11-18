@@ -971,6 +971,16 @@ export {
 	removePairingState,
 } from "./pairing-removal.js";
 export {
+	deviceMayWidenPeerProjectFilters,
+	newPairingFiltersNeedAdmin,
+	type PeerProjectFilterLists,
+	type PeerProjectFilters,
+	peerProjectFilterChangeOnlyNarrows,
+	peerProjectFiltersOnlyNarrow,
+	type SetPeerProjectFilterResult,
+	setPeerProjectFilterChecked,
+} from "./peer-project-filter-change.js";
+export {
 	type CoordinatorDeviceAnswer,
 	type CoordinatorDeviceAnswerLookup,
 	decidePeerBinding,
@@ -1683,6 +1693,7 @@ export {
 	setReplicationCursor,
 	setSyncResetState,
 	summarizeInboundScopeRejections,
+	syncProjectAllowed,
 	syncProjectAllowedByFilters,
 	syncVisibilityAllowed,
 } from "./sync-replication.js";

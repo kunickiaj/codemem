@@ -1990,7 +1990,11 @@ function parseJsonList(valuesJson: string | null | undefined): string[] {
 	}
 }
 
-function effectiveSyncProjectFilters(
+/**
+ * The Project filters in effect for one pairing: its own lists when it has any,
+ * otherwise the shared lists from configuration. With no pairing, the shared lists.
+ */
+export function effectiveSyncProjectFilters(
 	db: Database,
 	peerDeviceId: string | null,
 ): { include: string[]; exclude: string[] } {
