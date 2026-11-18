@@ -165,7 +165,7 @@ async function checkBatch(
 type FirstAnswer =
 	| { kind: "answered"; groupId: string; reply: PeerRemovalReply }
 	| { kind: "unsupported" }
-	| { kind: "refused"; removedFromGroups: string[] };
+	| { kind: "refused" };
 
 /**
  * How one group turned the check away. A disabled, removed, or archived
@@ -179,14 +179,14 @@ function groupRefusal(error: unknown): "unsupported" | "device_removed" | "refus
 	return error.status === 403 && error.code === "device_removed" ? "device_removed" : "refused";
 }
 
-/** The first configured group this device may sign the check for, or which groups refused it as removed. */
+/** Finds an authorized group, recording confirmed removals even if a later request fails. */
 async function firstAuthorizedGroup(
 	store: StoreLike,
 	config: CoordinatorSyncConfig,
 	options: { localDeviceId: string; keysDir?: string },
 	firstBatch: PeerRemovalLookupEntry[],
+	removedFromGroups: string[] = [],
 ): Promise<FirstAnswer> {
-	const removedFromGroups: string[] = [];
 	for (const groupId of config.syncCoordinatorGroups) {
 		try {
 			const reply = await checkBatch(store, config, { ...options, groupId }, firstBatch);
@@ -198,7 +198,7 @@ async function firstAuthorizedGroup(
 			if (refusal === "device_removed") removedFromGroups.push(groupId);
 		}
 	}
-	return { kind: "refused", removedFromGroups };
+	return { kind: "refused" };
 }
 
 function batchesOf(entries: PeerRemovalLookupEntry[]): PeerRemovalLookupEntry[][] {
@@ -243,11 +243,13 @@ export async function fetchPeerRemovalLookup(
 		...lookupEntries(store.db, options.localDeviceId),
 		generation: readPeerRemovalCheckState(store.db)?.generation ?? null,
 	}))();
+	const removedFromGroups: string[] = [];
 	try {
 		const [firstBatch = [], ...laterBatches] = batchesOf(entries);
-		const first = await firstAuthorizedGroup(store, config, options, firstBatch);
-		if (first.kind === "unsupported") return unanswered("unsupported", generation);
-		if (first.kind === "refused") return unanswered("failed", generation, first.removedFromGroups);
+		const first = await firstAuthorizedGroup(store, config, options, firstBatch, removedFromGroups);
+		if (first.kind === "unsupported")
+			return unanswered("unsupported", generation, removedFromGroups);
+		if (first.kind === "refused") return unanswered("failed", generation, removedFromGroups);
 		const replies = [first.reply];
 		for (const batch of laterBatches) {
 			replies.push(await checkBatch(store, config, { ...options, groupId: first.groupId }, batch));
@@ -264,7 +266,7 @@ export async function fetchPeerRemovalLookup(
 			removedFromGroups: [],
 		};
 	} catch {
-		return unanswered("failed", generation);
+		return unanswered("failed", generation, removedFromGroups);
 	}
 }
 

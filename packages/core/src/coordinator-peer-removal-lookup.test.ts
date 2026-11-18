@@ -402,6 +402,31 @@ describe("this device was removed from sharing", () => {
 		expect(removalState()).toEqual({ removed: false, removedFromGroups: ["group-a"] });
 	});
 
+	it.each([503, "network failure", 404] as const)(
+		"H14: records an earlier signed removal despite a later group failure (%s)",
+		async (failure) => {
+			stubCoordinator(() => valid({ removal_seq: 40 }));
+			await refresh();
+			stubCoordinator(({ groupId }) => {
+				if (groupId === "group-a") return refused("device_removed");
+				if (failure === "network failure") throw new Error("offline fixture");
+				return refused("unavailable", failure);
+			});
+
+			expect((await refresh()).status).toBe(failure === 404 ? "unsupported" : "failed");
+			expect(removalState()).toEqual({ removed: false, removedFromGroups: ["group-a"] });
+			expect(readAppliedRemovalSeq(db)).toBe(40);
+			expect(pairedIds()).toEqual(["peer-a", "peer-b"]);
+			expect(bindingStatus("peer-a")).toBe("active");
+
+			stubCoordinator(({ groupId }) =>
+				groupId === "group-b" ? refused("device_removed") : refused("unknown_device", 401),
+			);
+			await refresh();
+			expect(removalState()).toEqual({ removed: true, removedFromGroups: GROUPS });
+		},
+	);
+
 	it("H14: the next signed request the coordinator accepts clears the removed state", async () => {
 		stubCoordinator(() => refused("device_removed"));
 		await refresh();
