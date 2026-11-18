@@ -104,6 +104,7 @@ import {
 	type InboundScopeRejectionPeerSummary,
 	inviteTokenDigest,
 	isPeerTrustBindingCompatible,
+	isProjectScopeWithdrawn,
 	isProjectSyncEnablementError,
 	isScopedSyncCapability,
 	LEGACY_SHARED_REVIEW_SCOPE_ID,
@@ -4967,6 +4968,22 @@ function addExistingMutationScopes(
 	}
 }
 
+function cleanOpScopeId(op: ReplicationOp): string {
+	return typeof op.scope_id === "string" ? op.scope_id.trim() : "";
+}
+
+/** Every scope a batch touches, including both sides of a reassignment. Payloads are already parsed. */
+function mutationScopeIds(ops: ReplicationOp[]): Set<string> {
+	const scopeIds = new Set(ops.map(cleanOpScopeId));
+	for (const op of ops) {
+		if (op.op_type !== "reassign_scope") continue;
+		const reassignment = parseReassignScopePayload(op);
+		scopeIds.add(reassignment.old_scope_id);
+		scopeIds.add(reassignment.new_scope_id);
+	}
+	return scopeIds;
+}
+
 function rejectUnauthorizedInboundBatch(
 	c: Context,
 	ops: ReplicationOp[],
@@ -5487,20 +5504,13 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 		}
 
 		const normalizedOps = extractReplicationOps(body);
-		const scopeIds = new Set(
-			normalizedOps.map((op) => (typeof op.scope_id === "string" ? op.scope_id.trim() : "")),
-		);
 		const peerFeatures = normalizeSyncFeatures(body.sync_features);
 		const reassignOps = normalizedOps.filter((op) => op.op_type === "reassign_scope");
 		if (reassignOps.length > 0 && !peerFeatures.includes("reassign_scope")) {
 			return c.json({ error: "reassign_capability_required" }, 409);
 		}
 		try {
-			for (const op of reassignOps) {
-				const reassignment = parseReassignScopePayload(op);
-				scopeIds.add(reassignment.old_scope_id);
-				scopeIds.add(reassignment.new_scope_id);
-			}
+			for (const op of reassignOps) parseReassignScopePayload(op);
 		} catch {
 			return c.json({ error: "reassign_payload_invalid" }, 400);
 		}
@@ -5521,10 +5531,15 @@ export function syncProtocolRoutes(getStore: StoreFactory, opts: SyncProtocolRou
 			applyScopeFilter: false,
 			supportsReassignScope: peerFeatures.includes("reassign_scope"),
 		});
-		const rejected = rejectUnauthorizedInboundBatch(c, normalizedOps, scopeContext, {
+		// Ops for a Project this device withdrew from are skipped when applied, so they
+		// mustn't fail the rest of the batch here.
+		const validatedOps = normalizedOps.filter(
+			(op) => !isProjectScopeWithdrawn(scopeContext.db, cleanOpScopeId(op)),
+		);
+		const rejected = rejectUnauthorizedInboundBatch(c, validatedOps, scopeContext, {
 			enabled: negotiated !== "unsupported",
 			scopeId: scopeRequest.scope_id,
-			managedScopeIds: scopeIds,
+			managedScopeIds: mutationScopeIds(validatedOps),
 		});
 		if (rejected) return rejected;
 

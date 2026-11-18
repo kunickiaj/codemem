@@ -659,6 +659,13 @@ CREATE TABLE IF NOT EXISTS project_boundary_migrations (
 	updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_scope_withdrawals (
+	scope_id TEXT PRIMARY KEY NOT NULL,
+	canonical_project_identity TEXT NOT NULL,
+	group_id TEXT NOT NULL,
+	withdrawn_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS share_operations (
 	operation_id TEXT PRIMARY KEY NOT NULL,
 	state TEXT NOT NULL,

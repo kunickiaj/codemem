@@ -774,3 +774,37 @@ describe("authorized per-peer scope diagnostics", () => {
 		});
 	});
 });
+
+describe("a Project this device withdrew from", () => {
+	useScopeTestFixture();
+
+	it("is neither advertised nor served to an authorized peer", async () => {
+		// Arrange: both devices are authorized members, then this device withdraws.
+		insertScope(SCOPE_ID);
+		grantMembership(SCOPE_ID, LOCAL_DEVICE);
+		grantMembership(SCOPE_ID, PEER_DEVICE);
+		await refreshTestScopeRows(db);
+		const context = {
+			db,
+			localDeviceId: LOCAL_DEVICE,
+			localSigningPublicKey: CANONICAL_PUBLIC_KEY,
+			authenticatedPeerSigningKey: CANONICAL_PUBLIC_KEY,
+			negotiatedCapability: "scoped" as const,
+			peerDeviceId: PEER_DEVICE,
+		};
+		expect(listAuthorizedScopesForPeer(db, context)).toHaveLength(1);
+		db.prepare(
+			`INSERT INTO project_scope_withdrawals(
+			 scope_id, canonical_project_identity, group_id, withdrawn_at
+			 ) VALUES (?, 'git:example/atlas', 'group-a', '2026-11-18T10:00:00.000Z')`,
+		).run(SCOPE_ID);
+
+		// Act
+		const admission = parseSyncScopeRequest(SCOPE_ID, true, context);
+		const advertised = listAuthorizedScopesForPeer(db, context);
+
+		// Assert
+		expect(admission).toEqual({ ok: false, reason: "missing_scope" });
+		expect(advertised).toEqual([]);
+	});
+});

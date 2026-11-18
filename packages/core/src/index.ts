@@ -1019,6 +1019,8 @@ export {
 	normalizeProjectInviteSummaries,
 } from "./project-invite-identity.js";
 export { normalizeProjectLabel } from "./project-label.js";
+export type { ResumeProjectScopeSyncResult } from "./project-scope-resume.js";
+export { resumeProjectScopeSync } from "./project-scope-resume.js";
 export type {
 	ProjectScopeCandidate,
 	ProjectScopeGuardrailCode,
@@ -1047,6 +1049,12 @@ export {
 	upsertProjectScopeSettingsMapping,
 	upsertProjectScopeSettingsMappings,
 } from "./project-scope-settings.js";
+export type { ProjectScopeWithdrawal } from "./project-scope-withdrawal.js";
+export {
+	isProjectScopeWithdrawn,
+	listProjectScopeWithdrawals,
+	withdrawProjectScope,
+} from "./project-scope-withdrawal.js";
 export * from "./prompt-pack-ledger.js";
 export * from "./prompt-transport.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";

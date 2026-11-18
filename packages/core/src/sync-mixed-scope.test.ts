@@ -12,7 +12,9 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
+import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
+import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import {
 	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
@@ -578,5 +580,122 @@ describe("mixed personal/work/OSS sync — boundary enforcement", () => {
 		// The default scope for the work peer is also independent — moving its
 		// scoped cursor must not bleed into its default cursor.
 		expect(getReplicationCursor(fixture.db, PEER_ACME, DEFAULT_SYNC_SCOPE_ID)[0]).toBeNull();
+	});
+});
+
+describe("a Project this device withdrew from", () => {
+	let fixture: MixedFixture;
+
+	beforeEach(() => {
+		fixture = setupMixedFixture();
+		// The work scope stands in for a Project's boundary that this device left.
+		fixture.db
+			.prepare(
+				`INSERT INTO project_scope_withdrawals(
+				 scope_id, canonical_project_identity, group_id, withdrawn_at
+				 ) VALUES (?, 'git:acme/internal', 'group-a', '2026-05-03T00:00:05Z')`,
+			)
+			.run(ACME_SCOPE);
+	});
+
+	afterEach(() => {
+		fixture.db.close();
+	});
+
+	it("stops sending its ops and snapshots, and leaves other scopes alone", () => {
+		const [acmeOps] = filterForPeer(fixture.db, [fixture.ops.acme], PEER_ACME);
+		const acmeSnapshot = loadMemorySnapshotPageForPeer(fixture.db, {
+			peerDeviceId: PEER_ACME,
+			scopeId: ACME_SCOPE,
+			generation: 1,
+			snapshotId: "snap-1",
+			baselineCursor: "2026-05-03T00:00:00Z|baseline-op",
+		});
+		const [ossOps] = filterForPeer(fixture.db, [fixture.ops.oss], PEER_OSS);
+
+		expect(acmeOps).toEqual([]);
+		expect(acmeSnapshot.items).toEqual([]);
+		expect(ossOps.map((op) => op.op_id)).toEqual(["op-oss-1"]);
+	});
+
+	it("keeps this device authorized to write the scope, so its own memories can still move into it", () => {
+		const authorization = getCachedScopeAuthorization(fixture.db, {
+			deviceId: LOCAL_DEVICE,
+			scopeId: ACME_SCOPE,
+		});
+
+		expect(authorization.authorized).toBe(true);
+	});
+
+	it("gives nothing back on undo once this device has lost the scope", () => {
+		// Arrange: while withdrawn, this device was removed from the scope.
+		revokeScopeMembership(fixture.db, ACME_SCOPE, LOCAL_DEVICE);
+
+		// Act
+		resumeProjectScopeSync(fixture.db, {
+			scopeId: ACME_SCOPE,
+			deviceId: LOCAL_DEVICE,
+			now: "2026-05-03T00:00:07Z",
+		});
+		const [acmeOps] = filterForPeer(fixture.db, [fixture.ops.acme], PEER_ACME);
+		const inbound = applyReplicationOps(
+			fixture.db,
+			[
+				{
+					...makeOp({
+						opId: "inbound-after-undo",
+						entityId: "key:inbound-after-undo",
+						scopeId: ACME_SCOPE,
+						createdAt: "2026-05-03T00:00:08Z",
+						payload: { project: "acme/internal", visibility: "shared", scope_id: ACME_SCOPE },
+					}),
+					clock_device_id: PEER_ACME,
+					device_id: PEER_ACME,
+				},
+			],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_ACME } },
+		);
+
+		// Assert
+		expect(acmeOps).toEqual([]);
+		expect(inbound.applied).toBe(0);
+		expect(inbound.rejected).toBe(1);
+	});
+
+	it("skips incoming ops without rejecting them, so the peer keeps syncing", () => {
+		const inbound = (deviceId: string, scopeId: string, opId: string): ReplicationOp => ({
+			...makeOp({
+				opId,
+				entityId: `key:${opId}`,
+				scopeId,
+				createdAt: "2026-05-03T00:00:06Z",
+				payload: { project: opId, visibility: "shared", scope_id: scopeId },
+			}),
+			clock_device_id: deviceId,
+			device_id: deviceId,
+		});
+
+		const withdrawn = applyReplicationOps(
+			fixture.db,
+			[inbound(PEER_ACME, ACME_SCOPE, "inbound-acme")],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_ACME } },
+		);
+		const other = applyReplicationOps(
+			fixture.db,
+			[inbound(PEER_OSS, OSS_SCOPE, "inbound-oss")],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_OSS } },
+		);
+
+		expect(withdrawn).toMatchObject({ applied: 0, rejected: 0, skipped: 1, rejections: [] });
+		expect(
+			fixture.db.prepare("SELECT 1 FROM replication_ops WHERE op_id = 'inbound-acme'").get(),
+		).toBeUndefined();
+		expect(other).toMatchObject({ applied: 1, rejected: 0 });
 	});
 });
