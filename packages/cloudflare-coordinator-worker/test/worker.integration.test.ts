@@ -18,6 +18,7 @@ import {
 	sign,
 } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 interface TestIdentity {
 	deviceId: string;
@@ -103,7 +104,7 @@ function signHeaders(identity: TestIdentity, method: string, url: string, body: 
 		await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_invites").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM request_nonces").run();
 		await env.COORDINATOR_DB.prepare("DELETE FROM presence_records").run();
-		await env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices").run();
+		await resetEnrollments(env.COORDINATOR_DB);
 		await env.COORDINATOR_DB.prepare("DELETE FROM groups").run();
 	});
 

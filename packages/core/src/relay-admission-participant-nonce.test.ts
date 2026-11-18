@@ -510,6 +510,7 @@ describe("current participant tuples on disposable SQLite", () => {
 			const f = await participantFixture();
 			seed(f);
 			// Act: column names above are a static test allowlist, never packet data.
+			// Raw on purpose: this minimal participant schema has no key_id column and never gets the enrollment triggers.
 			db.prepare(`UPDATE enrolled_devices SET ${column}=?1 WHERE device_id=?2`).run(
 				params([value, deviceId]),
 			);

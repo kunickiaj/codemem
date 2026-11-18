@@ -39,6 +39,8 @@ interface Plan {
 	writes: (EnrollmentTestStatement & {
 		/** Skips the write on a schema where it fails with this error. */
 		unlessError?: RegExp;
+		/** Runs in place of the skipped write. */
+		otherwise?: EnrollmentTestStatement;
 	})[];
 }
 
@@ -46,6 +48,15 @@ const errorMatches = (error: unknown, pattern: RegExp | undefined) =>
 	pattern !== undefined && error instanceof Error && pattern.test(error.message);
 
 const NO_SUCH_TRIGGER = /no such trigger/u;
+
+/** What runs in place of a write that failed, if anything. Any other failure is thrown again. */
+function replacement(
+	write: Plan["writes"][number],
+	error: unknown,
+): EnrollmentTestStatement | undefined {
+	if (!errorMatches(error, write.unlessError)) throw error;
+	return write.otherwise;
+}
 
 function runPlanSync(db: EnrollmentTestSqlite, plan: Plan): void {
 	const run = (sql: string, values: unknown[] = []) => {
@@ -61,11 +72,12 @@ function runPlanSync(db: EnrollmentTestSqlite, plan: Plan): void {
 		}
 	}
 	try {
-		for (const { sql, values, unlessError } of plan.writes) {
+		for (const write of plan.writes) {
 			try {
-				run(sql, values);
+				run(write.sql, write.values);
 			} catch (error) {
-				if (!errorMatches(error, unlessError)) throw error;
+				const otherwise = replacement(write, error);
+				if (otherwise) run(otherwise.sql, otherwise.values);
 			}
 		}
 	} finally {
@@ -85,11 +97,12 @@ async function runPlanAsync(exec: EnrollmentTestExec, plan: Plan): Promise<void>
 		}
 	}
 	try {
-		for (const { sql, values, unlessError } of plan.writes) {
+		for (const write of plan.writes) {
 			try {
-				await run(sql, values);
+				await run(write.sql, write.values);
 			} catch (error) {
-				if (!errorMatches(error, unlessError)) throw error;
+				const otherwise = replacement(write, error);
+				if (otherwise) await run(otherwise.sql, otherwise.values);
 			}
 		}
 	} finally {
@@ -112,6 +125,22 @@ export function d1EnrollmentExec<Statement extends { run(): Promise<unknown> }>(
 			.prepare(sql)
 			.bind(...values)
 			.run();
+}
+
+/**
+ * The statement runner of a test database that binds a value array by number.
+ * Each `?` of a helper's statement becomes `?1` to `?n`, in order.
+ */
+export function numberedEnrollmentExec(
+	run: (sql: string, values: never[]) => Promise<unknown>,
+): EnrollmentTestExec {
+	return (sql, ...values) => {
+		let position = 0;
+		return run(
+			sql.replace(/\?/gu, () => `?${++position}`),
+			values,
+		);
+	};
 }
 
 function createTrigger(source: readonly string[], name: string): string {
@@ -252,6 +281,8 @@ function keyChangeStatements(
  * UPDATE sets `public_key`, `fingerprint` and `key_id` together. The UPDATE
  * before it moves `key_id` off its value, because the stale-key trigger cannot
  * tell a restated key ID from one that was left alone. No trigger is dropped.
+ * On a test schema without the key ID column only the key text and fingerprint
+ * are written.
  * The fingerprint defaults to that of the new key text. A null fingerprint keeps
  * the stored one, for a test that must change the key text and nothing else:
  * one that pins the key against drift apart from the fingerprint, or whose
@@ -264,7 +295,23 @@ export function changeEnrollmentKey<T extends Target>(
 	where = "",
 	...values: unknown[]
 ): Result<T> {
-	return runPlan(target, { triggers: [], writes: keyChangeStatements(key, where, values) });
+	const [restate, change] = keyChangeStatements(key, where, values) as [
+		EnrollmentTestStatement,
+		EnrollmentTestStatement,
+	];
+	// A test schema from before the key ID column has no key ID to restate.
+	const unlessError = /no such column: key_id/u;
+	const otherwise = {
+		sql: `UPDATE enrolled_devices SET public_key = ?, fingerprint = COALESCE(?, fingerprint)${whereSql(where)}`,
+		values: [change.values[0], change.values[1], ...values],
+	};
+	return runPlan(target, {
+		triggers: [],
+		writes: [
+			{ ...restate, unlessError },
+			{ ...change, unlessError, otherwise },
+		],
+	});
 }
 
 /**

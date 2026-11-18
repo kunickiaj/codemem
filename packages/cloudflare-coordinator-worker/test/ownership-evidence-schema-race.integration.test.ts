@@ -8,6 +8,7 @@ import { CoordinatorDeviceOwnershipEvidence } from "../../core/src/coordinator-d
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { readLegacyOwnerResolutionSchemaState } from "../../core/src/coordinator-legacy-owner-resolution-metadata.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_STATEMENTS } from "../../core/src/coordinator-legacy-owner-resolution-schema.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const db = env.COORDINATOR_DB;
 const table = "coordinator_legacy_owner_resolutions";
@@ -150,8 +151,8 @@ afterEach(async () => {
 		await db.prepare(`DROP TRIGGER IF EXISTS ${extraTrigger}`).run();
 		await restoreSchema();
 		for (const groupId of groups.splice(0)) {
+			await resetEnrollments(db, "group_id=?", groupId);
 			await db.batch([
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id=?").bind(groupId),
 				db.prepare("DELETE FROM groups WHERE group_id=?").bind(groupId),
 			]);
 		}

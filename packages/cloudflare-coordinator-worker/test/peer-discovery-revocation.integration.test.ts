@@ -3,6 +3,7 @@ import { describe, expect, vi } from "vitest";
 import { contractHarness } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { guardedPeerD1, hashGuard, peerDiscoveryTables, registerPeerDiscoveryContract, registerPeerDiscoveryFailures, registerPeerDiscoveryRaces } from "../../core/src/coordinator-peer-discovery-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 peer discovery revocation and JSON1 snapshot", () => {
@@ -20,11 +21,11 @@ describe("native D1 peer discovery revocation and JSON1 snapshot", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(db, "group_id IN (?, ?)", review.groupId, `${review.groupId}-other`);
 			await db.batch([
 				db.prepare("DELETE FROM coordinator_bootstrap_grants WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
 				db.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM presence_records WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
 				db.prepare("DELETE FROM groups WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
 			]);
 		}

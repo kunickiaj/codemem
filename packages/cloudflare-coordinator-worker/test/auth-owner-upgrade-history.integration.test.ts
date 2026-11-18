@@ -15,6 +15,7 @@ import {
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const NOW = 1791028800000;
 const DATE = new Date(NOW).toISOString();
@@ -46,12 +47,8 @@ afterEach(async () => {
 			.bind(device)
 			.run();
 	for (const group of groups) {
-		for (const table of [
-			"coordinator_legacy_team_completions",
-			"enrolled_devices",
-			"coordinator_invites",
-			"groups",
-		]) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", group);
+		for (const table of ["coordinator_legacy_team_completions", "coordinator_invites", "groups"]) {
 			await env.COORDINATOR_DB.prepare(`DELETE FROM ${table} WHERE group_id = ?`).bind(group).run();
 		}
 	}

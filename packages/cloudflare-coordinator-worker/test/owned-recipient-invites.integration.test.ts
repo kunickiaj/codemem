@@ -4,6 +4,7 @@ import { revocationHarness, revocationInput } from "../../core/src/coordinator-d
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { registerOwnedRecipientD1 } from "../../core/src/owned-recipient-d1-test-harness.js";
 import { ownedRecipientTables, registerOwnedRecipientContract } from "../../core/src/shared-owned-recipient-invites-test-harness.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 owned recipient invites (raw retained bindings, not owner proof)", () => {
@@ -31,11 +32,11 @@ describe("native D1 owned recipient invites (raw retained bindings, not owner pr
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", input.groupId);
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_bootstrap_grants WHERE group_id = ?").bind(input.groupId),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_invites WHERE group_id = ?").bind(input.groupId),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(input.groupId),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(input.groupId),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(input.groupId),
 			]);
 		}

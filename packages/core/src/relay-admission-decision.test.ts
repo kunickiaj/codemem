@@ -297,6 +297,7 @@ describe("relay admission snapshot and final gates", () => {
 		expect(deps.database.insertReturning).not.toHaveBeenCalled();
 	});
 
+	// Raw on purpose: this minimal participant schema has no key_id column and never gets the enrollment triggers.
 	it.each([
 		"UPDATE enrolled_devices SET enabled=0 WHERE device_id='target'",
 		"UPDATE enrolled_devices SET public_key='changed' WHERE device_id='source'",

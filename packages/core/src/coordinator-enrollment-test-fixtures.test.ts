@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
 import { ENROLLMENT_REMOVAL_TRIGGERS_SQL } from "./coordinator-device-removal.js";
@@ -253,6 +254,32 @@ describe.each([
 		);
 		f.db.close();
 	});
+});
+
+it("changeEnrollmentKey writes the key text and fingerprint on a schema without the key ID column", async () => {
+	// Arrange: the minimal participant schema of the relay and traversal tests.
+	const db = new Database(":memory:");
+	db.exec(`CREATE TABLE enrolled_devices(group_id TEXT, device_id TEXT, public_key TEXT, fingerprint TEXT);
+		INSERT INTO enrolled_devices VALUES ('g1', 'd1', 'old-key', 'old-fingerprint'), ('g1', 'd2', 'old-key', 'kept')`);
+	const exec = async (sql: string, ...values: unknown[]) => db.prepare(sql).run(...values);
+	// Act: once on each path.
+	changeEnrollmentKey(db, { publicKey: "sync-key", fingerprint: null }, "device_id = ?", "d1");
+	const sync = db.prepare("SELECT * FROM enrolled_devices WHERE device_id = 'd1'").get();
+	await changeEnrollmentKey(
+		exec,
+		{ publicKey: "async-key", fingerprint: "stated" },
+		"device_id = ?",
+		"d1",
+	);
+	// Assert
+	expect(sync).toMatchObject({ public_key: "sync-key", fingerprint: "old-fingerprint" });
+	expect(
+		db.prepare("SELECT public_key, fingerprint FROM enrolled_devices ORDER BY device_id").all(),
+	).toEqual([
+		{ public_key: "async-key", fingerprint: "stated" },
+		{ public_key: "old-key", fingerprint: "kept" },
+	]);
+	db.close();
 });
 
 it("clearEnrollmentsAndRemovals clears the enrollments of a database from before the tombstone table", async () => {

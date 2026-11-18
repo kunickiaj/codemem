@@ -6,6 +6,7 @@ import type { AuthLinkBackend } from '../../core/src/coordinator-auth-link.js';
 import { reconnectFixture } from './account-reconnect-fixture.js';
 import { config,input,hash,NOW } from './account-change-fixture.js';
 import { otherKey } from './device-claim-eligibility-fixture.js';
+import { changeEnrollmentKey, removeDeviceWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 it('native D1 reconnects with a current attestation independent of its revoked origin and preserves an archived retry',async () => {
 	const db = (env as unknown as {COORDINATOR_DB:D1Database}).COORDINATOR_DB;
@@ -15,9 +16,9 @@ it('native D1 reconnects with a current attestation independent of its revoked o
 	await f.disconnect(1);
 	// Rekey the original device under a fresh review. The unused fixture peer
 	// held this example key under another Identity and must not mask a conflict.
-	await store.removeDevice(input.signer.groupId,'unrelated-device');
+	await removeDeviceWithoutTombstone(f.exec,input.signer.groupId,'unrelated-device');
 	const signer = {...input.signer,publicKey:otherKey,fingerprint:'b'.repeat(64)};
-	await f.exec('UPDATE enrolled_devices SET public_key = ?,fingerprint = ? WHERE device_id = ?',signer.publicKey,signer.fingerprint,signer.deviceId);
+	await changeEnrollmentKey(f.exec,{publicKey:signer.publicKey,fingerprint:signer.fingerprint},'device_id = ?',signer.deviceId);
 	expect(await store.createAuthControllerAttestation({coordinatorId:config.coordinatorId,identityId:input.identityId,...signer,attestationId:'current',reviewReceiptId:'current-review',evidenceDigest:hash(7000)})).toMatchObject({kind:'created'});
 	await f.exec("UPDATE coordinator_auth_controller_attestations SET revoked_at='now' WHERE attestation_id='controller'");
 	const a = await f.confirmed(1,'account-B',signer,'controller_attestation');

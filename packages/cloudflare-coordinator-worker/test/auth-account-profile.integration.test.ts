@@ -5,6 +5,7 @@ import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof, redeemBound } from "./auth-link-session-proof-fixture.js";
 import { browserProofConfig, consumeSigninProof } from "../../core/src/coordinator-auth-browser-proof-test-fixtures.js";
 import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 type Issued = Awaited<ReturnType<typeof signIn>>;
@@ -26,13 +27,13 @@ const full = {
 
 afterEach(async () => {
 	for (const f of owned.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", f.groupId);
 		await env.COORDINATOR_DB.batch([
 			...[profiles, ...authorityTables].map((table) =>
 				env.COORDINATOR_DB.prepare(`DELETE FROM ${table} WHERE coordinator_id = ?`).bind(
 					f.coordinatorId,
 				),
 			),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(f.groupId),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.groupId),
 		]);
 	}

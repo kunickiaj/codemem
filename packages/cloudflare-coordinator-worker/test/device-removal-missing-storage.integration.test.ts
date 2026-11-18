@@ -16,7 +16,8 @@ beforeAll(async () => {
 	await resetNativeAuthStage("prior_extension");
 	await applyD1Migrations(
 		env.COORDINATOR_DB,
-		env.TEST_MIGRATIONS.filter(({ name }) => name !== DEVICE_REMOVAL_MIGRATION_NAME),
+		// Neither the storage migration nor a later one that builds on it.
+		env.TEST_MIGRATIONS.filter(({ name }) => name < DEVICE_REMOVAL_MIGRATION_NAME),
 	);
 });
 

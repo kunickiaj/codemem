@@ -4,6 +4,7 @@ import { revocationHarness, revocationInput } from "../../core/src/coordinator-d
 import { JOIN_NOW } from "../../core/src/coordinator-join-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { ownedJoinTables, registerOwnedJoinContract, registerOwnedJoinD1Guards } from "../../core/src/shared-owned-join-approval-test-harness.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 describe("native D1 owned join approval", () => {
 	const test = revocationHarness(async use => {
@@ -30,10 +31,11 @@ describe("native D1 owned join approval", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore(); vi.useRealTimers();
+			await resetEnrollments(env.COORDINATOR_DB);
 			await env.COORDINATOR_DB.batch([
 				"DROP TRIGGER IF EXISTS join_owned_race",
 				"DELETE FROM coordinator_bootstrap_grants", "DELETE FROM coordinator_join_requests",
-				"DELETE FROM coordinator_device_revocations", "DELETE FROM enrolled_devices",
+				"DELETE FROM coordinator_device_revocations",
 				"DELETE FROM groups WHERE group_id LIKE 'owned-join-native%'",
 			].map(sql => env.COORDINATOR_DB.prepare(sql)));
 		}

@@ -26,6 +26,7 @@ import {
 	createCoordinatorBrowserAuth,
 } from "../../../core/src/coordinator-browser-auth-app.js";
 import { importBrowserCsrfKey } from "../../../core/src/coordinator-browser-csrf.js";
+import { changeEnrollmentKey } from "../../../core/src/coordinator-enrollment-test-fixtures.js";
 import { oidcFixture, PROVIDER } from "../../../core/src/coordinator-oidc-test-fixtures.js";
 import { createInMemoryRequestRateLimiter } from "../../../core/src/request-rate-limit.js";
 import { seedResolvedOwner } from "../../test/resolved-owner-test-fixture.js";
@@ -556,9 +557,12 @@ it.each([
 	if (mode === "disabled-device")
 		f.db.prepare("UPDATE enrolled_devices SET enabled=0 WHERE device_id=?").run(f.deviceId);
 	if (mode === "wrong-key")
-		f.db
-			.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id=?")
-			.run(f.key.publicKey, f.deviceId);
+		changeEnrollmentKey(
+			f.db,
+			{ publicKey: f.key.publicKey, fingerprint: null },
+			"device_id=?",
+			f.deviceId,
+		);
 	if (mode === "revoked-controller")
 		f.db
 			.prepare(

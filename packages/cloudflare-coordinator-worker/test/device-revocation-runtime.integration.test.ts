@@ -12,6 +12,7 @@ import {
 	createCloudflareCoordinatorWorker,
 	createConfiguredCloudflareCoordinatorWorker,
 } from "../src/index.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const preview = "/v1/admin/devices/revoke-preview";
 const commit = "/v1/admin/devices/revoke";
@@ -48,9 +49,7 @@ function request(path = preview, options: RequestInit = {}) {
 }
 beforeEach(async () => {
 	await env.COORDINATOR_DB.prepare("DELETE FROM coordinator_device_revocations").run();
-	await env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?")
-		.bind(input.group_id)
-		.run();
+	await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", input.group_id);
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network forbidden"));
 });
 afterEach(() => {

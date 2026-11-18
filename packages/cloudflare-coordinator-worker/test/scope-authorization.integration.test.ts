@@ -3,6 +3,7 @@ import { describe, expect, vi } from "vitest";
 import { registerScopeContract, registerScopeRaces, registerScopeReceipts, scopeTables } from "../../core/src/coordinator-d1-scope-authorization-test-harness.js";
 import { contractHarness } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 scope authorization and JSON1 snapshot", () => {
@@ -19,10 +20,10 @@ describe("native D1 scope authorization and JSON1 snapshot", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(db, "group_id IN (?, ?)", review.groupId, `${review.groupId}-other`);
 			await db.batch([
 				...scopeTables.filter((table) => table.startsWith("coordinator_scope")).map((table) => db.prepare(`DELETE FROM ${table} WHERE scope_id = ?`).bind(`${review.groupId}-scope`)),
 				db.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(review.groupId),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
 				db.prepare("DELETE FROM groups WHERE group_id IN (?, ?)").bind(review.groupId, `${review.groupId}-other`),
 			]);
 		}

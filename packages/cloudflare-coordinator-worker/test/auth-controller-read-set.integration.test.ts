@@ -5,6 +5,7 @@ import type { CoordinatorAuthControllerReviewInput } from "../../core/src/coordi
 import { CANONICAL_PUBLIC_KEY } from "../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { controllerGuardedStage, hookNativeD1 } from "./controller-guarded-batch-hook.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const db = env.COORDINATOR_DB;
 const timestamp = "2026-10-01T00:00:00.000Z";
@@ -54,16 +55,16 @@ it.each(["create", "retry"] as const)(
 			fingerprint: "a".repeat(64),
 			evidenceDigest: "b".repeat(64),
 		};
-		cleanup.push(() =>
-			db.batch([
+		cleanup.push(async () => {
+			await resetEnrollments(db, "group_id = ?", review.groupId);
+			return db.batch([
 				db
 					.prepare("DELETE FROM coordinator_auth_controller_attestations WHERE coordinator_id = ?")
 					.bind(review.coordinatorId),
 				db.prepare("DELETE FROM coordinator_invites WHERE group_id = ?").bind(review.groupId),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
-			]),
-		);
+			]);
+		});
 		await store.createGroup(review.groupId);
 		await store.enrollDevice(review.groupId, {
 			deviceId: review.deviceId,

@@ -4,6 +4,7 @@ import { registerBootstrapAuthorizationApi } from "../../core/src/coordinator-bo
 import { authorizationNowMs } from "../../core/src/coordinator-bootstrap-authorization-test-harness.js";
 import { contractHarness } from "../../core/src/coordinator-identity-group-grant-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 versioned bootstrap API", () => {
@@ -19,11 +20,11 @@ describe("native D1 versioned bootstrap API", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			vi.restoreAllMocks();
+			await resetEnrollments(db, "group_id = ?", review.groupId);
 			await db.batch([
 				db.prepare("DELETE FROM coordinator_bootstrap_grants WHERE grant_id IN (SELECT grant_id FROM coordinator_bootstrap_grants WHERE group_id = ? OR group_id = 'foreign')").bind(review.groupId),
 				db.prepare("DELETE FROM coordinator_device_revocations WHERE evidence_group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM request_nonces WHERE device_id = ?").bind(`${prefix}-seed`),
-				db.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(review.groupId),
 				db.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
 			]);
 		}

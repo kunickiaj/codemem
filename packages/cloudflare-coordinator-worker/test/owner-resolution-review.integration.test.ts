@@ -16,6 +16,7 @@ import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifie
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { changeFixture, config, NOW, input as origin } from "./account-change-fixture.js";
 import { resetCeremony } from "./owner-ceremony-test-fixtures.js";
+import { changeEnrollmentKey, deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
 const now = new Date(NOW).toISOString();
@@ -419,12 +420,7 @@ for (const change of ["history", "Project", "enrollment key", "target generation
 				"f".repeat(64),
 			);
 		if (change === "enrollment key")
-			await exec(
-				"UPDATE enrolled_devices SET public_key=?,fingerprint=? WHERE device_id=?",
-				origin.signer.publicKey,
-				origin.signer.fingerprint,
-				f.signer.deviceId,
-			);
+			await changeEnrollmentKey(exec, { publicKey: origin.signer.publicKey, fingerprint: origin.signer.fingerprint }, "device_id=?", f.signer.deviceId);
 		if (change === "target generation") await reconnectTarget(f);
 		const before = await snapshot();
 		const batches = f.diagnostics.batches;
@@ -498,7 +494,7 @@ it("native current group two restores original receipts after source enrollment 
 	await f.store.createGroup("group-two");
 	await f.store.enrollDevice("group-two", f.signer);
 	await exec("UPDATE enrolled_devices SET identity_id='identity-c' WHERE group_id='group-two'");
-	await exec("DELETE FROM enrolled_devices WHERE group_id=?", f.signer.groupId);
+	await deleteEnrollmentWithoutTombstone(exec, "group_id=?", f.signer.groupId);
 	await exec("DELETE FROM groups WHERE group_id=?", f.signer.groupId);
 	const selected = { ...f.selection, groupId: "group-two" };
 	const before = await snapshot();

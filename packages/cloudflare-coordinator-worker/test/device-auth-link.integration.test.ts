@@ -6,6 +6,7 @@ import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { buildCanonicalRequest, SIGNATURE_VERSION } from "../../core/src/sync-auth.js";
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const NOW = 1791028800000;
 const ROOT = "/v1/auth/link-attempts";
@@ -40,6 +41,7 @@ afterEach(async () => {
 	expect(globalThis.fetch).not.toHaveBeenCalled();
 	vi.restoreAllMocks();
 	for (const f of fixtures.splice(0)) {
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", f.review.groupId);
 		await env.COORDINATOR_DB.batch([
 			...[
 				"link_audit_log",
@@ -55,9 +57,6 @@ afterEach(async () => {
 			env.COORDINATOR_DB.prepare(
 				"DELETE FROM request_nonces WHERE device_id IN (SELECT device_id FROM enrolled_devices WHERE group_id = ?)",
 			).bind(f.review.groupId),
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(
-				f.review.groupId,
-			),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(f.review.groupId),
 		]);
 	}

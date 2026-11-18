@@ -4,6 +4,7 @@ import { D1CoordinatorStore } from "@codemem/core/internal/cloudflare-coordinato
 import { afterEach, expect, it } from "vitest";
 import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
 import { fixtureDeviceKey } from "./fixture-device-key.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 const db = env.COORDINATOR_DB;
 const NOW = 1790899200000;
@@ -19,13 +20,12 @@ const tables = [
 const owned: string[] = [];
 afterEach(async () => {
 	for (const id of owned.splice(0)) {
+		await resetEnrollments(db, "group_id = ?", id);
 		await db.batch([
 			...tables.map((table) =>
 				db.prepare(`DELETE FROM ${table} WHERE coordinator_id = ?`).bind(id),
 			),
-			...["enrolled_devices", "groups"].map((table) =>
-				db.prepare(`DELETE FROM ${table} WHERE group_id = ?`).bind(id),
-			),
+			db.prepare("DELETE FROM groups WHERE group_id = ?").bind(id),
 		]);
 	}
 });

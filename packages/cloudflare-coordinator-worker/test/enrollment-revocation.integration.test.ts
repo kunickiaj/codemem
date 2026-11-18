@@ -13,6 +13,8 @@ import {
 	type D1DatabaseLike,
 	type D1PreparedStatementLike,
 } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
+import { changeEnrollmentKey } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 let sequence = 0;
 describe("native D1 enrollment revocation", () => {
@@ -39,11 +41,9 @@ describe("native D1 enrollment revocation", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id LIKE ?", `${input.groupId}%`);
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_device_revocations"),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id LIKE ?").bind(
-					`${input.groupId}%`,
-				),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id LIKE ?").bind(
 					`${input.groupId}%`,
 				),
@@ -118,11 +118,7 @@ function registerNativeKeyCapture(test: ReturnType<typeof revocationHarness>) {
 		await f.store.setDeviceEnabled(target.groupId, target.deviceId, false);
 		const hook = vi.fn(async (sql: string) => {
 			if (sql.includes("UPDATE enrolled_devices SET enabled"))
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
-					f.input.publicKey,
-					target.deviceId,
-				);
+				await changeEnrollmentKey(f.exec, { publicKey: f.input.publicKey, fingerprint: null }, "device_id = ?", target.deviceId);
 		});
 		const racing = new D1CoordinatorStore(beforeNativeWrite(hook));
 		// Act

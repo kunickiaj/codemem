@@ -341,6 +341,7 @@ export async function serverFixture(
 		rotateSourceEnrollment(seed = 4) {
 			// Rotate only the disposable trusted enrollment and the packet fixture's signing key.
 			const rotated = testSigner(seed);
+			// Raw on purpose: this minimal participant schema has no key_id column and never gets the enrollment triggers.
 			db.prepare(
 				"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
 			).run(rotated.publicKey, rotated.keyId, namespace.groupId, "source");

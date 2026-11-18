@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { fixtureDeviceKey } from "./fixture-device-key.js";
 import { consumeLinkProof } from "./auth-link-session-proof-fixture.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 type Config = Parameters<D1CoordinatorStore["createAuthLinkAttempt"]>[1];
 type FinalizeInput = Parameters<D1CoordinatorStore["finalizeAuthLinkAttempt"]>[0];
@@ -30,11 +31,9 @@ afterEach(async () => {
 			),
 		);
 		statements.push(
-			env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id = ?").bind(
-				review.groupId,
-			),
 			env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id = ?").bind(review.groupId),
 		);
+		await resetEnrollments(env.COORDINATOR_DB, "group_id = ?", review.groupId);
 		await env.COORDINATOR_DB.batch(statements);
 	}
 });

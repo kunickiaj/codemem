@@ -20,6 +20,7 @@ import { legacyTeamCandidateId } from "../../core/src/recipient-policy-identifie
 import { fingerprintPublicKey } from "../../core/src/sync-fingerprint.js";
 import { changeFixture, config, NOW, input as origin } from "./account-change-fixture.js";
 import { resetCeremony } from "./owner-ceremony-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 const db = env.COORDINATOR_DB;
 const now = new Date(NOW).toISOString();
@@ -829,7 +830,7 @@ it("native removed old source group still allows reuse through an eligible curre
 	// Arrange
 	const f = await setup();
 	const old = await originalController(f, { oldGroup: true });
-	await exec("DELETE FROM enrolled_devices WHERE group_id=?", old.group_id);
+	await deleteEnrollmentWithoutTombstone(exec, "group_id=?", old.group_id);
 	await exec("DELETE FROM groups WHERE group_id=?", old.group_id);
 	const review = await buildReview(f, { existingController: old });
 	const before = await snapshot([resolutionTable]);

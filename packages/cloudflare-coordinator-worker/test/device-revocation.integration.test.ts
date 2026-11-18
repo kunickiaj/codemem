@@ -5,6 +5,7 @@ import {
 	revocationSideEffectTables,
 } from "../../core/src/coordinator-device-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 device revocation and nonce admission", () => {
@@ -26,12 +27,12 @@ describe("native D1 device revocation and nonce admission", () => {
 			expect(fetch).not.toHaveBeenCalled();
 		} finally {
 			fetch.mockRestore();
+			await resetEnrollments(env.COORDINATOR_DB, "group_id LIKE ?", cleanupGroupPattern);
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_identity_group_grants WHERE group_id LIKE ?").bind(cleanupGroupPattern),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_auth_controller_attestations WHERE group_id LIKE ?").bind(cleanupGroupPattern),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_device_revocations"),
 				env.COORDINATOR_DB.prepare("DELETE FROM request_nonces"),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices WHERE group_id LIKE ?").bind(cleanupGroupPattern),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id LIKE ?").bind(cleanupGroupPattern),
 			]);
 		}

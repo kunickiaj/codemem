@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+	changeEnrollmentKey,
+	numberedEnrollmentExec,
+} from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	WriteFixture,
 	WriteSeedOptions,
@@ -261,11 +265,13 @@ async function corruptRequest(
 				signature: `v2:${btoa(String.fromCharCode(...new Uint8Array(64)))}`,
 			}),
 		pin: () =>
-			f.db.run("UPDATE enrolled_devices SET public_key=?1 WHERE group_id=?2 AND device_id=?3", [
-				f.options.participants.target?.public_key ?? "",
+			changeEnrollmentKey(
+				numberedEnrollmentExec((sql, values) => f.db.run(sql, values)),
+				{ publicKey: f.options.participants.target?.public_key ?? "", fingerprint: null },
+				"group_id=? AND device_id=?",
 				input.namespace.groupId,
 				input.deviceHeader,
-			]),
+			),
 		missingTarget: () =>
 			f.db.run(
 				"UPDATE enrolled_devices SET device_id='missing-target' WHERE group_id=?1 AND device_id=?2",

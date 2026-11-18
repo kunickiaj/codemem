@@ -21,6 +21,10 @@ import {
 	state,
 	timestamp,
 } from "./legacy-completion-owner-proof-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "../../core/src/coordinator-enrollment-test-fixtures.js";
 
 beforeEach(async () => {
 	vi.useFakeTimers({ toFake: ["Date"] });
@@ -102,13 +106,13 @@ it.each(["device", "key"])(
 		const { h } = await recovery();
 		const deviceId = match === "device" ? signer.deviceId : "different-device";
 		const publicKey = match === "device" ? otherKey : signer.publicKey;
-		await exec(
-			"UPDATE enrolled_devices SET device_id=?,public_key=?,fingerprint=? WHERE group_id=?",
-			deviceId,
-			publicKey,
-			fingerprintPublicKey(publicKey),
+		await changeEnrollmentKey(
+			exec,
+			{ publicKey, fingerprint: fingerprintPublicKey(publicKey) },
+			"group_id=?",
 			futureGroup,
 		);
+		await exec("UPDATE enrolled_devices SET device_id=? WHERE group_id=?", deviceId, futureGroup);
 		const before = await state();
 		// Act
 		const pending = h.complete(manifest("A", { deviceId, publicKey }));
@@ -183,7 +187,7 @@ it("native one surviving original source works after its group and enrollment di
 		resolution_id: "lost-second-resolution",
 		source_attestation_id: "missing-second-controller",
 	});
-	await exec("DELETE FROM enrolled_devices WHERE group_id=?", sourceGroup);
+	await deleteEnrollmentWithoutTombstone(exec, "group_id=?", sourceGroup);
 	await exec("DELETE FROM groups WHERE group_id=?", sourceGroup);
 	const before = await state({ excludeCompletion: true });
 	// Act

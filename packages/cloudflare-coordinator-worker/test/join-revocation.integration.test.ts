@@ -12,6 +12,7 @@ import {
 } from "../../core/src/coordinator-join-revocation-test-harness.js";
 import { recipientGuardedD1 } from "../../core/src/coordinator-recipient-revocation-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
+import { resetEnrollments } from "./enrollment-reset.js";
 
 let sequence = 0;
 describe("native D1 join review revocation", () => {
@@ -38,12 +39,12 @@ describe("native D1 join review revocation", () => {
 		} finally {
 			fetch.mockRestore();
 			vi.useRealTimers();
+			await resetEnrollments(env.COORDINATOR_DB);
 			await env.COORDINATOR_DB.batch([
 				env.COORDINATOR_DB.prepare("DROP TRIGGER IF EXISTS join_failure"),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_bootstrap_grants"),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_join_requests"),
 				env.COORDINATOR_DB.prepare("DELETE FROM coordinator_device_revocations"),
-				env.COORDINATOR_DB.prepare("DELETE FROM enrolled_devices"),
 				env.COORDINATOR_DB.prepare("DELETE FROM groups WHERE group_id LIKE ?").bind(
 					`${input.groupId}%`,
 				),
