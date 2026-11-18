@@ -1127,6 +1127,40 @@ function deleteLeftoverReplicationCursors(db: DatabaseType): void {
 	}
 }
 
+/** The marker table must exist before the shim can mark itself applied. */
+function ensureSchemaCompatMarkerTable(db: DatabaseType): void {
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS schema_compat_state (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for the marker table.
+	}
+}
+
+/** Added at schema version 22. Its own statement, so a failure elsewhere in the shim cannot skip it. */
+function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS project_boundary_migrations (
+				boundary_scope_id TEXT PRIMARY KEY NOT NULL,
+				source_scope_id TEXT NOT NULL,
+				additional_source_scope_ids_json TEXT NOT NULL DEFAULT '[]',
+				state TEXT NOT NULL,
+				generation INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep the compatibility shim fail-open. Readers treat a missing table as no records.
+	}
+}
+
 function promoteLegacySchemaVersion(db: DatabaseType): void {
 	const recipientPolicyTablesReady = [
 		"coordinator_enrollment_reconciliation_issues",
@@ -1155,18 +1189,8 @@ function applyAdditiveSchemaCompatibility(
 		// SCHEMA_VERSION. The "already applied" marker keys on SCHEMA_VERSION, so
 		// without a bump, legacy DBs already marked at the current version would
 		// skip the new DDL forever.
-		// Marker table must exist before we can mark; create it first.
-		try {
-			db.exec(`
-				CREATE TABLE IF NOT EXISTS schema_compat_state (
-					id INTEGER PRIMARY KEY CHECK (id = 1),
-					applied_schema_version INTEGER NOT NULL,
-					applied_at TEXT NOT NULL
-				)
-			`);
-		} catch {
-			// Keep compatibility shim fail-open for the marker table.
-		}
+		ensureSchemaCompatMarkerTable(db);
+		ensureProjectBoundaryMigrationSchema(db);
 		try {
 			db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (

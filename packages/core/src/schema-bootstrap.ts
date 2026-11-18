@@ -644,6 +644,16 @@ CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_identity_status
 CREATE INDEX IF NOT EXISTS idx_recipient_managed_projects_scope_authority
 	ON recipient_managed_project_projections(managed_scope_id, coordinator_id, group_id, status);
 
+CREATE TABLE IF NOT EXISTS project_boundary_migrations (
+	boundary_scope_id TEXT PRIMARY KEY NOT NULL,
+	source_scope_id TEXT NOT NULL,
+	additional_source_scope_ids_json TEXT NOT NULL DEFAULT '[]',
+	state TEXT NOT NULL,
+	generation INTEGER NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS share_operations (
 	operation_id TEXT PRIMARY KEY NOT NULL,
 	state TEXT NOT NULL,
