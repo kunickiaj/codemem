@@ -399,9 +399,15 @@ below changes its reply before the first release that ships it.
 
 **Status:** design accepted by the owner on 2026-11-16, from
 [the removal design note](../plans/2026-11-16-device-remove-and-block-design.md).
-Nothing in this section is implemented. The
-[test plan](../plans/2026-11-16-device-remove-and-block-test-plan.md) lists the
-tests that come first.
+The [test plan](../plans/2026-11-16-device-remove-and-block-test-plan.md) lists
+the tests that come first.
+
+Implemented so far: the tombstone table, `enrolled_devices.key_id`,
+`issued_after_removal_seq`, enrollment writers that store both, the enrollment
+triggers, and a single-group removal that performs steps 1 to 4 of the removal
+operation. The legacy remove route uses it. Steps 5 to 7, the removal routes, the
+removal checks on enrollment writers, lifting, and the new lookup reply are not
+implemented yet.
 
 A removal deletes a device's enrollments and records why they are gone. Unlike a
 revocation subject, a removal can be lifted. An invitation created after it
@@ -426,7 +432,11 @@ Revocation always takes precedence over removal.
 
 A partial unique index allows one active tombstone for each `group_id` and
 `device_id`. Triggers reject every delete, and every update except one that sets
-the lift columns that way on a row where all three are null. Tombstones apply to the whole
+the lift columns that way on a row where all three are null. A trigger before
+insert rejects a row that is already lifted, a row whose `removal_seq` is taken,
+and a second active row for the same `group_id` and `device_id`, so a replacing
+insert cannot erase a tombstone. A trigger after insert rejects a `removal_seq`
+below 1. Tombstones apply to the whole
 coordinator database, like revocation subjects, and have no expiry.
 
 A tombstone **matches** a device ID and key when its `device_id` equals the
@@ -435,37 +445,60 @@ exact key text is compared instead.
 
 `coordinator_invites.issued_after_removal_seq` is set by the statement that
 inserts the invitation to `COALESCE(MAX(removal_seq), 0)` over all tombstones.
-Invitations that predate the column keep null. A join request copies the value
-of its invitation when it is created.
+Invitations that predate the column keep null. A renewed invitation keeps its
+original value, so a renewal does not move it past a later removal. A join
+request copies the value of its invitation when it is created.
 
 `enrolled_devices.key_id` holds the canonical key ID of the enrollment's key, or
 an empty string for an opaque key. Every enrollment writer stores it from the key
-ID it already derives for the revocation check. The migration fills existing
-rows, and null means a row is not filled yet. The removal routes and the
-`removed` list are unavailable while any enrollment has a null `key_id`.
+ID it already derives for the revocation check. Null means a row is not filled
+yet. The removal routes and the `removed` list are unavailable while any
+enrollment has a null `key_id`.
+
+Existing rows are filled in two ways. A SQLite coordinator fills them when it
+opens the file. D1 cannot compute the key ID in SQL, so no migration fills them
+there. The store operation `fillEnrollmentKeyIds` fills a limited number of rows
+for each call, and the removal preview and lookup routes call it. Its result
+counts the rows it filled, the rows it left because an active tombstone matches
+them (`blocked`), and the rows another write changed first (`skipped`). A blocked
+row keeps its null `key_id`, and removal stays unavailable until an operator has
+looked at that enrollment.
 
 ### Enrollment triggers
 
 Triggers on `enrolled_devices` apply to every writer, including an older codemem
 that opens a migrated SQLite coordinator database directly:
 
-- `BEFORE INSERT`, and `BEFORE UPDATE` of `group_id`, `device_id`, `public_key`,
-  or `key_id`: abort when an active tombstone matches the new device ID or
-  `key_id`. When the new `key_id` is empty, the new `public_key` text is
-  compared with each active tombstone's `public_key` instead. Abort when the
-  new `key_id` is null and any tombstone exists. Abort when an update changes
-  `public_key` and leaves `key_id` unchanged.
-- `BEFORE INSERT`: abort when a row with the same `group_id` and `device_id`, or
-  the same `rowid`, exists. `BEFORE UPDATE`, with no column list: abort when
-  another row has the new `group_id` and `device_id` or the new `rowid`. A
-  column list would miss an update that names the row ID as `_rowid_` or `oid`.
-  With recursive triggers off, conflict replacement deletes the other row
-  without firing its delete trigger, as the ownership binding schema already
-  notes.
-- `BEFORE DELETE`: abort unless an active tombstone holds the row's `group_id`,
-  `device_id`, and `public_key`.
-- `BEFORE UPDATE` of `enabled` to 1: abort when an active tombstone of the same
-  group matches the row.
+- `BEFORE INSERT`, and `BEFORE UPDATE` that changes `group_id`, `device_id`,
+  `public_key`, or `key_id`: abort with `device_removed` when an active
+  tombstone matches the new device ID or `key_id`. When the new `key_id` is
+  empty, the new `public_key` text is compared with each active tombstone's
+  `public_key` instead. Abort with `enrollment_key_id_required` when the new
+  `key_id` is null and any tombstone exists. The update rule acts only on a real
+  change. A writer that restates those columns with their current values is not
+  stopped by a tombstone that matches the device in another group.
+- `BEFORE UPDATE` of `public_key`: abort with `enrollment_key_id_stale` when the
+  key text changes and `key_id` keeps its value. An opaque key is exempt: its
+  `key_id` is empty, it is matched by its text, and it has no ID that could go
+  stale. The exemption requires that the new text is also opaque. A text is
+  opaque unless the key parser reads it as SSH Ed25519, which it does when the
+  first token after leading white space is exactly `ssh-ed25519`.
+- `BEFORE INSERT`: abort with `enrollment_collision` when a row with the same
+  `group_id` and `device_id`, or the same `rowid`, exists. `BEFORE UPDATE`, with
+  no column list: abort when another row has the new `group_id` and `device_id`
+  or the new `rowid`. A column list would miss an update that names the row ID
+  as `_rowid_` or `oid`. With recursive triggers off, conflict replacement
+  deletes the other row without firing its delete trigger, as the ownership
+  binding schema already notes.
+- After an insert, and before any update: abort with `enrollment_rowid` when the
+  row ID is below 1. An automatic row ID reads as -1 before the insert, so a row
+  stored there would collide with every later insert.
+- `BEFORE DELETE`: abort with `enrollment_delete_requires_removal` unless an
+  active tombstone holds the row's `group_id`, `device_id`, and `public_key`.
+- `BEFORE UPDATE` of `enabled` to 1: abort with `device_removed` when an active
+  tombstone of the same group matches the row. Abort with
+  `enrollment_key_id_required` when the row's `key_id` is null and any tombstone
+  exists, because a null ID cannot be compared with a tombstone.
 
 Enrollment writers therefore use an `UPDATE` for an existing row and an insert
 only when no row exists. They use no `ON CONFLICT` clause and no `OR REPLACE` on
@@ -473,6 +506,21 @@ this table. The removal operation inserts a tombstone before it deletes the
 enrollment. A lift sets the lift columns before it inserts the enrollment. The
 triggers are a second check behind the statement checks below. They do not
 evaluate invitations.
+
+A trigger cannot tell a restated `key_id` from one that was left alone. A writer
+that changes the key text within one key, for example a key that lost its
+comment, therefore uses two statements: it sets `key_id` to the empty string,
+then writes the text, the fingerprint, and the ID. A read in the same
+transaction or batch raises unless the second statement happened, so the reset
+is never committed alone.
+
+A SQLite coordinator installs the triggers when it opens the file, and restores
+its definitions when a stored trigger is missing or differs. D1 gets them from
+migration `0049`. A removal requires each trigger by name, so a database that
+has the tombstone table and not yet the triggers answers
+`device_removal_unavailable`. Because an installed coordinator restores its own
+definitions, a later release that needs a different rule adds a trigger under a
+new name and leaves these as they are.
 
 ### Removal operation
 
@@ -500,7 +548,10 @@ caches refuse a member that returns at the epoch at which they recorded its
 revocation.
 
 The single-group form used by the legacy route targets one `group_id` and
-`device_id` and does not expand by key.
+`device_id` and does not expand by key. A read in its transaction or batch
+raises `device_removal_incomplete` when the tombstone was written and a row it
+deletes is still there, so a tombstone is never committed next to a surviving
+enrollment.
 
 `grantScopeMembership` changes with this operation. On both stores the statement
 that inserts or updates the membership requires an enabled enrollment of that
@@ -723,8 +774,10 @@ exists, and this section does not change it.
 
 ### Removed peers in the pinned-peer check
 
-`POST /v1/peers/revocations` keeps its request rules, with one change: an entry
-may omit `public_key`, and then only the device ID is checked. The reply becomes
+`POST /v1/peers/revocations` keeps its request rules, with two changes. An entry
+may omit `public_key`, and then only the device ID is checked. The list may be
+empty, and a client with no entries still sends one request with an empty list,
+to learn `removal_seq`. The reply becomes
 `{ "version": 1, "revoked": [...], "removed": [...], "enrolled": [...], "removal_seq": <integer> }`.
 
 - A requested entry is in `removed` when an active tombstone matches it and no
@@ -761,7 +814,8 @@ every batch of the client's entries returned 200 and was applied. After a
 complete lookup the client stores the lowest `removal_seq` among its replies and
 advertises it as `applied_removal_seq` in the `capabilities` of its next presence
 update, with the sync feature `peer_removal_check`. An incomplete lookup leaves
-the stored value unchanged.
+the stored value unchanged. The coordinator returns each device's advertised
+value in the `/v1/peers` and `/v1/admin/devices` replies.
 
 The stored value covers only the entries the lookup sent. The client keeps a
 local generation counter. Every write that changes what a lookup would send
@@ -805,9 +859,15 @@ are unchanged.
 - A removed device on a version that cannot sign `/v1/join` cannot lift its
   removal.
 - An older CLI that opens a migrated SQLite coordinator database directly is
-  stopped by the enrollment triggers. Its enrollment fails once any tombstone
-  exists, and its removal always fails. An older Worker on a migrated D1 schema
-  keeps enrolling until the first tombstone exists.
+  stopped by the enrollment triggers. Its removal always fails. Its enrollment
+  of a device that is already enrolled in the group always fails too, because it
+  writes an upsert and the collision trigger aborts the insert before the
+  upsert's update runs. Its enrollment of a new device fails once any tombstone
+  exists. An older Worker on a D1 schema that has the triggers behaves the same
+  way, so migration `0049` is applied with the 0.50 Worker.
+- An enrollment deleted before 0.50 has no tombstone. That device is not
+  reported to peers as removed, and a revocation cannot take a tombstone as
+  evidence for it.
 - This adds no push delivery and no offline expiry. A peer that cannot reach the
   coordinator keeps its pairing until a later check succeeds.
 
