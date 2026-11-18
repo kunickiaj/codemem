@@ -140,8 +140,8 @@ function LegacyTeamSetupDialogHost({
 	return (
 		<LegacyTeamSetupDialogView
 			session={session}
-			onAssign={(device, targetIdentityRef) =>
-				dispatch({ type: "assign_device", deviceRef: device.deviceRef, targetIdentityRef })
+			onAssign={(device, assignee) =>
+				dispatch({ type: "assign_device", deviceRef: device.deviceRef, assignee })
 			}
 			onClear={(device) => dispatch({ type: "clear_device", deviceRef: device.deviceRef })}
 			onClose={close}

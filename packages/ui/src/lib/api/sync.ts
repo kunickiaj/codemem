@@ -1261,6 +1261,7 @@ export type LegacyTeamSetupErrorCode =
 	| "team_setup_completion_unavailable"
 	| "team_setup_completion_conflict"
 	| "team_setup_completion_invalid"
+	| "team_setup_person_listed"
 	| "team_setup_failed";
 
 export type LegacyTeamSetupErrorReason =
@@ -1281,6 +1282,7 @@ const LEGACY_TEAM_SETUP_ERROR_CODES = new Set<LegacyTeamSetupErrorCode>([
 	"team_setup_completion_unavailable",
 	"team_setup_completion_conflict",
 	"team_setup_completion_invalid",
+	"team_setup_person_listed",
 	"team_setup_failed",
 ]);
 export const LEGACY_TEAM_SETUP_ERROR_REASONS = new Set<LegacyTeamSetupErrorReason>([
@@ -1734,14 +1736,16 @@ export function loadLegacyTeamSetupDetail(
 	return legacyTeamSetupRequest(legacyTeamSetupPath(candidateRef), isLegacyTeamSetupView);
 }
 
+/** A device goes to a listed person, or to someone new who is created as part of the save. */
+export type LegacyTeamSetupAssignee = { targetIdentityRef: string } | { newPersonName: string };
+
 export function saveLegacyTeamSetupAssignment(
 	candidateRef: string,
 	deviceRef: string,
 	input: {
 		attemptId: string;
-		targetIdentityRef: string;
 		expectation: LegacyTeamSetupAssignmentExpectationV1;
-	},
+	} & LegacyTeamSetupAssignee,
 ): Promise<LegacyTeamSetupMutationResponseV1> {
 	return legacyTeamSetupRequest(
 		`${legacyTeamSetupPath(candidateRef)}/devices/${encodeURIComponent(deviceRef)}/assignment`,

@@ -3019,6 +3019,112 @@ describe("legacy Team setup device suggestions", () => {
 	);
 });
 
+describe("Team setup assigns a device to someone new", () => {
+	async function chooseSomeoneNew(
+		name: string,
+		saveAssignment = vi
+			.fn()
+			.mockResolvedValue(
+				detail({ devices: [device()], identityChoices: identities, unresolvedDeviceCount: 1 }),
+			),
+	) {
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(
+					detail({ devices: [device()], identityChoices: identities, unresolvedDeviceCount: 1 }),
+				),
+			saveAssignment,
+		});
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
+			if (!match) throw new Error("identity select missing");
+			return match;
+		});
+		act(() => {
+			select.value = "new-person";
+			select.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+		const input = document.querySelector<HTMLInputElement>(".legacy-team-device-new-person");
+		if (!input) throw new Error("name field missing");
+		act(() => {
+			input.value = name;
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		return { saveAssignment };
+	}
+
+	it("saves the assignment with the new person's name", async () => {
+		// Arrange
+		const { saveAssignment } = await chooseSomeoneNew("  Casey   Park ");
+
+		// Act
+		act(() => button("Save assignment").click());
+
+		// Assert
+		await vi.waitFor(() => expect(saveAssignment).toHaveBeenCalledOnce());
+		expect(saveAssignment).toHaveBeenCalledWith("opaque-candidate", "device-ref-one", {
+			attemptId: "opaque-attempt",
+			newPersonName: "Casey Park",
+			expectation: { kind: "absent" },
+		});
+	});
+
+	it.each([
+		["", "Enter the name of the person who uses this device."],
+		["123e4567-e89b-12d3-a456-426614174000", "Enter a human-readable name."],
+	])("explains why %j can't be saved", async (name, message) => {
+		const { saveAssignment } = await chooseSomeoneNew(name);
+
+		act(() => button("Save assignment").click());
+
+		expect(button("Save assignment").getAttribute("aria-disabled")).toBe("true");
+		expect(document.querySelector(".legacy-team-device-row")?.textContent).toContain(message);
+		expect(saveAssignment).not.toHaveBeenCalled();
+	});
+
+	it("lets you fix a name the server says is already listed and save again", async () => {
+		// Arrange: two people can share a name, so only the server can tell it's taken.
+		const saveAssignment = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_person_listed"))
+			.mockResolvedValue(
+				detail({ devices: [device()], identityChoices: identities, unresolvedDeviceCount: 1 }),
+			);
+		await chooseSomeoneNew("Alex", saveAssignment);
+
+		// Act
+		act(() => button("Save assignment").click());
+		const row = document.querySelector(".legacy-team-device-row");
+		await vi.waitFor(() =>
+			expect(row?.textContent).toContain(
+				"Someone with that name is already listed. Nothing was saved. Choose them from the list, or enter a different name.",
+			),
+		);
+		const input = document.querySelector<HTMLInputElement>(".legacy-team-device-new-person");
+
+		// Assert: the controls stay usable and no Retry is needed.
+		expect(input?.disabled).toBe(false);
+		expect(document.getElementById("legacy-team-setup-item-retry")).toBeNull();
+
+		// Act: correct the name and save again.
+		act(() => {
+			if (!input) return;
+			input.value = "Alex Morgan";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Save assignment").click());
+
+		// Assert
+		await vi.waitFor(() => expect(saveAssignment).toHaveBeenCalledTimes(2));
+		expect(saveAssignment).toHaveBeenLastCalledWith(
+			"opaque-candidate",
+			"device-ref-one",
+			expect.objectContaining({ newPersonName: "Alex Morgan" }),
+		);
+	});
+});
+
 describe("Team setup dialog recovery from stale links", () => {
 	it("renders the close X immediately without waiting for icon initialization", () => {
 		setup(vi.fn().mockResolvedValue(detail()));

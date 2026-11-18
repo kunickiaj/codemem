@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
 	CoordinatorLegacyTeamCompletionManifestV1,
 	CoordinatorLegacyTeamCompletionRecord,
@@ -45,6 +46,7 @@ import {
 	legacyTeamSetupCompletionActorIds,
 	legacyTeamSetupFailureCheck,
 	listProjectScopeCandidates,
+	normalizeHumanPresentationName,
 	previewLegacyTeamSetupActivation,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
@@ -1291,6 +1293,60 @@ function identityChoicesFromRows(
 	);
 }
 
+type AssignmentTarget = { targetIdentityRef: string } | { newPersonName: string };
+
+/**
+ * A device is assigned to a person already in the list, or to someone new, named
+ * here. Naming someone new creates that person as part of the saved assignment,
+ * so Team setup never sends people elsewhere to create them first.
+ */
+function parseAssignmentTarget(body: Record<string, unknown>): AssignmentTarget | null {
+	if (hasExactKeys(body, ["attemptId", "expectation", "targetIdentityRef"])) {
+		const ref = body.targetIdentityRef;
+		return typeof ref === "string" && IDENTITY_REF_PATTERN.test(ref)
+			? { targetIdentityRef: ref }
+			: null;
+	}
+	if (!hasExactKeys(body, ["attemptId", "expectation", "newPersonName"])) return null;
+	if (typeof body.newPersonName !== "string") return null;
+	try {
+		return {
+			newPersonName: normalizeHumanPresentationName(body.newPersonName, "display_name"),
+		};
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Someone already listed under that name should be picked from the list instead.
+ * Compares stored names: the list adds suffixes to tell same-named people apart,
+ * so only the server can tell whether a typed name is taken.
+ */
+function personNameTaken(store: MemoryStore, name: string): boolean {
+	const key = name.normalize("NFC").toLocaleLowerCase();
+	const rows = store.db
+		.prepare(
+			"SELECT display_name FROM actors WHERE status = 'active' AND merged_into_actor_id IS NULL",
+		)
+		.all() as Array<{ display_name: string }>;
+	return rows.some((row) => row.display_name.normalize("NFC").toLocaleLowerCase() === key);
+}
+
+/** Runs inside the assignment transaction, so a failed assignment creates no one. */
+function insertTeamSetupPerson(store: MemoryStore, assignee: AssignmentTarget): string {
+	if (!("newPersonName" in assignee)) throw new Error("team_setup_incomplete");
+	const now = new Date().toISOString();
+	const actorId = randomUUID();
+	store.db
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, merged_into_actor_id, created_at, updated_at)
+			 VALUES (?, ?, 0, 'active', NULL, ?, ?)`,
+		)
+		.run(actorId, assignee.newPersonName, now, now);
+	return actorId;
+}
+
 function identityChoices(store: MemoryStore, candidateRef: string): IdentityChoiceInternal[] {
 	const rows = store.db
 		.prepare(
@@ -1811,6 +1867,121 @@ function finishResponse(
 		accessDeltaDigest: result.accessDeltaDigest,
 		completedAt: result.completedAt,
 	};
+}
+
+interface AssignmentRequest {
+	attemptId: string;
+	expectation: Record<string, unknown>;
+	assignee: AssignmentTarget;
+}
+
+function parseAssignmentRequest(body: Record<string, unknown>): AssignmentRequest | null {
+	const assignee = parseAssignmentTarget(body);
+	const { attemptId, expectation } = body;
+	if (!assignee || typeof attemptId !== "string" || !ATTEMPT_ID_PATTERN.test(attemptId)) {
+		return null;
+	}
+	if (!expectation || typeof expectation !== "object" || Array.isArray(expectation)) return null;
+	return { attemptId, expectation: expectation as Record<string, unknown>, assignee };
+}
+
+type AssignmentFailureCode =
+	| "team_setup_incomplete"
+	| "team_setup_person_listed"
+	| "team_setup_confirmation_stale"
+	| "team_setup_assignment_changed";
+
+type AssignmentOutcome =
+	| { status: 200; body: ReturnType<typeof detailResponse> }
+	| { status: 400 | 404 | 409; body: { error: AssignmentFailureCode } };
+
+function assignmentFailure(
+	error: AssignmentFailureCode,
+	status: 400 | 404 | 409,
+): AssignmentOutcome {
+	return { status, body: { error } };
+}
+
+function assignmentExpectationMatches(
+	candidateRef: string,
+	expected: LegacyTeamSetupDraftView["devices"][number]["expectation"],
+	submitted: Record<string, unknown>,
+): boolean {
+	if (expected.kind === "absent") {
+		return hasExactKeys(submitted, ["kind"]) && submitted.kind === "absent";
+	}
+	return (
+		hasExactKeys(submitted, ["assignmentVersion", "identityRef", "kind"]) &&
+		submitted.kind === "existing" &&
+		submitted.assignmentVersion === expected.assignmentVersion &&
+		submitted.identityRef === requiredIdentityRef(candidateRef, expected.identityId)
+	);
+}
+
+/** The listed person a device goes to, null for someone new, or why neither works. */
+function assigneeIdentityId(
+	store: MemoryStore,
+	candidateRef: string,
+	assignee: AssignmentTarget,
+): { identityId: string | null } | AssignmentOutcome {
+	if ("newPersonName" in assignee) {
+		return personNameTaken(store, assignee.newPersonName)
+			? assignmentFailure("team_setup_person_listed", 409)
+			: { identityId: null };
+	}
+	const target = identityChoices(store, candidateRef).find(
+		(choice) => choice.identityRef === assignee.targetIdentityRef,
+	);
+	return target
+		? { identityId: target.identityId }
+		: assignmentFailure("team_setup_confirmation_stale", 404);
+}
+
+function editableAssignmentDraft(
+	store: MemoryStore,
+	candidateRef: string,
+	attemptId: string,
+): LegacyTeamSetupDraftView | AssignmentOutcome {
+	const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
+	if (!draft) return assignmentFailure("team_setup_confirmation_stale", 404);
+	const stale =
+		(draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) ||
+		draft.attemptId !== attemptId ||
+		draft.state === "completed";
+	return stale ? assignmentFailure("team_setup_confirmation_stale", 409) : draft;
+}
+
+function saveDeviceAssignment(
+	store: MemoryStore,
+	input: AssignmentRequest & { candidateRef: string; deviceRef: string },
+): AssignmentOutcome {
+	const draft = editableAssignmentDraft(store, input.candidateRef, input.attemptId);
+	if ("status" in draft) return draft;
+	const device = draft.devices.find((item) => item.deviceRef === input.deviceRef);
+	if (!device) return assignmentFailure("team_setup_confirmation_stale", 404);
+	if (!assignmentExpectationMatches(input.candidateRef, device.expectation, input.expectation)) {
+		return assignmentFailure("team_setup_assignment_changed", 409);
+	}
+	const target = assigneeIdentityId(store, input.candidateRef, input.assignee);
+	if ("status" in target) return target;
+	const releaseMutation = claimCandidateMutation(store.db, input.candidateRef);
+	if (!releaseMutation) return assignmentFailure("team_setup_confirmation_stale", 409);
+	try {
+		const body = projectMutationAtomically(
+			store,
+			() =>
+				setLegacyTeamSetupDeviceAssignment(store.db, {
+					attemptId: input.attemptId,
+					deviceRef: input.deviceRef,
+					targetIdentityId: target.identityId ?? insertTeamSetupPerson(store, input.assignee),
+					expectation: device.expectation,
+				}),
+			(updated) => detailResponse(store, updated),
+		);
+		return { status: 200, body };
+	} finally {
+		releaseMutation();
+	}
 }
 
 export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
@@ -2512,76 +2683,15 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			return c.json({ error: "team_setup_incomplete" as const }, 400);
 		}
 		const parsed = await parseBoundedJsonObject(c);
-		if (
-			!parsed.ok ||
-			!hasExactKeys(parsed.value, ["attemptId", "expectation", "targetIdentityRef"])
-		) {
-			return c.json({ error: "team_setup_incomplete" as const }, 400);
-		}
-		const { attemptId, expectation, targetIdentityRef } = parsed.value;
-		if (
-			typeof attemptId !== "string" ||
-			!ATTEMPT_ID_PATTERN.test(attemptId) ||
-			typeof targetIdentityRef !== "string" ||
-			!IDENTITY_REF_PATTERN.test(targetIdentityRef) ||
-			!expectation ||
-			typeof expectation !== "object" ||
-			Array.isArray(expectation)
-		) {
-			return c.json({ error: "team_setup_incomplete" as const }, 400);
-		}
+		const request = parsed.ok ? parseAssignmentRequest(parsed.value) : null;
+		if (!request) return c.json({ error: "team_setup_incomplete" as const }, 400);
 		try {
-			const store = options.getStore();
-			const draft = getLegacyTeamSetupDraft(store.db, candidateRef);
-			if (!draft) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
-			if (draft.state !== "completed" && hasCompletedLegacyTeamSetup(store, candidateRef)) {
-				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
-			}
-			if (draft.attemptId !== attemptId) {
-				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
-			}
-			if (draft.state === "completed") {
-				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
-			}
-			const device = draft.devices.find((item) => item.deviceRef === deviceRef);
-			if (!device) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
-			const submittedExpectation = expectation as Record<string, unknown>;
-			const expectationMatches =
-				device.expectation.kind === "absent"
-					? hasExactKeys(submittedExpectation, ["kind"]) && submittedExpectation.kind === "absent"
-					: hasExactKeys(submittedExpectation, ["assignmentVersion", "identityRef", "kind"]) &&
-						submittedExpectation.kind === "existing" &&
-						submittedExpectation.assignmentVersion === device.expectation.assignmentVersion &&
-						submittedExpectation.identityRef ===
-							requiredIdentityRef(candidateRef, device.expectation.identityId);
-			if (!expectationMatches) {
-				return c.json({ error: "team_setup_assignment_changed" as const }, 409);
-			}
-			const target = identityChoices(store, candidateRef).find(
-				(choice) => choice.identityRef === targetIdentityRef,
-			);
-			if (!target) return c.json({ error: "team_setup_confirmation_stale" as const }, 404);
-			const releaseMutation = claimCandidateMutation(store.db, candidateRef);
-			if (!releaseMutation) {
-				return c.json({ error: "team_setup_confirmation_stale" as const }, 409);
-			}
-			try {
-				return c.json(
-					projectMutationAtomically(
-						store,
-						() =>
-							setLegacyTeamSetupDeviceAssignment(store.db, {
-								attemptId,
-								deviceRef,
-								targetIdentityId: target.identityId,
-								expectation: device.expectation,
-							}),
-						(draft) => detailResponse(store, draft),
-					),
-				);
-			} finally {
-				releaseMutation();
-			}
+			const outcome = saveDeviceAssignment(options.getStore(), {
+				candidateRef,
+				deviceRef,
+				...request,
+			});
+			return c.json(outcome.body, outcome.status);
 		} catch (error) {
 			const failure = teamSetupFailure(error, `${c.req.method} ${c.req.routePath}`);
 			return c.json({ error: failure.code }, failure.status);

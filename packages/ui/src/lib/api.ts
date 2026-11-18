@@ -64,6 +64,7 @@ export type {
 	LegacyTeamSetupAccessDeltaV1,
 	LegacyTeamSetupActionBlockedReasonV1,
 	LegacyTeamSetupActionGateV1,
+	LegacyTeamSetupAssignee,
 	LegacyTeamSetupAssignmentExpectationV1,
 	LegacyTeamSetupCandidateSummaryV1,
 	LegacyTeamSetupDetailResponseV1,
