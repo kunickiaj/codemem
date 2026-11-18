@@ -1101,6 +1101,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureSyncTransferActivitySchema(db);
 	ensureRelayServicePinSchema(db);
 	ensureProjectBoundaryMigrationSchema(db);
+	ensureProjectScopeWithdrawalSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
@@ -1181,6 +1182,27 @@ function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
 	} catch {
 		// Keep the compatibility shim fail-open. Readers treat a missing table as no
 		// records, and a record whose hold columns are missing as held.
+	}
+}
+
+/**
+ * Added at schema version 24: Projects this device withdrew from locally. Runs on
+ * every open and only writes when the table is missing, like the migration table.
+ */
+function ensureProjectScopeWithdrawalSchema(db: DatabaseType): void {
+	try {
+		if (tableExists(db, "project_scope_withdrawals")) return;
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS project_scope_withdrawals (
+				scope_id TEXT PRIMARY KEY NOT NULL,
+				canonical_project_identity TEXT NOT NULL,
+				group_id TEXT NOT NULL,
+				withdrawn_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep the compatibility shim fail-open. Readers treat a missing table as
+		// nothing withdrawn.
 	}
 }
 

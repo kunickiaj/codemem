@@ -85,8 +85,8 @@ afterEach(() => {
 });
 
 describe("the migration record table in the schema", () => {
-	it("is at schema version 23", () => {
-		expect(SCHEMA_VERSION).toBe(23);
+	it("is at schema version 23 or later", () => {
+		expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(23);
 	});
 
 	it("exists in a new database before anything is written to it", () => {
@@ -101,9 +101,9 @@ describe("the migration record table in the schema", () => {
 
 		expect(tableExists(db, TABLE)).toBe(true);
 		expect(missingHoldColumns(db)).toEqual([]);
-		expect(getSchemaVersion(db)).toBe(23);
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 		expect(db.prepare("SELECT applied_schema_version FROM schema_compat_state").pluck().get()).toBe(
-			23,
+			SCHEMA_VERSION,
 		);
 		expect(storeRecord(db)).toBe(true);
 	});
@@ -111,7 +111,7 @@ describe("the migration record table in the schema", () => {
 	it("is added on a later open when an earlier attempt failed and the database was marked upgraded", () => {
 		ensureAdditiveSchemaCompatibility(db);
 		db.exec(`DROP TABLE ${TABLE}`);
-		expect(getSchemaVersion(db)).toBe(23);
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
 		ensureAdditiveSchemaCompatibility(db);
 
@@ -148,7 +148,7 @@ describe("the hold columns in the schema", () => {
 		ensureAdditiveSchemaCompatibility(db);
 
 		expect(missingHoldColumns(db)).toEqual([]);
-		expect(getSchemaVersion(db)).toBe(23);
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 		expect(listProjectBoundaryMigrationRecords(db)).toHaveLength(1);
 		expect(getProjectBoundaryMigrationHold(db, BOUNDARY)).toMatchObject({
 			generation: 1,

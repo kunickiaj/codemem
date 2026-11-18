@@ -1499,6 +1499,14 @@ export const projectBoundaryMigrations = sqliteTable("project_boundary_migration
 	updated_at: text("updated_at").notNull(),
 });
 
+/** Projects this device withdrew from locally, keyed by the Project's boundary scope ID. */
+export const projectScopeWithdrawals = sqliteTable("project_scope_withdrawals", {
+	scope_id: text("scope_id").primaryKey(),
+	canonical_project_identity: text("canonical_project_identity").notNull(),
+	group_id: text("group_id").notNull(),
+	withdrawn_at: text("withdrawn_at").notNull(),
+});
+
 export const schema = {
 	deviceIdentityBindingCommits,
 	deviceIdentityBindingAudit,
@@ -1555,4 +1563,5 @@ export const schema = {
 	recipientPolicyReconciliationSteps,
 	recipientPolicyDenyOverlays,
 	projectBoundaryMigrations,
+	projectScopeWithdrawals,
 };
