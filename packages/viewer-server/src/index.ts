@@ -41,6 +41,7 @@ import {
 import { memoryToolRoutes } from "./routes/memory-tools.js";
 import { observerStatusRoutes } from "./routes/observer-status.js";
 import { packTransportRoutes } from "./routes/pack.js";
+import { projectWithdrawalRoutes } from "./routes/project-withdrawal.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
 import { type SyncRoutesOptions, syncRoutes } from "./routes/sync.js";
@@ -334,6 +335,7 @@ export function createApp(opts?: AppOptions) {
 		}),
 	);
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
+	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(
 		"/",
 		teamSetupRoutes({

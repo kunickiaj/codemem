@@ -785,6 +785,17 @@ Open **Sharing → Invitations → Review an invite** and paste any code you rec
 - **A device pairing code** belongs in **Devices**. Choose **Review in Devices**, then **Pair a device**. The code is already filled in, so you can check the other device before trusting it.
 - **An older connection-only code** connects this device to a coordinator group. It shares no Projects and adds you to no Team. If the group needs an admin's approval, Sharing says the join request was sent. These codes are no longer created, and codemem stops accepting them in the release after the last one can expire.
 
+### Stop receiving a Project on this device
+
+Any device can stop receiving a Project that someone shared with it. You don't need the coordinator admin secret, and other devices aren't affected.
+
+1. Open **Sharing → From other devices**. The **On this device** column shows **Receiving** or **Stopped** for each Project.
+2. Choose **Stop receiving…** and confirm.
+
+This device then stops getting new memories for that Project and stops sending its own memories for it. It keeps every memory it already has, and you can still search and read them. Choose **Resume** to start again. The device catches up on its next sync with whatever it's still allowed to receive at that point, including its own memories that changed in the meantime.
+
+The change applies only on this device. The coordinator still lists the device as receiving the Project, so the person who shared it sees no change. Projects shared the older way, as part of a group of Projects, show **Can't be stopped here**.
+
 ### Add a device for an existing Identity
 
 Create an **Add device** invitation from the existing Identity. Before sending it, review the exact Projects the new device will receive:

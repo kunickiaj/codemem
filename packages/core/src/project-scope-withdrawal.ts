@@ -43,7 +43,21 @@ export function withdrawProjectScope(
 	db: Database,
 	input: { canonicalProjectIdentity: string; groupId: string; now: string },
 ): ProjectScopeWithdrawal {
-	const scopeId = managedProjectScopeId(input.groupId, input.canonicalProjectIdentity);
+	return recordProjectScopeWithdrawal(db, {
+		...input,
+		scopeId: managedProjectScopeId(input.groupId, input.canonicalProjectIdentity),
+	});
+}
+
+/**
+ * Records a withdrawal for a boundary this device already knows by scope ID, as a
+ * receiving device does. Repeating it changes nothing.
+ */
+export function recordProjectScopeWithdrawal(
+	db: Database,
+	input: { scopeId: string; canonicalProjectIdentity: string; groupId: string; now: string },
+): ProjectScopeWithdrawal {
+	const { scopeId } = input;
 	db.prepare(
 		`INSERT INTO ${TABLE}(scope_id, canonical_project_identity, group_id, withdrawn_at)
 		 VALUES (?, ?, ?, ?)

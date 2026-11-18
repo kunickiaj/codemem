@@ -20,6 +20,11 @@ import {
 import { ProvenanceChip } from "./feed/components/ProvenanceChip";
 import { TagChip } from "./feed/components/TagChip";
 import { MyAccount } from "./my-account";
+import {
+	defaultReceivedProjectActions,
+	type ReceivedProjectActions,
+	ReceivedProjectOnThisDevice,
+} from "./received-project-on-this-device";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
 import {
 	openRecipientPolicyManagement,
@@ -40,6 +45,10 @@ export interface RecipientPolicySharingOptions {
 	refreshError?: boolean;
 	deviceInventoryUnavailable?: boolean;
 	received?: ReceivedProjectShare[];
+	/** Stops and resumes a received Project on this device; tests replace it. */
+	receivedActions?: ReceivedProjectActions;
+	/** Reloads after this device stops or resumes a received Project. */
+	onReceivedChanged?: () => Promise<unknown> | unknown;
 	deviceInventory?: DeviceIdentityInventoryV1;
 	onOpenTeamSetup?: (candidateRef: string) => void;
 	onReviewDevices?: (deviceId?: string) => void;
@@ -315,6 +324,17 @@ function createTeamControl(options: RecipientPolicySharingOptions) {
 	);
 }
 
+function receivedView(options: RecipientPolicySharingOptions) {
+	return (
+		<ReceivedView
+			actions={options.receivedActions ?? defaultReceivedProjectActions}
+			disabled={options.refreshError === true}
+			onChanged={options.onReceivedChanged}
+			received={options.received ?? []}
+		/>
+	);
+}
+
 function SharingTabPanelContent({
 	accountView,
 	active,
@@ -380,7 +400,7 @@ function SharingTabPanelContent({
 				/>
 			);
 		case "received":
-			return <ReceivedView received={options.received ?? []} />;
+			return receivedView(options);
 		case "invitations":
 			return <RecipientPolicyInvitations intent={intent} />;
 		default:
@@ -1014,7 +1034,17 @@ function receivedFromLabel(originDevices: ReceivedProjectShare["originDevices"])
 		: visibleNames.join(" · ");
 }
 
-function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
+function ReceivedView({
+	actions,
+	disabled,
+	onChanged,
+	received,
+}: {
+	actions: ReceivedProjectActions;
+	disabled: boolean;
+	onChanged?: () => Promise<unknown> | unknown;
+	received: ReceivedProjectShare[];
+}) {
 	const [query, setQuery] = useState("");
 	const normalizedQuery = query.trim().toLocaleLowerCase();
 	const visibleShares = received.filter((share) =>
@@ -1051,6 +1081,7 @@ function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
 						<th scope="col">From</th>
 						<th scope="col">Memories on this device</th>
 						<th scope="col">Last session</th>
+						<th scope="col">On this device</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -1070,6 +1101,14 @@ function ReceivedView({ received }: { received: ReceivedProjectShare[] }) {
 								{share.latestSessionAt
 									? new Date(share.latestSessionAt).toLocaleString()
 									: "No recent sessions"}
+							</td>
+							<td data-label="On this device">
+								<ReceivedProjectOnThisDevice
+									actions={actions}
+									disabled={disabled}
+									onChanged={onChanged}
+									share={share}
+								/>
 							</td>
 						</tr>
 					))}

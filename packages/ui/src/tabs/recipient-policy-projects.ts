@@ -11,6 +11,8 @@ export interface ReceivedProjectShare {
 	existingMemoryCount: number;
 	latestSessionAt: string | null;
 	originDevices: Array<{ deviceId: string; displayName: string | null }>;
+	/** Null when the Project can't be stopped here because it isn't on its own boundary. */
+	onThisDevice: { stoppedAt: string | null } | null;
 }
 
 /**
@@ -33,6 +35,7 @@ export function toReceivedProjectShares(
 				deviceId: device.device_id,
 				displayName: device.display_name,
 			})),
+			onThisDevice: project.own_boundary ? { stoppedAt: project.own_boundary.stopped_at } : null,
 		});
 	}
 	return [...byId.values()].sort(

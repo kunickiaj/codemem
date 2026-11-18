@@ -302,6 +302,14 @@ const syncRequestCases = {
 	loadProjectScopeInventory: syncRequestCase("GET", "/api/sync/projects", () =>
 		syncApi.loadProjectScopeInventory({ q: "project", limit: 10 }),
 	),
+	stopProjectOnThisDevice: syncRequestCase("POST", "/api/sync/project-withdrawals/v1/stop", () =>
+		syncApi.stopProjectOnThisDevice("project"),
+	),
+	resumeProjectOnThisDevice: syncRequestCase(
+		"POST",
+		"/api/sync/project-withdrawals/v1/resume",
+		() => syncApi.resumeProjectOnThisDevice("project"),
+	),
 	previewProjectInvite: syncRequestCase("POST", "/api/sync/project-invites/preview", () =>
 		syncApi.previewProjectInvite({ teammate_name: "Teammate", project_ids: ["project"] }),
 	),
@@ -1585,6 +1593,58 @@ describe("GET /api/sync/projects origin devices", () => {
 		aliasesPreUpgradeSharesToRepositoryProjects({ mappingOnly: true }));
 });
 
+describe("GET /api/sync/projects own boundary", () => {
+	async function receivedProject(app: ReturnType<typeof createTestApp>["app"]) {
+		const response = await app.request("/api/sync/projects?status=received");
+		const inventory = (await response.json()) as {
+			projects: Array<{ workspace_identity: string; own_boundary: unknown }>;
+		};
+		return inventory.projects[0];
+	}
+
+	it("says whether a received Project on its own boundary is stopped on this device", async () => {
+		const { app, ensureStore, cleanup } = createTestApp();
+		try {
+			// Arrange: a received Project, then its boundary with this device as a member.
+			const store = ensureStore();
+			seedReceivedProjectOriginDevices(store);
+			const before = await receivedProject(app);
+			const identity = before?.workspace_identity ?? "";
+			const scopeId = "managed-project:received";
+			const now = new Date().toISOString();
+			store.db
+				.prepare(
+					`INSERT INTO replication_scopes(scope_id, label, kind, authority_type, coordinator_id, group_id, membership_epoch, status, created_at, updated_at)
+					 VALUES (?, 'Viewer', 'managed_project', 'coordinator', 'coord-1', 'group-a', 1, 'active', ?, ?)`,
+				)
+				.run(scopeId, now, now);
+			store.db
+				.prepare(
+					`INSERT INTO scope_memberships(scope_id, device_id, role, status, membership_epoch, updated_at)
+					 VALUES (?, ?, 'member', 'active', 1, ?)`,
+				)
+				.run(scopeId, store.deviceId, now);
+
+			// Act
+			const receiving = await receivedProject(app);
+			const stop = await app.request("/api/sync/project-withdrawals/v1/stop", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ workspace_identity: identity }),
+			});
+			const stopped = await receivedProject(app);
+
+			// Assert
+			expect(before?.own_boundary).toBeNull();
+			expect(receiving?.own_boundary).toEqual({ stopped_at: null });
+			expect(stop.status).toBe(200);
+			expect(stopped?.own_boundary).toEqual({ stopped_at: expect.any(String) });
+		} finally {
+			cleanup();
+		}
+	});
+});
+
 it("wakes affected recipient policies after an actor merge", async () => {
 	const { app, getStore, cleanup } = createTestApp();
 	try {
@@ -2155,7 +2215,7 @@ describe("viewer-server", () => {
 			for (const [, request] of cases)
 				outcomes.push(...(await Promise.allSettled([request.invoke()])));
 			expect(exportedWrappers.sort()).toEqual(Object.keys(syncRequestCases).sort());
-			expect(cases).toHaveLength(58);
+			expect(cases).toHaveLength(60);
 			expect(fetchMock).toHaveBeenCalledTimes(cases.length);
 			expect(outcomes.map((outcome) => outcome.status)).toEqual(cases.map(() => "rejected"));
 			expect(requests).toEqual(cases.map(([, { method, path }]) => ({ method, path })));

@@ -62,7 +62,9 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { RecipientPolicyTeamRenameApiError } from "../lib/api/sync";
+import type { ReceivedProjectActions } from "./received-project-on-this-device";
 import type { RecipientPolicyManagementProject } from "./recipient-policy-management";
+import type { ReceivedProjectShare } from "./recipient-policy-projects";
 import { mountRecipientPolicySharing, requestSharingNavigation } from "./recipient-policy-sharing";
 import { deriveTeamSyncPrimaryStatus } from "./sync/view-model";
 
@@ -237,6 +239,7 @@ function rendersReceivedProjectSources(): void {
 					{ deviceId: "device-c", displayName: null },
 					{ deviceId: "device-a", displayName: "Work Laptop" },
 				],
+				onThisDevice: null,
 			},
 			{
 				canonicalProjectIdentity: "git:received-tools",
@@ -244,6 +247,7 @@ function rendersReceivedProjectSources(): void {
 				existingMemoryCount: 1,
 				latestSessionAt: null,
 				originDevices: [{ deviceId: "private-device-id", displayName: null }],
+				onThisDevice: null,
 			},
 			{
 				canonicalProjectIdentity: "git:received-private",
@@ -254,6 +258,7 @@ function rendersReceivedProjectSources(): void {
 					{ deviceId: "private-device-a", displayName: null },
 					{ deviceId: "private-device-b", displayName: null },
 				],
+				onThisDevice: null,
 			},
 			{
 				canonicalProjectIdentity: "git:received-legacy",
@@ -261,6 +266,7 @@ function rendersReceivedProjectSources(): void {
 				existingMemoryCount: 1,
 				latestSessionAt: null,
 				originDevices: [],
+				onThisDevice: null,
 			},
 		],
 	});
@@ -296,6 +302,118 @@ describe("received project sources", () => {
 		"counts distinct unresolved origins without showing raw identifiers",
 		rendersReceivedProjectSources,
 	);
+});
+
+function receivedShare(stoppedAt: string | null | "not-own-boundary"): ReceivedProjectShare {
+	return {
+		canonicalProjectIdentity: "git:example/atlas",
+		displayName: "Atlas",
+		existingMemoryCount: 12,
+		latestSessionAt: null,
+		originDevices: [{ deviceId: "device-a", displayName: "Work Laptop" }],
+		onThisDevice: stoppedAt === "not-own-boundary" ? null : { stoppedAt },
+	};
+}
+
+function receivedActions(overrides: Partial<ReceivedProjectActions> = {}): ReceivedProjectActions {
+	return {
+		stop: vi.fn().mockResolvedValue({}),
+		resume: vi.fn().mockResolvedValue({}),
+		confirmStop: vi.fn().mockResolvedValue(true),
+		...overrides,
+	};
+}
+
+function onThisDeviceButton(): HTMLButtonElement {
+	const button = visiblePanel().querySelector<HTMLButtonElement>(
+		'[data-label="On this device"] button',
+	);
+	if (!button) throw new Error("On this device button missing");
+	return button;
+}
+
+async function clickOnThisDevice(): Promise<void> {
+	await act(async () => {
+		onThisDeviceButton().click();
+	});
+}
+
+describe("stopping a received Project on this device", () => {
+	beforeEach(setupSharingMount);
+	afterEach(cleanupSharingMount);
+
+	it("stops receiving after confirmation and reloads", async () => {
+		// Arrange
+		const actions = receivedActions();
+		const onReceivedChanged = vi.fn();
+		mount(intent(), {
+			received: [receivedShare(null)],
+			receivedActions: actions,
+			onReceivedChanged,
+		});
+		clickTab("From other devices");
+
+		// Act
+		await clickOnThisDevice();
+
+		// Assert
+		expect(actions.confirmStop).toHaveBeenCalledOnce();
+		expect(actions.stop).toHaveBeenCalledWith("git:example/atlas");
+		expect(onReceivedChanged).toHaveBeenCalledOnce();
+	});
+
+	it("does nothing when the confirmation is cancelled", async () => {
+		const actions = receivedActions({ confirmStop: vi.fn().mockResolvedValue(false) });
+		mount(intent(), { received: [receivedShare(null)], receivedActions: actions });
+		clickTab("From other devices");
+
+		await clickOnThisDevice();
+
+		expect(actions.stop).not.toHaveBeenCalled();
+	});
+
+	it("resumes a stopped Project without asking", async () => {
+		const actions = receivedActions();
+		mount(intent(), {
+			received: [receivedShare("2026-11-18T10:00:00.000Z")],
+			receivedActions: actions,
+		});
+		clickTab("From other devices");
+
+		const label = onThisDeviceButton().textContent;
+		await clickOnThisDevice();
+
+		expect(visiblePanel().querySelector('[data-label="On this device"]')?.textContent).toContain(
+			"Stopped",
+		);
+		expect(label).toBe("Resume");
+		expect(actions.confirmStop).not.toHaveBeenCalled();
+		expect(actions.resume).toHaveBeenCalledWith("git:example/atlas");
+	});
+
+	it("explains a refusal and says nothing changed", async () => {
+		const actions = receivedActions({
+			stop: vi.fn().mockRejectedValue(new Error("project_not_on_own_boundary")),
+		});
+		mount(intent(), { received: [receivedShare(null)], receivedActions: actions });
+		clickTab("From other devices");
+
+		await clickOnThisDevice();
+
+		expect(visiblePanel().querySelector('[role="alert"]')?.textContent).toBe(
+			"Atlas was shared with this device the older way, so it can't be stopped here yet. Nothing changed.",
+		);
+	});
+
+	it("offers no switch for a Project that can't be stopped here", () => {
+		mount(intent(), { received: [receivedShare("not-own-boundary")] });
+		clickTab("From other devices");
+
+		const cell = visiblePanel().querySelector('[data-label="On this device"]');
+
+		expect(cell?.textContent).toBe("Can't be stopped here");
+		expect(cell?.querySelector("button")).toBeNull();
+	});
 });
 
 function registerRecipientFocusedSharingLifecycle(): void {
