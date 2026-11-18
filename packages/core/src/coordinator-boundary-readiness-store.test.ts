@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 import { initializeBaseSchema } from "./better-sqlite-coordinator-store.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
+	BOUNDARY_READINESS_MAX_BODY_BYTES,
+	BOUNDARY_READINESS_MAX_PROJECTS_BYTES,
 	BOUNDARY_READINESS_MIGRATION_NAME,
 	BOUNDARY_READINESS_SCHEMA_SQL,
 	BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
+	type BoundaryReadinessProject,
+	fitBoundaryReadinessProjects,
 } from "./coordinator-boundary-readiness.js";
 import {
 	BOUNDARY_READINESS_CLOCK_MS,
@@ -93,5 +97,63 @@ describe("readiness storage on the SQLite coordinator", () => {
 
 		expect(present(db)).toBe(0);
 		db.close();
+	});
+});
+
+describe("what one readiness request can carry", () => {
+	const entry = (
+		index: number,
+		sourceScopeId = "team:group-a:default",
+	): BoundaryReadinessProject => ({
+		source_scope_id: sourceScopeId,
+		boundary_scope_id: `managed-project:${index.toString(16).padStart(64, "0")}`,
+		state: "waiting",
+		own_rows_in_source: 1,
+		own_rows_in_boundary: 0,
+	});
+	const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+	it("fits the largest record the store accepts into one request body", () => {
+		const { projects, omittedProjects } = fitBoundaryReadinessProjects(
+			Array.from({ length: 5000 }, (_, index) => entry(index)),
+		);
+		const body = {
+			version: 1,
+			group_id: "g".repeat(256),
+			sequence: Number.MAX_SAFE_INTEGER,
+			omitted_projects: Number.MAX_SAFE_INTEGER,
+			projects,
+		};
+
+		expect(omittedProjects).toBeGreaterThan(0);
+		expect(bytes(projects)).toBeLessThanOrEqual(BOUNDARY_READINESS_MAX_PROJECTS_BYTES);
+		expect(bytes(body)).toBeLessThanOrEqual(BOUNDARY_READINESS_MAX_BODY_BYTES);
+	});
+
+	it("counts bytes, so IDs outside ASCII leave room for fewer Projects", () => {
+		const ascii = Array.from({ length: 5000 }, (_, index) => entry(index));
+		const wide = Array.from({ length: 5000 }, (_, index) => entry(index, "équipe:groupe:défaut"));
+
+		const fitted = fitBoundaryReadinessProjects(wide);
+
+		expect(bytes(fitted.projects)).toBeLessThanOrEqual(BOUNDARY_READINESS_MAX_PROJECTS_BYTES);
+		expect(fitted.projects.length).toBeLessThan(
+			fitBoundaryReadinessProjects(ascii).projects.length,
+		);
+	});
+
+	it("leaves out nothing when every Project fits", () => {
+		const projects = [entry(1), entry(2)];
+
+		expect(fitBoundaryReadinessProjects(projects)).toEqual({ projects, omittedProjects: 0 });
+	});
+
+	it("leaves out a Project too large to fit by itself, and everything after it", () => {
+		const huge = entry(1, "s".repeat(BOUNDARY_READINESS_MAX_PROJECTS_BYTES));
+
+		expect(fitBoundaryReadinessProjects([entry(0), huge, entry(2)])).toEqual({
+			projects: [entry(0)],
+			omittedProjects: 2,
+		});
 	});
 });

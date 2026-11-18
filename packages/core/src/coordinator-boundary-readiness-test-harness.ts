@@ -1,8 +1,10 @@
 import { expect, it } from "vitest";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
-import type {
-	BoundaryReadinessProject,
-	PutBoundaryReadinessInput,
+import {
+	BOUNDARY_READINESS_MAX_PROJECTS_BYTES,
+	type BoundaryReadinessProject,
+	fitBoundaryReadinessProjects,
+	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 
@@ -118,6 +120,7 @@ function registerStoring(test: BoundaryReadinessTest) {
 			group_id: w.groupId,
 			device_id: w.deviceId,
 			sequence: 1,
+			omitted_projects: 0,
 			updated_at: CLOCK_ISO,
 			projects: [project(w)],
 		});
@@ -298,6 +301,7 @@ const INVALID_RECORDS: {
 	{ name: "a sequence below one", change: () => ({ sequence: 0 }) },
 	{ name: "a sequence that is not a whole number", change: () => ({ sequence: 1.5 }) },
 	{ name: "an empty device ID", change: () => ({ deviceId: "" }) },
+	{ name: "a negative count of omitted Projects", change: () => ({ omittedProjects: -1 }) },
 	{
 		name: "an unknown Project state",
 		change: (w) => ({ projects: [project(w, { state: "done" as never })] }),
@@ -374,6 +378,60 @@ function registerDiscard(test: BoundaryReadinessTest) {
 	});
 }
 
+/** More Projects than one record holds: distinct boundaries, in the order the device lists them. */
+function manyProjects(w: World, count: number): BoundaryReadinessProject[] {
+	return Array.from({ length: count }, (_, index) =>
+		project(w, { boundary_scope_id: `managed-project:${index.toString(16).padStart(64, "0")}` }),
+	);
+}
+
+function registerSizeLimit(test: BoundaryReadinessTest) {
+	test("stores how many Projects the device left out, and replaces the count with the next record", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		await put(w, { omittedProjects: 12 });
+		expect(await stored(w)).toMatchObject({ omitted_projects: 12 });
+
+		await put(w, { sequence: 2 });
+
+		expect(await stored(w)).toMatchObject({ omitted_projects: 0 });
+	});
+
+	test("stores the largest record a device can build, with the rest counted", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const all = manyProjects(w, 2500);
+		const fitted = fitBoundaryReadinessProjects(all);
+		expect(fitted.omittedProjects).toBeGreaterThan(0);
+		expect(fitted.projects).toEqual(all.slice(0, fitted.projects.length));
+
+		const result = await put(w, fitted);
+
+		expect(result).toMatchObject({ kind: "stored", rejected: [] });
+		const record = await stored(w);
+		expect(record?.projects).toHaveLength(fitted.projects.length);
+		expect(record?.omitted_projects).toBe(all.length - fitted.projects.length);
+	});
+
+	test("refuses a record one Project larger than fits, and keeps the stored one", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		await put(w);
+		const all = manyProjects(w, 2500);
+		const tooMany = all.slice(0, fitBoundaryReadinessProjects(all).projects.length + 1);
+		expect(JSON.stringify(tooMany).length).toBeGreaterThan(BOUNDARY_READINESS_MAX_PROJECTS_BYTES);
+
+		await expect(put(w, { sequence: 2, projects: tooMany })).rejects.toThrow(
+			"boundary_readiness_too_large",
+		);
+
+		expect(await stored(w)).toMatchObject({ sequence: 1, projects: [project(w)] });
+	});
+}
+
 /** The readiness record contract, for the SQLite store and both D1 runtimes. */
 export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): void {
 	registerStoring(test);
@@ -382,4 +440,5 @@ export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): 
 	registerProjectChecks(test);
 	registerInvalidInput(test);
 	registerDiscard(test);
+	registerSizeLimit(test);
 }

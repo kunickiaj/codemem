@@ -605,6 +605,7 @@ CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness (
   device_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
   record_id TEXT NOT NULL,
+  omitted_projects INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (group_id, device_id)
 );

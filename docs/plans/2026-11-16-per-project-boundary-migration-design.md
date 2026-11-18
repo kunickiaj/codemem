@@ -107,7 +107,7 @@ A memory's scope is stamped when it is written, from the writing device's own ma
 
 ### Readiness record
 
-An updated device keeps one record per coordinator group at the coordinator, signed with its device key. It sends the record with its presence and again when the contents change. The coordinator keeps the last one. It discards the record when the device posts presence without the migration feature, which is what a downgraded device does.
+An updated device keeps one record per coordinator group at the coordinator, signed with its device key. It sends the record in a request of its own, after its presence and again when the contents change, because a presence request is limited to 64 KiB and a record can be larger. The coordinator keeps the last one. It discards the record when the device posts presence without the migration feature, which is what a downgraded device does.
 
 ```json
 {
@@ -140,7 +140,8 @@ What the coordinator stores (`packages/core/src/coordinator-boundary-readiness.t
 - A record with no Projects is valid. It says the device runs code that handles a boundary.
 - An entry that fails the two checks above is left out and named in the answer. The rest of the record is stored.
 - A device with no enabled enrollment in the group is refused.
-- A record lists at most 1,000 Projects, and one Project can appear once per source scope.
+- One Project can appear once per source scope.
+- A record's Projects take at most 256 KiB as compact JSON, about 1,300 Projects. The store and the request use the same limit, so a record the device can build always fits one request. A device with more Projects lists the ones that still wait first and sends the number it left out in `omitted_projects`. The coordinator stores that number, so the device counts as ready and an admin device can see that some of its Projects are not listed yet. Projects that have moved drop out of the list, which brings the omitted ones into a later record.
 - A coordinator that has not applied migration `0050` answers that readiness records are unavailable, and every Project waits.
 
 The device is checked against the source scope when the record arrives. It can leave that scope afterwards, and its record stays until its next one. The commit therefore counts only records of devices that are authorized in the source scope at the moment of the commit.
