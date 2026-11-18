@@ -4,7 +4,8 @@ import { type Database, tableExists } from "./db.js";
  * This device's copy of the coordinator's migration records: which older scope
  * a Project moved out of, and which boundary it moved into. A record is the
  * evidence that a memory may change scope when a snapshot is applied. The
- * table is part of the schema from version 22.
+ * table is part of the schema from version 22. Storing a record never touches
+ * the hold columns beside it (project-boundary-migration-hold.ts).
  */
 
 export type ProjectBoundaryMigrationState = "committed" | "rolled_back" | "detached";
@@ -29,7 +30,8 @@ export interface RecordProjectBoundaryMigrationInput {
 	now?: string;
 }
 
-interface RecordRow {
+/** The record columns of a stored row, as SQLite returns them. */
+export interface ProjectBoundaryMigrationRecordRow {
 	boundary_scope_id: string;
 	source_scope_id: string;
 	additional_source_scope_ids_json: string;
@@ -51,7 +53,10 @@ function scopeIdList(raw: string): string[] {
 	}
 }
 
-function recordFromRow(row: RecordRow): ProjectBoundaryMigrationRecord | null {
+/** Reads a stored row as a record, or null when the writer would not have accepted it. */
+export function projectBoundaryMigrationRecordFromRow(
+	row: ProjectBoundaryMigrationRecordRow,
+): ProjectBoundaryMigrationRecord | null {
 	const state = STATES.find((candidate) => candidate === row.state);
 	const boundaryScopeId = cleanScopeId(row.boundary_scope_id);
 	const sourceScopeId = cleanScopeId(row.source_scope_id);
@@ -89,8 +94,8 @@ export function listProjectBoundaryMigrationRecords(
 			`SELECT boundary_scope_id, source_scope_id, additional_source_scope_ids_json, state, generation
 			 FROM project_boundary_migrations ORDER BY boundary_scope_id`,
 		)
-		.all() as RecordRow[];
-	return rows.flatMap((row) => recordFromRow(row) ?? []);
+		.all() as ProjectBoundaryMigrationRecordRow[];
+	return rows.flatMap((row) => projectBoundaryMigrationRecordFromRow(row) ?? []);
 }
 
 function validatedInput(input: RecordProjectBoundaryMigrationInput) {
