@@ -21425,3 +21425,40 @@ describe("legacy shared review repository inference", () => {
 		}
 	});
 });
+
+it("answers a device removal that the coordinator cannot record with the coordinator's error", async () => {
+	// Arrange: the coordinator answers 503 while its database has migration 0048 and not 0049.
+	const configPath = join(mkdtempSync(join(tmpdir(), "codemem-config-test-")), "config.json");
+	const prevConfig = process.env.CODEMEM_CONFIG;
+	const prevFetch = globalThis.fetch;
+	process.env.CODEMEM_CONFIG = configPath;
+	writeFileSync(
+		configPath,
+		JSON.stringify({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_group: "team-a",
+			sync_coordinator_admin_secret: "secret",
+		}),
+	);
+	globalThis.fetch = vi.fn(
+		async () =>
+			new Response(JSON.stringify({ error: "device_removal_unavailable" }), { status: 503 }),
+	) as typeof fetch;
+	const { app, cleanup } = createTestApp();
+	try {
+		// Act
+		const response = await app.request("/api/coordinator/admin/devices/device-1/remove", {
+			method: "POST",
+		});
+		// Assert: this route reports every coordinator failure as 400 with its message.
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			error: "Remote coordinator request failed (503): device_removal_unavailable",
+		});
+	} finally {
+		cleanup();
+		if (prevConfig == null) delete process.env.CODEMEM_CONFIG;
+		else process.env.CODEMEM_CONFIG = prevConfig;
+		globalThis.fetch = prevFetch;
+	}
+});

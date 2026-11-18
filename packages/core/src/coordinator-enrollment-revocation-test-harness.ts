@@ -76,8 +76,8 @@ function registerOrdinaryWrites(test: EnrollmentTest) {
 			fingerprint: f.input.fingerprint,
 			enabled: 1,
 		});
-		// The removal's tombstone refuses the insert, and the writer reports its fail-closed error.
-		expect(reenrolled).toBe("device_ownership_authorization_unavailable");
+		// The removal's tombstone refuses the insert, and the writer names that refusal.
+		expect(reenrolled).toBe("device_removed");
 		expect(await f.store.getEnrollment(f.input.groupId, f.input.deviceId)).toBeNull();
 		expect(await f.rows("coordinator_device_revocations")).toEqual([]);
 	});

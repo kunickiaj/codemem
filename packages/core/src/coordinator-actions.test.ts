@@ -3475,3 +3475,33 @@ describe("overlapping invite config mutations", () => {
 		}
 	});
 });
+
+it("reports a removal that a remote coordinator cannot record with its error code", async () => {
+	// Arrange: a coordinator whose database has migration 0048 and not 0049.
+	const fetchMock = vi.fn(
+		async () =>
+			new Response(JSON.stringify({ error: "device_removal_unavailable" }), { status: 503 }),
+	);
+	vi.stubGlobal("fetch", fetchMock);
+	try {
+		// Act
+		const removal = coordinatorRemoveDeviceAction({
+			groupId: "team-a",
+			deviceId: "device-1",
+			remoteUrl: "https://coord.example.test/",
+			adminSecret: "secret",
+		});
+		// Assert: only a 404 for an unknown device reads as false.
+		await expect(removal).rejects.toMatchObject({
+			name: "RemoteCoordinatorRequestError",
+			status: 503,
+			code: "device_removal_unavailable",
+			message: "Remote coordinator request failed (503): device_removal_unavailable",
+		});
+		expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+			"https://coord.example.test/v1/admin/devices/remove",
+		);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
