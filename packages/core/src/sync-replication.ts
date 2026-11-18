@@ -28,6 +28,7 @@ import {
 import { memorySourceNamespace } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
 import { projectBasename } from "./project.js";
+import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
 import { clearMemoryRefs, populateMemoryRefs } from "./ref-populate.js";
 import * as schema from "./schema.js";
@@ -1469,14 +1470,7 @@ export function loadMemorySnapshotPageForPeer(
 		throw new Error("boundary_mismatch");
 	}
 	const peerDeviceId = cleanText(options.peerDeviceId);
-	if (
-		scopeFilterRequested &&
-		peerDeviceId &&
-		getAnyRecipientPolicyDenyOverlayForScopeDevice(db, {
-			scopeId: effectiveScopeId,
-			deviceId: peerDeviceId,
-		})
-	) {
+	if (scopeFilterRequested && snapshotScopeBlocked(db, effectiveScopeId, peerDeviceId)) {
 		return { boundary, items: [], nextPageToken: null, hasMore: false };
 	}
 
@@ -2322,6 +2316,7 @@ function outboundScopeAllowed(
 	const scopeId = cleanText(op.scope_id);
 	if (!scopeId) return true;
 	if (scopeId === DEFAULT_SYNC_SCOPE_ID) return false;
+	if (isProjectScopeWithdrawn(db, scopeId)) return false;
 	const peerId = cleanText(peerDeviceId);
 	if (!peerId) return false;
 	const peerAuth = getCachedScopeAuthorization(db, { deviceId: peerId, scopeId });
@@ -3677,13 +3672,34 @@ function buildPayloadFromMemoryRow(row: MemoryItemRow): MemoryPayload {
  * - For delete: soft-deletes (active=0, deleted_at) by import_key
  * - Records the applied op in replication_ops
  */
+/**
+ * A scope's snapshot is not served to a peer with a pending deny, or at all when
+ * this device withdrew from that Project, its own memories included.
+ */
+function snapshotScopeBlocked(db: Database, scopeId: string, peerDeviceId: string | null): boolean {
+	if (isProjectScopeWithdrawn(db, scopeId)) return true;
+	return Boolean(
+		peerDeviceId &&
+			getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { scopeId, deviceId: peerDeviceId }),
+	);
+}
+
+function opInWithdrawnScope(db: Database, op: ReplicationOp): boolean {
+	const scopeId = cleanText(op.scope_id);
+	return Boolean(scopeId) && isProjectScopeWithdrawn(db, scopeId as string);
+}
+
 function rejectUnretiredScopeFailures(
 	db: Database,
 	ops: ReplicationOp[],
 	localDeviceId: string,
 	options: InboundScopeValidationOptions,
 ): ApplyResult | null {
-	const eligible = ops.filter((op) => !retirementBlocksMemoryOp(db, op));
+	// Withdrawn and retired ops are skipped later rather than rejected, so the peer
+	// keeps syncing everything else.
+	const eligible = ops.filter(
+		(op) => !retirementBlocksMemoryOp(db, op) && !opInWithdrawnScope(db, op),
+	);
 	const rejected = rejectInboundScopeFailures(db, eligible, localDeviceId, options);
 	if (rejected) rejected.skipped += ops.length - eligible.length;
 	return rejected;
@@ -3696,6 +3712,8 @@ function skipOwnRetiredOrAppliedOp(
 	localDeviceId: string,
 ): boolean {
 	if (skipOwnOrRetiredMemoryOp(db, op, localDeviceId)) return true;
+	// Not recorded as applied, so a re-pull after the withdrawal ends applies it.
+	if (opInWithdrawnScope(db, op)) return true;
 	return (
 		d
 			.select({ one: sql<number>`1` })

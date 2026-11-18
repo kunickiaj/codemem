@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
+import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import * as schema from "./schema.js";
 import {
 	type CachedScopeAuthorization,
@@ -115,6 +116,8 @@ export function parseSyncScopeRequest(
 	if (localErrorReason) {
 		return { ok: false, reason: localErrorReason };
 	}
+	// This device left that Project locally; answer as for a scope it doesn't share.
+	if (isProjectScopeWithdrawn(db, scopeId)) return { ok: false, reason: "missing_scope" };
 
 	const authorization = getEffectiveCachedScopeAuthorization(db, {
 		deviceId: peerDeviceId,
@@ -277,7 +280,14 @@ function listAuthorizedScopeMembershipsForPeer(
 
 	const entries: Omit<AuthorizedScopeEntry, "sync_reset">[] = [];
 	for (const local of localMemberships) {
-		if (!local.scope_id || local.scope_id === DEFAULT_SYNC_SCOPE_ID) continue;
+		// A Project this device left locally is not advertised.
+		if (
+			!local.scope_id ||
+			local.scope_id === DEFAULT_SYNC_SCOPE_ID ||
+			isProjectScopeWithdrawn(db, local.scope_id)
+		) {
+			continue;
+		}
 		const localAuth = getEffectiveCachedScopeAuthorization(db, {
 			deviceId: localDeviceId,
 			scopeId: local.scope_id,

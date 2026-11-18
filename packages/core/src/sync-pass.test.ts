@@ -3441,3 +3441,80 @@ describe("sync_attempts.failure_category", () => {
 		expect(latestAttemptFailureCategory(db, "peer-ok")).toBeNull();
 	});
 });
+
+describe("syncOnce with a Project this device withdrew from", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		addSyncTables(db);
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		db.close();
+	});
+
+	it("doesn't pull a withdrawn scope the peer still advertises", async () => {
+		// Arrange: an incremental peer that advertises one scope this device left.
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run("peer-scoped", "fp-scoped", new Date().toISOString());
+		db.prepare(
+			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+		).run("peer-scoped", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
+			"local-device-id",
+			"ed25519 AAAA",
+		]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, "acme-work", ["peer-scoped", "local-device-id"]);
+		db.prepare(
+			`INSERT INTO project_scope_withdrawals(
+			 scope_id, canonical_project_identity, group_id, withdrawn_at
+			 ) VALUES ('acme-work', 'git:acme/internal', 'group-a', '2026-01-01T00:00:00Z')`,
+		).run();
+		const reset = { generation: 1, baseline_cursor: null, retained_floor_cursor: null };
+		const request = vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([
+				200,
+				{
+					fingerprint: "fp-scoped",
+					protocol_version: "2",
+					sync_capability: "scoped",
+					sync_reset: { ...reset, snapshot_id: "snap-default" },
+					authorized_scopes: [
+						{
+							scope_id: "acme-work",
+							label: "Acme Work",
+							authority_type: "coordinator",
+							membership_epoch: 1,
+							sync_reset: { ...reset, scope_id: "acme-work", snapshot_id: "snap-acme-1" },
+						},
+					],
+				},
+			])
+			.mockResolvedValueOnce([
+				200,
+				{
+					...reset,
+					reset_required: false,
+					snapshot_id: "snap-default",
+					ops: [],
+					next_cursor: null,
+					skipped: 0,
+				},
+			])
+			.mockImplementationOnce(acknowledgeEmptyPush);
+
+		// Act
+		const result = await syncOnce(db, "peer-scoped", ["http://127.0.0.1:9090"]);
+
+		// Assert
+		expect(result.ok).toBe(true);
+		expect(result.perScopeResults ?? []).toEqual([]);
+		expect(request).toHaveBeenCalledTimes(3);
+	});
+});

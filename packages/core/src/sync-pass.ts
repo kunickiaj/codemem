@@ -11,6 +11,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
+import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
@@ -769,7 +770,10 @@ async function runScopedSync(
 		limit: number;
 	},
 ): Promise<{ results: SyncScopeResult[]; totalOpsIn: number }> {
-	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes);
+	// A peer still advertises a Project this device left locally; don't pull it.
+	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes).filter(
+		(scope) => !isProjectScopeWithdrawn(db, scope.scope_id),
+	);
 	if (authorizedScopes.length === 0) {
 		return { results: [], totalOpsIn: 0 };
 	}
