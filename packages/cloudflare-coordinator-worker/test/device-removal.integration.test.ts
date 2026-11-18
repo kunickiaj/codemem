@@ -16,6 +16,7 @@ import {
 } from "../../core/src/coordinator-device-removal-test-harness.js";
 import { registerDeviceRemovalDependentsContract } from "../../core/src/coordinator-device-removal-dependents-test-harness.js";
 import { registerDeviceRemovalListContract } from "../../core/src/coordinator-device-removal-list-test-harness.js";
+import { registerMembershipEnrollmentContract } from "../../core/src/coordinator-membership-enrollment-test-harness.js";
 import { registerDeviceRemovalCommitContract } from "../../core/src/coordinator-device-removal-commit-test-harness.js";
 import { registerDeviceRemovalPreviewContract } from "../../core/src/coordinator-device-removal-preview-test-harness.js";
 import { registerEnrollmentWriterContract } from "../../core/src/coordinator-device-removal-writer-test-harness.js";
@@ -96,6 +97,7 @@ describe("native D1 device removal", () => {
 	registerDeviceRemovalDependentsContract(test);
 	registerDeviceRemovalCommitContract(test);
 	registerDeviceRemovalListContract(test);
+	registerMembershipEnrollmentContract(test);
 
 	test("between migrations 0048 and 0049 an enrollment stores its key ID and cannot be removed", async ({
 		fixture: f,

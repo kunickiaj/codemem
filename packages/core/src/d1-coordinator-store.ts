@@ -208,6 +208,7 @@ import {
 	normalizeMembershipEffectId,
 	revokeMembershipEffectRequestJson,
 } from "./coordinator-membership-effects.js";
+import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
 import {
 	type NegativeOwnerGuards,
 	readNegativeOwnerConsistency,
@@ -3895,43 +3896,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			}
 		}
 		const now = nowISO();
+		const write = membershipGrantStatement(normalized, { effectId, now });
 		await runAuditedBatch(this.db, [
-			this.db
-				.prepare(`INSERT INTO coordinator_scope_memberships(
-					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
-					manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-				) SELECT ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?
-				WHERE NOT EXISTS (
-					SELECT 1 FROM coordinator_scope_membership_effect_receipts WHERE effect_id = ?
-				)
-				ON CONFLICT(scope_id, device_id) DO UPDATE SET
-					role = excluded.role,
-					status = 'active',
-					membership_epoch = excluded.membership_epoch,
-					coordinator_id = excluded.coordinator_id,
-					group_id = excluded.group_id,
-					manifest_issuer_device_id = excluded.manifest_issuer_device_id,
-					manifest_hash = excluded.manifest_hash,
-					signed_manifest_json = excluded.signed_manifest_json,
-					updated_at = excluded.updated_at
-				WHERE excluded.membership_epoch > coordinator_scope_memberships.membership_epoch
-				   OR (
-					excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
-					AND coordinator_scope_memberships.status != 'revoked'
-				   )`)
-				.bind(
-					normalized.scopeId,
-					normalized.deviceId,
-					normalized.role,
-					normalized.membershipEpoch,
-					normalized.coordinatorId,
-					normalized.groupId,
-					normalized.manifestIssuerDeviceId,
-					normalized.manifestHash,
-					normalized.signedManifestJson,
-					now,
-					effectId,
-				),
+			this.db.prepare(write.sql).bind(...write.values),
 			prepareGrantEffectReceipt(this.db, {
 				effectId,
 				requestJson,

@@ -7,6 +7,7 @@ import type {
 import type { CoordinatorRemoveDeviceEnrollmentsInput } from "./coordinator-device-removal-commit.js";
 import type { CoordinatorListDeviceRemovalsInput } from "./coordinator-device-removal-list.js";
 import type { CoordinatorDeviceRemovalPreviewInput } from "./coordinator-device-removal-target.js";
+import { membershipGrantStatement } from "./coordinator-membership-enrollment.js";
 /**
  * BetterSqliteCoordinatorStore — SQLite-backed state for the coordinator relay server.
  *
@@ -3465,38 +3466,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const normalized = normalizeCoordinatorGrantScopeMembershipInput(opts, scope, existing);
 			assertScopeMembershipDeviceEnrolled(this.db, normalized.groupId, normalized.deviceId);
 			const now = nowISO();
-			const result = this.db
-				.prepare(`INSERT INTO coordinator_scope_memberships(
-						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id,
-						manifest_issuer_device_id, manifest_hash, signed_manifest_json, updated_at
-					) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
-					ON CONFLICT(scope_id, device_id) DO UPDATE SET
-						role = excluded.role,
-						status = 'active',
-						membership_epoch = excluded.membership_epoch,
-						coordinator_id = excluded.coordinator_id,
-						group_id = excluded.group_id,
-						manifest_issuer_device_id = excluded.manifest_issuer_device_id,
-						manifest_hash = excluded.manifest_hash,
-						signed_manifest_json = excluded.signed_manifest_json,
-						updated_at = excluded.updated_at
-					WHERE excluded.membership_epoch > coordinator_scope_memberships.membership_epoch
-					   OR (
-						excluded.membership_epoch = coordinator_scope_memberships.membership_epoch
-						AND coordinator_scope_memberships.status != 'revoked'
-					   )`)
-				.run(
-					normalized.scopeId,
-					normalized.deviceId,
-					normalized.role,
-					normalized.membershipEpoch,
-					normalized.coordinatorId,
-					normalized.groupId,
-					normalized.manifestIssuerDeviceId,
-					normalized.manifestHash,
-					normalized.signedManifestJson,
-					now,
-				);
+			const write = membershipGrantStatement(normalized, { effectId, now });
+			const result = this.db.prepare(write.sql).run(...write.values);
 			if (result.changes <= 0) {
 				throw new Error("scope membership grant was not applied.");
 			}
