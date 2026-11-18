@@ -1476,6 +1476,22 @@ export const recipientPolicyDenyOverlays = sqliteTable(
 export type RecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inferSelect;
 export type NewRecipientPolicyDenyOverlay = typeof recipientPolicyDenyOverlays.$inferInsert;
 
+/**
+ * This device's copy of the coordinator's per-Project migration records: the
+ * older scope a Project moved out of and the boundary it moved into.
+ */
+export const projectBoundaryMigrations = sqliteTable("project_boundary_migrations", {
+	boundary_scope_id: text("boundary_scope_id").primaryKey(),
+	source_scope_id: text("source_scope_id").notNull(),
+	additional_source_scope_ids_json: text("additional_source_scope_ids_json")
+		.notNull()
+		.default("[]"),
+	state: text("state").notNull(),
+	generation: integer("generation").notNull(),
+	created_at: text("created_at").notNull(),
+	updated_at: text("updated_at").notNull(),
+});
+
 export const schema = {
 	deviceIdentityBindingCommits,
 	deviceIdentityBindingAudit,
@@ -1531,4 +1547,5 @@ export const schema = {
 	recipientPolicyAuthorityStates,
 	recipientPolicyReconciliationSteps,
 	recipientPolicyDenyOverlays,
+	projectBoundaryMigrations,
 };

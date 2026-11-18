@@ -1100,6 +1100,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	applyAdditiveSchemaCompatibility(db, { compatAlreadyApplied });
 	ensureSyncTransferActivitySchema(db);
 	ensureRelayServicePinSchema(db);
+	ensureProjectBoundaryMigrationSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
@@ -1124,6 +1125,46 @@ function deleteLeftoverReplicationCursors(db: DatabaseType): void {
 				typeof code === "string" ? code : "unknown error"
 			}); the next start retries`,
 		);
+	}
+}
+
+/** The marker table must exist before the shim can mark itself applied. */
+function ensureSchemaCompatMarkerTable(db: DatabaseType): void {
+	try {
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS schema_compat_state (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				applied_schema_version INTEGER NOT NULL,
+				applied_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep compatibility shim fail-open for the marker table.
+	}
+}
+
+/**
+ * Added at schema version 22. It runs on every open and only writes when the
+ * table is missing, so a database whose first attempt failed, and which was
+ * marked as upgraded anyway, still gets the table. Later opens read
+ * sqlite_master and take no write lock.
+ */
+function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
+	try {
+		if (tableExists(db, "project_boundary_migrations")) return;
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS project_boundary_migrations (
+				boundary_scope_id TEXT PRIMARY KEY NOT NULL,
+				source_scope_id TEXT NOT NULL,
+				additional_source_scope_ids_json TEXT NOT NULL DEFAULT '[]',
+				state TEXT NOT NULL,
+				generation INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+	} catch {
+		// Keep the compatibility shim fail-open. Readers treat a missing table as no records.
 	}
 }
 
@@ -1155,18 +1196,7 @@ function applyAdditiveSchemaCompatibility(
 		// SCHEMA_VERSION. The "already applied" marker keys on SCHEMA_VERSION, so
 		// without a bump, legacy DBs already marked at the current version would
 		// skip the new DDL forever.
-		// Marker table must exist before we can mark; create it first.
-		try {
-			db.exec(`
-				CREATE TABLE IF NOT EXISTS schema_compat_state (
-					id INTEGER PRIMARY KEY CHECK (id = 1),
-					applied_schema_version INTEGER NOT NULL,
-					applied_at TEXT NOT NULL
-				)
-			`);
-		} catch {
-			// Keep compatibility shim fail-open for the marker table.
-		}
+		ensureSchemaCompatMarkerTable(db);
 		try {
 			db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (
