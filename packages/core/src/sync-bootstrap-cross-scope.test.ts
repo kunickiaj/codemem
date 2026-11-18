@@ -196,6 +196,35 @@ const olderCopy = {
 	origin_device_id: AUTHOR,
 };
 
+/** Ways this device stops being authorized in the older setup. A later refresh can undo each. */
+const LOST_ACCESS = [
+	{ name: "no longer listed", lose: () => leave(SOURCE, LOCAL) },
+	{
+		name: "revoked",
+		lose: async () => {
+			db.prepare(
+				"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = ? AND device_id = ?",
+			).run(SOURCE, LOCAL);
+		},
+	},
+	{
+		name: "behind the setup's membership epoch",
+		lose: async () => {
+			db.prepare("UPDATE replication_scopes SET membership_epoch = 2 WHERE scope_id = ?").run(
+				SOURCE,
+			);
+		},
+	},
+	{
+		name: "setup archived",
+		lose: async () => {
+			db.prepare("UPDATE replication_scopes SET status = 'archived' WHERE scope_id = ?").run(
+				SOURCE,
+			);
+		},
+	},
+] as const;
+
 /** Both ways a scoped snapshot is applied: a first pull, and a pull into a scope that has rows. */
 const SNAPSHOT_PATHS = [
 	{ path: "first pull of the scope", apply: applyBootstrapSnapshot },
@@ -303,11 +332,33 @@ describe.each(SNAPSHOT_PATHS)(
 			expect(copies()).toEqual([movedCopy]);
 		});
 
-		it("delivers the memory to a device that is no longer in the older setup", async () => {
+		it("delivers the memory to a device that has left the older setup, and leaves its older copy", async () => {
 			await leave(SOURCE, LOCAL);
 			holdCopy({ scopeId: SOURCE });
 
 			pull(LATE);
+
+			expect(copies()).toEqual([movedCopy, olderCopy]);
+		});
+
+		it.each(LOST_ACCESS)(
+			"does not let a device added later delete a copy in a setup this device may regain: $name",
+			async ({ lose }) => {
+				await lose();
+				holdCopy({ scopeId: SOURCE });
+
+				apply(db, LATE, [snapshotItem(BOUNDARY, 3, "delete")], resetInfo(BOUNDARY));
+
+				expect(copies()).toHaveLength(2);
+				expect(copies()).toContainEqual(olderCopy);
+			},
+		);
+
+		it("replaces a copy in a setup this device has left when a member of that setup serves the item", async () => {
+			await leave(SOURCE, LOCAL);
+			holdCopy({ scopeId: SOURCE });
+
+			pull(CARRIER);
 
 			expect(copies()).toEqual([movedCopy]);
 		});

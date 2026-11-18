@@ -139,10 +139,9 @@ class RecordedMoves implements CrossScopeSnapshotContext {
 	}
 
 	/**
-	 * This device has left the copy's scope, and the copy came from a peer. That is
-	 * the state in which stale-row cleanup deletes it. Missing proof of a membership
-	 * that is still listed is not this state: the proof can come back, and the copy
-	 * with it.
+	 * This device has left the copy's scope, and the copy came from a peer. Missing
+	 * proof of a membership that is still listed is not this state: the proof can
+	 * come back, and the copy with it.
 	 */
 	private receiverLeftScopeOf(copy: HeldCopy): boolean {
 		const origin = copy.origin_device_id;
@@ -164,28 +163,32 @@ class RecordedMoves implements CrossScopeSnapshotContext {
 	}
 
 	/**
-	 * A copy this device keeps is replaced only on the word of a device that could
-	 * have rewritten it anyway: the device that created it, or a proven member of
-	 * the scope it is in. A peer's copy in a scope this device has left is not
-	 * kept, because a device that never held it would be given the item.
+	 * What happens to one held copy when the item is applied.
+	 * - `replace`: the item is newer, and the serving peer could have rewritten the
+	 *   copy anyway, as the device that created it or a proven member of its scope.
+	 * - `leave`: this device has left the copy's scope, so a device that never held
+	 *   the copy would be given the item. The item is added and the copy stays. Loss
+	 *   of a scope can be temporary, so only ordinary cleanup may delete it.
+	 * - `hold_back`: the copy is this device's to keep, and nothing supports the item.
 	 */
-	private mayReplace(importKey: string, copy: HeldCopy): boolean {
-		if (this.receiverLeftScopeOf(copy)) return true;
-		if (this.servingPeerCreated(importKey)) return true;
-		return this.isProvenMember(this.serving, copy.scope_id ?? "");
+	private settle(item: SyncMemorySnapshotItem, copy: HeldCopy): "replace" | "leave" | "hold_back" {
+		const trustedSource =
+			this.servingPeerCreated(item.entity_id) ||
+			this.isProvenMember(this.serving, copy.scope_id ?? "");
+		if (trustedSource && itemIsNewer(item, copy)) return "replace";
+		return this.receiverLeftScopeOf(copy) ? "leave" : "hold_back";
 	}
 
 	decide(item: SyncMemorySnapshotItem, itemScopeId: string): CrossScopeDecision {
 		const copies = this.coveredCopies(item.entity_id, itemScopeId);
-		if (copies.length === 0) return APPLY;
-		const replaceable = copies.every(
-			(copy) => itemIsNewer(item, copy) && this.mayReplace(item.entity_id, copy),
-		);
-		if (!replaceable) return { kind: "keep_existing" };
+		const outcomes = copies.map((copy) => ({ copy, outcome: this.settle(item, copy) }));
+		if (outcomes.some(({ outcome }) => outcome === "hold_back")) return { kind: "keep_existing" };
+		const replaced = outcomes.filter(({ outcome }) => outcome === "replace");
+		if (replaced.length === 0) return APPLY;
 		return {
 			kind: "replace",
-			memoryIds: copies.map((copy) => copy.id),
-			originDeviceId: copies[0]?.origin_device_id ?? null,
+			memoryIds: replaced.map(({ copy }) => copy.id),
+			originDeviceId: replaced[0]?.copy.origin_device_id ?? null,
 		};
 	}
 }
