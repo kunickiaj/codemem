@@ -1,3 +1,4 @@
+import type { Database } from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
@@ -7,6 +8,7 @@ import {
 	readDeviceClaimBindingReadiness,
 	readDeviceClaimBindingReceipt,
 } from "./coordinator-device-claim-binding.js";
+import { appendToEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { nativeBackend } from "./coordinator-owner-enrollment-start-test-fixtures.js";
 import {
 	LEGACY_SETUP,
@@ -40,7 +42,7 @@ const DENIAL_SQL = [
 	],
 	[
 		"another enrollment key",
-		`UPDATE enrolled_devices SET public_key=public_key||' alias' WHERE device_id='device-a'`,
+		(db: Database) => appendToEnrollmentKey(db, " alias", "device_id='device-a'"),
 	],
 	[
 		"a canonical key alias on another device",
@@ -96,7 +98,8 @@ for (const kind of ["SQLite", "D1"] as const) {
 		it.each(DENIAL_SQL)("denies %s with no completion effects", async (_name, sql) => {
 			// Arrange
 			f = await linkedLegacySetupFixture(kind);
-			f.coordinator.db.exec(sql);
+			if (typeof sql === "string") f.coordinator.db.exec(sql);
+			else sql(f.coordinator.db);
 			const db = await backend();
 			const before = effects();
 			// Act

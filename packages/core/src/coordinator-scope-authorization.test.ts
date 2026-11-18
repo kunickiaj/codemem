@@ -1,4 +1,5 @@
 import { Hash } from "node:crypto";
+import type { Database } from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
@@ -9,6 +10,11 @@ import {
 	MALFORMED_KEYS,
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	appendToEnrollmentKey,
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import { READ_SCOPE_AUTHORIZATION_SQL } from "./coordinator-scope-authorization.js";
 
 const input = { groupId: "scope-group", scopeId: "scope-a" };
@@ -76,6 +82,21 @@ function beforeFinalRead(store: BetterSqliteCoordinatorStore, sql: string, mutat
 	return hook;
 }
 
+/**
+ * A table-driven change: SQL text, prepared now and run later, or a function that
+ * arranges enrollment state through a helper when it is called.
+ */
+function changer(
+	store: BetterSqliteCoordinatorStore,
+	change: string | ((db: Database) => void),
+): () => void {
+	if (typeof change !== "string") return () => change(store.db);
+	const statement = store.db.prepare(change);
+	return () => {
+		statement.run();
+	};
+}
+
 describe("SQLite current scope authorization", () => {
 	it("returns version 1 with the exact scope, membership and enrollment DTOs", async () => {
 		// Arrange: fingerprints and actor hints are not canonical key proof.
@@ -103,9 +124,7 @@ describe("SQLite current scope authorization", () => {
 		async ({ publicKey }) => {
 			// Arrange: the same key under another ID is globally revoked.
 			const store = await fixture();
-			store.db
-				.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = 'device-b'")
-				.run(publicKey);
+			changeEnrollmentKey(store.db, { publicKey, fingerprint: null }, "device_id = 'device-b'");
 			const before = await store.getScopeAuthorization(input);
 			const created = await store.createDeviceRevocation(revocation);
 			expect(created.kind).toBe("revoked");
@@ -171,7 +190,10 @@ describe("SQLite membership authority and raw history", () => {
 
 	it.each([
 		["disabled", "UPDATE enrolled_devices SET enabled = 0 WHERE device_id = 'device-a'"],
-		["missing enrollment", "DELETE FROM enrolled_devices WHERE device_id = 'device-a'"],
+		[
+			"missing enrollment",
+			(db: Database) => deleteEnrollmentWithoutTombstone(db, "device_id = 'device-a'"),
+		],
 		[
 			"wrong enrollment group",
 			"UPDATE enrolled_devices SET group_id = 'other-group' WHERE device_id = 'device-a'",
@@ -196,10 +218,10 @@ describe("SQLite membership authority and raw history", () => {
 			"conflicting manifest",
 			"UPDATE coordinator_scope_memberships SET manifest_hash = 'other-manifest' WHERE device_id = 'device-a'",
 		],
-	])("excludes a member with %s", async (_name, sql) => {
+	])("excludes a member with %s", async (_name, change) => {
 		// Arrange
 		const store = await fixture();
-		store.db.prepare(sql).run();
+		changer(store, change)();
 		// Act
 		const ids = await memberIds(store);
 		// Assert
@@ -215,7 +237,7 @@ describe("SQLite membership authority and raw history", () => {
 				"UPDATE coordinator_scope_memberships SET coordinator_id = NULL, group_id = NULL, manifest_issuer_device_id = NULL, manifest_hash = NULL",
 			)
 			.run();
-		store.db.prepare("DELETE FROM enrolled_devices WHERE device_id = 'device-a'").run();
+		deleteEnrollmentWithoutTombstone(store.db, "device_id = 'device-a'");
 		// Act
 		const ids = await memberIds(store);
 		// Assert
@@ -252,9 +274,14 @@ describe("SQLite key and input capture", () => {
 				"UPDATE coordinator_scope_memberships SET role = 'owner' WHERE device_id = 'device-a'",
 			)
 			.run();
+		changeEnrollmentKey(
+			store.db,
+			{ publicKey: "pk1", fingerprint: null },
+			"device_id = 'device-a'",
+		);
 		store.db
 			.prepare(
-				"UPDATE enrolled_devices SET identity_id = 'identity-owner', public_key = 'pk1' WHERE device_id = 'device-a'",
+				"UPDATE enrolled_devices SET identity_id = 'identity-owner' WHERE device_id = 'device-a'",
 			)
 			.run();
 		// Act
@@ -280,9 +307,11 @@ describe("SQLite key and input capture", () => {
 		async (key) => {
 			// Arrange
 			const store = await fixture();
-			store.db
-				.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = 'device-a'")
-				.run(key);
+			changeEnrollmentKey(
+				store.db,
+				{ publicKey: key, fingerprint: null },
+				"device_id = 'device-a'",
+			);
 			// Act
 			const ids = await memberIds(store);
 			// Assert
@@ -328,15 +357,12 @@ describe("SQLite final snapshot pins", () => {
 	it("captures the whole roster before hashing can change a later member's key", async () => {
 		// Arrange: mutate the second member during the first canonical hash.
 		const store = await fixture();
-		const mutation = store.db.prepare(
-			"UPDATE enrolled_devices SET public_key = public_key || ' replacement-comment' WHERE device_id = 'device-b'",
-		);
 		const update = Hash.prototype.update;
 		let changed = false;
 		vi.spyOn(Hash.prototype, "update").mockImplementation(function (data, encoding) {
 			if (!changed) {
 				changed = true;
-				mutation.run();
+				appendToEnrollmentKey(store.db, " replacement-comment", "device_id = 'device-b'");
 			}
 			if (typeof data === "string") return update.call(this, data, encoding);
 			return update.call(this, data);
@@ -350,18 +376,26 @@ describe("SQLite final snapshot pins", () => {
 	it.each([
 		[
 			"key replacement",
-			"UPDATE enrolled_devices SET public_key = 'replacement-key' WHERE device_id = 'device-a'",
+			(db: Database) =>
+				changeEnrollmentKey(
+					db,
+					{ publicKey: "replacement-key", fingerprint: null },
+					"device_id = 'device-a'",
+				),
 		],
 		[
 			"same-key representation drift",
-			"UPDATE enrolled_devices SET public_key = public_key || ' changed-comment' WHERE device_id = 'device-a'",
+			(db: Database) => appendToEnrollmentKey(db, " changed-comment", "device_id = 'device-a'"),
 		],
 		[
 			"fingerprint drift",
 			"UPDATE enrolled_devices SET fingerprint = 'new-fingerprint' WHERE device_id = 'device-a'",
 		],
 		["disabled enrollment", "UPDATE enrolled_devices SET enabled = 0 WHERE device_id = 'device-a'"],
-		["deleted enrollment", "DELETE FROM enrolled_devices WHERE device_id = 'device-a'"],
+		[
+			"deleted enrollment",
+			(db: Database) => deleteEnrollmentWithoutTombstone(db, "device_id = 'device-a'"),
+		],
 		[
 			"member epoch drift",
 			"UPDATE coordinator_scope_memberships SET membership_epoch = 3 WHERE device_id = 'device-a'",
@@ -370,11 +404,10 @@ describe("SQLite final snapshot pins", () => {
 			"member source drift",
 			"UPDATE coordinator_scope_memberships SET manifest_hash = 'changed' WHERE device_id = 'device-a'",
 		],
-	])("does not refresh %s into the captured positive member", async (_name, sql) => {
+	])("does not refresh %s into the captured positive member", async (_name, change) => {
 		// Arrange: mutate the real connection after capture, immediately before final SQL.
 		const store = await fixture();
-		const mutation = store.db.prepare(sql);
-		const hook = beforeFinalRead(store, READ_SCOPE_AUTHORIZATION_SQL, () => mutation.run());
+		const hook = beforeFinalRead(store, READ_SCOPE_AUTHORIZATION_SQL, changer(store, change));
 		// Act
 		const ids = await memberIds(store);
 		// Assert

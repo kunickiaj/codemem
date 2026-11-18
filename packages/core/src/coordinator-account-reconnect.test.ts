@@ -9,6 +9,7 @@ import { reconnectFixture } from "../../cloudflare-coordinator-worker/test/accou
 import { otherKey } from "../../cloudflare-coordinator-worker/test/device-claim-eligibility-fixture.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import type { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 async function fixture(
@@ -324,6 +325,14 @@ test("wrong original key/device cannot reconnect and a late publication fault ro
 	f,
 }) => {
 	await f.disconnect(1);
+	// The raw seed has no key ID. Restating its key stores one, so that the key change
+	// and its reversal below leave the enrollment exactly as this snapshot has it.
+	changeEnrollmentKey(
+		f.db,
+		{ publicKey: input.signer.publicKey, fingerprint: null },
+		"device_id = ?",
+		input.signer.deviceId,
+	);
 	const before = f.unchanged();
 	expect(
 		await f.links.createAuthLinkAttempt(
@@ -349,15 +358,21 @@ test("wrong original key/device cannot reconnect and a late publication fault ro
 	expect(
 		await f.links.finalizeAuthLinkAttempt({ ...a.proof, runtimeVerifierHash: hash(9999) }, config),
 	).toMatchObject({ kind: "rejected" });
-	f.db
-		.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?")
-		.run(otherKey, input.signer.deviceId);
+	changeEnrollmentKey(
+		f.db,
+		{ publicKey: otherKey, fingerprint: null },
+		"device_id = ?",
+		input.signer.deviceId,
+	);
 	expect(await f.links.finalizeAuthLinkAttempt(a.proof, config)).toMatchObject({
 		kind: "rejected",
 	});
-	f.db
-		.prepare("UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?")
-		.run(input.signer.publicKey, input.signer.deviceId);
+	changeEnrollmentKey(
+		f.db,
+		{ publicKey: input.signer.publicKey, fingerprint: null },
+		"device_id = ?",
+		input.signer.deviceId,
+	);
 	f.db.exec(
 		"CREATE TRIGGER relink_fault BEFORE INSERT ON coordinator_auth_link_audit_log WHEN NEW.attempt_id = 'relink-1' BEGIN SELECT RAISE(ABORT,'injected'); END",
 	);

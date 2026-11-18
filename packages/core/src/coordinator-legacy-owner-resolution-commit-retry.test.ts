@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import { backendTest, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import {
 	backendFor,
@@ -197,7 +198,7 @@ for (const kind of ["SQLite", "D1"] as const) {
 			"old-source-group",
 			`${signer.publicKey} retained-alias`,
 		);
-		f.db.prepare("DELETE FROM enrolled_devices WHERE group_id=?").run(original.group_id);
+		deleteEnrollmentWithoutTombstone(f.db, "group_id=?", original.group_id);
 		f.db.prepare("DELETE FROM groups WHERE group_id=?").run(original.group_id);
 		const review = await buildReview(f, { existingController: original });
 		const before = snapshot(f, [resolutionTable]);

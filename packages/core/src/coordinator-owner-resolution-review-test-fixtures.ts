@@ -5,6 +5,7 @@ import { type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js"
 import { type Backend, review } from "./coordinator-auth-store-test-fixtures.js";
 import { invitation } from "./coordinator-device-ownership-evidence-test-fixtures.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import {
 	backendFor,
@@ -123,9 +124,7 @@ export async function unrelatedChurn(f: LinkFixture) {
 			"UPDATE coordinator_auth_controller_attestations SET public_key=? WHERE attestation_id='unrelated-controller'",
 		)
 		.run(publicKey);
-	f.db
-		.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id='unrelated-person'")
-		.run(publicKey);
+	changeEnrollmentKey(f.db, { publicKey, fingerprint: null }, "device_id='unrelated-person'");
 	return publicKey;
 }
 

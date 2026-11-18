@@ -28,6 +28,10 @@ import {
 } from "./coordinator-auth-device-claim-eligibility.js";
 import { type Fixture, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { EXPECTED_KEY_ID } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	changeEnrollmentKeySql,
+} from "./coordinator-enrollment-test-fixtures.js";
 
 const BLOCKED_CASES = [
 	["disabled key", "UPDATE enrolled_devices SET enabled=0 WHERE device_id='device-a'"],
@@ -42,7 +46,10 @@ const BLOCKED_CASES = [
 	],
 	[
 		"canonical alias assigned elsewhere",
-		`UPDATE enrolled_devices SET public_key='${aliasKey}' WHERE device_id='unrelated-device'`,
+		changeEnrollmentKeySql(
+			{ publicKey: aliasKey, fingerprint: null },
+			"device_id='unrelated-device'",
+		),
 	],
 	["key tombstone", seedKeyRevocationSql],
 	[
@@ -334,9 +341,11 @@ describe.each(["SQLite", "D1"] as const)("%s device-claim readiness", (backend) 
 			const captured = await captureDeviceClaimEligibility(sqlBackend, input, config, NOW);
 			if (!captured) throw new Error("Missing fixture eligibility input");
 			expect(captured.values).toHaveLength(15);
-			f.db
-				.prepare("UPDATE enrolled_devices SET public_key=? WHERE device_id='unrelated-device'")
-				.run(key);
+			changeEnrollmentKey(
+				f.db,
+				{ publicKey: key, fingerprint: null },
+				"device_id='unrelated-device'",
+			);
 			const staleResult = f.db
 				.prepare(
 					`${AUTH_DEVICE_CLAIM_INPUT_SQL} SELECT CASE WHEN ${AUTH_DEVICE_CLAIM_ELIGIBLE_SQL} THEN 1 ELSE 0 END AS eligible FROM claim_input p`,

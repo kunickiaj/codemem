@@ -1,5 +1,6 @@
 // Each test changes a fact after the self-bind authority reads ran and before the batch
 // that writes, the moment a pre-read alone would miss. The guards in that batch decide.
+
 import { afterEach, describe, expect, it } from "vitest";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import type { DeviceRebindAttempt } from "./coordinator-device-rebind-proof.js";
@@ -8,6 +9,7 @@ import {
 	retainOwnReviewOwnership,
 	selfBindFixture,
 } from "./coordinator-device-self-bind-test-fixtures.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 
 const close: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -166,7 +168,7 @@ describe.each(["SQLite", "D1"] as const)("%s self-bind read set", (kind) => {
 			"an unrelated stored key is removed",
 			{
 				arrange: enrollUnrelatedDevice,
-				change: (f) => f.db.exec("DELETE FROM enrolled_devices WHERE device_id='unrelated-device'"),
+				change: (f) => deleteEnrollmentWithoutTombstone(f.db, "device_id='unrelated-device'"),
 			},
 		],
 		[

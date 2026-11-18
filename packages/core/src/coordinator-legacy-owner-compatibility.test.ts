@@ -6,6 +6,7 @@ import {
 	EXPECTED_KEY_ID,
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { removeDeviceWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { legacyOwnerKeyMetadata } from "./coordinator-legacy-owner-compatibility.js";
 import {
 	COORDINATOR_LEGACY_TEAM_COMPLETION_MAX_BYTES,
@@ -159,7 +160,8 @@ function registerLabels(test: CompletionTest) {
 			expect(await f.store.createLegacyTeamCompletion("g1", first)).toMatchObject({
 				status: "created",
 			});
-			await f.store.removeDevice("g1", "device-a");
+			// The device enrolls again in g2, which a recorded removal would refuse.
+			removeDeviceWithoutTombstone(f.db, "g1", "device-a");
 			const second = withEvidence(
 				manifest("g2", { publicKey: OTHER_KEY, owner: "identity-b" }),
 				"self",
@@ -178,7 +180,7 @@ function registerLabels(test: CompletionTest) {
 		const first = withEvidence(manifest("g1"), "self");
 		await enroll(f, "g1", first);
 		await f.store.createLegacyTeamCompletion("g1", first);
-		await f.store.removeDevice("g1", "device-a");
+		removeDeviceWithoutTombstone(f.db, "g1", "device-a");
 		// g2's uploader guesses that the same device belongs to identity-b.
 		const second = withEvidence(
 			manifest("g2", { publicKey: OTHER_KEY, owner: "identity-b" }),
@@ -233,7 +235,7 @@ function registerCompletedOwners(test: CompletionTest) {
 			const first = manifest("g1");
 			await enroll(f, "g1", first);
 			await f.store.createLegacyTeamCompletion("g1", first);
-			if (subject === "exact device") await f.store.removeDevice("g1", "device-a");
+			if (subject === "exact device") removeDeviceWithoutTombstone(f.db, "g1", "device-a");
 			let publicKey = OTHER_KEY;
 			let deviceId = "device-a";
 			if (subject !== "exact device") {
@@ -292,7 +294,7 @@ function registerRetainedEvidence(test: CompletionTest) {
 			// Arrange: a historical fingerprint alone is not canonical-key evidence.
 			await enroll(f, "g1");
 			seedHistory(f, "g1", manifest("g1"));
-			if (evidence === "missing") await f.store.removeDevice("g1", "device-a");
+			if (evidence === "missing") removeDeviceWithoutTombstone(f.db, "g1", "device-a");
 			else
 				f.db
 					.prepare("UPDATE enrolled_devices SET fingerprint = ? WHERE group_id = 'g1'")

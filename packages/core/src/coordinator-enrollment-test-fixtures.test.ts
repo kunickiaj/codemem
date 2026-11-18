@@ -3,7 +3,9 @@ import { setupStore, sqliteD1 } from "./coordinator-auth-store-test-fixtures.js"
 import { ENROLLMENT_REMOVAL_TRIGGERS_SQL } from "./coordinator-device-removal.js";
 import { removalDeviceKey } from "./coordinator-device-removal-test-harness.js";
 import {
+	appendToEnrollmentKey,
 	changeEnrollmentKey,
+	changeEnrollmentKeySql,
 	clearEnrollmentsAndRemovals,
 	d1EnrollmentExec,
 	deleteEnrollmentWithoutTombstone,
@@ -127,6 +129,25 @@ describe.each([
 		);
 		expect(stored()).toEqual([
 			{ public_key: "opaque-key", fingerprint: "stated-fingerprint", key_id: "" },
+		]);
+		f.db.exec(
+			changeEnrollmentKeySql({ publicKey: "it's opaque", fingerprint: null }, "device_id = 'd1'"),
+		);
+		expect(stored()).toEqual([
+			{ public_key: "it's opaque", fingerprint: "stated-fingerprint", key_id: "" },
+		]);
+		await changeEnrollmentKey(
+			f.target,
+			{ publicKey: f.key.publicKey, fingerprint: null },
+			"device_id = 'd1'",
+		);
+		appendToEnrollmentKey(f.db, " appended", "group_id = ? AND device_id = ?", "g1", "d1");
+		expect(stored()).toEqual([
+			{
+				public_key: `${f.key.publicKey} appended`,
+				fingerprint: "stated-fingerprint",
+				key_id: f.key.keyId,
+			},
 		]);
 		await changeEnrollmentKey(
 			f.target,

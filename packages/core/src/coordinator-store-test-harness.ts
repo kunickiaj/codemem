@@ -2893,12 +2893,6 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							},
 						],
 						[
-							"removed",
-							async () => {
-								await store.removeDevice("removed", "device-a");
-							},
-						],
-						[
 							"disabled",
 							async () => {
 								await store.setDeviceEnabled("disabled", "device-a", false);
@@ -2908,6 +2902,13 @@ export function runCoordinatorStoreContract<TStore extends CoordinatorStore>(
 							"re-keyed",
 							async () => {
 								await enrollLegacyTeamDevice(store, "re-keyed", "3".repeat(64));
+							},
+						],
+						// Last, because every group enrolls the same device and a removed device cannot enroll.
+						[
+							"removed",
+							async () => {
+								await store.removeDevice("removed", "device-a");
 							},
 						],
 					] as const) {

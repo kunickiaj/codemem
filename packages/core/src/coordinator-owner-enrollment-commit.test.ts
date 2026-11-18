@@ -2,6 +2,11 @@ import { expect, it, vi } from "vitest";
 import { authDeviceClaimProvenanceSql } from "./coordinator-auth-link-provenance.js";
 import { NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { sqliteD1 } from "./coordinator-auth-store-test-fixtures.js";
+import { ENROLLMENT_REMOVAL_TRIGGER_NAMES } from "./coordinator-device-removal.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import {
 	commitOwnerEnrollment,
 	type OwnerAttempt,
@@ -102,7 +107,8 @@ test.for(["SQLite", "D1"] as const)(
 	"%s commit on a schema without device removal storage enrolls every pinned group as before",
 	async (backend, { writer: f }) => {
 		// Arrange: the schema as it was before migration 0048 and before SQLite initialization added it.
-		f.db.exec(`DROP TABLE coordinator_device_removals;
+		f.db.exec(`${ENROLLMENT_REMOVAL_TRIGGER_NAMES.map((name) => `DROP TRIGGER IF EXISTS ${name};`).join("\n")}
+		DROP TABLE coordinator_device_removals;
 		ALTER TABLE enrolled_devices DROP COLUMN key_id;
 		ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq;
 		ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq;`);
@@ -375,7 +381,7 @@ test.for(["inactive", "removed"])(
 		await f.exec("UPDATE enrolled_devices SET enabled = 0");
 		if (state === "removed") {
 			await f.exec("DELETE FROM coordinator_auth_controller_attestations");
-			await f.exec("DELETE FROM enrolled_devices");
+			await deleteEnrollmentWithoutTombstone(f.exec);
 		}
 		// Act
 		const result = await commitOwnerEnrollment(f.input());
@@ -465,7 +471,7 @@ test.for(["unchanged", "disabled", "removed", "cleaned"])(
 		expect(await commitOwnerEnrollment(f.input())).toBe(true);
 		const receipt = f.finalRow();
 		if (cleanup === "disabled") await f.exec("UPDATE enrolled_devices SET enabled = 0");
-		if (["removed", "cleaned"].includes(cleanup)) await f.exec("DELETE FROM enrolled_devices");
+		if (["removed", "cleaned"].includes(cleanup)) await deleteEnrollmentWithoutTombstone(f.exec);
 		if (cleanup === "cleaned") {
 			await f.exec("DELETE FROM coordinator_owner_enrollment_audit_log");
 			await f.exec("DELETE FROM coordinator_identity_group_grants");
@@ -494,7 +500,10 @@ test.for(["binding", "audit", "enrollment"])(
 		if (fault === "audit")
 			await f.exec("UPDATE coordinator_owner_enrollment_audit_log SET device_id = 'replacement'");
 		if (fault === "enrollment")
-			await f.exec("UPDATE enrolled_devices SET public_key = ?", commitPendingKey().publicKey);
+			await changeEnrollmentKey(f.exec, {
+				publicKey: commitPendingKey().publicKey,
+				fingerprint: null,
+			});
 		const before = f.effects();
 		// Act
 		const read = await readOwnerEnrollmentReceipt(f.backend, receipt);

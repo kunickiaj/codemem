@@ -5,6 +5,10 @@ import {
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import { guardedGrantD1 } from "./coordinator-identity-grant-revocation-test-harness.js";
 import type {
 	contractHarness,
@@ -85,9 +89,10 @@ async function revoke(
 }
 async function revokeIdOnly(f: GrantFixture, who: Participant) {
 	const publicKey = `opaque-id-only-${who}`;
-	await f.exec(
-		"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-		publicKey,
+	await changeEnrollmentKey(
+		f.exec,
+		{ publicKey, fingerprint: null },
+		"group_id = ? AND device_id = ?",
 		f.review.groupId,
 		bootstrapParticipant(f, who),
 	);
@@ -171,7 +176,7 @@ function registerGrantCases(test: Test) {
 			// Arrange
 			const grant = await authorizationFixture(f);
 			if (mode === "missing group") {
-				await f.exec("DELETE FROM enrolled_devices WHERE group_id = ?", f.review.groupId);
+				await deleteEnrollmentWithoutTombstone(f.exec, "group_id = ?", f.review.groupId);
 				await f.exec("DELETE FROM groups WHERE group_id = ?", f.review.groupId);
 			}
 			if (mode === "archived") await f.store.archiveGroup(f.review.groupId);
@@ -300,10 +305,10 @@ function registerRevocationCases(test: Test) {
 				let key = who === "seed" ? CANONICAL_PUBLIC_KEY : UNRELATED_PUBLIC_KEY;
 				if (mode === "comment") key += " fixture-comment";
 				if (mode === "URL") key = key.replace(/\+/g, "-").replace(/\//g, "_");
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
-					key,
-					"false-caller-key-id",
+				await changeEnrollmentKey(
+					f.exec,
+					{ publicKey: key, fingerprint: "false-caller-key-id" },
+					"group_id = ? AND device_id = ?",
 					f.review.groupId,
 					bootstrapParticipant(f, who),
 				);
@@ -325,10 +330,10 @@ function registerRevocationCases(test: Test) {
 		// Arrange
 		const grant = await authorizationFixture(f);
 		await revoke(f, "seed", true);
-		await f.exec(
-			"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE group_id = ? AND device_id = ?",
-			"opaque-clean-key",
-			EXPECTED_KEY_ID,
+		await changeEnrollmentKey(
+			f.exec,
+			{ publicKey: "opaque-clean-key", fingerprint: EXPECTED_KEY_ID },
+			"group_id = ? AND device_id = ?",
 			f.review.groupId,
 			bootstrapParticipant(f, "seed"),
 		);
@@ -361,9 +366,10 @@ function registerRevokedReplacement(test: Test, database: DatabaseFixture, isFin
 			// Arrange: only the new key is revoked; the captured participant and the other current key are clean.
 			const grant = await authorizationFixture(f);
 			const other = who === "seed" ? "worker" : "seed";
-			await f.exec(
-				"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-				"opaque-clean-other",
+			await changeEnrollmentKey(
+				f.exec,
+				{ publicKey: "opaque-clean-other", fingerprint: null },
+				"group_id = ? AND device_id = ?",
 				f.review.groupId,
 				bootstrapParticipant(f, other),
 			);
@@ -372,9 +378,13 @@ function registerRevokedReplacement(test: Test, database: DatabaseFixture, isFin
 			const store = guardedGrantD1(database(f), async (query) => {
 				if (called || !isFinal(query)) return;
 				called = true;
-				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-					who === "seed" ? UNRELATED_PUBLIC_KEY : CANONICAL_PUBLIC_KEY,
+				await changeEnrollmentKey(
+					f.exec,
+					{
+						publicKey: who === "seed" ? UNRELATED_PUBLIC_KEY : CANONICAL_PUBLIC_KEY,
+						fingerprint: null,
+					},
+					"group_id = ? AND device_id = ?",
 					f.review.groupId,
 					bootstrapParticipant(f, who),
 				);
@@ -404,9 +414,10 @@ function registerFinalRevocations(test: Test, database: DatabaseFixture, isFinal
 					if (mode === "pinned key removed")
 						await f.store.removeDevice(f.review.groupId, bootstrapParticipant(f, who));
 					if (mode === "pinned key rotated")
-						await f.exec(
-							"UPDATE enrolled_devices SET public_key = ? WHERE group_id = ? AND device_id = ?",
-							"opaque-clean-rotation",
+						await changeEnrollmentKey(
+							f.exec,
+							{ publicKey: "opaque-clean-rotation", fingerprint: null },
+							"group_id = ? AND device_id = ?",
 							f.review.groupId,
 							bootstrapParticipant(f, who),
 						);

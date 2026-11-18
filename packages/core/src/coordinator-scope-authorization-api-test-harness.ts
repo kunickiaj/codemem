@@ -6,6 +6,7 @@ import {
 	EXPECTED_KEY_ID,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	contractHarness,
 	GrantFixture,
@@ -134,9 +135,10 @@ function registerCatalog(test: Test) {
 }
 async function addRevokedAlias(f: GrantFixture) {
 	await addMember(f, "key-alias");
-	await f.exec(
-		"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
-		`${UNRELATED_PUBLIC_KEY} alias-comment`,
+	await changeEnrollmentKey(
+		f.exec,
+		{ publicKey: `${UNRELATED_PUBLIC_KEY} alias-comment`, fingerprint: null },
+		"device_id = ?",
 		memberId(f, "key-alias"),
 	);
 	const evidenceId = `${memberId(f, "key-alias")}-evidence`;
@@ -323,9 +325,19 @@ async function driftRequester(f: GrantFixture, mode: string) {
 		return f.exec("DELETE FROM coordinator_scope_memberships WHERE device_id = ?", memberId(f));
 	if (mode === "removed") return f.store.removeDevice(f.review.groupId, memberId(f));
 	if (mode === "disabled") return f.store.setDeviceEnabled(f.review.groupId, memberId(f), false);
+	const keys: Record<string, string> = {
+		key: UNRELATED_PUBLIC_KEY,
+		"key-alias": `${CANONICAL_PUBLIC_KEY} changed-comment`,
+	};
+	const publicKey = keys[mode];
+	if (publicKey)
+		return changeEnrollmentKey(
+			f.exec,
+			{ publicKey, fingerprint: null },
+			"device_id = ?",
+			memberId(f),
+		);
 	const changes: Record<string, readonly [string, string]> = {
-		key: ["public_key", UNRELATED_PUBLIC_KEY],
-		"key-alias": ["public_key", `${CANONICAL_PUBLIC_KEY} changed-comment`],
 		fingerprint: ["fingerprint", "changed"],
 		identity: ["identity_id", "changed"],
 	};

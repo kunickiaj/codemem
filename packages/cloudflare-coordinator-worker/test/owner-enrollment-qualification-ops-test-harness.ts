@@ -1,3 +1,4 @@
+import { deleteEnrollmentWithoutTombstone } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { expect, it } from "vitest";
 import { readConnectionSchemaState } from "../../core/src/coordinator-account-connection-schema.js";
 import {
@@ -119,8 +120,8 @@ export async function qualificationOpsFixture(db: QualificationOpsDatabase) {
 	const traced = tracedBackend(db);
 	const { backend } = traced;
 	let now = NOW + 100;
-	const exec = async (sql: string) => {
-		await db.backend.run({ sql, values: [] });
+	const exec = async (sql: string, ...values: AuthLinkStatement["values"]) => {
+		await db.backend.run({ sql, values });
 	};
 	const ops = new OwnerEnrollmentQualificationOps(backend, config, () => now);
 	const rows = (name = table) => db.query(`SELECT * FROM ${name}`);
@@ -476,7 +477,7 @@ function registerRevocation(test: Test) {
 			kind: "rejected",
 			error: "qualification_conflict",
 		});
-		await f.exec("DELETE FROM enrolled_devices WHERE device_id='device-a'");
+		await deleteEnrollmentWithoutTombstone(f.exec, "device_id='device-a'");
 		await f.exec("DELETE FROM coordinator_auth_controller_attestations");
 		expect(await f.ops.revoke(pair)).toEqual({
 			kind: "revoked",

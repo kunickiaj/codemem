@@ -4,6 +4,7 @@ import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { consumeSigninProof, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { issueBrowserCookie, readBrowserCookie } from "./coordinator-browser-credential.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { oidcFixture, PROVIDER } from "./coordinator-oidc-test-fixtures.js";
 import { commitPendingKey } from "./coordinator-owner-enrollment-commit-test-fixtures.js";
 import {
@@ -483,7 +484,7 @@ it.each(["unchanged", "removed", "disabled", "revoked", "wrong-secret", "wrong-s
 		const c = await confirmed();
 		const first = await c.finalize(c.input);
 		expect(first.kind).toBe("finalized");
-		if (state === "removed") f.db.exec("DELETE FROM enrolled_devices");
+		if (state === "removed") deleteEnrollmentWithoutTombstone(f.db);
 		if (state === "disabled") f.db.exec("UPDATE enrolled_devices SET enabled=0");
 		if (state === "revoked") revokeKey();
 		c.setNow(NOW + 600000);

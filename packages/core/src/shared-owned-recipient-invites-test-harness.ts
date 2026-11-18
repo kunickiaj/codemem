@@ -15,6 +15,7 @@ import {
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	recipientInvite,
 	recipientSnapshot,
@@ -184,10 +185,10 @@ async function prepareCurrentEnrollment(f: RevocationFixture, kind: Kind, stage:
 	if (stage === "first")
 		await f.store.enrollDevice(f.input.groupId, { ...f.input, identityId: input.identityId });
 	else await f.store.consumeRecipientInvite(input);
-	await f.exec(
-		"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-		CANONICAL_PUBLIC_KEY,
-		fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+	await changeEnrollmentKey(
+		f.exec,
+		{ publicKey: CANONICAL_PUBLIC_KEY, fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY) },
+		"device_id = ?",
 		input.deviceId,
 	);
 	if (stage === "identity repair")

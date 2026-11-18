@@ -4,6 +4,7 @@
 // check flipped just before a stage's statement must give the same answer and the same
 // rows, in both backends and both resolution schema variants. Each case records that the
 // change reached its stage in both runs.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	seedClaimSql,
@@ -38,6 +39,10 @@ import {
 	sourceRef,
 } from "./coordinator-device-ownership-evidence-test-fixtures.js";
 import { EXPECTED_KEY_ID } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 import { LEGACY_OWNER_RESOLUTION_SCHEMA_SQL } from "./coordinator-legacy-owner-resolution-schema.js";
 
 beforeEach(() => {
@@ -162,7 +167,12 @@ const ORDINARY_CHANGES: Record<string, (f: Fixture, variant: Variant) => void> =
 	"enrollment disabled": (f) =>
 		set(f, "UPDATE enrolled_devices SET enabled=0 WHERE device_id=?", signer.deviceId),
 	"enrollment key": (f) =>
-		set(f, "UPDATE enrolled_devices SET public_key=? WHERE device_id=?", otherKey, signer.deviceId),
+		changeEnrollmentKey(
+			f.db,
+			{ publicKey: otherKey, fingerprint: null },
+			"device_id=?",
+			signer.deviceId,
+		),
 	"group archived": (f) =>
 		set(f, "UPDATE groups SET archived_at=? WHERE group_id=?", REVOKED, signer.groupId),
 	"device revoked": (f) => revocation(f, "device_id", signer.deviceId),
@@ -219,7 +229,7 @@ const ownerSigner = {
 async function ownerSeed(f: Fixture): Promise<CoordinatorAuthControllerReviewInput> {
 	// Persisted DEVICE_CLAIM genesis is trusted fixture proof, as in the owner review suite.
 	f.db.exec(seedEnrollmentSql);
-	f.db.exec("DELETE FROM enrolled_devices WHERE device_id='unrelated-device'");
+	deleteEnrollmentWithoutTombstone(f.db, "device_id='unrelated-device'");
 	f.db.exec(seedClaimSql);
 	f.db.exec(`INSERT INTO coordinator_auth_account_links
 		(coordinator_id,link_id,issuer,subject,identity_id,attempt_id,auth_config_revision,

@@ -4,12 +4,14 @@
 // Each check is flipped either before the commit's reads or just before its one batch, for
 // new and reused controllers, in both resolution schema variants. Both must answer alike
 // and leave the same rows.
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
 import { cfg, type LinkFixture, NOW } from "./coordinator-auth-link-test-fixtures.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import { OriginalDeviceOwnershipEvidence } from "./coordinator-device-ownership-evidence-original-sql-test-fixtures.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import { appendToEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import { commitReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit.js";
 import { commitOriginalReviewedOwnerResolution } from "./coordinator-legacy-owner-resolution-commit-original-sql-test-fixtures.js";
 import {
@@ -73,11 +75,7 @@ const CHECKS: Record<string, Change> = {
 	"enrollment disabled": (f) =>
 		set(f, "UPDATE enrolled_devices SET enabled=0 WHERE device_id=?", signer.deviceId),
 	"enrollment key text": (f) =>
-		set(
-			f,
-			"UPDATE enrolled_devices SET public_key=public_key || ' changed' WHERE device_id=?",
-			signer.deviceId,
-		),
+		appendToEnrollmentKey(f.db, " changed", "device_id=?", signer.deviceId),
 	"group archived": (f) =>
 		set(f, "UPDATE groups SET archived_at=? WHERE group_id=?", RACED, signer.groupId),
 	"device revoked": (f) => revocation(f, "device_id", signer.deviceId),

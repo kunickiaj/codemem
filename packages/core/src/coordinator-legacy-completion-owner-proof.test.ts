@@ -7,6 +7,10 @@ import { type Backend, setupStore, sqliteD1 } from "./coordinator-auth-store-tes
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
+import {
 	capturedRowsGuard,
 	captureLegacyCompletionOwnerProof,
 	legacyCompletionOwnerProofSql,
@@ -676,9 +680,12 @@ for (const kind of ["SQLite", "D1"] as const) {
 	}) => {
 		// Arrange: preserve the original controller and resolution, not their current group.
 		const { value } = await recovery(f, kind);
-		f.db
-			.prepare("DELETE FROM enrolled_devices WHERE group_id=? AND device_id=?")
-			.run(signer.groupId, signer.deviceId);
+		deleteEnrollmentWithoutTombstone(
+			f.db,
+			"group_id=? AND device_id=?",
+			signer.groupId,
+			signer.deviceId,
+		);
 		f.db.prepare("DELETE FROM groups WHERE group_id=?").run(signer.groupId);
 		const before = snapshot(f);
 		// Act
@@ -846,11 +853,15 @@ for (const kind of ["SQLite", "D1"] as const) {
 			await recovery(f, kind);
 			const deviceId = match === "device only" ? signer.deviceId : "different-laptop";
 			const publicKey = match === "device only" ? CANONICAL_PUBLIC_KEY : signer.publicKey;
+			changeEnrollmentKey(
+				f.db,
+				{ publicKey, fingerprint: fingerprintPublicKey(publicKey) },
+				"group_id=?",
+				futureGroup,
+			);
 			f.db
-				.prepare(
-					"UPDATE enrolled_devices SET device_id=?,public_key=?,fingerprint=? WHERE group_id=?",
-				)
-				.run(deviceId, publicKey, fingerprintPublicKey(publicKey), futureGroup);
+				.prepare("UPDATE enrolled_devices SET device_id=? WHERE group_id=?")
+				.run(deviceId, futureGroup);
 			const value = manifest(f, "identity-a", { deviceId, publicKey });
 			const before = snapshot(f);
 			// Act
@@ -969,9 +980,12 @@ for (const kind of ["SQLite", "D1"] as const) {
 		async (removed, { fixture: f }) => {
 			// Arrange: resolution proof is retained independently of current source enrollment.
 			const { value } = await recovery(f, kind);
-			f.db
-				.prepare("DELETE FROM enrolled_devices WHERE group_id=? AND device_id=?")
-				.run(signer.groupId, signer.deviceId);
+			deleteEnrollmentWithoutTombstone(
+				f.db,
+				"group_id=? AND device_id=?",
+				signer.groupId,
+				signer.deviceId,
+			);
 			if (removed === "group")
 				f.db.prepare("DELETE FROM groups WHERE group_id=?").run(signer.groupId);
 			const before = snapshot(f, [completions]);

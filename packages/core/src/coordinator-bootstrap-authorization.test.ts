@@ -12,6 +12,7 @@ import { bootstrapRevocationTables } from "./coordinator-bootstrap-revocation-te
 import * as keyParser from "./coordinator-ed25519-key-id-compat.js";
 import { CANONICAL_PUBLIC_KEY } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
 import { contractHarness } from "./coordinator-identity-group-grant-test-harness.js";
 
 describe.each(["SQLite", "D1"] as const)("%s current bootstrap authorization", (backend) => {
@@ -86,9 +87,12 @@ describe("SQLite synchronous bootstrap hash guard", () => {
 							f.review.fingerprint,
 							"2026-10-07T00:00:00Z",
 						);
-					local.db
-						.prepare("DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-						.run(f.review.groupId, bootstrapParticipant(f, who));
+					deleteEnrollmentWithoutTombstone(
+						local.db,
+						"group_id = ? AND device_id = ?",
+						f.review.groupId,
+						bootstrapParticipant(f, who),
+					);
 					return parsed;
 				});
 			try {

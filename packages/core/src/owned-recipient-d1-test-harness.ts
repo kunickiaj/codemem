@@ -5,6 +5,7 @@ import type {
 	revocationHarness,
 } from "./coordinator-device-revocation-test-harness.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	recipientGuardedD1,
 	recipientInvite,
@@ -187,10 +188,13 @@ function registerInviterCapture(test: Test, database: Database) {
 				);
 				if (retained === "removed") await f.store.removeDevice(seed.groupId, seed.deviceId);
 				else
-					await f.exec(
-						"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-						"clean-rotated-key",
-						fingerprintPublicKey("clean-rotated-key"),
+					await changeEnrollmentKey(
+						f.exec,
+						{
+							publicKey: "clean-rotated-key",
+							fingerprint: fingerprintPublicKey("clean-rotated-key"),
+						},
+						"device_id = ?",
 						seed.deviceId,
 					);
 				await bindRecipient(f, input);

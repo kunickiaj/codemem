@@ -22,6 +22,7 @@ import {
 	TABLES,
 } from "./coordinator-auth-link-test-fixtures.js";
 import { EXPECTED_KEY_ID } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { changeEnrollmentKeySql } from "./coordinator-enrollment-test-fixtures.js";
 
 const request = () =>
 	attempt({
@@ -225,7 +226,10 @@ for (const backend of ["SQLite", "D1"] as const) {
 	});
 	test.for([
 		"UPDATE enrolled_devices SET enabled=0 WHERE device_id='device-a'",
-		"UPDATE enrolled_devices SET public_key=public_key || ' changed' WHERE device_id='device-a'",
+		changeEnrollmentKeySql(
+			{ publicKey: `${input.signer.publicKey} changed`, fingerprint: null },
+			"device_id='device-a'",
+		),
 		"UPDATE enrolled_devices SET identity_id='other' WHERE device_id='device-a'",
 		"UPDATE groups SET archived_at='archived'",
 		seedKeyRevocationSql,

@@ -1,6 +1,7 @@
 // Runs the pre-port SQL authority statement beside the ported reads and decision on the
 // same database. Each case changes one fact and names the original checks it must fail,
 // by index into the original CHECKS array, so the matrix proves which checks it reaches.
+
 import { afterEach, describe, expect, it } from "vitest";
 import { applyAccountConnectionSchema } from "./coordinator-account-connection-schema.js";
 import { insertOwnDeviceClaim } from "./coordinator-device-rebind-test-fixtures.js";
@@ -17,6 +18,7 @@ import {
 	selfBindFixture,
 } from "./coordinator-device-self-bind-test-fixtures.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 
 const close: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -244,7 +246,7 @@ const CASES: Case[] = [
 		name: "another enrollment with another text form of the key",
 		fails: [1],
 		change: (f) =>
-			sql(f, `UPDATE enrolled_devices SET public_key=? WHERE ${OTHER}`, `${f.signer.publicKey} c`),
+			changeEnrollmentKey(f.db, { publicKey: `${f.signer.publicKey} c`, fingerprint: null }, OTHER),
 	},
 	{
 		name: "51 enrollments",

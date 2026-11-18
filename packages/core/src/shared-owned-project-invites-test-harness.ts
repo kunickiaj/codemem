@@ -10,6 +10,7 @@ import {
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import { changeEnrollmentKey } from "./coordinator-enrollment-test-fixtures.js";
 import {
 	projectGuardedD1,
 	projectInvite,
@@ -191,10 +192,17 @@ function registerStoredKeys(test: Test, backend: string) {
 						identityId: input.recipientActorId,
 					});
 				else await f.store.consumeProjectInvite(input);
+				await changeEnrollmentKey(
+					f.exec,
+					{
+						publicKey: CANONICAL_PUBLIC_KEY,
+						fingerprint: fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+					},
+					"device_id = ?",
+					input.deviceId,
+				);
 				await f.exec(
-					"UPDATE enrolled_devices SET public_key = ?, fingerprint = ?, identity_id = ? WHERE device_id = ?",
-					CANONICAL_PUBLIC_KEY,
-					fingerprintPublicKey(CANONICAL_PUBLIC_KEY),
+					"UPDATE enrolled_devices SET identity_id = ? WHERE device_id = ?",
 					stage === "repair" ? null : input.recipientActorId,
 					input.deviceId,
 				);
@@ -417,10 +425,10 @@ async function changePinnedProject(
 			publicKey: UNRELATED_PUBLIC_KEY,
 			fingerprint: fingerprintPublicKey(UNRELATED_PUBLIC_KEY),
 		});
-	return f.exec(
-		"UPDATE enrolled_devices SET public_key = ?, fingerprint = ? WHERE device_id = ?",
-		"rotated-seed",
-		fingerprintPublicKey("rotated-seed"),
+	return changeEnrollmentKey(
+		f.exec,
+		{ publicKey: "rotated-seed", fingerprint: fingerprintPublicKey("rotated-seed") },
+		"device_id = ?",
 		seed.deviceId,
 	);
 }

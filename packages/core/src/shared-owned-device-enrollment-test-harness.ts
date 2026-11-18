@@ -13,6 +13,10 @@ import {
 	NODE_ONLY_ALIASES,
 } from "./coordinator-ed25519-key-id-test-fixtures.js";
 import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-harness.js";
+import {
+	changeEnrollmentKey,
+	deleteEnrollmentWithoutTombstone,
+} from "./coordinator-enrollment-test-fixtures.js";
 
 export const OWNED_DENIAL = "device_ownership_requires_verified_identity";
 export const OWNED_UNAVAILABLE = "device_ownership_authorization_unavailable";
@@ -101,13 +105,14 @@ export function registerStoredKeyRaces(
 async function mutateStoredKeyRace(f: OwnershipFixture, scenario: string) {
 	if (scenario === "late binding") return insertOwnership(f);
 	if (scenario === "rotate captured owned key")
-		return f.exec(
-			"UPDATE enrolled_devices SET public_key = ? WHERE device_id = ?",
-			UNRELATED_PUBLIC_KEY,
+		return changeEnrollmentKey(
+			f.exec,
+			{ publicKey: UNRELATED_PUBLIC_KEY, fingerprint: null },
+			"device_id = ?",
 			storedOwnedAlias.deviceId,
 		);
 	if (scenario === "delete captured owned row")
-		return f.exec("DELETE FROM enrolled_devices WHERE device_id = ?", storedOwnedAlias.deviceId);
+		return deleteEnrollmentWithoutTombstone(f.exec, "device_id = ?", storedOwnedAlias.deviceId);
 	return f.exec(
 		"INSERT INTO enrolled_devices (group_id,device_id,public_key,fingerprint,enabled,created_at) VALUES (?,?,?,?,0,?)",
 		ownedGroup,
