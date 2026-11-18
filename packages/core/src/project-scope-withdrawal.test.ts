@@ -40,10 +40,9 @@ afterEach(() => {
 });
 
 describe("project scope withdrawal schema", () => {
-	it("creates the withdrawal table at schema version 24", () => {
-		expect(SCHEMA_VERSION).toBe(24);
+	it("creates the withdrawal table at the current schema version", () => {
 		expect(tableExists(db, "project_scope_withdrawals")).toBe(true);
-		expect(getSchemaVersion(db)).toBe(24);
+		expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
 	});
 
 	it("creates the table on a database that schema 23 left marked as upgraded", () => {
