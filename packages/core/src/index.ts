@@ -382,6 +382,9 @@ export {
 } from "./coordinator-store-contract.js";
 export {
 	type BoundaryMigrationMode,
+	type CoordinatorAdminReadiness,
+	coordinatorAdminReadiness,
+	isCoordinatorAdminDevice,
 	readBoundaryMigrationMode,
 } from "./coordinator-sync-config.js";
 export type { Database } from "./db.js";
@@ -967,6 +970,17 @@ export {
 	type PairingRemovalInput,
 	removePairingState,
 } from "./pairing-removal.js";
+export {
+	type CoordinatorDeviceAnswer,
+	type CoordinatorDeviceAnswerLookup,
+	decidePeerBinding,
+	noCoordinatorDeviceAnswer,
+	type PeerBindingDecisionInput,
+	type PeerBindingOutcome,
+	type PeerRemovalOptions,
+	type PeerRemovalResult,
+	removePeerFromThisDevice,
+} from "./peer-removal.js";
 export type { PiFlushSignal, PiHookAdapterEvent, PiHookRawEventEnvelope } from "./pi-hooks.js";
 export {
 	buildIngestPayloadFromPiEvent,

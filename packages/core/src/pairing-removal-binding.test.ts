@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reconcileCoordinatorEnrollmentSnapshot } from "./coordinator-enrollment-reconciler.js";
 import {
 	commitDeviceIdentityBindings,
@@ -11,10 +14,13 @@ import {
 } from "./device-identity-inventory.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
 import { removePairingState } from "./pairing-removal.js";
+import { removePeerFromThisDevice } from "./peer-removal.js";
 import { listRecipientPolicyIntent } from "./recipient-policy-intent.js";
 import { deriveRecipientPolicyEffectiveDevicesFromDatabase } from "./recipient-policy-reconciliation.js";
 import { resolveSameActorPeerIds } from "./same-actor-peers.js";
+import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { setReplicationCursor } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-11-17T00:00:00.000Z";
@@ -146,6 +152,88 @@ describe("a binding that device removal ended", () => {
 
 		expect(binding()).toEqual({ identity_id: IDENTITY, status: "active" });
 		expect(peerInventoryItem()).toMatchObject({ state: "configured", identityId: IDENTITY });
+	});
+});
+
+describe("a disconnect that keeps the binding", () => {
+	it("leaves the device in the reconciler's device list and wakes no Project policy", () => {
+		const bindingBefore = db
+			.prepare("SELECT * FROM identity_devices WHERE device_id = ?")
+			.get(PEER);
+
+		const counts = removePairingState(db, {
+			localDeviceId: LOCAL,
+			reason: "disconnect",
+			deviceIds: [PEER],
+		});
+
+		expect(counts).toMatchObject({ syncPeers: 1, identityDevices: 0 });
+		expect(db.prepare("SELECT * FROM identity_devices WHERE device_id = ?").get(PEER)).toEqual(
+			bindingBefore,
+		);
+		expect(
+			deriveRecipientPolicyEffectiveDevicesFromDatabase(db, PROJECT).devices.map(
+				(device) => device.deviceId,
+			),
+		).toEqual([PEER]);
+		expect(
+			db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().get(),
+		).toBe(NOW);
+	});
+});
+
+describe("default peer-removal config", () => {
+	it.each([
+		["truncated", '{"sync_coordinator_url":"https://coordinator.invalid"', "kept"],
+		["empty", "", "kept"],
+		["unreadable", null, "kept"],
+		["missing", null, "ended"],
+		["valid empty object", "{}", "ended"],
+	] as const)("handles %s config through the real default reader", async (kind, text, outcome) => {
+		const directory = mkdtempSync(join(tmpdir(), "peer-removal-config-"));
+		const path = join(directory, "config.json");
+		if (text !== null) writeFileSync(path, text);
+		if (kind === "unreadable") mkdirSync(path);
+		vi.stubEnv("CODEMEM_CONFIG", path);
+		for (const name of ["URL", "GROUP", "GROUPS", "ADMIN_SECRET"]) {
+			vi.stubEnv(`CODEMEM_SYNC_COORDINATOR_${name}`, undefined);
+		}
+		try {
+			setReplicationCursor(db, PEER, { lastApplied: "c1" });
+			setReplicationCursor(db, PEER, { lastApplied: "c2" }, "scope-a");
+			saveSyncChannelCompletedBoundary(db, {
+				peerDeviceId: PEER,
+				scopeId: "scope-a",
+				boundary: { generation: 1, snapshot_id: "snapshot-1", baseline_cursor: null },
+			});
+			const result = await removePeerFromThisDevice(db, {
+				localDeviceId: LOCAL,
+				peerDeviceId: PEER,
+			});
+			expect(result.binding).toBe(outcome);
+			expect(result.removed).toMatchObject({
+				replicationCursors: 1,
+				replicationCursorsV2: 2,
+				syncChannelProgress: 1,
+			});
+			expect(binding()).toMatchObject({ status: outcome === "kept" ? "active" : "removed" });
+			expect(
+				db.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states").pluck().get(),
+			).toBe(outcome === "kept" ? NOW : null);
+			expect(
+				[
+					"sync_peers",
+					"replication_cursors",
+					"replication_cursors_v2",
+					"sync_channel_progress",
+				].map((table) =>
+					db.prepare(`SELECT COUNT(*) FROM ${table} WHERE peer_device_id = ?`).pluck().get(PEER),
+				),
+			).toEqual([0, 0, 0, 0]);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });
 

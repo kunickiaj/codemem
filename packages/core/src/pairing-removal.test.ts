@@ -250,6 +250,55 @@ describe("removePairingState", () => {
 	});
 });
 
+describe("removePairingState with reason disconnect", () => {
+	it("reason disconnect deletes the pairing and all three sync progress tables, keeps every binding, and retains retirement trust", () => {
+		const bindingsBefore = db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all();
+
+		const counts = removePairingState(db, {
+			localDeviceId: LOCAL,
+			reason: "disconnect",
+			deviceIds: ["peer-a", "peer-b"],
+		});
+
+		expect(counts).toEqual({
+			syncPeers: 2,
+			replicationCursors: 2,
+			replicationCursorsV2: 4,
+			syncChannelProgress: 2,
+			identityDevices: 0,
+		});
+		expect(state("peer-a")).toEqual({ ...REMOVED, binding: "active" });
+		expect(state("peer-b")).toEqual({ ...REMOVED, binding: "active" });
+		expect(state("peer-keep")).toEqual(UNTOUCHED);
+		expect(db.prepare("SELECT * FROM identity_devices ORDER BY device_id").all()).toEqual(
+			bindingsBefore,
+		);
+		expect(getRetirementPeer(db, { localDeviceId: LOCAL, peerDeviceId: "peer-a" })).toEqual({
+			deviceId: "peer-a",
+			publicKey: sshKey(2),
+		});
+		expect(listRetiredDeviceAliases(db).size).toBe(0);
+	});
+
+	it("a failing statement under reason disconnect leaves the pairing and all three sync progress tables unchanged", () => {
+		// The scoped cursor delete for peer-b runs after peer-a fully succeeded.
+		db.exec(`CREATE TRIGGER fail_scoped_cursor_delete BEFORE DELETE ON replication_cursors_v2
+			WHEN OLD.peer_device_id = 'peer-b' BEGIN SELECT RAISE(ABORT, 'cursor delete failed'); END`);
+
+		expect(() =>
+			removePairingState(db, {
+				localDeviceId: LOCAL,
+				reason: "disconnect",
+				deviceIds: ["peer-a", "peer-b"],
+			}),
+		).toThrow("cursor delete failed");
+
+		expect(state("peer-a")).toEqual(UNTOUCHED);
+		expect(state("peer-b")).toEqual(UNTOUCHED);
+		expect(count("memory_retirement_peer_trust", "peer_device_id", "peer-a")).toBe(0);
+	});
+});
+
 describe("removePairingState boundaries", () => {
 	it("H1: removes a pairing on a device that never installed the channel progress table, without installing it", () => {
 		db.exec("DROP TABLE sync_channel_progress");
