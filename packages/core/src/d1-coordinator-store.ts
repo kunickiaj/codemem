@@ -108,7 +108,7 @@ import {
 import {
 	type BoundaryReadinessDeviceInput,
 	BoundaryReadinessOperations,
-	boundaryReadinessScopeCheck,
+	boundaryReadinessScopeAccess,
 	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
@@ -1575,7 +1575,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
 		this.boundaryReadiness = new BoundaryReadinessOperations(
 			ledgerBackend,
-			boundaryReadinessScopeCheck(this),
+			boundaryReadinessScopeAccess(this),
 			options.authClock,
 		);
 		const authBackend = createD1AuthLinkBackend(db);

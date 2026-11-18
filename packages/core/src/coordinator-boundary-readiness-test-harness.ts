@@ -1,7 +1,8 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { Store } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	BOUNDARY_READINESS_MAX_PROJECTS_BYTES,
+	BOUNDARY_READINESS_MAX_SOURCE_SCOPES,
 	type BoundaryReadinessProject,
 	fitBoundaryReadinessProjects,
 	type PutBoundaryReadinessInput,
@@ -27,6 +28,14 @@ const CLOCK_ISO = new Date(BOUNDARY_READINESS_CLOCK_MS).toISOString();
 const boundaryId = (digit: string) => `managed-project:${digit.repeat(64)}`;
 const BOUNDARY = boundaryId("a");
 const OTHER_BOUNDARY = boundaryId("b");
+
+/** What a record reports when it shows every Project the device holds. */
+const NOTHING_LEFT_OUT = {
+	omitted_projects: 0,
+	invalid_boundary_entries: 0,
+	unauthorized_source_scope_ids: [],
+	complete: true,
+};
 
 interface World {
 	store: Store;
@@ -120,7 +129,7 @@ function registerStoring(test: BoundaryReadinessTest) {
 			group_id: w.groupId,
 			device_id: w.deviceId,
 			sequence: 1,
-			omitted_projects: 0,
+			...NOTHING_LEFT_OUT,
 			updated_at: CLOCK_ISO,
 			projects: [project(w)],
 		});
@@ -432,6 +441,111 @@ function registerSizeLimit(test: BoundaryReadinessTest) {
 	});
 }
 
+function registerWhatARecordLeavesOut(test: BoundaryReadinessTest) {
+	test("is not complete when the device left Projects out, and complete again without them", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		await put(w, { omittedProjects: 3 });
+		expect(await stored(w)).toMatchObject({ omitted_projects: 3, complete: false });
+
+		await put(w, { sequence: 2 });
+
+		expect(await stored(w)).toMatchObject({ omitted_projects: 0, complete: true });
+	});
+
+	test("is not complete when an entry had a malformed boundary ID", async ({ fixture }) => {
+		const w = await world(fixture);
+
+		await put(w, {
+			projects: [project(w), project(w, { boundary_scope_id: "managed-project:abc" })],
+		});
+
+		expect(await stored(w)).toMatchObject({ invalid_boundary_entries: 1, complete: false });
+	});
+
+	test("names the older scopes it was refused for, so a later grant there can be noticed", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const foreign = [`${fixture.prefix}-foreign-b`, `${fixture.prefix}-foreign-a`];
+		for (const scopeId of foreign) await addScope(w.store, w.groupId, scopeId);
+
+		await put(w, {
+			projects: [
+				project(w),
+				...foreign.map((scopeId) => project(w, { source_scope_id: scopeId })),
+				project(w, { source_scope_id: foreign[0], boundary_scope_id: OTHER_BOUNDARY }),
+			],
+		});
+
+		expect(await stored(w)).toMatchObject({
+			unauthorized_source_scope_ids: foreign.toSorted(),
+			complete: true,
+			projects: [project(w)],
+		});
+	});
+}
+
+function registerAuthorizationReads(test: BoundaryReadinessTest) {
+	test("refuses the record when an authorization read fails, and keeps the stored one", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		await put(w);
+		const read = vi
+			.spyOn(w.store, "getScopeAuthorization")
+			.mockResolvedValueOnce({ kind: "rejected", error: "scope_authorization_unavailable" });
+
+		try {
+			await expect(put(w, { sequence: 2, projects: [] })).resolves.toMatchObject({
+				kind: "stored",
+			});
+			await expect(
+				put(w, { sequence: 3, projects: [project(w, { boundary_scope_id: OTHER_BOUNDARY })] }),
+			).rejects.toThrow("boundary_readiness_authorization_unavailable");
+		} finally {
+			read.mockRestore();
+		}
+
+		expect(await stored(w)).toMatchObject({ sequence: 2, projects: [], complete: true });
+	});
+
+	test("reads authorization only for scopes the device is a member of", async ({ fixture }) => {
+		const w = await world(fixture);
+		const read = vi.spyOn(w.store, "getScopeAuthorization");
+
+		try {
+			await put(w, {
+				projects: [
+					project(w),
+					project(w, { boundary_scope_id: "managed-project:abc" }),
+					...["x", "y", "z"].map((name) =>
+						project(w, { source_scope_id: `${fixture.prefix}-not-a-member-${name}` }),
+					),
+				],
+			});
+
+			expect(read).toHaveBeenCalledTimes(1);
+			expect(read).toHaveBeenCalledWith({ groupId: w.groupId, scopeId: w.sourceScopeId });
+		} finally {
+			read.mockRestore();
+		}
+	});
+
+	test("refuses a record that names more older scopes than one request may read", async ({
+		fixture,
+	}) => {
+		const w = await world(fixture);
+		const projects = Array.from({ length: BOUNDARY_READINESS_MAX_SOURCE_SCOPES + 1 }, (_, index) =>
+			project(w, { source_scope_id: `${fixture.prefix}-scope-${index}` }),
+		);
+
+		await expect(put(w, { projects })).rejects.toThrow("boundary_readiness_too_large");
+		expect(await stored(w)).toBeNull();
+	});
+}
+
 /** The readiness record contract, for the SQLite store and both D1 runtimes. */
 export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): void {
 	registerStoring(test);
@@ -441,4 +555,6 @@ export function registerBoundaryReadinessContract(test: BoundaryReadinessTest): 
 	registerInvalidInput(test);
 	registerDiscard(test);
 	registerSizeLimit(test);
+	registerWhatARecordLeavesOut(test);
+	registerAuthorizationReads(test);
 }

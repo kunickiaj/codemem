@@ -2,6 +2,7 @@ import type { DeviceRemovalBackend } from "./coordinator-device-removal.js";
 import type {
 	CoordinatorScopeAuthorizationInput,
 	CoordinatorScopeAuthorizationResult,
+	CoordinatorScopeMembership,
 } from "./coordinator-store-contract.js";
 
 /*
@@ -16,8 +17,14 @@ import type {
 /**
  * `record_id` names the write that stored the header. The project rows of one
  * write are only replaced while the header still carries that write's ID, so two
- * writes for the same device cannot mix their rows. `omitted_projects` counts the
- * Projects a device could not fit into its record.
+ * writes for the same device cannot mix their rows.
+ *
+ * Three header columns say what the record does not show. `omitted_projects`
+ * counts the Projects the device could not fit. `invalid_boundary_entries` counts
+ * entries left out for a malformed boundary ID. `unauthorized_source_scope_ids_json`
+ * lists the older scopes the record named and the device was not authorized in
+ * when it arrived. None has a default, so a writer cannot leave one out and
+ * produce a record that looks complete.
  */
 export const BOUNDARY_READINESS_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness (
@@ -25,7 +32,9 @@ CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness (
   device_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
   record_id TEXT NOT NULL,
-  omitted_projects INTEGER NOT NULL DEFAULT 0,
+  omitted_projects INTEGER NOT NULL,
+  invalid_boundary_entries INTEGER NOT NULL,
+  unauthorized_source_scope_ids_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (group_id, device_id)
 );
@@ -79,6 +88,21 @@ export interface BoundaryReadinessRecord {
 	sequence: number;
 	/** Projects the device holds under an older scope and could not fit into this record. */
 	omitted_projects: number;
+	/** Entries left out because the boundary ID is malformed. A correct build sends none. */
+	invalid_boundary_entries: number;
+	/**
+	 * Older scopes the record named and the device was not authorized in when it
+	 * arrived. If the device is authorized in one of them later, this record no
+	 * longer shows everything the device holds there.
+	 */
+	unauthorized_source_scope_ids: string[];
+	/**
+	 * False when the record leaves out Projects the device holds: it was cut to
+	 * fit, or an entry was malformed. A record that is not complete proves that
+	 * the device runs the migration code and nothing about what it holds, so it
+	 * must never be read as "the device does not hold the Projects it left out".
+	 */
+	complete: boolean;
 	updated_at: string;
 	projects: BoundaryReadinessProject[];
 }
@@ -128,35 +152,59 @@ export interface CoordinatorBoundaryReadinessStore {
 	discardBoundaryReadiness(input: BoundaryReadinessDeviceInput): Promise<boolean>;
 }
 
-/** Whether the device is an authorized member of the scope in this group right now. */
-export type BoundaryReadinessScopeCheck = (input: {
+/**
+ * The scopes, out of `scopeIds`, that the device is an authorized member of in
+ * this group right now. It throws when a read could not run, because a read
+ * that failed is not a denial.
+ */
+export type BoundaryReadinessScopeAccess = (input: {
 	groupId: string;
-	scopeId: string;
 	deviceId: string;
-}) => Promise<boolean>;
+	scopeIds: readonly string[];
+}) => Promise<Set<string>>;
 
-/** The check each store builds from its own scope authorization read. */
-export function boundaryReadinessScopeCheck(store: {
+/** The access read each store builds from its own membership and authorization reads. */
+export function boundaryReadinessScopeAccess(store: {
+	listDeviceScopeMemberships(deviceId: string): Promise<CoordinatorScopeMembership[]>;
 	getScopeAuthorization(
 		input: CoordinatorScopeAuthorizationInput,
 	): Promise<CoordinatorScopeAuthorizationResult>;
-}): BoundaryReadinessScopeCheck {
-	return async ({ groupId, scopeId, deviceId }) => {
-		const authorization = await store.getScopeAuthorization({ groupId, scopeId });
-		return (
-			authorization.kind === "authorized" &&
-			authorization.members.some((member) => member.membership.device_id === deviceId)
-		);
+}): BoundaryReadinessScopeAccess {
+	return async ({ groupId, deviceId, scopeIds }) => {
+		// One read narrows the request to scopes the device has an active membership
+		// in, so the scopes a request names cannot multiply the reads below.
+		const memberships = await store.listDeviceScopeMemberships(deviceId);
+		const memberOf = new Set(memberships.map((membership) => membership.scope_id));
+		const authorized = new Set<string>();
+		for (const scopeId of scopeIds.filter((candidate) => memberOf.has(candidate))) {
+			const authorization = await store.getScopeAuthorization({ groupId, scopeId });
+			if (authorization.kind === "rejected") {
+				if (authorization.error !== "scope_authorization_unavailable") continue;
+				throw new Error("boundary_readiness_authorization_unavailable");
+			}
+			const isMember = authorization.members.some(
+				(member) => member.membership.device_id === deviceId,
+			);
+			if (isMember) authorized.add(scopeId);
+		}
+		return authorized;
 	};
 }
 
 /**
  * The size limit of one record: the UTF-8 bytes of its Projects as compact JSON,
  * in the field order of BoundaryReadinessProject. The limit is on bytes and on
- * nothing else, so the store and a request agree on what fits. That is about
- * 1,300 Projects with IDs of ordinary length.
+ * the number of older scopes below, so the store and a request agree on what
+ * fits. That is about 1,300 Projects with IDs of ordinary length, and fewer
+ * with long IDs.
  */
 export const BOUNDARY_READINESS_MAX_PROJECTS_BYTES = 256 * 1024;
+
+/**
+ * A record names at most this many older scopes. Each one the device is a member
+ * of costs an authorization read, and a D1 request can run only so many queries.
+ */
+export const BOUNDARY_READINESS_MAX_SOURCE_SCOPES = 64;
 
 /**
  * The body limit of a request that carries one record: the Projects, and room
@@ -198,20 +246,25 @@ function captureProject(raw: BoundaryReadinessProject): BoundaryReadinessProject
 
 /**
  * Cuts a device's Projects to the longest leading run that fits one record, and
- * counts the rest. A device lists the Projects that still wait first, so the
- * ones it leaves out reach a later record as the listed ones move.
+ * counts the rest. A record with a count above zero is not complete: it shows
+ * that the device runs the migration code, and the coordinator treats the
+ * device as not ready for any older scope it is in.
  */
 export function fitBoundaryReadinessProjects(projects: readonly BoundaryReadinessProject[]): {
 	projects: BoundaryReadinessProject[];
 	omittedProjects: number;
 } {
 	const fitted: BoundaryReadinessProject[] = [];
+	const sourceScopeIds = new Set<string>();
 	// "[" and "]" around the entries, and one comma before every entry but the first.
 	let bytes = 2;
 	for (const project of projects.map(captureProject)) {
 		const next = bytes + utf8.encode(JSON.stringify(project)).length + (fitted.length > 0 ? 1 : 0);
+		const scopes = new Set(sourceScopeIds).add(project.source_scope_id).size;
 		if (next > BOUNDARY_READINESS_MAX_PROJECTS_BYTES) break;
+		if (scopes > BOUNDARY_READINESS_MAX_SOURCE_SCOPES) break;
 		fitted.push(project);
+		sourceScopeIds.add(project.source_scope_id);
 		bytes = next;
 	}
 	return { projects: fitted, omittedProjects: projects.length - fitted.length };
@@ -239,7 +292,11 @@ function capturePut(raw: PutBoundaryReadinessInput): PutBoundaryReadinessInput {
 	const projects = raw.projects.map(captureProject);
 	// One entry per Project and older scope. A repeat would make the stored record ambiguous.
 	if (new Set(projects.map(projectKey)).size !== projects.length) throw new Error("invalid_input");
-	if (projectsBytes(projects) > BOUNDARY_READINESS_MAX_PROJECTS_BYTES) {
+	const sourceScopes = new Set(projects.map((project) => project.source_scope_id)).size;
+	if (
+		projectsBytes(projects) > BOUNDARY_READINESS_MAX_PROJECTS_BYTES ||
+		sourceScopes > BOUNDARY_READINESS_MAX_SOURCE_SCOPES
+	) {
 		throw new Error("boundary_readiness_too_large");
 	}
 	return { ...device, sequence: raw.sequence, projects, omittedProjects };
@@ -247,14 +304,17 @@ function capturePut(raw: PutBoundaryReadinessInput): PutBoundaryReadinessInput {
 
 // The header is written only for an enabled enrollment and only by a newer sequence.
 const PUT_HEADER_SQL = `INSERT INTO coordinator_boundary_readiness
-	(group_id, device_id, sequence, record_id, omitted_projects, updated_at)
-	SELECT ?, ?, ?, ?, ?, ?
+	(group_id, device_id, sequence, record_id, omitted_projects,
+	 invalid_boundary_entries, unauthorized_source_scope_ids_json, updated_at)
+	SELECT ?, ?, ?, ?, ?, ?, ?, ?
 	WHERE EXISTS (SELECT 1 FROM enrolled_devices
 		WHERE group_id = ? AND device_id = ? AND enabled = 1)
 	ON CONFLICT(group_id, device_id) DO UPDATE SET
 		sequence = excluded.sequence,
 		record_id = excluded.record_id,
 		omitted_projects = excluded.omitted_projects,
+		invalid_boundary_entries = excluded.invalid_boundary_entries,
+		unauthorized_source_scope_ids_json = excluded.unauthorized_source_scope_ids_json,
 		updated_at = excluded.updated_at
 	WHERE excluded.sequence > coordinator_boundary_readiness.sequence`;
 
@@ -276,7 +336,8 @@ const PUT_PROJECTS_SQL = `INSERT INTO coordinator_boundary_readiness_projects
 	FROM json_each(?) AS entry
 	WHERE ${HEADER_HAS_RECORD_ID_SQL}`;
 
-const READ_HEADER_SQL = `SELECT sequence, record_id, omitted_projects, updated_at
+const READ_HEADER_SQL = `SELECT sequence, record_id, omitted_projects,
+		invalid_boundary_entries, unauthorized_source_scope_ids_json, updated_at
 	FROM coordinator_boundary_readiness WHERE group_id = ? AND device_id = ?`;
 
 const READ_ENROLLED_SQL = `SELECT COUNT(*) AS enrolled FROM enrolled_devices
@@ -298,7 +359,29 @@ interface HeaderRow {
 	sequence: number;
 	record_id: string;
 	omitted_projects: number;
+	invalid_boundary_entries: number;
+	unauthorized_source_scope_ids_json: string;
 	updated_at: string;
+}
+
+/** What the stored header says the record leaves out. A list that cannot be read makes it incomplete. */
+function recordGaps(header: HeaderRow) {
+	let unauthorized: string[] | null = null;
+	try {
+		const parsed: unknown = JSON.parse(header.unauthorized_source_scope_ids_json);
+		if (Array.isArray(parsed) && parsed.every(isId)) unauthorized = parsed;
+	} catch {
+		// Left as unreadable.
+	}
+	return {
+		omitted_projects: header.omitted_projects,
+		invalid_boundary_entries: header.invalid_boundary_entries,
+		unauthorized_source_scope_ids: unauthorized ?? [],
+		complete:
+			unauthorized !== null &&
+			header.omitted_projects === 0 &&
+			header.invalid_boundary_entries === 0,
+	};
 }
 
 function resultRows<T>(result: unknown): T[] {
@@ -315,7 +398,7 @@ function resultChanges(result: unknown): number {
 export class BoundaryReadinessOperations implements CoordinatorBoundaryReadinessStore {
 	constructor(
 		private readonly backend: DeviceRemovalBackend,
-		private readonly isAuthorizedInScope: BoundaryReadinessScopeCheck,
+		private readonly authorizedScopeIds: BoundaryReadinessScopeAccess,
 		private readonly clock: () => number = Date.now,
 	) {}
 
@@ -342,42 +425,45 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 	 * Splits a record's entries into the ones the coordinator stores and the ones
 	 * it leaves out. An entry is stored only for a boundary ID of the managed
 	 * Project form and an older scope the device is authorized in right now.
+	 * Malformed entries are set aside first, so they cost no authorization read.
 	 */
 	private async sortProjects(input: PutBoundaryReadinessInput) {
-		const sourceScopeIds = [...new Set(input.projects.map((project) => project.source_scope_id))];
-		const checks = await Promise.all(
-			sourceScopeIds.map(async (scopeId) => ({
-				scopeId,
-				authorized: await this.isAuthorizedInScope({
-					groupId: input.groupId,
-					scopeId,
-					deviceId: input.deviceId,
-				}),
-			})),
+		const wellFormed = input.projects.filter((project) =>
+			MANAGED_PROJECT_SCOPE_ID.test(project.boundary_scope_id),
 		);
-		const authorizedScopeIds = new Set(
-			checks.filter((check) => check.authorized).map((check) => check.scopeId),
-		);
-		const accepted: BoundaryReadinessProject[] = [];
-		const rejected: BoundaryReadinessRejection[] = [];
-		for (const project of input.projects) {
-			let reason: BoundaryReadinessRejectionReason | null = null;
-			if (!MANAGED_PROJECT_SCOPE_ID.test(project.boundary_scope_id)) {
-				reason = "boundary_scope_invalid";
-			} else if (!authorizedScopeIds.has(project.source_scope_id)) {
-				reason = "source_scope_not_authorized";
-			}
-			if (!reason) accepted.push(project);
-			else rejected.push({ ...projectScopeIds(project), reason });
-		}
-		return { accepted, rejected };
+		const authorized = await this.authorizedScopeIds({
+			groupId: input.groupId,
+			deviceId: input.deviceId,
+			scopeIds: [...new Set(wellFormed.map((project) => project.source_scope_id))],
+		});
+		const accepted = wellFormed.filter((project) => authorized.has(project.source_scope_id));
+		const reject =
+			(reason: BoundaryReadinessRejectionReason) => (project: BoundaryReadinessProject) => ({
+				source_scope_id: project.source_scope_id,
+				boundary_scope_id: project.boundary_scope_id,
+				reason,
+			});
+		const invalid = input.projects.filter((project) => !wellFormed.includes(project));
+		const unauthorized = wellFormed.filter((project) => !accepted.includes(project));
+		return {
+			accepted,
+			rejected: [
+				...invalid.map(reject("boundary_scope_invalid")),
+				...unauthorized.map(reject("source_scope_not_authorized")),
+			],
+			invalidBoundaryEntries: invalid.length,
+			unauthorizedSourceScopeIds: [
+				...new Set(unauthorized.map((project) => project.source_scope_id)),
+			].toSorted(),
+		};
 	}
 
 	async putBoundaryReadiness(raw: PutBoundaryReadinessInput): Promise<PutBoundaryReadinessResult> {
 		const input = capturePut(raw);
 		return this.whenStoragePresent<PutBoundaryReadinessResult>(
 			async () => {
-				const { accepted, rejected } = await this.sortProjects(input);
+				const sorted = await this.sortProjects(input);
+				const { accepted, rejected } = sorted;
 				const recordId = globalThis.crypto.randomUUID();
 				const device = [input.groupId, input.deviceId];
 				const results = await this.backend.batch([
@@ -388,6 +474,8 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 							input.sequence,
 							recordId,
 							input.omittedProjects ?? 0,
+							sorted.invalidBoundaryEntries,
+							JSON.stringify(sorted.unauthorizedSourceScopeIds),
 							new Date(this.clock()).toISOString(),
 							...device,
 						],
@@ -433,7 +521,7 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 				group_id: input.groupId,
 				device_id: input.deviceId,
 				sequence: header.sequence,
-				omitted_projects: header.omitted_projects,
+				...recordGaps(header),
 				updated_at: header.updated_at,
 				projects: resultRows<BoundaryReadinessProject>(results[1]),
 			};
@@ -452,11 +540,4 @@ export class BoundaryReadinessOperations implements CoordinatorBoundaryReadiness
 			return resultChanges(results[1]) > 0;
 		}, false);
 	}
-}
-
-function projectScopeIds(project: BoundaryReadinessProject) {
-	return {
-		source_scope_id: project.source_scope_id,
-		boundary_scope_id: project.boundary_scope_id,
-	};
 }

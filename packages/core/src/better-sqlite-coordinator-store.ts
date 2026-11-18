@@ -152,7 +152,7 @@ import {
 	BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
 	type BoundaryReadinessDeviceInput,
 	BoundaryReadinessOperations,
-	boundaryReadinessScopeCheck,
+	boundaryReadinessScopeAccess,
 	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
 import {
@@ -1228,7 +1228,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
 		this.boundaryReadiness = new BoundaryReadinessOperations(
 			ledgerBackend,
-			boundaryReadinessScopeCheck(this),
+			boundaryReadinessScopeAccess(this),
 			options.authClock,
 		);
 		const rawAuthBackend = rawSqliteAuthBackend(this.db);

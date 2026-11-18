@@ -6,6 +6,7 @@ import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	BOUNDARY_READINESS_MAX_BODY_BYTES,
 	BOUNDARY_READINESS_MAX_PROJECTS_BYTES,
+	BOUNDARY_READINESS_MAX_SOURCE_SCOPES,
 	BOUNDARY_READINESS_MIGRATION_NAME,
 	BOUNDARY_READINESS_SCHEMA_SQL,
 	BOUNDARY_READINESS_STORAGE_PRESENT_SQL,
@@ -140,6 +141,17 @@ describe("what one readiness request can carry", () => {
 		expect(fitted.projects.length).toBeLessThan(
 			fitBoundaryReadinessProjects(ascii).projects.length,
 		);
+	});
+
+	it("stops at the number of older scopes one record may name", () => {
+		const projects = Array.from({ length: BOUNDARY_READINESS_MAX_SOURCE_SCOPES + 5 }, (_, index) =>
+			entry(index, `scope-${index}`),
+		);
+
+		const fitted = fitBoundaryReadinessProjects(projects);
+
+		expect(fitted.projects).toEqual(projects.slice(0, BOUNDARY_READINESS_MAX_SOURCE_SCOPES));
+		expect(fitted.omittedProjects).toBe(5);
 	});
 
 	it("leaves out nothing when every Project fits", () => {

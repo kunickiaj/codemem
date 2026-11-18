@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS coordinator_boundary_readiness (
   device_id TEXT NOT NULL,
   sequence INTEGER NOT NULL,
   record_id TEXT NOT NULL,
-  omitted_projects INTEGER NOT NULL DEFAULT 0,
+  omitted_projects INTEGER NOT NULL,
+  invalid_boundary_entries INTEGER NOT NULL,
+  unauthorized_source_scope_ids_json TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (group_id, device_id)
 );

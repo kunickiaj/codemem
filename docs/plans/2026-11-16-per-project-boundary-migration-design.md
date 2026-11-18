@@ -141,8 +141,17 @@ What the coordinator stores (`packages/core/src/coordinator-boundary-readiness.t
 - An entry that fails the two checks above is left out and named in the answer. The rest of the record is stored.
 - A device with no enabled enrollment in the group is refused.
 - One Project can appear once per source scope.
-- A record's Projects take at most 256 KiB as compact JSON, about 1,300 Projects. The store and the request use the same limit, so a record the device can build always fits one request. A device with more Projects lists the ones that still wait first and sends the number it left out in `omitted_projects`. The coordinator stores that number, so the device counts as ready and an admin device can see that some of its Projects are not listed yet. Projects that have moved drop out of the list, which brings the omitted ones into a later record.
+- A record's Projects take at most 256 KiB as compact JSON, about 1,300 Projects and fewer with long IDs, and name at most 64 source scopes. The store and the request use the same limits, so a record the device can build always fits one request. A device with more Projects sends the ones that fit and the number it left out in `omitted_projects`, which the coordinator stores.
 - A coordinator that has not applied migration `0050` answers that readiness records are unavailable, and every Project waits.
+
+**What a record does not show.** A record can leave out Projects the device holds. The coordinator stores three facts about that, and the commit must use them. They are prerequisites of the commit change, with tests 63 to 67.
+
+- **A record that is not complete.** The record is not complete when the device left Projects out to fit the limit, or when an entry had a malformed boundary ID, which a correct build never sends. Such a record shows that the device runs the migration code and nothing about what it holds. It must never be read as "the device does not hold the Projects it left out". For a commit, a device whose record is not complete is treated like a device with no record: every Project of each source scope that device is authorized in waits. Nothing in those scopes moves in the meantime, so a device over the limit keeps them waiting until records can be sent in pages. An admin device can see the count, and nobody's access changes. Attach only needs to know that the device runs the code, so it accepts a record that is not complete.
+- **A source scope the device was refused for.** An entry is left out when the device is not authorized in its source scope at arrival, and the coordinator stores those scope IDs with the record. If the device is authorized in one of them at the commit, the record no longer shows what it holds there, and the commit treats it as not complete. A device that stays out of that scope blocks nothing.
+- **A read that could not run is not a refusal.** When the coordinator cannot read a scope's authorization, it stores nothing and answers that readiness is unavailable. The device sends the record again.
+- **Presence at the commit.** A record sent just before a downgrade can arrive after the downgraded build's presence discarded the earlier one. The commit therefore counts a record only when the device's stored presence lists the migration feature.
+
+The check that a Project is not also shared in a second older setup ([Two cases where a Project does not move by itself](#two-cases-where-a-project-does-not-move-by-itself)) covers devices authorized in the source scope, and devices outside it that have a complete record. A device outside the source scope with no record, or with one that is not complete, is not seen, as before this rule.
 
 The device is checked against the source scope when the record arrives. It can leave that scope afterwards, and its record stays until its next one. The commit therefore counts only records of devices that are authorized in the source scope at the moment of the commit.
 
@@ -597,6 +606,14 @@ The implementer writes these before the code. The first group pins behavior the 
 
 61. After the migration stopped a group's default grant, rolling one of its Projects back turns the grant on again, and an approved joiner receives the default scope. Moving the Project again stops it. A grant the user turned off stays off through both.
 62. Rolling back an attached record revokes nobody and leaves it `detached`. A recipient can then be removed and a replacement device granted on that boundary by a request with no generation. A request that carries the attach's generation is refused. Memories that were in the boundary before the attach stay there. A snapshot of the source scope does not pull out a memory that was in the boundary before the attach. Once the attach change keeps a record of what this device moved in, a device that still holds such a memory under the boundary takes the newer copy from a snapshot of the source scope.
+
+### Added with the readiness record storage
+
+63. Coordinator store contract (P3), SQLite and D1: commit writes nothing when a device authorized in the source scope has a readiness record with a left-out count above zero, or with an entry that was left out for a malformed boundary ID. A device outside the source scope with such a record does not stop the commit.
+64. Coordinator store contract (P3), SQLite and D1: commit writes nothing when a device authorized in the source scope has a record that names a refused source scope the device is authorized in at the commit. It commits when the device is still outside that scope.
+65. Coordinator store contract (P3), SQLite and D1: commit counts a readiness record only when the device's stored presence lists the migration feature.
+66. Coordinator store contract (P3), SQLite and D1: attach accepts a readiness record that is not complete.
+67. Coordinator store contract, SQLite and D1 (in the storage change): a record is not stored when a scope authorization read fails, and the stored record stays. A record with a left-out count or a malformed entry reads as not complete. The source scopes a record was refused for are stored with it.
 
 Validation for each stack layer is the focused tests above. The stack tip runs `pnpm run check` and the Docker scenarios `legacy-team-migration`, `project-sharing`, and `sharing-domains`.
 
