@@ -831,3 +831,45 @@ describe("unmanaged direct scope admission", () => {
 		},
 	);
 });
+
+describe("pushes that include a Project this device withdrew from", () => {
+	it("applies the rest of the batch and skips the withdrawn Project's operations", async () => {
+		// Arrange: this device left managed-work, and the peer has since lost it too.
+		seedManualScope();
+		root.store.db
+			.prepare(
+				`INSERT INTO project_scope_withdrawals(scope_id, canonical_project_identity, group_id, withdrawn_at)
+				 VALUES ('managed-work', 'git:example/work', 'group-1', ?)`,
+			)
+			.run(new Date().toISOString());
+		root.store.db
+			.prepare(
+				"UPDATE scope_memberships SET status = 'revoked' WHERE scope_id = 'managed-work' AND device_id = ?",
+			)
+			.run(root.peer.deviceId);
+
+		// Act
+		const response = await root.request("/v1/ops", root.peer.keysDir, {
+			method: "POST",
+			body: {
+				sync_capability: "scoped",
+				ops: [memoryOp("manual-work", "sibling-push"), memoryOp("managed-work", "withdrawn-push")],
+			},
+		});
+
+		// Assert
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ applied: 1, rejected: 0 });
+		expect(
+			root.store.db
+				.prepare("SELECT import_key FROM memory_items ORDER BY import_key")
+				.pluck()
+				.all(),
+		).toEqual(["sibling-push-memory"]);
+		expect(
+			root.store.db
+				.prepare("SELECT op_id FROM replication_ops WHERE op_id = 'withdrawn-push'")
+				.get(),
+		).toBeUndefined();
+	});
+});

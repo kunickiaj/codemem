@@ -18,6 +18,7 @@ import type { Database } from "./db.js";
 import { toJson } from "./db.js";
 import { recordForeignMemoryRevision } from "./memory-creation-provenance.js";
 import { retirementAllowsSnapshot } from "./memory-retirement-snapshot-guard.js";
+import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import * as schema from "./schema.js";
 import { redactMemoryFields, SecretScanner } from "./secret-scanner.js";
 import { snapshotSessionExportKeysForMemoryIds } from "./session-export-identity-mutation.js";
@@ -61,6 +62,21 @@ export interface BootstrapResult {
 export interface BootstrapApplicationOptions {
 	activityOptions?: { preserveError?: boolean };
 	cursorPolicy?: "preserve";
+	/** Checked inside the write transaction. Returns why the snapshot can no longer be applied. */
+	refusal?: () => string | null;
+}
+
+/**
+ * A Project this device withdrew from takes no snapshot, whichever caller fetched
+ * it. Checked inside the write transaction because the download can outlast the decision.
+ */
+function snapshotRefusal(
+	db: Database,
+	scopeId: string | null,
+	options?: BootstrapApplicationOptions,
+): string | null {
+	if (scopeId && isProjectScopeWithdrawn(db, scopeId)) return "project_withdrawn";
+	return options?.refusal?.() ?? null;
 }
 
 interface ExistingSnapshotRow {
@@ -583,6 +599,50 @@ function clearScopedAckedCursor(db: Database, peerDeviceId: string, scopeId: str
 		.run();
 }
 
+/** Inserts a replacing snapshot's items. Returns how many need embeddings. */
+function replaceSnapshotItems(
+	target: SnapshotTarget,
+	items: Iterable<SyncMemorySnapshotItem>,
+	heldInScope: Set<string>,
+	result: BootstrapResult,
+): number {
+	let embeddableApplied = 0;
+	for (const item of items) {
+		const heldElsewhere = settleCopiesInOtherScopes(target, item);
+		// A copy this scope held before it was cleared is put back. Only a first copy is held back.
+		if (heldElsewhere.keepExisting && !heldInScope.has(item.entity_id)) continue;
+		result.deleted += heldElsewhere.deleted;
+		embeddableApplied += addSnapshotItem(target, item, heldElsewhere.originDeviceId);
+	}
+	return embeddableApplied;
+}
+
+/**
+ * Moves the replication cursor to a replacing snapshot's baseline. For scoped
+ * null-baseline snapshots, baseline_cursor can be null; a hidden marker in the
+ * scoped cursor row lets status tell "this peer/scope bootstrap completed without
+ * a cursor boundary" from "this scope was never attempted".
+ */
+function advanceReplacedSnapshotBoundary(
+	db: Database,
+	peerDeviceId: string,
+	resetInfo: SyncResetRequired,
+): void {
+	const { scope_id: scopeId, baseline_cursor: baseline } = resetInfo;
+	if (!baseline && !scopeId) return;
+	if (scopeId && !baseline) clearReplicationCursorLastApplied(db, peerDeviceId, scopeId);
+	if (scopeId && baseline) clearScopedAckedCursor(db, peerDeviceId, scopeId);
+	setReplicationCursor(
+		db,
+		peerDeviceId,
+		{
+			lastApplied: baseline,
+			lastAcked: baseline ? undefined : SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
+		},
+		scopeId,
+	);
+}
+
 /**
  * Apply a bootstrap snapshot to the local database, atomically replacing
  * synced memories in the requested scope with the snapshot contents.
@@ -613,7 +673,11 @@ export function applyBootstrapSnapshot(
 	validateSnapshotScopes(items, bootstrapScopeId);
 
 	db.transaction(() => {
-		let embeddableApplied = 0;
+		const refused = snapshotRefusal(db, bootstrapScopeId, options);
+		if (refused) {
+			result.error = refused;
+			return;
+		}
 
 		// 1. Delete local sync-eligible memories only for an explicit bootstrap scope.
 		// - Only memories with import_key (i.e. previously synced) are deleted.
@@ -632,37 +696,15 @@ export function applyBootstrapSnapshot(
 		// 2. Insert snapshot items, grouping by project.
 		bootstrapSessionCache.clear();
 
-		for (const item of retirementSnapshotItems(db, items, bootstrapScopeId)) {
-			const heldElsewhere = settleCopiesInOtherScopes(target, item);
-			// A copy this scope held before it was cleared is put back. Only a first copy is held back.
-			if (heldElsewhere.keepExisting && !heldInScope.has(item.entity_id)) continue;
-			result.deleted += heldElsewhere.deleted;
-			embeddableApplied += addSnapshotItem(target, item, heldElsewhere.originDeviceId);
-		}
+		const embeddableApplied = replaceSnapshotItems(
+			target,
+			retirementSnapshotItems(db, items, bootstrapScopeId),
+			heldInScope,
+			result,
+		);
 
-		// 3. Update replication cursor to baseline_cursor. For scoped null-baseline
-		// snapshots, baseline_cursor can be null; store a hidden marker in the
-		// scoped cursor row so status can distinguish "this peer/scope bootstrap
-		// completed without a cursor boundary" from "this scope was never attempted".
-		if (resetInfo.baseline_cursor || resetInfo.scope_id) {
-			if (resetInfo.scope_id && !resetInfo.baseline_cursor) {
-				clearReplicationCursorLastApplied(db, peerDeviceId, resetInfo.scope_id);
-			}
-			if (resetInfo.scope_id && resetInfo.baseline_cursor) {
-				clearScopedAckedCursor(db, peerDeviceId, resetInfo.scope_id);
-			}
-			setReplicationCursor(
-				db,
-				peerDeviceId,
-				{
-					lastApplied: resetInfo.baseline_cursor,
-					lastAcked: resetInfo.baseline_cursor
-						? undefined
-						: SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
-				},
-				resetInfo.scope_id,
-			);
-		}
+		// 3. Update replication cursor to baseline_cursor.
+		advanceReplacedSnapshotBoundary(db, peerDeviceId, resetInfo);
 
 		// 4. Bump local generation + snapshot_id to match the peer.
 		setSyncResetState(
@@ -767,6 +809,11 @@ export function mergeBootstrapSnapshot(
 			);
 
 	db.transaction(() => {
+		const refused = snapshotRefusal(db, bootstrapScopeId, options);
+		if (refused) {
+			result.error = refused;
+			return;
+		}
 		let embeddableApplied = 0;
 		bootstrapSessionCache.clear();
 

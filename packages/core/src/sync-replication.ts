@@ -3689,6 +3689,11 @@ function opInWithdrawnScope(db: Database, op: ReplicationOp): boolean {
 	return Boolean(scopeId) && isProjectScopeWithdrawn(db, scopeId as string);
 }
 
+/** Drops ops for Projects this device has withdrawn from, for a send that started before the withdrawal. */
+export function withoutWithdrawnScopeOps(db: Database, ops: ReplicationOp[]): ReplicationOp[] {
+	return ops.filter((op) => !opInWithdrawnScope(db, op));
+}
+
 function rejectUnretiredScopeFailures(
 	db: Database,
 	ops: ReplicationOp[],

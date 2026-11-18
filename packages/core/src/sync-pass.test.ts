@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMaintenanceJob } from "./maintenance-jobs.js";
+import { resumeProjectScopeSync } from "./project-scope-resume.js";
+import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
 import * as syncAuth from "./sync-auth.js";
 import * as syncBootstrap from "./sync-bootstrap.js";
 import {
@@ -3442,13 +3444,138 @@ describe("sync_attempts.failure_category", () => {
 	});
 });
 
+function insertLocalScopedOps(
+	db: InstanceType<typeof Database>,
+	scopeId: string,
+	deviceId: string,
+	indexes: number[],
+): void {
+	for (const index of indexes) {
+		db.prepare(
+			`INSERT INTO replication_ops(
+				op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
+				clock_updated_at, clock_device_id, device_id, created_at, scope_id
+			 ) VALUES (?, 'memory_item', ?, 'upsert', ?, 1, ?, ?, ?, ?, ?)`,
+		).run(
+			`local-op-${index}`,
+			`memory:${index}`,
+			JSON.stringify({ visibility: "shared", scope_id: scopeId }),
+			`2026-01-01T00:00:0${index}Z`,
+			deviceId,
+			deviceId,
+			`2026-01-01T00:00:0${index}Z`,
+			scopeId,
+		);
+	}
+}
+
+// Fixtures for a scoped peer that still advertises a Project this device withdrew from.
+const WITHDRAWN = (() => {
+	const SCOPE = "acme-work";
+	const PEER = "peer-scoped";
+	const LOCAL = "local-device-id";
+	const reset = { generation: 1, baseline_cursor: null, retained_floor_cursor: null };
+	const statusResponse = {
+		fingerprint: "fp-scoped",
+		protocol_version: "2",
+		sync_capability: "scoped",
+		sync_reset: { ...reset, snapshot_id: "snap-default" },
+		authorized_scopes: [
+			{
+				scope_id: SCOPE,
+				label: "Acme Work",
+				authority_type: "coordinator",
+				membership_epoch: 1,
+				sync_reset: { ...reset, scope_id: SCOPE, snapshot_id: "snap-acme-1" },
+			},
+		],
+	};
+	const defaultOpsResponse = {
+		...reset,
+		reset_required: false,
+		snapshot_id: "snap-default",
+		ops: [],
+		next_cursor: null,
+		skipped: 0,
+	};
+	const snapshotResponse = {
+		...reset,
+		scope_id: SCOPE,
+		snapshot_id: "snap-acme-1",
+		sync_capability: "scoped",
+		items: [
+			{
+				entity_id: "key:acme-work-1",
+				op_type: "upsert",
+				payload_json: JSON.stringify({
+					kind: "discovery",
+					title: "Scoped memory",
+					body_text: "Scoped body",
+					active: 1,
+					created_at: "2026-01-01T00:00:00Z",
+					updated_at: "2026-01-01T00:00:00Z",
+					scope_id: SCOPE,
+					visibility: "shared",
+				}),
+				clock_rev: 1,
+				clock_updated_at: "2026-01-01T00:00:00Z",
+				clock_device_id: PEER,
+			},
+		],
+		next_page_token: null,
+		has_more: false,
+	};
+	return { SCOPE, PEER, LOCAL, statusResponse, defaultOpsResponse, snapshotResponse };
+})();
+
 describe("syncOnce with a Project this device withdrew from", () => {
+	const { SCOPE, PEER, LOCAL, statusResponse, defaultOpsResponse, snapshotResponse } = WITHDRAWN;
 	let db: InstanceType<typeof Database>;
+
+	function withdraw(): void {
+		db.prepare(
+			`INSERT INTO project_scope_withdrawals(
+			 scope_id, canonical_project_identity, group_id, withdrawn_at
+			 ) VALUES (?, 'git:acme/internal', 'group-a', '2026-01-01T00:00:00Z')`,
+		).run(SCOPE);
+	}
+
+	function denyThisDevice(): void {
+		putRecipientPolicyDenyOverlay(db, {
+			canonicalProjectIdentity: "git:acme/internal",
+			scopeId: SCOPE,
+			deviceId: LOCAL,
+			generation: 1,
+			reasonCode: "pending_revoke",
+			now: "2026-01-01T00:00:00Z",
+		});
+	}
+
+	function importedScopedMemory(): unknown {
+		return db.prepare("SELECT 1 FROM memory_items WHERE import_key = ?").get("key:acme-work-1");
+	}
+
+	/** Status, default pull and empty push, then whatever the scoped pull does. */
+	function peerServes(scopedPull: RequestJsonExecutor) {
+		return vi
+			.spyOn(syncHttpClient, "requestJson")
+			.mockResolvedValueOnce([200, statusResponse])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(acknowledgeEmptyPush)
+			.mockImplementationOnce(scopedPull);
+	}
 
 	beforeEach(() => {
 		db = new Database(":memory:");
 		initTestSchema(db);
 		addSyncTables(db);
+		db.prepare(
+			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
+		).run(PEER, "fp-scoped", new Date().toISOString());
+		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([LOCAL, "ed25519 AAAA"]);
+		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
+		vi.spyOn(syncAuth, "buildDirectPeerAuthHeaders").mockReturnValue({});
+		grantScopeForSyncPass(db, SCOPE, [PEER, LOCAL]);
 	});
 
 	afterEach(() => {
@@ -3456,65 +3583,103 @@ describe("syncOnce with a Project this device withdrew from", () => {
 		db.close();
 	});
 
-	it("doesn't pull a withdrawn scope the peer still advertises", async () => {
-		// Arrange: an incremental peer that advertises one scope this device left.
-		db.prepare(
-			"INSERT INTO sync_peers (peer_device_id, pinned_fingerprint, created_at) VALUES (?, ?, ?)",
-		).run("peer-scoped", "fp-scoped", new Date().toISOString());
-		db.prepare(
-			"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
-		).run("peer-scoped", "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
-		vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue([
-			"local-device-id",
-			"ed25519 AAAA",
-		]);
-		vi.spyOn(syncAuth, "buildAuthHeaders").mockReturnValue({});
-		grantScopeForSyncPass(db, "acme-work", ["peer-scoped", "local-device-id"]);
-		db.prepare(
-			`INSERT INTO project_scope_withdrawals(
-			 scope_id, canonical_project_identity, group_id, withdrawn_at
-			 ) VALUES ('acme-work', 'git:acme/internal', 'group-a', '2026-01-01T00:00:00Z')`,
-		).run();
-		const reset = { generation: 1, baseline_cursor: null, retained_floor_cursor: null };
+	describe("pulling", () => {
+		beforeEach(() => {
+			db.prepare(
+				"INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, last_acked_cursor, updated_at) VALUES (?, ?, ?, ?)",
+			).run(PEER, "2025-12-31T00:00:00Z|local-op-0", null, new Date().toISOString());
+		});
+
+		it("doesn't pull a withdrawn scope the peer still advertises", async () => {
+			// Arrange
+			withdraw();
+			const request = vi
+				.spyOn(syncHttpClient, "requestJson")
+				.mockResolvedValueOnce([200, statusResponse])
+				.mockResolvedValueOnce([200, defaultOpsResponse])
+				.mockImplementationOnce(acknowledgeEmptyPush);
+
+			// Act
+			const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+			// Assert
+			expect(result.ok).toBe(true);
+			expect(result.perScopeResults ?? []).toEqual([]);
+			expect(request).toHaveBeenCalledTimes(3);
+		});
+
+		it("applies nothing from a snapshot that arrives after this device withdrew", async () => {
+			// Arrange: the withdrawal lands while the snapshot is downloading.
+			peerServes(async () => {
+				withdraw();
+				return [200, snapshotResponse];
+			});
+
+			// Act
+			const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+			// Assert
+			expect(result.perScopeResults?.[0]).toMatchObject({ scope_id: SCOPE, ok: false });
+			expect(importedScopedMemory()).toBeUndefined();
+			expect(syncReplication.getReplicationCursor(db, PEER, SCOPE)).toEqual([null, null]);
+		});
+
+		it("imports no snapshot after undo while this device is denied locally", async () => {
+			// Arrange: denied while withdrawn; the cached membership still reads active.
+			withdraw();
+			denyThisDevice();
+			resumeProjectScopeSync(db, { scopeId: SCOPE, deviceId: LOCAL, now: "2026-01-02T00:00:00Z" });
+			const request = peerServes(async () => [200, snapshotResponse]);
+
+			// Act
+			const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+			// Assert
+			expect(result.perScopeResults?.[0]).toMatchObject({ scope_id: SCOPE, ok: false });
+			expect(request).toHaveBeenCalledTimes(3);
+			expect(importedScopedMemory()).toBeUndefined();
+		});
+
+		it("applies nothing from a snapshot when this device is denied during the download", async () => {
+			// Arrange
+			peerServes(async () => {
+				denyThisDevice();
+				return [200, snapshotResponse];
+			});
+
+			// Act
+			const result = await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
+
+			// Assert
+			expect(result.perScopeResults?.[0]).toMatchObject({ scope_id: SCOPE, ok: false });
+			expect(importedScopedMemory()).toBeUndefined();
+			expect(syncReplication.getReplicationCursor(db, PEER, SCOPE)).toEqual([null, null]);
+		});
+	});
+
+	it("stops sending a Project withdrawn while a split push is under way", async () => {
+		// Arrange: two of this device's ops in the Project, too many for one request.
+		syncReplication.setReplicationCursor(db, PEER, {
+			lastApplied: "2025-12-31T00:00:00Z|remote-baseline",
+		});
+		insertLocalScopedOps(db, SCOPE, LOCAL, [1, 2]);
 		const request = vi
 			.spyOn(syncHttpClient, "requestJson")
-			.mockResolvedValueOnce([
-				200,
-				{
-					fingerprint: "fp-scoped",
-					protocol_version: "2",
-					sync_capability: "scoped",
-					sync_reset: { ...reset, snapshot_id: "snap-default" },
-					authorized_scopes: [
-						{
-							scope_id: "acme-work",
-							label: "Acme Work",
-							authority_type: "coordinator",
-							membership_epoch: 1,
-							sync_reset: { ...reset, scope_id: "acme-work", snapshot_id: "snap-acme-1" },
-						},
-					],
-				},
-			])
-			.mockResolvedValueOnce([
-				200,
-				{
-					...reset,
-					reset_required: false,
-					snapshot_id: "snap-default",
-					ops: [],
-					next_cursor: null,
-					skipped: 0,
-				},
-			])
-			.mockImplementationOnce(acknowledgeEmptyPush);
+			.mockResolvedValueOnce([200, { ...statusResponse, sync_capability: "enforcing" }])
+			.mockResolvedValueOnce([200, defaultOpsResponse])
+			.mockImplementationOnce(async () => {
+				withdraw();
+				return [413, { error: "too_many_ops" }];
+			})
+			.mockResolvedValue([200, {}]);
 
 		// Act
-		const result = await syncOnce(db, "peer-scoped", ["http://127.0.0.1:9090"]);
+		await syncOnce(db, PEER, ["http://127.0.0.1:9090"]);
 
-		// Assert
-		expect(result.ok).toBe(true);
-		expect(result.perScopeResults ?? []).toEqual([]);
-		expect(request).toHaveBeenCalledTimes(3);
+		// Assert: only the first, refused request carried the Project's ops.
+		const pushedOpCounts = request.mock.calls
+			.filter(([method]) => method === "POST")
+			.map(([, , options]) => (options?.body as { ops: unknown[] } | undefined)?.ops.length);
+		expect(pushedOpCounts).toEqual([2]);
 	});
 });

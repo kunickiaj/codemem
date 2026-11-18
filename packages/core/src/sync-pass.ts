@@ -12,6 +12,7 @@ import { MAX_PEER_ADDRESSES, mergeAddresses } from "./address-utils.js";
 import type { Database } from "./db.js";
 import { ensureAdditiveSchemaCompatibility, ensureSyncAttemptTransportColumn } from "./db.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
+import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-deny-overlay.js";
 import type { RelayFailureReason } from "./relay-failure-reason.js";
 import { isStableReleaseVersion } from "./release-discovery.js";
 import * as schema from "./schema.js";
@@ -19,6 +20,7 @@ import type { SecretScanner } from "./secret-scanner.js";
 import { buildDirectPeerAuthHeaders } from "./sync-auth.js";
 import {
 	applyBootstrapSnapshot,
+	type BootstrapApplicationOptions,
 	fetchAllSnapshotPages,
 	mergeBootstrapSnapshot,
 } from "./sync-bootstrap.js";
@@ -59,6 +61,7 @@ import {
 	reconcileStalePeerReceivedRows,
 	SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER,
 	setReplicationCursor,
+	withoutWithdrawnScopeOps,
 } from "./sync-replication.js";
 import {
 	recordSyncTransferObservation,
@@ -503,17 +506,23 @@ function hasPeerApplyErrors(payload: Record<string, unknown>): boolean {
 	return !Array.isArray(errors) || errors.length > 0;
 }
 
-async function pushOps(
-	postUrl: string,
-	deviceId: string,
-	recipientId: string,
-	ops: ReplicationOp[],
-	requestExecutor: RequestJsonExecutor,
-	onAcknowledged: (ops: ReplicationOp[]) => void,
-	keysDir?: string,
-	dbPath?: string,
-	depth = 0,
-): Promise<void> {
+interface PushRequest {
+	postUrl: string;
+	deviceId: string;
+	recipientId: string;
+	requestExecutor: RequestJsonExecutor;
+	onAcknowledged: (ops: ReplicationOp[]) => void;
+	/** Checked again before every request, because the push spans network waits. */
+	stillSendable: (ops: ReplicationOp[]) => ReplicationOp[];
+	keysDir?: string;
+	dbPath?: string;
+}
+
+async function pushOps(push: PushRequest, batch: ReplicationOp[], depth = 0): Promise<void> {
+	const { postUrl, deviceId, recipientId, requestExecutor, onAcknowledged, keysDir, dbPath } = push;
+	const ops = push.stillSendable(batch);
+	// An empty batch is still sent to verify the signed path, but not one emptied here.
+	if (ops.length === 0 && batch.length > 0) return;
 	const body = {
 		ops,
 		sync_capability: LOCAL_SYNC_CAPABILITY,
@@ -554,18 +563,8 @@ async function pushOps(
 		(detail === "payload_too_large" || detail === "too_many_ops")
 	) {
 		const mid = Math.floor(ops.length / 2);
-		for (const batch of [ops.slice(0, mid), ops.slice(mid)]) {
-			await pushOps(
-				postUrl,
-				deviceId,
-				recipientId,
-				batch,
-				requestExecutor,
-				onAcknowledged,
-				keysDir,
-				dbPath,
-				depth + 1,
-			);
+		for (const half of [ops.slice(0, mid), ops.slice(mid)]) {
+			await pushOps(push, half, depth + 1);
 		}
 		return;
 	}
@@ -683,6 +682,9 @@ function scopedSnapshotAccessFailure(
 
 	const requiredEpoch = Number(scope.membership_epoch ?? 0);
 	for (const deviceId of [options.localDeviceId, options.peerDeviceId]) {
+		// A local denial holds even while the cached membership still reads active.
+		if (getAnyRecipientPolicyDenyOverlayForScopeDevice(db, { scopeId: options.scopeId, deviceId }))
+			return "missing_scope";
 		const membership = db
 			.prepare(
 				`SELECT status, membership_epoch
@@ -770,16 +772,13 @@ async function runScopedSync(
 		limit: number;
 	},
 ): Promise<{ results: SyncScopeResult[]; totalOpsIn: number }> {
-	// A peer still advertises a Project this device left locally; don't pull it.
-	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes).filter(
-		(scope) => !isProjectScopeWithdrawn(db, scope.scope_id),
-	);
-	if (authorizedScopes.length === 0) {
-		return { results: [], totalOpsIn: 0 };
-	}
+	const authorizedScopes = parseAuthorizedScopes(options.statusPayload.authorized_scopes);
 	const results: SyncScopeResult[] = [];
 	let totalOpsIn = 0;
 	for (const scope of authorizedScopes) {
+		// A peer still advertises a Project this device left locally; don't pull it.
+		// Checked per scope, because earlier pulls wait on the network.
+		if (isProjectScopeWithdrawn(db, scope.scope_id)) continue;
 		const scopeResult = await syncOneScope(db, {
 			peerDeviceId: options.peerDeviceId,
 			baseUrl: options.baseUrl,
@@ -833,38 +832,40 @@ function mergedReceiveVectorWork(
 	};
 }
 
+interface ScopedSnapshotAccess {
+	scopeId: string;
+	peerDeviceId: string;
+	localDeviceId: string;
+}
+
+/** Snapshot admission is checked again inside the apply transaction, after the download. */
+function scopedSnapshotApplication(
+	db: Database,
+	access: ScopedSnapshotAccess,
+): BootstrapApplicationOptions {
+	return { ...RECEIVE_WINDOW_OPTIONS, refusal: () => scopedSnapshotAccessFailure(db, access) };
+}
+
 function mergeScopeSnapshot(
 	db: Database,
-	peerDeviceId: string,
+	access: ScopedSnapshotAccess,
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
 	scanner: SecretScanner | undefined,
 ) {
-	return mergeBootstrapSnapshot(
-		db,
-		peerDeviceId,
-		items,
-		resetInfo,
-		scanner,
-		RECEIVE_WINDOW_OPTIONS,
-	);
+	const application = scopedSnapshotApplication(db, access);
+	return mergeBootstrapSnapshot(db, access.peerDeviceId, items, resetInfo, scanner, application);
 }
 
 function applyScopeSnapshot(
 	db: Database,
-	peerDeviceId: string,
+	access: ScopedSnapshotAccess,
 	items: SyncMemorySnapshotItem[],
 	resetInfo: SyncResetRequired,
 	scanner: SecretScanner | undefined,
 ) {
-	return applyBootstrapSnapshot(
-		db,
-		peerDeviceId,
-		items,
-		resetInfo,
-		scanner,
-		RECEIVE_WINDOW_OPTIONS,
-	);
+	const application = scopedSnapshotApplication(db, access);
+	return applyBootstrapSnapshot(db, access.peerDeviceId, items, resetInfo, scanner, application);
 }
 
 interface ScopedPeerPullOptions {
@@ -937,6 +938,7 @@ async function syncOneScope(
 	const { peerDeviceId, baseUrl, deviceId, scope, keysDir, dbPath, scanner, limit } = options;
 	const bootstrapOptions = scopedBootstrapOptions(options);
 	const scopeId = scope.scope_id;
+	const access = { scopeId, peerDeviceId, localDeviceId: deviceId };
 	const [lastApplied, lastAcked] = getReplicationCursor(db, peerDeviceId, scopeId);
 	const hasNullBaselineBootstrapMarker = lastAcked === SCOPED_NULL_BASELINE_BOOTSTRAP_CURSOR_MARKER;
 	const nullBaselineBootstrapStillCurrent = scopedNullBaselineIsCurrent({
@@ -950,11 +952,7 @@ async function syncOneScope(
 	const shouldBootstrapEmptyScope =
 		lastApplied == null && !localRowsPresent && !nullBaselineBootstrapStillCurrent;
 	if (shouldMergeRecoverScope || shouldBootstrapEmptyScope) {
-		const accessFailure = scopedSnapshotAccessFailure(db, {
-			scopeId,
-			peerDeviceId,
-			localDeviceId: deviceId,
-		});
+		const accessFailure = scopedSnapshotAccessFailure(db, access);
 		if (accessFailure) {
 			return {
 				scope_id: scopeId,
@@ -997,7 +995,7 @@ async function syncOneScope(
 			};
 			const { items } = await fetchAllSnapshotPages(baseUrl, resetInfo, deviceId, bootstrapOptions);
 			options.validateCurrentAuthorization?.();
-			const mergeResult = mergeScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const mergeResult = mergeScopeSnapshot(db, access, items, resetInfo, scanner);
 			if (!mergeResult.ok) {
 				const error = "scoped merge bootstrap apply failed";
 				return {
@@ -1071,7 +1069,7 @@ async function syncOneScope(
 					bootstrapped: true,
 				};
 			}
-			const bootstrapResult = applyScopeSnapshot(db, peerDeviceId, items, resetInfo, scanner);
+			const bootstrapResult = applyScopeSnapshot(db, access, items, resetInfo, scanner);
 			if (!bootstrapResult.ok) {
 				const error = "bootstrap apply failed";
 				return {
@@ -1919,27 +1917,28 @@ async function pushDefaultScope(
 	const postUrl = `${peer.baseUrl}/v1/ops`;
 	// An idle sender still verifies the signed POST path without claiming any transfer.
 	const batches = outboundOps.length > 0 ? chunkOpsBySize(outboundOps, MAX_SYNC_BODY_BYTES) : [[]];
+	const push: PushRequest = {
+		postUrl,
+		deviceId: context.deviceId,
+		recipientId: context.peerDeviceId,
+		requestExecutor: context.requestExecutor,
+		onAcknowledged: (acknowledged) => {
+			context.db.transaction(() => {
+				recordSyncTransferReceipts(
+					context.db,
+					context.peerDeviceId,
+					"send",
+					acknowledged.map((op) => op.op_id),
+				);
+				recordSyncTransferObservation(context.db, context.peerDeviceId, "send");
+			})();
+		},
+		stillSendable: (ops) => withoutWithdrawnScopeOps(context.db, ops),
+		keysDir: context.keysDir,
+		dbPath: context.dbPath,
+	};
 	for (const batch of batches) {
-		await pushOps(
-			postUrl,
-			context.deviceId,
-			context.peerDeviceId,
-			batch,
-			context.requestExecutor,
-			(acknowledged) => {
-				context.db.transaction(() => {
-					recordSyncTransferReceipts(
-						context.db,
-						context.peerDeviceId,
-						"send",
-						acknowledged.map((op) => op.op_id),
-					);
-					recordSyncTransferObservation(context.db, context.peerDeviceId, "send");
-				})();
-			},
-			context.keysDir,
-			context.dbPath,
-		);
+		await pushOps(push, batch);
 	}
 	const ackCursor = filteredOutboundCursor ?? outboundCursor;
 	let nextLastAcked = lastAcked;
