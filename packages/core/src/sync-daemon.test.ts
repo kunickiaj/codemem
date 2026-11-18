@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordCoordinatorDeviceRemoved } from "./coordinator-removal-notice.js";
 import { columnExists, connect } from "./db.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
 import {
@@ -1246,5 +1247,92 @@ describe("refreshCoordinatorForDaemon revocation check", () => {
 			"device_disabled",
 		);
 		expect(removeCoordinatorRevokedPeers).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("syncDaemonTick while this device is removed from sharing", () => {
+	const COORDINATOR = "https://coordinator.example.test";
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		db = new Database(":memory:");
+		initTestSchema(db);
+		const { coordinatorEnabled, readCoordinatorSyncConfig } = await import(
+			"./coordinator-runtime.js"
+		);
+		vi.mocked(coordinatorEnabled).mockReturnValue(true);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: COORDINATOR,
+			syncCoordinatorGroups: ["group-a", "group-b"],
+		} as unknown as ReturnType<typeof readCoordinatorSyncConfig>);
+		const insert = db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, discovered_via_coordinator_id, created_at)
+			 VALUES (?, 'fp', ?, '2026-11-18T00:00:00.000Z')`,
+		);
+		insert.run("coordinator-peer", COORDINATOR);
+		insert.run("manual-peer", null);
+	});
+
+	afterEach(async () => {
+		const { coordinatorEnabled, readCoordinatorSyncConfig } = await import(
+			"./coordinator-runtime.js"
+		);
+		vi.mocked(coordinatorEnabled).mockReturnValue(false);
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue(
+			{} as ReturnType<typeof readCoordinatorSyncConfig>,
+		);
+		db.close();
+	});
+
+	it("H14: stops outbound sync to peers found through the coordinator, keeps manual pairings, and deletes nothing", async () => {
+		recordCoordinatorDeviceRemoved(db, {
+			coordinatorId: COORDINATOR,
+			groupIds: ["group-a", "group-b"],
+		});
+
+		const results = await syncDaemonTick(db);
+
+		expect(results).toEqual([
+			{ ok: false, skipped: true, reason: "this device was removed from sharing" },
+			expect.objectContaining({ ok: true }),
+		]);
+		expect(runSyncPass).toHaveBeenCalledTimes(1);
+		expect(runSyncPass).toHaveBeenCalledWith(db, "manual-peer", expect.anything());
+		expect(db.prepare("SELECT COUNT(*) FROM sync_peers").pluck().get()).toBe(2);
+	});
+
+	it("H14: recognizes the coordinator whether a peer stored its URL as configured or normalized", async () => {
+		const { readCoordinatorSyncConfig } = await import("./coordinator-runtime.js");
+		vi.mocked(readCoordinatorSyncConfig).mockReturnValue({
+			syncCoordinatorUrl: "coordinator.example.test/",
+			syncCoordinatorGroups: ["group-a"],
+		} as unknown as ReturnType<typeof readCoordinatorSyncConfig>);
+		db.exec("DELETE FROM sync_peers");
+		const insert = db.prepare(
+			`INSERT INTO sync_peers(peer_device_id, pinned_fingerprint, discovered_via_coordinator_id, created_at)
+			 VALUES (?, 'fp', ?, '2026-11-18T00:00:00.000Z')`,
+		);
+		insert.run("stored-as-configured", "coordinator.example.test/");
+		insert.run("stored-normalized", "http://coordinator.example.test");
+		insert.run("other-coordinator", "https://other.example.test");
+		recordCoordinatorDeviceRemoved(db, {
+			coordinatorId: "http://coordinator.example.test",
+			groupIds: ["group-a"],
+		});
+
+		const results = await syncDaemonTick(db);
+
+		expect(results.filter((result) => result.skipped)).toHaveLength(2);
+		expect(runSyncPass).toHaveBeenCalledTimes(1);
+		expect(runSyncPass).toHaveBeenCalledWith(db, "other-coordinator", expect.anything());
+	});
+
+	it("H14: keeps syncing with every peer while one configured group has not answered device_removed", async () => {
+		recordCoordinatorDeviceRemoved(db, { coordinatorId: COORDINATOR, groupIds: ["group-a"] });
+
+		await syncDaemonTick(db);
+
+		expect(runSyncPass).toHaveBeenCalledTimes(2);
 	});
 });
