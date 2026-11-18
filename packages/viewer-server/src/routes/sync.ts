@@ -2071,7 +2071,14 @@ export async function loadAllGroupsDeviceIdentityCoordinatorEvidence(
 		config.syncCoordinatorGroups.length > 0 ||
 		config.syncCoordinatorAdminSecret.length > 0;
 	if (!configured) return unavailable("coordinator_not_configured");
-	if (!config.syncCoordinatorUrl.trim() || !config.syncCoordinatorAdminSecret.trim()) {
+	// Devices binds a paired device only with a configured group. The conversion retires the
+	// older assignment route, so it must not finish where Devices could not take over.
+	const hasConfiguredGroup = config.syncCoordinatorGroups.some((groupId) => groupId.trim());
+	if (
+		!config.syncCoordinatorUrl.trim() ||
+		!config.syncCoordinatorAdminSecret.trim() ||
+		!hasConfiguredGroup
+	) {
 		return unavailable("coordinator_configuration_required");
 	}
 	try {

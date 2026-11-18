@@ -192,6 +192,7 @@ describe("reading coordinator evidence for the conversion", () => {
 				...readCoordinatorSyncConfig(),
 				syncCoordinatorUrl: "https://coordinator.example.test",
 				syncCoordinatorAdminSecret: "synthetic-admin",
+				syncCoordinatorGroups: ["group-configured"],
 			},
 			listEnrollments: async () => {
 				throw new Error("coordinator_evidence_too_large");
@@ -214,6 +215,37 @@ describe("reading coordinator evidence for the conversion", () => {
 		});
 
 		expect(evidence.safeErrorCode).toBe("coordinator_configuration_required");
+	});
+});
+
+describe("a device with coordinator credentials and no configured group", () => {
+	const listEnrollments = vi.fn(async () => []);
+	const loadCoordinatorEvidence = () =>
+		loadAllGroupsDeviceIdentityCoordinatorEvidence({
+			config: {
+				...readCoordinatorSyncConfig(),
+				syncCoordinatorUrl: "https://coordinator.example.test",
+				syncCoordinatorAdminSecret: "synthetic-admin",
+				syncCoordinatorGroups: [],
+			},
+			listEnrollments,
+		});
+
+	it("does not finish the conversion, because Devices could not bind a paired device there", async () => {
+		const result = await convertLegacyPairingAssignmentsOperation(store, {
+			loadCoordinatorEvidence,
+		});
+
+		expect(result.status).toBe("waiting");
+		expect(listEnrollments).not.toHaveBeenCalled();
+		expect(legacyPairingAssignmentsConverted(store.db)).toBe(false);
+	});
+
+	it("keeps the older assignment route working for a device paired afterward", async () => {
+		await convertLegacyPairingAssignmentsOperation(store, { loadCoordinatorEvidence });
+		claimPeerAsOwnDevice();
+
+		expect((await clearClaim()).status).toBe(200);
 	});
 });
 
