@@ -194,19 +194,35 @@ const qualificationObjects = (source: Database.Database) =>
 	);
 
 describe("ledger baseline of migrations after the last auth stage", () => {
-	it("records each migration after the last auth stage by its own storage", () => {
-		// Arrange: device removal storage exists, readiness storage does not.
-		const db = chainThrough(DEVICE_REMOVAL_MIGRATION_NAME);
+	it.each([
+		[
+			"numbered order",
+			[
+				DEVICE_REMOVAL_MIGRATION_NAME,
+				ENROLLMENT_REMOVAL_MIGRATION_NAME,
+				BOUNDARY_READINESS_MIGRATION_NAME,
+			],
+		],
+		[
+			"readiness storage installed first",
+			[
+				BOUNDARY_READINESS_MIGRATION_NAME,
+				DEVICE_REMOVAL_MIGRATION_NAME,
+				ENROLLMENT_REMOVAL_MIGRATION_NAME,
+			],
+		],
+	])("records only each migration's own objects: %s", (_name, migrations) => {
+		const db = chainThrough(accountUnlink);
 		db.exec(ledger);
-		// Act
-		db.exec(coordinatorAuthStageBaselineSql("current"));
-		// Assert
-		expect(names(db)).toEqual(
-			numbered.slice(0, numbered.indexOf(DEVICE_REMOVAL_MIGRATION_NAME) + 1),
-		);
-		apply(db, BOUNDARY_READINESS_MIGRATION_NAME);
-		db.exec(coordinatorAuthStageBaselineSql("current"));
-		expect(names(db)).toEqual(numbered);
+		const expected = numbered.filter((name) => name <= accountUnlink);
+
+		for (const migration of migrations) {
+			apply(db, migration);
+			expected.push(migration);
+			db.exec(coordinatorAuthStageBaselineSql("current"));
+
+			expect(names(db).toSorted()).toEqual(expected.toSorted());
+		}
 	});
 });
 
