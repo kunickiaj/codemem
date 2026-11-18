@@ -23,6 +23,10 @@ beforeAll(async () => {
 
 describe("native D1 without device removal storage", () => {
 	const db = env.COORDINATOR_DB;
+	it("peer removal lookup is unavailable before migration 0048", async () => {
+		await expect(new D1CoordinatorStore(db).lookupPeerRemovals({ peers: [] }))
+			.rejects.toThrow("device_removal_unavailable");
+	});
 	it("D6 removal listing is unavailable before migration 0048", async () => {
 		await expect(new D1CoordinatorStore(db).listDeviceRemovals()).rejects.toThrow(
 			"device_removal_unavailable",

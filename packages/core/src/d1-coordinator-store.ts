@@ -221,6 +221,7 @@ import {
 	READ_CURRENT_PEERS_SQL,
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
+import type { CoordinatorPeerRemovalLookupInput } from "./coordinator-peer-removal-query.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
 	readRecipientOwnerConsistency,
@@ -2415,6 +2416,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	async listDeviceRemovals(options?: CoordinatorListDeviceRemovalsInput) {
 		return this.deviceRemovals.listDeviceRemovals(options);
+	}
+
+	async lookupPeerRemovals(input: CoordinatorPeerRemovalLookupInput) {
+		return this.deviceRemovals.lookupPeerRemovals(input);
 	}
 
 	async removeDeviceEnrollments(input: CoordinatorRemoveDeviceEnrollmentsInput) {

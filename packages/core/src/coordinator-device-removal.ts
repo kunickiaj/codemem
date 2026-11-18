@@ -32,6 +32,13 @@ import {
 	removalTargetStatements,
 } from "./coordinator-device-removal-target.js";
 import { ed25519KeyIdForRevocation } from "./coordinator-ed25519-key-id-compat.js";
+import {
+	type CoordinatorPeerRemovalLookupInput,
+	type CoordinatorPeerRemovalLookupResult,
+	capturePeerRemovalLookup,
+	peerRemovalSnapshotResult,
+	peerRemovalSnapshotStatements,
+} from "./coordinator-peer-removal-query.js";
 
 /**
  * Removal tombstones. One row records each deleted enrollment and stays active
@@ -577,6 +584,10 @@ export interface CoordinatorDeviceRemovalStore {
 	listDeviceRemovals(
 		options?: CoordinatorListDeviceRemovalsInput,
 	): Promise<CoordinatorDeviceRemovalListResult>;
+	/** Reads a complete peer-removal snapshot. Key-ID fill is orchestrated by the route. */
+	lookupPeerRemovals(
+		input: CoordinatorPeerRemovalLookupInput,
+	): Promise<CoordinatorPeerRemovalLookupResult>;
 }
 
 interface RemovalStatement {
@@ -790,6 +801,22 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		private readonly backend: DeviceRemovalBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
+
+	async lookupPeerRemovals(
+		raw: CoordinatorPeerRemovalLookupInput,
+	): Promise<CoordinatorPeerRemovalLookupResult> {
+		const entries = await capturePeerRemovalLookup(raw);
+		const results = await this.backend
+			.batch(peerRemovalSnapshotStatements(entries, REMOVAL_AVAILABLE_SQL))
+			.catch(removalBackendFailure);
+		if (results.length !== 2) return incompleteResult();
+		const states = resultRows<{ available: number; removal_seq: number }>(results[0]);
+		if (states.length !== 1) return incompleteResult();
+		const state = states[0];
+		if (state?.available === 0) throw new Error("device_removal_unavailable");
+		if (state?.available !== 1) return incompleteResult();
+		return peerRemovalSnapshotResult(entries, state, resultRows(results[1]));
+	}
 
 	async listDeviceRemovals(
 		raw: CoordinatorListDeviceRemovalsInput = {},

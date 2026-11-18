@@ -17,6 +17,7 @@ import {
 import { registerDeviceRemovalDependentsContract } from "../../core/src/coordinator-device-removal-dependents-test-harness.js";
 import { registerDeviceRemovalListContract } from "../../core/src/coordinator-device-removal-list-test-harness.js";
 import { registerMembershipEnrollmentContract } from "../../core/src/coordinator-membership-enrollment-test-harness.js";
+import { registerPeerRemovalQueryContract } from "../../core/src/coordinator-peer-removal-query-test-harness.js";
 import { registerDeviceRemovalCommitContract } from "../../core/src/coordinator-device-removal-commit-test-harness.js";
 import { registerDeviceRemovalPreviewContract } from "../../core/src/coordinator-device-removal-preview-test-harness.js";
 import { registerEnrollmentWriterContract } from "../../core/src/coordinator-device-removal-writer-test-harness.js";
@@ -98,6 +99,18 @@ describe("native D1 device removal", () => {
 	registerDeviceRemovalCommitContract(test);
 	registerDeviceRemovalListContract(test);
 	registerMembershipEnrollmentContract(test);
+	registerPeerRemovalQueryContract(test);
+	test("native peer lookup uses two reads with one JSON parameter for 0, 1 and 25 entries", async ({ fixture: f }) => {
+		const prepare = vi.spyOn(env.COORDINATOR_DB, "prepare");
+		try {
+			for (const count of [0, 1, 25]) {
+				prepare.mockClear();
+				await f.store.lookupPeerRemovals({ peers: Array.from({ length: count }, (_, i) => ({ deviceId: `d${i}` })) });
+				expect(prepare.mock.calls).toHaveLength(2);
+				expect(prepare.mock.calls.map(([sql]) => sql.match(/\?/gu)?.length ?? 0)).toEqual([0, 1]);
+			}
+		} finally { prepare.mockRestore(); }
+	});
 
 	test("between migrations 0048 and 0049 an enrollment stores its key ID and cannot be removed", async ({
 		fixture: f,
