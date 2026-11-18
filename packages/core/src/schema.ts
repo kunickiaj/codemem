@@ -1488,6 +1488,13 @@ export const projectBoundaryMigrations = sqliteTable("project_boundary_migration
 		.default("[]"),
 	state: text("state").notNull(),
 	generation: integer("generation").notNull(),
+	// The reconciler hold. A Project is held unless it was cleared at `generation`.
+	hold_cleared_generation: integer("hold_cleared_generation"),
+	hold_cleared_reason: text("hold_cleared_reason"),
+	hold_cleared_at: text("hold_cleared_at"),
+	// Devices of deactivated or merged people when the hold was first seen at that generation.
+	hold_withdrawn_generation: integer("hold_withdrawn_generation"),
+	hold_withdrawn_device_ids_json: text("hold_withdrawn_device_ids_json"),
 	created_at: text("created_at").notNull(),
 	updated_at: text("updated_at").notNull(),
 });

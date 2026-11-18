@@ -650,6 +650,11 @@ CREATE TABLE IF NOT EXISTS project_boundary_migrations (
 	additional_source_scope_ids_json TEXT NOT NULL DEFAULT '[]',
 	state TEXT NOT NULL,
 	generation INTEGER NOT NULL,
+	hold_cleared_generation INTEGER,
+	hold_cleared_reason TEXT,
+	hold_cleared_at TEXT,
+	hold_withdrawn_generation INTEGER,
+	hold_withdrawn_device_ids_json TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );

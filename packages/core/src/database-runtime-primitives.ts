@@ -2,7 +2,7 @@ import type { Database } from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 
 /** Current schema version this TS runtime was built against. */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 export const REQUIRED_TABLES = [
 	"memory_items",

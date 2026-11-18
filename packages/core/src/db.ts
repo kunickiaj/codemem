@@ -1143,15 +1143,29 @@ function ensureSchemaCompatMarkerTable(db: DatabaseType): void {
 	}
 }
 
+/** Added at schema version 23: the reconciler hold for a migrated Project. All nullable. */
+const PROJECT_BOUNDARY_MIGRATION_HOLD_COLUMNS = [
+	["hold_cleared_generation", "INTEGER"],
+	["hold_cleared_reason", "TEXT"],
+	["hold_cleared_at", "TEXT"],
+	["hold_withdrawn_generation", "INTEGER"],
+	["hold_withdrawn_device_ids_json", "TEXT"],
+] as const;
+
 /**
- * Added at schema version 22. It runs on every open and only writes when the
- * table is missing, so a database whose first attempt failed, and which was
- * marked as upgraded anyway, still gets the table. Later opens read
- * sqlite_master and take no write lock.
+ * The table was added at schema version 22 and its hold columns at 23. This runs
+ * on every open and only writes when the table or a column is missing, so a
+ * database whose first attempt failed, and which was marked as upgraded anyway,
+ * still gets them. Later opens only read the schema and take no write lock.
  */
 function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
 	try {
-		if (tableExists(db, "project_boundary_migrations")) return;
+		if (tableExists(db, "project_boundary_migrations")) {
+			for (const [name, definition] of PROJECT_BOUNDARY_MIGRATION_HOLD_COLUMNS) {
+				addColumnIfMissing(db, "project_boundary_migrations", name, definition);
+			}
+			return;
+		}
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS project_boundary_migrations (
 				boundary_scope_id TEXT PRIMARY KEY NOT NULL,
@@ -1159,12 +1173,14 @@ function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
 				additional_source_scope_ids_json TEXT NOT NULL DEFAULT '[]',
 				state TEXT NOT NULL,
 				generation INTEGER NOT NULL,
+				${PROJECT_BOUNDARY_MIGRATION_HOLD_COLUMNS.map((column) => column.join(" ")).join(",\n\t\t\t\t")},
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			)
 		`);
 	} catch {
-		// Keep the compatibility shim fail-open. Readers treat a missing table as no records.
+		// Keep the compatibility shim fail-open. Readers treat a missing table as no
+		// records, and a record whose hold columns are missing as held.
 	}
 }
 
