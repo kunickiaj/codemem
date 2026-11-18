@@ -39,6 +39,13 @@ import { ensureDeviceIdentity, loadPublicKey } from "./sync-identity.js";
 import { syncProjectAllowed } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
+const EXPECTED_PRESENCE_CAPABILITIES = {
+	sync_capability: "scoped",
+	sync_features: ["peer_removal_check", "reassign_scope", "relay_aware"],
+	// No lookup has run, so this device has applied no removal yet.
+	applied_removal_seq: 0,
+};
+
 describe("readCoordinatorSyncConfig.syncOpsLimit", () => {
 	afterEach(() => {
 		delete process.env.CODEMEM_SYNC_OPS_LIMIT;
@@ -1144,10 +1151,7 @@ describe("coordinatorStatusSnapshot", () => {
 			expect(secondPresenceFetchCount).toBe(1);
 			expect(changedAdvertisePresenceFetchCount).toBeGreaterThan(secondPresenceFetchCount);
 			expect(lastPresenceAddresses).toEqual(["http://new.example.test:7337"]);
-			expect(lastPresenceCapabilities).toEqual({
-				sync_capability: "scoped",
-				sync_features: ["reassign_scope", "relay_aware"],
-			});
+			expect(lastPresenceCapabilities).toEqual(EXPECTED_PRESENCE_CAPABILITIES);
 			expect(fetchCount).toBeGreaterThan(secondFetchCount);
 			expect(presenceFetchCount).toBeGreaterThan(changedAdvertisePresenceFetchCount);
 		} finally {
