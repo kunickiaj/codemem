@@ -1100,6 +1100,7 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	applyAdditiveSchemaCompatibility(db, { compatAlreadyApplied });
 	ensureSyncTransferActivitySchema(db);
 	ensureRelayServicePinSchema(db);
+	ensureProjectBoundaryMigrationSchema(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
@@ -1142,9 +1143,15 @@ function ensureSchemaCompatMarkerTable(db: DatabaseType): void {
 	}
 }
 
-/** Added at schema version 22. Its own statement, so a failure elsewhere in the shim cannot skip it. */
+/**
+ * Added at schema version 22. It runs on every open and only writes when the
+ * table is missing, so a database whose first attempt failed, and which was
+ * marked as upgraded anyway, still gets the table. Later opens read
+ * sqlite_master and take no write lock.
+ */
 function ensureProjectBoundaryMigrationSchema(db: DatabaseType): void {
 	try {
+		if (tableExists(db, "project_boundary_migrations")) return;
 		db.exec(`
 			CREATE TABLE IF NOT EXISTS project_boundary_migrations (
 				boundary_scope_id TEXT PRIMARY KEY NOT NULL,
@@ -1190,7 +1197,6 @@ function applyAdditiveSchemaCompatibility(
 		// without a bump, legacy DBs already marked at the current version would
 		// skip the new DDL forever.
 		ensureSchemaCompatMarkerTable(db);
-		ensureProjectBoundaryMigrationSchema(db);
 		try {
 			db.exec(`
 			CREATE TABLE IF NOT EXISTS coordinator_enrollment_reconciliation_issues (

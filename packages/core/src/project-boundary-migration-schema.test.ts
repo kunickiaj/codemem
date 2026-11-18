@@ -75,6 +75,17 @@ describe("the migration record table in the schema", () => {
 		expect(storeRecord(db)).toBe(true);
 	});
 
+	it("is added on a later open when an earlier attempt failed and the database was marked upgraded", () => {
+		ensureAdditiveSchemaCompatibility(db);
+		db.exec(`DROP TABLE ${TABLE}`);
+		expect(getSchemaVersion(db)).toBe(22);
+
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(tableExists(db, TABLE)).toBe(true);
+		expect(storeRecord(db)).toBe(true);
+	});
+
 	it("keeps stored records when the schema step runs again", () => {
 		storeRecord(db);
 
