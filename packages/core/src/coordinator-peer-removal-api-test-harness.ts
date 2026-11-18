@@ -1,0 +1,607 @@
+import { expect, it, vi } from "vitest";
+import {
+	type CoordinatorRequestRateLimitOptions,
+	type CoordinatorRequestVerifier,
+	createCoordinatorApp,
+} from "./coordinator-api.js";
+import type { Store } from "./coordinator-auth-store-test-fixtures.js";
+import {
+	ENROLLMENT_REMOVAL_TRIGGER_NAMES,
+	ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS,
+} from "./coordinator-device-removal.js";
+import { deleteEnrollmentWithoutTombstone } from "./coordinator-enrollment-test-fixtures.js";
+
+export interface PeerRemovalApiFixture {
+	store: Store;
+	prefix: string;
+	exec(sql: string, ...values: (string | number | null)[]): Promise<void>;
+	rows<T = Record<string, unknown>>(
+		sql: string,
+		...values: (string | number | null)[]
+	): Promise<T[]>;
+	measure(action: () => Promise<Response>): Promise<{ response: Response; sql: string[] }>;
+	/** Count fresh D1 construction too, without relying on a warm store's caches. */
+	freshStore?(): Store;
+	verifyRequest: CoordinatorRequestVerifier;
+	restoreRemovalStorage?(): Promise<void>;
+	valueBound(action: () => Promise<Response>): Promise<{ response: Response; bytes: number[] }>;
+}
+/** Simulate D1's per-value limit without a service call; record exact serialized UTF-8 sizes. */
+export function checkValueBytes(values: unknown[], bytes: number[]) {
+	for (const value of values)
+		if (typeof value === "string") {
+			const size = new TextEncoder().encode(value).byteLength;
+			bytes.push(size);
+			if (size > 2_000_000) throw new Error("fixture D1 value limit");
+		}
+}
+export const peerRemovalApiHarness = (
+	fixture: (use: (value: PeerRemovalApiFixture) => Promise<void>) => Promise<void>,
+) =>
+	it.extend<{ fixture: PeerRemovalApiFixture }>({
+		fixture: async ({ task: _task }, use) => fixture(use),
+	});
+type Test = ReturnType<typeof peerRemovalApiHarness>;
+const PATH = "/v1/peers/revocations";
+const encoder = new TextEncoder();
+const hex = (bytes: ArrayBuffer) =>
+	Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, "0")).join("");
+
+async function signingKey() {
+	const keys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+	if (!("privateKey" in keys)) throw new Error("Missing fixture key pair");
+	const wire = new Uint8Array(51);
+	new DataView(wire.buffer).setUint32(0, 11);
+	wire.set(encoder.encode("ssh-ed25519"), 4);
+	new DataView(wire.buffer).setUint32(15, 32);
+	wire.set(new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey)), 19);
+	const publicKey = `ssh-ed25519 ${btoa(String.fromCharCode(...wire))}`;
+	return { keys, publicKey };
+}
+type PostOptions = { nonce?: string; badSignature?: boolean; caller?: string };
+async function signedPost(
+	c: {
+		app: ReturnType<typeof createCoordinatorApp>;
+		groupId: string;
+		deviceId: string;
+		key: Parameters<typeof crypto.subtle.sign>[1];
+	},
+	raw: string,
+	options: PostOptions = {},
+) {
+	const path = `${PATH}?group_id=${c.groupId}`;
+	const timestamp = String(Math.floor(Date.now() / 1000));
+	const nonce = options.nonce ?? crypto.randomUUID();
+	const canonical = encoder.encode(
+		[
+			"POST",
+			path,
+			timestamp,
+			nonce,
+			hex(await crypto.subtle.digest("SHA-256", encoder.encode(raw))),
+		].join("\n"),
+	);
+	const signature = new Uint8Array(await crypto.subtle.sign("Ed25519", c.key, canonical));
+	return c.app.request(path, {
+		method: "POST",
+		body: raw,
+		headers: {
+			"Content-Type": "application/json",
+			"X-Opencode-Device": options.caller ?? c.deviceId,
+			"X-Opencode-Signature": options.badSignature
+				? "v1:invalid"
+				: `v1:${btoa(String.fromCharCode(...signature))}`,
+			"X-Opencode-Timestamp": timestamp,
+			"X-Opencode-Nonce": nonce,
+		},
+	});
+}
+async function api(f: PeerRemovalApiFixture, rate: CoordinatorRequestRateLimitOptions = {}) {
+	const { keys, publicKey } = await signingKey();
+	const groupId = `${f.prefix}-group`;
+	const deviceId = `${f.prefix}-caller`;
+	await f.store.createGroup(groupId);
+	await f.store.enrollDevice(groupId, { deviceId, publicKey, fingerprint: "fixture" });
+	const close = vi.spyOn(f.store, "close").mockResolvedValue();
+	const fill = vi.spyOn(f.store, "fillEnrollmentKeyIds");
+	const lookup = vi.spyOn(f.store, "lookupPeerRemovals");
+	const verify = vi.fn(f.verifyRequest);
+	const factory = vi.fn(() => f.store);
+	const app = createCoordinatorApp({
+		storeFactory: factory,
+		runtime: { adminSecret: () => null, now: () => new Date().toISOString() },
+		requestVerifier: verify,
+		requestRateLimit: rate,
+	});
+	const post = (raw: string, options?: PostOptions) =>
+		signedPost({ app, groupId, deviceId, key: keys.privateKey }, raw, options);
+	return { groupId, deviceId, publicKey, close, fill, lookup, verify, factory, post };
+}
+const EMPTY = JSON.stringify({ peers: [] });
+const failed = async (response: Response) => {
+	expect(response.status).toBe(503);
+	expect(await response.json()).toEqual({ error: "peer_revocation_unavailable" });
+};
+const authority = (f: PeerRemovalApiFixture) =>
+	Promise.all(
+		[
+			"enrolled_devices",
+			"coordinator_device_removals",
+			"coordinator_device_ownership_bindings",
+			"coordinator_scope_memberships",
+		].map((table) => f.rows(`SELECT * FROM ${table} ORDER BY rowid`)),
+	);
+async function legacy(f: PeerRemovalApiFixture, count = 1) {
+	await f.exec(
+		`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+		SELECT ?, ? || value, 'opaque-key', 'fp', 1, 'then' FROM json_each(?)`,
+		`${f.prefix}-legacy`,
+		`${f.prefix}-legacy-`,
+		JSON.stringify(Array.from({ length: count }, (_, i) => i)),
+	);
+}
+
+export function registerPeerRemovalApiContract(test: Test) {
+	registerCompleteReply(test);
+	registerMixedReply(test);
+	registerQueryBudget(test);
+	registerFillProgress(test);
+	registerLargeFill(test);
+	registerDenials(test);
+	registerRateAndReplay(test);
+	registerReadFailures(test);
+	registerStorageFailures(test);
+	registerParsingAndRace(test);
+	registerLookupRace(test);
+	registerUnexpectedFailures(test);
+}
+function registerCompleteReply(test: Test) {
+	test("signed raw bytes yield the complete keyed, keyless and empty reply without evidence or unrequested IDs", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		await f.store.enrollDevice(c.groupId, {
+			deviceId: `${f.prefix}-removed`,
+			publicKey: "opaque",
+			fingerprint: "fp",
+		});
+		await f.store.removeDevice(c.groupId, `${f.prefix}-removed`);
+		const raw = ` { "peers" : [ { "device_id" : "${f.prefix}-removed" }, { "device_id": "${c.deviceId}", "public_key": "${c.publicKey}" }, { "device_id": "${f.prefix}-opaque-alias", "public_key": "opaque" } ] }\n`;
+		const response = await c.post(raw);
+		expect(response.status).toBe(200);
+		const [maximum] = await f.rows<{ seq: number }>(
+			"SELECT MAX(removal_seq) AS seq FROM coordinator_device_removals",
+		);
+		expect(await response.json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [`${f.prefix}-opaque-alias`, `${f.prefix}-removed`].sort(),
+			enrolled: [c.deviceId],
+			removal_seq: maximum?.seq,
+		});
+		expect(new TextDecoder().decode(c.verify.mock.calls[0]?.[0].bodyBytes)).toBe(raw);
+		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }]]);
+		expect(c.close).toHaveBeenCalledTimes(1);
+		const empty = await c.post(EMPTY);
+		expect(await empty.json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [],
+			enrolled: [],
+			removal_seq: maximum?.seq,
+		});
+	});
+}
+function registerMixedReply(test: Test) {
+	test("B15 the route reports removed and enrolled independently for a mixed historical-key claim, with revocation precedence", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		await f.exec(
+			`INSERT INTO coordinator_device_removals
+			(removal_id, group_id, device_id, public_key, fingerprint, removed_at)
+			VALUES ('history', 'elsewhere', ?, 'old-key', 'fp', 'then')`,
+			c.deviceId,
+		);
+		const response = await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] }));
+		expect(await response.json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [c.deviceId],
+			enrolled: [c.deviceId],
+			removal_seq: 1,
+		});
+		await f.store.createDeviceRevocation({
+			groupId: c.groupId,
+			deviceId: c.deviceId,
+			publicKey: c.publicKey,
+			fingerprint: "fixture",
+		});
+		// Use a second signed caller. A revoked caller is refused before this endpoint's reads.
+		const other = await api({ ...f, prefix: `${f.prefix}-other` });
+		const blocked = await other.post(
+			JSON.stringify({ peers: [{ device_id: c.deviceId, public_key: "other-key" }] }),
+		);
+		expect(await blocked.json()).toEqual({
+			version: 1,
+			revoked: [c.deviceId],
+			removed: [],
+			enrolled: [c.deviceId],
+			removal_seq: 1,
+		});
+	});
+}
+function registerQueryBudget(test: Test) {
+	test("the whole signed HTTP request takes 8 or 10 statements, independent of 1 versus 25 entries", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		for (const count of [0, 1, 25]) {
+			const body = JSON.stringify({
+				peers: Array.from({ length: count }, (_, i) => ({ device_id: `id-${i}` })),
+			});
+			for (const oldRows of [0, 1]) await measureRequest(f, c, { body, oldRows });
+		}
+	});
+}
+async function measureRequest(
+	f: PeerRemovalApiFixture,
+	c: Awaited<ReturnType<typeof api>>,
+	options: { body: string; oldRows: number },
+) {
+	if (options.oldRows) await legacy(f);
+	if (f.freshStore) c.factory.mockImplementationOnce(f.freshStore);
+	const { response, sql } = await f.measure(() => c.post(options.body));
+	expect(response.status).toBe(200);
+	expect(sql).toHaveLength(options.oldRows ? 10 : 8);
+	expect(Math.max(...sql.map((query) => query.match(/\?/gu)?.length ?? 0))).toBe(6);
+	if (options.oldRows)
+		await deleteEnrollmentWithoutTombstone(f.exec, "group_id = ?", `${f.prefix}-legacy`);
+}
+function registerFillProgress(test: Test) {
+	test("one bounded fill page per request returns unavailable until all legacy rows are filled", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		await legacy(f, 201);
+		await failed(await c.post(EMPTY));
+		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }]]);
+		expect(await f.rows("SELECT 1 FROM enrolled_devices WHERE key_id IS NULL")).toHaveLength(1);
+		const next = await c.post(EMPTY);
+		expect(next.status).toBe(200);
+		expect(await next.json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [],
+			enrolled: [],
+			removal_seq: 0,
+		});
+		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }], [{ limit: 200 }]]);
+		expect(c.close).toHaveBeenCalledTimes(2);
+	});
+}
+function registerLargeFill(test: Test) {
+	test("large legacy keys progress over byte-bounded fill pages under a simulated D1 value limit", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		const key = `opaque ${'é"\\\n'.repeat(1500)}`;
+		await f.exec(
+			`INSERT INTO enrolled_devices(group_id, device_id, public_key, fingerprint, enabled, created_at)
+			SELECT ?, ? || value, ?, 'fp', 1, 'then' FROM json_each(?)`,
+			c.groupId,
+			`${f.prefix}-large-`,
+			key,
+			JSON.stringify(Array.from({ length: 200 }, (_, i) => i)),
+		);
+		const samples: number[] = [];
+		let previous = 200;
+		for (const remaining of [118, 36, 0]) {
+			const { response, bytes } = await f.valueBound(() => c.post(EMPTY));
+			samples.push(Math.max(...bytes));
+			expect(Math.max(...bytes)).toBeLessThanOrEqual(1_000_000);
+			const rows = await f.rows("SELECT 1 FROM enrolled_devices WHERE key_id IS NULL");
+			expect(rows).toHaveLength(remaining);
+			expect(rows.length).toBeLessThan(previous);
+			previous = rows.length;
+			if (remaining) await failed(response);
+			else
+				expect(await response.json()).toEqual({
+					version: 1,
+					revoked: [],
+					removed: [],
+					enrolled: [],
+					removal_seq: 0,
+				});
+		}
+		expect(samples).toEqual([988011, 988085, 433801]);
+		expect(c.fill.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ limit: 200 }]));
+	});
+}
+const DENIALS: Record<
+	string,
+	{
+		status: number;
+		code: string;
+		body?: string;
+		options?: PostOptions;
+		noStore?: boolean;
+		nonce?: number;
+	}
+> = {
+	"bad signature": { status: 401, code: "invalid_signature", options: { badSignature: true } },
+	unknown: { status: 401, code: "unknown_device", options: { caller: "unknown" } },
+	disabled: { status: 403, code: "device_disabled" },
+	archived: { status: 409, code: "group_archived" },
+	revoked: { status: 403, code: "device_revoked" },
+	"group missing": { status: 401, code: "group_not_found" },
+	"bad body": { status: 400, code: "peers_invalid", body: "{", nonce: 1 },
+	oversize: { status: 413, code: "body_too_large", body: " ".repeat(65 * 1024), noStore: true },
+	"invalid peers": {
+		status: 400,
+		code: "peers_invalid",
+		body: JSON.stringify({ peers: [{ device_id: "id", public_key: null }] }),
+		nonce: 1,
+	},
+};
+async function denyCaller(
+	f: PeerRemovalApiFixture,
+	c: Awaited<ReturnType<typeof api>>,
+	mode: string,
+) {
+	if (mode === "disabled") await f.store.setDeviceEnabled(c.groupId, c.deviceId, false);
+	if (mode === "archived") await f.store.archiveGroup(c.groupId);
+	if (mode === "revoked")
+		await f.store.createDeviceRevocation({
+			groupId: c.groupId,
+			deviceId: c.deviceId,
+			publicKey: c.publicKey,
+			fingerprint: "fixture",
+		});
+	if (mode === "group missing") await f.exec("DELETE FROM groups WHERE group_id = ?", c.groupId);
+}
+function registerDenials(test: Test) {
+	for (const [mode, denied] of Object.entries(DENIALS)) {
+		test(`${mode} preserves auth bookkeeping but performs no fill or new authority writes`, async ({
+			fixture: f,
+		}) => {
+			const c = await api(f);
+			await legacy(f);
+			await denyCaller(f, c, mode);
+			const before = await authority(f);
+			const response = await c.post(denied.body ?? EMPTY, { ...denied.options, nonce: "denied" });
+			expect(response.status).toBe(denied.status);
+			expect(await response.json()).toEqual({ error: denied.code });
+			expect(c.fill).not.toHaveBeenCalled();
+			expect(c.lookup).not.toHaveBeenCalled();
+			expect(await authority(f)).toEqual(before);
+			expect(c.close).toHaveBeenCalledTimes(denied.noStore ? 0 : 1);
+			expect(
+				await f.rows("SELECT nonce FROM request_nonces WHERE device_id = ?", c.deviceId),
+			).toHaveLength(denied.nonce ?? 0);
+		});
+	}
+}
+function registerRateAndReplay(test: Test) {
+	for (const mode of ["replay", "rate limit"] as const) {
+		test(`${mode} does not repeat fill or authority work after auth`, async ({ fixture: f }) => {
+			const c = await api(f, { mutationLimit: mode === "rate limit" ? 1 : 30 });
+			expect((await c.post(EMPTY, { nonce: "first" })).status).toBe(200);
+			await legacy(f);
+			c.fill.mockClear();
+			c.lookup.mockClear();
+			const before = await authority(f);
+			const response = await c.post(EMPTY, { nonce: mode === "replay" ? "first" : "second" });
+			expect(response.status).toBe(mode === "replay" ? 401 : 429);
+			expect(await response.json()).toMatchObject({
+				error: mode === "replay" ? "nonce_replay" : "rate_limited",
+			});
+			expect(c.fill).not.toHaveBeenCalled();
+			expect(c.lookup).not.toHaveBeenCalled();
+			expect(await authority(f)).toEqual(before);
+			expect(c.close).toHaveBeenCalledTimes(2);
+			expect(
+				await f.rows("SELECT nonce FROM request_nonces WHERE device_id = ?", c.deviceId),
+			).toHaveLength(mode === "replay" ? 1 : 2);
+		});
+	}
+}
+function registerReadFailures(test: Test) {
+	test("fill and snapshot failures or malformed results expose only the fixed unavailable reply", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		c.fill.mockRejectedValueOnce(new Error("private driver detail"));
+		await failed(await c.post(EMPTY));
+		expect(c.lookup).not.toHaveBeenCalled();
+		c.lookup.mockRejectedValueOnce(new Error("device_removal_incomplete"));
+		await failed(await c.post(EMPTY));
+		c.lookup.mockResolvedValueOnce({ revoked: [] } as never);
+		await failed(await c.post(EMPTY));
+		c.lookup.mockResolvedValueOnce({
+			revoked: ["unrequested"],
+			removed: [],
+			enrolled: [],
+			removal_seq: 0,
+		});
+		await failed(await c.post(EMPTY));
+		c.lookup.mockResolvedValueOnce({ revoked: [], removed: [], enrolled: [], removal_seq: -1 });
+		await failed(await c.post(EMPTY));
+		c.lookup.mockResolvedValueOnce({
+			revoked: [c.deviceId, c.deviceId],
+			removed: [],
+			enrolled: [],
+			removal_seq: 0,
+		});
+		await failed(await c.post(JSON.stringify({ peers: [{ device_id: c.deviceId }] })));
+		expect(c.close).toHaveBeenCalledTimes(6);
+	});
+	test("a blocked legacy row cannot become an empty complete answer", async ({ fixture: f }) => {
+		const c = await api(f);
+		await legacy(f);
+		await f.exec(
+			`INSERT INTO coordinator_device_removals
+			(removal_id, group_id, device_id, public_key, fingerprint, removed_at)
+			VALUES ('blocked', 'old', ?, 'opaque-key', 'fp', 'then')`,
+			`${f.prefix}-legacy-0`,
+		);
+		await failed(await c.post(EMPTY));
+	});
+}
+
+function registerUnexpectedFailures(test: Test) {
+	test("a removed signed caller remains unknown_device and receives no tombstone-based authentication", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		await f.store.removeDevice(c.groupId, c.deviceId);
+		const before = await authority(f);
+		const response = await c.post(EMPTY);
+		expect([response.status, await response.json()]).toEqual([401, { error: "unknown_device" }]);
+		expect(c.fill).not.toHaveBeenCalled();
+		expect(c.lookup).not.toHaveBeenCalled();
+		expect(await authority(f)).toEqual(before);
+		expect(c.close).toHaveBeenCalledTimes(1);
+	});
+	test("an auth-store failure is unavailable and performs no new fill work", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		vi.spyOn(f.store, "getEnrollment").mockRejectedValueOnce(
+			new Error("private auth driver detail"),
+		);
+		await failed(await c.post(EMPTY));
+		expect(c.fill).not.toHaveBeenCalled();
+		expect(c.lookup).not.toHaveBeenCalled();
+		expect(c.close).toHaveBeenCalledTimes(1);
+	});
+	test("peer key hashing failures after auth and fill are masked as unavailable", async ({
+		fixture: f,
+	}) => {
+		const snapshot = f.store.lookupPeerRemovals.bind(f.store);
+		const c = await api(f);
+		c.lookup.mockImplementationOnce(async (input) => {
+			const digest = vi
+				.spyOn(crypto.subtle, "digest")
+				.mockRejectedValue(new Error("private hash detail"));
+			try {
+				return await snapshot(input);
+			} finally {
+				digest.mockRestore();
+			}
+		});
+		await failed(
+			await c.post(JSON.stringify({ peers: [{ device_id: "peer", public_key: c.publicKey }] })),
+		);
+		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }]]);
+		expect(c.close).toHaveBeenCalledTimes(1);
+	});
+}
+function registerStorageFailures(test: Test) {
+	test("a missing enrollment trigger cannot become an empty complete answer", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		const sql = ENROLLMENT_REMOVAL_TRIGGER_STATEMENTS[0];
+		if (!sql) throw new Error("Missing fixture trigger");
+		await f.exec("DROP TRIGGER enrolled_devices_removal_insert");
+		try {
+			await failed(await c.post(EMPTY));
+		} finally {
+			await f.exec(sql);
+		}
+		expect(c.fill.mock.calls).toEqual([[{ limit: 200 }]]);
+		expect(c.close).toHaveBeenCalledTimes(1);
+	});
+	test("pre-0048 storage answers unavailable after existing signed admission without filling or fabricating a reply", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		for (const name of ENROLLMENT_REMOVAL_TRIGGER_NAMES) await f.exec(`DROP TRIGGER ${name}`);
+		for (const sql of [
+			"DROP TABLE coordinator_device_removals",
+			"ALTER TABLE enrolled_devices DROP COLUMN key_id",
+			"ALTER TABLE coordinator_invites DROP COLUMN issued_after_removal_seq",
+			"ALTER TABLE coordinator_join_requests DROP COLUMN issued_after_removal_seq",
+		])
+			await f.exec(sql);
+		try {
+			await failed(await c.post(EMPTY));
+			expect(c.fill).toHaveBeenCalledTimes(1);
+			expect(c.lookup).not.toHaveBeenCalled();
+			expect(c.close).toHaveBeenCalledTimes(1);
+		} finally {
+			await f.restoreRemovalStorage?.();
+		}
+	});
+}
+
+function registerParsingAndRace(test: Test) {
+	test("the snapshot, not the fill counters, decides readiness", async ({ fixture: f }) => {
+		const c = await api(f);
+		await legacy(f);
+		c.fill.mockResolvedValueOnce({
+			filled: 0,
+			blocked: 0,
+			skipped: 0,
+			remaining: false,
+			next: null,
+		});
+		await failed(await c.post(EMPTY));
+		expect(c.lookup).toHaveBeenCalledTimes(1);
+	});
+	test("all existing malformed peer shapes stay invalid without new fill writes", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		await legacy(f);
+		const invalid = [
+			{},
+			{ peers: Array.from({ length: 26 }, () => ({ device_id: "id" })) },
+			...[null, [], "id", {}, { device_id: " padded " }].map((peer) => ({ peers: [peer] })),
+			...["", 1, null, "x".repeat(4097), "x\u0000y"].map((public_key) => ({
+				peers: [{ device_id: "id", public_key }],
+			})),
+		];
+		for (const body of invalid) expect((await c.post(JSON.stringify(body))).status).toBe(400);
+		expect(c.fill).not.toHaveBeenCalled();
+		expect(c.lookup).not.toHaveBeenCalled();
+	});
+}
+function registerLookupRace(test: Test) {
+	test("a removal and fixture lift between fill and snapshot produce consistent flags and sequence", async ({
+		fixture: f,
+	}) => {
+		const snapshot = f.store.lookupPeerRemovals.bind(f.store);
+		const c = await api(f);
+		const deviceId = `${f.prefix}-peer`;
+		await f.store.enrollDevice(c.groupId, { deviceId, publicKey: "opaque", fingerprint: "fp" });
+		c.lookup.mockImplementationOnce(async (input) => {
+			await f.store.removeDevice(c.groupId, deviceId);
+			return snapshot(input);
+		});
+		const body = JSON.stringify({ peers: [{ device_id: deviceId }] });
+		expect(await (await c.post(body)).json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [deviceId],
+			enrolled: [],
+			removal_seq: 1,
+		});
+		c.lookup.mockImplementationOnce(async (input) => {
+			await f.exec(
+				`UPDATE coordinator_device_removals SET lifted_at = 'later', lifted_by_invite_id = 'fixture'
+				WHERE device_id = ?`,
+				deviceId,
+			);
+			return snapshot(input);
+		});
+		expect(await (await c.post(body)).json()).toEqual({
+			version: 1,
+			revoked: [],
+			removed: [],
+			enrolled: [],
+			removal_seq: 1,
+		});
+	});
+}

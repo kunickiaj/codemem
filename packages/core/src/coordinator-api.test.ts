@@ -3735,25 +3735,27 @@ describe("POST /v1/peers/revocations", () => {
 		enabled: 1,
 		created_at: "2026-03-28T00:00:00Z",
 	};
-	const revokedRecord = {
-		subject_kind: "device_id" as const,
-		subject_value: "retired",
-		revocation_id: "revocation-1",
-		evidence_group_id: "g1",
-		evidence_device_id: "retired",
-		evidence_public_key: "pk-retired",
-		evidence_fingerprint: "fp-retired",
-		actor_id: null,
-		created_at: "2026-03-28T00:00:00Z",
-	};
-
 	function checkApp(overrides: Partial<CoordinatorStoreInterface> = {}) {
 		const store = createMockStore({
 			getEnrollment: vi.fn(async () => caller),
 			getGroup: vi.fn(async () => sharingGroupFixture()),
-			listDeviceRevocations: vi.fn(async (input: { deviceId?: string }) =>
-				input.deviceId === "retired" ? [revokedRecord] : [],
-			),
+			fillEnrollmentKeyIds: vi.fn(async () => ({
+				filled: 0,
+				blocked: 0,
+				skipped: 0,
+				remaining: false,
+				next: null,
+			})),
+			lookupPeerRemovals: vi.fn(async (input: { peers: { deviceId: string }[] }) => ({
+				revoked: input.peers
+					.filter((peer) => peer.deviceId === "retired")
+					.map((peer) => peer.deviceId),
+				removed: [],
+				enrolled: input.peers
+					.filter((peer) => peer.deviceId === "active")
+					.map((peer) => peer.deviceId),
+				removal_seq: 7,
+			})),
 			...overrides,
 		});
 		return { store, app: createSharingAdminApp(() => store) };
@@ -3778,11 +3780,20 @@ describe("POST /v1/peers/revocations", () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ version: 1, revoked: ["retired"] });
-		expect(store.listDeviceRevocations).toHaveBeenCalledWith({
-			deviceId: "active",
-			publicKey: "pk-active",
+		expect(await response.json()).toEqual({
+			version: 1,
+			revoked: ["retired"],
+			removed: [],
+			enrolled: ["active"],
+			removal_seq: 7,
 		});
+		expect(store.lookupPeerRemovals).toHaveBeenCalledWith({
+			peers: [
+				{ deviceId: "retired", publicKey: "pk-retired" },
+				{ deviceId: "active", publicKey: "pk-active" },
+			],
+		});
+		expect(store.fillEnrollmentKeyIds).toHaveBeenCalledWith({ limit: 200 });
 	});
 
 	it("rejects a request without a valid device signature", async () => {
@@ -3791,12 +3802,13 @@ describe("POST /v1/peers/revocations", () => {
 		const response = await check(app, { peers: [{ device_id: "retired", public_key: "pk" }] });
 
 		expect(response.status).toBe(401);
-		expect(store.listDeviceRevocations).not.toHaveBeenCalled();
+		expect(store.fillEnrollmentKeyIds).not.toHaveBeenCalled();
+		expect(store.lookupPeerRemovals).not.toHaveBeenCalled();
 	});
 
 	it.each([
 		["a missing peer list", {}],
-		["a peer without a key", { peers: [{ device_id: "retired" }] }],
+		["a peer with a null key", { peers: [{ device_id: "retired", public_key: null }] }],
 		[
 			"too many peers",
 			{ peers: Array.from({ length: 26 }, (_, i) => ({ device_id: `d${i}`, public_key: "pk" })) },
@@ -3810,10 +3822,10 @@ describe("POST /v1/peers/revocations", () => {
 		expect(await response.json()).toEqual({ error: "peers_invalid" });
 	});
 
-	it("reports the check as unavailable when the revocation read fails", async () => {
+	it("reports the check as unavailable when the snapshot read fails", async () => {
 		const { app } = checkApp({
-			listDeviceRevocations: vi.fn(async () => {
-				throw new Error("device_revocation_incomplete");
+			lookupPeerRemovals: vi.fn(async () => {
+				throw new Error("device_removal_incomplete");
 			}),
 		});
 

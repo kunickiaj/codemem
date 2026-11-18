@@ -1,15 +1,15 @@
 # Coordinator device-revocation admission
 
 **Scope:** Revocation storage, signed-request admission, and optional configured
-operator HTTP preview/commit. No automatic backfill, owner enrollment, or live
-migration is enabled. Existing public writers and effective authorization reads
+operator HTTP preview/commit. No automatic revocation-subject backfill, owner
+enrollment, or live migration is enabled. Existing public writers and effective authorization reads
 check revocation as inventoried below. Durable handler tests cover SQLite and
 native D1; mounted runtime tests cover trusted context, transport, and store lifetime.
 
 **Planned for 0.50:** [Device removals](#device-removals-planned-for-050) specifies
 a removal that a new invitation can lift, next to the permanent revocation this
-document already describes. That section is a reviewed design and is not
-implemented. Every other section describes current behavior.
+document already describes. That section records the reviewed design and its
+implementation status. Every other section describes current behavior.
 
 ## Subjects and scope
 
@@ -367,16 +367,25 @@ listing it.
 which peers it already pinned are revoked. The request uses the same device
 signature, nonce admission, and rate limits as `/v1/peers`, with the JSON body
 `{ "peers": [{ "device_id": "...", "public_key": "..." }] }` and at most 25 peers.
-Each peer costs one revocation read, and the limit keeps a request within D1's
-per-request query budget. Each entry checks both subjects, so a revoked device ID
-with any key and a revoked key under any device ID both match. The reply is
-`{ "version": 1, "revoked": [<device IDs from the request>] }`.
+The key may be omitted for an ID-only check, and the list may be empty.
+With a supplied key, each entry checks both revocation subjects, so a revoked
+device ID with any key and a revoked key under any device ID both match.
+The reply is `{ "version": 1, "revoked": [...], "removed": [...],
+"enrolled": [...], "removal_seq": <integer> }`. The matching rules are specified
+under [Removed peers in the pinned-peer check](#removed-peers-in-the-pinned-peer-check).
+Readiness, the maximum sequence and the entries come from two reads in one
+statement batch, independent of the number of entries.
 
 Any enrolled device can learn whether a device ID or key it names is revoked
 anywhere in the coordinator database, including devices outside its own groups.
-The reply carries no revocation evidence, actor, or time. Device IDs use the same
+The reply carries only requested IDs and the sequence, with no key, group,
+revocation evidence, actor, or time. Device IDs use the same
 rules as revocation subjects. Malformed lists return `400 peers_invalid`, and a
-failed revocation read returns `503 peer_revocation_unavailable`.
+failed or incomplete snapshot returns `503 peer_revocation_unavailable`.
+After successful signed admission, rate limiting and parsing, the route calls
+`fillEnrollmentKeyIds({ limit: 200 })` once. It never loops. The subsequent
+snapshot determines readiness. Missing removal storage or triggers, or any
+remaining null enrollment key ID, returns the same 503 instead of a partial reply.
 
 The sync daemon runs this check at the start of each coordinator refresh, before
 presence and peer lookups, because those fail when any one group rejects the
@@ -402,12 +411,14 @@ below changes its reply before the first release that ships it.
 The [test plan](../plans/2026-11-16-device-remove-and-block-test-plan.md) lists
 the tests that come first.
 
-Implemented so far: the tombstone table, `enrolled_devices.key_id`,
-`issued_after_removal_seq`, enrollment writers that store both, the enrollment
-triggers, and a single-group removal that performs steps 1 to 4 of the removal
-operation. The legacy remove route uses it. Steps 5 to 7, the removal routes, the
-removal checks on enrollment writers, lifting, and the new lookup reply are not
-implemented yet.
+Implemented so far: removal storage and enrollment triggers, writers that store
+key IDs and invitation sequences, preview/full-commit/listing store operations,
+and all seven cleanup steps for both full and single-group removals. The legacy
+remove route uses the single-group form. Membership grant statements now require
+live enabled enrollment for grouped scopes. The complete pinned-peer lookup reply
+and its bounded key-ID fill are implemented.
+New removal HTTP routes, removal predicates and invitation ordering in enrollment
+writers, lifting, and tombstone-based signed admission are not implemented yet.
 
 A removal deletes a device's enrollments and records why they are gone. Unlike a
 revocation subject, a removal can be lifted. An invitation created after it
@@ -460,8 +471,13 @@ opens the file. D1 cannot compute the key ID in SQL, so no migration fills them
 there. The store operation `fillEnrollmentKeyIds` fills a limited number of rows
 for each call, and the removal preview and lookup routes call it. Its result
 counts the rows it filled, the rows it left because an active tombstone matches
-them (`blocked`), and the rows another write changed first (`skipped`). A blocked
-row keeps its null `key_id`, and removal stays unavailable until an operator has
+them (`blocked`), and rows changed by another write or individually oversized (`skipped`).
+Each bound JSON value is at most 1,000,000 serialized UTF-8 bytes. Pages consume a
+contiguous prefix: an ordinary row that does not fit waits for the next page.
+An individually oversized row stays null, counts as skipped, and advances the
+cursor so later rows can be processed. It needs operator inspection, not a blind
+rerun. The cursor includes oversized skips; `remaining` reports only rows beyond it.
+A blocked row keeps its null `key_id`, and removal stays unavailable until an operator has
 looked at that enrollment.
 
 ### Enrollment triggers

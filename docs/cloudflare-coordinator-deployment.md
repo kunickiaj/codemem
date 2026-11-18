@@ -609,10 +609,15 @@ Use the coordinator URL and admin secret already configured for the deployment.
 Do not paste the secret into a command, save it in a request file, or enable verbose
 HTTP logging. The response is
 `{ version: 1, filled, blocked, skipped, remaining, next }`. Each request fills at most
-500 rows. While `remaining` is true, repeat with `{"limit":500,"after":NEXT}`, replacing
+500 rows and binds at most 1,000,000 serialized UTF-8 bytes per JSON value, so byte
+size can end a page earlier. While `remaining` is true, repeat with `{"limit":500,"after":NEXT}`, replacing
 `NEXT` with the previous response's integer `next`. Add `blocked` and `skipped` across
-the pages. If any row was skipped because another writer changed it, restart from
-the first page after pausing that writer. A blocked row matches an active removal
+the pages. `next` includes individually oversized rows counted as skipped; they
+stay null while later pages can still progress. `remaining` refers to rows beyond
+that cursor, not skipped or blocked rows left before it. Inspect skipped rows:
+those exceeding the byte budget need operator inspection/correction, and a blind
+rerun will not fix them. Only rows skipped because another writer changed them
+should be retried after pausing that writer. A blocked row matches an active removal
 and keeps removal unavailable. Inspect that enrollment before changing it.
 When the pass has no blocked or skipped rows and `remaining` is false, removal is
 available. Requests are safe to repeat and never lift a removal or delete an enrollment.
