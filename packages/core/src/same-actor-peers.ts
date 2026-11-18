@@ -1,17 +1,24 @@
 import { eq, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { columnExists, type Database, tableExists } from "./db.js";
+import { legacyPairingAssignmentsConverted } from "./legacy-pairing-assignment-state.js";
 import * as schema from "./schema.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 
 const SAME_PERSON_BINDING_PROVENANCE = new Set([
 	"user_confirmed_identity_setup",
+	// A person once marked the pairing as their own device; the conversion kept that decision.
+	"legacy_pairing_assignment",
 	"recipient_invite",
 	"exact_project_invite",
 	"review_resolution",
 ]);
 
-/** Shared read-only resolver; authoritative bindings take precedence over legacy claims. */
+/**
+ * Shared read-only resolver. Bindings decide which devices are this person's own.
+ * The person assigned on a pairing still counts for a device with no binding until
+ * the one-time conversion of those assignments has run on this database.
+ */
 export function resolveSameActorPeerIds(db: Database, actorId: string): string[] {
 	const sets = resolveBindings(db, actorId);
 	if (!sets) return [];
@@ -21,6 +28,7 @@ export function resolveSameActorPeerIds(db: Database, actorId: string): string[]
 	);
 	if (sets.boundDeviceIds.size > 0 && !hasAliasEvidence) return [...sets.deviceIds].sort();
 	if (sets.boundDeviceIds.size > 0) resolveAliases(db, sets);
+	if (legacyPairingAssignmentsConverted(db)) return [...sets.deviceIds].sort();
 	const legacyRows = drizzle(db, { schema })
 		.select({ peer_device_id: schema.syncPeers.peer_device_id })
 		.from(schema.syncPeers)

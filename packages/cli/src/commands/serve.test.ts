@@ -41,6 +41,23 @@ vi.mock("node:fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("node:fs")>()),
 }));
 
+type MaintenanceDependencies = Parameters<typeof runServeCoordinatorMaintenance>[1];
+
+/** Runs maintenance with no older device assignment left to convert, unless a test supplies that stage. */
+function runCoordinatorMaintenance(
+	store: MemoryStore,
+	dependencies: Omit<MaintenanceDependencies, "convertLegacyPairingAssignments"> &
+		Partial<Pick<MaintenanceDependencies, "convertLegacyPairingAssignments">>,
+) {
+	return runServeCoordinatorMaintenance(store, {
+		convertLegacyPairingAssignments: async () => ({
+			status: "already_converted",
+			waitingReason: null,
+		}),
+		...dependencies,
+	});
+}
+
 describe("serve command option resolution", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -204,7 +221,7 @@ describe("serve command option resolution", () => {
 		const calls: string[] = [];
 		const store = {} as MemoryStore;
 		await expect(
-			runServeCoordinatorMaintenance(store, {
+			runCoordinatorMaintenance(store, {
 				advancePendingProjectShares: vi.fn(async (_store, options) => {
 					calls.push(`shares:${options.limit}`);
 					return { processed: 1, failed: 0 };
@@ -231,7 +248,7 @@ describe("serve command option resolution", () => {
 		const reconcileRecipientPolicyProjects = vi.fn(async () => ({ processed: 0, failed: 0 }));
 
 		await expect(
-			runServeCoordinatorMaintenance({} as MemoryStore, {
+			runCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 2, failed: 1 })),
 				reconcileConfiguredCoordinatorEnrollment,
 				reconcileRecipientPolicyProjects,
@@ -245,7 +262,7 @@ describe("serve command option resolution", () => {
 		const reconcileRecipientPolicyProjects = vi.fn(async () => ({ processed: 0, failed: 0 }));
 
 		await expect(
-			runServeCoordinatorMaintenance({} as MemoryStore, {
+			runCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
 				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
 					groupsProcessed: 1,
@@ -269,7 +286,7 @@ describe("serve command option resolution", () => {
 
 	it("limits enrollment failure details but preserves a hidden timeout reason", async () => {
 		await expect(
-			runServeCoordinatorMaintenance({} as MemoryStore, {
+			runCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
 				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
 					groupsProcessed: 0,
@@ -290,7 +307,7 @@ describe("serve command option resolution", () => {
 
 	it("reports reconciliation issues without claiming a group failure", async () => {
 		await expect(
-			runServeCoordinatorMaintenance({} as MemoryStore, {
+			runCoordinatorMaintenance({} as MemoryStore, {
 				advancePendingProjectShares: vi.fn(async () => ({ processed: 0, failed: 0 })),
 				reconcileConfiguredCoordinatorEnrollment: vi.fn(async () => ({
 					groupsProcessed: 1,
@@ -752,5 +769,33 @@ describe("serve relay wiring", () => {
 		expect(callback).toHaveBeenCalledWith(context);
 		expect(relay.refresh).toHaveBeenCalledTimes(2);
 		expect(relay.close).not.toHaveBeenCalled();
+	});
+});
+
+describe("converting older device assignments during coordinator maintenance", () => {
+	it("runs after enrollment reconciliation and before recipient reconciliation", async () => {
+		const calls: string[] = [];
+		const stage = <T>(name: string, result: T) =>
+			vi.fn(async () => {
+				calls.push(name);
+				return result;
+			});
+
+		const result = await runServeCoordinatorMaintenance({} as MemoryStore, {
+			advancePendingProjectShares: stage("shares", { processed: 0, failed: 0 }),
+			reconcileConfiguredCoordinatorEnrollment: stage("enrollment", {
+				groupsProcessed: 1,
+				failedGroups: 0,
+			}),
+			convertLegacyPairingAssignments: stage("assignments", {
+				status: "converted",
+				waitingReason: null,
+			}),
+			reconcileRecipientPolicyProjects: stage("policies", { processed: 0, failed: 0 }),
+		});
+
+		// A binding the coordinator supplies has to exist first, and policies read bindings.
+		expect(calls).toEqual(["shares", "enrollment", "assignments", "policies"]);
+		expect(result.legacyPairingAssignments).toEqual({ status: "converted", waitingReason: null });
 	});
 });

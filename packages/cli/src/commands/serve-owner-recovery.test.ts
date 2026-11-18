@@ -98,6 +98,7 @@ vi.mock("@codemem/server", () => ({
 	createViewerRelayReachability: () => null,
 	createAccountOwnerRecoveryService: mocks.createRecovery,
 	createViewerRawEventInbox: vi.fn(() => ({ inbox: { start: vi.fn() }, stop: vi.fn() })),
+	convertLegacyPairingAssignmentsOperation: vi.fn(),
 	reconcileConfiguredCoordinatorEnrollment: vi.fn(),
 }));
 vi.mock("@hono/node-server", () => ({ serve: mocks.serve }));
