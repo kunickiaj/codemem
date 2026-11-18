@@ -8,6 +8,7 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { summaryLikeSqlPredicate } from "./summary-memory.js";
 import { ensureSyncStatusIndexes } from "./sync-status-indexes.js";
@@ -911,6 +912,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureRawEventFlushClaimSchema(db);
 		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureSyncPeerSignatureStateSchema(db);
+		ensurePeerRemovalCheckState(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);

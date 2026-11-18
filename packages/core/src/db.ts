@@ -35,6 +35,7 @@ import {
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
 import { ensureMemoryReferenceSchema } from "./memory-reference-schema.js";
 import { expandUserPath } from "./observer-config.js";
+import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
 import { ensureRelayServicePinSchema } from "./relay-service-pin-store.js";
 import { deleteOrphanReplicationCursorsOnce } from "./replication-cursor-orphan-cleanup.js";
@@ -1102,6 +1103,8 @@ export function ensureAdditiveSchemaCompatibility(db: DatabaseType): void {
 	ensureRelayServicePinSchema(db);
 	ensureProjectBoundaryMigrationSchema(db);
 	ensureProjectScopeWithdrawalSchema(db);
+	// After the gated block, which creates the binding table on a database from before it existed.
+	ensurePeerRemovalCheckState(db);
 	// Current-marker databases also need this index, but legacy columns must
 	// exist before its first creation. Later opens only check sqlite_master.
 	ensureMemoryAggregateIndex(db);
