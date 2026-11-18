@@ -1,6 +1,10 @@
 import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import {
+	membershipRevocationsMatch,
+	removalDependentStatements,
+} from "./coordinator-device-removal-dependents.js";
+import {
 	type CoordinatorDeviceRemovalPreviewInput,
 	type CoordinatorDeviceRemovalPreviewResult,
 	type CoordinatorDeviceRemovalRefusal,
@@ -627,7 +631,18 @@ OR EXISTS (SELECT 1 FROM coordinator_reciprocal_approvals WHERE group_id = ?
   AND (requesting_device_id = ? OR requested_device_id = ?)))
 THEN json('device_removal_incomplete') ELSE 1 END AS complete`;
 
-/** The tombstone precedes the enrollment delete, which the delete trigger requires. */
+/** The condition that selects the one tombstone of a single-group removal, for alias `t`. */
+const SINGLE_OWN_TOMBSTONE_SQL =
+	"t.removal_id = ? AND t.group_id = ? AND t.device_id = ? AND t.lifted_at IS NULL";
+
+/** How many statements of a single-group removal write, before its reads. */
+const SINGLE_REMOVAL_WRITES = 9;
+
+/**
+ * The tombstone precedes the enrollment delete, which the delete trigger
+ * requires. The dependent writes follow that delete, and each finds its rows
+ * through the tombstone, so none of them runs for a removal that wrote none.
+ */
 function singleRemovalStatements(
 	input: Required<CoordinatorRemoveEnrollmentInput>,
 	removalId: string,
@@ -635,6 +650,10 @@ function singleRemovalStatements(
 ): RemovalStatement[] {
 	const target = [input.groupId, input.deviceId];
 	const own = [removalId, ...target];
+	const dependents = removalDependentStatements(
+		{ sql: SINGLE_OWN_TOMBSTONE_SQL, values: own },
+		{ actorId: input.actorId, now },
+	);
 	return [
 		{
 			sql: `INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key,
@@ -657,11 +676,20 @@ AND (requesting_device_id = ? OR requested_device_id = ?) AND ${OWN_TOMBSTONE_SQ
 			sql: `DELETE FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND ${OWN_TOMBSTONE_SQL}`,
 			values: [...target, ...own],
 		},
+		...dependents.writes,
 		{
 			sql: REMOVAL_COMPLETE_SQL,
 			values: [...own, ...target, ...target, input.groupId, input.deviceId, input.deviceId],
 			read: true,
 		},
+		dependents.complete,
+		...singleRemovalReads(removalId, target),
+	];
+}
+
+/** The tombstone this removal wrote, and why it wrote none. */
+function singleRemovalReads(removalId: string, target: string[]): RemovalStatement[] {
+	return [
 		{
 			sql: `SELECT removal_seq, group_id, device_id FROM coordinator_device_removals
 WHERE removal_id = ? ORDER BY removal_seq`,
@@ -756,10 +784,12 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 		);
 		const results = await this.backend.batch(statements).catch(removalBackendFailure);
 		if (results.length !== statements.length) return incompleteResult();
-		const writes = results.slice(0, 4).map(resultChanges);
-		if (resultRows<{ complete: number }>(results[4])[0]?.complete !== 1) return incompleteResult();
-		const removals = resultRows<CoordinatorDeviceRemovalEntry>(results[5]);
-		const state = resultRows<{ available: number; enrolled: number }>(results[6])[0];
+		const writes = results.slice(0, SINGLE_REMOVAL_WRITES).map(resultChanges);
+		const [complete, dependentsComplete, removed, read] = results.slice(SINGLE_REMOVAL_WRITES);
+		for (const check of [complete, dependentsComplete])
+			if (resultRows<{ complete: number }>(check)[0]?.complete !== 1) return incompleteResult();
+		const removals = resultRows<CoordinatorDeviceRemovalEntry>(removed);
+		const state = resultRows<{ available: number; enrolled: number }>(read)[0];
 		if (!state) return incompleteResult();
 		if (removals.length === 0) {
 			if (writes.some((count) => count !== 0)) return incompleteResult();
@@ -767,8 +797,10 @@ export class DeviceRemovalOperations implements CoordinatorDeviceRemovalStore {
 			if (state.enrolled > 0) return incompleteResult();
 			return { kind: "not_enrolled" };
 		}
-		if (removals.length !== 1 || writes[0] !== 1 || writes[3] !== 1 || state.enrolled !== 0)
+		const [tombstone, , , enrollment, ...dependents] = writes;
+		if (removals.length !== 1 || tombstone !== 1 || enrollment !== 1 || state.enrolled !== 0)
 			return incompleteResult();
+		if (!membershipRevocationsMatch(dependents)) return incompleteResult();
 		return { kind: "removed", removal_id: removalId, removals };
 	}
 

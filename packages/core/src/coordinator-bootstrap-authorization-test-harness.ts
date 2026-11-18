@@ -8,6 +8,7 @@ import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-h
 import {
 	changeEnrollmentKey,
 	deleteEnrollmentWithoutTombstone,
+	removeDeviceWithoutTombstone,
 } from "./coordinator-enrollment-test-fixtures.js";
 import { guardedGrantD1 } from "./coordinator-identity-grant-revocation-test-harness.js";
 import type {
@@ -142,9 +143,9 @@ function registerEnrollmentCases(test: Test) {
 	test.for(["seed", "worker"] as const)(
 		"raw unenrolled %s grant is retained but never authorized",
 		async (who, { fixture: f }) => {
-			// Arrange
+			// Arrange: without a tombstone, because a recorded removal would revoke the grant.
 			const grant = await authorizationFixture(f);
-			await f.store.removeDevice(f.review.groupId, bootstrapParticipant(f, who));
+			await removeDeviceWithoutTombstone(f.exec, f.review.groupId, bootstrapParticipant(f, who));
 			const before = await snapshot(f);
 			// Act
 			const result = await f.store.getBootstrapGrantAuthorization(request(grant.grant_id));
@@ -462,7 +463,12 @@ function registerFinalEnrollmentDrift(test: Test, database: DatabaseFixture, isF
 					if (called || !isFinal(query)) return;
 					called = true;
 					if (field === "removal") {
-						await f.store.removeDevice(f.review.groupId, bootstrapParticipant(f, who));
+						// The enrollment alone goes. A recorded removal would also revoke the grant.
+						await removeDeviceWithoutTombstone(
+							f.exec,
+							f.review.groupId,
+							bootstrapParticipant(f, who),
+						);
 						return;
 					}
 					if (field === "disabled" || field === "enabled") {

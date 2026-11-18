@@ -11,6 +11,7 @@ import { UNRELATED_PUBLIC_KEY } from "./coordinator-enrollment-revocation-test-h
 import {
 	changeEnrollmentKey,
 	deleteEnrollmentWithoutTombstone,
+	removeDeviceWithoutTombstone,
 } from "./coordinator-enrollment-test-fixtures.js";
 import type {
 	contractHarness,
@@ -90,7 +91,9 @@ async function change(f: GrantFixture, grantId: string, mode: string) {
 }
 async function changeParticipant(f: GrantFixture, mode: string, who: "seed" | "worker") {
 	const deviceId = bootstrapParticipant(f, who);
-	if (mode === `${who} missing`) await f.store.removeDevice(f.review.groupId, deviceId);
+	// A recorded removal would revoke the grant, and this is a grant whose participant is gone.
+	if (mode === `${who} missing`)
+		await removeDeviceWithoutTombstone(f.exec, f.review.groupId, deviceId);
 	if (mode === `${who} disabled`) await f.store.setDeviceEnabled(f.review.groupId, deviceId, false);
 	if (!mode.startsWith(`${who} `) || !mode.endsWith("revoked")) return;
 	let publicKey = who === "seed" ? CANONICAL_PUBLIC_KEY : UNRELATED_PUBLIC_KEY;
