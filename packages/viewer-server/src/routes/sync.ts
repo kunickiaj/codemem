@@ -20,6 +20,7 @@ import type {
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
 	ProjectScopeInventoryProject,
+	ProjectWithdrawalState,
 	ReassignScopeCapability,
 	RecipientPolicyCoordinatorEffectReceipt,
 	RecipientPolicyOnboardingPreviewV1,
@@ -150,6 +151,7 @@ import {
 	previewRecipientPolicyOnboarding,
 	previewRecipientPolicyOnboardingFromReviewedIntent,
 	projectShareLifecycle,
+	projectWithdrawalStates,
 	RecipientPolicyEdgeRequestError,
 	RecipientPolicyTeamRenameError,
 	RemoteCoordinatorRequestError,
@@ -5685,16 +5687,27 @@ function resolveOriginDeviceDisplayNames(
 	return names;
 }
 
+function ownBoundaryPayload(state: ProjectWithdrawalState | undefined) {
+	return state ? { stopped_at: state.withdrawnAt } : null;
+}
+
 function serializeProjectScopeInventory(
 	store: MemoryStore,
 	inventory: ReturnType<typeof listProjectScopeInventory>,
 	sharingByProject: Map<string, Array<Record<string, unknown>>>,
 ) {
 	const originDeviceNames = resolveOriginDeviceDisplayNames(store, inventory.projects);
+	const withdrawalStates = projectWithdrawalStates(
+		store.db,
+		store.deviceId,
+		inventory.projects.map((project) => project.workspace_identity),
+	);
 	return {
 		...inventory,
 		projects: inventory.projects.map((project) => ({
 			...project,
+			// Null when the Project doesn't reach this device on its own boundary.
+			own_boundary: ownBoundaryPayload(withdrawalStates.get(project.workspace_identity)),
 			origin_devices: project.origin_devices.map(({ device_id }) => ({
 				device_id,
 				display_name: originDeviceNames.get(device_id) ?? null,

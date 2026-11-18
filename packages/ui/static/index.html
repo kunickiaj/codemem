@@ -1851,7 +1851,7 @@
       .recipient-policy-sharing-received-head,
       .recipient-policy-sharing-received-row {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 180px 190px 170px;
+        grid-template-columns: minmax(0, 1fr) 160px 150px 160px 200px;
         gap: var(--sp-4);
         align-items: center;
         padding: var(--sp-3) var(--sp-4);
@@ -1871,6 +1871,14 @@
       .recipient-policy-sharing-received-head th { min-width: 0; padding: 0; text-align: left; }
       .recipient-policy-sharing-received-head th:nth-child(n + 3),
       .recipient-policy-sharing-received-row td:nth-child(n + 3) { text-align: right; }
+      .received-project-on-this-device {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: var(--sp-2);
+      }
+      .received-project-on-this-device .recipient-policy-sharing-error { flex-basis: 100%; margin: 0; text-align: left; }
       .recipient-policy-sharing-pointer { display: inline-block; margin-top: var(--sp-3); }
       .recipient-policy-sharing-card,
       .recipient-policy-sharing-card-title,
@@ -2259,6 +2267,7 @@
           text-transform: uppercase;
         }
         .recipient-policy-sharing-received-row td:nth-child(n + 3) { text-align: left; }
+        .received-project-on-this-device { justify-content: flex-start; }
         .project-inventory-table-header { display: none; }
         .project-inventory-table-row { grid-template-columns: 28px minmax(0, 1fr) auto; row-gap: var(--sp-3); }
         .project-inventory-select-cell { grid-column: 1; grid-row: 1; }

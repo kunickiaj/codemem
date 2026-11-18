@@ -139,6 +139,7 @@ function sharedSharingOptions(
 		deviceInventoryUnavailable: state.lastDeviceInventoryUnavailable,
 		onOpenTeamSetup: options.onOpenTeamSetup,
 		onPeopleChanged: () => refresh(),
+		onReceivedChanged: () => refresh(),
 		onReviewDevices: options.onReviewDevices,
 		onTeamCreated: () => refresh(),
 		onTeamRenamed: () => refresh({ requireTeamSetupSummary: true }),

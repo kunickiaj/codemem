@@ -614,6 +614,8 @@ export interface ProjectScopeInventoryProject extends ProjectScopeCandidate {
 		session_count: number;
 	}>;
 	sharing?: ProjectSharingSummary[];
+	/** Null when the Project doesn't reach this device on its own boundary. */
+	own_boundary?: { stopped_at: string | null } | null;
 }
 
 export interface ProjectSharingSummary {
@@ -2213,6 +2215,41 @@ export async function deleteSharingDomainProjectMapping(
 		throw new Error(payloadError(payload) || text || "request failed");
 	}
 	return Boolean(payload?.deleted);
+}
+
+export interface ProjectOnThisDeviceResult {
+	workspace_identity: string;
+	stopped_at: string | null;
+}
+
+async function changeProjectOnThisDevice(
+	action: "stop" | "resume",
+	workspaceIdentity: string,
+): Promise<ProjectOnThisDeviceResult> {
+	const resp = await fetch(`/api/sync/project-withdrawals/v1/${action}`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ workspace_identity: workspaceIdentity }),
+	});
+	const { text, payload } = await readJsonPayload<ProjectOnThisDeviceResult & { error?: string }>(
+		resp,
+	);
+	if (!resp.ok) throw new Error(payloadError(payload) || text || "request failed");
+	if (!payload?.workspace_identity) throw new Error("response missing project");
+	return payload;
+}
+
+/** This device stops sending and receiving the Project. It keeps what it already has. */
+export function stopProjectOnThisDevice(
+	workspaceIdentity: string,
+): Promise<ProjectOnThisDeviceResult> {
+	return changeProjectOnThisDevice("stop", workspaceIdentity);
+}
+
+export function resumeProjectOnThisDevice(
+	workspaceIdentity: string,
+): Promise<ProjectOnThisDeviceResult> {
+	return changeProjectOnThisDevice("resume", workspaceIdentity);
 }
 
 export async function reassignProjectInventoryProject(input: {

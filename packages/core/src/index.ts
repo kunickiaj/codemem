@@ -1055,6 +1055,12 @@ export {
 	listProjectScopeWithdrawals,
 	withdrawProjectScope,
 } from "./project-scope-withdrawal.js";
+export type { ProjectWithdrawalState } from "./project-withdrawal-state.js";
+export {
+	projectWithdrawalStates,
+	resumeProjectOnThisDevice,
+	stopProjectOnThisDevice,
+} from "./project-withdrawal-state.js";
 export * from "./prompt-pack-ledger.js";
 export * from "./prompt-transport.js";
 export type { FlushRawEventsOptions } from "./raw-event-flush.js";
