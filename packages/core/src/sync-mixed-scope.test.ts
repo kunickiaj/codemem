@@ -12,7 +12,9 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { toJson } from "./db.js";
+import { resumeProjectScopeSync } from "./project-scope-resume.js";
 import { putRecipientPolicyDenyOverlay } from "./recipient-policy-reconciliation.js";
+import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
 import {
 	applyReplicationOps,
 	DEFAULT_SYNC_SCOPE_ID,
@@ -614,6 +616,52 @@ describe("a Project this device withdrew from", () => {
 		expect(acmeOps).toEqual([]);
 		expect(acmeSnapshot.items).toEqual([]);
 		expect(ossOps.map((op) => op.op_id)).toEqual(["op-oss-1"]);
+	});
+
+	it("keeps this device authorized to write the scope, so its own memories can still move into it", () => {
+		const authorization = getCachedScopeAuthorization(fixture.db, {
+			deviceId: LOCAL_DEVICE,
+			scopeId: ACME_SCOPE,
+		});
+
+		expect(authorization.authorized).toBe(true);
+	});
+
+	it("gives nothing back on undo once this device has lost the scope", () => {
+		// Arrange: while withdrawn, this device was removed from the scope.
+		revokeScopeMembership(fixture.db, ACME_SCOPE, LOCAL_DEVICE);
+
+		// Act
+		resumeProjectScopeSync(fixture.db, {
+			scopeId: ACME_SCOPE,
+			deviceId: LOCAL_DEVICE,
+			now: "2026-05-03T00:00:07Z",
+		});
+		const [acmeOps] = filterForPeer(fixture.db, [fixture.ops.acme], PEER_ACME);
+		const inbound = applyReplicationOps(
+			fixture.db,
+			[
+				{
+					...makeOp({
+						opId: "inbound-after-undo",
+						entityId: "key:inbound-after-undo",
+						scopeId: ACME_SCOPE,
+						createdAt: "2026-05-03T00:00:08Z",
+						payload: { project: "acme/internal", visibility: "shared", scope_id: ACME_SCOPE },
+					}),
+					clock_device_id: PEER_ACME,
+					device_id: PEER_ACME,
+				},
+			],
+			LOCAL_DEVICE,
+			undefined,
+			{ inboundScopeValidation: { peerDeviceId: PEER_ACME } },
+		);
+
+		// Assert
+		expect(acmeOps).toEqual([]);
+		expect(inbound.applied).toBe(0);
+		expect(inbound.rejected).toBe(1);
 	});
 
 	it("skips incoming ops without rejecting them, so the peer keeps syncing", () => {
