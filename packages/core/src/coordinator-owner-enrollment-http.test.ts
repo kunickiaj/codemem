@@ -194,16 +194,11 @@ it.each(["signin", "link", "owner_enroll", "drift", "malformed", "read-fault"] a
 	},
 );
 
-it("uses genuine SDK forms then redirects only to signed loopback and returns row identity", async () => {
-	// Arrange
-	const c = await fixture();
+/** Signs in, confirms in the browser, and signs the finalize request of the device. */
+async function confirmedFinalize(c: Awaited<ReturnType<typeof fixture>>) {
 	const { callback, transaction } = await verified(c);
 	const html = await callback.text();
 	const form = fields(html);
-	expect(callback.status).toBe(200);
-	expect(html).toContain("identity-a");
-	expect(html).not.toContain("completionSecret");
-	// Act
 	const confirmed = await c.send("/auth/owner/confirm", {
 		method: "POST",
 		headers: {
@@ -232,6 +227,17 @@ it("uses genuine SDK forms then redirects only to signed loopback and returns ro
 		completionSecret,
 		signature: f.key.sign(ownerEnrollmentFinalMessage(signed, completionSecret)),
 	};
+	return { callback, html, confirmed, destination, input };
+}
+
+it("uses genuine SDK forms then redirects only to signed loopback and returns row identity", async () => {
+	// Arrange
+	const c = await fixture();
+	// Act
+	const { callback, html, confirmed, destination, input } = await confirmedFinalize(c);
+	expect(callback.status).toBe(200);
+	expect(html).toContain("identity-a");
+	expect(html).not.toContain("completionSecret");
 	const final = await (await c.post("/v1/auth/owner-attempts/finalize", input)).json();
 	const retry = await (await c.post("/v1/auth/owner-attempts/finalize", input)).json();
 	// Assert: no completion HTML or identity supplied by B, and old receipt remains exact.
@@ -329,6 +335,26 @@ it.each(["malformed", "array", "extra", "oversize", "content-type", "method", "q
 		expect(f.snapshot()).toEqual(before);
 	},
 );
+
+it("answers the finalize of a removed device with the generic reply and enrolls nothing", async () => {
+	// Arrange: the device was removed from another group after the browser confirmation.
+	const c = await fixture();
+	const { input } = await confirmedFinalize(c);
+	f.db
+		.prepare(
+			`INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key,
+				fingerprint, removed_at) VALUES ('removal-a', 'group-z', ?, ?, ?, 'then')`,
+		)
+		.run(c.start.deviceId, c.start.publicKey, hash(c.start.publicKey));
+	// Act
+	const final = await c.post("/v1/auth/owner-attempts/finalize", input);
+	// Assert: owner enrollment replies to the device never name the reason.
+	expect([final.status, await final.text()]).toEqual([400, "Owner enrollment unavailable."]);
+	expect(f.rows(ATTEMPTS)).toMatchObject([{ state: "confirmed", binding_id: null }]);
+	expect(f.rows("enrolled_devices").filter((row) => row.device_id === c.start.deviceId)).toEqual(
+		[],
+	);
+});
 
 it("limits by trusted socket key despite spoofed forwarding headers", async () => {
 	// Arrange

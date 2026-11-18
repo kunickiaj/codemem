@@ -355,6 +355,27 @@ export function storedTriggerSql(sql: string): string {
 }
 
 /**
+ * Throws the fixed error `device_removed` when a backend error is the abort of
+ * an enrollment trigger that found an active tombstone for the device, and
+ * returns otherwise. SQLite reports the trigger's message alone, and D1 puts
+ * its own prefix and constraint suffix around it. An error that only mentions
+ * the word does not match. The abort rolled back the writer's transaction or
+ * batch. An enrollment writer calls this before it reports its own fail-closed
+ * error, so that a refusal by tombstone is not reported as an unavailable or
+ * incomplete write. The aborts of the other enrollment triggers keep the
+ * writer's error.
+ */
+export function rethrowDeviceRemovedAbort(error: unknown): void {
+	if (
+		error instanceof Error &&
+		/^(?:D1_ERROR: )?device_removed(?:: SQLITE_CONSTRAINT(?: \(extended: SQLITE_CONSTRAINT_TRIGGER\))?)?$/.test(
+			error.message,
+		)
+	)
+		throw new Error("device_removed");
+}
+
+/**
  * The one statement that inserts an invitation, on both stores. With removal
  * storage it also records, as `issued_after_removal_seq`, the highest removal
  * sequence at that moment, or 0. It takes 24 bound values in column order.

@@ -170,6 +170,7 @@ import {
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
 	type RemovalColumnSql,
+	rethrowDeviceRemovedAbort,
 	storedTriggerSql,
 	type UnfilledEnrollmentKey,
 } from "./coordinator-device-removal.js";
@@ -730,6 +731,20 @@ function initializeSchema(db: DatabaseType): void {
 	// a concurrent startup that already installed leaves this one with nothing to write.
 	if (readConnectionSchemaStateSync(reader) === "ready") return;
 	db.transaction(() => installAccountConnectionSchemaSync(reader)).immediate();
+}
+
+/**
+ * Runs the enrollment write of an invitation acceptance. An abort of the
+ * tombstone-match trigger leaves it as the store's fixed error `device_removed`
+ * in place of the database driver's error.
+ */
+function namingRemovalRefusal<T>(write: () => T): T {
+	try {
+		return write();
+	} catch (error) {
+		rethrowDeviceRemovedAbort(error);
+		throw error;
+	}
 }
 
 function hasDeviceRemovalSchemaSync(db: DatabaseType): boolean {
@@ -2433,17 +2448,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (saved.recipient_actor_id !== authoritativeIdentityId)
 					throw new Error("invite_identity_conflict");
 				if (changed === 1) {
-					this.writeRecipientEnrollmentSync(invite.group_id, opts, {
+					this.writeRecipientEnrollment(invite.group_id, opts, {
 						identityId: authoritativeIdentityId,
 						displayName: deviceDisplayName,
 						createdAt: consumedAt,
 						authorization,
 					});
 				} else {
-					pendingGuards = this.repairRecipientOwnerIdentity(invite, opts, {
-						authorization,
-						consistency,
-					});
+					pendingGuards = namingRemovalRefusal(() =>
+						this.repairRecipientOwnerIdentity(invite, opts, { authorization, consistency }),
+					);
 				}
 				this.assertRecipientInviteAuthorized(invite, opts, participantSubjects);
 				this.validateAcceptedRecipientOwner(invite, opts);
@@ -2499,6 +2513,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				};
 			})
 			.immediate();
+	}
+
+	/** The enrollment write of an acceptance, with a refusal by tombstone reported as `device_removed`. */
+	private writeRecipientEnrollment(
+		...write: Parameters<BetterSqliteCoordinatorStore["writeRecipientEnrollmentSync"]>
+	): void {
+		namingRemovalRefusal(() => this.writeRecipientEnrollmentSync(...write));
 	}
 
 	/** Updates the device's enrollment in the group, or inserts it when the group has none. */
@@ -2817,7 +2838,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						displayName: opts.deviceDisplayName,
 					});
 				} else {
-					this.repairProjectInviteIdentitySync(invite, opts, guard);
+					namingRemovalRefusal(() => this.repairProjectInviteIdentitySync(invite, opts, guard));
 				}
 				const seed = invite.inviter_device_id
 					? (this.db

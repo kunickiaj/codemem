@@ -117,6 +117,7 @@ import {
 	inviteInsertSql,
 	joinRequestRemovalSeqSql,
 	type RemovalColumnSql,
+	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import {
 	type CoordinatorCreateDeviceRevocationInput,
@@ -902,6 +903,8 @@ async function runRecipientInviteBatch(
 			if (unpinned) return statements.map(() => 0);
 		}
 		await guard.assertEligible({ requireBinding: false });
+		// A trigger abort rolled the batch back, and its message names the tombstone match.
+		rethrowDeviceRemovedAbort(error);
 		throw new Error("device_ownership_authorization_unavailable");
 	}
 }
@@ -3181,7 +3184,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		let results: unknown[];
 		try {
 			results = await this.db.batch(statements);
-		} catch {
+		} catch (error) {
 			// A transport error may follow commit. Only a still-pending request permits denial diagnosis.
 			let latest: { status: unknown } | null;
 			try {
@@ -3194,6 +3197,8 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				throw new Error("join_review_incomplete");
 			}
 			if (latest?.status === "pending") await this.assertJoinOwnershipAvailable(options.guard);
+			// A trigger abort rolled this batch back. A concurrent review may still have decided the request.
+			rethrowDeviceRemovedAbort(error);
 			throw new Error("join_review_incomplete");
 		}
 		if (results.length !== statements.length) throw new Error("join_review_incomplete");

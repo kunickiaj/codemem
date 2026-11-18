@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	coordinatorImportInviteAction: vi.fn(),
+	coordinatorRemoveDeviceAction: vi.fn(),
 }));
 
 vi.mock("@codemem/core", async (importOriginal) => {
@@ -9,6 +10,7 @@ vi.mock("@codemem/core", async (importOriginal) => {
 	return {
 		...actual,
 		coordinatorImportInviteAction: mocks.coordinatorImportInviteAction,
+		coordinatorRemoveDeviceAction: mocks.coordinatorRemoveDeviceAction,
 	};
 });
 
@@ -71,6 +73,54 @@ describe("coordinator aliases used by deployed browser pages", () => {
 		]) {
 			expect(names).not.toContain(name);
 		}
+	});
+});
+
+describe("coordinator device remove", () => {
+	const previousExitCode = process.exitCode;
+	const remove = (...flags: string[]) =>
+		buildCoordinatorCommand().parseAsync(["device", "remove", "team-a", "device-1", ...flags], {
+			from: "user",
+		});
+
+	beforeEach(() => {
+		process.exitCode = undefined;
+		mocks.coordinatorRemoveDeviceAction.mockReset();
+		vi.spyOn(console, "log").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		process.exitCode = previousExitCode;
+		vi.restoreAllMocks();
+	});
+
+	it("reports a removal that the coordinator cannot record as a JSON error and exits 1", async () => {
+		// Arrange: the local coordinator database has an enrollment without a key ID.
+		mocks.coordinatorRemoveDeviceAction.mockRejectedValueOnce(
+			new Error("device_removal_unavailable"),
+		);
+		// Act: the handler does not throw.
+		await remove("--json");
+		// Assert
+		expect(vi.mocked(console.log).mock.calls).toEqual([
+			[JSON.stringify({ error: "remove_failed", message: "device_removal_unavailable" })],
+		]);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it("keeps its replies for a removed device and for a device that is not enrolled", async () => {
+		// Arrange
+		mocks.coordinatorRemoveDeviceAction.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+		// Act
+		await remove("--json");
+		const removedExitCode = process.exitCode;
+		await remove("--json");
+		// Assert
+		expect(vi.mocked(console.log).mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+			{ ok: true, group_id: "team-a", device_id: "device-1" },
+			{ error: "device_not_found", message: "Device not found: device-1" },
+		]);
+		expect([removedExitCode, process.exitCode]).toEqual([undefined, 1]);
 	});
 });
 

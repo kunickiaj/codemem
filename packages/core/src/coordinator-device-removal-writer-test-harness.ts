@@ -36,6 +36,7 @@ export function registerEnrollmentWriterContract(test: RemovalTest) {
 	registerKeyTextChanges(test);
 	registerKeyTextChangeFailures(test);
 	registerSuppressedKeyTextRewrites(test);
+	registerRemovedDeviceRefusals(test);
 }
 
 const INVITE_CONSUME = ["UPDATE coordinator_invites SET token"];
@@ -404,12 +405,183 @@ function registerKeyTextChangeFailures(test: RemovalTest) {
 			const before = await enrollmentRow(f, enrolled);
 			// Act
 			const pending = enroll(f, changed);
-			// Assert
-			await expect(pending).rejects.toThrow("device_ownership_authorization_unavailable");
+			// Assert: the tombstone-match trigger aborts, and the writer names that refusal.
+			await expect(pending).rejects.toThrow(/^device_removed$/u);
 			expect(await enrollmentRow(f, enrolled)).toEqual(before);
 			expect(before).toMatchObject([storedKey(enrolled)]);
 		});
 	}
+}
+
+/** An active tombstone of another group that records the device ID and key of `removed`. */
+function removedElsewhere(f: RemovalFixture, removed: Enrollment): Promise<void> {
+	return insertTombstone(f, { ...removed, groupId: `${f.prefix}-g9` });
+}
+
+/**
+ * The fixed error of a refused writer, or what it returned. An error class of
+ * the database driver is named, because a fixed store error is a plain Error.
+ */
+const refusal = (write: Promise<unknown>) =>
+	write.then(
+		(result) => ({ returned: result }),
+		(error: Error) =>
+			error.constructor === Error ? error.message : `${error.name}: ${error.message}`,
+	);
+
+/**
+ * The enrollment triggers stop a removed device behind every writer. Each writer
+ * names that refusal `device_removed` and commits nothing of its operation.
+ */
+function registerRemovedDeviceRefusals(test: RemovalTest) {
+	registerRemovedEnrollmentRefusals(test);
+	registerRemovedAcceptanceRefusals(test);
+	registerRemovedEnableRefusal(test);
+	registerRevokedAndRemovedRefusals(test);
+}
+
+/** Enrolls the device, records a revocation of its ID and key, and removes it through the store. */
+async function revokeAndRemove(f: RemovalFixture, device: Enrollment): Promise<void> {
+	await enroll(f, device);
+	const revoked = await f.store.createDeviceRevocation({
+		groupId: device.groupId,
+		deviceId: device.deviceId,
+		publicKey: device.key.publicKey,
+		fingerprint: device.key.fingerprint,
+	});
+	expect(revoked).toMatchObject({ kind: "revoked" });
+	expect(await f.store.removeDevice(device.groupId, device.deviceId)).toBe(true);
+}
+
+function registerRevokedAndRemovedRefusals(test: RemovalTest) {
+	test("a device that is both revoked and removed is refused with device_revoked by admin enrollment and by a team invitation", async ({
+		fixture: f,
+	}) => {
+		// Arrange: for each writer, a revocation subject and an active tombstone match its device.
+		const enrolling = await target(f, "enrolling");
+		const acceptance = await teamAcceptance(f, await removalDeviceKey(`${f.prefix}-joining`));
+		await revokeAndRemove(f, enrolling);
+		await revokeAndRemove(f, acceptance.enrollment);
+		const removals = await f.rows(
+			"SELECT device_id FROM coordinator_device_removals WHERE lifted_at IS NULL AND device_id IN (?, ?)",
+			enrolling.deviceId,
+			acceptance.enrollment.deviceId,
+		);
+		// Act
+		const enrolled = await refusal(enroll(f, enrolling));
+		const accepted = await refusal(acceptance.accept(f.store));
+		// Assert: revocation takes precedence, and neither writer wrote anything.
+		expect(removals).toHaveLength(2);
+		expect([enrolled, accepted]).toEqual(["device_revoked", "device_revoked"]);
+		expect(await enrollmentRow(f, enrolling)).toEqual([]);
+		expect(await enrollmentRow(f, acceptance.enrollment)).toEqual([]);
+		expect(
+			await f.rows(
+				"SELECT consumed_at, bound_device_id FROM coordinator_invites WHERE invite_id = ?",
+				acceptance.inviteId,
+			),
+		).toEqual([{ consumed_at: null, bound_device_id: null }]);
+	});
+}
+
+function registerRemovedEnrollmentRefusals(test: RemovalTest) {
+	test("an admin enrollment of a removed device is refused with device_removed", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const removed = await target(f);
+		await f.store.createGroup(removed.groupId);
+		await removedElsewhere(f, removed);
+		// Act
+		const byDeviceId = await refusal(enroll(f, { ...removed, key: opaqueKey(`${f.prefix}-new`) }));
+		const byKey = await refusal(enroll(f, { ...removed, deviceId: `${f.prefix}-renamed` }));
+		// Assert
+		expect([byDeviceId, byKey]).toEqual(["device_removed", "device_removed"]);
+		expect(await enrollments(f)).toEqual([]);
+	});
+
+	test("a join approval of a removed device is refused with device_removed and stays pending", async ({
+		fixture: f,
+	}) => {
+		// Arrange: the device was removed after it asked to join.
+		const joining = await target(f);
+		await f.store.createGroup(joining.groupId);
+		const requestId = await requestToJoin(f, joining);
+		await removedElsewhere(f, joining);
+		// Act
+		const review = await refusal(f.store.reviewJoinRequest({ requestId, approved: true }));
+		// Assert
+		expect(review).toBe("device_removed");
+		expect(
+			await f.rows("SELECT status FROM coordinator_join_requests WHERE request_id = ?", requestId),
+		).toEqual([{ status: "pending" }]);
+		expect(await enrollments(f)).toEqual([]);
+	});
+}
+
+function registerRemovedAcceptanceRefusals(test: RemovalTest) {
+	for (const [family, arrange] of Object.entries({
+		team: teamAcceptance,
+		Project: projectAcceptance,
+	})) {
+		test(`a ${family} invitation acceptance by a removed device is refused with device_removed and consumes nothing`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: the device was removed after the invitation was created.
+			const acceptance = await arrange(f, await removalDeviceKey(`${f.prefix}-joining`));
+			await removedElsewhere(f, acceptance.enrollment);
+			// Act
+			const accepted = await refusal(acceptance.accept(f.store));
+			// Assert
+			expect(accepted).toBe("device_removed");
+			expect(
+				await f.rows(
+					"SELECT consumed_at, bound_device_id FROM coordinator_invites WHERE invite_id = ?",
+					acceptance.inviteId,
+				),
+			).toEqual([{ consumed_at: null, bound_device_id: null }]);
+			expect(await enrollmentRow(f, acceptance.enrollment)).toEqual([]);
+		});
+
+		test(`a retried ${family} invitation acceptance that would repair a removed device's enrollment is refused with device_removed`, async ({
+			fixture: f,
+		}) => {
+			// Arrange: an accepted enrollment as an earlier release left it, removed elsewhere since.
+			const acceptance = await arrange(f, await removalDeviceKey(`${f.prefix}-joining`));
+			await acceptance.accept(f.store);
+			await f.exec(
+				"UPDATE enrolled_devices SET identity_id = NULL, key_id = NULL WHERE device_id = ?",
+				acceptance.enrollment.deviceId,
+			);
+			await removedElsewhere(f, acceptance.enrollment);
+			const before = await enrollmentRow(f, acceptance.enrollment);
+			// Act: the repair would state the key ID, which is a change the tombstone refuses.
+			const retried = await refusal(acceptance.accept(f.store));
+			// Assert
+			expect(retried).toBe("device_removed");
+			expect(await enrollmentRow(f, acceptance.enrollment)).toEqual(before);
+			expect(before).toMatchObject([{ identity_id: null, key_id: null, enabled: 1 }]);
+		});
+	}
+}
+
+function registerRemovedEnableRefusal(test: RemovalTest) {
+	test("enabling an enrollment whose key was removed from the group is refused with device_removed", async ({
+		fixture: f,
+	}) => {
+		// Arrange: a disabled enrollment, and a removal of its key under another device ID.
+		const disabled = await target(f);
+		await enroll(f, disabled);
+		await f.store.setDeviceEnabled(disabled.groupId, disabled.deviceId, false);
+		await insertTombstone(f, { ...disabled, deviceId: `${f.prefix}-alias` });
+		// Act
+		const enabled = await refusal(
+			f.store.setDeviceEnabled(disabled.groupId, disabled.deviceId, true),
+		);
+		// Assert
+		expect(enabled).toBe("device_removed");
+		expect(await enrollmentRow(f, disabled)).toMatchObject([{ enabled: 0 }]);
+	});
 }
 
 function registerKeyTextChanges(test: RemovalTest) {

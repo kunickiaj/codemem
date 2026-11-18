@@ -152,7 +152,7 @@ export type CoordinatorAppBrowserAuthOptions =
 	| { kind: "unavailable"; error?: typeof AUTH_SCHEMA_UPGRADE_REQUIRED };
 
 function recipientInviteErrorStatus(code: string): 403 | 404 | 409 | 410 {
-	if (code === "device_revoked") return 403;
+	if (code === "device_revoked" || code === "device_removed") return 403;
 	if (code === "invite_expired") return 410;
 	if (code === "invite_invalid") return 404;
 	return 409;
@@ -545,8 +545,11 @@ async function readRequestBytes(c: Context, maxBytes = MAX_BODY_BYTES): Promise<
 function deviceRevokedResponse(c: Context, error: unknown): Response {
 	const ownership = deviceOwnershipErrorResponse(c, error);
 	if (ownership) return ownership;
-	if (error instanceof Error && error.message === "device_revoked") {
-		return c.json({ error: "device_revoked" }, 403);
+	if (
+		error instanceof Error &&
+		(error.message === "device_revoked" || error.message === "device_removed")
+	) {
+		return c.json({ error: error.message }, 403);
 	}
 	throw error;
 }
@@ -573,7 +576,7 @@ function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Respo
 	const ownership = deviceOwnershipErrorResponse(c, error);
 	if (ownership) return ownership;
 	const code = error instanceof Error ? error.message : "invite_invalid";
-	if (code === "device_revoked") return c.json({ error: "device_revoked" }, 403);
+	if (code === "device_revoked" || code === "device_removed") return c.json({ error: code }, 403);
 	if (code === "invite_expired") return c.json({ error: code }, 410);
 	if (code === "invite_invalid") return c.json({ error: code }, 404);
 	return c.json({ error: code }, 409);
@@ -609,6 +612,29 @@ async function reviewJoinRequestWithRevocationDenial(
 			return args[0].json({ error: error.message }, 503);
 		}
 		return deviceRevokedResponse(args[0], error);
+	}
+}
+
+/**
+ * A coordinator that cannot record a removal yet answers 503 with the store's
+ * fixed error, and no enrollment is deleted. Any other failure stays a server error.
+ */
+async function removeAdminDevice(
+	c: Context,
+	store: CoordinatorStore,
+	groupId: string,
+	deviceId: string,
+): Promise<Response> {
+	try {
+		const ok = await store.removeDevice(groupId, deviceId);
+		if (!ok) return c.json({ error: "device_not_found" }, 404);
+		return c.json({ ok: true });
+	} catch (error) {
+		if (error instanceof Error && error.message === "device_removal_unavailable")
+			return c.json({ error: "device_removal_unavailable" }, 503);
+		throw error;
+	} finally {
+		await store.close();
 	}
 }
 
@@ -1964,14 +1990,7 @@ export function createCoordinatorApp(
 			return c.json({ error: "group_id_and_device_id_required" }, 400);
 		}
 
-		const store = createStore();
-		try {
-			const ok = await store.removeDevice(groupId, deviceId);
-			if (!ok) return c.json({ error: "device_not_found" }, 404);
-			return c.json({ ok: true });
-		} finally {
-			await store.close();
-		}
+		return removeAdminDevice(c, createStore(), groupId, deviceId);
 	});
 
 	app.post("/v1/admin/legacy-team-completions", async (c) => {

@@ -132,6 +132,33 @@ test.for(["SQLite", "D1"] as const)(
 	},
 );
 
+test.for(["SQLite", "D1"] as const)(
+	"%s commit for a removed device is refused with device_removed and writes nothing",
+	async (backend, { writer: f }) => {
+		// Arrange: the device was removed from another group after its attempt was confirmed.
+		await f.exec(
+			`INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key,
+				fingerprint, key_id, removed_at) VALUES ('removal-a', 'group-z', ?, ?, ?, ?, 'then')`,
+			f.row.device_id,
+			f.key.publicKey,
+			f.row.fingerprint,
+			f.row.key_id,
+		);
+		const input = f.input();
+		if (backend === "D1") input.backend = createD1AuthLinkBackend(sqliteD1(f.db));
+		const before = f.effects();
+		// Act
+		const refused = await commitOwnerEnrollment(input).then(
+			() => null,
+			(error: Error) => error,
+		);
+		// Assert: the store's fixed error, and the attempt stays confirmed.
+		expect([refused?.constructor, refused?.message]).toEqual([Error, "device_removed"]);
+		expect(f.effects()).toEqual(before);
+		expect(f.finalRow().state).toBe("confirmed");
+	},
+);
+
 test.for(["signature", "other-key", "secret", "malformed-secret", "early", "deadline", "revision"])(
 	"private final proof denies %s with no durable changes",
 	async (fault, { writer: f }) => {

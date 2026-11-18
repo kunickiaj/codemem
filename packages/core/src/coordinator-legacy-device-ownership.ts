@@ -2,6 +2,7 @@ import {
 	enrollmentKeyIdColumn,
 	enrollmentKeyIdSql,
 	type RemovalColumnSql,
+	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
 import type { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
@@ -325,6 +326,7 @@ export function legacyDeviceDenial(row: unknown): string {
 }
 
 export function legacyDeviceAuthorizationFailure(error: unknown): never {
+	rethrowDeviceRemovedAbort(error);
 	if (
 		error instanceof Error &&
 		[

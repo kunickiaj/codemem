@@ -356,6 +356,30 @@ test.for(["retained", "removed", "forged"])(
 	},
 );
 
+test("native D1 commit for a removed device is refused with device_removed and writes nothing", async ({
+	writer: f,
+}) => {
+	// Arrange: the device was removed from another group after its attempt was confirmed.
+	await exec(
+		`INSERT INTO coordinator_device_removals(removal_id, group_id, device_id, public_key,
+			fingerprint, key_id, removed_at) VALUES ('removal-a', 'group-z', ?, ?, ?, ?, 'then')`,
+		f.row.device_id,
+		f.row.public_key,
+		f.row.fingerprint,
+		f.row.key_id,
+	);
+	const before = await effects();
+	// Act
+	const refused = await commitOwnerEnrollment(f.input).then(
+		() => null,
+		(error: Error) => error.message,
+	);
+	// Assert: the store's fixed error, without the text D1 puts around a trigger's message.
+	expect(refused).toBe("device_removed");
+	expect(await effects()).toEqual(before);
+	expect((await finalRow()).state).toBe("confirmed");
+});
+
 test("native D1 commit on a schema without device removal storage enrolls every pinned group as before", async ({
 	writer: f,
 }) => {

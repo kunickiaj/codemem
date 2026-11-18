@@ -6,6 +6,7 @@ import {
 	enrollmentKeyIdSql,
 	hasDeviceRemovalSchema,
 	type RemovalColumnSql,
+	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import {
 	ed25519KeyIdForRevocation,
@@ -194,7 +195,12 @@ async function writeOwnerEnrollment(
 	writes: AuthLinkStatement[],
 	winner: string[],
 ): Promise<boolean> {
-	if ((await writeGuarded(backend, guards, writes)) === "changed") return false;
+	const written = await writeGuarded(backend, guards, writes).catch((error: unknown) => {
+		// A tombstone-match abort rolled the batch back. Both backends report it by one fixed error.
+		rethrowDeviceRemovedAbort(error);
+		throw error;
+	});
+	if (written === "changed") return false;
 	return readCommittedOwnerEnrollment(backend, winner);
 }
 
