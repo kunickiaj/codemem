@@ -1417,18 +1417,18 @@ function testRecipientFocusedMigration() {
 		const overview = document.querySelector<HTMLElement>(
 			'[aria-labelledby="sharing-team-setup-heading"]',
 		);
-		expect(overview?.querySelector("h3")?.textContent).toBe("Legacy groups to migrate");
+		expect(overview?.querySelector("h3")?.textContent).toBe("Teams to finish setting up");
 		expect(overview?.textContent).toContain(
-			"Review current devices before migrating Team membership or project access.",
+			"Confirm who uses each device and which Projects each Team shares, then finish setup.",
 		);
 		expect(document.body.textContent).toContain(
 			"Team setup status is temporarily unavailable. The previous Team setup status is being shown.",
 		);
 		expect(overview?.textContent).toContain(
-			"Needs Team · 8 devices, 2 Projects — Migration review needs update",
+			"Needs Team · 8 devices, 2 Projects — Setup needs a fresh review",
 		);
 		expect(overview?.textContent).toContain(
-			"Progress Team · 0 devices, 0 Projects — Migration in progress",
+			"Progress Team · 0 devices, 0 Projects — Setup in progress",
 		);
 		expect(overview?.textContent).not.toContain("Ready Team");
 		expect(overview?.textContent).not.toContain("5 unresolved");
@@ -1438,18 +1438,18 @@ function testRecipientFocusedMigration() {
 				badge.className,
 			]),
 		).toEqual([
-			["Migration review needs update", "project-status-badge needs_attention"],
-			["Migration in progress", "project-status-badge suggested"],
+			["Setup needs a fresh review", "project-status-badge needs_attention"],
+			["Setup in progress", "project-status-badge suggested"],
 		]);
 		const buttons = overview?.querySelectorAll<HTMLButtonElement>("button") ?? [];
 		expect(buttons).toHaveLength(2);
 		expect([...buttons].map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Review and migrate Needs Team: 8 devices, 2 Projects",
-			"Review and migrate Progress Team: 0 devices, 0 Projects",
+			"Finish setting up Needs Team: 8 devices, 2 Projects",
+			"Finish setting up Progress Team: 0 devices, 0 Projects",
 		]);
 		expect([...buttons].map((button) => button.textContent)).toEqual([
-			"Review and migrate",
-			"Review and migrate",
+			"Finish setting up",
+			"Finish setting up",
 		]);
 		act(() => buttons[1]?.click());
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("candidate-progress");
@@ -1519,8 +1519,8 @@ function testRecipientFocusedMigrationGroups() {
 			expect(row.querySelector(".recipient-policy-sharing-team-setup-action")).not.toBeNull();
 		}
 		expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
-			"Review and migrate Legacy Team 1 of 2: 2 devices, 3 Projects",
-			"Review and migrate Legacy Team 2 of 2: 4 devices, 5 Projects",
+			"Finish setting up Legacy Team 1 of 2: 2 devices, 3 Projects",
+			"Finish setting up Legacy Team 2 of 2: 4 devices, 5 Projects",
 		]);
 		expect(new Set(buttons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
 		expect(duplicateGroup?.textContent).not.toMatch(/opaque-candidate|coordinator|group[_ -]?id/i);
@@ -1588,7 +1588,7 @@ function testRecipientFocusedMigrationFallbacks() {
 		expect(badge?.textContent).toBe("Ready to review");
 		expect(badge?.className).toBe("project-status-badge needs_attention");
 		expect(document.getElementById("sharing-team-setup-heading")?.textContent).toBe(
-			"Legacy groups to migrate",
+			"Teams to finish setting up",
 		);
 	});
 }
@@ -1622,12 +1622,12 @@ function testRecipientFocusedMigrationSurface() {
 			'[aria-labelledby="sharing-team-setup-heading"]',
 		);
 		const action = overview?.querySelector<HTMLButtonElement>("button");
-		expect(overview?.textContent).toContain("Legacy groups to migrate");
+		expect(overview?.textContent).toContain("Teams to finish setting up");
 		expect(overview?.textContent).toContain("SRE");
 		expect(overview?.textContent).toContain("6 devices, 1 Project");
 		expect(overview?.textContent).toContain("Ready to review");
-		expect(action?.textContent).toBe("Review and migrate");
-		expect(action?.getAttribute("aria-label")).toBe("Review and migrate SRE: 6 devices, 1 Project");
+		expect(action?.textContent).toBe("Finish setting up");
+		expect(action?.getAttribute("aria-label")).toBe("Finish setting up SRE: 6 devices, 1 Project");
 		expect(document.body.textContent).toContain(
 			"No Teams yet. Create one to share Projects with a group of people.",
 		);
@@ -1706,7 +1706,7 @@ describe("Sharing Team setup recovery blockers", () => {
 			expect(row?.textContent).toMatch(/Team setup could not be verified/i);
 			expect(action?.textContent).toBe("View recovery details");
 			expect(action?.getAttribute("aria-label")).toContain("Recovery Team");
-			expect(row?.textContent).not.toContain("Review and migrate");
+			expect(row?.textContent).not.toContain("Finish setting up");
 			expect(row?.textContent).not.toContain("Ready to review");
 			expect(row?.outerHTML).not.toContain("team_setup_completion_invalid");
 			expect(onOpenTeamSetup).toHaveBeenCalledExactlyOnceWith("candidate-blocked");
@@ -1737,7 +1737,7 @@ describe("Sharing Team setup recovery blockers", () => {
 		expect(rows).toHaveLength(2);
 		expect(healthy).toBeDefined();
 		expect(healthy?.textContent).not.toContain("Needs recovery");
-		expect(action?.textContent).toBe("Review and migrate");
+		expect(action?.textContent).toBe("Finish setting up");
 		expect(onOpenTeamSetup).toHaveBeenCalledExactlyOnceWith("candidate-healthy");
 		expect(rows.filter((row) => row.textContent?.includes("View recovery details"))).toHaveLength(
 			1,
