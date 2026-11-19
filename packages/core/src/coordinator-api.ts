@@ -14,6 +14,10 @@ import {
 	assertConfiguredAuthSchema,
 	authSchemaUpgradeResponse,
 } from "./coordinator-auth-schema.js";
+import {
+	discardReadinessWithoutFeature,
+	registerCoordinatorBoundaryReadinessRoute,
+} from "./coordinator-boundary-readiness-route.js";
 import type {
 	CoordinatorBrowserAuth,
 	CoordinatorBrowserAuthClientKey,
@@ -299,6 +303,12 @@ export interface CoordinatorVerifyRequestInput {
 	deviceId: string;
 }
 
+/** The capabilities object of a presence body, or undefined when it is not an object. */
+function presenceCapabilities(value: unknown): Record<string, unknown> | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	return value as Record<string, unknown>;
+}
+
 function registerCoordinatorRuntimeRoutes(
 	app: Hono,
 	opts: CreateCoordinatorAppOptions,
@@ -329,6 +339,12 @@ function registerCoordinatorRuntimeRoutes(
 		...deps,
 		storeFactory: () => createStore(),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
+	});
+	registerCoordinatorBoundaryReadinessRoute(app, {
+		...deps,
+		storeFactory: () => createStore(),
+		authorizeRequest: (store, request) =>
+			authorizeRequest(store, opts.runtime, opts.requestVerifier, request),
 	});
 	registerOptionalCoordinatorAuth(app, opts, deps);
 }
@@ -1094,17 +1110,16 @@ export function createCoordinatorApp(
 				return c.json({ error: "ttl_s_must_be_int" }, 400);
 			}
 
-			const response = await store.upsertPresence({
+			const presence = {
 				groupId,
 				deviceId: String(auth.enrollment.device_id),
+				capabilities: presenceCapabilities(data.capabilities),
+			};
+			await discardReadinessWithoutFeature(store, presence);
+			const response = await store.upsertPresence({
+				...presence,
 				addresses: rawAddresses as string[],
 				ttlS,
-				capabilities:
-					typeof data.capabilities === "object" &&
-					data.capabilities !== null &&
-					!Array.isArray(data.capabilities)
-						? (data.capabilities as Record<string, unknown>)
-						: undefined,
 			});
 
 			return c.json({ ok: true, ...response });
