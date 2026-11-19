@@ -28,6 +28,7 @@ import {
 	setTeamInvitePanelOpen,
 	teamInvitePanelOpen,
 } from "../../helpers";
+import { peerRemovalFeedback } from "../../peer-removal-feedback";
 import {
 	openDuplicatePersonDialog,
 	openSyncConfirmDialog,
@@ -56,6 +57,38 @@ import {
 const TEAM_SYNC_ACTIONS_MOUNT_ID = "syncTeamActionsMount";
 const APPROVAL_SENT_MESSAGE =
 	"Approval sent for this device. This screen may take up to 30 seconds to confirm two-way trust.";
+
+export async function removeConflictingLocalPeer(
+	row: Pick<TeamSyncDiscoveredRow, "deviceId" | "displayName">,
+): Promise<SyncActionFeedback | null> {
+	const confirmed = await openSyncConfirmDialog({
+		title: `Remove ${row.displayName}?`,
+		description:
+			"This deletes the broken local device record. You can review this device again after the screen refreshes.",
+		confirmLabel: "Remove device record",
+		cancelLabel: "Keep device record",
+		tone: "danger",
+	});
+	if (!confirmed) return null;
+	try {
+		const result = await api.deletePeer(row.deviceId);
+		const feedback = peerRemovalFeedback(result, {
+			label: row.displayName,
+			removedMessage: `Removed the broken local device record for ${row.displayName}. If it is still available, review it again from Next steps or Devices seen on team.`,
+		});
+		state.syncDiscoveredFeedback = feedback;
+		await teamSyncState.loadSyncData();
+		return feedback;
+	} catch (error) {
+		return {
+			message: friendlyError(
+				error,
+				"Failed to remove the broken local device record. The old local record is still present in People & devices.",
+			),
+			tone: "warning",
+		};
+	}
+}
 
 export function needsCoordinatorGroupReview(
 	groupIds: string[],
@@ -531,35 +564,7 @@ export function renderTeamSync() {
 					"warning",
 				);
 			},
-			onRemoveConflict: async (row) => {
-				const confirmed = await openSyncConfirmDialog({
-					title: `Remove ${row.displayName}?`,
-					description:
-						"This deletes the broken local device record. You can review this device again after the screen refreshes.",
-					confirmLabel: "Remove device record",
-					cancelLabel: "Keep device record",
-					tone: "danger",
-				});
-				if (!confirmed) return null;
-				try {
-					await api.deletePeer(row.deviceId);
-					const feedback = {
-						message: `Removed the broken local device record for ${row.displayName}. If it is still available, review it again from Next steps or Devices seen on team.`,
-						tone: "success",
-					} satisfies SyncActionFeedback;
-					state.syncDiscoveredFeedback = feedback;
-					await teamSyncState.loadSyncData();
-					return feedback;
-				} catch (error) {
-					return {
-						message: friendlyError(
-							error,
-							"Failed to remove the broken local device record. The old local record is still present in People & devices.",
-						),
-						tone: "warning",
-					} satisfies SyncActionFeedback;
-				}
-			},
+			onRemoveConflict: removeConflictingLocalPeer,
 			onReviewDiscoveredDevice: async (row) => {
 				try {
 					const reviewedName = await reviewDiscoveredDeviceName(row.displayName);

@@ -11,6 +11,7 @@ import {
 import { teamSyncState } from "../data/state";
 import {
 	needsCoordinatorGroupReview,
+	removeConflictingLocalPeer,
 	renderTeamSync,
 	renderTeamSyncPrimaryStatus,
 	submitDiscoveredDeviceReview,
@@ -19,7 +20,37 @@ import {
 vi.mock("../../../../lib/api", () => ({
 	acceptDiscoveredPeer: vi.fn(),
 	renamePeer: vi.fn(),
+	deletePeer: vi.fn(),
 }));
+
+vi.mock("../../sync-dialogs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../sync-dialogs")>()),
+	openSyncConfirmDialog: vi.fn(async () => true),
+}));
+
+it("shows administrator guidance when conflict cleanup keeps the binding", async () => {
+	vi.mocked(api.deletePeer).mockResolvedValue({ binding: "kept" });
+	const feedback = await removeConflictingLocalPeer({
+		deviceId: "fixture-peer",
+		displayName: "Desk",
+	});
+	expect(feedback?.message).toBe(
+		"Disconnected this device from Desk. The device stays in Projects. An administrator's device can remove it.",
+	);
+	expect(state.syncDiscoveredFeedback).toBe(feedback);
+	expect(teamSyncState.loadSyncData).toHaveBeenCalledOnce();
+});
+
+it("keeps conflict recovery guidance when the binding was ended", async () => {
+	vi.mocked(api.deletePeer).mockResolvedValue({ binding: "ended" });
+	const feedback = await removeConflictingLocalPeer({
+		deviceId: "fixture-peer",
+		displayName: "Desk",
+	});
+	expect(feedback?.message).toBe(
+		"Removed the broken local device record for Desk. If it is still available, review it again from Next steps or Devices seen on team.",
+	);
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();
