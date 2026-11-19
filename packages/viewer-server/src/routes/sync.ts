@@ -16,6 +16,7 @@ import type {
 	DeviceIdentityBindingCommitRequestV1,
 	DeviceIdentityBindingPreviewRequestV1,
 	DeviceIdentityCoordinatorEvidence,
+	LegacyPairingAssignmentConversionResult,
 	MaintenanceJobSnapshot,
 	MemoryStore,
 	ProjectScopeGuardrailWarning,
@@ -57,6 +58,7 @@ import {
 	commitDeviceIdentityBindings,
 	commitRecipientPolicyEdges,
 	completeCoordinatorDeviceSetup,
+	convertLegacyPairingAssignments,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
@@ -113,6 +115,7 @@ import {
 	LOCAL_SYNC_CAPABILITY,
 	LOCAL_SYNC_FEATURES,
 	LocalIdentitySupersededError,
+	legacyPairingAssignmentsConverted,
 	listAuthorizedScopesForPeer,
 	listDeviceIdentityInventory,
 	listInboundScopeRejections,
@@ -228,6 +231,7 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { type Context, Hono } from "hono";
 import { queryBool, queryInt, safeJsonList } from "../helpers.js";
 import type { InMemoryRequestRateLimiter } from "../request-rate-limit.js";
+import { listAllEnrollments } from "./device-rename.js";
 import { deviceRoutes } from "./device-retire.js";
 import { legacyTeamCandidateGroupDescriptors, normalizedCoordinatorId } from "./team-setup.js";
 
@@ -2037,6 +2041,87 @@ async function reconcileConfiguredCoordinatorGroup(
 		};
 	} catch (error) {
 		return { failures: [coordinatorEnrollmentFailure(groupId, stage, error)] };
+	}
+}
+
+export type ConvertLegacyPairingAssignmentsOperationResult = Pick<
+	LegacyPairingAssignmentConversionResult,
+	"status" | "waitingReason"
+>;
+
+/**
+ * Enrollments from every group the coordinator has, including groups this device
+ * is not configured for. A device can be enrolled under another person in a
+ * group this device does not sync with, and the conversion must see that.
+ */
+export async function loadAllGroupsDeviceIdentityCoordinatorEvidence(
+	options: {
+		config?: ReturnType<typeof readCoordinatorSyncConfig>;
+		listEnrollments?: typeof listAllEnrollments;
+	} = {},
+): Promise<DeviceIdentityCoordinatorEvidence> {
+	const config = options.config ?? readCoordinatorSyncConfig();
+	const unavailable = (safeErrorCode: string): DeviceIdentityCoordinatorEvidence => ({
+		availability: "unavailable",
+		safeErrorCode,
+		enrollments: [],
+	});
+	const configured =
+		config.syncCoordinatorUrl.length > 0 ||
+		config.syncCoordinatorGroups.length > 0 ||
+		config.syncCoordinatorAdminSecret.length > 0;
+	if (!configured) return unavailable("coordinator_not_configured");
+	// Devices binds a paired device only with a configured group. The conversion retires the
+	// older assignment route, so it must not finish where Devices could not take over.
+	const hasConfiguredGroup = config.syncCoordinatorGroups.some((groupId) => groupId.trim());
+	if (
+		!config.syncCoordinatorUrl.trim() ||
+		!config.syncCoordinatorAdminSecret.trim() ||
+		!hasConfiguredGroup
+	) {
+		return unavailable("coordinator_configuration_required");
+	}
+	try {
+		const list = options.listEnrollments ?? listAllEnrollments;
+		const enrollments = await list(config, { includeArchived: true });
+		return { availability: "available", safeErrorCode: null, enrollments };
+	} catch {
+		return unavailable("coordinator_unavailable");
+	}
+}
+
+/**
+ * Runs the one-time conversion of the person assigned on pairings into Identity
+ * bindings. It runs after enrollment reconciliation, so a binding the coordinator
+ * supplies is already in place, and before recipient reconciliation, which reads
+ * bindings. Until this device can read the coordinator's enrollments it changes
+ * nothing, and the older assignment keeps working.
+ */
+export async function convertLegacyPairingAssignmentsOperation(
+	store: MemoryStore,
+	options: {
+		loadCoordinatorEvidence?: () => Promise<DeviceIdentityCoordinatorEvidence>;
+	} = {},
+): Promise<ConvertLegacyPairingAssignmentsOperationResult> {
+	if (legacyPairingAssignmentsConverted(store.db)) {
+		return { status: "already_converted", waitingReason: null };
+	}
+	const load = options.loadCoordinatorEvidence ?? loadAllGroupsDeviceIdentityCoordinatorEvidence;
+	const coordinator = await load();
+	try {
+		const { status, waitingReason } = convertLegacyPairingAssignments(store.db, {
+			localActorId: store.actorId,
+			localDeviceId: store.deviceId,
+			coordinator,
+			ensureLocalIdentity: () => ensureLocalActorRecord(store),
+		});
+		return { status, waitingReason };
+	} catch (error) {
+		// This process runs as a person the database has switched away from. The current one converts.
+		if (error instanceof LocalIdentitySupersededError) {
+			return { status: "waiting", waitingReason: "local_identity_conflict" };
+		}
+		throw error;
 	}
 }
 
@@ -6088,6 +6173,11 @@ function persistPeerIdentityMutation(store: MemoryStore, body: Record<string, un
 		claimedLocalActor: Boolean(peer.claimed_local_actor),
 	});
 	if ("error" in assignment) return assignment;
+	// After the conversion, a binding decides whose device this is. Changing these columns
+	// would report success and change nothing, so the change is made in Devices instead.
+	if (legacyPairingAssignmentsConverted(store.db)) {
+		return { error: "device_identity_managed_in_devices", status: 409 as const };
+	}
 	d.update(schema.syncPeers)
 		.set({
 			actor_id: assignment.actor_id,

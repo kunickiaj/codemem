@@ -112,6 +112,7 @@ export {
 	memoryToolCallRoutes,
 } from "./routes/memory-tool-call.js";
 export type {
+	ConvertLegacyPairingAssignmentsOperationResult,
 	RecipientPolicyReconciliationReadModel,
 	RecipientPolicyReconciliationReadState,
 	ReconcileConfiguredCoordinatorEnrollmentResult,
@@ -119,6 +120,7 @@ export type {
 export {
 	advancePendingProjectShares,
 	advanceProjectShareOperation,
+	convertLegacyPairingAssignmentsOperation,
 	createRecipientPolicyReconcilerEffects,
 	listRecipientPolicyReconciliationStatus,
 	recipientPolicyCapabilityFromStatus,

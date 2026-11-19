@@ -604,6 +604,7 @@ export interface ServeCoordinatorMaintenanceResult {
 		failures?: ReconcileConfiguredCoordinatorEnrollmentResult["failures"];
 	};
 	recipientPolicies: { processed: number; failed: number };
+	legacyPairingAssignments: { status: string; waitingReason: string | null };
 }
 
 type ServeCoordinatorMaintenanceDependencies = Parameters<typeof runServeCoordinatorMaintenance>[1];
@@ -618,6 +619,7 @@ function createServeCoordinatorMaintenanceDependencies(
 				advanceOperation: server.advanceProjectShareOperation,
 			}),
 		reconcileConfiguredCoordinatorEnrollment: server.reconcileConfiguredCoordinatorEnrollment,
+		convertLegacyPairingAssignments: server.convertLegacyPairingAssignmentsOperation,
 		reconcileRecipientPolicyProjects: (store, options) =>
 			server.reconcileRecipientPolicyProjectsOperation(store, {
 				...options,
@@ -662,11 +664,16 @@ export async function runServeCoordinatorMaintenance(
 			issues?: number;
 			failures?: ReconcileConfiguredCoordinatorEnrollmentResult["failures"];
 		}>;
+		convertLegacyPairingAssignments: (
+			store: MemoryStore,
+		) => Promise<{ status: string; waitingReason: string | null }>;
 	},
 ): Promise<ServeCoordinatorMaintenanceResult> {
 	const projectShares = await dependencies.advancePendingProjectShares(store, { limit: 3 });
 	const coordinatorEnrollment = await dependencies.reconcileConfiguredCoordinatorEnrollment(store);
 	const enrollmentIssues = coordinatorEnrollment.issues ?? 0;
+	// After enrollment, so a binding the coordinator supplies wins. Before policies, which read bindings.
+	const legacyPairingAssignments = await dependencies.convertLegacyPairingAssignments(store);
 	const recipientPolicies = await dependencies.reconcileRecipientPolicyProjects(store, {
 		limit: 3,
 	});
@@ -689,7 +696,7 @@ export async function runServeCoordinatorMaintenance(
 			`recipient policy maintenance failed for ${recipientPolicies.failed} of ${recipientPolicies.processed} projects`,
 		);
 	}
-	return { projectShares, coordinatorEnrollment, recipientPolicies };
+	return { projectShares, coordinatorEnrollment, recipientPolicies, legacyPairingAssignments };
 }
 
 async function startBackgroundViewer(invocation: ResolvedServeInvocation): Promise<void> {

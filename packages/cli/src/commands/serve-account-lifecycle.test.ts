@@ -98,6 +98,7 @@ vi.mock("@codemem/server", () => ({
 		inbox: { start: mocks.inboxStart },
 		stop: mocks.inboxStop,
 	})),
+	convertLegacyPairingAssignmentsOperation: vi.fn(),
 	reconcileConfiguredCoordinatorEnrollment: vi.fn(),
 }));
 vi.mock("@hono/node-server", () => ({ serve: mocks.serve }));

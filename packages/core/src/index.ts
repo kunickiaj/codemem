@@ -716,6 +716,19 @@ export {
 } from "./ingest-xml-parser.js";
 export { parsePositiveMemoryId, parseStrictInteger } from "./integers.js";
 export type {
+	LegacyPairingAssignmentConversionInput,
+	LegacyPairingAssignmentConversionResult,
+	LegacyPairingAssignmentReviewReason,
+} from "./legacy-pairing-assignment-conversion.js";
+export {
+	convertLegacyPairingAssignments,
+	LEGACY_PAIRING_ASSIGNMENT_PROVENANCE,
+} from "./legacy-pairing-assignment-conversion.js";
+export {
+	LEGACY_PAIRING_ASSIGNMENT_JOB,
+	legacyPairingAssignmentsConverted,
+} from "./legacy-pairing-assignment-state.js";
+export type {
 	LegacyRecipientPolicyConditionCodeV1,
 	LegacyRecipientPolicyConditionV1,
 	LegacyRecipientPolicyConfidenceV1,

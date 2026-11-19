@@ -774,11 +774,26 @@ export async function coordinatorUnarchiveGroupAction(opts: {
 	}
 }
 
+/** A reply that lists groups, or an error. A missing list or a malformed entry is never read as "no groups". */
+function wellFormedGroupList(payload: Record<string, unknown> | null): CoordinatorGroup[] {
+	const items = payload?.items;
+	if (!Array.isArray(items)) throw new Error("coordinator_group_list_malformed");
+	return items.map((row) => {
+		const groupId = (row as { group_id?: unknown } | null)?.group_id;
+		if (!isCanonicalCoordinatorIdentifier(groupId)) {
+			throw new Error("coordinator_group_list_malformed");
+		}
+		return row as CoordinatorGroup;
+	});
+}
+
 export async function coordinatorListGroupsAction(opts?: {
 	dbPath?: string | null;
 	remoteUrl?: string | null;
 	adminSecret?: string | null;
 	includeArchived?: boolean;
+	/** Throw on a reply that is not a well-formed group list, for callers that need every group. */
+	requireWellFormed?: boolean;
 	timeoutS?: number;
 }): Promise<CoordinatorGroup[]> {
 	const remote = opts?.remoteUrl ?? null;
@@ -794,6 +809,7 @@ export async function coordinatorListGroupsAction(opts?: {
 			undefined,
 			opts?.timeoutS,
 		);
+		if (opts?.requireWellFormed) return wellFormedGroupList(payload);
 		return Array.isArray(payload?.items)
 			? payload.items.filter(
 					(row): row is CoordinatorGroup => Boolean(row) && typeof row === "object",

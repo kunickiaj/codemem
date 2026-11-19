@@ -23,6 +23,8 @@ export async function listAllEnrollments(
 		remoteUrl,
 		adminSecret,
 		includeArchived: options.includeArchived === true,
+		// Callers act on "every enrollment", so a reply that cannot be read must not look like none.
+		requireWellFormed: true,
 	});
 	if (groups.length > 25) throw new Error("coordinator_evidence_too_large");
 	const devices = (
