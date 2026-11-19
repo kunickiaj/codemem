@@ -3642,3 +3642,92 @@ describe("Team setup stale retry lifecycle", () => {
 		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
 	});
 });
+
+describe("Team setup after a name the server says is already listed", () => {
+	// An included device whose saved person is Alex, in a setup that's ready to finish.
+	const includedDevice = device({
+		existingIdentityRef: "identity-ref-alex",
+		suggestedIdentityRef: null,
+		verifiedEvidenceKind: "active_assignment",
+		decision: "included",
+		targetIdentityRef: "identity-ref-alex",
+		expectation: { kind: "existing", assignmentVersion: 7, identityRef: "identity-ref-alex" },
+	});
+
+	async function tryListedNameThenChoose(identityRef: string | null) {
+		const finish = vi.fn().mockResolvedValue(undefined);
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockResolvedValue(
+					detail({ canFinish: true, devices: [includedDevice], identityChoices: identities }),
+				),
+			saveAssignment: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_person_listed")),
+			finish,
+		});
+		await vi.waitFor(() =>
+			expect(document.querySelector('button[aria-current="step"]')).not.toBeNull(),
+		);
+		act(() => button("Devices").click());
+		const select = await vi.waitFor(() => {
+			const match = document.querySelector<HTMLSelectElement>(".legacy-team-device-select");
+			if (!match) throw new Error("identity select missing");
+			return match;
+		});
+		const choose = (value: string) =>
+			act(() => {
+				select.value = value;
+				select.dispatchEvent(new Event("change", { bubbles: true }));
+			});
+		choose("new-person");
+		act(() => {
+			const input = document.querySelector<HTMLInputElement>(".legacy-team-device-new-person");
+			if (!input) throw new Error("name field missing");
+			input.value = "Alex";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		act(() => button("Save assignment").click());
+		await vi.waitFor(() =>
+			expect(document.querySelector(".legacy-team-device-row")?.textContent).toContain(
+				"Someone with that name is already listed.",
+			),
+		);
+		if (identityRef) choose(identityRef);
+		return { finish };
+	}
+
+	it("finishes after going back to the saved person", async () => {
+		// Arrange
+		const { finish } = await tryListedNameThenChoose("identity-ref-alex");
+
+		// Act
+		act(() => button("Review").click());
+		await confirmFinish();
+		act(() => button("Finish Team setup").click());
+
+		// Assert
+		expect(document.body.textContent).not.toContain("Someone with that name is already listed.");
+		await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+	});
+
+	it("keeps Finish off and says why while the listed name is still entered", async () => {
+		// Arrange
+		const { finish } = await tryListedNameThenChoose(null);
+
+		// Act
+		act(() => button("Review").click());
+		await confirmFinish();
+		const finishButton = button("Finish Team setup");
+		act(() => finishButton.click());
+
+		// Assert
+		expect(finishButton.getAttribute("aria-disabled")).toBe("true");
+		const reason = document.getElementById(
+			finishButton.getAttribute("aria-describedby")?.split(" ").at(-1) ?? "",
+		);
+		expect(reason?.textContent).toContain("Someone with that name is already listed.");
+		expect(finish).not.toHaveBeenCalled();
+	});
+});

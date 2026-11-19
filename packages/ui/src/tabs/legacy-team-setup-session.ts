@@ -75,6 +75,8 @@ export type SetupSessionEvent =
 			targetIdentityRef?: string;
 	  }
 	| { type: "clear_device"; deviceRef: string }
+	/** The person changed a device's unsaved assignment, which retires its correctable error. */
+	| { type: "device_draft_changed"; deviceRef: string }
 	| { type: "map_project"; projectRef: string; resolvedProjectRef: string }
 	| { type: "finish" }
 	| { type: "command_started"; id: string }
@@ -132,6 +134,8 @@ export function reduceSetupSession(
 			return enqueueDevice(state, event, "decide_device");
 		case "clear_device":
 			return enqueueDevice(state, event, "clear_device");
+		case "device_draft_changed":
+			return dismissCorrectableDeviceError(state, event.deviceRef);
 		case "map_project":
 			return enqueueProject(state, event);
 		case "finish":
@@ -387,6 +391,22 @@ function enqueueGlobal(
 		},
 		message,
 	);
+}
+
+/**
+ * A correctable error describes the value that failed to save, so it no longer
+ * applies once that value is edited. Other errors stay until they're resolved.
+ */
+function dismissCorrectableDeviceError(
+	state: SetupSessionState,
+	deviceRef: string,
+): SetupSessionState {
+	if (state.status !== "open") return state;
+	const errors = state.errors.filter(
+		(error) =>
+			!(error.correctable && error.scope.kind === "device" && error.scope.itemRef === deviceRef),
+	);
+	return errors.length === state.errors.length ? state : { ...state, errors };
 }
 
 function enqueueFinish(state: SetupSessionState): SetupSessionState {
