@@ -18,7 +18,7 @@ export interface LegacyTeamSetupDevicesProps {
 	busyDeviceRefs: ReadonlySet<string>;
 	detail: LegacyTeamSetupDetailResponseV1;
 	/** A message the person can fix on this device's row, keyed by device. */
-	deviceNotices?: ReadonlyMap<string, string>;
+	deviceNotices?: ReadonlyMap<string, DeviceNotice>;
 	onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) => void;
 	onClear: (device: LegacyTeamSetupDeviceV1) => void;
 	onDecision: (
@@ -26,6 +26,12 @@ export interface LegacyTeamSetupDevicesProps {
 		decision: DeviceDecision,
 		identityRef?: string,
 	) => void;
+}
+
+/** A correctable message on a device's row, and how editing the row retires it. */
+export interface DeviceNotice {
+	message: string;
+	onEdit?: () => void;
 }
 
 const DECISION_LABELS: Record<LegacyTeamSetupDeviceV1["decision"], string> = {
@@ -107,6 +113,8 @@ function PersonPicker(props: {
 	draft: string;
 	newPersonName: string;
 	onDraft: (value: string) => void;
+	/** Tells the session an unsaved assignment changed, while the row shows a notice. */
+	onEdited?: () => void;
 	onNewPersonName: (value: string) => void;
 	showUnavailable: boolean;
 }) {
@@ -118,7 +126,10 @@ function PersonPicker(props: {
 				className="legacy-team-device-select"
 				disabled={props.disabled}
 				id={props.controlId}
-				onChange={(event) => props.onDraft(event.currentTarget.value)}
+				onChange={(event) => {
+					props.onDraft(event.currentTarget.value);
+					props.onEdited?.();
+				}}
 				value={props.draft}
 			>
 				<option value="">Choose a person</option>
@@ -136,7 +147,10 @@ function PersonPicker(props: {
 				describedBy={props.describedBy}
 				disabled={props.disabled}
 				id={`${props.controlId}-new-name`}
-				onInput={props.onNewPersonName}
+				onInput={(value) => {
+					props.onNewPersonName(value);
+					props.onEdited?.();
+				}}
 				shown={props.draft === NEW_PERSON}
 				value={props.newPersonName}
 			/>
@@ -264,7 +278,6 @@ function DeviceRow({
 	const notice = deviceNotices?.get(device.deviceRef);
 	const existingName = identityName(detail, device.existingIdentityRef);
 	const suggestedName = identityName(detail, device.suggestedIdentityRef);
-	const assignmentNeedsHelp = !device.enabled || includeNeedsHelp;
 	const globalBlockedDescription = blocked
 		? blockedDescriptionId
 		: itemBlocked
@@ -272,7 +285,7 @@ function DeviceRow({
 			: undefined;
 	const assignmentDescription = [
 		evidenceId,
-		assignmentNeedsHelp ? assignmentHelpId : undefined,
+		!device.enabled || includeNeedsHelp ? assignmentHelpId : undefined,
 		globalBlockedDescription,
 	]
 		.filter(Boolean)
@@ -305,12 +318,13 @@ function DeviceRow({
 				draft={draftIdentityRef}
 				newPersonName={newPersonName}
 				onDraft={setDraftIdentityRef}
+				onEdited={notice?.onEdit}
 				onNewPersonName={setNewPersonName}
 				showUnavailable={assignmentIdentityUnavailable}
 			/>
 			{notice || assignmentHelp ? (
 				<p className="small" id={assignmentHelpId} role={notice ? "alert" : undefined}>
-					{notice ?? assignmentHelp}
+					{notice?.message ?? assignmentHelp}
 				</p>
 			) : null}
 			<div className="legacy-team-device-actions">

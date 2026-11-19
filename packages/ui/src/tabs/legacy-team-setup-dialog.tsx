@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { RadixDialogProps } from "../components/primitives/radix-dialog";
+import type { LegacyTeamSetupAssignee, LegacyTeamSetupDeviceV1 } from "../lib/api";
 import * as api from "../lib/api";
 import { LegacyTeamSetupDialogView } from "./legacy-team-setup-dialog-view";
 import { createSetupEffectRunner, type SetupEffectDependencies } from "./legacy-team-setup-effects";
@@ -66,6 +67,18 @@ function canRestoreFocus(element: HTMLElement | null): element is HTMLElement {
 		}
 	}
 	return true;
+}
+
+/** Session events for a device row's person assignment. */
+function deviceRowEvents(dispatch: (event: SetupSessionEvent) => void) {
+	return {
+		onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) =>
+			dispatch({ type: "assign_device", deviceRef: device.deviceRef, assignee }),
+		onClear: (device: LegacyTeamSetupDeviceV1) =>
+			dispatch({ type: "clear_device", deviceRef: device.deviceRef }),
+		onDeviceDraftChange: (deviceRef: string) =>
+			dispatch({ type: "device_draft_changed", deviceRef }),
+	};
 }
 
 function LegacyTeamSetupDialogHost({
@@ -140,10 +153,7 @@ function LegacyTeamSetupDialogHost({
 	return (
 		<LegacyTeamSetupDialogView
 			session={session}
-			onAssign={(device, assignee) =>
-				dispatch({ type: "assign_device", deviceRef: device.deviceRef, assignee })
-			}
-			onClear={(device) => dispatch({ type: "clear_device", deviceRef: device.deviceRef })}
+			{...deviceRowEvents(dispatch)}
 			onClose={close}
 			onCloseAutoFocus={(event) => restoreFocus(event, returnFocus)}
 			onDecide={(device, decision, targetIdentityRef) => {

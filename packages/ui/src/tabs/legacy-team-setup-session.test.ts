@@ -1222,3 +1222,32 @@ describe("legacy Team setup finish against an outdated coordinator", () => {
 		expect(message).toContain("could not be verified");
 	});
 });
+
+describe("editing a device's unsaved assignment", () => {
+	it("drops only that device's correctable error", () => {
+		const opened = reduceSetupSession(createSetupSessionState(), {
+			type: "open",
+			candidateRef: "candidate",
+		});
+		if (opened.status !== "open") throw new Error("expected open session");
+		const listed = (itemRef: string) => ({
+			scope: { kind: "device" as const, itemRef },
+			message: "Someone with that name is already listed.",
+			retry: null,
+			correctable: true,
+		});
+		const needsRetry = {
+			scope: { kind: "device" as const, itemRef: "device-a" },
+			message: "This device change could not be saved.",
+			retry: "load" as const,
+		};
+		const session = { ...opened, errors: [listed("device-a"), listed("device-b"), needsRetry] };
+
+		const next = reduceSetupSession(session, {
+			type: "device_draft_changed",
+			deviceRef: "device-a",
+		});
+
+		expect(next.status === "open" ? next.errors : []).toEqual([listed("device-b"), needsRetry]);
+	});
+});

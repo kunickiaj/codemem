@@ -6,10 +6,11 @@ import {
 } from "../components/primitives/radix-dialog";
 import type {
 	LegacyTeamSetupAssignee,
+	LegacyTeamSetupDetailResponseV1,
 	LegacyTeamSetupDeviceV1,
 	LegacyTeamSetupProjectV1,
 } from "../lib/api";
-import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
+import { type DeviceNotice, LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
 import { LegacyTeamSetupProjects } from "./legacy-team-setup-projects";
 import { LegacyTeamSetupReview } from "./legacy-team-setup-review";
@@ -30,6 +31,7 @@ const EXPLICIT_LIST_ITEM_ROLE = { role: "listitem" } as const;
 export interface LegacyTeamSetupDialogViewProps {
 	session: OpenSetupSessionState;
 	onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) => void;
+	onDeviceDraftChange?: (deviceRef: string) => void;
 	onClear: (device: LegacyTeamSetupDeviceV1) => void;
 	onClose: () => void;
 	onCloseAutoFocus: NonNullable<RadixDialogProps["onCloseAutoFocus"]>;
@@ -44,6 +46,49 @@ export interface LegacyTeamSetupDialogViewProps {
 	onOpenAutoFocus: NonNullable<RadixDialogProps["onOpenAutoFocus"]>;
 	onRefresh: () => void;
 	onRetry: () => void;
+}
+
+const UNSAVED_DEVICE_NOTICES_ID = "legacy-team-setup-device-notices";
+
+function editableNotices(
+	notices: ReadonlyMap<string, string>,
+	onEdit: ((deviceRef: string) => void) | undefined,
+): ReadonlyMap<string, DeviceNotice> {
+	return new Map(
+		[...notices].map(([deviceRef, message]) => [
+			deviceRef,
+			{ message, onEdit: onEdit ? () => onEdit(deviceRef) : undefined },
+		]),
+	);
+}
+
+function reviewBlockedDescriptionId(
+	input: { itemRecoveryRequired: boolean; blockedDescriptionId: string | undefined },
+	devicesNeedFixing: boolean,
+): string | undefined {
+	if (input.itemRecoveryRequired) return "legacy-team-setup-item-errors";
+	if (devicesNeedFixing) return UNSAVED_DEVICE_NOTICES_ID;
+	return input.blockedDescriptionId;
+}
+
+/** Why Finish is off while a device still shows an assignment that couldn't be saved. */
+function UnsavedDeviceNotices(props: {
+	detail: LegacyTeamSetupDetailResponseV1;
+	notices: ReadonlyMap<string, string>;
+}) {
+	if (props.notices.size === 0) return null;
+	const nameOf = (deviceRef: string) =>
+		props.detail.devices.find((device) => device.deviceRef === deviceRef)?.displayName ??
+		"A device";
+	return (
+		<div className="legacy-team-setup-error" id={UNSAVED_DEVICE_NOTICES_ID}>
+			{[...props.notices].map(([deviceRef, message]) => (
+				<p key={deviceRef}>
+					{nameOf(deviceRef)}: {message} Fix this in Devices before finishing.
+				</p>
+			))}
+		</div>
+	);
 }
 
 function requiresRecoveryView(
@@ -306,7 +351,7 @@ function StepBody(input: {
 				blockedDeviceRefs={input.blockedDeviceRefs}
 				busyDeviceRefs={input.busyDeviceRefs}
 				detail={view}
-				deviceNotices={input.deviceNotices}
+				deviceNotices={editableNotices(input.deviceNotices, props.onDeviceDraftChange)}
 				onAssign={props.onAssign}
 				onClear={props.onClear}
 				onDecision={props.onDecide}
@@ -327,16 +372,18 @@ function StepBody(input: {
 		);
 	}
 	if (step === "review" && view.state === "ready_to_finish") {
+		const devicesNeedFixing = input.deviceNotices.size > 0;
 		return (
-			<LegacyTeamSetupReview
-				blocked={input.mutationsBlocked || input.itemRecoveryRequired}
-				blockedDescriptionId={
-					input.itemRecoveryRequired ? "legacy-team-setup-item-errors" : input.blockedDescriptionId
-				}
-				detail={view}
-				finishing={input.finishing}
-				onFinish={props.onFinish}
-			/>
+			<>
+				<UnsavedDeviceNotices detail={view} notices={input.deviceNotices} />
+				<LegacyTeamSetupReview
+					blocked={input.mutationsBlocked || input.itemRecoveryRequired || devicesNeedFixing}
+					blockedDescriptionId={reviewBlockedDescriptionId(input, devicesNeedFixing)}
+					detail={view}
+					finishing={input.finishing}
+					onFinish={props.onFinish}
+				/>
+			</>
 		);
 	}
 	return (
