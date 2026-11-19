@@ -844,6 +844,8 @@ function completionOrChangedMessage(options: {
 			terminalRecoveryCode,
 		};
 	}
+	if (cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_admin_required")
+		return { completionCode, message: ADMIN_REQUIRED_ERROR, terminalRecoveryCode };
 	if (changed) return { completionCode, message: CHANGED_STATE_ERROR, terminalRecoveryCode };
 	if (rosterUnavailable)
 		return { completionCode, message: rosterErrorMessage(command, cause), terminalRecoveryCode };
@@ -977,7 +979,11 @@ export function globalError(state: OpenSetupSessionState): SetupSessionError | n
 	);
 }
 
+const ADMIN_REQUIRED_ERROR =
+	"Only a device that holds the coordinator admin secret can set up this Team. Nothing changed. Finish setting it up on that device.";
+
 function unavailableMessage(reason: LegacyTeamSetupErrorCode): string {
+	if (reason === "team_setup_admin_required") return ADMIN_REQUIRED_ERROR;
 	if (isChangedStateCode(reason)) return CHANGED_STATE_ERROR;
 	if (reason === "team_setup_roster_unavailable") return ROSTER_UNAVAILABLE_ERROR;
 	const completion = completionMessage(completionErrorCode(reason));

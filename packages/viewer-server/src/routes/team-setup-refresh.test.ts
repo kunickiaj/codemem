@@ -3,6 +3,7 @@ import {
 	type LegacyTeamConfiguredGroupSnapshot,
 	legacyTeamCandidateId,
 	MemoryStore,
+	readCoordinatorSyncConfig,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
 import { teamSetupRoutes } from "./team-setup.js";
@@ -23,6 +24,13 @@ describe("Team setup refresh snapshots", () => {
 		const app = teamSetupRoutes({
 			getStore: () => store,
 			loadLegacyTeamConfiguredGroupSnapshots: loadSnapshots,
+			// Refreshing saves a draft, so it needs a device that could finish setup.
+			readCoordinatorConfig: () =>
+				readCoordinatorSyncConfig({
+					sync_coordinator_url: coordinatorId,
+					sync_coordinator_groups: [groupId],
+					sync_coordinator_admin_secret: "fixture-admin-secret",
+				}),
 			completionDependencies: null,
 		});
 		try {

@@ -2090,3 +2090,247 @@ describe("Team setup error logging", () => {
 		}
 	});
 });
+
+// Fixtures for draft edits on a device without the admin secret.
+const HEX = "0".repeat(64);
+const ATTEMPT = "legacy-team-attempt:00000000-0000-0000-0000-000000000000";
+
+function draftApp(
+	store: MemoryStore,
+	adminSecret: () => string,
+	onRosterLoad: () => void = () => {},
+) {
+	const base = readCoordinatorSyncConfig({});
+	const publicKey = "draft-edit-public-key";
+	return teamSetupRoutes({
+		getStore: () => store,
+		snapshotLoaderDependencies: {
+			readConfig: () => ({
+				...base,
+				syncCoordinatorUrl: FINISH_COORDINATOR_ID,
+				syncCoordinatorGroups: [FINISH_GROUP_ID],
+				syncCoordinatorAdminSecret: adminSecret(),
+			}),
+			listGroups: vi.fn(async () => [
+				{ group_id: FINISH_GROUP_ID, display_name: "Migration Team", archived_at: null },
+			]) as never,
+			listDevices: vi.fn(async () => {
+				onRosterLoad();
+				return [
+					{
+						group_id: FINISH_GROUP_ID,
+						device_id: "device-a",
+						public_key: publicKey,
+						fingerprint: fingerprintPublicKey(publicKey),
+						identity_id: null,
+						display_name: "Laptop",
+						enabled: 1,
+						created_at: "2026-09-06T00:00:00.000Z",
+					},
+				];
+			}) as never,
+		},
+		completionDependencies: {
+			create: async ({ manifest }) => ({ status: "created", manifest }),
+			list: async () => [],
+		},
+	});
+}
+
+function edit(
+	app: ReturnType<typeof teamSetupRoutes>,
+	method: string,
+	path: string,
+	body: unknown,
+) {
+	return app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}${path}`, {
+		method,
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+const edits = [
+	{
+		name: "device assignment",
+		method: "PUT",
+		path: `/devices/legacy-team-device-ref-v1:${HEX}/assignment`,
+		body: {
+			attemptId: ATTEMPT,
+			expectation: { kind: "absent" },
+			targetIdentityRef: `legacy-team-viewer-identity-ref-v1:${HEX}`,
+		},
+	},
+	{
+		name: "device decision",
+		method: "PUT",
+		path: `/devices/legacy-team-device-ref-v1:${HEX}/decision`,
+		body: { attemptId: ATTEMPT, decision: "excluded" },
+	},
+	{
+		name: "clearing a device decision",
+		method: "DELETE",
+		path: `/devices/legacy-team-device-ref-v1:${HEX}/decision`,
+		body: { attemptId: ATTEMPT },
+	},
+	{
+		name: "Project mapping",
+		method: "PUT",
+		path: `/projects/legacy-team-project-ref-v1:${HEX}/mapping`,
+		body: {
+			attemptId: ATTEMPT,
+			resolvedProjectRef: `legacy-team-resolved-project-ref-v1:${HEX}`,
+		},
+	},
+];
+
+describe("Team setup draft edits without admin access", () => {
+	it.each(edits)(
+		"refuses a $name and leaves the draft unchanged",
+		async ({ method, path, body }) => {
+			// Arrange: the draft was created while this device held the admin secret.
+			const { store, close } = createRouteStore();
+			let adminSecret = FINISH_ADMIN_SECRET;
+			const app = draftApp(store, () => adminSecret);
+			try {
+				await app.request("/api/sync/team-setup/v1");
+				const before = getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF);
+				adminSecret = "";
+
+				// Act
+				const response = await edit(app, method, path, body);
+
+				// Assert
+				expect(before).not.toBeNull();
+				expect(response.status).toBe(403);
+				expect(await response.json()).toEqual({ error: "team_setup_admin_required" });
+				expect(getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF)).toEqual(before);
+			} finally {
+				close();
+			}
+		},
+	);
+
+	it("shows the draft with every action off", async () => {
+		const { store, close } = createRouteStore();
+		let adminSecret = FINISH_ADMIN_SECRET;
+		const app = draftApp(store, () => adminSecret);
+		try {
+			await app.request("/api/sync/team-setup/v1");
+			adminSecret = "";
+
+			const response = await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`);
+
+			expect(response.status).toBe(200);
+			const view = (await response.json()) as {
+				state: string;
+				unavailableReason: string;
+				devices: Array<{ actions: Record<string, { enabled: boolean }> }>;
+			};
+			expect(view.state).toBe("unavailable");
+			expect(view.unavailableReason).toBe("team_setup_admin_required");
+			for (const device of view.devices)
+				expect(Object.values(device.actions).every((action) => !action.enabled)).toBe(true);
+		} finally {
+			close();
+		}
+	});
+
+	it("checks again inside the write transaction", async () => {
+		// Arrange: the secret is present for the route's first check only.
+		const { store, close } = createRouteStore();
+		let adminSecret = FINISH_ADMIN_SECRET;
+		let readsLeft = Number.POSITIVE_INFINITY;
+		const app = draftApp(store, () => (readsLeft-- > 0 ? adminSecret : ""));
+		try {
+			await app.request("/api/sync/team-setup/v1");
+			const detail = (await (
+				await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`)
+			).json()) as { attemptId: string; devices: Array<{ deviceRef: string }> };
+			const before = getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF);
+			readsLeft = 1;
+
+			// Act
+			const response = await edit(app, "PUT", `/devices/${detail.devices[0]?.deviceRef}/decision`, {
+				attemptId: detail.attemptId,
+				decision: "excluded",
+			});
+
+			// Assert
+			expect(response.status).toBe(403);
+			expect(getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF)).toEqual(before);
+		} finally {
+			adminSecret = "";
+			close();
+		}
+	});
+});
+
+describe("Team setup refresh and discovery without admin access", () => {
+	it("refuses a refresh and leaves the draft unchanged", async () => {
+		const { store, close } = createRouteStore();
+		let adminSecret = FINISH_ADMIN_SECRET;
+		const app = draftApp(store, () => adminSecret);
+		try {
+			await app.request("/api/sync/team-setup/v1");
+			const before = getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF);
+			adminSecret = "";
+
+			const response = await app.request(
+				`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}/refresh`,
+				{ method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+			);
+
+			expect(response.status).toBe(403);
+			expect(getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF)).toEqual(before);
+		} finally {
+			close();
+		}
+	});
+
+	it("refuses a refresh when the secret goes away while the roster loads", async () => {
+		const { store, close } = createRouteStore();
+		let adminSecret = FINISH_ADMIN_SECRET;
+		let dropSecret = false;
+		const app = draftApp(
+			store,
+			() => adminSecret,
+			() => {
+				if (dropSecret) adminSecret = "";
+			},
+		);
+		try {
+			await app.request("/api/sync/team-setup/v1");
+			const before = getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF);
+			dropSecret = true;
+
+			const response = await app.request(
+				`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}/refresh`,
+				{ method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+			);
+
+			expect(response.status).toBe(403);
+			expect(getLegacyTeamSetupDraft(store.db, FINISH_CANDIDATE_REF)).toEqual(before);
+		} finally {
+			close();
+		}
+	});
+
+	it("turns off refresh in the read-only view", async () => {
+		const { store, close } = createRouteStore();
+		let adminSecret = FINISH_ADMIN_SECRET;
+		const app = draftApp(store, () => adminSecret);
+		try {
+			await app.request("/api/sync/team-setup/v1");
+			adminSecret = "";
+
+			const view = (await (
+				await app.request(`/api/sync/team-setup/v1/${FINISH_CANDIDATE_REF}`)
+			).json()) as { actions: { refresh: { enabled: boolean } } };
+
+			expect(view.actions.refresh.enabled).toBe(false);
+		} finally {
+			close();
+		}
+	});
+});

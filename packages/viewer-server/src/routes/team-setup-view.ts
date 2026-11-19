@@ -166,7 +166,9 @@ export type LegacyTeamSetupViewV1 =
 			state: "unavailable";
 			unavailableReason: LegacyTeamSetupUnavailableReasonV1;
 			actions: {
-				refresh: { enabled: true; blockedReason: null };
+				refresh:
+					| { enabled: true; blockedReason: null }
+					| { enabled: false; blockedReason: "setup_unavailable" };
 				finish: { enabled: false; blockedReason: "setup_unavailable" };
 			};
 	  })
@@ -329,7 +331,14 @@ export function projectLegacyTeamSetupView(input: ProjectViewInput): LegacyTeamS
 			...base,
 			state,
 			unavailableReason: input.unavailableReason ?? "team_setup_confirmation_stale",
-			actions: { refresh: enabled, finish: blocked("setup_unavailable") },
+			actions: {
+				// Refreshing saves a new draft, which this device isn't allowed to do.
+				refresh:
+					input.unavailableReason === "team_setup_admin_required"
+						? blocked("setup_unavailable")
+						: enabled,
+				finish: blocked("setup_unavailable"),
+			},
 		};
 	}
 	if (state === "ready_to_finish" && input.preview) {
