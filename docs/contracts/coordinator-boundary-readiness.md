@@ -120,6 +120,32 @@ After a discard the coordinator accepts a first sequence again.
 The reader's own SQL must apply these rules in the transaction that decides. The
 design lists them as tests 63 to 66.
 
+## Device inventory
+
+`buildBoundaryReadinessInventory` reads one consistent snapshot of local mappings,
+stored repository identities and the device's own active memories. It does not
+probe checkouts, create schema, modify mappings or send requests.
+
+- Exact mappings count even when no memories exist. Pattern mappings are resolved
+  against locally recorded Projects, without a Viewer page limit.
+- Own active memories also supply workspace IDs when the session has no checkout
+  or repository identity. They use the same mapping resolver and identity precedence.
+- Unstamped memories supply identity evidence without contributing to source or
+  boundary counters. Scope selection matches the recorded cache authority ID,
+  including explicit non-URL IDs and the local coordinator's `local` ID.
+- Own rows under an older scope count even when the mapping has changed. Private
+  rows count because they move with the Project while remaining private. Inactive,
+  deleted and peer-authored rows do not count.
+- The caller supplies recorded local adoption or rollback observations. The
+  builder does not infer adoption from a copy arriving under the boundary.
+- The shared fitting helper applies the byte and source-scope limits and returns
+  the omitted count.
+
+Unidentified or ambiguous own-source identities make the build fail. A future
+sender must then post presence without the migration feature for that group, so
+the previous record is discarded. It must not leave an older complete record
+available while inventory is unknown.
+
 ## Storage
 
 Tables `coordinator_boundary_readiness` (one row per group and device) and
