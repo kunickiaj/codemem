@@ -74,7 +74,7 @@ codemem coordinator device disable <group-id> <device-id> --db-path <path>
 codemem coordinator device remove <group-id> <device-id> --db-path <path>
 
 # Invite / join-request commands
-codemem coordinator invitation create <group-id> --db-path <path>
+codemem coordinator invitation create --team <team> --review
 codemem coordinator request list <group-id> --db-path <path>
 codemem coordinator request approve <request-id> --db-path <path>
 codemem coordinator request deny <request-id> --db-path <path>
@@ -83,8 +83,9 @@ codemem coordinator request deny <request-id> --db-path <path>
 ### Invite and join flow
 
 ```fish
-# Create an invite (admin)
-codemem coordinator invitation create <group-id> --db-path <path>
+# Review, then create a Team invitation (Team admin, on their own device)
+codemem coordinator invitation create --team <team> --review
+codemem coordinator invitation create --team <team> --reviewed-onboarding-digest <digest>
 
 # Import an invite (teammate)
 codemem coordinator invitation accept <encoded-invite>
@@ -218,27 +219,30 @@ codemem coordinator device enroll my-team <device-id> \
 
 ### Invite-driven enrollment (recommended)
 
-The admin creates an invite and shares it:
+A Team admin creates the invitation in the viewer under **Sharing → Invitations**, or from the CLI
+on their own device. The CLI uses that device's memory database and config, which must hold the
+coordinator admin secret. Review the Projects the invitation shares first, then create it with the
+digest the review prints:
 
 ```fish
-codemem coordinator invitation create my-team --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation create --team "Platform" --review
+codemem coordinator invitation create --team "Platform" --reviewed-onboarding-digest <digest>
 ```
 
-This outputs an encoded invite string. Share it with the teammate, who imports it:
+Use `--add-device` instead of `--team` to invite another device for the person on this device.
+The command no longer creates connection-only codes. To connect a device without sharing any
+Projects, enroll it directly as shown above.
 
-```fish
-codemem coordinator invitation accept <encoded-invite>
-```
+The teammate pastes the invitation in the viewer under **Sharing**. Team-member and add-device
+invitations must be accepted in the viewer because codemem must show and confirm their reviewed
+access details before joining.
 
-Or paste the invite in the viewer UI under **Advanced → Team sync → Join team**.
-
-For an exact-Project invitation, use `--recipient-name "Your name"` or
-`--device-name "Your device"` to replace legacy configured names that look like internal
-identifiers. Team-member and add-device recipient invitations must be accepted in the viewer
-because codemem must show and confirm their reviewed access details before joining.
-
-If the invite policy is `approval_required`, the teammate's join request will appear in the admin's pending queue. The
-admin approves it from the CLI or the viewer UI.
+Older connection-only codes can still be imported with
+`codemem coordinator invitation accept <encoded-invite>` or in **Sharing**. For an exact-Project
+invitation, use `--recipient-name "Your name"` or `--device-name "Your device"` to replace legacy
+configured names that look like internal identifiers. If an older code's policy is
+`approval_required`, the teammate's join request appears in the admin's pending queue. The admin
+approves it from the CLI or the viewer UI.
 
 ## Data model (operator terms)
 

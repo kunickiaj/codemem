@@ -2,6 +2,8 @@ import { assert, assertStatus } from "../lib/assert.js";
 import {
 	ADMIN_SECRET,
 	CLI_PREFIX,
+	COORDINATOR_URL,
+	enrollPeerDevice,
 	fetchCoordinatorSnapshot,
 	GROUP_ID,
 	parseJson,
@@ -146,7 +148,7 @@ function addSharedMemory(ctx: ScenarioContext, service: string, artifactName: st
 export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Bootstrap scenario: seed peer-a with fixture-large, enroll empty peer-c via coordinator, accept peer records, validate bootstrap to empty peer, then validate dirty-local bootstrap refusal.",
+		"Bootstrap scenario: seed peer-a with fixture-large, have an admin enroll empty peer-c in the coordinator group, accept peer records, validate bootstrap to empty peer, then validate dirty-local bootstrap refusal.",
 	);
 
 	ctx.compose.down("00-compose-down-pre", true);
@@ -209,68 +211,29 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 	);
 	assertStatus(enrollPeerA.status, 0, "failed to enroll peer-a in coordinator");
 
-	const inviteResult = ctx.compose.exec(
-		"peer-a",
-		[...CLI_PREFIX, "coordinator", "invitation", "create", GROUP_ID, "--policy", "approval_required", "--json"],
-		"10-create-invite",
-		120_000,
-	);
-	assertStatus(inviteResult.status, 0, "failed to create invite");
-	const invitePayload = parseJson<{ encoded: string }>(inviteResult.stdout, "invite payload");
-
-	const importResult = ctx.compose.exec(
+	// peer-c only needs to be in the coordinator group here, so an admin enrolls it
+	// directly. The coordinator scenario covers joining by invitation and approval.
+	writePeerConfig(
+		ctx,
 		"peer-c",
-		[
-			...CLI_PREFIX,
-			"coordinator",
-			"invitation", "accept",
-			invitePayload.encoded,
-			"--db-path",
-			"/data/mem.sqlite",
-			"--keys-dir",
-			"/keys",
-			"--config",
-			"/config/codemem.json",
-			"--json",
-		],
-		"11-import-invite",
-		120_000,
+		{ sync_coordinator_url: COORDINATOR_URL, sync_coordinator_group: GROUP_ID },
+		"10-write-peer-c-config",
 	);
-	assertStatus(importResult.status, 0, "failed to import invite on peer-c");
 
 	const enablePeerC = ctx.compose.exec(
 		"peer-c",
 		[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "5"],
-		"12-enable-peer-c",
+		"11-enable-peer-c",
 		120_000,
 	);
 	assertStatus(enablePeerC.status, 0, "failed to enable sync on peer-c");
 
-	const joinRequestsResult = ctx.compose.exec(
-		"coordinator",
-		[...CLI_PREFIX, "coordinator", "request", "list", GROUP_ID, "--db-path", "/data/coordinator.sqlite", "--json"],
-		"13-list-join-requests",
-		120_000,
-	);
-	assertStatus(joinRequestsResult.status, 0, "failed to list join requests");
-	const joinRequests = parseJson<Array<{ request_id: string }>>(joinRequestsResult.stdout, "join requests");
-	assert(joinRequests.length === 1, `expected exactly one join request, got ${joinRequests.length}`);
-
-	const approveResult = ctx.compose.exec(
-		"coordinator",
-		[
-			...CLI_PREFIX,
-			"coordinator",
-			"request", "approve",
-			joinRequests[0]?.request_id ?? "",
-			"--db-path",
-			"/data/coordinator.sqlite",
-			"--json",
-		],
-		"14-approve-join-request",
-		120_000,
-	);
-	assertStatus(approveResult.status, 0, "failed to approve join request");
+	const peerCIdentity = readPeerIdentity(ctx, "peer-c", "12-peer-c-identity");
+	enrollPeerDevice(ctx, {
+		groupId: GROUP_ID,
+		identity: peerCIdentity,
+		artifactName: "13-enroll-peer-c",
+	});
 
 	await waitFor(
 		async () => {
@@ -287,7 +250,6 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		{ description: "peer-c coordinator discovery", timeoutMs: 180_000, intervalMs: 3_000 },
 	);
 
-	const peerCIdentity = readPeerIdentity(ctx, "peer-c", "17-peer-c-identity");
 	const acceptPeerC = ctx.compose.exec(
 		"peer-a",
 		[

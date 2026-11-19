@@ -2,6 +2,7 @@ import { assert, assertStatus } from "../lib/assert.js";
 import {
 	ADMIN_SECRET,
 	CLI_PREFIX,
+	createLegacyApprovalInvite,
 	fetchCoordinatorSnapshot,
 	GROUP_ID,
 	parseJson,
@@ -15,7 +16,7 @@ import { waitFor } from "../lib/wait.js";
 export async function runCoordinatorScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Coordinator scenario: configure admin peer, create approval-required invite, import on joiner peer, approve join request, start both peer viewers, and wait for coordinator-discovered devices on both peers.",
+		"Coordinator scenario: configure admin peer, mint an approval-required legacy invite through the coordinator admin API (the CLI no longer creates them), import on joiner peer, approve join request, start both peer viewers, and wait for coordinator-discovered devices on both peers.",
 	);
 
 	ctx.compose.down("00-compose-down-pre", true);
@@ -82,15 +83,11 @@ export async function runCoordinatorScenario(ctx: ScenarioContext): Promise<void
 	);
 	assertStatus(enrollPeerA.status, 0, "failed to enroll peer-a in coordinator");
 
-	const inviteResult = ctx.compose.exec(
-		"peer-a",
-		[...CLI_PREFIX, "coordinator", "invitation", "create", GROUP_ID, "--policy", "approval_required", "--json"],
-		"10-create-invite",
-		120_000,
-	);
-	assertStatus(inviteResult.status, 0, "failed to create invite");
-	const invitePayload = parseJson<{ encoded: string }>(inviteResult.stdout, "invite payload");
-	assert(invitePayload.encoded, "invite payload missing encoded invite");
+	const legacyInvite = createLegacyApprovalInvite(ctx, {
+		service: "peer-a",
+		groupId: GROUP_ID,
+		artifactName: "10-create-legacy-invite",
+	});
 
 	const importResult = ctx.compose.exec(
 		"peer-b",
@@ -98,7 +95,7 @@ export async function runCoordinatorScenario(ctx: ScenarioContext): Promise<void
 			...CLI_PREFIX,
 			"coordinator",
 			"invitation", "accept",
-			invitePayload.encoded,
+			legacyInvite,
 			"--db-path",
 			"/data/mem.sqlite",
 			"--keys-dir",

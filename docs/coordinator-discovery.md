@@ -120,7 +120,8 @@ codemem coordinator device remove team-alpha <device-id> --db-path ~/.codemem/co
 codemem coordinator grant list team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator grant revoke <grant-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator serve --db-path ~/.codemem/coordinator.sqlite --coordinator-host 0.0.0.0 --coordinator-port 7347
-codemem coordinator invitation create team-alpha --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator invitation create --team "Platform" --review
+codemem coordinator invitation create --team "Platform" --reviewed-onboarding-digest '<digest>'
 codemem coordinator invitation accept <invite>
 codemem coordinator invitation accept '<recipient-invite>' --review --json
 codemem coordinator invitation accept '<recipient-invite>' --reviewed-onboarding-digest '<digest>' --json

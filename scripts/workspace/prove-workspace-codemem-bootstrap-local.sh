@@ -102,7 +102,31 @@ SEED_FINGERPRINT=$(read_json_field "$SEED_IDENTITY" fingerprint)
 SEED_PUBLIC_KEY=$(read_json_field "$SEED_IDENTITY" public_key)
 
 codemem coordinator device enroll "$GROUP_ID" "$SEED_DEVICE_ID" --fingerprint "$SEED_FINGERPRINT" --public-key "$SEED_PUBLIC_KEY" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/enroll-seed.json"
-codemem coordinator invitation create "$GROUP_ID" --policy auto_admit --coordinator-url "http://127.0.0.1:$COORDINATOR_PORT" --remote-url "http://127.0.0.1:$COORDINATOR_PORT" --admin-secret "$ADMIN_SECRET" --db-path "$COORDINATOR_DB" --json > "$PROOF_ROOT/create-invite.json"
+# Legacy fixture: the worker bootstrap script joins with a connection-only invitation.
+# The CLI no longer creates those, but devices still accept existing ones, so the
+# coordinator admin API mints one here.
+python3 - "$COORDINATOR_PORT" "$ADMIN_SECRET" "$GROUP_ID" > "$PROOF_ROOT/create-invite.json" <<'PY'
+import datetime, json, sys, urllib.request
+
+coordinator_url = f"http://127.0.0.1:{sys.argv[1]}"
+expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+req = urllib.request.Request(
+    f"{coordinator_url}/v1/admin/invites",
+    data=json.dumps(
+        {
+            "group_id": sys.argv[3],
+            "invite_kind": "legacy_enrollment",
+            "policy": "auto_admit",
+            "coordinator_url": coordinator_url,
+            "expires_at": expires_at.isoformat(),
+        }
+    ).encode("utf-8"),
+    headers={"Content-Type": "application/json", "X-Codemem-Coordinator-Admin": sys.argv[2]},
+    method="POST",
+)
+with urllib.request.urlopen(req) as response:
+    print(response.read().decode("utf-8"))
+PY
 
 INVITE=$(python3 - <<'PY' "$PROOF_ROOT/create-invite.json"
 import json, sys
