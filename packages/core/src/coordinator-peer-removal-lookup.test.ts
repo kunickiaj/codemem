@@ -13,6 +13,7 @@ import { readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
 import { readAppliedRemovalSeq } from "./peer-removal-check-state.js";
 import { listRetiredDeviceAliases } from "./retired-device-aliases.js";
+import { saveSyncChannelCompletedBoundary } from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
 import { ensureDeviceIdentity } from "./sync-identity.js";
 import { initTestSchema } from "./test-utils.js";
@@ -274,6 +275,63 @@ describe("incomplete and stale coordinator lookups", () => {
 		expect(readAppliedRemovalSeq(db)).toBe(9);
 	});
 });
+
+function replacementState() {
+	const row = (table: string, idColumn = "peer_device_id") =>
+		db.prepare(`SELECT * FROM ${table} WHERE ${idColumn} = 'peer-a'`).all();
+	return {
+		pairing: row("sync_peers"),
+		binding: row("identity_devices", "device_id"),
+		cursors: row("replication_cursors"),
+		scopedCursors: row("replication_cursors_v2"),
+		channel: row("sync_channel_progress"),
+	};
+}
+
+it.each([
+	["removed", "new key"],
+	["revoked", "new key"],
+	["removed", "new row"],
+] as const)(
+	"keeps a replacement pairing after a stale %s answer (%s)",
+	async (outcome, replacement) => {
+		stubCoordinator(() => valid({ removal_seq: 40 }));
+		await refresh();
+		let current: ReturnType<typeof replacementState> | undefined;
+		stubCoordinator(({ entries }) => {
+			expect(entries).toContainEqual({ device_id: "peer-a", public_key: "key-peer-a" });
+			if (replacement === "new key") {
+				db.prepare(
+					"UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ? WHERE peer_device_id = 'peer-a'",
+				).run("replacement-key", fingerprintPublicKey("replacement-key"));
+			} else {
+				db.exec(`DELETE FROM sync_peers WHERE peer_device_id = 'peer-a';
+				DELETE FROM replication_cursors_v2 WHERE peer_device_id = 'peer-a';`);
+				pair("peer-a");
+			}
+			db.prepare(
+				"UPDATE replication_cursors_v2 SET last_applied_cursor = 'replacement' WHERE peer_device_id = 'peer-a'",
+			).run();
+			db.prepare(`INSERT INTO replication_cursors(peer_device_id, last_applied_cursor, updated_at)
+			VALUES ('peer-a', 'replacement', ?)`).run(NOW);
+			saveSyncChannelCompletedBoundary(db, {
+				peerDeviceId: "peer-a",
+				scopeId: "scope-a",
+				boundary: { generation: 2, snapshot_id: "replacement", baseline_cursor: null },
+			});
+			current = replacementState();
+			return valid({ [outcome]: ["peer-a"], enrolled: ["peer-b"], removal_seq: 44 });
+		});
+
+		const result = await refresh();
+
+		expect(current?.pairing).toHaveLength(1);
+		expect(replacementState()).toEqual(current);
+		expect(result).toEqual({ revoked: 0, removed: 0, enrolled: [], status: "failed" });
+		expect(listRetiredDeviceAliases(db).has("peer-a")).toBe(false);
+		expect(readAppliedRemovalSeq(db)).toBe(0);
+	},
+);
 
 describe("coordinator removal lookup entries", () => {
 	it("sends a pairing with no stored key by device ID only, and drops it when the reply says removed", async () => {
