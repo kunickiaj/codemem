@@ -775,10 +775,19 @@ function discoverCandidates(
 	groups: LegacyTeamConfiguredGroupSnapshot[],
 ): LegacyTeamCandidateView[] {
 	requireBoundedSnapshots(groups);
+	const mayRediscover = completedTeamDiscoveryAuthority.getStore() ?? (() => false);
 	return discoverLegacyTeamCandidates(store.db, {
 		projection: projectionOptions(store),
-		groups,
+		groups: groups.filter((group) => !wasCompleted(store, group) || mayRediscover(group)),
 	});
+}
+
+function wasCompleted(store: MemoryStore, group: LegacyTeamCandidateGroupDescriptor): boolean {
+	const candidateRef = legacyTeamCandidateId(group.coordinatorId, group.groupId);
+	return (
+		getLegacyTeamSetupDraft(store.db, candidateRef)?.state === "completed" ||
+		hasCompletedLegacyTeamSetup(store, candidateRef)
+	);
 }
 
 function candidateSummary(candidate: LegacyTeamCandidateView): LegacyTeamSetupCandidateSummaryV1 {
@@ -2043,7 +2052,23 @@ const DRAFT_EDIT_ROUTES = [
 	["POST", "/api/sync/team-setup/v1/:candidateRef/refresh"],
 ] as const;
 
-function installDraftEditGate(app: Hono, mayEdit: (candidateRef: string) => boolean): void {
+/**
+ * Discovery of a completed Team can restore its setup-owned Project recipients,
+ * which changes who receives Projects, so it needs current authority for the
+ * Team's group. Every Team setup request carries that check; without it, nothing
+ * completed is rediscovered.
+ */
+const completedTeamDiscoveryAuthority = new AsyncLocalStorage<
+	(group: LegacyTeamCandidateGroupDescriptor) => boolean
+>();
+
+function installSetupGates(
+	app: Hono,
+	getStore: () => MemoryStore,
+	authorization: () => CompletionAuthorization | null,
+	mayEditDraft: (store: MemoryStore, candidateRef: string) => boolean,
+): void {
+	const mayEdit = (candidateRef: string) => mayEditDraft(getStore(), candidateRef);
 	for (const [method, path] of DRAFT_EDIT_ROUTES) {
 		app.on(method, path, async (c, next) => {
 			const candidateRef = c.req.param("candidateRef") ?? "";
@@ -2051,6 +2076,13 @@ function installDraftEditGate(app: Hono, mayEdit: (candidateRef: string) => bool
 				return c.json({ error: "team_setup_admin_required" as const }, 403);
 			await draftEditAuthority.run(() => mayEdit(candidateRef), next);
 		});
+	}
+	const mayRediscover = (group: LegacyTeamCandidateGroupDescriptor) => {
+		const current = authorization();
+		return Boolean(current && authorizesGroup(current, group));
+	};
+	for (const path of ["/api/sync/team-setup/v1", "/api/sync/team-setup/v1/*"]) {
+		app.use(path, (_c, next) => completedTeamDiscoveryAuthority.run(mayRediscover, next));
 	}
 }
 
@@ -2119,9 +2151,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 	const detailAccess = (store: MemoryStore, candidateRef: string) => ({
 		editable: hasDraftEditAuthority(store, candidateRef),
 	});
-	installDraftEditGate(app, (candidateRef) =>
-		hasDraftEditAuthority(options.getStore(), candidateRef),
-	);
+	installSetupGates(app, options.getStore, currentCompletionAuthorization, hasDraftEditAuthority);
 
 	/**
 	 * Configuration may change while completion-list or roster requests are in
