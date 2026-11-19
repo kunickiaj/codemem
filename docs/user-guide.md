@@ -1087,7 +1087,7 @@ codemem maintenance status
 ### Advanced actor management
 
 - The Sync panel now has an `Actors` section for creating and renaming non-local actors.
-- The same section can merge a duplicate actor into another actor. This immediately moves assigned peers, device bindings, Team memberships, and direct or received Project access to the target Identity, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them.
+- The same section can merge a duplicate actor into another actor. This immediately moves assigned peers, device bindings, Team memberships, and direct or received Project access to the target Identity, while already-stamped historical memories keep their current provenance until a later follow-on flow changes them. Merging and removing people change who receives Projects, so they work only on a device that holds the coordinator admin secret, here as in Sharing. That includes merging duplicate people on a device with no coordinator configured.
 - Historical actor records and `sync_peers.actor_id` remain available to explain provenance and supply setup suggestions. After the one-time conversion described under Same-person device recovery, they do not establish device ownership.
 - Create or rename an actor label here when maintaining legacy provenance, then complete any device ownership choice in Devices.
 - Non-local peers receive memories only after Sharing-domain authorization succeeds. Their include/exclude filters can narrow that set, but cannot grant access.

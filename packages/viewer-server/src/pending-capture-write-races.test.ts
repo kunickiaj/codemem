@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { coordinatorImportInviteAction, MemoryStore } from "@codemem/core";
+import {
+	coordinatorImportInviteAction,
+	MemoryStore,
+	readCoordinatorSyncConfig,
+} from "@codemem/core";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { encodeInvitePayload } from "../../core/src/coordinator-invites.js";
@@ -124,8 +128,19 @@ function pending(options: { configured?: boolean; valid?: boolean } = {}) {
 	reopen();
 	return target;
 }
+// Merging and removing people need the admin device; these tests are about other checks.
+const ACTOR_ROUTE_OPTIONS = {
+	readCoordinatorConfig: () =>
+		readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+			sync_coordinator_admin_secret: "fixture-admin-secret",
+		}),
+};
+
 function post(path: string, body: Record<string, unknown>) {
-	return syncRoutes(() => fixture.store).request(path, {
+	const options = path.startsWith("/api/sync/actors/") ? ACTOR_ROUTE_OPTIONS : {};
+	return syncRoutes(() => fixture.store, undefined, options).request(path, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),

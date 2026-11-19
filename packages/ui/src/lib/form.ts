@@ -1,5 +1,7 @@
 /* Form validation and async-action helpers. */
 
+import { accessChangeRefusalMessage } from "./access-change";
+
 export function shakeField(input: HTMLElement): void {
 	input.classList.add("sync-shake");
 	input.addEventListener("animationend", () => input.classList.remove("sync-shake"), {
@@ -30,6 +32,8 @@ export function clearFieldError(input: HTMLInputElement | HTMLTextAreaElement): 
 }
 
 export function friendlyError(error: unknown, fallback: string): string {
+	const refusal = accessChangeRefusalMessage(error);
+	if (refusal) return refusal;
 	if (error instanceof Error) {
 		const msg = error.message;
 		if (msg.includes("fetch") || msg.includes("network") || msg.includes("Failed to fetch")) {

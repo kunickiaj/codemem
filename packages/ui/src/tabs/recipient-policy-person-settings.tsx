@@ -1,6 +1,7 @@
 import { useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
+import { accessChangeRefusalMessage } from "../lib/access-change";
 import * as api from "../lib/api";
 import { PERSON_NAME_LIMIT, personNameProblem } from "../lib/identity-presentation";
 
@@ -151,7 +152,15 @@ const STALE_MERGE_ERRORS = new Set([
 	"secondary actor not active",
 ]);
 
+/** The server refused because this device lacks the admin secret; nothing changed. */
+function accessRefusal(cause: unknown): PersonActionFailure | null {
+	const refusal = accessChangeRefusalMessage(cause);
+	return refusal ? rejected(refusal) : null;
+}
+
 export function mergeFailure(cause: unknown, name: string, target: string): PersonActionFailure {
+	const refusal = accessRefusal(cause);
+	if (refusal) return refusal;
 	const message = errorText(cause);
 	if (message === "actor team memberships conflict") {
 		return rejected(
@@ -173,6 +182,8 @@ export function mergeFailure(cause: unknown, name: string, target: string): Pers
 }
 
 export function removeFailure(cause: unknown, name: string): PersonActionFailure {
+	const refusal = accessRefusal(cause);
+	if (refusal) return refusal;
 	const message = errorText(cause);
 	if (message === "actor not found" || message === "actor not active") return STALE_PERSON;
 	if (message === "cannot deactivate this device's own local actor") {

@@ -1681,7 +1681,7 @@ describe("GET /api/sync/projects own boundary", () => {
 });
 
 it("wakes affected recipient policies after an actor merge", async () => {
-	const { app, getStore, cleanup } = createTestApp();
+	const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 	try {
 		await app.request("/api/sync/actors");
 		const store = getStore();
@@ -15836,7 +15836,7 @@ describe("viewer-server", () => {
 		});
 
 		it("creates, renames, and merges actors through viewer routes", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");
@@ -16195,7 +16195,7 @@ describe("viewer-server", () => {
 		});
 
 		it("rejects merging the local actor into another actor", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");
@@ -16223,7 +16223,7 @@ describe("viewer-server", () => {
 		});
 
 		it("serializes actor merge and deactivation by affected actor identity", async () => {
-			const { app, getStore, cleanup } = createTestApp();
+			const { app, getStore, cleanup } = createTestApp(ADMIN_APP);
 			try {
 				await app.request("/api/stats");
 				await app.request("/api/sync/actors");
@@ -21799,6 +21799,110 @@ describe("Project mapping changes need a device with the admin secret", () => {
 			const response = await send(app, "PUT", path, body);
 
 			expect(response.status).not.toBe(403);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("Merging and removing people need a device with the admin secret", () => {
+	const memberConfig = () =>
+		core.readCoordinatorSyncConfig({
+			sync_coordinator_url: "https://coord.example.test",
+			sync_coordinator_groups: ["group-admin"],
+		});
+
+	function seedPeople(store: MemoryStore): void {
+		const now = new Date().toISOString();
+		const insert = store.db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES (?, ?, 0, 'active', ?, ?)`,
+		);
+		insert.run("actor-brian", "Brian", now, now);
+		insert.run("actor-brian-2", "Brian Lee", now, now);
+	}
+
+	function actorStatuses(store: MemoryStore) {
+		return store.db
+			.prepare(
+				"SELECT actor_id, status FROM actors WHERE actor_id LIKE 'actor-brian%' ORDER BY actor_id",
+			)
+			.all();
+	}
+
+	const requests = [
+		[
+			"/api/sync/actors/merge",
+			{ primary_actor_id: "actor-brian", secondary_actor_id: "actor-brian-2" },
+		],
+		["/api/sync/actors/deactivate", { actor_id: "actor-brian-2" }],
+	] as const;
+
+	it.each(requests)("refuses %s and changes nothing", async (path, body) => {
+		const { app, ensureStore, cleanup } = createTestApp({ readCoordinatorConfig: memberConfig });
+		try {
+			const store = ensureStore();
+			seedPeople(store);
+			const before = actorStatuses(store);
+
+			const response = await app.request(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "access_change_needs_admin_device" });
+			expect(actorStatuses(store)).toEqual(before);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it.each(requests)(
+		"refuses %s when the secret goes away while it waits for the lock",
+		async (path, body) => {
+			// Arrange: the secret is present at the gate and gone by the write.
+			let reads = 0;
+			const { app, ensureStore, cleanup } = createTestApp({
+				readCoordinatorConfig: () => (reads++ === 0 ? adminCoordinatorConfig() : memberConfig()),
+			});
+			try {
+				const store = ensureStore();
+				seedPeople(store);
+				const before = actorStatuses(store);
+
+				const response = await app.request(path, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				});
+
+				expect(response.status).toBe(403);
+				expect(actorStatuses(store)).toEqual(before);
+			} finally {
+				cleanup();
+			}
+		},
+	);
+
+	it.each(requests)("applies %s on the admin device", async (path, body) => {
+		const { app, ensureStore, cleanup } = createTestApp(ADMIN_APP);
+		try {
+			const store = ensureStore();
+			seedPeople(store);
+
+			const response = await app.request(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+
+			expect(response.status).toBe(200);
+			expect(actorStatuses(store)).not.toContainEqual({
+				actor_id: "actor-brian-2",
+				status: "active",
+			});
 		} finally {
 			cleanup();
 		}
