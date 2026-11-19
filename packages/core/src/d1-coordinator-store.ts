@@ -105,6 +105,12 @@ import {
 	bootstrapRawInsertValues,
 	captureBootstrapParticipantSource,
 } from "./coordinator-bootstrap-grant-issuance.js";
+import {
+	type BoundaryReadinessDeviceInput,
+	BoundaryReadinessOperations,
+	boundaryReadinessScopeAccess,
+	type PutBoundaryReadinessInput,
+} from "./coordinator-boundary-readiness.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
 import {
 	type CoordinatorFillEnrollmentKeyIdsOptions,
@@ -1545,6 +1551,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private readonly deviceRevocations: DeviceRevocationOperations;
 	private readonly deviceRemovals: DeviceRemovalOperations;
 	private removalSchemaSeen = false;
+	private readonly boundaryReadiness: BoundaryReadinessOperations;
 	private readonly authSessions: AuthSessionOperations;
 	private readonly authAccountProfiles: AuthAccountProfileOperations;
 	private readonly authBrowserTransactions: CoordinatorAuthBrowserTransactions;
@@ -1566,6 +1573,11 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		};
 		this.deviceRevocations = new DeviceRevocationOperations(ledgerBackend, options.authClock);
 		this.deviceRemovals = new DeviceRemovalOperations(ledgerBackend, options.authClock);
+		this.boundaryReadiness = new BoundaryReadinessOperations(
+			ledgerBackend,
+			boundaryReadinessScopeAccess(this),
+			options.authClock,
+		);
 		const authBackend = createD1AuthLinkBackend(db);
 		this.controllerBackend = authBackend;
 		this.accountChangeBackend = createD1AuthLinkBackend(db, { connections: true });
@@ -2429,6 +2441,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	/** Bounded, so an operator route can call it until nothing remains. */
 	async fillEnrollmentKeyIds(options?: CoordinatorFillEnrollmentKeyIdsOptions) {
 		return this.deviceRemovals.fillEnrollmentKeyIds(options);
+	}
+
+	async putBoundaryReadiness(input: PutBoundaryReadinessInput) {
+		return this.boundaryReadiness.putBoundaryReadiness(input);
+	}
+
+	async getBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
+		return this.boundaryReadiness.getBoundaryReadiness(input);
+	}
+
+	async discardBoundaryReadiness(input: BoundaryReadinessDeviceInput) {
+		return this.boundaryReadiness.discardBoundaryReadiness(input);
 	}
 
 	async recordNonce(_deviceId: string, _nonce: string, _createdAt: string): Promise<boolean> {

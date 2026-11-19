@@ -1,4 +1,5 @@
 import type { CoordinatorAuthSchemaStore } from "./coordinator-auth-schema.js";
+import type { CoordinatorBoundaryReadinessStore } from "./coordinator-boundary-readiness.js";
 import type { CoordinatorDeviceRemovalStore } from "./coordinator-device-removal.js";
 import type { CoordinatorDeviceRevocationStore } from "./coordinator-device-revocation.js";
 import type {
@@ -535,6 +536,7 @@ export interface CoordinatorListReciprocalApprovalsInput {
 export interface CoordinatorStore
 	extends CoordinatorDeviceRevocationStore,
 		CoordinatorDeviceRemovalStore,
+		CoordinatorBoundaryReadinessStore,
 		Partial<CoordinatorAuthSchemaStore> {
 	close(): Promise<void>;
 	createGroup(groupId: string, displayName?: string | null): Promise<void>;

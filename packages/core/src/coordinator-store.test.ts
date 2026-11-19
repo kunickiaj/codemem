@@ -32,6 +32,8 @@ const EXPECTED_COORDINATOR_TABLES = [
 	"coordinator_auth_sessions",
 	"coordinator_auth_signin_purge_floors",
 	"coordinator_bootstrap_grants",
+	"coordinator_boundary_readiness",
+	"coordinator_boundary_readiness_projects",
 	"coordinator_device_ownership_bindings",
 	"coordinator_device_rebind_attempts",
 	"coordinator_device_rebind_audit_log",
