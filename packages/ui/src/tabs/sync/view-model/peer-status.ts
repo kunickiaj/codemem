@@ -31,6 +31,7 @@ export function derivePeerDirection(peer: PeerLike): PeerDirection {
 }
 
 export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
+	if (explicitPairingRefusal(peer)) return "needs-repair";
 	const peerState = cleanText(peer?.status?.peer_state);
 	if (peerState === "offline" || peerState === "stale") return "offline";
 	const lastError = peerErrorText(peer);
@@ -42,7 +43,46 @@ export function derivePeerUiStatus(peer: PeerLike): UiSyncStatus {
 	return "waiting";
 }
 
+function explicitPairingRefusal(peer: PeerLike): UiPeerTrustSummary | null {
+	if (!peer.pairing_saved_at) return null;
+	const failure = peer.sync_health?.authorization_failure;
+	if (failure === "trust")
+		return {
+			state: "needs-review",
+			badgeLabel: "Connection refused",
+			description: "The other device did not authorize this connection.",
+			isWarning: true,
+		};
+	if (failure === "scope")
+		return {
+			state: "needs-review",
+			badgeLabel: "Space access refused",
+			description: "The peer is not authorized for one or more Spaces.",
+			isWarning: true,
+		};
+	return null;
+}
+
+function unverifiedPeerTrust(peer: PeerLike): UiPeerTrustSummary {
+	if (peer.pairing_saved_at)
+		return {
+			state: "trusted-by-you",
+			badgeLabel: "Pairing saved",
+			description: "No connection has been verified since you paired.",
+			isWarning: false,
+		};
+	return {
+		state: "trusted-by-you",
+		badgeLabel: "Waiting on other device",
+		description:
+			"This device is already trusted here. Finish setup on the other device before sync can run both ways.",
+		isWarning: false,
+	};
+}
+
 export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
+	const refusal = explicitPairingRefusal(peer);
+	if (refusal) return refusal;
 	const peerStatus = peer?.status || {};
 	const peerState = cleanText(peerStatus.peer_state);
 	const lastError = peerErrorText(peer);
@@ -91,13 +131,7 @@ export function derivePeerTrustSummary(peer: PeerLike): UiPeerTrustSummary {
 			isWarning: true,
 		};
 	}
-	return {
-		state: "trusted-by-you",
-		badgeLabel: "Waiting on other device",
-		description:
-			"This device is already trusted here. Finish setup on the other device before sync can run both ways.",
-		isWarning: false,
-	};
+	return unverifiedPeerTrust(peer);
 }
 
 const SCOPE_REJECTION_REASON_LABELS: Record<PeerScopeRejectionReason, string> = {

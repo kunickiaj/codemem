@@ -3901,6 +3901,7 @@ function mapPeerRow(
 		address_count: addresses.length,
 		last_seen_at: row.last_seen_at,
 		last_sync_at: row.last_sync_at,
+		pairing_saved_at: row.pairing_saved_at,
 		last_error: showDiag ? row.last_error : null,
 		runtime_version: row.runtime_version ?? null,
 		runtime_version_observed_at: row.runtime_version_observed_at ?? null,
@@ -4752,9 +4753,17 @@ function isRecentIso(value: unknown, windowS = SYNC_STALE_AFTER_SECONDS): boolea
 	return ageS >= 0 && ageS <= windowS;
 }
 
+function peerConnectionTimes(peer: Record<string, unknown>) {
+	if (!peer.pairing_saved_at)
+		return { lastSyncAt: peer.last_sync_at, lastPingAt: peer.last_seen_at };
+	// A saved address is not a ping. Explicit pairings need observed sync evidence.
+	const sincePair =
+		Date.parse(String(peer.last_sync_at ?? "")) >= Date.parse(String(peer.pairing_saved_at));
+	return { lastSyncAt: sincePair ? peer.last_sync_at : null, lastPingAt: null };
+}
+
 function peerStatus(peer: Record<string, unknown>): Record<string, unknown> {
-	const lastSyncAt = peer.last_sync_at;
-	const lastPingAt = peer.last_seen_at;
+	const { lastSyncAt, lastPingAt } = peerConnectionTimes(peer);
 	const hasError = Boolean(peer.has_error);
 
 	const syncFresh = isRecentIso(lastSyncAt);
@@ -4802,6 +4811,8 @@ function readViewerBinding(dbPath: string): { host: string; port: number } | nul
 const PEERS_QUERY = `
 	SELECT p.peer_device_id, p.name, p.pinned_fingerprint, p.public_key, p.addresses_json,
 	       p.last_seen_at, p.last_sync_at, p.last_error,
+	       CASE WHEN p.explicit_pairing_fingerprint = p.pinned_fingerprint
+	            THEN p.explicit_pairing_saved_at END AS pairing_saved_at,
 	       p.runtime_version, p.runtime_version_observed_at,
 	       p.projects_include_json, p.projects_exclude_json, p.claimed_local_actor,
 	       p.actor_id, p.discovered_via_coordinator_id, p.discovered_via_group_id,

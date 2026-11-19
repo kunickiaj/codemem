@@ -257,6 +257,7 @@ export interface SyncPeerStatus {
 export interface SyncPeer {
 	sync_health?: import("./sync-health").PeerSyncHealth | null;
 	peer_device_id?: string;
+	pairing_saved_at?: string;
 	pinned?: boolean;
 	last_sync_at?: string | null;
 	recent_ops?: { in?: number; out?: number };

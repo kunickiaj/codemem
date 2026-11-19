@@ -914,6 +914,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerSignatureStateSchema(db);
 		ensurePeerRemovalCheckState(db);
 		ensureSyncPeerManualAddressesColumn(db);
+		ensureSyncPeerExplicitPairingColumns(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
@@ -935,6 +936,18 @@ export function bootstrapSchema(db: Database): void {
 function ensureSyncPeerManualAddressesColumn(db: Database): void {
 	if (!columnExists(db, "sync_peers", "manual_addresses_json")) {
 		db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
+	}
+}
+
+export function ensureSyncPeerExplicitPairingColumns(db: Database): void {
+	if (db.readonly || !tableExists(db, "sync_peers")) return;
+	for (const name of ["explicit_pairing_fingerprint", "explicit_pairing_saved_at"]) {
+		if (columnExists(db, "sync_peers", name)) continue;
+		try {
+			db.exec(`ALTER TABLE sync_peers ADD COLUMN ${name} TEXT`);
+		} catch (error) {
+			if (!columnExists(db, "sync_peers", name)) throw error;
+		}
 	}
 }
 

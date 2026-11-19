@@ -15,6 +15,7 @@ export interface PeerSyncHealth {
 	state: "exchange_succeeded" | "not_verified" | "stale" | "needs_attention";
 	send: SyncDirectionHealth;
 	receive: SyncDirectionHealth;
+	authorization_failure?: "trust" | "scope";
 	last_successful_connection?: {
 		transport: "direct" | "relay" | null;
 		at: string | null;

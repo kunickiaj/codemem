@@ -8,6 +8,7 @@
 
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { readCoordinatorRemovalState } from "./coordinator-removal-notice.js";
 import {
 	coordinatorEnabled,
 	fetchCoordinatorStalePeers,
@@ -16,14 +17,15 @@ import {
 	registerCoordinatorPresence,
 	removeCoordinatorRevokedPeers,
 } from "./coordinator-runtime.js";
-
 import type { Database } from "./db.js";
 import { connect as connectDb, ensureAdditiveSchemaCompatibility, resolveDbPath } from "./db.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
+import { listRetiredDeviceAliases, retiredAliasApplies } from "./retired-device-aliases.js";
 import * as schema from "./schema.js";
 import { refreshConfiguredScopeMembershipCache } from "./scope-membership-cache.js";
 import type { SecretScanner } from "./secret-scanner.js";
 import { advertiseMdns, mdnsEnabled } from "./sync-discovery.js";
+import { buildBaseUrl } from "./sync-http-client.js";
 import { DeviceIdentityError, ensureDeviceIdentity } from "./sync-identity.js";
 import { runSyncPass } from "./sync-orchestration.js";
 import { shouldSkipOfflinePeer, syncPassPreflight } from "./sync-pass.js";
@@ -250,7 +252,7 @@ function warnOnRevocationCheckChange(status: string): void {
 	lastRevocationCheck = status;
 	if (status !== "failed") return;
 	console.warn(
-		"[codemem] coordinator peer revocation check failed; pairings with revoked devices stay until a later refresh succeeds",
+		"[codemem] coordinator peer removal check failed; pairings with removed or blocked devices stay until a later refresh succeeds",
 	);
 }
 
@@ -269,6 +271,87 @@ export async function refreshCoordinatorPresenceForDaemon(
 // ---------------------------------------------------------------------------
 // Sync tick
 // ---------------------------------------------------------------------------
+
+/**
+ * The peers this device found through its coordinator, while the coordinator
+ * says this device was removed from sharing. Those peers have dropped it, so
+ * dialing them only fails. Direct and manual pairings are not in the set.
+ */
+function coordinatorPeersWhileRemoved(
+	db: Database,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+): Set<string> {
+	if (
+		!coordinatorEnabled(config) ||
+		!tableColumnExists(db, "sync_peers", "discovered_via_coordinator_id")
+	)
+		return new Set();
+	const coordinatorId = buildBaseUrl(config.syncCoordinatorUrl);
+	const state = readCoordinatorRemovalState(db, {
+		coordinatorId,
+		groupIds: config.syncCoordinatorGroups,
+	});
+	if (!state.removed) return new Set();
+	const retired = listRetiredDeviceAliases(db);
+	// The two-subject Block operation records its enrollment ID and canonical key in one row.
+	const blockedKeys = [...retired.values()]
+		.filter((alias) => alias.kind === "key" || alias.keyId !== null)
+		.map((alias) => ({ ...alias, kind: "key" as const }));
+	const explicitPin = tableColumnExists(db, "sync_peers", "explicit_pairing_fingerprint")
+		? "explicit_pairing_fingerprint"
+		: "NULL AS explicit_pairing_fingerprint";
+	// Writers store the configured URL as typed or in its normalized form, so compare normalized.
+	const discovered = db
+		.prepare(
+			`SELECT peer_device_id, discovered_via_coordinator_id, pinned_fingerprint, public_key,
+			 ${explicitPin} FROM sync_peers
+			 WHERE discovered_via_coordinator_id IS NOT NULL`,
+		)
+		.all() as Array<{
+		peer_device_id: string;
+		discovered_via_coordinator_id: string;
+		pinned_fingerprint: string | null;
+		public_key: string | null;
+		explicit_pairing_fingerprint: string | null;
+	}>;
+	return new Set(
+		discovered
+			.filter((peer) => {
+				if (buildBaseUrl(peer.discovered_via_coordinator_id) !== coordinatorId) return false;
+				if (
+					!peer.pinned_fingerprint ||
+					peer.explicit_pairing_fingerprint !== peer.pinned_fingerprint
+				)
+					return true;
+				const pin = {
+					publicKey: peer.public_key,
+					fingerprint: peer.pinned_fingerprint,
+				};
+				return (
+					retiredAliasApplies(retired.get(peer.peer_device_id), pin) ||
+					blockedKeys.some((alias) => retiredAliasApplies(alias, pin))
+				);
+			})
+			.map((peer) => peer.peer_device_id),
+	);
+}
+
+/** Why this tick does not dial the peer, or null when it should. */
+function tickSkipReason(
+	db: Database,
+	peer: { peerDeviceId: string; stalePeerKey: string },
+	stalePeers: Set<string> | undefined,
+	removedFromSharing: Set<string>,
+): string | null {
+	if (removedFromSharing.has(peer.peerDeviceId)) return "this device was removed from sharing";
+	if (
+		stalePeers?.has(peer.peerDeviceId) ||
+		(peer.stalePeerKey && stalePeers?.has(peer.stalePeerKey))
+	)
+		return "peer offline (coordinator presence expired)";
+	if (shouldSkipOfflinePeer(db, peer.peerDeviceId)) return "peer offline (backoff)";
+	return null;
+}
 
 /**
  * Run one sync tick: iterate over all enabled peers and sync each.
@@ -303,6 +386,7 @@ export async function syncDaemonTick(
 	const opsLimit = config.syncOpsLimit;
 
 	syncPassPreflight(db);
+	const unreachable = coordinatorPeersWhileRemoved(db, config);
 	const tickRoutes = tickReachability(reachability, staleScopeRefresh({ config, keysDir, dbPath }));
 
 	const results: SyncTickResult[] = [];
@@ -311,17 +395,9 @@ export async function syncDaemonTick(
 		const pinnedFingerprint = String(row.pinned_fingerprint ?? "").trim();
 		const stalePeerKey = pinnedFingerprint ? `${peerDeviceId}:${pinnedFingerprint}` : "";
 
-		if (stalePeers?.has(peerDeviceId) || (stalePeerKey && stalePeers?.has(stalePeerKey))) {
-			results.push({
-				ok: false,
-				skipped: true,
-				reason: "peer offline (coordinator presence expired)",
-			});
-			continue;
-		}
-
-		if (shouldSkipOfflinePeer(db, peerDeviceId)) {
-			results.push({ ok: false, skipped: true, reason: "peer offline (backoff)" });
+		const skipReason = tickSkipReason(db, { peerDeviceId, stalePeerKey }, stalePeers, unreachable);
+		if (skipReason) {
+			results.push({ ok: false, skipped: true, reason: skipReason });
 			continue;
 		}
 

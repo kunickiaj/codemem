@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_PEER_ADDRESSES } from "./address-utils.js";
+import { ensureAdditiveSchemaCompatibility } from "./db.js";
 import {
 	addressDedupeKey,
 	advertiseMdns,
@@ -22,6 +23,57 @@ import {
 } from "./sync-discovery.js";
 import { loadManualPeerAddresses } from "./sync-peer-addresses.js";
 import { initTestSchema } from "./test-utils.js";
+
+it("adds explicit Pair evidence to a current-version database without reclassifying peers", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		ensureAdditiveSchemaCompatibility(db);
+		db.exec(`ALTER TABLE sync_peers DROP COLUMN explicit_pairing_fingerprint;
+			ALTER TABLE sync_peers DROP COLUMN explicit_pairing_saved_at;
+			INSERT INTO sync_peers (peer_device_id, trust_provenance, created_at)
+			VALUES ('peer', 'coordinator_policy', '2026-11-18T00:00:00Z')`);
+
+		ensureAdditiveSchemaCompatibility(db);
+		ensureAdditiveSchemaCompatibility(db);
+
+		expect(
+			db
+				.prepare(`SELECT trust_provenance, explicit_pairing_fingerprint,
+			explicit_pairing_saved_at FROM sync_peers WHERE peer_device_id = 'peer'`)
+				.get(),
+		).toEqual({
+			trust_provenance: "coordinator_policy",
+			explicit_pairing_fingerprint: null,
+			explicit_pairing_saved_at: null,
+		});
+	} finally {
+		db.close();
+	}
+});
+
+it("records Pair evidence only when a replacement pin comes with manual addresses", () => {
+	const db = new Database(":memory:");
+	try {
+		initTestSchema(db);
+		const pin = { pinnedFingerprint: "fixture-pin", publicKey: "fixture-key" };
+		const evidence = (id: string) =>
+			db
+				.prepare("SELECT explicit_pairing_fingerprint FROM sync_peers WHERE peer_device_id = ?")
+				.pluck()
+				.get(id);
+		const address = ["http://127.0.0.1:7337"];
+		updatePeerAddresses(db, "bootstrap", [], { ...pin, replaceTrust: true });
+		updatePeerAddresses(db, "discovered", address, { ...pin, coordinatorCandidates: true });
+		updatePeerAddresses(db, "pair", address, { ...pin, replaceTrust: true });
+
+		expect(evidence("bootstrap")).toBeNull();
+		expect(evidence("discovered")).toBeNull();
+		expect(evidence("pair")).toBe("fixture-pin");
+	} finally {
+		db.close();
+	}
+});
 
 // ---------------------------------------------------------------------------
 // normalizeAddress
