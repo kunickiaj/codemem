@@ -2,7 +2,7 @@ import { useRef, useState } from "preact/hooks";
 import { DialogCloseButton } from "../components/primitives/dialog-close-button";
 import { RadixDialog } from "../components/primitives/radix-dialog";
 import * as api from "../lib/api";
-import { isMachinePresentationLabel } from "../lib/identity-presentation";
+import { PERSON_NAME_LIMIT, personNameProblem } from "../lib/identity-presentation";
 
 export interface PersonSettingsActions {
 	rename: (identityId: string, displayName: string) => Promise<unknown>;
@@ -61,7 +61,6 @@ type Stage =
 	| { kind: "confirm-remove" }
 	| { kind: "done"; message: string };
 
-const NAME_LIMIT = 120;
 const DIALOG_ID = "recipientPolicyPersonSettingsDialog";
 
 /**
@@ -83,17 +82,6 @@ function accessBlockedReason(disabled: boolean, accessChangesAllowed: boolean): 
 	if (disabled) return REFRESH_REASON;
 	if (!accessChangesAllowed) return ACCESS_CHANGE_REASON;
 	return null;
-}
-
-function nameValidation(value: string): string {
-	const reviewed = value.trim();
-	if (!reviewed) return "Name is required.";
-	if ([...reviewed].length > NAME_LIMIT) return "Name must use 120 characters or fewer.";
-	if ([...reviewed].some((character) => /[\p{Cc}\p{Cf}]/u.test(character))) {
-		return "Name cannot include control or format characters.";
-	}
-	if (isMachinePresentationLabel(reviewed)) return "Enter a human-readable name.";
-	return "";
 }
 
 function errorText(cause: unknown): string {
@@ -412,7 +400,7 @@ function usePersonSettingsState({
 		void onChanged?.();
 	};
 	const saveName = () => {
-		const invalid = disabled ? REFRESH_REASON : nameValidation(draft);
+		const invalid = disabled ? REFRESH_REASON : personNameProblem(draft);
 		if (invalid) {
 			setError(invalid);
 			return;
@@ -620,7 +608,7 @@ function PersonSettingsBody({
 					<input
 						disabled={busy}
 						id="recipient-policy-person-settings-name"
-						maxLength={NAME_LIMIT}
+						maxLength={PERSON_NAME_LIMIT}
 						onInput={(event) => settings.setDraft(event.currentTarget.value)}
 						ref={input}
 						value={settings.draft}

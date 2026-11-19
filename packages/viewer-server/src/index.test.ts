@@ -21557,3 +21557,163 @@ it("answers a device removal that the coordinator cannot record with the coordin
 		globalThis.fetch = prevFetch;
 	}
 });
+
+const newPersonCoordinatorId = "localhost:8787/";
+const newPersonGroupId = "group-alpha";
+const newPersonCandidateRef = core.legacyTeamCandidateId(newPersonCoordinatorId, newPersonGroupId);
+const newPersonNow = "2026-08-24T00:00:00.000Z";
+
+async function openNewPersonSetup() {
+	const harness = createTestApp({
+		loadLegacyTeamConfiguredGroupSnapshots: vi.fn(async () => [
+			{
+				coordinatorId: newPersonCoordinatorId,
+				groupId: newPersonGroupId,
+				displayName: "Migration Team",
+				devices: [
+					{
+						deviceId: "device-new-person",
+						fingerprint: "b".repeat(64),
+						displayName: "Casey Laptop",
+						enabled: true,
+					},
+				],
+			},
+		]),
+		readCoordinatorConfig: () =>
+			core.readCoordinatorSyncConfig({
+				sync_coordinator_url: newPersonCoordinatorId,
+				sync_coordinator_groups: [newPersonGroupId],
+				sync_coordinator_admin_secret: "test-secret",
+			}),
+	});
+	const store = harness.ensureStore();
+	store.db
+		.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-alex', 'Alex Rivera', 0, 'active', ?, ?)`,
+		)
+		.run(newPersonNow, newPersonNow);
+	expect(
+		(await harness.app.request(`/api/sync/team-setup/v1/${newPersonCandidateRef}`)).status,
+	).toBe(200);
+	const draft = core.getLegacyTeamSetupDraft(store.db, newPersonCandidateRef);
+	const deviceRef = draft?.devices[0]?.deviceRef ?? "";
+	const assign = (body: Record<string, unknown>) =>
+		harness.app.request(
+			`/api/sync/team-setup/v1/${newPersonCandidateRef}/devices/${deviceRef}/assignment`,
+			{
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					attemptId: draft?.attemptId,
+					expectation: { kind: "absent" },
+					...body,
+				}),
+			},
+		);
+	const people = () =>
+		store.db
+			.prepare("SELECT display_name FROM actors WHERE is_local = 0 ORDER BY display_name")
+			.pluck()
+			.all();
+	return { ...harness, assign, people, store };
+}
+
+describe("Team setup assigns a device to someone new", () => {
+	it("creates the person and assigns the device in one save", async () => {
+		const { assign, cleanup, people } = await openNewPersonSetup();
+		try {
+			const response = await assign({ newPersonName: "  Casey   Park " });
+
+			expect(response.status).toBe(200);
+			const view = (await response.json()) as {
+				identityChoices: Array<{ identityRef: string; displayName: string }>;
+				devices: Array<{ targetIdentityRef: string | null }>;
+			};
+			const casey = view.identityChoices.find((choice) => choice.displayName === "Casey Park");
+			expect(casey).toBeDefined();
+			expect(view.devices[0]?.targetIdentityRef).toBe(casey?.identityRef);
+			expect(people()).toEqual(["Alex Rivera", "Casey Park"]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("compares stored names, not the labels that tell two same-named people apart", async () => {
+		// Arrange: two people share a name, so the list shows each with a suffix.
+		const { app, assign, cleanup, people, store } = await openNewPersonSetup();
+		try {
+			store.db
+				.prepare(
+					`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+					 VALUES ('identity-alex-2', 'Alex Rivera', 0, 'active', ?, ?)`,
+				)
+				.run(newPersonNow, newPersonNow);
+			const view = (await (
+				await app.request(`/api/sync/team-setup/v1/${newPersonCandidateRef}`)
+			).json()) as { identityChoices: Array<{ displayName: string }> };
+			const decorated = view.identityChoices.find(
+				(choice) => choice.displayName !== "Alex Rivera" && choice.displayName.startsWith("Alex"),
+			)?.displayName;
+			expect(decorated).toBeDefined();
+
+			// Act
+			const sameName = await assign({ newPersonName: "Alex Rivera" });
+			const labelOnly = await assign({ newPersonName: decorated });
+
+			// Assert
+			expect(sameName.status).toBe(409);
+			expect(labelOnly.status).toBe(200);
+			expect(people()).toEqual(["Alex Rivera", "Alex Rivera", decorated]);
+		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe("Team setup refuses some new names", () => {
+	it("refuses a name already in the list and says to pick that person", async () => {
+		const { assign, cleanup, people } = await openNewPersonSetup();
+		try {
+			const response = await assign({ newPersonName: "alex rivera" });
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({ error: "team_setup_person_listed" });
+			expect(people()).toEqual(["Alex Rivera"]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it.each([
+		["an ID instead of a name", "7f3a9c2e-1b4d-4e8f-9a0b-1c2d3e4f5a6b"],
+		["an empty name", "   "],
+	])("refuses %s and creates no one", async (_label, name) => {
+		const { assign, cleanup, people } = await openNewPersonSetup();
+		try {
+			const response = await assign({ newPersonName: name });
+
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({ error: "team_setup_incomplete" });
+			expect(people()).toEqual(["Alex Rivera"]);
+		} finally {
+			cleanup();
+		}
+	});
+
+	it("refuses a request that names both an existing and a new person", async () => {
+		const { assign, cleanup, people } = await openNewPersonSetup();
+		try {
+			const response = await assign({
+				newPersonName: "Casey Park",
+				targetIdentityRef: `legacy-team-viewer-identity-ref-v1:${"c".repeat(64)}`,
+			});
+
+			expect(response.status).toBe(400);
+			expect(people()).toEqual(["Alex Rivera"]);
+		} finally {
+			cleanup();
+		}
+	});
+});

@@ -1,5 +1,6 @@
 import {
 	LegacyTeamSetupApiError,
+	type LegacyTeamSetupAssignee,
 	type LegacyTeamSetupErrorCode,
 	type LegacyTeamSetupViewV1,
 } from "../lib/api";
@@ -31,6 +32,8 @@ export interface SetupSessionError {
 	scope: SetupErrorScope;
 	hideStaleView?: boolean;
 	readOnlyRetry?: boolean;
+	/** Fixed by editing the item and saving again, so it never locks the item or needs Retry. */
+	correctable?: boolean;
 }
 
 interface ClosedSetupSessionState {
@@ -64,7 +67,7 @@ export type SetupSessionEvent =
 	| { type: "blocked_navigation"; step: "devices" | "projects"; message: string }
 	| { type: "retry" }
 	| { type: "refresh" }
-	| { type: "assign_device"; deviceRef: string; targetIdentityRef: string }
+	| { type: "assign_device"; deviceRef: string; assignee: LegacyTeamSetupAssignee }
 	| {
 			type: "decide_device";
 			deviceRef: string;
@@ -286,7 +289,7 @@ function enqueueDevice(
 					...base,
 					input: {
 						attemptId: state.view.attemptId,
-						targetIdentityRef: event.targetIdentityRef,
+						...event.assignee,
 						expectation: device.expectation,
 					},
 				}
@@ -615,6 +618,18 @@ function errorFor(
 	cause: unknown,
 	recoveryCause?: unknown,
 ): SetupSessionError {
+	if (
+		command.kind === "assign_device" &&
+		cause instanceof LegacyTeamSetupApiError &&
+		cause.errorCode === "team_setup_person_listed"
+	) {
+		return {
+			scope: { kind: "device", itemRef: command.deviceRef },
+			message: PERSON_LISTED_ERROR,
+			retry: null,
+			correctable: true,
+		};
+	}
 	const changed = cause instanceof LegacyTeamSetupApiError && isChangedStateCode(cause.errorCode);
 	const rosterUnavailable =
 		cause instanceof LegacyTeamSetupApiError && cause.errorCode === "team_setup_roster_unavailable";
@@ -818,6 +833,9 @@ function completionOrChangedMessage(options: {
 		terminalRecoveryCode,
 	};
 }
+
+const PERSON_LISTED_ERROR =
+	"Someone with that name is already listed. Nothing was saved. Choose them from the list, or enter a different name.";
 
 const COORDINATOR_OUTDATED_ERROR =
 	"The coordinator needs an update before this Team setup can finish. No changes were applied. Ask the person who runs it to update it, then retry.";

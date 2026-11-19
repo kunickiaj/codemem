@@ -36,3 +36,17 @@ export function humanPresentationLabel(value: unknown): string {
 	if (!label || [...label].length > 120 || isMachinePresentationLabel(label)) return "";
 	return label;
 }
+
+export const PERSON_NAME_LIMIT = 120;
+
+/** Why a typed person name can't be saved, or "" when it can. Mirrors the server's rules. */
+export function personNameProblem(value: string): string {
+	const reviewed = value.trim();
+	if (!reviewed) return "Name is required.";
+	if ([...reviewed].length > PERSON_NAME_LIMIT) return "Name must use 120 characters or fewer.";
+	if ([...reviewed].some((character) => /[\p{Cc}\p{Cf}]/u.test(character))) {
+		return "Name cannot include control or format characters.";
+	}
+	if (isMachinePresentationLabel(reviewed)) return "Enter a human-readable name.";
+	return "";
+}

@@ -1023,7 +1023,7 @@ describe("legacy Team setup session reducer", () => {
 			reduceSetupSession(state, {
 				type: "assign_device",
 				deviceRef: "device-a",
-				targetIdentityRef: "identity-a",
+				assignee: { targetIdentityRef: "identity-a" },
 			}),
 		).toBe(state);
 	});

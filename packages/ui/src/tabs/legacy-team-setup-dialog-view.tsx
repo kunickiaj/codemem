@@ -4,7 +4,11 @@ import {
 	type RadixDialogProps,
 	RadixDialogTitle,
 } from "../components/primitives/radix-dialog";
-import type { LegacyTeamSetupDeviceV1, LegacyTeamSetupProjectV1 } from "../lib/api";
+import type {
+	LegacyTeamSetupAssignee,
+	LegacyTeamSetupDeviceV1,
+	LegacyTeamSetupProjectV1,
+} from "../lib/api";
 import { LegacyTeamSetupDevices } from "./legacy-team-setup-devices";
 import { setupItemErrorId } from "./legacy-team-setup-dom";
 import { LegacyTeamSetupProjects } from "./legacy-team-setup-projects";
@@ -25,7 +29,7 @@ const EXPLICIT_LIST_ITEM_ROLE = { role: "listitem" } as const;
 
 export interface LegacyTeamSetupDialogViewProps {
 	session: OpenSetupSessionState;
-	onAssign: (device: LegacyTeamSetupDeviceV1, targetIdentityRef: string) => void;
+	onAssign: (device: LegacyTeamSetupDeviceV1, assignee: LegacyTeamSetupAssignee) => void;
 	onClear: (device: LegacyTeamSetupDeviceV1) => void;
 	onClose: () => void;
 	onCloseAutoFocus: NonNullable<RadixDialogProps["onCloseAutoFocus"]>;
@@ -53,6 +57,35 @@ function requiresRecoveryView(
 	);
 }
 
+/**
+ * Item errors that need Retry lock their item. A correctable one, such as a name
+ * that's already listed, is shown on its own row and leaves the row editable.
+ */
+function groupItemErrors(errors: OpenSetupSessionState["errors"]) {
+	const itemErrors = errors.filter(
+		(item) => (item.scope.kind === "device" || item.scope.kind === "project") && !item.correctable,
+	);
+	const refsOf = (kind: "device" | "project") =>
+		new Set(
+			itemErrors.flatMap((item) =>
+				item.scope.kind === kind && "itemRef" in item.scope ? [item.scope.itemRef] : [],
+			),
+		);
+	const deviceNotices = new Map(
+		errors.flatMap((item) =>
+			item.correctable && item.scope.kind === "device"
+				? [[item.scope.itemRef, item.message] as const]
+				: [],
+		),
+	);
+	return {
+		itemErrors,
+		deviceNotices,
+		blockedDeviceRefs: refsOf("device"),
+		blockedProjectRefs: refsOf("project"),
+	};
+}
+
 export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps) {
 	const session = props.session;
 	const view = session.view;
@@ -72,17 +105,11 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 			.filter(Boolean)
 			.join(" ") || undefined;
 	const title = view ? `Set up ${view.candidate.displayName}` : "Set up Team";
-	const itemErrors = session.errors.filter(
-		(item) => item.scope.kind === "device" || item.scope.kind === "project",
+	const { itemErrors, deviceNotices, blockedDeviceRefs, blockedProjectRefs } = groupItemErrors(
+		session.errors,
 	);
 	const itemRecoveryRequired = itemErrors.length > 0;
 	const itemRefreshRecovery = itemErrors.some((item) => item.retry === "refresh");
-	const blockedDeviceRefs = new Set(
-		itemErrors.flatMap((item) => (item.scope.kind === "device" ? [item.scope.itemRef] : [])),
-	);
-	const blockedProjectRefs = new Set(
-		itemErrors.flatMap((item) => (item.scope.kind === "project" ? [item.scope.itemRef] : [])),
-	);
 	const busyDeviceRefs = new Set(
 		session.commands.flatMap((command) => ("deviceRef" in command ? [command.deviceRef] : [])),
 	);
@@ -218,46 +245,21 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 							>
 								{session.message}
 							</p>
-							{recoveryMode ? null : session.step === "devices" ? (
-								<LegacyTeamSetupDevices
-									blocked={mutationsBlocked}
+							{recoveryMode ? null : (
+								<StepBody
 									blockedDescriptionId={mutationBlockDescriptionId}
 									blockedDeviceRefs={blockedDeviceRefs}
-									busyDeviceRefs={busyDeviceRefs}
-									detail={view}
-									onAssign={props.onAssign}
-									onClear={props.onClear}
-									onDecision={props.onDecide}
-								/>
-							) : session.step === "projects" ? (
-								<LegacyTeamSetupProjects
-									blocked={mutationsBlocked}
-									blockedDescriptionId={mutationBlockDescriptionId}
 									blockedProjectRefs={blockedProjectRefs}
-									busyProjectRefs={busyProjectRefs}
-									detail={view}
-									onContinue={() => props.onNavigate("review")}
-									onMap={props.onMap}
-								/>
-							) : session.step === "review" && view.state === "ready_to_finish" ? (
-								<LegacyTeamSetupReview
-									blocked={mutationsBlocked || itemRecoveryRequired}
-									blockedDescriptionId={
-										itemRecoveryRequired
-											? "legacy-team-setup-item-errors"
-											: mutationBlockDescriptionId
-									}
-									detail={view}
-									finishing={finishing}
-									onFinish={props.onFinish}
-								/>
-							) : (
-								<FallbackStep
 									busy={globalBusy}
-									canFinish={view.state === "ready_to_finish"}
-									onRefresh={props.onRefresh}
+									busyDeviceRefs={busyDeviceRefs}
+									busyProjectRefs={busyProjectRefs}
+									deviceNotices={deviceNotices}
+									finishing={finishing}
+									itemRecoveryRequired={itemRecoveryRequired}
+									mutationsBlocked={mutationsBlocked}
+									props={props}
 									recoveryRequired={recoveryRequired}
-									step={session.step}
+									view={view}
 								/>
 							)}
 						</>
@@ -275,6 +277,76 @@ export function LegacyTeamSetupDialogView(props: LegacyTeamSetupDialogViewProps)
 				</div>
 			</div>
 		</RadixDialog>
+	);
+}
+
+/** The current step's content: device review, Project mapping, the final review, or a fallback. */
+function StepBody(input: {
+	blockedDescriptionId: string | undefined;
+	blockedDeviceRefs: ReadonlySet<string>;
+	blockedProjectRefs: ReadonlySet<string>;
+	busy: boolean;
+	busyDeviceRefs: ReadonlySet<string>;
+	busyProjectRefs: ReadonlySet<string>;
+	deviceNotices: ReadonlyMap<string, string>;
+	finishing: boolean;
+	itemRecoveryRequired: boolean;
+	mutationsBlocked: boolean;
+	props: LegacyTeamSetupDialogViewProps;
+	recoveryRequired: boolean;
+	view: NonNullable<OpenSetupSessionState["view"]>;
+}) {
+	const { props, view } = input;
+	const step = props.session.step;
+	if (step === "devices") {
+		return (
+			<LegacyTeamSetupDevices
+				blocked={input.mutationsBlocked}
+				blockedDescriptionId={input.blockedDescriptionId}
+				blockedDeviceRefs={input.blockedDeviceRefs}
+				busyDeviceRefs={input.busyDeviceRefs}
+				detail={view}
+				deviceNotices={input.deviceNotices}
+				onAssign={props.onAssign}
+				onClear={props.onClear}
+				onDecision={props.onDecide}
+			/>
+		);
+	}
+	if (step === "projects") {
+		return (
+			<LegacyTeamSetupProjects
+				blocked={input.mutationsBlocked}
+				blockedDescriptionId={input.blockedDescriptionId}
+				blockedProjectRefs={input.blockedProjectRefs}
+				busyProjectRefs={input.busyProjectRefs}
+				detail={view}
+				onContinue={() => props.onNavigate("review")}
+				onMap={props.onMap}
+			/>
+		);
+	}
+	if (step === "review" && view.state === "ready_to_finish") {
+		return (
+			<LegacyTeamSetupReview
+				blocked={input.mutationsBlocked || input.itemRecoveryRequired}
+				blockedDescriptionId={
+					input.itemRecoveryRequired ? "legacy-team-setup-item-errors" : input.blockedDescriptionId
+				}
+				detail={view}
+				finishing={input.finishing}
+				onFinish={props.onFinish}
+			/>
+		);
+	}
+	return (
+		<FallbackStep
+			busy={input.busy}
+			canFinish={view.state === "ready_to_finish"}
+			onRefresh={props.onRefresh}
+			recoveryRequired={input.recoveryRequired}
+			step={step}
+		/>
 	);
 }
 
