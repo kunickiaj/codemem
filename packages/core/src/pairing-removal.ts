@@ -12,9 +12,10 @@ import { fingerprintPublicKey } from "./sync-fingerprint.js";
  * resume from the old position and skip history in that direction. Every removal
  * therefore deletes the pairing and all of its progress in one transaction.
  *
- * Removal also ends the device's Identity binding by status. The row stays,
- * because deleting it would delete the device's per-Team decisions and a later
- * rejoin would then widen access past a recorded exclusion.
+ * Removal also ends the device's Identity binding by status, unless the reason
+ * is `disconnect` or `policy`. The row stays, because deleting it would delete
+ * the device's per-Team decisions and a later rejoin would then widen access
+ * past a recorded exclusion.
  */
 
 export type RetiredDeviceAliasRecord = Parameters<typeof recordRetiredDeviceAliases>[1][number];
@@ -29,6 +30,11 @@ export interface PolicyPairing {
 export type PairingRemoval =
 	/** The coordinator removed the device, or this device removed it locally. It may pair again. */
 	| { reason: "removed" | "local"; deviceIds: string[] }
+	/**
+	 * This device withdrew its own connection to the device. The binding stays active,
+	 * because this device may not change the other device's access.
+	 */
+	| { reason: "disconnect"; deviceIds: string[] }
 	/**
 	 * The coordinator blocked the device. Without `retiredAliases`, each validated
 	 * pinned key is recorded as a key-only alias.
@@ -155,6 +161,7 @@ function removeDevices(
 			syncPeers: deletePairing(db, deviceId),
 			...deleteSyncProgress(db, deviceId),
 		});
+		if (input.reason === "disconnect") continue;
 		// This device's own binding is never ended by removing a pairing.
 		if (deviceId === input.localDeviceId) continue;
 		const identityId = endBinding(db, deviceId, now);
@@ -180,7 +187,7 @@ function emptyCounts(): PairingRemovalCounts {
 
 /**
  * Removes each device's pairing and sync progress, and ends its Identity binding
- * unless the reason is `policy`. Memory retirement trust is retained first, and
+ * unless the reason is `disconnect` or `policy`. Memory retirement trust is retained first, and
  * `sync_attempts` and `sync_scope_rejections` stay as diagnostic history. One
  * immediate transaction: any failure leaves every table unchanged.
  */

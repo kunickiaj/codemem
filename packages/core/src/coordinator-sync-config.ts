@@ -144,6 +144,27 @@ export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyn
 	};
 }
 
+export type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
+
+/** `ready` means the device has a coordinator URL, at least one group, and the admin secret. */
+export function coordinatorAdminReadiness(
+	config: CoordinatorSyncConfig,
+): CoordinatorAdminReadiness {
+	if (!config.syncCoordinatorUrl) return "not_configured";
+	if (config.syncCoordinatorGroups.length === 0 || !config.syncCoordinatorAdminSecret) {
+		return "partial";
+	}
+	return "ready";
+}
+
+/**
+ * Whether this device may change other devices' access: only a ready device that
+ * holds the coordinator admin secret does (ADR 0007 Decision 4).
+ */
+export function isCoordinatorAdminDevice(config: CoordinatorSyncConfig): boolean {
+	return coordinatorAdminReadiness(config) === "ready";
+}
+
 export function coordinatorEnabled(config: CoordinatorSyncConfig): boolean {
 	return Boolean(config.syncCoordinatorUrl && config.syncCoordinatorGroups.length > 0);
 }
