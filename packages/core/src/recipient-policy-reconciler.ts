@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
+import { isWithdrawnPolicyIdentity } from "./policy-team-device-eligibility.js";
 import { isStrictRecipientPolicyId } from "./recipient-policy-identifiers.js";
 import {
 	clearRecipientPolicyDenyOverlay,
@@ -1512,6 +1513,140 @@ function stagePolicyRevocations(
 	}
 }
 
+/**
+ * Whether a device is bound to a deactivated or merged Identity. Such a device
+ * never receives a Project, whatever else the policy says, so revoking it is safe
+ * even while another problem blocks the rest of the Project's recipients. Devices
+ * with no binding, or bound to an Identity that is merely pending or missing, are
+ * left for full derivation to decide.
+ */
+const WITHDRAWN_BINDING_SQL = `SELECT d.device_id, a.status, a.merged_into_actor_id
+	FROM identity_devices d JOIN actors a ON a.actor_id = d.identity_id`;
+
+type BindingRow = { device_id: string; status: string; merged_into_actor_id: string | null };
+
+function bindingWithdrawn(row: BindingRow | undefined): boolean {
+	return (
+		row !== undefined &&
+		isWithdrawnPolicyIdentity({
+			status: row.status,
+			mergedIntoIdentityId: row.merged_into_actor_id,
+		})
+	);
+}
+
+function hasWithdrawnBinding(db: Database): boolean {
+	const rows = db.prepare(WITHDRAWN_BINDING_SQL).all() as BindingRow[];
+	return rows.some(bindingWithdrawn);
+}
+
+function deviceBindingWithdrawn(db: Database, deviceId: string): boolean {
+	const row = db.prepare(`${WITHDRAWN_BINDING_SQL} WHERE d.device_id = ?`).get(deviceId) as
+		| BindingRow
+		| undefined;
+	return bindingWithdrawn(row);
+}
+
+/**
+ * Stages a deny overlay for a device only if this worker still holds the lease and
+ * the device is still bound to a withdrawn Identity, all in one transaction, so a
+ * binding change or another worker's takeover can't slip in between.
+ */
+function denyIfStillWithdrawn(
+	run: RecipientPolicyReconciliationRun,
+	scopeId: string,
+	deviceId: string,
+): boolean {
+	return run.db
+		.transaction(() => {
+			assertLease(run.db, run.projectId, run.leaseOwner, run.effects.now());
+			if (!deviceBindingWithdrawn(run.db, deviceId)) return false;
+			stagePolicyRevocations(run, scopeId, [deviceId]);
+			return true;
+		})
+		.immediate();
+}
+
+function isLeaseLost(error: unknown): boolean {
+	return error instanceof Error && error.message === "recipient_policy_lease_lost";
+}
+
+/**
+ * Revokes withdrawn devices one at a time. A binding can change while this pass
+ * waits on the coordinator, so each device is checked again immediately before
+ * its deny overlay is staged; staging and starting the revoke run without yielding.
+ * After a failed revoke, the remaining withdrawn devices are still denied locally,
+ * but no further coordinator calls are made in this pass. Losing the lease stops
+ * the pass at once.
+ */
+async function revokeWithdrawnDevices(
+	run: RecipientPolicyReconciliationRun,
+	input: { scopeId: string; snapshotStateKey: string; candidateDeviceIds: string[] },
+): Promise<void> {
+	let revokeError: unknown = null;
+	let refreshError: unknown = null;
+	for (const deviceId of input.candidateDeviceIds) {
+		if (!denyIfStillWithdrawn(run, input.scopeId, deviceId) || revokeError) continue;
+		try {
+			const error = await applyPolicyRevocation(run, {
+				scopeId: input.scopeId,
+				snapshotStateKey: input.snapshotStateKey,
+				revocation: { deviceId, stepKey: `revoke:${input.snapshotStateKey}:${deviceId}` },
+			});
+			if (isLeaseLost(error)) throw error;
+			refreshError ??= error;
+		} catch (error) {
+			if (isLeaseLost(error)) throw error;
+			revokeError = error;
+		}
+	}
+	if (revokeError) throw revokeError;
+	if (refreshError) throw refreshError;
+	await retryPendingRevocationRefreshes(run.db, {
+		projectId: run.projectId,
+		scopeId: input.scopeId,
+		leaseOwner: run.leaseOwner,
+		lease: run.lease,
+		effects: run.effects,
+	});
+}
+
+/**
+ * Full derivation is blocked, so nothing is granted and the blocker is reported.
+ * Deactivating or merging a person still revokes their devices here (ADR 0007
+ * Decision 6) instead of waiting for the unrelated blocker to be repaired.
+ */
+async function blockedDerivationResult(
+	run: RecipientPolicyReconciliationRun,
+	managedBoundary: ManagedProjectBoundary,
+	startedAt: string,
+): Promise<RecipientPolicyReconcileResult> {
+	authority(run, {
+		safeErrorCode: "recipient_policy_desired_state_invalid",
+		now: run.effects.now(),
+	});
+	if (hasWithdrawnBinding(run.db)) {
+		const snapshot = await run.effects.snapshot({
+			canonicalProjectIdentity: run.projectId,
+			scopeId: managedBoundary.scopeId,
+		});
+		await revokeWithdrawnDevices(run, {
+			scopeId: managedBoundary.scopeId,
+			snapshotStateKey: digest("recipient-policy-snapshot-state-v1", {
+				fingerprint: snapshot.fingerprint,
+			}),
+			candidateDeviceIds: activeSnapshotDevices(snapshot, managedBoundary.scopeId, startedAt),
+		});
+	}
+	return result(
+		run.projectId,
+		"needs_attention",
+		run.activeGeneration,
+		"recipient_policy_desired_state_invalid",
+		run.revokedDeviceIds,
+	);
+}
+
 async function prepareInitialReconciliation(
 	run: RecipientPolicyReconciliationRun,
 	startedAt: string,
@@ -1522,18 +1657,9 @@ async function prepareInitialReconciliation(
 	const managedBoundary = boundary(run.db, run.projectId);
 	const desired = deriveRecipientPolicyEffectiveDevicesFromDatabase(run.db, run.projectId);
 	if (desired.status !== "eligible") {
-		authority(run, {
-			safeErrorCode: "recipient_policy_desired_state_invalid",
-			now: run.effects.now(),
-		});
 		return {
 			kind: "complete",
-			result: result(
-				run.projectId,
-				"needs_attention",
-				run.activeGeneration,
-				"recipient_policy_desired_state_invalid",
-			),
+			result: await blockedDerivationResult(run, managedBoundary, startedAt),
 		};
 	}
 	const initialSnapshot = await run.effects.snapshot({

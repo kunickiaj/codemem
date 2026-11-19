@@ -1970,6 +1970,261 @@ describe("recipient-policy reconciler with withdrawn people", () => {
 	});
 });
 
+describe("recipient-policy reconciler revokes withdrawn people while blocked", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertPolicyGraph(db);
+		// An unrelated pending recipient blocks full derivation for the Project.
+		insertDirectRecipient(db, "identity-pending", "device-pending", "pending");
+	});
+
+	afterEach(() => db.close());
+
+	async function reconcileBlocked(active: string[]) {
+		const { effects, members } = harness(active);
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-blocked" },
+			effects,
+		);
+		return { effects, members, outcome };
+	}
+
+	it("revokes a deactivated direct recipient's device and still reports the blocker", async () => {
+		// Arrange
+		insertDirectRecipient(db, "identity-b", "device-b");
+		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+
+		// Act
+		const { effects, members, outcome } = await reconcileBlocked([
+			"device-keep",
+			"device-b",
+			"device-unbound",
+		]);
+
+		// Assert
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			safeErrorCode: "recipient_policy_desired_state_invalid",
+			revokedDeviceIds: ["device-b"],
+			grantedDeviceIds: [],
+		});
+		expect(vi.mocked(effects.revoke).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"device-b",
+		]);
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect([...members].toSorted()).toEqual(["device-keep", "device-unbound"]);
+	});
+
+	it("revokes a merged Team member's device and leaves the rest of the Team alone", async () => {
+		// Arrange: identity-c was merged away but its Team membership is still active.
+		insertTeamRecipient(db, "team-1", ["identity-a", "identity-c"]);
+		insertDirectRecipient(db, "identity-c", "device-c", "merged");
+		db.prepare("DELETE FROM project_recipients WHERE recipient_id = 'identity-c'").run();
+		db.prepare(
+			"UPDATE actors SET merged_into_actor_id = 'identity-a' WHERE actor_id = 'identity-c'",
+		).run();
+
+		// Act
+		const { effects, members, outcome } = await reconcileBlocked(["device-keep", "device-c"]);
+
+		// Assert
+		expect(outcome).toMatchObject({
+			status: "needs_attention",
+			revokedDeviceIds: ["device-c"],
+			grantedDeviceIds: [],
+		});
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect([...members]).toEqual(["device-keep"]);
+	});
+
+	it("does not revoke a device whose binding is not withdrawn", async () => {
+		const { effects, outcome } = await reconcileBlocked(["device-keep", "device-pending"]);
+
+		expect(outcome).toMatchObject({ status: "needs_attention", revokedDeviceIds: [] });
+		expect(effects.revoke).not.toHaveBeenCalled();
+	});
+});
+
+describe("recipient-policy reconciler withdrawal while bindings change or revokes fail", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+		insertPolicyGraph(db);
+		insertDirectRecipient(db, "identity-pending", "device-pending", "pending");
+	});
+
+	afterEach(() => db.close());
+
+	it("rechecks a binding that moves to an active person during the snapshot", async () => {
+		// Arrange: device-b's person was removed, then device-b is rebound to identity-a mid-pass.
+		insertDirectRecipient(db, "identity-b", "device-b");
+		db.prepare("UPDATE actors SET status = 'deactivated' WHERE actor_id = 'identity-b'").run();
+		const { effects, members } = harness(["device-keep", "device-b"]);
+		const snapshot = effects.snapshot;
+		effects.snapshot = async (input) => {
+			db.prepare(
+				"UPDATE identity_devices SET identity_id = 'identity-a' WHERE device_id = 'device-b'",
+			).run();
+			return snapshot(input);
+		};
+
+		// Act
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-rebound" },
+			effects,
+		);
+
+		// Assert
+		expect(outcome).toMatchObject({ status: "needs_attention", revokedDeviceIds: [] });
+		expect(effects.revoke).not.toHaveBeenCalled();
+		expect(members.has("device-b")).toBe(true);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT)).toEqual([]);
+	});
+
+	it("rechecks each device after an earlier device's revocation", async () => {
+		// Arrange: both people were removed; device-c is rebound while device-b is revoked.
+		withdrawTwoPeople(db);
+		const { effects, members } = harness(["device-keep", "device-b", "device-c"]);
+		const revoke = effects.revoke;
+		effects.revoke = vi.fn(async (input) => {
+			db.prepare(
+				"UPDATE identity_devices SET identity_id = 'identity-a' WHERE device_id = 'device-c'",
+			).run();
+			return revoke(input);
+		});
+
+		// Act
+		const outcome = await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-rebound-later" },
+			effects,
+		);
+
+		// Assert
+		expect(outcome).toMatchObject({ revokedDeviceIds: ["device-b"] });
+		expect(members.has("device-c")).toBe(true);
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT).map((overlay) => overlay.deviceId)).toEqual(
+			["device-b"],
+		);
+	});
+
+	it("still denies later withdrawn devices locally when an earlier revoke fails", async () => {
+		// Arrange
+		withdrawTwoPeople(db);
+		const { effects } = harness(["device-keep", "device-b", "device-c"]);
+		effects.revoke = vi.fn(async () => {
+			throw new Error("coordinator_unavailable");
+		});
+
+		// Act
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-revoke-fails" },
+			effects,
+		).catch(() => undefined);
+
+		// Assert
+		expect(effects.revoke).toHaveBeenCalledOnce();
+		expect(effects.grant).not.toHaveBeenCalled();
+		expect(
+			listRecipientPolicyDenyOverlays(db, PROJECT)
+				.map((overlay) => overlay.deviceId)
+				.toSorted(),
+		).toEqual(["device-b", "device-c"]);
+	});
+
+	it("keeps revoking later withdrawn devices after a refresh fails", async () => {
+		// Arrange
+		withdrawTwoPeople(db);
+		const { effects, members } = harness(["device-keep", "device-b", "device-c"]);
+		effects.refresh = vi.fn().mockRejectedValueOnce(new Error("refresh_failed"));
+
+		// Act
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-refresh-fails" },
+			effects,
+		).catch(() => undefined);
+
+		// Assert
+		expect(vi.mocked(effects.revoke).mock.calls.map(([input]) => input.deviceId)).toEqual([
+			"device-b",
+			"device-c",
+		]);
+		expect([...members]).toEqual(["device-keep"]);
+	});
+
+	it("stops writing once another worker takes the lease", async () => {
+		// Arrange
+		withdrawTwoPeople(db);
+		const { effects } = harness(["device-keep", "device-b", "device-c"]);
+		const revoke = effects.revoke;
+		effects.revoke = vi.fn(async (input) => {
+			db.prepare(
+				"UPDATE recipient_policy_authority_states SET lease_owner = 'worker-other' WHERE canonical_project_identity = ?",
+			).run(PROJECT);
+			return revoke(input);
+		});
+
+		// Act
+		await reconcileRecipientPolicyProject(
+			db,
+			{ canonicalProjectIdentity: PROJECT, leaseOwner: "worker-stale" },
+			effects,
+		).catch(() => undefined);
+
+		// Assert
+		expect(effects.revoke).toHaveBeenCalledOnce();
+		expect(listRecipientPolicyDenyOverlays(db, PROJECT).map((overlay) => overlay.deviceId)).toEqual(
+			["device-b"],
+		);
+	});
+});
+
+/** Adds identity-b and identity-c as direct recipients, each with a device, then removes both. */
+function withdrawTwoPeople(db: InstanceType<typeof Database>): void {
+	insertDirectRecipient(db, "identity-b", "device-b");
+	insertDirectRecipient(db, "identity-c", "device-c");
+	db.prepare(
+		"UPDATE actors SET status = 'deactivated' WHERE actor_id IN ('identity-b', 'identity-c')",
+	).run();
+}
+
+function insertTeamRecipient(
+	db: InstanceType<typeof Database>,
+	teamId: string,
+	memberIds: string[],
+): void {
+	const now = new Date(BASE_TIME).toISOString();
+	db.prepare(
+		`INSERT INTO policy_teams(
+		 team_id, display_name, status, provenance, revision, migration_state,
+		 idempotency_key, created_at, updated_at
+		 ) VALUES (?, ?, 'active', 'test', '1', 'native', ?, ?, ?)`,
+	).run(teamId, teamId, `team:${teamId}`, now, now);
+	for (const identityId of memberIds) {
+		db.prepare(
+			`INSERT INTO policy_team_memberships(
+			 team_id, identity_id, role, status, provenance, revision, migration_state,
+			 idempotency_key, created_at, updated_at
+			 ) VALUES (?, ?, 'member', 'active', 'test', '1', 'native', ?, ?, ?)`,
+		).run(teamId, identityId, `membership:${teamId}:${identityId}`, now, now);
+	}
+	db.prepare(
+		`INSERT INTO project_recipients(
+		 canonical_project_identity, recipient_kind, recipient_id, status, provenance,
+		 policy_revision, migration_state, idempotency_key, created_at, updated_at
+		 ) VALUES (?, 'team', ?, 'active', 'test', '1', 'native', ?, ?, ?)`,
+	).run(PROJECT, teamId, `recipient:team:${teamId}`, now, now);
+}
+
 function insertDirectRecipient(
 	db: InstanceType<typeof Database>,
 	identityId: string,
