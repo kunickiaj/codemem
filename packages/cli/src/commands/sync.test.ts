@@ -11,7 +11,7 @@ import {
 	MemoryStore,
 	resolveKeyPaths,
 } from "@codemem/core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CANONICAL_PUBLIC_KEY } from "../../../core/src/coordinator-ed25519-key-id-test-fixtures.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
 import { saveSyncChannelCompletedBoundary } from "../../../core/src/sync-channel-progress.js";
@@ -24,7 +24,7 @@ import {
 	signingContexts,
 } from "../../../core/src/sync-status-test-fixtures.js";
 import { buildCoordinatorCommand } from "./coordinator.js";
-import { syncCommand } from "./sync.js";
+import { removeSyncPeer, syncCommand } from "./sync.js";
 import {
 	buildServeLifecycleArgs,
 	collectAdvertiseAddresses,
@@ -784,6 +784,35 @@ function seedRemovablePeer(dbPath: string) {
 	return store;
 }
 
+const POLICY_ATTEMPT_AT = "2026-11-17T00:00:00.000Z";
+
+/** Shares a Project with the peer's Identity, so removal has a Project policy to wake. */
+function shareProjectWithPeerIdentity(store: MemoryStore) {
+	const at = POLICY_ATTEMPT_AT;
+	store.db
+		.prepare(
+			`INSERT INTO project_recipients(canonical_project_identity, recipient_kind, recipient_id,
+			 status, provenance, policy_revision, migration_state, idempotency_key, created_at, updated_at)
+			 VALUES ('project-a', 'identity', 'identity-a', 'active', 'test', '1', 'native', 'recipient:a', ?, ?)`,
+		)
+		.run(at, at);
+	store.db
+		.prepare(
+			`INSERT INTO recipient_policy_authority_states(canonical_project_identity, authority_state,
+			 generation, state_changed_at, last_attempt_at, created_at, updated_at)
+			 VALUES ('project-a', 'active', 1, ?, ?, ?, ?)`,
+		)
+		.run(at, at, at, at);
+}
+
+/** The reconciler clears this when a Project's policy is woken. */
+function policyLastAttemptAt(store: MemoryStore) {
+	return store.db
+		.prepare("SELECT last_attempt_at FROM recipient_policy_authority_states")
+		.pluck()
+		.get();
+}
+
 function removedPeerState(store: MemoryStore) {
 	const count = (table: string) =>
 		store.db.prepare(`SELECT COUNT(*) FROM ${table} WHERE peer_device_id = 'peer-1'`).pluck().get();
@@ -807,9 +836,187 @@ async function runPeersRemove(args: string[]) {
 
 const REMOVE_NOTICE =
 	"Other devices still sync with work until they remove it too. If the coordinator still lists work, this device pairs with it again at the next refresh.";
+const KEPT_NOTICE = "work was not removed from Projects. An administrator's device can remove it.";
+const WITHOUT_ADMIN_SECRET = {
+	sync_coordinator_url: "https://coord.example.test",
+	sync_coordinator_groups: ["group-a"],
+};
+const ADMIN_DEVICE = {
+	...WITHOUT_ADMIN_SECRET,
+	sync_coordinator_admin_secret: "fixture-admin-secret",
+};
+const DISCONNECTED = {
+	pairings: 0,
+	cursors: 0,
+	cursorsV2: 0,
+	channelProgress: 0,
+	binding: "active",
+};
+
+let peersRemoveConfigDir: string;
+
+/** Each test reads only this file: no coordinator unless the test writes one. */
+function useCoordinatorSettings(config: Record<string, unknown>) {
+	writeFileSync(join(peersRemoveConfigDir, "config.json"), JSON.stringify(config), "utf8");
+}
+
+/** Keeps the developer's own config file and coordinator environment out of each test. */
+function isolateCoordinatorSettings() {
+	beforeEach(() => {
+		peersRemoveConfigDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-config-"));
+		vi.stubEnv("CODEMEM_CONFIG", join(peersRemoveConfigDir, "config.json"));
+		for (const name of ["URL", "GROUP", "GROUPS", "ADMIN_SECRET"]) {
+			vi.stubEnv(`CODEMEM_SYNC_COORDINATOR_${name}`, undefined);
+		}
+		useCoordinatorSettings({});
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(peersRemoveConfigDir, { recursive: true, force: true });
+	});
+}
+
+/** Runs the removal as JSON and returns what it printed and what it left in the store. */
+async function removeAsJson(
+	run: (dbPath: string) => Promise<void> = (dbPath) =>
+		runPeersRemove(["work", "--db-path", dbPath, "--json"]),
+) {
+	const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-rule-test-"));
+	const dbPath = join(tmpDbDir, "mem.sqlite");
+	const store = seedRemovablePeer(dbPath);
+	shareProjectWithPeerIdentity(store);
+	const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+	try {
+		await run(dbPath);
+		return {
+			payload: JSON.parse(String(logSpy.mock.calls[0]?.[0])) as Record<string, unknown>,
+			state: removedPeerState(store),
+			policyLastAttemptAt: policyLastAttemptAt(store),
+		};
+	} finally {
+		logSpy.mockRestore();
+		store.close();
+		rmSync(tmpDbDir, { recursive: true, force: true });
+	}
+}
+
+describe("sync peers remove: ending the other device's binding", () => {
+	isolateCoordinatorSettings();
+
+	it("keeps the binding with truncated config through the real default reader", async () => {
+		writeFileSync(
+			join(peersRemoveConfigDir, "config.json"),
+			'{"sync_coordinator_url":"https://coordinator.invalid"',
+		);
+		const result = await removeAsJson();
+		expect(result.state).toEqual(DISCONNECTED);
+		expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
+		expect(result.payload).toMatchObject({ binding: "kept" });
+	});
+
+	it("without the admin secret, removes the pairing and its sync progress, keeps the binding, wakes no Project policy, and says an admin device removes it from Projects", async () => {
+		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
+
+		const result = await removeAsJson();
+
+		expect(result.state).toEqual(DISCONNECTED);
+		expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
+		expect(result.payload).toEqual({
+			ok: true,
+			peer_device_id: "peer-1",
+			name: "work",
+			removed: {
+				sync_peers: 1,
+				replication_cursors: 1,
+				replication_cursors_v2: 1,
+				sync_channel_progress: 1,
+				identity_devices: 0,
+			},
+			binding: "kept",
+			remove_from_projects: "needs_admin_device",
+			notice: `${KEPT_NOTICE} ${REMOVE_NOTICE}`,
+		});
+	});
+
+	it("without the admin secret, prints that the device was disconnected and that an admin device removes it from Projects", async () => {
+		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
+		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-kept-text-test-"));
+		const dbPath = join(tmpDbDir, "mem.sqlite");
+		const store = seedRemovablePeer(dbPath);
+		const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+		try {
+			await runPeersRemove(["peer-1", "--db-path", dbPath]);
+
+			const rendered = writeSpy.mock.calls.map((call) => String(call[0])).join("\n");
+			expect(rendered).toContain("Disconnected this device from work");
+			expect(rendered).not.toContain("Removed peer");
+			expect(rendered).toContain(KEPT_NOTICE);
+			expect(rendered).toContain(REMOVE_NOTICE);
+			expect(rendered).toContain("Identity bindings ended: 0");
+			expect(removedPeerState(store)).toEqual(DISCONNECTED);
+		} finally {
+			writeSpy.mockRestore();
+			store.close();
+			rmSync(tmpDbDir, { recursive: true, force: true });
+		}
+	});
+
+	it("without the admin secret, keeps the binding when the coordinator says the device is enrolled", async () => {
+		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
+
+		const result = await removeAsJson((dbPath) =>
+			removeSyncPeer(
+				"work",
+				{ dbPath, json: true },
+				{ lookupCoordinatorAnswer: async () => "enrolled" },
+			),
+		);
+
+		expect(result.payload).toMatchObject({ binding: "kept" });
+		expect(result.state).toEqual(DISCONNECTED);
+		expect(result.policyLastAttemptAt).toBe(POLICY_ATTEMPT_AT);
+	});
+
+	it("without the admin secret, ends the binding when the coordinator says the device is removed", async () => {
+		useCoordinatorSettings(WITHOUT_ADMIN_SECRET);
+		const asked: string[] = [];
+
+		const result = await removeAsJson((dbPath) =>
+			removeSyncPeer(
+				"work",
+				{ dbPath, json: true },
+				{
+					lookupCoordinatorAnswer: async (deviceId) => {
+						asked.push(deviceId);
+						return "removed";
+					},
+				},
+			),
+		);
+
+		expect(asked).toEqual(["peer-1"]);
+		expect(result.payload).toMatchObject({ binding: "ended", notice: REMOVE_NOTICE });
+		expect(result.payload).not.toHaveProperty("remove_from_projects");
+		expect(result.state).toEqual({ ...DISCONNECTED, binding: "removed" });
+		expect(result.policyLastAttemptAt).toBeNull();
+	});
+
+	it("ends the binding on a device that holds the admin secret", async () => {
+		useCoordinatorSettings(ADMIN_DEVICE);
+
+		const result = await removeAsJson();
+
+		expect(result.payload).toMatchObject({ binding: "ended", notice: REMOVE_NOTICE });
+		expect(result.state).toEqual({ ...DISCONNECTED, binding: "removed" });
+		expect(result.policyLastAttemptAt).toBeNull();
+	});
+});
 
 describe("sync peers remove", () => {
-	it("K1: removes a peer by exact name from both cursor tables, ends its binding, and returns the counts as JSON", async () => {
+	isolateCoordinatorSettings();
+
+	it("K1: with no coordinator configured, removes a peer by exact name from both cursor tables, ends its binding, and returns the counts as JSON", async () => {
 		const tmpDbDir = mkdtempSync(join(tmpdir(), "sync-peers-remove-test-"));
 		const dbPath = join(tmpDbDir, "mem.sqlite");
 		const store = seedRemovablePeer(dbPath);
@@ -832,6 +1039,7 @@ describe("sync peers remove", () => {
 							sync_channel_progress: 1,
 							identity_devices: 1,
 						},
+						binding: "ended",
 						notice: REMOVE_NOTICE,
 					},
 					null,

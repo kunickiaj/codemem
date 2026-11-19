@@ -51,6 +51,7 @@ import {
 	buildAuthHeaders,
 	buildBaseUrl,
 	buildDirectPeerAuthHeaders,
+	type CoordinatorDeviceAnswerLookup,
 	CoordinatorReciprocalApprovalRequestChangedError,
 	canonicalRepositoryProjectIdentity,
 	canonicalWorkspaceIdentity,
@@ -61,6 +62,7 @@ import {
 	commitRecipientPolicyEdges,
 	completeCoordinatorDeviceSetup,
 	convertLegacyPairingAssignments,
+	coordinatorAdminReadiness,
 	coordinatorArchiveGroupAction,
 	coordinatorCreateAddDeviceInviteAction,
 	coordinatorCreateGroupAction,
@@ -108,6 +110,7 @@ import {
 	getSyncResetState,
 	type InboundScopeRejectionPeerSummary,
 	inviteTokenDigest,
+	isCoordinatorAdminDevice,
 	isPeerTrustBindingCompatible,
 	isProjectScopeWithdrawn,
 	isProjectSyncEnablementError,
@@ -176,7 +179,7 @@ import {
 	refreshAuthorizedCoordinatorPeerTrust,
 	refreshConfiguredScopeMembershipCache,
 	rejectInboundScopeFailures,
-	removePairingState,
+	removePeerFromThisDevice,
 	renameRecipientPolicyTeam,
 	repositoryIdentitiesByWorkspace,
 	repositoryIdentityForWorkspace,
@@ -247,6 +250,8 @@ export interface SyncRoutesOptions {
 	onRecipientPolicyTeamRenamed?: () => void;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	renameCoordinatorGroup?: typeof coordinatorRenameGroupAction;
+	/** What the coordinator says about a peer being removed. Without it there is no answer. */
+	lookupCoordinatorDeviceAnswer?: CoordinatorDeviceAnswerLookup;
 }
 type SafeSkippedSyncDetail = Pick<
 	FilterReplicationSkipped,
@@ -490,21 +495,15 @@ async function inspectPairingInvite(c: Context, next: () => Promise<void>) {
 	}
 }
 
-type CoordinatorAdminReadiness = "not_configured" | "partial" | "ready";
-
 export function coordinatorAdminStatusPayload(
 	config: ReturnType<typeof readCoordinatorSyncConfig> = readCoordinatorSyncConfig(),
 ) {
 	const groups = config.syncCoordinatorGroups;
 	const activeGroup = groups[0] ?? null;
-	const hasUrl = Boolean(config.syncCoordinatorUrl);
 	const hasGroups = groups.length > 0;
 	const hasAdminSecret = Boolean(config.syncCoordinatorAdminSecret);
-	let readiness: CoordinatorAdminReadiness = "ready";
-	if (!hasUrl) readiness = "not_configured";
-	else if (!hasGroups || !hasAdminSecret) readiness = "partial";
 	return {
-		readiness,
+		readiness: coordinatorAdminReadiness(config),
 		coordinator_url: config.syncCoordinatorUrl || null,
 		groups,
 		active_group: activeGroup,
@@ -6299,8 +6298,7 @@ async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
  */
 function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig): boolean {
 	try {
-		const status = coordinatorAdminStatusPayload(readConfig());
-		return status.readiness === "ready" && status.has_admin_secret === true;
+		return isCoordinatorAdminDevice(readConfig());
 	} catch {
 		return false;
 	}
@@ -6394,6 +6392,37 @@ export function installRecipientAccessChangeGate(
 	app.delete("/api/sync/sharing-domains/project-mappings/:id", async (c, next) =>
 		allowed() ? next() : refuse(c),
 	);
+}
+
+async function removeLocalPeerRoute(
+	c: Context,
+	getStore: StoreFactory,
+	options: SyncRoutesOptions,
+): Promise<Response> {
+	const store = getStore();
+	const d = drizzle(store.db, { schema });
+	const peerDeviceId = c.req.param("peer_device_id")?.trim();
+	if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+	const exists = d
+		.select({ peer_device_id: schema.syncPeers.peer_device_id })
+		.from(schema.syncPeers)
+		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
+		.get();
+	if (!exists) return c.json({ error: "peer not found" }, 404);
+	const { binding } = await removePeerFromThisDevice(store.db, {
+		localDeviceId: store.deviceId,
+		peerDeviceId,
+		readConfig: options.readCoordinatorConfig,
+		lookupCoordinatorAnswer: options.lookupCoordinatorDeviceAnswer,
+	});
+	if (binding === "ended") return c.json({ ok: true, binding });
+	// The device stays in Projects shared with its Identity until an admin device removes it.
+	return c.json({
+		ok: true,
+		binding,
+		remove_from_projects: "needs_admin_device",
+		notice: "The device stays in Projects. An administrator's device can remove it.",
+	});
 }
 
 export function syncRoutes(
@@ -9376,26 +9405,7 @@ export function syncRoutes(
 	app.post("/api/sync/bootstrap-grants/revoke", revokeBootstrapGrantRoute);
 
 	// DELETE /api/sync/peers/:peer_device_id
-	app.delete("/api/sync/peers/:peer_device_id", (c) => {
-		const store = getStore();
-		{
-			const d = drizzle(store.db, { schema });
-			const peerDeviceId = c.req.param("peer_device_id")?.trim();
-			if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-			const exists = d
-				.select({ peer_device_id: schema.syncPeers.peer_device_id })
-				.from(schema.syncPeers)
-				.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-				.get();
-			if (!exists) return c.json({ error: "peer not found" }, 404);
-			removePairingState(store.db, {
-				localDeviceId: store.deviceId,
-				reason: "local",
-				deviceIds: [peerDeviceId],
-			});
-			return c.json({ ok: true });
-		}
-	});
+	app.delete("/api/sync/peers/:peer_device_id", (c) => removeLocalPeerRoute(c, getStore, options));
 
 	return app;
 }

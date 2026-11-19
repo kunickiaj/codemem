@@ -819,6 +819,13 @@ A client that decides how to remove a device treats an entry as absent from the
 coordinator only when a 200 reply lists it in none of the three arrays. A failed
 or missing reply is no answer, and the client then changes nothing.
 
+Removing a peer with `codemem sync peers remove` or the Viewer's peer removal
+route always deletes that client's own pairing and sync progress. A client
+without the admin secret also ends the device's Identity binding only when no
+coordinator is configured or this reply shows the device as removed, revoked,
+or absent from the coordinator. In every other case, including no answer, the
+binding stays active and an administrator's device ends it.
+
 A client requires the three arrays and the integer. A reply without them is invalid,
 and the client keeps every pairing. For each `removed` ID that it sent, the
 client deletes the pairing, both replication cursor tables, and the peer's

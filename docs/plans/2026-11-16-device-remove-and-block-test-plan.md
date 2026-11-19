@@ -406,7 +406,10 @@ New function in `packages/core`, for example `removePairingState`.
 ## K. CLI
 
 1. `codemem sync peers remove` deletes both cursor tables, ends the binding,
-   and prints the notice. `--json` returns the counts.
+   and prints the notice. `--json` returns the counts. Without the admin
+   secret, with a coordinator configured and no confirmation that the device
+   is removed, blocked, or not enrolled, it keeps the binding and says that an
+   administrator's device removes the device from Projects.
 2. `codemem coordinator device remove` writes a tombstone.
 3. `codemem coordinator device enable` enables a disabled enrollment and is
    refused for a removed device.

@@ -185,6 +185,7 @@ export interface AppOptions extends SyncAppOptions {
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
+	lookupCoordinatorDeviceAnswer?: SyncRoutesOptions["lookupCoordinatorDeviceAnswer"];
 	syncReachability?: SyncRoutesOptions["syncReachability"];
 	getSyncRuntimeStatus?: () => {
 		phase:
@@ -298,6 +299,25 @@ function registerViewerTargetGuards(options: { app: Hono; storeFactory: () => Me
 	app.use("/api/pi/sessions/search", viewerTargetGuard);
 }
 
+function registerViewerSyncRoutes(
+	app: Hono,
+	storeFactory: () => MemoryStore,
+	opts: AppOptions | undefined,
+	onRecipientPolicyTeamRenamed: () => void,
+): void {
+	app.route(
+		"/",
+		syncRoutes(storeFactory, opts?.getSyncRuntimeStatus, {
+			syncReachability: opts?.syncReachability,
+			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
+			onRecipientPolicyTeamRenamed,
+			readCoordinatorConfig: opts?.readCoordinatorConfig,
+			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
+			lookupCoordinatorDeviceAnswer: opts?.lookupCoordinatorDeviceAnswer,
+		}),
+	);
+}
+
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
@@ -331,16 +351,7 @@ export function createApp(opts?: AppOptions) {
 	registerConfigRoutes(app, opts, sweeper);
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
-	app.route(
-		"/",
-		syncRoutes(storeFactory, opts?.getSyncRuntimeStatus, {
-			syncReachability: opts?.syncReachability,
-			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
-			onRecipientPolicyTeamRenamed: () => invalidateTeamSetupSummary(),
-			readCoordinatorConfig: opts?.readCoordinatorConfig,
-			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
-		}),
-	);
+	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
 	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(

@@ -2102,6 +2102,14 @@ describe("GET /api/projects query plan", () => {
 	);
 });
 
+// This removal fixture has no coordinator regardless of the inherited environment.
+const localPeerRemovalOptions = {
+	readCoordinatorConfig: () => ({
+		...core.readCoordinatorSyncConfig({}),
+		syncCoordinatorUrl: "",
+	}),
+};
+
 describe("viewer-server", () => {
 	it("serves viewer shell and app bundle with cache-safe headers", async () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "codemem-viewer-static-cache-"));
@@ -21306,7 +21314,7 @@ describe("viewer-server", () => {
 		});
 
 		it("deletes sync peers through the viewer route", async () => {
-			const { app, ensureStore, cleanup } = createTestApp();
+			const { app, ensureStore, cleanup } = createTestApp(localPeerRemovalOptions);
 			try {
 				const store = ensureStore();
 				store.db
@@ -21319,7 +21327,7 @@ describe("viewer-server", () => {
 					.run("peer-delete-me", "cursor-1", "cursor-1", new Date().toISOString());
 				const res = await app.request("/api/sync/peers/peer-delete-me", { method: "DELETE" });
 				expect(res.status).toBe(200);
-				expect(await res.json()).toEqual({ ok: true });
+				expect(await res.json()).toEqual({ ok: true, binding: "ended" });
 				const remaining = store.db
 					.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
 					.get("peer-delete-me");
