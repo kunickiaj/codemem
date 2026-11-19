@@ -313,6 +313,7 @@ function renderSharingLoad(
 	const { dependencies, state } = context;
 	if (data.loadSucceeded && managementMount) {
 		dependencies.mountManagement(managementMount, data.projects, data.intent, {
+			accessChangesAllowed: state.coordinatorAccess === "ready",
 			onCommitted: async () => {
 				await refresh();
 			},

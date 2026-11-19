@@ -44,7 +44,11 @@ import { packTransportRoutes } from "./routes/pack.js";
 import { projectWithdrawalRoutes } from "./routes/project-withdrawal.js";
 import { rawEventsRoutes } from "./routes/raw-events.js";
 import { statsRoutes } from "./routes/stats.js";
-import { type SyncRoutesOptions, syncRoutes } from "./routes/sync.js";
+import {
+	installRecipientAccessChangeGate,
+	type SyncRoutesOptions,
+	syncRoutes,
+} from "./routes/sync.js";
 import { type ViewerTargetStore, viewerTargetQueryGuard } from "./routes/target-validation.js";
 import { teamCreateRoutes } from "./routes/team-create.js";
 import {
@@ -326,6 +330,7 @@ export function createApp(opts?: AppOptions) {
 	);
 	registerConfigRoutes(app, opts, sweeper);
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
+	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
 	app.route(
 		"/",
 		syncRoutes(storeFactory, opts?.getSyncRuntimeStatus, {

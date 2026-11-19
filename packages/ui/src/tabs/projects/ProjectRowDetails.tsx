@@ -105,6 +105,12 @@ function ProjectDetailsOverview({ model, view }: Pick<ProjectRowDetailsProps, "m
 			{peerReceived ? (
 				<div className="settings-note">Read-only here. Change it on the source device.</div>
 			) : null}
+			{view.accessChangesAllowed ? null : (
+				<div className="settings-note">
+					Only a device that holds the coordinator admin secret can share this Project more widely.
+					Here you can keep it local-only.
+				</div>
+			)}
 			{project.identity_source === "unmapped" ? (
 				<div className="settings-note">
 					Stays on this device until it has a path, git remote, or workspace id.
@@ -189,7 +195,8 @@ function ProjectSpaceSelect(props: DetailsContentProps) {
 function ProjectSecondaryActions({
 	callbacks,
 	model,
-}: Pick<DetailsContentProps, "callbacks" | "model">) {
+	view,
+}: Pick<DetailsContentProps, "callbacks" | "model" | "view">) {
 	const { project } = model;
 	return (
 		<>
@@ -202,7 +209,11 @@ function ProjectSecondaryActions({
 			</button>
 			<button
 				className="settings-button"
-				disabled={project.mapping_id == null || project.resolution_reason !== "exact_mapping"}
+				disabled={
+					!view.accessChangesAllowed ||
+					project.mapping_id == null ||
+					project.resolution_reason !== "exact_mapping"
+				}
 				onClick={() => void callbacks.removeProjectScope(project.workspace_identity)}
 				type="button"
 			>
@@ -343,7 +354,7 @@ function ProjectDetailsActions(props: DetailsContentProps) {
 			{assignable ? (
 				<>
 					<ProjectSpaceSelect {...props} />
-					<ProjectSecondaryActions callbacks={callbacks} model={model} />
+					<ProjectSecondaryActions callbacks={callbacks} model={model} view={view} />
 					<SpaceConfirmation
 						callbacks={callbacks}
 						confirmationActionRef={props.confirmationActionRef}

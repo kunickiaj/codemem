@@ -2,6 +2,7 @@
  * Sync routes — status, peers, actors, attempts, pairing, mutations.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
@@ -38,6 +39,7 @@ import type {
 	SharePersonIntent,
 	ShareProjectIntent,
 	SyncScopeResetReason,
+	UpsertProjectScopeMappingInput,
 } from "@codemem/core";
 import {
 	ACCESS_CLEANUP_OP_TYPE,
@@ -153,6 +155,7 @@ import {
 	previewRecipientPolicyEdges,
 	previewRecipientPolicyOnboarding,
 	previewRecipientPolicyOnboardingFromReviewedIntent,
+	projectScopeMappingSavesOnlyNarrow,
 	projectShareLifecycle,
 	projectWithdrawalStates,
 	RecipientPolicyEdgeRequestError,
@@ -5988,6 +5991,7 @@ function saveProjectMappingsAndWakePolicies(
 	store.adoptEnsuredDeviceIdentity(deviceId);
 	return store.db
 		.transaction(() => {
+			requireNarrowingWhenGated(store, mappingInputs);
 			const before = policyWakeMappings(store);
 			const previousMappings = existingRequestedMappings(before, mappingInputs);
 			const writableScopeIds = new Set(
@@ -6286,6 +6290,110 @@ async function projectScopeInventoryRoute(c: Context, store: MemoryStore) {
 		repositoryIdentitySnapshot,
 	);
 	return c.json(serializeProjectScopeInventory(store, inventory, sharingByProject));
+}
+
+/**
+ * Changing who receives a Project takes effect only through the reconciler on a
+ * ready device that holds the coordinator admin secret (ADR 0007 Decision 4), so
+ * other devices must not save those changes.
+ */
+function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig): boolean {
+	try {
+		const status = coordinatorAdminStatusPayload(readConfig());
+		return status.readiness === "ready" && status.has_admin_secret === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Set while a request that passed the gate only because it narrows access is
+ * handled. Another save can land between the gate and the write, so the write
+ * checks again inside its transaction, after the publication lock.
+ */
+const mappingSaveMustOnlyNarrow = new AsyncLocalStorage<boolean>();
+
+function requireNarrowingWhenGated(
+	store: MemoryStore,
+	inputs: UpsertProjectScopeMappingInput[],
+): void {
+	if (!mappingSaveMustOnlyNarrow.getStore()) return;
+	if (!projectScopeMappingSavesOnlyNarrow(store.db, inputs)) {
+		throw new Error("access_change_needs_admin_device");
+	}
+}
+
+async function isDryRunMigration(c: Context): Promise<boolean> {
+	const body = await parseViewerJsonBody(c, { allowEmpty: true });
+	return body?.dryRun === true;
+}
+
+/**
+ * Reads a mapping save the way its own route does, so a request can't show the
+ * gate one shape and the route another. Malformed input passes through to the
+ * route, which rejects it.
+ */
+async function mappingSaveOnlyNarrows(
+	c: Context,
+	store: MemoryStore,
+	parse: (body: Record<string, unknown>) => UpsertProjectScopeMappingInput[],
+): Promise<boolean> {
+	const body = await parseViewerJsonBody(c);
+	if (!body) return true;
+	let inputs: UpsertProjectScopeMappingInput[];
+	try {
+		inputs = parse(body);
+	} catch {
+		return true;
+	}
+	return projectScopeMappingSavesOnlyNarrow(store.db, inputs);
+}
+
+/**
+ * Refuses saves that change who receives a Project before they reach their route
+ * handlers: recipient changes, moving a Project into a shared setup, and removing
+ * a Project's mapping (which can expose a broader shared mapping). Register it on
+ * the app before the sync routes are mounted.
+ */
+export function installRecipientAccessChangeGate(
+	app: Hono,
+	getStore: () => MemoryStore,
+	readConfig: typeof readCoordinatorSyncConfig = readCoordinatorSyncConfig,
+): void {
+	const refuse = (c: Context) => c.json({ error: "access_change_needs_admin_device" }, 403);
+	const allowed = () => canChangeRecipientAccess(readConfig);
+	// Each of these saves a choice of who receives a Project: recipient edges, review
+	// decisions and the migration that materializes them, and moving held-back
+	// memories into a shared scope.
+	for (const path of [
+		"/api/sync/recipient-policy/v1/edges/commit",
+		"/api/sync/recipient-policy/v1/review/resolve",
+		"/api/sync/recipient-policy/v1/review/resolve-bulk",
+		"/api/sync/legacy-shared-review/reassign",
+	]) {
+		app.post(path, async (c, next) => (allowed() ? next() : refuse(c)));
+	}
+	// A dry run writes nothing, so any device may preview the migration.
+	app.post("/api/sync/recipient-policy/v1/migrate", async (c, next) =>
+		allowed() || (await isDryRunMigration(c)) ? next() : refuse(c),
+	);
+	const mappingRoutes = [
+		[
+			"/api/sync/sharing-domains/project-mappings",
+			(body: Record<string, unknown>) => [parseViewerProjectMappingInput(body)],
+		],
+		["/api/sync/sharing-domains/project-mappings/bulk", parseViewerProjectMappingInputs],
+	] as const;
+	for (const [path, parse] of mappingRoutes) {
+		app.put(path, async (c, next) => {
+			if (allowed()) return next();
+			if (!(await mappingSaveOnlyNarrows(c, getStore(), parse))) return refuse(c);
+			return mappingSaveMustOnlyNarrow.run(true, () => next());
+		});
+	}
+	app.delete("/api/sync/sharing-domains/project-mappings/:id", async (c, next) =>
+		allowed() ? next() : refuse(c),
+	);
 }
 
 export function syncRoutes(

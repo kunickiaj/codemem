@@ -3,6 +3,7 @@
  * the "Review" CTA back to the Feed tab filtered by the current actor. */
 
 import { h } from "preact";
+import { accessChangeRefusalMessage } from "../../../../lib/access-change";
 import * as api from "../../../../lib/api";
 import type {
 	LegacySharedReviewReassignmentPreview,
@@ -49,7 +50,8 @@ async function reassignLegacySharedReviewGroup(
 	} catch (error) {
 		if (error instanceof api.LegacySharedReviewConfirmationError) return error.preview;
 		const message =
-			error instanceof Error ? error.message : "Unable to reassign legacy review memories.";
+			accessChangeRefusalMessage(error) ??
+			(error instanceof Error ? error.message : "Unable to reassign legacy review memories.");
 		showGlobalNotice(message, "warning");
 		throw new Error(message);
 	}

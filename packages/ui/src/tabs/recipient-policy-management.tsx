@@ -26,6 +26,11 @@ export type RecipientPolicyManagementRequest =
 	| { mode: "recipient-manage"; recipient: RecipientPolicyEdgeRecipientRefV1 };
 
 export interface RecipientPolicyManagementMountOptions {
+	/**
+	 * True only on a ready device that holds the coordinator admin secret. Anything
+	 * else shows current access read-only (ADR 0007 Decision 4).
+	 */
+	accessChangesAllowed?: boolean;
 	loading?: boolean;
 	loadError?: boolean;
 	onCommitted?: (result: RecipientPolicyEdgeCommitResultV1) => void | Promise<void>;
@@ -133,7 +138,15 @@ function unavailableProjectLabels(
 	);
 }
 
+const READ_ONLY_ACCESS =
+	"Only a device that holds the coordinator admin secret can change who receives Projects. You can see current access here. Make changes on that device.";
+const READ_ONLY_ADDITIONS =
+	"Only a device that holds the coordinator admin secret can change who receives Projects. Make changes on that device.";
+
 function safeError(cause: unknown, fallback: string): string {
+	if (cause instanceof Error && cause.message === "access_change_needs_admin_device") {
+		return "Only a device that holds the coordinator admin secret can change who receives Projects. Nothing changed. Make changes on that device.";
+	}
 	if (cause instanceof api.RecipientPolicyEdgesStaleError) {
 		return "Recipient access changed after this review. Review the refreshed changes before trying again.";
 	}
@@ -819,6 +832,62 @@ function CommitResult({
 	);
 }
 
+function managementUnavailableMessage(
+	options: RecipientPolicyManagementMountOptions,
+	missingProject: boolean,
+	fixedRecipientMissing: boolean,
+): string | null {
+	if (options.loading) return "Loading the complete recipient access inventory…";
+	if (options.loadError) {
+		return "The complete recipient access inventory is unavailable. Refresh and try again.";
+	}
+	if (missingProject) return "One selected Project is no longer available. Refresh and try again.";
+	if (fixedRecipientMissing) return "This recipient is no longer available. Refresh and try again.";
+	return null;
+}
+
+function footerStage(done: boolean, unavailable: boolean): "editing" | "unavailable" | "done" {
+	if (done) return "done";
+	return unavailable ? "unavailable" : "editing";
+}
+
+function ManagementFooter(props: {
+	busy: boolean;
+	canSubmit: boolean;
+	onBack: () => void;
+	onSubmit: () => void;
+	reviewing: boolean;
+	stage: "editing" | "unavailable" | "done";
+}) {
+	let backLabel = "Cancel";
+	if (props.stage === "done") backLabel = "Done";
+	else if (props.reviewing) backLabel = "Back";
+	let submitLabel = props.reviewing ? "Confirm changes" : "Review changes";
+	if (props.busy) submitLabel = props.reviewing ? "Saving…" : "Reviewing…";
+	return (
+		<div className="modal-footer recipient-policy-management-actions">
+			<button
+				className="settings-button recipient-policy-management-target"
+				disabled={props.busy}
+				onClick={props.onBack}
+				type="button"
+			>
+				{backLabel}
+			</button>
+			{props.stage === "editing" ? (
+				<button
+					className="settings-button sync-dialog-confirm recipient-policy-management-target"
+					disabled={props.busy || !props.canSubmit}
+					onClick={props.onSubmit}
+					type="button"
+				>
+					{submitLabel}
+				</button>
+			) : null}
+		</div>
+	);
+}
+
 function RecipientPolicyManagementHost({ intent, options, projects }: ManagementData) {
 	const [request, setRequest] = useState<RecipientPolicyManagementRequest | null>(null);
 	const [selected, setSelected] = useState<string[]>([]);
@@ -953,6 +1022,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 	const review = async () => {
 		if (
 			dataUnavailable ||
+			options.accessChangesAllowed !== true ||
 			selectionEmpty ||
 			noChanges ||
 			changeLimitExceeded ||
@@ -979,7 +1049,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		}
 	};
 	const commit = async () => {
-		if (!preview || submitting.current) return;
+		if (!preview || submitting.current || options.accessChangesAllowed !== true) return;
 		submitting.current = true;
 		setBusy(true);
 		setError(null);
@@ -1011,16 +1081,19 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		}
 	};
 
-	let unavailableMessage: string | null = null;
-	if (options.loading) unavailableMessage = "Loading the complete recipient access inventory…";
-	else if (options.loadError) {
-		unavailableMessage =
-			"The complete recipient access inventory is unavailable. Refresh and try again.";
-	} else if (missingProject) {
-		unavailableMessage = "One selected Project is no longer available. Refresh and try again.";
-	} else if (fixedRecipientMissing) {
-		unavailableMessage = "This recipient is no longer available. Refresh and try again.";
+	const unavailableMessage = managementUnavailableMessage(
+		options,
+		missingProject,
+		fixedRecipientMissing,
+	);
+	const readOnly = options.accessChangesAllowed !== true;
+	// Add dialogs list only additions, so they can't claim to show current access.
+	const showsCurrentAccess = request.mode.endsWith("-manage");
+	if (readOnly && !preview && !result && showsCurrentAccess) {
+		description = "Current access, as this device last saw it.";
 	}
+	const readOnlyNotice = showsCurrentAccess ? READ_ONLY_ACCESS : READ_ONLY_ADDITIONS;
+	const notice = error ?? (readOnly && !result ? readOnlyNotice : null);
 
 	let content: ComponentChildren;
 	if (unavailableMessage) {
@@ -1052,12 +1125,12 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 				? "No additional Projects are available."
 				: "No Projects are available.";
 		content = (
-			<fieldset className="sync-dialog-radio-list" disabled={busy}>
+			<fieldset className="sync-dialog-radio-list" disabled={busy || readOnly}>
 				<legend>{copy.legend}</legend>
 				<ProjectChoices
 					choices={availableProjects}
 					selected={selected}
-					busy={busy}
+					busy={busy || readOnly}
 					toggle={toggle}
 					emptyMessage={emptyMessage}
 				/>
@@ -1065,7 +1138,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 		);
 	} else {
 		content = (
-			<fieldset className="sync-dialog-radio-list" disabled={busy}>
+			<fieldset className="sync-dialog-radio-list" disabled={busy || readOnly}>
 				<legend>{copy.legend}</legend>
 				{choices.length ? (
 					<RecipientChoices
@@ -1073,7 +1146,7 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 						intent={intent}
 						request={request}
 						selected={selected}
-						busy={busy}
+						busy={busy || readOnly}
 						toggle={toggle}
 					/>
 				) : (
@@ -1142,9 +1215,9 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 							{status}
 						</p>
 					)}
-					{error ? (
-						<p aria-live="assertive" role="alert">
-							{error}
+					{notice ? (
+						<p aria-live="assertive" role={error ? "alert" : "status"}>
+							{notice}
 						</p>
 					) : null}
 					{changeLimitExceeded ? (
@@ -1155,41 +1228,25 @@ function RecipientPolicyManagementHost({ intent, options, projects }: Management
 						</p>
 					) : null}
 				</div>
-				<div className="modal-footer recipient-policy-management-actions">
-					<button
-						className="settings-button recipient-policy-management-target"
-						disabled={busy}
-						onClick={
-							preview && !result
-								? () => {
-										setPreview(null);
-										reviewedRecipientLabels.current = new Map();
-										reviewedProjectLabels.current = new Map();
-										setStatus("");
-									}
-								: close
-						}
-						type="button"
-					>
-						{result ? "Done" : preview ? "Back" : "Cancel"}
-					</button>
-					{!result && !unavailableMessage ? (
-						<button
-							className="settings-button sync-dialog-confirm recipient-policy-management-target"
-							disabled={busy || (!preview && (selectionEmpty || noChanges || changeLimitExceeded))}
-							onClick={() => void (preview ? commit() : review())}
-							type="button"
-						>
-							{busy
-								? preview
-									? "Saving…"
-									: "Reviewing…"
-								: preview
-									? "Confirm changes"
-									: "Review changes"}
-						</button>
-					) : null}
-				</div>
+				<ManagementFooter
+					busy={busy}
+					canSubmit={
+						!readOnly && (preview != null || !(selectionEmpty || noChanges || changeLimitExceeded))
+					}
+					onBack={
+						preview && !result
+							? () => {
+									setPreview(null);
+									reviewedRecipientLabels.current = new Map();
+									reviewedProjectLabels.current = new Map();
+									setStatus("");
+								}
+							: close
+					}
+					onSubmit={() => void (preview ? commit() : review())}
+					reviewing={preview != null}
+					stage={footerStage(result != null, unavailableMessage != null)}
+				/>
 			</div>
 		</RadixDialog>
 	);

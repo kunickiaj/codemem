@@ -1016,3 +1016,33 @@ describe("Sharing Team creation access", () => {
 		expect(loadIntent).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe("Sharing recipient changes need the admin secret", () => {
+	it.each([
+		[{ readiness: "ready", has_admin_secret: true }, true],
+		[{ readiness: "partial", has_admin_secret: false }, false],
+		[{ readiness: "ready", has_admin_secret: false }, false],
+		[null, false],
+	])("lets the recipient dialog change access for status %j: %s", async (status, allowed) => {
+		// Arrange
+		document.body.innerHTML =
+			'<div id="recipientPolicySharingMount"></div><div id="recipientPolicyManagementMount"></div>';
+		const mountManagement = vi.fn();
+		const load = createRecipientPolicySharingLoader({
+			loadCoordinatorAdminStatus: vi.fn(async () => status),
+			loadDeviceInventory: vi.fn().mockResolvedValue({ version: 1, items: [], truncated: false }),
+			loadIntent: vi.fn().mockResolvedValue(intent),
+			loadProjects: vi.fn().mockResolvedValue({ manageable: projects, received: [] }),
+			loadSyncStatus: vi.fn().mockResolvedValue({}),
+			loadTeamSetupSummary: vi.fn().mockResolvedValue({ version: 1, candidates: [] }),
+			mountManagement,
+			mountSharing: vi.fn(),
+		});
+
+		// Act
+		await load();
+
+		// Assert
+		expect(mountManagement.mock.calls.at(-1)?.[3]).toMatchObject({ accessChangesAllowed: allowed });
+	});
+});

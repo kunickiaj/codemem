@@ -2,6 +2,7 @@ import { type RefObject, render } from "preact";
 import { useEffect, useId, useRef, useState } from "preact/hooks";
 import { Chip } from "../components/primitives/chip";
 import { NativeSelect } from "../components/primitives/native-select";
+import { accessChangeRefusalMessage } from "../lib/access-change";
 import * as api from "../lib/api";
 import type {
 	RecipientPolicyBlockedItemV1,
@@ -231,7 +232,7 @@ function appliedGroupMessage(
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-	return error instanceof Error ? error.message : fallback;
+	return accessChangeRefusalMessage(error) ?? (error instanceof Error ? error.message : fallback);
 }
 
 function isDecisionBlocked(group: ReviewGroup, decision: RecipientPolicyReviewDecisionV1): boolean {
