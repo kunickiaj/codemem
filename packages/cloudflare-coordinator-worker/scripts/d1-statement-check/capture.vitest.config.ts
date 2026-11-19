@@ -5,6 +5,15 @@ const core = resolve(import.meta.dirname, "../../../core");
 
 /** Runs the core coordinator tests with statement capture switched on. */
 export default defineConfig({
+	resolve: {
+		alias: {
+			// The capture job imports the Worker verifier without building Core first.
+			"@codemem/core/internal/cloudflare-coordinator": resolve(
+				core,
+				"src/internal/cloudflare-coordinator.ts",
+			),
+		},
+	},
 	test: {
 		name: "d1-statement-capture",
 		root: core,
