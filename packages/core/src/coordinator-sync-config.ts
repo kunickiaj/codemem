@@ -2,6 +2,8 @@ import { getCodememEnvOverrides, readCodememConfigFile } from "./observer-config
 
 type ConfigRecord = Record<string, unknown>;
 
+export type BoundaryMigrationMode = "off" | "report" | "on";
+
 function clean(value: unknown): string {
 	return typeof value === "string" ? value.trim() : "";
 }
@@ -92,6 +94,16 @@ export function readRelayClientSettings(config?: ConfigRecord): RelayClientSetti
 		enabled: parseBoolOr(raw.sync_relay_enabled, true),
 		serviceKey: clean(raw.sync_relay_service_key),
 	};
+}
+
+/**
+ * Selects the rollout mode without activating the migration or advertising
+ * readiness. Invalid nonempty settings disable migration.
+ */
+export function readBoundaryMigrationMode(config?: ConfigRecord): BoundaryMigrationMode {
+	const mode = clean(readRawSyncConfig(config).sync_boundary_migration).toLowerCase();
+	if (mode === "report" || mode === "on") return mode;
+	return "off";
 }
 
 export function readCoordinatorSyncConfig(config?: ConfigRecord): CoordinatorSyncConfig {
