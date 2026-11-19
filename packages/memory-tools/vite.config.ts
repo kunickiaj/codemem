@@ -25,5 +25,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "memory-tools",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 	},
 });

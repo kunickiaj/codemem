@@ -41,5 +41,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "mcp-server",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 	},
 });

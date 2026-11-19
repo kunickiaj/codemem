@@ -31,5 +31,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "pi-extension",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 	},
 });

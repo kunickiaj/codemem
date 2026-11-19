@@ -83,6 +83,8 @@ const unitTestExcludes = [
 	"scripts/visual-policy.test.mjs",
 ];
 
+const unitTestServer = { deps: { inline: radixTestDependencies } };
+
 export default defineConfig(({ command, mode }) => {
 	const isDevServer = command === "serve";
 	const viewerPort = Number(process.env.CODEMEM_DEV_VIEWER_PORT || "38899");
@@ -147,14 +149,11 @@ export default defineConfig(({ command, mode }) => {
 			},
 			environment: "jsdom",
 			name: "ui",
+			setupFiles: ["../core/src/test-environment-isolation.ts"],
 			alias: {
 				"react-remove-scroll": resolve(import.meta.dirname, "src/menu-test-scroll-lock.tsx"),
 			},
-			server: {
-				deps: {
-					inline: radixTestDependencies,
-				},
-			},
+			server: unitTestServer,
 		},
 	};
 });

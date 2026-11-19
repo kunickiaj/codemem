@@ -34,5 +34,6 @@ export default defineConfig({
 	},
 	test: {
 		name: "viewer-server",
+		setupFiles: ["../core/src/test-environment-isolation.ts"],
 	},
 });
