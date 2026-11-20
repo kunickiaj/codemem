@@ -4,27 +4,31 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	deviceMayWidenPeerProjectFilters,
 	newPairingFiltersNeedAdmin,
 	peerProjectFiltersOnlyNarrow,
+	readPeerProjectFilterAuthority,
 	setPeerProjectFilterChecked,
 } from "./peer-project-filter-change.js";
 import { syncProjectAllowed, syncProjectAllowedByFilters } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const PEER = "peer-1";
+const COORDINATOR = { sync_coordinator_url: "http://127.0.0.1:1", sync_coordinator_group: "g1" };
+const ADMIN = { ...COORDINATOR, sync_coordinator_admin_secret: "fixture-secret" };
 let dir: string;
 let db: InstanceType<typeof Database>;
 
+function configure(config: Record<string, unknown>) {
+	writeFileSync(join(dir, "config.json"), JSON.stringify(config));
+}
+
 /** The filters every pairing inherits unless it has its own. */
 function globalFilters(filters: { include?: string[]; exclude?: string[] }) {
-	writeFileSync(
-		join(dir, "config.json"),
-		JSON.stringify({
-			sync_projects_include: filters.include ?? [],
-			sync_projects_exclude: filters.exclude ?? [],
-		}),
-	);
+	configure({
+		...COORDINATOR,
+		sync_projects_include: filters.include ?? [],
+		sync_projects_exclude: filters.exclude ?? [],
+	});
 }
 
 /** The pairing's own filters, or none when it inherits. */
@@ -38,11 +42,8 @@ function pairingFilters(filters: { include: string[]; exclude: string[] } | null
 	);
 }
 
-function save(
-	next: { include: string[] | null; exclude: string[] | null },
-	access: { mayWiden: boolean } = { mayWiden: false },
-) {
-	return setPeerProjectFilterChecked(db, PEER, { ...next, ...access });
+function save(next: { include: string[] | null; exclude: string[] | null }) {
+	return setPeerProjectFilterChecked(db, PEER, next);
 }
 
 const sends = (project: string) => syncProjectAllowed(db, project, PEER);
@@ -224,42 +225,43 @@ describe("a device that may not widen what a pairing receives", () => {
 
 describe("a device that may widen what a pairing receives", () => {
 	it("can make an excluded Project flow again", () => {
+		configure(ADMIN);
 		pairingFilters({ include: [], exclude: ["secret"] });
 
-		expect(save({ include: [], exclude: [] }, { mayWiden: true })).toBe("saved");
+		expect(save({ include: [], exclude: [] })).toBe("saved");
 		expect(sends("secret")).toBe(true);
 	});
 });
 
 describe("which device may widen what a pairing receives", () => {
-	const coordinator = {
-		syncCoordinatorUrl: "http://127.0.0.1:1",
-		syncCoordinatorGroups: ["g1"],
-		syncCoordinatorAdminSecret: "fixture-secret",
-	};
-
 	it.each([
-		["a device set up with the coordinator's admin secret", coordinator, true],
-		["a device with no coordinator", { ...coordinator, syncCoordinatorUrl: "" }, true],
-		[
-			"a device without the admin secret",
-			{ ...coordinator, syncCoordinatorAdminSecret: "" },
-			false,
-		],
-		["a device with the secret and no group", { ...coordinator, syncCoordinatorGroups: [] }, false],
+		["a device set up with the coordinator's admin secret", ADMIN, true],
+		["a device with no coordinator", {}, true],
+		["a device without the admin secret", COORDINATOR, false],
+		["a device with the secret and no group", { ...ADMIN, sync_coordinator_group: "" }, false],
 		[
 			"a device with only the coordinator's address",
-			{ ...coordinator, syncCoordinatorGroups: [], syncCoordinatorAdminSecret: "" },
+			{ sync_coordinator_url: COORDINATOR.sync_coordinator_url },
 			false,
 		],
 	])("%s: %o may widen: %s", (_name, config, expected) => {
-		expect(deviceMayWidenPeerProjectFilters(config)).toBe(expected);
+		configure(config);
+		expect(readPeerProjectFilterAuthority(db)).toBe(expected);
+	});
+
+	it("refuses widening if store management history cannot be read", () => {
+		configure({});
+		db.exec("DROP TABLE peer_project_filter_management");
+		pairingFilters({ include: [], exclude: ["secret"] });
+
+		expect(save({ include: [], exclude: [] })).toBe("needs_admin_device");
+		expect(sends("secret")).toBe(false);
 	});
 });
 
 describe("filters a new pairing starts with", () => {
-	const refused = (include: string[] | null, exclude: string[] | null, mayWiden = false) =>
-		newPairingFiltersNeedAdmin(db, { peerDeviceId: PEER, include, exclude, mayWiden });
+	const refused = (include: string[] | null, exclude: string[] | null) =>
+		newPairingFiltersNeedAdmin(db, { peerDeviceId: PEER, include, exclude });
 
 	beforeEach(() => globalFilters({ exclude: ["secret"] }));
 
@@ -279,7 +281,8 @@ describe("filters a new pairing starts with", () => {
 	});
 
 	it("are accepted on a device that may widen", () => {
-		expect(refused([], [], true)).toBe(false);
+		configure({ ...ADMIN, sync_projects_exclude: ["secret"] });
+		expect(refused([], [])).toBe(false);
 	});
 });
 
@@ -301,7 +304,6 @@ describe("replacement lists for a removed pairing", () => {
 				peerDeviceId: PEER,
 				include: [],
 				exclude: [],
-				mayWiden: false,
 			}),
 		).toBe(true);
 	});

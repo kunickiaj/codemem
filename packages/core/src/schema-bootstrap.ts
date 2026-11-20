@@ -8,6 +8,7 @@ import {
 	SCHEMA_VERSION,
 } from "./database-runtime-primitives.js";
 import { ensureMemoryOwnershipSchemas } from "./memory-ownership-recovery-schema.js";
+import { ensurePeerProjectFilterManagementSchema } from "./peer-project-filter-management.js";
 import { ensurePeerProjectFilterRetentionSchema } from "./peer-project-filter-retention.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { ensureRawEventFlushClaimSchema } from "./raw-event-flush-claim-schema.js";
@@ -915,6 +916,7 @@ export function bootstrapSchema(db: Database): void {
 		ensureSyncPeerSignatureStateSchema(db);
 		ensurePeerRemovalCheckState(db);
 		ensurePeerProjectFilterRetentionSchema(db);
+		ensurePeerProjectFilterManagementSchema(db);
 		ensureSyncPeerManualAddressesColumn(db);
 		ensureSyncPeerExplicitPairingColumns(db);
 		ensureSyncPeerLastSuccessAddressColumn(db);

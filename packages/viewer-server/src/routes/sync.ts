@@ -167,7 +167,6 @@ import {
 	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
-	readPeerProjectFilterAuthority,
 	readRepositoryIdentitySnapshot,
 	reassignProjectScopeInventoryProject,
 	recipientInviteAuthoritativeIdentityId,
@@ -3853,7 +3852,7 @@ async function acceptDiscoveredPeer(
 	const seed = existing
 		? null
 		: newPairingScopeSeed(store, { coordinatorUrl, groupId, override: input.scopeOverride });
-	if (seed && newPairingFiltersRefused(store, config, seed, input.peerDeviceId)) {
+	if (seed && newPairingFiltersRefused(store, seed, input.peerDeviceId)) {
 		return NEW_PAIRING_FILTERS_REFUSED;
 	}
 	await createCoordinatorReciprocalApproval(store, config, {
@@ -3867,7 +3866,7 @@ async function acceptDiscoveredPeer(
 	const now = new Date().toISOString();
 	const result = store.db.transaction(() => {
 		if (!existing) {
-			const created = storeNewPairing(store, config, {
+			const created = storeNewPairing(store, {
 				peer_device_id: input.peerDeviceId,
 				name: nextName,
 				pinned_fingerprint: nextFingerprint || null,
@@ -6356,11 +6355,6 @@ function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig):
 	}
 }
 
-/** A configuration that cannot be read never permits widening. */
-function canWidenPeerProjectFilters(readConfig: typeof readCoordinatorSyncConfig): boolean {
-	return readPeerProjectFilterAuthority(readConfig);
-}
-
 /** Project names from a request body, or null when the body has no list there. */
 function projectNameList(value: unknown): string[] | null {
 	if (!Array.isArray(value)) return null;
@@ -6409,7 +6403,7 @@ function savePeerProjectScope(
 		if (!peerProjectFilterRow(store, peerDeviceId)) return c.json({ error: "peer not found" }, 404);
 		const saved = setPeerProjectFilterChecked(store.db, peerDeviceId, {
 			...requestedPeerProjectFilters(body),
-			mayWiden: canWidenPeerProjectFilters(readConfig),
+			readConfig,
 		});
 		if (saved === "needs_admin_device") {
 			return c.json({ error: "access_change_needs_admin_device" }, 403);
@@ -6426,7 +6420,6 @@ function savePeerProjectScope(
 /** Whether a new pairing's own filters, stored as JSON lists, are refused on this device. */
 function newPairingFiltersRefused(
 	store: MemoryStore,
-	config: ReturnType<typeof readCoordinatorSyncConfig>,
 	own: { include: string | null; exclude: string | null },
 	peerDeviceId: string,
 ): boolean {
@@ -6434,7 +6427,6 @@ function newPairingFiltersRefused(
 		peerDeviceId,
 		include: own.include === null ? null : parseJsonList(own.include),
 		exclude: own.exclude === null ? null : parseJsonList(own.exclude),
-		mayWiden: readPeerProjectFilterAuthority(() => config),
 	});
 }
 
@@ -6498,7 +6490,6 @@ function manualPairingFilterList(value: unknown): string | null {
 /** The duplicate check, retained-filter check, and insert share one write lock. */
 function storeNewPairing(
 	store: MemoryStore,
-	config: ReturnType<typeof readCoordinatorSyncConfig>,
 	row: typeof schema.syncPeers.$inferInsert,
 ): "saved" | "exists" | "needs_admin_device" {
 	return store.db
@@ -6508,7 +6499,7 @@ function storeNewPairing(
 				include: row.projects_include_json ?? null,
 				exclude: row.projects_exclude_json ?? null,
 			};
-			if (newPairingFiltersRefused(store, config, own, row.peer_device_id)) {
+			if (newPairingFiltersRefused(store, own, row.peer_device_id)) {
 				return "needs_admin_device" as const;
 			}
 			drizzle(store.db, { schema }).insert(schema.syncPeers).values(row).run();
@@ -6542,7 +6533,6 @@ function manualPairingRow(body: Record<string, unknown>) {
 function acceptManualPairing(
 	c: Context,
 	store: MemoryStore,
-	config: ReturnType<typeof readCoordinatorSyncConfig>,
 	body: Record<string, unknown>,
 ): Response {
 	const row = manualPairingRow(body);
@@ -6554,7 +6544,7 @@ function acceptManualPairing(
 	}
 	let created: ReturnType<typeof storeNewPairing>;
 	try {
-		created = storeNewPairing(store, config, row);
+		created = storeNewPairing(store, row);
 	} catch (error) {
 		const message = error instanceof Error ? error.message.toLowerCase() : "";
 		if (!message.includes("unique") && !message.includes("primary key")) throw error;
@@ -6667,7 +6657,7 @@ function peerEnrollmentHandler(getStore: StoreFactory) {
 		const request = await parsePeerEnrollment(c);
 		if (request instanceof Response) return request;
 		const store = getStore();
-		if (request.mode === "manual") return acceptManualPairing(c, store, config, request.body);
+		if (request.mode === "manual") return acceptManualPairing(c, store, request.body);
 		// Discovery contacts the coordinator. Manual pairing remains local.
 		if (!status.has_admin_secret) {
 			return c.json({ error: "coordinator_admin_secret_missing", status }, 400);

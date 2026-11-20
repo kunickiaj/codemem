@@ -1,9 +1,8 @@
-import {
-	type CoordinatorSyncConfig,
-	readCoordinatorSyncConfig,
-} from "./coordinator-sync-config.js";
+import { lstatSync } from "node:fs";
+import { isCoordinatorAdminDevice, readCoordinatorSyncConfig } from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
 import { getCodememConfigPath, readCodememConfigFileForMutation } from "./observer-config.js";
+import { hasPeerProjectFilterManagement } from "./peer-project-filter-management.js";
 import {
 	type PeerProjectFilters,
 	peerProjectFiltersOnlyNarrow,
@@ -24,47 +23,41 @@ export {
  */
 
 /**
- * Whether this device may make a pairing receive more than it does now. With no
- * coordinator configured, the filters are this device's own choice of what to
- * send, because no administrator's device exists to ask. Once a coordinator is
- * configured, only a device that is set up with its admin secret may widen.
- */
-export function deviceMayWidenPeerProjectFilters(
-	config: Pick<
-		CoordinatorSyncConfig,
-		"syncCoordinatorUrl" | "syncCoordinatorGroups" | "syncCoordinatorAdminSecret"
-	>,
-): boolean {
-	if (!config.syncCoordinatorUrl) return true;
-	return config.syncCoordinatorGroups.length > 0 && Boolean(config.syncCoordinatorAdminSecret);
-}
-
-/**
  * Uses the runtime's configuration, which also supplies inherited filters.
  * Selecting an alternate CLI file must not supply authority over this store.
- * Damaged or unreadable configuration supplies no authority.
+ * Clearing the URL does not make a previously managed store standalone.
  */
-export function readPeerProjectFilterAuthority(
-	readConfig: typeof readCoordinatorSyncConfig = readCoordinatorSyncConfig,
-): boolean {
+function readRuntimeFilterConfig(): Record<string, unknown> | null {
 	try {
 		const outcome = readCodememConfigFileForMutation(getCodememConfigPath());
-		if (outcome.status !== "valid" && outcome.status !== "missing") return false;
-		return deviceMayWidenPeerProjectFilters(
-			readConfig(outcome.status === "valid" ? outcome.data : {}),
-		);
+		if (outcome.status === "valid") return outcome.data;
+		if (outcome.status !== "missing") return null;
+		// A failed existence check can also mean a broken link or inaccessible path.
+		lstatSync(outcome.path);
+		return null;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException | null)?.code;
+		return code === "ENOENT" ? {} : null;
+	}
+}
+
+function mayWidenWithConfig(
+	db: Database,
+	raw: Record<string, unknown>,
+	readConfig = readCoordinatorSyncConfig,
+): boolean {
+	try {
+		const config = readConfig(raw);
+		if (config.syncCoordinatorUrl) return isCoordinatorAdminDevice(config);
+		return !hasPeerProjectFilterManagement(db);
 	} catch {
 		return false;
 	}
 }
 
-function runtimeFilterConfigReadable(): boolean {
-	try {
-		const outcome = readCodememConfigFileForMutation(getCodememConfigPath());
-		return outcome.status === "valid" || outcome.status === "missing";
-	} catch {
-		return false;
-	}
+export function readPeerProjectFilterAuthority(db: Database): boolean {
+	const config = readRuntimeFilterConfig();
+	return config !== null && mayWidenWithConfig(db, config);
 }
 
 /**
@@ -78,12 +71,13 @@ export function newPairingFiltersNeedAdmin(
 		peerDeviceId: string;
 		include: string[] | null;
 		exclude: string[] | null;
-		mayWiden: boolean;
 	},
 ): boolean {
-	if (!runtimeFilterConfigReadable()) return true;
-	if (own.mayWiden || (own.include === null && own.exclude === null)) return false;
-	return !peerProjectFiltersOnlyNarrow(effectiveSyncProjectFilters(db, own.peerDeviceId), {
+	const config = readRuntimeFilterConfig();
+	if (!config) return true;
+	if (own.include === null && own.exclude === null) return false;
+	if (mayWidenWithConfig(db, config)) return false;
+	return !peerProjectFiltersOnlyNarrow(effectiveSyncProjectFilters(db, own.peerDeviceId, config), {
 		include: own.include ?? [],
 		exclude: own.exclude ?? [],
 	});
@@ -96,18 +90,33 @@ export interface PeerProjectFilterLists {
 }
 
 export interface SetPeerProjectFilterCheckedOptions extends PeerProjectFilterLists {
-	/** Whether this device may make a pairing receive more than it does now. */
-	mayWiden: boolean;
+	readConfig?: typeof readCoordinatorSyncConfig;
 }
 
 export type SetPeerProjectFilterResult = "saved" | "needs_admin_device";
 
 /** The filters in effect once `lists` is stored: the lists given, or the shared ones. */
-function filtersAfter(db: Database, lists: PeerProjectFilterLists): PeerProjectFilters {
+function filtersAfter(
+	db: Database,
+	lists: PeerProjectFilterLists,
+	config: Record<string, unknown>,
+): PeerProjectFilters {
 	if (lists.include === null && lists.exclude === null) {
-		return effectiveSyncProjectFilters(db, null);
+		return effectiveSyncProjectFilters(db, null, config);
 	}
 	return { include: lists.include ?? [], exclude: lists.exclude ?? [] };
+}
+
+function onlyNarrowsWithConfig(
+	db: Database,
+	peerDeviceId: string,
+	lists: PeerProjectFilterLists,
+	config: Record<string, unknown>,
+): boolean {
+	return peerProjectFiltersOnlyNarrow(
+		effectiveSyncProjectFilters(db, peerDeviceId, config),
+		filtersAfter(db, lists, config),
+	);
 }
 
 /** Whether storing `lists` for a pairing sends it nothing that its filters in effect hold back. */
@@ -116,11 +125,8 @@ export function peerProjectFilterChangeOnlyNarrows(
 	peerDeviceId: string,
 	lists: PeerProjectFilterLists,
 ): boolean {
-	if (!runtimeFilterConfigReadable()) return false;
-	return peerProjectFiltersOnlyNarrow(
-		effectiveSyncProjectFilters(db, peerDeviceId),
-		filtersAfter(db, lists),
-	);
+	const config = readRuntimeFilterConfig();
+	return config !== null && onlyNarrowsWithConfig(db, peerDeviceId, lists, config);
 }
 
 /**
@@ -136,8 +142,10 @@ export function setPeerProjectFilterChecked(
 ): SetPeerProjectFilterResult {
 	return db
 		.transaction((): SetPeerProjectFilterResult => {
-			if (!runtimeFilterConfigReadable()) return "needs_admin_device";
-			if (!options.mayWiden && !peerProjectFilterChangeOnlyNarrows(db, peerDeviceId, options)) {
+			const config = readRuntimeFilterConfig();
+			if (!config) return "needs_admin_device";
+			const mayWiden = mayWidenWithConfig(db, config, options.readConfig);
+			if (!mayWiden && !onlyNarrowsWithConfig(db, peerDeviceId, options, config)) {
 				return "needs_admin_device";
 			}
 			setPeerProjectFilter(db, peerDeviceId, {

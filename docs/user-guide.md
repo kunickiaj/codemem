@@ -1003,7 +1003,7 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
-Any device can change these filters so that a pairing receives less. Once a coordinator is configured, only a device that holds its admin secret can change them so that a pairing receives more, including with `--all` or `--default`. Another device is told that an administrator's device is needed, and nothing changes. With no coordinator configured, the filters stay this device's own choice.
+Any device can change these filters so that a pairing receives less. A store that has never used a coordinator can also widen them. Once the store is managed, widening requires a configured coordinator and its admin secret, including with `--all` or `--default`. Clearing the coordinator URL stops coordinator sync and keeps this requirement. Use `codemem sync connect '' --db-path <path>` when disconnecting a store at a nondefault database path.
 
 Filter permissions use the runtime configuration that supplies the inherited filters. Choosing another `--config` file cannot grant permission to widen them. If that runtime configuration is damaged or unreadable, repair it before saving filters.
 
