@@ -131,12 +131,16 @@ async function readyDraftThroughSummary(
 }
 
 /**
- * A completed Team whose setup-owned Project recipient was later deleted, plus a
- * newer review attempt. Opening Team setup repairs that recipient.
+ * A completed Team whose setup-owned Project recipient was later deleted (or
+ * revoked), plus by default a newer review attempt. `preMarker` turns the Team
+ * into a completion recorded before the terminal marker existed, which the
+ * detail route still sends through discovery. Opening Team setup with current
+ * authority repairs that recipient.
  */
 async function completedTeamMissingItsRecipient(
 	store: MemoryStore,
 	app: ReturnType<typeof teamSetupRoutes>,
+	options: { recipient?: "deleted" | "revoked"; newerAttempt?: boolean; preMarker?: boolean } = {},
 ) {
 	const projectIdentity = "https://example.test/terminal-project.git";
 	store.db
@@ -230,10 +234,19 @@ async function completedTeamMissingItsRecipient(
 	const teamId = completion.teamId;
 	store.db
 		.prepare(
-			`DELETE FROM project_recipients
-				 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+			options.recipient === "revoked"
+				? `UPDATE project_recipients SET status = 'revoked'
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`
+				: `DELETE FROM project_recipients
+					 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
 		)
 		.run(projectIdentity, teamId);
+	if (options.preMarker) {
+		store.db
+			.prepare("UPDATE policy_teams SET provenance = 'legacy_team_candidate' WHERE team_id = ?")
+			.run(teamId);
+	}
+	if (options.newerAttempt === false) return { projectIdentity, teamId, newerAttemptId: null };
 	const newerAttemptId = "legacy-team-attempt:00000000-0000-4000-8000-000000000099";
 	store.db
 		.prepare(
@@ -3271,6 +3284,240 @@ describe("Team setup batch failure isolation", () => {
 				[secondGroup.groupId],
 			]);
 			expect(getLegacyTeamSetupDraft(store.db, CANDIDATE_REF)?.state).toBe("completed");
+		} finally {
+			store.close();
+		}
+	});
+});
+
+const POLICY_STATE_TABLES =
+	/^(policy_|project_recipients$|recipient_policy_|legacy_team_setup_|identity_devices$|project_scope_mappings$|replication_scope)/;
+
+/** Every row of every recipient-policy table, so a test can prove nothing was written. */
+function policyState(store: MemoryStore): Record<string, string[]> {
+	const tables = store.db
+		.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+		.pluck()
+		.all() as string[];
+	return Object.fromEntries(
+		tables
+			.filter((name) => POLICY_STATE_TABLES.test(name))
+			.map((name) => [
+				name,
+				(store.db.prepare(`SELECT * FROM "${name}"`).all() as unknown[])
+					.map((row) => JSON.stringify(row))
+					.toSorted(),
+			]),
+	);
+}
+
+function teamRecipientStatus(store: MemoryStore, projectIdentity: string, teamId: string) {
+	return store.db
+		.prepare(
+			`SELECT status FROM project_recipients
+			 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+		)
+		.pluck()
+		.get(projectIdentity, teamId);
+}
+
+/** Coordinator configuration whose admin secret a test can take away mid-request. */
+function revocableAdminSecret() {
+	const held = completionConfig().readConfig;
+	let revoked = false;
+	return {
+		readConfig: () => (revoked ? { ...held(), syncCoordinatorAdminSecret: "" } : held()),
+		revoke: () => {
+			revoked = true;
+		},
+	};
+}
+
+function repairApp(
+	store: MemoryStore,
+	options: Partial<Parameters<typeof teamSetupRoutes>[0]> = {},
+) {
+	return teamSetupRoutes({
+		getStore: () => store,
+		loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+		completionDependencies: null,
+		...options,
+	});
+}
+
+const detailPath = `/api/sync/team-setup/v1/${CANDIDATE_REF}`;
+
+describe("Completed Team recipient repair from the summary", () => {
+	it("leaves recipient policy unchanged on a device without the admin secret", async () => {
+		// Arrange
+		const store = new MemoryStore(":memory:");
+		try {
+			await completedTeamMissingItsRecipient(store, repairApp(store));
+			const before = policyState(store);
+
+			// Act
+			const summary = await repairApp(store).request("/api/sync/team-setup/v1");
+
+			// Assert
+			expect(summary.status).toBe(200);
+			expect(policyState(store)).toEqual(before);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("reactivates a revoked setup recipient with the admin secret", async () => {
+		// Arrange
+		const store = new MemoryStore(":memory:");
+		try {
+			const app = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(store, app, {
+				recipient: "revoked",
+			});
+
+			// Act
+			await app.request("/api/sync/team-setup/v1");
+
+			// Assert
+			expect(teamRecipientStatus(store, projectIdentity, teamId)).toBe("active");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps a revoked setup recipient revoked without the admin secret", async () => {
+		// Arrange
+		const store = new MemoryStore(":memory:");
+		try {
+			await completedTeamMissingItsRecipient(store, repairApp(store), { recipient: "revoked" });
+			const before = policyState(store);
+
+			// Act
+			await repairApp(store).request("/api/sync/team-setup/v1");
+
+			// Assert
+			expect(policyState(store)).toEqual(before);
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("Completed Team recipient repair from the detail route", () => {
+	// A completion recorded before the terminal marker existed still goes
+	// through discovery when its detail opens, which is where repair runs.
+	const preMarker = { newerAttempt: false, preMarker: true } as const;
+
+	it("repairs the recipient with the admin secret", async () => {
+		// Arrange
+		const store = new MemoryStore(":memory:");
+		try {
+			const app = repairApp(store, { readCoordinatorConfig: completionConfig().readConfig });
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(
+				store,
+				app,
+				preMarker,
+			);
+
+			// Act
+			await app.request(detailPath);
+
+			// Assert
+			expect(teamRecipientStatus(store, projectIdentity, teamId)).toBe("active");
+		} finally {
+			store.close();
+		}
+	});
+
+	for (const recipient of ["deleted", "revoked"] as const) {
+		it(`leaves recipient policy unchanged without the admin secret (${recipient})`, async () => {
+			// Arrange
+			const store = new MemoryStore(":memory:");
+			try {
+				await completedTeamMissingItsRecipient(store, repairApp(store), {
+					...preMarker,
+					recipient,
+				});
+				const before = policyState(store);
+
+				// Act
+				await repairApp(store).request(detailPath);
+
+				// Assert
+				expect(policyState(store)).toEqual(before);
+			} finally {
+				store.close();
+			}
+		});
+	}
+});
+
+describe("Completed Team recipient repair when the admin secret goes away mid-request", () => {
+	for (const [route, path, fixture] of [
+		["summary", "/api/sync/team-setup/v1", {}],
+		["detail", detailPath, { newerAttempt: false, preMarker: true }],
+	] as const) {
+		it(`repairs nothing from the ${route} when it goes away while the roster loads`, async () => {
+			// Arrange
+			const store = new MemoryStore(":memory:");
+			try {
+				await completedTeamMissingItsRecipient(store, repairApp(store), fixture);
+				const before = policyState(store);
+				const authority = revocableAdminSecret();
+				const app = repairApp(store, {
+					readCoordinatorConfig: authority.readConfig,
+					loadLegacyTeamConfiguredGroupSnapshots: async () => {
+						authority.revoke();
+						return SNAPSHOTS;
+					},
+				});
+
+				// Act
+				await app.request(path);
+
+				// Assert
+				expect(policyState(store)).toEqual(before);
+			} finally {
+				store.close();
+			}
+		});
+	}
+
+	it("repairs nothing more after it goes away while completion reconciliation waits", async () => {
+		// Arrange
+		const store = new MemoryStore(":memory:");
+		try {
+			const { projectIdentity, teamId } = await completedTeamMissingItsRecipient(
+				store,
+				repairApp(store),
+			);
+			const authority = revocableAdminSecret();
+			let stateAtLoss: Record<string, string[]> | null = null;
+			const list = vi.fn(async () => {
+				// Discovery already restored the recipient with authority. Remove it
+				// again and take the secret away before the summary rereads Teams.
+				store.db
+					.prepare(
+						`DELETE FROM project_recipients
+						 WHERE canonical_project_identity = ? AND recipient_kind = 'team' AND recipient_id = ?`,
+					)
+					.run(projectIdentity, teamId);
+				authority.revoke();
+				stateAtLoss = policyState(store);
+				return [];
+			});
+			const create = vi.fn(async ({ manifest }) => ({ status: "existing" as const, manifest }));
+			const app = repairApp(store, {
+				readCoordinatorConfig: authority.readConfig,
+				completionDependencies: { create, list },
+			});
+
+			// Act
+			await app.request("/api/sync/team-setup/v1");
+
+			// Assert
+			expect(list).toHaveBeenCalledOnce();
+			expect(policyState(store)).toEqual(stateAtLoss);
 		} finally {
 			store.close();
 		}
