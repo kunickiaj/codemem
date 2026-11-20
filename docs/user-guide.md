@@ -1007,6 +1007,8 @@ Any device can change these filters so that a pairing receives less. Once a coor
 
 Filter permissions use the runtime configuration that supplies the inherited filters. Choosing another `--config` file cannot grant permission to widen them. If that runtime configuration is damaged or unreadable, repair it before saving filters.
 
+Removing a pairing retains its filter lists. Pairing that device again without supplying replacement filters restores those lists.
+
 ### Product terms and internal access boundaries
 
 Normal sharing uses product terms:

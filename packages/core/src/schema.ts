@@ -776,6 +776,13 @@ export const syncPeers = sqliteTable("sync_peers", {
 export type SyncPeer = typeof syncPeers.$inferSelect;
 export type NewSyncPeer = typeof syncPeers.$inferInsert;
 
+// No foreign key: these restrictions survive deletion of the pairing.
+export const peerProjectFilterRetention = sqliteTable("peer_project_filter_retention", {
+	peer_device_id: text("peer_device_id").primaryKey(),
+	projects_include_json: text("projects_include_json"),
+	projects_exclude_json: text("projects_exclude_json"),
+});
+
 export const syncPeerSignatureState = sqliteTable("sync_peer_signature_state", {
 	peer_device_id: text("peer_device_id").primaryKey(),
 	highest_observed_direct_signature_version: integer(
@@ -1537,6 +1544,7 @@ export const schema = {
 	replicationCursors,
 	replicationCursorsV2,
 	syncPeers,
+	peerProjectFilterRetention,
 	syncNonces,
 	syncDevice,
 	syncAttempts,
