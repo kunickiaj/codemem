@@ -94,7 +94,6 @@ import {
 	decodeInvitePayload,
 	defaultSpaceScopeIdForGroup,
 	deleteProjectScopeSettingsMapping,
-	deviceMayWidenPeerProjectFilters,
 	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
 	executeShareProvisioning,
@@ -168,6 +167,7 @@ import {
 	RemoteCoordinatorRequestError,
 	readCodememConfigFile,
 	readCoordinatorSyncConfig,
+	readPeerProjectFilterAuthority,
 	readRepositoryIdentitySnapshot,
 	reassignProjectScopeInventoryProject,
 	recipientInviteAuthoritativeIdentityId,
@@ -6357,11 +6357,7 @@ function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig):
 
 /** A configuration that cannot be read never permits widening. */
 function canWidenPeerProjectFilters(readConfig: typeof readCoordinatorSyncConfig): boolean {
-	try {
-		return deviceMayWidenPeerProjectFilters(readConfig());
-	} catch {
-		return false;
-	}
+	return readPeerProjectFilterAuthority(readConfig);
 }
 
 /** Project names from a request body, or null when the body has no list there. */
@@ -6435,7 +6431,7 @@ function newPairingFiltersRefused(
 	return newPairingFiltersNeedAdmin(store.db, {
 		include: own.include === null ? null : parseJsonList(own.include),
 		exclude: own.exclude === null ? null : parseJsonList(own.exclude),
-		mayWiden: deviceMayWidenPeerProjectFilters(config),
+		mayWiden: readPeerProjectFilterAuthority(() => config),
 	});
 }
 

@@ -1,7 +1,20 @@
-import type { CoordinatorSyncConfig } from "./coordinator-sync-config.js";
+import {
+	type CoordinatorSyncConfig,
+	readCoordinatorSyncConfig,
+} from "./coordinator-sync-config.js";
 import type { Database } from "./db.js";
+import { getCodememConfigPath, readCodememConfigFileForMutation } from "./observer-config.js";
+import {
+	type PeerProjectFilters,
+	peerProjectFiltersOnlyNarrow,
+} from "./project-filters-narrowing.js";
 import { setPeerProjectFilter } from "./sync-discovery.js";
 import { effectiveSyncProjectFilters } from "./sync-replication.js";
+
+export {
+	type PeerProjectFilters,
+	peerProjectFiltersOnlyNarrow,
+} from "./project-filters-narrowing.js";
 
 /*
  * A pairing's Project filters decide which of this device's Projects that
@@ -9,29 +22,6 @@ import { effectiveSyncProjectFilters } from "./sync-replication.js";
  * access, which only an administrator's device may do (ADR 0007 Decision 4).
  * Sending less is a device withdrawing its own data, which any device may do.
  */
-
-export interface PeerProjectFilters {
-	include: string[];
-	exclude: string[];
-}
-
-/**
- * Whether `next` sends nothing that `current` holds back. It is true when
- * `next` keeps every excluded entry and, where `current` has an include list,
- * `next` has one made only of its entries. That is stricter than necessary: a
- * change that narrows by naming a Project differently is refused too, which
- * errs toward asking an administrator.
- */
-export function peerProjectFiltersOnlyNarrow(
-	current: PeerProjectFilters,
-	next: PeerProjectFilters,
-): boolean {
-	const excluded = new Set(next.exclude);
-	if (!current.exclude.every((entry) => excluded.has(entry))) return false;
-	if (current.include.length === 0) return true;
-	const included = new Set(current.include);
-	return next.include.length > 0 && next.include.every((entry) => included.has(entry));
-}
 
 /**
  * Whether this device may make a pairing receive more than it does now. With no
@@ -50,6 +40,34 @@ export function deviceMayWidenPeerProjectFilters(
 }
 
 /**
+ * Uses the runtime's configuration, which also supplies inherited filters.
+ * Selecting an alternate CLI file must not supply authority over this store.
+ * Damaged or unreadable configuration supplies no authority.
+ */
+export function readPeerProjectFilterAuthority(
+	readConfig: typeof readCoordinatorSyncConfig = readCoordinatorSyncConfig,
+): boolean {
+	try {
+		const outcome = readCodememConfigFileForMutation(getCodememConfigPath());
+		if (outcome.status !== "valid" && outcome.status !== "missing") return false;
+		return deviceMayWidenPeerProjectFilters(
+			readConfig(outcome.status === "valid" ? outcome.data : {}),
+		);
+	} catch {
+		return false;
+	}
+}
+
+function runtimeFilterConfigReadable(): boolean {
+	try {
+		const outcome = readCodememConfigFileForMutation(getCodememConfigPath());
+		return outcome.status === "valid" || outcome.status === "missing";
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Whether a new pairing may not start with these filters of its own, because
  * they would send it Projects that the shared filters hold back and this device
  * may not widen. A pairing with no filters of its own inherits the shared ones,
@@ -59,6 +77,7 @@ export function newPairingFiltersNeedAdmin(
 	db: Database,
 	own: { include: string[] | null; exclude: string[] | null; mayWiden: boolean },
 ): boolean {
+	if (!runtimeFilterConfigReadable()) return true;
 	if (own.mayWiden || (own.include === null && own.exclude === null)) return false;
 	return !peerProjectFiltersOnlyNarrow(effectiveSyncProjectFilters(db, null), {
 		include: own.include ?? [],
@@ -93,6 +112,7 @@ export function peerProjectFilterChangeOnlyNarrows(
 	peerDeviceId: string,
 	lists: PeerProjectFilterLists,
 ): boolean {
+	if (!runtimeFilterConfigReadable()) return false;
 	return peerProjectFiltersOnlyNarrow(
 		effectiveSyncProjectFilters(db, peerDeviceId),
 		filtersAfter(db, lists),
@@ -112,6 +132,7 @@ export function setPeerProjectFilterChecked(
 ): SetPeerProjectFilterResult {
 	return db
 		.transaction((): SetPeerProjectFilterResult => {
+			if (!runtimeFilterConfigReadable()) return "needs_admin_device";
 			if (!options.mayWiden && !peerProjectFilterChangeOnlyNarrows(db, peerDeviceId, options)) {
 				return "needs_admin_device";
 			}

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -82,6 +82,27 @@ describe("POST /api/sync/peers/scope on a device without the admin secret", () =
 	beforeEach(() => configure(DEVICES["a device without the admin secret"]));
 
 	it.each([
+		[
+			{ include: ["work"], exclude: [] },
+			{ include: ["/repos/work"], exclude: [] },
+		],
+		[
+			{ include: [], exclude: ["/repos/secret"] },
+			{ include: [], exclude: ["secret"] },
+		],
+		[
+			{ include: ["work", "play"], exclude: ["secret"] },
+			{ include: ["work"], exclude: [] },
+		],
+	])("allows a narrowing change from %o to %o", async (current, next) => {
+		pairingFilters(current);
+
+		const response = await saveScope(next);
+
+		expect(response.status).toBe(200);
+	});
+
+	it.each([
 		["clearing the exclude list", { include: [], exclude: [] }],
 		["leaving the exclude list out", { include: [] }],
 		["swapping the excluded Project", { include: [], exclude: ["other"] }],
@@ -142,6 +163,62 @@ describe.each(["an administrator's device", "a device with no coordinator"] as c
 		});
 	},
 );
+
+describe("configuring a coordinator on a device that had none", () => {
+	it.each([
+		["with a group and no admin secret", COORDINATOR],
+		["with only its address", { sync_coordinator_url: COORDINATOR.sync_coordinator_url }],
+	])("turns widening off %s", async (_name, config) => {
+		pairingFilters({ include: [], exclude: ["secret", "other"] });
+		configure({});
+		const before = await saveScope({ include: [], exclude: ["secret"] });
+		expect(before.status).toBe(200);
+		expect(sends("other")).toBe(true);
+
+		configure(config);
+		const after = await saveScope({ include: [], exclude: [] });
+
+		expect(after.status).toBe(403);
+		expect(await after.json()).toEqual({ error: "access_change_needs_admin_device" });
+		expect(sends("secret")).toBe(false);
+	});
+});
+
+describe("Project filter writes when configuration cannot be read", () => {
+	it("does not freeze the damaged-reader fallback as wider filters of its own", async () => {
+		configure({ ...COORDINATOR, sync_projects_exclude: ["secret"] });
+		pairingFilters(null);
+		writeFileSync(join(dir, "config.json"), "{");
+
+		const response = await saveScope({ include: [], exclude: [] });
+		configure({ ...COORDINATOR, sync_projects_exclude: ["secret"] });
+
+		expect(response.status).toBe(403);
+		expect(sends("secret")).toBe(false);
+	});
+
+	it.each(["{", "", "[]"])("refuses widening with invalid configuration %j", async (text) => {
+		pairingFilters({ include: [], exclude: ["secret"] });
+		writeFileSync(join(dir, "config.json"), text);
+
+		const response = await saveScope({ include: [], exclude: [] });
+
+		expect(response.status).toBe(403);
+		expect(sends("secret")).toBe(false);
+	});
+
+	it("refuses widening when the configuration path is unreadable", async () => {
+		pairingFilters({ include: [], exclude: ["secret"] });
+		const path = join(dir, "unreadable-config");
+		mkdirSync(path);
+		vi.stubEnv("CODEMEM_CONFIG", path);
+
+		const response = await saveScope({ include: [], exclude: [] });
+
+		expect(response.status).toBe(403);
+		expect(sends("secret")).toBe(false);
+	});
+});
 
 describe("POST /api/sync/peers/scope", () => {
 	it("still answers 404 for a pairing that does not exist", async () => {

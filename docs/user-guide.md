@@ -1005,6 +1005,8 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 
 Any device can change these filters so that a pairing receives less. Once a coordinator is configured, only a device that holds its admin secret can change them so that a pairing receives more, including with `--all` or `--default`. Another device is told that an administrator's device is needed, and nothing changes. With no coordinator configured, the filters stay this device's own choice.
 
+Filter permissions use the runtime configuration that supplies the inherited filters. Choosing another `--config` file cannot grant permission to widen them. If that runtime configuration is damaged or unreadable, repair it before saving filters.
+
 ### Product terms and internal access boundaries
 
 Normal sharing uses product terms:
