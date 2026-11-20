@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -217,6 +217,63 @@ describe("Project filter writes when configuration cannot be read", () => {
 
 		expect(response.status).toBe(403);
 		expect(sends("secret")).toBe(false);
+	});
+
+	it("does not treat a broken config link as standalone", async () => {
+		symlinkSync(join(dir, "absent.json"), join(dir, "config.json"));
+		pairingFilters({ include: [], exclude: ["secret"] });
+
+		expect((await saveScope({ include: [], exclude: [] })).status).toBe(403);
+		expect(sends("secret")).toBe(false);
+	});
+});
+
+describe("Project filter writes without a current coordinator URL", () => {
+	function seedCoordinatorScope() {
+		store.db
+			.prepare(
+				`INSERT INTO replication_scopes(scope_id, label, authority_type, coordinator_id,
+				 group_id, created_at, updated_at)
+				 VALUES ('team:g1:default', 'Team', 'coordinator', 'fixture-authority', 'g1', ?, ?)`,
+			)
+			.run("2026-11-18T00:00:00.000Z", "2026-11-18T00:00:00.000Z");
+	}
+
+	it.each(["missing", "disconnected"])(
+		"refuses widening with a managed store and %s config",
+		async (config) => {
+			seedCoordinatorScope();
+			pairingFilters({ include: [], exclude: ["secret"] });
+			if (config === "disconnected") configure({ sync_coordinator_url: "" });
+
+			const response = await saveScope({ include: [], exclude: [] });
+
+			expect(response.status).toBe(403);
+			expect(sends("secret")).toBe(false);
+		},
+	);
+
+	it("uses persisted cache history even if the coordinator returned no scopes", async () => {
+		store.db
+			.prepare(
+				`INSERT INTO scope_membership_cache_state(
+				 coordinator_id, group_id, last_refresh_at, last_success_at, updated_at)
+				 VALUES ('fixture-authority', 'g1', ?, ?, ?)`,
+			)
+			.run("2026-11-18T00:00:00.000Z", "2026-11-18T00:00:00.000Z", "2026-11-18T00:00:00.000Z");
+		pairingFilters({ include: [], exclude: ["secret"] });
+
+		const response = await saveScope({ include: [], exclude: [] });
+
+		expect(response.status).toBe(403);
+		expect(sends("secret")).toBe(false);
+	});
+
+	it("allows a standalone store with no config file to widen", async () => {
+		pairingFilters({ include: [], exclude: ["secret"] });
+
+		expect((await saveScope({ include: [], exclude: [] })).status).toBe(200);
+		expect(sends("secret")).toBe(true);
 	});
 });
 

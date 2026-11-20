@@ -1999,9 +1999,9 @@ function parseJsonList(valuesJson: string | null | undefined): string[] {
 export function effectiveSyncProjectFilters(
 	db: Database,
 	peerDeviceId: string | null,
+	config = readCodememConfigFile(),
 ): { include: string[]; exclude: string[] } {
 	const d = drizzle(db, { schema });
-	const config = readCodememConfigFile();
 	const includeOverride = process.env.CODEMEM_SYNC_PROJECTS_INCLUDE;
 	const excludeOverride = process.env.CODEMEM_SYNC_PROJECTS_EXCLUDE;
 	const globalInclude =

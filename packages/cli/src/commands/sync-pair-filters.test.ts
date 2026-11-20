@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, fingerprintPublicKey, initTestSchema, syncProjectAllowed } from "@codemem/core";
@@ -59,6 +59,15 @@ async function accept(...flags: string[]) {
 		{ from: "user" },
 	);
 	return JSON.parse(output.at(-1) ?? "{}") as Record<string, unknown>;
+}
+
+async function setCoordinator(url: string, ...flags: string[]) {
+	const command = syncCommand.commands.find((candidate) => candidate.name() === "connect");
+	if (!command) throw new Error("sync connect command missing");
+	for (const option of command.options) {
+		command.setOptionValueWithSource(option.attributeName(), undefined, "default");
+	}
+	await command.parseAsync([url, "--db-path", dbPath, ...flags], { from: "user" });
 }
 
 const sends = (project: string) => syncProjectAllowed(db, project, PEER);
@@ -195,6 +204,57 @@ describe("sync pair filter authority uses the runtime configuration", () => {
 
 		expect(await accept("--all")).toEqual({ error: "pairing_failed", message: REFUSED });
 		expect(sends("secret")).toBe(false);
+	});
+});
+
+describe("sync pair filter authority after disconnect", () => {
+	it("still requires coordinator authority after disconnect, even before the first refresh", async () => {
+		configure(ADMIN);
+		pairedWith({ include: [], exclude: ["secret"] });
+
+		await setCoordinator("");
+		expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8"))).toMatchObject({
+			sync_coordinator_url: "",
+		});
+		expect(await accept("--all")).toEqual({ error: "pairing_failed", message: REFUSED });
+		expect(sends("secret")).toBe(false);
+		vi.stubEnv("CODEMEM_CONFIG", join(dir, "missing-runtime-config.json"));
+		expect(await accept("--all")).toEqual({ error: "pairing_failed", message: REFUSED });
+		vi.stubEnv("CODEMEM_CONFIG", join(dir, "config.json"));
+		expect(await accept("--exclude", "secret,other")).toEqual({ ok: true, peer_device_id: PEER });
+		expect(sends("other")).toBe(false);
+
+		// Reconnect without a secret first, then restore the synthetic admin configuration.
+		configure({ sync_coordinator_group: "g1" });
+		await setCoordinator(COORDINATOR.sync_coordinator_url);
+		expect(await accept("--all")).toEqual({ error: "pairing_failed", message: REFUSED });
+		expect(sends("secret")).toBe(false);
+		configure(ADMIN);
+		expect(await accept("--all")).toEqual({ ok: true, peer_device_id: PEER });
+		expect(sends("secret")).toBe(true);
+	});
+
+	it("leaves coordinator connectivity configured if management history cannot be saved", async () => {
+		configure(WITHOUT_SECRET);
+		db.exec(`CREATE TRIGGER reject_management_marker BEFORE INSERT ON peer_project_filter_management
+		         BEGIN SELECT RAISE(ABORT, 'fixture marker write failure'); END`);
+
+		await setCoordinator("");
+
+		expect(process.exitCode).toBe(1);
+		expect(JSON.parse(readFileSync(join(dir, "config.json"), "utf8"))).toEqual(WITHOUT_SECRET);
+	});
+
+	it("does not infer a coordinator from clearing an unrelated config file", async () => {
+		configure({});
+		pairedWith({ include: [], exclude: ["secret"] });
+		const alternate = join(dir, "other-config.json");
+		writeFileSync(alternate, JSON.stringify(WITHOUT_SECRET));
+
+		await setCoordinator("", "--config", alternate);
+
+		expect(await accept("--all")).toEqual({ ok: true, peer_device_id: PEER });
+		expect(sends("secret")).toBe(true);
 	});
 });
 

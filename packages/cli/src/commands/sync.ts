@@ -3,7 +3,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,8 +16,10 @@ import {
 	type CoordinatorDeviceAnswerLookup,
 	DeviceIdentityError,
 	ensureDeviceIdentity,
+	expandUserPath,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
+	getCodememConfigPath,
 	hasUnsyncedSharedMemoryChanges,
 	listPerPeerScopeSyncState,
 	loadPublicKey,
@@ -33,6 +35,7 @@ import {
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
 	readPeerProjectFilterAuthority,
+	rememberPeerProjectFilterManagement,
 	removePeerFromThisDevice,
 	requestJson,
 	resolveDbPath,
@@ -401,34 +404,30 @@ function pairFilterChange(opts: SyncPairOptions): PeerProjectFilterLists | null 
 }
 
 /** What the running `sync pair` asked for. Set before its handler runs and cleared after it. */
-let pairRun: { filters: PeerProjectFilterLists | null; mayWiden: boolean } | null = null;
+let pairRun: PeerProjectFilterLists | null = null;
 
 function beginPairRun(opts: SyncPairOptions): void {
-	pairRun = {
-		filters: pairFilterChange(opts),
-		mayWiden: readPeerProjectFilterAuthority(),
-	};
+	pairRun = pairFilterChange(opts);
 }
 
 /** Stores an accepted pairing, unless its filter flags would widen on a device that may not. */
 function updatePeerAddresses(...args: Parameters<typeof storePeerAddresses>): void {
 	const [db, peerDeviceId] = args;
 	const refused =
-		pairRun?.filters != null &&
-		!pairRun.mayWiden &&
-		!peerProjectFilterChangeOnlyNarrows(db, peerDeviceId, pairRun.filters);
+		pairRun !== null &&
+		!readPeerProjectFilterAuthority(db) &&
+		!peerProjectFilterChangeOnlyNarrows(db, peerDeviceId, pairRun);
 	if (refused) throw new Error(PAIR_FILTERS_REFUSED);
 	storePeerAddresses(...args);
 }
 
-/** The filter write of an accepted pairing. A run that set nothing up may not widen. */
+/** The filter write of an accepted pairing rechecks authority inside the transaction. */
 function setPeerProjectFilter(
 	db: MemoryStore["db"],
 	peerDeviceId: string,
 	lists: PeerProjectFilterLists,
 ): void {
-	const mayWiden = pairRun?.mayWiden ?? false;
-	const saved = setPeerProjectFilterChecked(db, peerDeviceId, { ...lists, mayWiden });
+	const saved = setPeerProjectFilterChecked(db, peerDeviceId, lists);
 	if (saved !== "saved") throw new Error(PAIR_FILTERS_REFUSED);
 }
 
@@ -1481,16 +1480,47 @@ syncCommand.addCommand(bootstrapCmd);
 
 // ---- sync connect <coordinator-url> ----
 
+interface SyncConnectOptions {
+	group?: string;
+	config?: string;
+	dbPath?: string;
+	db?: string;
+}
+
+function targetsRuntimeConfig(path?: string): boolean {
+	if (!path) return true;
+	const runtime = getCodememConfigPath();
+	return existsSync(runtime) && realpathSync(runtime) === realpathSync(expandUserPath(path));
+}
+
+function rememberCoordinatorBeforeDisconnect(
+	config: Record<string, unknown>,
+	opts: SyncConnectOptions,
+): void {
+	const previousUrl = config.sync_coordinator_url;
+	if (typeof previousUrl !== "string" || !previousUrl.trim()) return;
+	if (!targetsRuntimeConfig(opts.config)) return;
+	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
+	try {
+		rememberPeerProjectFilterManagement(store.db);
+	} finally {
+		store.close();
+	}
+}
+
 const connectCmd = new Command("connect")
 	.configureHelp(helpStyle)
 	.description("Set the coordinator URL for sync")
 	.argument("<url>", "coordinator URL (e.g. https://coordinator.example.com)")
 	.option("--group <group>", "sync group ID");
 addConfigOption(connectCmd);
-connectCmd.action((url: string, opts: { group?: string; config?: string }) => {
+addDbOption(connectCmd);
+connectCmd.action((url: string, opts: SyncConnectOptions) => {
+	const nextUrl = url.trim();
 	try {
 		mutateCliConfig((config) => {
-			config.sync_coordinator_url = url.trim();
+			if (!nextUrl) rememberCoordinatorBeforeDisconnect(config, opts);
+			config.sync_coordinator_url = nextUrl;
 			if (opts.group) config.sync_coordinator_group = opts.group.trim();
 			return config;
 		}, opts.config);
@@ -1501,7 +1531,7 @@ connectCmd.action((url: string, opts: { group?: string; config?: string }) => {
 		return;
 	}
 	p.intro("codemem sync connect");
-	p.log.success(`Coordinator: ${url.trim()}`);
+	p.log.success(`Coordinator: ${nextUrl}`);
 	if (opts.group) p.log.info(`Group: ${opts.group.trim()}`);
 	p.outro("Restart `codemem serve` to activate coordinator sync");
 });

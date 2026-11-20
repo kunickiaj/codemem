@@ -971,7 +971,6 @@ export {
 	removePairingState,
 } from "./pairing-removal.js";
 export {
-	deviceMayWidenPeerProjectFilters,
 	newPairingFiltersNeedAdmin,
 	type PeerProjectFilterLists,
 	type PeerProjectFilters,
@@ -981,6 +980,7 @@ export {
 	type SetPeerProjectFilterResult,
 	setPeerProjectFilterChecked,
 } from "./peer-project-filter-change.js";
+export { rememberPeerProjectFilterManagement } from "./peer-project-filter-management.js";
 export {
 	type CoordinatorDeviceAnswer,
 	type CoordinatorDeviceAnswerLookup,
