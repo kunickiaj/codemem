@@ -15,6 +15,7 @@ import {
 	buildDirectPeerAuthHeaders,
 	type CoordinatorDeviceAnswerLookup,
 	DeviceIdentityError,
+	deviceMayWidenPeerProjectFilters,
 	ensureDeviceIdentity,
 	fetchAllSnapshotPages,
 	fingerprintPublicKey,
@@ -26,7 +27,9 @@ import {
 	mdnsEnabled,
 	mutateCodememConfigFile,
 	type PeerBindingOutcome,
+	type PeerProjectFilterLists,
 	type PeerRemovalResult,
+	peerProjectFilterChangeOnlyNarrows,
 	readCodememConfigFile,
 	readCodememConfigFileAtPath,
 	readCoordinatorSyncConfig,
@@ -35,9 +38,9 @@ import {
 	resolveDbPath,
 	runSyncPass,
 	schema,
-	setPeerProjectFilter,
+	setPeerProjectFilterChecked,
+	updatePeerAddresses as storePeerAddresses,
 	syncPassPreflight,
-	updatePeerAddresses,
 } from "@codemem/core";
 import { Command, Option } from "commander";
 import { desc, eq } from "drizzle-orm";
@@ -376,6 +379,61 @@ syncCommand.addCommand(onceCmd);
 
 // ---- sync pair ----
 
+/*
+ * Who may change a pairing's Project filters. Sending a pairing more than it
+ * gets now changes another device's access, which only an administrator's
+ * device may do (ADR 0007 Decision 4). The pair handler below is a long legacy
+ * function, so the rule lives in the two writes it calls: the first refuses
+ * before anything is stored, and the second checks again inside its own write
+ * transaction. The handler's catch block reports a refusal like any other
+ * pairing failure.
+ */
+
+const PAIR_FILTERS_REFUSED =
+	"These filters would send this pairing Projects it does not receive now. Only an administrator's device can do that. This device can send less. Nothing was changed.";
+
+/** The filters the pair flags ask for, or null when no filter flag was given. */
+function pairFilterChange(opts: SyncPairOptions): PeerProjectFilterLists | null {
+	if (opts.default) return { include: null, exclude: null };
+	if (opts.all) return { include: [], exclude: [] };
+	if (!opts.include && !opts.exclude) return null;
+	return { include: parseProjectList(opts.include), exclude: parseProjectList(opts.exclude) };
+}
+
+/** What the running `sync pair` asked for. Set before its handler runs and cleared after it. */
+let pairRun: { filters: PeerProjectFilterLists | null; mayWiden: boolean } | null = null;
+
+function beginPairRun(opts: SyncPairOptions): void {
+	pairRun = {
+		filters: pairFilterChange(opts),
+		mayWiden: deviceMayWidenPeerProjectFilters(
+			readCoordinatorSyncConfig(readCliConfig(opts.config)),
+		),
+	};
+}
+
+/** Stores an accepted pairing, unless its filter flags would widen on a device that may not. */
+function updatePeerAddresses(...args: Parameters<typeof storePeerAddresses>): void {
+	const [db, peerDeviceId] = args;
+	const refused =
+		pairRun?.filters != null &&
+		!pairRun.mayWiden &&
+		!peerProjectFilterChangeOnlyNarrows(db, peerDeviceId, pairRun.filters);
+	if (refused) throw new Error(PAIR_FILTERS_REFUSED);
+	storePeerAddresses(...args);
+}
+
+/** The filter write of an accepted pairing. A run that set nothing up may not widen. */
+function setPeerProjectFilter(
+	db: MemoryStore["db"],
+	peerDeviceId: string,
+	lists: PeerProjectFilterLists,
+): void {
+	const mayWiden = pairRun?.mayWiden ?? false;
+	const saved = setPeerProjectFilterChecked(db, peerDeviceId, { ...lists, mayWiden });
+	if (saved !== "saved") throw new Error(PAIR_FILTERS_REFUSED);
+}
+
 const pairCmd = new Command("pair")
 	.configureHelp(helpStyle)
 	.description("Create or accept a device pairing request")
@@ -391,6 +449,10 @@ const pairCmd = new Command("pair")
 addDbOption(pairCmd);
 addConfigOption(pairCmd);
 addJsonOption(pairCmd);
+pairCmd.hook("preAction", (_command, action) => beginPairRun(action.opts<SyncPairOptions>()));
+pairCmd.hook("postAction", () => {
+	pairRun = null;
+});
 pairCmd.action(async (opts: SyncPairOptions) => {
 	const store = new MemoryStore(resolveDbPath(resolveDbOpt(opts)));
 	try {

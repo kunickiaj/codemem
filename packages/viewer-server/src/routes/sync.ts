@@ -94,6 +94,7 @@ import {
 	decodeInvitePayload,
 	defaultSpaceScopeIdForGroup,
 	deleteProjectScopeSettingsMapping,
+	deviceMayWidenPeerProjectFilters,
 	diagnoseStalePeerReceivedRows,
 	ensureDeviceIdentity,
 	executeShareProvisioning,
@@ -141,6 +142,7 @@ import {
 	migrateRecipientPolicyIntent,
 	mutateCodememConfigFile,
 	negotiateSyncCapability,
+	newPairingFiltersNeedAdmin,
 	normalizeAddress,
 	normalizeHumanPresentationName,
 	normalizeSyncCapability,
@@ -196,6 +198,7 @@ import {
 	schema,
 	scopeAuthorizationFailureReason,
 	serializeRecipientPolicyTeamMutation,
+	setPeerProjectFilterChecked,
 	summarizeInboundScopeRejections,
 	supportsSyncFeature,
 	syncScopeResetRequiredPayload,
@@ -3846,6 +3849,11 @@ async function acceptDiscoveredPeer(
 		}
 	})();
 	const addressesJson = JSON.stringify(mergeAddresses(nextAddresses, existingAddresses));
+	const coordinatorUrl = config.syncCoordinatorUrl || null;
+	const seed = existing
+		? null
+		: newPairingScopeSeed(store, { coordinatorUrl, groupId, override: input.scopeOverride });
+	if (seed && newPairingFiltersRefused(store, config, seed)) return NEW_PAIRING_FILTERS_REFUSED;
 	await createCoordinatorReciprocalApproval(store, config, {
 		groupId,
 		requestedDeviceId: input.peerDeviceId,
@@ -3853,32 +3861,6 @@ async function acceptDiscoveredPeer(
 			? { expectedIncomingRequestId: input.expectedIncomingRequestId }
 			: {}),
 	});
-
-	// Resolve project-scope seed. On first enrollment (no existing row), apply
-	// the group's scope template if auto_seed_scope is enabled. Per-field
-	// overrides fall back to the template when undefined, so passing only
-	// `projects_include` does not silently wipe the template's exclude list.
-	// Existing peers are not re-scoped — the template is a seed, not a live link.
-	const coordinatorUrl = config.syncCoordinatorUrl || null;
-	let scopeInclude: string | null | undefined;
-	let scopeExclude: string | null | undefined;
-	if (!existing) {
-		let templateInclude: string[] | null = null;
-		let templateExclude: string[] | null = null;
-		if (coordinatorUrl) {
-			const prefs = getCoordinatorGroupPreference(store.db, coordinatorUrl, groupId);
-			if (prefs?.auto_seed_scope) {
-				templateInclude = prefs.projects_include ?? null;
-				templateExclude = prefs.projects_exclude ?? null;
-			}
-		}
-		const overrideInclude = input.scopeOverride?.projects_include;
-		const overrideExclude = input.scopeOverride?.projects_exclude;
-		const resolvedInclude = overrideInclude === undefined ? templateInclude : overrideInclude;
-		const resolvedExclude = overrideExclude === undefined ? templateExclude : overrideExclude;
-		scopeInclude = resolvedInclude ? JSON.stringify(resolvedInclude) : null;
-		scopeExclude = resolvedExclude ? JSON.stringify(resolvedExclude) : null;
-	}
 
 	const now = new Date().toISOString();
 	const result = store.db.transaction(() => {
@@ -3890,8 +3872,8 @@ async function acceptDiscoveredPeer(
 					pinned_fingerprint: nextFingerprint || null,
 					public_key: nextPublicKey,
 					addresses_json: addressesJson,
-					projects_include_json: scopeInclude ?? null,
-					projects_exclude_json: scopeExclude ?? null,
+					projects_include_json: seed?.include ?? null,
+					projects_exclude_json: seed?.exclude ?? null,
 					created_at: now,
 					last_seen_at: now,
 					discovered_via_coordinator_id: coordinatorUrl,
@@ -6373,6 +6355,164 @@ function canChangeRecipientAccess(readConfig: typeof readCoordinatorSyncConfig):
 	}
 }
 
+/** A configuration that cannot be read never permits widening. */
+function canWidenPeerProjectFilters(readConfig: typeof readCoordinatorSyncConfig): boolean {
+	try {
+		return deviceMayWidenPeerProjectFilters(readConfig());
+	} catch {
+		return false;
+	}
+}
+
+/** Project names from a request body, or null when the body has no list there. */
+function projectNameList(value: unknown): string[] | null {
+	if (!Array.isArray(value)) return null;
+	return value
+		.filter((item): item is string => typeof item === "string")
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+/** The filters a scope save asks for. Inheriting means the pairing has none of its own. */
+function requestedPeerProjectFilters(body: Record<string, unknown>) {
+	if (body.inherit_global) return { include: null, exclude: null };
+	return {
+		include: projectNameList(body.include) ?? [],
+		exclude: projectNameList(body.exclude) ?? [],
+	};
+}
+
+function peerProjectFilterRow(store: MemoryStore, peerDeviceId: string) {
+	return store.db
+		.prepare(
+			"SELECT projects_include_json, projects_exclude_json FROM sync_peers WHERE peer_device_id = ? LIMIT 1",
+		)
+		.get(peerDeviceId) as Record<string, unknown> | undefined;
+}
+
+/**
+ * Saves a pairing's Project filters. Sending a pairing more than it gets now
+ * changes another device's access, so a device that may not widen is refused,
+ * inside the write, when the new filters would do that.
+ */
+function savePeerProjectScope(
+	getStore: StoreFactory,
+	readConfig: typeof readCoordinatorSyncConfig,
+) {
+	return async (c: Context) => {
+		const store = getStore();
+		let body: Record<string, unknown>;
+		try {
+			body = await c.req.json<Record<string, unknown>>();
+		} catch {
+			return c.json({ error: "invalid json" }, 400);
+		}
+		const peerDeviceId = String(body.peer_device_id ?? "").trim();
+		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
+		if (!peerProjectFilterRow(store, peerDeviceId)) return c.json({ error: "peer not found" }, 404);
+		const saved = setPeerProjectFilterChecked(store.db, peerDeviceId, {
+			...requestedPeerProjectFilters(body),
+			mayWiden: canWidenPeerProjectFilters(readConfig),
+		});
+		if (saved === "needs_admin_device") {
+			return c.json({ error: "access_change_needs_admin_device" }, 403);
+		}
+		const row = peerProjectFilterRow(store, peerDeviceId);
+		if (!row) return c.json({ error: "peer not found" }, 404);
+		return c.json({
+			ok: true,
+			project_scope: currentProjectScope(row, readPeerProjectFilters(store, peerDeviceId)),
+		});
+	};
+}
+
+/** Whether a new pairing's own filters, stored as JSON lists, are refused on this device. */
+function newPairingFiltersRefused(
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	own: { include: string | null; exclude: string | null },
+): boolean {
+	return newPairingFiltersNeedAdmin(store.db, {
+		include: own.include === null ? null : parseJsonList(own.include),
+		exclude: own.exclude === null ? null : parseJsonList(own.exclude),
+		mayWiden: deviceMayWidenPeerProjectFilters(config),
+	});
+}
+
+const NEW_PAIRING_FILTERS_REFUSED = {
+	ok: false as const,
+	status: 403,
+	error: "access_change_needs_admin_device",
+	detail:
+		"The filters this pairing would start with send Projects that the shared filters hold back. Only an administrator's device can do that.",
+};
+
+/**
+ * The filters a newly discovered pairing starts with. The group's template
+ * applies when auto_seed_scope is on. A per-field override falls back to the
+ * template when it is undefined, so passing only `projects_include` does not
+ * wipe the template's exclude list. An existing pairing is never seeded again.
+ */
+function newPairingScopeSeed(
+	store: MemoryStore,
+	input: {
+		coordinatorUrl: string | null;
+		groupId: string;
+		override?: { projects_include?: string[] | null; projects_exclude?: string[] | null };
+	},
+): { include: string | null; exclude: string | null } {
+	const prefs = input.coordinatorUrl
+		? getCoordinatorGroupPreference(store.db, input.coordinatorUrl, input.groupId)
+		: null;
+	const template = prefs?.auto_seed_scope ? prefs : null;
+	const include =
+		input.override?.projects_include === undefined
+			? (template?.projects_include ?? null)
+			: input.override.projects_include;
+	const exclude =
+		input.override?.projects_exclude === undefined
+			? (template?.projects_exclude ?? null)
+			: input.override.projects_exclude;
+	return {
+		include: include ? JSON.stringify(include) : null,
+		exclude: exclude ? JSON.stringify(exclude) : null,
+	};
+}
+
+const MANUAL_PAIRING_ROUTE = "/api/coordinator/admin/groups/:group_id/enroll-peer";
+
+/** A manual pairing's own filter list as the enroll route stores it: null when absent or empty. */
+function manualPairingFilterList(value: unknown): string | null {
+	if (!Array.isArray(value)) return null;
+	const cleaned = value.map((item) => String(item ?? "").trim()).filter((item) => item.length > 0);
+	return cleaned.length === 0 ? null : JSON.stringify(cleaned);
+}
+
+/**
+ * Refuses a manual pairing whose own filters send Projects that the shared
+ * filters hold back, before the enroll route stores it. It reads the body the
+ * way that route does. The comparison is against configuration, which no
+ * database write changes, so it needs no second check inside the insert.
+ */
+function manualPairingFilterGate(getStore: StoreFactory) {
+	return async (c: Context, next: () => Promise<void>) => {
+		const body = c.req.method === "POST" ? await parseViewerJsonBody(c) : null;
+		const manual =
+			String(body?.mode ?? "")
+				.trim()
+				.toLowerCase() === "manual";
+		if (!body || !manual) return next();
+		const own = {
+			include: manualPairingFilterList(body.projects_include),
+			exclude: manualPairingFilterList(body.projects_exclude),
+		};
+		if (newPairingFiltersRefused(getStore(), readCoordinatorSyncConfig(), own)) {
+			return c.json({ error: "access_change_needs_admin_device" }, 403);
+		}
+		return next();
+	};
+}
+
 /**
  * Set while a request that passed the gate only because it narrows access is
  * handled. Another save can land between the gate and the write, so the write
@@ -7089,57 +7229,7 @@ export function syncRoutes(
 
 	app.post("/api/sync/run", manualSyncHandler(getStore, options));
 
-	app.post("/api/sync/peers/scope", async (c) => {
-		const store = getStore();
-		let body: Record<string, unknown>;
-		try {
-			body = await c.req.json<Record<string, unknown>>();
-		} catch {
-			return c.json({ error: "invalid json" }, 400);
-		}
-		const peerDeviceId = String(body.peer_device_id ?? "").trim();
-		if (!peerDeviceId) return c.json({ error: "peer_device_id required" }, 400);
-		const include = Array.isArray(body.include)
-			? body.include
-					.filter((value): value is string => typeof value === "string")
-					.map((value) => value.trim())
-					.filter(Boolean)
-			: null;
-		const exclude = Array.isArray(body.exclude)
-			? body.exclude
-					.filter((value): value is string => typeof value === "string")
-					.map((value) => value.trim())
-					.filter(Boolean)
-			: null;
-		const inheritGlobal = Boolean(body.inherit_global);
-		const d = drizzle(store.db, { schema });
-		const exists = d
-			.select({ peer_device_id: schema.syncPeers.peer_device_id })
-			.from(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-			.get();
-		if (!exists) return c.json({ error: "peer not found" }, 404);
-		d.update(schema.syncPeers)
-			.set({
-				projects_include_json: inheritGlobal ? null : JSON.stringify(include ?? []),
-				projects_exclude_json: inheritGlobal ? null : JSON.stringify(exclude ?? []),
-			})
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-			.run();
-		const row = d
-			.select({
-				projects_include_json: schema.syncPeers.projects_include_json,
-				projects_exclude_json: schema.syncPeers.projects_exclude_json,
-			})
-			.from(schema.syncPeers)
-			.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
-			.get() as Record<string, unknown> | undefined;
-		if (!row) return c.json({ error: "peer not found" }, 404);
-		return c.json({
-			ok: true,
-			project_scope: currentProjectScope(row, readPeerProjectFilters(store, peerDeviceId)),
-		});
-	});
+	app.post("/api/sync/peers/scope", savePeerProjectScope(getStore, readCoordinatorConfig));
 
 	app.get("/api/sync/sharing-domains/settings", (c) => {
 		const store = getStore();
@@ -9207,6 +9297,7 @@ export function syncRoutes(
 	//     optional name/fingerprint/addresses; :group_id path param is
 	//     ignored and both discovery columns are left null.
 	// See docs/plans/2026-04-22-multi-team-coordinator-groups-design.md.
+	app.use(MANUAL_PAIRING_ROUTE, manualPairingFilterGate(getStore));
 	app.post("/api/coordinator/admin/groups/:group_id/enroll-peer", async (c) => {
 		const config = readCoordinatorSyncConfig();
 		const status = coordinatorAdminStatusPayload(config);

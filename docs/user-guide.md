@@ -1003,6 +1003,8 @@ Optional legacy filters can narrow an already-authorized peer's data; they canno
 - `codemem sync pair --accept '<payload>' --include shared-repo-1,shared-repo-2`
 - `codemem sync pair --accept '<payload>' --exclude private-repo`
 
+Any device can change these filters so that a pairing receives less. Once a coordinator is configured, only a device that holds its admin secret can change them so that a pairing receives more, including with `--all` or `--default`. Another device is told that an administrator's device is needed, and nothing changes. With no coordinator configured, the filters stay this device's own choice.
+
 ### Product terms and internal access boundaries
 
 Normal sharing uses product terms:
