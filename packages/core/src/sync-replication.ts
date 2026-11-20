@@ -27,6 +27,7 @@ import {
 } from "./memory-scope-retirement.js";
 import { memorySourceNamespace } from "./memory-source-identity.js";
 import { readCodememConfigFile } from "./observer-config.js";
+import { readRetainedPeerProjectFilters } from "./peer-project-filter-retention.js";
 import { projectBasename } from "./project.js";
 import { isProjectScopeWithdrawn } from "./project-scope-withdrawal.js";
 import { getAnyRecipientPolicyDenyOverlayForScopeDevice } from "./recipient-policy-reconciliation.js";
@@ -1991,8 +1992,9 @@ function parseJsonList(valuesJson: string | null | undefined): string[] {
 }
 
 /**
- * The Project filters in effect for one pairing: its own lists when it has any,
- * otherwise the shared lists from configuration. With no pairing, the shared lists.
+ * The Project filters in effect for one pairing: its own lists, or its retained
+ * lists while removed, otherwise the shared lists from configuration.
+ * With no device ID, return the shared lists.
  */
 export function effectiveSyncProjectFilters(
 	db: Database,
@@ -2012,7 +2014,7 @@ export function effectiveSyncProjectFilters(
 			: parseStringList(config.sync_projects_exclude);
 	if (!peerDeviceId) return { include: globalInclude, exclude: globalExclude };
 
-	const row = d
+	const paired = d
 		.select({
 			projects_include_json: schema.syncPeers.projects_include_json,
 			projects_exclude_json: schema.syncPeers.projects_exclude_json,
@@ -2021,6 +2023,7 @@ export function effectiveSyncProjectFilters(
 		.where(eq(schema.syncPeers.peer_device_id, peerDeviceId))
 		.limit(1)
 		.get();
+	const row = paired ?? readRetainedPeerProjectFilters(db, peerDeviceId);
 	if (!row) return { include: globalInclude, exclude: globalExclude };
 
 	const hasOverride = row.projects_include_json != null || row.projects_exclude_json != null;

@@ -198,6 +198,25 @@ describe("sync pair filter authority uses the runtime configuration", () => {
 	});
 });
 
+describe("sync pair --accept after a restricted pairing was removed", () => {
+	beforeEach(() => {
+		configure(WITHOUT_SECRET);
+		pairedWith({ include: ["work"], exclude: ["secret"] });
+		db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(PEER);
+	});
+
+	it.each([["--all"], ["--include", "play"]])("refuses widening flags %o", async (...flags) => {
+		expect(await accept(...flags)).toEqual({ error: "pairing_failed", message: REFUSED });
+		expect(pairingName()).toBeUndefined();
+	});
+
+	it("restores the restriction when no replacement flags are given", async () => {
+		expect(await accept()).toEqual({ ok: true, peer_device_id: PEER });
+		expect(sends("play")).toBe(false);
+		expect(sends("secret")).toBe(false);
+	});
+});
+
 describe.each([
 	["an administrator's device", ADMIN],
 	["a device with no coordinator", {}],

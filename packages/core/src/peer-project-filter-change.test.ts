@@ -259,7 +259,7 @@ describe("which device may widen what a pairing receives", () => {
 
 describe("filters a new pairing starts with", () => {
 	const refused = (include: string[] | null, exclude: string[] | null, mayWiden = false) =>
-		newPairingFiltersNeedAdmin(db, { include, exclude, mayWiden });
+		newPairingFiltersNeedAdmin(db, { peerDeviceId: PEER, include, exclude, mayWiden });
 
 	beforeEach(() => globalFilters({ exclude: ["secret"] }));
 
@@ -280,5 +280,29 @@ describe("filters a new pairing starts with", () => {
 
 	it("are accepted on a device that may widen", () => {
 		expect(refused([], [], true)).toBe(false);
+	});
+});
+
+describe("replacement lists for a removed pairing", () => {
+	beforeEach(() => {
+		pairingFilters({ include: ["work"], exclude: ["secret"] });
+		db.prepare("DELETE FROM sync_peers WHERE peer_device_id = ?").run(PEER);
+	});
+
+	it("keeps the retained filter as the baseline before recreation", () => {
+		expect(sends("secret")).toBe(false);
+		expect(sends("play")).toBe(false);
+		expect(sends("work")).toBe(true);
+	});
+
+	it("refuses explicit replacements that exceed the removed pairing's restrictions", () => {
+		expect(
+			newPairingFiltersNeedAdmin(db, {
+				peerDeviceId: PEER,
+				include: [],
+				exclude: [],
+				mayWiden: false,
+			}),
+		).toBe(true);
 	});
 });
