@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rejoin_attempts (
  CHECK ((state = 'finalized') = (final_receipt_json IS NOT NULL)),
  CHECK (finalized_at_ms IS NULL OR (typeof(finalized_at_ms) = 'integer'
   AND finalized_at_ms >= created_at_ms AND finalized_at_ms < expires_at_ms))
-) WITHOUT ROWID;
+);
 
 CREATE INDEX IF NOT EXISTS idx_coordinator_device_rejoin_attempts_device
  ON coordinator_device_rejoin_attempts (coordinator_id, device_id, created_at_ms);
@@ -51,14 +51,23 @@ CREATE INDEX IF NOT EXISTS idx_coordinator_device_rejoin_attempts_device
 CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_attempt_collision
 BEFORE INSERT ON coordinator_device_rejoin_attempts
 WHEN EXISTS (SELECT 1 FROM coordinator_device_rejoin_attempts
- WHERE coordinator_id = NEW.coordinator_id AND attempt_id = NEW.attempt_id)
+ WHERE rowid = NEW.rowid OR (coordinator_id = NEW.coordinator_id AND attempt_id = NEW.attempt_id))
 BEGIN
  SELECT RAISE(ABORT, 'device_rejoin_attempt_collision');
+END;
+
+-- SQLite reports -1 for an automatically allocated rowid before insertion.
+CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_attempt_rowid
+AFTER INSERT ON coordinator_device_rejoin_attempts
+WHEN NEW.rowid < 1
+BEGIN
+ SELECT RAISE(ABORT, 'device_rejoin_attempt_rowid');
 END;
 
 CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_attempt_pins
 BEFORE UPDATE ON coordinator_device_rejoin_attempts
 WHEN OLD.state IN ('finalized', 'expired', 'failed')
+ OR NEW.rowid IS NOT OLD.rowid
  OR NEW.coordinator_id IS NOT OLD.coordinator_id OR NEW.attempt_id IS NOT OLD.attempt_id
  OR NEW.origin IS NOT OLD.origin OR NEW.device_id IS NOT OLD.device_id
  OR NEW.public_key IS NOT OLD.public_key OR NEW.key_id IS NOT OLD.key_id
@@ -107,7 +116,7 @@ CREATE TABLE IF NOT EXISTS coordinator_device_rejoin_audit_log (
  finalized_at_ms INTEGER NOT NULL CHECK (typeof(finalized_at_ms) = 'integer' AND finalized_at_ms >= 0),
  PRIMARY KEY (coordinator_id, event_id),
  UNIQUE (coordinator_id, attempt_id)
-) WITHOUT ROWID;
+);
 
 CREATE INDEX IF NOT EXISTS idx_coordinator_device_rejoin_audit_identity
  ON coordinator_device_rejoin_audit_log (coordinator_id, identity_id, finalized_at_ms, event_id);
@@ -115,9 +124,17 @@ CREATE INDEX IF NOT EXISTS idx_coordinator_device_rejoin_audit_identity
 CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_audit_collision
 BEFORE INSERT ON coordinator_device_rejoin_audit_log
 WHEN EXISTS (SELECT 1 FROM coordinator_device_rejoin_audit_log
- WHERE coordinator_id = NEW.coordinator_id AND (event_id = NEW.event_id OR attempt_id = NEW.attempt_id))
+ WHERE rowid = NEW.rowid
+ OR (coordinator_id = NEW.coordinator_id AND (event_id = NEW.event_id OR attempt_id = NEW.attempt_id)))
 BEGIN
  SELECT RAISE(ABORT, 'device_rejoin_audit_collision');
+END;
+
+CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_audit_rowid
+AFTER INSERT ON coordinator_device_rejoin_audit_log
+WHEN NEW.rowid < 1
+BEGIN
+ SELECT RAISE(ABORT, 'device_rejoin_audit_rowid');
 END;
 
 CREATE TRIGGER IF NOT EXISTS coordinator_device_rejoin_audit_no_update

@@ -46,6 +46,9 @@ export async function checkRejoinAttemptStorage(db: RejoinSchemaFixture) {
 	expect(await db.rows(`SELECT state FROM ${attempts}`)).toEqual([]);
 	expect(await db.rows(`SELECT event_id FROM ${audit}`)).toEqual([]);
 	await insertAttempt(db);
+	expect(await db.rows(`SELECT attempt_id FROM ${attempts} ORDER BY rowid`)).toEqual([
+		{ attempt_id: "attempt" },
+	]);
 	const before = await db.rows(`SELECT * FROM ${attempts}`);
 	await expect(insertAttempt(db, "INSERT OR REPLACE")).rejects.toThrow(
 		/device_rejoin_attempt_collision/u,
@@ -66,6 +69,11 @@ export async function checkRejoinAttemptStorage(db: RejoinSchemaFixture) {
 	expect(await db.rows(`SELECT * FROM ${attempts}`)).toEqual(before);
 	await insertAttempt(db, "INSERT", "second-attempt");
 	expect(await db.rows(`SELECT count(*) AS count FROM ${attempts}`)).toEqual([{ count: 2 }]);
+	await expect(
+		db.run(`UPDATE OR REPLACE ${attempts} SET rowid = (
+		 SELECT rowid FROM ${attempts} WHERE attempt_id = 'attempt'
+		) WHERE attempt_id = 'second-attempt'`),
+	).rejects.toThrow(/device_rejoin_attempt_immutable/u);
 	await expect(db.run(`UPDATE ${attempts} SET state = 'oidc_verified'`)).rejects.toThrow(
 		/device_rejoin_attempt_immutable/u,
 	);
@@ -129,6 +137,24 @@ export async function storeFinalizedRejoinFixture(db: RejoinSchemaFixture) {
 }
 
 export async function checkFinalizedRejoinStorage(db: RejoinSchemaFixture) {
+	for (const [table, idColumn] of [
+		[attempts, "attempt_id"],
+		[audit, "event_id"],
+	] as const) {
+		const columns = await db.rows(`SELECT name FROM pragma_table_info('${table}') ORDER BY cid`);
+		const names = columns.map((column) => (column as { name: string }).name);
+		const projection = names.map((name) =>
+			name === idColumn || (table === audit && name === "attempt_id") ? "'new-id'" : name,
+		);
+		await expect(
+			db.run(`INSERT OR REPLACE INTO ${table} (rowid, ${names.join(", ")})
+			 SELECT rowid, ${projection.join(", ")} FROM ${table}`),
+		).rejects.toThrow(/device_rejoin_(attempt|audit)_collision/u);
+		await expect(
+			db.run(`INSERT INTO ${table} (rowid, ${names.join(", ")})
+			 SELECT -1, ${projection.join(", ")} FROM ${table}`),
+		).rejects.toThrow(/device_rejoin_(attempt|audit)_rowid/u);
+	}
 	await expect(db.run(`UPDATE ${attempts} SET final_receipt_json = '{}'`)).rejects.toThrow(
 		/device_rejoin_attempt_immutable/u,
 	);
