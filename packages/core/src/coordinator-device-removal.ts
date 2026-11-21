@@ -704,8 +704,10 @@ function resultChanges(result: unknown): number {
 }
 
 const NO_UNFILLED_KEY_ID_SQL = "NOT EXISTS (SELECT 1 FROM enrolled_devices WHERE key_id IS NULL)";
-/** Without the enrollment triggers a writer of an older release could undo a removal. */
-const REMOVAL_AVAILABLE_SQL = `${NO_UNFILLED_KEY_ID_SQL}
+/** Preview must check the table explicitly because its target queries do not read tombstones. */
+const REMOVAL_AVAILABLE_SQL = `EXISTS (
+SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coordinator_device_removals')
+AND ${NO_UNFILLED_KEY_ID_SQL}
 AND ${ENROLLMENT_REMOVAL_TRIGGERS_PRESENT_SQL}`;
 /** Bind the removal ID, group ID, and device ID, in that order. */
 const OWN_TOMBSTONE_SQL = `EXISTS (SELECT 1 FROM coordinator_device_removals t
