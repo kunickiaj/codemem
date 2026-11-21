@@ -18,7 +18,11 @@ vi.mock("@clack/prompts", () => ({
 	log: mocks.log,
 }));
 
-import { COORDINATOR_DEVICE_REVOCATION_SCOPE as scope } from "@codemem/core";
+import {
+	BetterSqliteCoordinatorStore,
+	createCoordinatorApp,
+	COORDINATOR_DEVICE_REVOCATION_SCOPE as scope,
+} from "@codemem/core";
 import { buildCoordinatorCommand } from "./coordinator.js";
 import { buildCoordinatorRevokeDeviceCommand } from "./coordinator-revoke-device.js";
 import { syncCommand } from "./sync.js";
@@ -194,6 +198,82 @@ it("confirms exact reviewed subjects once and displays both retained references 
 	expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ output: process.stderr }));
 	expect(process.exitCode).toBeUndefined();
 });
+
+function removalOperator(store: BetterSqliteCoordinatorStore) {
+	const app = createCoordinatorApp({
+		storeFactory: () => store,
+		runtime: {
+			adminSecret: () => config.sync_coordinator_admin_secret,
+			now: () => "2026-11-21T00:00:00.000Z",
+		},
+		requestVerifier: () => false,
+		deviceRevocation: { coordinatorId: "coordinator-a" },
+	});
+	return {
+		request: async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+			const request = new Request(input, init);
+			expect(new URL(request.url).origin).toBe(config.sync_coordinator_url);
+			return app.request(request);
+		},
+		operate: async (path: string, body?: object) => {
+			const response = await app.request(`/v1/admin/devices/${path}`, {
+				method: body ? "POST" : "GET",
+				headers: { "X-Codemem-Coordinator-Admin": config.sync_coordinator_admin_secret },
+				body: body && JSON.stringify(body),
+			});
+			expect(response.status).toBe(200);
+			return response;
+		},
+	};
+}
+
+it("blocks a removed device through the CLI using the coordinator's tombstone", async () => {
+	const store = new BetterSqliteCoordinatorStore(":memory:");
+	const close = vi.spyOn(store, "close").mockResolvedValue();
+	try {
+		await store.createGroup("group-a");
+		await store.enrollDevice("group-a", {
+			deviceId: "device-a",
+			// Public Ed25519 test vector from RFC 8032 section 7.1.
+			publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINdamAGCsQq31Uv+08lkBzoO4XLz2qYjJa8CGmj3B1Ea",
+			fingerprint: "fixture-fingerprint",
+		});
+		const { operate, request } = removalOperator(store);
+		const target = { device_ids: ["device-a"] };
+		const preview = (await (await operate("removal-preview", target)).json()) as {
+			expected_digest: string;
+			key_id: string;
+		};
+		await operate("removal", { ...target, expected_digest: preview.expected_digest });
+		const list = "removals?device_id=device-a";
+		expect(await (await operate(list)).json()).toMatchObject({
+			items: [{ group_id: "group-a", device_id: "device-a", key_id: preview.key_id }],
+		});
+		expect(await store.listDeviceRevocations({ deviceId: "device-a" })).toEqual([]);
+
+		vi.mocked(fetch).mockReset().mockImplementation(request);
+		mocks.confirm.mockResolvedValueOnce(true);
+		await run();
+
+		expect(process.exitCode).toBeUndefined();
+		expect(JSON.parse(stdout())).toMatchObject({
+			state: "revoked",
+			revocations: [
+				{ subject_kind: "device_id", subject_value: "device-a" },
+				{ subject_kind: "ed25519_key", subject_value: preview.key_id },
+			],
+		});
+		expect(await store.getEnrollment("group-a", "device-a", true)).toBeNull();
+		expect(await (await operate(list)).json()).toMatchObject({ items: [] });
+		expect(await (await operate(`${list}&include_blocked=1`)).json()).toMatchObject({
+			items: [{ device_id: "device-a", revoked: true }],
+		});
+	} finally {
+		close.mockRestore();
+		await store.close();
+	}
+});
+
 it("prints a complete JSON receipt on stdout with reversible visible control escapes", async () => {
 	// Arrange: inspect raw stdout and logger arguments, not JSON-stringified mocks.
 	const text = "ledger\n\u001b\u0085\u202e\u2028\u2029\ud800";
