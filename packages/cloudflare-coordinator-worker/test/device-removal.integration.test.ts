@@ -1,6 +1,7 @@
 import { d1EnrollmentExec } from "../../core/src/coordinator-enrollment-test-fixtures.js";
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
+import { createCoordinatorApp } from "../../core/src/coordinator-api.js";
 import {
 	ENROLLMENT_REMOVAL_MIGRATION_NAME,
 	ENROLLMENT_REMOVAL_TRIGGERS,
@@ -9,10 +10,12 @@ import {
 } from "../../core/src/coordinator-device-removal.js";
 import {
 	invitationFixture,
+	enroll,
 	REMOVAL_CLOCK_MS,
 	registerDeviceRemovalContract,
 	removalDeviceKey,
 	removalHarness,
+	target,
 } from "../../core/src/coordinator-device-removal-test-harness.js";
 import { registerDeviceRemovalDependentsContract } from "../../core/src/coordinator-device-removal-dependents-test-harness.js";
 import { registerDeviceRemovalListContract } from "../../core/src/coordinator-device-removal-list-test-harness.js";
@@ -100,6 +103,31 @@ describe("native D1 device removal", () => {
 	registerDeviceRemovalListContract(test);
 	registerMembershipEnrollmentContract(test);
 	registerPeerRemovalQueryContract(test);
+	test("D5 serves the admin removal listing from native D1", async ({ fixture: f }) => {
+		const removed = await target(f);
+		await enroll(f, removed);
+		expect(await f.store.removeDevice(removed.groupId, removed.deviceId)).toBe(true);
+		const adminSecret = "removal-list-test-secret";
+		const app = createCoordinatorApp({
+			storeFactory: () => f.store,
+			runtime: { adminSecret: () => adminSecret, now: () => new Date(REMOVAL_CLOCK_MS).toISOString() },
+			requestVerifier: () => false,
+			requestRateLimit: { readLimit: 1 },
+		});
+		const url = `/v1/admin/devices/removals?device_id=${removed.deviceId}`;
+		expect((await app.request(url)).status).toBe(401);
+		const headers = { "X-Codemem-Coordinator-Admin": adminSecret };
+		const response = await app.request(url, { headers });
+		const page = await response.json<{ items: unknown[] }>();
+		expect(response.status).toBe(200);
+		expect(page).toMatchObject({
+			version: 1,
+			items: [{ device_id: removed.deviceId, group_id: removed.groupId, key_id: removed.key.keyId }],
+			next_before_seq: null,
+		});
+		expect(page.items[0]).not.toHaveProperty("public_key");
+		expect((await app.request(url, { headers })).status).toBe(429);
+	});
 	test("native peer lookup uses two reads with one JSON parameter for 0, 1 and 25 entries", async ({ fixture: f }) => {
 		const prepare = vi.spyOn(env.COORDINATOR_DB, "prepare");
 		try {

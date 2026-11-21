@@ -40,6 +40,7 @@ import {
 	DEVICE_REBIND_ATTEMPTS_PATH,
 	registerCoordinatorDeviceRebindRoutes,
 } from "./coordinator-device-rebind-http.js";
+import { registerCoordinatorDeviceRemovalRoutes } from "./coordinator-device-removal-routes.js";
 import {
 	type CoordinatorDeviceRevocationContext,
 	registerCoordinatorDeviceRevocationRoutes,
@@ -338,6 +339,11 @@ function registerCoordinatorRuntimeRoutes(
 	registerCoordinatorKeyIdFillRoute(app, {
 		...deps,
 		storeFactory: () => createStore(),
+		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
+	});
+	registerCoordinatorDeviceRemovalRoutes(app, {
+		rateLimitedResponse: deps.rateLimitedResponse,
+		storeFactory: () => createStore({ existingOnly: true }),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});
 	registerCoordinatorBoundaryReadinessRoute(app, {
