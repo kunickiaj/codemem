@@ -871,8 +871,9 @@ function registerEnrollmentMoveTriggers(test: RemovalTest) {
 		await enroll(f, survivor);
 		await f.store.removeEnrollment({ groupId: removed.groupId, deviceId: removed.deviceId });
 		const before = await enrollments(f);
-		// Act: writers that name the checked columns without changing them.
-		await enroll(f, survivor);
+		// Direct enrollment also has a statement check, even if it would restate the key.
+		await expect(enroll(f, survivor)).rejects.toThrow(/^device_removed$/u);
+		// A raw restatement of those columns still passes the update trigger.
 		await f.exec(
 			`UPDATE enrolled_devices SET group_id = group_id, device_id = device_id,
 				public_key = public_key, key_id = key_id WHERE device_id = ?`,

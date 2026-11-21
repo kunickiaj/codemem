@@ -169,12 +169,14 @@ import {
 	captureLegacyEnrollmentPublicKey,
 	captureLegacyProjectInviteInput,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
-	LEGACY_DEVICE_DENIAL_SQL,
-	LEGACY_ENROLLMENT_DENIAL_SQL,
 	type LegacyEnrollmentStatement,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
+	legacyEnableDenialStatement,
+	legacyEnableDenied,
+	legacyEnableWriteStatement,
+	legacyEnrollmentDenialStatement,
 	legacyEnrollmentWriteStatements,
 	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
@@ -2262,8 +2264,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			const keyId = await ed25519KeyIdForRevocation(publicKey);
 			const currentKeyId =
 				currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey);
-			const source = [currentPublicKey, _groupId, deviceId, _groupId, deviceId, currentPublicKey];
-			const writes = legacyEnrollmentWriteStatements({
+			const enrollment = {
 				groupId: _groupId,
 				deviceId,
 				publicKey,
@@ -2275,14 +2276,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				currentPublicKey,
 				currentKeyId,
 				storeKeyId: await this.hasRemovalSchema(),
-			});
+				checkRemoval: true,
+			};
+			const writes = legacyEnrollmentWriteStatements(enrollment);
 			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(writes))) return;
-			const denial = await firstRow<unknown>(
-				this.db
-					.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
-					.bind(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source),
+			const denial = legacyEnrollmentDenialStatement(enrollment);
+			throw new Error(
+				legacyDeviceDenial(
+					await firstRow<unknown>(this.db.prepare(denial.sql).bind(...denial.values)),
+				),
 			);
-			throw new Error(legacyDeviceDenial(denial));
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
@@ -2356,42 +2359,34 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		if (typeof _enabled !== "boolean") throw new Error("invalid_input");
 		if (_enabled) {
 			try {
-				const enrollment = await firstRow<{ public_key: string }>(
-					this.db
-						.prepare("SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?")
-						.bind(_groupId, _deviceId),
-				);
-				if (enrollment === null) return false;
-				if (!enrollment) throw new Error("device_ownership_authorization_unavailable");
-				const publicKey = enrollment.public_key;
-				if (typeof publicKey !== "string")
-					throw new Error("device_ownership_authorization_unavailable");
-				const keyId = await ed25519KeyIdForRevocation(publicKey);
-				const stored = storedKeyIdWrite(await this.storedKeyId(publicKey));
-				const result = await this.db
-					.prepare(`UPDATE enrolled_devices SET enabled = 1${stored.sql.assignment}
-						WHERE group_id = ? AND device_id = ? AND public_key = ?
-						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
-						AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
-					.bind(
-						...stored.values,
-						_groupId,
-						_deviceId,
-						publicKey,
-						_deviceId,
-						keyId,
-						_deviceId,
-						keyId,
-					)
-					.run();
-				if (legacyDeviceWriteChanges(result) === 1) return true;
-				const denial = legacyDeviceDenial(
+				const publicKey = captureLegacyEnrollmentPublicKey(
 					await firstRow<unknown>(
-						this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).bind(_deviceId, keyId, _deviceId, keyId),
+						this.db
+							.prepare(
+								"SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
+							)
+							.bind(_groupId, _deviceId),
 					),
 				);
-				if (denial === "device_ownership_requires_verified_identity") throw new Error(denial);
-				return false;
+				const input = {
+					groupId: _groupId,
+					deviceId: _deviceId,
+					publicKey,
+					keyId: publicKey === null ? null : await ed25519KeyIdForRevocation(publicKey),
+					storeKeyId: await this.hasRemovalSchema(),
+				};
+				if (publicKey !== null) {
+					const write = legacyEnableWriteStatement(input);
+					const result = await this.db
+						.prepare(write.sql)
+						.bind(...write.values)
+						.run();
+					if (legacyDeviceWriteChanges(result) === 1) return true;
+				} else if (!input.storeKeyId) return false;
+				const denial = legacyEnableDenialStatement(input);
+				return legacyEnableDenied(
+					await firstRow<unknown>(this.db.prepare(denial.sql).bind(...denial.values)),
+				);
 			} catch (error) {
 				legacyDeviceAuthorizationFailure(error);
 			}
