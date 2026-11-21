@@ -602,6 +602,7 @@ it.each([
 	"stale-timestamp",
 	"query-tamper",
 	"removed",
+	"removed-and-blocked",
 	"disabled",
 	"revoked",
 ])("rejects %s before exposing account information", async (variant) => {
@@ -622,7 +623,10 @@ it.each([
 	}
 	if (variant === "stale-timestamp") signed = headers(f.key, PATH, String(NOW / 1000 - 10000));
 	if (variant === "query-tamper") signed = headers(f.key, statusPath("other-group"));
-	if (variant === "removed") await f.store.removeDevice("group-a", f.key.deviceId);
+	if (variant === "removed-and-blocked")
+		await f.store.createDeviceRevocation({ groupId: "group-a", ...f.key });
+	if (variant === "removed" || variant === "removed-and-blocked")
+		expect(await f.store.removeDevice("group-a", f.key.deviceId)).toBe(true);
 	if (variant === "disabled") {
 		await f.store.setDeviceEnabled("group-a", f.key.deviceId, false);
 		expected = 403;
