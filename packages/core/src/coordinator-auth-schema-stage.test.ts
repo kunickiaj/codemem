@@ -18,6 +18,7 @@ import {
 	COORDINATOR_D1_BASE_INVENTORY,
 	COORDINATOR_D1_MIGRATION_NAMES,
 } from "./coordinator-d1-schema-inventory.js";
+import { DEVICE_REJOIN_MIGRATION_NAME } from "./coordinator-device-rejoin-schema.js";
 import {
 	DEVICE_REMOVAL_MIGRATION_NAME,
 	ENROLLMENT_REMOVAL_MIGRATION_NAME,
@@ -194,6 +195,18 @@ const qualificationObjects = (source: Database.Database) =>
 	);
 
 describe("ledger baseline of migrations after the last auth stage", () => {
+	it("does not baseline rejoin storage until its audit guard exists", () => {
+		const db = current();
+		db.exec("DROP TRIGGER coordinator_device_rejoin_audit_no_delete");
+		db.exec(ledger);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered.filter((name) => name !== DEVICE_REJOIN_MIGRATION_NAME));
+
+		apply(db, DEVICE_REJOIN_MIGRATION_NAME);
+		db.exec(coordinatorAuthStageBaselineSql("current"));
+		expect(names(db)).toEqual(numbered);
+	});
+
 	it.each([
 		[
 			"numbered order",
