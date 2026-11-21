@@ -141,6 +141,10 @@ const REMOVED_DEVICE_REQUESTS: Record<string, (f: ApiFixture) => Promise<Request
 		await f.enrollAndRemove(`${DEVICE}-alias`);
 		return { path: "/v1/admin/devices/enable", body: { group_id: GROUP, device_id: DEVICE } };
 	},
+	"enabling the device whose enrollment was removed": async (f) => {
+		await f.enrollAndRemove();
+		return { path: "/v1/admin/devices/enable", body: { group_id: GROUP, device_id: DEVICE } };
+	},
 };
 
 describe.each(["SQLite", "D1"] as const)("%s coordinator API for a removed device", (backend) => {
@@ -166,6 +170,29 @@ describe.each(["SQLite", "D1"] as const)("%s coordinator API for a removed devic
 			}
 		},
 	);
+
+	it("answers re-enable for a blocked and removed device with 403 device_revoked and writes nothing", async () => {
+		const f = await apiFixture(backend);
+		try {
+			await f.store.createGroup(GROUP);
+			await f.store.enrollDevice(GROUP, f.device);
+			expect(await f.store.createDeviceRevocation({ ...f.device, groupId: GROUP })).toMatchObject({
+				kind: "revoked",
+			});
+			expect(await f.store.removeDevice(GROUP, DEVICE)).toBe(true);
+			const before = f.snapshot();
+
+			const response = await f.post("/v1/admin/devices/enable", {
+				group_id: GROUP,
+				device_id: DEVICE,
+			});
+
+			expect([response.status, await response.json()]).toEqual([403, { error: "device_revoked" }]);
+			expect(f.snapshot()).toEqual(before);
+		} finally {
+			f.close();
+		}
+	});
 
 	it("answers a removal with 503 device_removal_unavailable while an enrollment trigger is missing", async () => {
 		// Arrange: the state of a D1 database between migrations 0048 and 0049.

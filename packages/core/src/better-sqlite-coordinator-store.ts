@@ -225,11 +225,13 @@ import {
 	captureLegacyEnrollmentPublicKey,
 	captureLegacyProjectInviteInput,
 	DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL,
-	LEGACY_DEVICE_DENIAL_SQL,
-	LEGACY_ENROLLMENT_DENIAL_SQL,
 	legacyDeviceAuthorizationFailure,
 	legacyDeviceDenial,
 	legacyDeviceWriteChanges,
+	legacyEnableDenialStatement,
+	legacyEnableDenied,
+	legacyEnableWriteStatement,
+	legacyEnrollmentDenialStatement,
 	legacyEnrollmentWriteStatements,
 	legacyEnrollmentWritten,
 	legacyProjectInviteOwnershipEvidence,
@@ -1570,7 +1572,11 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return this.authLinks.finalizeHeadlessAuthLinkAttempt(input, config);
 	}
 
-	private enrollDeviceSync(groupId: string, opts: CoordinatorEnrollDeviceInput): void {
+	private enrollDeviceSync(
+		groupId: string,
+		opts: CoordinatorEnrollDeviceInput,
+		options?: { checkRemoval: true },
+	): void {
 		const { deviceId, publicKey, fingerprint, identityId, displayName } = captureLegacyEnrollment(
 			groupId,
 			opts,
@@ -1584,8 +1590,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			const keyId = enrollmentRevocationKeyId(publicKey);
 			const currentKeyId =
 				currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey);
-			const source = [currentPublicKey, groupId, deviceId, groupId, deviceId, currentPublicKey];
-			const writes = legacyEnrollmentWriteStatements({
+			const enrollment = {
 				groupId,
 				deviceId,
 				publicKey,
@@ -1597,7 +1602,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				currentPublicKey,
 				currentKeyId,
 				storeKeyId: this.hasRemovalSchema(),
-			});
+				checkRemoval: options?.checkRemoval === true,
+			};
+			const writes = legacyEnrollmentWriteStatements(enrollment);
 			// The caller's immediate transaction rolls a first statement back when a later one,
 			// or the completion assertion, fails.
 			const changes: number[] = [];
@@ -1607,10 +1614,8 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				else changes.push(legacyDeviceWriteChanges({ meta: statement.run(...values) }));
 			}
 			if (legacyEnrollmentWritten(changes)) return;
-			const denial = this.db
-				.prepare(LEGACY_ENROLLMENT_DENIAL_SQL)
-				.get(deviceId, keyId, deviceId, keyId, deviceId, currentKeyId, ...source);
-			throw new Error(legacyDeviceDenial(denial));
+			const denial = legacyEnrollmentDenialStatement(enrollment);
+			throw new Error(legacyDeviceDenial(this.db.prepare(denial.sql).get(...denial.values)));
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
@@ -1976,7 +1981,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	async enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void> {
 		const input = captureLegacyEnrollment(groupId, opts);
 		try {
-			this.db.transaction(() => this.enrollDeviceSync(groupId, input)).immediate();
+			this.db
+				.transaction(() => this.enrollDeviceSync(groupId, input, { checkRemoval: true }))
+				.immediate();
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
@@ -2030,38 +2037,27 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			try {
 				return this.db
 					.transaction(() => {
-						const enrollment = this.db
-							.prepare(
-								"SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
-							)
-							.get(groupId, deviceId) as { public_key: string } | undefined;
-						if (!enrollment) return false;
-						const publicKey = enrollment.public_key;
-						if (typeof publicKey !== "string")
-							throw new Error("device_ownership_authorization_unavailable");
-						const keyId = enrollmentRevocationKeyId(publicKey);
-						const stored = this.storedKeyIdWrite(publicKey);
-						const result = this.db
-							.prepare(`UPDATE enrolled_devices SET enabled = 1${stored.sql.assignment}
-						WHERE group_id = ? AND device_id = ? AND public_key = ?
-						AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
-						AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}`)
-							.run(
-								...stored.values,
-								groupId,
-								deviceId,
-								publicKey,
-								deviceId,
-								keyId,
-								deviceId,
-								keyId,
-							);
-						if (legacyDeviceWriteChanges({ meta: result }) === 1) return true;
-						const denial = legacyDeviceDenial(
-							this.db.prepare(LEGACY_DEVICE_DENIAL_SQL).get(deviceId, keyId, deviceId, keyId),
+						const publicKey = captureLegacyEnrollmentPublicKey(
+							this.db
+								.prepare(
+									"SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?",
+								)
+								.get(groupId, deviceId) ?? null,
 						);
-						if (denial === "device_ownership_requires_verified_identity") throw new Error(denial);
-						return false;
+						const input = {
+							groupId,
+							deviceId,
+							publicKey,
+							keyId: publicKey === null ? null : enrollmentRevocationKeyId(publicKey),
+							storeKeyId: this.hasRemovalSchema(),
+						};
+						if (publicKey !== null) {
+							const write = legacyEnableWriteStatement(input);
+							const result = this.db.prepare(write.sql).run(...write.values);
+							if (legacyDeviceWriteChanges({ meta: result }) === 1) return true;
+						} else if (!input.storeKeyId) return false;
+						const denial = legacyEnableDenialStatement(input);
+						return legacyEnableDenied(this.db.prepare(denial.sql).get(...denial.values));
 					})
 					.immediate();
 			} catch (error) {

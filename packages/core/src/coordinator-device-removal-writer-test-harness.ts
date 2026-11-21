@@ -37,6 +37,8 @@ export function registerEnrollmentWriterContract(test: RemovalTest) {
 	registerKeyTextChangeFailures(test);
 	registerSuppressedKeyTextRewrites(test);
 	registerRemovedDeviceRefusals(test);
+	registerDirectUpsertRemovalGuards(test);
+	registerDirectEnableRemovalGuards(test);
 }
 
 const INVITE_CONSUME = ["UPDATE coordinator_invites SET token"];
@@ -428,6 +430,84 @@ const refusal = (write: Promise<unknown>) =>
 		(error: Error) =>
 			error.constructor === Error ? error.message : `${error.name}: ${error.message}`,
 	);
+
+function registerDirectUpsertRemovalGuards(test: RemovalTest) {
+	for (const kind of [
+		"same key",
+		"same ID with replacement key",
+		"key alias",
+		"opaque alias",
+	] as const) {
+		test(`S2b: direct upsert refuses an existing ${kind} after removal from another group`, async ({
+			fixture: f,
+		}) => {
+			const device = await target(f);
+			const removed = kind === "opaque alias" ? { ...device, key: opaqueKey(f.prefix) } : device;
+			const survivor = { ...removed, groupId: `${f.prefix}-g2` };
+			if (kind === "key alias" || kind === "opaque alias") survivor.deviceId = `${f.prefix}-alias`;
+			await enroll(f, removed);
+			await enroll(f, survivor);
+			expect(await f.store.removeDevice(removed.groupId, removed.deviceId)).toBe(true);
+			const before = await enrollmentRow(f, survivor);
+			let key = survivor.key;
+			if (kind === "same ID with replacement key") key = opaqueKey(`${f.prefix}-replacement`);
+			if (kind === "key alias") key = otherTextForm(survivor).key;
+
+			const result = await refusal(
+				f.store.enrollDevice(survivor.groupId, {
+					deviceId: survivor.deviceId,
+					publicKey: key.publicKey,
+					fingerprint: key.fingerprint,
+					displayName: "Must not be saved",
+				}),
+			);
+
+			expect(result).toBe("device_removed");
+			expect(await enrollmentRow(f, survivor)).toEqual(before);
+			expect(await enrollmentRow(f, removed)).toEqual([]);
+		});
+	}
+}
+
+function registerDirectEnableRemovalGuards(test: RemovalTest) {
+	test("S2b: re-enable refuses the removed group but still permits the surviving group", async ({
+		fixture: f,
+	}) => {
+		const removed = await target(f);
+		const survivor = { ...removed, groupId: `${f.prefix}-g2` };
+		const thirdGroup = `${f.prefix}-g3`;
+		await enroll(f, removed);
+		await enroll(f, survivor);
+		await f.store.createGroup(thirdGroup);
+		expect(await f.store.removeDevice(removed.groupId, removed.deviceId)).toBe(true);
+
+		expect(await refusal(f.store.setDeviceEnabled(removed.groupId, removed.deviceId, true))).toBe(
+			"device_removed",
+		);
+		expect(await refusal(enroll(f, { ...removed, groupId: thirdGroup }))).toBe("device_removed");
+		expect(await enrollmentRow(f, removed)).toEqual([]);
+		expect(await enrollmentRow(f, { ...removed, groupId: thirdGroup })).toEqual([]);
+		expect(await f.store.setDeviceEnabled(survivor.groupId, survivor.deviceId, false)).toBe(true);
+		expect(await f.store.setDeviceEnabled(survivor.groupId, survivor.deviceId, true)).toBe(true);
+	});
+
+	test("S2b: a permanent key block takes precedence over a same-group removal on re-enable", async ({
+		fixture: f,
+	}) => {
+		const blocked = await target(f);
+		const alias = { ...blocked, deviceId: `${f.prefix}-alias` };
+		await enroll(f, alias);
+		expect(await f.store.setDeviceEnabled(alias.groupId, alias.deviceId, false)).toBe(true);
+		await revokeAndRemove(f, blocked);
+		const before = await enrollmentRow(f, alias);
+
+		expect(await refusal(f.store.setDeviceEnabled(alias.groupId, alias.deviceId, true))).toBe(
+			"device_revoked",
+		);
+		expect(await enrollmentRow(f, alias)).toEqual(before);
+		expect(before).toMatchObject([{ enabled: 0 }]);
+	});
+}
 
 /**
  * The enrollment triggers stop a removed device behind every writer. Each writer

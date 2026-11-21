@@ -216,6 +216,32 @@ const NEW_ROW_TOMBSTONE_MATCH_SQL = tombstoneMatchSql({
 	publicKey: "NEW.public_key",
 });
 
+/** Matches a captured enrollment subject, globally for enrollment or in one group for enable. */
+export function activeEnrollmentRemoval(input: {
+	deviceId: string;
+	keyId: string | null;
+	publicKey: string | null;
+	groupId?: string;
+}) {
+	const { deviceId, keyId, publicKey, groupId } = input;
+	return {
+		sql: `EXISTS (
+SELECT 1 FROM (SELECT ? AS device_id, ? AS key_id, ? AS public_key) subject
+CROSS JOIN coordinator_device_removals t
+WHERE ${tombstoneMatchSql({
+			deviceId: "subject.device_id",
+			keyId: "subject.key_id",
+			publicKey: "subject.public_key",
+		})}${groupId === undefined ? "" : " AND t.group_id = ?"})`,
+		values: [
+			deviceId,
+			enrollmentKeyIdColumn(keyId),
+			publicKey,
+			...(groupId === undefined ? [] : [groupId]),
+		],
+	};
+}
+
 /**
  * Every character that String.prototype.trim removes, and that the key parser
  * splits tokens on, as one SQL string.

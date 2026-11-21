@@ -1,4 +1,5 @@
 import {
+	activeEnrollmentRemoval,
 	enrollmentKeyIdColumn,
 	enrollmentKeyIdSql,
 	type RemovalColumnSql,
@@ -59,25 +60,10 @@ export function legacyProjectInviteOwnershipEvidence(
 	};
 }
 
-export const LEGACY_DEVICE_DENIAL_SQL = `SELECT CASE
-WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
-WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} THEN 'device_ownership_requires_verified_identity'
-ELSE 'invite_identity_conflict' END AS denial`;
-
 /** Bind captured public key (null for absence), group/device, then group/device/public key. */
 export const LEGACY_ENROLLMENT_SOURCE_MATCH_SQL = `((? IS NULL AND NOT EXISTS (
 SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ?)) OR EXISTS (
 SELECT 1 FROM enrolled_devices WHERE group_id = ? AND device_id = ? AND public_key = ?))`;
-
-/** Incoming revocation, incoming ownership, captured current ownership, then source tuple.
- * Source drift deliberately falls through the denial validator to the unavailable error.
- */
-export const LEGACY_ENROLLMENT_DENIAL_SQL = `SELECT CASE
-WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
-WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
-THEN 'device_ownership_requires_verified_identity'
-WHEN NOT ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL} THEN 'device_ownership_authorization_unavailable'
-ELSE 'invite_identity_conflict' END AS denial`;
 
 /** Incoming revocation, incoming ownership, captured current ownership, then source tuple. */
 const LEGACY_ENROLLMENT_GUARD_SQL = `NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
@@ -86,36 +72,42 @@ AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
 AND ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL}`;
 
 /** No captured enrollment: the source match holds only while no row exists. */
-const legacyEnrollmentInsertSql = (keyId: RemovalColumnSql) => `INSERT INTO enrolled_devices(
+const legacyEnrollmentInsertSql = (
+	keyId: RemovalColumnSql,
+	guard: string,
+) => `INSERT INTO enrolled_devices(
 group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled, created_at${keyId.column}
 ) SELECT ?, ?, ?, ?, ?, ?, 1, ?${keyId.value}
-WHERE ${LEGACY_ENROLLMENT_GUARD_SQL}`;
+WHERE ${guard}`;
 
 /** The captured row, an Identity that does not conflict, then the shared guard. */
-const LEGACY_ENROLLMENT_ROW_GUARD_SQL = `public_key = ?
+const legacyEnrollmentRowGuardSql = (guard: string) => `public_key = ?
 AND (? IS NULL OR identity_id IS NULL OR identity_id = ?)
-AND ${LEGACY_ENROLLMENT_GUARD_SQL}`;
+AND ${guard}`;
 
 /** A captured enrollment: the source match holds only while the row keeps the captured key. */
 const legacyEnrollmentUpdateSql = (
 	keyId: RemovalColumnSql,
+	rowGuard: string,
 ) => `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
 identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1${keyId.assignment}
-WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL}`;
+WHERE group_id = ? AND device_id = ? AND ${rowGuard}`;
 
 /** First statement of a key text change that keeps the stored key ID value. */
-const LEGACY_KEY_ID_RESET_SQL = `UPDATE enrolled_devices SET key_id = ''
-WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL}`;
+const legacyKeyIdResetSql = (rowGuard: string) => `UPDATE enrolled_devices SET key_id = ''
+WHERE group_id = ? AND device_id = ? AND ${rowGuard}`;
 
 /**
  * Second statement of that change. It writes only when the reset before it changed
  * the row, and it carries every guard again. A guard that fails here raises, so the
  * transaction or batch rolls the reset back and no row keeps the empty key ID.
  */
-const LEGACY_KEY_TEXT_UPDATE_SQL = `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
+const legacyKeyTextUpdateSql = (
+	rowGuard: string,
+) => `UPDATE enrolled_devices SET public_key = ?, fingerprint = ?,
 identity_id = COALESCE(identity_id, ?), display_name = ?, enabled = 1, key_id = ?
 WHERE group_id = ? AND device_id = ?
-AND CASE WHEN changes() <> 1 THEN 0 WHEN ${LEGACY_ENROLLMENT_ROW_GUARD_SQL} THEN 1
+AND CASE WHEN changes() <> 1 THEN 0 WHEN ${rowGuard} THEN 1
 ELSE json('enrollment_key_text_incomplete') END`;
 
 /**
@@ -125,8 +117,10 @@ ELSE json('enrollment_key_text_incomplete') END`;
  * error. The read then raises, which rolls the reset back before anything commits.
  * A count read after a D1 batch would come too late for that.
  */
-const LEGACY_KEY_TEXT_COMPLETE_SQL = `SELECT CASE WHEN EXISTS (SELECT 1 FROM enrolled_devices
-WHERE group_id = ? AND device_id = ? AND ${LEGACY_ENROLLMENT_ROW_GUARD_SQL})
+const legacyKeyTextCompleteSql = (
+	rowGuard: string,
+) => `SELECT CASE WHEN EXISTS (SELECT 1 FROM enrolled_devices
+WHERE group_id = ? AND device_id = ? AND ${rowGuard})
 THEN json('enrollment_key_text_incomplete') ELSE 1 END AS complete`;
 
 /**
@@ -161,6 +155,8 @@ export interface LegacyEnrollmentWrite {
 	currentKeyId: string | null;
 	/** False on a schema without the `key_id` column, where the key ID is not stored. */
 	storeKeyId: boolean;
+	/** Direct enrollment only. Invitation writers keep their current checks until their own slices. */
+	checkRemoval: boolean;
 }
 
 export interface LegacyEnrollmentStatement {
@@ -168,6 +164,44 @@ export interface LegacyEnrollmentStatement {
 	values: (string | null)[];
 	/** A read that raises on an incomplete write. It changes no row and has no count. */
 	assertion?: true;
+}
+
+function legacyEnrollmentOwnershipValues(input: LegacyEnrollmentWrite) {
+	const { deviceId, keyId, currentKeyId } = input;
+	return [deviceId, keyId, deviceId, currentKeyId];
+}
+
+function legacyEnrollmentSourceValues(input: LegacyEnrollmentWrite) {
+	const { groupId, deviceId, currentPublicKey } = input;
+	return [currentPublicKey, groupId, deviceId, groupId, deviceId, currentPublicKey];
+}
+
+function legacyEnrollmentRemoval(input: LegacyEnrollmentWrite) {
+	if (!input.storeKeyId || !input.checkRemoval) return null;
+	const { deviceId, keyId, publicKey } = input;
+	return activeEnrollmentRemoval({ deviceId, keyId, publicKey });
+}
+
+export function legacyEnrollmentDenialStatement(
+	input: LegacyEnrollmentWrite,
+): LegacyEnrollmentStatement {
+	const removal = legacyEnrollmentRemoval(input);
+	return {
+		sql: `SELECT CASE
+WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
+WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
+THEN 'device_ownership_requires_verified_identity'
+${removal ? `WHEN ${removal.sql} THEN 'device_removed'` : ""}
+WHEN NOT ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL} THEN 'device_ownership_authorization_unavailable'
+ELSE 'invite_identity_conflict' END AS denial`,
+		values: [
+			input.deviceId,
+			input.keyId,
+			...legacyEnrollmentOwnershipValues(input),
+			...(removal?.values ?? []),
+			...legacyEnrollmentSourceValues(input),
+		],
+	};
 }
 
 /**
@@ -184,26 +218,21 @@ export function legacyEnrollmentWriteStatements(
 	input: LegacyEnrollmentWrite,
 ): LegacyEnrollmentStatement[] {
 	const { groupId, deviceId, currentPublicKey } = input;
+	const removal = legacyEnrollmentRemoval(input);
+	const guard = `${LEGACY_ENROLLMENT_GUARD_SQL}${removal ? ` AND NOT ${removal.sql}` : ""}`;
 	const guards = [
 		deviceId,
 		input.keyId,
-		deviceId,
-		input.keyId,
-		deviceId,
-		input.currentKeyId,
-		currentPublicKey,
-		groupId,
-		deviceId,
-		groupId,
-		deviceId,
-		currentPublicKey,
+		...legacyEnrollmentOwnershipValues(input),
+		...legacyEnrollmentSourceValues(input),
+		...(removal?.values ?? []),
 	];
 	const keyIdSql = enrollmentKeyIdSql(input.storeKeyId);
 	const keyIdValues = input.storeKeyId ? [enrollmentKeyIdColumn(input.keyId)] : [];
 	if (currentPublicKey === null) {
 		return [
 			{
-				sql: legacyEnrollmentInsertSql(keyIdSql),
+				sql: legacyEnrollmentInsertSql(keyIdSql, guard),
 				values: [
 					groupId,
 					deviceId,
@@ -219,17 +248,76 @@ export function legacyEnrollmentWriteStatements(
 		];
 	}
 	const row = [groupId, deviceId, currentPublicKey, input.identityId, input.identityId, ...guards];
+	const rowGuard = legacyEnrollmentRowGuardSql(guard);
 	const assignments = [input.publicKey, input.fingerprint, input.identityId, input.displayName];
 	if (input.storeKeyId && changesKeyTextOnly(input)) {
 		return [
-			{ sql: LEGACY_KEY_ID_RESET_SQL, values: row },
-			{ sql: LEGACY_KEY_TEXT_UPDATE_SQL, values: [...assignments, ...keyIdValues, ...row] },
-			{ sql: LEGACY_KEY_TEXT_COMPLETE_SQL, values: row, assertion: true },
+			{ sql: legacyKeyIdResetSql(rowGuard), values: row },
+			{ sql: legacyKeyTextUpdateSql(rowGuard), values: [...assignments, ...keyIdValues, ...row] },
+			{ sql: legacyKeyTextCompleteSql(rowGuard), values: row, assertion: true },
 		];
 	}
 	return [
-		{ sql: legacyEnrollmentUpdateSql(keyIdSql), values: [...assignments, ...keyIdValues, ...row] },
+		{
+			sql: legacyEnrollmentUpdateSql(keyIdSql, rowGuard),
+			values: [...assignments, ...keyIdValues, ...row],
+		},
 	];
+}
+
+type LegacyEnableInput = {
+	groupId: string;
+	deviceId: string;
+	publicKey: string | null;
+	keyId: string | null;
+	storeKeyId: boolean;
+};
+
+export function legacyEnableWriteStatement(input: LegacyEnableInput): LegacyEnrollmentStatement {
+	const { groupId, deviceId, publicKey, keyId, storeKeyId } = input;
+	const storedKey = enrollmentKeyIdSql(storeKeyId);
+	const removal = storeKeyId ? activeEnrollmentRemoval(input) : null;
+	return {
+		sql: `UPDATE enrolled_devices SET enabled = 1${storedKey.assignment}
+WHERE group_id = ? AND device_id = ? AND public_key = ?
+AND NOT ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL}
+AND NOT ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}${removal ? ` AND NOT ${removal.sql}` : ""}`,
+		values: [
+			...(storeKeyId ? [enrollmentKeyIdColumn(keyId)] : []),
+			groupId,
+			deviceId,
+			publicKey,
+			deviceId,
+			keyId,
+			deviceId,
+			keyId,
+			...(removal?.values ?? []),
+		],
+	};
+}
+
+export function legacyEnableDenialStatement(input: LegacyEnableInput): LegacyEnrollmentStatement {
+	const { deviceId, keyId, publicKey, storeKeyId } = input;
+	const removal = storeKeyId ? activeEnrollmentRemoval(input) : null;
+	const ownership = publicKey !== null;
+	return {
+		// Revocation alone has historically returned false. Name it when it outranks removal.
+		sql: `SELECT CASE
+WHEN removed AND revoked THEN 'device_revoked'
+WHEN owned AND NOT revoked THEN 'device_ownership_requires_verified_identity'
+WHEN removed THEN 'device_removed'
+ELSE 'invite_identity_conflict' END AS denial
+FROM (SELECT ${removal?.sql ?? "0"} AS removed,
+${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} AS revoked,
+${ownership ? DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL : "0"} AS owned)`,
+		values: [...(removal?.values ?? []), deviceId, keyId, ...(ownership ? [deviceId, keyId] : [])],
+	};
+}
+
+export function legacyEnableDenied(row: unknown): false {
+	const denial = legacyDeviceDenial(row);
+	if (denial !== "invite_identity_conflict") throw new Error(denial);
+	return false;
 }
 
 /**
@@ -317,6 +405,7 @@ export function legacyDeviceDenial(row: unknown): string {
 		const denial = row.denial;
 		if (
 			denial === "device_revoked" ||
+			denial === "device_removed" ||
 			denial === "device_ownership_requires_verified_identity" ||
 			denial === "invite_identity_conflict"
 		)
