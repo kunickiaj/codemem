@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { revokeUnauthorizedCoordinatorPeerTrust } from "./coordinator-runtime.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
 import { getRetirementPeer } from "./memory-retirement-trust.js";
-import { removePairingState } from "./pairing-removal.js";
+import { type PairingRemovalInput, removePairingState } from "./pairing-removal.js";
+import { readRetainedPeerProjectFilters } from "./peer-project-filter-retention.js";
 import { listRetiredDeviceAliases } from "./retired-device-aliases.js";
 import {
 	getSyncChannelProgress,
@@ -11,7 +12,11 @@ import {
 	saveSyncChannelOutboundAck,
 } from "./sync-channel-progress.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
-import { getReplicationCursor, setReplicationCursor } from "./sync-replication.js";
+import {
+	getReplicationCursor,
+	setReplicationCursor,
+	syncProjectAllowed,
+} from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const NOW = "2026-11-17T00:00:00.000Z";
@@ -113,6 +118,67 @@ beforeEach(() => {
 });
 
 afterEach(() => db.close());
+
+const FILTER_PEER = "filter-peer";
+const FILTERS = {
+	projects_include_json: '["work","work-private"]',
+	projects_exclude_json: '["work-private"]',
+};
+const REMOVAL_REASONS = ["local", "removed", "disconnect", "policy", "revoked"] as const;
+
+function prepareRestrictedPeer(reason: PairingRemovalInput["reason"]): PairingRemovalInput {
+	pair(FILTER_PEER, sshKey(6), reason === "policy" ? "coordinator_policy" : null);
+	bind(FILTER_PEER);
+	addProgress(FILTER_PEER);
+	db.prepare(
+		`UPDATE sync_peers SET projects_include_json = ?, projects_exclude_json = ?
+		 WHERE peer_device_id = ?`,
+	).run(FILTERS.projects_include_json, FILTERS.projects_exclude_json, FILTER_PEER);
+	if (reason === "policy")
+		return {
+			localDeviceId: LOCAL,
+			reason,
+			pairings: [{ deviceId: FILTER_PEER, coordinatorId: "coord", groupId: "group" }],
+		};
+	return { localDeviceId: LOCAL, reason, deviceIds: [FILTER_PEER] };
+}
+
+describe("Project filters in the pairing removal transaction", () => {
+	it.each(REMOVAL_REASONS)("retains restrictions when the reason is %s", (reason) => {
+		const removal = prepareRestrictedPeer(reason);
+
+		const counts = removePairingState(db, removal);
+
+		expect(counts.syncPeers).toBe(1);
+		expect(readRetainedPeerProjectFilters(db, FILTER_PEER)).toEqual(FILTERS);
+		if (reason === "revoked") {
+			expect(listRetiredDeviceAliases(db).has(FILTER_PEER)).toBe(true);
+			return;
+		}
+		pair(FILTER_PEER, sshKey(6));
+		expect(syncProjectAllowed(db, "work", FILTER_PEER)).toBe(true);
+		expect(syncProjectAllowed(db, "play", FILTER_PEER)).toBe(false);
+		expect(syncProjectAllowed(db, "work-private", FILTER_PEER)).toBe(false);
+	});
+
+	it.each(REMOVAL_REASONS)("rolls back retained filters when %s cleanup fails", (reason) => {
+		const removal = prepareRestrictedPeer(reason);
+		// Fail after the pairing delete stored the filters, before cleanup can commit.
+		db.exec(`CREATE TRIGGER fail_after_retaining_filters BEFORE DELETE ON sync_channel_progress
+			WHEN OLD.peer_device_id = 'filter-peer' AND EXISTS (
+				SELECT 1 FROM peer_project_filter_retention WHERE peer_device_id = OLD.peer_device_id
+			)
+			BEGIN SELECT RAISE(ABORT, 'cleanup failed after retaining filters'); END`);
+
+		expect(() => removePairingState(db, removal)).toThrow("cleanup failed after retaining filters");
+		expect(readRetainedPeerProjectFilters(db, FILTER_PEER)).toBeNull();
+		expect(state(FILTER_PEER)).toEqual(UNTOUCHED);
+		expect(syncProjectAllowed(db, "work", FILTER_PEER)).toBe(true);
+		expect(syncProjectAllowed(db, "play", FILTER_PEER)).toBe(false);
+		expect(listRetiredDeviceAliases(db).has(FILTER_PEER)).toBe(false);
+		expect(count("memory_retirement_peer_trust", "peer_device_id", FILTER_PEER)).toBe(0);
+	});
+});
 
 describe("removePairingState", () => {
 	it.each(["removed", "local", "revoked"] as const)(
