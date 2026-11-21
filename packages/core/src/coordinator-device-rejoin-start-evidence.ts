@@ -8,7 +8,7 @@ import {
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 
 // Keep ownership, revocation, and the complete active tombstone set in one snapshot.
-const START_EVIDENCE_SQL = `WITH input(device_id, key_id, coordinator_id) AS (VALUES (?, ?, ?))
+export const START_EVIDENCE_SQL = `WITH input(device_id, key_id, coordinator_id) AS (VALUES (?, ?, ?))
 SELECT b.binding_id, b.identity_id,
  (SELECT json_group_array(json_array(removal_seq, group_id, public_key, fingerprint))
   FROM (SELECT removal_seq, group_id, public_key, fingerprint FROM coordinator_device_removals t
