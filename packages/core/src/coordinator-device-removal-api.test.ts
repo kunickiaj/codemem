@@ -11,6 +11,7 @@ const EXPIRES_AT = "2099-01-01T00:00:00.000Z";
 const ADMIN_SECRET = "disposable-test-credential";
 const GROUP = "removal-api-group";
 const DEVICE = "removal-api-device";
+const REMOVALS_PATH = "/v1/admin/devices/removals";
 /** Every table a refused enrollment writer could have changed. */
 const WRITER_TABLES = [
 	"enrolled_devices",
@@ -23,10 +24,12 @@ const WRITER_TABLES = [
 async function apiFixture(backend: Backend) {
 	const { store, db } = setupStore(backend);
 	vi.spyOn(store, "close").mockResolvedValue();
+	const storeFactory = vi.fn(() => store);
 	const app = createCoordinatorApp({
-		storeFactory: () => store,
+		storeFactory,
 		runtime: { adminSecret: () => ADMIN_SECRET, now: () => NOW },
 		requestVerifier: async () => false,
+		requestRateLimit: { readLimit: 10 },
 	});
 	const key = await removalDeviceKey("removal-api");
 	const device = { deviceId: DEVICE, publicKey: key.publicKey, fingerprint: key.fingerprint };
@@ -43,6 +46,11 @@ async function apiFixture(backend: Backend) {
 		db,
 		device,
 		invitation,
+		storeFactory,
+		list: (query = "", secret = ADMIN_SECRET) =>
+			app.request(`${REMOVALS_PATH}${query}`, {
+				headers: secret ? { "X-Codemem-Coordinator-Admin": secret } : {},
+			}),
 		post: (path: string, body: Record<string, unknown>) =>
 			app.request(path, {
 				method: "POST",
@@ -146,6 +154,82 @@ const REMOVED_DEVICE_REQUESTS: Record<string, (f: ApiFixture) => Promise<Request
 		return { path: "/v1/admin/devices/enable", body: { group_id: GROUP, device_id: DEVICE } };
 	},
 };
+
+describe.each(["SQLite", "D1"] as const)("%s coordinator removal listing API", (backend) => {
+	it("D5 lists only requested active removals and exposes blocked rows only on request", async () => {
+		const f = await apiFixture(backend);
+		try {
+			const older = await removalDeviceKey("removal-api-older");
+			await f.store.createGroup(GROUP);
+			await f.store.enrollDevice(GROUP, { ...older, deviceId: `${DEVICE}-older` });
+			expect(await f.store.removeDevice(GROUP, `${DEVICE}-older`)).toBe(true);
+			await f.store.enrollDevice(GROUP, f.device);
+			expect(await f.store.createDeviceRevocation({ ...f.device, groupId: GROUP })).toMatchObject({
+				kind: "revoked",
+			});
+			expect(await f.store.removeDevice(GROUP, DEVICE)).toBe(true);
+			const before = f.snapshot();
+			const hidden = await f.list();
+			const blocked = await f.list(`?device_id=${DEVICE}&include_blocked=1`);
+			const page = await blocked.json();
+			expect(hidden.status).toBe(200);
+			expect(await hidden.json()).toMatchObject({
+				version: 1,
+				items: [{ device_id: `${DEVICE}-older` }],
+				next_before_seq: null,
+			});
+			expect(blocked.status).toBe(200);
+			expect(page).toMatchObject({
+				version: 1,
+				items: [{ device_id: DEVICE, revoked: true }],
+				next_before_seq: null,
+			});
+			expect(page.items[0]).not.toHaveProperty("public_key");
+			const earlier = await f.list(`?before_seq=${page.items[0].removal_seq}&include_blocked=1`);
+			expect(await earlier.json()).toMatchObject({ items: [{ device_id: `${DEVICE}-older` }] });
+			expect(f.snapshot()).toEqual(before);
+			expect(f.storeFactory).toHaveBeenCalledWith({ existingOnly: true });
+		} finally {
+			f.close();
+		}
+	});
+
+	it("D5 authenticates before validating query parameters or opening the store", async () => {
+		const f = await apiFixture(backend);
+		try {
+			expect((await f.list("?unknown=1", "")).status).toBe(401);
+			expect((await f.list("", "incorrect-fixture-secret")).status).toBe(401);
+			for (const query of [
+				"?unknown=1",
+				"?before_seq=1.5",
+				"?before_seq=",
+				"?device_id=%20bad",
+				"?include_blocked=true",
+				"?device_id=a&device_id=b",
+			]) {
+				const response = await f.list(query);
+				expect([response.status, await response.json()]).toEqual([400, { error: "invalid_input" }]);
+			}
+			expect(f.storeFactory).not.toHaveBeenCalled();
+		} finally {
+			f.close();
+		}
+	});
+
+	it("D6 removal listing returns 503 before the removal schema is available", async () => {
+		const f = await apiFixture(backend);
+		try {
+			f.db.exec("DROP TABLE coordinator_device_removals");
+			const response = await f.list();
+			expect([response.status, await response.json()]).toEqual([
+				503,
+				{ error: "device_removal_unavailable" },
+			]);
+		} finally {
+			f.close();
+		}
+	});
+});
 
 describe.each(["SQLite", "D1"] as const)("%s coordinator API for a removed device", (backend) => {
 	it.each(Object.keys(REMOVED_DEVICE_REQUESTS))(
