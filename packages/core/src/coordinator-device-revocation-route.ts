@@ -81,6 +81,8 @@ export function registerCoordinatorDeviceRevocationRoutes(
 					adminSecret: secret,
 					store: {
 						getEnrollment: (...args) => selected().getEnrollment(...args),
+						getDeviceRevocationTombstone: (...args) =>
+							selected().getDeviceRevocationTombstone(...args),
 						createDeviceRevocation: (...args) => selected().createDeviceRevocation(...args),
 					},
 					beforeBody: (request) =>

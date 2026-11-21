@@ -370,6 +370,7 @@ function registerPreview(test: Test) {
 			1,
 			"revoke",
 			coordinator,
+			"enrollment",
 			f.input.groupId,
 			f.input.deviceId,
 			f.input.publicKey,
@@ -419,6 +420,7 @@ function registerDigestDrift(test: Test) {
 					1,
 					"preview",
 					coordinator,
+					"enrollment",
 					f.input.groupId,
 					f.input.deviceId,
 					f.input.publicKey,
@@ -486,7 +488,11 @@ function registerRaces(test: Test) {
 		await enrollRevocation(f);
 		const config = options(f);
 		const handler = createHandler(config);
-		const other = { getEnrollment: vi.fn(), createDeviceRevocation: vi.fn() };
+		const other = {
+			getEnrollment: vi.fn(),
+			getDeviceRevocationTombstone: vi.fn(),
+			createDeviceRevocation: vi.fn(),
+		};
 		// Act: invocation yields during native authentication hashing.
 		const pending = handler("preview", request(body(f)));
 		config.adminSecret = "replacement";
@@ -518,6 +524,7 @@ function registerRaces(test: Test) {
 			1,
 			"revoke",
 			coordinator,
+			"enrollment",
 			f.input.groupId,
 			f.input.deviceId,
 			f.input.publicKey,

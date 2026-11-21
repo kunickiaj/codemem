@@ -17,11 +17,17 @@ export interface CoordinatorDeviceRevocationRecord {
 	readonly created_at: string;
 }
 
-export interface CoordinatorCreateDeviceRevocationInput {
+export type CoordinatorDeviceRevocationEvidenceKind = "enrollment" | "removal_tombstone";
+export interface CoordinatorDeviceRevocationEvidence {
 	groupId: string;
 	deviceId: string;
 	publicKey: string;
 	fingerprint: string;
+}
+export interface CoordinatorCreateDeviceRevocationInput
+	extends CoordinatorDeviceRevocationEvidence {
+	/** Existing internal callers supply enrollment evidence. */
+	evidenceKind?: CoordinatorDeviceRevocationEvidenceKind;
 	/** Audit evidence only; this internal capability requires a trusted caller. */
 	actorId?: string | null;
 }
@@ -49,6 +55,10 @@ export type CoordinatorAuthorizedNonceResult =
 	| "group_archived";
 
 export interface CoordinatorDeviceRevocationStore {
+	getDeviceRevocationTombstone(
+		groupId: string,
+		deviceId: string,
+	): Promise<CoordinatorDeviceRevocationEvidence | null>;
 	createDeviceRevocation(
 		input: CoordinatorCreateDeviceRevocationInput,
 	): Promise<CoordinatorCreateDeviceRevocationResult>;
@@ -117,15 +127,18 @@ function captureRevocation(
 	const publicKey = own(input, "publicKey"),
 		fingerprint = own(input, "fingerprint");
 	const actorId = own(input, "actorId") ?? null;
+	const suppliedKind = own(input, "evidenceKind");
+	const evidenceKind = suppliedKind === undefined ? "enrollment" : suppliedKind;
 	if (
 		!isAuthControllerId(groupId) ||
 		!isAuthControllerId(deviceId) ||
 		!exactText(publicKey) ||
 		!exactText(fingerprint) ||
+		(evidenceKind !== "enrollment" && evidenceKind !== "removal_tombstone") ||
 		(actorId !== null && !isAuthControllerId(actorId))
 	)
 		return null;
-	return Object.freeze({ groupId, deviceId, publicKey, fingerprint, actorId });
+	return Object.freeze({ groupId, deviceId, publicKey, fingerprint, actorId, evidenceKind });
 }
 function captureNonce(input: unknown): Readonly<CoordinatorRecordAuthorizedNonceInput> {
 	const groupId = own(input, "groupId"),
@@ -176,6 +189,13 @@ function incompleteResult(): never {
 
 const CURRENT_TUPLE_SQL = `SELECT 1 FROM enrolled_devices
 WHERE group_id = ? AND device_id = ? AND public_key = ? AND fingerprint = ?`;
+// Enrollment in the requested group has precedence, even if its key differs.
+const ACTIVE_TOMBSTONE_SQL = `FROM coordinator_device_removals t
+WHERE t.group_id = ? AND t.device_id = ? AND t.lifted_at IS NULL
+AND NOT EXISTS (SELECT 1 FROM enrolled_devices e
+  WHERE e.group_id = t.group_id AND e.device_id = t.device_id)`;
+const CURRENT_TOMBSTONE_TUPLE_SQL = `SELECT 1 ${ACTIVE_TOMBSTONE_SQL}
+AND t.public_key = ? AND t.fingerprint = ?`;
 /** Bind the device ID and derived canonical key ID (or null), in that order. */
 export const DEVICE_REVOCATION_SUBJECT_EXISTS_SQL = `EXISTS (
 SELECT 1 FROM coordinator_device_revocations WHERE
@@ -215,29 +235,61 @@ function revocationStatements(
 	now: string,
 ): RevocationStatement[] {
 	const tuple = [input.groupId, input.deviceId, input.publicKey, input.fingerprint];
+	const evidenceSql =
+		input.evidenceKind === "enrollment" ? CURRENT_TUPLE_SQL : CURRENT_TOMBSTONE_TUPLE_SQL;
 	const subjects = [{ kind: "device_id", value: input.deviceId }];
 	if (keyId) subjects.push({ kind: "ed25519_key", value: keyId });
 	const revocationId = globalThis.crypto.randomUUID();
 	const writes = subjects.map(({ kind, value }) => ({
 		sql: `INSERT INTO coordinator_device_revocations(subject_kind, subject_value, revocation_id,
 evidence_group_id, evidence_device_id, evidence_public_key, evidence_fingerprint, actor_id, created_at)
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${CURRENT_TUPLE_SQL})
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${evidenceSql})
 ON CONFLICT(subject_kind, subject_value) DO NOTHING`,
 		values: [kind, value, revocationId, ...tuple, input.actorId, now, ...tuple],
 	}));
 	return [
-		{ sql: CURRENT_TUPLE_SQL, values: tuple, read: true },
+		{ sql: evidenceSql, values: tuple, read: true },
 		...writes,
 		{ sql: SUBJECTS_SQL, values: [input.deviceId, keyId], read: true },
 	];
 }
 
-/** Internal storage capability only. Removal of the current tuple prevents creation and retry. */
+/** Internal storage capability only. Creation and retries require the exact evidence source. */
 export class DeviceRevocationOperations implements CoordinatorDeviceRevocationStore {
 	constructor(
 		private readonly backend: DeviceRevocationBackend,
 		private readonly clock: () => number = Date.now,
 	) {}
+
+	async getDeviceRevocationTombstone(
+		groupId: string,
+		deviceId: string,
+	): Promise<CoordinatorDeviceRevocationEvidence | null> {
+		if (!isAuthControllerId(groupId) || !isAuthControllerId(deviceId))
+			throw new Error("invalid_input");
+		try {
+			const rows = resultRows<CoordinatorDeviceRevocationEvidence>(
+				await this.backend.all({
+					sql: `SELECT t.group_id AS groupId, t.device_id AS deviceId,
+t.public_key AS publicKey, t.fingerprint ${ACTIVE_TOMBSTONE_SQL} LIMIT 2`,
+					values: [groupId, deviceId],
+					read: true,
+				}),
+			);
+			if (rows.length > 1) throw new Error("device_revocation_incomplete");
+			return rows[0] ?? null;
+		} catch (error) {
+			// A pre-removal schema can still revoke an enrolled device.
+			if (
+				error instanceof Error &&
+				/^(?:D1_ERROR: )?no such table: (?:main\.)?coordinator_device_removals(?:: SQLITE_ERROR)?$/u.test(
+					error.message,
+				)
+			)
+				return null;
+			return incompleteResult();
+		}
+	}
 
 	async createDeviceRevocation(
 		raw: CoordinatorCreateDeviceRevocationInput,
@@ -245,6 +297,8 @@ export class DeviceRevocationOperations implements CoordinatorDeviceRevocationSt
 		const input = captureRevocation(raw);
 		if (!input) return { kind: "rejected", error: "invalid_input" };
 		const keyId = await ed25519KeyIdForRevocation(input.publicKey);
+		if (input.evidenceKind === "removal_tombstone" && !keyId)
+			return { kind: "rejected", error: "invalid_input" };
 		const statements = revocationStatements(input, keyId, new Date(this.clock()).toISOString());
 		const results = await this.backend.batch(statements).catch(incompleteResult);
 		if (results.length !== statements.length) throw new Error("device_revocation_incomplete");
