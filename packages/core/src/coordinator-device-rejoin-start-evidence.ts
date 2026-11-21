@@ -8,8 +8,8 @@ import {
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 
 // Keep ownership, revocation, and the complete active tombstone set in one snapshot.
-export const START_EVIDENCE_SQL = `WITH input(device_id, key_id, coordinator_id) AS (VALUES (?, ?, ?))
-SELECT b.binding_id, b.identity_id,
+/** The caller supplies a one-row input CTE with device_id, key_id and coordinator_id. */
+export const REJOIN_EVIDENCE_SELECT_SQL = `SELECT b.binding_id, b.identity_id,
  (SELECT json_group_array(json_array(removal_seq, group_id, public_key, fingerprint))
   FROM (SELECT removal_seq, group_id, public_key, fingerprint FROM coordinator_device_removals t
    WHERE t.lifted_at IS NULL AND t.device_id = i.device_id AND t.key_id = i.key_id
@@ -31,6 +31,9 @@ AND NOT EXISTS (
  WHERE (r.subject_kind = 'device_id' AND r.subject_value = i.device_id)
     OR (r.subject_kind = 'ed25519_key' AND r.subject_value = i.key_id)
 )`;
+
+export const START_EVIDENCE_SQL = `WITH input(device_id, key_id, coordinator_id) AS (VALUES (?, ?, ?))
+${REJOIN_EVIDENCE_SELECT_SQL}`;
 
 type OwnTombstone = [removalSeq: number, groupId: string, publicKey: string, fingerprint: string];
 

@@ -45,9 +45,9 @@ export const OWNER_ACTIVE_LINK_SQL = `EXISTS (SELECT 1 FROM coordinator_auth_acc
  AND l.attempt_id = a.link_attempt_id AND l.controller_attestation_id = a.link_controller_attestation_id
  AND l.auth_config_revision = a.link_auth_config_revision AND l.revoked_at_ms IS NULL)`;
 
-// Private SQL expressions only: a is the stored attempt in both callers.
+// Private SQL expressions only: a is the stored attempt in each caller.
 export function ownerExcludedLegacyDecisionSql(
-	groupExpression: "r.group_id" | "json_extract(p.value,'$.groupId')",
+	groupExpression: "r.group_id" | "json_extract(p.value,'$.groupId')" | "t.group_id",
 ): string {
 	return `EXISTS (SELECT 1 FROM coordinator_legacy_team_completions c, json_each(c.manifest_json,'$.device_decisions') d
  WHERE c.group_id = ${groupExpression} AND json_extract(c.manifest_json,'$.coordinator_id') = a.coordinator_id
