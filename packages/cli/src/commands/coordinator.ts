@@ -20,7 +20,6 @@ import {
 	coordinatorGrantScopeMembershipAction,
 	coordinatorImportInviteAction,
 	coordinatorListBootstrapGrantsAction,
-	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
 	coordinatorListScopeMembershipsAction,
@@ -56,6 +55,7 @@ import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.j
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
 import { buildCoordinatorInvitationCreateCommand } from "./coordinator-invitation-create.js";
 import { buildCoordinatorLinkAccountCommand } from "./coordinator-link-account.js";
+import { buildCoordinatorDeviceListCommand } from "./coordinator-list-removed.js";
 import { buildCoordinatorQualifyOwnerCommand } from "./coordinator-qualify-owner.js";
 import { buildCoordinatorReviewDeviceOwnerCommand } from "./coordinator-review-device-owner.js";
 import { buildCoordinatorRevokeDeviceCommand } from "./coordinator-revoke-device.js";
@@ -403,51 +403,7 @@ export function buildCoordinatorCommand(): Command {
 
 	// ---- list-devices ----
 
-	const listDevicesCmd = new Command("list")
-		.configureHelp(helpStyle)
-		.description("List enrolled devices in a local coordinator group")
-		.argument("<group>", "group id")
-		.option("--include-disabled", "include disabled devices");
-	addDbOption(listDevicesCmd);
-	addJsonOption(listDevicesCmd);
-	listDevicesCmd.action(
-		async (
-			groupId: string,
-			opts: { includeDisabled?: boolean; db?: string; dbPath?: string; json?: boolean },
-		) => {
-			try {
-				const rows = await coordinatorListDevicesAction({
-					groupId,
-					includeDisabled: opts.includeDisabled === true,
-					dbPath: resolveDbOpt(opts) ?? null,
-				});
-				if (opts.json) {
-					console.log(JSON.stringify(rows, null, 2));
-					return;
-				}
-				p.intro("codemem coordinator device list");
-				if (rows.length === 0) {
-					p.outro(`No enrolled devices for ${groupId.trim()}`);
-					return;
-				}
-				for (const row of rows) {
-					const label =
-						String(row.display_name ?? row.device_id ?? "").trim() || String(row.device_id ?? "");
-					const enabled = Number(row.enabled ?? 1) === 1 ? "enabled" : "disabled";
-					p.log.message(`- ${label} (${String(row.device_id ?? "")}) ${enabled}`);
-				}
-				p.outro(`${rows.length} device(s)`);
-			} catch (err) {
-				if (opts.json) {
-					emitJsonError("list_devices_failed", err instanceof Error ? err.message : String(err));
-					return;
-				}
-				p.log.error(err instanceof Error ? err.message : String(err));
-				process.exitCode = 1;
-			}
-		},
-	);
-	device.addCommand(listDevicesCmd);
+	device.addCommand(buildCoordinatorDeviceListCommand());
 
 	// ---- list-scopes ----
 

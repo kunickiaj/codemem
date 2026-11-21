@@ -7,6 +7,11 @@ import { isAuthControllerId } from "./coordinator-auth-controller.js";
 import { CONTROLLER_REVIEW_MAX_RESPONSE_BYTES } from "./coordinator-auth-controller-history.js";
 import { capture, isHash } from "./coordinator-auth-link-input.js";
 import {
+	type CoordinatorDeviceRemovalListItem,
+	type CoordinatorDeviceRemovalListResult,
+	parseDeviceRemovalListPage,
+} from "./coordinator-device-removal-list.js";
+import {
 	type CoordinatorIdentityGroupGrantActionResult,
 	isCoordinatorControllerAttestationReference,
 	parseCoordinatorIdentityGroupGrantResponse,
@@ -1362,6 +1367,56 @@ export async function coordinatorEnrollDeviceAction(opts: {
 		const enrollment = await store.getEnrollment(groupId, deviceId);
 		if (!enrollment) throw new Error(`Failed to enroll device: ${deviceId}`);
 		return enrollment;
+	} finally {
+		await store.close();
+	}
+}
+
+async function collectDeviceRemovals(
+	readPage: (beforeSeq?: number) => Promise<CoordinatorDeviceRemovalListResult>,
+	groupId?: string,
+): Promise<CoordinatorDeviceRemovalListItem[]> {
+	const rows: CoordinatorDeviceRemovalListItem[] = [];
+	let beforeSeq: number | undefined;
+	for (;;) {
+		const page = await readPage(beforeSeq);
+		for (const row of page.items) {
+			if (groupId === undefined || row.group_id === groupId) rows.push(row);
+		}
+		if (page.next_before_seq === null) return rows;
+		beforeSeq = page.next_before_seq;
+	}
+}
+
+export async function coordinatorListRemovedDevicesAction(opts: {
+	groupId?: string;
+	dbPath?: string;
+	remote?: { url: string; adminSecret: string; timeoutS?: number };
+}): Promise<CoordinatorDeviceRemovalListItem[]> {
+	const { groupId, remote } = opts;
+	if (remote) {
+		return collectDeviceRemovals(async (beforeSeq) => {
+			const query = beforeSeq === undefined ? "" : `?before_seq=${beforeSeq}`;
+			const endpoint = `${stripTrailingSlashes(remote.url)}/v1/admin/devices/removals${query}`;
+			const payload = await remoteRequest(
+				"GET",
+				endpoint,
+				remote.adminSecret,
+				undefined,
+				undefined,
+				remote.timeoutS,
+			);
+			return parseDeviceRemovalListPage(payload, beforeSeq);
+		}, groupId);
+	}
+	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH, {
+		existingOnly: true,
+	});
+	try {
+		return await collectDeviceRemovals(
+			(beforeSeq) => store.listDeviceRemovals({ beforeSeq }),
+			groupId,
+		);
 	} finally {
 		await store.close();
 	}
