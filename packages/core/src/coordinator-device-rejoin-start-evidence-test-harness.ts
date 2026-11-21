@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { readVerifiedRejoinStartEvidence } from "./coordinator-device-rejoin-start-evidence.js";
+import { insertVerifiedRejoinStartAttempt } from "./coordinator-device-rejoin-start-write.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 
 type Fixture = Pick<AuthLinkBackend, "first"> & {
-	run(sql: string, ...values: string[]): Promise<unknown>;
+	run(sql: string, ...values: (string | number | null)[]): Promise<{ changes: number }>;
 };
 type WithFixture = (run: (db: Fixture) => Promise<void>) => Promise<void>;
 
@@ -22,29 +23,31 @@ async function signingFixture() {
 	const publicKey = `ssh-ed25519 ${wire.toString("base64")}`;
 	const keyId = await ed25519KeyId(publicKey);
 	if (!keyId) throw new Error("Fixture needs a canonical key");
-	const input = {
+	const fields = {
 		deviceId: "device",
 		publicKey: `${publicKey} request-comment`,
 		attemptId: "attempt",
 		browserStartHash: "a".repeat(64),
 		loopbackRedirect: "http://127.0.0.1:12345/codemem/auth/complete",
 		timestampMs: NOW,
-		signature: "",
 	};
-	const message = JSON.stringify([
-		"codemem-device-rejoin-start-v1",
-		CONFIG.origin,
-		input.attemptId,
-		input.deviceId,
-		input.publicKey,
-		keyId,
-		input.browserStartHash,
-		input.loopbackRedirect,
-		input.timestampMs,
-	]);
-	const signature = await crypto.subtle.sign("Ed25519", key.privateKey, encoder.encode(message));
-	input.signature = Buffer.from(signature).toString("base64url");
-	return { publicKey, keyId, input };
+	const privateKey = key.privateKey;
+	const signAttempt = async (attemptId: string) => {
+		const message = JSON.stringify([
+			"codemem-device-rejoin-start-v1",
+			CONFIG.origin,
+			attemptId,
+			fields.deviceId,
+			fields.publicKey,
+			keyId,
+			fields.browserStartHash,
+			fields.loopbackRedirect,
+			fields.timestampMs,
+		]);
+		const signature = await crypto.subtle.sign("Ed25519", privateKey, encoder.encode(message));
+		return { ...fields, attemptId, signature: Buffer.from(signature).toString("base64url") };
+	};
+	return { publicKey, keyId, input: await signAttempt(fields.attemptId), signAttempt };
 }
 
 async function seedBinding(db: Fixture, keyId: string, device = "device") {
@@ -199,6 +202,154 @@ function registerRefusalTests(withFixture: WithFixture) {
 export function registerRejoinStartEvidenceTests(withFixture: WithFixture) {
 	registerSnapshotTest(withFixture);
 	registerRefusalTests(withFixture);
+}
+
+const WRITE_CONFIG = {
+	...CONFIG,
+	issuer: "https://issuer.example.test",
+	authConfigRevision: "fixture-revision",
+};
+
+type StartFixture = Awaited<ReturnType<typeof signingFixture>>;
+
+const races: Record<string, (db: Fixture, signing: StartFixture) => Promise<unknown>> = {
+	"block by ID": (db, signing) => seedBlock(db, "device_id", "device", signing.publicKey),
+	"block by key": (db, signing) => seedBlock(db, "ed25519_key", signing.keyId, signing.publicKey),
+	"new own tombstone": (db, signing) =>
+		seedRemoval(db, "device", "other", signing.keyId, signing.publicKey),
+	"new alias tombstone": (db, signing) =>
+		seedRemoval(db, "alias", "other", signing.keyId, signing.publicKey),
+	"different key under the same device": (db, signing) =>
+		seedRemoval(db, "device", "other", "0".repeat(64), signing.publicKey),
+	"lifted own tombstone": (db) => liftFixture(db, "group"),
+	"lifted alias tombstone": (db) => liftFixture(db, "alias-group"),
+	"binding drift": async (db) => {
+		await db.run("DROP TRIGGER coordinator_device_ownership_immutable_update");
+		await db.run("UPDATE coordinator_device_ownership_bindings SET identity_id = 'other-identity'");
+	},
+};
+
+function liftFixture(db: Fixture, group: string) {
+	return db.run(
+		`UPDATE coordinator_device_removals SET lifted_at = 'fixture-lift',
+		lifted_by_invite_id = 'fixture-invite' WHERE group_id = ?`,
+		group,
+	);
+}
+
+async function verifiedFixture(db: Fixture) {
+	const signing = await signingFixture();
+	await seedBinding(db, signing.keyId);
+	await seedRemoval(db, "device", "group", signing.keyId, signing.publicKey);
+	await seedRemoval(db, "alias", "alias-group", signing.keyId, signing.publicKey);
+	return signing;
+}
+
+function writer(db: Fixture, beforeWrite?: () => Promise<unknown>) {
+	return {
+		first: db.first,
+		run: async ({ sql, values }: Parameters<AuthLinkBackend["run"]>[0]) => {
+			await beforeWrite?.();
+			return (await db.run(sql, ...values)).changes;
+		},
+	};
+}
+
+function registerWriteOutcomeTests(withFixture: WithFixture) {
+	it("stores the verified pins in one pending attempt and leaves duplicates unchanged", () =>
+		withFixture(async (db) => {
+			const { input, publicKey, keyId } = await verifiedFixture(db);
+			const evidence = await readVerifiedRejoinStartEvidence(db, CONFIG, input, NOW);
+			expect(await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, input, NOW)).toBe(
+				true,
+			);
+			const stored = () =>
+				db.first({ sql: "SELECT * FROM coordinator_device_rejoin_attempts", values: [] });
+			const row = await stored();
+			expect(row).toMatchObject({
+				attempt_id: "attempt",
+				state: "pending",
+				key_id: keyId,
+				identity_id: "identity",
+				binding_id: "binding",
+				public_key: input.publicKey,
+				fingerprint: createHash("sha256").update(input.publicKey).digest("hex"),
+				own_tombstones_json: JSON.stringify([[1, "group", publicKey, "fingerprint"]]),
+				alias_removal_seqs_json: "[2]",
+				removal_digest: evidence?.removalDigest,
+				created_at_ms: NOW,
+				expires_at_ms: NOW + 600_000,
+			});
+			expect(await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, input, NOW)).toBe(
+				false,
+			);
+			expect(await stored()).toEqual(row);
+		}));
+
+	it("never reaches the insert on an invalid signature", () =>
+		withFixture(async (db) => {
+			const { input } = await verifiedFixture(db);
+			const before = await readEffects(db);
+			const backend = writer(db, async () => {
+				throw new Error("invalid proof reached the write");
+			});
+			expect(
+				await insertVerifiedRejoinStartAttempt(
+					backend,
+					WRITE_CONFIG,
+					{ ...input, signature: "invalid" },
+					NOW,
+				),
+			).toBe(false);
+			expect(await readEffects(db)).toEqual(before);
+		}));
+}
+
+function registerCapacityTest(withFixture: WithFixture) {
+	it("does not exceed the twenty-attempt limit before eviction is wired", () =>
+		withFixture(async (db) => {
+			const { signAttempt } = await verifiedFixture(db);
+			const backend = writer(db);
+			for (let i = 0; i < 20; i++) {
+				const input = await signAttempt(`attempt-${i}`);
+				expect(await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, input, NOW)).toBe(
+					true,
+				);
+			}
+			const before = await readEffects(db);
+			const excess = await signAttempt("excess");
+			expect(await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, excess, NOW)).toBe(
+				false,
+			);
+			expect(await readEffects(db)).toEqual(before);
+		}));
+}
+
+export function registerRejoinStartWriteTests(withFixture: WithFixture) {
+	registerWriteOutcomeTests(withFixture);
+	registerCapacityTest(withFixture);
+	it.each(Object.entries(races))(
+		"writes nothing when %s changes after verification",
+		(_name, change) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				let ran = false;
+				const backend = writer(db, async () => {
+					await change(db, signing);
+					ran = true;
+				});
+				expect(
+					await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
+				).toBe(false);
+				expect(ran).toBe(true);
+				expect(
+					await db.first({
+						sql: "SELECT attempt_id FROM coordinator_device_rejoin_attempts",
+						values: [],
+					}),
+				).toBeNull();
+			}),
+	);
 }
 
 function readEffects(db: Fixture) {
