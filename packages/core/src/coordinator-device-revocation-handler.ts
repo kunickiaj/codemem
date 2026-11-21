@@ -12,7 +12,10 @@ function isAction(action: unknown): action is CoordinatorDeviceRevocationAction 
 	return action === "preview" || action === "commit";
 }
 export interface CoordinatorDeviceRevocationHandlerOptions {
-	store: Pick<CoordinatorStore, "getEnrollment" | "createDeviceRevocation">;
+	store: Pick<
+		CoordinatorStore,
+		"getEnrollment" | "getDeviceRevocationTombstone" | "createDeviceRevocation"
+	>;
 	/** Server composition only: never derive this from a request or enrollment. */
 	trustedCoordinatorId: string | null;
 	adminSecret?: string | null;
@@ -157,6 +160,7 @@ async function evidenceDigest(
 			1,
 			"revoke",
 			coordinatorId,
+			tuple.evidenceKind ?? "enrollment",
 			tuple.groupId,
 			tuple.deviceId,
 			tuple.publicKey,
@@ -203,23 +207,41 @@ function captureRevocationReferences(
 	}
 	return references;
 }
+async function readRevocationEvidence(
+	store: CoordinatorDeviceRevocationHandlerOptions["store"],
+	input: RevocationInput,
+): Promise<Readonly<CoordinatorCreateDeviceRevocationInput> | null> {
+	const includeDisabled = true;
+	const enrollment = await store.getEnrollment(input.group_id, input.device_id, includeDisabled);
+	// Copy the exact tuple before any crypto await; never refresh it during commit.
+	if (enrollment)
+		return Object.freeze({
+			groupId: enrollment.group_id,
+			deviceId: enrollment.device_id,
+			publicKey: enrollment.public_key,
+			fingerprint: enrollment.fingerprint,
+		});
+	const tombstone = await store.getDeviceRevocationTombstone(input.group_id, input.device_id);
+	if (!tombstone) return null;
+	const { groupId, deviceId, publicKey, fingerprint } = tombstone;
+	return Object.freeze({
+		groupId,
+		deviceId,
+		publicKey,
+		fingerprint,
+		evidenceKind: "removal_tombstone",
+	});
+}
+
 async function applyAction(
 	action: CoordinatorDeviceRevocationAction,
 	store: CoordinatorDeviceRevocationHandlerOptions["store"],
 	coordinatorId: string,
 	input: RevocationInput,
 ): Promise<Response> {
-	const includeDisabled = true;
-	const enrollment = await store.getEnrollment(input.group_id, input.device_id, includeDisabled);
-	if (!enrollment) return failure("revocation_target_unavailable", 409);
-	// Copy the exact tuple before any crypto await; never refresh it during commit.
-	const tuple = Object.freeze({
-		groupId: enrollment.group_id,
-		deviceId: enrollment.device_id,
-		publicKey: enrollment.public_key,
-		fingerprint: enrollment.fingerprint,
-	});
+	const tuple = await readRevocationEvidence(store, input);
 	if (
+		!tuple ||
 		tuple.groupId !== input.group_id ||
 		tuple.deviceId !== input.device_id ||
 		typeof tuple.publicKey !== "string" ||
