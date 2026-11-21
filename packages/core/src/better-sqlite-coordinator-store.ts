@@ -167,6 +167,10 @@ import {
 	upgradePreReleaseRebindAttemptsSql,
 } from "./coordinator-device-rebind-schema.js";
 import {
+	DEVICE_REJOIN_SCHEMA_SQL,
+	DEVICE_REJOIN_STORAGE_PRESENT_SQL,
+} from "./coordinator-device-rejoin-schema.js";
+import {
 	type CoordinatorFillEnrollmentKeyIdsOptions,
 	type CoordinatorRemoveEnrollmentInput,
 	DEVICE_REMOVAL_COLUMNS,
@@ -1139,6 +1143,8 @@ export function initializeBaseSchema(db: DatabaseType): void {
 	// Every enrollment writer needs this storage, whatever the account schema state.
 	initializeDeviceRemovalSchema(db);
 	initializeBoundaryReadinessSchema(db);
+	if (db.prepare(DEVICE_REJOIN_STORAGE_PRESENT_SQL).pluck().get() !== 1)
+		db.transaction(() => db.exec(DEVICE_REJOIN_SCHEMA_SQL)).immediate();
 }
 
 export function connectCoordinator(
