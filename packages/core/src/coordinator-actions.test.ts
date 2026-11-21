@@ -211,6 +211,42 @@ describe("controller review response transport", () => {
 	});
 });
 
+it.each([0, "42"])(
+	"validates advertised removal progress in remote device listings (%j)",
+	async (sequence) => {
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+			Response.json({
+				items: [
+					{
+						group_id: "team-a",
+						device_id: "device-a",
+						public_key: "pk-a",
+						fingerprint: "fp-a",
+						identity_id: null,
+						display_name: null,
+						enabled: 1,
+						created_at: "2026-07-26T00:00:00.000Z",
+						presence_expires_at: "2026-07-27T00:00:00.000Z",
+						presence_capabilities: { applied_removal_seq: sequence },
+					},
+				],
+			}),
+		);
+		try {
+			const [device] = await coordinatorListDevicesAction({
+				groupId: "team-a",
+				remoteUrl: "https://coord.example.test",
+				adminSecret: "secret",
+			});
+			if (typeof sequence === "number")
+				expect(device?.presence_capabilities).toHaveProperty("applied_removal_seq", sequence);
+			else expect(device?.presence_capabilities).not.toHaveProperty("applied_removal_seq");
+		} finally {
+			fetch.mockRestore();
+		}
+	},
+);
+
 describe("coordinator local admin actions", () => {
 	let tmpDir: string;
 	let dbPath: string;

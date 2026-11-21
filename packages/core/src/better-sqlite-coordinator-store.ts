@@ -288,6 +288,7 @@ import {
 	READ_CURRENT_PEERS_SQL,
 	requirePeerDiscoveryRows,
 } from "./coordinator-peer-discovery.js";
+import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
 import { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import {
 	readRecipientOwnerConsistency,
@@ -416,14 +417,12 @@ function rowToEnrollmentWithPresence(row: unknown): CoordinatorEnrollment {
 		if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
 			return base as unknown as CoordinatorEnrollment;
 		}
-		const capabilityRecord = capabilities as Record<string, unknown>;
 		return {
 			...(base as unknown as CoordinatorEnrollment),
 			presence_expires_at: expiresAt,
-			presence_capabilities: {
-				sync_capability: capabilityRecord.sync_capability,
-				sync_features: capabilityRecord.sync_features,
-			},
+			presence_capabilities: selectDeviceListingCapabilities(
+				capabilities as Record<string, unknown>,
+			),
 		};
 	} catch {
 		return base as unknown as CoordinatorEnrollment;

@@ -6,6 +6,7 @@ import {
 	peerRemovalApiHarness,
 	registerPeerRemovalApiContract,
 } from "./coordinator-peer-removal-api-test-harness.js";
+import { expectRemovalProgressListings } from "./coordinator-removal-progress-listing-test-harness.js";
 import { D1CoordinatorStore } from "./d1-coordinator-store.js";
 
 describe.each(["SQLite", "D1"] as const)("%s signed peer removal API", (backend) => {
@@ -62,4 +63,6 @@ describe.each(["SQLite", "D1"] as const)("%s signed peer removal API", (backend)
 		}
 	});
 	registerPeerRemovalApiContract(test);
+	test("lists advertised removal progress even after presence expires", ({ fixture }) =>
+		expectRemovalProgressListings(fixture));
 });

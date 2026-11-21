@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, vi } from "vitest";
 import { peerRemovalApiHarness, registerPeerRemovalApiContract, checkValueBytes } from "../../core/src/coordinator-peer-removal-api-test-harness.js";
+import { expectRemovalProgressListings } from "../../core/src/coordinator-removal-progress-listing-test-harness.js";
 import { D1CoordinatorStore } from "../../core/src/d1-coordinator-store.js";
 import { resetDeviceRemovals } from "./device-removal-reset.js";
 import { verifyCloudflareCoordinatorRequest } from "../src/request-verifier.js";
@@ -49,4 +50,7 @@ describe("native D1 signed peer removal API", () => {
 		}
 	});
 	registerPeerRemovalApiContract(test);
+	test("lists advertised removal progress even after presence expires", ({ fixture }) =>
+		expectRemovalProgressListings(fixture),
+	);
 });
