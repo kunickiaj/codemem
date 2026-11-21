@@ -606,12 +606,15 @@ for (const backend of ["SQLite", "D1"] as const) {
 		});
 	});
 	describe(`${backend} signed link authorization`, () => {
-		test.for(["other-group", "removed", "disabled"])(
+		test.for(["other-group", "removed", "removed-and-blocked", "disabled", "blocked"])(
 			"status denies %s enrollment without reading account metadata",
 			async (variant, { f, key, app }) => {
 				// Arrange
 				await seed(f, key, app, "pending");
-				if (variant === "removed") await f.store.removeDevice("group-a", key.deviceId);
+				if (variant === "removed-and-blocked" || variant === "blocked")
+					await f.store.createDeviceRevocation({ groupId: "group-a", ...key });
+				if (variant === "removed" || variant === "removed-and-blocked")
+					expect(await f.store.removeDevice("group-a", key.deviceId)).toBe(true);
 				if (variant === "disabled") await f.store.setDeviceEnabled("group-a", key.deviceId, false);
 				const group = variant === "other-group" ? "other-group" : "group-a";
 				const before = snapshot(f);
@@ -625,7 +628,7 @@ for (const backend of ["SQLite", "D1"] as const) {
 					"GET",
 				);
 				// Assert
-				expect(response.status).toBe(variant === "disabled" ? 403 : 401);
+				expect(response.status).toBe(variant === "disabled" || variant === "blocked" ? 403 : 401);
 				expect(await response.json()).toEqual({ error: "auth_link_unavailable" });
 				expect(read).not.toHaveBeenCalled();
 				expect(snapshot(f)).toEqual(before);

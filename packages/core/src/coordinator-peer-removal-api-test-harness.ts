@@ -142,6 +142,7 @@ async function legacy(f: PeerRemovalApiFixture, count = 1) {
 }
 
 export function registerPeerRemovalApiContract(test: Test) {
+	registerRemovedCallerAdmission(test);
 	registerCompleteReply(test);
 	registerMixedReply(test);
 	registerQueryBudget(test);
@@ -154,6 +155,63 @@ export function registerPeerRemovalApiContract(test: Test) {
 	registerParsingAndRace(test);
 	registerLookupRace(test);
 	registerUnexpectedFailures(test);
+}
+
+function registerRemovedCallerAdmission(test: Test) {
+	for (const blocked of [false, true]) {
+		test(`a signed removed caller gets a denial without a nonce (blocked: ${blocked})`, async ({
+			fixture: f,
+		}) => {
+			const c = await api(f);
+			if (blocked)
+				expect(
+					await f.store.createDeviceRevocation({ ...c, fingerprint: "fixture" }),
+				).toMatchObject({
+					kind: "revoked",
+				});
+			expect(await f.store.removeDevice(c.groupId, c.deviceId)).toBe(true);
+			const before = await authority(f);
+			const invalid = await c.post(EMPTY, { badSignature: true });
+			expect([invalid.status, await invalid.json()]).toEqual([401, { error: "unknown_device" }]);
+
+			const valid = await c.post(EMPTY);
+			expect([valid.status, await valid.json()]).toEqual([
+				403,
+				{ error: blocked ? "device_revoked" : "device_removed" },
+			]);
+			expect(c.fill).not.toHaveBeenCalled();
+			expect(c.lookup).not.toHaveBeenCalled();
+			expect(c.close).toHaveBeenCalledTimes(2);
+			expect(await authority(f)).toEqual(before);
+			expect(
+				await f.rows("SELECT device_id FROM request_nonces WHERE device_id = ?", c.deviceId),
+			).toEqual([]);
+		});
+	}
+
+	test("does not disclose a removal lifted while the recorded signature is being verified", async ({
+		fixture: f,
+	}) => {
+		const c = await api(f);
+		expect(await f.store.removeDevice(c.groupId, c.deviceId)).toBe(true);
+		c.verify.mockImplementationOnce(async (request) => {
+			const valid = await f.verifyRequest(request);
+			await f.exec(
+				`UPDATE coordinator_device_removals SET lifted_at = 'fixture-lift',
+			 lifted_by_invite_id = 'fixture-invite' WHERE group_id = ? AND device_id = ?`,
+				c.groupId,
+				c.deviceId,
+			);
+			return valid;
+		});
+		const response = await c.post(EMPTY);
+		expect([response.status, await response.json()]).toEqual([401, { error: "unknown_device" }]);
+		expect(c.verify).toHaveBeenCalledOnce();
+		expect(c.lookup).not.toHaveBeenCalled();
+		expect(
+			await f.rows("SELECT device_id FROM request_nonces WHERE device_id = ?", c.deviceId),
+		).toEqual([]);
+	});
 }
 function registerCompleteReply(test: Test) {
 	test("signed raw bytes yield the complete keyed, keyless and empty reply without evidence or unrequested IDs", async ({
@@ -450,19 +508,6 @@ function registerReadFailures(test: Test) {
 }
 
 function registerUnexpectedFailures(test: Test) {
-	test("a removed signed caller remains unknown_device and receives no tombstone-based authentication", async ({
-		fixture: f,
-	}) => {
-		const c = await api(f);
-		await f.store.removeDevice(c.groupId, c.deviceId);
-		const before = await authority(f);
-		const response = await c.post(EMPTY);
-		expect([response.status, await response.json()]).toEqual([401, { error: "unknown_device" }]);
-		expect(c.fill).not.toHaveBeenCalled();
-		expect(c.lookup).not.toHaveBeenCalled();
-		expect(await authority(f)).toEqual(before);
-		expect(c.close).toHaveBeenCalledTimes(1);
-	});
 	test("an auth-store failure is unavailable and performs no new fill work", async ({
 		fixture: f,
 	}) => {

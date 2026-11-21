@@ -25,6 +25,26 @@ function privateResponse(response: Response) {
 	expect(response.headers.get("referrer-policy")).toBe("no-referrer");
 }
 
+it.each([false, true])(
+	"masks account-change status after removal (blocked: %s)",
+	async (blocked) => {
+		const f = await fixture();
+		await f.prepare("refresh");
+		if (blocked)
+			expect(await f.store.createDeviceRevocation({ groupId: "group-a", ...f.key })).toMatchObject({
+				kind: "revoked",
+			});
+		expect(await f.store.removeDevice("group-a", f.key.deviceId)).toBe(true);
+		const before = f.snapshot();
+		const response = await f.send("GET", f.statusPath());
+		expect([response.status, await response.json()]).toEqual([
+			401,
+			{ error: "account_change_unavailable" },
+		]);
+		expect(f.snapshot()).toEqual(before);
+	},
+);
+
 for (const intent of ["refresh", "disconnect"] as const) {
 	it(`signed ${intent} create/status/finalize and retained exact-proof retry`, async () => {
 		const f = await fixture();

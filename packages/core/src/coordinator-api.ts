@@ -358,7 +358,13 @@ function registerCoordinatorRuntimeRoutes(
 		storeFactory: () => createStore({ existingOnly: true }),
 		authorizeAdmin: (secret) => authorizeAdmin(secret, opts.runtime),
 	});
-	registerOptionalCoordinatorAuth(app, opts, deps);
+	registerOptionalCoordinatorAuth(app, opts, {
+		...deps,
+		authorizeRequest: (store, request) =>
+			authorizeRequest(store, opts.runtime, opts.requestVerifier, request, {
+				maskRemovedDevice: true,
+			}),
+	});
 }
 
 export type CoordinatorRequestVerifier = (
@@ -397,6 +403,30 @@ interface AuthResult {
 	enrollment: CoordinatorEnrollment | null;
 }
 
+async function removedDeviceDenial(
+	store: CoordinatorStore,
+	requestVerifier: CoordinatorRequestVerifier,
+	groupId: string,
+	proof: Omit<CoordinatorVerifyRequestInput, "publicKey">,
+): Promise<AuthResult> {
+	const unknown: AuthResult = { ok: false, error: "unknown_device", enrollment: null };
+	if (!isAuthControllerId(groupId) || !isAuthControllerId(proof.deviceId)) return unknown;
+	try {
+		const { deviceId } = proof;
+		const evidence = await store.getDeviceRevocationTombstone(groupId, deviceId);
+		if (evidence?.groupId !== groupId || evidence.deviceId !== deviceId) return unknown;
+		const { publicKey, fingerprint } = evidence;
+		if (!(await requestVerifier({ ...proof, publicKey }))) return unknown;
+		const blocked = await store.listDeviceRevocations({ deviceId, publicKey });
+		// A lift or replacement may have committed while signature verification was in flight.
+		const current = await store.getDeviceRevocationTombstone(groupId, deviceId);
+		if (current?.publicKey !== publicKey || current.fingerprint !== fingerprint) return unknown;
+		return { ...unknown, error: blocked.length ? "device_revoked" : "device_removed" };
+	} catch {
+		return unknown;
+	}
+}
+
 async function authorizeRequest(
 	store: CoordinatorStore,
 	runtime: CoordinatorRuntimeDeps,
@@ -411,15 +441,26 @@ async function authorizeRequest(
 		timestamp: string | null;
 		nonce: string | null;
 	},
+	options?: { maskRemovedDevice: true },
 ): Promise<AuthResult> {
 	const { deviceId, signature, timestamp, nonce } = opts;
 	if (!deviceId || !signature || !timestamp || !nonce) {
 		return { ok: false, error: "missing_headers", enrollment: null };
 	}
 
+	const proof = {
+		method: opts.method,
+		pathWithQuery: pathWithQuery(opts.url),
+		bodyBytes: opts.body,
+		deviceId,
+		signature,
+		timestamp,
+		nonce,
+	};
 	const sourceEnrollment = await store.getEnrollment(opts.groupId, deviceId, true);
 	if (!sourceEnrollment) {
-		return { ok: false, error: "unknown_device", enrollment: null };
+		if (options?.maskRemovedDevice) return { ok: false, error: "unknown_device", enrollment: null };
+		return removedDeviceDenial(store, requestVerifier, opts.groupId, proof);
 	}
 	const enrollment = { ...sourceEnrollment };
 	if (enrollment.enabled !== 1) {
@@ -438,16 +479,7 @@ async function authorizeRequest(
 		return { ok: false, error: "unknown_device", enrollment: null };
 	let valid: boolean;
 	try {
-		valid = await requestVerifier({
-			method: opts.method,
-			pathWithQuery: pathWithQuery(opts.url),
-			bodyBytes: opts.body,
-			timestamp,
-			nonce,
-			signature,
-			publicKey: String(publicKey),
-			deviceId,
-		});
+		valid = await requestVerifier({ ...proof, publicKey });
 	} catch {
 		return { ok: false, error: "signature_verification_error", enrollment: null };
 	}
@@ -486,7 +518,8 @@ async function authorizeRequest(
 }
 
 function authErrorStatus(error: string): 401 | 403 | 409 {
-	if (error === "device_disabled" || error === "device_revoked") return 403;
+	if (error === "device_disabled" || error === "device_revoked" || error === "device_removed")
+		return 403;
 	if (error === "group_archived") return 409;
 	return 401;
 }
