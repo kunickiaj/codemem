@@ -44,6 +44,7 @@ import {
 	scopedResolutionReview,
 	validateResolutionOptions,
 } from "./coordinator-owner-resolution-review-client.js";
+import { selectDeviceListingCapabilities } from "./coordinator-presence-capabilities.js";
 import type {
 	CoordinatorBootstrapGrant,
 	CoordinatorEnrollment,
@@ -1447,9 +1448,10 @@ function remoteEnrollmentExtras(record: Record<string, unknown>): Partial<Coordi
 		Array.isArray(capabilities)
 	)
 		return extras;
-	const { sync_capability, sync_features } = capabilities as Record<string, unknown>;
 	extras.presence_expires_at = record.presence_expires_at;
-	extras.presence_capabilities = { sync_capability, sync_features };
+	extras.presence_capabilities = selectDeviceListingCapabilities(
+		capabilities as Record<string, unknown>,
+	);
 	return extras;
 }
 
