@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { buildAdapterNormalizers } from "../../../scripts/build-adapter-normalizers.mjs";
 import { smokeCaptureInspection } from "./packed-capture-inspection-smoke.mjs";
 import { smokeTeamRecovery } from "./packed-team-recovery-smoke.mjs";
+import { smokeUpgradeFromPublished } from "./packed-upgrade-smoke.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(packageRoot, "..", "..");
@@ -745,6 +746,7 @@ try {
 
 	smokeCaptureInspection(installDir, tempDir, { runtimeEnv });
 	await smokeTeamRecovery(installDir, tempDir, { runtimeEnv });
+	await smokeUpgradeFromPublished(installDir, tempDir, { runtimeEnv });
 
 	const semanticInstallDir = join(tempDir, "semantic-install");
 	mkdirSync(semanticInstallDir, { recursive: true });
