@@ -13,7 +13,7 @@ const START_FIELDS = [
 	"signature",
 ] as const;
 
-interface DeviceRejoinStartInput {
+export interface DeviceRejoinStartInput {
 	deviceId: string;
 	publicKey: string;
 	attemptId: string;
