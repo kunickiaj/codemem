@@ -168,6 +168,11 @@ The coordinator also accepts hidden account-linking and schema-upgrade aliases
 used in messages from older deployed coordinators. New instructions use the
 grouped `coordinator account` and `coordinator schema` commands.
 
+Use `codemem coordinator device list --removed` to list active removals in the
+local coordinator database. Add a group ID to filter the list. To read from a
+remote coordinator, pass `--config <path>` with its saved URL and admin secret.
+The listing omits permanently blocked devices.
+
 `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations
 continue to work, and bare `codemem serve` runs the local service in the foreground.
 

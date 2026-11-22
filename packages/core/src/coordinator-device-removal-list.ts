@@ -119,6 +119,29 @@ function listingItem(row: ListRow): CoordinatorDeviceRemovalListItem {
 	return item;
 }
 
+/** Validate the public page and project only the documented tombstone fields. */
+export function parseDeviceRemovalListPage(
+	payload: Record<string, unknown> | null,
+	beforeSeq?: number,
+): CoordinatorDeviceRemovalListResult {
+	const invalid = () => new Error("coordinator_removal_list_malformed");
+	if (payload?.version !== 1 || !Array.isArray(payload.items) || payload.items.length > 500)
+		throw invalid();
+	let previous = beforeSeq ?? Infinity;
+	const items = payload.items.map((item: unknown) => {
+		if (!item || typeof item !== "object" || Array.isArray(item) || "revoked" in item)
+			throw invalid();
+		const row = { ...item, revoked: 0 };
+		if (!validRow(row) || row.removal_seq >= previous) throw invalid();
+		previous = row.removal_seq;
+		return listingItem(row);
+	});
+	const next = payload.next_before_seq;
+	if (next !== null && (typeof next !== "number" || next !== items.at(-1)?.removal_seq))
+		throw invalid();
+	return { items, next_before_seq: next };
+}
+
 export function removalListPage(
 	rows: unknown[],
 	options: Options,

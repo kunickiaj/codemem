@@ -126,6 +126,7 @@ export {
 	coordinatorListGroupsAction,
 	coordinatorListJoinRequestsAction,
 	coordinatorListLegacyTeamCompletionsAction,
+	coordinatorListRemovedDevicesAction,
 	coordinatorListReviewedRecipientInviteEvidenceAction,
 	coordinatorListScopeMembershipsAction,
 	coordinatorListScopesAction,
