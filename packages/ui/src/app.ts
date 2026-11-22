@@ -55,6 +55,7 @@ import {
 	beginStandaloneCoordinatorAdminStatusRefresh,
 	refreshCoordinatorAdminStatusForGeneration,
 } from "./tabs/coordinator-admin/data/status-refresh";
+import { mountRemovedDevices } from "./tabs/device-removal-list";
 import {
 	type DeviceAvailabilityInput,
 	type DevicePeerRuntimeMetadataInput,
@@ -1057,6 +1058,8 @@ setTheme(getTheme());
 initTabs();
 
 // Tab modules
+const removedDevicesMount = document.getElementById("removedDevicesMount");
+if (removedDevicesMount) mountRemovedDevices(removedDevicesMount);
 initFeedTab();
 initHealthTab();
 initDiagnosticsEntryPoints();
