@@ -293,6 +293,7 @@ export {
 	type PeerRemovalAnswer,
 	queryPeerRemoval,
 } from "./coordinator-peer-revocation.js";
+export { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
 export { relayAdmissionNamespaces } from "./coordinator-relay-admission-route.js";
 export {
 	type CoordinatorRemovalState,
@@ -1580,6 +1581,7 @@ export type {
 export {
 	createSerializedDaemonTickRunner,
 	getSyncDaemonPhase,
+	refreshCoordinatorForDaemon,
 	runSyncDaemon,
 	setSyncDaemonError,
 	setSyncDaemonOk,

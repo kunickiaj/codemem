@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
 import { recordCoordinatorDeviceRemoved } from "./coordinator-removal-notice.js";
 import { columnExists, connect } from "./db.js";
 import type { RelayPeerClient } from "./relay-peer-client.js";
@@ -39,6 +40,59 @@ async function resetReachabilityMocks(): Promise<void> {
 	vi.mocked(shouldSkipOfflinePeer).mockReturnValue(false);
 	vi.spyOn(syncIdentity, "ensureDeviceIdentity").mockReturnValue(["local", "public-key"]);
 }
+
+it("shares the daemon's coordinator maintenance and fallback refresh with Viewer cleanup", async () => {
+	await resetReachabilityMocks();
+	const lifecycle = createCoordinatorRefreshLifecycle();
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const events: string[] = [];
+	const tick = runTickOnce(
+		":memory:",
+		undefined,
+		undefined,
+		async () => {
+			events.push("maintenance");
+			entered.resolve();
+			await release.promise;
+			events.push("maintenance finished");
+		},
+		undefined,
+		async (work) => {
+			return lifecycle.runRefresh(async () => {
+				events.push("daemon slot");
+				return work();
+			});
+		},
+	);
+	try {
+		await entered.promise;
+		const removal = lifecycle.forRemoval(async () => {
+			events.push("fresh refresh");
+		});
+		const finished = (async () => {
+			await removal.waitForRefresh();
+			events.push("local cleanup");
+			await removal.refresh();
+		})();
+		expect(events).toEqual(["daemon slot", "maintenance"]);
+		release.resolve();
+		await finished;
+		await tick;
+		expect(events).toEqual([
+			"daemon slot",
+			"maintenance",
+			"maintenance finished",
+			"local cleanup",
+			"fresh refresh",
+			"daemon slot",
+		]);
+	} finally {
+		release.resolve();
+		await tick;
+		vi.restoreAllMocks();
+	}
+});
 
 describe("daemon reachability wiring", () => {
 	beforeEach(resetReachabilityMocks);

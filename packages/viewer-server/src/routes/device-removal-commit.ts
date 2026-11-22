@@ -10,11 +10,15 @@ import { originGuard } from "../middleware.js";
 import { readDeviceRemovalCoordinator } from "./device-removal-review.js";
 import { listAllEnrollments } from "./device-rename.js";
 
+export type DeviceRemovalRefreshHooksFactory = () => {
+	waitForRefresh(): Promise<void>;
+	refresh(): Promise<void>;
+};
+
 interface Options {
 	getStore(): Pick<MemoryStore, "db" | "deviceId">;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
-	waitForRefresh(): Promise<void>;
-	refresh(): Promise<void>;
+	createDeviceRemovalRefreshHooks: DeviceRemovalRefreshHooksFactory;
 }
 
 const REFUSAL_STATUS = {
@@ -85,8 +89,7 @@ async function commitRemove(c: Context, options: Options) {
 					local: { deviceId, keyId: verifiedLocalKeyId(store.db, deviceId) },
 				};
 			},
-			waitForRefresh: options.waitForRefresh,
-			refresh: options.refresh,
+			...options.createDeviceRemovalRefreshHooks(),
 		});
 		if (result.kind === "rejected")
 			return c.json({ error: result.error }, REFUSAL_STATUS[result.error]);

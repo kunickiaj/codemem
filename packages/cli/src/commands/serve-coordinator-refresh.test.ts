@@ -1,0 +1,87 @@
+import type { MemoryStore } from "@codemem/core";
+import { expect, it, vi } from "vitest";
+import { createServeCoordinatorRefresh } from "./serve-coordinator-refresh.js";
+
+function fixtureOptions() {
+	const store = { db: {} as MemoryStore["db"], dbPath: ":memory:" };
+	const abort = new AbortController();
+	return { store, signal: abort.signal, abort };
+}
+
+it("shares the daemon refresh queue with each Viewer removal", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const events: string[] = [];
+	const fresh = vi.fn(async () => {
+		events.push("fresh coordinator pass");
+		return { refreshed: true, peers: [] };
+	});
+	const options = fixtureOptions();
+	const { daemon, viewer } = createServeCoordinatorRefresh(options, fresh);
+	const existing = daemon.runCoordinatorRefresh(async () => {
+		events.push("daemon refresh");
+		entered.resolve();
+		await release.promise;
+		events.push("daemon maintenance complete");
+		return "daemon result";
+	});
+	await entered.promise;
+
+	const removal = viewer.createDeviceRemovalRefreshHooks();
+	const cleanup = (async () => {
+		await removal.waitForRefresh();
+		events.push("verified local cleanup");
+		await removal.refresh();
+	})();
+	expect(events).toEqual(["daemon refresh"]);
+	const next = daemon.runCoordinatorRefresh(async () => {
+		events.push("next daemon refresh");
+	});
+	release.resolve();
+	await Promise.all([cleanup, next]);
+	expect(await existing).toBe("daemon result");
+	expect(events).toEqual([
+		"daemon refresh",
+		"daemon maintenance complete",
+		"verified local cleanup",
+		"fresh coordinator pass",
+		"next daemon refresh",
+	]);
+	expect(fresh).toHaveBeenCalledOnce();
+	expect(fresh).toHaveBeenCalledWith(
+		options.store.db,
+		options.store.dbPath,
+		process.env.CODEMEM_KEYS_DIR?.trim() || undefined,
+	);
+});
+
+it("does not start a fresh pass after the foreground runtime is aborted", async () => {
+	const options = fixtureOptions();
+	const fresh = vi.fn(async () => ({ refreshed: true, peers: [] }));
+	const { daemon, viewer } = createServeCoordinatorRefresh(options, fresh);
+	const hooks = viewer.createDeviceRemovalRefreshHooks();
+	await hooks.waitForRefresh();
+	options.abort.abort(new Error("foreground runtime stopped"));
+	await expect(hooks.refresh()).rejects.toThrow("foreground runtime stopped");
+	expect(fresh).not.toHaveBeenCalled();
+	await expect(daemon.runCoordinatorRefresh(async () => "queue released")).resolves.toBe(
+		"queue released",
+	);
+});
+
+it("does not combine separate foreground stores or start refresh work on construction", async () => {
+	const fresh = vi.fn(async () => ({ refreshed: true, peers: [] }));
+	const first = createServeCoordinatorRefresh(fixtureOptions(), fresh);
+	const second = createServeCoordinatorRefresh(fixtureOptions(), fresh);
+	const release = Promise.withResolvers<void>();
+	const existing = first.daemon.runCoordinatorRefresh(() => release.promise);
+	try {
+		expect(await second.daemon.runCoordinatorRefresh(async () => "other store")).toBe(
+			"other store",
+		);
+		expect(fresh).not.toHaveBeenCalled();
+	} finally {
+		release.resolve();
+		await existing;
+	}
+});

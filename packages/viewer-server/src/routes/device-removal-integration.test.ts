@@ -140,7 +140,14 @@ async function fixture(options: FixtureOptions = {}) {
 				localIdentity: () => ({ deviceId: localId, keyId: verifiedLocalKeyId(local.db, localId) }),
 			}),
 		)
-		.route("/", deviceRemovalCommitRoutes({ ...runtime, getStore: () => local }));
+		.route(
+			"/",
+			deviceRemovalCommitRoutes({
+				readCoordinatorConfig: runtime.readCoordinatorConfig,
+				createDeviceRemovalRefreshHooks: () => runtime,
+				getStore: () => local,
+			}),
+		);
 	const browser: string[] = [];
 	const remote: string[] = [];
 	const fetch = vi.fn(async (input: string, init: RequestInit) => {

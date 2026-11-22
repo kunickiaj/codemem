@@ -8,6 +8,7 @@
 
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import type { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
 import { readCoordinatorRemovalState } from "./coordinator-removal-notice.js";
 import {
 	coordinatorEnabled,
@@ -47,6 +48,8 @@ import type {
 export type SyncDaemonReachability = SyncReachabilityOptions | SyncPeerReachabilityResolver;
 
 export interface SyncDaemonOptions {
+	/** Share the coordinator refresh and maintenance phase with local Viewer work. */
+	runCoordinatorRefresh?: ReturnType<typeof createCoordinatorRefreshLifecycle>["runRefresh"];
 	/** Explicit programmatic relay integration. The caller owns every client's lifecycle. */
 	reachability?: SyncDaemonReachability;
 	host?: string;
@@ -481,6 +484,7 @@ export async function runSyncDaemon(options?: SyncDaemonOptions): Promise<void> 
 					scanner,
 					onAfterCoordinatorRefresh,
 					daemonReachability(options),
+					options?.runCoordinatorRefresh,
 				),
 			() => onPhaseChange?.("running"),
 		);
@@ -534,6 +538,26 @@ export function createSerializedDaemonTickRunner(
 	};
 }
 
+async function runCoordinatorPhase(
+	context: SyncDaemonTickContext,
+	onAfterCoordinatorRefresh?: SyncDaemonTickCallback,
+) {
+	const { db, dbPath, keysDir } = context;
+	let peers: Record<string, unknown>[] | null = null;
+	try {
+		peers = (await refreshCoordinatorForDaemon(db, dbPath, keysDir)).peers;
+	} catch {
+		// Leave the peer snapshot empty so the stale-peer preflight can read it itself.
+	}
+	try {
+		await onAfterCoordinatorRefresh?.(context);
+		return { peers, callbackFailed: false };
+	} catch (error) {
+		reportSyncDaemonError(db, error, { prefix: "daemon tick callback failed" });
+		return { peers, callbackFailed: true };
+	}
+}
+
 /**
  * Run a single tick, opening and closing a DB connection.
  *
@@ -545,33 +569,27 @@ export async function runTickOnce(
 	scanner?: SecretScanner,
 	onAfterCoordinatorRefresh?: SyncDaemonTickCallback,
 	reachability?: SyncDaemonReachability,
+	runCoordinatorRefresh?: SyncDaemonOptions["runCoordinatorRefresh"],
 ): Promise<void> {
 	const resolvedKeysDir = resolveSyncDaemonKeysDir(keysDir);
 	const db = connectDb(dbPath);
 	try {
 		ensureAdditiveSchemaCompatibility(db);
 		ensureDeviceIdentity(db, { keysDir: resolvedKeysDir });
-		let coordinatorPeers: Record<string, unknown>[] | null = null;
-		try {
-			coordinatorPeers = (await refreshCoordinatorForDaemon(db, dbPath, resolvedKeysDir)).peers;
-		} catch {
-			// Coordinator discovery is a supplemental surface. Keep direct peer sync running
-			// even when heartbeat posting fails for this tick. Leaving coordinatorPeers null
-			// lets the stale-peer preflight below fall back to its own lookup.
-		}
-		let callbackFailed = false;
-		try {
-			await onAfterCoordinatorRefresh?.({ db, dbPath, keysDir: resolvedKeysDir });
-		} catch (error) {
-			callbackFailed = true;
-			reportSyncDaemonError(db, error, { prefix: "daemon tick callback failed" });
-		}
+		const phase = () =>
+			runCoordinatorPhase({ db, dbPath, keysDir: resolvedKeysDir }, onAfterCoordinatorRefresh);
+		const { peers, callbackFailed } = await (runCoordinatorRefresh
+			? runCoordinatorRefresh(phase)
+			: phase());
 		await maintainDaemonReachability(db, reachability);
 		// Best-effort: skip peers the coordinator reports as offline.
 		// Returns empty set when coordinator is disabled or lookup fails.
-		const stalePeers = await fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir, {
-			peers: coordinatorPeers ?? undefined,
-		});
+		const readStalePeers = () =>
+			fetchCoordinatorStalePeers(db, dbPath, resolvedKeysDir, { peers: peers ?? undefined });
+		// The fallback may save fresh addresses. The prefetched path only classifies the snapshot.
+		const stalePeers = await (!peers && runCoordinatorRefresh
+			? runCoordinatorRefresh(readStalePeers)
+			: readStalePeers());
 		const results = await syncDaemonTick(
 			db,
 			resolvedKeysDir,
