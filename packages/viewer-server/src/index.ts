@@ -29,6 +29,7 @@ import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
+import type { DeviceRemovalRefreshHooksFactory } from "./routes/device-removal-commit.js";
 import { deviceRemovalReviewRoutes } from "./routes/device-removal-review.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { fileContextRoutes } from "./routes/file-context.js";
@@ -188,6 +189,8 @@ export interface AppOptions extends SyncAppOptions {
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
+	/** Supplied by the foreground host for the unmounted Remove commit route. */
+	createDeviceRemovalRefreshHooks?: DeviceRemovalRefreshHooksFactory;
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
 	lookupCoordinatorDeviceAnswer?: SyncRoutesOptions["lookupCoordinatorDeviceAnswer"];
 	syncReachability?: SyncRoutesOptions["syncReachability"];

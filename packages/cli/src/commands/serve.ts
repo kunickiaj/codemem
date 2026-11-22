@@ -38,6 +38,7 @@ import {
 	type ViewerPidRecord,
 	viewerUrl,
 } from "../viewer-runtime.js";
+import { createServeCoordinatorRefresh } from "./serve-coordinator-refresh.js";
 import {
 	type LegacyServeOptions,
 	type ResolvedServeInvocation,
@@ -990,6 +991,7 @@ function startServeSyncDaemon(options: {
 	status: ServeSyncRuntimeStatus;
 	maintenance: ServeCoordinatorMaintenanceDependencies;
 	relay: ServeRelay | null;
+	coordinatorRefresh: ReturnType<typeof createServeCoordinatorRefresh>["daemon"];
 }): void {
 	const { syncConfig, store, signal, status, relay } = options;
 	status.phase = "starting";
@@ -1001,6 +1003,7 @@ function startServeSyncDaemon(options: {
 		host: syncConfig.syncHost,
 		port: syncConfig.syncPort,
 		signal,
+		...options.coordinatorRefresh,
 		// Foreground mode: hand the daemon the same workspace-aware
 		// scanner the local writes use, so workspace `secret_scanner`
 		// rules apply to inbound peer payloads instead of the daemon
@@ -1024,6 +1027,12 @@ function startServeSyncDaemon(options: {
 				status.detail = signal.aborted ? "Sync stopped" : null;
 			}
 		});
+}
+
+function scheduleServeSyncDaemon(options: Parameters<typeof startServeSyncDaemon>[0]): void {
+	const delayMs = 3000;
+	p.log.step(`Sync daemon will start in background (${delayMs / 1000}s delay)`);
+	setTimeout(() => startServeSyncDaemon(options), delayMs).unref();
 }
 
 /**
@@ -1054,6 +1063,7 @@ function foregroundAppOptions(
 		accountLink: ReturnType<typeof createViewerAccountLink>;
 		relay: ServeRelay | null;
 		syncRuntimeStatus: ServeSyncRuntimeStatus;
+		coordinatorRefresh: ReturnType<typeof createServeCoordinatorRefresh>["viewer"];
 	},
 ) {
 	return {
@@ -1061,6 +1071,7 @@ function foregroundAppOptions(
 		storeFactory: () => store,
 		syncReachability: options.relay?.reachability,
 		...rawEventOptions,
+		...options.coordinatorRefresh,
 		getSyncRuntimeStatus: () => options.syncRuntimeStatus,
 	};
 }
@@ -1153,11 +1164,13 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 		phase: syncEnabled ? "starting" : "disabled",
 		detail: syncEnabled ? "Waiting for viewer startup to finish" : "Sync is disabled",
 	};
+	const coordinatorRefresh = createServeCoordinatorRefresh({ store, signal: syncAbort.signal });
 
 	const appOpts = foregroundAppOptions(store, rawEventProcessing.appOptions, {
 		accountLink,
 		relay,
 		syncRuntimeStatus,
+		coordinatorRefresh: coordinatorRefresh.viewer,
 	});
 	const { app, setBoundAddress } = createBoundApp(createApp, appOpts, { invocation, accountLink });
 	const pidPath = pidFilePath(dbPath);
@@ -1195,19 +1208,16 @@ export async function startForegroundViewer(invocation: ResolvedServeInvocation)
 			announceViewerStartup({ pidPath, invocation, preparedDb, info });
 			maintenanceWorker = startMaintenanceWorkerProcess(invocation);
 			if (syncEnabled) {
-				const syncStartDelayMs = 3000;
-				p.log.step(`Sync daemon will start in background (${syncStartDelayMs / 1000}s delay)`);
-				setTimeout(() => {
-					startServeSyncDaemon({
-						invocation,
-						syncConfig,
-						store,
-						signal: syncAbort.signal,
-						status: syncRuntimeStatus,
-						maintenance: coordinatorMaintenanceDependencies,
-						relay,
-					});
-				}, syncStartDelayMs).unref();
+				scheduleServeSyncDaemon({
+					invocation,
+					syncConfig,
+					store,
+					signal: syncAbort.signal,
+					status: syncRuntimeStatus,
+					maintenance: coordinatorMaintenanceDependencies,
+					relay,
+					coordinatorRefresh: coordinatorRefresh.daemon,
+				});
 			}
 		},
 	);
