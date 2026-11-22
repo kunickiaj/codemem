@@ -70,7 +70,7 @@ it("lists a removed device from an existing local coordinator, with or without a
 	}
 });
 
-it("lists through the merged admin route using the explicitly selected coordinator config", async () => {
+it.each(["--config", "-c"])("lists through the merged admin route using %s", async (flag) => {
 	const store = new BetterSqliteCoordinatorStore(":memory:");
 	const close = vi.spyOn(store, "close").mockResolvedValue();
 	try {
@@ -85,7 +85,7 @@ it("lists through the merged admin route using the explicitly selected coordinat
 			expect(request.url).toBe(`${origin}/v1/admin/devices/removals`);
 			return app.request(request);
 		});
-		await run("--removed", "--config", "fixture.json");
+		await run("--removed", flag, "fixture.json");
 		expect(config).toHaveBeenCalledWith("fixture.json");
 		expect(output()).toMatchObject([{ group_id: "group-a", device_id: "device-a" }]);
 		expect(process.exitCode).toBeUndefined();

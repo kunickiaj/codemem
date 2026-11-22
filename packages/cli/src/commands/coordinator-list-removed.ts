@@ -9,7 +9,13 @@ import {
 } from "@codemem/core";
 import { Command } from "commander";
 import { helpStyle } from "../help-style.js";
-import { addDbOption, addJsonOption, emitJsonError, resolveDbOpt } from "../shared-options.js";
+import {
+	addConfigOption,
+	addDbOption,
+	addJsonOption,
+	emitJsonError,
+	resolveDbOpt,
+} from "../shared-options.js";
 
 interface Options {
 	includeDisabled?: boolean;
@@ -123,8 +129,8 @@ export function buildCoordinatorDeviceListCommand() {
 		.description("List enrolled or removed coordinator devices")
 		.argument("[group]", "group id (required unless --removed is set)")
 		.option("--include-disabled", "include disabled devices")
-		.option("--removed", "list active removals that have not been permanently blocked")
-		.option("--config <path>", "read remote coordinator settings for --removed");
+		.option("--removed", "list active removals that have not been permanently blocked");
+	addConfigOption(command);
 	addDbOption(command);
 	addJsonOption(command);
 	return command.action((groupId: string | undefined, options: Options) =>
