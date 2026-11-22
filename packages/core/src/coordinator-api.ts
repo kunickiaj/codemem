@@ -78,7 +78,9 @@ import type {
 	CoordinatorBootstrapGrantAuthorizationError,
 	CoordinatorBootstrapGrantAuthorizationInput,
 	CoordinatorBootstrapGrantVerification,
+	CoordinatorCreateJoinRequestInput,
 	CoordinatorEnrollment,
+	CoordinatorInvite,
 	CoordinatorInviteKind,
 	CoordinatorScope,
 	CoordinatorScopeMembership,
@@ -704,6 +706,34 @@ function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Respo
 	return c.json({ error: code }, 409);
 }
 
+async function acceptEnrollmentInvitation(
+	c: Context,
+	store: CoordinatorStore,
+	invite: CoordinatorInvite,
+	input: Omit<CoordinatorCreateJoinRequestInput, "groupId" | "inviteId">,
+) {
+	const { group_id: groupId, invite_id: inviteId, policy } = invite;
+	const group = await store.getGroup(groupId);
+	if (!group) return c.json({ error: "group_not_found" }, 404);
+	if (group.archived_at) return c.json({ error: "group_archived" }, 409);
+
+	const reply = { ok: true, group_id: groupId, policy };
+	if (await store.getEnrollment(groupId, input.deviceId))
+		return c.json({ ...reply, status: "already_enrolled" });
+	if (policy === "approval_required") {
+		const request = await store.createJoinRequest({ ...input, groupId, inviteId });
+		return c.json({ ...reply, status: "pending", request_id: request.request_id });
+	}
+	if (policy !== "auto_admit") return c.json({ error: `unknown invite policy: ${policy}` }, 400);
+	const { deviceId, fingerprint, publicKey, displayName } = input;
+	await store.enrollDevice(
+		groupId,
+		{ deviceId, fingerprint, publicKey, displayName },
+		{ inviteId },
+	);
+	return c.json({ ...reply, status: "enrolled" });
+}
+
 async function enrollAdminDevice(
 	c: Context,
 	store: CoordinatorStore,
@@ -733,6 +763,8 @@ async function reviewJoinRequestWithRevocationDenial(
 		) {
 			return args[0].json({ error: error.message }, 503);
 		}
+		if (error instanceof Error && error.message === "invite_invalid")
+			return args[0].json({ error: "invite_invalid" }, 404);
 		return deviceRevokedResponse(args[0], error);
 	}
 }
@@ -2983,58 +3015,16 @@ export function createCoordinatorApp(
 			if (projectAcceptanceFields.some((field) => Object.hasOwn(data, field))) {
 				return c.json({ error: "unexpected_project_invite_fields" }, 400);
 			}
-			const group = await store.getGroup(String(invite.group_id));
-			if (!group) return c.json({ error: "group_not_found" }, 404);
-			if (group.archived_at) return c.json({ error: "group_archived" }, 409);
-
-			const inviteGroupId = String(invite.group_id);
-			const existing = await store.getEnrollment(inviteGroupId, deviceId);
-			if (existing) {
-				return c.json({
-					ok: true,
-					status: "already_enrolled",
-					group_id: invite.group_id,
-					policy: invite.policy,
-				});
-			}
-
-			const invitePolicy = String(invite.policy);
-			if (!["auto_admit", "approval_required"].includes(invitePolicy)) {
-				return c.json({ error: `unknown invite policy: ${invitePolicy}` }, 400);
-			}
-
-			if (invitePolicy === "approval_required") {
-				const request = await store.createJoinRequest({
-					groupId: inviteGroupId,
-					deviceId,
-					publicKey,
-					fingerprint,
-					displayName,
-					token,
-				});
-				return c.json({
-					ok: true,
-					status: "pending",
-					group_id: invite.group_id,
-					policy: invite.policy,
-					request_id: request.request_id,
-				});
-			}
-
-			await store.enrollDevice(inviteGroupId, {
+			return await acceptEnrollmentInvitation(c, store, invite, {
+				token,
 				deviceId,
-				fingerprint,
 				publicKey,
+				fingerprint,
 				displayName,
 			});
-
-			return c.json({
-				ok: true,
-				status: "enrolled",
-				group_id: invite.group_id,
-				policy: invite.policy,
-			});
 		} catch (error) {
+			if (error instanceof Error && error.message === "invite_invalid")
+				return c.json({ error: "invite_invalid" }, 404);
 			return deviceRevokedResponse(c, error);
 		} finally {
 			await store.close();

@@ -1580,7 +1580,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private enrollDeviceSync(
 		groupId: string,
 		opts: CoordinatorEnrollDeviceInput,
-		options?: { checkRemoval: true },
+		options?: { checkRemoval: true; inviteId?: string },
 	): void {
 		const { deviceId, publicKey, fingerprint, identityId, displayName } = captureLegacyEnrollment(
 			groupId,
@@ -1608,6 +1608,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				currentKeyId,
 				storeKeyId: this.hasRemovalSchema(),
 				checkRemoval: options?.checkRemoval === true,
+				inviteId: options?.inviteId,
 			};
 			const writes = legacyEnrollmentWriteStatements(enrollment);
 			// The caller's immediate transaction rolls a first statement back when a later one,
@@ -1983,11 +1984,20 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		return result.changes > 0;
 	}
 
-	async enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void> {
+	async enrollDevice(
+		groupId: string,
+		opts: CoordinatorEnrollDeviceInput,
+		invitation?: { inviteId: string },
+	): Promise<void> {
 		const input = captureLegacyEnrollment(groupId, opts);
 		try {
 			this.db
-				.transaction(() => this.enrollDeviceSync(groupId, input, { checkRemoval: true }))
+				.transaction(() =>
+					this.enrollDeviceSync(groupId, input, {
+						checkRemoval: true,
+						inviteId: invitation?.inviteId,
+					}),
+				)
 				.immediate();
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
@@ -2807,6 +2817,23 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			incoming: incomingKeyId,
 			current: currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey),
 		});
+		this.assertProjectInviteOwnership(guard);
+		this.validateRecipientInviteParticipants(invite, {
+			...opts,
+			identityId: opts.recipientActorId,
+		});
+		const removal = invitationRemovalFence(this.hasRemovalSchema(), {
+			...opts,
+			inviteId: invite.invite_id,
+			keyId: incomingKeyId,
+		});
+		this.assertInvitationRemovalClear(removal);
+		return withInvitationRemovalGuard(guard, removal);
+	}
+
+	private assertProjectInviteOwnership(
+		guard: ReturnType<typeof legacyProjectInviteOwnershipEvidence>,
+	) {
 		try {
 			const row = this.db
 				.prepare(`SELECT (${guard.revocationSql}) AS revoked,
@@ -2821,11 +2848,6 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
-		this.validateRecipientInviteParticipants(invite, {
-			...opts,
-			identityId: opts.recipientActorId,
-		});
-		return guard;
 	}
 
 	private assertProjectInviteEligible(
@@ -3062,11 +3084,17 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		const removalSeqValues = hasRemovalSchema
 			? [opts.groupId, opts.token, tokenDigest(opts.token)]
 			: [];
-		this.db
+		const keyId = opts.inviteId === undefined ? null : enrollmentRevocationKeyId(opts.publicKey);
+		const fence =
+			opts.inviteId === undefined
+				? null
+				: invitationRemovalFence(hasRemovalSchema, { ...opts, inviteId: opts.inviteId, keyId });
+		const changes = this.db
 			.prepare(`INSERT INTO coordinator_join_requests(
 					request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
 					created_at, reviewed_at, reviewed_by${removalSeq.column}
-				) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value})`)
+				) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value}
+				WHERE ${fence?.ordered.sql ?? "1"}`)
 			.run(
 				requestId,
 				opts.groupId,
@@ -3077,7 +3105,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				opts.token,
 				now,
 				...removalSeqValues,
-			);
+				...(fence?.ordered.values ?? []),
+			).changes;
+		if (changes !== 1) {
+			if (!fence) throw new Error("join_review_incomplete");
+			const denial = joinRequestCreationDenial(fence, { deviceId: opts.deviceId, keyId });
+			throw new Error(legacyDeviceDenial(this.db.prepare(denial.sql).get(...denial.values)));
+		}
 		const row = this.db
 			.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
 				 FROM coordinator_join_requests WHERE request_id = ?`)
@@ -3168,21 +3202,35 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				.prepare(`SELECT public_key FROM enrolled_devices WHERE group_id = ? AND device_id = ?`)
 				.get(row.group_id, row.device_id) ?? null,
 		);
-		const guard = joinReviewGuardEvidence(
+		const keyId = enrollmentRevocationKeyId(row.public_key);
+		const evidence = joinReviewGuardEvidence(
 			row,
 			seed,
 			{
-				recipient: enrollmentRevocationKeyId(row.public_key),
+				recipient: keyId,
 				seed: seed ? enrollmentRevocationKeyId(seed.public_key) : null,
 				current: currentPublicKey === null ? null : enrollmentRevocationKeyId(currentPublicKey),
 			},
 			currentPublicKey,
 		);
+		const removal = joinRequestRemovalFence(
+			this.hasRemovalSchema(),
+			{
+				requestId: row.request_id,
+				deviceId: row.device_id,
+				publicKey: row.public_key,
+				keyId,
+			},
+			tokenDigest(row.token),
+		);
+		const guard = { ...evidence, removal };
 		this.assertJoinApprovalCurrentSync(guard);
 		return guard;
 	}
 
-	private assertJoinApprovalCurrentSync(guard: ReturnType<typeof joinReviewGuardEvidence>) {
+	private assertJoinApprovalCurrentSync(
+		guard: ReturnType<BetterSqliteCoordinatorStore["prepareJoinApprovalSync"]>,
+	) {
 		if (this.db.prepare(`SELECT 1 WHERE ${guard.revocationSql}`).get(...guard.revocationValues))
 			throw new Error("device_revoked");
 		let owned: unknown;
@@ -3192,13 +3240,25 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			throw new Error("device_ownership_authorization_unavailable");
 		}
 		if (owned) throw new Error("device_ownership_requires_verified_identity");
+		this.assertInvitationRemovalClear(guard.removal);
 		if (!this.db.prepare(`SELECT 1 WHERE ${guard.eligibilitySql}`).get(...guard.eligibilityValues))
 			throw new Error("join_review_incomplete");
 	}
 
+	private assertInvitationRemovalClear(removal: InvitationRemovalFence) {
+		if (!removal) return;
+		const { sql, values } = removal.read;
+		invitationRemovalNeedsLift(
+			this.db.prepare(sql).get(...values) as InvitationRemovalState | undefined,
+			{
+				consumed: true,
+			},
+		);
+	}
+
 	private applyJoinApprovalSync(
 		row: CoordinatorJoinRequest & { public_key: string },
-		guard: ReturnType<typeof joinReviewGuardEvidence>,
+		guard: ReturnType<BetterSqliteCoordinatorStore["prepareJoinApprovalSync"]>,
 		bootstrap: ReturnType<typeof normalizeCoordinatorBootstrapGrantRequest>,
 		reviewedAt: string,
 	) {
@@ -4134,8 +4194,12 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 }
 
 import {
+	type InvitationRemovalFence,
 	type InvitationRemovalState,
 	invitationRemovalFence,
 	invitationRemovalNeedsLift,
+	joinRequestCreationDenial,
+	joinRequestRemovalFence,
 	liftInvitationRemovals,
+	withInvitationRemovalGuard,
 } from "./coordinator-invitation-removal.js";

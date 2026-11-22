@@ -166,14 +166,14 @@ function registerSuccess(test: ProjectTest) {
 }
 
 function registerPending(test: ProjectTest) {
-	for (const state of ["disabled", "removed"] as const) {
+	for (const state of ["disabled", "missing without a tombstone"] as const) {
 		test(`unrevoked ${state} seed preserves accepted pending setup without a grant`, async ({
 			fixture: f,
 		}) => {
 			// Arrange
 			const { input, seed } = await projectInvite(f);
 			if (state === "disabled") await f.store.setDeviceEnabled(seed.groupId, seed.deviceId, false);
-			else await f.store.removeDevice(seed.groupId, seed.deviceId);
+			else await removeDeviceWithoutTombstone(f.exec, seed.groupId, seed.deviceId);
 			// Act
 			const accepted = await f.store.consumeProjectInvite(input);
 			const retry = await f.store.consumeProjectInvite(input);
@@ -198,14 +198,14 @@ function registerPending(test: ProjectTest) {
 		expect(retry.bootstrap_grant).toEqual(recovered.bootstrap_grant);
 		expect(await f.rows("coordinator_bootstrap_grants")).toHaveLength(1);
 	});
-	test("removed seed's historical key alone does not infer current ownership", async ({
+	test("missing seed's key alone does not infer a current block without a tombstone", async ({
 		fixture: f,
 	}) => {
 		// Arrange
 		const { input, seed } = await projectInvite(f);
 		const historical = { ...seed, deviceId: `${seed.deviceId}-historical` };
 		await f.store.enrollDevice(seed.groupId, historical);
-		await f.store.removeDevice(seed.groupId, seed.deviceId);
+		await removeDeviceWithoutTombstone(f.exec, seed.groupId, seed.deviceId);
 		expect(await f.store.createDeviceRevocation(historical)).toMatchObject({ kind: "revoked" });
 		// Act
 		const accepted = await f.store.consumeProjectInvite(input);

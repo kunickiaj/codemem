@@ -6,6 +6,7 @@ import {
 	rethrowDeviceRemovedAbort,
 } from "./coordinator-device-removal.js";
 import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
+import { invitationRemovalFence } from "./coordinator-invitation-removal.js";
 import type { projectInviteGuardEvidence } from "./coordinator-project-invite-guards.js";
 import type {
 	CoordinatorConsumeProjectInviteInput,
@@ -157,6 +158,7 @@ export interface LegacyEnrollmentWrite {
 	storeKeyId: boolean;
 	/** Direct enrollment only. Invitation writers keep their current checks until their own slices. */
 	checkRemoval: boolean;
+	inviteId?: string;
 }
 
 export interface LegacyEnrollmentStatement {
@@ -179,25 +181,34 @@ function legacyEnrollmentSourceValues(input: LegacyEnrollmentWrite) {
 function legacyEnrollmentRemoval(input: LegacyEnrollmentWrite) {
 	if (!input.storeKeyId || !input.checkRemoval) return null;
 	const { deviceId, keyId, publicKey } = input;
-	return activeEnrollmentRemoval({ deviceId, keyId, publicKey });
+	const active = activeEnrollmentRemoval({ deviceId, keyId, publicKey });
+	return { sql: `NOT ${active.sql}`, values: active.values };
+}
+
+function legacyEnrollmentInvite(input: LegacyEnrollmentWrite) {
+	if (input.inviteId === undefined) return null;
+	return invitationRemovalFence(input.storeKeyId, { ...input, inviteId: input.inviteId });
 }
 
 export function legacyEnrollmentDenialStatement(
 	input: LegacyEnrollmentWrite,
 ): LegacyEnrollmentStatement {
 	const removal = legacyEnrollmentRemoval(input);
+	const invite = legacyEnrollmentInvite(input);
 	return {
 		sql: `SELECT CASE
 WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
 WHEN ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL} OR ${DEVICE_OWNERSHIP_SUBJECT_EXISTS_SQL}
 THEN 'device_ownership_requires_verified_identity'
-${removal ? `WHEN ${removal.sql} THEN 'device_removed'` : ""}
+ ${invite ? `WHEN NOT (${invite.eligible.sql}) THEN COALESCE((${invite.denial.sql}), 'invite_invalid')` : ""}
+ ${removal ? `WHEN NOT (${removal.sql}) THEN 'device_removed'` : ""}
 WHEN NOT ${LEGACY_ENROLLMENT_SOURCE_MATCH_SQL} THEN 'device_ownership_authorization_unavailable'
 ELSE 'invite_identity_conflict' END AS denial`,
 		values: [
 			input.deviceId,
 			input.keyId,
 			...legacyEnrollmentOwnershipValues(input),
+			...(invite ? [...invite.eligible.values, ...invite.denial.values] : []),
 			...(removal?.values ?? []),
 			...legacyEnrollmentSourceValues(input),
 		],
@@ -218,8 +229,8 @@ export function legacyEnrollmentWriteStatements(
 	input: LegacyEnrollmentWrite,
 ): LegacyEnrollmentStatement[] {
 	const { groupId, deviceId, currentPublicKey } = input;
-	const removal = legacyEnrollmentRemoval(input);
-	const guard = `${LEGACY_ENROLLMENT_GUARD_SQL}${removal ? ` AND NOT ${removal.sql}` : ""}`;
+	const removal = legacyEnrollmentInvite(input)?.eligible ?? legacyEnrollmentRemoval(input);
+	const guard = `${LEGACY_ENROLLMENT_GUARD_SQL}${removal ? ` AND (${removal.sql})` : ""}`;
 	const guards = [
 		deviceId,
 		input.keyId,
@@ -407,6 +418,7 @@ export function legacyDeviceDenial(row: unknown): string {
 			denial === "device_revoked" ||
 			denial === "device_removed" ||
 			denial === "device_ownership_requires_verified_identity" ||
+			denial === "invite_invalid" ||
 			denial === "invite_identity_conflict"
 		)
 			return denial;
@@ -421,6 +433,7 @@ export function legacyDeviceAuthorizationFailure(error: unknown): never {
 		[
 			"device_revoked",
 			"device_ownership_requires_verified_identity",
+			"invite_invalid",
 			"invite_identity_conflict",
 		].includes(error.message)
 	)
