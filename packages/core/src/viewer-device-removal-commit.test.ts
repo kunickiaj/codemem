@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BetterSqliteCoordinatorStore } from "./better-sqlite-coordinator-store.js";
 import { createCoordinatorApp } from "./coordinator-api.js";
 import { CANONICAL_PUBLIC_KEY as key } from "./coordinator-ed25519-key-id-test-fixtures.js";
+import { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
 import { ensureMemoryRetirementDeliverySchema } from "./memory-retirement-delivery-schema.js";
 import { ensurePeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { canonicalKeyId } from "./retired-device-aliases.js";
@@ -318,4 +319,46 @@ describe("Viewer removal commit races and failures", () => {
 			removedBindings: ["local-alias"],
 		});
 	});
+});
+
+it("waits for the shared refresh lane after coordinator proof and runs a fresh pass after cleanup", async () => {
+	const f = await fixture();
+	const lifecycle = createCoordinatorRefreshLifecycle();
+	const running = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const verified = Promise.withResolvers<"verified">();
+	const existing = lifecycle.runRefresh(async () => {
+		running.resolve();
+		await release.promise;
+	});
+	await running.promise;
+
+	const fresh = vi.fn(async () => {
+		expect(f.summary()).toEqual(afterRemoval);
+	});
+	const hooks = lifecycle.forRemoval(fresh);
+	const removal = commitViewerDeviceRemoval(f.confirmed, {
+		...f,
+		waitForRefresh: () => {
+			verified.resolve("verified");
+			return hooks.waitForRefresh();
+		},
+		refresh: hooks.refresh,
+	});
+	try {
+		expect(await Promise.race([verified.promise, removal])).toBe("verified");
+		expect(await f.store.getEnrollment("a", "peer", true)).toBeNull();
+		expect(f.summary()).toEqual(f.before);
+		expect(fresh).not.toHaveBeenCalled();
+	} finally {
+		release.resolve();
+		await Promise.all([existing, removal]);
+	}
+	expect(await removal).toMatchObject({
+		kind: "removed",
+		evidence: { source: "receipt" },
+		localCleanup: { state: "applied" },
+		refreshPending: false,
+	});
+	expect(fresh).toHaveBeenCalledOnce();
 });
