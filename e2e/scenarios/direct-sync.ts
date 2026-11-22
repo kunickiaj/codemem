@@ -3,15 +3,16 @@ import {
 	ADMIN_SECRET,
 	CLI_PREFIX,
 	COORDINATOR_URL,
-	enrollPeerDevice,
 	fetchCoordinatorSnapshot,
 	GROUP_ID,
 	parseJson,
 	readPeerIdentity,
 	writePeerConfig,
 } from "../lib/coordinator.js";
+import { listInventoryProjects, shareProjectsWithTeammate } from "../lib/project-share.js";
 import type { ScenarioContext } from "../lib/scenario-context.js";
 import { seedPeer } from "../lib/seed.js";
+import { startServer, waitForServer } from "../lib/viewer.js";
 import { waitFor } from "../lib/wait.js";
 
 function fetchFixtureSummary(
@@ -44,101 +45,23 @@ function fetchFixtureSummary(
 	return parseJson(result.stdout, `${service}:fixture-summary`);
 }
 
-function startSyncServer(ctx: ScenarioContext, service: string, artifactName: string) {
-	const prepareStaticDir = ctx.compose.exec(
-		service,
-		[
-			"node",
-			"--input-type=module",
-			"-e",
-			"import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('/tmp/viewer-static', { recursive: true }); writeFileSync('/tmp/viewer-static/index.html', '<!doctype html><title>e2e</title>');",
-		],
-		`${artifactName}-prepare-static`,
-		30_000,
-	);
-	assertStatus(prepareStaticDir.status, 0, `failed to prepare static dir for ${service}`);
-	const result = ctx.compose.execDetached(
-		service,
-		[
-			"env",
-			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
-			...CLI_PREFIX,
-			"service",
-			"start",
-			"--foreground",
-			"--db-path",
-			"/data/mem.sqlite",
-			"--host",
-			"0.0.0.0",
-			"--port",
-			"38888",
-		],
-		artifactName,
-		120_000,
-	);
-	assertStatus(result.status, 0, `failed to start sync protocol for ${service}`);
-}
-
-function waitForSyncServer(ctx: ScenarioContext, service: string, artifactName: string) {
-	return waitFor(
-		async () => {
-			const result = ctx.compose.exec(
-				service,
-				[
-					"node",
-					"--input-type=module",
-					"-e",
-					"const res = await fetch('http://127.0.0.1:7337/'); process.exit(res.status === 404 ? 0 : 1);",
-				],
-				artifactName,
-				30_000,
-			);
-			assertStatus(result.status, 0, `${service} sync server is not ready`);
-		},
-		{ description: `${service} sync server readiness`, timeoutMs: 120_000, intervalMs: 2_000 },
-	);
-}
-
-function acceptDiscoveredPeer(
-	ctx: ScenarioContext,
-	service: string,
-	peerDeviceId: string,
-	fingerprint: string,
-	artifactName: string,
-) {
-	const result = ctx.compose.exec(
-		service,
-		[
-			"pnpm",
-			"exec",
-			"tsx",
-			"--conditions",
-			"source",
-			"e2e/scripts/accept-discovered.ts",
-			"--peer-device-id",
-			peerDeviceId,
-			"--fingerprint",
-			fingerprint,
-			"--db-path",
-			"/data/mem.sqlite",
-		],
-		artifactName,
-		120_000,
-	);
-	assertStatus(result.status, 0, `failed to accept discovered peer ${peerDeviceId} on ${service}`);
-	return parseJson<{ ok: boolean; created: boolean; updated: boolean }>(result.stdout, artifactName);
-}
+/** fixture-small sessions run in these directories, one per Project. */
+const FIXTURE_PROJECT_PREFIX = "/workspace/e2e-fixture-";
 
 export async function runDirectSyncScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Direct sync scenario: seed peer-a with fixture-small, have an admin enroll peer-b in the coordinator group, accept discovered peers on both sides, run direct sync, and assert only shared fixture data replicates.",
+		"Direct sync scenario: seed peer-a with fixture-small, share both fixture Projects with peer-b through a Project invite so each gets its own boundary, run direct sync, and assert only shared fixture data replicates.",
 	);
 
 	ctx.compose.down("00-compose-down-pre", true);
 	ctx.compose.up(["coordinator", "peer-a", "peer-b"], "01-compose-up");
 	ctx.compose.ps("02-compose-ps");
 
+	// Create peer-a's sync identity first so the seeded memories record it as
+	// their origin, as they do when sync is enabled before memories are written.
+	// Memories written before sync was enabled are tracked separately (codemem-yfla4).
+	readPeerIdentity(ctx, "peer-a", "03-peer-a-identity-before-seed");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-a", "fixture-small", "03-seed-peer-a-small");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-b", "empty", "04-seed-peer-b-empty");
 
@@ -153,6 +76,9 @@ export async function runDirectSyncScenario(ctx: ScenarioContext): Promise<void>
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_group: GROUP_ID,
 			sync_coordinator_admin_secret: ADMIN_SECRET,
+			sync_advertise: "http://peer-a:7337",
+			sync_device_name: "Owner Mac",
+			actor_display_name: "Owner",
 		},
 		"05-write-peer-a-config",
 	);
@@ -195,28 +121,43 @@ export async function runDirectSyncScenario(ctx: ScenarioContext): Promise<void>
 	);
 	assertStatus(enrollPeerA.status, 0, "failed to enroll peer-a in coordinator");
 
-	// peer-b only needs to be in the coordinator group here, so an admin enrolls it
-	// directly. The coordinator scenario covers joining by invitation and approval.
+	// peer-b joins by accepting a Project invite, which enrolls it, pins both
+	// devices, and gives each shared fixture Project its own boundary. Memories
+	// outside a shared Project stay Local only and never sync.
 	writePeerConfig(
 		ctx,
 		"peer-b",
-		{ sync_coordinator_url: COORDINATOR_URL, sync_coordinator_group: GROUP_ID },
+		{
+			sync_enabled: false,
+			sync_host: "0.0.0.0",
+			sync_port: 7337,
+			sync_interval_s: 5,
+			sync_advertise: "http://peer-b:7337",
+			sync_coordinator_url: COORDINATOR_URL,
+			sync_coordinator_group: GROUP_ID,
+		},
 		"10-write-peer-b-config",
 	);
-
-	const enablePeerB = ctx.compose.exec(
-		"peer-b",
-		[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "5"],
-		"11-enable-peer-b",
-		120_000,
-	);
-	assertStatus(enablePeerB.status, 0, "failed to enable sync on peer-b");
-
 	const peerBIdentity = readPeerIdentity(ctx, "peer-b", "12-peer-b-identity");
-	enrollPeerDevice(ctx, {
-		groupId: GROUP_ID,
-		identity: peerBIdentity,
-		artifactName: "13-enroll-peer-b",
+
+	startServer(ctx, "peer-a", "20-start-peer-a-sync-server");
+	startServer(ctx, "peer-b", "21-start-peer-b-sync-server");
+	await waitForServer(ctx, "peer-a", "22-peer-a-sync-ready");
+	await waitForServer(ctx, "peer-b", "23-peer-b-sync-ready");
+
+	const fixtureProjects = (await listInventoryProjects(ctx, "peer-a", "13-peer-a-projects")).filter((project) =>
+		project.workspace_identity.startsWith(FIXTURE_PROJECT_PREFIX),
+	);
+	assert(fixtureProjects.length === 2, `expected 2 fixture Projects on peer-a, got ${fixtureProjects.length}`);
+	await shareProjectsWithTeammate(ctx, {
+		owner: "peer-a",
+		recipient: "peer-b",
+		recipientDeviceId: peerBIdentity.device_id,
+		projects: fixtureProjects,
+		expectedExistingMemories: 16,
+		teammateName: "Teammate",
+		deviceName: "Teammate Mac",
+		artifactPrefix: "14-share",
 	});
 
 	await waitFor(
@@ -233,14 +174,6 @@ export async function runDirectSyncScenario(ctx: ScenarioContext): Promise<void>
 		},
 		{ description: "peer-b coordinator discovery", timeoutMs: 180_000, intervalMs: 3_000 },
 	);
-
-	acceptDiscoveredPeer(ctx, "peer-a", peerBIdentity.device_id, peerBIdentity.fingerprint, "18-accept-peer-b");
-	acceptDiscoveredPeer(ctx, "peer-b", peerAIdentity.device_id, peerAIdentity.fingerprint, "19-accept-peer-a");
-
-	startSyncServer(ctx, "peer-a", "20-start-peer-a-sync-server");
-	startSyncServer(ctx, "peer-b", "21-start-peer-b-sync-server");
-	await waitForSyncServer(ctx, "peer-a", "22-peer-a-sync-ready");
-	await waitForSyncServer(ctx, "peer-b", "23-peer-b-sync-ready");
 
 	const syncPeerA = ctx.compose.exec(
 		"peer-a",
