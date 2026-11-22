@@ -1,11 +1,13 @@
 import type { AuthLinkStatement } from "./coordinator-auth-link.js";
+import { DEVICE_REVOCATION_SUBJECT_EXISTS_SQL } from "./coordinator-device-revocation.js";
 
-interface InviteRemovalSubject {
-	inviteId: string;
+interface RemovalSubject {
 	deviceId: string;
 	keyId: string | null;
 	publicKey: string;
 }
+
+type InviteRemovalSubject = RemovalSubject & { inviteId: string };
 
 const RECIPIENT_MATCH = `(t.device_id = s.device_id OR
  (s.key_id IS NOT NULL AND t.key_id = s.key_id) OR
@@ -25,16 +27,51 @@ const STALE_SQL = `CASE
  ELSE 'fresh' END`;
 
 export function invitationRemovalFence(ready: boolean, subject: InviteRemovalSubject) {
+	return removalFence(ready, subject, {
+		source: "coordinator_invites i",
+		match: "i.invite_id = s.source_id",
+		id: subject.inviteId,
+	});
+}
+
+export function joinRequestRemovalFence(
+	ready: boolean,
+	subject: RemovalSubject & { requestId: string },
+	tokenDigest: string,
+) {
+	return removalFence(ready, subject, {
+		source: `(SELECT jr.request_id, jr.group_id, jr.issued_after_removal_seq,
+		 (SELECT invite.inviter_device_id FROM coordinator_invites invite
+		  WHERE invite.group_id = jr.group_id AND (invite.token = jr.token OR invite.token_digest = ?)
+		  LIMIT 1) AS inviter_device_id FROM coordinator_join_requests jr) i`,
+		match: "i.request_id = s.source_id",
+		id: subject.requestId,
+		values: [tokenDigest],
+	});
+}
+
+function removalFence(
+	ready: boolean,
+	subject: RemovalSubject,
+	source: { source: string; match: string; id: string; values?: string[] },
+) {
 	if (!ready) return null;
-	const { inviteId, deviceId, keyId, publicKey } = subject;
+	const { deviceId, keyId, publicKey } = subject;
 	// D1 repeats this guard within one statement. Bind the tuple once per use.
-	const from = `FROM coordinator_invites i
- CROSS JOIN (SELECT json_extract(value,'$[0]') AS invite_id, json_extract(value,'$[1]') AS device_id,
+	const from = `FROM ${source.source}
+ CROSS JOIN (SELECT json_extract(value,'$[0]') AS source_id, json_extract(value,'$[1]') AS device_id,
  json_extract(value,'$[2]') AS key_id, json_extract(value,'$[3]') AS public_key
- FROM json_each(?)) s WHERE i.invite_id = s.invite_id`;
+ FROM json_each(?)) s WHERE ${source.match}`;
 	const active = `EXISTS (SELECT 1 FROM coordinator_device_removals t WHERE t.lifted_at IS NULL AND ${RECIPIENT_MATCH})`;
-	const values = [JSON.stringify([[inviteId, deviceId, keyId, publicKey]])];
+	const values = [
+		...(source.values ?? []),
+		JSON.stringify([[source.id, deviceId, keyId, publicKey]]),
+	];
 	return {
+		ordered: {
+			sql: `EXISTS (SELECT 1 ${from} AND (${STALE_SQL}) = 'fresh')`,
+			values,
+		},
 		eligible: {
 			sql: `EXISTS (SELECT 1 ${from} AND (${STALE_SQL}) = 'fresh' AND NOT (${active}))`,
 			values,
@@ -43,10 +80,44 @@ export function invitationRemovalFence(ready: boolean, subject: InviteRemovalSub
 			sql: `SELECT (${STALE_SQL}) AS ordering, (${active}) AS active ${from}`,
 			values,
 		},
+		denial: {
+			sql: `SELECT CASE WHEN (${STALE_SQL}) = 'fresh' THEN 'device_removed' ELSE (${STALE_SQL}) END ${from}`,
+			values,
+		},
 	};
 }
 
 export type InvitationRemovalState = { ordering: string; active: number };
+export type InvitationRemovalFence = ReturnType<typeof invitationRemovalFence>;
+
+export function withInvitationRemovalGuard<
+	T extends {
+		eligibilitySql: string;
+		eligibilityValues: unknown[];
+		boundEligibilitySql: string;
+		boundEligibilityValues: unknown[];
+	},
+>(guard: T, fence: InvitationRemovalFence): T {
+	if (!fence) return guard;
+	return {
+		...guard,
+		eligibilitySql: `${guard.eligibilitySql} AND (${fence.eligible.sql})`,
+		eligibilityValues: [...guard.eligibilityValues, ...fence.eligible.values],
+		boundEligibilitySql: `${guard.boundEligibilitySql} AND (${fence.eligible.sql})`,
+		boundEligibilityValues: [...guard.boundEligibilityValues, ...fence.eligible.values],
+	};
+}
+
+export function joinRequestCreationDenial(
+	fence: NonNullable<ReturnType<typeof invitationRemovalFence>>,
+	subject: Pick<RemovalSubject, "deviceId" | "keyId">,
+) {
+	return {
+		sql: `SELECT CASE WHEN ${DEVICE_REVOCATION_SUBJECT_EXISTS_SQL} THEN 'device_revoked'
+ ELSE COALESCE((${fence.denial.sql}), 'invite_invalid') END AS denial`,
+		values: [subject.deviceId, subject.keyId, ...fence.denial.values],
+	};
+}
 
 export function invitationRemovalNeedsLift(
 	state: InvitationRemovalState | null | undefined,

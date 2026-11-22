@@ -1101,6 +1101,7 @@ async function prepareProjectInviteGuards(
 	db: D1DatabaseLike,
 	initial: CoordinatorInvite,
 	opts: CoordinatorConsumeProjectInviteInput,
+	hasRemovalSchema: boolean,
 ) {
 	const participantOpts = { ...opts, identityId: opts.recipientActorId };
 	const enrollmentRow = await firstRow<CoordinatorEnrollment>(
@@ -1135,12 +1136,45 @@ async function prepareProjectInviteGuards(
 		incoming: recipientKeyId,
 		current: currentKeyId,
 	});
+	const removal = invitationRemovalFence(hasRemovalSchema, {
+		...opts,
+		inviteId: initial.invite_id,
+		keyId: recipientKeyId,
+	});
+	const assertEligible = projectInviteEligibility(db, {
+		initial,
+		opts,
+		guard,
+		enrollment,
+		recipientKeyId,
+		removal,
+	});
+	await assertEligible({ requireBinding: false });
+	validateRecipientEnrollmentTuple(enrollment, participantOpts);
+	return { ...withInvitationRemovalGuard(guard, removal), assertEligible };
+}
+
+function projectInviteEligibility(
+	db: D1DatabaseLike,
+	input: {
+		initial: CoordinatorInvite;
+		opts: CoordinatorConsumeProjectInviteInput;
+		guard: ReturnType<typeof legacyProjectInviteOwnershipEvidence>;
+		enrollment: CoordinatorEnrollment | null;
+		recipientKeyId: string | null;
+		removal: InvitationRemovalFence;
+	},
+) {
+	const { initial, opts, guard, enrollment, recipientKeyId, removal } = input;
+	const participantOpts = { ...opts, identityId: opts.recipientActorId };
 	const assertEligible = async (options: { requireBinding: boolean }): Promise<void> => {
 		const state = await readRecipientInviteDecision(
 			() => prepareProjectInviteDecision(db, initial, opts, guard, options),
 			["revoked", "owned", "eligible"],
 		);
 		if (state.revoked === 1) throw new Error("device_revoked");
+		if (state.owned === 0)
+			await assertInvitationRemovalClear(db, removal, { missing: "invite_invalid" });
 		if (state.eligible === 0) {
 			if (state.owned === 0) validateRecipientEnrollmentTuple(enrollment, participantOpts);
 			await rejectStaleRecipientInviteEvidence(db, initial, participantOpts, recipientKeyId, {
@@ -1148,9 +1182,19 @@ async function prepareProjectInviteGuards(
 			});
 		}
 	};
-	await assertEligible({ requireBinding: false });
-	validateRecipientEnrollmentTuple(enrollment, participantOpts);
-	return { ...guard, assertEligible };
+	return assertEligible;
+}
+
+async function assertInvitationRemovalClear(
+	db: D1DatabaseLike,
+	removal: InvitationRemovalFence,
+	options?: { missing: "invite_invalid" },
+) {
+	if (!removal) return;
+	const { sql, values } = removal.read;
+	const state = await firstRow<InvitationRemovalState>(db.prepare(sql).bind(...values));
+	if (!state && options?.missing) throw new Error(options.missing);
+	invitationRemovalNeedsLift(state, { consumed: true });
 }
 
 function prepareBoundProjectInviteIdentityRepair(
@@ -2380,7 +2424,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 	}
 
-	async enrollDevice(_groupId: string, _opts: CoordinatorEnrollDeviceInput): Promise<void> {
+	async enrollDevice(
+		_groupId: string,
+		_opts: CoordinatorEnrollDeviceInput,
+		invitation?: { inviteId: string },
+	): Promise<void> {
+		const inviteId = invitation?.inviteId;
 		const { deviceId, publicKey, fingerprint, identityId, displayName } = captureLegacyEnrollment(
 			_groupId,
 			_opts,
@@ -2409,6 +2458,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				currentKeyId,
 				storeKeyId: await this.hasRemovalSchema(),
 				checkRemoval: true,
+				inviteId,
 			};
 			const writes = legacyEnrollmentWriteStatements(enrollment);
 			if (legacyEnrollmentWritten(await this.runLegacyEnrollmentWrites(writes))) return;
@@ -3019,7 +3069,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			throw new Error("invite_expired");
 		}
 		if (initial.consumed_at) assertProjectInviteBinding(initial, _opts);
-		const guard = await prepareProjectInviteGuards(this.db, initial, _opts);
+		const guard = await this.projectInvitationGuards(initial, _opts);
 		const grantId = tokenUrlSafe(12);
 		const enrollmentValues = projectInviteEnrollmentValues(initial, _opts);
 		const consume: ProjectInviteConsume = {
@@ -3125,9 +3175,17 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		).map((row) => rowToRecord<CoordinatorInvite>(row));
 	}
 
+	private async projectInvitationGuards(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeProjectInviteInput,
+	) {
+		return prepareProjectInviteGuards(this.db, invite, opts, await this.hasRemovalSchema());
+	}
+
 	async createJoinRequest(
 		_opts: CoordinatorCreateJoinRequestInput,
 	): Promise<CoordinatorJoinRequest> {
+		_opts = { ..._opts };
 		const now = nowISO();
 		const requestId = tokenUrlSafe(12);
 		const hasRemovalSchema = await this.hasRemovalSchema();
@@ -3135,11 +3193,18 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		const removalSeqValues = hasRemovalSchema
 			? [_opts.groupId, _opts.token, await tokenDigest(_opts.token)]
 			: [];
-		await this.db
+		const keyId =
+			_opts.inviteId === undefined ? null : await ed25519KeyIdForRevocation(_opts.publicKey);
+		const fence =
+			_opts.inviteId === undefined
+				? null
+				: invitationRemovalFence(hasRemovalSchema, { ..._opts, inviteId: _opts.inviteId, keyId });
+		const statement = this.db
 			.prepare(`INSERT INTO coordinator_join_requests(
 				request_id, group_id, device_id, public_key, fingerprint, display_name, token, status,
 				created_at, reviewed_at, reviewed_by${removalSeq.column}
-			) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value})`)
+			) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL${removalSeq.value}
+			WHERE ${fence?.ordered.sql ?? "1"}`)
 			.bind(
 				requestId,
 				_opts.groupId,
@@ -3150,8 +3215,15 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				_opts.token,
 				now,
 				...removalSeqValues,
-			)
-			.run();
+				...(fence?.ordered.values ?? []),
+			);
+		if ((await runChanges(statement)) !== 1) {
+			if (!fence) throw new Error("join_review_incomplete");
+			const denial = joinRequestCreationDenial(fence, { deviceId: _opts.deviceId, keyId });
+			throw new Error(
+				legacyDeviceDenial(await firstRow(this.db.prepare(denial.sql).bind(...denial.values))),
+			);
+		}
 		const row = await firstRow<CoordinatorJoinRequest>(
 			this.db
 				.prepare(`SELECT request_id, group_id, device_id, public_key, fingerprint, display_name, token, status, created_at, reviewed_at, reviewed_by
@@ -3268,22 +3340,51 @@ export class D1CoordinatorStore implements CoordinatorStore {
 					.bind(row.group_id, row.device_id),
 			),
 		);
-		const guard = joinReviewGuardEvidence(
+		const keyId = await ed25519KeyIdForRevocation(row.public_key);
+		const evidence = joinReviewGuardEvidence(
 			row,
 			seedEnrollment,
 			{
-				recipient: await ed25519KeyIdForRevocation(row.public_key),
+				recipient: keyId,
 				seed: seedEnrollment ? await ed25519KeyIdForRevocation(seedEnrollment.public_key) : null,
 				current:
 					currentPublicKey === null ? null : await ed25519KeyIdForRevocation(currentPublicKey),
 			},
 			currentPublicKey,
 		);
-		await this.assertJoinOwnershipAvailable(guard);
+		const guard = await this.joinApprovalRemovalGuard(row, keyId, evidence);
+		await this.assertJoinApprovalEligible(guard);
 		return { guard, bootstrapGrantInput };
 	}
 
-	private async assertJoinOwnershipAvailable(guard: ReturnType<typeof joinReviewGuardEvidence>) {
+	private async joinApprovalRemovalGuard(
+		row: CoordinatorJoinRequest & { public_key: string },
+		keyId: string | null,
+		evidence: ReturnType<typeof joinReviewGuardEvidence>,
+	) {
+		const removal = joinRequestRemovalFence(
+			await this.hasRemovalSchema(),
+			{
+				requestId: row.request_id,
+				deviceId: row.device_id,
+				publicKey: row.public_key,
+				keyId,
+			},
+			await tokenDigest(row.token),
+		);
+		return removal
+			? {
+					...evidence,
+					removal,
+					eligibilitySql: `${evidence.eligibilitySql} AND (${removal.eligible.sql})`,
+					eligibilityValues: [...evidence.eligibilityValues, ...removal.eligible.values],
+				}
+			: { ...evidence, removal };
+	}
+
+	private async assertJoinApprovalEligible(
+		guard: Awaited<ReturnType<D1CoordinatorStore["prepareJoinApproval"]>>["guard"],
+	) {
 		const revocation = await readRecipientInviteDecision(
 			() =>
 				this.db
@@ -3301,11 +3402,15 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		if (state.revoked === 1) throw new Error("device_revoked");
 		if (state.owned === 1) throw new Error("device_ownership_requires_verified_identity");
+		await assertInvitationRemovalClear(this.db, guard.removal);
 	}
 
 	private async executeJoinApprovalBatch(
 		statements: D1PreparedStatementLike[],
-		options: { requestId: string; guard: ReturnType<typeof joinReviewGuardEvidence> },
+		options: {
+			requestId: string;
+			guard: Awaited<ReturnType<D1CoordinatorStore["prepareJoinApproval"]>>["guard"];
+		},
 	): Promise<boolean> {
 		if (!this.db.batch) throw new Error("join_review_unavailable");
 		let results: unknown[];
@@ -3323,7 +3428,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			} catch {
 				throw new Error("join_review_incomplete");
 			}
-			if (latest?.status === "pending") await this.assertJoinOwnershipAvailable(options.guard);
+			if (latest?.status === "pending") await this.assertJoinApprovalEligible(options.guard);
 			// A trigger abort rolled this batch back. A concurrent review may still have decided the request.
 			rethrowDeviceRemovedAbort(error);
 			throw new Error("join_review_incomplete");
@@ -3555,7 +3660,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 
 	private async classifyJoinReviewFailure(
 		requestId: string,
-		guard: ReturnType<typeof joinReviewGuardEvidence> | null,
+		guard: Awaited<ReturnType<D1CoordinatorStore["prepareJoinApproval"]>>["guard"] | null,
 	): Promise<CoordinatorJoinRequestReviewResult | null> {
 		const latest = await firstRow<CoordinatorJoinRequestReviewResult>(
 			this.db
@@ -3566,7 +3671,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		);
 		if (!latest) return null;
 		if (latest.status !== "pending") return { ...latest, _no_transition: true };
-		if (guard) await this.assertJoinOwnershipAvailable(guard);
+		if (guard) await this.assertJoinApprovalEligible(guard);
 		throw new Error("join_review_incomplete");
 	}
 
@@ -4632,8 +4737,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 }
 
 import {
+	type InvitationRemovalFence,
 	type InvitationRemovalState,
 	invitationRemovalFence,
 	invitationRemovalNeedsLift,
+	joinRequestCreationDenial,
+	joinRequestRemovalFence,
 	liftInvitationRemovals,
+	withInvitationRemovalGuard,
 } from "./coordinator-invitation-removal.js";

@@ -4,6 +4,7 @@ import type {
 	RevocationFixture,
 	revocationHarness,
 } from "./coordinator-device-revocation-test-harness.js";
+import { projectInvite } from "./coordinator-project-revocation-test-harness.js";
 import { recipientInvite } from "./coordinator-recipient-revocation-test-harness.js";
 import { recipientReviewedIntentDigest } from "./recipient-reviewed-intent.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
@@ -13,6 +14,7 @@ export const liftTables = [
 	"groups",
 	"enrolled_devices",
 	"coordinator_invites",
+	"coordinator_join_requests",
 	"coordinator_bootstrap_grants",
 	"coordinator_device_removals",
 	"coordinator_device_revocations",
@@ -133,28 +135,15 @@ async function arrange(
 	kind: Kind,
 	scenario: Scenario,
 	verifier: CoordinatorRequestVerifier,
+	beforeRemoval?: () => Promise<void>,
 ) {
 	const key = await signingKey();
 	Object.assign(f.input, { publicKey: key.publicKey, fingerprint: key.fingerprint });
 	const a = await api(f, verifier);
 	const stale = await issueLiftInvitation(f, kind, a.post);
 	await enrollAliases(f, key);
-	const preview = await a.post("/v1/admin/devices/removal-preview", {
-		device_ids: [f.input.deviceId],
-	});
-	expect(preview.status).toBe(200);
-	const reviewed = (await preview.json()) as { expected_digest: string };
-	const removal = await a.post("/v1/admin/devices/removal", {
-		device_ids: [f.input.deviceId],
-		expected_digest: reviewed.expected_digest,
-	});
-	expect(removal.status).toBe(200);
-	expect(await f.rows("coordinator_device_removals")).toHaveLength(3);
-	expect(await f.rows("coordinator_scope_memberships")).toMatchObject([
-		{ status: "revoked" },
-		{ status: "revoked" },
-		{ status: "revoked" },
-	]);
+	await beforeRemoval?.();
+	await removeAliases(f, a.post);
 	// A fresh invitation must carry the removal high-water mark, unlike stale.
 	const fresh = await issueLiftInvitation(f, kind, a.post);
 	if (kind === "team_member") {
@@ -187,6 +176,21 @@ async function arrange(
 		body.fingerprint = signer.fingerprint;
 	}
 	return { ...a, body, signer, fresh, stale };
+}
+
+async function removeAliases(f: RevocationFixture, post: Awaited<ReturnType<typeof api>>["post"]) {
+	const device_ids = [f.input.deviceId];
+	const preview = await post("/v1/admin/devices/removal-preview", { device_ids });
+	expect(preview.status).toBe(200);
+	const { expected_digest } = (await preview.json()) as { expected_digest: string };
+	const removal = await post("/v1/admin/devices/removal", { device_ids, expected_digest });
+	expect(removal.status).toBe(200);
+	expect(await f.rows("coordinator_device_removals")).toHaveLength(3);
+	expect(await f.rows("coordinator_scope_memberships")).toMatchObject([
+		{ status: "revoked" },
+		{ status: "revoked" },
+		{ status: "revoked" },
+	]);
 }
 
 async function signedJoin(a: Awaited<ReturnType<typeof arrange>>, scenario: Scenario) {
@@ -238,6 +242,9 @@ export function registerInvitationLiftContract(
 		registerSuccess(test, kind, verifier);
 		registerDenials(test, kind, verifier);
 	}
+	registerPreRemovalAuthorityDenials(test, verifier);
+	registerPreRemovalRequestDenial(test, verifier);
+	registerPreRemovalProjectDenials(test, verifier);
 	test("a zero-row enrollment after lifting rolls back the invitation and every tombstone", async ({
 		fixture: f,
 	}) => {
@@ -268,6 +275,131 @@ export function registerInvitationLiftContract(
 		const response = await signedJoin(a, "eligible");
 		expect(response.status).toBe(403);
 		expect(await response.json()).toEqual({ error: "device_removed" });
+		expect(await snapshot(f)).toEqual(before);
+	});
+}
+
+function registerPreRemovalAuthorityDenials(
+	test: ReturnType<typeof revocationHarness>,
+	verifier: CoordinatorRequestVerifier,
+) {
+	for (const policy of ["auto_admit", "approval_required"] as const) {
+		test(`a pre-removal ${policy} code cannot grant access to another group after rejoin`, async ({
+			fixture: f,
+		}) => {
+			const groupId = `${f.input.groupId}-other`;
+			const issueCode = () =>
+				f.store.createInvite({
+					groupId,
+					policy,
+					expiresAt: "2099-01-01T00:00:00Z",
+				});
+			let token = "";
+			const a = await arrange(f, "team_member", "eligible", verifier, async () => {
+				token = (await issueCode()).token;
+			});
+			expect((await signedJoin(a, "eligible")).status).toBe(200);
+			const before = await snapshot(f);
+			const join = (code: string) =>
+				a.post("/v1/join", {
+					token: code,
+					device_id: f.input.deviceId,
+					public_key: f.input.publicKey,
+					fingerprint: f.input.fingerprint,
+				});
+			const stale = await join(token);
+			expect(stale.status).toBe(403);
+			expect(await stale.json()).toEqual({ error: "device_removed" });
+			expect(await snapshot(f)).toEqual(before);
+			expect(await f.store.getEnrollment(groupId, f.input.deviceId, true)).toBeNull();
+			const fresh = await join((await issueCode()).token);
+			expect(fresh.status).toBe(200);
+			const freshBody = (await fresh.json()) as { status: string; request_id?: string };
+			expect(freshBody).toMatchObject({
+				status: policy === "auto_admit" ? "enrolled" : "pending",
+			});
+			if (freshBody.request_id) {
+				const approval = await a.post("/v1/admin/join-requests/approve", {
+					request_id: freshBody.request_id,
+				});
+				expect(approval.status).toBe(200);
+			}
+			expect(await f.store.getEnrollment(groupId, f.input.deviceId)).not.toBeNull();
+		});
+	}
+}
+
+function registerPreRemovalRequestDenial(
+	test: ReturnType<typeof revocationHarness>,
+	verifier: CoordinatorRequestVerifier,
+) {
+	test("a retained join request from before removal cannot be approved after rejoin", async ({
+		fixture: f,
+	}) => {
+		const groupId = `${f.input.groupId}-other`;
+		const a = await arrange(f, "team_member", "eligible", verifier);
+		expect((await signedJoin(a, "eligible")).status).toBe(200);
+		// A request stored by an older coordinator can still be pending after a rejoin.
+		await f.exec(
+			`INSERT INTO coordinator_join_requests
+			(request_id, group_id, device_id, public_key, fingerprint, token, status, created_at, issued_after_removal_seq)
+			VALUES ('historical-request', ?, ?, ?, ?, 'historical-code', 'pending', ?, 0)`,
+			groupId,
+			f.input.deviceId,
+			f.input.publicKey,
+			f.input.fingerprint,
+			LIFT_NOW,
+		);
+		const before = await snapshot(f);
+		const review = await a.post("/v1/admin/join-requests/approve", {
+			request_id: "historical-request",
+		});
+		expect(review.status).toBe(403);
+		expect(await review.json()).toEqual({ error: "device_removed" });
+		expect(await snapshot(f)).toEqual(before);
+	});
+}
+
+function registerPreRemovalProjectDenials(
+	test: ReturnType<typeof revocationHarness>,
+	verifier: CoordinatorRequestVerifier,
+) {
+	for (const retry of [false, true]) {
+		test(`a pre-removal Project invitation cannot ${retry ? "recover a bound grant" : "accept"} after rejoin`, async ({
+			fixture: f,
+		}) => {
+			const groupId = `${f.input.groupId}-other`;
+			let project!: Awaited<ReturnType<typeof projectInvite>>;
+			const a = await arrange(f, "team_member", "eligible", verifier, async () => {
+				project = await projectInvite({ ...f, input: { ...f.input, groupId } });
+				if (retry) {
+					await f.store.setDeviceEnabled(groupId, project.seed.deviceId, false);
+					const accepted = await f.store.consumeProjectInvite(project.input);
+					expect(accepted.bootstrap_grant).toBeNull();
+					await f.store.setDeviceEnabled(groupId, project.seed.deviceId, true);
+				}
+			});
+			expect((await signedJoin(a, "eligible")).status).toBe(200);
+			const before = await snapshot(f);
+			await expect(f.store.consumeProjectInvite(project.input)).rejects.toThrow(/^device_removed$/);
+			expect(await snapshot(f)).toEqual(before);
+		});
+	}
+	test("a Project invitation predating its inviter's removal stays invalid after the inviter returns", async ({
+		fixture: f,
+	}) => {
+		const { input, seed } = await projectInvite(f);
+		expect(await f.store.removeDevice(seed.groupId, seed.deviceId)).toBe(true);
+		await f.exec(
+			`UPDATE coordinator_device_removals SET lifted_at = ?, lifted_by_attempt_id = 'fixture-rejoin'
+			WHERE group_id = ? AND device_id = ?`,
+			LIFT_NOW,
+			seed.groupId,
+			seed.deviceId,
+		);
+		await f.store.enrollDevice(seed.groupId, seed);
+		const before = await snapshot(f);
+		await expect(f.store.consumeProjectInvite(input)).rejects.toThrow(/^invite_invalid$/);
 		expect(await snapshot(f)).toEqual(before);
 	});
 }

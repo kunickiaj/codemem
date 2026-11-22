@@ -407,6 +407,8 @@ export interface CoordinatorConsumeRecipientInviteInput {
 }
 
 export interface CoordinatorCreateJoinRequestInput {
+	/** Internal invitation row ID resolved from the request token. */
+	inviteId?: string;
 	groupId: string;
 	deviceId: string;
 	publicKey: string;
@@ -547,7 +549,11 @@ export interface CoordinatorStore
 	renameGroup(groupId: string, displayName: string): Promise<boolean>;
 	archiveGroup(groupId: string, archivedAt?: string): Promise<boolean>;
 	unarchiveGroup(groupId: string): Promise<boolean>;
-	enrollDevice(groupId: string, opts: CoordinatorEnrollDeviceInput): Promise<void>;
+	enrollDevice(
+		groupId: string,
+		opts: CoordinatorEnrollDeviceInput,
+		invitation?: { inviteId: string },
+	): Promise<void>;
 	listEnrolledDevices(groupId: string, includeDisabled?: boolean): Promise<CoordinatorEnrollment[]>;
 	getEnrollment(
 		groupId: string,
