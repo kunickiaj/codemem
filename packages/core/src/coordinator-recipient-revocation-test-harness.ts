@@ -276,25 +276,21 @@ function registerInviterDenials(test: RecipientTest) {
 }
 
 function registerPending(test: RecipientTest) {
-	for (const retained of ["disabled", "removed"] as const) {
-		test(`unrevoked ${retained} inviter leaves add-device accepted and pending without a grant`, async ({
-			fixture: f,
-		}) => {
-			// Arrange
-			const { input, seed } = await recipientInvite(f, "add_device");
-			if (retained === "disabled")
-				await f.store.setDeviceEnabled(seed.groupId, seed.deviceId, false);
-			else await f.store.removeDevice(seed.groupId, seed.deviceId);
-			// Act
-			const accepted = await f.store.consumeRecipientInvite(input);
-			const retry = await f.store.consumeRecipientInvite(input);
-			// Assert
-			expect([accepted.status, retry.status]).toEqual(["accepted", "existing"]);
-			expect([accepted.bootstrap_grant, retry.bootstrap_grant]).toEqual([null, null]);
-			expect(await f.rows("coordinator_bootstrap_grants")).toEqual([]);
-		});
-	}
-	test("historical inviter key does not infer current ownership after the enrollment is removed", async ({
+	test("a disabled but unremoved inviter leaves add-device accepted and pending without a grant", async ({
+		fixture: f,
+	}) => {
+		// Arrange
+		const { input, seed } = await recipientInvite(f, "add_device");
+		await f.store.setDeviceEnabled(seed.groupId, seed.deviceId, false);
+		// Act
+		const accepted = await f.store.consumeRecipientInvite(input);
+		const retry = await f.store.consumeRecipientInvite(input);
+		// Assert
+		expect([accepted.status, retry.status]).toEqual(["accepted", "existing"]);
+		expect([accepted.bootstrap_grant, retry.bootstrap_grant]).toEqual([null, null]);
+		expect(await f.rows("coordinator_bootstrap_grants")).toEqual([]);
+	});
+	test("an invitation issued before its inviter was removed is invalid without inferring a current key block", async ({
 		fixture: f,
 	}) => {
 		// Arrange
@@ -303,11 +299,9 @@ function registerPending(test: RecipientTest) {
 		await f.store.enrollDevice(seed.groupId, historicalAlias);
 		await f.store.removeDevice(seed.groupId, seed.deviceId);
 		await f.store.createDeviceRevocation(historicalAlias);
-		// Act
-		const accepted = await f.store.consumeRecipientInvite(input);
-		// Assert
-		expect(accepted).toMatchObject({ status: "accepted", bootstrap_grant: null });
-		expect(await f.rows("coordinator_bootstrap_grants")).toEqual([]);
+		const before = await recipientSnapshot(f);
+		await expect(f.store.consumeRecipientInvite(input)).rejects.toThrow(/^invite_invalid$/);
+		expect(await recipientSnapshot(f)).toEqual(before);
 	});
 }
 

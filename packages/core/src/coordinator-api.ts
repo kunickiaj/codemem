@@ -371,6 +371,34 @@ export type CoordinatorRequestVerifier = (
 	input: CoordinatorVerifyRequestInput,
 ) => Promise<boolean> | boolean;
 
+async function verifyInvitationJoinProof(
+	c: Context,
+	verify: CoordinatorRequestVerifier,
+	raw: Uint8Array,
+	input: { deviceId: string; publicKey: string },
+): Promise<boolean> {
+	const timestamp = c.req.header("X-Opencode-Timestamp");
+	const nonce = c.req.header("X-Opencode-Nonce");
+	const signature = c.req.header("X-Opencode-Signature");
+	if (c.req.header("X-Opencode-Device") !== input.deviceId || !timestamp || !nonce || !signature)
+		return false;
+	try {
+		return (
+			(await verify({
+				...input,
+				method: "POST",
+				pathWithQuery: pathWithQuery(c.req.url),
+				bodyBytes: raw,
+				timestamp,
+				nonce,
+				signature,
+			})) === true
+		);
+	} catch {
+		return false;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -631,6 +659,39 @@ function recipientInviteAcceptanceErrorResponse(c: Context, error: unknown): Res
 	if (ownership) return ownership;
 	const code = error instanceof Error ? error.message : "invite_invalid";
 	return c.json({ error: code }, recipientInviteErrorStatus(code));
+}
+
+async function acceptRecipientInvitation(
+	c: Context,
+	store: CoordinatorStore,
+	input: Parameters<CoordinatorStore["consumeRecipientInvite"]>[0],
+) {
+	try {
+		const {
+			status,
+			invite,
+			bootstrap_grant: grant,
+			reviewed_intent,
+		} = await store.consumeRecipientInvite(input);
+		return c.json({
+			ok: true,
+			status,
+			kind: invite.invite_kind,
+			group_id: invite.group_id,
+			identity_id: invite.recipient_actor_id,
+			policy_team_id: invite.policy_team_id ?? null,
+			target_identity_id: invite.target_identity_id ?? null,
+			assigned_identity_id: invite.assigned_identity_id ?? null,
+			bootstrap_grant_id: grant?.grant_id ?? null,
+			inviter_device: grant
+				? await store.getEnrollment(invite.group_id, grant.seed_device_id)
+				: null,
+			reviewed_preview_digest: invite.reviewed_preview_digest,
+			reviewed_intent,
+		});
+	} catch (error) {
+		return recipientInviteAcceptanceErrorResponse(c, error);
+	}
 }
 
 function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Response {
@@ -2816,40 +2877,22 @@ export function createCoordinatorApp(
 				) {
 					return c.json({ error: "add_device_invite_self_acceptance_forbidden" }, 409);
 				}
-				try {
-					const acceptance = await store.consumeRecipientInvite({
-						...recipientInviteContext(opts, token),
-						inviteKind: invite.invite_kind as "team_member" | "add_device",
-						identityId,
-						deviceId,
-						publicKey,
-						fingerprint,
-						recipientDisplayName: normalizedRecipientDisplayName,
-						deviceDisplayName: normalizedDeviceDisplayName,
-						now: runtime.now(),
-					});
-					return c.json({
-						ok: true,
-						status: acceptance.status,
-						kind: acceptance.invite.invite_kind,
-						group_id: acceptance.invite.group_id,
-						identity_id: acceptance.invite.recipient_actor_id,
-						policy_team_id: acceptance.invite.policy_team_id ?? null,
-						target_identity_id: acceptance.invite.target_identity_id ?? null,
-						assigned_identity_id: acceptance.invite.assigned_identity_id ?? null,
-						bootstrap_grant_id: acceptance.bootstrap_grant?.grant_id ?? null,
-						inviter_device: acceptance.bootstrap_grant
-							? await store.getEnrollment(
-									acceptance.invite.group_id,
-									acceptance.bootstrap_grant.seed_device_id,
-								)
-							: null,
-						reviewed_preview_digest: acceptance.invite.reviewed_preview_digest,
-						reviewed_intent: acceptance.reviewed_intent,
-					});
-				} catch (error) {
-					return recipientInviteAcceptanceErrorResponse(c, error);
-				}
+				const joinProofVerified =
+					data.device_id === deviceId &&
+					data.public_key === publicKey &&
+					(await verifyInvitationJoinProof(c, requestVerifier, raw, { deviceId, publicKey }));
+				return await acceptRecipientInvitation(c, store, {
+					...recipientInviteContext(opts, token),
+					inviteKind: invite.invite_kind as "team_member" | "add_device",
+					identityId,
+					deviceId,
+					publicKey,
+					fingerprint,
+					joinProofVerified,
+					recipientDisplayName: normalizedRecipientDisplayName,
+					deviceDisplayName: normalizedDeviceDisplayName,
+					now: runtime.now(),
+				});
 			}
 			if (invite.operation_id || invite.reviewed_project_set_digest) {
 				const allowedProjectAcceptanceFields = new Set([

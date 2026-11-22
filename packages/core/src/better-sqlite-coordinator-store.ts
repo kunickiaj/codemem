@@ -2423,6 +2423,48 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		};
 	}
 
+	private prepareRecipientInvitationRemoval(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeRecipientInviteInput,
+		consumedAt: string,
+		authorization: ReturnType<BetterSqliteCoordinatorStore["recipientInviteAuthorization"]>,
+	) {
+		const subject = {
+			inviteId: invite.invite_id,
+			deviceId: opts.deviceId,
+			keyId: enrollmentRevocationKeyId(opts.publicKey),
+			publicKey: opts.publicKey,
+		};
+		const fence = invitationRemovalFence(this.hasRemovalSchema(), subject);
+		if (!fence) return { authorization, lifted: false };
+		const read = () =>
+			this.db.prepare(fence.read.sql).get(...fence.read.values) as
+				| InvitationRemovalState
+				| undefined;
+		const lifted = invitationRemovalNeedsLift(read(), {
+			consumed: Boolean(invite.consumed_at),
+			proofVerified: opts.joinProofVerified,
+		});
+		if (lifted) {
+			const statement = liftInvitationRemovals(subject, consumedAt, authorization);
+			if (this.db.prepare(statement.sql).run(...statement.values).changes === 0)
+				throw new Error("device_removed");
+		}
+		const assertRemovalClear = () => invitationRemovalNeedsLift(read(), { consumed: true });
+		assertRemovalClear();
+		return {
+			lifted,
+			authorization: {
+				sql: `${authorization.sql} AND (${fence.eligible.sql})`,
+				values: [...authorization.values, ...fence.eligible.values],
+				assertAuthorized: () => {
+					authorization.assertAuthorized();
+					assertRemovalClear();
+				},
+			},
+		};
+	}
+
 	async consumeRecipientInvite(
 		input: CoordinatorConsumeRecipientInviteInput,
 	): Promise<CoordinatorRecipientInviteAcceptance> {
@@ -2485,16 +2527,21 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					throw new Error("invite_identity_conflict");
 				}
 				const participantSubjects = this.validateRecipientInviteParticipants(invite, opts);
-				const authorization = this.recipientInviteAuthorization(invite, opts, participantSubjects);
-				const { sql: authorizationSql, values: authorizationValues } = authorization;
 				this.assertRecipientInviteAuthorized(invite, opts, participantSubjects);
 				// The guards re-run the retained-ownership reads inside this transaction. They
 				// replace the pin that the token update and later writes each carried.
 				this.assertRecipientOwnerGuards(consistency?.guards);
+				const { authorization, lifted } = this.prepareRecipientInvitationRemoval(
+					invite,
+					opts,
+					consumedAt,
+					this.recipientInviteAuthorization(invite, opts, participantSubjects),
+				);
 				const changed = this.consumeRecipientOwnerToken(invite, opts, {
 					authorization,
 					consumedAt,
 				});
+				if (lifted && changed !== 1) throw new Error("device_removed");
 				let pendingGuards = consistency.retainedGuards;
 				const saved = this.getRecipientInviteById(invite.invite_id);
 				if (
@@ -2507,12 +2554,13 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				if (saved.recipient_actor_id !== authoritativeIdentityId)
 					throw new Error("invite_identity_conflict");
 				if (changed === 1) {
-					this.writeRecipientEnrollment(invite.group_id, opts, {
+					const enrollmentChanges = this.writeRecipientEnrollment(invite.group_id, opts, {
 						identityId: authoritativeIdentityId,
 						displayName: deviceDisplayName,
 						createdAt: consumedAt,
 						authorization,
 					});
+					if (lifted && enrollmentChanges !== 1) throw new Error("device_removed");
 				} else {
 					pendingGuards = namingRemovalRefusal(() =>
 						this.repairRecipientOwnerIdentity(invite, opts, { authorization, consistency }),
@@ -2520,49 +2568,19 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				}
 				this.assertRecipientInviteAuthorized(invite, opts, participantSubjects);
 				this.validateAcceptedRecipientOwner(invite, opts);
-				let bootstrapGrant: CoordinatorBootstrapGrant | null = null;
-				if (
-					preflightInspection.kind === "add_device" &&
-					invite.inviter_device_id &&
-					!invite.bootstrap_grant_id &&
-					new Date(invite.expires_at) > new Date(consumedAt)
-				) {
-					const seed = this.db
-						.prepare(`SELECT ${ENROLLMENT_COLUMNS} FROM enrolled_devices
-					 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
-						.get(invite.group_id, invite.inviter_device_id) as CoordinatorEnrollment | undefined;
-					if (seed) {
-						const grantId = tokenUrlSafe(12);
-						const claimed = this.db
-							.prepare(
-								`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
-						 trust_state = 'bootstrap_grant_created'
-								 WHERE invite_id = ? AND bootstrap_grant_id IS NULL AND ${authorizationSql}`,
-							)
-							.run(grantId, invite.invite_id, ...authorizationValues);
-						if (claimed.changes === 1) {
-							bootstrapGrant = insertBootstrapGrantSync(
-								this.db,
-								{
-									groupId: invite.group_id,
-									seedDeviceId: seed.device_id,
-									workerDeviceId: opts.deviceId,
-									expiresAt: invite.expires_at,
-									createdBy: authoritativeIdentityId,
-								},
-								grantId,
-								consumedAt,
-								authorization,
-							);
-						}
-					}
-				}
+				let bootstrapGrant = this.claimRecipientInviteGrant(
+					invite,
+					opts,
+					consumedAt,
+					authorization,
+				);
 				const savedWithGrant = this.getRecipientInviteById(invite.invite_id);
 				if (!bootstrapGrant && savedWithGrant.bootstrap_grant_id) {
 					bootstrapGrant = this.getRecipientInviteBootstrapGrant(savedWithGrant.bootstrap_grant_id);
 				}
 				// Trigger effects belong to this transaction too; denial rolls back all acceptance writes.
 				this.assertRecipientInviteAuthorized(savedWithGrant, opts, participantSubjects);
+				authorization.assertAuthorized();
 				this.assertRecipientOwnerGuards(pendingGuards);
 				return {
 					status: changed === 1 ? "accepted" : "existing",
@@ -2574,11 +2592,51 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.immediate();
 	}
 
+	private claimRecipientInviteGrant(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeRecipientInviteInput,
+		consumedAt: string,
+		authorization: ReturnType<BetterSqliteCoordinatorStore["recipientInviteAuthorization"]>,
+	): CoordinatorBootstrapGrant | null {
+		if (
+			opts.inviteKind !== "add_device" ||
+			!invite.inviter_device_id ||
+			invite.bootstrap_grant_id ||
+			new Date(invite.expires_at) <= new Date(consumedAt)
+		)
+			return null;
+		const seed = this.db
+			.prepare(`SELECT device_id FROM enrolled_devices
+		 WHERE group_id = ? AND device_id = ? AND enabled = 1`)
+			.get(invite.group_id, invite.inviter_device_id) as { device_id: string } | undefined;
+		if (!seed) return null;
+		const grantId = tokenUrlSafe(12);
+		const claimed = this.db
+			.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
+		 trust_state = 'bootstrap_grant_created'
+		 WHERE invite_id = ? AND bootstrap_grant_id IS NULL AND ${authorization.sql}`)
+			.run(grantId, invite.invite_id, ...authorization.values);
+		if (claimed.changes !== 1) return null;
+		return insertBootstrapGrantSync(
+			this.db,
+			{
+				groupId: invite.group_id,
+				seedDeviceId: seed.device_id,
+				workerDeviceId: opts.deviceId,
+				expiresAt: invite.expires_at,
+				createdBy: opts.identityId,
+			},
+			grantId,
+			consumedAt,
+			authorization,
+		);
+	}
+
 	/** The enrollment write of an acceptance, with a refusal by tombstone reported as `device_removed`. */
 	private writeRecipientEnrollment(
 		...write: Parameters<BetterSqliteCoordinatorStore["writeRecipientEnrollmentSync"]>
-	): void {
-		namingRemovalRefusal(() => this.writeRecipientEnrollmentSync(...write));
+	): number {
+		return namingRemovalRefusal(() => this.writeRecipientEnrollmentSync(...write));
 	}
 
 	/** Updates the device's enrollment in the group, or inserts it when the group has none. */
@@ -2591,7 +2649,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			createdAt: string;
 			authorization: AuthLinkStatement;
 		},
-	): void {
+	): number {
 		const { identityId, displayName, authorization } = write;
 		const keyId = this.storedKeyIdWrite(opts.publicKey);
 		const existing = this.db
@@ -2599,7 +2657,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			.get(groupId, opts.deviceId);
 		if (existing) {
 			// The participant check of this transaction found the same key and fingerprint.
-			this.db
+			return this.db
 				.prepare(
 					`UPDATE enrolled_devices SET identity_id = COALESCE(identity_id, ?),
 						display_name = COALESCE(display_name, ?), enabled = 1${keyId.sql.assignment}
@@ -2616,10 +2674,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 					opts.fingerprint,
 					identityId,
 					...authorization.values,
-				);
-			return;
+				).changes;
 		}
-		this.db
+		return this.db
 			.prepare(
 				`INSERT INTO enrolled_devices(
 					group_id, device_id, public_key, fingerprint, identity_id, display_name, enabled,
@@ -2636,7 +2693,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				write.createdAt,
 				...keyId.values,
 				...authorization.values,
-			);
+			).changes;
 	}
 
 	private repairRecipientOwnerIdentity(
@@ -4075,3 +4132,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		});
 	}
 }
+
+import {
+	type InvitationRemovalState,
+	invitationRemovalFence,
+	invitationRemovalNeedsLift,
+	liftInvitationRemovals,
+} from "./coordinator-invitation-removal.js";

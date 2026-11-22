@@ -390,6 +390,8 @@ export interface CoordinatorInspectRecipientInviteInput {
 }
 
 export interface CoordinatorConsumeRecipientInviteInput {
+	/** Internal result of verifying the exact join request, never read from JSON. */
+	joinProofVerified?: boolean;
 	/** Internal server-config namespace only; never accepted from invite HTTP JSON. */
 	coordinatorId?: string;
 	token: string;
