@@ -21,6 +21,13 @@ export function createServeCoordinatorRefresh(
 	};
 	return {
 		daemon: { runCoordinatorRefresh: lifecycle.runRefresh },
-		viewer: { createDeviceRemovalRefreshHooks: () => lifecycle.forRemoval(refreshAfterRemoval) },
+		viewer: {
+			createDeviceRemovalRefreshHooks: () => lifecycle.forRemoval(refreshAfterRemoval),
+			runManualCoordinatorRefresh: <T>(work: () => Promise<T>) =>
+				lifecycle.runRefresh(() => {
+					signal.throwIfAborted();
+					return work();
+				}),
+		},
 	};
 }

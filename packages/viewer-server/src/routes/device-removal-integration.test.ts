@@ -8,6 +8,7 @@ import {
 import Database from "better-sqlite3";
 import { Hono } from "hono";
 import { afterEach, expect, it, vi } from "vitest";
+import { createServeCoordinatorRefresh } from "../../../cli/src/commands/serve-coordinator-refresh.js";
 import { ensureMemoryRetirementDeliverySchema } from "../../../core/src/memory-retirement-delivery-schema.js";
 import { ensurePeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
@@ -117,6 +118,7 @@ type FixtureOptions = {
 	loseRequest?: boolean;
 	missingCommitRoute?: boolean;
 	progressUnavailable?: boolean;
+	sharedRefresh?: boolean;
 };
 
 async function fixture(options: FixtureOptions = {}) {
@@ -132,6 +134,24 @@ async function fixture(options: FixtureOptions = {}) {
 		waitForRefresh: vi.fn(async () => {}),
 		refresh: vi.fn(async () => {}),
 	};
+	const shared = createServeCoordinatorRefresh(
+		{ store: { db: local.db, dbPath: ":memory:" }, signal: new AbortController().signal },
+		async () => {
+			await runtime.refresh();
+			return { refreshed: true, peers: [] };
+		},
+	);
+	const createHooks = () => {
+		if (!options.sharedRefresh) return runtime;
+		const hooks = shared.viewer.createDeviceRemovalRefreshHooks();
+		return {
+			waitForRefresh: () => {
+				const ready = hooks.waitForRefresh();
+				return runtime.waitForRefresh().then(() => ready);
+			},
+			refresh: hooks.refresh,
+		};
+	};
 	const viewer = new Hono()
 		.route(
 			"/",
@@ -144,7 +164,7 @@ async function fixture(options: FixtureOptions = {}) {
 			"/",
 			deviceRemovalCommitRoutes({
 				readCoordinatorConfig: runtime.readCoordinatorConfig,
-				createDeviceRemovalRefreshHooks: () => runtime,
+				createDeviceRemovalRefreshHooks: createHooks,
 				getStore: () => local,
 			}),
 		);
@@ -174,7 +194,7 @@ async function fixture(options: FixtureOptions = {}) {
 	});
 	vi.stubGlobal("fetch", fetch);
 	vi.stubGlobal("window", { setTimeout, clearTimeout });
-	return { ...local, ...runtime, store, config, viewer, browser, remote };
+	return { ...local, ...runtime, store, config, viewer, browser, remote, shared };
 }
 
 it("uses the real review and commit routes only after the device confirmation", async () => {
@@ -364,4 +384,47 @@ it("still reports verified removal when peer progress is unavailable", async () 
 	});
 	expect(f.remote).toEqual([remotePreview, remotePreview, remoteCommit, progressPaths[0]]);
 	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+});
+
+it("queues verified Viewer cleanup behind an in-flight manual refresh and before the next daemon pass", async () => {
+	const f = await fixture({ sharedRefresh: true, loseReply: true });
+	const { viewer, daemon } = f.shared;
+	const before = f.localSnapshot();
+	const steps: string[] = [];
+	const release = Promise.withResolvers<void>();
+	const verified = Promise.withResolvers<"verified">();
+	const manual = viewer.runManualCoordinatorRefresh(async () => {
+		steps.push("manual started");
+		await release.promise;
+		steps.push("manual finished");
+	});
+	f.waitForRefresh.mockImplementation(async () => {
+		verified.resolve("verified");
+	});
+	f.refresh.mockImplementation(async () => {
+		expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+		steps.push("fresh refresh");
+	});
+
+	const removal = confirmAndCommitDeviceRemoval(target, { confirm: async () => true });
+	try {
+		expect(await Promise.race([verified.promise, removal])).toBe("verified");
+		expect(f.localSnapshot()).toEqual(before);
+		expect(f.remote).toContain(remoteList);
+		expect(steps).toEqual(["manual started"]);
+		const queued = daemon.runCoordinatorRefresh(async () => {
+			steps.push("daemon resumed");
+		});
+		release.resolve();
+		await queued;
+	} finally {
+		release.resolve();
+		await Promise.all([manual, removal]);
+	}
+	expect(await removal).toMatchObject({
+		state: "removed",
+		evidence: "listing",
+		local_cleanup: "applied",
+	});
+	expect(steps).toEqual(["manual started", "manual finished", "fresh refresh", "daemon resumed"]);
 });
