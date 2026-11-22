@@ -3,70 +3,36 @@ import {
 	ADMIN_SECRET,
 	CLI_PREFIX,
 	COORDINATOR_URL,
-	enrollPeerDevice,
 	fetchCoordinatorSnapshot,
 	GROUP_ID,
 	parseJson,
 	readPeerIdentity,
 	writePeerConfig,
 } from "../lib/coordinator.js";
+import { listInventoryProjects, shareProjectsWithTeammate } from "../lib/project-share.js";
 import type { ScenarioContext } from "../lib/scenario-context.js";
 import { seedPeer } from "../lib/seed.js";
+import { startServer, waitForServer } from "../lib/viewer.js";
 import { waitFor } from "../lib/wait.js";
 
-function startSyncServer(ctx: ScenarioContext, service: string, artifactName: string) {
-	const prepareStaticDir = ctx.compose.exec(
-		service,
-		[
-			"node",
-			"--input-type=module",
-			"-e",
-			"import { mkdirSync, writeFileSync } from 'node:fs'; mkdirSync('/tmp/viewer-static', { recursive: true }); writeFileSync('/tmp/viewer-static/index.html', '<!doctype html><title>e2e</title>');",
-		],
-		`${artifactName}-prepare-static`,
-		30_000,
-	);
-	assertStatus(prepareStaticDir.status, 0, `failed to prepare static dir for ${service}`);
-	const result = ctx.compose.execDetached(
-		service,
-		[
-			"env",
-			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
-			...CLI_PREFIX,
-			"service",
-			"start",
-			"--foreground",
-			"--db-path",
-			"/data/mem.sqlite",
-			"--host",
-			"0.0.0.0",
-			"--port",
-			"38888",
-		],
-		artifactName,
-		120_000,
-	);
-	assertStatus(result.status, 0, `failed to start sync protocol for ${service}`);
+/** fixture-large sessions run in these directories, one per Project. */
+const FIXTURE_PROJECT_PREFIX = "/workspace/e2e-fixture-";
+
+interface PeerScopeState {
+	peer_device_id: string;
+	scopes: Array<{ scope_id: string; bootstrapped: boolean }>;
 }
 
-function waitForSyncServer(ctx: ScenarioContext, service: string, artifactName: string) {
-	return waitFor(
-		async () => {
-			const result = ctx.compose.exec(
-				service,
-				[
-					"node",
-					"--input-type=module",
-					"-e",
-					"const res = await fetch('http://127.0.0.1:7337/'); process.exit(res.status === 404 ? 0 : 1);",
-				],
-				artifactName,
-				30_000,
-			);
-			assertStatus(result.status, 0, `${service} sync server is not ready`);
-		},
-		{ description: `${service} sync server readiness`, timeoutMs: 120_000, intervalMs: 2_000 },
+function peerScopes(ctx: ScenarioContext, service: string, peerDeviceId: string, artifactName: string) {
+	const result = ctx.compose.exec(
+		service,
+		[...CLI_PREFIX, "sync", "peers", "--db-path", "/data/mem.sqlite", "--json"],
+		artifactName,
+		60_000,
 	);
+	assertStatus(result.status, 0, `failed to list sync peers on ${service}`);
+	const peers = parseJson<PeerScopeState[]>(result.stdout, artifactName);
+	return peers.find((peer) => peer.peer_device_id === peerDeviceId)?.scopes ?? [];
 }
 
 function fetchFixtureSummary(
@@ -126,6 +92,17 @@ function bootstrapPeer(
 	return ctx.compose.exec(service, args, artifactName, 300_000, allowFailure);
 }
 
+function unsyncedCount(ctx: ScenarioContext, service: string, artifactName: string): number {
+	const result = ctx.compose.exec(
+		service,
+		["pnpm", "exec", "tsx", "--conditions", "source", "e2e/scripts/unsynced-count.ts"],
+		artifactName,
+		60_000,
+	);
+	assertStatus(result.status, 0, `failed to count unsynced shared memories on ${service}`);
+	return parseJson<{ count: number }>(result.stdout, artifactName).count;
+}
+
 function addSharedMemory(ctx: ScenarioContext, service: string, artifactName: string) {
 	const result = ctx.compose.exec(
 		service,
@@ -148,16 +125,22 @@ function addSharedMemory(ctx: ScenarioContext, service: string, artifactName: st
 export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Bootstrap scenario: seed peer-a with fixture-large, have an admin enroll empty peer-c in the coordinator group, accept peer records, validate bootstrap to empty peer, then validate dirty-local bootstrap refusal.",
+		"Bootstrap scenario: seed peer-a with fixture-large, share its fixture Projects with empty peer-c through a Project invite, let peer-c's sync pull each Project's boundary snapshot, then validate dirty-local bootstrap refusal.",
 	);
 
 	ctx.compose.down("00-compose-down-pre", true);
 	ctx.compose.up(["coordinator", "peer-a", "peer-c"], "01-compose-up");
 	ctx.compose.ps("02-compose-ps");
 
+	// Create peer-a's sync identity first so the seeded memories record it as
+	// their origin, as they do when sync is enabled before memories are written.
+	// Memories written before sync was enabled are tracked separately (codemem-yfla4).
+	const peerAIdentity = readPeerIdentity(ctx, "peer-a", "03-peer-a-identity-before-seed");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-a", "fixture-large", "03-seed-peer-a-large");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-c", "empty", "04-seed-peer-c-empty");
 
+	// peer-a syncs rarely, so peer-c's own pull of each new boundary, the
+	// per-Project bootstrap, delivers the data rather than peer-a's push.
 	writePeerConfig(
 		ctx,
 		"peer-a",
@@ -165,7 +148,10 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 			sync_enabled: true,
 			sync_host: "0.0.0.0",
 			sync_port: 7337,
-			sync_interval_s: 5,
+			sync_interval_s: 3600,
+			sync_advertise: "http://peer-a:7337",
+			sync_device_name: "Owner Mac",
+			actor_display_name: "Owner",
 			sync_coordinator_url: "http://coordinator:7347",
 			sync_coordinator_group: GROUP_ID,
 			sync_coordinator_admin_secret: ADMIN_SECRET,
@@ -175,7 +161,7 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 
 	const enablePeerA = ctx.compose.exec(
 		"peer-a",
-		[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "5"],
+		[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "3600"],
 		"06-enable-peer-a",
 		120_000,
 	);
@@ -189,7 +175,6 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 	);
 	assertStatus(groupCreate.status, 0, "failed to create coordinator group");
 
-	const peerAIdentity = readPeerIdentity(ctx, "peer-a", "08-peer-a-identity");
 	const enrollPeerA = ctx.compose.exec(
 		"coordinator",
 		[
@@ -211,28 +196,42 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 	);
 	assertStatus(enrollPeerA.status, 0, "failed to enroll peer-a in coordinator");
 
-	// peer-c only needs to be in the coordinator group here, so an admin enrolls it
-	// directly. The coordinator scenario covers joining by invitation and approval.
+	// peer-c joins by accepting a Project invite, which enrolls it, pins both
+	// devices, and gives each shared fixture Project its own boundary.
 	writePeerConfig(
 		ctx,
 		"peer-c",
-		{ sync_coordinator_url: COORDINATOR_URL, sync_coordinator_group: GROUP_ID },
+		{
+			sync_enabled: false,
+			sync_host: "0.0.0.0",
+			sync_port: 7337,
+			sync_interval_s: 5,
+			sync_advertise: "http://peer-c:7337",
+			sync_coordinator_url: COORDINATOR_URL,
+			sync_coordinator_group: GROUP_ID,
+		},
 		"10-write-peer-c-config",
 	);
-
-	const enablePeerC = ctx.compose.exec(
-		"peer-c",
-		[...CLI_PREFIX, "sync", "enable", "--db-path", "/data/mem.sqlite", "--host", "0.0.0.0", "--port", "7337", "--interval", "5"],
-		"11-enable-peer-c",
-		120_000,
-	);
-	assertStatus(enablePeerC.status, 0, "failed to enable sync on peer-c");
-
 	const peerCIdentity = readPeerIdentity(ctx, "peer-c", "12-peer-c-identity");
-	enrollPeerDevice(ctx, {
-		groupId: GROUP_ID,
-		identity: peerCIdentity,
-		artifactName: "13-enroll-peer-c",
+
+	startServer(ctx, "peer-a", "20-start-peer-a-sync-server");
+	startServer(ctx, "peer-c", "21-start-peer-c-sync-server");
+	await waitForServer(ctx, "peer-a", "21-peer-a-sync-ready");
+	await waitForServer(ctx, "peer-c", "21-peer-c-sync-ready");
+
+	const fixtureProjects = (await listInventoryProjects(ctx, "peer-a", "13-peer-a-projects")).filter((project) =>
+		project.workspace_identity.startsWith(FIXTURE_PROJECT_PREFIX),
+	);
+	assert(fixtureProjects.length === 8, `expected 8 fixture Projects on peer-a, got ${fixtureProjects.length}`);
+	await shareProjectsWithTeammate(ctx, {
+		owner: "peer-a",
+		recipient: "peer-c",
+		recipientDeviceId: peerCIdentity.device_id,
+		projects: fixtureProjects,
+		expectedExistingMemories: 1280,
+		teammateName: "Teammate",
+		deviceName: "Teammate Mac",
+		artifactPrefix: "14-share",
 	});
 
 	await waitFor(
@@ -250,59 +249,6 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		{ description: "peer-c coordinator discovery", timeoutMs: 180_000, intervalMs: 3_000 },
 	);
 
-	const acceptPeerC = ctx.compose.exec(
-		"peer-a",
-		[
-			"pnpm",
-			"exec",
-			"tsx",
-			"--conditions",
-			"source",
-			"e2e/scripts/accept-discovered.ts",
-			"--peer-device-id",
-			peerCIdentity.device_id,
-			"--fingerprint",
-			peerCIdentity.fingerprint,
-			"--db-path",
-			"/data/mem.sqlite",
-		],
-		"18-accept-peer-c",
-		120_000,
-	);
-	assertStatus(acceptPeerC.status, 0, "failed to accept peer-c on peer-a");
-
-	const acceptPeerA = ctx.compose.exec(
-		"peer-c",
-		[
-			"pnpm",
-			"exec",
-			"tsx",
-			"--conditions",
-			"source",
-			"e2e/scripts/accept-discovered.ts",
-			"--peer-device-id",
-			peerAIdentity.device_id,
-			"--fingerprint",
-			peerAIdentity.fingerprint,
-			"--db-path",
-			"/data/mem.sqlite",
-		],
-		"19-accept-peer-a",
-		120_000,
-	);
-	assertStatus(acceptPeerA.status, 0, "failed to accept peer-a on peer-c");
-
-	startSyncServer(ctx, "peer-a", "20-start-peer-a-sync-server");
-	await waitForSyncServer(ctx, "peer-a", "21-peer-a-sync-ready");
-
-	const bootstrapResult = bootstrapPeer(ctx, "peer-c", peerAIdentity.device_id, "22-bootstrap-peer-c", true);
-	assertStatus(bootstrapResult.status, 0, "peer-c bootstrap command failed");
-	const parsedBootstrap = parseJson<{ ok: boolean; applied: number; deleted: number; error: string | null }>(
-		bootstrapResult.stdout,
-		"bootstrap peer-c",
-	);
-	assert(parsedBootstrap.ok === true, `expected bootstrap ok=true, got ${JSON.stringify(parsedBootstrap)}`);
-
 	await waitFor(
 		async () => {
 			const summary = fetchFixtureSummary(ctx, "peer-c", "23-peer-c-fixture-large-summary", "fixture-large memory ");
@@ -312,8 +258,25 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		},
 		{ description: "peer-c bootstrap data arrival", timeoutMs: 120_000, intervalMs: 3_000 },
 	);
+	const sharedBoundaries = peerScopes(ctx, "peer-c", peerAIdentity.device_id, "23-peer-c-boundaries").filter(
+		(scope) => scope.scope_id.startsWith("managed-project:"),
+	);
+	assert(sharedBoundaries.length === 8, `expected 8 shared Project boundaries on peer-c, got ${sharedBoundaries.length}`);
+	assert(
+		sharedBoundaries.every((scope) => scope.bootstrapped),
+		"peer-c has not finished its first pull of every shared Project boundary",
+	);
 
+	// Stop peer-c's sync service so nothing changes its rows between the counts.
+	const stopped = ctx.compose.restart("peer-c", "24-stop-peer-c-service");
+	assertStatus(stopped.status, 0, "failed to stop peer-c's sync service");
+	const unsyncedBefore = unsyncedCount(ctx, "peer-c", "24-unsynced-before");
 	addSharedMemory(ctx, "peer-c", "24-add-local-shared-memory");
+	const unsyncedAfter = unsyncedCount(ctx, "peer-c", "24-unsynced-after");
+	assert(
+		unsyncedAfter === unsyncedBefore + 1,
+		`expected one more unsynced shared memory after the local change, got ${unsyncedBefore} -> ${unsyncedAfter}`,
+	);
 	const refusalResult = bootstrapPeer(
 		ctx,
 		"peer-c",
@@ -323,13 +286,15 @@ export async function runBootstrapScenario(ctx: ScenarioContext): Promise<void> 
 		true,
 	);
 	assert(refusalResult.status !== 0, "expected bootstrap refusal to exit non-zero");
-	const parsedRefusal = parseJson<{ ok: boolean; error: string; count?: number }>(
-		refusalResult.stdout,
-		"bootstrap refusal",
+	// CLI JSON errors are {error, message} (docs/cli-design-conventions.md).
+	const parsedRefusal = parseJson<Record<string, unknown>>(refusalResult.stdout, "bootstrap refusal");
+	assert(
+		Object.keys(parsedRefusal).toSorted().join(",") === "error,message" &&
+			typeof parsedRefusal.message === "string" &&
+			parsedRefusal.message.length > 0,
+		`unexpected bootstrap refusal shape: ${refusalResult.stdout}`,
 	);
-	assert(parsedRefusal.ok === false, "expected bootstrap refusal ok=false");
-	assert(parsedRefusal.error === "local_unsynced_changes", `unexpected refusal error: ${parsedRefusal.error}`);
-	assert((parsedRefusal.count ?? 0) >= 1, "expected refusal count >= 1");
+	assert(parsedRefusal.error === "local_unsynced_changes", `unexpected refusal error: ${String(parsedRefusal.error)}`);
 
 	ctx.compose.copyFromContainer(
 		"peer-c:/data/mem.sqlite",

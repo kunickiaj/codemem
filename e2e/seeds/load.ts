@@ -28,9 +28,13 @@ function createFixture(store: MemoryStore, mode: Exclude<SeedMode, "empty">): nu
 	const sessionCount = mode === "fixture-large" ? 8 : 2;
 	let created = 0;
 	for (let sessionIndex = 0; sessionIndex < sessionCount; sessionIndex += 1) {
+		// Each directory gets its own Project name. Two directories with the same
+		// name need a review before either can be shared, which fixtures skip.
+		const baseProject = sessionIndex % 2 === 0 ? "e2e-project-alpha" : "e2e-project-beta";
+		const round = Math.floor(sessionIndex / 2);
 		const sessionId = store.startSession({
 			cwd: `/workspace/e2e-fixture-${sessionIndex}`,
-			project: sessionIndex % 2 === 0 ? "e2e-project-alpha" : "e2e-project-beta",
+			project: round === 0 ? baseProject : `${baseProject}-${round}`,
 			user: "e2e",
 			toolVersion: "e2e-seed",
 			metadata: { seed_mode: mode, session_index: sessionIndex },
