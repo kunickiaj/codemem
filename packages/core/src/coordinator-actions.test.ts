@@ -58,6 +58,38 @@ import { ensureDeviceIdentity, fingerprintPublicKey, loadPublicKey } from "./syn
 type TeamReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "team" }>;
 type AddDeviceReviewedIntent = Extract<RecipientReviewedIntentV1, { journey: "add_device" }>;
 
+function readInviteRequest(
+	url: string,
+	init: RequestInit | undefined,
+	raw: string,
+	{ signed = true }: { signed?: boolean } = {},
+) {
+	const body = JSON.parse(raw) as Record<string, unknown>;
+	const headers = new Headers(init?.headers);
+	if (!signed || !url.endsWith("/v1/join")) {
+		expect(headers.has("X-Opencode-Signature")).toBe(false);
+		return body;
+	}
+	const deviceId = headers.get("X-Opencode-Device");
+	expect(deviceId).toBe(body.device_id);
+	expect(headers.get("X-Opencode-Signature")).toMatch(/^v2:/u);
+	expect(headers.has("X-Codemem-Coordinator-Admin")).toBe(false);
+	expect(init?.redirect).toBe("error");
+	expect(
+		verifySignature({
+			method: "POST",
+			pathWithQuery: "/v1/join",
+			timestamp: String(headers.get("X-Opencode-Timestamp")),
+			nonce: String(headers.get("X-Opencode-Nonce")),
+			signature: String(headers.get("X-Opencode-Signature")),
+			deviceId: String(deviceId),
+			publicKey: String(body.public_key),
+			bodyBytes: Buffer.from(raw),
+		}),
+	).toBe(true);
+	return body;
+}
+
 function teamReviewedIntent(teamId = "policy-team-1"): TeamReviewedIntent {
 	return {
 		version: 1,
@@ -558,7 +590,7 @@ describe("coordinator local admin actions", () => {
 				vi.fn(async (_url: string, init?: RequestInit) => {
 					const body =
 						init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
-					const parsed = JSON.parse(body) as Record<string, unknown>;
+					const parsed = readInviteRequest(_url, init, body);
 					capturedBodies.push(parsed);
 					return parsed[testCase.unsupportedField]
 						? new Response(JSON.stringify({ error: "unexpected_recipient_invite_fields" }), {
@@ -2055,7 +2087,7 @@ describe("coordinator local admin actions", () => {
 			vi.fn(async (_url: string, init?: RequestInit) => {
 				const body =
 					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
-				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				capturedBodies.push(readInviteRequest(_url, init, body, { signed: false }));
 				return new Response(JSON.stringify({ ok: true, status: "enrolled" }), {
 					status: 200,
 					headers: { "content-type": "application/json" },
@@ -2123,7 +2155,7 @@ describe("coordinator local admin actions", () => {
 			vi.fn(async (_url: string, init?: RequestInit) => {
 				const body =
 					init?.body instanceof Uint8Array ? Buffer.from(init.body).toString("utf8") : "{}";
-				capturedBodies.push(JSON.parse(body) as Record<string, unknown>);
+				capturedBodies.push(readInviteRequest(_url, init, body));
 				return new Response(
 					JSON.stringify({
 						ok: true,

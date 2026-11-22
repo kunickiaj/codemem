@@ -2635,6 +2635,45 @@ function ensureInviteDeviceIdentity(dbPath: string, keysDir: string | undefined)
 	}
 }
 
+interface InviteJoinTransport {
+	url: string;
+	signer?: { deviceId: string; dbPath: string; keysDir?: string };
+}
+
+function postInviteJoin({ url, signer }: InviteJoinTransport, body: Record<string, unknown>) {
+	const options = { timeoutS: INVITE_IMPORT_TIMEOUT_S, redirect: "error" as const };
+	if (!signer) return requestJson("POST", url, { ...options, body });
+	const bodyBytes = Buffer.from(JSON.stringify(body));
+	const headers = buildAuthHeaders({ ...signer, url, method: "POST", bodyBytes });
+	return requestJson("POST", url, { ...options, bodyBytes, headers });
+}
+
+async function requestInvitationJoin(
+	transport: InviteJoinTransport,
+	body: Record<string, unknown>,
+	{ recipientLegacyRetry }: { recipientLegacyRetry: boolean },
+) {
+	try {
+		const [status, response] = await postInviteJoin(transport, body);
+		if (
+			!recipientLegacyRetry ||
+			status !== 400 ||
+			response?.error !== "unexpected_recipient_invite_fields" ||
+			(!Object.hasOwn(body, "recipient_display_name") &&
+				!Object.hasOwn(body, "device_display_name"))
+		)
+			return [status, response] as const;
+		const legacyBody = Object.fromEntries(
+			Object.entries(body).filter(
+				([key]) => key !== "recipient_display_name" && key !== "device_display_name",
+			),
+		);
+		return await postInviteJoin(transport, legacyBody);
+	} catch (error) {
+		throw inviteImportTransportError(error);
+	}
+}
+
 export async function coordinatorImportInviteAction(opts: {
 	inviteValue: string;
 	dbPath?: string | null;
@@ -2726,39 +2765,17 @@ export async function coordinatorImportInviteAction(opts: {
 				}
 			: {}),
 	};
-	let status = 0;
-	let response: Record<string, unknown> | null = null;
-	try {
-		[status, response] = await requestJson(
-			"POST",
-			`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
-			{ body: joinBody, timeoutS: INVITE_IMPORT_TIMEOUT_S, redirect: "error" },
-		);
-		if (
-			recipientInvite &&
-			!projectInvite &&
-			("recipient_display_name" in joinBody || "device_display_name" in joinBody) &&
-			status === 400 &&
-			response?.error === "unexpected_recipient_invite_fields"
-		) {
-			const legacyJoinBody = Object.fromEntries(
-				Object.entries(joinBody).filter(
-					([key]) => key !== "recipient_display_name" && key !== "device_display_name",
-				),
-			);
-			[status, response] = await requestJson(
-				"POST",
-				`${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
-				{
-					body: legacyJoinBody,
-					timeoutS: INVITE_IMPORT_TIMEOUT_S,
-					redirect: "error",
-				},
-			);
-		}
-	} catch (error) {
-		throw inviteImportTransportError(error);
-	}
+	const [status, response] = await requestInvitationJoin(
+		{
+			url: `${stripTrailingSlashes(coordinatorUrl)}/v1/join`,
+			signer:
+				recipientInvite || projectInvite
+					? { deviceId, dbPath: resolvedDbPath, keysDir }
+					: undefined,
+		},
+		joinBody,
+		{ recipientLegacyRetry: recipientInvite && !projectInvite },
+	);
 	if (status < 200 || status >= 300) {
 		const detail = typeof response?.error === "string" ? response.error : "unknown";
 		if (
