@@ -12,6 +12,7 @@ import { DeviceIdentityBindingApiError } from "../lib/api/sync";
 import { formatTimestamp } from "../lib/format";
 import { state } from "../lib/state";
 import { closeActionMenu, openActionMenu } from "../menu-test-utils";
+import { createRemovalClickFixture } from "./device-removal-click-fixture.js";
 import { deviceIdentitySetupError, mountDevices, projectDevices } from "./devices";
 
 const projects = [
@@ -3369,6 +3370,7 @@ describe("Device retirement menu", () => {
 
 		const action = retireAction();
 		expect(action?.disabled).toBe(false);
+		expect(document.querySelector('[aria-label="Remove Work Laptop"]')).toBeNull();
 		await act(async () => action?.click());
 
 		await vi.waitFor(() => expect(onCommitted).toHaveBeenCalledOnce());
@@ -3449,4 +3451,84 @@ describe("Device retirement menu", () => {
 
 		expect(retireAction()).toBeUndefined();
 	});
+});
+
+function watchDeviceCommitStatus() {
+	const status = document.getElementById("devices-commit-status");
+	if (!status) throw new Error("Missing device commit status");
+	let observer!: MutationObserver;
+	const reported = new Promise<string | null>((resolve) => {
+		observer = new MutationObserver(() => {
+			observer.disconnect();
+			resolve(status.textContent);
+		});
+		observer.observe(status, { childList: true });
+	});
+	return { reported, stop: () => observer.disconnect() };
+}
+
+it("removes a device from the fixture menu only after confirmation and verified cleanup", async () => {
+	const deviceId = "device-address-fingerprint-secret";
+	const f = await createRemovalClickFixture(deviceId);
+	let finish!: () => void;
+	const before = new Promise<void>((resolve) => {
+		finish = resolve;
+	});
+	const prior = f.lifecycle.runRefresh(() => before);
+	const confirm = vi.fn(async () => {
+		expect(f.paths).not.toContain(f.remoteCommit);
+		expect(f.paired()).toBe(true);
+		return true;
+	});
+	const onCommitted = vi.fn(async () => true);
+	let stopWatching: (() => void) | undefined;
+	try {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			removalConfirmation: { confirm },
+			onCommitted,
+		});
+		const row = document.getElementById(`device-identity-card-${deviceId}`);
+		const menu = openActionMenu(row ?? document);
+		const action = [...menu.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Remove device…",
+		);
+		expect(action?.disabled).toBe(false);
+		const status = watchDeviceCommitStatus();
+		stopWatching = status.stop;
+		await act(() => action?.click());
+		expect(await Promise.race([f.waiting, status.reported])).toBe("waiting");
+		expect(await f.enrollment()).toBeNull();
+		expect(f.paths.filter((path) => path === f.remoteCommit)).toHaveLength(1);
+		expect(f.paths).toContain(f.remoteList);
+		expect(f.paired()).toBe(true);
+		expect(f.cursor()).toBe("cursor");
+		expect(f.binding()).toBe("active");
+		expect(f.refresh).not.toHaveBeenCalled();
+		expect(onCommitted).not.toHaveBeenCalled();
+		finish();
+		expect(await status.reported).toBe("Work Laptop is removed.");
+		expect(onCommitted).toHaveBeenCalledOnce();
+		expect(f.paired()).toBe(false);
+		expect(f.cursor()).toBeUndefined();
+		expect(f.binding()).toBe("removed");
+		expect(f.refresh).toHaveBeenCalledOnce();
+		expect(confirm).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				title: "Remove Work Laptop?",
+				confirmLabel: "Remove device",
+				autoFocusAction: "cancel",
+			}),
+		);
+	} finally {
+		stopWatching?.();
+		finish();
+		await prior;
+		await f.close();
+	}
 });
