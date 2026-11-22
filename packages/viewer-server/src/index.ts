@@ -191,6 +191,8 @@ export interface AppOptions extends SyncAppOptions {
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
 	/** Supplied by the foreground host for the unmounted Remove commit route. */
 	createDeviceRemovalRefreshHooks?: DeviceRemovalRefreshHooksFactory;
+	/** For manual refresh entry points only. Daemon maintenance already holds the queue. */
+	runManualCoordinatorRefresh?: <T>(work: () => Promise<T>) => Promise<T>;
 	renameCoordinatorGroup?: SyncRoutesOptions["renameCoordinatorGroup"];
 	lookupCoordinatorDeviceAnswer?: SyncRoutesOptions["lookupCoordinatorDeviceAnswer"];
 	syncReachability?: SyncRoutesOptions["syncReachability"];

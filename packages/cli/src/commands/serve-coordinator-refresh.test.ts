@@ -85,3 +85,17 @@ it("does not combine separate foreground stores or start refresh work on constru
 		await existing;
 	}
 });
+
+it("does not start a queued manual refresh after the foreground runtime aborts", async () => {
+	const options = fixtureOptions();
+	const { daemon, viewer } = createServeCoordinatorRefresh(options);
+	const release = Promise.withResolvers<void>();
+	const existing = daemon.runCoordinatorRefresh(() => release.promise);
+	const work = vi.fn(async () => "manual work");
+	const pending = viewer.runManualCoordinatorRefresh(work);
+	options.abort.abort(new Error("foreground runtime stopped"));
+	release.resolve();
+	await existing;
+	await expect(pending).rejects.toThrow("foreground runtime stopped");
+	expect(work).not.toHaveBeenCalled();
+});
