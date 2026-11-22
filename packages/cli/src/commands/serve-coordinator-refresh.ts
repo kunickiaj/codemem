@@ -4,6 +4,8 @@ import {
 	refreshCoordinatorForDaemon,
 } from "@codemem/core";
 
+export const VIEWER_REMOVAL_QUEUE_WAIT_TIMEOUT_MS = 5_000;
+
 /** Share one queue between foreground daemon work and each Viewer removal. */
 export function createServeCoordinatorRefresh(
 	{ store, signal }: { store: Pick<MemoryStore, "db" | "dbPath">; signal: AbortSignal },
@@ -22,7 +24,10 @@ export function createServeCoordinatorRefresh(
 	return {
 		daemon: { runCoordinatorRefresh: lifecycle.runRefresh },
 		viewer: {
-			createDeviceRemovalRefreshHooks: () => lifecycle.forRemoval(refreshAfterRemoval),
+			createDeviceRemovalRefreshHooks: () =>
+				lifecycle.forRemoval(refreshAfterRemoval, {
+					queueWaitTimeoutMs: VIEWER_REMOVAL_QUEUE_WAIT_TIMEOUT_MS,
+				}),
 			runManualCoordinatorRefresh: <T>(work: () => Promise<T>) =>
 				lifecycle.runRefresh(() => {
 					signal.throwIfAborted();
