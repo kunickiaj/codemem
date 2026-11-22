@@ -17,7 +17,7 @@ import type {
 	ObserverClient,
 	UpdateStatus,
 } from "@codemem/core";
-import { type RawEventSweeper, VERSION } from "@codemem/core";
+import { type RawEventSweeper, VERSION, verifiedLocalKeyId } from "@codemem/core";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { type AccountLinkOptions, createAccountGuard } from "./account/guard.js";
@@ -29,6 +29,7 @@ import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
+import { deviceRemovalReviewRoutes } from "./routes/device-removal-review.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { fileContextRoutes } from "./routes/file-context.js";
 import { healthRoutes } from "./routes/health.js";
@@ -355,6 +356,16 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
+	app.route(
+		"/",
+		deviceRemovalReviewRoutes({
+			readCoordinatorConfig: opts?.readCoordinatorConfig,
+			localIdentity: () => {
+				const store = storeFactory();
+				return { deviceId: store.deviceId, keyId: verifiedLocalKeyId(store.db, store.deviceId) };
+			},
+		}),
+	);
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
 	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(

@@ -457,6 +457,7 @@ export {
 	removeRevokedPeers,
 	resolveRetireTarget,
 	retireDeviceLocally,
+	verifiedLocalKeyId,
 } from "./device-retirement.js";
 export { withDiagnosticStoreSnapshot } from "./diagnostic-store-snapshot.js";
 export type {

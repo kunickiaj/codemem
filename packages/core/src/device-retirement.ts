@@ -53,9 +53,9 @@ const FINGERPRINT_CONFLICTS = new Set(["fingerprint_conflict", "fingerprint_inva
 /**
  * This device's canonical key ID, only when exactly one consistent identity row
  * exists for the ID the viewer runs as. Anything else can hide this device from
- * the inventory, so retirement refuses rather than guess.
+ * the inventory, so device-removal checks refuse rather than guess.
  */
-function verifiedLocalKeyId(db: Database, localDeviceId: string): string | null {
+export function verifiedLocalKeyId(db: Database, localDeviceId: string): string | null {
 	const rows = db
 		.prepare("SELECT device_id, public_key, fingerprint FROM sync_device")
 		.all() as Array<{
