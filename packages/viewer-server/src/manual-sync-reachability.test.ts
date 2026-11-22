@@ -68,10 +68,17 @@ afterEach(() => {
 	vi.unstubAllEnvs();
 });
 
-function fixture(syncReachability?: SyncPeerReachabilityResolver) {
+function fixture(
+	syncReachability?: SyncPeerReachabilityResolver,
+	runManualCoordinatorRefresh?: Parameters<typeof createApp>[0]["runManualCoordinatorRefresh"],
+) {
 	const scanner = { scan: vi.fn() };
 	const store = { db, dbPath: "manual-sync.sqlite", scanner } as unknown as core.MemoryStore;
-	const app = createApp({ storeFactory: () => store, syncReachability });
+	const app = createApp({
+		storeFactory: () => store,
+		syncReachability,
+		runManualCoordinatorRefresh,
+	});
 	// Hono's default error handler would print the synthetic resolver exception.
 	app.onError(() => new Response("request_failed", { status: 500 }));
 	return {
@@ -285,6 +292,27 @@ describe("manual sync resolver failures", () => {
 });
 
 describe("manual sync authorization refresh", () => {
+	it("runs the manual authorization refresh inside the foreground queue before choosing a route", async () => {
+		const events: string[] = [];
+		const routes = resolver();
+		routes.forPeer.mockImplementation(() => {
+			events.push("resolve");
+			return undefined;
+		});
+		refreshAuthorization.mockImplementationOnce(async () => {
+			events.push("refresh");
+			return { status: "refreshed", coordinatorId: null, groups: [] };
+		});
+		const f = fixture(routes, async (work) => {
+			events.push("queue");
+			const result = await work();
+			events.push("release");
+			return result;
+		});
+		expect((await f.run({ peer_device_id: "peer-a" })).status).toBe(200);
+		expect(events).toEqual(["queue", "refresh", "release", "resolve"]);
+	});
+
 	it("awaits revalidation before choosing a relay route", async () => {
 		const route = { scopeId: "space-a", logicalOrigin: "https://relay.invalid" };
 		const routes = resolver(route);

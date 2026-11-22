@@ -321,6 +321,7 @@ function registerViewerSyncRoutes(
 			loadDeviceIdentityCoordinatorEvidence: opts?.loadDeviceIdentityCoordinatorEvidence,
 			onRecipientPolicyTeamRenamed,
 			readCoordinatorConfig: opts?.readCoordinatorConfig,
+			runManualCoordinatorRefresh: opts?.runManualCoordinatorRefresh,
 			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 			lookupCoordinatorDeviceAnswer: opts?.lookupCoordinatorDeviceAnswer,
 		}),
