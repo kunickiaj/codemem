@@ -251,10 +251,14 @@ export interface SyncRoutesOptions {
 	loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader;
 	onRecipientPolicyTeamRenamed?: () => void;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
+	runManualCoordinatorRefresh?: ManualCoordinatorRefresh;
 	renameCoordinatorGroup?: typeof coordinatorRenameGroupAction;
 	/** What the coordinator says about a peer being removed. Without it there is no answer. */
 	lookupCoordinatorDeviceAnswer?: CoordinatorDeviceAnswerLookup;
 }
+
+type ManualCoordinatorRefresh = <T>(work: () => Promise<T>) => Promise<T>;
+const runRefreshDirectly: ManualCoordinatorRefresh = (work) => work();
 type SafeSkippedSyncDetail = Pick<
 	FilterReplicationSkipped,
 	"reason" | "skipped_count" | "scope_id" | "project" | "visibility"
@@ -263,19 +267,24 @@ type SafeSkippedSyncDetail = Pick<
 interface ManualSyncOptions {
 	readonly resolver: SyncPeerReachabilityResolver | undefined;
 	readonly config: ReturnType<typeof readCoordinatorSyncConfig>;
+	readonly runRefresh: ManualCoordinatorRefresh;
 	refreshFailed: boolean;
 }
 
 async function refreshManualSyncAuthorization(store: MemoryStore, options: ManualSyncOptions) {
 	if (options.refreshFailed) return;
-	const refreshed = await refreshConfiguredScopeMembershipCache(store.db, options.config, {
-		keysDir: syncKeysDir(),
-		dbPath: store.dbPath,
-		onlyIfStale: true,
-	}).catch((error) => {
-		options.refreshFailed = true;
-		throw error;
-	});
+	const refreshed = await options
+		.runRefresh(() =>
+			refreshConfiguredScopeMembershipCache(store.db, options.config, {
+				keysDir: syncKeysDir(),
+				dbPath: store.dbPath,
+				onlyIfStale: true,
+			}),
+		)
+		.catch((error) => {
+			options.refreshFailed = true;
+			throw error;
+		});
 	options.refreshFailed = refreshed.status !== "refreshed" && refreshed.status !== "skipped";
 }
 
@@ -316,10 +325,28 @@ async function runManualSyncPass(store: MemoryStore, peerId: string, options: Ma
 	});
 }
 
+function manualSyncPeerIds(store: MemoryStore, body: Record<string, unknown>): string[] | null {
+	const address = typeof body.address === "string" ? body.address.trim() : "";
+	if (address) {
+		const peerId = findPeerDeviceIdForAddress(store, address);
+		return peerId ? [peerId] : null;
+	}
+	const requested = typeof body.peer_device_id === "string" ? body.peer_device_id.trim() : "";
+	const rows = requested
+		? store.db
+				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
+				.all(requested)
+		: store.db.prepare("SELECT peer_device_id FROM sync_peers").all();
+	return (rows as { peer_device_id: string | null }[])
+		.map((row) => String(row.peer_device_id ?? "").trim())
+		.filter(Boolean);
+}
+
 function manualSyncHandler(
 	getStore: StoreFactory,
-	options: Pick<SyncRoutesOptions, "syncReachability">,
+	options: Pick<SyncRoutesOptions, "syncReachability" | "runManualCoordinatorRefresh">,
 ) {
+	const runRefresh = options.runManualCoordinatorRefresh ?? runRefreshDirectly;
 	return async (c: Context) => {
 		const store = getStore();
 		let body: Record<string, unknown> = {};
@@ -330,32 +357,15 @@ function manualSyncHandler(
 		}
 		const config = readCoordinatorSyncConfig();
 		if (!config.syncEnabled) return c.json({ error: "sync_disabled" }, 403);
-		const address =
-			typeof body.address === "string" && body.address.trim() ? body.address.trim() : null;
-		const requestedPeerId =
-			typeof body.peer_device_id === "string" && body.peer_device_id.trim()
-				? body.peer_device_id.trim()
-				: null;
-		let peerIds: string[];
-		if (address) {
-			const peerId = findPeerDeviceIdForAddress(store, address);
-			if (!peerId) return c.json({ error: "unknown peer address" }, 404);
-			peerIds = [peerId];
-		} else if (requestedPeerId) {
-			const requestedPeerRows = store.db
-				.prepare("SELECT peer_device_id FROM sync_peers WHERE peer_device_id = ?")
-				.all(requestedPeerId) as Array<{ peer_device_id: string | null }>;
-			peerIds = requestedPeerRows
-				.map((row) => String(row.peer_device_id ?? "").trim())
-				.filter(Boolean);
-		} else {
-			const allPeerRows = store.db.prepare("SELECT peer_device_id FROM sync_peers").all() as Array<{
-				peer_device_id: string | null;
-			}>;
-			peerIds = allPeerRows.map((row) => String(row.peer_device_id ?? "").trim()).filter(Boolean);
-		}
+		const peerIds = manualSyncPeerIds(store, body);
+		if (!peerIds) return c.json({ error: "unknown peer address" }, 404);
 		const items = [] as Array<Record<string, unknown>>;
-		const manualSyncOptions = { resolver: options.syncReachability, config, refreshFailed: false };
+		const manualSyncOptions = {
+			resolver: options.syncReachability,
+			config,
+			runRefresh,
+			refreshFailed: false,
+		};
 		for (const peerId of peerIds) {
 			const result = await runManualSyncPass(store, peerId, manualSyncOptions);
 			items.push({
@@ -1674,7 +1684,30 @@ async function shareOperationReadModels(
 	);
 }
 
-async function executeProjectShareProvisioning(store: MemoryStore, operationId: string) {
+function projectShareAuthorizationRefresh(
+	store: MemoryStore,
+	config: ReturnType<typeof readCoordinatorSyncConfig>,
+	groupId: string,
+	runRefresh: ManualCoordinatorRefresh,
+) {
+	return async (expectedGroupId: string) => {
+		if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
+		const refreshed = await runRefresh(() =>
+			refreshConfiguredScopeMembershipCache(store.db, config, {
+				keysDir: syncKeysDir(),
+				dbPath: store.dbPath,
+			}),
+		);
+		const group = refreshed.groups.find((item) => item.groupId === groupId);
+		if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
+	};
+}
+
+async function executeProjectShareProvisioning(
+	store: MemoryStore,
+	operationId: string,
+	runRefresh: ManualCoordinatorRefresh = runRefreshDirectly,
+) {
 	const { groupId, config } = projectInviteStatus();
 	const coordinatorId = config.syncCoordinatorUrl || null;
 	if (!coordinatorId) throw new Error("coordinator_not_configured");
@@ -1730,15 +1763,7 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 				});
 			},
 			supportsReassignScope: (deviceId) => peerSupportsReassignScope(store, deviceId),
-			refreshAuthorization: async (expectedGroupId) => {
-				if (expectedGroupId !== groupId) throw new Error("operation_scope_mismatch");
-				const refreshed = await refreshConfiguredScopeMembershipCache(store.db, config, {
-					keysDir: syncKeysDir(),
-					dbPath: store.dbPath,
-				});
-				const group = refreshed.groups.find((item) => item.groupId === groupId);
-				if (group?.status !== "refreshed") throw new Error("authorization_refresh_failed");
-			},
+			refreshAuthorization: projectShareAuthorizationRefresh(store, config, groupId, runRefresh),
 			runInitialSync: (recipientDeviceId) =>
 				runSyncPass(store.db, recipientDeviceId, {
 					keysDir: syncKeysDir(),
@@ -1753,6 +1778,7 @@ async function executeProjectShareProvisioning(store: MemoryStore, operationId: 
 export async function advanceProjectShareOperation(
 	store: MemoryStore,
 	operationId: string,
+	{ runRefresh = runRefreshDirectly }: { runRefresh?: ManualCoordinatorRefresh } = {},
 ): Promise<AdvanceProjectShareOperationResult> {
 	const operation = store.db
 		.prepare(
@@ -1775,13 +1801,54 @@ export async function advanceProjectShareOperation(
 			return { advanced: false, state: "waiting_for_acceptance" };
 		}
 	}
-	const plan = await executeProjectShareProvisioning(store, operationId);
+	const plan = await executeProjectShareProvisioning(store, operationId, runRefresh);
 	if (plan.superseded) {
 		// A duplicate operation won the race and cancelled this one mid-flight;
 		// reporting it as active would contradict the stored state.
 		return { advanced: false, state: "cancelled" };
 	}
 	return { advanced: true, state: "active" };
+}
+
+function projectShareProvisioningFailure(
+	c: Context,
+	store: MemoryStore,
+	operationId: string,
+	error: unknown,
+) {
+	const code = error instanceof Error ? error.message : "provisioning_failed";
+	const state = store.db
+		.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
+		.pluck()
+		.get(operationId);
+	if (state === "cancelled") return c.json({ error: "operation_superseded" }, 409);
+	return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
+}
+
+function advanceProjectShareHandler(getStore: StoreFactory, runRefresh?: ManualCoordinatorRefresh) {
+	return async (c: Context) => {
+		const store = getStore();
+		const operationId = String(c.req.param("operationId") ?? "").trim();
+		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
+			return c.json({ error: "operation_id_invalid" }, 400);
+		}
+		try {
+			const advanced = await advanceProjectShareOperation(store, operationId, { runRefresh });
+			if (!advanced.advanced) {
+				return c.json(
+					{
+						error:
+							advanced.state === "cancelled" ? "operation_superseded" : "invitation_not_accepted",
+					},
+					409,
+				);
+			}
+			const [operation] = await shareOperationReadModels(store, operationId);
+			return c.json({ ok: true, operation });
+		} catch (error) {
+			return projectShareProvisioningFailure(c, store, operationId, error);
+		}
+	};
 }
 
 function errorStatus(error: unknown): number | null {
@@ -7823,39 +7890,10 @@ export function syncRoutes(
 		return item ? c.json(item) : c.json({ error: "operation_not_found" }, 404);
 	});
 
-	const advanceProjectShare = async (c: Context) => {
-		const store = getStore();
-		const operationId = String(c.req.param("operationId") ?? "").trim();
-		if (!/^share_[a-f0-9]{40}$/u.test(operationId)) {
-			return c.json({ error: "operation_id_invalid" }, 400);
-		}
-		try {
-			const advanced = await advanceProjectShareOperation(store, operationId);
-			if (!advanced.advanced) {
-				return c.json(
-					{
-						error:
-							advanced.state === "cancelled" ? "operation_superseded" : "invitation_not_accepted",
-					},
-					409,
-				);
-			}
-			const [operation] = await shareOperationReadModels(store, operationId);
-			return c.json({ ok: true, operation });
-		} catch (error) {
-			const code = error instanceof Error ? error.message : "provisioning_failed";
-			const state = store.db
-				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
-				.pluck()
-				.get(operationId);
-			if (state === "cancelled") {
-				return c.json({ error: "operation_superseded" }, 409);
-			}
-			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
-		}
-	};
-
-	app.post("/api/sync/share-operations/:operationId/advance", advanceProjectShare);
+	app.post(
+		"/api/sync/share-operations/:operationId/advance",
+		advanceProjectShareHandler(getStore, options.runManualCoordinatorRefresh),
+	);
 
 	app.post("/api/sync/project-invites/:operationId/provision", async (c) => {
 		const store = getStore();
@@ -7864,7 +7902,11 @@ export function syncRoutes(
 			return c.json({ error: "operation_id_invalid" }, 400);
 		}
 		try {
-			const plan = await executeProjectShareProvisioning(store, operationId);
+			const plan = await executeProjectShareProvisioning(
+				store,
+				operationId,
+				options.runManualCoordinatorRefresh,
+			);
 			if (plan.superseded) {
 				// Consistent with /advance: a supersession race is a conflict, not a
 				// success with a flag.
@@ -7872,15 +7914,7 @@ export function syncRoutes(
 			}
 			return c.json({ ok: true, operation_id: operationId, state: "active", plan });
 		} catch (error) {
-			const code = error instanceof Error ? error.message : "provisioning_failed";
-			const state = store.db
-				.prepare("SELECT state FROM share_operations WHERE operation_id = ?")
-				.pluck()
-				.get(operationId);
-			if (state === "cancelled") {
-				return c.json({ error: "operation_superseded" }, 409);
-			}
-			return c.json({ error: code }, code === "operation_not_found" ? 404 : 409);
+			return projectShareProvisioningFailure(c, store, operationId, error);
 		}
 	});
 
