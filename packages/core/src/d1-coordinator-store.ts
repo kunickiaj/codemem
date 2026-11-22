@@ -854,7 +854,58 @@ async function prepareRecipientInviteGuards(
 			});
 		}
 	};
-	return { ...evidence, assertEligible };
+	return { ...evidence, assertEligible, recipientKeyId };
+}
+
+async function prepareRecipientInvitationRemoval(
+	db: D1DatabaseLike,
+	initial: CoordinatorInvite,
+	opts: CoordinatorConsumeRecipientInviteInput,
+	authorization: Awaited<ReturnType<typeof prepareRecipientInviteGuards>>,
+	ready: boolean,
+	consumedAt: string,
+) {
+	const subject = {
+		inviteId: initial.invite_id,
+		deviceId: opts.deviceId,
+		keyId: authorization.recipientKeyId,
+		publicKey: opts.publicKey,
+	};
+	const fence = invitationRemovalFence(ready, subject);
+	if (!fence) return { ...authorization, lift: [] };
+	const read = () =>
+		firstRow<InvitationRemovalState>(db.prepare(fence.read.sql).bind(...fence.read.values));
+	const needsLift = invitationRemovalNeedsLift(await read(), {
+		consumed: Boolean(initial.consumed_at),
+		proofVerified: opts.joinProofVerified,
+	});
+	const lift = needsLift
+		? [
+				liftInvitationRemovals(subject, consumedAt, {
+					sql: authorization.eligibilitySql,
+					values: authorization.eligibilityValues.map((value) => value ?? null),
+				}),
+				{
+					sql: `SELECT CASE WHEN changes() > 0 AND (${fence.eligible.sql})
+			THEN 1 ELSE json('device_removed') END`,
+					values: fence.eligible.values,
+				},
+			]
+		: [];
+	return {
+		eligibilitySql: `${authorization.eligibilitySql} AND (${fence.eligible.sql})`,
+		eligibilityValues: [...authorization.eligibilityValues, ...fence.eligible.values],
+		boundEligibilitySql: `${authorization.boundEligibilitySql} AND (${fence.eligible.sql})`,
+		boundEligibilityValues: [...authorization.boundEligibilityValues, ...fence.eligible.values],
+		assertEligible: async (options: { requireBinding: boolean }) => {
+			// A failed lift may leave the original active tombstone in place. Read
+			// authorization first so a permanent block still takes precedence.
+			await authorization.assertEligible({ requireBinding: false });
+			invitationRemovalNeedsLift(await read(), { consumed: true });
+			if (options.requireBinding) await authorization.assertEligible(options);
+		},
+		lift,
+	};
 }
 
 interface RecipientInviteGuard {
@@ -1252,6 +1303,88 @@ interface RecipientInviteConsume {
 	eligibilityValues: unknown[];
 	boundEligibilitySql: string;
 	boundEligibilityValues: unknown[];
+}
+
+/** Keep bootstrap work on the winning enrollment's changes() chain. */
+function prepareRecipientInviteBootstrap(db: D1DatabaseLike, write: RecipientInviteConsume) {
+	const { invite, opts, digest, consumedAt, boundEligibilitySql, boundEligibilityValues } = write;
+	return [
+		db
+			.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?, trust_state = 'bootstrap_grant_created'
+			WHERE (token_digest = ? OR token = ?) AND invite_kind = 'add_device'
+			AND invite_id = ? AND group_id = ?
+			AND bootstrap_grant_id IS NULL AND inviter_device_id IS NOT NULL AND expires_at > ?
+			AND EXISTS (SELECT 1 FROM enrolled_devices e WHERE e.group_id = coordinator_invites.group_id
+				AND e.device_id = coordinator_invites.inviter_device_id AND e.enabled = 1)
+			AND changes() = 1 AND ${boundEligibilitySql}`)
+			.bind(
+				tokenUrlSafe(12),
+				digest,
+				opts.token,
+				invite.invite_id,
+				invite.group_id,
+				consumedAt,
+				...boundEligibilityValues,
+			),
+		db
+			.prepare(`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
+			grant_id, group_id, seed_device_id, worker_device_id, expires_at, created_at, created_by, revoked_at
+			) SELECT i.bootstrap_grant_id, i.group_id, i.inviter_device_id, i.bound_device_id,
+			i.expires_at, ?, i.recipient_actor_id, NULL FROM coordinator_invites i
+			JOIN enrolled_devices e ON e.group_id = i.group_id
+				AND e.device_id = i.inviter_device_id AND e.enabled = 1
+			WHERE (i.token_digest = ? OR i.token = ?) AND i.invite_kind = 'add_device'
+			AND i.invite_id = ? AND i.group_id = ?
+			AND i.bootstrap_grant_id IS NOT NULL AND i.bound_device_id = ?
+			AND changes() = 1 AND ${boundEligibilitySql}`)
+			.bind(
+				consumedAt,
+				digest,
+				opts.token,
+				invite.invite_id,
+				invite.group_id,
+				opts.deviceId,
+				...boundEligibilityValues,
+			),
+	];
+}
+
+function prepareFreshRecipientInvite(
+	db: D1DatabaseLike,
+	write: RecipientInviteConsume,
+	lifting: boolean,
+) {
+	const statements = prepareRecipientInviteConsume(db, write);
+	if (lifting)
+		statements.push(
+			db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
+		);
+	return [...statements, ...prepareRecipientInviteBootstrap(db, write)];
+}
+
+async function consumeFreshRecipientInvite(
+	db: D1DatabaseLike,
+	write: RecipientInviteConsume,
+	options: Pick<RecipientInviteGuard, "assertEligible"> & {
+		lift: AuthLinkStatement[];
+		consistency: NegativeOwnerGuards;
+	},
+): Promise<number> {
+	if (write.invite.consumed_at) return 0;
+	if (!db.batch) throw new Error("D1 batch support is required for atomic invite consume.");
+	const { lift, consistency } = options;
+	const changes = await runRecipientInviteBatch(
+		db,
+		prepareFreshRecipientInvite(db, write, lift.length > 0),
+		{
+			sql: write.eligibilitySql,
+			values: write.eligibilityValues,
+			assertEligible: options.assertEligible,
+			guards: [...consistency.guards, ...lift],
+			unpinned: lift.length ? undefined : consistency.retainedGuards,
+		},
+	);
+	return inviteConsumeWon(changes) ? 1 : 0;
 }
 
 function prepareRecipientInviteConsume(
@@ -2762,89 +2895,40 @@ export class D1CoordinatorStore implements CoordinatorStore {
 				.bind(initial.group_id, _opts.deviceId),
 		);
 		validateRecipientEnrollmentTuple(existingEnrollment, _opts);
+		const authorization = await prepareRecipientInviteGuards(this.db, initial, _opts);
+		await authorization.assertEligible({ requireBinding: Boolean(initial.consumed_at) });
 		const {
 			eligibilitySql,
 			eligibilityValues,
 			boundEligibilitySql,
 			boundEligibilityValues,
 			assertEligible,
-		} = await prepareRecipientInviteGuards(this.db, initial, _opts);
-		await assertEligible({ requireBinding: Boolean(initial.consumed_at) });
+			lift,
+		} = await prepareRecipientInvitationRemoval(
+			this.db,
+			initial,
+			_opts,
+			authorization,
+			await this.hasRemovalSchema(),
+			consumedAt,
+		);
 		const consistency = await this.prepareEligibleRecipientOwner(_opts);
-		let changed = 0;
-		const bootstrapGrantId = tokenUrlSafe(12);
-		if (!initial.consumed_at) {
-			if (!this.db.batch)
-				throw new Error("D1 batch support is required for atomic invite consume.");
-			const changes = await runRecipientInviteBatch(
-				this.db,
-				[
-					...prepareRecipientInviteConsume(this.db, {
-						invite: initial,
-						opts: _opts,
-						digest,
-						consumedAt,
-						identityId: authoritativeIdentityId,
-						keyId: await this.storedKeyId(_opts.publicKey),
-						eligibilitySql,
-						eligibilityValues,
-						boundEligibilitySql,
-						boundEligibilityValues,
-					}),
-					// Enrollment follows the winning token write. Keep bootstrap writes on
-					// that changes() chain; a loser still needs its full pin during repair.
-					this.db
-						.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
-						trust_state = 'bootstrap_grant_created'
-						WHERE (token_digest = ? OR token = ?) AND invite_kind = 'add_device'
-						AND invite_id = ? AND group_id = ?
-						AND bootstrap_grant_id IS NULL AND inviter_device_id IS NOT NULL
-						AND expires_at > ?
-						AND EXISTS (SELECT 1 FROM enrolled_devices e
-							WHERE e.group_id = coordinator_invites.group_id
-							AND e.device_id = coordinator_invites.inviter_device_id AND e.enabled = 1)
-						AND changes() = 1 AND ${boundEligibilitySql}`)
-						.bind(
-							bootstrapGrantId,
-							digest,
-							_opts.token,
-							initial.invite_id,
-							initial.group_id,
-							consumedAt,
-							...boundEligibilityValues,
-						),
-					this.db
-						.prepare(`INSERT OR IGNORE INTO coordinator_bootstrap_grants(
-						grant_id, group_id, seed_device_id, worker_device_id, expires_at,
-						created_at, created_by, revoked_at
-					) SELECT i.bootstrap_grant_id, i.group_id, i.inviter_device_id, i.bound_device_id,
-						i.expires_at, ?, i.recipient_actor_id, NULL FROM coordinator_invites i
-					JOIN enrolled_devices e ON e.group_id = i.group_id
-						AND e.device_id = i.inviter_device_id AND e.enabled = 1
-					WHERE (i.token_digest = ? OR i.token = ?) AND i.invite_kind = 'add_device'
-						AND i.invite_id = ? AND i.group_id = ?
-						AND i.bootstrap_grant_id IS NOT NULL AND i.bound_device_id = ?
-						AND changes() = 1 AND ${boundEligibilitySql}`)
-						.bind(
-							consumedAt,
-							digest,
-							_opts.token,
-							initial.invite_id,
-							initial.group_id,
-							_opts.deviceId,
-							...boundEligibilityValues,
-						),
-				],
-				{
-					sql: eligibilitySql,
-					values: eligibilityValues,
-					assertEligible,
-					guards: consistency.guards,
-					unpinned: consistency.retainedGuards,
-				},
-			);
-			changed = inviteConsumeWon(changes) ? 1 : 0;
-		}
+		const changed = await consumeFreshRecipientInvite(
+			this.db,
+			{
+				invite: initial,
+				opts: _opts,
+				digest,
+				consumedAt,
+				identityId: authoritativeIdentityId,
+				keyId: await this.storedKeyId(_opts.publicKey),
+				eligibilitySql,
+				eligibilityValues,
+				boundEligibilitySql,
+				boundEligibilityValues,
+			},
+			{ assertEligible, lift, consistency },
+		);
 		await assertEligible({ requireBinding: false });
 		const currentGroup = await this.getGroup(initial.group_id);
 		if (!currentGroup) throw new Error("group_not_found");
@@ -4546,3 +4630,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		});
 	}
 }
+
+import {
+	type InvitationRemovalState,
+	invitationRemovalFence,
+	invitationRemovalNeedsLift,
+	liftInvitationRemovals,
+} from "./coordinator-invitation-removal.js";
