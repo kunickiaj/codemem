@@ -11,7 +11,7 @@ import { originGuard } from "../middleware.js";
 const LIST_PATH = "/api/sync/devices/removals";
 const DIGEST = /^[a-f0-9]{64}$/u;
 
-function readTarget(readConfig: typeof readCoordinatorSyncConfig) {
+export function readDeviceRemovalCoordinator(readConfig: typeof readCoordinatorSyncConfig) {
 	const config = readConfig();
 	const url = normalizeCoordinatorAccountLinkOrigin(config.syncCoordinatorUrl);
 	const adminSecret = config.syncCoordinatorAdminSecret;
@@ -27,7 +27,7 @@ function coordinatorReadFailure(c: Context, error: unknown) {
 
 async function listRemovals(c: Context, readConfig: typeof readCoordinatorSyncConfig) {
 	try {
-		const remote = readTarget(readConfig);
+		const remote = readDeviceRemovalCoordinator(readConfig);
 		if (!remote) return c.json({ error: "coordinator_admin_required" }, 409);
 		const rows = await coordinatorListRemovedDevicesAction({ remote });
 		const items = rows.map(({ device_id, group_id, display_name, removal_seq }) => ({
@@ -49,6 +49,7 @@ function reviewPreview(
 		deviceId: string;
 		localId: string;
 		localKeyId: string;
+		coordinatorOrigin: string;
 	},
 ) {
 	if (
@@ -75,7 +76,13 @@ function reviewPreview(
 		if (!row || typeof row.device_id !== "string") return coordinatorReadFailure(c, null);
 		if (row.device_id === ids.localId) return c.json({ error: "cannot_remove_this_device" }, 400);
 	}
-	return c.json({ device_id: ids.deviceId, rejoin, expected_digest, key_id });
+	return c.json({
+		device_id: ids.deviceId,
+		rejoin,
+		expected_digest,
+		key_id,
+		coordinator_origin: ids.coordinatorOrigin,
+	});
 }
 
 interface Options {
@@ -96,7 +103,9 @@ async function previewRemoval(c: Context, options: Options) {
 		const { deviceId: localId, keyId: localKeyId } = options.localIdentity();
 		if (localId === deviceId) return c.json({ error: "cannot_remove_this_device" }, 400);
 		if (!localKeyId) return c.json({ error: "local_identity_unverified" }, 409);
-		const remote = readTarget(options.readCoordinatorConfig ?? readCoordinatorSyncConfig);
+		const remote = readDeviceRemovalCoordinator(
+			options.readCoordinatorConfig ?? readCoordinatorSyncConfig,
+		);
 		if (!remote) return c.json({ error: "coordinator_admin_required" }, 409);
 		const [status, payload] = await requestJson(
 			"POST",
@@ -108,7 +117,13 @@ async function previewRemoval(c: Context, options: Options) {
 				maxResponseBytes: 128_000,
 			},
 		);
-		if (status === 200) return reviewPreview(c, payload, { deviceId, localId, localKeyId });
+		if (status === 200)
+			return reviewPreview(c, payload, {
+				deviceId,
+				localId,
+				localKeyId,
+				coordinatorOrigin: remote.url,
+			});
 		if (status === 404 && payload?.error === "removal_target_not_enrolled")
 			return c.json({ error: "removal_target_not_enrolled" }, 404);
 		if (status === 404) return c.json({ error: "coordinator_update_required" }, 503);

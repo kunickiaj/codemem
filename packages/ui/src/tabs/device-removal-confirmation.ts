@@ -1,4 +1,4 @@
-import { fetchJson } from "../lib/api/internal";
+import { fetchJson, payloadError } from "../lib/api/internal";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
 export interface DeviceRemovalPreview {
@@ -6,6 +6,7 @@ export interface DeviceRemovalPreview {
 	rejoin: "invitation" | "sign_in" | "none";
 	expected_digest: string;
 	key_id: string | null;
+	coordinator_origin: string;
 }
 
 export interface DeviceRemovalConfirmationDependencies {
@@ -22,6 +23,16 @@ export class DeviceRemovalPreviewError extends Error {
 	}
 }
 
+function isCoordinatorOrigin(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	try {
+		const url = new URL(value);
+		return (url.protocol === "https:" || url.protocol === "http:") && url.origin === value;
+	} catch {
+		return false;
+	}
+}
+
 function validatePreview(value: unknown, deviceId: string): DeviceRemovalPreview {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		throw new DeviceRemovalPreviewError();
@@ -34,7 +45,8 @@ function validatePreview(value: unknown, deviceId: string): DeviceRemovalPreview
 			preview.rejoin !== "none") ||
 		typeof preview.expected_digest !== "string" ||
 		!/^[a-f0-9]{64}$/.test(preview.expected_digest) ||
-		(preview.key_id !== null && typeof preview.key_id !== "string")
+		(preview.key_id !== null && typeof preview.key_id !== "string") ||
+		!isCoordinatorOrigin(preview.coordinator_origin)
 	) {
 		throw new DeviceRemovalPreviewError();
 	}
@@ -43,6 +55,7 @@ function validatePreview(value: unknown, deviceId: string): DeviceRemovalPreview
 		rejoin: preview.rejoin,
 		expected_digest: preview.expected_digest,
 		key_id: preview.key_id as string | null,
+		coordinator_origin: preview.coordinator_origin,
 	};
 }
 
@@ -96,4 +109,135 @@ export async function runDeviceRemovalConfirmation(
 		tone: "danger",
 	});
 	return confirmed === true ? reviewed : null;
+}
+
+interface DeviceRemovalProgress {
+	device_id: string;
+	group_id: string;
+	display_name: string | null;
+	state: "applied" | "pending" | "older";
+}
+
+export interface DeviceRemovalResult {
+	state: "removed";
+	removal_id: string;
+	removal_seq: number;
+	evidence: "receipt" | "listing";
+	local_cleanup: "applied" | "deferred";
+	refresh_pending: boolean;
+	progress?: DeviceRemovalProgress[] | null;
+}
+
+const removalErrorCodes = [
+	"invalid_input",
+	"coordinator_admin_required",
+	"coordinator_update_required",
+	"device_removal_unavailable",
+	"local_identity_unverified",
+	"cannot_remove_this_device",
+	"removal_preview_stale",
+	"removal_target_not_enrolled",
+	"removal_target_unavailable",
+	"removal_outcome_unknown",
+] as const;
+
+export type DeviceRemovalErrorCode = (typeof removalErrorCodes)[number];
+
+export class DeviceRemovalCommitError extends Error {
+	constructor(
+		readonly code: DeviceRemovalErrorCode,
+		readonly statusCode: number,
+	) {
+		super(code);
+		this.name = "DeviceRemovalCommitError";
+	}
+}
+
+function readProgress(raw: unknown): DeviceRemovalProgress[] | null {
+	if (!Array.isArray(raw) || raw.length > 500) return null;
+	const rows: DeviceRemovalProgress[] = [];
+	for (const value of raw) {
+		if (!value || typeof value !== "object") return null;
+		const { device_id, group_id, display_name, state } = value as Record<string, unknown>;
+		if (
+			typeof device_id !== "string" ||
+			typeof group_id !== "string" ||
+			(display_name !== null && typeof display_name !== "string") ||
+			(state !== "applied" && state !== "pending" && state !== "older")
+		)
+			return null;
+		rows.push({
+			device_id,
+			group_id,
+			display_name: typeof display_name === "string" ? display_name : null,
+			state,
+		});
+	}
+	return rows;
+}
+
+function validateRemovalResult(value: unknown): DeviceRemovalResult {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new DeviceRemovalCommitError("removal_outcome_unknown", 200);
+	}
+	const result = value as Record<string, unknown>;
+	if (
+		result.state !== "removed" ||
+		typeof result.removal_id !== "string" ||
+		!result.removal_id.trim() ||
+		!Number.isSafeInteger(result.removal_seq) ||
+		(result.removal_seq as number) < 1 ||
+		(result.evidence !== "receipt" && result.evidence !== "listing") ||
+		(result.local_cleanup !== "applied" && result.local_cleanup !== "deferred") ||
+		typeof result.refresh_pending !== "boolean"
+	) {
+		throw new DeviceRemovalCommitError("removal_outcome_unknown", 200);
+	}
+	return {
+		state: "removed",
+		removal_id: result.removal_id,
+		removal_seq: result.removal_seq as number,
+		evidence: result.evidence,
+		local_cleanup: result.local_cleanup,
+		refresh_pending: result.refresh_pending,
+		...(Object.hasOwn(result, "progress") ? { progress: readProgress(result.progress) } : {}),
+	};
+}
+
+async function commitDeviceRemoval(
+	deviceId: string,
+	preview: DeviceRemovalPreview,
+): Promise<DeviceRemovalResult> {
+	let response: Response;
+	let payload: unknown;
+	try {
+		response = await fetch(`/api/sync/devices/${encodeURIComponent(deviceId)}/remove`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				coordinator_origin: preview.coordinator_origin,
+				expected_digest: preview.expected_digest,
+			}),
+		});
+		payload = await response.json();
+	} catch {
+		// A lost response cannot tell us whether the coordinator applied the removal.
+		throw new DeviceRemovalCommitError("removal_outcome_unknown", 0);
+	}
+	if (response.status !== 200) {
+		const code = payloadError(payload);
+		const knownCode = removalErrorCodes.find((candidate) => candidate === code);
+		throw new DeviceRemovalCommitError(knownCode ?? "removal_outcome_unknown", response.status);
+	}
+	return validateRemovalResult(payload);
+}
+
+/** Unmounted entry point. A caller must refresh Devices before retrying an unknown outcome. */
+export async function confirmAndCommitDeviceRemoval(
+	device: Parameters<typeof runDeviceRemovalConfirmation>[0],
+	dependencies: Partial<DeviceRemovalConfirmationDependencies> = {},
+): Promise<DeviceRemovalResult | null> {
+	const reviewed = await runDeviceRemovalConfirmation(device, dependencies);
+	if (!reviewed) return null;
+	return commitDeviceRemoval(reviewed.device_id, reviewed);
 }

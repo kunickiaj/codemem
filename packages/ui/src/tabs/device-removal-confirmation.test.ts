@@ -14,6 +14,7 @@ const preview: DeviceRemovalPreview = {
 	rejoin: "invitation",
 	expected_digest: "a".repeat(64),
 	key_id: null,
+	coordinator_origin: "https://coordinator.example",
 };
 const body =
 	"Your devices stop syncing with Old laptop. Devices that are online stop within a few minutes. A device that is offline stops when it next connects. Memories already on Old laptop stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other.";
@@ -122,6 +123,13 @@ describe("runDeviceRemovalConfirmation", () => {
 		{ ...preview, expected_digest: 123 },
 		{ ...preview, key_id: undefined },
 		{ ...preview, key_id: 123 },
+		{ ...preview, coordinator_origin: undefined },
+		{ ...preview, coordinator_origin: "" },
+		{ ...preview, coordinator_origin: 123 },
+		{ ...preview, coordinator_origin: "invalid" },
+		{ ...preview, coordinator_origin: "https://user:secret@coordinator.example" },
+		{ ...preview, coordinator_origin: "https://coordinator.example/path" },
+		{ ...preview, coordinator_origin: "file:///example" },
 	])("rejects malformed or mismatched previews before confirmation: %j", async (value) => {
 		await expect(
 			runDeviceRemovalConfirmation(device, { preview: vi.fn().mockResolvedValue(value) }),

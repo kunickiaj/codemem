@@ -1799,6 +1799,7 @@ export {
 	semanticSearch,
 	storeVectors,
 } from "./vectors.js";
+export { commitViewerDeviceRemoval } from "./viewer-device-removal-commit.js";
 export type {
 	ViewerLivenessProbeDependencies,
 	ViewerLivenessProbeResult,
