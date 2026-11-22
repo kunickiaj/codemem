@@ -362,3 +362,44 @@ it("waits for the shared refresh lane after coordinator proof and runs a fresh p
 	});
 	expect(fresh).toHaveBeenCalledOnce();
 });
+
+it("returns verified removal with cleanup deferred when waiting for refresh times out", async () => {
+	const f = await fixture();
+	const lifecycle = createCoordinatorRefreshLifecycle();
+	const release = Promise.withResolvers<void>();
+	const waiting = Promise.withResolvers<"waiting">();
+	const existing = lifecycle.runRefresh(() => release.promise);
+	const fresh = vi.fn(async () => {});
+	const hooks = lifecycle.forRemoval(fresh, { queueWaitTimeoutMs: 100 });
+
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const removal = commitViewerDeviceRemoval(f.confirmed, {
+		...f,
+		waitForRefresh: () => {
+			const ready = hooks.waitForRefresh();
+			waiting.resolve("waiting");
+			return ready;
+		},
+		refresh: hooks.refresh,
+	});
+	try {
+		expect(await Promise.race([waiting.promise, removal])).toBe("waiting");
+		await vi.advanceTimersByTimeAsync(100);
+		expect(await removal).toMatchObject({
+			kind: "removed",
+			evidence: { source: "receipt" },
+			localCleanup: { state: "deferred" },
+			refreshPending: true,
+		});
+		expect(await f.store.getEnrollment("a", "peer", true)).toBeNull();
+		expect(f.summary()).toEqual(f.before);
+	} finally {
+		release.resolve();
+		await Promise.all([existing, removal]);
+		vi.useRealTimers();
+	}
+
+	await expect(lifecycle.runRefresh(async () => "next refresh")).resolves.toBe("next refresh");
+	expect(f.summary()).toEqual(f.before);
+	expect(fresh).not.toHaveBeenCalled();
+});

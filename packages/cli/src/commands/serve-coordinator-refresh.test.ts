@@ -1,12 +1,63 @@
 import type { MemoryStore } from "@codemem/core";
-import { expect, it, vi } from "vitest";
-import { createServeCoordinatorRefresh } from "./serve-coordinator-refresh.js";
+import { afterEach, expect, it, vi } from "vitest";
+import {
+	createServeCoordinatorRefresh,
+	VIEWER_REMOVAL_QUEUE_WAIT_TIMEOUT_MS,
+} from "./serve-coordinator-refresh.js";
+
+afterEach(() => vi.useRealTimers());
 
 function fixtureOptions() {
 	const store = { db: {} as MemoryStore["db"], dbPath: ":memory:" };
 	const abort = new AbortController();
 	return { store, signal: abort.signal, abort };
 }
+
+it("limits Viewer removal queue acquisition without releasing an active daemon pass", async () => {
+	vi.useFakeTimers();
+	const fresh = vi.fn(async () => ({ refreshed: true, peers: [] }));
+	const { daemon, viewer } = createServeCoordinatorRefresh(fixtureOptions(), fresh);
+	const release = Promise.withResolvers<void>();
+	const existing = daemon.runCoordinatorRefresh(() => release.promise);
+	const removal = viewer.createDeviceRemovalRefreshHooks();
+	const cleanup = vi.fn();
+	const rejected = expect(removal.waitForRefresh().then(cleanup)).rejects.toThrow(
+		"coordinator_refresh_queue_timeout",
+	);
+	const manualWork = vi.fn(async () => "manual result");
+	const manual = viewer.runManualCoordinatorRefresh(manualWork);
+
+	await vi.advanceTimersByTimeAsync(VIEWER_REMOVAL_QUEUE_WAIT_TIMEOUT_MS);
+	await rejected;
+	await expect(removal.refresh()).rejects.toThrow("coordinator_refresh_queue_timeout");
+	expect(manualWork).not.toHaveBeenCalled();
+	expect(fresh).not.toHaveBeenCalled();
+	expect(vi.getTimerCount()).toBe(0);
+
+	release.resolve();
+	await existing;
+	await expect(manual).resolves.toBe("manual result");
+	expect(cleanup).not.toHaveBeenCalled();
+	expect(fresh).not.toHaveBeenCalled();
+});
+
+it("clears the Viewer removal deadline after fast acquisition and retains exclusive cleanup", async () => {
+	vi.useFakeTimers();
+	const fresh = vi.fn(async () => ({ refreshed: true, peers: [] }));
+	const { daemon, viewer } = createServeCoordinatorRefresh(fixtureOptions(), fresh);
+	const removal = viewer.createDeviceRemovalRefreshHooks();
+	await removal.waitForRefresh();
+	expect(vi.getTimerCount()).toBe(0);
+	const nextWork = vi.fn(async () => {});
+	const next = daemon.runCoordinatorRefresh(nextWork);
+	await vi.advanceTimersByTimeAsync(VIEWER_REMOVAL_QUEUE_WAIT_TIMEOUT_MS * 2);
+	expect(nextWork).not.toHaveBeenCalled();
+	expect(fresh).not.toHaveBeenCalled();
+	await removal.refresh();
+	await next;
+	expect(fresh).toHaveBeenCalledOnce();
+	expect(nextWork).toHaveBeenCalledOnce();
+});
 
 it("shares the daemon refresh queue with each Viewer removal", async () => {
 	const entered = Promise.withResolvers<void>();
