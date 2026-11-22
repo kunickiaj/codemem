@@ -35,6 +35,11 @@ import {
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
+import {
+	confirmAndCommitDeviceRemoval,
+	DeviceRemovalCommitError,
+	type DeviceRemovalConfirmationDependencies,
+} from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
 import { type DeviceRetirementApi, runDeviceRetirement } from "./device-retire";
 
@@ -96,6 +101,8 @@ export interface DevicesRendererOptions {
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	renameDevice?: typeof renameKnownDevice;
 	retirementApi?: DeviceRetirementApi;
+	/** Explicit fixture mount only until the Remove lifecycle acceptance gate passes. */
+	removalConfirmation?: Partial<DeviceRemovalConfirmationDependencies>;
 	coordinatorEnrollmentIssueCount?: number;
 }
 
@@ -611,19 +618,22 @@ function SetupCardRetire({
 	options: DevicesRendererOptions;
 }) {
 	const device = { deviceId: item.deviceId, displayName: item.displayName };
-	const [action] = deviceRetireMenuAction(device, item, options);
-	if (!action || item.isLocal) return null;
+	const actions = deviceRemovalMenuActions(device, item, options);
+	if (actions.length === 0) return null;
 	return (
 		<div className="device-identity-card-actions">
-			<button
-				aria-label={action.ariaLabel}
-				className="settings-button"
-				disabled={action.disabled}
-				onClick={action.onSelect}
-				type="button"
-			>
-				Retire device…
-			</button>
+			{actions.map((action) => (
+				<button
+					key={action.label}
+					aria-label={action.ariaLabel}
+					className="settings-button"
+					disabled={action.disabled}
+					onClick={action.onSelect}
+					type="button"
+				>
+					{action.label}
+				</button>
+			))}
 		</div>
 	);
 }
@@ -1401,6 +1411,54 @@ function deviceRenameMenuAction(options: DevicesRendererOptions, onRename: () =>
 /** Retirement needs coordinator evidence for a person's device other than this one. */
 type RetireTarget = Pick<DeviceProjection, "deviceId" | "displayName">;
 
+function deviceRemovalMenuActions(
+	device: RetireTarget,
+	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
+	options: DevicesRendererOptions,
+): MenuAction[] {
+	const retire = deviceRetireMenuAction(device, inventoryItem, options);
+	const confirmation = options.removalConfirmation;
+	if (!confirmation || retire.length === 0) return retire;
+	return [
+		...retire,
+		{
+			ariaLabel: `Remove ${device.displayName}`,
+			disabled: identityMutationsBlocked(options),
+			label: "Remove device…",
+			onSelect: () => void removeFromMenu(device, options, confirmation),
+		},
+	];
+}
+
+async function removeFromMenu(
+	device: RetireTarget,
+	options: DevicesRendererOptions,
+	confirmation: Partial<DeviceRemovalConfirmationDependencies>,
+) {
+	let result: Awaited<ReturnType<typeof confirmAndCommitDeviceRemoval>>;
+	try {
+		result = await confirmAndCommitDeviceRemoval(device, confirmation);
+	} catch (error) {
+		const message =
+			error instanceof DeviceRemovalCommitError && error.code === "removal_outcome_unknown"
+				? `The coordinator didn't confirm. Refresh Devices to see whether ${device.displayName} was removed before you try again.`
+				: `Could not remove ${device.displayName}. Refresh Devices before trying again.`;
+		setDeviceCommitStatus(message, "warning");
+		return;
+	}
+	if (!result) return;
+	const refreshed = await Promise.resolve()
+		.then(() => options.onCommitted?.())
+		.catch(() => false);
+	const message = `${device.displayName} is removed.`;
+	if (refreshed === false || result.local_cleanup === "deferred" || result.refresh_pending) {
+		setDeviceCommitStatus(`${message} Refresh Devices to check local sync status.`, "warning");
+	} else {
+		setDeviceCommitStatus(message, "success");
+	}
+	document.getElementById("devices-heading")?.focus();
+}
+
 function deviceRetireMenuAction(
 	device: RetireTarget,
 	inventoryItem: DeviceIdentityInventoryItemV1 | undefined,
@@ -1476,7 +1534,7 @@ function DeviceRowMenu({
 			onSelect: onDetails,
 		},
 		deviceRenameMenuAction(options, onRename),
-		...deviceRetireMenuAction(device, inventoryItem, options),
+		...deviceRemovalMenuActions(device, inventoryItem, options),
 		...(inventoryItem && canReassign
 			? [
 					{

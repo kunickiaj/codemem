@@ -84,6 +84,14 @@ const unitTestExcludes = [
 ];
 
 const unitTestServer = { deps: { inline: radixTestDependencies } };
+const unitTestAliases = [
+	// In-process Viewer fixtures use workspace source without a separate Core build.
+	{ find: /^@codemem\/core$/, replacement: resolve(import.meta.dirname, "../core/src/index.ts") },
+	{
+		find: "react-remove-scroll",
+		replacement: resolve(import.meta.dirname, "src/menu-test-scroll-lock.tsx"),
+	},
+];
 
 export default defineConfig(({ command, mode }) => {
 	const isDevServer = command === "serve";
@@ -150,9 +158,7 @@ export default defineConfig(({ command, mode }) => {
 			environment: "jsdom",
 			name: "ui",
 			setupFiles: ["../core/src/test-environment-isolation.ts"],
-			alias: {
-				"react-remove-scroll": resolve(import.meta.dirname, "src/menu-test-scroll-lock.tsx"),
-			},
+			alias: unitTestAliases,
 			server: unitTestServer,
 		},
 	};
