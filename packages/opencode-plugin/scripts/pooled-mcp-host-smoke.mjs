@@ -11,6 +11,9 @@
 // The binary must support pooling (2.2.6 or later); it is not a workspace
 // dependency. Options, all through the environment:
 //   CODEMEM_SMOKE_CLI=dist      run the built CLI (after `pnpm build`), not source
+//   CODEMEM_SMOKE_CLI=packed    pack the CLI, its workspace packages and this plugin
+//                               (after `pnpm build`), install the tarballs into the
+//                               temp directory, and run the installed CLI and plugin
 //   CODEMEM_SMOKE_MEASURE=N     also measure private, pooled, and native with N projects
 //   CODEMEM_SMOKE_KEEP=1        keep the temp directory
 
@@ -44,15 +47,22 @@ import {
 	stopChild,
 	waitForMcp,
 } from "./lib/scripted-host.mjs";
+import { installPackedCodemem } from "./lib/packed-install.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const workspaceRoot = resolve(packageRoot, "..", "..");
 const opencodeBin = process.env.CODEMEM_SMOKE_OPENCODE_BIN;
-const useDist = process.env.CODEMEM_SMOKE_CLI === "dist";
+const CLI_MODES = ["source", "dist", "packed"];
+const cliMode = process.env.CODEMEM_SMOKE_CLI || "source";
+if (!CLI_MODES.includes(cliMode)) {
+	throw new Error(`CODEMEM_SMOKE_CLI must be one of ${CLI_MODES.join(", ")}`);
+}
 const measureProjects = Number(process.env.CODEMEM_SMOKE_MEASURE ?? 0);
 const keepTemp = process.env.CODEMEM_SMOKE_KEEP === "1";
 const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "codemem-pooled-smoke-")));
 const home = join(tempRoot, "home");
+/** The plugin OpenCode loads: this checkout's, or the packed install's. */
+let pluginPackage = packageRoot;
 const children = new Set();
 const checks = [];
 const SERVER = "codemem";
@@ -61,9 +71,10 @@ function check(name, pass, evidence) {
 	checks.push({ name, pass: Boolean(pass), ...(pass ? {} : { evidence }) });
 }
 
-// The launcher execs this checkout's CLI entry point, so that path identifies
-// the servers whatever the checkout directory is called.
-const CLI_ENTRY_RE = /packages\/cli\/(src\/index\.ts|dist\/index\.js)\s+mcp(\s|$)/;
+// The launcher execs this checkout's CLI entry point, or the packed install's,
+// so that path identifies the servers whatever the directory is called.
+const CLI_ENTRY_RE =
+	/(packages\/cli\/(src\/index\.ts|dist\/index\.js)|node_modules\/codemem\/dist\/index\.js)\s+mcp(\s|$)/;
 const isCodememMcp = (row) => CLI_ENTRY_RE.test(row.command);
 
 /**
@@ -83,14 +94,20 @@ function mcpProcesses(host) {
 
 // ------------------------------------------------------------------- fixture
 
-/** A `codemem` launcher for this checkout, so no installed CLI is ever used. */
-function writeCodememLauncher() {
+/**
+ * A `codemem` launcher for this checkout, or for the packed install made in the
+ * temp directory, so no globally installed CLI is ever used.
+ */
+function writeCodememLauncher(packedCliEntry) {
 	const binDir = join(tempRoot, "bin");
 	mkdirSync(binDir, { recursive: true });
 	const tsx = join(workspaceRoot, "packages/cli/node_modules/.bin/tsx");
-	const command = useDist
-		? `"${process.execPath}" "${join(workspaceRoot, "packages/cli/dist/index.js")}"`
-		: `"${tsx}" --conditions source "${join(workspaceRoot, "packages/cli/src/index.ts")}"`;
+	const entries = {
+		source: `"${tsx}" --conditions source "${join(workspaceRoot, "packages/cli/src/index.ts")}"`,
+		dist: `"${process.execPath}" "${join(workspaceRoot, "packages/cli/dist/index.js")}"`,
+		packed: `"${process.execPath}" "${packedCliEntry}"`,
+	};
+	const command = entries[cliMode];
 	const launcher = join(binDir, "codemem");
 	writeFileSync(launcher, `#!/bin/sh\nexec ${command} "$@"\n`);
 	chmodSync(launcher, 0o755);
@@ -179,7 +196,7 @@ function mcpEntry(mode, launcher, target, { codemode } = {}) {
 function writeProjectConfig(dir, providerBaseURL, entry) {
 	const config = {
 		...providerConfig(providerBaseURL),
-		plugins: [{ package: packageRoot }],
+		plugins: [{ package: pluginPackage }],
 		...(entry ? { mcp: { servers: { [SERVER]: entry } } } : {}),
 	};
 	writeFileSync(join(dir, "opencode.json"), JSON.stringify(config, null, 2));
@@ -517,7 +534,9 @@ async function main() {
 		throw new Error("Set CODEMEM_SMOKE_OPENCODE_BIN to an OpenCode binary that supports pooling");
 	}
 	mkdirSync(join(tempRoot, "pool-cwd"), { recursive: true });
-	const launcher = writeCodememLauncher();
+	const packed = cliMode === "packed" ? installPackedCodemem(workspaceRoot, join(tempRoot, "packed-install")) : null;
+	if (packed) pluginPackage = packed.pluginRoot;
+	const launcher = writeCodememLauncher(packed?.cliEntry);
 	const provider = await startProvider(SCENARIOS);
 	try {
 		const correctness = [];
@@ -533,7 +552,7 @@ async function main() {
 		const failed = checks.filter((entry) => !entry.pass);
 		const summary = {
 			ok: failed.length === 0,
-			cli: useDist ? "dist" : "source",
+			cli: cliMode,
 			correctness,
 			measurements,
 			checks,
