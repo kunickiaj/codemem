@@ -45,7 +45,7 @@ export function projectGuardedD1(
 		hook,
 	);
 }
-export async function projectInvite(f: RevocationFixture) {
+export async function projectInvite(f: RevocationFixture, operationId = `share_${"a".repeat(40)}`) {
 	await f.store.createGroup(f.input.groupId);
 	const seed = {
 		...f.input,
@@ -60,7 +60,6 @@ export async function projectInvite(f: RevocationFixture) {
 		display_name: "Project",
 		existing_memory_count: 3,
 	};
-	const operationId = `share_${"a".repeat(40)}`;
 	const invite = await f.store.createInvite({
 		groupId: seed.groupId,
 		policy: "auto_admit",
