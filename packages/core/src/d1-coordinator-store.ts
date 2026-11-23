@@ -880,17 +880,15 @@ async function prepareRecipientInvitationRemoval(
 		proofVerified: opts.joinProofVerified,
 	});
 	const lift = needsLift
-		? [
-				liftInvitationRemovals(subject, consumedAt, {
+		? invitationLiftStatements(
+				subject,
+				consumedAt,
+				{
 					sql: authorization.eligibilitySql,
 					values: authorization.eligibilityValues.map((value) => value ?? null),
-				}),
-				{
-					sql: `SELECT CASE WHEN changes() > 0 AND (${fence.eligible.sql})
-			THEN 1 ELSE json('device_removed') END`,
-					values: fence.eligible.values,
 				},
-			]
+				fence,
+			)
 		: [];
 	return {
 		eligibilitySql: `${authorization.eligibilitySql} AND (${fence.eligible.sql})`,
@@ -1101,7 +1099,7 @@ async function prepareProjectInviteGuards(
 	db: D1DatabaseLike,
 	initial: CoordinatorInvite,
 	opts: CoordinatorConsumeProjectInviteInput,
-	hasRemovalSchema: boolean,
+	acceptance: { hasRemovalSchema: boolean; consumedAt: string },
 ) {
 	const participantOpts = { ...opts, identityId: opts.recipientActorId };
 	const enrollmentRow = await firstRow<CoordinatorEnrollment>(
@@ -1136,11 +1134,8 @@ async function prepareProjectInviteGuards(
 		incoming: recipientKeyId,
 		current: currentKeyId,
 	});
-	const removal = invitationRemovalFence(hasRemovalSchema, {
-		...opts,
-		inviteId: initial.invite_id,
-		keyId: recipientKeyId,
-	});
+	const subject = { ...opts, inviteId: initial.invite_id, keyId: recipientKeyId };
+	const removal = invitationRemovalFence(acceptance.hasRemovalSchema, subject);
 	const assertEligible = projectInviteEligibility(db, {
 		initial,
 		opts,
@@ -1149,9 +1144,49 @@ async function prepareProjectInviteGuards(
 		recipientKeyId,
 		removal,
 	});
-	await assertEligible({ requireBinding: false });
+	await assertEligible({ requireBinding: false, checkRemoval: Boolean(initial.consumed_at) });
 	validateRecipientEnrollmentTuple(enrollment, participantOpts);
-	return { ...withInvitationRemovalGuard(guard, removal), assertEligible };
+	const lift = await prepareProjectInvitationLift(db, initial, opts, {
+		subject,
+		removal,
+		guard,
+		consumedAt: acceptance.consumedAt,
+	});
+	return { ...withInvitationRemovalGuard(guard, removal), assertEligible, lift };
+}
+
+async function prepareProjectInvitationLift(
+	db: D1DatabaseLike,
+	invite: CoordinatorInvite,
+	opts: CoordinatorConsumeProjectInviteInput,
+	input: {
+		subject: Parameters<typeof invitationRemovalFence>[1];
+		removal: InvitationRemovalFence;
+		guard: ReturnType<typeof legacyProjectInviteOwnershipEvidence>;
+		consumedAt: string;
+	},
+) {
+	const { subject, removal, guard, consumedAt } = input;
+	if (!removal) return [];
+	const { sql, values } = removal.read;
+	const state = await firstRow<InvitationRemovalState>(db.prepare(sql).bind(...values));
+	if (!state) throw new Error("invite_invalid");
+	if (
+		!invitationRemovalNeedsLift(state, {
+			consumed: Boolean(invite.consumed_at),
+			proofVerified: opts.joinProofVerified,
+		})
+	)
+		return [];
+	return invitationLiftStatements(
+		subject,
+		consumedAt,
+		{
+			sql: guard.eligibilitySql,
+			values: guard.eligibilityValues.map((value) => value ?? null),
+		},
+		removal,
+	);
 }
 
 function projectInviteEligibility(
@@ -1167,13 +1202,16 @@ function projectInviteEligibility(
 ) {
 	const { initial, opts, guard, enrollment, recipientKeyId, removal } = input;
 	const participantOpts = { ...opts, identityId: opts.recipientActorId };
-	const assertEligible = async (options: { requireBinding: boolean }): Promise<void> => {
+	const assertEligible = async (options: {
+		requireBinding: boolean;
+		checkRemoval?: boolean;
+	}): Promise<void> => {
 		const state = await readRecipientInviteDecision(
 			() => prepareProjectInviteDecision(db, initial, opts, guard, options),
 			["revoked", "owned", "eligible"],
 		);
 		if (state.revoked === 1) throw new Error("device_revoked");
-		if (state.owned === 0)
+		if (state.owned === 0 && options.checkRemoval !== false)
 			await assertInvitationRemovalClear(db, removal, { missing: "invite_invalid" });
 		if (state.eligible === 0) {
 			if (state.owned === 0) validateRecipientEnrollmentTuple(enrollment, participantOpts);
@@ -1263,6 +1301,7 @@ async function runProjectInviteBatch(
 		sql: `${guard.boundEligibilitySql} AND ${PROJECT_INVITE_ENROLLMENT_SQL}`,
 		values: [...guard.boundEligibilityValues, ...enrollmentValues],
 		assertEligible: guard.assertEligible,
+		guards: guard.lift,
 	});
 	return !initial.consumed_at && inviteConsumeWon(changes);
 }
@@ -1628,8 +1667,16 @@ function prepareProjectInviteConsume(
 function prepareProjectInviteTokenAndEnrollment(
 	db: D1DatabaseLike,
 	write: ProjectInviteConsume,
+	lift: AuthLinkStatement[],
 ): D1PreparedStatementLike[] {
-	if (!write.invite.consumed_at) return prepareProjectInviteConsume(db, write);
+	if (!write.invite.consumed_at) {
+		const statements = prepareProjectInviteConsume(db, write);
+		if (lift.length)
+			statements.push(
+				db.prepare("SELECT CASE WHEN changes() = 1 THEN 1 ELSE json('device_removed') END"),
+			);
+		return statements;
+	}
 	return [
 		prepareProjectInviteRetryConsume(db, write),
 		prepareBoundProjectInviteIdentityRepair(db, write),
@@ -3069,7 +3116,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			throw new Error("invite_expired");
 		}
 		if (initial.consumed_at) assertProjectInviteBinding(initial, _opts);
-		const guard = await this.projectInvitationGuards(initial, _opts);
+		const guard = await this.projectInvitationGuards(initial, _opts, consumedAt);
 		const grantId = tokenUrlSafe(12);
 		const enrollmentValues = projectInviteEnrollmentValues(initial, _opts);
 		const consume: ProjectInviteConsume = {
@@ -3081,7 +3128,7 @@ export class D1CoordinatorStore implements CoordinatorStore {
 			guard,
 		};
 		const statements = [
-			...prepareProjectInviteTokenAndEnrollment(this.db, consume),
+			...prepareProjectInviteTokenAndEnrollment(this.db, consume, guard.lift),
 			this.db
 				.prepare(`UPDATE coordinator_invites SET bootstrap_grant_id = ?,
 					trust_state = 'bootstrap_grant_created'
@@ -3178,8 +3225,12 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	private async projectInvitationGuards(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeProjectInviteInput,
+		consumedAt: string,
 	) {
-		return prepareProjectInviteGuards(this.db, invite, opts, await this.hasRemovalSchema());
+		return prepareProjectInviteGuards(this.db, invite, opts, {
+			hasRemovalSchema: await this.hasRemovalSchema(),
+			consumedAt,
+		});
 	}
 
 	async createJoinRequest(
@@ -4739,10 +4790,10 @@ export class D1CoordinatorStore implements CoordinatorStore {
 import {
 	type InvitationRemovalFence,
 	type InvitationRemovalState,
+	invitationLiftStatements,
 	invitationRemovalFence,
 	invitationRemovalNeedsLift,
 	joinRequestCreationDenial,
 	joinRequestRemovalFence,
-	liftInvitationRemovals,
 	withInvitationRemovalGuard,
 } from "./coordinator-invitation-removal.js";

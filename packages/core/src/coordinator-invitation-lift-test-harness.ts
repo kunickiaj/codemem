@@ -193,7 +193,12 @@ async function removeAliases(f: RevocationFixture, post: Awaited<ReturnType<type
 	]);
 }
 
-async function signedJoin(a: Awaited<ReturnType<typeof arrange>>, scenario: Scenario) {
+async function signedJoin(
+	a: Pick<Awaited<ReturnType<typeof arrange>>, "app" | "signer" | "stale"> & {
+		body: { device_id: string; token: string };
+	},
+	scenario: Scenario,
+) {
 	const raw = JSON.stringify(a.body);
 	if (scenario === "unsigned")
 		return a.app.request("/v1/join", {
@@ -245,6 +250,8 @@ export function registerInvitationLiftContract(
 	registerPreRemovalAuthorityDenials(test, verifier);
 	registerPreRemovalRequestDenial(test, verifier);
 	registerPreRemovalProjectDenials(test, verifier);
+	registerProjectLift(test, verifier);
+	registerProjectLiftRollback(test, verifier);
 	test("a zero-row enrollment after lifting rolls back the invitation and every tombstone", async ({
 		fixture: f,
 	}) => {
@@ -271,6 +278,129 @@ export function registerInvitationLiftContract(
 		const inviter = a.fresh.invite.inviter_device_id;
 		if (!inviter) throw new Error("Missing fixture inviter");
 		await f.store.setDeviceEnabled(f.input.groupId, inviter, false);
+		const before = await snapshot(f);
+		const response = await signedJoin(a, "eligible");
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ error: "device_removed" });
+		expect(await snapshot(f)).toEqual(before);
+	});
+}
+
+async function arrangeProjectLift(f: RevocationFixture, verifier: CoordinatorRequestVerifier) {
+	const a = await arrange(f, "team_member", "eligible", verifier);
+	const project = await projectInvite(f);
+	const { input } = project;
+	const body = {
+		token: input.token,
+		device_id: input.deviceId,
+		public_key: input.publicKey,
+		fingerprint: input.fingerprint,
+		operation_id: input.operationId,
+		recipient_actor_id: input.recipientActorId,
+		recipient_display_name: input.recipientDisplayName,
+		device_display_name: input.deviceDisplayName,
+	};
+	return { ...a, ...project, body };
+}
+
+function registerProjectLift(
+	test: ReturnType<typeof revocationHarness>,
+	verifier: CoordinatorRequestVerifier,
+) {
+	test("a fresh signed Project invitation lifts all matching removals and enrolls only in its group", async ({
+		fixture: f,
+	}) => {
+		const a = await arrangeProjectLift(f, verifier);
+		const memberships = await f.rows("coordinator_scope_memberships");
+		const accepted = await signedJoin(a, "eligible");
+		const payload = await accepted.json();
+		expect(accepted.status, JSON.stringify(payload)).toBe(200);
+		expect(payload).toMatchObject({
+			ok: true,
+			group_id: f.input.groupId,
+			operation_id: a.input.operationId,
+			bootstrap_grant_id: expect.any(String),
+		});
+		expect(await f.rows("coordinator_device_removals")).toMatchObject(
+			Array.from({ length: 3 }, () => ({
+				lifted_at: LIFT_NOW,
+				lifted_by_invite_id: a.invite.invite_id,
+			})),
+		);
+		expect(await f.rows("enrolled_devices")).toMatchObject([
+			{ device_id: a.seed.deviceId, group_id: f.input.groupId },
+			{ device_id: f.input.deviceId, group_id: f.input.groupId, enabled: 1 },
+		]);
+		expect(await f.rows("coordinator_scope_memberships")).toEqual(memberships);
+		expect(await f.rows("request_nonces")).toEqual([]);
+		const after = await snapshot(f);
+		expect((await signedJoin(a, "eligible")).status).toBe(200);
+		expect(await snapshot(f)).toEqual(after);
+	});
+	for (const scenario of [
+		"unsigned",
+		"wrong device header",
+		"tampered token",
+		"permanent block",
+	] as const) {
+		test(`a ${scenario} Project join leaves the removed device and invitation unchanged`, async ({
+			fixture: f,
+		}) => {
+			const a = await arrangeProjectLift(f, verifier);
+			if (scenario === "permanent block") {
+				expect(
+					await f.store.createDeviceRevocation({
+						...f.input,
+						evidenceKind: "removal_tombstone",
+					}),
+				).toMatchObject({ kind: "revoked" });
+			}
+			const before = await snapshot(f);
+			const response = await signedJoin(a, scenario);
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({
+				error: scenario === "permanent block" ? "device_revoked" : "device_removed",
+			});
+			expect(await snapshot(f)).toEqual(before);
+		});
+	}
+}
+
+function registerProjectLiftRollback(
+	test: ReturnType<typeof revocationHarness>,
+	verifier: CoordinatorRequestVerifier,
+) {
+	test("Project lift rolls back when the enrollment writes no row", async ({ fixture: f }) => {
+		const a = await arrangeProjectLift(f, verifier);
+		const before = await snapshot(f);
+		await f.exec(`CREATE TRIGGER fixture_ignore_project_enrollment BEFORE INSERT ON enrolled_devices
+			WHEN EXISTS (SELECT 1 FROM coordinator_device_removals t
+			 WHERE t.device_id = NEW.device_id AND t.lifted_by_invite_id IS NOT NULL)
+			BEGIN SELECT RAISE(IGNORE); END`);
+		try {
+			const response = await signedJoin(a, "eligible");
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: "device_removed" });
+			expect(await snapshot(f)).toEqual(before);
+		} finally {
+			await f.exec("DROP TRIGGER fixture_ignore_project_enrollment");
+		}
+	});
+	test("a signed Project retry never lifts a second removal", async ({ fixture: f }) => {
+		const a = await arrangeProjectLift(f, verifier);
+		expect((await signedJoin(a, "eligible")).status).toBe(200);
+		expect(await f.store.removeDevice(f.input.groupId, f.input.deviceId)).toBe(true);
+		const before = await snapshot(f);
+		const retry = await signedJoin(a, "eligible");
+		expect(retry.status).toBe(403);
+		expect(await retry.json()).toEqual({ error: "device_removed" });
+		expect(await snapshot(f)).toEqual(before);
+	});
+	test("a fresh signed Project invitation cannot lift while its inviter is disabled", async ({
+		fixture: f,
+	}) => {
+		const a = await arrangeProjectLift(f, verifier);
+		await f.store.setDeviceEnabled(a.seed.groupId, a.seed.deviceId, false);
 		const before = await snapshot(f);
 		const response = await signedJoin(a, "eligible");
 		expect(response.status).toBe(403);

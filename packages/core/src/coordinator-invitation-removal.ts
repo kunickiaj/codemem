@@ -151,8 +151,24 @@ export function liftInvitationRemovals(
    AND (i.inviter_device_id IS NULL OR EXISTS (
     SELECT 1 FROM enrolled_devices seed
     WHERE seed.group_id = i.group_id AND seed.device_id = i.inviter_device_id AND seed.enabled = 1))
-   AND i.invite_kind IN ('team_member','add_device') AND (${STALE_SQL}) = 'fresh')
+   AND i.invite_kind IN ('team_member','add_device','project_share') AND (${STALE_SQL}) = 'fresh')
  AND (${eligibility.sql})`,
 		values: [deviceId, keyId, publicKey, now, inviteId, inviteId, now, ...eligibility.values],
 	};
+}
+
+export function invitationLiftStatements(
+	subject: InviteRemovalSubject,
+	now: string,
+	eligibility: AuthLinkStatement,
+	fence: NonNullable<InvitationRemovalFence>,
+): AuthLinkStatement[] {
+	return [
+		liftInvitationRemovals(subject, now, eligibility),
+		{
+			sql: `SELECT CASE WHEN changes() > 0 AND (${fence.eligible.sql})
+				THEN 1 ELSE json('device_removed') END`,
+			values: fence.eligible.values,
+		},
+	];
 }

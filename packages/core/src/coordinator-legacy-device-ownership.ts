@@ -35,6 +35,10 @@ export function captureLegacyProjectInviteInput(
 		if (typeof value !== "string") throw new Error("invalid_input");
 		captured[field] = value;
 	}
+	const proof = legacyEnrollmentDescriptor(input, "joinProofVerified");
+	if (proof && (!("value" in proof) || typeof proof.value !== "boolean"))
+		throw new Error("invalid_input");
+	captured.joinProofVerified = proof?.value === true;
 	return captured as unknown as CoordinatorConsumeProjectInviteInput;
 }
 
