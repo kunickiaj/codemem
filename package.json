@@ -18,6 +18,7 @@
     "e2e:fleet-smoke": "pnpm exec tsx e2e/bin/run-local.ts fleetSmoke",
     "e2e:legacy-team-migration": "pnpm exec tsx e2e/bin/run-local.ts legacyTeamMigration",
     "e2e:project-sharing": "pnpm exec tsx e2e/bin/run-local.ts projectSharing",
+    "e2e:project-withdrawal": "pnpm exec tsx e2e/bin/run-local.ts projectWithdrawal",
     "e2e:sharing-domains": "pnpm exec tsx e2e/bin/run-local.ts sharingDomains",
     "e2e:smoke": "pnpm exec tsx e2e/bin/run-local.ts smoke",
     "test": "pnpm exec vitest run",

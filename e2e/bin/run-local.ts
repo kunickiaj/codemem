@@ -8,6 +8,7 @@ import { runFleetReadyScenario } from "../scenarios/fleet-ready.js";
 import { runFleetSmokeScenario } from "../scenarios/fleet-smoke.js";
 import { runLegacyTeamMigrationScenario } from "../scenarios/legacy-team-migration.js";
 import { runProjectSharingScenario } from "../scenarios/project-sharing.js";
+import { runProjectWithdrawalScenario } from "../scenarios/project-withdrawal.js";
 import { runSharingDomainsScenario } from "../scenarios/sharing-domains.js";
 import { runSmokeScenario } from "../scenarios/smoke.js";
 
@@ -20,6 +21,7 @@ const scenarios = {
 	fleetSmoke: runFleetSmokeScenario,
 	legacyTeamMigration: runLegacyTeamMigrationScenario,
 	projectSharing: runProjectSharingScenario,
+	projectWithdrawal: runProjectWithdrawalScenario,
 	sharingDomains: runSharingDomainsScenario,
 	smoke: runSmokeScenario,
 } as const;
