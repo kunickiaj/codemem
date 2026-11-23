@@ -173,6 +173,38 @@ function expectInviterProjectFilterRejected(
 	);
 }
 
+function insertSession(
+	db: InstanceType<typeof Database>,
+	input: { user: string; toolVersion: string; importKey?: string },
+): number {
+	return Number(
+		db
+			.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version, import_key)
+				VALUES (?, 'api', ?, ?, ?, ?)`)
+			.run(createdAt, remote, input.user, input.toolVersion, input.importKey ?? null)
+			.lastInsertRowid,
+	);
+}
+
+/** A shared memory written before sync setup, so its origin is "local". */
+function insertPreSyncMemory(
+	db: InstanceType<typeof Database>,
+	sessionId: number,
+	title: string,
+	importKey: string | null,
+): void {
+	db.prepare(`INSERT INTO memory_items(
+		session_id, kind, title, body_text, confidence, tags_text, active, created_at,
+		updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
+	) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, '{}', ?, 1, 'shared', 'local-default', 'local')`).run(
+		sessionId,
+		title,
+		createdAt,
+		createdAt,
+		importKey,
+	);
+}
+
 /** Provisioning dependencies that succeed for the selected-Project share fixture. */
 function selectedProjectDependencies(
 	db: InstanceType<typeof Database>,
@@ -717,35 +749,20 @@ describe("exact project share provisioning", () => {
 	});
 
 	it("records the owner as origin of the locally written memories it moves, and nothing else", async () => {
-		// Arrange: memories written before sync setup, on both move paths, and one
-		// from a sync session that provisioning doesn't treat as the owner's.
-		const session = (user: string, toolVersion: string) =>
-			Number(
-				db
-					.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version)
-						VALUES (?, 'api', ?, ?, ?)`)
-					.run(createdAt, remote, user, toolVersion).lastInsertRowid,
-			);
-		const insertPreSync = db.prepare(`INSERT INTO memory_items(
-			session_id, kind, title, body_text, confidence, tags_text, active, created_at,
-			updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
-		) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, '{}', ?, 1, 'shared', 'local-default', 'local')`);
-		const localSession = session("adam", "codemem");
-		insertPreSync.run(
-			localSession,
-			"pre-sync replicated",
-			createdAt,
-			createdAt,
-			"pre-sync:replicated",
-		);
-		insertPreSync.run(localSession, "pre-sync never replicated", createdAt, createdAt, null);
-		insertPreSync.run(
-			session("sync", "sync_replication"),
-			"pre-sync from sync",
-			createdAt,
-			createdAt,
-			"pre-sync:peer",
-		);
+		// Arrange: memories written before sync setup, on both move paths, one from
+		// a sync session that provisioning doesn't treat as the owner's, and one
+		// brought in by `memory import` from another device's export.
+		const localSession = insertSession(db, { user: "adam", toolVersion: "codemem" });
+		insertPreSyncMemory(db, localSession, "pre-sync replicated", "pre-sync:replicated");
+		insertPreSyncMemory(db, localSession, "pre-sync never replicated", null);
+		const syncSession = insertSession(db, { user: "sync", toolVersion: "sync_replication" });
+		insertPreSyncMemory(db, syncSession, "pre-sync from sync", "pre-sync:peer");
+		const importedSession = insertSession(db, {
+			user: "other",
+			toolVersion: "codemem",
+			importKey: `export-session:v1:${"c".repeat(64)}`,
+		});
+		insertPreSyncMemory(db, importedSession, "pre-sync imported", "pre-sync:imported");
 		db.prepare("UPDATE share_operations SET inviter_device_ids_json = '[\"owner\"]'").run();
 		const { deps, scopeId } = dependencies();
 
@@ -757,6 +774,7 @@ describe("exact project share provisioning", () => {
 			db.prepare("SELECT title, scope_id, origin_device_id FROM memory_items ORDER BY title").all(),
 		).toEqual([
 			{ title: "pre-sync from sync", scope_id: "local-default", origin_device_id: "local" },
+			{ title: "pre-sync imported", scope_id: scopeId, origin_device_id: "local" },
 			{ title: "pre-sync never replicated", scope_id: scopeId, origin_device_id: "owner" },
 			{ title: "pre-sync replicated", scope_id: scopeId, origin_device_id: "owner" },
 			{ title: "selected-local-shared", scope_id: scopeId, origin_device_id: "owner" },
@@ -771,7 +789,13 @@ describe("exact project share provisioning", () => {
 			)
 			.all(scopeId) as Array<{ entity_id: string; origin: string | null }>;
 		expect(payloadOrigins.length).toBeGreaterThan(0);
-		expect(new Set(payloadOrigins.map((row) => row.origin))).toEqual(new Set(["owner"]));
+		const imported = (row: { entity_id: string }) => row.entity_id === "pre-sync:imported";
+		expect(new Set(payloadOrigins.filter(imported).map((row) => row.origin))).toEqual(
+			new Set(["local"]),
+		);
+		expect(
+			new Set(payloadOrigins.filter((row) => !imported(row)).map((row) => row.origin)),
+		).toEqual(new Set(["owner"]));
 	});
 
 	it("cancels superseded accepted duplicates for the same person and project set once active", async () => {

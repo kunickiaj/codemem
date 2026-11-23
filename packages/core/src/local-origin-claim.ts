@@ -14,6 +14,13 @@ import type { Database } from "./db.js";
  * Only rows whose origin is "local", empty or missing, from a session that isn't
  * a sync session, are claimed: the rule share provisioning already uses to treat
  * a memory as this device's own. A row with any other origin is left alone.
+ *
+ * Rows brought in by `memory import` are left alone too, because an export from
+ * another device carries the same "local" origin and nothing shows who wrote it.
+ * Import keys every session it creates as `export-session:...` or
+ * `export|session|...`, while sessions started here get a random key. A local
+ * session from before sessions had keys can also hold an `export-session:` key,
+ * and its memories stay unclaimed as well.
  * Call it inside the write transaction that moves the row. Returns whether the
  * row changed; a missing or "local" device ID changes nothing.
  */
@@ -31,7 +38,9 @@ export function claimLocalOrigin(db: Database, memoryId: number, deviceId: strin
 					SELECT 1 FROM sessions s
 					WHERE s.id = memory_items.session_id
 					  AND (COALESCE(TRIM(s.user), '') = 'sync'
-					       OR COALESCE(TRIM(s.tool_version), '') = 'sync_replication')
+					       OR COALESCE(TRIM(s.tool_version), '') = 'sync_replication'
+					       OR substr(s.import_key, 1, 15) = 'export-session:'
+					       OR substr(s.import_key, 1, 15) = 'export|session|')
 				   )`,
 			)
 			.run(owner, memoryId).changes > 0
