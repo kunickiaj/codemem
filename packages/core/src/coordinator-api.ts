@@ -378,7 +378,9 @@ async function verifyInvitationJoinProof(
 	verify: CoordinatorRequestVerifier,
 	raw: Uint8Array,
 	input: { deviceId: string; publicKey: string },
+	data: Record<string, unknown>,
 ): Promise<boolean> {
+	if (data.device_id !== input.deviceId || data.public_key !== input.publicKey) return false;
 	const timestamp = c.req.header("X-Opencode-Timestamp");
 	const nonce = c.req.header("X-Opencode-Nonce");
 	const signature = c.req.header("X-Opencode-Signature");
@@ -704,6 +706,44 @@ function projectInviteAcceptanceErrorResponse(c: Context, error: unknown): Respo
 	if (code === "invite_expired") return c.json({ error: code }, 410);
 	if (code === "invite_invalid") return c.json({ error: code }, 404);
 	return c.json({ error: code }, 409);
+}
+
+async function acceptProjectInvitation(
+	c: Context,
+	store: CoordinatorStore,
+	input: Parameters<CoordinatorStore["consumeProjectInvite"]>[0],
+	acceptedIntent: {
+		operation_id: string;
+		reviewed_project_set_digest: string;
+		projects: ReturnType<typeof parseAcceptedProjectIntent>;
+	},
+) {
+	try {
+		const {
+			invite,
+			seed_enrollment: seed,
+			bootstrap_grant: grant,
+		} = await store.consumeProjectInvite(input);
+		return c.json({
+			ok: true,
+			status: PROJECT_INVITE_PENDING_STATUS,
+			group_id: invite.group_id,
+			operation_id: invite.operation_id,
+			trust_state: invite.trust_state,
+			bootstrap_grant_id: grant?.grant_id ?? null,
+			inviter_device: seed
+				? {
+						device_id: seed.device_id,
+						public_key: seed.public_key,
+						fingerprint: seed.fingerprint,
+						display_name: seed.display_name,
+					}
+				: null,
+			accepted_project_intent: acceptedIntent,
+		});
+	} catch (error) {
+		return projectInviteAcceptanceErrorResponse(c, error);
+	}
 }
 
 async function acceptEnrollmentInvitation(
@@ -2909,10 +2949,13 @@ export function createCoordinatorApp(
 				) {
 					return c.json({ error: "add_device_invite_self_acceptance_forbidden" }, 409);
 				}
-				const joinProofVerified =
-					data.device_id === deviceId &&
-					data.public_key === publicKey &&
-					(await verifyInvitationJoinProof(c, requestVerifier, raw, { deviceId, publicKey }));
+				const joinProofVerified = await verifyInvitationJoinProof(
+					c,
+					requestVerifier,
+					raw,
+					{ deviceId, publicKey },
+					data,
+				);
 				return await acceptRecipientInvitation(c, store, {
 					...recipientInviteContext(opts, token),
 					inviteKind: invite.invite_kind as "team_member" | "add_device",
@@ -2973,9 +3016,18 @@ export function createCoordinatorApp(
 				} catch {
 					return c.json({ error: "operation_intent_invalid" }, 409);
 				}
-				try {
-					const acceptance = await store.consumeProjectInvite({
+				return await acceptProjectInvitation(
+					c,
+					store,
+					{
 						token,
+						joinProofVerified: await verifyInvitationJoinProof(
+							c,
+							requestVerifier,
+							raw,
+							{ deviceId, publicKey },
+							data,
+						),
 						operationId,
 						deviceId,
 						publicKey,
@@ -2984,27 +3036,9 @@ export function createCoordinatorApp(
 						recipientDisplayName: normalizedRecipientName,
 						deviceDisplayName: normalizedDeviceName,
 						now: runtime.now(),
-					});
-					return c.json({
-						ok: true,
-						status: PROJECT_INVITE_PENDING_STATUS,
-						group_id: acceptance.invite.group_id,
-						operation_id: acceptance.invite.operation_id,
-						trust_state: acceptance.invite.trust_state,
-						bootstrap_grant_id: acceptance.bootstrap_grant?.grant_id ?? null,
-						inviter_device: acceptance.seed_enrollment
-							? {
-									device_id: acceptance.seed_enrollment.device_id,
-									public_key: acceptance.seed_enrollment.public_key,
-									fingerprint: acceptance.seed_enrollment.fingerprint,
-									display_name: acceptance.seed_enrollment.display_name,
-								}
-							: null,
-						accepted_project_intent: acceptedIntent,
-					});
-				} catch (error) {
-					return projectInviteAcceptanceErrorResponse(c, error);
-				}
+					},
+					acceptedIntent,
+				);
 			}
 			const projectAcceptanceFields = [
 				"operation_id",

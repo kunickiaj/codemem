@@ -1580,7 +1580,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private enrollDeviceSync(
 		groupId: string,
 		opts: CoordinatorEnrollDeviceInput,
-		options?: { checkRemoval: true; inviteId?: string },
+		options?: { checkRemoval?: true; inviteId?: string; lifted?: boolean },
 	): void {
 		const { deviceId, publicKey, fingerprint, identityId, displayName } = captureLegacyEnrollment(
 			groupId,
@@ -1621,7 +1621,10 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			}
 			if (legacyEnrollmentWritten(changes)) return;
 			const denial = legacyEnrollmentDenialStatement(enrollment);
-			throw new Error(legacyDeviceDenial(this.db.prepare(denial.sql).get(...denial.values)));
+			const code = legacyDeviceDenial(this.db.prepare(denial.sql).get(...denial.values));
+			throw new Error(
+				options?.lifted && code === "invite_identity_conflict" ? "device_removed" : code,
+			);
 		} catch (error) {
 			legacyDeviceAuthorizationFailure(error);
 		}
@@ -2796,6 +2799,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	private prepareProjectInviteGuards(
 		invite: CoordinatorInvite,
 		opts: CoordinatorConsumeProjectInviteInput,
+		acceptance?: { consumedAt: string },
 	) {
 		const current = this.db
 			.prepare(`SELECT public_key FROM enrolled_devices
@@ -2827,8 +2831,45 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 			inviteId: invite.invite_id,
 			keyId: incomingKeyId,
 		});
+		const lifted = this.prepareProjectInvitationLift(
+			invite,
+			opts,
+			incomingKeyId,
+			guard,
+			removal,
+			acceptance,
+		);
+		return { ...withInvitationRemovalGuard(guard, removal), lifted };
+	}
+
+	private prepareProjectInvitationLift(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeProjectInviteInput,
+		keyId: string | null,
+		guard: ReturnType<typeof legacyProjectInviteOwnershipEvidence>,
+		removal: InvitationRemovalFence,
+		acceptance?: { consumedAt: string },
+	): boolean {
+		if (!removal) return false;
+		const { sql, values } = removal.read;
+		const state = this.db.prepare(sql).get(...values) as InvitationRemovalState | undefined;
+		const lifted = invitationRemovalNeedsLift(state, {
+			consumed: !acceptance || Boolean(invite.consumed_at),
+			proofVerified: opts.joinProofVerified,
+		});
+		if (!lifted || !acceptance) return false;
+		const statement = liftInvitationRemovals(
+			{ ...opts, inviteId: invite.invite_id, keyId },
+			acceptance.consumedAt,
+			{
+				sql: guard.eligibilitySql,
+				values: guard.eligibilityValues.map((value) => value ?? null),
+			},
+		);
+		if (this.db.prepare(statement.sql).run(...statement.values).changes === 0)
+			throw new Error("device_removed");
 		this.assertInvitationRemovalClear(removal);
-		return withInvitationRemovalGuard(guard, removal);
+		return true;
 	}
 
 	private assertProjectInviteOwnership(
@@ -2916,7 +2957,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				) {
 					throw new Error("invite_identity_conflict");
 				}
-				const guard = this.prepareProjectInviteGuards(invite, opts);
+				const guard = this.prepareProjectInviteGuards(invite, opts, { consumedAt });
 				let accepted = false;
 				if (!invite.consumed_at) {
 					const changed = this.db
@@ -2945,17 +2986,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 						.prepare(`SELECT ${INVITE_COLUMNS} FROM coordinator_invites WHERE invite_id = ?`)
 						.get(invite.invite_id) as CoordinatorInvite;
 					if (!accepted) {
-						const currentGroup = this.db
-							.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
-							.get(invite.group_id) as { archived_at: string | null } | undefined;
-						if (currentGroup?.archived_at) throw new Error("group_archived");
-						if (
-							invite.bound_device_id !== opts.deviceId ||
-							invite.bound_public_key !== opts.publicKey ||
-							invite.bound_fingerprint !== opts.fingerprint
-						) {
-							throw new Error("invite_already_bound");
-						}
+						this.assertProjectInviteConsumeLost(invite, opts, { lifted: guard.lifted });
 					}
 				}
 				if (
@@ -2967,14 +2998,7 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				}
 
 				if (accepted) {
-					this.assertProjectInviteEligible(invite, opts, guard);
-					this.enrollDeviceSync(invite.group_id, {
-						deviceId: opts.deviceId,
-						publicKey: opts.publicKey,
-						fingerprint: opts.fingerprint,
-						identityId: opts.recipientActorId,
-						displayName: opts.deviceDisplayName,
-					});
+					this.writeProjectInviteEnrollment(invite, opts, guard);
 				} else {
 					namingRemovalRefusal(() => this.repairProjectInviteIdentitySync(invite, opts, guard));
 				}
@@ -3041,6 +3065,43 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 				};
 			})
 			.immediate();
+	}
+
+	private assertProjectInviteConsumeLost(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeProjectInviteInput,
+		outcome: { lifted: boolean },
+	) {
+		if (outcome.lifted) throw new Error("device_removed");
+		const group = this.db
+			.prepare("SELECT archived_at FROM groups WHERE group_id = ?")
+			.get(invite.group_id) as { archived_at: string | null } | undefined;
+		if (group?.archived_at) throw new Error("group_archived");
+		if (
+			invite.bound_device_id !== opts.deviceId ||
+			invite.bound_public_key !== opts.publicKey ||
+			invite.bound_fingerprint !== opts.fingerprint
+		)
+			throw new Error("invite_already_bound");
+	}
+
+	private writeProjectInviteEnrollment(
+		invite: CoordinatorInvite,
+		opts: CoordinatorConsumeProjectInviteInput,
+		guard: ReturnType<BetterSqliteCoordinatorStore["prepareProjectInviteGuards"]>,
+	) {
+		this.assertProjectInviteEligible(invite, opts, guard);
+		this.enrollDeviceSync(
+			invite.group_id,
+			{
+				deviceId: opts.deviceId,
+				publicKey: opts.publicKey,
+				fingerprint: opts.fingerprint,
+				identityId: opts.recipientActorId,
+				displayName: opts.deviceDisplayName,
+			},
+			{ lifted: guard.lifted },
+		);
 	}
 
 	/** A retry of a consumed Project invitation repairs only its pinned enrollment. */

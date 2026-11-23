@@ -372,6 +372,8 @@ export interface CoordinatorCreateInviteInput {
 }
 
 export interface CoordinatorConsumeProjectInviteInput {
+	/** Internal result of verifying the exact join request, never read from JSON. */
+	joinProofVerified?: boolean;
 	token: string;
 	operationId: string;
 	deviceId: string;
