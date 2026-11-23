@@ -61,8 +61,17 @@ function sse(response, delta, finishReason) {
 	response.end("data: [DONE]\n\n");
 }
 
-/** How the host offers the memory tools: as direct tools, through Code Mode, or not at all. */
-function exposureOf(tools, messages) {
+/** The `codemem` namespace in a Code Mode catalog, for example `- codemem (15 tools, none shown)`. */
+const CODEMEM_NAMESPACE_RE = /^- codemem \((\d+) tools?\b/m;
+const SHOWN_MEMORY_TOOL_RE = /tools\.codemem\.(memory_\w+)\(/g;
+
+/**
+ * How the host offers the memory tools: as direct tools, through Code Mode, or
+ * not at all. A Code Mode catalog may show only some of a namespace's tools
+ * (OpenCode 2.4 can show none), so a listed codemem namespace with tools counts
+ * as Code Mode exposure, and `shown` records which tools the catalog spelled out.
+ */
+export function exposureOf(tools, messages) {
 	const names = tools.map((tool) => tool.function?.name).filter(Boolean);
 	const direct = names.filter((name) => MEMORY_TOOL_RE.test(name));
 	if (direct.length > 0) return { mode: "direct", direct };
@@ -70,16 +79,32 @@ function exposureOf(tools, messages) {
 		.filter((message) => message.role === "system")
 		.map((message) => textOf(message.content))
 		.join("\n");
-	const inCatalog = names.includes("execute") && /tools\.codemem\.memory_/.test(system);
-	return { mode: inCatalog ? "codemode" : "absent", direct, system };
+	const shown = [...new Set([...system.matchAll(SHOWN_MEMORY_TOOL_RE)].map((match) => match[1]))];
+	const listed = Number(system.match(CODEMEM_NAMESPACE_RE)?.[1] ?? 0) > 0;
+	const inCatalog = names.includes("execute") && (shown.length > 0 || listed);
+	return { mode: inCatalog ? "codemode" : "absent", direct, shown, system };
 }
 
-function toolCallFor(step, exposure) {
+/**
+ * The model's next tool call. In Code Mode, a tool the catalog doesn't show is
+ * first looked up with the host's `search`, as the catalog instructs, and the
+ * call fails if search doesn't return it.
+ */
+export function toolCallFor(step, exposure) {
 	if (exposure.mode === "direct") {
 		const name = exposure.direct.find((candidate) => candidate.endsWith(step.tool));
 		return { name: name ?? `codemem_${step.tool}`, arguments: JSON.stringify(step.args) };
 	}
-	const code = `return await tools.codemem.${step.tool}(${JSON.stringify(step.args)});`;
+	const call = `return await tools.codemem.${step.tool}(${JSON.stringify(step.args)});`;
+	if (exposure.shown?.includes(step.tool)) {
+		return { name: "execute", arguments: JSON.stringify({ code: call }) };
+	}
+	const path = `tools.codemem.${step.tool}`;
+	const code = [
+		`const found = await search({ query: ${JSON.stringify(step.tool)}, namespace: "codemem" });`,
+		`if (!found.items.some((item) => item.path === ${JSON.stringify(path)})) throw new Error(${JSON.stringify(`search did not find ${path}`)});`,
+		call,
+	].join("\n");
 	return { name: "execute", arguments: JSON.stringify({ code }) };
 }
 
