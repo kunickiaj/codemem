@@ -1418,7 +1418,15 @@ function deviceRemovalMenuActions(
 ): MenuAction[] {
 	const retire = deviceRetireMenuAction(device, inventoryItem, options);
 	const confirmation = options.removalConfirmation;
-	if (!confirmation || retire.length === 0) return retire;
+	if (
+		!confirmation ||
+		!inventoryItem ||
+		inventoryItem.state === "service" ||
+		inventoryItem.isLocal ||
+		directLocalDeviceId(options) === device.deviceId
+	)
+		return retire;
+	if (retire.length === 0 && !inventoryItem.sources.includes("sync_peer")) return retire;
 	return [
 		...retire,
 		{
@@ -1441,7 +1449,7 @@ async function removeFromMenu(
 	} catch (error) {
 		const message =
 			error instanceof DeviceRemovalCommitError && error.code === "removal_outcome_unknown"
-				? `The coordinator didn't confirm. Refresh Devices to see whether ${device.displayName} was removed before you try again.`
+				? `Could not confirm the removal. Refresh Devices to see whether ${device.displayName} was removed before you try again.`
 				: `Could not remove ${device.displayName}. Refresh Devices before trying again.`;
 		setDeviceCommitStatus(message, "warning");
 		return;
@@ -1450,6 +1458,15 @@ async function removeFromMenu(
 	const refreshed = await Promise.resolve()
 		.then(() => options.onCommitted?.())
 		.catch(() => false);
+	if ("mode" in result) {
+		const message = `${device.displayName} is removed from this device. Remove it on your other devices too.`;
+		setDeviceCommitStatus(
+			refreshed === false ? `${message} Refresh Devices to update this list.` : message,
+			refreshed === false ? "warning" : "success",
+		);
+		document.getElementById("devices-heading")?.focus();
+		return;
+	}
 	const message = `${device.displayName} is removed.`;
 	if (refreshed === false || result.local_cleanup === "deferred" || result.refresh_pending) {
 		setDeviceCommitStatus(`${message} Refresh Devices to check local sync status.`, "warning");

@@ -119,6 +119,7 @@ type FixtureOptions = {
 	missingCommitRoute?: boolean;
 	progressUnavailable?: boolean;
 	sharedRefresh?: boolean;
+	localOnly?: boolean;
 };
 
 async function fixture(options: FixtureOptions = {}) {
@@ -126,8 +127,8 @@ async function fixture(options: FixtureOptions = {}) {
 	const { app, store } = await coordinatorStore();
 	const config = {
 		...readCoordinatorSyncConfig({}),
-		syncCoordinatorUrl: origin,
-		syncCoordinatorAdminSecret: adminSecret,
+		syncCoordinatorUrl: options.localOnly ? "" : origin,
+		syncCoordinatorAdminSecret: options.localOnly ? "" : adminSecret,
 	};
 	const runtime = {
 		readCoordinatorConfig: () => config,
@@ -158,6 +159,7 @@ async function fixture(options: FixtureOptions = {}) {
 			deviceRemovalReviewRoutes({
 				readCoordinatorConfig: runtime.readCoordinatorConfig,
 				localIdentity: () => ({ deviceId: localId, keyId: verifiedLocalKeyId(local.db, localId) }),
+				getLocalStore: () => local,
 			}),
 		)
 		.route(
@@ -196,6 +198,39 @@ async function fixture(options: FixtureOptions = {}) {
 	vi.stubGlobal("window", { setTimeout, clearTimeout });
 	return { ...local, ...runtime, store, config, viewer, browser, remote, shared };
 }
+
+it.each(["coordinator configured", "pairing changed"] as const)(
+	"refuses a local-only confirmation when the %s after preview",
+	async (change) => {
+		const f = await fixture({ localOnly: true });
+		const before = f.localSnapshot();
+		const confirm = vi.fn(async () => {
+			if (change === "coordinator configured") f.config.syncCoordinatorUrl = origin;
+			else f.db.prepare("UPDATE sync_peers SET pinned_fingerprint = 'changed'").run();
+			return true;
+		});
+		await expect(confirmAndCommitDeviceRemoval(target, { confirm })).rejects.toMatchObject({
+			code: "removal_preview_stale",
+		});
+		expect(confirm).toHaveBeenCalledOnce();
+		expect(f.remote).toEqual([]);
+		expect(f.localSnapshot()).toEqual(before);
+	},
+);
+
+it("refuses a local-only Remove of a pairing that holds this device's key", async () => {
+	const f = await fixture({ localOnly: true });
+	const ownKey = key.replace("dam", "eam");
+	f.db
+		.prepare("UPDATE sync_peers SET public_key = ?, pinned_fingerprint = ?")
+		.run(`${ownKey} alias`, fingerprintPublicKey(`${ownKey} alias`));
+	const before = f.localSnapshot();
+	const review = await f.viewer.request(previewPath, { method: "POST" });
+	expect(review.status).toBe(400);
+	expect(await review.json()).toEqual({ error: "cannot_remove_this_device" });
+	expect(f.remote).toEqual([]);
+	expect(f.localSnapshot()).toEqual(before);
+});
 
 it("uses the real review and commit routes only after the device confirmation", async () => {
 	const f = await fixture();
