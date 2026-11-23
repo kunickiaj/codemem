@@ -1,5 +1,6 @@
 import {
 	coordinatorListRemovedDevicesAction,
+	type MemoryStore,
 	normalizeCoordinatorAccountLinkOrigin,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
@@ -7,6 +8,7 @@ import {
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import { originGuard } from "../middleware.js";
+import { hasNoRemovalCoordinator, readLocalRemoval } from "./device-removal-local.js";
 
 const LIST_PATH = "/api/sync/devices/removals";
 const DIGEST = /^[a-f0-9]{64}$/u;
@@ -88,6 +90,15 @@ function reviewPreview(
 interface Options {
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	localIdentity: () => { deviceId: string; keyId: string | null };
+	getLocalStore?: () => Pick<MemoryStore, "db" | "deviceId">;
+}
+
+function previewLocalRemoval(c: Context, options: Options, deviceId: string) {
+	if (!options.getLocalStore || !hasNoRemovalCoordinator(options.readCoordinatorConfig))
+		return null;
+	const local = readLocalRemoval(options.getLocalStore(), deviceId);
+	if ("error" in local) return c.json({ error: local.error }, local.status);
+	return c.json(local);
 }
 
 async function previewRemoval(c: Context, options: Options) {
@@ -100,6 +111,8 @@ async function previewRemoval(c: Context, options: Options) {
 	)
 		return c.json({ error: "invalid_input" }, 400);
 	try {
+		const local = previewLocalRemoval(c, options, deviceId);
+		if (local) return local;
 		const { deviceId: localId, keyId: localKeyId } = options.localIdentity();
 		if (localId === deviceId) return c.json({ error: "cannot_remove_this_device" }, 400);
 		if (!localKeyId) return c.json({ error: "local_identity_unverified" }, 409);

@@ -3467,6 +3467,60 @@ function watchDeviceCommitStatus() {
 	return { reported, stop: () => observer.disconnect() };
 }
 
+it("removes a paired device locally from Devices without contacting a coordinator", async () => {
+	const deviceId = "device-address-fingerprint-secret";
+	const f = await createRemovalClickFixture(deviceId, { localOnly: true });
+	const path = `/api/sync/devices/${deviceId}/remove`;
+	const confirm = vi.fn(async () => {
+		expect(f.paths).toEqual([`${path}/preview`]);
+		expect(f.paired()).toBe(true);
+		expect(f.cursorV2()).toBe("cursor-v2");
+		return true;
+	});
+	let stopWatching: (() => void) | undefined;
+	try {
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "sync_peer"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			removalConfirmation: { confirm },
+			onCommitted: async () => true,
+		});
+		const menu = openActionMenu(
+			document.getElementById(`device-identity-card-${deviceId}`) ?? document,
+		);
+		const action = [...menu.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Remove device…",
+		);
+		expect(action?.disabled).toBe(false);
+		const status = watchDeviceCommitStatus();
+		stopWatching = status.stop;
+		await act(() => action?.click());
+		expect(await status.reported).toBe(
+			"Work Laptop is removed from this device. Remove it on your other devices too.",
+		);
+		expect(confirm).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				title: "Remove Work Laptop from this device?",
+				confirmLabel: "Remove from this device",
+				autoFocusAction: "cancel",
+			}),
+		);
+		expect(f.paths).toEqual([`${path}/preview`, path]);
+		expect(f.paired()).toBe(false);
+		expect(f.cursor()).toBeUndefined();
+		expect(f.cursorV2()).toBeUndefined();
+		expect(f.binding()).toBe("removed");
+		expect(await f.enrollment()).not.toBeNull();
+	} finally {
+		stopWatching?.();
+		await f.close();
+	}
+});
+
 it("removes a device from the fixture menu only after confirmation and verified cleanup", async () => {
 	const deviceId = "device-address-fingerprint-secret";
 	const f = await createRemovalClickFixture(deviceId);

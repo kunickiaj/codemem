@@ -29,6 +29,8 @@ function seedLocal(db, deviceId) {
 		VALUES (?, ?, ?, 'then')`).run(deviceId, publicKey, fingerprintPublicKey(publicKey));
 	db.prepare(`INSERT INTO replication_cursors (peer_device_id, last_applied_cursor, updated_at)
 		VALUES (?, 'cursor', 'then')`).run(deviceId);
+	db.prepare(`INSERT INTO replication_cursors_v2 (peer_device_id, scope_id, last_applied_cursor, updated_at)
+		VALUES (?, 'scope', 'cursor-v2', 'then')`).run(deviceId);
 	db.prepare(`INSERT INTO identity_devices (device_id, identity_id, display_name, status, provenance,
 		revision, migration_state, idempotency_key, created_at, updated_at)
 		VALUES (?, 'fixture-identity', 'Laptop', 'active', 'test', '1', 'user_managed', 'key:peer', 'then', 'then')`).run(
@@ -36,15 +38,20 @@ function seedLocal(db, deviceId) {
 	);
 }
 
-function viewerRoutes(store, waitForRefresh, refresh) {
+function viewerRoutes(store, waitForRefresh, refresh, localOnly) {
 	const loadConfig = () =>
-		readCoordinatorSyncConfig({
-			sync_coordinator_url: origin,
-			sync_coordinator_admin_secret: secret,
-		});
+		readCoordinatorSyncConfig(
+			localOnly
+				? {}
+				: {
+						sync_coordinator_url: origin,
+						sync_coordinator_admin_secret: secret,
+					},
+		);
 	const read = deviceRemovalReviewRoutes({
 		readCoordinatorConfig: loadConfig,
 		localIdentity: () => ({ deviceId: localId, keyId: verifiedLocalKeyId(store.db, localId) }),
+		getLocalStore: () => ({ db: store.db, deviceId: localId }),
 	});
 	return read.route(
 		"/",
@@ -74,7 +81,21 @@ function captureRequests(viewer, coordinator) {
 	return paths;
 }
 
-export async function createRemovalClickFixture(deviceId) {
+async function coordinatorFixture(remote, deviceId) {
+	await remote.createGroup(group);
+	await remote.enrollDevice(group, {
+		deviceId,
+		publicKey,
+		fingerprint: fingerprintPublicKey(publicKey),
+	});
+	return createCoordinatorApp({
+		storeFactory: () => remote,
+		runtime: { adminSecret: () => secret, now: () => "2026-11-22T00:00:00.000Z" },
+		requestVerifier: () => false,
+	});
+}
+
+export async function createRemovalClickFixture(deviceId, { localOnly = false } = {}) {
 	const local = new MemoryStore(":memory:");
 	const remote = new BetterSqliteCoordinatorStore(":memory:");
 	const remoteClose = vi.spyOn(remote, "close").mockResolvedValue();
@@ -85,15 +106,8 @@ export async function createRemovalClickFixture(deviceId) {
 		await local.close();
 	};
 	try {
-		const fingerprint = fingerprintPublicKey(publicKey);
 		seedLocal(local.db, deviceId);
-		await remote.createGroup(group);
-		await remote.enrollDevice(group, { deviceId, publicKey, fingerprint });
-		const coordinator = createCoordinatorApp({
-			storeFactory: () => remote,
-			runtime: { adminSecret: () => secret, now: () => "2026-11-22T00:00:00.000Z" },
-			requestVerifier: () => false,
-		});
+		const coordinator = await coordinatorFixture(remote, deviceId);
 		const lifecycle = createCoordinatorRefreshLifecycle();
 		const waiting = Promise.withResolvers();
 		const refresh = vi.fn(async () => {});
@@ -106,6 +120,7 @@ export async function createRemovalClickFixture(deviceId) {
 				return ready;
 			},
 			hooks.refresh,
+			localOnly,
 		);
 		const paths = captureRequests(viewer, coordinator);
 		const binding = () => local.db.prepare("SELECT status FROM identity_devices").pluck().get();
@@ -120,6 +135,8 @@ export async function createRemovalClickFixture(deviceId) {
 			binding,
 			paired,
 			cursor,
+			cursorV2: () =>
+				local.db.prepare("SELECT last_applied_cursor FROM replication_cursors_v2").pluck().get(),
 			enrollment: () => remote.getEnrollment(group, deviceId),
 			remoteCommit,
 			remoteList,
