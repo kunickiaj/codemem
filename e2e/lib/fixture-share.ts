@@ -28,16 +28,22 @@ export interface SharedFixturePeers {
  * Seeds peer-a with fixture-small and shares both fixture Projects with an empty
  * peer-b through a Project invite, so each Project gets its own boundary. Both
  * devices keep their sync services running and sync every 5 seconds.
+ *
+ * By default peer-a gets its sync identity before seeding, as when sync is
+ * enabled before memories are written. With `seedBeforeIdentity`, the seeded
+ * memories are written first, so they keep origin "local" until shared.
  */
-export async function shareFixtureProjectsWithPeerB(ctx: ScenarioContext): Promise<SharedFixturePeers> {
+export async function shareFixtureProjectsWithPeerB(
+	ctx: ScenarioContext,
+	options: { seedBeforeIdentity?: boolean } = {},
+): Promise<SharedFixturePeers> {
 	ctx.compose.down("00-compose-down-pre", true);
 	ctx.compose.up(["coordinator", "peer-a", "peer-b"], "01-compose-up");
 	ctx.compose.ps("02-compose-ps");
 
-	// Create peer-a's sync identity first so the seeded memories record it as
-	// their origin, as they do when sync is enabled before memories are written.
-	// Memories written before sync was enabled are tracked separately (codemem-yfla4).
-	readPeerIdentity(ctx, "peer-a", "03-peer-a-identity-before-seed");
+	if (!options.seedBeforeIdentity) {
+		readPeerIdentity(ctx, "peer-a", "03-peer-a-identity-before-seed");
+	}
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-a", "fixture-small", "03-seed-peer-a-small");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-b", "empty", "04-seed-peer-b-empty");
 

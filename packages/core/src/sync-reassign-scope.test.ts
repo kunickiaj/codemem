@@ -8,7 +8,7 @@ import {
 	recordReplicationOp,
 	recordScopeReassignment,
 } from "./sync-replication.js";
-import { initTestSchema } from "./test-utils.js";
+import { initTestSchema, initTestSchemaWithPeers } from "./test-utils.js";
 import type { ReplicationOp } from "./types.js";
 
 const now = "2026-07-20T14:00:00.000Z";
@@ -301,5 +301,213 @@ describe("reassign_scope replication", () => {
 		expect(blocked).toEqual([]);
 		expect(blockedCursor).toContain(oldSide.op_id);
 		expect(skipped).toMatchObject({ reason: "scope_filter", scope_id: DEFAULT_SYNC_SCOPE_ID });
+	});
+});
+
+/** A shared memory written before sync setup, so its origin is "local". */
+function insertPreSyncMemory(
+	db: InstanceType<typeof Database>,
+	input: { origin?: string | null; sessionUser?: string } = {},
+): number {
+	const session = db
+		.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version)
+			VALUES (?, 'api', ?, ?, ?)`)
+		.run(
+			now,
+			"https://example.invalid/acme/api.git",
+			input.sessionUser ?? "adam",
+			input.sessionUser === "sync" ? "sync_replication" : "codemem",
+		);
+	return Number(
+		db
+			.prepare(`INSERT INTO memory_items(
+				session_id, kind, title, body_text, confidence, tags_text, active, created_at,
+				updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
+			) VALUES (?, 'discovery', 'title', 'body', 0.8, '', 1, ?, ?, '{}', 'memory:key', 1, 'shared', ?, ?)`)
+			.run(
+				Number(session.lastInsertRowid),
+				now,
+				now,
+				DEFAULT_SYNC_SCOPE_ID,
+				input.origin === undefined ? "local" : input.origin,
+			).lastInsertRowid,
+	);
+}
+
+function reassignFromLocalDefault(
+	owner: InstanceType<typeof Database>,
+	memoryId: number,
+	options: { claimLocalOrigin?: boolean } = {},
+) {
+	return recordScopeReassignment(owner, {
+		operationId: "share_pre_sync",
+		memoryId,
+		oldScopeId: DEFAULT_SYNC_SCOPE_ID,
+		newScopeId: "managed",
+		deviceId: "owner",
+		createdAt: now,
+		...options,
+	});
+}
+
+function sideOps(owner: InstanceType<typeof Database>, side: "old" | "new"): ReplicationOp[] {
+	return ops(owner).filter((op) => parseReassignScopePayload(op).side === side);
+}
+
+describe("claiming a local origin while reassigning", () => {
+	let owner: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		owner = new Database(":memory:");
+		initTestSchema(owner);
+	});
+
+	afterEach(() => owner.close());
+
+	function origin(memoryId: number): unknown {
+		return owner
+			.prepare("SELECT origin_device_id FROM memory_items WHERE id = ?")
+			.pluck()
+			.get(memoryId);
+	}
+
+	function newSideOrigin(): unknown {
+		return JSON.parse(sideOps(owner, "new")[0]?.payload_json ?? "{}").origin_device_id;
+	}
+
+	it("records the owner as origin in the same write, so the new side carries it", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner);
+
+		// Act
+		reassignFromLocalDefault(owner, memoryId, { claimLocalOrigin: true });
+
+		// Assert
+		expect(origin(memoryId)).toBe("owner");
+		expect(newSideOrigin()).toBe("owner");
+	});
+
+	it("also claims a memory with no recorded origin", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner, { origin: null });
+
+		// Act
+		reassignFromLocalDefault(owner, memoryId, { claimLocalOrigin: true });
+
+		// Assert
+		expect(origin(memoryId)).toBe("owner");
+	});
+
+	it("keeps a local origin when the caller doesn't ask to claim it", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner);
+
+		// Act
+		reassignFromLocalDefault(owner, memoryId);
+
+		// Assert
+		expect(origin(memoryId)).toBe("local");
+		expect(newSideOrigin()).toBe("local");
+	});
+
+	it("never replaces another device's origin", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner, { origin: "other-device" });
+
+		// Act
+		reassignFromLocalDefault(owner, memoryId, { claimLocalOrigin: true });
+
+		// Assert
+		expect(origin(memoryId)).toBe("other-device");
+	});
+
+	it("leaves a local origin from a sync session alone", () => {
+		// Arrange
+		const memoryId = insertPreSyncMemory(owner, { sessionUser: "sync" });
+
+		// Act
+		reassignFromLocalDefault(owner, memoryId, { claimLocalOrigin: true });
+
+		// Assert
+		expect(origin(memoryId)).toBe("local");
+	});
+});
+
+describe("a recipient applying a share of pre-sync memories", () => {
+	let owner: InstanceType<typeof Database>;
+	let receiver: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		owner = new Database(":memory:");
+		initTestSchema(owner);
+		// The recipient is a member of the new boundary alongside the owner.
+		receiver = new Database(":memory:");
+		initTestSchemaWithPeers(receiver, ["owner"]);
+		receiver
+			.prepare(`INSERT INTO replication_scopes(
+				scope_id, label, kind, authority_type, membership_epoch, status, created_at, updated_at
+			) VALUES ('managed', 'managed', 'team', 'coordinator', 1, 'active', ?, ?)`)
+			.run(now, now);
+		for (const deviceId of ["owner", "recipient"]) {
+			receiver
+				.prepare(`INSERT INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, updated_at
+				) VALUES ('managed', ?, 'member', 'active', 1, ?)`)
+				.run(deviceId, now);
+		}
+	});
+
+	afterEach(() => {
+		owner.close();
+		receiver.close();
+	});
+
+	/** The new side arrives first, through the Project's own pull, then the old side. */
+	function applyBothSides() {
+		const validation = { inboundScopeValidation: { peerDeviceId: "owner" } };
+		const received = applyReplicationOps(
+			receiver,
+			sideOps(owner, "new"),
+			"recipient",
+			undefined,
+			validation,
+		);
+		const cleanup = applyReplicationOps(
+			receiver,
+			sideOps(owner, "old"),
+			"recipient",
+			undefined,
+			validation,
+		);
+		return { received, cleanup };
+	}
+
+	it("applies both sides of a fresh share without a rejection", () => {
+		// Arrange
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner), { claimLocalOrigin: true });
+
+		// Act
+		const { received, cleanup } = applyBothSides();
+
+		// Assert
+		expect([received.rejected, cleanup.rejected]).toEqual([0, 0]);
+		expect(
+			receiver.prepare("SELECT origin_device_id, scope_id, active FROM memory_items").get(),
+		).toEqual({
+			origin_device_id: "owner",
+			scope_id: "managed",
+			active: 1,
+		});
+	});
+
+	it("rejects the cleanup when a local origin is shared unclaimed", () => {
+		// Arrange
+		reassignFromLocalDefault(owner, insertPreSyncMemory(owner));
+
+		// Act
+		const { cleanup } = applyBothSides();
+
+		// Assert
+		expect(cleanup.rejections.map((rejection) => rejection.reason)).toEqual(["sender_not_member"]);
 	});
 });

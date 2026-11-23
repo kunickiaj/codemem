@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
+import { claimLocalOrigin } from "./local-origin-claim.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import {
@@ -730,6 +731,7 @@ function localReassign(db: Database, memoryIds: number[], scopeId: string, devic
 				| { scope_id: string | null; rev: number | null; metadata_json: string | null }
 				| undefined;
 			if (!row || clean(row.scope_id) === scopeId) continue;
+			claimLocalOrigin(db, memoryId, deviceId);
 			const metadata = fromJson(row.metadata_json);
 			metadata.clock_device_id = deviceId;
 			db.prepare(`UPDATE memory_items SET scope_id = ?, rev = COALESCE(rev, 0) + 1,
@@ -742,6 +744,37 @@ function localReassign(db: Database, memoryIds: number[], scopeId: string, devic
 			recordReplicationOp(db, { memoryId, opType: "upsert", deviceId, scopeId, createdAt: now });
 		}
 	})();
+}
+
+/**
+ * Moves a Project's selected memories into its boundary. Only memories already
+ * selected as this device's own reach here, so each move also records this
+ * device as the origin of the ones it wrote before it had a sync identity.
+ */
+function moveProjectMemories(
+	db: Database,
+	project: ManagedProjectPlan,
+	operationId: string,
+	deviceId: string,
+): void {
+	localReassign(db, project.localOnlyMemoryIds, project.boundaryId, deviceId);
+	for (const memoryId of project.reassignedMemoryIds) {
+		const oldScopeId =
+			clean(
+				db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId) as
+					| string
+					| null,
+			) ?? "local-default";
+		if (oldScopeId === project.boundaryId) continue;
+		recordScopeReassignment(db, {
+			operationId,
+			memoryId,
+			oldScopeId,
+			newScopeId: project.boundaryId,
+			deviceId,
+			claimLocalOrigin: true,
+		});
+	}
 }
 
 function assertCompatibleEffectiveMapping(
@@ -864,25 +897,7 @@ async function executeShareProvisioningWithStableMappings(
 		await executeStep(
 			`memory_reassignment:${stepIdentity}`,
 			`memory-reassignment:${plan.operationId}:${stepIdentity}`,
-			() => {
-				localReassign(db, project.localOnlyMemoryIds, project.boundaryId, input.initiatingDeviceId);
-				for (const memoryId of project.reassignedMemoryIds) {
-					const oldScopeId =
-						clean(
-							db.prepare("SELECT scope_id FROM memory_items WHERE id = ?").pluck().get(memoryId) as
-								| string
-								| null,
-						) ?? "local-default";
-					if (oldScopeId === project.boundaryId) continue;
-					recordScopeReassignment(db, {
-						operationId: plan.operationId,
-						memoryId,
-						oldScopeId,
-						newScopeId: project.boundaryId,
-						deviceId: input.initiatingDeviceId,
-					});
-				}
-			},
+			() => moveProjectMemories(db, project, plan.operationId, input.initiatingDeviceId),
 		);
 		await executeStep(`project_assignment:${stepIdentity}`, project.boundaryId, () =>
 			exactMapping(db, project),

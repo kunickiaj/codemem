@@ -173,6 +173,76 @@ function expectInviterProjectFilterRejected(
 	);
 }
 
+/** Provisioning dependencies that succeed for the selected-Project share fixture. */
+function selectedProjectDependencies(
+	db: InstanceType<typeof Database>,
+	operationId: string,
+	overrides: Partial<ShareProvisioningDependencies> = {},
+) {
+	const plan = planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" });
+	const scopeId = plan.projects[0]?.boundaryId ?? "missing";
+	const deps: ShareProvisioningDependencies = {
+		createOrGetBoundary: vi.fn(async () => ({
+			scope_id: scopeId,
+			label: "api",
+			kind: "managed_project",
+			authority_type: "coordinator",
+			coordinator_id: "coord",
+			group_id: "team",
+			manifest_issuer_device_id: null,
+			membership_epoch: 1,
+			manifest_hash: null,
+			status: "active",
+			created_at: createdAt,
+			updated_at: createdAt,
+		})),
+		grantMembership: vi.fn(async ({ scopeId: grantedScope, deviceId, role }) => ({
+			scope_id: grantedScope,
+			device_id: deviceId,
+			role,
+			status: "active",
+			membership_epoch: 1,
+			coordinator_id: "coord",
+			group_id: "team",
+			manifest_issuer_device_id: null,
+			manifest_hash: null,
+			signed_manifest_json: null,
+			updated_at: createdAt,
+		})),
+		supportsReassignScope: vi.fn(async () => "supported"),
+		refreshAuthorization: vi.fn(async () => {
+			db.prepare(`INSERT OR REPLACE INTO replication_scopes(
+				scope_id, label, kind, authority_type, coordinator_id, group_id,
+				membership_epoch, status, created_at, updated_at
+			) VALUES (?, 'api', 'managed_project', 'coordinator', 'coord', 'team', 1, 'active', ?, ?)`).run(
+				scopeId,
+				createdAt,
+				createdAt,
+			);
+			for (const deviceId of ["owner", "owner-proven", "recipient"]) {
+				db.prepare(`INSERT OR REPLACE INTO scope_memberships(
+					scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
+				) VALUES (?, ?, 'member', 'active', 1, 'coord', 'team', ?)`).run(
+					scopeId,
+					deviceId,
+					createdAt,
+				);
+			}
+			db.prepare(`INSERT OR REPLACE INTO scope_membership_cache_state(
+				coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at
+			) VALUES ('coord', 'team', ?, ?, NULL, ?)`).run(createdAt, createdAt, createdAt);
+		}),
+		runInitialSync: vi.fn(async () => {
+			expect(getCachedScopeAuthorization(db, { deviceId: "recipient", scopeId }).authorized).toBe(
+				true,
+			);
+			return { ok: true, perScopeResults: [{ scope_id: scopeId, ok: true }] };
+		}),
+		...overrides,
+	};
+	return { deps, scopeId };
+}
+
 describe("exact project share provisioning", () => {
 	let db: InstanceType<typeof Database>;
 	let operationId: string;
@@ -354,70 +424,8 @@ describe("exact project share provisioning", () => {
 		expect(project?.memoryIds).not.toContain(replicatedMemoryId);
 	});
 
-	function dependencies(overrides: Partial<ShareProvisioningDependencies> = {}) {
-		const plan = planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" });
-		const scopeId = plan.projects[0]?.boundaryId ?? "missing";
-		const deps: ShareProvisioningDependencies = {
-			createOrGetBoundary: vi.fn(async () => ({
-				scope_id: scopeId,
-				label: "api",
-				kind: "managed_project",
-				authority_type: "coordinator",
-				coordinator_id: "coord",
-				group_id: "team",
-				manifest_issuer_device_id: null,
-				membership_epoch: 1,
-				manifest_hash: null,
-				status: "active",
-				created_at: createdAt,
-				updated_at: createdAt,
-			})),
-			grantMembership: vi.fn(async ({ scopeId: grantedScope, deviceId, role }) => ({
-				scope_id: grantedScope,
-				device_id: deviceId,
-				role,
-				status: "active",
-				membership_epoch: 1,
-				coordinator_id: "coord",
-				group_id: "team",
-				manifest_issuer_device_id: null,
-				manifest_hash: null,
-				signed_manifest_json: null,
-				updated_at: createdAt,
-			})),
-			supportsReassignScope: vi.fn(async () => "supported"),
-			refreshAuthorization: vi.fn(async () => {
-				db.prepare(`INSERT OR REPLACE INTO replication_scopes(
-					scope_id, label, kind, authority_type, coordinator_id, group_id,
-					membership_epoch, status, created_at, updated_at
-				) VALUES (?, 'api', 'managed_project', 'coordinator', 'coord', 'team', 1, 'active', ?, ?)`).run(
-					scopeId,
-					createdAt,
-					createdAt,
-				);
-				for (const deviceId of ["owner", "owner-proven", "recipient"]) {
-					db.prepare(`INSERT OR REPLACE INTO scope_memberships(
-						scope_id, device_id, role, status, membership_epoch, coordinator_id, group_id, updated_at
-					) VALUES (?, ?, 'member', 'active', 1, 'coord', 'team', ?)`).run(
-						scopeId,
-						deviceId,
-						createdAt,
-					);
-				}
-				db.prepare(`INSERT OR REPLACE INTO scope_membership_cache_state(
-					coordinator_id, group_id, last_refresh_at, last_success_at, last_error, updated_at
-				) VALUES ('coord', 'team', ?, ?, NULL, ?)`).run(createdAt, createdAt, createdAt);
-			}),
-			runInitialSync: vi.fn(async () => {
-				expect(getCachedScopeAuthorization(db, { deviceId: "recipient", scopeId }).authorized).toBe(
-					true,
-				);
-				return { ok: true, perScopeResults: [{ scope_id: scopeId, ok: true }] };
-			}),
-			...overrides,
-		};
-		return { deps, scopeId };
-	}
+	const dependencies = (overrides: Partial<ShareProvisioningDependencies> = {}) =>
+		selectedProjectDependencies(db, operationId, overrides);
 
 	it("derives bounded membership without inheriting unreviewed source members", () => {
 		const plan = planShareProvisioning(db, { operationId, initiatingDeviceId: "owner" });
@@ -706,6 +714,64 @@ describe("exact project share provisioning", () => {
 				.pluck()
 				.get(operationId),
 		).toBe("active");
+	});
+
+	it("records the owner as origin of the locally written memories it moves, and nothing else", async () => {
+		// Arrange: memories written before sync setup, on both move paths, and one
+		// from a sync session that provisioning doesn't treat as the owner's.
+		const session = (user: string, toolVersion: string) =>
+			Number(
+				db
+					.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version)
+						VALUES (?, 'api', ?, ?, ?)`)
+					.run(createdAt, remote, user, toolVersion).lastInsertRowid,
+			);
+		const insertPreSync = db.prepare(`INSERT INTO memory_items(
+			session_id, kind, title, body_text, confidence, tags_text, active, created_at,
+			updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
+		) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, '{}', ?, 1, 'shared', 'local-default', 'local')`);
+		const localSession = session("adam", "codemem");
+		insertPreSync.run(
+			localSession,
+			"pre-sync replicated",
+			createdAt,
+			createdAt,
+			"pre-sync:replicated",
+		);
+		insertPreSync.run(localSession, "pre-sync never replicated", createdAt, createdAt, null);
+		insertPreSync.run(
+			session("sync", "sync_replication"),
+			"pre-sync from sync",
+			createdAt,
+			createdAt,
+			"pre-sync:peer",
+		);
+		db.prepare("UPDATE share_operations SET inviter_device_ids_json = '[\"owner\"]'").run();
+		const { deps, scopeId } = dependencies();
+
+		// Act
+		await executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps);
+
+		// Assert
+		expect(
+			db.prepare("SELECT title, scope_id, origin_device_id FROM memory_items ORDER BY title").all(),
+		).toEqual([
+			{ title: "pre-sync from sync", scope_id: "local-default", origin_device_id: "local" },
+			{ title: "pre-sync never replicated", scope_id: scopeId, origin_device_id: "owner" },
+			{ title: "pre-sync replicated", scope_id: scopeId, origin_device_id: "owner" },
+			{ title: "selected-local-shared", scope_id: scopeId, origin_device_id: "owner" },
+			{ title: "selected-private", scope_id: "source-space", origin_device_id: null },
+			{ title: "selected-shared", scope_id: scopeId, origin_device_id: "owner" },
+			{ title: "unrelated", scope_id: "source-space", origin_device_id: null },
+		]);
+		const payloadOrigins = db
+			.prepare(
+				`SELECT entity_id, json_extract(payload_json, '$.origin_device_id') AS origin
+				 FROM replication_ops WHERE scope_id = ? ORDER BY entity_id`,
+			)
+			.all(scopeId) as Array<{ entity_id: string; origin: string | null }>;
+		expect(payloadOrigins.length).toBeGreaterThan(0);
+		expect(new Set(payloadOrigins.map((row) => row.origin))).toEqual(new Set(["owner"]));
 	});
 
 	it("cancels superseded accepted duplicates for the same person and project set once active", async () => {
