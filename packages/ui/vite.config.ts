@@ -157,7 +157,7 @@ export default defineConfig(({ command, mode }) => {
 			},
 			environment: "jsdom",
 			name: "ui",
-			setupFiles: ["../core/src/test-environment-isolation.ts"],
+			setupFiles: ["../core/src/test-environment-isolation.ts", "./src/preact-frame-test-setup.ts"],
 			alias: unitTestAliases,
 			server: unitTestServer,
 		},
