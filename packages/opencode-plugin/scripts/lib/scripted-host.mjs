@@ -61,8 +61,17 @@ function sse(response, delta, finishReason) {
 	response.end("data: [DONE]\n\n");
 }
 
-/** How the host offers the memory tools: as direct tools, through Code Mode, or not at all. */
-function exposureOf(tools, messages) {
+/** The `codemem` namespace in a Code Mode catalog, for example `- codemem (15 tools, none shown)`. */
+const CODEMEM_NAMESPACE_RE = /^- codemem \((\d+) tools?\b/m;
+const SHOWN_MEMORY_TOOL_RE = /tools\.codemem\.(memory_\w+)\(/g;
+
+/**
+ * How the host offers the memory tools: as direct tools, through Code Mode, or
+ * not at all. A Code Mode catalog may show only some of a namespace's tools
+ * (OpenCode 2.4 can show none), so a listed codemem namespace with tools counts
+ * as Code Mode exposure, and `shown` records which tools the catalog spelled out.
+ */
+export function exposureOf(tools, messages) {
 	const names = tools.map((tool) => tool.function?.name).filter(Boolean);
 	const direct = names.filter((name) => MEMORY_TOOL_RE.test(name));
 	if (direct.length > 0) return { mode: "direct", direct };
@@ -70,16 +79,57 @@ function exposureOf(tools, messages) {
 		.filter((message) => message.role === "system")
 		.map((message) => textOf(message.content))
 		.join("\n");
-	const inCatalog = names.includes("execute") && /tools\.codemem\.memory_/.test(system);
-	return { mode: inCatalog ? "codemode" : "absent", direct, system };
+	const shown = [...new Set([...system.matchAll(SHOWN_MEMORY_TOOL_RE)].map((match) => match[1]))];
+	const listed = Number(system.match(CODEMEM_NAMESPACE_RE)?.[1] ?? 0) > 0;
+	const inCatalog = names.includes("execute") && (shown.length > 0 || listed);
+	return { mode: inCatalog ? "codemode" : "absent", direct, shown, system };
 }
 
-function toolCallFor(step, exposure) {
+/** Memory tools the scripted model may name in generated Code Mode source. */
+const MEMORY_TOOL_NAME_RE = /^memory_[a-z_]+$/;
+const UNSAFE_IN_SOURCE_RE = /[<>\u2028\u2029]/g;
+
+/**
+ * A value as a JavaScript literal for Code Mode source. JSON is valid
+ * JavaScript, and the characters that could end a surrounding script or line
+ * are written as \\u escapes, so the literal parses to the same value.
+ */
+export function sourceLiteral(value) {
+	return JSON.stringify(value).replace(
+		UNSAFE_IN_SOURCE_RE,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
+function memoryToolName(step) {
+	if (typeof step.tool !== "string" || !MEMORY_TOOL_NAME_RE.test(step.tool)) {
+		throw new Error(`scenario tool is not a memory tool name: ${String(step.tool)}`);
+	}
+	return step.tool;
+}
+
+/**
+ * The model's next tool call. In Code Mode, a tool the catalog doesn't show is
+ * first looked up with the host's `search`, as the catalog instructs, and the
+ * call fails if search doesn't return it. Generated source contains only a
+ * checked memory tool name and values written by `sourceLiteral`.
+ */
+export function toolCallFor(step, exposure) {
 	if (exposure.mode === "direct") {
 		const name = exposure.direct.find((candidate) => candidate.endsWith(step.tool));
 		return { name: name ?? `codemem_${step.tool}`, arguments: JSON.stringify(step.args) };
 	}
-	const code = `return await tools.codemem.${step.tool}(${JSON.stringify(step.args)});`;
+	const tool = memoryToolName(step);
+	const call = `return await tools.codemem.${tool}(${sourceLiteral(step.args ?? {})});`;
+	if (exposure.shown?.includes(tool)) {
+		return { name: "execute", arguments: JSON.stringify({ code: call }) };
+	}
+	const path = `tools.codemem.${tool}`;
+	const code = [
+		`const found = await search({ query: ${sourceLiteral(tool)}, namespace: "codemem" });`,
+		`if (!found.items.some((item) => item.path === ${sourceLiteral(path)})) throw new Error(${sourceLiteral(`search did not find ${path}`)});`,
+		call,
+	].join("\n");
 	return { name: "execute", arguments: JSON.stringify({ code }) };
 }
 
@@ -104,7 +154,7 @@ export async function startProvider(scenarios) {
 			(message) => message.role === "user" && marker.test(textOf(message.content)),
 		);
 		const name = textOf(messages[anchor]?.content).match(marker)?.[1];
-		const steps = scenarios[name]?.steps;
+		const steps = name && Object.hasOwn(scenarios, name) ? scenarios[name].steps : undefined;
 		if (!steps || tools.length === 0) return sse(response, { content: "done" }, "stop");
 		const exposure = exposureOf(tools, messages);
 		state.exposures[name] = exposure.mode;
