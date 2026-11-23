@@ -85,24 +85,49 @@ export function exposureOf(tools, messages) {
 	return { mode: inCatalog ? "codemode" : "absent", direct, shown, system };
 }
 
+/** Memory tools the scripted model may name in generated Code Mode source. */
+const MEMORY_TOOL_NAME_RE = /^memory_[a-z_]+$/;
+const UNSAFE_IN_SOURCE_RE = /[<>\u2028\u2029]/g;
+
+/**
+ * A value as a JavaScript literal for Code Mode source. JSON is valid
+ * JavaScript, and the characters that could end a surrounding script or line
+ * are written as \\u escapes, so the literal parses to the same value.
+ */
+export function sourceLiteral(value) {
+	return JSON.stringify(value).replace(
+		UNSAFE_IN_SOURCE_RE,
+		(char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
+}
+
+function memoryToolName(step) {
+	if (typeof step.tool !== "string" || !MEMORY_TOOL_NAME_RE.test(step.tool)) {
+		throw new Error(`scenario tool is not a memory tool name: ${String(step.tool)}`);
+	}
+	return step.tool;
+}
+
 /**
  * The model's next tool call. In Code Mode, a tool the catalog doesn't show is
  * first looked up with the host's `search`, as the catalog instructs, and the
- * call fails if search doesn't return it.
+ * call fails if search doesn't return it. Generated source contains only a
+ * checked memory tool name and values written by `sourceLiteral`.
  */
 export function toolCallFor(step, exposure) {
 	if (exposure.mode === "direct") {
 		const name = exposure.direct.find((candidate) => candidate.endsWith(step.tool));
 		return { name: name ?? `codemem_${step.tool}`, arguments: JSON.stringify(step.args) };
 	}
-	const call = `return await tools.codemem.${step.tool}(${JSON.stringify(step.args)});`;
-	if (exposure.shown?.includes(step.tool)) {
+	const tool = memoryToolName(step);
+	const call = `return await tools.codemem.${tool}(${sourceLiteral(step.args ?? {})});`;
+	if (exposure.shown?.includes(tool)) {
 		return { name: "execute", arguments: JSON.stringify({ code: call }) };
 	}
-	const path = `tools.codemem.${step.tool}`;
+	const path = `tools.codemem.${tool}`;
 	const code = [
-		`const found = await search({ query: ${JSON.stringify(step.tool)}, namespace: "codemem" });`,
-		`if (!found.items.some((item) => item.path === ${JSON.stringify(path)})) throw new Error(${JSON.stringify(`search did not find ${path}`)});`,
+		`const found = await search({ query: ${sourceLiteral(tool)}, namespace: "codemem" });`,
+		`if (!found.items.some((item) => item.path === ${sourceLiteral(path)})) throw new Error(${sourceLiteral(`search did not find ${path}`)});`,
 		call,
 	].join("\n");
 	return { name: "execute", arguments: JSON.stringify({ code }) };
@@ -129,7 +154,7 @@ export async function startProvider(scenarios) {
 			(message) => message.role === "user" && marker.test(textOf(message.content)),
 		);
 		const name = textOf(messages[anchor]?.content).match(marker)?.[1];
-		const steps = scenarios[name]?.steps;
+		const steps = name && Object.hasOwn(scenarios, name) ? scenarios[name].steps : undefined;
 		if (!steps || tools.length === 0) return sse(response, { content: "done" }, "stop");
 		const exposure = exposureOf(tools, messages);
 		state.exposures[name] = exposure.mode;

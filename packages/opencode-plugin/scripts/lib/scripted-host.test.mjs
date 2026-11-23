@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exposureOf, toolCallFor } from "./scripted-host.mjs";
+import { exposureOf, sourceLiteral, toolCallFor } from "./scripted-host.mjs";
 
 const codeModeTools = [{ function: { name: "execute" } }, { function: { name: "read" } }];
 const system = (content) => [{ role: "system", content }];
@@ -83,5 +83,39 @@ describe("toolCallFor in Code Mode", () => {
 		expect(code).toContain('await search({ query: "memory_remember", namespace: "codemem" })');
 		expect(code).toContain('item.path === "tools.codemem.memory_remember"');
 		expect(code.endsWith('return await tools.codemem.memory_remember({"title":"t"});')).toBe(true);
+	});
+});
+
+describe("sourceLiteral", () => {
+	const value = { title: "a<b>c", body: "line\u2028para\u2029end", nested: [1, { path: "x/y" }] };
+
+	it("parses back to the same value", () => {
+		// Act
+		const literal = sourceLiteral(value);
+
+		// Assert
+		expect(JSON.parse(literal)).toEqual(value);
+	});
+
+	it("writes angle brackets and line and paragraph separators as escapes", () => {
+		// Act
+		const literal = sourceLiteral(value);
+
+		// Assert
+		expect(literal).not.toMatch(/[<>\u2028\u2029]/);
+		expect(literal).toContain("\\u003c");
+		expect(literal).toContain("\\u2028");
+	});
+});
+
+describe("toolCallFor with an unexpected tool name", () => {
+	it("refuses a name that isn't a memory tool before writing any source", () => {
+		// Arrange
+		const exposure = exposureOf(codeModeTools, system(CATALOG_NONE_SHOWN));
+
+		// Act + Assert
+		expect(() => toolCallFor({ tool: "memory_search.x", args: {} }, exposure)).toThrow(
+			"scenario tool is not a memory tool name",
+		);
 	});
 });
