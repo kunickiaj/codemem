@@ -1,4 +1,12 @@
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import {
+	type DeviceRejoinBrowserScope,
+	REJOIN_ATTEMPTS_TABLE,
+	REJOIN_HASH,
+	type RejoinLinkStorage,
+	rejoinConsumedBrowserCtes,
+	validRejoinBrowserScope,
+} from "./coordinator-device-rejoin-browser-evidence.js";
 import { REJOIN_DESTINATION_CTES } from "./coordinator-device-rejoin-destinations.js";
 import {
 	type DeviceRejoinLinkEvidence,
@@ -7,23 +15,9 @@ import {
 	rejoinLinkEvidenceCtes,
 } from "./coordinator-device-rejoin-link-evidence.js";
 
-const ATTEMPTS = "coordinator_device_rejoin_attempts";
-const HASH = /^[0-9a-f]{64}$/u;
-type Storage = NonNullable<Awaited<ReturnType<typeof readDeviceRejoinLinkStorage>>>;
 type Backend = Pick<AuthLinkBackend, "first" | "readAuthSchemaState">;
 
-/** The browser guard supplies the hashes, config and time. Neither comes from a form field. */
-export interface DeviceRejoinConfirmationScope {
-	coordinatorId: string;
-	attemptId: string;
-	origin: string;
-	issuer: string;
-	authConfigRevision: string;
-	redirectUri: string;
-	transactionHash: string;
-	binderHash: string;
-	now: number;
-}
+export type DeviceRejoinConfirmationScope = DeviceRejoinBrowserScope;
 
 interface ReviewRow extends DeviceRejoinLinkEvidence {
 	removal_digest: string;
@@ -33,29 +27,11 @@ interface ReviewRow extends DeviceRejoinLinkEvidence {
 
 function confirmationEvidence(
 	c: DeviceRejoinConfirmationScope,
-	storage: Storage,
+	storage: RejoinLinkStorage,
 ): AuthLinkStatement {
-	const bootstrapCheck =
-		storage === "unqualified"
-			? `AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE tbl_name = 'coordinator_owner_enrollment_qualifications' COLLATE NOCASE)`
-			: "";
+	const { sql, values } = rejoinConsumedBrowserCtes(c, storage, { state: "oidc_verified" });
 	return {
-		sql: `WITH RECURSIVE rejoin_link_clock(now_ms) AS (VALUES (?)),
-attempt AS MATERIALIZED (
- SELECT a.* FROM ${ATTEMPTS} a
- JOIN coordinator_auth_browser_transactions b ON b.coordinator_id = a.coordinator_id
- AND b.attempt_id = a.attempt_id AND b.browser_transaction_hash = a.browser_transaction_hash
- AND b.binder_hash = a.browser_binder_hash AND b.issuer = a.issuer
- AND b.auth_config_revision = a.auth_config_revision
- CROSS JOIN rejoin_link_clock t
- WHERE a.coordinator_id = ? AND a.attempt_id = ? AND a.origin = ?
- AND a.issuer = ? AND a.auth_config_revision = ?
- AND a.browser_transaction_hash = ? AND a.browser_binder_hash = ?
- AND a.state = 'oidc_verified' AND a.created_at_ms <= t.now_ms AND a.expires_at_ms > t.now_ms
- AND b.purpose = 'owner_enroll' AND b.state = 'consumed' AND b.redirect_uri = ?
- AND b.consumed_at_ms <= t.now_ms AND b.expires_at_ms > t.now_ms
- ${bootstrapCheck}
-), rejoin_link_scope AS MATERIALIZED (
+		sql: `${sql}, rejoin_link_scope AS MATERIALIZED (
  SELECT a.coordinator_id, a.identity_id, a.issuer, l.subject
  FROM attempt a JOIN coordinator_auth_account_links l
  ON l.coordinator_id = a.coordinator_id AND l.link_id = a.link_id
@@ -71,23 +47,12 @@ rejoin_review AS MATERIALIZED (
  FROM checked a JOIN rejoin_link_evidence l ON ${REJOIN_LINK_PIN_MATCH_SQL}
  WHERE NOT EXISTS (SELECT 1 FROM groups_with_reasons WHERE reason = 'missing_group')
 )`,
-		values: [
-			c.now,
-			c.coordinatorId,
-			c.attemptId,
-			c.origin,
-			c.issuer,
-			c.authConfigRevision,
-			c.transactionHash,
-			c.binderHash,
-			c.redirectUri,
-		],
+		values,
 	};
 }
 
 async function readReview(backend: Backend, scope: DeviceRejoinConfirmationScope) {
-	if (!Number.isSafeInteger(scope.now) || scope.now < 0) return null;
-	if (!HASH.test(scope.transactionHash) || !HASH.test(scope.binderHash)) return null;
+	if (!validRejoinBrowserScope(scope)) return null;
 	const storage = await readDeviceRejoinLinkStorage(backend);
 	if (!storage) return null;
 	const { sql, values } = confirmationEvidence(scope, storage);
@@ -132,14 +97,14 @@ export async function confirmDeviceRejoinAttempt(
 	input: DeviceRejoinConfirmationScope & { confirmation: string; completionSecretHash: string },
 ): Promise<boolean> {
 	const { confirmation, completionSecretHash, ...scope } = input;
-	if (!HASH.test(confirmation) || !HASH.test(completionSecretHash)) return false;
+	if (!REJOIN_HASH.test(confirmation) || !REJOIN_HASH.test(completionSecretHash)) return false;
 	const review = await readReview(backend, scope);
 	if (!review || review.row.destinations_json === "[]") return false;
 	if ((await reviewHash(scope.attemptId, review.row)) !== confirmation) return false;
 	const { sql, values, row } = review;
 	const changed = await backend.run({
 		sql: `${sql}
-UPDATE ${ATTEMPTS} AS a SET state = 'confirmed',
+UPDATE ${REJOIN_ATTEMPTS_TABLE} AS a SET state = 'confirmed',
  destinations_json = r.destinations_json, non_destinations_json = r.non_destinations_json,
  confirmation_hash = ?, completion_secret_hash = ?
 FROM rejoin_review r

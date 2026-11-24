@@ -9,6 +9,7 @@ import {
 	type RejoinEvidenceFixture,
 	seedGenesis,
 } from "./coordinator-device-rejoin-link-evidence-test-harness.js";
+import { pinVerifiedDeviceRejoinAccount } from "./coordinator-device-rejoin-oidc-pins.js";
 
 export type RejoinConfirmationFixture = RejoinEvidenceFixture & {
 	changed(s: AuthLinkStatement): Promise<number>;
@@ -29,10 +30,20 @@ export const confirmationScope: DeviceRejoinConfirmationScope = {
 const pin = confirmationScope;
 const keyId = "f".repeat(64);
 const completeHash = "b".repeat(64);
+const acceptedCallback = {
+	...pin,
+	claimToken: "claim-rejoin",
+	account: { issuer: pin.issuer, subject: "private-subject" },
+};
 
 export async function prepareConfirmation(
 	db: Fixture,
-	options: { generation?: number; key?: { publicKey: string; keyId: string }; alias?: true } = {},
+	options: {
+		generation?: number;
+		key?: { publicKey: string; keyId: string };
+		alias?: true;
+		leaveBrowserClaimed?: true;
+	} = {},
 ) {
 	const key = options.key ?? { publicKey: "fixture-key", keyId };
 	await seedGenesis(db);
@@ -78,10 +89,24 @@ export async function prepareConfirmation(
 		now - 20,
 		now - 20 + 600_000,
 	);
-	await seedConsumedBrowser(db, options.generation ?? 1);
+	await seedConsumedBrowser(db);
+	if (options.leaveBrowserClaimed) return;
+	if (options.generation === undefined) {
+		expect(await pinAccount(db, acceptedCallback)).toBe(true);
+		return;
+	}
+	await db.run(
+		`UPDATE coordinator_device_rejoin_attempts SET state='oidc_verified',link_id='link-a',
+	link_authority_kind='controller_attestation',link_generation=?`,
+		options.generation,
+	);
 }
 
-async function seedConsumedBrowser(db: Fixture, generation: number) {
+function pinAccount(db: Fixture, input: typeof acceptedCallback) {
+	return pinVerifiedDeviceRejoinAccount({ first: db.first, run: db.changed }, input);
+}
+
+async function seedConsumedBrowser(db: Fixture) {
 	await db.run(
 		`INSERT INTO coordinator_auth_browser_transactions
 	(coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,
@@ -104,11 +129,6 @@ async function seedConsumedBrowser(db: Fixture, generation: number) {
 	browser_transaction_hash=?,browser_binder_hash=?`,
 		pin.transactionHash,
 		pin.binderHash,
-	);
-	await db.run(
-		`UPDATE coordinator_device_rejoin_attempts SET state='oidc_verified',link_id='link-a',
-	link_authority_kind='controller_attestation',link_generation=?`,
-		generation,
 	);
 }
 
@@ -134,6 +154,8 @@ function confirm(db: Fixture, confirmation: string, run = db.changed) {
 export function registerRejoinConfirmationTests(
 	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
 ) {
+	registerAccountPinTests(withFixture);
+
 	it("confirms the exact browser review once", () =>
 		withFixture(async (db) => {
 			await prepareConfirmation(db);
@@ -183,5 +205,29 @@ export function registerRejoinConfirmationTests(
 			expect(await readDeviceRejoinConfirmation(db, pin)).toBeNull();
 			expect(await confirm(db, "1".repeat(64))).toBe(false);
 			expect(await attempt(db)).toMatchObject({ state: "oidc_verified", confirmation_hash: null });
+		}));
+}
+
+function registerAccountPinTests(
+	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
+) {
+	it("pins only the account from the consumed rejoin callback", () =>
+		withFixture(async (db) => {
+			await prepareConfirmation(db, { leaveBrowserClaimed: true });
+			const before = await attempt(db);
+			for (const input of [
+				{ ...acceptedCallback, claimToken: "other-claim" },
+				{ ...acceptedCallback, transactionHash: "2".repeat(64) },
+				{ ...acceptedCallback, account: { ...acceptedCallback.account, subject: "wrong-subject" } },
+				{
+					...acceptedCallback,
+					account: { ...acceptedCallback.account, issuer: "https://other.example.test" },
+				},
+			])
+				expect(await pinAccount(db, input)).toBe(false);
+			expect(await attempt(db)).toEqual(before);
+			expect(await pinAccount(db, acceptedCallback)).toBe(true);
+			expect(await attempt(db)).toMatchObject({ state: "oidc_verified" });
+			expect(await pinAccount(db, acceptedCallback)).toBe(false);
 		}));
 }
