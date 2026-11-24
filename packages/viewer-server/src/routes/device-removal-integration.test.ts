@@ -446,6 +446,78 @@ it("blocks the listed removal through the mounted Viewer without exposing coordi
 	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
 });
 
+async function commitMountedCompoundBlock(f: Awaited<ReturnType<typeof fixture>>) {
+	const removalPreview = await f.viewer.request(previewPath, { method: "POST" });
+	expect(removalPreview.status).toBe(200);
+	const removal = (await removalPreview.json()) as {
+		expected_digest: string;
+		coordinator_origin: string;
+	};
+	const path = `/api/sync/devices/${deviceId}/block-enrolled`;
+	const blockPreview = await f.viewer.request(`${path}/preview`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ group_id: groupId }),
+	});
+	expect(blockPreview.status).toBe(200);
+	const block = (await blockPreview.json()) as { coordinator_id: string; key_id: string };
+	return f.viewer.request(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			group_id: groupId,
+			coordinator_id: block.coordinator_id,
+			key_id: block.key_id,
+			expected_digest: removal.expected_digest,
+			coordinator_origin: removal.coordinator_origin,
+		}),
+	});
+}
+
+it("mounts compound Block through the foreground Viewer and uses the verified removal ID", async () => {
+	const f = await fixture({ mounted: true });
+	const response = await commitMountedCompoundBlock(f);
+	expect(response.status).toBe(200);
+	expect(await response.json()).toEqual({ state: "blocked", removal_id: expect.any(String) });
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
+	expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toHaveLength(2);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	expect(f.remote).toEqual([
+		"/v1/peers/revocations",
+		remotePreview,
+		"/v1/peers/revocations",
+		blockPreviewPath,
+		"/v1/peers/revocations",
+		blockPreviewPath,
+		blockPreviewPath,
+		remotePreview,
+		remoteCommit,
+		blockPreviewPath,
+		blockCommitPath,
+	]);
+});
+
+it.each([
+	[{ blockCompatibility: "rejects_selector" }, "refused"],
+	[{ blockFailure: "commit" }, "removed-but-block-refused"],
+] as const)("reports the mounted compound Block outcome with %j", async (failure, state) => {
+	const f = await fixture({ ...failure, mounted: true });
+	const response = await commitMountedCompoundBlock(f);
+	expect(response.status).toBe(200);
+	expect(await response.json()).toMatchObject({ state });
+	expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toEqual([]);
+	const enrollment = await f.store.getEnrollment(groupId, deviceId, true);
+	if (state === "refused") {
+		expect(enrollment).not.toBeNull();
+		expect(f.remote).not.toContain(remoteCommit);
+		expect(f.localSnapshot()).toMatchObject({ paired: true, binding: "active" });
+		return;
+	}
+	expect(enrollment).toBeNull();
+	expect((await f.store.listDeviceRemovals({ deviceId })).items).toHaveLength(1);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+});
+
 async function supportsPinnedBlockFixture() {
 	try {
 		// A new removal ID cannot name an existing tombstone in this fixture.

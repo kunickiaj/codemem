@@ -82,12 +82,16 @@ function reviewPreview(
 		if (!row || typeof row.device_id !== "string") return coordinatorReadFailure(c, null);
 		if (row.device_id === ids.localId) return c.json({ error: "cannot_remove_this_device" }, 400);
 	}
+	const groupId = enrollments.find(
+		(row) => row.device_id === ids.deviceId && typeof row.group_id === "string",
+	)?.group_id;
 	return c.json({
 		device_id: ids.deviceId,
 		rejoin,
 		expected_digest,
 		key_id,
 		coordinator_origin: ids.coordinatorOrigin,
+		...(groupId ? { group_id: groupId } : {}),
 	});
 }
 

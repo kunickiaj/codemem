@@ -32,6 +32,8 @@ interface ViewerRemovalOptions {
 	readContext(): ViewerRemovalContext;
 	waitForRefresh(): Promise<void>;
 	refresh(): Promise<void>;
+	/** Compound Block must not remove an enrollment different from its preflight. */
+	expectedEnrollment?: { groupId: string; keyId: string };
 }
 
 type Rejection =
@@ -224,6 +226,20 @@ async function refreshAfterVerification(options: ViewerRemovalOptions): Promise<
 	}
 }
 
+function matchesExpectedEnrollment(
+	preview: ViewerRemovalPreview,
+	deviceId: string | undefined,
+	expected: ViewerRemovalOptions["expectedEnrollment"],
+) {
+	if (!expected) return true;
+	return (
+		preview.key_id === expected.keyId &&
+		preview.enrollments.some(
+			(row) => row.group_id === expected.groupId && row.device_id === deviceId,
+		)
+	);
+}
+
 async function commitConfirmed(
 	input: CapturedInput,
 	options: ViewerRemovalOptions,
@@ -239,6 +255,8 @@ async function commitConfirmed(
 		return { kind: "rejected", error: "cannot_remove_this_device" };
 	const preview = await refreshPreview(coordinator, input);
 	if (typeof preview === "string") return { kind: "rejected", error: preview };
+	if (!matchesExpectedEnrollment(preview, input.deviceIds[0], options.expectedEnrollment))
+		return { kind: "rejected", error: "removal_preview_stale" };
 	if (
 		preview.key_id === local.keyId ||
 		preview.enrollments.some((row) => row.device_id === local.deviceId)
