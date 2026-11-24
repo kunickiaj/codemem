@@ -14,7 +14,8 @@ type LocalStore = Pick<MemoryStore, "db" | "deviceId">;
 
 /** A malformed setting must never authorize a local-only removal. */
 export function hasNoRemovalCoordinator(readConfig?: typeof readCoordinatorSyncConfig): boolean {
-	if (readConfig) return !readConfig().syncCoordinatorUrl.trim();
+	if (readConfig?.().syncCoordinatorUrl.trim()) return false;
+	// An effective-settings reader may have treated a damaged file as empty.
 	const config = readCodememConfigFileForMutation(getCodememConfigPath());
 	if (config.status !== "missing" && config.status !== "valid") return false;
 	const data = config.status === "valid" ? config.data : {};

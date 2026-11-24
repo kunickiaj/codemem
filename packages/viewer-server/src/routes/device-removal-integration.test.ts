@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	BetterSqliteCoordinatorStore,
 	coordinatorRevokeDeviceAction,
@@ -42,8 +45,18 @@ const cleanups: (() => Promise<void> | void)[] = [];
 
 afterEach(async () => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+
+function fixtureConfig(text: string) {
+	const directory = mkdtempSync(join(tmpdir(), "codemem-viewer-remove-config-"));
+	cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
+	const path = join(directory, "config.json");
+	writeFileSync(path, text);
+	vi.stubEnv("CODEMEM_CONFIG", path);
+	return path;
+}
 
 function localStore() {
 	const db = new Database(":memory:");
@@ -375,6 +388,52 @@ it.each(["coordinator configured", "pairing changed"] as const)(
 		expect(f.localSnapshot()).toEqual(before);
 	},
 );
+
+it.each([
+	"{broken",
+	'{"sync_coordinator_url":42}',
+	'{"sync_coordinator_url":"https://coordinator.example.test"}',
+] as const)(
+	"never offers local Remove when the config file cannot prove the coordinator is absent (%s)",
+	async (text) => {
+		fixtureConfig(text);
+		const f = await fixture({ localOnly: true });
+		const before = f.localSnapshot();
+		const response = await f.viewer.request(previewPath, { method: "POST" });
+		expect(response.status).not.toBe(200);
+		expect(await response.json()).not.toHaveProperty("mode", "local");
+		expect(f.remote).toEqual([]);
+		expect(f.localSnapshot()).toEqual(before);
+	},
+);
+
+it("does not use local Remove when an environment override configures the coordinator", async () => {
+	fixtureConfig("{}");
+	const f = await fixture({ localOnly: true });
+	const before = f.localSnapshot();
+	vi.stubEnv("CODEMEM_SYNC_COORDINATOR_URL", origin);
+	const response = await f.viewer.request(previewPath, { method: "POST" });
+	expect(response.status).not.toBe(200);
+	expect(await response.json()).not.toHaveProperty("mode", "local");
+	expect(f.remote).toEqual([]);
+	expect(f.localSnapshot()).toEqual(before);
+});
+
+it("does not commit local Remove when the config becomes malformed after preview", async () => {
+	const path = fixtureConfig("{}");
+	const f = await fixture({ localOnly: true });
+	const before = f.localSnapshot();
+	const confirm = vi.fn(async () => {
+		writeFileSync(path, "{broken");
+		return true;
+	});
+	await expect(confirmAndCommitDeviceRemoval(target, { confirm })).rejects.toMatchObject({
+		code: "removal_preview_stale",
+	});
+	expect(confirm).toHaveBeenCalledOnce();
+	expect(f.remote).toEqual([]);
+	expect(f.localSnapshot()).toEqual(before);
+});
 
 it("refuses a local-only Remove of a pairing that holds this device's key", async () => {
 	const f = await fixture({ localOnly: true });
