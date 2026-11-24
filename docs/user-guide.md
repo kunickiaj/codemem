@@ -984,6 +984,16 @@ do not assume rollback or retry automatically.
 
 ### Sync runtime
 
+On a removed device with a coordinator account link, run `codemem sync rejoin`
+in a terminal when the coordinator supports sign-in rejoin. Open the private
+link in a browser on that device, sign in with the Google account linked to
+its Identity, and review the groups that still qualify. Keep the link private.
+
+After the coordinator confirms rejoin, the next signed coordinator check
+refreshes this device’s sync status. The command leaves your memories and
+sync settings in place. If Codemem cannot confirm the result, check sync
+status before you start again.
+
 - `codemem sync enable` generates keys and writes config.
 - `codemem service start|stop|restart` manages the local service runtime.
 - `codemem service status` and `codemem status` show the same local operational report.

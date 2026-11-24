@@ -68,6 +68,7 @@ import {
 	parseProjectList,
 	type SyncLifecycleOptions,
 } from "./sync-helpers.js";
+import { buildSyncRejoinCommand } from "./sync-rejoin.js";
 import { approveRelayKeyCommand, relayKeysCommand } from "./sync-relay-keys.js";
 
 function readCliConfig(configPath?: string): Record<string, unknown> {
@@ -1536,6 +1537,7 @@ connectCmd.action((url: string, opts: SyncConnectOptions) => {
 	p.outro("Restart `codemem serve` to activate coordinator sync");
 });
 syncCommand.addCommand(connectCmd);
+syncCommand.addCommand(buildSyncRejoinCommand());
 
 // ---- Deprecation alias: sync coordinator → coordinator ----
 // Build a separate coordinator command tree for the sync alias (Commander

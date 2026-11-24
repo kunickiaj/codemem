@@ -188,6 +188,11 @@ export type {
 } from "./coordinator-device-rebind-client.js";
 export { resumeDeviceRebind, runDeviceRebind } from "./coordinator-device-rebind-client.js";
 export {
+	type DeviceRejoinOptions,
+	type DeviceRejoinOutcome,
+	runDeviceRejoin,
+} from "./coordinator-device-rejoin-client.js";
+export {
 	COORDINATOR_DEVICE_REVOCATION_SCOPE,
 	type CoordinatorDeviceRevocationCommit,
 	type CoordinatorDeviceRevocationPreview,
