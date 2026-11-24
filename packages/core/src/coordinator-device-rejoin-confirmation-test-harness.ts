@@ -44,8 +44,10 @@ export async function prepareConfirmation(
 		alias?: true;
 		leaveBrowserClaimed?: true;
 		browserStartHash?: string;
+		scope?: DeviceRejoinConfirmationScope;
 	} = {},
 ) {
+	const pin = options.scope ?? confirmationScope;
 	const key = options.key ?? { publicKey: "fixture-key", keyId };
 	await seedGenesis(db);
 	await db.run(
@@ -76,7 +78,7 @@ export async function prepareConfirmation(
 	issuer,auth_config_revision,removal_digest,own_tombstones_json,alias_removal_seqs_json,
 	browser_start_hash,loopback_redirect,created_at_ms,expires_at_ms)
 	VALUES (?,?,?,'removed',?,?,'fingerprint','identity-a','binding',?,?,'digest',
-	?,?,?,'http://127.0.0.1:1234/complete',?,?)`,
+	?,?,?,'http://127.0.0.1:1234/codemem/auth/complete',?,?)`,
 		pin.coordinatorId,
 		pin.attemptId,
 		pin.origin,

@@ -169,6 +169,7 @@ import {
 import {
 	DEVICE_REJOIN_SCHEMA_SQL,
 	DEVICE_REJOIN_STORAGE_PRESENT_SQL,
+	readDeviceRejoinBackend,
 } from "./coordinator-device-rejoin-schema.js";
 import {
 	type CoordinatorFillEnrollmentKeyIdsOptions,
@@ -1279,6 +1280,9 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 	/** ADR 0005 Section 8 rebind storage; null before its tables exist. */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
 		return readDeviceRebindBackend(this.schemaBackend);
+	}
+	readDeviceRejoinBackend(): Promise<AuthLinkBackend | null> {
+		return readDeviceRejoinBackend(this.schemaBackend);
 	}
 	/** Headless account-linking storage; null unless both of its tables exist. */
 	readHeadlessLinkBackend(): Promise<AuthLinkBackend | null> {

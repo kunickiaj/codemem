@@ -118,6 +118,9 @@ type PendingCallback = {
 	nonce: string;
 	pkce_verifier: string;
 	loopback_redirect: string;
+	identity_id: string;
+	device_id: string;
+	fingerprint: string;
 };
 
 /**
@@ -133,7 +136,8 @@ export async function consumeDeviceRejoinCallback(
 		return null;
 	const pins = [...scope(p), p.redirectUri, p.stateHash, p.binderHash, p.now, p.now];
 	const row = await backend.first<PendingCallback>({
-		sql: `SELECT a.attempt_id, b.browser_transaction_hash, b.nonce, b.pkce_verifier, a.loopback_redirect
+		sql: `SELECT a.attempt_id, b.browser_transaction_hash, b.nonce, b.pkce_verifier,
+ a.loopback_redirect, a.identity_id, a.device_id, a.fingerprint
  ${PENDING_CALLBACK}`,
 		values: pins,
 	});
@@ -162,5 +166,8 @@ WHERE rowid = (SELECT b.rowid ${PENDING_CALLBACK}
 		nonce: row.nonce,
 		pkceVerifier: row.pkce_verifier,
 		loopbackRedirect: row.loopback_redirect,
+		identityId: row.identity_id,
+		deviceId: row.device_id,
+		fingerprint: row.fingerprint,
 	};
 }

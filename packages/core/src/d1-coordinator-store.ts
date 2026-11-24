@@ -112,6 +112,7 @@ import {
 	type PutBoundaryReadinessInput,
 } from "./coordinator-boundary-readiness.js";
 import { readDeviceRebindBackend } from "./coordinator-device-rebind-schema.js";
+import { readDeviceRejoinBackend } from "./coordinator-device-rejoin-schema.js";
 import {
 	type CoordinatorFillEnrollmentKeyIdsOptions,
 	type CoordinatorRemoveEnrollmentInput,
@@ -1844,6 +1845,9 @@ export class D1CoordinatorStore implements CoordinatorStore {
 	 */
 	readDeviceRebindBackend(): Promise<AuthLinkBackend | null> {
 		return readDeviceRebindBackend(createRawD1AuthLinkBackend(this.db));
+	}
+	readDeviceRejoinBackend(): Promise<AuthLinkBackend | null> {
+		return readDeviceRejoinBackend(createRawD1AuthLinkBackend(this.db));
 	}
 	/** Headless account-linking storage; null before migration 0043. */
 	readHeadlessLinkBackend(): Promise<AuthLinkBackend | null> {
