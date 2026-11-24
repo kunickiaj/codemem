@@ -19,6 +19,20 @@ describe.each(["SQLite", "D1"] as const)("%s rejoin start evidence", (backend) =
 								.first<T>()
 						: Promise.resolve((db.prepare(sql).get(...values) as T | undefined) ?? null),
 				run: async (sql, ...values) => db.prepare(sql).run(...values),
+				batch: async (statements) => {
+					if (backend === "D1") {
+						return d1.batch(statements.map(({ sql, values }) => d1.prepare(sql).bind(...values)));
+					}
+					return db
+						.transaction(() =>
+							statements.map(({ sql, values }) => {
+								const statement = db.prepare(sql);
+								if (statement.reader) return statement.all(...values);
+								return statement.run(...values);
+							}),
+						)
+						.immediate();
+				},
 			});
 		} finally {
 			await store.close();

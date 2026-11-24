@@ -16,6 +16,8 @@ describe("native D1 rejoin start evidence", () => {
 				const result = await db.prepare(sql).bind(...values).run();
 				return { changes: result.meta.changes };
 			},
+			batch: (statements) =>
+				db.batch(statements.map(({ sql, values }) => db.prepare(sql).bind(...values))),
 		});
 	};
 	registerRejoinStartEvidenceTests(withFixture);

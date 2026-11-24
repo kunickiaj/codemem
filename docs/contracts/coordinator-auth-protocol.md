@@ -419,10 +419,17 @@ the device ID together with the client address, so one source cannot spend
 another's budget.
 
 Attempts for one device do not exclude each other. A device may have up to 20
-unexpired attempts that are not finalized. A start beyond that expires the
-oldest one that has not reached `oidc_verified`. An attempt that reached
-`oidc_verified` has proven the account and is never expired by a start. When
-all 20 have proven the account, the start returns `409` with reason `retry`.
+unexpired attempts in `pending`, `browser_claimed`, `oidc_verified` or
+`confirmed`. Terminal `failed` attempts do not count, even before their
+ten-minute deadline. Terminal `expired` and `finalized` attempts do not count.
+A start beyond that expires the oldest unexpired `pending` or `browser_claimed`
+attempt, ordered by creation time and then attempt ID to break ties. An attempt
+that reached `oidc_verified` has proven the account and is never expired by a
+start. When all 20 have proven the account, the start returns `409` with reason
+`retry`. An attempt whose deadline equals the coordinator clock no longer
+counts. A duplicate attempt ID leaves existing attempts unchanged, including
+at capacity.
+
 A start also deletes that device's attempts that expired or failed more than
 24 hours ago, so the table stays small.
 
