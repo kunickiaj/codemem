@@ -10,7 +10,7 @@ import {
 } from "./coordinator-device-rejoin-link-evidence.js";
 import { COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS } from "./coordinator-owner-enrollment-qualification-schema.js";
 
-type Fixture = Pick<AuthLinkBackend, "first"> & {
+export type RejoinEvidenceFixture = Pick<AuthLinkBackend, "first"> & {
 	run(sql: string, ...values: (string | number | null)[]): Promise<unknown>;
 	proof: {
 		controllerLinkEvidenceSql(pins: { publicKey: string; attemptId?: string }): string;
@@ -18,6 +18,7 @@ type Fixture = Pick<AuthLinkBackend, "first"> & {
 		seedClaimSql: string;
 	};
 };
+type Fixture = RejoinEvidenceFixture;
 
 const NOW = 1_791_028_800_000;
 const scope = {
@@ -44,7 +45,7 @@ async function seedOrder(db: Fixture) {
 	);
 }
 
-async function seedGenesis(db: Fixture) {
+export async function seedGenesis(db: Fixture) {
 	await seedOrder(db);
 	await db.run(
 		`INSERT INTO coordinator_auth_controller_attestations

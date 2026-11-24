@@ -2,9 +2,8 @@ import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { REJOIN_EVIDENCE_SELECT_SQL } from "./coordinator-device-rejoin-start-evidence.js";
 import { ownerExcludedLegacyDecisionSql } from "./coordinator-owner-enrollment-commit.js";
 
-const DESTINATION_SNAPSHOT_SQL = `WITH attempt AS MATERIALIZED (
- SELECT * FROM coordinator_device_rejoin_attempts WHERE coordinator_id = ? AND attempt_id = ?
-), input AS (SELECT device_id, key_id, coordinator_id FROM attempt),
+/** The caller supplies an `attempt` CTE scoped to the exact stored attempt. */
+export const REJOIN_DESTINATION_CTES = `input AS (SELECT device_id, key_id, coordinator_id FROM attempt),
 evidence AS MATERIALIZED (${REJOIN_EVIDENCE_SELECT_SQL}),
 checked AS (
  SELECT a.* FROM attempt a CROSS JOIN evidence e
@@ -26,7 +25,11 @@ checked AS (
  LEFT JOIN groups g ON g.group_id = t.group_id
  LEFT JOIN coordinator_identity_group_grants r ON r.coordinator_id = a.coordinator_id
   AND r.identity_id = a.identity_id AND r.group_id = t.group_id
-)
+)`;
+
+const DESTINATION_SNAPSHOT_SQL = `WITH attempt AS MATERIALIZED (
+ SELECT * FROM coordinator_device_rejoin_attempts WHERE coordinator_id = ? AND attempt_id = ?
+), ${REJOIN_DESTINATION_CTES}
 SELECT (SELECT json_group_array(json_array(group_id, revision, reason))
  FROM (SELECT * FROM groups_with_reasons ORDER BY group_id COLLATE BINARY)) AS groups_json
 FROM checked`;
