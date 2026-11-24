@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
-import {
-	claimLocalOrigin,
-	hasUnattributedOrigin,
-	isImportedSessionKey,
-} from "./local-origin-claim.js";
+import { claimLocalOrigin, hasUnattributedOrigin, isImportedMemory } from "./local-origin-claim.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import {
@@ -115,6 +111,7 @@ interface MemoryCandidateRow {
 	session_tool_version: string | null;
 	session_metadata_json: string | null;
 	session_import_key: string | null;
+	metadata_json: string | null;
 }
 
 function clean(value: unknown): string | null {
@@ -164,7 +161,8 @@ function memoryCandidates(db: Database): MemoryCandidateRow[] {
 		.prepare(`SELECT mi.id, mi.import_key, mi.visibility, mi.scope_id, mi.origin_device_id,
 			COALESCE(mi.project, s.project) AS project, s.cwd, s.git_remote, s.git_branch,
 			mi.workspace_id, s.user AS session_user, s.tool_version AS session_tool_version,
-			s.metadata_json AS session_metadata_json, s.import_key AS session_import_key
+			s.metadata_json AS session_metadata_json, s.import_key AS session_import_key,
+			mi.metadata_json
 		 FROM memory_items mi
 		 JOIN sessions s ON s.id = mi.session_id
 		 WHERE mi.active = 1`)
@@ -194,7 +192,12 @@ function shareableForManagedProject(row: MemoryCandidateRow): boolean {
  */
 function isUnattributedImport(row: MemoryCandidateRow): boolean {
 	return (
-		hasUnattributedOrigin(row.origin_device_id) && isImportedSessionKey(row.session_import_key)
+		hasUnattributedOrigin(row.origin_device_id) &&
+		isImportedMemory({
+			metadataJson: row.metadata_json,
+			sessionImportKey: row.session_import_key,
+			sessionMetadataJson: row.session_metadata_json,
+		})
 	);
 }
 

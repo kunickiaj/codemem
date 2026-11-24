@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { claimLocalOrigin } from "./local-origin-claim.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
@@ -17,9 +18,12 @@ import {
 	type ShareProvisioningDependencies,
 } from "./share-provisioning.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { migrateLegacyImportKeys } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const createdAt = "2026-07-20T12:00:00.000Z";
+/** Metadata import writes on a memory it adds, including to a session started here. */
+const EXPORTED = '{"source":"export"}';
 const remote = "https://example.invalid/acme/api.git";
 
 function includeHistoricalRepositoryMemory(
@@ -176,13 +180,15 @@ function expectInviterProjectFilterRejected(
 
 function insertSession(
 	db: InstanceType<typeof Database>,
-	input: { user: string; toolVersion: string; importKey?: string },
+	input: { user: string; toolVersion: string; importKey?: string; imported?: boolean },
 ): number {
+	// `memory import` records `"source": "export"` on every session it creates.
+	const metadata = input.imported ? '{"source":"export"}' : "{}";
 	return Number(
 		db
-			.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version, import_key)
-				VALUES (?, 'api', ?, ?, ?, ?)`)
-			.run(createdAt, remote, input.user, input.toolVersion, input.importKey ?? null)
+			.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version, import_key, metadata_json)
+				VALUES (?, 'api', ?, ?, ?, ?, ?)`)
+			.run(createdAt, remote, input.user, input.toolVersion, input.importKey ?? null, metadata)
 			.lastInsertRowid,
 	);
 }
@@ -194,15 +200,17 @@ function insertPreSyncMemory(
 	title: string,
 	importKey: string | null,
 	origin: string | null = "local",
+	metadataJson = "{}",
 ): void {
 	db.prepare(`INSERT INTO memory_items(
 		session_id, kind, title, body_text, confidence, tags_text, active, created_at,
 		updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
-	) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, '{}', ?, 1, 'shared', 'local-default', ?)`).run(
+	) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, ?, ?, 1, 'shared', 'local-default', ?)`).run(
 		sessionId,
 		title,
 		createdAt,
 		createdAt,
+		metadataJson,
 		importKey,
 		origin,
 	);
@@ -765,9 +773,10 @@ describe("exact project share provisioning", () => {
 			user: "other",
 			toolVersion: "codemem",
 			importKey: `export-session:v1:${"c".repeat(64)}`,
+			imported: true,
 		});
 		insertPreSyncMemory(db, importedSession, "pre-sync imported", "pre-sync:imported");
-		insertPreSyncMemory(db, importedSession, "imported no origin", "imported:none", null);
+		insertPreSyncMemory(db, localSession, "imported no origin", "imported:none", null, EXPORTED);
 		insertPreSyncMemory(db, importedSession, "imported from owner", "imported:owner", "owner");
 		db.prepare("UPDATE share_operations SET inviter_device_ids_json = '[\"owner\"]'").run();
 		const { deps, scopeId } = dependencies();
@@ -1593,6 +1602,28 @@ describe("imported memories without a known author", () => {
 		initTestSchema(db);
 	});
 	afterEach(() => db.close());
+
+	it("still shares and claims memories from a session that only export bookkeeping keyed", () => {
+		// Arrange: a session started here before sessions had keys, holding a
+		// pre-sync memory with an old-style key.
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES ('owner', 'key', 'fp', ?)",
+		).run(createdAt);
+		const sessionId = insertSession(db, { user: "adam", toolVersion: "codemem" });
+		insertPreSyncMemory(db, sessionId, "written here long ago", "legacy:memory_item:5");
+		const memoryId = Number(db.prepare("SELECT id FROM memory_items").pluck().get());
+
+		// Act: key migration gives the session an export-style key.
+		migrateLegacyImportKeys(db);
+
+		// Assert
+		const sessionKey = String(db.prepare("SELECT import_key FROM sessions").pluck().get());
+		expect(sessionKey.startsWith("export-session:")).toBe(true);
+		const input = { canonicalIdentity: remote, initiatingDeviceId: "owner" };
+		expect(countShareableProjectMemories(db, input)).toBe(1);
+		expect(countUnattributedImportedProjectMemories(db, input)).toBe(0);
+		expect(claimLocalOrigin(db, memoryId, "owner")).toBe(true);
+	});
 
 	it("leaves imports without a known author out of the reviewed count and counts them separately", () => {
 		// Arrange

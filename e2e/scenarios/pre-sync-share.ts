@@ -135,14 +135,21 @@ export async function runPreSyncShareScenario(ctx: ScenarioContext): Promise<voi
 	assert(recipient.imported.length === 0, `peer-b received the imported memory: ${JSON.stringify(recipient.imported)}`);
 
 	// Act + Assert: peer-b's own pull from peer-a succeeds and records no rejections.
-	const pull = ctx.compose.exec(
-		"peer-b",
-		[...CLI_PREFIX, "sync", "once", "--db-path", "/data/mem.sqlite", "--peer", ownerId, "--json"],
-		"26-peer-b-pull",
-		180_000,
-		true,
-	);
-	assertStatus(pull.status, 0, `peer-b pull from peer-a failed: ${pull.stdout}`);
+	// peer-b's sync service runs too, so a pull can meet its database lock. Only
+	// that is retried; any other failure, a rejection included, fails at once.
+	for (let attempt = 1; ; attempt += 1) {
+		const pull = ctx.compose.exec(
+			"peer-b",
+			[...CLI_PREFIX, "sync", "once", "--db-path", "/data/mem.sqlite", "--peer", ownerId, "--json"],
+			`26-peer-b-pull-${attempt}`,
+			180_000,
+			true,
+		);
+		if (pull.status === 0) break;
+		const locked = pull.stdout.includes("database is locked") && !pull.stdout.includes("rejected");
+		assert(locked && attempt < 6, `peer-b pull from peer-a failed: ${pull.stdout}`);
+		await new Promise((resolve) => setTimeout(resolve, 5_000));
+	}
 	const rejections = peerState(ctx, "peer-b", "27-peer-b-rejections").rejections;
 	assert(rejections.length === 0, `peer-b recorded inbound rejections: ${JSON.stringify(rejections)}`);
 
