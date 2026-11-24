@@ -4,6 +4,8 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it, vi } from "vitest";
 import {
 	createCoordinatorAccountLinkReceiver,
+	createCoordinatorDeviceRebindReceiver,
+	createCoordinatorDeviceRejoinReceiver,
 	createCoordinatorOwnerEnrollmentReceiver,
 } from "./coordinator-account-link-receiver.js";
 
@@ -132,6 +134,180 @@ describe("account link receiver finishing receipt", () => {
 			// Assert
 			expect(result).toBeInstanceOf(Error);
 			expect(String(result)).not.toContain(coordinatorOrigin);
+		}
+	});
+});
+
+describe("device rejoin browser delivery", () => {
+	it.each(["127.0.0.1", "::1"] as const)(
+		"rejects forged or mismatched %s deliveries without consuming confirmation",
+		async (host) => {
+			const receiver = await createCoordinatorDeviceRejoinReceiver({
+				attemptId: "attempt-a",
+				host,
+			});
+			const url = new URL(receiver.destination);
+			const confirmationHash = "a".repeat(64);
+			const valid = `${url.pathname}${query}&confirmation=${confirmationHash}`;
+			const invalid = [
+				valid.replace("attempt-a", "other-attempt"),
+				valid.replace(proof, `${proof}=`),
+				valid.replace(proof, `${proof.slice(0, -1)}1`),
+				valid.replace(proof, "short"),
+				valid.replace(confirmationHash, "A".repeat(64)),
+				valid.replace(confirmationHash, "g".repeat(64)),
+				valid.replace(confirmationHash, "a".repeat(63)),
+				valid.replace(confirmationHash, "a".repeat(65)),
+				`${url.pathname}${query}`,
+				`${valid}&attempt_id=attempt-a`,
+				`${valid}&completion=${proof}`,
+				`${valid}&confirmation=${confirmationHash}`,
+				`${valid}&extra=1`,
+				`${valid}&refused=blocked`,
+				`${valid}#fragment`,
+				`${receiver.destination}${query}&confirmation=${confirmationHash}`,
+				valid.replace("/complete", "/%63omplete"),
+				`${url.pathname}?attempt_id=attempt-a&refused=unavailable`,
+				`${url.pathname}?attempt_id=other-attempt&refused=blocked`,
+				`${url.pathname}?attempt_id=attempt-a&refused=blocked&extra=1`,
+				`${url.pathname}?attempt_id=attempt-a&refused=blocked&refused=blocked`,
+				`${url.pathname}?attempt_id=attempt-a&attempt_id=attempt-a&refused=blocked`,
+				`${url.pathname}?attempt_id=attempt-a&refused=blocked&completion=${proof}`,
+				`${url.pathname}?attempt_id=attempt-a&refused=blocked&confirmation=${confirmationHash}`,
+				...["", "unknown", "device_already_bound", "current_identity_linked"].map(
+					(reason) => `${url.pathname}?attempt_id=attempt-a&refused=${reason}`,
+				),
+			];
+			try {
+				for (const target of invalid)
+					expect(await request(receiver, target)).toMatch(/^HTTP\/1.1 400 /);
+				for (const authority of [
+					url.hostname,
+					`localhost:${url.port}`,
+					`${url.host}\r\nHost: ${url.host}`,
+					`wrong.test:${url.port}\r\nX-Forwarded-Host: ${url.host}`,
+				])
+					expect(await request(receiver, valid, authority)).toMatch(/^HTTP\/1.1 400 /);
+				for (const headers of [
+					"Origin: https://example.test\r\n",
+					"Purpose: prefetch\r\n",
+					"Sec-Purpose: prefetch\r\n",
+					"Sec-Fetch-Mode: cors\r\n",
+					"Sec-Fetch-Dest: iframe\r\n",
+					"Content-Length: 1\r\n",
+					"Transfer-Encoding: chunked\r\n",
+				])
+					expect(await request(receiver, valid, undefined, "GET", headers)).toMatch(
+						/^HTTP\/1.1 400 /,
+					);
+				for (const method of ["POST", "HEAD", "OPTIONS"])
+					expect(await request(receiver, valid, undefined, method)).toMatch(/^HTTP\/1.1 405 /);
+				const accepted = await request(
+					receiver,
+					valid,
+					undefined,
+					"GET",
+					"Sec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\nContent-Length: 0\r\n",
+				);
+				expect(accepted).toMatch(/^HTTP\/1.1 200 /);
+				expect(await receiver.completion).toEqual({
+					kind: "confirmed",
+					completionSecret: proof,
+					confirmationHash,
+				});
+				expect(await request(receiver, valid)).toMatch(/^HTTP\/1.1 410 /);
+				expect(accepted.toLowerCase()).toContain("cache-control: no-store");
+				expect(accepted.toLowerCase()).toContain("referrer-policy: no-referrer");
+				expect(accepted.toLowerCase()).toContain("content-security-policy:");
+				expect(accepted).not.toMatch(/<script\b|location:|access-control-allow-origin:/i);
+				expect(accepted).not.toContain(proof);
+				expect(accepted).not.toContain(confirmationHash);
+			} finally {
+				await receiver.close();
+			}
+		},
+	);
+});
+
+describe("device rejoin terminal delivery", () => {
+	it("accepts only one of racing confirmation and refusal deliveries", async () => {
+		const receiver = await createCoordinatorDeviceRejoinReceiver({ attemptId: "attempt-a" });
+		const path = new URL(receiver.destination).pathname;
+		const confirmationHash = "a".repeat(64);
+		try {
+			const responses = await Promise.all([
+				request(receiver, `${path}${query}&confirmation=${confirmationHash}`),
+				request(receiver, `${path}?attempt_id=attempt-a&refused=blocked`),
+			]);
+			expect(responses.map((response) => response.slice(9, 12)).sort()).toEqual(["200", "410"]);
+			const expected = responses[0]?.startsWith("HTTP/1.1 200 ")
+				? { kind: "confirmed", completionSecret: proof, confirmationHash }
+				: { kind: "refused", reason: "blocked" };
+			expect(await receiver.completion).toEqual(expected);
+		} finally {
+			await receiver.close();
+		}
+	});
+
+	it.each([
+		"removal_changed",
+		"account_not_linked",
+		"wrong_account",
+		"no_destination",
+		"removal_conflict",
+		"blocked",
+		"daily_limit",
+		"retry",
+	])("delivers terminal refusal %s exactly once", async (reason) => {
+		const receiver = await createCoordinatorDeviceRejoinReceiver({ attemptId: "attempt-a" });
+		const path = new URL(receiver.destination).pathname;
+		const target = `${path}?attempt_id=attempt-a&refused=${reason}`;
+		try {
+			expect(await request(receiver, target)).toMatch(/^HTTP\/1.1 200 /);
+			expect(await receiver.completion).toEqual({ kind: "refused", reason });
+			expect(await request(receiver, target)).toMatch(/^HTTP\/1.1 410 /);
+			expect(await request(receiver, `${path}${query}&confirmation=${"a".repeat(64)}`)).toMatch(
+				/^HTTP\/1.1 410 /,
+			);
+		} finally {
+			await receiver.close();
+		}
+	});
+
+	it.each(["abort", "close"])("%s rejects pending rejoin delivery", async (action) => {
+		const controller = new AbortController();
+		const receiver = await createCoordinatorDeviceRejoinReceiver({
+			attemptId: "attempt-a",
+			signal: controller.signal,
+		});
+		const rejection = expect(receiver.completion).rejects.toThrow("Account-link receiver stopped.");
+		try {
+			if (action === "abort") controller.abort();
+			await receiver.close();
+			await rejection;
+			await expect(request(receiver, "/codemem/auth/complete")).rejects.toThrow();
+		} finally {
+			await receiver.close();
+		}
+	});
+
+	it("preserves rebind refusal allowlisting and confirmation delivery", async () => {
+		const receiver = await createCoordinatorDeviceRebindReceiver({ attemptId: "attempt-a" });
+		const path = new URL(receiver.destination).pathname;
+		try {
+			expect(await request(receiver, `${path}?attempt_id=attempt-a&refused=blocked`)).toMatch(
+				/^HTTP\/1.1 400 /,
+			);
+			expect(await request(receiver, `${path}${query}&confirmation=${"a".repeat(64)}`)).toMatch(
+				/^HTTP\/1.1 200 /,
+			);
+			expect(await receiver.completion).toEqual({
+				kind: "confirmed",
+				completionSecret: proof,
+				confirmationHash: "a".repeat(64),
+			});
+		} finally {
+			await receiver.close();
 		}
 	});
 });

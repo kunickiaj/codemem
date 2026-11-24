@@ -26,6 +26,15 @@ export interface CoordinatorDeviceRebindReceiver {
 	completion: Promise<CoordinatorDeviceRebindDelivery>;
 	close(): Promise<void>;
 }
+/** Browser delivery alone does not authorize lifting a device removal. */
+export type CoordinatorDeviceRejoinDelivery =
+	| ({ kind: "confirmed" } & CoordinatorOwnerEnrollmentCompletion)
+	| { kind: "refused"; reason: (typeof REJOIN_REFUSALS)[number] };
+export interface CoordinatorDeviceRejoinReceiver {
+	destination: string;
+	completion: Promise<CoordinatorDeviceRejoinDelivery>;
+	close(): Promise<void>;
+}
 const REBIND_REFUSALS = [
 	"unavailable",
 	"current_identity_linked",
@@ -35,8 +44,22 @@ const REBIND_REFUSALS = [
 	"daily_limit",
 	"retry",
 ] as const;
-type ReceiverMode = "account_link" | "owner_enroll" | "device_rebind";
-type Delivery = string | CoordinatorOwnerEnrollmentCompletion | CoordinatorDeviceRebindDelivery;
+const REJOIN_REFUSALS = [
+	"removal_changed",
+	"account_not_linked",
+	"wrong_account",
+	"no_destination",
+	"removal_conflict",
+	"blocked",
+	"daily_limit",
+	"retry",
+] as const;
+type ReceiverMode = "account_link" | "owner_enroll" | "device_rebind" | "device_rejoin";
+type Delivery =
+	| string
+	| CoordinatorOwnerEnrollmentCompletion
+	| CoordinatorDeviceRebindDelivery
+	| CoordinatorDeviceRejoinDelivery;
 export interface CoordinatorOwnerEnrollmentReceiver {
 	destination: string;
 	completion: Promise<CoordinatorOwnerEnrollmentCompletion>;
@@ -121,6 +144,7 @@ function readCompletion(
 		return null;
 	const params = new URLSearchParams(raw.slice(PATH.length + 1));
 	if (mode === "device_rebind") return parseRebindParams(params, attemptId);
+	if (mode === "device_rejoin") return parseRejoinParams(params, attemptId);
 	return parseCompletionParams(params, attemptId, mode);
 }
 function parseCompletionParams(
@@ -162,6 +186,25 @@ function parseRebindParams(
 	)
 		return null;
 	return { kind: "refused", reason: reason as (typeof REBIND_REFUSALS)[number] };
+}
+function parseRejoinParams(
+	params: URLSearchParams,
+	attemptId: string,
+): CoordinatorDeviceRejoinDelivery | null {
+	if (!params.has("refused")) {
+		const confirmed = parseCompletionParams(params, attemptId, "owner_enroll");
+		return confirmed && typeof confirmed !== "string" ? { kind: "confirmed", ...confirmed } : null;
+	}
+	const reason = params.get("refused");
+	if (
+		[...params].length !== 2 ||
+		params.getAll("refused").length !== 1 ||
+		params.getAll("attempt_id").length !== 1 ||
+		params.get("attempt_id") !== attemptId ||
+		!REJOIN_REFUSALS.includes(reason as (typeof REJOIN_REFUSALS)[number])
+	)
+		return null;
+	return { kind: "refused", reason: reason as (typeof REJOIN_REFUSALS)[number] };
 }
 function isNavigation(request: IncomingMessage): boolean {
 	const headers = request.headers;
@@ -351,5 +394,20 @@ export async function createCoordinatorDeviceRebindReceiver(
 	return {
 		...receiver,
 		completion: receiver.completion as Promise<CoordinatorDeviceRebindDelivery>,
+	};
+}
+
+/** Internal device-client delivery. The driver must verify and finalize the result. */
+export async function createCoordinatorDeviceRejoinReceiver(
+	options: Omit<CoordinatorAccountLinkReceiverOptions, "coordinatorOrigin" | "intent">,
+): Promise<CoordinatorDeviceRejoinReceiver> {
+	const receiver = await createReceiver(
+		options,
+		"device_rejoin",
+		"Your computer received the result. Return to Codemem.",
+	);
+	return {
+		...receiver,
+		completion: receiver.completion as Promise<CoordinatorDeviceRejoinDelivery>,
 	};
 }
