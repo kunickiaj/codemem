@@ -1007,6 +1007,8 @@ export interface DeviceIdentityInventoryItemV1 {
 }
 
 export interface DeviceIdentityInventoryV1 {
+	/** The Viewer host mounted the Remove and Block actions. */
+	deviceLifecycleActions?: true;
 	version: 1;
 	items: DeviceIdentityInventoryItemV1[];
 	coordinatorEvidence: {

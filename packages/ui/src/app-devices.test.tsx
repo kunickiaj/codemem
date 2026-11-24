@@ -1273,6 +1273,34 @@ describe("Devices app pairing and refresh", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);
 
+	it.each([true, false])(
+		"shows lifecycle controls only when the Viewer advertises them (%s)",
+		async (available) => {
+			const inventory = configuredDeviceInventory();
+			mocks.loadDeviceIdentityInventory.mockResolvedValueOnce({
+				...inventory,
+				...(available ? { deviceLifecycleActions: true } : {}),
+				items: inventory.items.map((item) => ({
+					...item,
+					sources: ["identity_binding", "coordinator_enrollment"],
+				})),
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+			const menu = workMenu();
+			if (available) {
+				expect(menu.textContent).toContain("Remove device…");
+				expect(menu.textContent).toContain("Block device permanently…");
+				expect(menu.textContent).not.toContain("Retire device…");
+			} else {
+				expect(menu.textContent).toContain("Retire device…");
+				expect(menu.textContent).not.toContain("Block device permanently…");
+				expect(menu.textContent).not.toContain("Remove device…");
+			}
+		},
+	);
+
 	it("joins runtime metadata only from the matched paired peer", () => {
 		const workLaptop = document.getElementById("device-identity-card-device-private");
 		const coordinatorTablet = document.getElementById(

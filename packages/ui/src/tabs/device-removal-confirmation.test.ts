@@ -17,7 +17,7 @@ const preview: DeviceRemovalPreview = {
 	coordinator_origin: "https://coordinator.example",
 };
 const body =
-	"Your devices stop syncing with Old laptop. Devices that are online stop within a few minutes. A device that is offline stops when it next connects. Memories already on Old laptop stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other.";
+	"Devices that support Remove stop syncing with Old laptop when they next check the coordinator. Memories already on Old laptop stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other.";
 const invitationAdvice =
 	"To bring Old laptop back, create a new invitation in Sharing and accept it on Old laptop.";
 
@@ -98,7 +98,7 @@ describe("runDeviceRemovalConfirmation", () => {
 		);
 		expect(openSyncConfirmDialog).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				description: `${body} ${invitationAdvice}\n\n2 devices run an older version of codemem and keep syncing with Old laptop until they update: Desk Mac, Travel laptop.`,
+				description: `${body} ${invitationAdvice}\n\nDevices that haven't reported Remove support may still sync with Old laptop: Desk Mac, Travel laptop. Update those devices or unpair Old laptop on each of them.`,
 			}),
 		);
 

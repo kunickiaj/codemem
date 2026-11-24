@@ -3467,6 +3467,171 @@ function watchDeviceCommitStatus() {
 	return { reported, stop: () => observer.disconnect() };
 }
 
+it.each([true, false])(
+	"reports the Remove compatibility result (older peer: %s)",
+	async (older) => {
+		const deviceId = "device-address-fingerprint-secret";
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json({
+					device_id: deviceId,
+					expected_digest: "a".repeat(64),
+					key_id: "b".repeat(64),
+					coordinator_origin: "https://coordinator.example.test",
+					rejoin: "invitation",
+					...(older ? { older_device_names: ["Desk Mac"] } : {}),
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					state: "removed",
+					removal_id: "fixture-removal",
+					removal_seq: 2,
+					evidence: "receipt",
+					local_cleanup: "applied",
+					refresh_pending: false,
+					progress: [
+						{
+							device_id: "older-peer",
+							group_id: "other-group",
+							display_name: "Desk Mac",
+							state: "older",
+						},
+						{
+							device_id: "older-peer",
+							group_id: "fixture-group",
+							display_name: "Desk Mac",
+							state: older ? "older" : "applied",
+						},
+					],
+				}),
+			);
+		vi.stubGlobal("fetch", fetch);
+		const confirm = vi.fn(async () => true);
+		mount(intent(), reconciliation(), {
+			inventory: inventory([
+				inventoryItem(deviceId, "Work Laptop", "configured", {
+					sources: ["identity_binding", "coordinator_enrollment"],
+					validatedFingerprint: "fingerprint",
+				}),
+			]),
+			removalConfirmation: { confirm },
+			enrolledDeviceBlock: true,
+			onCommitted: async () => true,
+		});
+		const menu = openActionMenu(
+			document.getElementById(`device-identity-card-${deviceId}`) ?? document,
+		);
+		const action = [...menu.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+			(button) => button.textContent === "Remove device…",
+		);
+		expect(action?.disabled).toBe(false);
+		const status = watchDeviceCommitStatus();
+		try {
+			await act(() => action?.click());
+			const result = await status.reported;
+			expect(confirm).toHaveBeenCalledOnce();
+			if (older) {
+				expect(confirm).toHaveBeenCalledWith(
+					expect.objectContaining({
+						description: expect.stringContaining("may still sync with Work Laptop: Desk Mac"),
+					}),
+				);
+				expect(result).toContain("Desk Mac. Update those devices or unpair Work Laptop");
+			} else {
+				expect(confirm).not.toHaveBeenCalledWith(
+					expect.objectContaining({
+						description: expect.stringContaining("Desk Mac"),
+					}),
+				);
+				expect(result).toBe("Work Laptop is removed.");
+			}
+			expect(document.getElementById("devices-commit-status")?.dataset.tone).toBe(
+				older ? "warning" : "success",
+			);
+			expect(fetch).toHaveBeenCalledTimes(2);
+		} finally {
+			status.stop();
+			vi.unstubAllGlobals();
+		}
+	},
+);
+
+it.each([
+	["blocked", "Work Laptop is permanently blocked."],
+	[
+		"removed-but-block-refused",
+		"Work Laptop was removed. Block it permanently from Removed devices.",
+	],
+] as const)("uses the enrolled Block control and reports %s", async (outcome, message) => {
+	const deviceId = "device-address-fingerprint-secret";
+	const path = `/api/sync/devices/${deviceId}`;
+	const keyId = "a".repeat(64);
+	const expectedDigest = "b".repeat(64);
+	const fetch = vi
+		.fn()
+		.mockResolvedValueOnce(
+			Response.json({
+				device_id: deviceId,
+				group_id: "fixture-group",
+				key_id: keyId,
+				coordinator_origin: "https://coordinator.example.test",
+				expected_digest: expectedDigest,
+			}),
+		)
+		.mockResolvedValueOnce(Response.json({ coordinator_id: "fixture-coordinator", key_id: keyId }))
+		.mockResolvedValueOnce(Response.json({ state: outcome }));
+	vi.stubGlobal("fetch", fetch);
+	const confirm = vi.fn(async () => {
+		expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+			`${path}/remove/preview`,
+			`${path}/block-enrolled/preview`,
+		]);
+		return true;
+	});
+	mount(intent(), reconciliation(), {
+		inventory: inventory([
+			inventoryItem(deviceId, "Work Laptop", "configured", {
+				sources: ["identity_binding", "coordinator_enrollment"],
+				validatedFingerprint: "fingerprint",
+			}),
+		]),
+		removalConfirmation: { confirm },
+		enrolledDeviceBlock: true,
+		onCommitted: async () => true,
+	});
+	const menu = openActionMenu(
+		document.getElementById(`device-identity-card-${deviceId}`) ?? document,
+	);
+	expect(menu.textContent).not.toContain("Retire device");
+	const action = [...menu.querySelectorAll<HTMLButtonElement>(".feed-menu-item")].find(
+		(button) => button.textContent === "Block device permanently…",
+	);
+	expect(action?.disabled).toBe(false);
+	const status = watchDeviceCommitStatus();
+	try {
+		await act(() => action?.click());
+		expect(await status.reported).toBe(message);
+		expect(confirm).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				confirmLabel: "Block permanently",
+				autoFocusAction: "cancel",
+			}),
+		);
+		expect(fetch.mock.calls.at(-1)?.[0]).toBe(`${path}/block-enrolled`);
+		expect(JSON.parse(fetch.mock.calls.at(-1)?.[1].body)).toMatchObject({
+			group_id: "fixture-group",
+			key_id: keyId,
+			expected_digest: expectedDigest,
+			coordinator_id: "fixture-coordinator",
+		});
+	} finally {
+		status.stop();
+		vi.unstubAllGlobals();
+	}
+});
+
 it("removes a paired device locally from Devices without contacting a coordinator", async () => {
 	const deviceId = "device-address-fingerprint-secret";
 	const f = await createRemovalClickFixture(deviceId, { localOnly: true });

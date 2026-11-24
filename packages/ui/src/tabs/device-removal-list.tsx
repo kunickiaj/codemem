@@ -20,6 +20,12 @@ type Listing =
 	| { state: "ready"; items: RemovedEnrollment[] }
 	| { state: "error" };
 
+const REMOVED_DEVICES_REFRESH = "codemem:removed-devices-refresh";
+
+export function refreshRemovedDevices() {
+	document.dispatchEvent(new Event(REMOVED_DEVICES_REFRESH));
+}
+
 export function RemovedDevicesPanel({ blockApi }: { blockApi?: DeviceBlockApi } = {}) {
 	const [open, setOpen] = useState(false);
 	const [listing, setListing] = useState<Listing>({ state: "loading" });
@@ -29,6 +35,13 @@ export function RemovedDevicesPanel({ blockApi }: { blockApi?: DeviceBlockApi } 
 		heading.current?.focus();
 		setRevision((value) => value + 1);
 	};
+
+	useEffect(() => {
+		if (!open) return;
+		const refresh = () => setRevision((value) => value + 1);
+		document.addEventListener(REMOVED_DEVICES_REFRESH, refresh);
+		return () => document.removeEventListener(REMOVED_DEVICES_REFRESH, refresh);
+	}, [open]);
 
 	useEffect(() => {
 		if (!open) return;

@@ -10,6 +10,7 @@ import { type Context, Hono } from "hono";
 import { originGuard } from "../middleware.js";
 import { hasNoRemovalCoordinator, readLocalRemoval } from "./device-removal-local.js";
 import { lookupViewerRemoval } from "./device-removal-lookup.js";
+import { previewOlderRemovalPeers } from "./device-removal-progress.js";
 
 const LIST_PATH = "/api/sync/devices/removals";
 const DIGEST = /^[a-f0-9]{64}$/u;
@@ -48,7 +49,7 @@ async function listRemovals(c: Context, options: Options) {
 	}
 }
 
-function reviewPreview(
+async function reviewPreview(
 	c: Context,
 	payload: Record<string, unknown> | null,
 	ids: {
@@ -57,6 +58,7 @@ function reviewPreview(
 		localKeyId: string;
 		coordinatorOrigin: string;
 	},
+	progressConfig?: ReturnType<typeof readCoordinatorSyncConfig>,
 ) {
 	if (
 		payload?.state !== "ready" ||
@@ -85,6 +87,10 @@ function reviewPreview(
 	const groupId = enrollments.find(
 		(row) => row.device_id === ids.deviceId && typeof row.group_id === "string",
 	)?.group_id;
+	const compatibility = await previewCompatibility(progressConfig, [
+		ids.localId,
+		...enrollments.map((row) => row.device_id),
+	]);
 	return c.json({
 		device_id: ids.deviceId,
 		rejoin,
@@ -92,7 +98,17 @@ function reviewPreview(
 		key_id,
 		coordinator_origin: ids.coordinatorOrigin,
 		...(groupId ? { group_id: groupId } : {}),
+		...compatibility,
 	});
+}
+
+async function previewCompatibility(
+	config: ReturnType<typeof readCoordinatorSyncConfig> | undefined,
+	excluded: string[],
+) {
+	if (!config) return {};
+	const names = await previewOlderRemovalPeers(config, new Set(excluded));
+	return names?.length ? { older_device_names: names } : {};
 }
 
 interface Options {
@@ -131,6 +147,7 @@ async function previewRemoval(c: Context, options: Options) {
 async function previewConfiguredRemoval(c: Context, options: Options, deviceId: string) {
 	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
 	let config = readConfig();
+	let progressConfig: typeof config | undefined;
 	if (options.getSignedLookupStore) {
 		const evidence = await lookupViewerRemoval(
 			options.getSignedLookupStore(),
@@ -145,6 +162,7 @@ async function previewConfiguredRemoval(c: Context, options: Options, deviceId: 
 				expected_digest: evidence.expectedDigest,
 			});
 		config = evidence.context.config;
+		progressConfig = config;
 	}
 	const { deviceId: localId, keyId: localKeyId } = options.localIdentity();
 	if (localId === deviceId) return c.json({ error: "cannot_remove_this_device" }, 400);
@@ -162,12 +180,17 @@ async function previewConfiguredRemoval(c: Context, options: Options, deviceId: 
 		},
 	);
 	if (status === 200)
-		return reviewPreview(c, payload, {
-			deviceId,
-			localId,
-			localKeyId,
-			coordinatorOrigin: remote.url,
-		});
+		return await reviewPreview(
+			c,
+			payload,
+			{
+				deviceId,
+				localId,
+				localKeyId,
+				coordinatorOrigin: remote.url,
+			},
+			progressConfig,
+		);
 	if (status === 404 && payload?.error === "removal_target_not_enrolled")
 		return c.json({ error: "removal_target_not_enrolled" }, 404);
 	if (status === 404) return c.json({ error: "coordinator_update_required" }, 503);

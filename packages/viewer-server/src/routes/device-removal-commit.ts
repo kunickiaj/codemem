@@ -11,8 +11,8 @@ import { parseJsonObjectBody } from "../helpers.js";
 import { originGuard } from "../middleware.js";
 import { commitLocalRemoval, hasNoRemovalCoordinator } from "./device-removal-local.js";
 import { lookupViewerRemoval, matchesViewerRemovalContext } from "./device-removal-lookup.js";
+import { readRemovalProgress } from "./device-removal-progress.js";
 import { readDeviceRemovalCoordinator } from "./device-removal-review.js";
-import { listAllEnrollments } from "./device-rename.js";
 
 export type DeviceRemovalRefreshHooksFactory = () => {
 	waitForRefresh(): Promise<void>;
@@ -45,33 +45,6 @@ function confirmedRequest(body: Record<string, unknown>, deviceId: string) {
 	)
 		return null;
 	return { deviceIds: [deviceId], expectedDigest, coordinatorOrigin };
-}
-
-async function readRemovalProgress(
-	config: ReturnType<typeof readCoordinatorSyncConfig>,
-	readConfig: typeof readCoordinatorSyncConfig,
-	removalSeq: number,
-) {
-	try {
-		const current = readConfig();
-		if (
-			current.syncCoordinatorUrl !== config.syncCoordinatorUrl ||
-			current.syncCoordinatorAdminSecret !== config.syncCoordinatorAdminSecret
-		)
-			return null;
-		const rows = await listAllEnrollments(config);
-		return rows.map(({ device_id, group_id, display_name, presence_capabilities }) => {
-			const sequence = presence_capabilities?.applied_removal_seq;
-			let state: "older" | "pending" | "applied" = "older";
-			if (typeof sequence === "number" && Number.isSafeInteger(sequence) && sequence >= 0)
-				state = sequence >= removalSeq ? "applied" : "pending";
-			// Last advertised progress still applies when presence has expired.
-			return { device_id, group_id, display_name, state };
-		});
-	} catch {
-		// A failed progress read cannot turn a confirmed removal into an error.
-		return null;
-	}
 }
 
 async function commitRemove(c: Context, options: Options) {
@@ -111,7 +84,10 @@ async function commitRemove(c: Context, options: Options) {
 			evidence: result.evidence.source,
 			local_cleanup: result.localCleanup.state,
 			refresh_pending: result.refreshPending,
-			progress: await readRemovalProgress(config, readConfig, result.evidence.removalSeq),
+			progress: await readRemovalProgress(config, readConfig, {
+				localId: store.deviceId,
+				removalSeq: result.evidence.removalSeq,
+			}),
 		});
 	} catch {
 		return c.json({ error: "device_removal_unavailable" }, 503);

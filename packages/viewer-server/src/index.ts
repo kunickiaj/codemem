@@ -329,6 +329,7 @@ function registerViewerSyncRoutes(
 			runManualCoordinatorRefresh: opts?.runManualCoordinatorRefresh,
 			renameCoordinatorGroup: opts?.renameCoordinatorGroup,
 			lookupCoordinatorDeviceAnswer: opts?.lookupCoordinatorDeviceAnswer,
+			deviceLifecycleActions: Boolean(opts?.createDeviceRemovalRefreshHooks),
 		}),
 	);
 }

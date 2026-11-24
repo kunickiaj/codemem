@@ -247,6 +247,7 @@ export type StoreFactory = () => MemoryStore;
 export type DeviceIdentityCoordinatorEvidenceLoader =
 	() => Promise<DeviceIdentityCoordinatorEvidence>;
 export interface SyncRoutesOptions {
+	deviceLifecycleActions?: boolean;
 	syncReachability?: SyncPeerReachabilityResolver;
 	loadDeviceIdentityCoordinatorEvidence?: DeviceIdentityCoordinatorEvidenceLoader;
 	onRecipientPolicyTeamRenamed?: () => void;
@@ -6989,6 +6990,18 @@ export async function createRecipientInvitation(
 	}
 }
 
+async function readViewerDeviceInventory(
+	store: MemoryStore,
+	readInput: (store: MemoryStore) => Promise<Parameters<typeof listDeviceIdentityInventory>[1]>,
+	options: Pick<SyncRoutesOptions, "deviceLifecycleActions">,
+) {
+	ensureStableStoreIdentityForRead(store);
+	const inventory = listDeviceIdentityInventory(store.db, await readInput(store));
+	return options.deviceLifecycleActions
+		? { ...inventory, deviceLifecycleActions: true }
+		: inventory;
+}
+
 export function syncRoutes(
 	getStore: StoreFactory,
 	getSyncRuntimeStatus?: () => SyncRuntimeStatus | null,
@@ -7030,11 +7043,9 @@ export function syncRoutes(
 		};
 	};
 
-	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) => {
-		const store = getStore();
-		ensureStableStoreIdentityForRead(store);
-		return c.json(listDeviceIdentityInventory(store.db, await localInventoryInput(store)));
-	});
+	app.get("/api/sync/recipient-policy/v1/device-inventory", async (c) =>
+		c.json(await readViewerDeviceInventory(getStore(), localInventoryInput, options)),
+	);
 
 	app.patch("/api/sync/recipient-policy/v1/teams/:teamId", async (c) => {
 		const raw = await readBoundedRequestBytes(c.req.raw, 8_192);

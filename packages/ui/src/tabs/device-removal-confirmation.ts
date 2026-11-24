@@ -7,6 +7,7 @@ export interface DeviceRemovalPreview {
 	expected_digest: string;
 	key_id: string | null;
 	coordinator_origin: string;
+	older_device_names?: string[];
 }
 
 interface LocalRemovalPreview {
@@ -68,13 +69,29 @@ function validatePreview(
 	) {
 		throw new DeviceRemovalPreviewError();
 	}
+	const olderDeviceNames = readOlderDeviceNames(preview.older_device_names);
 	return {
 		device_id: deviceId,
 		rejoin: preview.rejoin as DeviceRemovalPreview["rejoin"],
 		expected_digest: preview.expected_digest,
 		key_id: preview.key_id as string | null,
 		coordinator_origin: preview.coordinator_origin,
+		...(olderDeviceNames.length ? { older_device_names: olderDeviceNames } : {}),
 	};
+}
+
+function readOlderDeviceNames(value: unknown): string[] {
+	if (
+		!Array.isArray(value) ||
+		value.length > 500 ||
+		!value.every((item) => typeof item === "string" && item.trim().length > 0)
+	)
+		return [];
+	return value;
+}
+
+export function removalCompatibilityNotice(name: string, names: readonly string[]) {
+	return `Devices that haven't reported Remove support may still sync with ${name}: ${names.join(", ")}. Update those devices or unpair ${name} on each of them.`;
 }
 
 function rejoinDescription(name: string, rejoin: DeviceRemovalPreview["rejoin"]): string {
@@ -93,9 +110,9 @@ function confirmDescription(
 	rejoin: DeviceRemovalPreview["rejoin"],
 	olderDeviceNames: readonly string[],
 ): string {
-	const body = `Your devices stop syncing with ${name}. Devices that are online stop within a few minutes. A device that is offline stops when it next connects. Memories already on ${name} stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other. ${rejoinDescription(name, rejoin)}`;
+	const body = `Devices that support Remove stop syncing with ${name} when they next check the coordinator. Memories already on ${name} stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other. ${rejoinDescription(name, rejoin)}`;
 	if (olderDeviceNames.length === 0) return body;
-	return `${body}\n\n${olderDeviceNames.length} devices run an older version of codemem and keep syncing with ${name} until they update: ${olderDeviceNames.join(", ")}.`;
+	return `${body}\n\n${removalCompatibilityNotice(name, olderDeviceNames)}`;
 }
 
 const defaultDependencies: DeviceRemovalConfirmationDependencies = {
@@ -131,11 +148,9 @@ export async function runDeviceRemovalConfirmation(
 	}
 	const confirmed = await confirm({
 		title: `Remove ${device.displayName}?`,
-		description: confirmDescription(
-			device.displayName,
-			reviewed.rejoin,
-			device.olderDeviceNames ?? [],
-		),
+		description: confirmDescription(device.displayName, reviewed.rejoin, [
+			...new Set([...(reviewed.older_device_names ?? []), ...(device.olderDeviceNames ?? [])]),
+		]),
 		confirmLabel: "Remove device",
 		cancelLabel: "Keep device",
 		autoFocusAction: "cancel",

@@ -3,7 +3,7 @@ import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceBlockApi } from "./device-block-confirmation";
-import { RemovedDevicesPanel } from "./device-removal-list";
+import { RemovedDevicesPanel, refreshRemovedDevices } from "./device-removal-list";
 
 let mount: HTMLElement;
 
@@ -49,6 +49,38 @@ it("reads the listing on demand and shows each removed enrollment", async () => 
 		]),
 	);
 	expect(mount.querySelector("button")).toBeNull();
+});
+
+it("refreshes an open removed list after the enrolled-device action without moving focus", async () => {
+	const fetch = vi
+		.fn()
+		.mockResolvedValueOnce(Response.json({ items: [] }))
+		.mockResolvedValueOnce(
+			Response.json({
+				items: [
+					{
+						device_id: "laptop",
+						group_id: "group-a",
+						display_name: "Travel laptop",
+						removal_seq: 9,
+						removal_id: "fixture-removal",
+					},
+				],
+			}),
+		);
+	vi.stubGlobal("fetch", fetch);
+	await openPanel();
+	await vi.waitFor(() => expect(mount.textContent).toContain("No removed devices"));
+	const heading = mount.querySelector("summary");
+	heading?.focus();
+	await act(() => refreshRemovedDevices());
+	await vi.waitFor(() =>
+		expect(
+			mount.querySelector('button[aria-label="Block Travel laptop permanently"]'),
+		).not.toBeNull(),
+	);
+	expect(document.activeElement).toBe(heading);
+	expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 it.each([false, true])(
