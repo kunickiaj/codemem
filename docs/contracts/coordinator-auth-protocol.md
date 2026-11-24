@@ -523,6 +523,16 @@ The array binds:
 `confirmation_view` returns the destinations and the non-destination groups
 with their reasons, so the device can show the same list the browser showed.
 
+The status handler is prepared but remains unmounted. Its live projection uses
+`confirmation_view: { destinations: [[group_id, revision]], non_destinations:
+[[group_id, reason]] }`, preserving the stored group order and tuple encoding
+from confirmation. A destination revision is a positive integer or null. Reasons
+are the four values above. The view appears for confirmed and finalized attempts.
+The finalized `receipt` uses the exact finalizer fields and serialization, with
+no additional stored fields forwarded. An authenticated elapsed deadline or
+stored expired state returns only an internal tag to the caller, without reading
+the receipt. Their HTTP behavior and mounting require a separate decision.
+
 #### Browser steps
 
 1. The device opens `/auth/rejoin/start?attempt_id=...&start_code=...`. The
