@@ -2,12 +2,13 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe } from "vitest";
 import type { AuthLinkStatement } from "../../core/src/coordinator-auth-link.js";
+import { registerRejoinBrowserTransactionTests } from "../../core/src/coordinator-device-rejoin-browser-transaction-test-harness.js";
 import { registerRejoinFinalizeTests } from "../../core/src/coordinator-device-rejoin-finalize-test-harness.js";
 import * as proof from "./device-claim-eligibility-fixture.js";
 import { resetNativeAuthStage } from "./native-auth-stage.js";
 
-describe("native D1 rejoin finalize", () => {
-	registerRejoinFinalizeTests(async (use) => {
+describe("native D1 rejoin storage", () => {
+	const withFixture: Parameters<typeof registerRejoinFinalizeTests>[0] = async (use) => {
 		await resetNativeAuthStage("prior_extension");
 		const db = env.COORDINATOR_DB;
 		await applyD1Migrations(db, env.TEST_MIGRATIONS);
@@ -18,5 +19,7 @@ describe("native D1 rejoin finalize", () => {
 			changed: async ({ sql, values }) => (await db.prepare(sql).bind(...values).run()).meta.changes,
 			batch: (statements) => db.batch(statements.map(({ sql, values }) => db.prepare(sql).bind(...values))),
 		});
-	});
+	};
+	registerRejoinFinalizeTests(withFixture);
+	registerRejoinBrowserTransactionTests(withFixture);
 });

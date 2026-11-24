@@ -43,6 +43,7 @@ export async function prepareConfirmation(
 		key?: { publicKey: string; keyId: string };
 		alias?: true;
 		leaveBrowserClaimed?: true;
+		browserStartHash?: string;
 	} = {},
 ) {
 	const key = options.key ?? { publicKey: "fixture-key", keyId };
@@ -85,10 +86,11 @@ export async function prepareConfirmation(
 		pin.authConfigRevision,
 		JSON.stringify([[1, "group-a", key.publicKey, "fingerprint"]]),
 		options.alias ? "[2]" : "[]",
-		"e".repeat(64),
+		options.browserStartHash ?? "e".repeat(64),
 		now - 20,
 		now - 20 + 600_000,
 	);
+	if (options.browserStartHash) return;
 	await seedConsumedBrowser(db);
 	if (options.leaveBrowserClaimed) return;
 	if (options.generation === undefined) {
