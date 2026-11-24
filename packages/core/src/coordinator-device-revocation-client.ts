@@ -35,6 +35,8 @@ export interface CoordinatorRevokeDeviceActionOptions {
 	groupId: string;
 	deviceId: string;
 	expectedDigest?: string;
+	/** Require the active tombstone from this Remove receipt for both phases. */
+	requiredRemovalId?: string;
 	expectedContext?: { coordinatorId: string; keyId: string };
 	timeoutS?: number;
 	/** Called only after validation, immediately before dispatching the commit request. */
@@ -156,6 +158,7 @@ function prepare(opts: CoordinatorRevokeDeviceActionOptions) {
 		groupId,
 		deviceId,
 		expectedDigest,
+		requiredRemovalId,
 		timeoutS = 3,
 		onDispatch,
 	} = opts;
@@ -166,6 +169,7 @@ function prepare(opts: CoordinatorRevokeDeviceActionOptions) {
 		!isAuthControllerId(groupId) ||
 		!isAuthControllerId(deviceId) ||
 		(expectedDigest !== undefined && !isHash(expectedDigest)) ||
+		(requiredRemovalId !== undefined && !isAuthControllerId(requiredRemovalId)) ||
 		(expectedContext && expectedDigest === undefined) ||
 		!Number.isFinite(timeoutS) ||
 		timeoutS < 1 ||
@@ -177,6 +181,7 @@ function prepare(opts: CoordinatorRevokeDeviceActionOptions) {
 	const fallback = commit ? "revocation_outcome_unknown" : "revocation_unavailable";
 	const body: Record<string, unknown> = { group_id: groupId, device_id: deviceId };
 	if (commit) body.expected_digest = expectedDigest;
+	if (requiredRemovalId !== undefined) body.required_removal_id = requiredRemovalId;
 	return {
 		origin,
 		adminSecret,

@@ -1,7 +1,9 @@
 import {
 	BetterSqliteCoordinatorStore,
+	coordinatorRevokeDeviceAction,
 	createCoordinatorApp,
 	fingerprintPublicKey,
+	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
 	verifiedLocalKeyId,
 } from "@codemem/core";
@@ -109,6 +111,7 @@ async function coordinatorStore() {
 		storeFactory: () => store,
 		runtime: { adminSecret: () => adminSecret, now: () => "2026-11-21T00:00:00.000Z" },
 		requestVerifier: () => false,
+		deviceRevocation: { coordinatorId: "synthetic-viewer-removal" },
 	});
 	return { app, store };
 }
@@ -120,7 +123,31 @@ type FixtureOptions = {
 	progressUnavailable?: boolean;
 	sharedRefresh?: boolean;
 	localOnly?: boolean;
+	blockFailure?: "preflight" | "commit";
+	blockCompatibility?: "rejects_selector" | "ignores_selector" | "unavailable";
 };
+
+const blockPreviewPath = "/v1/admin/devices/revoke-preview";
+const blockCommitPath = "/v1/admin/devices/revoke";
+const blockRequest = { remoteUrl: origin, adminSecret, groupId, deviceId };
+const refusedBlockPath = { preflight: blockPreviewPath, commit: blockCommitPath };
+
+async function fixtureBlockCompatibility(
+	app: Awaited<ReturnType<typeof coordinatorStore>>["app"],
+	request: Request,
+	compatibility: FixtureOptions["blockCompatibility"],
+) {
+	if (!compatibility || new URL(request.url).pathname !== blockPreviewPath)
+		return app.request(request);
+	const body = await request.clone().json<Record<string, unknown>>();
+	if (!Object.hasOwn(body, "required_removal_id")) return app.request(request);
+	if (compatibility === "rejects_selector")
+		return Response.json({ error: "revocation_invalid_input" }, { status: 400 });
+	if (compatibility === "unavailable")
+		return Response.json({ error: "revocation_unavailable" }, { status: 503 });
+	delete body.required_removal_id;
+	return app.request(new Request(request, { body: JSON.stringify(body) }));
+}
 
 async function fixture(options: FixtureOptions = {}) {
 	const local = localStore();
@@ -181,13 +208,13 @@ async function fixture(options: FixtureOptions = {}) {
 		expect(url.origin).toBe(origin);
 		expect(new Headers(init.headers).get("X-Codemem-Coordinator-Admin")).toBe(adminSecret);
 		remote.push(url.pathname);
-		if (url.pathname === progressPaths[0] && options.progressUnavailable)
-			return new Response(null, { status: 503 });
-		if (url.pathname === remoteCommit && options.missingCommitRoute)
-			return new Response(null, { status: 404 });
-		if (url.pathname === remoteCommit && options.loseRequest)
-			throw new Error("synthetic lost request");
-		const response = await app.request(new Request(url, init));
+		const refusal = fixtureRemoteRefusal(url.pathname, options);
+		if (refusal) return refusal;
+		const response = await fixtureBlockCompatibility(
+			app,
+			new Request(url, init),
+			options.blockCompatibility,
+		);
 		if (url.pathname === remoteCommit && options.loseReply) {
 			expect(response.status).toBe(200);
 			throw new Error("synthetic lost response");
@@ -198,6 +225,137 @@ async function fixture(options: FixtureOptions = {}) {
 	vi.stubGlobal("window", { setTimeout, clearTimeout });
 	return { ...local, ...runtime, store, config, viewer, browser, remote, shared };
 }
+
+function fixtureRemoteRefusal(path: string, options: FixtureOptions) {
+	if (options.blockFailure !== undefined && path === refusedBlockPath[options.blockFailure])
+		return Response.json({ error: "revocation_target_unavailable" }, { status: 409 });
+	if (path === progressPaths[0] && options.progressUnavailable)
+		return new Response(null, { status: 503 });
+	if (path !== remoteCommit) return null;
+	if (options.missingCommitRoute) return new Response(null, { status: 404 });
+	if (options.loseRequest) throw new Error("synthetic lost request");
+	return null;
+}
+
+async function supportsPinnedBlockFixture() {
+	try {
+		// A new removal ID cannot name an existing tombstone in this fixture.
+		// A capable coordinator recognizes the selector and refuses the nonmatching target.
+		await coordinatorRevokeDeviceAction({
+			...blockRequest,
+			requiredRemovalId: crypto.randomUUID(),
+		});
+		return false;
+	} catch (error) {
+		return (
+			error instanceof RemoteCoordinatorRequestError &&
+			error.status === 409 &&
+			error.code === "revocation_target_unavailable"
+		);
+	}
+}
+
+// Exercise the existing transports without mounting a production Block action.
+async function runCompoundBlockFixture() {
+	const preflight = await coordinatorRevokeDeviceAction(blockRequest);
+	if (preflight.state !== "ready") throw new Error("Expected enrollment Block preview");
+	if (!(await supportsPinnedBlockFixture())) throw new Error("pinned_block_support_unconfirmed");
+	const removal = await confirmAndCommitDeviceRemoval(target, { confirm: async () => true });
+	if (!removal || "mode" in removal) throw new Error("Expected verified coordinator removal");
+	const pinned = { ...blockRequest, requiredRemovalId: removal.removal_id };
+	const preview = await coordinatorRevokeDeviceAction(pinned);
+	if (
+		preview.state !== "ready" ||
+		preview.coordinator_id !== preflight.coordinator_id ||
+		preview.key_id !== preflight.key_id
+	)
+		throw new Error("Block evidence does not match preflight");
+	return coordinatorRevokeDeviceAction({
+		...pinned,
+		expectedDigest: preview.expected_digest,
+		expectedContext: { coordinatorId: preview.coordinator_id, keyId: preview.key_id },
+	});
+}
+
+it("blocks an enrolled device using a new preview pinned to the verified Remove receipt", async () => {
+	const f = await fixture();
+	await expect(runCompoundBlockFixture()).resolves.toMatchObject({
+		state: "revoked",
+		group_id: groupId,
+		device_id: deviceId,
+	});
+	expect(f.remote).toEqual([
+		blockPreviewPath,
+		blockPreviewPath,
+		remotePreview,
+		remotePreview,
+		remoteCommit,
+		...progressPaths,
+		blockPreviewPath,
+		blockCommitPath,
+	]);
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+});
+
+it.each(["rejects_selector", "ignores_selector", "unavailable"] as const)(
+	"does not request Viewer Remove when Block capability cannot be confirmed (%s)",
+	async (blockCompatibility) => {
+		const f = await fixture({ blockCompatibility });
+		const before = f.localSnapshot();
+		const enrollment = await f.store.getEnrollment(groupId, deviceId, true);
+		expect(enrollment).not.toBeNull();
+		await expect(runCompoundBlockFixture()).rejects.toThrow(/^pinned_block_support_unconfirmed$/);
+		expect(f.remote).toEqual([blockPreviewPath, blockPreviewPath]);
+		expect(f.browser).toEqual([]);
+		expect(f.localSnapshot()).toEqual(before);
+		expect(await f.store.getEnrollment(groupId, deviceId, true)).toEqual(enrollment);
+		expect((await f.store.listDeviceRemovals({ deviceId })).items).toEqual([]);
+		expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toEqual([]);
+	},
+);
+
+it("leaves the enrollment and pairing intact if Block preflight refuses", async () => {
+	const f = await fixture({ blockFailure: "preflight" });
+	const before = f.localSnapshot();
+	await expect(runCompoundBlockFixture()).rejects.toMatchObject({
+		status: 409,
+		code: "revocation_target_unavailable",
+	});
+	expect(f.remote).toEqual([blockPreviewPath]);
+	expect(f.browser).toEqual([]);
+	expect(f.localSnapshot()).toEqual(before);
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).not.toBeNull();
+	expect((await f.store.listDeviceRemovals({ deviceId })).items).toEqual([]);
+});
+
+it("keeps the verified removal available in Devices after an explicit Block commit refusal", async () => {
+	const options: FixtureOptions = { blockFailure: "commit" };
+	const f = await fixture(options);
+	await expect(runCompoundBlockFixture()).rejects.toMatchObject({
+		status: 409,
+		code: "revocation_target_unavailable",
+	});
+	expect(f.remote.slice(-2)).toEqual([blockPreviewPath, blockCommitPath]);
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toEqual([]);
+	const listing = await f.viewer.request("/api/sync/devices/removals");
+	expect(listing.status).toBe(200);
+	expect(await listing.json()).toMatchObject({
+		items: [{ group_id: groupId, device_id: deviceId }],
+	});
+	options.blockFailure = undefined;
+	const retry = await coordinatorRevokeDeviceAction(blockRequest);
+	if (retry.state !== "ready") throw new Error("Expected removed-device Block preview");
+	await expect(
+		coordinatorRevokeDeviceAction({
+			...blockRequest,
+			expectedDigest: retry.expected_digest,
+		}),
+	).resolves.toMatchObject({ state: "revoked" });
+	expect(f.remote.filter((path) => path === remoteCommit)).toHaveLength(1);
+});
 
 it.each(["coordinator configured", "pairing changed"] as const)(
 	"refuses a local-only confirmation when the %s after preview",
