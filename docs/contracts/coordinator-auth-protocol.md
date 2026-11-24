@@ -433,6 +433,14 @@ at capacity.
 A start also deletes that device's attempts that expired or failed more than
 24 hours ago, so the table stays small.
 
+The prepared start handler charges the anonymous budget by trusted client
+address before reading the body. It charges the device-and-address budget
+only after verifying the device's proof. The write checks freshness and the
+removal evidence again before admitting the attempt. At capacity, a verified
+device with 20 protected attempts receives `409 retry` without changing any
+attempt. The handler is not mounted until the duplicate reply and retention
+cleanup are defined.
+
 The key alone can therefore not reserve the ceremony. Someone who holds a copy
 of the key and no access to the Google account cannot finish a rejoin. They can
 slow the owner's rejoin only by starting attempts from many addresses faster

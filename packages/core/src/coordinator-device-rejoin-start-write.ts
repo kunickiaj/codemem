@@ -4,7 +4,10 @@ import {
 	readVerifiedRejoinStartEvidence,
 	START_EVIDENCE_SQL,
 } from "./coordinator-device-rejoin-start-evidence.js";
-import type { DeviceRejoinStartInput } from "./coordinator-device-rejoin-start-input.js";
+import {
+	type DeviceRejoinStartInput,
+	isFreshDeviceRejoinStart,
+} from "./coordinator-device-rejoin-start-input.js";
 
 const ATTEMPT_TTL_MS = 600_000;
 const MAX_ACTIVE_ATTEMPTS = 20;
@@ -19,6 +22,41 @@ type StartConfig = {
 };
 
 type Evidence = NonNullable<Awaited<ReturnType<typeof readVerifiedRejoinStartEvidence>>>;
+type Backend = Pick<AuthLinkBackend, "first" | "batch">;
+
+type StartResult =
+	| {
+			kind: "started";
+			body: {
+				attempt_id: string;
+				expires_at_ms: number;
+				coordinator_id: string;
+				origin: string;
+				issuer: string;
+				auth_config_revision: string;
+				identity_id: string;
+				binding_id: string;
+				removal_digest: string;
+			};
+	  }
+	| { kind: "unavailable" | "duplicate_start" | "retry" };
+
+type PreparedStart = {
+	deviceId: string;
+	insert(now: number): Promise<StartResult>;
+};
+
+const EVIDENCE_MATCH = `e.binding_id = ? AND e.identity_id = ?
+ AND e.own_tombstones_json = ? AND e.alias_removal_seqs_json = ?`;
+
+function evidencePins(evidence: Evidence) {
+	return [
+		evidence.bindingId,
+		evidence.identityId,
+		JSON.stringify(evidence.ownTombstones),
+		JSON.stringify(evidence.aliasRemovalSeqs),
+	];
+}
 
 function insertStatement(
 	config: StartConfig,
@@ -37,8 +75,7 @@ INSERT INTO ${ATTEMPTS} (coordinator_id, attempt_id, origin, device_id, public_k
 SELECT ?, ?, ?, ?, ?, ?, ?, e.identity_id, e.binding_id, ?, ?, ?,
  e.own_tombstones_json, e.alias_removal_seqs_json, ?, ?, ?, ?
 FROM evidence e
-WHERE e.binding_id = ? AND e.identity_id = ?
- AND e.own_tombstones_json = ? AND e.alias_removal_seqs_json = ?
+WHERE ${EVIDENCE_MATCH}
  AND NOT EXISTS (SELECT 1 FROM ${ATTEMPTS} a WHERE a.coordinator_id = ? AND a.attempt_id = ?)
  AND (SELECT count(*) FROM ${ATTEMPTS} a WHERE a.coordinator_id = ? AND a.device_id = ?
   AND a.state IN ${LIVE_STATES}
@@ -61,10 +98,7 @@ WHERE e.binding_id = ? AND e.identity_id = ?
 			input.loopbackRedirect,
 			now,
 			now + ATTEMPT_TTL_MS,
-			evidence.bindingId,
-			evidence.identityId,
-			JSON.stringify(evidence.ownTombstones),
-			JSON.stringify(evidence.aliasRemovalSeqs),
+			...evidencePins(evidence),
 			coordinatorId,
 			input.attemptId,
 			coordinatorId,
@@ -103,23 +137,35 @@ WHERE coordinator_id = ? AND attempt_id = (
 	};
 }
 
-/**
- * Admits an attempt with atomic quota eviction and a full evidence recheck.
- * Replay is checked before any write. A zero-row INSERT rolls back eviction too.
- * Retention cleanup and route/rate-limit integration remain separate. A false
- * result is internal and does not choose a wire error.
- */
-export async function insertVerifiedRejoinStartAttempt(
-	backend: Pick<AuthLinkBackend, "first" | "batch">,
+/** Verifies possession before the caller spends a device-specific rate budget. */
+export async function prepareVerifiedRejoinStart(
+	backend: Backend,
 	config: StartConfig,
 	input: DeviceRejoinStartInput,
 	now: number,
-): Promise<boolean> {
+): Promise<PreparedStart | null> {
 	const trusted = { ...config };
 	const request = { ...input };
-	if (now > Number.MAX_SAFE_INTEGER - ATTEMPT_TTL_MS) return false;
 	const evidence = await readVerifiedRejoinStartEvidence(backend, trusted, request, now);
-	if (!evidence) return false;
+	if (!evidence) return null;
+	return {
+		deviceId: evidence.deviceId,
+		insert: (time) => writeVerifiedStart(backend, trusted, request, evidence, time),
+	};
+}
+
+async function writeVerifiedStart(
+	backend: Backend,
+	trusted: StartConfig,
+	request: DeviceRejoinStartInput,
+	evidence: Evidence,
+	now: number,
+): Promise<StartResult> {
+	if (
+		!isFreshDeviceRejoinStart(request.timestampMs, now) ||
+		now > Number.MAX_SAFE_INTEGER - ATTEMPT_TTL_MS
+	)
+		return { kind: "unavailable" };
 	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(request.publicKey));
 	const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
 		byte.toString(16).padStart(2, "0"),
@@ -128,15 +174,69 @@ export async function insertVerifiedRejoinStartAttempt(
 		sql: `NOT EXISTS (SELECT 1 FROM ${ATTEMPTS} WHERE coordinator_id = ? AND attempt_id = ?)`,
 		values: [trusted.coordinatorId, request.attemptId],
 	});
-	return (
-		(await writeGuarded(
-			backend,
-			[replayGuard],
-			[
-				evictionStatement(trusted.coordinatorId, evidence.deviceId, now),
-				insertStatement(trusted, request, evidence, fingerprint, now),
-				changedRows(),
-			],
-		)) === "committed"
+	const result = await writeGuarded(
+		backend,
+		[replayGuard],
+		[
+			evictionStatement(trusted.coordinatorId, evidence.deviceId, now),
+			insertStatement(trusted, request, evidence, fingerprint, now),
+			changedRows(),
+		],
 	);
+	if (result === "changed") return { kind: "duplicate_start" };
+	if (result === "unmatched") return diagnoseQuotaRefusal(backend, trusted, evidence, now);
+	return {
+		kind: "started",
+		body: {
+			attempt_id: request.attemptId,
+			expires_at_ms: now + ATTEMPT_TTL_MS,
+			coordinator_id: trusted.coordinatorId,
+			origin: trusted.origin,
+			issuer: trusted.issuer,
+			auth_config_revision: trusted.authConfigRevision,
+			identity_id: evidence.identityId,
+			binding_id: evidence.bindingId,
+			removal_digest: evidence.removalDigest,
+		},
+	};
+}
+
+async function diagnoseQuotaRefusal(
+	backend: Backend,
+	config: StartConfig,
+	evidence: Evidence,
+	now: number,
+): Promise<StartResult> {
+	const blocked = await backend.first<{ full: number }>({
+		sql: `WITH evidence AS MATERIALIZED (${START_EVIDENCE_SQL})
+SELECT 1 AS full FROM evidence e
+WHERE ${EVIDENCE_MATCH} AND (SELECT count(*) FROM ${ATTEMPTS} a
+ WHERE a.coordinator_id = ? AND a.device_id = ?
+ AND a.state IN ('oidc_verified', 'confirmed') AND a.expires_at_ms > ?) >= ?`,
+		values: [
+			evidence.deviceId,
+			evidence.keyId,
+			config.coordinatorId,
+			...evidencePins(evidence),
+			config.coordinatorId,
+			evidence.deviceId,
+			now,
+			MAX_ACTIVE_ATTEMPTS,
+		],
+	});
+	return { kind: blocked?.full === 1 ? "retry" : "unavailable" };
+}
+
+/**
+ * The existing internal writer. Quota eviction and the exact evidence recheck
+ * run in one batch. No failed insert can leave an eviction behind.
+ */
+export async function insertVerifiedRejoinStartAttempt(
+	backend: Backend,
+	config: StartConfig,
+	input: DeviceRejoinStartInput,
+	now: number,
+): Promise<boolean> {
+	const prepared = await prepareVerifiedRejoinStart(backend, config, input, now);
+	return (await prepared?.insert(now))?.kind === "started";
 }
