@@ -473,7 +473,19 @@ of a canonical encoding of:
   `fingerprint`
 - the `removal_seq` of every other active tombstone that has the `key_id`.
 
-At confirmation it stores, and hashes into `confirmation`:
+The coordinator pins the live link after OIDC verification. At confirmation
+it rechecks that link and the destinations in the same statement that marks
+the attempt confirmed. The `confirmation` value is the lowercase hex SHA-256
+of the UTF-8 JSON array shown below. Both group arrays are ordered by group ID
+using binary comparison.
+
+```json
+["codemem-device-rejoin-confirmation-v1", "attempt_id", "removal_digest",
+ ["link_id", "link_authority_kind", 1],
+ [["destination_group_id", null]], [["other_group_id", "archived"]]]
+```
+
+The array binds:
 
 - `attempt_id` and `removal_digest`
 - the account link's `link_id`, authority kind (`controller_attestation`,
