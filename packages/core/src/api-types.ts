@@ -831,6 +831,11 @@ export interface ApiProjectInvitePreviewProject {
 	project_id: string;
 	display_name: string;
 	existing_memory_count: number;
+	/**
+	 * Memories in this Project that the share leaves on this device because
+	 * import didn't record who wrote them. Present only when there are some.
+	 */
+	unattributed_import_count?: number;
 }
 
 export interface ApiProjectInvitePreviewResponse {
@@ -842,6 +847,8 @@ export interface ApiProjectInvitePreviewResponse {
 	};
 	projects: ApiProjectInvitePreviewProject[];
 	existing_memory_count: number;
+	/** Total of the per-Project counts. Present only when there are some. */
+	unattributed_import_count?: number;
 	future_memories_shared: true;
 	history_policy: "existing_and_future";
 	reviewed_project_set_digest: string;

@@ -35,7 +35,13 @@ export interface SharedFixturePeers {
  */
 export async function shareFixtureProjectsWithPeerB(
 	ctx: ScenarioContext,
-	options: { seedBeforeIdentity?: boolean } = {},
+	options: {
+		seedBeforeIdentity?: boolean;
+		/** Extra owner setup after seeding, before sync is set up. */
+		afterSeed?: () => void;
+		/** Imported memories without a known author the review must report as left out. */
+		expectedUnattributedImports?: number;
+	} = {},
 ): Promise<SharedFixturePeers> {
 	ctx.compose.down("00-compose-down-pre", true);
 	ctx.compose.up(["coordinator", "peer-a", "peer-b"], "01-compose-up");
@@ -46,6 +52,7 @@ export async function shareFixtureProjectsWithPeerB(
 	}
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-a", "fixture-small", "03-seed-peer-a-small");
 	seedPeer(ctx.compose, ctx.artifactsDir, "peer-b", "empty", "04-seed-peer-b-empty");
+	options.afterSeed?.();
 
 	writePeerConfig(
 		ctx,
@@ -137,6 +144,7 @@ export async function shareFixtureProjectsWithPeerB(
 		recipientDeviceId: peerBIdentity.device_id,
 		projects: fixtureProjects,
 		expectedExistingMemories: 16,
+		expectedUnattributedImports: options.expectedUnattributedImports,
 		teammateName: "Teammate",
 		deviceName: "Teammate Mac",
 		artifactPrefix: "14-share",

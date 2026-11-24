@@ -1,6 +1,34 @@
 import type { Database } from "./db.js";
 
 /**
+ * Session keys `memory import` assigns to every session it creates. Sessions
+ * started on a device get a random key instead. A local session from before
+ * sessions had keys can also hold an `export-session:` key, so a match means
+ * "maybe imported", and callers treat it as imported.
+ */
+const IMPORTED_SESSION_KEY_PREFIXES = ["export-session:", "export|session|"] as const;
+
+/** Whether `memory import` created the session with this key. */
+export function isImportedSessionKey(sessionImportKey: string | null | undefined): boolean {
+	if (typeof sessionImportKey !== "string") return false;
+	return IMPORTED_SESSION_KEY_PREFIXES.some((prefix) => sessionImportKey.startsWith(prefix));
+}
+
+/** Whether a memory's origin names no device: "local", empty or missing. */
+export function hasUnattributedOrigin(originDeviceId: string | null | undefined): boolean {
+	const origin = typeof originDeviceId === "string" ? originDeviceId.trim() : "";
+	return origin === "" || origin === "local";
+}
+
+const IMPORTED_SESSION_SQL = IMPORTED_SESSION_KEY_PREFIXES.map(
+	() => "substr(s.import_key, 1, ?) = ?",
+).join(" OR ");
+const IMPORTED_SESSION_PARAMS = IMPORTED_SESSION_KEY_PREFIXES.flatMap((prefix) => [
+	prefix.length,
+	prefix,
+]);
+
+/**
  * Records this device as the origin of a memory it wrote before it had a sync
  * identity.
  *
@@ -17,10 +45,7 @@ import type { Database } from "./db.js";
  *
  * Rows brought in by `memory import` are left alone too, because an export from
  * another device carries the same "local" origin and nothing shows who wrote it.
- * Import keys every session it creates as `export-session:...` or
- * `export|session|...`, while sessions started here get a random key. A local
- * session from before sessions had keys can also hold an `export-session:` key,
- * and its memories stay unclaimed as well.
+ * See `isImportedSessionKey`.
  * Call it inside the write transaction that moves the row. Returns whether the
  * row changed; a missing or "local" device ID changes nothing.
  */
@@ -39,10 +64,9 @@ export function claimLocalOrigin(db: Database, memoryId: number, deviceId: strin
 					WHERE s.id = memory_items.session_id
 					  AND (COALESCE(TRIM(s.user), '') = 'sync'
 					       OR COALESCE(TRIM(s.tool_version), '') = 'sync_replication'
-					       OR substr(s.import_key, 1, 15) = 'export-session:'
-					       OR substr(s.import_key, 1, 15) = 'export|session|')
+					       OR ${IMPORTED_SESSION_SQL})
 				   )`,
 			)
-			.run(owner, memoryId).changes > 0
+			.run(owner, memoryId, ...IMPORTED_SESSION_PARAMS).changes > 0
 	);
 }

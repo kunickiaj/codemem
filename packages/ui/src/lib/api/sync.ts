@@ -677,6 +677,7 @@ export interface ProjectInvitePreviewProject {
 	project_id: string;
 	display_name: string;
 	existing_memory_count: number;
+	unattributed_import_count?: number;
 }
 
 export interface ProjectInvitePreview {
@@ -688,6 +689,7 @@ export interface ProjectInvitePreview {
 	};
 	projects: ProjectInvitePreviewProject[];
 	existing_memory_count: number;
+	unattributed_import_count?: number;
 	future_memories_shared: true;
 	history_policy: "existing_and_future";
 	reviewed_project_set_digest: string;

@@ -777,6 +777,14 @@ No other projects will be shared.
 
 Project access uses canonical project identity, not a display name. Selecting `codemem` does not share a similarly named or sibling project in the same Space. **Only me** keeps a memory local, even when its project is shared.
 
+Memories brought in with `codemem memory import` that don't name the device that wrote them aren't shared. An export of memories written before sync was set up looks the same whichever device wrote it, so codemem can't tell whether you or someone else wrote them, and it won't present them as yours. They stay on this device, and the review says how many it leaves out:
+
+```text
+3 imported memories with no known author won't be shared. They stay on this device.
+```
+
+Imported memories that name their author keep that author: ones written on this device are shared like any other memory, and ones written elsewhere are not shared from this device.
+
 The invite is single-use, expires, and is limited to the reviewed Projects. It names one Identity, not a Team, and the recipient cannot add Projects during acceptance. Existing and future selected-Project memories arrive after setup; unrelated Projects remain absent.
 
 Changing who receives a Project works only on a device that holds the coordinator admin secret, because that device applies the change to the coordinator. That covers **Projects → Update sharing**, the Projects of a person or Team in **Sharing**, and moving a Project out of local-only in **Projects**. On other devices, these controls are turned off and say which device makes changes, and the Viewer refuses such a save. You can still keep a Project local-only on any device.

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import type { CoordinatorScope, CoordinatorScopeMembership } from "./coordinator-store-contract.js";
 import { type Database, fromJson } from "./db.js";
-import { claimLocalOrigin } from "./local-origin-claim.js";
+import {
+	claimLocalOrigin,
+	hasUnattributedOrigin,
+	isImportedSessionKey,
+} from "./local-origin-claim.js";
 import { assertLegacyShareGrantAllowed } from "./recipient-policy-reconciler.js";
 import { serializeRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import {
@@ -110,6 +114,7 @@ interface MemoryCandidateRow {
 	session_user: string | null;
 	session_tool_version: string | null;
 	session_metadata_json: string | null;
+	session_import_key: string | null;
 }
 
 function clean(value: unknown): string | null {
@@ -159,7 +164,7 @@ function memoryCandidates(db: Database): MemoryCandidateRow[] {
 		.prepare(`SELECT mi.id, mi.import_key, mi.visibility, mi.scope_id, mi.origin_device_id,
 			COALESCE(mi.project, s.project) AS project, s.cwd, s.git_remote, s.git_branch,
 			mi.workspace_id, s.user AS session_user, s.tool_version AS session_tool_version,
-			s.metadata_json AS session_metadata_json
+			s.metadata_json AS session_metadata_json, s.import_key AS session_import_key
 		 FROM memory_items mi
 		 JOIN sessions s ON s.id = mi.session_id
 		 WHERE mi.active = 1`)
@@ -180,7 +185,21 @@ function shareableForManagedProject(row: MemoryCandidateRow): boolean {
 	return !visibility.startsWith("private") && !visibility.startsWith("personal");
 }
 
+/**
+ * A memory `memory import` brought in without naming a device as its author.
+ * Another device's pre-sync export looks exactly like this device's own
+ * pre-sync memories, so these are never shared as this device's: sharing would
+ * either record this device as their author or send an origin recipients can't
+ * check. They stay where they are on this device.
+ */
+function isUnattributedImport(row: MemoryCandidateRow): boolean {
+	return (
+		hasUnattributedOrigin(row.origin_device_id) && isImportedSessionKey(row.session_import_key)
+	);
+}
+
 function isInitiatingDeviceMemory(row: MemoryCandidateRow, initiatingDeviceId: string): boolean {
+	if (isUnattributedImport(row)) return false;
 	const originDeviceId = clean(row.origin_device_id);
 	if (!originDeviceId || originDeviceId === initiatingDeviceId) return true;
 	if (originDeviceId !== "local") return false;
@@ -207,16 +226,30 @@ function memoryCandidateIdentity(
 	}).value;
 }
 
+function projectShareCandidates(db: Database, canonicalIdentity: string): MemoryCandidateRow[] {
+	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
+	return memoryCandidates(db).filter(
+		(row) =>
+			shareableForManagedProject(row) &&
+			memoryCandidateIdentity(row, repositoryIdentities) === canonicalIdentity,
+	);
+}
+
 export function countShareableProjectMemories(
 	db: Database,
 	input: { canonicalIdentity: string; initiatingDeviceId: string },
 ): number {
-	const repositoryIdentities = repositoryIdentitiesByWorkspace(db);
-	return memoryCandidates(db).filter((row) => {
-		if (!shareableForManagedProject(row)) return false;
-		if (!isInitiatingDeviceMemory(row, input.initiatingDeviceId)) return false;
-		return memoryCandidateIdentity(row, repositoryIdentities) === input.canonicalIdentity;
-	}).length;
+	return projectShareCandidates(db, input.canonicalIdentity).filter((row) =>
+		isInitiatingDeviceMemory(row, input.initiatingDeviceId),
+	).length;
+}
+
+/** Project memories a share leaves on this device because import didn't record who wrote them. */
+export function countUnattributedImportedProjectMemories(
+	db: Database,
+	input: { canonicalIdentity: string },
+): number {
+	return projectShareCandidates(db, input.canonicalIdentity).filter(isUnattributedImport).length;
 }
 
 function effectiveInviterDevices(

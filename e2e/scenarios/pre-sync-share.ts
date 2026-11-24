@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { assert, assertStatus } from "../lib/assert.js";
 import { CLI_PREFIX, parseJson } from "../lib/coordinator.js";
 import { shareFixtureProjectsWithPeerB } from "../lib/fixture-share.js";
@@ -6,6 +8,7 @@ import { waitFor } from "../lib/wait.js";
 
 interface PeerState {
 	origins: Array<{ origin: string; visibility: string; count: number }>;
+	imported: Array<{ scope_id: string; origin: string }>;
 	rejections: Array<{ reason: string; scope_id: string | null; count: number }>;
 }
 
@@ -30,12 +33,73 @@ function fixtureSummary(ctx: ScenarioContext, artifact: string): FixtureSummary 
 	return parseJson<FixtureSummary>(stdout, artifact);
 }
 
+/**
+ * Another device's export of a memory it wrote before it had a sync identity,
+ * in the first fixture Project. Nothing in it says which device wrote it.
+ */
+function importOtherDevicesPreSyncMemory(ctx: ScenarioContext): void {
+	const exportPath = join(ctx.artifactsDir, "other-device-export.json");
+	writeFileSync(
+		exportPath,
+		JSON.stringify({
+			version: "1.0",
+			exported_at: "2026-01-01T00:00:00Z",
+			export_metadata: {
+				tool_version: "codemem",
+				projects: ["e2e-project-alpha"],
+				total_memories: 1,
+				total_sessions: 1,
+				include_inactive: false,
+				filters: {},
+			},
+			sessions: [
+				{
+					id: 1,
+					project: "e2e-project-alpha",
+					cwd: "/workspace/e2e-fixture-0",
+					started_at: "2026-01-01T00:00:00Z",
+					user: "other",
+				},
+			],
+			memory_items: [
+				{
+					id: 1,
+					session_id: 1,
+					project: "e2e-project-alpha",
+					kind: "discovery",
+					title: "imported pre-sync memory",
+					body_text: "Synthetic memory another device wrote before it had a sync identity.",
+					visibility: "shared",
+					workspace_kind: "shared",
+					workspace_id: "shared:alpha",
+					origin_device_id: "local",
+					import_key: "e2e-other-device-pre-sync-0001",
+				},
+			],
+			user_prompts: [],
+			session_summaries: [],
+		}),
+	);
+	ctx.compose.copyToContainer(exportPath, "peer-a:/tmp/other-device-export.json", "03-copy-other-device-export");
+	const imported = ctx.compose.exec(
+		"peer-a",
+		[...CLI_PREFIX, "memory", "import", "/tmp/other-device-export.json", "--db-path", "/data/mem.sqlite"],
+		"03-import-other-device-export",
+		120_000,
+	);
+	assertStatus(imported.status, 0, "memory import of the other device's export failed on peer-a");
+}
+
 export async function runPreSyncShareScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Pre-sync share: seed peer-a with fixture-small before it has a sync identity, so its memories keep origin 'local', share both fixture Projects with peer-b, and assert peer-b receives only the shared memories, peer-a records its own device as their origin, and peer-b's pulls from peer-a succeed without inbound rejections (codemem-yfla4).",
+		"Pre-sync share: seed peer-a with fixture-small before it has a sync identity, so its memories keep origin 'local', share both fixture Projects with peer-b, and assert peer-b receives only the shared memories, peer-a records its own device as their origin, peer-b's pulls from peer-a succeed without inbound rejections, and another device's imported pre-sync memory is left out of the share and stays on peer-a unchanged (codemem-yfla4).",
 	);
-	const { peerAIdentity } = await shareFixtureProjectsWithPeerB(ctx, { seedBeforeIdentity: true });
+	const { peerAIdentity } = await shareFixtureProjectsWithPeerB(ctx, {
+		seedBeforeIdentity: true,
+		afterSeed: () => importOtherDevicesPreSyncMemory(ctx),
+		expectedUnattributedImports: 1,
+	});
 	const ownerId = peerAIdentity.device_id;
 
 	// Assert: peer-b receives exactly the shared fixture memories.
@@ -61,6 +125,14 @@ export async function runPreSyncShareScenario(ctx: ScenarioContext): Promise<voi
 		recipient.origins.length === 1 && recipient.origins[0]?.origin === ownerId,
 		`peer-b stored origins: ${JSON.stringify(recipient.origins)}`,
 	);
+
+	// Assert: the imported memory without a known author stayed on peer-a as it
+	// was, and never reached peer-b.
+	assert(
+		JSON.stringify(owner.imported) === JSON.stringify([{ scope_id: "local-default", origin: "local" }]),
+		`peer-a imported memory: ${JSON.stringify(owner.imported)}`,
+	);
+	assert(recipient.imported.length === 0, `peer-b received the imported memory: ${JSON.stringify(recipient.imported)}`);
 
 	// Act + Assert: peer-b's own pull from peer-a succeeds and records no rejections.
 	const pull = ctx.compose.exec(

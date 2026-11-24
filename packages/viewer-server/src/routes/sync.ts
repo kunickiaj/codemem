@@ -89,6 +89,7 @@ import {
 	coordinatorUnarchiveGroupAction,
 	coordinatorUpdateScopeAction,
 	countShareableProjectMemories,
+	countUnattributedImportedProjectMemories,
 	createCoordinatorReciprocalApproval,
 	DEFAULT_TIME_WINDOW_S,
 	decodeInvitePayload,
@@ -1406,7 +1407,17 @@ function projectInvitePlan(
 	};
 }
 
-function projectInvitePreview(plan: ShareOperationPlan) {
+/** Reported only when a share leaves imported memories without a known author behind. */
+function unattributedImportCount(count: number): { unattributed_import_count?: number } {
+	return count > 0 ? { unattributed_import_count: count } : {};
+}
+
+function projectInvitePreview(store: MemoryStore, plan: ShareOperationPlan) {
+	const unattributedImports = plan.projects.map((project) =>
+		countUnattributedImportedProjectMemories(store.db, {
+			canonicalIdentity: project.canonicalIdentity,
+		}),
+	);
 	return {
 		operation_id: plan.operationId,
 		teammate: {
@@ -1414,15 +1425,17 @@ function projectInvitePreview(plan: ShareOperationPlan) {
 			match: plan.personKind,
 			...(plan.personKind === "existing" ? { person_id: plan.personId } : {}),
 		},
-		projects: plan.projects.map((project) => ({
+		projects: plan.projects.map((project, index) => ({
 			project_id: project.canonicalIdentity,
 			display_name: project.displayName,
 			existing_memory_count: project.existingMemoryCount,
+			...unattributedImportCount(unattributedImports[index] ?? 0),
 		})),
 		existing_memory_count: plan.projects.reduce(
 			(total, project) => total + project.existingMemoryCount,
 			0,
 		),
+		...unattributedImportCount(unattributedImports.reduce((total, count) => total + count, 0)),
 		future_memories_shared: true as const,
 		history_policy: plan.historyPolicy,
 		reviewed_project_set_digest: plan.reviewedProjectSetDigest,
@@ -7739,7 +7752,7 @@ export function syncRoutes(
 				new Date(createdAt).getTime() + PROJECT_INVITE_TTL_HOURS * 3600 * 1000,
 			).toISOString();
 			const { plan } = projectInvitePlan(store, body, createdAt, inviteExpiresAt);
-			return c.json(projectInvitePreview(plan));
+			return c.json(projectInvitePreview(store, plan));
 		} catch (error) {
 			return c.json(
 				{ error: error instanceof Error ? error.message : "project_invite_invalid" },
@@ -7828,7 +7841,7 @@ export function syncRoutes(
 			});
 			return c.json({
 				ok: true,
-				...projectInvitePreview(persistedPlan),
+				...projectInvitePreview(store, persistedPlan),
 				invite: {
 					link,
 					encoded,
