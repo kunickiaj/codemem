@@ -10,7 +10,7 @@ import {
 	generateKeypair,
 	listDeviceIdentityInventory,
 	loadPublicKey,
-	type MemoryStore,
+	MemoryStore,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
 	verifiedLocalKeyId,
@@ -27,7 +27,10 @@ import {
 } from "../../../core/src/retired-device-aliases.js";
 import { verifySignature } from "../../../core/src/sync-auth.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
-import { confirmAndCommitDeviceRemoval } from "../../../ui/src/tabs/device-removal-confirmation";
+import {
+	confirmAndCommitDeviceRemoval,
+	type DeviceRemovalConfirmationDependencies,
+} from "../../../ui/src/tabs/device-removal-confirmation";
 import { createApp } from "../index.js";
 import { deviceRemovalCommitRoutes } from "./device-removal-commit.js";
 import { deviceRemovalReviewRoutes } from "./device-removal-review.js";
@@ -68,6 +71,37 @@ function fixtureConfig(text: string) {
 	vi.stubEnv("CODEMEM_CONFIG", path);
 	return path;
 }
+
+it.each([true, false])(
+	"advertises device lifecycle actions only on the mounted Viewer (%s)",
+	async (mounted) => {
+		const configPath = fixtureConfig("{}");
+		vi.stubEnv("CODEMEM_KEYS_DIR", join(configPath, "..", "keys"));
+		vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+		const store = new MemoryStore(":memory:");
+		cleanups.push(() => store.close());
+		const app = createApp({
+			storeFactory: () => store,
+			loadDeviceIdentityCoordinatorEvidence: async () => ({
+				availability: "available",
+				safeErrorCode: null,
+				enrollments: [],
+			}),
+			...(mounted
+				? {
+						createDeviceRemovalRefreshHooks: () => ({
+							waitForRefresh: async () => {},
+							refresh: async () => {},
+						}),
+					}
+				: {}),
+		});
+		const response = await app.request("/api/sync/recipient-policy/v1/device-inventory");
+		expect(response.status).toBe(200);
+		const inventory = await response.json<Record<string, unknown>>();
+		expect(inventory.deviceLifecycleActions).toBe(mounted ? true : undefined);
+	},
+);
 
 function localStore() {
 	const db = new Database(":memory:");
@@ -328,26 +362,54 @@ it("never falls back to Remove when a mounted Viewer cannot obtain signed eviden
 	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
 });
 
-it("uses the mounted routes to remove an enrolled peer after signed lookup", async () => {
-	const f = await fixture({ mounted: true });
-	await expect(
-		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
-	).resolves.toMatchObject({
-		state: "removed",
-		evidence: "receipt",
-		local_cleanup: "applied",
-	});
-	expect(f.remote).toEqual([
-		"/v1/peers/revocations",
-		remotePreview,
-		"/v1/peers/revocations",
-		remotePreview,
-		remoteCommit,
-		...progressPaths,
-	]);
-	expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
-	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
-});
+it.each([true, false])(
+	"reports compatibility on the mounted Remove path (older device: %s)",
+	async (older) => {
+		const f = await fixture({ mounted: true });
+		await f.store.renameDevice(groupId, "older", "Desk Mac");
+		if (!older) {
+			await f.store.upsertPresence({
+				groupId,
+				deviceId: "older",
+				addresses: [],
+				ttlS: 120,
+				capabilities: { applied_removal_seq: 0 },
+			});
+		}
+		const confirm = vi.fn<DeviceRemovalConfirmationDependencies["confirm"]>(async () => true);
+		await expect(confirmAndCommitDeviceRemoval(target, { confirm })).resolves.toMatchObject({
+			state: "removed",
+			evidence: "receipt",
+			local_cleanup: "applied",
+			progress: expect.arrayContaining([
+				{
+					device_id: "older",
+					group_id: groupId,
+					display_name: "Desk Mac",
+					state: older ? "older" : "pending",
+				},
+			]),
+		});
+		const description = confirm.mock.calls[0]?.[0].description;
+		if (older) {
+			expect(description).toContain("may still sync with Travel laptop: Desk Mac");
+			expect(description).toContain("Update those devices or unpair Travel laptop");
+		} else {
+			expect(description).not.toContain("Desk Mac");
+		}
+		expect(f.remote).toEqual([
+			"/v1/peers/revocations",
+			remotePreview,
+			...progressPaths,
+			"/v1/peers/revocations",
+			remotePreview,
+			remoteCommit,
+			...progressPaths,
+		]);
+		expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
+		expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	},
+);
 
 it("does not remove an enrolled disabled peer from a Viewer without admin credentials", async () => {
 	const f = await fixture({ mounted: true });
@@ -485,6 +547,7 @@ it("mounts compound Block through the foreground Viewer and uses the verified re
 	expect(f.remote).toEqual([
 		"/v1/peers/revocations",
 		remotePreview,
+		...progressPaths,
 		"/v1/peers/revocations",
 		blockPreviewPath,
 		"/v1/peers/revocations",

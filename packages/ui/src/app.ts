@@ -55,7 +55,7 @@ import {
 	beginStandaloneCoordinatorAdminStatusRefresh,
 	refreshCoordinatorAdminStatusForGeneration,
 } from "./tabs/coordinator-admin/data/status-refresh";
-import { mountRemovedDevices } from "./tabs/device-removal-list";
+import { mountRemovedDevices, refreshRemovedDevices } from "./tabs/device-removal-list";
 import {
 	type DeviceAvailabilityInput,
 	type DevicePeerRuntimeMetadataInput,
@@ -711,6 +711,7 @@ function loadDevicesData(
 }
 
 async function refreshDevicesAfterCommit(): Promise<boolean> {
+	refreshRemovedDevices();
 	const [devicesRefreshed, sharingRefreshed] = await Promise.all([
 		loadDevicesData(),
 		loadRecipientPolicySharingData(),
@@ -718,11 +719,20 @@ async function refreshDevicesAfterCommit(): Promise<boolean> {
 	return devicesRefreshed && sharingRefreshed;
 }
 
-function deviceRendererActions(): Pick<
+function deviceRendererActions(
+	lifecycleAvailable = false,
+): Pick<
 	DevicesRendererOptions,
-	"onCommitted" | "onNavigate" | "onRetry" | "localDeviceId" | "onSyncDevice"
+	| "onCommitted"
+	| "onNavigate"
+	| "onRetry"
+	| "localDeviceId"
+	| "onSyncDevice"
+	| "removalConfirmation"
+	| "enrolledDeviceBlock"
 > {
 	return {
+		...(lifecycleAvailable ? { removalConfirmation: {}, enrolledDeviceBlock: true } : {}),
 		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
@@ -745,7 +755,7 @@ function renderPreviousDevicesAfterRefreshFailure(mount: HTMLElement): void {
 		lastDevicesData.projects,
 		lastDevicesData.availability,
 		{
-			...deviceRendererActions(),
+			...deviceRendererActions(lastDevicesData.inventory?.deviceLifecycleActions === true),
 			coordinatorEnrollmentIssueCount: lastDevicesData.coordinatorEnrollmentIssueCount,
 			inventory: lastDevicesData.inventory,
 			inventoryUnavailable: lastDevicesData.inventoryUnavailable,
@@ -790,7 +800,7 @@ async function runLoadDevicesData(
 		}
 		state.deviceIdentityInventoryLoadError = inventoryResult.unavailable;
 		mountDevices(mount, intent, reconciliation, projects, availability, {
-			...deviceRendererActions(),
+			...deviceRendererActions(inventoryResult.inventory?.deviceLifecycleActions === true),
 			inventory: inventoryResult.inventory,
 			inventoryUnavailable: inventoryResult.unavailable,
 			coordinatorEnrollmentIssueCount,

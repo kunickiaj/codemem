@@ -15,6 +15,17 @@ export interface DeviceBlockApi {
 	confirm?: typeof openSyncConfirmDialog;
 }
 
+export function permanentBlockConfirmation(name: string) {
+	return {
+		title: `Block ${name} permanently?`,
+		description: `This cannot be undone. Use it for a lost, stolen, or compromised machine. Every device stops syncing with ${name}, including devices paired with it directly. Devices that are online stop within a few minutes, and an offline device stops when it next connects. No invitation brings ${name} back. That machine can only return if it is set up again as a new device. Memories already on ${name} stay there, because blocking cannot erase them. Your other devices and their memories are not affected.`,
+		confirmLabel: "Block permanently",
+		cancelLabel: "Keep device",
+		autoFocusAction: "cancel",
+		tone: "danger",
+	} as const;
+}
+
 /** The removed-device path never calls Remove or reuses an enrollment preview. */
 export async function confirmAndBlockRemovedDevice(target: Target, api: DeviceBlockApi) {
 	const { groupId, deviceId, displayName: name } = target;
@@ -27,14 +38,7 @@ export async function confirmAndBlockRemovedDevice(target: Target, api: DeviceBl
 	)
 		throw new Error("Block preview does not match the selected device");
 	const reviewed = { ...evidence };
-	const approved = await confirm({
-		title: `Block ${name} permanently?`,
-		description: `This cannot be undone. Use it for a lost, stolen, or compromised machine. Every device stops syncing with ${name}, including devices paired with it directly. Devices that are online stop within a few minutes, and an offline device stops when it next connects. No invitation brings ${name} back. That machine can only return if it is set up again as a new device. Memories already on ${name} stay there, because blocking cannot erase them. Your other devices and their memories are not affected.`,
-		confirmLabel: "Block permanently",
-		cancelLabel: "Keep device",
-		autoFocusAction: "cancel",
-		tone: "danger",
-	});
+	const approved = await confirm(permanentBlockConfirmation(name));
 	if (approved !== true) return null;
 	const result = await commit(reviewed);
 	if (

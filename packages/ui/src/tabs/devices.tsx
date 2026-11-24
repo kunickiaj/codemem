@@ -35,10 +35,13 @@ import {
 import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
+import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
 import {
 	confirmAndCommitDeviceRemoval,
 	DeviceRemovalCommitError,
 	type DeviceRemovalConfirmationDependencies,
+	type DeviceRemovalResult,
+	removalCompatibilityNotice,
 } from "./device-removal-confirmation";
 import { RenameDevicePanel } from "./device-rename";
 import { type DeviceRetirementApi, runDeviceRetirement } from "./device-retire";
@@ -101,7 +104,8 @@ export interface DevicesRendererOptions {
 	commitBindings?: typeof commitDeviceIdentityBindings;
 	renameDevice?: typeof renameKnownDevice;
 	retirementApi?: DeviceRetirementApi;
-	/** Explicit fixture mount only until the Remove lifecycle acceptance gate passes. */
+	enrolledDeviceBlock?: boolean;
+	/** Present when the Viewer host has mounted Remove. */
 	removalConfirmation?: Partial<DeviceRemovalConfirmationDependencies>;
 	coordinatorEnrollmentIssueCount?: number;
 }
@@ -1427,15 +1431,56 @@ function deviceRemovalMenuActions(
 	)
 		return retire;
 	if (retire.length === 0 && !inventoryItem.sources.includes("sync_peer")) return retire;
+	const block: MenuAction[] =
+		options.enrolledDeviceBlock && retire.length > 0
+			? [
+					{
+						ariaLabel: `Block ${device.displayName} permanently`,
+						disabled: identityMutationsBlocked(options),
+						label: "Block device permanently…",
+						onSelect: () => void blockFromMenu(device, options, confirmation.confirm),
+					},
+				]
+			: [];
 	return [
-		...retire,
+		...(options.enrolledDeviceBlock ? [] : retire),
 		{
 			ariaLabel: `Remove ${device.displayName}`,
 			disabled: identityMutationsBlocked(options),
 			label: "Remove device…",
 			onSelect: () => void removeFromMenu(device, options, confirmation),
 		},
+		...block,
 	];
+}
+
+async function blockFromMenu(
+	device: RetireTarget,
+	options: DevicesRendererOptions,
+	confirm: DeviceRemovalConfirmationDependencies["confirm"] | undefined,
+) {
+	const name = device.displayName;
+	try {
+		const outcome = await confirmAndBlockEnrolledDevice(device, confirm);
+		if (outcome === null) return;
+		const messages = {
+			blocked: `${name} is permanently blocked.`,
+			"removed-but-block-refused": `${name} was removed. Block it permanently from Removed devices.`,
+			"removed-block-unknown": `${name} was removed. Refresh Removed devices to check whether it was blocked.`,
+			unknown: `Could not confirm the outcome for ${name}. Refresh Devices before trying again.`,
+			refused: `Could not block ${name}. No removal was confirmed.`,
+		};
+		await Promise.resolve()
+			.then(() => options.onCommitted?.())
+			.catch(() => {});
+		setDeviceCommitStatus(messages[outcome], outcome === "blocked" ? "success" : "warning");
+		document.getElementById("devices-heading")?.focus();
+	} catch {
+		setDeviceCommitStatus(
+			`Could not review ${name} for Block. Refresh Devices before trying again.`,
+			"warning",
+		);
+	}
 }
 
 async function removeFromMenu(
@@ -1470,13 +1515,36 @@ async function removeFromMenu(
 		document.getElementById("devices-heading")?.focus();
 		return;
 	}
-	const message = `${device.displayName} is removed.`;
-	if (refreshed === false || result.local_cleanup === "deferred" || result.refresh_pending) {
-		setDeviceCommitStatus(`${message} Refresh Devices to check local sync status.`, "warning");
-	} else {
-		setDeviceCommitStatus(message, "success");
-	}
+	const status = coordinatorRemovalStatus(device.displayName, result, refreshed === false);
+	setDeviceCommitStatus(status.message, status.tone);
 	document.getElementById("devices-heading")?.focus();
+}
+
+function coordinatorRemovalStatus(
+	name: string,
+	result: DeviceRemovalResult,
+	refreshFailed: boolean,
+) {
+	const messages = [`${name} is removed.`];
+	const supportedIds = new Set(
+		result.progress?.filter((peer) => peer.state !== "older").map((peer) => peer.device_id),
+	);
+	const older = [
+		...new Set(
+			result.progress
+				?.filter((peer) => peer.state === "older" && !supportedIds.has(peer.device_id))
+				.map((peer) => peer.display_name?.trim() || peer.device_id),
+		),
+	];
+	if (older.length) messages.push(removalCompatibilityNotice(name, older));
+	if (result.progress === null)
+		messages.push("Could not check whether other devices have stopped syncing.");
+	if (refreshFailed || result.local_cleanup === "deferred" || result.refresh_pending)
+		messages.push("Refresh Devices to check local sync status.");
+	return {
+		message: messages.join(" "),
+		tone: messages.length > 1 ? "warning" : "success",
+	} as const;
 }
 
 function deviceRetireMenuAction(
