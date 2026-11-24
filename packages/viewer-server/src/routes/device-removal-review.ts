@@ -9,6 +9,7 @@ import {
 import { type Context, Hono } from "hono";
 import { originGuard } from "../middleware.js";
 import { hasNoRemovalCoordinator, readLocalRemoval } from "./device-removal-local.js";
+import { lookupViewerRemoval } from "./device-removal-lookup.js";
 
 const LIST_PATH = "/api/sync/devices/removals";
 const DIGEST = /^[a-f0-9]{64}$/u;
@@ -91,6 +92,7 @@ interface Options {
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	localIdentity: () => { deviceId: string; keyId: string | null };
 	getLocalStore?: () => Pick<MemoryStore, "db" | "deviceId">;
+	getSignedLookupStore?: () => Pick<MemoryStore, "db" | "dbPath" | "deviceId">;
 }
 
 function previewLocalRemoval(c: Context, options: Options, deviceId: string) {
@@ -113,38 +115,57 @@ async function previewRemoval(c: Context, options: Options) {
 	try {
 		const local = previewLocalRemoval(c, options, deviceId);
 		if (local) return local;
-		const { deviceId: localId, keyId: localKeyId } = options.localIdentity();
-		if (localId === deviceId) return c.json({ error: "cannot_remove_this_device" }, 400);
-		if (!localKeyId) return c.json({ error: "local_identity_unverified" }, 409);
-		const remote = readDeviceRemovalCoordinator(
-			options.readCoordinatorConfig ?? readCoordinatorSyncConfig,
-		);
-		if (!remote) return c.json({ error: "coordinator_admin_required" }, 409);
-		const [status, payload] = await requestJson(
-			"POST",
-			`${remote.url}/v1/admin/devices/removal-preview`,
-			{
-				body: { device_ids: [deviceId] },
-				headers: { "X-Codemem-Coordinator-Admin": remote.adminSecret },
-				timeoutS: remote.timeoutS,
-				maxResponseBytes: 128_000,
-			},
-		);
-		if (status === 200)
-			return reviewPreview(c, payload, {
-				deviceId,
-				localId,
-				localKeyId,
-				coordinatorOrigin: remote.url,
-			});
-		if (status === 404 && payload?.error === "removal_target_not_enrolled")
-			return c.json({ error: "removal_target_not_enrolled" }, 404);
-		if (status === 404) return c.json({ error: "coordinator_update_required" }, 503);
-		if (status === 409) return c.json({ error: "removal_target_unavailable" }, 409);
-		return coordinatorReadFailure(c, null);
+		return await previewConfiguredRemoval(c, options, deviceId);
 	} catch (error) {
 		return coordinatorReadFailure(c, error);
 	}
+}
+
+async function previewConfiguredRemoval(c: Context, options: Options, deviceId: string) {
+	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
+	let config = readConfig();
+	if (options.getSignedLookupStore) {
+		const evidence = await lookupViewerRemoval(
+			options.getSignedLookupStore(),
+			deviceId,
+			readConfig,
+		);
+		if ("error" in evidence) return c.json({ error: evidence.error }, evidence.status);
+		if (evidence.mode !== "coordinator")
+			return c.json({
+				mode: evidence.mode,
+				device_id: deviceId,
+				expected_digest: evidence.expectedDigest,
+			});
+		config = evidence.context.config;
+	}
+	const { deviceId: localId, keyId: localKeyId } = options.localIdentity();
+	if (localId === deviceId) return c.json({ error: "cannot_remove_this_device" }, 400);
+	if (!localKeyId) return c.json({ error: "local_identity_unverified" }, 409);
+	const remote = readDeviceRemovalCoordinator(() => config);
+	if (!remote) return c.json({ error: "coordinator_admin_required" }, 409);
+	const [status, payload] = await requestJson(
+		"POST",
+		`${remote.url}/v1/admin/devices/removal-preview`,
+		{
+			body: { device_ids: [deviceId] },
+			headers: { "X-Codemem-Coordinator-Admin": remote.adminSecret },
+			timeoutS: remote.timeoutS,
+			maxResponseBytes: 128_000,
+		},
+	);
+	if (status === 200)
+		return reviewPreview(c, payload, {
+			deviceId,
+			localId,
+			localKeyId,
+			coordinatorOrigin: remote.url,
+		});
+	if (status === 404 && payload?.error === "removal_target_not_enrolled")
+		return c.json({ error: "removal_target_not_enrolled" }, 404);
+	if (status === 404) return c.json({ error: "coordinator_update_required" }, 503);
+	if (status === 409) return c.json({ error: "removal_target_unavailable" }, 409);
+	return coordinatorReadFailure(c, null);
 }
 
 /** Read-only coordinator evidence. No removal or local pairing mutation is mounted here. */

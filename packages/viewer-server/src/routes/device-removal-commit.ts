@@ -2,12 +2,15 @@ import {
 	commitViewerDeviceRemoval,
 	type MemoryStore,
 	readCoordinatorSyncConfig,
+	removePairingState,
+	removeRevokedPeers,
 	verifiedLocalKeyId,
 } from "@codemem/core";
 import { type Context, Hono } from "hono";
 import { parseJsonObjectBody } from "../helpers.js";
 import { originGuard } from "../middleware.js";
 import { commitLocalRemoval, hasNoRemovalCoordinator } from "./device-removal-local.js";
+import { lookupViewerRemoval, matchesViewerRemovalContext } from "./device-removal-lookup.js";
 import { readDeviceRemovalCoordinator } from "./device-removal-review.js";
 import { listAllEnrollments } from "./device-rename.js";
 
@@ -20,6 +23,7 @@ interface Options {
 	getStore(): Pick<MemoryStore, "db" | "deviceId">;
 	readCoordinatorConfig?: typeof readCoordinatorSyncConfig;
 	createDeviceRemovalRefreshHooks: DeviceRemovalRefreshHooksFactory;
+	getSignedLookupStore?: () => Pick<MemoryStore, "db" | "dbPath" | "deviceId">;
 }
 
 const REFUSAL_STATUS = {
@@ -76,12 +80,15 @@ async function commitRemove(c: Context, options: Options) {
 		const body = await parseJsonObjectBody(c, 8_192);
 		if (body instanceof Response) return body;
 		const deviceId = c.req.param("device_id") ?? "";
-		if (body.mode === "local") return commitLocal(c, options, body, deviceId);
+		if (body.mode === "local" || body.mode === "already_removed")
+			return await commitLocal(c, options, body, deviceId, body.mode);
 		const config = { ...readConfig() };
 		if (!readDeviceRemovalCoordinator(() => config))
 			return c.json({ error: "coordinator_admin_required" }, 409);
 		const input = confirmedRequest(body, deviceId);
 		if (!input) return c.json({ error: "invalid_input" }, 400);
+		const refusal = await checkCoordinatorRemoval(c, options, deviceId, input.coordinatorOrigin);
+		if (refusal) return refusal;
 		const store = options.getStore();
 		const result = await commitViewerDeviceRemoval(input, {
 			db: store.db,
@@ -111,11 +118,27 @@ async function commitRemove(c: Context, options: Options) {
 	}
 }
 
-function commitLocal(
+async function checkCoordinatorRemoval(
+	c: Context,
+	options: Options,
+	deviceId: string,
+	origin: string,
+) {
+	if (!options.getSignedLookupStore) return null;
+	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
+	const evidence = await lookupViewerRemoval(options.getSignedLookupStore(), deviceId, readConfig);
+	if ("error" in evidence) return c.json({ error: evidence.error }, evidence.status);
+	if (evidence.mode !== "coordinator" || evidence.context.config.syncCoordinatorUrl !== origin)
+		return c.json({ error: "removal_preview_stale" }, 409);
+	return null;
+}
+
+async function commitLocal(
 	c: Context,
 	options: Options,
 	body: Record<string, unknown>,
 	deviceId: string,
+	mode: "local" | "already_removed",
 ) {
 	const expectedDigest = body.expected_digest;
 	if (
@@ -125,13 +148,48 @@ function commitLocal(
 	)
 		return c.json({ error: "invalid_input" }, 400);
 	const readConfig = options.readCoordinatorConfig;
-	if (!hasNoRemovalCoordinator(readConfig)) return c.json({ error: "removal_preview_stale" }, 409);
-	const applied = commitLocalRemoval(options.getStore(), { deviceId, expectedDigest }, readConfig);
+	const applied =
+		mode === "local" && hasNoRemovalCoordinator(readConfig)
+			? commitLocalRemoval(options.getStore(), { deviceId, expectedDigest }, readConfig)
+			: await cleanupFromSignedLookup(options, { deviceId, expectedDigest, mode });
 	if (!applied) return c.json({ error: "removal_preview_stale" }, 409);
-	return c.json({ state: "removed", mode: "local" });
+	return c.json({ state: "removed", mode });
 }
 
-/** Unmounted until Devices and the real refresh lifecycle can use the complete flow. */
+async function cleanupFromSignedLookup(
+	options: Options,
+	input: { deviceId: string; expectedDigest: string; mode: "local" | "already_removed" },
+) {
+	const store = options.getSignedLookupStore?.();
+	if (!store) return false;
+	const { deviceId, expectedDigest, mode } = input;
+	const readConfig = options.readCoordinatorConfig ?? readCoordinatorSyncConfig;
+	const hooks = options.createDeviceRemovalRefreshHooks();
+	try {
+		await hooks.waitForRefresh();
+		const evidence = await lookupViewerRemoval(store, deviceId, readConfig);
+		if ("error" in evidence || evidence.mode !== mode || evidence.expectedDigest !== expectedDigest)
+			return false;
+		return store.db
+			.transaction(() => {
+				if (!matchesViewerRemovalContext(store, deviceId, readConfig, evidence.contextDigest))
+					return false;
+				if (evidence.revoked) removeRevokedPeers(store.db, store.deviceId, [deviceId]);
+				else
+					removePairingState(store.db, {
+						localDeviceId: store.deviceId,
+						deviceIds: [deviceId],
+						reason: "local",
+					});
+				return true;
+			})
+			.immediate();
+	} finally {
+		// Release the reserved slot even if lookup or cleanup did not complete.
+		await hooks.refresh().catch(() => {});
+	}
+}
+
 export function deviceRemovalCommitRoutes(options: Options) {
 	return new Hono().post("/api/sync/devices/:device_id/remove", originGuard(), (c) => {
 		c.header("Cache-Control", "no-store");

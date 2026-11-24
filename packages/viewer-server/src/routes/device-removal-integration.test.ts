@@ -3,9 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	BetterSqliteCoordinatorStore,
+	canonicalKeyId,
 	coordinatorRevokeDeviceAction,
 	createCoordinatorApp,
 	fingerprintPublicKey,
+	generateKeypair,
+	listDeviceIdentityInventory,
+	loadPublicKey,
+	type MemoryStore,
 	RemoteCoordinatorRequestError,
 	readCoordinatorSyncConfig,
 	verifiedLocalKeyId,
@@ -16,8 +21,14 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createServeCoordinatorRefresh } from "../../../cli/src/commands/serve-coordinator-refresh.js";
 import { ensureMemoryRetirementDeliverySchema } from "../../../core/src/memory-retirement-delivery-schema.js";
 import { ensurePeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
+import {
+	listRetiredDeviceAliases,
+	retiredAliasApplies,
+} from "../../../core/src/retired-device-aliases.js";
+import { verifySignature } from "../../../core/src/sync-auth.js";
 import { initTestSchema } from "../../../core/src/test-utils.js";
 import { confirmAndCommitDeviceRemoval } from "../../../ui/src/tabs/device-removal-confirmation";
+import { createApp } from "../index.js";
 import { deviceRemovalCommitRoutes } from "./device-removal-commit.js";
 import { deviceRemovalReviewRoutes } from "./device-removal-review.js";
 
@@ -123,7 +134,8 @@ async function coordinatorStore() {
 	const app = createCoordinatorApp({
 		storeFactory: () => store,
 		runtime: { adminSecret: () => adminSecret, now: () => "2026-11-21T00:00:00.000Z" },
-		requestVerifier: () => false,
+		requestVerifier: (input) =>
+			verifySignature({ ...input, bodyBytes: Buffer.from(input.bodyBytes) }),
 		deviceRevocation: { coordinatorId: "synthetic-viewer-removal" },
 	});
 	return { app, store };
@@ -138,6 +150,8 @@ type FixtureOptions = {
 	localOnly?: boolean;
 	blockFailure?: "preflight" | "commit";
 	blockCompatibility?: "rejects_selector" | "ignores_selector" | "unavailable";
+	mounted?: boolean;
+	lookupUnavailable?: boolean;
 };
 
 const blockPreviewPath = "/v1/admin/devices/revoke-preview";
@@ -169,6 +183,7 @@ async function fixture(options: FixtureOptions = {}) {
 		...readCoordinatorSyncConfig({}),
 		syncCoordinatorUrl: options.localOnly ? "" : origin,
 		syncCoordinatorAdminSecret: options.localOnly ? "" : adminSecret,
+		syncCoordinatorGroups: options.mounted ? [groupId] : [],
 	};
 	const runtime = {
 		readCoordinatorConfig: () => config,
@@ -193,23 +208,33 @@ async function fixture(options: FixtureOptions = {}) {
 			refresh: hooks.refresh,
 		};
 	};
-	const viewer = new Hono()
-		.route(
-			"/",
-			deviceRemovalReviewRoutes({
-				readCoordinatorConfig: runtime.readCoordinatorConfig,
-				localIdentity: () => ({ deviceId: localId, keyId: verifiedLocalKeyId(local.db, localId) }),
-				getLocalStore: () => local,
-			}),
-		)
-		.route(
-			"/",
-			deviceRemovalCommitRoutes({
+	if (options.mounted) await enableFixtureSigning(local, store);
+	const viewer = options.mounted
+		? createApp({
+				storeFactory: () => ({ ...local, dbPath: ":memory:" }) as MemoryStore,
 				readCoordinatorConfig: runtime.readCoordinatorConfig,
 				createDeviceRemovalRefreshHooks: createHooks,
-				getStore: () => local,
-			}),
-		);
+			})
+		: new Hono()
+				.route(
+					"/",
+					deviceRemovalReviewRoutes({
+						readCoordinatorConfig: runtime.readCoordinatorConfig,
+						localIdentity: () => ({
+							deviceId: localId,
+							keyId: verifiedLocalKeyId(local.db, localId),
+						}),
+						getLocalStore: () => local,
+					}),
+				)
+				.route(
+					"/",
+					deviceRemovalCommitRoutes({
+						readCoordinatorConfig: runtime.readCoordinatorConfig,
+						createDeviceRemovalRefreshHooks: createHooks,
+						getStore: () => local,
+					}),
+				);
 	const browser: string[] = [];
 	const remote: string[] = [];
 	const fetch = vi.fn(async (input: string, init: RequestInit) => {
@@ -219,7 +244,9 @@ async function fixture(options: FixtureOptions = {}) {
 			return viewer.request(new Request(url, init));
 		}
 		expect(url.origin).toBe(origin);
-		expect(new Headers(init.headers).get("X-Codemem-Coordinator-Admin")).toBe(adminSecret);
+		expect(new Headers(init.headers).get("X-Codemem-Coordinator-Admin")).toBe(
+			url.pathname === "/v1/peers/revocations" ? null : adminSecret,
+		);
 		remote.push(url.pathname);
 		const refusal = fixtureRemoteRefusal(url.pathname, options);
 		if (refusal) return refusal;
@@ -240,6 +267,8 @@ async function fixture(options: FixtureOptions = {}) {
 }
 
 function fixtureRemoteRefusal(path: string, options: FixtureOptions) {
+	if (path === "/v1/peers/revocations" && options.lookupUnavailable)
+		return new Response(null, { status: 404 });
 	if (options.blockFailure !== undefined && path === refusedBlockPath[options.blockFailure])
 		return Response.json({ error: "revocation_target_unavailable" }, { status: 409 });
 	if (path === progressPaths[0] && options.progressUnavailable)
@@ -249,6 +278,135 @@ function fixtureRemoteRefusal(path: string, options: FixtureOptions) {
 	if (options.loseRequest) throw new Error("synthetic lost request");
 	return null;
 }
+
+async function enableFixtureSigning(
+	local: ReturnType<typeof localStore>,
+	store: BetterSqliteCoordinatorStore,
+) {
+	const keysDir = mkdtempSync(join(tmpdir(), "codemem-removal-lookup-keys-"));
+	cleanups.push(() => rmSync(keysDir, { recursive: true, force: true }));
+	vi.stubEnv("CODEMEM_KEYS_DIR", keysDir);
+	vi.stubEnv("CODEMEM_SYNC_KEY_STORE", "file");
+	generateKeypair(join(keysDir, "device.key"), join(keysDir, "device.key.pub"));
+	const publicKey = loadPublicKey(keysDir);
+	if (!publicKey) throw new Error("Missing fixture public key");
+	const fingerprint = fingerprintPublicKey(publicKey);
+	local.db
+		.prepare("UPDATE sync_device SET public_key = ?, fingerprint = ?")
+		.run(publicKey, fingerprint);
+	await store.enrollDevice(groupId, { deviceId: localId, publicKey, fingerprint });
+}
+
+it("uses signed global evidence to commit a mounted Remove for a locally paired, unenrolled device", async () => {
+	const f = await fixture({ mounted: true });
+	// An unrelated pairing is not in the coordinator's enrollment or removal records.
+	const peer = "local-only-peer";
+	const peerKey = key.replace("dam", "zam");
+	f.db
+		.prepare("UPDATE sync_peers SET peer_device_id = ?, public_key = ?, pinned_fingerprint = ?")
+		.run(peer, peerKey, fingerprintPublicKey(peerKey));
+	f.db.prepare("UPDATE identity_devices SET device_id = ?").run(peer);
+	expect(
+		await confirmAndCommitDeviceRemoval(
+			{ deviceId: peer, displayName: "Local peer" },
+			{ confirm: async () => true },
+		),
+	).toEqual({ state: "removed", mode: "local" });
+	expect(f.remote).toEqual(["/v1/peers/revocations", "/v1/peers/revocations"]);
+	expect(f.localSnapshot()).toMatchObject({ paired: false, binding: "removed" });
+	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
+});
+
+it("never falls back to Remove when a mounted Viewer cannot obtain signed evidence", async () => {
+	const f = await fixture({ mounted: true, lookupUnavailable: true });
+	const before = f.localSnapshot();
+	const response = await f.viewer.request(previewPath, { method: "POST" });
+	expect(response.status).toBe(503);
+	expect(await response.json()).toEqual({ error: "device_removal_unavailable" });
+	expect(f.remote).toEqual(["/v1/peers/revocations"]);
+	expect(f.localSnapshot()).toEqual(before);
+	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
+});
+
+it("uses the mounted routes to remove an enrolled peer after signed lookup", async () => {
+	const f = await fixture({ mounted: true });
+	await expect(
+		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
+	).resolves.toMatchObject({
+		state: "removed",
+		evidence: "receipt",
+		local_cleanup: "applied",
+	});
+	expect(f.remote).toEqual([
+		"/v1/peers/revocations",
+		remotePreview,
+		"/v1/peers/revocations",
+		remotePreview,
+		remoteCommit,
+		...progressPaths,
+	]);
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).toBeNull();
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+});
+
+it("does not remove an enrolled disabled peer from a Viewer without admin credentials", async () => {
+	const f = await fixture({ mounted: true });
+	f.config.syncCoordinatorAdminSecret = "";
+	await f.store.setDeviceEnabled(groupId, deviceId, false);
+	const before = f.localSnapshot();
+	const response = await f.viewer.request(previewPath, { method: "POST" });
+	expect(response.status).toBe(409);
+	expect(await response.json()).toEqual({ error: "coordinator_admin_required" });
+	expect(f.remote).toEqual(["/v1/peers/revocations"]);
+	expect(await f.store.getEnrollment(groupId, deviceId, true)).not.toBeNull();
+	expect(f.localSnapshot()).toEqual(before);
+});
+
+it("clears local state for an already removed peer without issuing a second coordinator Remove", async () => {
+	const f = await fixture({ mounted: true });
+	f.config.syncCoordinatorAdminSecret = "";
+	expect(await f.store.removeDevice(groupId, deviceId)).toBe(true);
+	const before = await f.store.listDeviceRemovals();
+	await expect(
+		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
+	).resolves.toEqual({
+		state: "removed",
+		mode: "already_removed",
+	});
+	expect(f.remote).toEqual(["/v1/peers/revocations", "/v1/peers/revocations"]);
+	expect(await f.store.listDeviceRemovals()).toEqual(before);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	expect(listRetiredDeviceAliases(f.db).has(deviceId)).toBe(false);
+});
+
+it("retains the blocked key when the mounted Viewer cleans up a revoked peer", async () => {
+	const f = await fixture({ mounted: true });
+	f.config.syncCoordinatorAdminSecret = "";
+	const fingerprint = fingerprintPublicKey(key);
+	await expect(
+		f.store.createDeviceRevocation({ groupId, deviceId, publicKey: key, fingerprint }),
+	).resolves.toMatchObject({ kind: "revoked" });
+	await expect(
+		confirmAndCommitDeviceRemoval(target, { confirm: async () => true }),
+	).resolves.toEqual({
+		state: "removed",
+		mode: "already_removed",
+	});
+	expect(f.remote).toEqual(["/v1/peers/revocations", "/v1/peers/revocations"]);
+	expect(f.localSnapshot()).toEqual({ paired: false, cursor: null, binding: "removed" });
+	const alias = listRetiredDeviceAliases(f.db).get(deviceId);
+	expect(alias).toEqual({ kind: "key", keyId: canonicalKeyId(key), fingerprint });
+	expect(retiredAliasApplies(alias, { publicKey: `${key} alias`, fingerprint: null })).toBe(true);
+	expect(
+		retiredAliasApplies(alias, { publicKey: key.replace("dam", "fam"), fingerprint: null }),
+	).toBe(false);
+	expect(
+		listDeviceIdentityInventory(f.db, {
+			localDeviceId: localId,
+			coordinator: { availability: "available", safeErrorCode: null, enrollments: [] },
+		}).items,
+	).toContainEqual(expect.objectContaining({ deviceId, state: "retired" }));
+});
 
 async function supportsPinnedBlockFixture() {
 	try {

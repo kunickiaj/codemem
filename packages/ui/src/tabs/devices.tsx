@@ -1459,7 +1459,10 @@ async function removeFromMenu(
 		.then(() => options.onCommitted?.())
 		.catch(() => false);
 	if ("mode" in result) {
-		const message = `${device.displayName} is removed from this device. Remove it on your other devices too.`;
+		const message =
+			result.mode === "already_removed"
+				? `${device.displayName} was already removed. This device cleared its sync progress.`
+				: `${device.displayName} is removed from this device. Remove it on your other devices too.`;
 		setDeviceCommitStatus(
 			refreshed === false ? `${message} Refresh Devices to update this list.` : message,
 			refreshed === false ? "warning" : "success",
