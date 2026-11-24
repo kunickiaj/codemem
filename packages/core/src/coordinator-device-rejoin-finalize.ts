@@ -272,7 +272,13 @@ async function finalizeRefusal(
 	storage: Storage,
 ): Promise<FinalizeRefusal> {
 	const row = await backend.first<{ reason: FinalizeRefusal }>({
-		sql: `${finalizeEvidenceCtes(storage)}
+		sql: `${finalizeEvidenceCtes(storage)}, destination_fit AS (
+ SELECT count(*) FILTER (WHERE g.reason IS NULL) AS qualifying,
+ count(*) FILTER (WHERE g.reason IS NULL AND j.value IS NOT NULL
+  AND g.revision IS json_extract(j.value, '$[1]')) AS matching
+ FROM groups_with_reasons g CROSS JOIN attempt a
+ LEFT JOIN json_each(a.destinations_json) j ON g.group_id = json_extract(j.value, '$[0]')
+)
 SELECT CASE
  WHEN EXISTS (SELECT 1 FROM coordinator_device_revocations r
   WHERE (r.subject_kind = 'device_id' AND r.subject_value = a.device_id)
@@ -281,12 +287,13 @@ SELECT CASE
   WHERE r.lifted_at IS NULL AND r.device_id = a.device_id AND r.key_id IS NOT a.key_id) THEN 'removal_conflict'
  WHEN t.attempt_id IS NULL THEN 'removal_changed'
  WHEN l.link_id IS NULL THEN 'account_not_linked'
- WHEN NOT EXISTS (SELECT 1 FROM groups_with_reasons WHERE reason IS NULL) THEN 'no_destination'
- WHEN ${DESTINATIONS_CHANGED} THEN 'removal_changed'
+ WHEN d.qualifying = 0 THEN 'no_destination'
+ WHEN d.matching <> json_array_length(a.destinations_json) THEN 'removal_changed'
  WHEN ${DAILY_LIMIT_REACHED} THEN 'daily_limit'
  ELSE 'retry' END AS reason
 FROM attempt a LEFT JOIN checked t ON t.attempt_id = a.attempt_id
-LEFT JOIN rejoin_link_evidence l ON ${REJOIN_LINK_PIN_MATCH_SQL}`,
+LEFT JOIN rejoin_link_evidence l ON ${REJOIN_LINK_PIN_MATCH_SQL}
+CROSS JOIN destination_fit d`,
 		values: [c.now, ...activePins(c, i), c.now - DAY_MS],
 	});
 	return row?.reason ?? "retry";
