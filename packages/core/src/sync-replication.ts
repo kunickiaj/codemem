@@ -13,6 +13,7 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
+import { claimLocalOrigin } from "./local-origin-claim.js";
 import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
@@ -1038,16 +1039,45 @@ function writeUnretiredReassignment(
 	}).immediate();
 }
 
-export function recordScopeReassignment(
-	db: Database,
-	opts: {
+/** A reassigned memory's metadata: the new clock and scope, and the reassignment that moved it. */
+function reassignedMetadata(
+	metadataJson: string | null,
+	input: {
+		deviceId: string;
 		operationId: string;
-		memoryId: number;
 		oldScopeId: string;
 		newScopeId: string;
-		deviceId: string;
-		createdAt?: string;
+		revision: number;
 	},
+): Record<string, unknown> {
+	const metadata = fromJson(metadataJson);
+	Object.assign(metadata, { clock_device_id: input.deviceId, scope_id: input.newScopeId });
+	metadata.last_scope_reassignment = {
+		operation_id: input.operationId,
+		old_scope_id: input.oldScopeId,
+		new_scope_id: input.newScopeId,
+		revision: input.revision,
+	};
+	return metadata;
+}
+
+export interface RecordScopeReassignmentInput {
+	operationId: string;
+	memoryId: number;
+	oldScopeId: string;
+	newScopeId: string;
+	deviceId: string;
+	createdAt?: string;
+	/**
+	 * Record `deviceId` as the origin of a memory this device wrote before it had
+	 * a sync identity, in the same write. See `claimLocalOrigin`.
+	 */
+	claimLocalOrigin?: boolean;
+}
+
+export function recordScopeReassignment(
+	db: Database,
+	opts: RecordScopeReassignmentInput,
 ): { revision: number; oldOpId: string; newOpId: string } {
 	const operationId = requiredPayloadText(opts.operationId);
 	const oldScopeId = requiredPayloadText(opts.oldScopeId);
@@ -1091,15 +1121,22 @@ export function recordScopeReassignment(
 	}
 	const revision = Number(existing.rev ?? 0) + 1;
 	const createdAt = opts.createdAt ?? new Date().toISOString();
-	const metadata = fromJson(existing.metadata_json);
-	Object.assign(metadata, { clock_device_id: deviceId, scope_id: newScopeId });
-	metadata.last_scope_reassignment = {
+	const metadata = reassignedMetadata(existing.metadata_json, {
+		deviceId,
+		operationId,
+		oldScopeId,
+		newScopeId,
+		revision,
+	});
+	const common = {
 		operation_id: operationId,
+		memory_id: memoryId,
 		old_scope_id: oldScopeId,
 		new_scope_id: newScopeId,
 		revision,
 	};
 	const write = db.transaction(() => {
+		if (opts.claimLocalOrigin) claimLocalOrigin(db, opts.memoryId, deviceId);
 		d.update(schema.memoryItems)
 			.set({
 				scope_id: newScopeId,
@@ -1120,13 +1157,6 @@ export function recordScopeReassignment(
 					db.prepare("SELECT project FROM sessions WHERE id = ?").pluck().get(updated.session_id),
 				)
 			: null;
-		const common = {
-			operation_id: operationId,
-			memory_id: memoryId,
-			old_scope_id: oldScopeId,
-			new_scope_id: newScopeId,
-			revision,
-		};
 		const insert = db.prepare(`INSERT INTO replication_ops(
 			op_id, entity_type, entity_id, op_type, payload_json, clock_rev,
 			clock_updated_at, clock_device_id, device_id, created_at, scope_id

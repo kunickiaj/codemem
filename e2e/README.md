@@ -12,6 +12,7 @@ This directory holds the first local Docker/Compose-based E2E harness for sync s
 - direct peer sync scenario with data-plane assertions
 - project-sharing scenario covering exact-project replication and recipient-policy promotion gates
 - project-withdrawal scenario covering stopping and resuming a received Project on one device (`pnpm run e2e:project-withdrawal`)
+- pre-sync-share scenario covering sharing memories written before sync was set up (`pnpm run e2e:pre-sync-share`)
 - sharing-domain scenario covering Personal/Work/OSS boundaries and hostile/legacy peers
 - bootstrap scenario plus dirty-local refusal validation
 - seed modes: `empty`, `fixture-small`, `fixture-large`, `local-import`
