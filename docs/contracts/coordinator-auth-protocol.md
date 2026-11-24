@@ -380,9 +380,6 @@ A `403` with `device_rebind_unavailable` is an admission failure. A `403` with
 
 ### Device rejoin routes
 
-**Status:** Browser rejoin, device start, and device finalize are implemented.
-Device status remains unmounted while the expired-attempt response is undecided.
-
 This section is the wire protocol for
 [lifting a removal by owner sign-in](coordinator-device-revocations.md#lifting-a-removal-by-owner-sign-in).
 That contract states what the ceremony must prove and what it writes. This
@@ -434,9 +431,10 @@ current removal evidence and does not write, admit another attempt, or evict
 one. A duplicate with different pins, changed removal evidence, or an attempt
 that is no longer live returns the masked `403 device_rejoin_unavailable`.
 
-The protocol calls for start to delete that device’s attempts that expired or
-failed more than 24 hours ago. Start does not perform that cleanup yet because
-the age reference for those terminal attempts remains undecided.
+A successful new start deletes that device’s non-finalized attempts whose
+original `expires_at_ms` was at least 24 hours ago. Early failure or eviction
+does not move that cutoff. Cleanup runs in the same transaction as admission.
+Finalized attempts retain their receipts.
 
 The start handler charges the anonymous budget by trusted client
 address before reading the body. It charges the device-and-address budget
@@ -456,7 +454,7 @@ remedy is to block the device and set it up as a new one.
 | Route | Body and result |
 | --- | --- |
 | `POST /v1/auth/rejoin-attempts` | Exactly `device_id`, `public_key`, `attempt_id`, `browser_start_hash`, `loopback_redirect`, `timestamp_ms` and `signature`. `browser_start_hash` and `loopback_redirect` follow the rules for rebind attempts. Returns `attempt_id`, `expires_at_ms`, `coordinator_id`, `origin`, `issuer`, `auth_config_revision`, `identity_id`, `binding_id` and `removal_digest`. |
-| `POST /v1/auth/rejoin-attempts/:attemptId/status` | Exactly `device_id`, `timestamp_ms` and `signature`. Only the key that started the attempt can read it, and a missing attempt gets the same refusal. Returns `state`, `expires_at_ms`, `confirmation_view` once the person confirmed, and the receipt once finalized. It writes nothing. |
+| `POST /v1/auth/rejoin-attempts/:attemptId/status` | Exactly `device_id`, `timestamp_ms` and `signature`. Only the key that started the attempt can read it with a fresh signature. Returns `state`, `expires_at_ms`, `confirmation_view` once the person confirmed, and the receipt once finalized, while the attempt is live. It writes nothing. |
 | `POST /v1/auth/rejoin-attempts/:attemptId/finalize` | Exactly `device_id`, the raw `completion` secret and `signature`. Returns `state` (`finalized`, or `prior_commit` for a repeat) and the receipt. |
 
 An attempt lives for ten minutes. Bodies are limited to 4 KiB.
@@ -527,15 +525,17 @@ The array binds:
 `confirmation_view` returns the destinations and the non-destination groups
 with their reasons, so the device can show the same list the browser showed.
 
-The status handler is prepared but remains unmounted. Its live projection uses
+The live status response uses
 `confirmation_view: { destinations: [[group_id, revision]], non_destinations:
 [[group_id, reason]] }`, preserving the stored group order and tuple encoding
 from confirmation. A destination revision is a positive integer or null. Reasons
 are the four values above. The view appears for confirmed and finalized attempts.
 The finalized `receipt` uses the exact finalizer fields and serialization, with
-no additional stored fields forwarded. An authenticated elapsed deadline or
-stored expired state returns only an internal tag to the caller, without reading
-the receipt. Their HTTP behavior and mounting require a separate decision.
+no additional stored fields forwarded. A missing attempt, an attempt marked
+`expired`, or a poll at or after the original deadline gets the same masked
+`403 device_rejoin_unavailable`. This applies even if the attempt finalized.
+The coordinator does not read the receipt for these status polls. An exact
+signed finalize retry can still retrieve its stored receipt.
 
 #### Browser steps
 

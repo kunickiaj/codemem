@@ -21,13 +21,13 @@ export type DeviceRejoinStatusHttpDeps = Pick<
 	clientKey: CoordinatorBrowserAuthClientKey;
 	storeFactory: () => Pick<CoordinatorDeviceAuthLinkStore, "readDeviceRejoinBackend" | "close">;
 };
-type NonLive = { kind: "authenticated_deadline_elapsed" } | { kind: "authenticated_expired" };
+export const DEVICE_REJOIN_STATUS_PATH = "/v1/auth/rejoin-attempts/:attemptId/status";
 
 function unavailable(c: Context) {
 	return c.json({ error: "device_rejoin_unavailable" }, 403);
 }
 
-async function prepare(c: Context, deps: DeviceRejoinStatusHttpDeps): Promise<Response | NonLive> {
+async function handle(c: Context, deps: DeviceRejoinStatusHttpDeps): Promise<Response> {
 	const { config } = deps;
 	if (!config.enabled || !isAuthControllerId(config.coordinatorId)) return unavailable(c);
 	const client = deps.clientKey(c);
@@ -66,31 +66,26 @@ async function readStatus(
 	deps: DeviceRejoinStatusHttpDeps,
 	scope: DeviceRejoinStatusScope,
 	input: DeviceRejoinStatusInput,
-): Promise<Response | NonLive> {
+): Promise<Response> {
 	const store = deps.storeFactory();
 	try {
 		const backend = await store.readDeviceRejoinBackend?.();
 		if (!backend || !(await hasDeviceRemovalSchema(backend)))
 			return c.json({ error: "not_found" }, 404);
 		const result = await readLiveDeviceRejoinStatus(backend, scope, input);
-		if (result.kind === "unavailable") return unavailable(c);
-		if (result.kind !== "live") return result;
+		if (result.kind !== "live") return unavailable(c);
 		return c.json(result.body);
 	} finally {
 		await store.close();
 	}
 }
 
-/**
- * Prepare-only handler. No route registration or package export. A future adapter
- * must choose non-live HTTP policy explicitly before this can be mounted.
- */
 export function createDeviceRejoinStatusHandler(deps: DeviceRejoinStatusHttpDeps) {
-	return async (c: Context): Promise<Response | NonLive> => {
+	return async (c: Context): Promise<Response> => {
 		c.header("Cache-Control", "no-store");
 		c.header("Referrer-Policy", "no-referrer");
 		try {
-			return await prepare(c, deps);
+			return await handle(c, deps);
 		} catch {
 			return c.json({ error: "device_rejoin_unknown" }, 503);
 		}

@@ -423,12 +423,12 @@ function registerAdmissionBoundaryTests(withFixture: WithFixture) {
 					failed: "failed",
 					expired: "expired",
 					deadline: "pending",
-					"old-failed": "failed",
 					finalized: "finalized",
 					"other-device": "pending",
 					"other-coordinator": "pending",
 					attempt: "pending",
 				});
+				expect(states).not.toHaveProperty("old-failed");
 				expect(states["live-0"]).toBe(count === 20 ? "expired" : "pending");
 			}),
 	);
@@ -438,11 +438,10 @@ function registerAdmissionBoundaryTests(withFixture: WithFixture) {
 		(state) =>
 			withFixture(async (db) => {
 				const signing = await verifiedFixture(db);
-				await seedAttempts(
-					db,
-					signing,
-					liveRows(20).map((row) => ({ ...row, state })),
-				);
+				await seedAttempts(db, signing, [
+					...liveRows(20).map((row) => ({ ...row, state })),
+					{ id: "old-failed", state: "failed", created: NOW - 90_000_000 },
+				]);
 				const before = await allAttempts(db);
 				const prepared = await prepareVerifiedRejoinStart(
 					writer(db),
@@ -572,6 +571,52 @@ function registerAdmissionRaceTests(withFixture: WithFixture) {
 		}));
 }
 
+function registerRetentionTests(withFixture: WithFixture) {
+	it("cleans only this coordinator and device at the original deadline plus 24 hours", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			const cutoff = NOW - 86_400_000 - 600_000;
+			await seedAttempts(db, signing, [
+				{ id: "young-failed", state: "failed", created: cutoff + 1 },
+				{ id: "young-evicted", state: "expired", created: cutoff + 1 },
+				{ id: "due-failed", state: "failed", created: cutoff },
+				{ id: "due-evicted", state: "expired", created: cutoff },
+				{ id: "due-pending", state: "pending", created: cutoff },
+				{ id: "due-confirmed", state: "confirmed", created: cutoff },
+				{ id: "older-receipt", state: "finalized", created: cutoff - 1 },
+				{ id: "other-device", state: "expired", created: cutoff, device: "other" },
+				{ id: "other-coordinator", state: "failed", created: cutoff, coordinator: "other" },
+			]);
+			expect(
+				await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+			).toBe(true);
+			expect(await attemptStates(db)).toEqual({
+				"young-failed": "failed",
+				"young-evicted": "expired",
+				"older-receipt": "finalized",
+				"other-device": "expired",
+				"other-coordinator": "failed",
+				attempt: "pending",
+			});
+		}));
+
+	it("rolls back the new attempt and eviction if cleanup fails", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, [
+				...liveRows(20),
+				{ id: "old-failed", state: "failed", created: NOW - 90_000_000 },
+			]);
+			await db.run(`CREATE TRIGGER reject_cleanup BEFORE DELETE ON coordinator_device_rejoin_attempts
+			 BEGIN SELECT RAISE(ABORT, 'synthetic_cleanup_failure'); END`);
+			const before = await allAttempts(db);
+			await expect(
+				insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+			).rejects.toThrow("synthetic_cleanup_failure");
+			expect(await allAttempts(db)).toEqual(before);
+		}));
+}
+
 async function allAttempts(db: Fixture) {
 	return db.first({
 		sql: `SELECT json_group_array(json(row)) AS rows FROM
@@ -587,7 +632,10 @@ function registerLiveReplayTests(withFixture: WithFixture) {
 		withFixture(async (db) => {
 			const signing = await verifiedFixture(db);
 			const backend = writer(db);
-			await seedAttempts(db, signing, liveRows(19));
+			await seedAttempts(db, signing, [
+				...liveRows(19),
+				{ id: "soon-due", state: "failed", created: NOW - 86_400_000 - 600_000 + 100_000 },
+			]);
 			const initial = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, signing.input, NOW);
 			const original = await initial?.insert(() => NOW);
 			expect(original?.kind).toBe("started");
@@ -671,6 +719,7 @@ export function registerRejoinStartWriteTests(withFixture: WithFixture) {
 	registerAdmissionOrderingTests(withFixture);
 	registerAdmissionRollbackTests(withFixture);
 	registerAdmissionRaceTests(withFixture);
+	registerRetentionTests(withFixture);
 	registerLiveReplayTests(withFixture);
 	it.each(Object.entries(races))(
 		"writes nothing when %s changes after verification",

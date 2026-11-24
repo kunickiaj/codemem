@@ -14,7 +14,7 @@ The visible roots are `memory`, `session`, `service`, `status`, `sync`,
 | `session` | `import`, `search <query>` | Import and search Pi session history. |
 | `service` | `start`, `stop`, `restart`, `status` | Run and inspect the local viewer, sync, ingestion, and maintenance service. |
 | `status` | — | Alias for `service status`. |
-| `sync` | `enable`, `disable`, `peers`, `peers remove`, `pair`, `once`, `attempts`, `doctor`, `relay-keys`, `approve-relay-key`, `bootstrap`, `connect` | Configure and diagnose peer-to-peer sync. |
+| `sync` | `enable`, `disable`, `peers`, `peers remove`, `pair`, `once`, `attempts`, `doctor`, `relay-keys`, `approve-relay-key`, `bootstrap`, `connect`, `rejoin` | Configure and diagnose peer-to-peer sync. |
 | `coordinator` | `account link`; `owner enroll`, `review`, `qualify`; `group grant-identity`, `create`, `list`; `device revoke`, `enroll`, `list`, `rename`, `disable`, `remove`; `domain list`, `create`, `update`, `members`, `grant`, `revoke`; `grant list`, `revoke`; `invitation create`, `accept`; `request list`, `approve`, `deny`; `schema diagnose-team`, `upgrade-auth`, `upgrade-account`, `baseline-d1`; `serve` | Administer a self-hosted coordinator. |
 | `maintenance` | `database init`, `vacuum`, `stats`, `prune-events`, `prune-history`; `memory prune`, `deduplicate`, `redact-secrets`; `project rename <old> <new>`, `normalize`; `embeddings`; `backfill tags`, `dedup-keys`, `narrative`, `structured`; `status` | Run storage, memory, embedding, project, and backfill maintenance. |
 | `diagnostics` | `memory roles`, `compare`, `artifacts`, `relink`, `relink-plan`; `extraction report`, `replay`, `benchmark`; `capture status`, `retry`, `check`, `list-rejected`, `show-rejected`, `recover-rejected` | Inspect retrieval, extraction, and capture state. |
@@ -28,6 +28,14 @@ the stored record. Operations that delete rows identify that consequence in thei
 own help text. `memory distill`, `maintenance embeddings`, extraction benchmarks,
 and other observer-backed operations can consume configured model usage or incur
 model costs.
+
+### Rejoin a removed device
+
+Run `codemem sync rejoin` in a terminal on the removed device once its
+coordinator supports the full sign-in rejoin flow. Use `--config` and
+`--db-path` to select the existing profile and database. The command uses the
+existing device key and prints a private browser link. It does not support
+`--json`. See the [user guide](user-guide.md#sync-runtime) for the sign-in steps.
 
 ### Prune memories
 
