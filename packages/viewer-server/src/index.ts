@@ -29,6 +29,7 @@ import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
+import { removedDeviceBlockRoutes } from "./routes/device-block-removed.js";
 import {
 	type DeviceRemovalRefreshHooksFactory,
 	deviceRemovalCommitRoutes,
@@ -352,7 +353,7 @@ function registerViewerDeviceRemoval(
 			},
 		}),
 	);
-	if (createDeviceRemovalRefreshHooks)
+	if (createDeviceRemovalRefreshHooks) {
 		app.route(
 			"/",
 			deviceRemovalCommitRoutes({
@@ -362,6 +363,8 @@ function registerViewerDeviceRemoval(
 				createDeviceRemovalRefreshHooks,
 			}),
 		);
+		app.route("/", removedDeviceBlockRoutes({ ...options, getStore: storeFactory }));
+	}
 }
 
 export function createApp(opts?: AppOptions) {

@@ -408,6 +408,44 @@ it("retains the blocked key when the mounted Viewer cleans up a revoked peer", a
 	).toContainEqual(expect.objectContaining({ deviceId, state: "retired" }));
 });
 
+it("blocks the listed removal through the mounted Viewer without exposing coordinator credentials", async () => {
+	const f = await fixture({ mounted: true });
+	expect(await f.store.removeDevice(groupId, deviceId)).toBe(true);
+	const listing = await f.viewer.request("/api/sync/devices/removals");
+	expect(listing.status).toBe(200);
+	const { items } = (await listing.json()) as { items: { removal_id: string }[] };
+	expect(items).toHaveLength(1);
+	const path = `/api/sync/devices/${deviceId}/block`;
+	const body = { group_id: groupId, removal_id: items[0]?.removal_id };
+	const post = (route: string, json: unknown, requestOrigin?: string) =>
+		f.viewer.request(route, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...(requestOrigin ? { Origin: requestOrigin } : {}),
+			},
+			body: JSON.stringify(json),
+		});
+	expect((await post(`${path}/preview`, body, "https://cross-site.example.test")).status).toBe(403);
+	expect((await post(`${path}/preview`, { ...body, removal_id: "another-removal" })).status).toBe(
+		409,
+	);
+	const review = await post(`${path}/preview`, body);
+	expect(review.status).toBe(200);
+	const reviewed = (await review.json()) as { expected_digest: string };
+	expect(reviewed).not.toHaveProperty("admin_secret");
+	expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toEqual([]);
+	const commit = await post(path, { ...body, expected_digest: reviewed.expected_digest });
+	expect(commit.status).toBe(200);
+	expect(await commit.json()).toMatchObject({
+		state: "revoked",
+		group_id: groupId,
+		device_id: deviceId,
+	});
+	expect(await f.store.listDeviceRevocations({ deviceId, publicKey: key })).toHaveLength(2);
+	expect((await f.store.listDeviceRemovals()).items).toEqual([]);
+});
+
 async function supportsPinnedBlockFixture() {
 	try {
 		// A new removal ID cannot name an existing tombstone in this fixture.

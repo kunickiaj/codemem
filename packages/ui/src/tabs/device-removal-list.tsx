@@ -1,3 +1,7 @@
+import type {
+	CoordinatorDeviceRevocationCommit,
+	CoordinatorDeviceRevocationPreview,
+} from "@codemem/core";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { fetchJson } from "../lib/api/internal";
@@ -8,6 +12,7 @@ interface RemovedEnrollment {
 	group_id: string;
 	display_name: string | null;
 	removal_seq: number;
+	removal_id?: string;
 }
 
 type Listing =
@@ -78,11 +83,45 @@ function RemovedEnrollments({
 			{listing.items.map((item) => (
 				<li key={item.removal_seq}>
 					{item.display_name || item.device_id} · {item.group_id}
-					{blockApi && <BlockRemovedDevice item={item} api={blockApi} onBlocked={onRetry} />}
+					<RemovedDeviceBlockAction item={item} api={blockApi} onBlocked={onRetry} />
 				</li>
 			))}
 		</ul>
 	);
+}
+
+function RemovedDeviceBlockAction({
+	item,
+	api,
+	onBlocked,
+}: {
+	item: RemovedEnrollment;
+	api?: DeviceBlockApi;
+	onBlocked: () => void;
+}) {
+	const removalId = item.removal_id;
+	const transport = api ?? (removalId ? removedBlockTransport(item, removalId) : undefined);
+	return transport ? (
+		<BlockRemovedDevice item={item} api={transport} onBlocked={onBlocked} />
+	) : null;
+}
+
+function removedBlockTransport(item: RemovedEnrollment, removalId: string): DeviceBlockApi {
+	const path = `/api/sync/devices/${encodeURIComponent(item.device_id)}/block`;
+	const target = { group_id: item.group_id, removal_id: removalId };
+	const post = (body: Record<string, unknown>) => ({
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	return {
+		preview: () => fetchJson<CoordinatorDeviceRevocationPreview>(`${path}/preview`, post(target)),
+		commit: (preview) =>
+			fetchJson<CoordinatorDeviceRevocationCommit>(
+				path,
+				post({ ...target, expected_digest: preview.expected_digest }),
+			),
+	};
 }
 
 function BlockRemovedDevice({
