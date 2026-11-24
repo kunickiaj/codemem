@@ -477,9 +477,12 @@ At confirmation it stores, and hashes into `confirmation`:
 
 - `attempt_id` and `removal_digest`
 - the account link's `link_id`, authority kind (`controller_attestation`,
-  `qualified_device_claim` or `device_claim`) and `generation`, the integer
-  that `coordinator_auth_account_links` already increments for each new link of
-  an Identity
+  `qualified_device_claim` or `device_claim`) and `generation`. With V2 account
+  connections, the first link has generation 1. Each verified predecessor adds
+  one. The coordinator requires the chain to account for all retained links
+  of that Identity and refuses rejoin if the history is incomplete or inconsistent.
+  The coordinator stores the generation on the attempt without changing account
+  link storage.
 - the destinations, each as `group_id` and the Identity-group grant `revision`,
   or null where the Identity has no grant row for that group and the own
   tombstone of that group records the binding's Identity

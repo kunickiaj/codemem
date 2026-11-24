@@ -108,7 +108,7 @@ const SOURCE = `FROM coordinator_auth_controller_attestations a
 const SOURCE_COLUMNS = Object.entries(BIRTH)
 	.map(([name, expression]) => `${expression} AS ${name}`)
 	.join(",");
-const QUALIFICATION_READY = COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS.map(
+export const QUALIFICATION_READY = COORDINATOR_OWNER_ENROLLMENT_QUALIFICATION_SCHEMA_STATEMENTS.map(
 	(sql, index) =>
 		authSchemaDefinitionCheck(
 			sql.replace(/^(?:\s|--[^\n]*\n)*/u, "").replace(/;\s*$/u, ""),

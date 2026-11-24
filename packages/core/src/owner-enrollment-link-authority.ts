@@ -39,8 +39,11 @@ const readiness = [
 	.join(" AND ");
 
 /** Historical review birth, not current controller authority or old-device liveness. */
-const QUALIFIED_LINKS = `SELECT l.coordinator_id,l.link_id,q.qualification_id
- FROM owner_claim_proven_links l
+export function qualifiedClaimLinksSql(
+	source: "owner_claim_proven_links" | "rejoin_link_generation",
+) {
+	return `SELECT l.coordinator_id,l.link_id,q.qualification_id
+ FROM ${source} l
  JOIN coordinator_owner_enrollment_qualifications q ON q.coordinator_id=l.coordinator_id AND q.link_id=l.link_id
  JOIN coordinator_auth_device_claims d ON d.coordinator_id=l.coordinator_id AND d.claim_id=l.device_claim_id
  JOIN coordinator_auth_controller_attestations origin ON origin.coordinator_id=q.coordinator_id AND origin.attestation_id=q.controller_attestation_id
@@ -56,6 +59,7 @@ const QUALIFIED_LINKS = `SELECT l.coordinator_id,l.link_id,q.qualification_id
  AND origin.evidence_digest=q.evidence_digest AND origin.enrollment_identity_id IS q.enrollment_identity_id
  AND (q.enrollment_identity_id IS NULL OR q.enrollment_identity_id=q.identity_id)
  AND (${authLinkLiveGenerationSql({ link: "l", connections: true })})`;
+}
 
 /** Scope SQL is private composition, with values from a session or stored attempt.
  * No scope means no rows, never a coordinator-wide authority scan.
@@ -131,7 +135,7 @@ function ownerLinkAuthoritySql({
 			? `, owner_claim_proven_links AS MATERIALIZED (
  SELECT l.* FROM owner_scope_links l
  WHERE ${authDeviceClaimProvenanceSql({ link: "l", connections: true })}),
- owner_qualified_links AS MATERIALIZED (${QUALIFIED_LINKS} AND q.created_at_ms <= ${time}),
+ owner_qualified_links AS MATERIALIZED (${qualifiedClaimLinksSql("owner_claim_proven_links")} AND q.created_at_ms <= ${time}),
  owner_authorized_links AS MATERIALIZED (
  SELECT l.*,${qualification} AS owner_qualification_id FROM owner_scope_links l
  WHERE (${controller}) OR ${qualification} IS NOT NULL) `
