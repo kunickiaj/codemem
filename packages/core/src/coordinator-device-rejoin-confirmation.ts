@@ -21,6 +21,7 @@ export type DeviceRejoinConfirmationScope = DeviceRejoinBrowserScope;
 
 interface ReviewRow extends DeviceRejoinLinkEvidence {
 	removal_digest: string;
+	loopback_redirect: string;
 	destinations_json: string;
 	non_destinations_json: string;
 }
@@ -38,7 +39,7 @@ function confirmationEvidence(
  AND l.identity_id = a.identity_id AND l.issuer = a.issuer
 ), ${rejoinLinkEvidenceCtes(storage)}, ${REJOIN_DESTINATION_CTES},
 rejoin_review AS MATERIALIZED (
- SELECT a.coordinator_id, a.attempt_id, a.removal_digest,
+ SELECT a.coordinator_id, a.attempt_id, a.removal_digest, a.loopback_redirect,
  l.link_id, l.link_authority_kind, l.link_generation,
  (SELECT json_group_array(json_array(group_id, revision) ORDER BY group_id COLLATE BINARY)
   FROM groups_with_reasons WHERE reason IS NULL) AS destinations_json,
@@ -88,6 +89,7 @@ export async function readDeviceRejoinConfirmation(
 		destinationsJson: review.row.destinations_json,
 		nonDestinationsJson: review.row.non_destinations_json,
 		confirmation: await reviewHash(input.attemptId, review.row),
+		loopbackRedirect: review.row.loopback_redirect,
 	};
 }
 

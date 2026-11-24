@@ -525,6 +525,10 @@ with their reasons, so the device can show the same list the browser showed.
    The rebind ceremony's own link check is narrower and is not the model here.
    The same check runs again at confirmation and in the winning finalize
    statement.
+   With the `owner_enroll` browser purpose, the shared callback checks the
+   rejoin attempt's exact transaction and binder first. A callback without
+   those pins goes to the other browser ceremonies. A matching callback
+   consumes its transaction before Codemem verifies the Google response.
 3. The confirmation page names the Google account, the Identity, the device
    with its key fingerprint, the groups the device returns to, and the groups
    it does not return to with the reason. It states that Team and Project

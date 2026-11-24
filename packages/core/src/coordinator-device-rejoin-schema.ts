@@ -1,3 +1,6 @@
+import { hasConnectionSessionSchema } from "./coordinator-account-connection-session.js";
+import type { AuthLinkBackend } from "./coordinator-auth-link.js";
+
 /** Storage only. Authentication and the winning rejoin write check live authority separately. */
 export const DEVICE_REJOIN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS coordinator_device_rejoin_attempts (
@@ -170,3 +173,15 @@ FROM sqlite_master WHERE (type, name, tbl_name) IN (
  ('trigger', 'coordinator_device_rejoin_audit_no_update', 'coordinator_device_rejoin_audit_log'),
  ('trigger', 'coordinator_device_rejoin_audit_no_delete', 'coordinator_device_rejoin_audit_log')
 )`;
+
+/** Neither the browser nor the callback is available on an unready coordinator. */
+export async function readDeviceRejoinBackend(
+	backend: AuthLinkBackend,
+): Promise<AuthLinkBackend | null> {
+	const row = await backend.first<{ present: number }>({
+		sql: DEVICE_REJOIN_STORAGE_PRESENT_SQL,
+		values: [],
+	});
+	if (row?.present !== 1 || !(await hasConnectionSessionSchema(backend))) return null;
+	return backend;
+}

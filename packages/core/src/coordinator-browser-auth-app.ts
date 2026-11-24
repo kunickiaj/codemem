@@ -62,7 +62,9 @@ import {
 } from "./coordinator-browser-signin-start.js";
 import { createDeviceRebindBrowser } from "./coordinator-device-rebind-browser.js";
 import { DEVICE_REBIND_BROWSER_PATHS } from "./coordinator-device-rebind-view.js";
-import type { CoordinatorOidcOptions } from "./coordinator-oidc.js";
+import { createDeviceRejoinBrowser } from "./coordinator-device-rejoin-browser.js";
+import { DEVICE_REJOIN_BROWSER_PATHS } from "./coordinator-device-rejoin-browser-view.js";
+import { type CoordinatorOidcOptions, createCoordinatorOidcClient } from "./coordinator-oidc.js";
 import {
 	checkCoordinatorOwnerEnrollmentTransport,
 	coordinatorOwnerEnrollmentHttpMethods,
@@ -158,6 +160,8 @@ const FIXED_PATHS: Readonly<Record<string, readonly string[]>> = {
 	"/auth/account/change/confirm": ["POST"],
 	[DEVICE_REBIND_BROWSER_PATHS.start]: ["GET", "POST"],
 	[DEVICE_REBIND_BROWSER_PATHS.confirm]: ["POST"],
+	[DEVICE_REJOIN_BROWSER_PATHS.start]: ["GET", "POST"],
+	[DEVICE_REJOIN_BROWSER_PATHS.confirm]: ["POST"],
 	[HEADLESS_LINK_BROWSER_PATHS.code]: ["GET", "POST"],
 	[HEADLESS_LINK_BROWSER_PATHS.confirm]: ["POST"],
 };
@@ -353,6 +357,7 @@ function admitFormSetup(
 	if (url.pathname === "/auth/link/start") action = "link_start";
 	if (url.pathname === ACCOUNT_CHANGE_BROWSER_PATHS.start) action = "link_start";
 	if (url.pathname === DEVICE_REBIND_BROWSER_PATHS.start) action = "link_start";
+	if (url.pathname === DEVICE_REJOIN_BROWSER_PATHS.start) action = "link_start";
 	if (url.pathname === HEADLESS_LINK_BROWSER_PATHS.code) action = "headless_code";
 	const failure = admitBrowserFormSetup({
 		request,
@@ -441,10 +446,15 @@ function createSharedCallback(
 	},
 	handlers: Pick<
 		CoordinatorBrowserAuthCallbackInput,
-		"completeLink" | "ownerCallback" | "accountChangeCallback" | "deviceRebindCallback"
+		| "completeLink"
+		| "ownerCallback"
+		| "accountChangeCallback"
+		| "deviceRebindCallback"
+		| "deviceRejoinCallback"
 	>,
 ) {
-	const sharesOwnerPurpose = handlers.ownerCallback || handlers.deviceRebindCallback;
+	const sharesOwnerPurpose =
+		handlers.ownerCallback || handlers.deviceRebindCallback || handlers.deviceRejoinCallback;
 	return createCoordinatorBrowserAuthCallback({
 		...input,
 		...handlers,
@@ -467,7 +477,7 @@ export async function createCoordinatorBrowserAuth(
 		if (!payload) return Object.freeze({ ok: false, error: "browser_auth_setup_failed" });
 		const checked = await browserAuthStoreState(store);
 		if ("error" in checked) return Object.freeze({ ok: false, error: checked.error });
-		const rebind = createRebindAdapter(payload, store, limiter);
+		const device = createDeviceBrowserAdapters(payload, store, limiter);
 		const input = Object.freeze({
 			config: payload.config,
 			csrfKey: payload.csrfKey,
@@ -493,7 +503,7 @@ export async function createCoordinatorBrowserAuth(
 			completeLink: link.handlers.completeLink,
 			ownerCallback: owner?.handleCallback,
 			accountChangeCallback: change.callback,
-			deviceRebindCallback: rebind.callback,
+			...device.callbacks,
 		});
 		const account = await createCoordinatorBrowserAccount(input);
 		if (!signin.ok || !start.ok || !callback.ok || !account.ok)
@@ -517,7 +527,7 @@ export async function createCoordinatorBrowserAuth(
 			{ path: "/auth/logout", post: account.handlers.logout },
 			...ownerRoutes(owner),
 			...change.routes,
-			...rebind.routes,
+			...device.routes,
 			...createHeadlessAdapter(payload, store, limiter, link.handlers.confirmHeadless),
 		]);
 		return browserAuthReady(payload.settings.store, routes, { accountChanges: change.enabled });
@@ -632,6 +642,81 @@ function createRebindAdapter(
 				return null;
 			}
 		},
+	};
+}
+
+function createDeviceBrowserAdapters(
+	payload: EnabledPayload,
+	store: CoordinatorBrowserAuthStore,
+	limiter: InMemoryRequestRateLimiter,
+) {
+	const rebind = createRebindAdapter(payload, store, limiter);
+	const rejoin = createRejoinAdapter(payload, store, limiter);
+	return {
+		routes: [...rebind.routes, ...rejoin.routes],
+		callbacks: { deviceRebindCallback: rebind.callback, deviceRejoinCallback: rejoin.callback },
+	};
+}
+
+function createRejoinAdapter(
+	payload: EnabledPayload,
+	store: CoordinatorBrowserAuthStore,
+	limiter: InMemoryRequestRateLimiter,
+): { routes: Route[]; callback?: (request: Request) => Promise<Response | null> } {
+	const read = storeMethod(store, "readDeviceRejoinBackend");
+	if (!read) return { routes: [] };
+	const client = lazyRejoinClient(payload);
+	let ready: ReturnType<typeof createDeviceRejoinBrowser> | undefined;
+	const resolve = async () => {
+		if (ready) return ready;
+		const backend = (await read()) as AuthLinkBackend | null;
+		if (!backend) return null;
+		ready ??= createDeviceRejoinBrowser({
+			backend,
+			csrfKey: payload.csrfKey,
+			limiter,
+			scope: payload.settings,
+			now: Date.now,
+			client,
+		});
+		return ready;
+	};
+	const page =
+		(step: "startPage" | "start" | "confirm"): BrowserHandler =>
+		async (request, key) => {
+			const handler = (await resolve())?.[step];
+			return {
+				response: handler
+					? await handler(request, key)
+					: new Response("Not found.", { status: 404 }),
+			};
+		};
+	return {
+		routes: [
+			{ path: DEVICE_REJOIN_BROWSER_PATHS.start, get: page("startPage"), post: page("start") },
+			{ path: DEVICE_REJOIN_BROWSER_PATHS.confirm, post: page("confirm") },
+		],
+		callback: async (request) => {
+			const handlers = await resolve().catch(() => null);
+			return (await handlers?.callback(request)) ?? null;
+		},
+	};
+}
+
+function lazyRejoinClient(
+	payload: EnabledPayload,
+): Parameters<typeof createDeviceRejoinBrowser>[0]["client"] {
+	let client: Parameters<typeof createDeviceRejoinBrowser>[0]["client"] | undefined;
+	const ready = async () => {
+		if (client) return client;
+		const result = await createCoordinatorOidcClient(payload.settings.oidc, payload.oidcOptions);
+		if (!result.ok) throw new Error("device_rejoin_oidc_unavailable");
+		client ??= result.client;
+		return client;
+	};
+	return {
+		createAuthorizationRequest: async () => (await ready()).createAuthorizationRequest(),
+		verifyCallback: async (...args) => (await ready()).verifyCallback(...args),
 	};
 }
 
