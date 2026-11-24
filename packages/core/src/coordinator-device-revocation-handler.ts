@@ -26,6 +26,7 @@ interface RevocationInput {
 	group_id: string;
 	device_id: string;
 	expected_digest?: string;
+	required_removal_id?: string;
 }
 export const COORDINATOR_DEVICE_REVOCATION_MAX_BODY_BYTES = 4096;
 const MAX_BODY_BYTES = COORDINATOR_DEVICE_REVOCATION_MAX_BODY_BYTES;
@@ -105,6 +106,16 @@ async function readBody(request: Request): Promise<Uint8Array | null> {
 		reader.releaseLock();
 	}
 }
+function validInputFields(data: object, action: CoordinatorDeviceRevocationAction): boolean {
+	const fields =
+		action === "commit" ? ["group_id", "device_id", "expected_digest"] : ["group_id", "device_id"];
+	if ("required_removal_id" in data) {
+		if (!isAuthControllerId(data.required_removal_id)) return false;
+		fields.push("required_removal_id");
+	}
+	const keys = Object.keys(data);
+	return keys.length === fields.length && keys.every((key) => fields.includes(key));
+}
 function parseInput(
 	raw: Uint8Array,
 	action: CoordinatorDeviceRevocationAction,
@@ -112,15 +123,12 @@ function parseInput(
 	try {
 		const data: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
 		if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-		const fields =
-			action === "commit"
-				? ["group_id", "device_id", "expected_digest"]
-				: ["group_id", "device_id"];
-		const keys = Object.keys(data);
-		if (keys.length !== fields.length || keys.some((key) => !fields.includes(key))) return null;
+		if (!validInputFields(data, action)) return null;
 		if (!("group_id" in data) || !("device_id" in data)) return null;
 		if (!isAuthControllerId(data.group_id) || !isAuthControllerId(data.device_id)) return null;
 		const input: RevocationInput = { group_id: data.group_id, device_id: data.device_id };
+		if ("required_removal_id" in data)
+			input.required_removal_id = data.required_removal_id as string;
 		if (action === "commit") {
 			if (!("expected_digest" in data) || !isDigest(data.expected_digest)) return null;
 			input.expected_digest = data.expected_digest;
@@ -166,6 +174,10 @@ async function evidenceDigest(
 			tuple.publicKey,
 			tuple.fingerprint,
 			keyId,
+			// Preserve the legacy preimage exactly unless the caller pins a removal.
+			...(tuple.requiredRemovalId === undefined
+				? []
+				: ["required_removal_id", tuple.requiredRemovalId]),
 		]),
 	);
 	return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -212,7 +224,10 @@ async function readRevocationEvidence(
 	input: RevocationInput,
 ): Promise<Readonly<CoordinatorCreateDeviceRevocationInput> | null> {
 	const includeDisabled = true;
-	const enrollment = await store.getEnrollment(input.group_id, input.device_id, includeDisabled);
+	const enrollment =
+		input.required_removal_id === undefined
+			? await store.getEnrollment(input.group_id, input.device_id, includeDisabled)
+			: null;
 	// Copy the exact tuple before any crypto await; never refresh it during commit.
 	if (enrollment)
 		return Object.freeze({
@@ -221,7 +236,11 @@ async function readRevocationEvidence(
 			publicKey: enrollment.public_key,
 			fingerprint: enrollment.fingerprint,
 		});
-	const tombstone = await store.getDeviceRevocationTombstone(input.group_id, input.device_id);
+	const tombstone = await store.getDeviceRevocationTombstone(
+		input.group_id,
+		input.device_id,
+		input.required_removal_id,
+	);
 	if (!tombstone) return null;
 	const { groupId, deviceId, publicKey, fingerprint } = tombstone;
 	return Object.freeze({
@@ -230,6 +249,9 @@ async function readRevocationEvidence(
 		publicKey,
 		fingerprint,
 		evidenceKind: "removal_tombstone",
+		...(input.required_removal_id === undefined
+			? {}
+			: { requiredRemovalId: input.required_removal_id }),
 	});
 }
 

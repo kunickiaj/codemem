@@ -35,6 +35,20 @@ signature-verifier acceptance remain unchanged.
 
 ## Internal recording and queries
 
+The existing admin-authenticated Block preview and commit also accept an optional
+`required_removal_id` alongside their existing fields. Compound Remove-then-Block
+callers copy this identifier from the verified Remove receipt and supply it to
+both actions. It requires the active tombstone with that exact identifier in the
+requested group for the requested device. An enrollment cannot substitute for it.
+The preview digest binds the selector as well as the exact public key and
+fingerprint. Commit checks the same identifier, tuple, unlifted state, and absence
+of an enrollment inside the transaction that writes both revocation subjects.
+A lifted, replaced, or changed tombstone cannot authorize those writes.
+
+Without the selector, enrollment-first evidence and the existing digest preimage
+are unchanged. The selector adds no authority and uses the same admin authentication.
+It requires no schema migration.
+
 `createDeviceRevocation` requires the exact current group/device/public-key/
 legacy-fingerprint tuple, including disabled enrollments. It records the device
 subject and, for a recognized Ed25519 key, the key subject in one transaction.

@@ -28,6 +28,8 @@ export interface CoordinatorCreateDeviceRevocationInput
 	extends CoordinatorDeviceRevocationEvidence {
 	/** Existing internal callers supply enrollment evidence. */
 	evidenceKind?: CoordinatorDeviceRevocationEvidenceKind;
+	/** Opt-in compound Block constraint, copied from the verified Remove receipt. */
+	requiredRemovalId?: string;
 	/** Audit evidence only; this internal capability requires a trusted caller. */
 	actorId?: string | null;
 }
@@ -58,6 +60,7 @@ export interface CoordinatorDeviceRevocationStore {
 	getDeviceRevocationTombstone(
 		groupId: string,
 		deviceId: string,
+		requiredRemovalId?: string,
 	): Promise<CoordinatorDeviceRevocationEvidence | null>;
 	createDeviceRevocation(
 		input: CoordinatorCreateDeviceRevocationInput,
@@ -119,9 +122,7 @@ function own(input: unknown, key: string): unknown {
 function exactText(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
-function captureRevocation(
-	input: unknown,
-): Readonly<Required<CoordinatorCreateDeviceRevocationInput>> | null {
+function captureRevocation(input: unknown): Readonly<CapturedRevocation> | null {
 	const groupId = own(input, "groupId"),
 		deviceId = own(input, "deviceId");
 	const publicKey = own(input, "publicKey"),
@@ -129,17 +130,32 @@ function captureRevocation(
 	const actorId = own(input, "actorId") ?? null;
 	const suppliedKind = own(input, "evidenceKind");
 	const evidenceKind = suppliedKind === undefined ? "enrollment" : suppliedKind;
+	const requiredRemovalId = own(input, "requiredRemovalId");
 	if (
 		!isAuthControllerId(groupId) ||
 		!isAuthControllerId(deviceId) ||
 		!exactText(publicKey) ||
 		!exactText(fingerprint) ||
 		(evidenceKind !== "enrollment" && evidenceKind !== "removal_tombstone") ||
+		(requiredRemovalId !== undefined &&
+			(!isAuthControllerId(requiredRemovalId) || evidenceKind !== "removal_tombstone")) ||
 		(actorId !== null && !isAuthControllerId(actorId))
 	)
 		return null;
-	return Object.freeze({ groupId, deviceId, publicKey, fingerprint, actorId, evidenceKind });
+	return Object.freeze({
+		groupId,
+		deviceId,
+		publicKey,
+		fingerprint,
+		actorId,
+		evidenceKind,
+		requiredRemovalId,
+	});
 }
+type CapturedRevocation = Required<
+	Omit<CoordinatorCreateDeviceRevocationInput, "requiredRemovalId">
+> &
+	Pick<CoordinatorCreateDeviceRevocationInput, "requiredRemovalId">;
 function captureNonce(input: unknown): Readonly<CoordinatorRecordAuthorizedNonceInput> {
 	const groupId = own(input, "groupId"),
 		deviceId = own(input, "deviceId");
@@ -230,13 +246,18 @@ FROM input i LEFT JOIN groups g ON g.group_id = i.group_id
 LEFT JOIN enrolled_devices e ON e.group_id = i.group_id AND e.device_id = i.device_id`;
 
 function revocationStatements(
-	input: Required<CoordinatorCreateDeviceRevocationInput>,
+	input: CapturedRevocation,
 	keyId: string | null,
 	now: string,
 ): RevocationStatement[] {
 	const tuple = [input.groupId, input.deviceId, input.publicKey, input.fingerprint];
-	const evidenceSql =
+	let evidenceSql =
 		input.evidenceKind === "enrollment" ? CURRENT_TUPLE_SQL : CURRENT_TOMBSTONE_TUPLE_SQL;
+	const evidenceValues = [...tuple];
+	if (input.requiredRemovalId !== undefined) {
+		evidenceSql += " AND t.removal_id = ?";
+		evidenceValues.push(input.requiredRemovalId);
+	}
 	const subjects = [{ kind: "device_id", value: input.deviceId }];
 	if (keyId) subjects.push({ kind: "ed25519_key", value: keyId });
 	const revocationId = globalThis.crypto.randomUUID();
@@ -245,10 +266,10 @@ function revocationStatements(
 evidence_group_id, evidence_device_id, evidence_public_key, evidence_fingerprint, actor_id, created_at)
 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (${evidenceSql})
 ON CONFLICT(subject_kind, subject_value) DO NOTHING`,
-		values: [kind, value, revocationId, ...tuple, input.actorId, now, ...tuple],
+		values: [kind, value, revocationId, ...tuple, input.actorId, now, ...evidenceValues],
 	}));
 	return [
-		{ sql: evidenceSql, values: tuple, read: true },
+		{ sql: evidenceSql, values: evidenceValues, read: true },
 		...writes,
 		{ sql: SUBJECTS_SQL, values: [input.deviceId, keyId], read: true },
 	];
@@ -264,15 +285,23 @@ export class DeviceRevocationOperations implements CoordinatorDeviceRevocationSt
 	async getDeviceRevocationTombstone(
 		groupId: string,
 		deviceId: string,
+		requiredRemovalId?: string,
 	): Promise<CoordinatorDeviceRevocationEvidence | null> {
-		if (!isAuthControllerId(groupId) || !isAuthControllerId(deviceId))
+		if (
+			!isAuthControllerId(groupId) ||
+			!isAuthControllerId(deviceId) ||
+			(requiredRemovalId !== undefined && !isAuthControllerId(requiredRemovalId))
+		)
 			throw new Error("invalid_input");
 		try {
 			const rows = resultRows<CoordinatorDeviceRevocationEvidence>(
 				await this.backend.all({
 					sql: `SELECT t.group_id AS groupId, t.device_id AS deviceId,
-t.public_key AS publicKey, t.fingerprint ${ACTIVE_TOMBSTONE_SQL} LIMIT 2`,
-					values: [groupId, deviceId],
+t.public_key AS publicKey, t.fingerprint ${ACTIVE_TOMBSTONE_SQL}${requiredRemovalId === undefined ? "" : " AND t.removal_id = ?"} LIMIT 2`,
+					values:
+						requiredRemovalId === undefined
+							? [groupId, deviceId]
+							: [groupId, deviceId, requiredRemovalId],
 					read: true,
 				}),
 			);
