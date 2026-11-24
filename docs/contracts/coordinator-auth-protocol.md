@@ -380,8 +380,10 @@ A `403` with `device_rebind_unavailable` is an admission failure. A `403` with
 
 ### Device rejoin routes
 
-**Status:** planned for 0.50 and not implemented. This section is the wire
-protocol for
+**Status:** The browser ceremony and device finalize route are implemented.
+Device start and status are specified below for 0.50.
+
+This section is the wire protocol for
 [lifting a removal by owner sign-in](coordinator-device-revocations.md#lifting-a-removal-by-owner-sign-in).
 That contract states what the ceremony must prove and what it writes. This
 section states how.
@@ -580,8 +582,9 @@ changes no row where the pins require one aborts the batch. The enrollment
 uses the binding's `device_id` and `identity_id` and the own tombstone's
 `public_key` and `fingerprint`, with `key_id` stored and `enabled` set.
 
-A finalize of an attempt that is already `finalized` returns `prior_commit`
-with the stored receipt and runs no write. The receipt contains `attempt_id`,
+A finalize with the same signed completion for an already `finalized` attempt
+returns `prior_commit` with the stored receipt, even after the original attempt
+deadline. This retry runs no write. The receipt contains `attempt_id`,
 `device_id`, `identity_id`, `binding_id`, `group_ids`, `lifted_removal_seqs`
 and `finalized_at_ms`.
 
@@ -593,8 +596,9 @@ device_rejoin_unavailable`. After it, a refusal returns
 `retry`, which the device may repeat unchanged. Every other reason returns
 `403`:
 
-- `removal_changed`: the device was removed again, or a tombstone was lifted,
-  after the attempt started. The device starts a new attempt.
+- `removal_changed`: the removal evidence or the reviewed grant revision changed.
+  For example, the device was removed again or a tombstone was lifted after the
+  attempt started. The device starts a new attempt.
 - `account_not_linked`: the Google account has no live link.
 - `wrong_account`: the account is linked to another Identity.
 - `no_destination`: no group qualifies.
