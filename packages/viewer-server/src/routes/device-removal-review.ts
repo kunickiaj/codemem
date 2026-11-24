@@ -28,16 +28,19 @@ function coordinatorReadFailure(c: Context, error: unknown) {
 	return c.json({ error: "device_removal_unavailable" }, 503);
 }
 
-async function listRemovals(c: Context, readConfig: typeof readCoordinatorSyncConfig) {
+async function listRemovals(c: Context, options: Options) {
 	try {
-		const remote = readDeviceRemovalCoordinator(readConfig);
+		const remote = readDeviceRemovalCoordinator(
+			options.readCoordinatorConfig ?? readCoordinatorSyncConfig,
+		);
 		if (!remote) return c.json({ error: "coordinator_admin_required" }, 409);
 		const rows = await coordinatorListRemovedDevicesAction({ remote });
-		const items = rows.map(({ device_id, group_id, display_name, removal_seq }) => ({
+		const items = rows.map(({ device_id, group_id, display_name, removal_seq, removal_id }) => ({
 			device_id,
 			group_id,
 			display_name,
 			removal_seq,
+			...(options.getSignedLookupStore ? { removal_id } : {}),
 		}));
 		return c.json({ items });
 	} catch (error) {
@@ -174,7 +177,7 @@ export function deviceRemovalReviewRoutes(options: Options) {
 		.use(LIST_PATH, originGuard({ unsafeGetPathPrefixes: [LIST_PATH] }))
 		.get(LIST_PATH, (c) => {
 			c.header("Cache-Control", "no-store");
-			return listRemovals(c, options.readCoordinatorConfig ?? readCoordinatorSyncConfig);
+			return listRemovals(c, options);
 		})
 		.post("/api/sync/devices/:device_id/remove/preview", (c) => {
 			c.header("Cache-Control", "no-store");
