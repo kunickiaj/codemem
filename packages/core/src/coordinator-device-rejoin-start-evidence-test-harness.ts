@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { expect, it } from "vitest";
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { readVerifiedRejoinStartEvidence } from "./coordinator-device-rejoin-start-evidence.js";
-import { insertVerifiedRejoinStartAttempt } from "./coordinator-device-rejoin-start-write.js";
+import {
+	insertVerifiedRejoinStartAttempt,
+	prepareVerifiedRejoinStart,
+} from "./coordinator-device-rejoin-start-write.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 
 type Fixture = Pick<AuthLinkBackend, "first" | "batch"> & {
@@ -50,7 +53,7 @@ async function signingFixture() {
 	return { publicKey, keyId, input: await signAttempt(fields.attemptId), signAttempt };
 }
 
-async function seedBinding(db: Fixture, keyId: string, device = "device") {
+async function seedBinding(db: Pick<Fixture, "run">, keyId: string, device = "device") {
 	await db.run(
 		`INSERT INTO coordinator_device_ownership_bindings
 		(device_id, key_id, coordinator_id, identity_id, binding_id, provenance, source_ref, bound_at)
@@ -61,7 +64,7 @@ async function seedBinding(db: Fixture, keyId: string, device = "device") {
 }
 
 async function seedRemoval(
-	db: Fixture,
+	db: Pick<Fixture, "run">,
 	device: string,
 	group: string,
 	keyId: string,
@@ -237,7 +240,7 @@ function liftFixture(db: Fixture, group: string) {
 	);
 }
 
-async function verifiedFixture(db: Fixture) {
+export async function verifiedFixture(db: Pick<Fixture, "run">) {
 	const signing = await signingFixture();
 	await seedBinding(db, signing.keyId);
 	await seedRemoval(db, "device", "group", signing.keyId, signing.publicKey);
@@ -440,9 +443,13 @@ function registerAdmissionBoundaryTests(withFixture: WithFixture) {
 					liveRows(20).map((row) => ({ ...row, state })),
 				);
 				const before = await allAttempts(db);
-				expect(
-					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
-				).toBe(false);
+				const prepared = await prepareVerifiedRejoinStart(
+					writer(db),
+					WRITE_CONFIG,
+					signing.input,
+					NOW,
+				);
+				expect(await prepared?.insert(NOW)).toEqual({ kind: "retry" });
 				expect(await allAttempts(db)).toEqual(before);
 			}),
 	);
