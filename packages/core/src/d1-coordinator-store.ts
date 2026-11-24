@@ -2695,8 +2695,16 @@ export class D1CoordinatorStore implements CoordinatorStore {
 		await this.db.prepare("DELETE FROM request_nonces WHERE created_at < ?").bind(_cutoff).run();
 	}
 
-	async getDeviceRevocationTombstone(groupId: string, deviceId: string) {
-		return this.deviceRevocations.getDeviceRevocationTombstone(groupId, deviceId);
+	async getDeviceRevocationTombstone(
+		groupId: string,
+		deviceId: string,
+		requiredRemovalId?: string,
+	) {
+		return this.deviceRevocations.getDeviceRevocationTombstone(
+			groupId,
+			deviceId,
+			requiredRemovalId,
+		);
 	}
 
 	async createDeviceRevocation(input: CoordinatorCreateDeviceRevocationInput) {

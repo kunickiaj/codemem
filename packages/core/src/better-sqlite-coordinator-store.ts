@@ -2147,8 +2147,16 @@ export class BetterSqliteCoordinatorStore implements CoordinatorStore {
 		}
 	}
 
-	async getDeviceRevocationTombstone(groupId: string, deviceId: string) {
-		return this.deviceRevocations.getDeviceRevocationTombstone(groupId, deviceId);
+	async getDeviceRevocationTombstone(
+		groupId: string,
+		deviceId: string,
+		requiredRemovalId?: string,
+	) {
+		return this.deviceRevocations.getDeviceRevocationTombstone(
+			groupId,
+			deviceId,
+			requiredRemovalId,
+		);
 	}
 
 	async createDeviceRevocation(input: CoordinatorCreateDeviceRevocationInput) {
