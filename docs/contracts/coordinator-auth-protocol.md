@@ -392,7 +392,8 @@ A removed device has no enrollment, so it cannot pass signed admission, which
 checks the enrolled key. These routes therefore carry their own key proof in the
 request body, verified against the public key that the device's removal
 tombstone recorded. They mount only when optional browser authentication is
-ready and the coordinator runs under a server-trusted coordinator ID. They
+ready and the coordinator runs under a server-trusted coordinator ID. Start
+also requires the platform to supply a verified client address. The routes
 report `404 not_found` until the removal tables and
 `coordinator_device_rejoin_attempts` exist.
 
