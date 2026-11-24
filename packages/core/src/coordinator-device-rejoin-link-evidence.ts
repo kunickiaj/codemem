@@ -2,7 +2,7 @@ import { hasConnectionSessionSchema } from "./coordinator-account-connection-ses
 import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { REJOIN_LINK_LINEAGE_CTES } from "./coordinator-device-rejoin-link-lineage.js";
 import { QUALIFICATION_READY } from "./coordinator-owner-enrollment-qualification.js";
-import { qualifiedClaimLinksSql } from "./owner-enrollment-link-authority.js";
+import { QUALIFIED_CLAIM_LINK_MATCH_SQL } from "./owner-enrollment-link-authority.js";
 
 export interface DeviceRejoinLinkEvidence {
 	link_id: string;
@@ -16,19 +16,17 @@ type QualificationStorage = "qualified" | "unqualified";
  * Consumers must require the complete connection schema before composing these CTEs.
  */
 export function rejoinLinkEvidenceCtes(storage: QualificationStorage) {
-	const qualifications =
+	const kind =
 		storage === "qualified"
-			? `${qualifiedClaimLinksSql("rejoin_link_generation")}
- AND q.created_at_ms <= (SELECT now_ms FROM rejoin_link_clock)`
-			: "SELECT NULL AS coordinator_id, NULL AS link_id, NULL AS qualification_id WHERE 0";
+			? `CASE WHEN EXISTS (SELECT 1 ${QUALIFIED_CLAIM_LINK_MATCH_SQL}
+ AND q.created_at_ms <= (SELECT now_ms FROM rejoin_link_clock))
+ THEN 'qualified_device_claim' ELSE l.authority_kind END`
+			: "l.authority_kind";
 	return `${REJOIN_LINK_LINEAGE_CTES},
-rejoin_qualified_links AS MATERIALIZED (
- ${qualifications}
-), rejoin_link_evidence AS MATERIALIZED (
+rejoin_link_evidence AS MATERIALIZED (
  SELECT l.coordinator_id, l.identity_id, l.link_id, l.generation AS link_generation,
- CASE WHEN q.qualification_id IS NOT NULL THEN 'qualified_device_claim' ELSE l.authority_kind END AS link_authority_kind
- FROM rejoin_link_generation l LEFT JOIN rejoin_qualified_links q
- ON q.coordinator_id = l.coordinator_id AND q.link_id = l.link_id
+ ${kind} AS link_authority_kind
+ FROM rejoin_link_generation l
 )`;
 }
 

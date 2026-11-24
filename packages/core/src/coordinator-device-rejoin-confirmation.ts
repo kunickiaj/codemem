@@ -41,12 +41,15 @@ function confirmationEvidence(
 rejoin_review AS MATERIALIZED (
  SELECT a.coordinator_id, a.attempt_id, a.removal_digest, a.loopback_redirect,
  l.link_id, l.link_authority_kind, l.link_generation,
- (SELECT json_group_array(json_array(group_id, revision) ORDER BY group_id COLLATE BINARY)
-  FROM groups_with_reasons WHERE reason IS NULL) AS destinations_json,
- (SELECT json_group_array(json_array(group_id, reason) ORDER BY group_id COLLATE BINARY)
-  FROM groups_with_reasons WHERE reason IS NOT NULL) AS non_destinations_json
+ g.destinations_json, g.non_destinations_json
  FROM checked a JOIN rejoin_link_evidence l ON ${REJOIN_LINK_PIN_MATCH_SQL}
- WHERE NOT EXISTS (SELECT 1 FROM groups_with_reasons WHERE reason = 'missing_group')
+ CROSS JOIN (
+  SELECT json_group_array(json_array(group_id, revision) ORDER BY group_id COLLATE BINARY)
+   FILTER (WHERE reason IS NULL) AS destinations_json,
+  json_group_array(json_array(group_id, reason) ORDER BY group_id COLLATE BINARY)
+   FILTER (WHERE reason IS NOT NULL) AS non_destinations_json
+  FROM groups_with_reasons HAVING count(*) FILTER (WHERE reason = 'missing_group') = 0
+ ) g
 )`,
 		values,
 	};

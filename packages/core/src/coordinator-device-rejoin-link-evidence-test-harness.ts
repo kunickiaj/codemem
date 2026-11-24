@@ -97,7 +97,7 @@ async function qualifyClaim(db: Fixture) {
 	);
 }
 
-async function unlink(db: Fixture, end: string, at: number) {
+async function unlink(db: Fixture, end: string, at: number, options: { incomplete?: true } = {}) {
 	const columns = CONNECTION_BIRTH_COLUMNS.join(",");
 	await db.run(
 		`INSERT INTO coordinator_auth_account_connection_unlinks
@@ -118,6 +118,7 @@ async function unlink(db: Fixture, end: string, at: number) {
 		end,
 	);
 	await db.run("DELETE FROM coordinator_auth_account_links");
+	if (options.incomplete) return;
 	await db.run(
 		`UPDATE coordinator_auth_account_connection_unlinks
 	SET state='completed',completed_at_ms=? WHERE attempt_id=?`,
@@ -217,6 +218,7 @@ export function registerRejoinLinkEvidenceTests(
 		}));
 
 	registerInvalidLineageTests(withFixture);
+	registerIncompleteProofTests(withFixture);
 
 	it("compares the current claim kind again when qualification changes", () =>
 		withFixture(async (db) => {
@@ -242,6 +244,37 @@ export function registerRejoinLinkEvidenceTests(
 			expect(await readDeviceRejoinLinkEvidence(db, claimScope)).toEqual(bare);
 			await matchesOnWrite(db, bare, claimScope);
 			expect(await marker(db)).toEqual({ group_id: "marker" });
+		}));
+}
+
+function registerIncompleteProofTests(
+	withFixture: (use: (db: Fixture) => Promise<void>) => Promise<void>,
+) {
+	it("refuses a connected predecessor without a completed disconnect receipt", () =>
+		withFixture(async (db) => {
+			await seedGenesis(db);
+			await unlink(db, "end-a", NOW + 1, { incomplete: true });
+			await relink(db, 2, "link-a", { attach: true });
+
+			expect(await readDeviceRejoinLinkEvidence(db, scope)).toBeNull();
+			await matchesOnWrite(db, { ...genesis, link_id: "link-2", link_generation: 2 });
+			expect(await marker(db)).toBeNull();
+		}));
+
+	it("refuses an extra finalized birth that has no current or retained link", () =>
+		withFixture(async (db) => {
+			await seedGenesis(db);
+			const orphan = db.proof
+				.controllerLinkEvidenceSql({ publicKey: "fixture-public-key", attemptId: "orphan" })
+				.split(";")
+				.find((sql) => sql.includes("INSERT INTO coordinator_auth_link_attempts"))
+				?.replaceAll("'link-a'", "'orphan-link'");
+			if (!orphan) throw new Error("Missing synthetic link attempt");
+			await db.run(orphan);
+
+			expect(await readDeviceRejoinLinkEvidence(db, scope)).toBeNull();
+			await matchesOnWrite(db, genesis);
+			expect(await marker(db)).toBeNull();
 		}));
 }
 
