@@ -77,7 +77,11 @@ export function createRejoinOidc() {
 }
 
 type RequestRoute = (url: string, init?: RequestInit) => Response | Promise<Response>;
-type Browser = { request: RequestRoute; oidc: ReturnType<typeof createRejoinOidc> };
+type Browser = {
+	request: RequestRoute;
+	oidc: ReturnType<typeof createRejoinOidc>;
+	expectedGroups?: readonly string[];
+};
 const cookie = (r: Response) => r.headers.getSetCookie()[0]?.split(";")[0] ?? "";
 const field = (html: string, name: string) =>
 	new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? "";
@@ -95,7 +99,10 @@ function postBrowser(
 	});
 }
 
-export async function confirmInBrowser({ request, oidc }: Browser, link: string) {
+export async function confirmInBrowser(
+	{ request, oidc, expectedGroups = [groupId] }: Browser,
+	link: string,
+) {
 	const start = await request(link);
 	expect(start.status).toBe(200);
 	const startPage = await start.text();
@@ -111,7 +118,7 @@ export async function confirmInBrowser({ request, oidc }: Browser, link: string)
 	const review = await request(oidc.authorize(google).href, { headers: { cookie: cookie(begin) } });
 	expect(review.status).toBe(200);
 	const page = await review.text();
-	expect(page).toContain(groupId);
+	for (const group of expectedGroups) expect(page).toContain(group);
 	const confirmation = field(page, "confirmation_hash");
 	const complete = await postBrowser(request, "/auth/rejoin/confirm", cookie(begin), {
 		attempt_id: attemptId,
