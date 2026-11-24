@@ -10,7 +10,7 @@ export interface DeviceRemovalPreview {
 }
 
 interface LocalRemovalPreview {
-	mode: "local";
+	mode: "local" | "already_removed";
 	device_id: string;
 	expected_digest: string;
 }
@@ -47,14 +47,14 @@ function validatePreview(
 		throw new DeviceRemovalPreviewError();
 	}
 	const preview = value as Record<string, unknown>;
-	if (preview.mode === "local") {
+	if (preview.mode === "local" || preview.mode === "already_removed") {
 		if (
 			preview.device_id !== deviceId ||
 			typeof preview.expected_digest !== "string" ||
 			!/^[a-f0-9]{64}$/u.test(preview.expected_digest)
 		)
 			throw new DeviceRemovalPreviewError();
-		return { mode: "local", device_id: deviceId, expected_digest: preview.expected_digest };
+		return { mode: preview.mode, device_id: deviceId, expected_digest: preview.expected_digest };
 	}
 	if (
 		preview.device_id !== deviceId ||
@@ -118,7 +118,10 @@ export async function runDeviceRemovalConfirmation(
 		const name = device.displayName;
 		const confirmed = await confirm({
 			title: `Remove ${name} from this device?`,
-			description: `This device stops syncing with ${name} and forgets its sync progress. Your other devices keep syncing with ${name} until you remove it on each of them. Memories already on either device stay.`,
+			description:
+				reviewed.mode === "already_removed"
+					? `${name} is already removed from the coordinator. This device will clear its pairing and sync progress. Memories already on either device stay.`
+					: `This device stops syncing with ${name} and forgets its sync progress. Your other devices keep syncing with ${name} until you remove it on each of them. Memories already on either device stay.`,
 			confirmLabel: "Remove from this device",
 			cancelLabel: "Keep device",
 			autoFocusAction: "cancel",
@@ -160,7 +163,7 @@ export interface DeviceRemovalResult {
 
 interface LocalRemovalResult {
 	state: "removed";
-	mode: "local";
+	mode: "local" | "already_removed";
 }
 
 const removalErrorCodes = [
@@ -251,7 +254,7 @@ async function commitDeviceRemoval(
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(
 				"mode" in preview
-					? { mode: "local", expected_digest: preview.expected_digest }
+					? { mode: preview.mode, expected_digest: preview.expected_digest }
 					: {
 							coordinator_origin: preview.coordinator_origin,
 							expected_digest: preview.expected_digest,
@@ -273,11 +276,11 @@ async function commitDeviceRemoval(
 			payload &&
 			typeof payload === "object" &&
 			"mode" in payload &&
-			payload.mode === "local" &&
+			payload.mode === preview.mode &&
 			"state" in payload &&
 			payload.state === "removed"
 		)
-			return { state: "removed", mode: "local" };
+			return { state: "removed", mode: preview.mode };
 		throw new DeviceRemovalCommitError("removal_outcome_unknown", 200);
 	}
 	return validateRemovalResult(payload);

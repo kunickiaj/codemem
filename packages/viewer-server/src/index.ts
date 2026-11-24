@@ -29,7 +29,10 @@ import { accountOperationRoutes } from "./routes/account-operations.js";
 import { accountOwnerRecoveryRoutes } from "./routes/account-owner-recovery.js";
 import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
-import type { DeviceRemovalRefreshHooksFactory } from "./routes/device-removal-commit.js";
+import {
+	type DeviceRemovalRefreshHooksFactory,
+	deviceRemovalCommitRoutes,
+} from "./routes/device-removal-commit.js";
 import { deviceRemovalReviewRoutes } from "./routes/device-removal-review.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { fileContextRoutes } from "./routes/file-context.js";
@@ -189,7 +192,7 @@ export interface AppOptions extends SyncAppOptions {
 	loadLegacyTeamConfiguredGroupSnapshots?: LegacyTeamConfiguredGroupSnapshotLoader;
 	teamSetupCompletionDependencies?: LegacyTeamCompletionDependencies | null;
 	readCoordinatorConfig?: SyncRoutesOptions["readCoordinatorConfig"];
-	/** Supplied by the foreground host for the unmounted Remove commit route. */
+	/** Supplied by the foreground host to serialize Remove cleanup with refreshes. */
 	createDeviceRemovalRefreshHooks?: DeviceRemovalRefreshHooksFactory;
 	/** For manual refresh entry points only. Daemon maintenance already holds the queue. */
 	runManualCoordinatorRefresh?: <T>(work: () => Promise<T>) => Promise<T>;
@@ -328,6 +331,39 @@ function registerViewerSyncRoutes(
 	);
 }
 
+function registerViewerDeviceRemoval(
+	app: Hono,
+	storeFactory: () => MemoryStore,
+	opts?: AppOptions,
+) {
+	const createDeviceRemovalRefreshHooks = opts?.createDeviceRemovalRefreshHooks;
+	const options = { readCoordinatorConfig: opts?.readCoordinatorConfig };
+	const mounted = createDeviceRemovalRefreshHooks
+		? { getLocalStore: storeFactory, getSignedLookupStore: storeFactory }
+		: {};
+	app.route(
+		"/",
+		deviceRemovalReviewRoutes({
+			...options,
+			...mounted,
+			localIdentity: () => {
+				const store = storeFactory();
+				return { deviceId: store.deviceId, keyId: verifiedLocalKeyId(store.db, store.deviceId) };
+			},
+		}),
+	);
+	if (createDeviceRemovalRefreshHooks)
+		app.route(
+			"/",
+			deviceRemovalCommitRoutes({
+				...options,
+				...mounted,
+				getStore: storeFactory,
+				createDeviceRemovalRefreshHooks,
+			}),
+		);
+}
+
 export function createApp(opts?: AppOptions) {
 	const storeFactory = opts?.storeFactory ?? getStore;
 	const sweeper = opts?.sweeper ?? null;
@@ -362,16 +398,7 @@ export function createApp(opts?: AppOptions) {
 	app.route("/", rawEventsRoutes(storeFactory, sweeper, opts?.rawEventInbox, opts?.rawEventTarget));
 	installRecipientAccessChangeGate(app, storeFactory, opts?.readCoordinatorConfig);
 	registerViewerSyncRoutes(app, storeFactory, opts, () => invalidateTeamSetupSummary());
-	app.route(
-		"/",
-		deviceRemovalReviewRoutes({
-			readCoordinatorConfig: opts?.readCoordinatorConfig,
-			localIdentity: () => {
-				const store = storeFactory();
-				return { deviceId: store.deviceId, keyId: verifiedLocalKeyId(store.db, store.deviceId) };
-			},
-		}),
-	);
+	registerViewerDeviceRemoval(app, storeFactory, opts);
 	app.route("/", teamCreateRoutes(storeFactory, opts?.readCoordinatorConfig));
 	app.route("/", projectWithdrawalRoutes(storeFactory));
 	app.route(
