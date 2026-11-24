@@ -35,20 +35,21 @@ async function signingFixture() {
 		timestampMs: NOW,
 	};
 	const privateKey = key.privateKey;
-	const signAttempt = async (attemptId: string) => {
+	const signAttempt = async (attemptId: string, patch: Partial<typeof fields> = {}) => {
+		const input = { ...fields, ...patch, attemptId };
 		const message = JSON.stringify([
 			"codemem-device-rejoin-start-v1",
 			CONFIG.origin,
 			attemptId,
-			fields.deviceId,
-			fields.publicKey,
+			input.deviceId,
+			input.publicKey,
 			keyId,
-			fields.browserStartHash,
-			fields.loopbackRedirect,
-			fields.timestampMs,
+			input.browserStartHash,
+			input.loopbackRedirect,
+			input.timestampMs,
 		]);
 		const signature = await crypto.subtle.sign("Ed25519", privateKey, encoder.encode(message));
-		return { ...fields, attemptId, signature: Buffer.from(signature).toString("base64url") };
+		return { ...input, signature: Buffer.from(signature).toString("base64url") };
 	};
 	return { publicKey, keyId, input: await signAttempt(fields.attemptId), signAttempt };
 }
@@ -449,7 +450,7 @@ function registerAdmissionBoundaryTests(withFixture: WithFixture) {
 					signing.input,
 					NOW,
 				);
-				expect(await prepared?.insert(NOW)).toEqual({ kind: "retry" });
+				expect(await prepared?.insert(() => NOW)).toEqual({ kind: "retry" });
 				expect(await allAttempts(db)).toEqual(before);
 			}),
 	);
@@ -544,9 +545,11 @@ function registerAdmissionRaceTests(withFixture: WithFixture) {
 				await db.run(`CREATE TRIGGER reject_racing_replay BEFORE UPDATE ON coordinator_device_rejoin_attempts
 				 BEGIN SELECT RAISE(ABORT, 'replay_wrote'); END`);
 			});
-			expect(
-				await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
-			).toBe(false);
+			const prepared = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, signing.input, NOW);
+			expect(await prepared?.insert(() => NOW)).toMatchObject({
+				kind: "prior_start",
+				body: { attempt_id: "attempt", expires_at_ms: NOW + 600_000 },
+			});
 			expect(await allAttempts(db)).toEqual(before);
 		}));
 
@@ -579,6 +582,88 @@ async function allAttempts(db: Fixture) {
 	});
 }
 
+function registerLiveReplayTests(withFixture: WithFixture) {
+	it("recovers a lost start reply with a fresh signature without extending or evicting at capacity", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			const backend = writer(db);
+			await seedAttempts(db, signing, liveRows(19));
+			const initial = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, signing.input, NOW);
+			const original = await initial?.insert(() => NOW);
+			expect(original?.kind).toBe("started");
+			const now = NOW + 200_000;
+			const fresh = await signing.signAttempt("attempt", { timestampMs: now });
+			const before = await allAttempts(db);
+			const retry = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, fresh, now);
+			expect(await retry?.insert(() => now)).toEqual({ ...original, kind: "prior_start" });
+			expect(await allAttempts(db)).toEqual(before);
+		}));
+
+	it.each([
+		["browser start hash", { browserStartHash: "f".repeat(64) }],
+		["loopback redirect", { loopbackRedirect: "http://127.0.0.1:5432/codemem/auth/complete" }],
+	] as const)("masks a freshly signed duplicate with a different %s", (_name, patch) =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			const backend = writer(db);
+			expect(
+				await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
+			).toBe(true);
+			const before = await allAttempts(db);
+			const fresh = await signing.signAttempt("attempt", patch);
+			const retry = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, fresh, NOW);
+			expect(await retry?.insert(() => NOW)).toEqual({ kind: "unavailable" });
+			expect(await allAttempts(db)).toEqual(before);
+		}),
+	);
+	registerReplayResolutionRaces(withFixture);
+}
+
+function registerReplayResolutionRaces(withFixture: WithFixture) {
+	it.each(["failed", "expired"] as const)(
+		"masks a %s duplicate even before its original deadline",
+		(state) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				const backend = writer(db);
+				expect(
+					await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
+				).toBe(true);
+				await db.run(
+					"UPDATE coordinator_device_rejoin_attempts SET state = ? WHERE attempt_id = 'attempt'",
+					state,
+				);
+				const before = await allAttempts(db);
+				const fresh = await signing.signAttempt("attempt", { timestampMs: NOW + 1 });
+				const retry = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, fresh, NOW + 1);
+				expect(await retry?.insert(() => NOW + 1)).toEqual({ kind: "unavailable" });
+				expect(await allAttempts(db)).toEqual(before);
+			}),
+	);
+
+	it.each(["evidence changed", "deadline reached"] as const)(
+		"does not replay a receipt if %s before the duplicate read",
+		(scenario) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				expect(
+					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+				).toBe(true);
+				let now = NOW + 599_999;
+				const fresh = await signing.signAttempt("attempt", { timestampMs: now });
+				const before = await allAttempts(db);
+				const backend = writer(db, async () => {
+					if (scenario === "evidence changed")
+						await seedRemoval(db, "alias", "new-alias", signing.keyId, signing.publicKey);
+					else now += 1;
+				});
+				const retry = await prepareVerifiedRejoinStart(backend, WRITE_CONFIG, fresh, now);
+				expect(await retry?.insert(() => now)).toEqual({ kind: "unavailable" });
+				expect(await allAttempts(db)).toEqual(before);
+			}),
+	);
+}
+
 export function registerRejoinStartWriteTests(withFixture: WithFixture) {
 	registerWriteOutcomeTests(withFixture);
 	registerCapacityTest(withFixture);
@@ -586,6 +671,7 @@ export function registerRejoinStartWriteTests(withFixture: WithFixture) {
 	registerAdmissionOrderingTests(withFixture);
 	registerAdmissionRollbackTests(withFixture);
 	registerAdmissionRaceTests(withFixture);
+	registerLiveReplayTests(withFixture);
 	it.each(Object.entries(races))(
 		"writes nothing when %s changes after verification",
 		(_name, change) =>

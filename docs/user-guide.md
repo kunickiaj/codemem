@@ -984,10 +984,14 @@ do not assume rollback or retry automatically.
 
 ### Sync runtime
 
+Wait until your coordinator supports the full sign-in rejoin flow before
+running `codemem sync rejoin`. The command needs the status endpoint to verify
+your browser confirmation before it can finish.
+
 On a removed device with a coordinator account link, run `codemem sync rejoin`
-in a terminal when the coordinator supports sign-in rejoin. Open the private
-link in a browser on that device, sign in with the Google account linked to
-its Identity, and review the groups that still qualify. Keep the link private.
+in a terminal. Open the private link in a browser on that device, sign in with
+the Google account linked to its Identity, and review the groups that still
+qualify. Keep the link private.
 
 After the coordinator confirms rejoin, the next signed coordinator check
 refreshes this device’s sync status. The command leaves your memories and

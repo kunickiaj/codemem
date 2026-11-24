@@ -380,8 +380,8 @@ A `403` with `device_rebind_unavailable` is an admission failure. A `403` with
 
 ### Device rejoin routes
 
-**Status:** The browser ceremony and device finalize route are implemented.
-Device start and status are specified below for 0.50.
+**Status:** Browser rejoin, device start, and device finalize are implemented.
+Device status remains unmounted while the expired-attempt response is undecided.
 
 This section is the wire protocol for
 [lifting a removal by owner sign-in](coordinator-device-revocations.md#lifting-a-removal-by-owner-sign-in).
@@ -392,7 +392,8 @@ A removed device has no enrollment, so it cannot pass signed admission, which
 checks the enrolled key. These routes therefore carry their own key proof in the
 request body, verified against the public key that the device's removal
 tombstone recorded. They mount only when optional browser authentication is
-ready and the coordinator runs under a server-trusted coordinator ID. They
+ready and the coordinator runs under a server-trusted coordinator ID. Start
+also requires the platform to supply a verified client address. The routes
 report `404 not_found` until the removal tables and
 `coordinator_device_rejoin_attempts` exist.
 
@@ -427,19 +428,22 @@ attempt, ordered by creation time and then attempt ID to break ties. An attempt
 that reached `oidc_verified` has proven the account and is never expired by a
 start. When all 20 have proven the account, the start returns `409` with reason
 `retry`. An attempt whose deadline equals the coordinator clock no longer
-counts. A duplicate attempt ID leaves existing attempts unchanged, including
-at capacity.
+counts. A freshly signed retry for an existing live attempt with identical pins
+returns the original `200` response and expiry. The coordinator rechecks the
+current removal evidence and does not write, admit another attempt, or evict
+one. A duplicate with different pins, changed removal evidence, or an attempt
+that is no longer live returns the masked `403 device_rejoin_unavailable`.
 
-A start also deletes that device's attempts that expired or failed more than
-24 hours ago, so the table stays small.
+The protocol calls for start to delete that device’s attempts that expired or
+failed more than 24 hours ago. Start does not perform that cleanup yet because
+the age reference for those terminal attempts remains undecided.
 
-The prepared start handler charges the anonymous budget by trusted client
+The start handler charges the anonymous budget by trusted client
 address before reading the body. It charges the device-and-address budget
 only after verifying the device's proof. The write checks freshness and the
 removal evidence again before admitting the attempt. At capacity, a verified
 device with 20 protected attempts receives `409 retry` without changing any
-attempt. The handler is not mounted until the duplicate reply and retention
-cleanup are defined.
+attempt.
 
 The key alone can therefore not reserve the ceremony. Someone who holds a copy
 of the key and no access to the Google account cannot finish a rejoin. They can
