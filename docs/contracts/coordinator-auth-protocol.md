@@ -511,6 +511,9 @@ with their reasons, so the device can show the same list the browser showed.
 1. The device opens `/auth/rejoin/start?attempt_id=...&start_code=...`. The
    page submits itself. Its form post claims the attempt for that browser and
    continues to Google with account selection, as rebinding does.
+   The coordinator creates a new browser transaction and pins its hash and
+   binder to the rejoin attempt in the same transaction. An existing browser
+   transaction cannot be adopted by rejoin, even if the attempt IDs match.
 2. After Google sign-in, the shared callback resolves the issuer and subject to
    a live account link under the trusted coordinator ID. The link's Identity
    must equal the binding's `identity_id`. The link must be attestation-backed,
