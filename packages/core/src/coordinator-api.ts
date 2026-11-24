@@ -40,6 +40,10 @@ import {
 	DEVICE_REBIND_ATTEMPTS_PATH,
 	registerCoordinatorDeviceRebindRoutes,
 } from "./coordinator-device-rebind-http.js";
+import {
+	DEVICE_REJOIN_FINALIZE_PATH,
+	registerCoordinatorDeviceRejoinFinalizeRoute,
+} from "./coordinator-device-rejoin-http.js";
 import { registerCoordinatorDeviceRemovalCommands } from "./coordinator-device-removal-commands.js";
 import { registerCoordinatorDeviceRemovalRoutes } from "./coordinator-device-removal-routes.js";
 import {
@@ -255,6 +259,7 @@ function registerOptionalCoordinatorAuth(
 			DEVICE_REBIND_ATTEMPTS_PATH,
 			DEVICE_BINDING_PATH,
 			`${DEVICE_REBIND_ATTEMPTS_PATH}/*`,
+			DEVICE_REJOIN_FINALIZE_PATH,
 			"/v1/admin/auth-controller-reviews",
 		]) {
 			app.all(path, unavailable);
@@ -290,6 +295,7 @@ function registerBrowserHalfRoutes(
 	registerCoordinatorAccountLinkStatusRoute(app, browserDeps);
 	// A legacy link option has no rebind or headless code-entry pages.
 	registerCoordinatorDeviceRebindRoutes(app, browserDeps);
+	registerCoordinatorDeviceRejoinFinalizeRoute(app, { ...browserDeps, clientKey: ready.clientKey });
 	// Code entry is mounted only with a verified client address; without that page,
 	// a device could create attempts that no browser can ever claim.
 	if (ready.clientAddress) registerCoordinatorDeviceHeadlessLinkRoutes(app, browserDeps);

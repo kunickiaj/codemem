@@ -33,6 +33,9 @@ export interface DeviceRejoinFinalizeInput {
 }
 
 interface ConfirmedAttempt extends DeviceRejoinLinkEvidence {
+	state: "confirmed" | "finalized";
+	finalized_at_ms: number | null;
+	final_receipt_json: string | null;
 	key_id: string;
 	binding_id: string;
 	identity_id: string;
@@ -46,7 +49,7 @@ interface ConfirmedAttempt extends DeviceRejoinLinkEvidence {
 	destinations_json: string;
 }
 
-interface RejoinReceipt {
+export interface RejoinReceipt {
 	attempt_id: string;
 	device_id: string;
 	identity_id: string;
@@ -56,9 +59,24 @@ interface RejoinReceipt {
 	finalized_at_ms: number;
 }
 
-const ACTIVE = `a.coordinator_id = ? AND a.attempt_id = ? AND a.device_id = ?
+const SCOPE = `a.coordinator_id = ? AND a.attempt_id = ? AND a.device_id = ?
  AND a.origin = ? AND a.issuer = ? AND a.auth_config_revision = ?
- AND a.state = 'confirmed' AND a.created_at_ms <= ? AND a.expires_at_ms > ?`;
+ AND a.created_at_ms <= ?`;
+const ACTIVE = `${SCOPE} AND a.state = 'confirmed' AND a.expires_at_ms > ?`;
+
+type FinalizeRefusal =
+	| "blocked"
+	| "removal_conflict"
+	| "removal_changed"
+	| "account_not_linked"
+	| "no_destination"
+	| "daily_limit"
+	| "retry";
+
+export type DeviceRejoinFinalizeResult =
+	| { kind: "unavailable" }
+	| { kind: "refused"; reason: FinalizeRefusal }
+	| { kind: "finalized" | "prior_commit"; receipt: RejoinReceipt };
 
 function activePins(c: DeviceRejoinFinalizeScope, i: DeviceRejoinFinalizeInput) {
 	return [
@@ -104,12 +122,18 @@ async function verifyFinalize(
 	const secret = decodeCoordinatorAuthProof32(i.completion);
 	if (!secret) return null;
 	const a = await backend.first<ConfirmedAttempt>({
-		sql: `SELECT * FROM ${ATTEMPTS} a WHERE ${ACTIVE}`,
+		sql: `SELECT a.* FROM ${ATTEMPTS} a
+ JOIN coordinator_device_removals t ON t.removal_seq = json_extract(a.own_tombstones_json, '$[0][0]')
+ AND t.group_id = json_extract(a.own_tombstones_json, '$[0][1]')
+ AND t.public_key = json_extract(a.own_tombstones_json, '$[0][2]')
+ AND t.fingerprint = json_extract(a.own_tombstones_json, '$[0][3]')
+ AND t.device_id = a.device_id AND t.key_id = a.key_id
+ WHERE ${SCOPE} AND (a.state = 'finalized' OR (a.state = 'confirmed' AND a.expires_at_ms > ?))`,
 		values: activePins(c, i),
 	});
 	if (!a || (await hashCoordinatorAuthProofBytes32(secret)) !== a.completion_secret_hash)
 		return null;
-	const prepared = receiptFor(a, { input: i, now: c.now });
+	const prepared = receiptFor(a, { input: i, now: a.finalized_at_ms ?? c.now });
 	if (!prepared) return null;
 	const verified = await verifyDeviceRejoinProof(
 		{
@@ -134,6 +158,28 @@ async function verifyFinalize(
 	return verified ? { row: a, receipt: prepared.receipt } : null;
 }
 
+function finalizeEvidenceCtes(storage: Storage) {
+	const absentQualification =
+		storage === "unqualified"
+			? "AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE tbl_name = 'coordinator_owner_enrollment_qualifications' COLLATE NOCASE)"
+			: "";
+	return `WITH RECURSIVE rejoin_link_clock(now_ms) AS (VALUES (?)),
+attempt AS MATERIALIZED (SELECT a.* FROM ${ATTEMPTS} a WHERE ${ACTIVE} ${absentQualification}),
+rejoin_link_scope AS MATERIALIZED (
+ SELECT a.coordinator_id, a.identity_id, a.issuer, l.subject FROM attempt a
+ JOIN coordinator_auth_account_links l ON l.coordinator_id = a.coordinator_id AND l.link_id = a.link_id
+ AND l.identity_id = a.identity_id AND l.issuer = a.issuer
+), ${rejoinLinkEvidenceCtes(storage)}, ${REJOIN_DESTINATION_CTES}`;
+}
+
+const DESTINATIONS_CHANGED = `EXISTS (SELECT 1 FROM json_each(a.destinations_json) j
+ LEFT JOIN groups_with_reasons g ON g.group_id = json_extract(j.value, '$[0]')
+ WHERE g.group_id IS NULL OR g.reason IS NOT NULL OR g.revision IS NOT json_extract(j.value, '$[1]'))`;
+
+const DAILY_LIMIT_REACHED = `(SELECT count(*) FROM coordinator_device_rejoin_audit_log r
+ WHERE r.coordinator_id = a.coordinator_id AND r.identity_id = a.identity_id
+ AND r.finalized_at_ms > ?) >= 3`;
+
 function winningUpdate(
 	c: DeviceRejoinFinalizeScope,
 	i: DeviceRejoinFinalizeInput,
@@ -141,18 +187,8 @@ function winningUpdate(
 	row: ConfirmedAttempt,
 	receipt: string,
 ): AuthLinkStatement {
-	const absentQualification =
-		storage === "unqualified"
-			? "AND NOT EXISTS (SELECT 1 FROM sqlite_master WHERE tbl_name = 'coordinator_owner_enrollment_qualifications' COLLATE NOCASE)"
-			: "";
 	return {
-		sql: `WITH RECURSIVE rejoin_link_clock(now_ms) AS (VALUES (?)),
-attempt AS MATERIALIZED (SELECT a.* FROM ${ATTEMPTS} a WHERE ${ACTIVE} ${absentQualification}),
-rejoin_link_scope AS MATERIALIZED (
- SELECT a.coordinator_id, a.identity_id, a.issuer, l.subject FROM attempt a
- JOIN coordinator_auth_account_links l ON l.coordinator_id = a.coordinator_id AND l.link_id = a.link_id
- AND l.identity_id = a.identity_id AND l.issuer = a.issuer
-), ${rejoinLinkEvidenceCtes(storage)}, ${REJOIN_DESTINATION_CTES}
+		sql: `${finalizeEvidenceCtes(storage)}
 UPDATE ${ATTEMPTS} AS a SET state = 'finalized', finalized_at_ms = ?, final_receipt_json = ?
 FROM checked t, rejoin_link_evidence l
 WHERE a.coordinator_id = t.coordinator_id AND a.attempt_id = t.attempt_id
@@ -163,12 +199,8 @@ WHERE a.coordinator_id = t.coordinator_id AND a.attempt_id = t.attempt_id
  AND a.key_id = ? AND a.public_key = ? AND a.fingerprint = ?
  AND a.own_tombstones_json = ? AND a.alias_removal_seqs_json = ? AND a.destinations_json = ?
  AND json_array_length(a.destinations_json) > 0
- AND NOT EXISTS (SELECT 1 FROM json_each(a.destinations_json) j
-  LEFT JOIN groups_with_reasons g ON g.group_id = json_extract(j.value, '$[0]')
-  WHERE g.group_id IS NULL OR g.reason IS NOT NULL OR g.revision IS NOT json_extract(j.value, '$[1]'))
- AND (SELECT count(*) FROM coordinator_device_rejoin_audit_log r
- WHERE r.coordinator_id = a.coordinator_id AND r.identity_id = a.identity_id
- AND r.finalized_at_ms > ?) < 3`,
+ AND NOT ${DESTINATIONS_CHANGED}
+ AND NOT (${DAILY_LIMIT_REACHED})`,
 		values: [
 			c.now,
 			...activePins(c, i),
@@ -232,21 +264,53 @@ function finalizeEffects(
 	];
 }
 
-/** Commits only a new, live attempt. The route separately handles status and prior receipts. */
-export async function finalizeNewDeviceRejoin(
+/** A diagnostic read after rollback can explain a refusal but never return a success. */
+async function finalizeRefusal(
+	backend: AuthLinkBackend,
+	c: DeviceRejoinFinalizeScope,
+	i: DeviceRejoinFinalizeInput,
+	storage: Storage,
+): Promise<FinalizeRefusal> {
+	const row = await backend.first<{ reason: FinalizeRefusal }>({
+		sql: `${finalizeEvidenceCtes(storage)}
+SELECT CASE
+ WHEN EXISTS (SELECT 1 FROM coordinator_device_revocations r
+  WHERE (r.subject_kind = 'device_id' AND r.subject_value = a.device_id)
+  OR (r.subject_kind = 'ed25519_key' AND r.subject_value = a.key_id)) THEN 'blocked'
+ WHEN EXISTS (SELECT 1 FROM coordinator_device_removals r
+  WHERE r.lifted_at IS NULL AND r.device_id = a.device_id AND r.key_id IS NOT a.key_id) THEN 'removal_conflict'
+ WHEN t.attempt_id IS NULL THEN 'removal_changed'
+ WHEN l.link_id IS NULL THEN 'account_not_linked'
+ WHEN NOT EXISTS (SELECT 1 FROM groups_with_reasons WHERE reason IS NULL) THEN 'no_destination'
+ WHEN ${DESTINATIONS_CHANGED} THEN 'removal_changed'
+ WHEN ${DAILY_LIMIT_REACHED} THEN 'daily_limit'
+ ELSE 'retry' END AS reason
+FROM attempt a LEFT JOIN checked t ON t.attempt_id = a.attempt_id
+LEFT JOIN rejoin_link_evidence l ON ${REJOIN_LINK_PIN_MATCH_SQL}`,
+		values: [c.now, ...activePins(c, i), c.now - DAY_MS],
+	});
+	return row?.reason ?? "retry";
+}
+
+export async function finalizeDeviceRejoin(
 	backend: AuthLinkBackend,
 	config: DeviceRejoinFinalizeScope,
 	input: DeviceRejoinFinalizeInput,
-): Promise<RejoinReceipt | null> {
+): Promise<DeviceRejoinFinalizeResult> {
 	const c = { ...config };
 	const i = { ...input };
-	if (!Number.isSafeInteger(c.now) || c.now < 0 || c.now > 8_640_000_000_000_000) return null;
+	if (!Number.isSafeInteger(c.now) || c.now < 0 || c.now > 8_640_000_000_000_000)
+		return { kind: "unavailable" };
 	const prepared = await verifyFinalize(backend, c, i);
-	if (!prepared) return null;
-	const storage = await readDeviceRejoinLinkStorage(backend);
-	if (!storage) return null;
+	if (!prepared) return { kind: "unavailable" };
 	const { row, receipt } = prepared;
 	const encoded = JSON.stringify(receipt);
+	if (row.state === "finalized") {
+		if (row.final_receipt_json !== encoded) throw new Error("device_rejoin_receipt_invalid");
+		return { kind: "prior_commit", receipt };
+	}
+	const storage = await readDeviceRejoinLinkStorage(backend);
+	if (!storage) return { kind: "refused", reason: "account_not_linked" };
 	const wrote = await writeGuarded(
 		backend,
 		[],
@@ -256,5 +320,6 @@ export async function finalizeNewDeviceRejoin(
 			...finalizeEffects(c, receipt, encoded),
 		],
 	);
-	return wrote === "committed" ? receipt : null;
+	if (wrote === "committed") return { kind: "finalized", receipt };
+	return { kind: "refused", reason: await finalizeRefusal(backend, c, i, storage) };
 }

@@ -48,6 +48,7 @@ export type CoordinatorDeviceAuthLinkStore = CoordinatorStore &
 	Pick<CoordinatorAuthBrowserTransactionStore, "retireAuthBrowserTransactions"> & {
 		/** Rebind storage (ADR 0005 Section 8), or null before its tables exist. */
 		readDeviceRebindBackend?(): Promise<AuthLinkBackend | null>;
+		readDeviceRejoinBackend?(): Promise<AuthLinkBackend | null>;
 	};
 
 export interface CoordinatorDeviceAuthLinkOptions {
