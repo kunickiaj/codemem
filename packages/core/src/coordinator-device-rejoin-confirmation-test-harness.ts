@@ -10,9 +10,12 @@ import {
 	seedGenesis,
 } from "./coordinator-device-rejoin-link-evidence-test-harness.js";
 
-type Fixture = RejoinEvidenceFixture & { changed(s: AuthLinkStatement): Promise<number> };
+export type RejoinConfirmationFixture = RejoinEvidenceFixture & {
+	changed(s: AuthLinkStatement): Promise<number>;
+};
+type Fixture = RejoinConfirmationFixture;
 const now = 1_791_028_800_020;
-const pin: DeviceRejoinConfirmationScope = {
+export const confirmationScope: DeviceRejoinConfirmationScope = {
 	coordinatorId: "coordinator-a",
 	attemptId: "rejoin-a",
 	origin: "https://coordinator.example.test",
@@ -23,41 +26,62 @@ const pin: DeviceRejoinConfirmationScope = {
 	binderHash: "d".repeat(64),
 	now,
 };
+const pin = confirmationScope;
 const keyId = "f".repeat(64);
 const completeHash = "b".repeat(64);
 
-async function prepare(db: Fixture, generation = 1) {
+export async function prepareConfirmation(
+	db: Fixture,
+	options: { generation?: number; key?: { publicKey: string; keyId: string }; alias?: true } = {},
+) {
+	const key = options.key ?? { publicKey: "fixture-key", keyId };
 	await seedGenesis(db);
 	await db.run(
 		`INSERT INTO coordinator_device_ownership_bindings
 	(device_id,key_id,coordinator_id,identity_id,binding_id,provenance,source_ref,bound_at)
 	VALUES ('removed',?,'coordinator-a','identity-a','binding','owner_enrollment','fixture','then')`,
-		keyId,
+		key.keyId,
 	);
 	await db.run("INSERT INTO groups (group_id,created_at) VALUES ('group-a','then')");
 	await db.run(
 		`INSERT INTO coordinator_device_removals
 	(removal_seq,removal_id,group_id,device_id,public_key,fingerprint,key_id,identity_id,removed_at)
-	VALUES (1,'removal','group-a','removed','fixture-key','fingerprint',?,'identity-a','then')`,
-		keyId,
+	VALUES (1,'removal','group-a','removed',?,'fingerprint',?,'identity-a','then')`,
+		key.publicKey,
+		key.keyId,
 	);
+	if (options.alias)
+		await db.run(
+			`INSERT INTO coordinator_device_removals
+		(removal_seq,removal_id,group_id,device_id,public_key,fingerprint,key_id,identity_id,removed_at)
+		VALUES (2,'alias-removal','group-a','alias',?,'fingerprint',?,'identity-a','then')`,
+			key.publicKey,
+			key.keyId,
+		);
 	await db.run(
 		`INSERT INTO coordinator_device_rejoin_attempts
 	(coordinator_id,attempt_id,origin,device_id,public_key,key_id,fingerprint,identity_id,binding_id,
 	issuer,auth_config_revision,removal_digest,own_tombstones_json,alias_removal_seqs_json,
 	browser_start_hash,loopback_redirect,created_at_ms,expires_at_ms)
-	VALUES (?,?,?,'removed','fixture-key',?,'fingerprint','identity-a','binding',?,?,'digest',
-	'[[1,"group-a","fixture-key","fingerprint"]]','[]',?,'http://127.0.0.1:1234/complete',?,?)`,
+	VALUES (?,?,?,'removed',?,?,'fingerprint','identity-a','binding',?,?,'digest',
+	?,?,?,'http://127.0.0.1:1234/complete',?,?)`,
 		pin.coordinatorId,
 		pin.attemptId,
 		pin.origin,
-		keyId,
+		key.publicKey,
+		key.keyId,
 		pin.issuer,
 		pin.authConfigRevision,
+		JSON.stringify([[1, "group-a", key.publicKey, "fingerprint"]]),
+		options.alias ? "[2]" : "[]",
 		"e".repeat(64),
 		now - 20,
 		now - 20 + 600_000,
 	);
+	await seedConsumedBrowser(db, options.generation ?? 1);
+}
+
+async function seedConsumedBrowser(db: Fixture, generation: number) {
 	await db.run(
 		`INSERT INTO coordinator_auth_browser_transactions
 	(coordinator_id,browser_transaction_hash,purpose,attempt_id,state_hash,binder_hash,issuer,
@@ -112,7 +136,7 @@ export function registerRejoinConfirmationTests(
 ) {
 	it("confirms the exact browser review once", () =>
 		withFixture(async (db) => {
-			await prepare(db);
+			await prepareConfirmation(db);
 			const review = await readDeviceRejoinConfirmation(db, pin);
 			if (!review) throw new Error("Missing eligible review");
 			expect(review.destinationsJson).toBe('[["group-a",null]]');
@@ -137,7 +161,7 @@ export function registerRejoinConfirmationTests(
 		"refuses when the %s after the read",
 		(scenario) =>
 			withFixture(async (db) => {
-				await prepare(db);
+				await prepareConfirmation(db);
 				const review = await readDeviceRejoinConfirmation(db, pin);
 				if (!review) throw new Error("Missing eligible review");
 				const before = await attempt(db);
@@ -155,7 +179,7 @@ export function registerRejoinConfirmationTests(
 
 	it("refuses an incorrect generation", () =>
 		withFixture(async (db) => {
-			await prepare(db, 2);
+			await prepareConfirmation(db, { generation: 2 });
 			expect(await readDeviceRejoinConfirmation(db, pin)).toBeNull();
 			expect(await confirm(db, "1".repeat(64))).toBe(false);
 			expect(await attempt(db)).toMatchObject({ state: "oidc_verified", confirmation_hash: null });
