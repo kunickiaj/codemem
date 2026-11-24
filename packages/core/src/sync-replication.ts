@@ -2369,6 +2369,35 @@ function outboundScopeAllowed(
 	return localAuth.authorized && localAuth.scope?.authority_type !== "local";
 }
 
+/**
+ * Whether this device recorded a local-default cleanup it can't show it may
+ * send.
+ *
+ * A recipient accepts this device's cleanup of a memory only when its own copy
+ * names this device as origin. This device sends one only when its current copy
+ * of the memory names it too. Otherwise, for example a memory `memory import`
+ * brought in without an author, one shared before shares recorded the owner as
+ * origin, or one this device no longer has, the cleanup is skipped like any
+ * other filtered operation, so cursors still move past it. Withholding never
+ * changes a recipient's copy; those copies stay as they are. Operations other
+ * than this device's own local-default cleanups are unchanged.
+ */
+function cannotVouchForDefaultCleanup(
+	db: Database,
+	op: ReplicationOp,
+	reassignment: ReassignScopePayload,
+	localDeviceId: string | null | undefined,
+): boolean {
+	const self = cleanText(localDeviceId);
+	if (!self || reassignment.side !== "old") return false;
+	if (reassignment.old_scope_id !== DEFAULT_SYNC_SCOPE_ID) return false;
+	if (cleanText(op.device_id) !== self || cleanText(op.clock_device_id) !== self) return false;
+	const row = db
+		.prepare("SELECT origin_device_id FROM memory_items WHERE import_key = ?")
+		.get(op.entity_id) as { origin_device_id: string | null } | undefined;
+	return cleanText(row?.origin_device_id) !== self;
+}
+
 function legacyDefaultReassignAllowed(
 	db: Database,
 	op: ReplicationOp,
@@ -2422,6 +2451,34 @@ function existingDeleteRejection(
 	return null;
 }
 
+/**
+ * How the outbound filter treats a reassign_scope op: skip it, send it as is
+ * (old side), or check it like any other op (new side). An op that can't be
+ * parsed or checked is skipped.
+ */
+function reassignOutboundDecision(
+	db: Database,
+	op: ReplicationOp,
+	payload: Record<string, unknown> | null,
+	peerDeviceId: string | null,
+	options: { applyScopeFilter: boolean; localDeviceId: string | null | undefined },
+): "skip" | "send" | "check" {
+	try {
+		const reassignment = parseReassignScopePayload(op);
+		if (cannotVouchForDefaultCleanup(db, op, reassignment, options.localDeviceId)) return "skip";
+		if (options.applyScopeFilter) {
+			const allowed =
+				reassignment.side === "old" && reassignment.old_scope_id === DEFAULT_SYNC_SCOPE_ID
+					? legacyDefaultReassignAllowed(db, op, peerDeviceId)
+					: outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null);
+			if (!allowed) return "skip";
+		}
+		return reassignment.side === "old" ? "send" : "check";
+	} catch {
+		return "skip";
+	}
+}
+
 export function filterReplicationOpsForSyncWithStatus(
 	db: Database,
 	ops: ReplicationOp[],
@@ -2462,31 +2519,16 @@ export function filterReplicationOpsForSyncWithStatus(
 				continue;
 			}
 			if (op.op_type === REASSIGN_SCOPE_OP_TYPE) {
-				try {
-					const reassignment = parseReassignScopePayload(op);
-					const scopeAllowed =
-						!applyScopeFilter ||
-						(reassignment.side === "old" && reassignment.old_scope_id === DEFAULT_SYNC_SCOPE_ID
-							? legacyDefaultReassignAllowed(db, op, peerDeviceId)
-							: outboundScopeAllowed(db, op, payload, peerDeviceId, options.localDeviceId ?? null));
-					if (!scopeAllowed) {
-						addSkipped(skipped, op, {
-							reason: "scope_filter",
-							scope_id: cleanText(op.scope_id),
-						});
-						nextCursor = computeCursor(op.created_at, op.op_id);
-						continue;
-					}
-					if (reassignment.side === "old") {
-						allowed.push(op);
-						nextCursor = computeCursor(op.created_at, op.op_id);
-						continue;
-					}
-				} catch {
-					addSkipped(skipped, op, {
-						reason: "scope_filter",
-						scope_id: cleanText(op.scope_id),
-					});
+				const decision = reassignOutboundDecision(db, op, payload, peerDeviceId, {
+					applyScopeFilter,
+					localDeviceId: options.localDeviceId,
+				});
+				if (decision === "skip") {
+					addSkipped(skipped, op, { reason: "scope_filter", scope_id: cleanText(op.scope_id) });
+				} else if (decision === "send") {
+					allowed.push(op);
+				}
+				if (decision !== "check") {
 					nextCursor = computeCursor(op.created_at, op.op_id);
 					continue;
 				}

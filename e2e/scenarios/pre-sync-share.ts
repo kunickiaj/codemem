@@ -90,12 +90,33 @@ function importOtherDevicesPreSyncMemory(ctx: ScenarioContext): void {
 	assertStatus(imported.status, 0, "memory import of the other device's export failed on peer-a");
 }
 
+/**
+ * One `sync once` from `service` with `peerId`. Both devices' sync services run
+ * too, so a pass can meet the database lock. Only that is retried; any other
+ * failure, a rejection included, fails at once.
+ */
+async function syncOnce(ctx: ScenarioContext, service: string, peerId: string, artifact: string): Promise<void> {
+	for (let attempt = 1; ; attempt += 1) {
+		const pass = ctx.compose.exec(
+			service,
+			[...CLI_PREFIX, "sync", "once", "--db-path", "/data/mem.sqlite", "--peer", peerId, "--json"],
+			`${artifact}-${attempt}`,
+			180_000,
+			true,
+		);
+		if (pass.status === 0) return;
+		const locked = pass.stdout.includes("database is locked") && !pass.stdout.includes("rejected");
+		assert(locked && attempt < 6, `${service} sync with ${peerId} failed: ${pass.stdout}`);
+		await new Promise((resolve) => setTimeout(resolve, 5_000));
+	}
+}
+
 export async function runPreSyncShareScenario(ctx: ScenarioContext): Promise<void> {
 	ctx.recordNote(
 		"scenario.txt",
-		"Pre-sync share: seed peer-a with fixture-small before it has a sync identity, so its memories keep origin 'local', share both fixture Projects with peer-b, and assert peer-b receives only the shared memories, peer-a records its own device as their origin, peer-b's pulls from peer-a succeed without inbound rejections, and another device's imported pre-sync memory is left out of the share and stays on peer-a unchanged (codemem-yfla4).",
+		"Pre-sync share: seed peer-a with fixture-small before it has a sync identity, so its memories keep origin 'local', share both fixture Projects with peer-b, and assert peer-b receives only the shared memories, peer-a records its own device as their origin, peer-b's pulls from peer-a succeed without inbound rejections, another device's imported pre-sync memory is left out of the share and stays on peer-a unchanged, and once that memory is moved the way earlier shares did, peer-a withholds the cleanup peer-b would refuse so peer-b keeps pulling (codemem-yfla4).",
 	);
-	const { peerAIdentity } = await shareFixtureProjectsWithPeerB(ctx, {
+	const { peerAIdentity, peerBIdentity } = await shareFixtureProjectsWithPeerB(ctx, {
 		seedBeforeIdentity: true,
 		afterSeed: () => importOtherDevicesPreSyncMemory(ctx),
 		expectedUnattributedImports: 1,
@@ -135,25 +156,29 @@ export async function runPreSyncShareScenario(ctx: ScenarioContext): Promise<voi
 	assert(recipient.imported.length === 0, `peer-b received the imported memory: ${JSON.stringify(recipient.imported)}`);
 
 	// Act + Assert: peer-b's own pull from peer-a succeeds and records no rejections.
-	// peer-b's sync service runs too, so a pull can meet its database lock. Only
-	// that is retried; any other failure, a rejection included, fails at once.
-	for (let attempt = 1; ; attempt += 1) {
-		const pull = ctx.compose.exec(
-			"peer-b",
-			[...CLI_PREFIX, "sync", "once", "--db-path", "/data/mem.sqlite", "--peer", ownerId, "--json"],
-			`26-peer-b-pull-${attempt}`,
-			180_000,
-			true,
-		);
-		if (pull.status === 0) break;
-		const locked = pull.stdout.includes("database is locked") && !pull.stdout.includes("rejected");
-		assert(locked && attempt < 6, `peer-b pull from peer-a failed: ${pull.stdout}`);
-		await new Promise((resolve) => setTimeout(resolve, 5_000));
-	}
+	await syncOnce(ctx, "peer-b", ownerId, "26-peer-b-pull");
 	const rejections = peerState(ctx, "peer-b", "27-peer-b-rejections").rejections;
 	assert(rejections.length === 0, `peer-b recorded inbound rejections: ${JSON.stringify(rejections)}`);
 
+	// Arrange: the imported memory as a share made before shares claimed the
+	// origin left it: moved into the shared Project, origin still "local", with
+	// a cleanup peer-b refuses. peer-a's push delivers the move to peer-b first.
+	tsx(ctx, "peer-a", ["e2e/scripts/pre-sync-share-legacy-move.ts"], "28-peer-a-legacy-move");
+	await syncOnce(ctx, "peer-a", peerBIdentity.device_id, "29-peer-a-push");
+
+	// Act + Assert: peer-a withholds that cleanup, so peer-b keeps pulling
+	// without a rejection. peer-b's copy stays as it was received.
+	await syncOnce(ctx, "peer-b", ownerId, "30-peer-b-pull-after-legacy-move");
+	const after = peerState(ctx, "peer-b", "31-peer-b-after-legacy-move");
+	assert(after.rejections.length === 0, `peer-b recorded inbound rejections: ${JSON.stringify(after.rejections)}`);
+	assert(
+		after.imported.length === 1 && after.imported[0]?.origin === "local",
+		`peer-b imported copy: ${JSON.stringify(after.imported)}`,
+	);
+	const ownerAfter = peerState(ctx, "peer-a", "31-peer-a-after-legacy-move");
+	assert(ownerAfter.imported[0]?.origin === "local", `peer-a imported memory: ${JSON.stringify(ownerAfter.imported)}`);
+
 	if (!ctx.keepStackOnFailure) {
-		ctx.compose.down("28-compose-down-post");
+		ctx.compose.down("32-compose-down-post");
 	}
 }
