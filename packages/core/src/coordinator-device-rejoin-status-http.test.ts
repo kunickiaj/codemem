@@ -4,6 +4,7 @@ import type { AuthLinkBackend } from "./coordinator-auth-link.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	createDeviceRejoinStatusHandler,
+	DEVICE_REJOIN_STATUS_PATH,
 	type DeviceRejoinStatusHttpDeps,
 } from "./coordinator-device-rejoin-status-http.js";
 import {
@@ -76,16 +77,8 @@ async function fixture(kind: "SQLite" | "D1") {
 		readRequestBytes,
 		storeFactory,
 	};
-	const handler = createDeviceRejoinStatusHandler(deps);
 	const app = new Hono();
-	const internal: unknown[] = [];
-	// This test adapter records the non-wire result. Production has no adapter or route.
-	app.post("/v1/auth/rejoin-attempts/:attemptId/status", async (c) => {
-		const result = await handler(c);
-		if (result instanceof Response) return result;
-		internal.push(result);
-		return new Response(null, { status: 204 });
-	});
+	app.post(DEVICE_REJOIN_STATUS_PATH, createDeviceRejoinStatusHandler(deps));
 	const body = (now = scope.now) => {
 		const proof = poll(now);
 		return {
@@ -105,7 +98,6 @@ async function fixture(kind: "SQLite" | "D1") {
 		body,
 		send,
 		deps,
-		internal,
 		first,
 		close,
 		clientKey,
@@ -116,7 +108,7 @@ async function fixture(kind: "SQLite" | "D1") {
 	};
 }
 
-describe.each(["SQLite", "D1"] as const)("unmounted status handler (%s)", (kind) => {
+describe.each(["SQLite", "D1"] as const)("device rejoin status (%s)", (kind) => {
 	it("returns pending status and the exact live finalized projection using the retained tombstone", async () => {
 		const f = await fixture(kind);
 		const pending = await f.send();
@@ -204,16 +196,32 @@ describe.each(["SQLite", "D1"] as const)("unmounted status handler (%s)", (kind)
 		expect((await f.send()).status).toBe(403);
 		expect(f.storeFactory).toHaveBeenCalledTimes(2);
 	});
+});
 
-	it("returns only authenticated internal tags at elapsed and stored-expired boundaries", async () => {
+describe.each(["SQLite", "D1"] as const)("status expiry (%s)", (kind) => {
+	it.each([
+		["marked expired before its deadline", "expired", 599_999],
+		["pending at its deadline", "pending", 600_000],
+		["finalized at its deadline", "finalized", 600_000],
+		["finalized after its deadline", "finalized", 600_001],
+	] as const)("masks a valid poll for an attempt that is %s", async (_case, state, offset) => {
 		const f = await fixture(kind);
-		await finalizeStatusLive(f.fixtureDb);
-		f.clock.mockReturnValue(scope.now + 600_000);
-		await f.send(f.body(scope.now + 600_000));
-		expect(f.internal).toEqual([{ kind: "authenticated_deadline_elapsed" }]);
+		if (state === "finalized") await finalizeStatusLive(f.fixtureDb);
+		if (state === "expired") {
+			await f.fixtureDb.run(
+				"UPDATE coordinator_device_rejoin_attempts SET state = 'expired' WHERE attempt_id = 'attempt'",
+			);
+		}
+		const before = await statusLiveSnapshot(f.fixtureDb);
+		const now = scope.now + offset;
+		f.clock.mockReturnValue(now);
+		const response = await f.send(f.body(now));
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual({ error: "device_rejoin_unavailable" });
 		expect(
 			f.first.mock.calls.some(([statement]) => statement.sql.includes("final_receipt_json")),
 		).toBe(false);
+		expect(await statusLiveSnapshot(f.fixtureDb)).toEqual(before);
 		expect(f.close).toHaveBeenCalledOnce();
 	});
 });

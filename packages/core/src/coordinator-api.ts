@@ -48,6 +48,10 @@ import {
 	createDeviceRejoinStartHandler,
 	DEVICE_REJOIN_START_PATH,
 } from "./coordinator-device-rejoin-start-http.js";
+import {
+	createDeviceRejoinStatusHandler,
+	DEVICE_REJOIN_STATUS_PATH,
+} from "./coordinator-device-rejoin-status-http.js";
 import { registerCoordinatorDeviceRemovalCommands } from "./coordinator-device-removal-commands.js";
 import { registerCoordinatorDeviceRemovalRoutes } from "./coordinator-device-removal-routes.js";
 import {
@@ -265,6 +269,7 @@ function registerOptionalCoordinatorAuth(
 			`${DEVICE_REBIND_ATTEMPTS_PATH}/*`,
 			DEVICE_REJOIN_FINALIZE_PATH,
 			DEVICE_REJOIN_START_PATH,
+			DEVICE_REJOIN_STATUS_PATH,
 			"/v1/admin/auth-controller-reviews",
 		]) {
 			app.all(path, unavailable);
@@ -301,6 +306,10 @@ function registerBrowserHalfRoutes(
 	// A legacy link option has no rebind or headless code-entry pages.
 	registerCoordinatorDeviceRebindRoutes(app, browserDeps);
 	registerCoordinatorDeviceRejoinFinalizeRoute(app, { ...browserDeps, clientKey: ready.clientKey });
+	app.post(
+		DEVICE_REJOIN_STATUS_PATH,
+		createDeviceRejoinStatusHandler({ ...browserDeps, clientKey: ready.clientKey }),
+	);
 	if (ready.clientAddress)
 		app.post(
 			DEVICE_REJOIN_START_PATH,

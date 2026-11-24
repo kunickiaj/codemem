@@ -10,6 +10,7 @@ import {
 } from "./coordinator-device-rejoin-start-input.js";
 
 const ATTEMPT_TTL_MS = 600_000;
+const TERMINAL_RETENTION_MS = 86_400_000;
 const MAX_ACTIVE_ATTEMPTS = 20;
 const ATTEMPTS = "coordinator_device_rejoin_attempts";
 const LIVE_STATES = "('pending', 'browser_claimed', 'oidc_verified', 'confirmed')";
@@ -137,6 +138,14 @@ WHERE coordinator_id = ? AND attempt_id = (
 	};
 }
 
+function cleanupStatement(coordinatorId: string, deviceId: string, now: number): AuthLinkStatement {
+	return {
+		sql: `DELETE FROM ${ATTEMPTS}
+ WHERE coordinator_id = ? AND device_id = ? AND expires_at_ms <= ? AND state <> 'finalized'`,
+		values: [coordinatorId, deviceId, now - TERMINAL_RETENTION_MS],
+	};
+}
+
 /** Verifies possession before the caller spends a device-specific rate budget. */
 export async function prepareVerifiedRejoinStart(
 	backend: Backend,
@@ -182,6 +191,7 @@ async function writeVerifiedStart(
 			evictionStatement(trusted.coordinatorId, evidence.deviceId, now),
 			insertStatement(trusted, request, evidence, fingerprint, now),
 			changedRows(),
+			cleanupStatement(trusted.coordinatorId, evidence.deviceId, now),
 		],
 	);
 	if (result === "changed")
@@ -288,8 +298,8 @@ WHERE ${EVIDENCE_MATCH} AND (SELECT count(*) FROM ${ATTEMPTS} a
 }
 
 /**
- * The existing internal writer. Quota eviction and the exact evidence recheck
- * run in one batch. No failed insert can leave an eviction behind.
+ * The internal writer batches the exact evidence recheck, quota eviction,
+ * insert, and cleanup. A failed start leaves no attempt changes behind.
  */
 export async function insertVerifiedRejoinStartAttempt(
 	backend: Backend,
