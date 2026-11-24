@@ -68,9 +68,10 @@ codemem coordinator device enroll <group-id> <device-id> \
 # List enrolled devices
 codemem coordinator device list <group-id> --db-path <path>
 
-# Rename, disable, or remove a device
+# Rename, disable, enable, or remove a device
 codemem coordinator device rename <group-id> <device-id> --name "work-laptop" --db-path <path>
 codemem coordinator device disable <group-id> <device-id> --db-path <path>
+codemem coordinator device enable <group-id> <device-id> --db-path <path>
 codemem coordinator device remove <group-id> <device-id> --db-path <path>
 
 # Invite / join-request commands

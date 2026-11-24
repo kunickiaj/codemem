@@ -116,6 +116,7 @@ codemem coordinator domain grant team-alpha acme-work <device-id> --effect-id <e
 codemem coordinator domain revoke team-alpha acme-work <device-id> --effect-id <effect-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator device rename team-alpha <device-id> --name "work-laptop" --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator device disable team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
+codemem coordinator device enable team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator device remove team-alpha <device-id> --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator grant list team-alpha --db-path ~/.codemem/coordinator.sqlite
 codemem coordinator grant revoke <grant-id> --db-path ~/.codemem/coordinator.sqlite

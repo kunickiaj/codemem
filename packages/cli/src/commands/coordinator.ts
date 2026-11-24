@@ -51,6 +51,7 @@ import {
 } from "./coordinator-auth-schema.js";
 import { buildCoordinatorD1BaselineCommand } from "./coordinator-d1-baseline.js";
 import { buildCoordinatorDiagnoseTeamSetupCommand } from "./coordinator-diagnose-team-setup.js";
+import { buildCoordinatorEnableDeviceCommand } from "./coordinator-enable-device.js";
 import { buildCoordinatorEnrollOwnerCommand } from "./coordinator-enroll-owner.js";
 import { buildCoordinatorGrantIdentityGroupCommand } from "./coordinator-grant-identity-group.js";
 import { buildCoordinatorInvitationCreateCommand } from "./coordinator-invitation-create.js";
@@ -200,10 +201,9 @@ function createCoordinatorResources() {
 		.addCommand(buildCoordinatorQualifyOwnerCommand());
 	const group = coordinatorResource("group", "Manage coordinator groups and enrollment grants");
 	group.addCommand(buildCoordinatorGrantIdentityGroupCommand());
-	const device = coordinatorResource(
-		"device",
-		"Manage device enrollment and revocation",
-	).addCommand(buildCoordinatorRevokeDeviceCommand());
+	const device = coordinatorResource("device", "Manage device enrollment and revocation")
+		.addCommand(buildCoordinatorRevokeDeviceCommand())
+		.addCommand(buildCoordinatorEnableDeviceCommand());
 	const domain = coordinatorResource("domain", "Manage Sharing domains and device access");
 	const invitation = coordinatorResource(
 		"invitation",
