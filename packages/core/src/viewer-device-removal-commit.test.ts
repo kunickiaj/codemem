@@ -142,6 +142,43 @@ const afterRemoval = {
 	removedBindings: ["local-alias", "peer", "remote-alias"],
 };
 
+describe("Viewer compound Block enrollment pin", () => {
+	it.each([
+		{ groupId: "a", keyId: canonicalKeyId(otherKey), omitKey: false },
+		{ groupId: "a", keyId: canonicalKeyId(key), omitKey: true },
+		{ groupId: "b", keyId: canonicalKeyId(key), omitKey: false },
+	])(
+		"refuses to Remove when the matching digest is for a different Block enrollment (%j)",
+		async ({ groupId, keyId, omitKey }) => {
+			if (!keyId) throw new Error("Missing fixture key");
+			const f = await fixture(async (_request, dispatch) => {
+				const response = await dispatch();
+				if (!omitKey) return response;
+				return Response.json({ ...(await response.json()), key_id: null });
+			});
+			await expect(
+				commitViewerDeviceRemoval(f.confirmed, { ...f, expectedEnrollment: { groupId, keyId } }),
+			).resolves.toEqual({ kind: "rejected", error: "removal_preview_stale" });
+			expect(f.paths).toEqual([previewPath]);
+			expect(f.summary()).toEqual(f.before);
+			expect(await f.store.getEnrollment("a", "peer")).not.toBeNull();
+		},
+	);
+
+	it("commits Remove when the digest and expected Block enrollment agree", async () => {
+		const f = await fixture();
+		const keyId = canonicalKeyId(key);
+		if (!keyId) throw new Error("Missing fixture key");
+		await expect(
+			commitViewerDeviceRemoval(f.confirmed, {
+				...f,
+				expectedEnrollment: { groupId: "a", keyId },
+			}),
+		).resolves.toMatchObject({ kind: "removed", evidence: { source: "receipt" } });
+		expect(f.paths).toEqual([previewPath, commitPath]);
+	});
+});
+
 describe("Viewer coordinator removal commit", () => {
 	it("uses a verified receipt before waiting for refresh and removing the local pairings", async () => {
 		const f = await fixture();
