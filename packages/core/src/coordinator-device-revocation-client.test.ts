@@ -140,6 +140,8 @@ it.each([
 	{ deviceId: "a\u200b" },
 	{ expectedDigest: "A".repeat(64) },
 	{ expectedDigest: "short" },
+	{ requiredRemovalId: "" },
+	{ requiredRemovalId: " removal-a" },
 	{ expectedContext: { coordinatorId: "", keyId: key } },
 	{ expectedContext: { coordinatorId: "coordinator-a", keyId: "bad" } },
 	{ timeoutS: 0 },

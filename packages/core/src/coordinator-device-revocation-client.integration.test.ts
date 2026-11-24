@@ -167,3 +167,42 @@ it("rejects real enrollment key drift after preview with 409 stale and no tombst
 	expect(before.revocations).toEqual([]);
 	expect(fetch).toHaveBeenCalledTimes(2);
 });
+
+it("requires the same Remove receipt on the pinned Block preview and commit", async () => {
+	const store = new BetterSqliteCoordinatorStore(dbPath, { existingOnly: true });
+	try {
+		expect(await store.removeDevice(request.groupId, request.deviceId)).toBe(true);
+	} finally {
+		await store.close();
+	}
+	const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+	let requiredRemovalId: unknown;
+	try {
+		requiredRemovalId = db
+			.prepare("SELECT removal_id FROM coordinator_device_removals")
+			.pluck()
+			.get();
+	} finally {
+		db.close();
+	}
+	if (typeof requiredRemovalId !== "string") throw new Error("Missing fixture removal");
+	const pinned = { ...request, requiredRemovalId };
+	const before = inspect();
+	await expect(revoke({ ...pinned, requiredRemovalId: "another-removal" })).rejects.toMatchObject({
+		status: 409,
+		code: "revocation_target_unavailable",
+	});
+	const preview = await revoke(pinned);
+	if (preview.state !== "ready") throw new Error("Expected preview");
+	const commit = {
+		expectedDigest: preview.expected_digest,
+		expectedContext: { coordinatorId: preview.coordinator_id, keyId: preview.key_id },
+	};
+	await expect(revoke({ ...request, ...commit })).rejects.toMatchObject({
+		status: 409,
+		code: "revocation_preview_stale",
+	});
+	expect(inspect()).toEqual(before);
+	await expect(revoke({ ...pinned, ...commit })).resolves.toMatchObject({ state: "revoked" });
+	expect(inspect().revocations).toHaveLength(2);
+});
