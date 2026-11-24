@@ -49,6 +49,8 @@ export interface CoordinatorEnrollment {
 	ownership_identity_id?: string;
 	/** Set by the coordinator for its own configured infrastructure devices, never by callers. */
 	service_role?: CoordinatorServiceRole;
+	/** Display-only timestamp for an enrollment written by Google sign-in rejoin. */
+	rejoined_at_ms?: number;
 	/** Set in admin listings when this device ID or key is revoked coordinator-wide. */
 	revoked?: true;
 }
@@ -207,6 +209,7 @@ export interface CoordinatorPeerRecord {
 	device_id: string;
 	public_key: string;
 	fingerprint: string;
+	rejoined_at_ms?: number;
 	display_name: string | null;
 	addresses: string[];
 	last_seen_at: string | null;

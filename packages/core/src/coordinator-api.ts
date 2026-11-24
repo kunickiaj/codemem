@@ -40,6 +40,11 @@ import {
 	DEVICE_REBIND_ATTEMPTS_PATH,
 	registerCoordinatorDeviceRebindRoutes,
 } from "./coordinator-device-rebind-http.js";
+import { withDeviceRejoinDisplay } from "./coordinator-device-rejoin-display.js";
+import {
+	DEVICE_REJOIN_EVENTS_PATH,
+	registerDeviceRejoinEvents,
+} from "./coordinator-device-rejoin-events.js";
 import {
 	DEVICE_REJOIN_FINALIZE_PATH,
 	registerCoordinatorDeviceRejoinFinalizeRoute,
@@ -270,6 +275,7 @@ function registerOptionalCoordinatorAuth(
 			DEVICE_REJOIN_FINALIZE_PATH,
 			DEVICE_REJOIN_START_PATH,
 			DEVICE_REJOIN_STATUS_PATH,
+			DEVICE_REJOIN_EVENTS_PATH,
 			"/v1/admin/auth-controller-reviews",
 		]) {
 			app.all(path, unavailable);
@@ -302,6 +308,7 @@ function registerBrowserHalfRoutes(
 	deps: Parameters<typeof registerOptionalCoordinatorAuth>[2],
 ): void {
 	const browserDeps = { ...deps, config: ready.auth.storeConfig, storeFactory: ready.storeFactory };
+	registerDeviceRejoinEvents(app, browserDeps);
 	registerCoordinatorAccountLinkStatusRoute(app, browserDeps);
 	// A legacy link option has no rebind or headless code-entry pages.
 	registerCoordinatorDeviceRebindRoutes(app, browserDeps);
@@ -882,7 +889,7 @@ async function peerDiscoveryResponse(
 ): Promise<Response> {
 	try {
 		const items = await store.listGroupPeers(groupId, requestingDeviceId);
-		return c.json({ items });
+		return c.json({ items: await withDeviceRejoinDisplay(store, groupId, items) });
 	} catch {
 		return c.json({ error: "peer_discovery_unavailable" }, 503);
 	}
@@ -1080,11 +1087,15 @@ async function withRevocationMarks(
 }
 
 async function adminDeviceListing(
+	c: Context,
 	store: CoordinatorStore,
-	enrollments: CoordinatorEnrollment[],
+	groupId: string,
+	includeDisabled: boolean,
 	relayHealthProbes: readonly RelayHealthProbeEnrollment[] = [],
-): Promise<CoordinatorEnrollment[]> {
-	return withRevocationMarks(store, withServiceRoles(enrollments, relayHealthProbes));
+): Promise<Response> {
+	const enrollments = await store.listEnrolledDevices(groupId, includeDisabled);
+	const listed = await withRevocationMarks(store, withServiceRoles(enrollments, relayHealthProbes));
+	return c.json({ items: await withDeviceRejoinDisplay(store, groupId, listed) });
 }
 
 export function createCoordinatorApp(
@@ -2072,8 +2083,7 @@ export function createCoordinatorApp(
 
 		const store = createStore();
 		try {
-			const items = await store.listEnrolledDevices(groupId, includeDisabled);
-			return c.json({ items: await adminDeviceListing(store, items, opts.relayHealthProbes) });
+			return await adminDeviceListing(c, store, groupId, includeDisabled, opts.relayHealthProbes);
 		} finally {
 			await store.close();
 		}

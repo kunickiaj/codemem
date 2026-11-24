@@ -657,9 +657,11 @@ Section 8 requires for rebinding, applied to rejoin.
   route for an enrolled device that has its own ownership binding. It returns
   the rejoin audit events of the binding's Identity across all groups, oldest
   first, at most 50, each with `event_id`, `device_id`, `group_ids` and
-  `finalized_at_ms`, and the cursor for the next read. A device stores the last
-  cursor it has shown. A caller without an ownership binding gets an empty
-  list, because the Identity on an enrollment alone is not proof.
+  `finalized_at_ms`, in `items`. Omit `after` for the first page. Use
+  `next_cursor` from the last page shown to continue. An empty page keeps the
+  supplied cursor or returns `null` if none was supplied. A caller without an
+  ownership binding gets an empty list, because the Identity on an enrollment
+  alone is not proof.
 
 Both are display evidence and authorize nothing.
 

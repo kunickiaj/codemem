@@ -48,7 +48,7 @@ async function coordinator() {
 	const oidc = createRejoinOidc();
 	const csrfKey = await importBrowserCsrfKey(new Uint8Array(32).fill(7));
 	const worker = createCloudflareCoordinatorWorker({
-		now: () => new Date(now).toISOString(),
+		now: () => new Date(Date.now()).toISOString(),
 		browserAuth: { config, csrfKey, oidcOptions: { fetch: oidc.fetch } },
 	});
 	const request = (path: string, init?: RequestInit) => {
@@ -82,13 +82,16 @@ function post(f: Fixture, path: string, body: Record<string, string | number>) {
 
 function ordinaryCheck(f: Fixture) {
 	const path = `/v1/peers/revocations?group_id=${groupId}`;
-	const body = JSON.stringify({ peers: [] });
-	const timestamp = String(Math.floor(now / 1000));
+	return signedRequest(f, path, "POST", JSON.stringify({ peers: [] }));
+}
+
+function signedRequest(f: Fixture, path: string, method: "GET" | "POST", body?: string) {
+	const timestamp = String(Math.floor(Date.now() / 1000));
 	const nonce = crypto.randomUUID();
-	const canonical = buildCanonicalRequest("POST", path, timestamp, nonce, Buffer.from(body));
+	const canonical = buildCanonicalRequest(method, path, timestamp, nonce, Buffer.from(body ?? ""));
 	const signature = sign(null, canonical, f.key.privateKey).toString("base64");
 	return f.request(path, {
-		method: "POST",
+		method,
 		headers: {
 			"content-type": "application/json",
 			"x-opencode-device": deviceId,
@@ -215,8 +218,27 @@ it("rejoins through the registered Worker routes on native D1 and restores signe
 	expect(
 		await f.db.prepare("SELECT count(*) AS count FROM coordinator_device_rejoin_audit_log").first(),
 	).toEqual({ count: 1 });
+	await expectDurableEvents(f);
 	expect(f.network).not.toHaveBeenCalled();
 });
+
+async function expectDurableEvents(f: Fixture) {
+	f.clock.mockReturnValue(now + 8 * 86_400_000);
+	const path = `/v1/auth/rejoin-events?group_id=${groupId}`;
+	const response = await signedRequest(f, path, "GET");
+	expect(response.status).toBe(200);
+	expect(await response.json()).toEqual({
+		items: [{
+			event_id: attemptId,
+			device_id: deviceId,
+			group_ids: [groupId],
+			finalized_at_ms: now,
+		}],
+		next_cursor: attemptId,
+	});
+	const following = await signedRequest(f, `${path}&after=${attemptId}`, "GET");
+	expect(await following.json()).toEqual({ items: [], next_cursor: attemptId });
+}
 
 async function expectLateRecovery(
 	f: Fixture,
