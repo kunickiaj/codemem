@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createCoordinatorApp } from "./coordinator-api.js";
 import { type Backend, setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import type { DeviceAuthLinkDeps } from "./coordinator-device-auth-link.js";
 import { verifiedFixture } from "./coordinator-device-rejoin-start-evidence-test-harness.js";
-import { prepareDeviceRejoinStartHandler } from "./coordinator-device-rejoin-start-http.js";
+import { createDeviceRejoinStartHandler } from "./coordinator-device-rejoin-start-http.js";
+import type { DeviceRejoinStartInput } from "./coordinator-device-rejoin-start-input.js";
 import { createInMemoryRequestRateLimiter } from "./request-rate-limit.js";
 
 const origin = "https://coordinator.example.test";
@@ -16,19 +18,8 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 
-async function fixture(kind: Backend) {
-	const { db, store } = setupStore(kind);
-	const realClose = store.close.bind(store);
-	disposers.push(async () => {
-		await realClose();
-		if (db.open) db.close();
-	});
-	vi.spyOn(store, "close").mockResolvedValue(undefined);
-	const { input } = await verifiedFixture({
-		run: async (sql, ...values) => db.prepare(sql).run(...values),
-	});
-	const now = vi.spyOn(Date, "now").mockReturnValue(input.timestampMs);
-	const body = {
+function wire(input: DeviceRejoinStartInput) {
+	return {
 		device_id: input.deviceId,
 		public_key: input.publicKey,
 		attempt_id: input.attemptId,
@@ -37,9 +28,23 @@ async function fixture(kind: Backend) {
 		timestamp_ms: input.timestampMs,
 		signature: input.signature,
 	};
+}
+
+async function fixture(kind: Backend) {
+	const { db, store } = setupStore(kind);
+	const realClose = store.close.bind(store);
+	disposers.push(async () => {
+		await realClose();
+		if (db.open) db.close();
+	});
+	vi.spyOn(store, "close").mockResolvedValue(undefined);
+	const { input, signAttempt } = await verifiedFixture({
+		run: async (sql, ...values) => db.prepare(sql).run(...values),
+	});
+	const now = vi.spyOn(Date, "now").mockReturnValue(input.timestampMs);
+	const body = wire(input);
 	const storeFactory = vi.fn(() => store);
 	const address = vi.fn<() => string | null>(() => "a");
-	const pending = vi.fn();
 	const limiter = createInMemoryRequestRateLimiter({ now: Date.now });
 	const readRequestBytes = vi.fn<DeviceAuthLinkDeps["readRequestBytes"]>(async (c, max) => {
 		const bytes = new Uint8Array(await c.req.raw.arrayBuffer());
@@ -49,37 +54,43 @@ async function fixture(kind: Backend) {
 		const result = limiter.check(JSON.stringify([authenticated, key]), authenticated ? 2 : 4);
 		return result.allowed ? null : c.json({ error: "rate_limited" }, 429);
 	});
-	const start = prepareDeviceRejoinStartHandler({
-		config: {
-			enabled: true,
-			coordinatorId: "coordinator",
-			redirectUri: `${origin}/auth/callback`,
-			revision,
-			issuer,
-		},
+	const config = {
+		enabled: true,
+		coordinatorId: "coordinator",
+		redirectUri: `${origin}/auth/callback`,
+		revision,
+		issuer,
+	};
+	const start = createDeviceRejoinStartHandler({
+		config,
 		clientAddress: address,
 		storeFactory,
 		readRequestBytes,
 		rateLimitedResponse: rate,
 	});
 	const app = new Hono();
-	app.post(path, async (c) => {
-		const outcome = await start(c);
-		if (outcome instanceof Response) return outcome;
-		pending(outcome);
-		// This is a test transport, not the pending duplicate-start HTTP decision.
-		return new Response(null, { status: 204 });
-	});
+	app.post(path, start);
 	const send = (payload: unknown = body, url = `${origin}${path}`) =>
 		app.request(url, {
 			method: "POST",
 			body: typeof payload === "string" ? payload : JSON.stringify(payload),
 		});
 	const attempts = () => db.prepare("SELECT * FROM coordinator_device_rejoin_attempts").all();
-	return { body, address, now, pending, readRequestBytes, rate, send, storeFactory, attempts };
+	return {
+		body,
+		address,
+		now,
+		signAttempt,
+		config,
+		readRequestBytes,
+		rate,
+		send,
+		storeFactory,
+		attempts,
+	};
 }
 
-describe.each(["SQLite", "D1"] as const)("prepared rejoin start (%s)", (kind) => {
+describe.each(["SQLite", "D1"] as const)("device rejoin start (%s)", (kind) => {
 	it("reads the raw bounded body, admits verified evidence and returns only the committed pins", async () => {
 		const f = await fixture(kind);
 		const response = await f.send();
@@ -87,7 +98,8 @@ describe.each(["SQLite", "D1"] as const)("prepared rejoin start (%s)", (kind) =>
 		expect(response.headers.get("Cache-Control")).toBe("no-store");
 		expect(f.readRequestBytes.mock.calls[0]?.[1]).toBe(4096);
 		const stored = f.attempts()[0] as { removal_digest: string };
-		expect(await response.json()).toEqual({
+		const original = await response.json();
+		expect(original).toEqual({
 			attempt_id: "attempt",
 			expires_at_ms: f.body.timestamp_ms + 600_000,
 			coordinator_id: "coordinator",
@@ -105,8 +117,11 @@ describe.each(["SQLite", "D1"] as const)("prepared rejoin start (%s)", (kind) =>
 			[["device-rejoin:start", "coordinator", "a", "device"], true],
 		]);
 		const before = f.attempts();
-		await f.send();
-		expect(f.pending).toHaveBeenCalledExactlyOnceWith({ kind: "duplicate_start" });
+		const next = f.body.timestamp_ms + 1000;
+		f.now.mockReturnValue(next);
+		const retry = await f.send(wire(await f.signAttempt("attempt", { timestampMs: next })));
+		expect(retry.status).toBe(200);
+		expect(await retry.json()).toEqual(original);
 		expect(f.attempts()).toEqual(before);
 	});
 
@@ -124,11 +139,10 @@ describe.each(["SQLite", "D1"] as const)("prepared rejoin start (%s)", (kind) =>
 		f.address.mockReturnValue("b");
 		expect((await f.send()).status).toBe(200);
 		const before = f.attempts();
-		await f.send();
+		expect((await f.send()).status).toBe(200);
 		expect((await f.send()).status).toBe(429);
 		f.address.mockReturnValue("c");
-		await f.send();
-		expect(f.pending).toHaveBeenCalledTimes(2);
+		expect((await f.send()).status).toBe(200);
 		expect(f.attempts()).toEqual(before);
 	});
 
@@ -154,4 +168,57 @@ describe.each(["SQLite", "D1"] as const)("prepared rejoin start (%s)", (kind) =>
 		expect((await f.send()).status).toBe(403);
 		expect(f.attempts()).toEqual([]);
 	});
+
+	it("masks a stale proof and a newly signed mismatch on an existing attempt", async () => {
+		const f = await fixture(kind);
+		expect((await f.send()).status).toBe(200);
+		const before = f.attempts();
+		const next = f.body.timestamp_ms + 300_001;
+		f.now.mockReturnValue(next);
+		const stale = await f.send();
+		expect(stale.status).toBe(403);
+		expect(await stale.json()).toEqual({ error: "device_rejoin_unavailable" });
+		const mismatch = await f.send(
+			wire(
+				await f.signAttempt("attempt", {
+					timestampMs: next,
+					browserStartHash: "f".repeat(64),
+				}),
+			),
+		);
+		expect(mismatch.status).toBe(403);
+		expect(await mismatch.json()).toEqual({ error: "device_rejoin_unavailable" });
+		expect(f.attempts()).toEqual(before);
+	});
 });
+
+it.each(["SQLite", "D1"] as const)(
+	"mounts through the real app only with a verified address supplier (%s)",
+	async (kind) => {
+		const f = await fixture(kind);
+		const app = (clientAddress?: () => string) =>
+			createCoordinatorApp({
+				storeFactory: f.storeFactory,
+				runtime: { adminSecret: () => null, now: () => new Date(Date.now()).toISOString() },
+				requestVerifier: () => {
+					throw new Error("Enrolled admission must not run");
+				},
+				browserAuth: {
+					kind: "ready",
+					auth: { storeConfig: f.config, register: () => {} },
+					storeFactory: f.storeFactory,
+					clientKey: () => "client-key",
+					clientAddress,
+				},
+			});
+		const post = (coordinator: ReturnType<typeof app>) =>
+			coordinator.request(`${origin}${path}`, {
+				method: "POST",
+				body: JSON.stringify(f.body),
+			});
+		expect((await post(app())).status).toBe(404);
+		expect(f.attempts()).toEqual([]);
+		expect((await post(app(() => "127.0.0.1"))).status).toBe(200);
+		expect(f.attempts()).toHaveLength(1);
+	},
+);

@@ -17,13 +17,13 @@ type Deps = Pick<
 	clientAddress: CoordinatorBrowserAuthClientKey;
 };
 
-type StartOutcome = Response | { kind: "duplicate_start" };
+export const DEVICE_REJOIN_START_PATH = "/v1/auth/rejoin-attempts";
 
 function unavailable(c: Context) {
 	return c.json({ error: "device_rejoin_unavailable" }, 403);
 }
 
-async function handle(c: Context, deps: Deps, origin: string): Promise<StartOutcome> {
+async function handle(c: Context, deps: Deps, origin: string): Promise<Response> {
 	c.header("Cache-Control", "no-store");
 	c.header("Referrer-Policy", "no-referrer");
 	if (!deps.config.enabled) return c.json({ error: "not_found" }, 404);
@@ -50,7 +50,7 @@ async function admit(
 	origin: string,
 	ratePrefix: string[],
 	input: Extract<ReturnType<typeof parseDeviceRejoinStartBody>, { ok: true }>["input"],
-): Promise<StartOutcome> {
+): Promise<Response> {
 	const store = deps.storeFactory();
 	try {
 		const backend = await store.readDeviceRejoinBackend?.();
@@ -74,19 +74,18 @@ async function admit(
 			{ authenticated: true },
 		);
 		if (deviceRate) return deviceRate;
-		const result = await prepared.insert(Date.now());
-		if (result.kind === "started") return c.json(result.body);
+		const result = await prepared.insert(Date.now);
+		if (result.kind === "started" || result.kind === "prior_start") return c.json(result.body);
 		if (result.kind === "retry")
 			return c.json({ error: "device_rejoin_refused", reason: "retry" }, 409);
-		if (result.kind === "duplicate_start") return { kind: "duplicate_start" };
 		return unavailable(c);
 	} finally {
 		await store.close();
 	}
 }
 
-/** Unmounted until the duplicate response and retention steps are specified. */
-export function prepareDeviceRejoinStartHandler(deps: Deps): (c: Context) => Promise<StartOutcome> {
+/** Start uses the verified platform address and the removed device's purpose-specific proof. */
+export function createDeviceRejoinStartHandler(deps: Deps): (c: Context) => Promise<Response> {
 	const origin = new URL(deps.config.redirectUri).origin;
 	return async (c) => {
 		try {
