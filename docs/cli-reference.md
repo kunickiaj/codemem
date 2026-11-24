@@ -15,7 +15,7 @@ The visible roots are `memory`, `session`, `service`, `status`, `sync`,
 | `service` | `start`, `stop`, `restart`, `status` | Run and inspect the local viewer, sync, ingestion, and maintenance service. |
 | `status` | — | Alias for `service status`. |
 | `sync` | `enable`, `disable`, `peers`, `peers remove`, `pair`, `once`, `attempts`, `doctor`, `relay-keys`, `approve-relay-key`, `bootstrap`, `connect`, `rejoin` | Configure and diagnose peer-to-peer sync. |
-| `coordinator` | `account link`; `owner enroll`, `review`, `qualify`; `group grant-identity`, `create`, `list`; `device revoke`, `enroll`, `list`, `rename`, `disable`, `remove`; `domain list`, `create`, `update`, `members`, `grant`, `revoke`; `grant list`, `revoke`; `invitation create`, `accept`; `request list`, `approve`, `deny`; `schema diagnose-team`, `upgrade-auth`, `upgrade-account`, `baseline-d1`; `serve` | Administer a self-hosted coordinator. |
+| `coordinator` | `account link`; `owner enroll`, `review`, `qualify`; `group grant-identity`, `create`, `list`; `device revoke`, `enroll`, `list`, `rename`, `disable`, `enable`, `remove`; `domain list`, `create`, `update`, `members`, `grant`, `revoke`; `grant list`, `revoke`; `invitation create`, `accept`; `request list`, `approve`, `deny`; `schema diagnose-team`, `upgrade-auth`, `upgrade-account`, `baseline-d1`; `serve` | Administer a self-hosted coordinator. |
 | `maintenance` | `database init`, `vacuum`, `stats`, `prune-events`, `prune-history`; `memory prune`, `deduplicate`, `redact-secrets`; `project rename <old> <new>`, `normalize`; `embeddings`; `backfill tags`, `dedup-keys`, `narrative`, `structured`; `status` | Run storage, memory, embedding, project, and backfill maintenance. |
 | `diagnostics` | `memory roles`, `compare`, `artifacts`, `relink`, `relink-plan`; `extraction report`, `replay`, `benchmark`; `capture status`, `retry`, `check`, `list-rejected`, `show-rejected`, `recover-rejected` | Inspect retrieval, extraction, and capture state. |
 | `config` | `workspace`, `where` | Update workspace configuration or show the configuration file path. |
@@ -180,6 +180,12 @@ Use `codemem coordinator device list --removed` to list active removals in the
 local coordinator database. Add a group ID to filter the list. To read from a
 remote coordinator, pass `--config <path>` with its saved URL and admin secret.
 The listing omits permanently blocked devices.
+
+Use `codemem coordinator device enable <group> <device>` to enable a disabled
+enrollment in the local coordinator database named by `--db-path`. The command
+never contacts a remote coordinator, even when the saved configuration names
+one. It refuses a removed device, which needs a new invitation, and a
+permanently blocked device, and it leaves their records unchanged.
 
 `codemem serve` remains a compatibility entrypoint. Existing `serve` invocations
 continue to work, and bare `codemem serve` runs the local service in the foreground.
