@@ -5,7 +5,7 @@ import { readVerifiedRejoinStartEvidence } from "./coordinator-device-rejoin-sta
 import { insertVerifiedRejoinStartAttempt } from "./coordinator-device-rejoin-start-write.js";
 import { ed25519KeyId } from "./coordinator-ed25519-key-id.js";
 
-type Fixture = Pick<AuthLinkBackend, "first"> & {
+type Fixture = Pick<AuthLinkBackend, "first" | "batch"> & {
 	run(sql: string, ...values: (string | number | null)[]): Promise<{ changes: number }>;
 };
 type WithFixture = (run: (db: Fixture) => Promise<void>) => Promise<void>;
@@ -248,9 +248,9 @@ async function verifiedFixture(db: Fixture) {
 function writer(db: Fixture, beforeWrite?: () => Promise<unknown>) {
 	return {
 		first: db.first,
-		run: async ({ sql, values }: Parameters<AuthLinkBackend["run"]>[0]) => {
+		batch: async (statements: Parameters<AuthLinkBackend["batch"]>[0]) => {
 			await beforeWrite?.();
-			return (await db.run(sql, ...values)).changes;
+			return db.batch(statements);
 		},
 	};
 }
@@ -306,7 +306,7 @@ function registerWriteOutcomeTests(withFixture: WithFixture) {
 }
 
 function registerCapacityTest(withFixture: WithFixture) {
-	it("does not exceed the twenty-attempt limit before eviction is wired", () =>
+	it("admits the twentieth live attempt without eviction and the twenty-first expires the oldest", () =>
 		withFixture(async (db) => {
 			const { signAttempt } = await verifiedFixture(db);
 			const backend = writer(db);
@@ -316,23 +316,276 @@ function registerCapacityTest(withFixture: WithFixture) {
 					true,
 				);
 			}
-			const before = await readEffects(db);
 			const excess = await signAttempt("excess");
-			expect(await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, excess, NOW)).toBe(
-				false,
-			);
-			expect(await readEffects(db)).toEqual(before);
+			expect(Object.values(await attemptStates(db))).toEqual(Array(20).fill("pending"));
+			expect(await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, excess, NOW)).toBe(true);
+			expect(await attemptStates(db)).toMatchObject({ "attempt-0": "expired", excess: "pending" });
+			expect(
+				Object.values(await attemptStates(db)).filter((state) => state === "pending"),
+			).toHaveLength(20);
 		}));
+}
+
+async function attemptStates(db: Fixture): Promise<Record<string, string>> {
+	const result = await db.first<{ states: string }>({
+		sql: `SELECT json_group_object(attempt_id, state) AS states FROM
+		 (SELECT attempt_id, state FROM coordinator_device_rejoin_attempts ORDER BY attempt_id)`,
+		values: [],
+	});
+	return JSON.parse(result?.states ?? "{}");
+}
+
+type SeedAttempt = {
+	id: string;
+	state:
+		| "pending"
+		| "browser_claimed"
+		| "oidc_verified"
+		| "confirmed"
+		| "failed"
+		| "expired"
+		| "finalized";
+	created?: number;
+	device?: string;
+	coordinator?: string;
+};
+
+async function seedAttempts(db: Fixture, signing: StartFixture, rows: SeedAttempt[]) {
+	expect(await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW)).toBe(
+		true,
+	);
+	const template = await db.first<Record<string, string | number | null>>({
+		sql: "SELECT * FROM coordinator_device_rejoin_attempts WHERE attempt_id = 'attempt'",
+		values: [],
+	});
+	if (!template) throw new Error("Missing attempt template");
+	await db.run("DELETE FROM coordinator_device_rejoin_attempts WHERE attempt_id = 'attempt'");
+	for (const row of rows) {
+		const created = row.created ?? NOW;
+		const data = {
+			...template,
+			attempt_id: row.id,
+			state: row.state,
+			created_at_ms: created,
+			expires_at_ms: created + 600_000,
+			device_id: row.device ?? "device",
+			coordinator_id: row.coordinator ?? "coordinator",
+			browser_transaction_hash: "transaction",
+			browser_binder_hash: "b".repeat(64),
+			link_id: "link",
+			link_authority_kind: "device_claim",
+			link_generation: 1,
+			destinations_json: "[]",
+			non_destinations_json: "[]",
+			confirmation_hash: "confirmation",
+			completion_secret_hash: "c".repeat(64),
+			finalized_at_ms: row.state === "finalized" ? created + 1 : null,
+			final_receipt_json: row.state === "finalized" ? "{}" : null,
+		};
+		await db.run(
+			`INSERT INTO coordinator_device_rejoin_attempts (${Object.keys(data).join(",")})
+			 VALUES (${Object.keys(data)
+					.map(() => "?")
+					.join(",")})`,
+			...Object.values(data),
+		);
+	}
+}
+
+const liveRows = (count: number): SeedAttempt[] =>
+	Array.from({ length: count }, (_, i) => ({ id: `live-${i}`, state: "pending" }));
+
+function registerAdmissionBoundaryTests(withFixture: WithFixture) {
+	it.each([19, 20])(
+		"excludes failed, expired and deadline-equal rows with %i live attempts",
+		(count) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				await seedAttempts(db, signing, [
+					...liveRows(count),
+					{ id: "failed", state: "failed" },
+					{ id: "expired", state: "expired" },
+					{ id: "deadline", state: "pending", created: NOW - 600_000 },
+					{ id: "old-failed", state: "failed", created: NOW - 90_000_000 },
+					{ id: "finalized", state: "finalized" },
+					{ id: "other-device", state: "pending", device: "other" },
+					{ id: "other-coordinator", state: "pending", coordinator: "other" },
+				]);
+				expect(
+					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+				).toBe(true);
+				const states = await attemptStates(db);
+				expect(states).toMatchObject({
+					failed: "failed",
+					expired: "expired",
+					deadline: "pending",
+					"old-failed": "failed",
+					finalized: "finalized",
+					"other-device": "pending",
+					"other-coordinator": "pending",
+					attempt: "pending",
+				});
+				expect(states["live-0"]).toBe(count === 20 ? "expired" : "pending");
+			}),
+	);
+
+	it.each(["oidc_verified", "confirmed"] as const)(
+		"refuses twenty protected %s attempts without changing any row",
+		(state) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				await seedAttempts(
+					db,
+					signing,
+					liveRows(20).map((row) => ({ ...row, state })),
+				);
+				const before = await allAttempts(db);
+				expect(
+					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+				).toBe(false);
+				expect(await allAttempts(db)).toEqual(before);
+			}),
+	);
+}
+
+function registerAdmissionOrderingTests(withFixture: WithFixture) {
+	it("expires the oldest eligible browser claim, preserves older protected rows, and breaks age ties by ID", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, [
+				...liveRows(16),
+				{ id: "protected-oidc", state: "oidc_verified", created: NOW - 100 },
+				{ id: "protected-confirmed", state: "confirmed", created: NOW - 100 },
+				{ id: "z-pending", state: "pending", created: NOW - 50 },
+				{ id: "a-browser", state: "browser_claimed", created: NOW - 50 },
+				{ id: "past-oidc", state: "oidc_verified", created: NOW - 600_000 },
+				{ id: "past-confirmed", state: "confirmed", created: NOW - 600_000 },
+			]);
+			expect(
+				await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+			).toBe(true);
+			expect(await attemptStates(db)).toMatchObject({
+				"a-browser": "expired",
+				"z-pending": "pending",
+				"protected-oidc": "oidc_verified",
+				"protected-confirmed": "confirmed",
+				"past-oidc": "oidc_verified",
+				"past-confirmed": "confirmed",
+			});
+		}));
+}
+
+function registerAdmissionRollbackTests(withFixture: WithFixture) {
+	it.each(["pending", "failed", "expired", "confirmed", "finalized"] as const)(
+		"replay of an existing %s ID runs no write, including with a full device",
+		(state) =>
+			withFixture(async (db) => {
+				const signing = await verifiedFixture(db);
+				await seedAttempts(db, signing, [
+					...liveRows(20),
+					{ id: "attempt", state, created: NOW - 90_000_000 },
+				]);
+				// Even an UPDATE affecting no rows must not run on replay.
+				await db.run(`CREATE TRIGGER reject_replay_write BEFORE UPDATE ON coordinator_device_rejoin_attempts
+			 BEGIN SELECT RAISE(ABORT, 'replay_wrote'); END`);
+				const before = await allAttempts(db);
+				expect(
+					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+				).toBe(false);
+				expect(await allAttempts(db)).toEqual(before);
+			}),
+	);
+
+	it("rolls back eviction when the guarded INSERT changes zero rows", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, liveRows(20));
+			await db.run(`CREATE TRIGGER skip_start BEFORE INSERT ON coordinator_device_rejoin_attempts
+			 BEGIN SELECT RAISE(IGNORE); END`);
+			const before = await allAttempts(db);
+			expect(
+				await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+			).toBe(false);
+			expect(await allAttempts(db)).toEqual(before);
+		}));
+
+	it("rolls back eviction and propagates an unexpected INSERT failure", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, liveRows(20));
+			await db.run(`CREATE TRIGGER reject_start BEFORE INSERT ON coordinator_device_rejoin_attempts
+			 BEGIN SELECT RAISE(ABORT, 'synthetic_insert_failure'); END`);
+			const before = await allAttempts(db);
+			await expect(
+				insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+			).rejects.toThrow("synthetic_insert_failure");
+			expect(await allAttempts(db)).toEqual(before);
+		}));
+}
+
+function registerAdmissionRaceTests(withFixture: WithFixture) {
+	it("checks replay again inside the batch before eviction", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, liveRows(20));
+			let before: unknown;
+			const backend = writer(db, async () => {
+				expect(
+					await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, signing.input, NOW),
+				).toBe(true);
+				before = await allAttempts(db);
+				await db.run(`CREATE TRIGGER reject_racing_replay BEFORE UPDATE ON coordinator_device_rejoin_attempts
+				 BEGIN SELECT RAISE(ABORT, 'replay_wrote'); END`);
+			});
+			expect(
+				await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
+			).toBe(false);
+			expect(await allAttempts(db)).toEqual(before);
+		}));
+
+	it("counts capacity inside the batch after another start takes the twentieth slot", () =>
+		withFixture(async (db) => {
+			const signing = await verifiedFixture(db);
+			await seedAttempts(db, signing, liveRows(19));
+			const other = await signing.signAttempt("other-start");
+			const backend = writer(db, async () => {
+				expect(await insertVerifiedRejoinStartAttempt(writer(db), WRITE_CONFIG, other, NOW)).toBe(
+					true,
+				);
+			});
+			expect(
+				await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
+			).toBe(true);
+			const states = await attemptStates(db);
+			expect(states["live-0"]).toBe("expired");
+			expect(Object.values(states).filter((state) => state === "pending")).toHaveLength(20);
+		}));
+}
+
+async function allAttempts(db: Fixture) {
+	return db.first({
+		sql: `SELECT json_group_array(json(row)) AS rows FROM
+		 (SELECT json_object('id', attempt_id, 'state', state, 'expiry', expires_at_ms,
+		  'created', created_at_ms, 'key', public_key, 'digest', removal_digest) AS row
+		  FROM coordinator_device_rejoin_attempts ORDER BY coordinator_id, attempt_id)`,
+		values: [],
+	});
 }
 
 export function registerRejoinStartWriteTests(withFixture: WithFixture) {
 	registerWriteOutcomeTests(withFixture);
 	registerCapacityTest(withFixture);
+	registerAdmissionBoundaryTests(withFixture);
+	registerAdmissionOrderingTests(withFixture);
+	registerAdmissionRollbackTests(withFixture);
+	registerAdmissionRaceTests(withFixture);
 	it.each(Object.entries(races))(
 		"writes nothing when %s changes after verification",
 		(_name, change) =>
 			withFixture(async (db) => {
 				const signing = await verifiedFixture(db);
+				await seedAttempts(db, signing, liveRows(20));
+				const before = await allAttempts(db);
 				let ran = false;
 				const backend = writer(db, async () => {
 					await change(db, signing);
@@ -342,12 +595,7 @@ export function registerRejoinStartWriteTests(withFixture: WithFixture) {
 					await insertVerifiedRejoinStartAttempt(backend, WRITE_CONFIG, signing.input, NOW),
 				).toBe(false);
 				expect(ran).toBe(true);
-				expect(
-					await db.first({
-						sql: "SELECT attempt_id FROM coordinator_device_rejoin_attempts",
-						values: [],
-					}),
-				).toBeNull();
+				expect(await allAttempts(db)).toEqual(before);
 			}),
 	);
 }

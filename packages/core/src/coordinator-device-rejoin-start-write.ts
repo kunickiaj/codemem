@@ -1,4 +1,5 @@
 import type { AuthLinkBackend, AuthLinkStatement } from "./coordinator-auth-link.js";
+import { changedRows, snapshotGuard, writeGuarded } from "./coordinator-auth-read-set.js";
 import {
 	readVerifiedRejoinStartEvidence,
 	START_EVIDENCE_SQL,
@@ -8,6 +9,7 @@ import type { DeviceRejoinStartInput } from "./coordinator-device-rejoin-start-i
 const ATTEMPT_TTL_MS = 600_000;
 const MAX_ACTIVE_ATTEMPTS = 20;
 const ATTEMPTS = "coordinator_device_rejoin_attempts";
+const LIVE_STATES = "('pending', 'browser_claimed', 'oidc_verified', 'confirmed')";
 
 type StartConfig = {
 	coordinatorId: string;
@@ -39,7 +41,7 @@ WHERE e.binding_id = ? AND e.identity_id = ?
  AND e.own_tombstones_json = ? AND e.alias_removal_seqs_json = ?
  AND NOT EXISTS (SELECT 1 FROM ${ATTEMPTS} a WHERE a.coordinator_id = ? AND a.attempt_id = ?)
  AND (SELECT count(*) FROM ${ATTEMPTS} a WHERE a.coordinator_id = ? AND a.device_id = ?
-  AND a.state IN ('pending', 'browser_claimed', 'oidc_verified', 'confirmed')
+  AND a.state IN ${LIVE_STATES}
   AND a.expires_at_ms > ?) < ?`,
 		values: [
 			evidence.deviceId,
@@ -73,13 +75,42 @@ WHERE e.binding_id = ? AND e.identity_id = ?
 	};
 }
 
+function evictionStatement(
+	coordinatorId: string,
+	deviceId: string,
+	now: number,
+): AuthLinkStatement {
+	return {
+		sql: `UPDATE ${ATTEMPTS} SET state = 'expired'
+WHERE coordinator_id = ? AND attempt_id = (
+ SELECT attempt_id FROM ${ATTEMPTS}
+ WHERE coordinator_id = ? AND device_id = ?
+  AND state IN ('pending', 'browser_claimed') AND expires_at_ms > ?
+ ORDER BY created_at_ms, attempt_id LIMIT 1)
+ AND (SELECT count(*) FROM ${ATTEMPTS}
+  WHERE coordinator_id = ? AND device_id = ?
+   AND state IN ${LIVE_STATES} AND expires_at_ms > ?) >= ?`,
+		values: [
+			coordinatorId,
+			coordinatorId,
+			deviceId,
+			now,
+			coordinatorId,
+			deviceId,
+			now,
+			MAX_ACTIVE_ATTEMPTS,
+		],
+	};
+}
+
 /**
- * Inserts a verified attempt only while the entire evidence snapshot still matches.
- * The route must not use this alone: admission still needs rate limits and atomic
- * eviction/cleanup. A false result is internal and does not choose a wire error.
+ * Admits an attempt with atomic quota eviction and a full evidence recheck.
+ * Replay is checked before any write. A zero-row INSERT rolls back eviction too.
+ * Retention cleanup and route/rate-limit integration remain separate. A false
+ * result is internal and does not choose a wire error.
  */
 export async function insertVerifiedRejoinStartAttempt(
-	backend: Pick<AuthLinkBackend, "first" | "run">,
+	backend: Pick<AuthLinkBackend, "first" | "batch">,
 	config: StartConfig,
 	input: DeviceRejoinStartInput,
 	now: number,
@@ -93,5 +124,19 @@ export async function insertVerifiedRejoinStartAttempt(
 	const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
 		byte.toString(16).padStart(2, "0"),
 	).join("");
-	return (await backend.run(insertStatement(trusted, request, evidence, fingerprint, now))) === 1;
+	const replayGuard = snapshotGuard({
+		sql: `NOT EXISTS (SELECT 1 FROM ${ATTEMPTS} WHERE coordinator_id = ? AND attempt_id = ?)`,
+		values: [trusted.coordinatorId, request.attemptId],
+	});
+	return (
+		(await writeGuarded(
+			backend,
+			[replayGuard],
+			[
+				evictionStatement(trusted.coordinatorId, evidence.deviceId, now),
+				insertStatement(trusted, request, evidence, fingerprint, now),
+				changedRows(),
+			],
+		)) === "committed"
+	);
 }
