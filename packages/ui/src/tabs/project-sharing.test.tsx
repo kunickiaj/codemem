@@ -223,7 +223,7 @@ describe("project sharing flow", () => {
 			"436 existing memories and future activity from codemem",
 		);
 		expect(document.body.textContent).toContain("No other projects will be shared.");
-		expect(document.body.textContent).not.toMatch(/Space|scope|UUID|filter|coordinator/i);
+		expect(document.body.textContent).not.toMatch(/Space|scope|UUID|filter|coordinator|imported/i);
 		expect(api.previewProjectInvite).toHaveBeenCalledWith({
 			teammate_name: "Brian",
 			project_ids: [project.workspace_identity],
@@ -656,5 +656,39 @@ describe("project sharing flow", () => {
 
 		expect(document.body.textContent).not.toContain("Invitation created for Brian");
 		expect(document.getElementById("project-share-teammate")).not.toBeNull();
+	});
+});
+
+describe("imported memories left out of a share", () => {
+	it("says how many imported memories without a known author stay on this device", async () => {
+		// Arrange
+		vi.mocked(api.previewProjectInvite).mockResolvedValueOnce({
+			...preview,
+			unattributed_import_count: 3,
+			projects: [{ ...preview.projects[0], unattributed_import_count: 3 }],
+		} as never);
+		const mount = document.getElementById("mount");
+		if (!mount) throw new Error("mount missing");
+		act(() => renderProjectShareFlow(mount, [project]));
+		act(() => (document.querySelector("button") as HTMLButtonElement).click());
+		const name = document.getElementById("project-share-teammate") as HTMLInputElement;
+		act(() => {
+			name.value = "Brian";
+			name.dispatchEvent(new Event("input", { bubbles: true }));
+			(document.querySelector('input[type="checkbox"]') as HTMLInputElement).click();
+		});
+
+		// Act
+		await act(async () => {
+			(document.querySelector(".sync-dialog-confirm") as HTMLButtonElement).click();
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		// Assert
+		expect(document.body.textContent).toContain(
+			"3 imported memories with no known author won't be shared. They stay on this device.",
+		);
+		expect(document.body.textContent).not.toMatch(/Space|scope|actor|enrollment/i);
 	});
 });

@@ -1514,6 +1514,7 @@ export type {
 } from "./share-provisioning.js";
 export {
 	countShareableProjectMemories,
+	countUnattributedImportedProjectMemories,
 	executeShareProvisioning,
 	planShareProvisioning,
 } from "./share-provisioning.js";

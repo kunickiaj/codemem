@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { claimLocalOrigin } from "./local-origin-claim.js";
 import { REPOSITORY_IDENTITY_METADATA_KEY } from "./project.js";
 import { claimRecipientPolicyPublicationMutation } from "./recipient-policy-team-metadata.js";
 import { getCachedScopeAuthorization } from "./scope-membership-cache.js";
@@ -11,14 +12,18 @@ import {
 } from "./share-operation.js";
 import {
 	countShareableProjectMemories,
+	countUnattributedImportedProjectMemories,
 	executeShareProvisioning,
 	planShareProvisioning,
 	type ShareProvisioningDependencies,
 } from "./share-provisioning.js";
 import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { migrateLegacyImportKeys } from "./sync-replication.js";
 import { initTestSchema } from "./test-utils.js";
 
 const createdAt = "2026-07-20T12:00:00.000Z";
+/** Metadata import writes on a memory it adds, including to a session started here. */
+const EXPORTED = '{"source":"export"}';
 const remote = "https://example.invalid/acme/api.git";
 
 function includeHistoricalRepositoryMemory(
@@ -175,13 +180,15 @@ function expectInviterProjectFilterRejected(
 
 function insertSession(
 	db: InstanceType<typeof Database>,
-	input: { user: string; toolVersion: string; importKey?: string },
+	input: { user: string; toolVersion: string; importKey?: string; imported?: boolean },
 ): number {
+	// `memory import` records `"source": "export"` on every session it creates.
+	const metadata = input.imported ? '{"source":"export"}' : "{}";
 	return Number(
 		db
-			.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version, import_key)
-				VALUES (?, 'api', ?, ?, ?, ?)`)
-			.run(createdAt, remote, input.user, input.toolVersion, input.importKey ?? null)
+			.prepare(`INSERT INTO sessions(started_at, project, git_remote, user, tool_version, import_key, metadata_json)
+				VALUES (?, 'api', ?, ?, ?, ?, ?)`)
+			.run(createdAt, remote, input.user, input.toolVersion, input.importKey ?? null, metadata)
 			.lastInsertRowid,
 	);
 }
@@ -192,16 +199,20 @@ function insertPreSyncMemory(
 	sessionId: number,
 	title: string,
 	importKey: string | null,
+	origin: string | null = "local",
+	metadataJson = "{}",
 ): void {
 	db.prepare(`INSERT INTO memory_items(
 		session_id, kind, title, body_text, confidence, tags_text, active, created_at,
 		updated_at, metadata_json, import_key, rev, visibility, scope_id, origin_device_id
-	) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, '{}', ?, 1, 'shared', 'local-default', 'local')`).run(
+	) VALUES (?, 'discovery', ?, 'body', 0.8, '', 1, ?, ?, ?, ?, 1, 'shared', 'local-default', ?)`).run(
 		sessionId,
 		title,
 		createdAt,
 		createdAt,
+		metadataJson,
 		importKey,
+		origin,
 	);
 }
 
@@ -750,8 +761,9 @@ describe("exact project share provisioning", () => {
 
 	it("records the owner as origin of the locally written memories it moves, and nothing else", async () => {
 		// Arrange: memories written before sync setup, on both move paths, one from
-		// a sync session that provisioning doesn't treat as the owner's, and one
-		// brought in by `memory import` from another device's export.
+		// a sync session that provisioning doesn't treat as the owner's, and three
+		// brought in by `memory import`: two without a known author, and one that
+		// names this device.
 		const localSession = insertSession(db, { user: "adam", toolVersion: "codemem" });
 		insertPreSyncMemory(db, localSession, "pre-sync replicated", "pre-sync:replicated");
 		insertPreSyncMemory(db, localSession, "pre-sync never replicated", null);
@@ -761,20 +773,25 @@ describe("exact project share provisioning", () => {
 			user: "other",
 			toolVersion: "codemem",
 			importKey: `export-session:v1:${"c".repeat(64)}`,
+			imported: true,
 		});
 		insertPreSyncMemory(db, importedSession, "pre-sync imported", "pre-sync:imported");
+		insertPreSyncMemory(db, localSession, "imported no origin", "imported:none", null, EXPORTED);
+		insertPreSyncMemory(db, importedSession, "imported from owner", "imported:owner", "owner");
 		db.prepare("UPDATE share_operations SET inviter_device_ids_json = '[\"owner\"]'").run();
 		const { deps, scopeId } = dependencies();
 
 		// Act
 		await executeShareProvisioning(db, { operationId, initiatingDeviceId: "owner" }, deps);
 
-		// Assert
+		// Assert: imports without a known author stay where they were, unchanged.
 		expect(
 			db.prepare("SELECT title, scope_id, origin_device_id FROM memory_items ORDER BY title").all(),
 		).toEqual([
+			{ title: "imported from owner", scope_id: scopeId, origin_device_id: "owner" },
+			{ title: "imported no origin", scope_id: "local-default", origin_device_id: null },
 			{ title: "pre-sync from sync", scope_id: "local-default", origin_device_id: "local" },
-			{ title: "pre-sync imported", scope_id: scopeId, origin_device_id: "local" },
+			{ title: "pre-sync imported", scope_id: "local-default", origin_device_id: "local" },
 			{ title: "pre-sync never replicated", scope_id: scopeId, origin_device_id: "owner" },
 			{ title: "pre-sync replicated", scope_id: scopeId, origin_device_id: "owner" },
 			{ title: "selected-local-shared", scope_id: scopeId, origin_device_id: "owner" },
@@ -789,13 +806,8 @@ describe("exact project share provisioning", () => {
 			)
 			.all(scopeId) as Array<{ entity_id: string; origin: string | null }>;
 		expect(payloadOrigins.length).toBeGreaterThan(0);
-		const imported = (row: { entity_id: string }) => row.entity_id === "pre-sync:imported";
-		expect(new Set(payloadOrigins.filter(imported).map((row) => row.origin))).toEqual(
-			new Set(["local"]),
-		);
-		expect(
-			new Set(payloadOrigins.filter((row) => !imported(row)).map((row) => row.origin)),
-		).toEqual(new Set(["owner"]));
+		expect(new Set(payloadOrigins.map((row) => row.origin))).toEqual(new Set(["owner"]));
+		expect(payloadOrigins.map((row) => row.entity_id)).not.toContain("pre-sync:imported");
 	});
 
 	it("cancels superseded accepted duplicates for the same person and project set once active", async () => {
@@ -1580,5 +1592,64 @@ describe("historical repository share provisioning", () => {
 		} finally {
 			db.close();
 		}
+	});
+});
+
+describe("imported memories without a known author", () => {
+	let db: InstanceType<typeof Database>;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+	afterEach(() => db.close());
+
+	it("still shares and claims memories from a session that only export bookkeeping keyed", () => {
+		// Arrange: a session started here before sessions had keys, holding a
+		// pre-sync memory with an old-style key.
+		db.prepare(
+			"INSERT INTO sync_device(device_id, public_key, fingerprint, created_at) VALUES ('owner', 'key', 'fp', ?)",
+		).run(createdAt);
+		const sessionId = insertSession(db, { user: "adam", toolVersion: "codemem" });
+		insertPreSyncMemory(db, sessionId, "written here long ago", "legacy:memory_item:5");
+		const memoryId = Number(db.prepare("SELECT id FROM memory_items").pluck().get());
+
+		// Act: key migration gives the session an export-style key.
+		migrateLegacyImportKeys(db);
+
+		// Assert
+		const sessionKey = String(db.prepare("SELECT import_key FROM sessions").pluck().get());
+		expect(sessionKey.startsWith("export-session:")).toBe(true);
+		const input = { canonicalIdentity: remote, initiatingDeviceId: "owner" };
+		expect(countShareableProjectMemories(db, input)).toBe(1);
+		expect(countUnattributedImportedProjectMemories(db, input)).toBe(0);
+		expect(claimLocalOrigin(db, memoryId, "owner")).toBe(true);
+	});
+
+	it("leaves imports without a known author out of the reviewed count and counts them separately", () => {
+		// Arrange
+		const importedSession = insertSession(db, {
+			user: "other",
+			toolVersion: "codemem",
+			importKey: "export|session|7|api|2026-03-01T00:00:00Z",
+		});
+		insertPreSyncMemory(db, importedSession, "imported local", "imported:local");
+		insertPreSyncMemory(db, importedSession, "imported empty", "imported:empty", " ");
+		insertPreSyncMemory(db, importedSession, "imported from owner", "imported:owner", "owner");
+		const localSession = insertSession(db, { user: "adam", toolVersion: "codemem" });
+		insertPreSyncMemory(db, localSession, "written here", "local:written");
+		const input = { canonicalIdentity: remote, initiatingDeviceId: "owner" };
+		const before = countShareableProjectMemories(db, input);
+
+		// Act
+		db.prepare("UPDATE sessions SET import_key = NULL WHERE id = ?").run(importedSession);
+		const withoutImportKey = countShareableProjectMemories(db, input);
+		db.prepare("UPDATE sessions SET import_key = ? WHERE id = ?").run(
+			"export|session|7|api|2026-03-01T00:00:00Z",
+			importedSession,
+		);
+
+		// Assert: the two unattributed imports are the only difference.
+		expect(withoutImportKey - before).toBe(2);
+		expect(countUnattributedImportedProjectMemories(db, { canonicalIdentity: remote })).toBe(2);
 	});
 });

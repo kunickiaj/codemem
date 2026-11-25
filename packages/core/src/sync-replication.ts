@@ -13,7 +13,7 @@ import { and, desc, eq, gt, isNotNull, isNull, like, or, sql } from "drizzle-orm
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import type { Database } from "./db.js";
 import { fromJson, fromJsonStrict, toJson, toJsonNullable } from "./db.js";
-import { claimLocalOrigin } from "./local-origin-claim.js";
+import { claimLocalOrigin, keepImportMarker } from "./local-origin-claim.js";
 import {
 	hasMatchingLocalCreation,
 	hasRecordedLocalCreation,
@@ -579,17 +579,22 @@ function resetRequired(
 	};
 }
 
+/**
+ * Metadata for an applied foreign revision. When it replaces an existing row's
+ * metadata, pass that row so it keeps its import marker.
+ */
 function foreignRevisionMetadata(
 	db: Database,
 	op: ReplicationOp,
 	metadata: Record<string, unknown> | string | null,
+	replaced?: { metadata_json: string | null },
 ): Record<string, unknown> {
 	recordForeignMemoryRevision(db, op.entity_id, "replication");
 	const object = typeof metadata === "string" || metadata === null ? fromJson(metadata) : metadata;
-	return {
-		...object,
-		clock_device_id: op.clock_device_id,
-	};
+	return keepImportMarker(
+		{ ...object, clock_device_id: op.clock_device_id },
+		replaced?.metadata_json,
+	);
 }
 
 export function clockDeviceIdFromMetadataJson(raw: string | null): string {
@@ -4072,7 +4077,7 @@ function applyReplicationOpsInternal(
 							continue;
 						}
 						redactMemoryFields(payload, activeScanner);
-						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json);
+						const metaObj = foreignRevisionMetadata(db, op, payload.metadata_json, memRow);
 						const nextTitle = resolveReplicatedTextUpdate(payload.title, memRow.title);
 						const nextBodyText = resolveReplicatedTextUpdate(payload.body_text, memRow.body_text);
 						const contentChanged =

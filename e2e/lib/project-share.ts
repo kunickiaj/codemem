@@ -16,6 +16,8 @@ export interface ShareProjectsOptions {
 	projects: InventoryProject[];
 	/** Shared memories the owner's review must count, summed across the Projects. */
 	expectedExistingMemories: number;
+	/** When set, imported memories without a known author the review must report as left out. */
+	expectedUnattributedImports?: number;
 	teammateName: string;
 	deviceName: string;
 	artifactPrefix: string;
@@ -71,7 +73,11 @@ export async function shareProjectsWithTeammate(
 	const { owner, recipient, artifactPrefix: prefix } = options;
 	const projectIds = options.projects.map((project) => project.workspace_identity);
 	await waitForDaemonSync(ctx, owner, `${prefix}-owner-sync`, "owner sync before the Project invite");
-	const preview = await request<{ reviewed_project_set_digest: string; existing_memory_count: number }>(
+	const preview = await request<{
+		reviewed_project_set_digest: string;
+		existing_memory_count: number;
+		unattributed_import_count?: number;
+	}>(
 		ctx,
 		owner,
 		"/api/sync/project-invites/preview",
@@ -83,6 +89,12 @@ export async function shareProjectsWithTeammate(
 		preview.body.existing_memory_count === options.expectedExistingMemories,
 		`Project invite review counted ${preview.body.existing_memory_count} shared memories, expected ${options.expectedExistingMemories}`,
 	);
+	if (options.expectedUnattributedImports !== undefined) {
+		assert(
+			(preview.body.unattributed_import_count ?? 0) === options.expectedUnattributedImports,
+			`Project invite review left out ${preview.body.unattributed_import_count} imported memories, expected ${options.expectedUnattributedImports}`,
+		);
+	}
 	const created = await request<{
 		operation_id: string;
 		invite: { encoded: string };

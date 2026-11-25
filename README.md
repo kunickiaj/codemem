@@ -586,7 +586,7 @@ For a direct share, choose **Create an invitation → Share exact Projects**:
 3. Confirm that existing memories **and future activity** from those projects will share, then send the one expiring invite.
 4. The recipient reviews and accepts the invitation, then confirms their Identity and device display names. Codemem establishes trust and Project access, then starts the first sync.
 
-Only the reviewed canonical projects are shared—similarly named or sibling projects are not included. A memory marked **Only me** stays local even when its project is shared. Removing access stops future sharing; memories already copied to another device may remain there.
+Only the reviewed canonical projects are shared—similarly named or sibling projects are not included. A memory marked **Only me** stays local even when its project is shared, and so does a memory brought in with `codemem memory import` that doesn't name the device that wrote it; the review says how many such memories stay behind. Removing access stops future sharing; memories already copied to another device may remain there.
 
 ### Add, disable, or restore devices
 

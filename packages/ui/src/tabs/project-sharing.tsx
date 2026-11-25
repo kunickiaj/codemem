@@ -82,6 +82,18 @@ function ProjectChoice(props: {
 	);
 }
 
+/** Imported memories without a known author are left out of the share and stay here. */
+function UnattributedImportsNotice({ count }: { count: number | undefined }) {
+	if (!count) return null;
+	const memories =
+		count === 1 ? "1 imported memory" : `${count.toLocaleString()} imported memories`;
+	return (
+		<p className="small">
+			{`${memories} with no known author won't be shared. ${count === 1 ? "It stays" : "They stay"} on this device.`}
+		</p>
+	);
+}
+
 function Confirmation({ preview }: { preview: ProjectInvitePreview }) {
 	return (
 		<div className="sync-dialog-stack">
@@ -100,6 +112,7 @@ function Confirmation({ preview }: { preview: ProjectInvitePreview }) {
 					</li>
 				))}
 			</ul>
+			<UnattributedImportsNotice count={preview.unattributed_import_count} />
 			<p>
 				<strong>No other projects will be shared.</strong>
 			</p>
