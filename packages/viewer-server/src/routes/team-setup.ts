@@ -27,6 +27,7 @@ import {
 	coordinatorListDevicesAction,
 	coordinatorListGroupsAction,
 	coordinatorListLegacyTeamCompletionsAction,
+	coordinatorListRemovedDevicesAction,
 	deriveLegacyTeamSetupCompletionManifest,
 	deterministicPolicyTeamId,
 	discoverLegacyTeamCandidates,
@@ -289,13 +290,17 @@ export interface LegacyTeamCompletionDependencies {
 	create: typeof coordinatorCreateLegacyTeamCompletionAction;
 	get?: typeof coordinatorGetLegacyTeamCompletionAction;
 	list: typeof coordinatorListLegacyTeamCompletionsAction;
+	listRemovals?: typeof coordinatorListRemovedDevicesAction;
 }
 
 const defaultCompletionDependencies: LegacyTeamCompletionDependencies = {
 	create: coordinatorCreateLegacyTeamCompletionAction,
 	get: coordinatorGetLegacyTeamCompletionAction,
 	list: coordinatorListLegacyTeamCompletionsAction,
+	listRemovals: coordinatorListRemovedDevicesAction,
 };
+
+type ListCompletionRemovals = () => ReturnType<typeof coordinatorListRemovedDevicesAction>;
 
 interface LegacyTeamSnapshotLoaderDependencies {
 	readConfig: typeof readCoordinatorSyncConfig;
@@ -2024,6 +2029,55 @@ interface CompletionAuthorization {
 	currentGroupIds: Set<string>;
 }
 
+function readCompletionAuthorization(
+	options: TeamSetupRoutesOptions,
+): CompletionAuthorization | null {
+	const config = (
+		options.readCoordinatorConfig ??
+		options.snapshotLoaderDependencies?.readConfig ??
+		readCoordinatorSyncConfig
+	)();
+	const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
+	if (!remoteUrl || !config.syncCoordinatorAdminSecret) return null;
+	const configuredCoordinatorId = normalizedCoordinatorId(remoteUrl);
+	if (!configuredCoordinatorId) return null;
+	let currentGroupIds: Set<string>;
+	try {
+		currentGroupIds = new Set(configuredGroupIds(config.syncCoordinatorGroups));
+	} catch {
+		return null;
+	}
+	return { config, remoteUrl, configuredCoordinatorId, currentGroupIds };
+}
+
+function completionReadActions(
+	dependencies: LegacyTeamCompletionDependencies,
+	{ config, remoteUrl }: CompletionAuthorization,
+	timeoutS: number,
+	deadlineMs: number,
+) {
+	const adminSecret = config.syncCoordinatorAdminSecret;
+	let removals: ReturnType<ListCompletionRemovals> | undefined;
+	const listRemovals: ListCompletionRemovals = () => {
+		removals ??=
+			dependencies
+				.listRemovals?.({
+					includeBlocked: true,
+					remote: { url: remoteUrl, adminSecret, timeoutS, deadlineMs },
+				})
+				.catch(() => []) ?? Promise.resolve([]);
+		return removals;
+	};
+	const listCompletionRecords = (groupIds: string[]) =>
+		retryTransientCoordinatorRead(
+			(attemptTimeoutS) =>
+				dependencies.list({ groupIds, remoteUrl, adminSecret, timeoutS: attemptTimeoutS }),
+			timeoutS,
+			deadlineMs,
+		);
+	return { listCompletionRecords, listRemovals };
+}
+
 // Endpoint equivalence only: candidate identity stays bound to the persisted
 // coordinator string and is never rewritten from configuration.
 function authorizesGroup(
@@ -2119,29 +2173,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 			? defaultCompletionDependencies
 			: options.completionDependencies;
 
-	/**
-	 * Reads the live coordinator configuration and the groups it currently
-	 * authorizes. Returns null when completion I/O is not configured or current
-	 * authorization cannot be proven.
-	 */
-	function currentCompletionAuthorization(): CompletionAuthorization | null {
-		const config = (
-			options.readCoordinatorConfig ??
-			options.snapshotLoaderDependencies?.readConfig ??
-			readCoordinatorSyncConfig
-		)();
-		const remoteUrl = buildBaseUrl(config.syncCoordinatorUrl);
-		if (!remoteUrl || !config.syncCoordinatorAdminSecret) return null;
-		const configuredCoordinatorId = normalizedCoordinatorId(remoteUrl);
-		if (!configuredCoordinatorId) return null;
-		let currentGroupIds: Set<string>;
-		try {
-			currentGroupIds = new Set(configuredGroupIds(config.syncCoordinatorGroups));
-		} catch {
-			return null;
-		}
-		return { config, remoteUrl, configuredCoordinatorId, currentGroupIds };
-	}
+	const currentCompletionAuthorization = () => readCompletionAuthorization(options);
 
 	function hasDraftEditAuthority(store: MemoryStore, candidateRef: string): boolean {
 		const authorization = currentCompletionAuthorization();
@@ -2251,7 +2283,13 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		group: LegacyTeamCandidateGroupDescriptor,
 		manifest: CoordinatorLegacyTeamCompletionManifestV1,
 		freshRoster: LegacyTeamConfiguredGroupSnapshot["devices"],
+		listRemovals: ListCompletionRemovals,
 	): Promise<"applied" | "unauthorized" | "claimed"> {
+		const freshIds = new Set(freshRoster.map((device) => device.deviceId));
+		const missing = manifest.device_decisions.some(
+			(device) => device.decision === "included" && !freshIds.has(device.device_id),
+		);
+		const verifiedRemovals = missing ? await listRemovals() : undefined;
 		let outcome: "applied" | "unauthorized" = "unauthorized";
 		const ran = await runCandidateMutation(
 			store.db,
@@ -2264,6 +2302,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						groupId: group.groupId,
 						manifest,
 						freshRoster,
+						verifiedRemovals,
 						recipientPolicyLocksHeld: completionRecipientPolicyLocksHeld(actorIds),
 					});
 					outcome = "applied";
@@ -2295,19 +2334,13 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 		const timeoutS = Math.max(1, config.syncCoordinatorTimeoutS);
 		try {
 			const reconciliationDeadlineMs = Date.now() + COORDINATOR_ROSTER_READ_BUDGET_MS;
+			const { listCompletionRecords, listRemovals } = completionReadActions(
+				completionDependencies,
+				authorization,
+				timeoutS,
+				reconciliationDeadlineMs,
+			);
 			const groupById = new Map(scopedGroups.map((group) => [group.groupId, group]));
-			const listCompletionRecords = (groupIds: string[]) =>
-				retryTransientCoordinatorRead(
-					(attemptTimeoutS) =>
-						completionDependencies.list({
-							groupIds,
-							remoteUrl,
-							adminSecret: config.syncCoordinatorAdminSecret,
-							timeoutS: attemptTimeoutS,
-						}),
-					timeoutS,
-					reconciliationDeadlineMs,
-				);
 			const scopedGroupIds = [...new Set(scopedGroups.map((group) => group.groupId))];
 			let records: Awaited<ReturnType<LegacyTeamCompletionDependencies["list"]>>;
 			try {
@@ -2491,6 +2524,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 						group,
 						canonicalManifest,
 						freshGroup.devices,
+						listRemovals,
 					);
 					if (applied !== "applied") continue;
 				} catch (error) {
@@ -2601,6 +2635,7 @@ export function teamSetupRoutes(options: TeamSetupRoutesOptions): Hono {
 							group,
 							canonicalManifest,
 							freshGroup.devices,
+							listRemovals,
 						);
 						if (applied !== "applied") continue;
 					} catch (applyError) {

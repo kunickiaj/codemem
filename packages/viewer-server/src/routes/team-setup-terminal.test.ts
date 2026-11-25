@@ -2572,6 +2572,59 @@ describe("Team setup terminal migration routing", () => {
 	});
 });
 
+describe("Team setup terminal routing after device removal", () => {
+	it("keeps a completed Team when a fresh roster omits a device the coordinator removed", async () => {
+		const store = new MemoryStore(":memory:");
+		try {
+			const setupApp = teamSetupRoutes({
+				getStore: () => store,
+				loadLegacyTeamConfiguredGroupSnapshots: async () => SNAPSHOTS,
+				completionDependencies: null,
+			});
+			const draft = await readyDraftThroughSummary(store, setupApp);
+			const manifest = deriveLegacyTeamSetupCompletionManifest(store.db, {
+				candidateRef: CANDIDATE_REF,
+				attemptId: draft.attemptId,
+				completedAt: NOW,
+			});
+			const list = vi.fn(async () => [{ group_id: GROUP_ID, manifest }]);
+			const makeApp = (removed: boolean) =>
+				teamSetupRoutes({
+					getStore: () => store,
+					loadLegacyTeamConfiguredGroupSnapshots: async () =>
+						removed ? SNAPSHOTS.map((snapshot) => ({ ...snapshot, devices: [] })) : SNAPSHOTS,
+					snapshotLoaderDependencies: completionConfig(),
+					completionDependencies: { create: vi.fn(), list, listRemovals },
+				});
+			const device = manifest.device_decisions[0];
+			if (!device) throw new Error("Missing included device");
+			const listRemovals = vi.fn(async () => [
+				{
+					group_id: GROUP_ID,
+					device_id: device.device_id,
+					fingerprint: device.key_fingerprint,
+					removal_id: "removal-1",
+					removal_seq: 1,
+					key_id: null,
+					display_name: null,
+					identity_id: null,
+					removed_at: NOW,
+				},
+			]);
+			const setupPath = `/api/sync/team-setup/v1/${CANDIDATE_REF}`;
+			await makeApp(false).request(setupPath);
+			expect(listRemovals).not.toHaveBeenCalled();
+			expect(store.db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+			const detail = await makeApp(true).request(setupPath);
+			expect(detail.status).toBe(200);
+			expect(listRemovals).toHaveBeenCalledOnce();
+			expect(store.db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe("active");
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("Team setup terminal routing with draft edit authority", () => {
 	it("rejects finish publication for a scope-backed group absent from configuration", async () => {
 		const store = new MemoryStore(":memory:");

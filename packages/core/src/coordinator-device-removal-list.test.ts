@@ -1,10 +1,12 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { coordinatorListRemovedDevicesAction } from "./coordinator-actions.js";
 import { setupStore } from "./coordinator-auth-store-test-fixtures.js";
 import {
 	type DeviceRemovalBackend,
 	DeviceRemovalOperations,
 	ENROLLMENT_REMOVAL_TRIGGER_NAMES,
 } from "./coordinator-device-removal.js";
+import { parseDeviceRemovalListPage } from "./coordinator-device-removal-list.js";
 
 const ROW = {
 	removal_id: "r1",
@@ -78,6 +80,33 @@ it("listing never returns extra backend columns, including public_key or a false
 	).listDeviceRemovals({ includeBlocked: true });
 	const { revoked: _, ...item } = ROW;
 	expect(page).toEqual({ items: [item], next_before_seq: null });
+});
+
+it("reads a blocked removal from the coordinator when explicitly requested", async () => {
+	const item = { ...ROW, revoked: true };
+	const page = { version: 1, items: [item], next_before_seq: null };
+	const fetchPage = vi.fn(async () => Response.json(page));
+	vi.stubGlobal("fetch", fetchPage);
+	try {
+		await expect(
+			coordinatorListRemovedDevicesAction({
+				includeBlocked: true,
+				remote: { url: "https://coordinator.example.invalid", adminSecret: "test-secret" },
+			}),
+		).resolves.toEqual([item]);
+		expect(fetchPage).toHaveBeenCalledWith(
+			"https://coordinator.example.invalid/v1/admin/devices/removals?include_blocked=1",
+			expect.objectContaining({ method: "GET" }),
+		);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+	expect(() => parseDeviceRemovalListPage(page)).toThrow("coordinator_removal_list_malformed");
+	expect(() =>
+		parseDeviceRemovalListPage({ ...page, items: [{ ...item, revoked: false }] }, undefined, {
+			includeBlocked: true,
+		}),
+	).toThrow("coordinator_removal_list_malformed");
 });
 
 it.each(["SQLite", "D1"] as const)(

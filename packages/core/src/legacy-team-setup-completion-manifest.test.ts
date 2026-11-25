@@ -25,6 +25,7 @@ import {
 	setLegacyTeamSetupDeviceAssignment,
 	setLegacyTeamSetupDeviceDecision,
 } from "./legacy-team-setup-draft.js";
+import { removePairingState } from "./pairing-removal.js";
 import {
 	legacyTeamCandidateId,
 	legacyTeamProjectRef,
@@ -2575,6 +2576,89 @@ function hiddenSpaceCompletionState(
 			.all(teamId),
 	};
 }
+
+describe("legacy Team setup completion manifests after device removal", () => {
+	let db: InstanceType<typeof Database>;
+
+	beforeEach(() => {
+		db = createCompletionFixtureDb();
+	});
+
+	afterEach(() => db.close());
+
+	it.each([
+		["verified removal", GROUP_ID, KEY_A, true],
+		["wrong group", "other-group", KEY_A, false],
+		["wrong key", GROUP_ID, "other-key", false],
+	] as const)("reconciles an absent reviewed device: %s", async (_case, group, key, verified) => {
+		db.prepare(
+			`INSERT INTO actors(actor_id, display_name, is_local, status, created_at, updated_at)
+			 VALUES ('identity-b', 'Person B', 0, 'active', ?, ?)`,
+		).run(NOW, NOW);
+		const roster = [
+			...FRESH_ROSTER,
+			{ deviceId: "device-b", fingerprint: "b".repeat(64), displayName: "Desktop", enabled: true },
+		];
+		let draft = refreshLegacyTeamSetupDraft(db, {
+			candidateId: CANDIDATE,
+			coordinatorId: COORDINATOR_ID,
+			groupId: GROUP_ID,
+			displayName: "Engineering",
+			devices: roster,
+			projects: [HIDDEN_SPACE_PROJECTS[0]],
+			now: NOW,
+		});
+		for (const device of draft.devices) {
+			setLegacyTeamSetupDeviceAssignment(db, {
+				attemptId: draft.attemptId,
+				deviceRef: device.deviceRef,
+				targetIdentityId: device.displayName === "Laptop" ? "identity-a" : "identity-b",
+				expectation: device.expectation,
+				now: NOW,
+			});
+			draft = setLegacyTeamSetupDeviceDecision(db, {
+				attemptId: draft.attemptId,
+				deviceRef: device.deviceRef,
+				decision: "included",
+				now: NOW,
+			});
+		}
+		const manifest = deriveLegacyTeamSetupCompletionManifest(db, {
+			candidateRef: draft.candidateRef,
+			attemptId: draft.attemptId,
+			completedAt: NOW,
+		});
+		const input = { coordinatorId: COORDINATOR_ID, groupId: GROUP_ID, manifest };
+		await applyLegacyTeamSetupCompletionManifest(db, { ...input, freshRoster: roster });
+		removePairingState(db, {
+			localDeviceId: "device-b",
+			reason: "removed",
+			deviceIds: ["device-a"],
+		});
+		const reconcile = () =>
+			applyLegacyTeamSetupCompletionManifest(db, {
+				...input,
+				freshRoster: roster.slice(1),
+				verifiedRemovals: [{ group_id: group, device_id: "device-a", fingerprint: key }],
+			});
+		if (verified) {
+			await expect(reconcile()).resolves.toEqual(manifest);
+			await expect(reconcile()).resolves.toEqual(manifest);
+		} else {
+			await expect(reconcile()).rejects.toThrow("team_setup_completion_invalid");
+		}
+		expect(db.prepare("SELECT status FROM policy_teams").pluck().get()).toBe(
+			verified ? "active" : "inactive",
+		);
+		expect(db.prepare("SELECT status FROM project_recipients").pluck().get()).toBe(
+			verified ? "active" : "revoked",
+		);
+		expect(
+			db.prepare("SELECT status FROM identity_devices ORDER BY device_id").pluck().all(),
+		).toEqual(["removed", "active"]);
+		expect(db.prepare("SELECT count(*) FROM policy_team_memberships").pluck().get()).toBe(2);
+	});
+});
 
 describe("legacy Team setup completion manifests with hidden Spaces", () => {
 	let db: InstanceType<typeof Database>;

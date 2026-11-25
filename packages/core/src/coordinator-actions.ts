@@ -1392,22 +1392,30 @@ async function collectDeviceRemovals(
 export async function coordinatorListRemovedDevicesAction(opts: {
 	groupId?: string;
 	dbPath?: string;
-	remote?: { url: string; adminSecret: string; timeoutS?: number };
+	includeBlocked?: boolean;
+	remote?: { url: string; adminSecret: string; timeoutS?: number; deadlineMs?: number };
 }): Promise<CoordinatorDeviceRemovalListItem[]> {
-	const { groupId, remote } = opts;
+	const { groupId, includeBlocked, remote } = opts;
 	if (remote) {
 		return collectDeviceRemovals(async (beforeSeq) => {
-			const query = beforeSeq === undefined ? "" : `?before_seq=${beforeSeq}`;
-			const endpoint = `${stripTrailingSlashes(remote.url)}/v1/admin/devices/removals${query}`;
+			const endpoint = new URL(`${stripTrailingSlashes(remote.url)}/v1/admin/devices/removals`);
+			if (beforeSeq !== undefined) endpoint.searchParams.set("before_seq", String(beforeSeq));
+			if (includeBlocked) endpoint.searchParams.set("include_blocked", "1");
+			let timeoutS = remote.timeoutS;
+			if (remote.deadlineMs !== undefined) {
+				const remainingS = (remote.deadlineMs - Date.now()) / 1000;
+				if (remainingS <= 0) throw new Error("device_removal_unavailable");
+				timeoutS = Math.min(timeoutS ?? remainingS, remainingS);
+			}
 			const payload = await remoteRequest(
 				"GET",
-				endpoint,
+				endpoint.toString(),
 				remote.adminSecret,
 				undefined,
 				undefined,
-				remote.timeoutS,
+				timeoutS,
 			);
-			return parseDeviceRemovalListPage(payload, beforeSeq);
+			return parseDeviceRemovalListPage(payload, beforeSeq, { includeBlocked });
 		}, groupId);
 	}
 	const store = new BetterSqliteCoordinatorStore(opts.dbPath ?? DEFAULT_COORDINATOR_DB_PATH, {
@@ -1415,7 +1423,7 @@ export async function coordinatorListRemovedDevicesAction(opts: {
 	});
 	try {
 		return await collectDeviceRemovals(
-			(beforeSeq) => store.listDeviceRemovals({ beforeSeq }),
+			(beforeSeq) => store.listDeviceRemovals({ beforeSeq, includeBlocked }),
 			groupId,
 		);
 	} finally {
