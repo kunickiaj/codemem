@@ -4383,11 +4383,109 @@ function rejectedInboundBatch(
 	options: ApplyReplicationOpsOptions,
 ): ApplyResult | null {
 	const validation = options.inboundScopeValidation;
+	// These hold for every apply, whatever capability or validation mode was negotiated.
+	const sender = cleanText(validation?.peerDeviceId ?? options.activityPeerDeviceId);
+	const structural = [
+		...unsupportedEntityRejections(ops, sender),
+		...(sender ? localOnlyRowRejections(db, ops, localDeviceId, sender) : []),
+	];
+	if (structural.length > 0) return inboundRejectionResult(db, structural);
 	if (!validation) return null;
 	const rejected = rejectUnretiredScopeFailures(db, ops, localDeviceId, validation);
 	if (rejected) return rejected;
 	const senderRejections = inboundSenderRejections(db, ops, localDeviceId, validation);
 	return senderRejections.length > 0 ? inboundRejectionResult(db, senderRejections) : null;
+}
+
+/** Op types the apply dispatches on, all of which write memory rows. */
+const MEMORY_WRITE_OP_TYPES = new Set([
+	"upsert",
+	"delete",
+	REASSIGN_SCOPE_OP_TYPE,
+	ACCESS_CLEANUP_OP_TYPE,
+]);
+
+/**
+ * The apply handles these op types only for memory rows, and would treat any
+ * other entity as one. Such an op is refused before dispatch. Other op types
+ * are skipped without a write.
+ */
+function unsupportedEntityRejections(
+	ops: ReplicationOp[],
+	sender: string | null,
+): InboundScopeRejection[] {
+	return ops
+		.filter((op) => MEMORY_WRITE_OP_TYPES.has(op.op_type) && op.entity_type !== "memory_item")
+		.map((op) => inboundScopeRejection(op, "scope_mismatch", sender, null));
+}
+
+function isLocalOnlyScope(db: Database, scopeId: string | null): boolean {
+	const scope = cleanText(scopeId);
+	if (!scope || scope === DEFAULT_SYNC_SCOPE_ID) return true;
+	const row = db
+		.prepare("SELECT authority_type FROM replication_scopes WHERE scope_id = ?")
+		.get(scope) as { authority_type: string | null } | undefined;
+	return row?.authority_type === "local";
+}
+
+/**
+ * A local-only row is a replica the sender originated: this device recorded no
+ * creation of it, and its stored origin names the sender, not this device or
+ * the literal local label. Cleanup notices apply the same test.
+ */
+function senderOriginatedReplica(
+	db: Database,
+	importKey: string,
+	origin: string | null,
+	sender: { deviceId: string; localDeviceId: string },
+): boolean {
+	const stored = cleanText(origin);
+	if (!stored || stored !== sender.deviceId) return false;
+	if (stored === sender.localDeviceId || stored === "local") return false;
+	return !hasRecordedLocalCreation(db, importKey);
+}
+
+/**
+ * Rows in the local default scope or a local scope never sync, and an update,
+ * delete or move matches rows by import key alone. A peer may change such a
+ * row only when it is the peer's own replica, as in moving a memory it shared
+ * before scopes existed. A row this device created is never changed.
+ */
+function localOnlyRowRejections(
+	db: Database,
+	ops: ReplicationOp[],
+	localDeviceId: string,
+	sender: string,
+): InboundScopeRejection[] {
+	const stored = db.prepare(
+		"SELECT scope_id, origin_device_id FROM memory_items WHERE import_key = ?",
+	);
+	const applied = db.prepare("SELECT 1 FROM replication_ops WHERE op_id = ?");
+	const rejections: InboundScopeRejection[] = [];
+	for (const op of ops) {
+		if (!MEMORY_WRITE_OP_TYPES.has(op.op_type) || op.op_type === ACCESS_CLEANUP_OP_TYPE) continue;
+		// The apply skips these without a write.
+		if (op.device_id === localDeviceId || applied.get(op.op_id)) continue;
+		if (retirementBlocksMemoryOp(db, op) || opInWithdrawnScope(db, op)) continue;
+		const deviceId = sender;
+		const rows = stored.all(op.entity_id) as Array<{
+			scope_id: string | null;
+			origin_device_id: string | null;
+		}>;
+		const blocked = rows.find(
+			(row) =>
+				isLocalOnlyScope(db, row.scope_id) &&
+				!senderOriginatedReplica(db, op.entity_id, row.origin_device_id, {
+					deviceId,
+					localDeviceId,
+				}),
+		);
+		if (blocked) {
+			const scopeId = cleanText(blocked.scope_id) ?? DEFAULT_SYNC_SCOPE_ID;
+			rejections.push(inboundScopeRejection(op, "sender_not_member", deviceId, scopeId));
+		}
+	}
+	return rejections;
 }
 
 /**

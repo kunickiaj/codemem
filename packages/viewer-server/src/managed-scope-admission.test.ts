@@ -255,7 +255,7 @@ describe("managed authorization for the existing row behind another scope's oper
 		{ opType, entityType: "memory_itemx", omitScope: true },
 	]);
 	it.each(cases)(
-		"rejects $entityType $opType of managed content atomically (omitted operation scope: $omitScope), but admits the same label with correct keys",
+		"rejects $entityType $opType of managed content atomically (omitted operation scope: $omitScope), and applies only a supported label with correct keys",
 		async ({ opType, entityType, omitScope }) => {
 			// Arrange: C contains protected content; B is pinned but only A is enrolled in C.
 			const entityId = await seedProtectedMemory(`protected-${opType}-seed`);
@@ -307,9 +307,12 @@ describe("managed authorization for the existing row behind another scope's oper
 				method: "POST",
 				body: { sync_capability: "unsupported", ops: [control] },
 			});
-			// Assert: even the unknown label reaches apply with valid C keys, not invalid-op rejection.
+			// Assert: with valid C keys the memory label applies, and an unsupported label writes nothing.
+			const supported = entityType === "memory_item";
 			expect(permitted.status).toBe(200);
-			expect(await permitted.json()).toMatchObject({ applied: 1, rejected: 0 });
+			expect(await permitted.json()).toMatchObject(
+				supported ? { applied: 1, rejected: 0 } : { applied: 0, rejected: 1 },
+			);
 			expect(
 				root.store.db
 					.prepare(
@@ -320,7 +323,7 @@ describe("managed authorization for the existing row behind another scope's oper
 				scope_id: "managed-work",
 				title: `protected-${opType}-seed`,
 				body_text: "Signed push content",
-				active: opType === "delete" ? 0 : 1,
+				active: supported && opType === "delete" ? 0 : 1,
 			});
 		},
 	);
