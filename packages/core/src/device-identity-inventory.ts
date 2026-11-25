@@ -305,6 +305,14 @@ function preferredDisplayName(group: Evidence[]): string {
 	return "Unnamed device";
 }
 
+function coordinatorServiceEvidence(group: Evidence[]): boolean {
+	if (!group.some((item) => item.serviceDevice)) return false;
+	return group.every((item) => {
+		if (item.source === "coordinator_enrollment") return item.serviceDevice;
+		return item.source === "sync_peer" && !item.pairingProof;
+	});
+}
+
 function inventoryState(
 	group: Evidence[],
 	facts: { conflicted: boolean; activeBindings: Evidence[] },
@@ -313,9 +321,8 @@ function inventoryState(
 	if (group.some((item) => item.revoked)) return "retired";
 	// Conflicting evidence stays visible for review, even for a coordinator-labeled device.
 	if (facts.conflicted) return "conflicted";
-	// Any local, peer, or binding evidence means a person-managed device, so it stays visible.
-	if (group.every((item) => item.source === "coordinator_enrollment" && item.serviceDevice))
-		return "service";
+	// Automatic coordinator discovery is not evidence that a person manages the probe.
+	if (coordinatorServiceEvidence(group)) return "service";
 	if (facts.activeBindings.length > 0) return "configured";
 	const hasPairingProof = group.some((item) => item.pairingProof);
 	const hasCoordinatorEvidence = group.some(

@@ -1,3 +1,4 @@
+import { fingerprintPublicKey, projectDeviceIdentityInventory } from "@codemem/core";
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,52 @@ const projects = [
 	{ canonicalProjectIdentity: "project-direct-filter-id", displayName: "API" },
 	{ canonicalProjectIdentity: "project-team-grant-id", displayName: "Codemem" },
 ];
+
+it("never asks to pair a coordinator-managed relay health probe", () => {
+	const key = "probe-key";
+	const fingerprint = fingerprintPublicKey(key);
+	const projected = projectDeviceIdentityInventory({
+		localDevice: null,
+		bindings: [],
+		peers: [
+			{
+				deviceId: "relay-probe",
+				displayName: "Relay health probe",
+				publicKey: key,
+				pinnedFingerprint: fingerprint,
+				suggestedIdentityId: null,
+				trustProvenance: "coordinator_policy",
+				claimedLocalActor: false,
+			},
+		],
+		coordinator: {
+			availability: "available",
+			safeErrorCode: null,
+			enrollments: [
+				{
+					group_id: "group-a",
+					device_id: "relay-probe",
+					public_key: key,
+					fingerprint,
+					identity_id: null,
+					display_name: "Relay health probe",
+					service_role: "relay_health_probe",
+					enabled: 1,
+					created_at: "2026-11-24T12:00:00Z",
+				},
+			],
+		},
+	});
+	mount(intent({ identityDevices: [] }), reconciliation(), { inventory: projected });
+	expect(
+		document.querySelector('[aria-labelledby="service-devices-heading"]')?.textContent,
+	).toContain("Relay health probe");
+	expect(document.body.textContent).not.toContain("Pairing required");
+	expect(document.body.textContent).not.toContain("Manual pairing requires");
+	expect(document.querySelector('[aria-label="Pair Relay health probe"]')).toBeNull();
+	expect(document.querySelector('[aria-label="Remove Relay health probe"]')).toBeNull();
+	expect(document.querySelector('[aria-label="Block Relay health probe permanently"]')).toBeNull();
+});
 
 function intent(
 	overrides: Partial<RecipientPolicyIntentGraphV1> = {},
