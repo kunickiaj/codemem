@@ -74,18 +74,29 @@ type ProjectRowHeaderProps = ProjectRowProps & {
 };
 
 /**
- * Pointer shortcut for the row's details. Keyboard and screen-reader users reach the
- * same disclosure through its summary, so this duplicate stays out of their way.
+ * Pointer and speech-input control for a row's disclosure. The disclosure's own summary
+ * stays the keyboard stop, so this duplicate is named but left out of the tab order.
  */
-function ProjectDetailsToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function ProjectDetailsToggle({
+	label,
+	onToggle,
+	open,
+}: {
+	/** What the disclosure holds and for which row, such as "details for api". */
+	label: string;
+	onToggle: () => void;
+	open: boolean;
+}) {
+	const name = `${open ? "Hide" : "Show"} ${label}`;
 	return (
 		<button
-			aria-hidden="true"
+			aria-expanded={open}
+			aria-label={name}
 			className="project-details-toggle"
 			data-open={String(open)}
 			onClick={onToggle}
 			tabIndex={-1}
-			title={open ? "Hide details" : "Show details"}
+			title={name}
 			type="button"
 		/>
 	);
@@ -150,7 +161,11 @@ function ProjectRowActions({
 					onRemoveMapping={() => void callbacks.removeProjectScope(project.workspace_identity)}
 				/>
 			) : null}
-			<ProjectDetailsToggle onToggle={onToggleDetails} open={detailsOpen} />
+			<ProjectDetailsToggle
+				label={`details for ${project.display_project}`}
+				onToggle={onToggleDetails}
+				open={detailsOpen}
+			/>
 		</td>
 	);
 }

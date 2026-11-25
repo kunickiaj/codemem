@@ -7,7 +7,7 @@ import type {
 	ProjectInventoryClusterViewModel,
 	ProjectsInventoryViewModel,
 } from "../projects-inventory-model";
-import { ProjectRow, RecipientSummary } from "./ProjectRow";
+import { ProjectDetailsToggle, ProjectRow, RecipientSummary } from "./ProjectRow";
 import { ProjectClusterMenu } from "./ProjectRowMenu";
 import { isAssignable, projectDomId, scopeIsAvailable, scopeOptionLabel } from "./project-view";
 
@@ -101,14 +101,24 @@ function ClusterStats({ model, summary, view }: ClusterContentProps) {
 }
 
 type ClusterHeaderProps = ClusterContentProps & {
+	assignmentOpen: boolean;
 	onOpenAssignment: () => void;
+	onToggleAssignment: () => void;
 	onToggleWorktrees: () => void;
 	titleId: string;
 	entriesId: string;
 	worktreesOpen: boolean;
 };
 
-function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: ClusterHeaderProps) {
+function ClusterActions({
+	assignmentOpen,
+	callbacks,
+	model,
+	onOpenAssignment,
+	onToggleAssignment,
+	summary,
+	view,
+}: ClusterHeaderProps) {
 	return (
 		<td className="project-inventory-cell project-inventory-row-actions">
 			{model.projectIds.length > 0 ? (
@@ -125,7 +135,11 @@ function ClusterActions({ callbacks, model, onOpenAssignment, summary, view }: C
 			{summary.assignable.length > 0 ? (
 				<ProjectClusterMenu label={model.label} onOpenSpaceAssignment={onOpenAssignment} />
 			) : null}
-			<span aria-hidden="true" className="project-details-toggle-spacer" />
+			<ProjectDetailsToggle
+				label={`Space assignment for ${model.label}`}
+				onToggle={onToggleAssignment}
+				open={assignmentOpen}
+			/>
 		</td>
 	);
 }
@@ -410,8 +424,10 @@ export function ProjectClusterRow(props: ProjectClusterRowProps) {
 		>
 			<ClusterHeader
 				{...props}
+				assignmentOpen={open}
 				entriesId={entriesId}
 				onOpenAssignment={openAssignment}
+				onToggleAssignment={() => setDetailsOpen(!open)}
 				onToggleWorktrees={() => callbacks.setClusterWorktreesOpen(model.key, !model.worktreesOpen)}
 				summary={summary}
 				titleId={titleId}

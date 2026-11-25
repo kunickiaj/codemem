@@ -4681,12 +4681,39 @@ describe("Projects table at rest", () => {
 
 		expect(details?.open).toBe(false);
 		expect(toggle?.tabIndex).toBe(-1);
-		expect(toggle?.getAttribute("aria-hidden")).toBe("true");
+		expect(toggle?.getAttribute("aria-label")).toBe("Show details for api");
+		expect(toggle?.getAttribute("aria-expanded")).toBe("false");
 		toggle?.click();
 		await vi.waitFor(() => expect(details?.open).toBe(true));
-		expect(toggle?.dataset.open).toBe("true");
+		expect(toggle?.getAttribute("aria-label")).toBe("Hide details for api");
+		expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 		toggle?.click();
 		await vi.waitFor(() => expect(details?.open).toBe(false));
+	});
+
+	it("opens a group's Space assignment from its pointer toggle when the group has no menu", async () => {
+		const received = (suffix: string) =>
+			project({
+				read_only: true,
+				read_only_reason: "peer_received",
+				workspace_identity: `peer-received:peer-a:project:${suffix}`,
+			});
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([received("one"), received("two")]),
+		);
+		await loadProjectsData();
+		const cluster = document.querySelector<HTMLElement>(".project-inventory-cluster");
+		const header = cluster?.querySelector(":scope > .project-inventory-row-header");
+		const toggle = header?.querySelector<HTMLButtonElement>(".project-details-toggle");
+		const details = cluster?.querySelector<HTMLDetailsElement>(
+			":scope > .project-inventory-cluster-details-row .project-inventory-details",
+		);
+
+		expect(header?.querySelector('[aria-haspopup="menu"]')).toBeNull();
+		expect(toggle?.getAttribute("aria-label")).toBe("Show Space assignment for api");
+		toggle?.click();
+		await vi.waitFor(() => expect(details?.open).toBe(true));
+		expect(details?.textContent).toContain("received from other devices");
 	});
 
 	it("keeps the exact time on a Project's one-line last activity", async () => {
