@@ -139,7 +139,7 @@ export function toolCallFor(step, exposure) {
  * result. `scenarios` may be extended while the provider runs.
  */
 export async function startProvider(scenarios) {
-	const state = { results: {}, exposures: {}, callerArgumentSeen: false, calls: 0 };
+	const state = { results: {}, exposures: {}, shown: {}, callerArgumentSeen: false, calls: 0 };
 	const marker = /smoke-scenario=([a-z0-9-]+)/;
 	const server = createServer(async (request, response) => {
 		const chunks = [];
@@ -158,6 +158,7 @@ export async function startProvider(scenarios) {
 		if (!steps || tools.length === 0) return sse(response, { content: "done" }, "stop");
 		const exposure = exposureOf(tools, messages);
 		state.exposures[name] = exposure.mode;
+		state.shown[name] ??= exposure.shown ?? [];
 		const results = messages.slice(anchor + 1).filter((message) => message.role === "tool");
 		state.results[name] = results.map((message) => textOf(message.content));
 		const step = steps[results.length];

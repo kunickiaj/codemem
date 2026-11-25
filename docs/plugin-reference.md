@@ -454,6 +454,11 @@ If compatibility toasts appear after restart, follow the runner-specific guidanc
 
 ## OpenCode plugin tools exposed to the model
 
+On OpenCode 2.4.1 and later 2.x releases, the plugin shows `memory_search_index`
+and `memory_get_observations` up front in Code Mode. This lets agents use
+either tool without a separate signature lookup. Other tools can still be
+discovered, and tools configured for direct calls keep that exposure.
+
 - `mem-status` - show viewer URL, log path, stats, and recent entries.
 - `mem-stats` - show just the stats block.
 - `mem-recent` - show recent items (defaults to 5).
