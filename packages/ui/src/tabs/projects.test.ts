@@ -89,6 +89,7 @@ import {
 } from "./projects";
 import * as recipientPolicyManagement from "./recipient-policy-management";
 import { openSyncInputDialog } from "./sync/sync-dialogs";
+import { teamSetupRecoveryReason } from "./team-setup-recovery";
 
 function inventoryPage(
 	projects: ProjectScopeInventoryProject[] = [],
@@ -1126,6 +1127,109 @@ describe("Projects cached recipient presentation", () => {
 		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
 		expect(api.resolveRecipientPolicyReview).not.toHaveBeenCalled();
 		expect(recipientPolicyManagement.openRecipientPolicyManagement).not.toHaveBeenCalled();
+	});
+
+	it("shows a Team that needs recovery with the Sharing blocker text and a recovery action", async () => {
+		const onOpenTeamSetup = vi.fn();
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress",
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 0,
+					unresolvedProjectCount: 0,
+					blockingError: "team_setup_completion_invalid",
+				},
+			],
+		});
+
+		initProjectsTab(() => {}, { onOpenTeamSetup });
+		await loadProjectsData();
+
+		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+		expect(entry?.querySelector("h2")?.textContent).toBe("Team needs recovery");
+		expect(entry?.textContent).not.toContain("Finish setting up");
+		expect(entry?.querySelector(".project-team-setup-recovery-reason")?.textContent).toBe(
+			teamSetupRecoveryReason("team_setup_completion_invalid"),
+		);
+		const button = entry?.querySelector<HTMLButtonElement>("button");
+		expect(button?.textContent).toBe("View recovery details");
+		expect(button?.getAttribute("aria-label")).toBe("View recovery details for Example Team");
+		button?.click();
+		expect(onOpenTeamSetup).toHaveBeenCalledWith("opaque-candidate-ref");
+	});
+
+	it("keeps ordinary setup wording for a Team without a blocker beside a blocked Team", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(recipientReview());
+		const candidate = {
+			displayName: "Example Team",
+			status: "in_progress" as const,
+			deviceCount: 2,
+			projectCount: 1,
+			unresolvedDeviceCount: 1,
+			unresolvedProjectCount: 0,
+		};
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+			version: 1,
+			candidates: [
+				{ ...candidate, candidateRef: "ordinary-ref" },
+				{
+					...candidate,
+					candidateRef: "blocked-ref",
+					blockingError: "team_setup_roster_unavailable",
+				},
+			],
+		});
+
+		initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
+		await loadProjectsData();
+
+		const entry = document.querySelector<HTMLElement>(".project-team-setup-entry");
+		expect(entry?.querySelector("h2")?.textContent).toBe("Finish setting up this Team");
+		const buttons = [...(entry?.querySelectorAll("button") ?? [])].map(
+			(button) => button.textContent,
+		);
+		expect(buttons).toEqual(["Finish setting up this Team", "View recovery details"]);
+		expect(entry?.querySelectorAll(".project-team-setup-recovery-reason")).toHaveLength(1);
+	});
+
+	it("renders the review card and Team setup card as sibling cards in one flex mount", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage());
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({ reviewItems: [reviewItem()] }),
+		);
+		vi.mocked(api.loadLegacyTeamSetupSummary).mockResolvedValue({
+			version: 1,
+			candidates: [
+				{
+					candidateRef: "opaque-candidate-ref",
+					displayName: "Example Team",
+					status: "in_progress",
+					deviceCount: 2,
+					projectCount: 1,
+					unresolvedDeviceCount: 1,
+					unresolvedProjectCount: 0,
+				},
+			],
+		});
+
+		initProjectsTab(() => {}, { onOpenTeamSetup: vi.fn() });
+		await loadProjectsData();
+
+		const mount = document.getElementById("recipientPolicyReviewMount");
+		expect(mount?.hidden).toBe(false);
+		const visible = [...(mount?.children ?? [])].filter((child) => !(child as HTMLElement).hidden);
+		expect(visible.map((child) => child.className)).toEqual([
+			"project-recipient-policy-review-content",
+			"card project-team-setup-entry",
+		]);
 	});
 
 	it("preserves the focused Team setup action while a refresh discovery is pending", async () => {

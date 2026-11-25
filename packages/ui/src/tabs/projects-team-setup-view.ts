@@ -1,4 +1,7 @@
 import type { LegacyTeamSetupSummaryResponseV1 } from "../lib/api/sync";
+import { teamSetupRecoveryReason } from "./team-setup-recovery";
+
+type SetupCandidate = LegacyTeamSetupSummaryResponseV1["candidates"][number];
 
 export interface ProjectTeamSetupViewOptions {
 	onOpenTeamSetup?: (candidateRef: string) => void;
@@ -26,7 +29,7 @@ function restoreCandidateFocus(
 }
 
 function candidateRow(
-	candidate: LegacyTeamSetupSummaryResponseV1["candidates"][number],
+	candidate: SetupCandidate,
 	onOpenTeamSetup: ProjectTeamSetupViewOptions["onOpenTeamSetup"],
 ): HTMLElement {
 	const row = document.createElement("div");
@@ -36,14 +39,38 @@ function candidateRow(
 	row.appendChild(label);
 	if (!onOpenTeamSetup) return row;
 	const button = document.createElement("button");
-	button.setAttribute("aria-label", `Finish setting up ${candidate.displayName}`);
+	const needsRecovery = Boolean(candidate.blockingError);
+	button.setAttribute(
+		"aria-label",
+		needsRecovery
+			? `View recovery details for ${candidate.displayName}`
+			: `Finish setting up ${candidate.displayName}`,
+	);
 	button.className = "settings-button";
 	button.type = "button";
-	button.textContent = "Finish setting up this Team";
+	button.textContent = needsRecovery ? "View recovery details" : "Finish setting up this Team";
 	button.dataset.teamSetupCandidateRef = candidate.candidateRef;
 	button.addEventListener("click", () => onOpenTeamSetup(candidate.candidateRef));
 	row.appendChild(button);
 	return row;
+}
+
+function recoveryReason(candidate: SetupCandidate): HTMLElement | null {
+	if (!candidate.blockingError) return null;
+	const reason = document.createElement("p");
+	reason.className = "section-meta project-team-setup-recovery-reason";
+	reason.textContent = teamSetupRecoveryReason(candidate.blockingError);
+	return reason;
+}
+
+function setupSignature(candidates: SetupCandidate[]): string {
+	return JSON.stringify(
+		candidates.map((candidate) => [
+			candidate.candidateRef,
+			candidate.displayName,
+			candidate.blockingError ?? null,
+		]),
+	);
 }
 
 function setupSurface(
@@ -52,18 +79,22 @@ function setupSurface(
 ): HTMLElement {
 	const surface = document.createElement("section");
 	surface.className = "card project-team-setup-entry";
-	surface.dataset.teamSetupSignature = JSON.stringify(
-		summary.candidates.map((candidate) => [candidate.candidateRef, candidate.displayName]),
-	);
+	surface.dataset.teamSetupSignature = setupSignature(summary.candidates);
+	const needsRecovery = summary.candidates.every((candidate) => candidate.blockingError);
 	const heading = document.createElement("h2");
-	heading.textContent = "Finish setting up this Team";
-	const detail = document.createElement("p");
-	detail.className = "section-meta";
-	detail.textContent =
-		"Tell Codemem who uses each device before using this Team for Project sharing.";
-	surface.append(heading, detail);
+	heading.textContent = needsRecovery ? "Team needs recovery" : "Finish setting up this Team";
+	surface.appendChild(heading);
+	if (!needsRecovery) {
+		const detail = document.createElement("p");
+		detail.className = "section-meta";
+		detail.textContent =
+			"Tell Codemem who uses each device before using this Team for Project sharing.";
+		surface.appendChild(detail);
+	}
 	for (const candidate of summary.candidates) {
 		surface.appendChild(candidateRow(candidate, options.onOpenTeamSetup));
+		const reason = recoveryReason(candidate);
+		if (reason) surface.appendChild(reason);
 	}
 	return surface;
 }
@@ -87,9 +118,7 @@ export function renderProjectTeamSetupEntry(
 		return;
 	}
 	if (!summary) return;
-	const signature = JSON.stringify(
-		candidates.map((candidate) => [candidate.candidateRef, candidate.displayName]),
-	);
+	const signature = setupSignature(candidates);
 	if (existing?.dataset.teamSetupSignature === signature) {
 		mount.hidden = false;
 		return;
