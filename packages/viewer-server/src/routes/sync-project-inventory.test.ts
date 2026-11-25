@@ -124,3 +124,76 @@ describe("project inventory route repository reads", () => {
 		expect(cwdReads).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("project inventory route empty Projects", () => {
+	const stores: MemoryStore[] = [];
+	afterEach(() => {
+		for (const store of stores) store.close();
+		stores.length = 0;
+	});
+
+	function createInventoryApp() {
+		const store = new MemoryStore(":memory:");
+		stores.push(store);
+		const insertSession = store.db.prepare(
+			"INSERT INTO sessions(started_at, cwd, project, git_remote) VALUES (?, ?, ?, NULL)",
+		);
+		const busySessionId = Number(
+			insertSession.run("2026-11-02", "/workspace/busy", "busy").lastInsertRowid,
+		);
+		insertSession.run("2026-11-01", "/workspace/idle", "idle");
+		store.remember(busySessionId, "discovery", "busy memory", "body");
+		return syncRoutes(() => store);
+	}
+
+	async function inventoryNames(app: ReturnType<typeof syncRoutes>, query: string) {
+		const response = await app.request(`/api/sync/projects${query}`);
+		expect(response.status).toBe(200);
+		const result = (await response.json()) as {
+			hidden_empty_count: number;
+			projects: Array<{ display_project: string }>;
+			total: number;
+		};
+		return {
+			hidden_empty_count: result.hidden_empty_count,
+			names: result.projects.map((project) => project.display_project).sort(),
+			total: result.total,
+		};
+	}
+
+	it.each(["", "?include_empty=true", "?include_empty=yes"])(
+		"lists empty Projects when the request is %j",
+		async (query) => {
+			const app = createInventoryApp();
+
+			await expect(inventoryNames(app, query)).resolves.toEqual({
+				hidden_empty_count: 0,
+				names: ["busy", "idle"],
+				total: 2,
+			});
+		},
+	);
+
+	it.each(["?include_empty=false", "?include_empty=0", "?include_empty=FALSE"])(
+		"leaves out empty Projects and reports how many for %j",
+		async (query) => {
+			const app = createInventoryApp();
+
+			await expect(inventoryNames(app, query)).resolves.toEqual({
+				hidden_empty_count: 1,
+				names: ["busy"],
+				total: 1,
+			});
+		},
+	);
+
+	it("lists empty Projects under the empty status even when pruning", async () => {
+		const app = createInventoryApp();
+
+		await expect(inventoryNames(app, "?include_empty=false&status=empty")).resolves.toEqual({
+			hidden_empty_count: 0,
+			names: ["idle"],
+			total: 1,
+		});
+	});
+});

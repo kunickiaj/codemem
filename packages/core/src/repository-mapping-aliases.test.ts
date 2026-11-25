@@ -128,19 +128,27 @@ function expectPatternConflictsFailClosed(store: MemoryStore, tmpDir: string): v
 	const worktreeSessionId = store.startSession({ cwd: worktree, project: "pattern-conflict" });
 	expect(resolveSessionScopeId(store.db, { sessionId: mainSessionId })).toBe("local-default");
 	expect(resolveSessionScopeId(store.db, { sessionId: worktreeSessionId })).toBe("local-default");
+	const identity = "https://example.test/acme/pattern-conflict.git";
 	const project = listProjectScopeInventory(store.db, { limit: 10 }).projects.find(
-		(item) => item.workspace_identity === "https://example.test/acme/pattern-conflict.git",
+		(item) => item.workspace_identity === identity,
 	);
 	expect(project).toMatchObject({
+		memory_count: 0,
 		resolved_scope_id: "local-default",
 		suggested_scope_id: null,
 		suggestion_reason: null,
 		suggestion_signal: null,
-		statuses: expect.arrayContaining(["needs_attention"]),
+		statuses: expect.arrayContaining(["empty", "needs_attention"]),
 		guardrail_warnings: expect.arrayContaining([
 			expect.objectContaining({ code: "conflicting_repository_mappings" }),
 		]),
 	});
+	// An empty Project that needs attention stays in the default list and its filter.
+	for (const status of [null, "needs_attention"]) {
+		const pruned = listProjectScopeInventory(store.db, { includeEmpty: false, limit: 10, status });
+		expect(pruned.projects.map((item) => item.workspace_identity)).toContain(identity);
+		expect(pruned.hidden_empty_count).toBe(0);
+	}
 }
 
 function expectExactConflictsFailClosed(store: MemoryStore, tmpDir: string): void {

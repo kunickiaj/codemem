@@ -1660,12 +1660,13 @@ describe("Projects cached recipient presentation", () => {
 		).toEqual(["/workspace/first"]);
 
 		resolveFirstLookup(inventoryPage());
+		// Each lookup checks the default list, then the No memories list.
 		await vi.waitFor(() =>
 			expect(
 				vi
 					.mocked(api.loadProjectScopeInventory)
 					.mock.calls.flatMap(([input]) => (input?.q ? [input.q] : [])),
-			).toEqual(["/workspace/first", "/workspace/second"]),
+			).toEqual(["/workspace/first", "/workspace/first", "/workspace/second", "/workspace/second"]),
 		);
 		await flushAsyncWork();
 	});
@@ -1921,6 +1922,7 @@ describe("Projects cached recipient presentation", () => {
 			).toBe(true),
 		);
 		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith({
+			include_empty: false,
 			limit: 250,
 			offset: 0,
 			q: repairProject.workspace_identity,
@@ -1971,9 +1973,161 @@ describe("Projects cached recipient presentation", () => {
 				.mock.calls.map(([input]) => input)
 				.filter((input) => input?.q === projectIdentity),
 		).toEqual([
-			{ limit: 250, offset: 0, q: projectIdentity },
-			{ limit: 250, offset: 250, q: projectIdentity },
+			{ include_empty: false, limit: 250, offset: 0, q: projectIdentity },
+			{ include_empty: false, limit: 250, offset: 250, q: projectIdentity },
+			{ status: "empty", limit: 250, offset: 0, q: projectIdentity },
+			{ status: "empty", limit: 250, offset: 250, q: projectIdentity },
 		]);
+	});
+
+	function emptyStatusOption(): HTMLSelectElement {
+		const status = document.getElementById("projectsStatusFilter") as HTMLSelectElement;
+		if (![...status.options].some((option) => option.value === "empty"))
+			status.append(new Option("No memories", "empty"));
+		return status;
+	}
+
+	function openedRepairDetails(projectIdentity: string): boolean | undefined {
+		return document
+			.querySelector<HTMLElement>(`[data-project-workspace-identity="${projectIdentity}"]`)
+			?.querySelector<HTMLDetailsElement>(".project-inventory-details")?.open;
+	}
+
+	function mockRepairReview(projectIdentity: string, blockedItemId: string): void {
+		vi.mocked(api.loadRecipientPolicyReview).mockResolvedValue(
+			recipientReview({
+				blockedItems: [blockedProjectRepair(projectIdentity, { blockedItemId })],
+				continuity: null,
+				reviewItems: [],
+			}),
+		);
+	}
+
+	it("opens a repair target at its offset in the default list, not the full inventory", async () => {
+		const repairProject = project({ workspace_identity: "/workspace/pruned-offset" });
+		const filler = project({ workspace_identity: "/workspace/pruned-offset/empty" });
+		// The full inventory has the target on page 2; the default list moves it to page 1.
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (input.q !== repairProject.workspace_identity) return inventoryPage();
+			const offset = input.offset ?? 0;
+			if (input.include_empty === false)
+				return offset === 0 ? inventoryPage([repairProject]) : inventoryPage([], { offset });
+			if (offset === 0) return inventoryPage([filler], { has_more: true, total: 251 });
+			return inventoryPage([repairProject], { offset, total: 251 });
+		});
+		mockRepairReview(repairProject.workspace_identity, "blocked-pruned-offset");
+
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(openedRepairDetails(repairProject.workspace_identity)).toBe(true),
+		);
+		expect(showGlobalNotice).not.toHaveBeenCalled();
+	});
+
+	it("opens an empty repair target that the default list leaves out", async () => {
+		const status = emptyStatusOption();
+		const repairProject = project({
+			memory_count: 0,
+			statuses: ["empty", "local_only"],
+			workspace_identity: "/workspace/empty-target",
+		});
+		// Like the server, the default list leaves the target out unless the status is empty.
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			const pruned = input.include_empty === false && input.status !== "empty";
+			if (input.q !== repairProject.workspace_identity || pruned) return inventoryPage();
+			return inventoryPage([repairProject]);
+		});
+		mockRepairReview(repairProject.workspace_identity, "blocked-empty-target");
+
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(openedRepairDetails(repairProject.workspace_identity)).toBe(true),
+		);
+		expect(status.value).toBe("empty");
+		expect(showGlobalNotice).not.toHaveBeenCalled();
+	});
+
+	function inventoryRequests() {
+		return vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input ?? {});
+	}
+
+	/** An empty repair target that only the No memories list holds, and its status filter. */
+	function setupNoMemoriesRepair(
+		repairId: string,
+		reload: (input: { status?: string }) => Promise<ProjectScopeInventoryResult>,
+	) {
+		initProjectsTab(() => {
+			void loadProjectsData();
+		});
+		const status = emptyStatusOption();
+		status.value = "needs_attention";
+		const repairProject = project({
+			memory_count: 0,
+			statuses: ["empty", "local_only"],
+			workspace_identity: repairId,
+		});
+		vi.mocked(api.loadProjectScopeInventory).mockImplementation(async (input = {}) => {
+			if (input.q !== repairId) return inventoryPage();
+			if (input.include_empty === false && input.status === "empty") return reload(input);
+			if (input.status === "empty") return inventoryPage([repairProject]);
+			return inventoryPage();
+		});
+		mockRepairReview(repairId, `blocked-${repairId}`);
+		return { repairProject, status };
+	}
+
+	function isRepairReload(input: { include_empty?: boolean; q?: string; status?: string }) {
+		return input.include_empty === false && input.status === "empty" && Boolean(input.q);
+	}
+
+	it("keeps the user's status filter when a search supersedes a No memories repair", async () => {
+		let resolveReload!: (value: ProjectScopeInventoryResult) => void;
+		const reload = new Promise<ProjectScopeInventoryResult>((resolve) => {
+			resolveReload = resolve;
+		});
+		const { repairProject, status } = setupNoMemoriesRepair(
+			"/workspace/superseded-empty",
+			() => reload,
+		);
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+		await vi.waitFor(() => expect(inventoryRequests().some(isRepairReload)).toBe(true));
+
+		const search = document.getElementById("projectsSearch") as HTMLInputElement;
+		search.value = "user-query";
+		search.dispatchEvent(new Event("input"));
+		resolveReload(inventoryPage([repairProject]));
+		await flushAsyncWork();
+
+		const userRequest = inventoryRequests().find((input) => input.q === "user-query");
+		expect(userRequest?.status).toBe("needs_attention");
+		expect(status.value).toBe("needs_attention");
+		expect(search.value).toBe("user-query");
+	});
+
+	it("leaves the status filter unchanged when the No memories repair reload fails", async () => {
+		const statusesDuringReload: string[] = [];
+		const { status } = setupNoMemoriesRepair("/workspace/failed-empty", async () => {
+			statusesDuringReload.push(status.value);
+			throw new Error("reload failed");
+		});
+		await loadProjectsData();
+		blockedRepairButton()?.click();
+
+		await vi.waitFor(() =>
+			expect(showGlobalNotice).toHaveBeenCalledWith(
+				"Project administration could not be opened. Refresh Projects and try again.",
+				"warning",
+			),
+		);
+		expect(statusesDuringReload).toEqual(["needs_attention"]);
+		expect(status.value).toBe("needs_attention");
+		const restored = inventoryRequests().filter((input) => input.include_empty === false);
+		expect(restored.at(-1)).toMatchObject({ q: undefined, status: "needs_attention" });
 	});
 
 	it("opens the local repairable row when a peer row shares its reserved identity", async () => {
@@ -4107,6 +4261,42 @@ describe("Projects distinct canonical sharing coverage", () => {
 	);
 });
 
+describe("Projects group coverage with an empty entry", () => {
+	it("counts an empty entry the server keeps in its group", async () => {
+		// The server keeps an empty, unshared entry listed while its group has listed entries.
+		const ids = ["/workspace/api-one", "/workspace/api-two", "/workspace/api-empty"];
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(
+			inventoryPage([
+				project({ workspace_identity: ids[0] }),
+				project({ workspace_identity: ids[1] }),
+				project({ memory_count: 0, statuses: ["empty", "local_only"], workspace_identity: ids[2] }),
+			]),
+		);
+		vi.mocked(api.loadRecipientPolicyIntent).mockResolvedValue(
+			recipientIntent({
+				projectRecipients: ids.slice(0, 2).map((id) => ({
+					version: 1,
+					canonicalProjectIdentity: id,
+					recipientKind: "team",
+					teamId: "team-example",
+					intentSource: "user",
+					policyRevision: "one",
+					status: "active",
+				})),
+			}),
+		);
+
+		await loadProjectsData();
+
+		const row = getProjectsInventoryController().getViewModel().rows[0];
+		if (row?.kind !== "cluster") throw new Error("project cluster missing");
+		expect(row.projectIds).toEqual([...ids].sort());
+		expect(document.querySelector(".project-recipient-coverage")?.textContent).toBe(
+			"2 of 3 entries",
+		);
+	});
+});
+
 describe("Projects inventory controller subscriptions", () => {
 	it("notifies component subscribers and stops after unsubscribe", async () => {
 		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
@@ -4892,5 +5082,67 @@ describe("Projects table at rest", () => {
 		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(
 			"251 projects · 1–1",
 		);
+	});
+});
+
+describe("Projects with no memories", () => {
+	beforeEach(setupRequestReuseTest);
+
+	it("asks for the list without empty Projects and offers the No memories filter", async () => {
+		vi.mocked(api.loadProjectScopeInventory).mockResolvedValue(inventoryPage([project()]));
+
+		await loadProjectsData();
+
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledTimes(1);
+		expect(api.loadProjectScopeInventory).toHaveBeenCalledWith(
+			expect.objectContaining({ include_empty: false, offset: 0 }),
+		);
+		expect(document.querySelector("option[value='empty']")?.textContent).toBe("No memories");
+	});
+
+	it("loads sharing choices with empty Projects when the list left some out", async () => {
+		const idle = project({ display_project: "idle", memory_count: 0, workspace_identity: "idle" });
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(inventoryPage([project()], { hidden_empty_count: 1 }))
+			.mockResolvedValue(inventoryPage([project(), idle]));
+
+		await loadProjectsData();
+
+		const requests = vi.mocked(api.loadProjectScopeInventory).mock.calls.map(([input]) => input);
+		expect(requests).toHaveLength(2);
+		expect(requests[1]).toMatchObject({ limit: 250, offset: 0 });
+		expect(requests[1]).not.toHaveProperty("include_empty");
+		expect(projectSharing.renderProjectShareFlow).toHaveBeenLastCalledWith(
+			document.getElementById("projectShareFlowMount"),
+			[project(), idle],
+			{ inventoryError: false },
+		);
+	});
+
+	it.each([
+		[
+			"no count when none are hidden",
+			inventoryPage([project()], { hidden_empty_count: 0 }),
+			"1 project",
+		],
+		[
+			"the hidden count",
+			inventoryPage([project()], { hidden_empty_count: 11 }),
+			"1 project · 11 empty not shown",
+		],
+		[
+			"the hidden count after the range",
+			inventoryPage([project()], { has_more: true, hidden_empty_count: 3, total: 251 }),
+			"251 projects · 1–1 · 3 empty not shown",
+		],
+	])("shows %s in the list summary", async (_label, page, expected) => {
+		// Follow-up sharing reads end on the last page.
+		vi.mocked(api.loadProjectScopeInventory)
+			.mockResolvedValueOnce(page)
+			.mockResolvedValue(inventoryPage([], { offset: 250, total: 251 }));
+
+		await loadProjectsData();
+
+		expect(document.getElementById("projectsInventoryMeta")?.textContent).toBe(expected);
 	});
 });

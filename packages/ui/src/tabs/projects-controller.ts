@@ -12,6 +12,7 @@ import { showGlobalNotice } from "../lib/notice";
 import { state } from "../lib/state";
 import { openProjectShareFlow, renderProjectShareFlow } from "./project-sharing";
 import { renderProjectInventory as renderProjectInventoryView } from "./projects/ProjectInventory";
+import { projectClusterKey } from "./projects/project-view";
 import type {
 	ProjectInventoryCallbacks,
 	ProjectInventoryClusterViewModel,
@@ -48,6 +49,7 @@ const STATUS_OPTIONS = [
 	["explicitly_mapped", "Already assigned"],
 	["legacy_review", "Older shared data"],
 	["unmapped", "Missing project identity"],
+	["empty", "No memories"],
 ] as const;
 
 let refreshProjects: RefreshFn | null = null;
@@ -277,12 +279,6 @@ function recipientChips(projectIds: string[]): RecipientChip[] {
 	return [...chips.values()].sort((left, right) =>
 		`${left.kind}:${left.displayName}`.localeCompare(`${right.kind}:${right.displayName}`),
 	);
-}
-
-function projectClusterKey(project: ProjectScopeInventoryProject): string {
-	if (project.git_remote) return `git:${project.git_remote}`;
-	if (project.project) return `project:${project.project}`;
-	return `identity:${project.workspace_identity}`;
 }
 
 function projectClusterLabel(project: ProjectScopeInventoryProject): string {
@@ -596,16 +592,46 @@ async function reassignInventoryProject(project: ProjectScopeInventoryProject) {
 	}
 }
 
+/**
+ * Where a repair target sits in the list the display loads. `status` is the filter the
+ * display applies: "" for the default list, which leaves prunable empty Projects out, or
+ * "empty", which lists every empty Project.
+ */
+interface ProjectRepairTarget {
+	offset: number;
+	project: ProjectScopeInventoryProject;
+	status: "" | "empty";
+}
+
 async function projectForRepair(
 	projectIdentity: string,
-): Promise<{ offset: number; project: ProjectScopeInventoryProject } | null> {
+	navigation: ProjectNavigationSnapshot,
+): Promise<ProjectRepairTarget | null> {
 	const cached = projectInventoryByIdentity.get(projectIdentity);
-	if (cached && !isPeerReceivedProject(cached)) return { offset: currentOffset, project: cached };
+	if (cached && !isPeerReceivedProject(cached)) {
+		const status = readProjectInventoryFilters().status === "empty" ? "empty" : "";
+		return { offset: currentOffset, project: cached, status };
+	}
+	// Search the same lists the display loads so the returned offset is valid there.
+	const listed = await findRepairTarget(projectIdentity, "");
+	if (listed || projectNavigationChanged(navigation)) return listed;
+	return findRepairTarget(projectIdentity, "empty");
+}
+
+function repairLookupFilter(status: ProjectRepairTarget["status"]) {
+	return status === "empty" ? { status } : { include_empty: false };
+}
+
+async function findRepairTarget(
+	projectIdentity: string,
+	status: ProjectRepairTarget["status"],
+): Promise<ProjectRepairTarget | null> {
 	try {
 		let offset = 0;
 		let pagesScanned = 0;
 		while (true) {
 			const result = await api.loadProjectScopeInventory({
+				...repairLookupFilter(status),
 				limit: lastLimit,
 				offset,
 				q: projectIdentity,
@@ -615,7 +641,7 @@ async function projectForRepair(
 				(candidate) =>
 					candidate.workspace_identity === projectIdentity && !isPeerReceivedProject(candidate),
 			);
-			if (project) return { offset: result.offset, project };
+			if (project) return { offset: result.offset, project, status };
 			if (!result.has_more || result.limit <= 0) return null;
 			const nextOffset = result.offset + result.limit;
 			if (nextOffset <= offset || pagesScanned >= maxRepairLookupPages) return null;
@@ -682,10 +708,7 @@ function projectNavigationChanged(snapshot: ProjectNavigationSnapshot): boolean 
 	);
 }
 
-async function openProjectAdministrationFromRepair(target: {
-	offset: number;
-	project: ProjectScopeInventoryProject;
-}): Promise<void> {
+async function openProjectAdministrationFromRepair(target: ProjectRepairTarget): Promise<void> {
 	const { project } = target;
 	if (focusProjectAdministration(project.workspace_identity)) return;
 	openProjectWorktrees.add(projectClusterKey(project));
@@ -697,17 +720,21 @@ async function openProjectAdministrationFromRepair(target: {
 	const previous = projectNavigationSnapshot();
 	const repairSearch = project.workspace_identity;
 	if (search) search.value = repairSearch;
-	if (status) status.value = "";
 	currentOffset = target.offset;
 	const repairGeneration = projectsUserNavigationGeneration;
-	await loadProjectsData();
-	if (focusProjectAdministration(project.workspace_identity)) return;
+	// The repair's status goes only into this request. The status filter changes once
+	// the target row opens, so a superseding load keeps the user's filter.
+	await loadProjectsData({ status: target.status });
 	if (
 		projectsUserNavigationGeneration !== repairGeneration ||
 		(search && search.value !== repairSearch) ||
-		(status && status.value !== "") ||
+		(status && status.value !== previous.status) ||
 		currentOffset !== target.offset
 	) {
+		return;
+	}
+	if (focusProjectAdministration(project.workspace_identity)) {
+		if (status) status.value = target.status;
 		return;
 	}
 	if (search) search.value = previous.search;
@@ -728,7 +755,7 @@ async function performRecipientPolicyRepair(
 		return;
 	}
 	const navigation = projectNavigationSnapshot();
-	const target = await projectForRepair(repair.projectIdentity);
+	const target = await projectForRepair(repair.projectIdentity, navigation);
 	if (projectNavigationChanged(navigation)) return;
 	if (isProjectSpaceSelectActive()) {
 		showGlobalNotice("Finish the open Space assignment, then try Repair again.", "warning");
@@ -902,7 +929,7 @@ function hideProjectInventorySkeleton() {
 	document.getElementById("projectsInventorySkeleton")?.remove();
 }
 
-function projectInventoryMetaText(result: {
+function projectCountText(result: {
 	projects: ProjectScopeInventoryProject[];
 	total: number;
 	offset: number;
@@ -913,6 +940,18 @@ function projectInventoryMetaText(result: {
 	// A range only helps when the list spans more than one page.
 	if (result.offset === 0 && lastVisible === result.total) return total;
 	return `${total} · ${result.offset + 1}–${lastVisible}`;
+}
+
+function projectInventoryMetaText(result: {
+	projects: ProjectScopeInventoryProject[];
+	total: number;
+	offset: number;
+	hidden_empty_count?: number;
+}): string {
+	const hidden = result.hidden_empty_count ?? 0;
+	const count = projectCountText(result);
+	if (hidden <= 0) return count;
+	return `${count} · ${hidden.toLocaleString()} empty not shown`;
 }
 
 function renderCurrentProjectInventory(error?: string): void {
@@ -927,6 +966,7 @@ function renderProjectInventory(result: {
 	total: number;
 	offset: number;
 	has_more: boolean;
+	hidden_empty_count?: number;
 }) {
 	hasProjectInventoryResult = true;
 	latestInventoryResult = {
@@ -981,18 +1021,28 @@ async function loadAllProjectShareChoices(
 	const projects = new Map<string, ProjectScopeInventoryProject>();
 	let offset = 0;
 	while (true) {
-		const page = await (sharedPage?.offset === offset
-			? sharedPage.promise
-			: api.loadProjectScopeInventory({
-					limit: lastLimit,
-					offset,
-					signal: options.signal,
-				}));
+		const page = await loadShareChoicesPage(offset, options, sharedPage);
 		for (const project of page.projects) projects.set(project.workspace_identity, project);
 		if (!page.has_more) break;
 		offset += page.limit;
 	}
 	return [...projects.values()];
+}
+
+/**
+ * Sharing must offer every Project, including empty ones. The visible page leaves empty
+ * Projects out, so it is reused only when it reports that none were left out.
+ */
+async function loadShareChoicesPage(
+	offset: number,
+	options: { signal?: AbortSignal },
+	sharedPage?: { offset: number; promise: ReturnType<typeof loadProjectInventoryPage> },
+) {
+	if (sharedPage?.offset === offset) {
+		const page = await sharedPage.promise;
+		if (!page.hidden_empty_count) return page;
+	}
+	return api.loadProjectScopeInventory({ limit: lastLimit, offset, signal: options.signal });
 }
 
 interface ProjectInventoryFilters {
@@ -1023,6 +1073,7 @@ function loadProjectInventoryPage(
 	filters: ProjectInventoryFilters,
 ) {
 	return api.loadProjectScopeInventory({
+		include_empty: false,
 		limit: lastLimit,
 		offset: filters.offset,
 		q: filters.query || undefined,
@@ -1086,6 +1137,8 @@ export interface ProjectsDataLoadOptions {
 	awaitTeamSetupSummary?: boolean;
 	requireTeamSetupSummary?: boolean;
 	signal?: AbortSignal;
+	/** Status to request instead of the status filter's. The filter itself is unchanged. */
+	status?: string;
 }
 
 export function loadProjectsData(options: ProjectsDataLoadOptions = {}): Promise<boolean> {
@@ -1200,7 +1253,8 @@ async function loadProjectsResources(
 	filters: ProjectInventoryFilters,
 ) {
 	const visiblePagePromise = loadProjectInventoryPage(options, filters);
-	// Share only an identical unfiltered request within this load and its abort signal.
+	// Share only an unfiltered request within this load and its abort signal. The share
+	// choices load it again when the visible page left empty Projects out.
 	const sharedPage =
 		!filters.query && !filters.status
 			? { offset: filters.offset, promise: visiblePagePromise }
@@ -1315,7 +1369,9 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 	if (isProjectSpaceSelectActive()) return loadProjectsWhileSelectActive(options);
 	skippedProjectRefreshForActiveSelect = false;
 	const loadGeneration = ++projectsLoadGeneration;
-	const requestedFilters = readProjectInventoryFilters();
+	const userFilters = readProjectInventoryFilters();
+	const requestedFilters =
+		options.status === undefined ? userFilters : { ...userFilters, status: options.status };
 	// Keep the last successful inventory usable while a background refresh is pending.
 	// The recipient review/commit path revalidates the current policy before saving.
 	if (!hasProjectInventoryResult) {
@@ -1332,7 +1388,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
-		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
+		if (!projectInventoryFiltersAreCurrent(userFilters)) return false;
 		const requiredLoadSucceeded = renderLoadedProjectResources(
 			resources,
 			loadGeneration,
@@ -1357,7 +1413,7 @@ async function loadProjectsDataOperation(options: ProjectsDataLoadOptions): Prom
 		if (!isCurrentProjectsLoad(loadGeneration, options)) {
 			return supersededProjectsLoad(options, teamSetupSummaryPromise);
 		}
-		if (!projectInventoryFiltersAreCurrent(requestedFilters)) return false;
+		if (!projectInventoryFiltersAreCurrent(userFilters)) return false;
 		renderProjectsLoadFailure(error, meta);
 		return finishFailedProjectsLoad(options, teamSetupSummaryPromise);
 	}

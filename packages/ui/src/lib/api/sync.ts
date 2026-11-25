@@ -594,6 +594,7 @@ export interface ProjectScopeCandidate {
 }
 
 export type ProjectScopeInventoryStatus =
+	| "empty"
 	| "explicitly_mapped"
 	| "legacy_review"
 	| "local_only"
@@ -671,6 +672,8 @@ export interface ProjectScopeInventoryResult {
 	limit: number;
 	offset: number;
 	has_more: boolean;
+	/** Empty Projects left out by `include_empty: false`. Older servers omit it. */
+	hidden_empty_count?: number;
 }
 
 export interface ProjectInvitePreviewProject {
@@ -2080,6 +2083,8 @@ export async function loadSharingDomainSettings(
 export async function loadProjectScopeInventory(
 	input: {
 		identity_source?: string;
+		/** False leaves out empty Projects that the server can hide (see pruneEmptyProjects in core). */
+		include_empty?: boolean;
 		limit?: number;
 		offset?: number;
 		q?: string;
