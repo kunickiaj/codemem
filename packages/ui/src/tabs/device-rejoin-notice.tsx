@@ -49,9 +49,11 @@ function writeDismissed(localDeviceId: string, keys: string[]): void {
 export function DeviceRejoinNotice({
 	item,
 	localDeviceId,
+	showDeviceName = false,
 }: {
-	item: DeviceIdentityInventoryItemV1;
+	item: Pick<DeviceIdentityInventoryItemV1, "displayName" | "rejoin">;
 	localDeviceId: string | undefined;
+	showDeviceName?: boolean;
 }) {
 	const [dismissed, setDismissed] = useState<{ localDeviceId: string; keys: string[] } | null>(
 		null,
@@ -72,7 +74,10 @@ export function DeviceRejoinNotice({
 	};
 	return (
 		<p className="small device-rejoin-notice" role="status">
-			Rejoined by Google sign-in · {formatTimestamp(rejoin.rejoinedAtMs)}{" "}
+			{showDeviceName
+				? `${item.displayName} rejoined by Google sign-in`
+				: "Rejoined by Google sign-in"}{" "}
+			· {formatTimestamp(rejoin.rejoinedAtMs)}{" "}
 			{localDeviceId ? (
 				<button
 					aria-label={`Dismiss rejoin notice for ${item.displayName}`}

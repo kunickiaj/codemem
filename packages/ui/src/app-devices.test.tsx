@@ -1040,6 +1040,55 @@ describe("Devices app inventory recovery", () => {
 	});
 });
 
+describe("Devices app rejoin history", () => {
+	beforeEach(setupDevicesAppTest);
+	afterEach(teardownDevicesAppTest);
+
+	it("loads and dismisses a missed rejoin from the normal Devices refresh", async () => {
+		const { state } = await import("./lib/state");
+		const scope = "c".repeat(64);
+		const origin = "https://coordinator.example.test";
+		const event = {
+			eventId: "missed-rejoin",
+			deviceId: "offline-laptop",
+			finalizedAtMs: 1_700_000_000_000,
+		};
+		mocks.loadSyncData.mockImplementation(async () => {
+			state.lastSyncStatus = { device_id: "observer" };
+			state.lastSyncCoordinator = { configured: true, coordinator_url: origin };
+			return true;
+		});
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const request = new URL(String(input), "http://viewer.example.test");
+			expect(request.pathname).toBe("/api/sync/devices/rejoin-events");
+			return Response.json({
+				scope,
+				localDeviceId: "observer",
+				items: request.searchParams.has("after") ? [] : [event],
+				nextCursor: event.eventId,
+			});
+		});
+		const refresh = async () => {
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_100);
+			});
+		};
+		await refresh();
+		expect(fetch.mock.calls[0]?.[0]).toBe("/api/sync/devices/rejoin-events");
+		const panel = document.getElementById("tab-devices");
+		const notice = () => panel?.querySelector('[aria-label="Device rejoin history"]');
+		await vi.waitFor(() =>
+			expect(notice()?.textContent ?? "").toContain("A device rejoined by Google sign-in"),
+		);
+		act(() => notice()?.querySelector<HTMLButtonElement>("button")?.click());
+		await refresh();
+		expect(fetch.mock.calls.at(-1)?.[0]).toBe(
+			`/api/sync/devices/rejoin-events?scope=${scope}&after=${event.eventId}`,
+		);
+		expect(notice()?.textContent ?? "").not.toContain("A device rejoined by Google sign-in");
+	});
+});
+
 describe("Devices app sync health", () => {
 	beforeEach(setupDevicesAppTest);
 	afterEach(teardownDevicesAppTest);

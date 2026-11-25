@@ -36,6 +36,7 @@ import { copyToClipboard } from "../lib/dom";
 import { state } from "../lib/state";
 import { syncHealthLabel as evidenceLabel, type PeerSyncHealth } from "../lib/sync-health";
 import { confirmAndBlockEnrolledDevice } from "./device-block-enrolled";
+import { DeviceRejoinHistory } from "./device-rejoin-history";
 import { DeviceRejoinNotice } from "./device-rejoin-notice";
 import {
 	confirmAndCommitDeviceRemoval,
@@ -100,6 +101,8 @@ export interface DevicesRendererOptions {
 	syncStatusUnavailable?: boolean;
 	onSyncDevice?: (peerDeviceId: string) => Promise<DeviceSyncFeedback>;
 	inventory?: DeviceIdentityInventoryV1;
+	rejoinHistoryRevision?: number;
+	rejoinHistoryProfile?: string;
 	onCommitted?: () => boolean | undefined | Promise<boolean | undefined>;
 	previewBindings?: typeof previewDeviceIdentityBindings;
 	commitBindings?: typeof commitDeviceIdentityBindings;
@@ -2435,6 +2438,9 @@ function ConfiguredFallbackInventory({
 							<p>
 								<strong>Owning Identity:</strong> {previousIdentityName}
 							</p>
+							{item.validatedFingerprint ? (
+								<DeviceRejoinNotice item={item} localDeviceId={directLocalDeviceId(options)} />
+							) : null}
 							<ConfiguredRebind
 								controlKey={item.deviceId}
 								intent={intent}
@@ -2636,7 +2642,20 @@ function ServiceDevices({ items }: { items: DeviceIdentityInventoryItemV1[] }) {
 function DevicesSyncSummary({ options }: { options: DevicesRendererOptions }) {
 	const unavailable =
 		options.refreshError || options.syncStatusUnavailable || options.loading || options.loadError;
-	return <SyncHealthSummary health={state.lastSyncStatus?.sync_health} unavailable={unavailable} />;
+	return (
+		<>
+			<SyncHealthSummary health={state.lastSyncStatus?.sync_health} unavailable={unavailable} />
+			{options.rejoinHistoryRevision !== undefined ? (
+				<DeviceRejoinHistory
+					key={options.rejoinHistoryProfile}
+					profile={options.rejoinHistoryProfile}
+					localDeviceId={directLocalDeviceId(options)}
+					inventory={options.inventory}
+					refreshRevision={options.rejoinHistoryRevision}
+				/>
+			) : null}
+		</>
+	);
 }
 
 function useDevicePairing() {
