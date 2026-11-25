@@ -1900,6 +1900,73 @@ describe("project scope settings", () => {
 	});
 });
 
+describe("searching for the No project title", () => {
+	let db: InstanceType<typeof Database>;
+	beforeEach(() => {
+		db = new Database(":memory:");
+		initTestSchema(db);
+	});
+	afterEach(() => {
+		db.close();
+	});
+
+	function seedUnnamedAndNamedProjects(): void {
+		const unnamedSession = insertSession(db, {
+			cwd: null,
+			gitBranch: null,
+			gitRemote: null,
+			project: null,
+		});
+		insertMemory(db, unnamedSession, { workspaceId: "ws-generated-a1b2" });
+		insertMemory(db, insertSession(db));
+		const generatedLookingSession = insertSession(db, {
+			cwd: null,
+			gitBranch: null,
+			gitRemote: null,
+			project: "ws-recorded-c3d4",
+		});
+		insertMemory(db, generatedLookingSession, { workspaceId: "ws-recorded-c3d4" });
+	}
+
+	it("finds an unnamed Project by its displayed title, ignoring case", () => {
+		seedUnnamedAndNamedProjects();
+
+		const inventory = listProjectScopeInventory(db, { query: "no PROJECT" });
+
+		expect(inventory.total).toBe(1);
+		expect(inventory.projects[0]).toMatchObject({
+			display_project: "ws-generated-a1b2",
+			identity_source: "workspace_id",
+			project: null,
+			workspace_identity: "ws-generated-a1b2",
+		});
+	});
+
+	it("does not match Projects whose recorded name differs from the title", () => {
+		seedUnnamedAndNamedProjects();
+
+		const names = listProjectScopeInventory(db, { query: "No project" }).projects.map(
+			(project) => project.display_project,
+		);
+
+		expect(names).not.toContain("api");
+		expect(names).not.toContain("ws-recorded-c3d4");
+	});
+
+	it("still finds a recorded Project named like a generated ID by its own name", () => {
+		seedUnnamedAndNamedProjects();
+
+		const inventory = listProjectScopeInventory(db, { query: "ws-recorded-c3d4" });
+
+		expect(inventory.projects).toEqual([
+			expect.objectContaining({
+				display_project: "ws-recorded-c3d4",
+				project: "ws-recorded-c3d4",
+			}),
+		]);
+	});
+});
+
 describe("historical repository scope propagation", () => {
 	it("keeps cwd-only memories local when repository history is ambiguous", () => {
 		const db = new Database(":memory:");

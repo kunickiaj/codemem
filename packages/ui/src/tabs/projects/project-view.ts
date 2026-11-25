@@ -47,6 +47,8 @@ export function projectHeading(project: ProjectScopeInventoryProject): {
 	const name = project.display_project;
 	const signal = collapseHome(projectSignal(project));
 	// Memories recorded without a project name carry only a generated workspace ID.
+	// The inventory search matches this title server-side (UNNAMED_PROJECT_LABEL in
+	// packages/core/src/project-scope-settings.ts). Change both together.
 	const generatedIdOnly =
 		!project.project &&
 		project.identity_source === "workspace_id" &&
