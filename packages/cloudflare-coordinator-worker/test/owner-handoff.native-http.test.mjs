@@ -66,6 +66,9 @@ export { seedD1ConnectionOrder } from './coordinator-account-schema-test-fixture
 							"export const vi = { fn: (f) => f }; export const it = {}; export const expect = () => { throw new Error('Unexpected Vitest assertion'); }; export const onTestFinished = () => { throw new Error('Unexpected Vitest hook'); };",
 						loader: "js",
 					}));
+					builder.onResolve({ filter: /^@codemem\/memory-tools$/ }, () => ({
+						path: fileURLToPath(new URL("../../memory-tools/src/index.ts", import.meta.url)),
+					}));
 					builder.onResolve({ filter: /^[^./]/ }, async ({ path, pluginData }) => {
 						if (pluginData?.resolving) return;
 						if (path.startsWith("node:")) return { path, external: true };

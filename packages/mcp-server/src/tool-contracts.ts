@@ -1,3 +1,4 @@
+import { SEARCH_INDEX_MAX_LIMIT } from "@codemem/memory-tools";
 import type { ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
@@ -19,6 +20,11 @@ const storedMemorySchema = z
 	})
 	.passthrough();
 
+const compactObservationSchema = z.strictObject({
+	...storedMemorySchema.pick({ id: true, kind: true, title: true, body_text: true }).shape,
+	project: z.string().nullable(),
+});
+
 const searchMemorySchema = z
 	.object({
 		id: z.number().int(),
@@ -32,17 +38,21 @@ const searchMemorySchema = z
 	})
 	.passthrough();
 
-const indexMemorySchema = z
-	.object({
-		id: z.number().int(),
-		kind: z.string(),
-		title: z.string(),
-		score: z.number(),
-		created_at: z.string(),
-		session_id: z.number().int(),
-		metadata: metadataSchema,
-	})
-	.passthrough();
+const indexMemorySchema = z.strictObject({
+	id: z.number().int(),
+	kind: z.string(),
+	title: z.string(),
+	score: z.number(),
+	created_at: z.string(),
+	session_id: z.number().int(),
+	metadata: z
+		.strictObject({
+			widened_from_project: z.literal(true).optional(),
+			widened_from_shared: z.literal(true).optional(),
+			source_project: z.string().optional(),
+		})
+		.describe("Widening labels when present. Stored observer metadata is omitted."),
+});
 
 // Raw Pi transcript hit (core PiSessionSearchMatch). Only user/assistant text
 // is ever extracted, so no memory or tool-payload fields exist here.
@@ -122,7 +132,7 @@ const stringListSectionSchema = z
 
 export const toolOutputSchemas = {
 	memory_search: z.object({ items: z.array(searchMemorySchema) }),
-	memory_search_index: z.object({ items: z.array(indexMemorySchema) }),
+	memory_search_index: z.object({ items: z.array(indexMemorySchema).max(SEARCH_INDEX_MAX_LIMIT) }),
 	memory_session_search: z.object({
 		query: z.string(),
 		query_truncated: z.boolean(),
@@ -181,7 +191,12 @@ export const toolOutputSchemas = {
 			.passthrough(),
 	}),
 	memory_get: storedMemorySchema,
-	memory_get_observations: z.object({ items: z.array(storedMemorySchema) }),
+	memory_get_observations: z.object({
+		items: z.union([
+			z.array(storedMemorySchema.required({ metadata_json: true })),
+			z.array(compactObservationSchema),
+		]),
+	}),
 	memory_remember: z.object({ id: z.number().int() }),
 	memory_forget: z.object({ status: z.literal("ok") }),
 	memory_distill_candidates: z.object({

@@ -62,7 +62,11 @@ afterEach(() => {
 describe("native tools use canonical CLI paths", () => {
 	const cases = [
 		{ tool: "memory_search", params: { query: "auth" }, path: ["memory", "search"] },
-		{ tool: "memory_search_index", params: { query: "auth" }, path: ["memory", "search"] },
+		{
+			tool: "memory_search_index",
+			params: { query: "auth" },
+			path: ["memory-tool", "memory_search_index"],
+		},
 		{ tool: "memory_recent", params: {}, path: ["memory", "list"] },
 		{ tool: "memory_pack", params: { context: "auth" }, path: ["memory", "pack"] },
 		{ tool: "memory_distill_candidates", params: {}, path: ["memory", "distill"] },
@@ -70,7 +74,10 @@ describe("native tools use canonical CLI paths", () => {
 
 	it.each(cases)("$tool invokes $path", async ({ tool, params, path }) => {
 		// Arrange: generic fake output must not hide an obsolete command path.
-		const execImpl = vi.fn(async (_args: string[]) => ({ stdout: "{}", stderr: "" }));
+		const execImpl = vi.fn(async (_args: string[]) => ({
+			stdout: tool === "memory_search_index" ? '{"ok":true,"result":{"items":[]}}' : "{}",
+			stderr: "",
+		}));
 		const client = new PiCodememClient(offlineConfig, createViewerRuntime(), { execImpl });
 		// Act
 		const result = await installTools(client)[tool].execute("canonical", params, undefined);
@@ -99,6 +106,87 @@ describe("native tools use canonical CLI paths", () => {
 			expect(result.details.isError).toBe(true);
 		},
 	);
+});
+
+describe("memory_search_index result", () => {
+	const largeText = '💡\u0001\\"'.repeat(10_000);
+	const row = {
+		id: 11,
+		kind: "discovery",
+		title: `Auth ${largeText}`,
+		score: 0.5,
+		created_at: "2026-11-01T12:00:00Z",
+		session_id: 7,
+		body: "full body",
+		metadata: { facts: [largeText] },
+	};
+	const payload = { items: [row, { ...row, id: 12 }] };
+
+	it.each(["HTTP", "CLI"] as const)("caps the model-facing text from %s", async (transport) => {
+		const cwd = process.cwd();
+		let requestedUrl: URL | undefined;
+		const offline = transport === "CLI";
+		vi.stubEnv("CODEMEM_PROJECT", "env-project");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				if (url.pathname === "/api/prompt-pack-profile") return matchingProfile(cwd);
+				if (url.pathname === "/api/raw-events/status")
+					return jsonOk({ ingest: { available: true } });
+				requestedUrl = url;
+				return jsonOk(payload);
+			}),
+		);
+		const execImpl = vi.fn(async (_args: string[], _opts?: { stdin?: string }) => ({
+			stdout: JSON.stringify({ ok: true, result: payload }),
+			stderr: "",
+		}));
+		const client = new PiCodememClient(
+			offline ? offlineConfig : onlineConfig,
+			createViewerRuntime(),
+			{
+				cwd,
+				execImpl,
+			},
+		);
+
+		const result = await installTools(client).memory_search_index.execute(
+			"index",
+			{ query: "auth", project: "explicit-project", kind: "discovery", limit: 1 },
+			undefined,
+		);
+
+		const text = result.content[0]?.text ?? "";
+		expect(Buffer.byteLength(text)).toBeLessThanOrEqual(512);
+		expect(JSON.parse(text)).toEqual({
+			items: [
+				{
+					id: row.id,
+					kind: row.kind,
+					title: expect.stringMatching(/^Auth .*…$/su),
+					score: row.score,
+					created_at: row.created_at,
+					session_id: row.session_id,
+					metadata: {},
+				},
+			],
+		});
+		expect(result.details.value).toEqual(JSON.parse(text));
+		if (offline) {
+			expect(execImpl.mock.calls[0]?.[0]).toEqual(["memory-tool", "memory_search_index"]);
+			expect(JSON.parse(execImpl.mock.calls[0]?.[1]?.stdin ?? "")).toEqual({
+				query: "auth",
+				limit: 1,
+				project: "env-project",
+				kind: "discovery",
+			});
+		} else {
+			expect(execImpl).not.toHaveBeenCalled();
+			expect(requestedUrl?.pathname).toBe("/api/memories/search_index");
+			expect(requestedUrl?.searchParams.get("project")).toBe("explicit-project");
+		}
+	});
 });
 
 describe("memory_pack schema keeps project and drops kind", () => {

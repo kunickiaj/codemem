@@ -5,6 +5,7 @@ import { connect, initTestSchema, MemoryStore, queryRetrievalAttempts } from "@c
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCodememMcpServer } from "./index.js";
+import { callCodememToolLocally } from "./local-call.js";
 
 type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
@@ -182,6 +183,36 @@ async function rememberFixturePair(): Promise<[number, number]> {
 	});
 	return [first.id as number, second.id as number];
 }
+
+it("records only the ranked IDs returned by the capped index after widening", async () => {
+	await rememberFixturePair();
+	const query = "contract sentinel";
+	const project = "contract-fixture";
+	const [top, next] = store.search(query, 8, { project });
+	if (!top || !next) throw new Error("Missing ranked fixtures");
+	const search = vi
+		.spyOn(store, "search")
+		.mockReturnValueOnce([
+			top,
+			{ ...next, metadata: { ...next.metadata, widened_from_shared: true } },
+		]);
+
+	const outcome = await callCodememToolLocally(store, "memory_search_index", {
+		query,
+		project,
+		limit: 1,
+		widen_shared_when_weak: true,
+	});
+
+	expect(search).toHaveBeenCalledWith(query, 1, { project, widen_shared_when_weak: true });
+	expect(outcome).toEqual({
+		ok: true,
+		result: { items: [expect.objectContaining({ id: top.id, metadata: {} })] },
+	});
+	expect(
+		queryRetrievalAttempts(store.db, { surface: "mcp_search_index", limit: 1 })[0],
+	).toMatchObject({ selectedCount: 1, exposures: [{ memoryId: top.id }] });
+});
 
 describe("registered MCP tool declarations", () => {
 	it("publishes an output schema and the audited annotations for all 15 tools", async () => {

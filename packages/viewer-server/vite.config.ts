@@ -16,6 +16,7 @@ export default defineConfig({
 				"../core/src/internal/relay-runtime.ts",
 			),
 			"@codemem/core": resolve(import.meta.dirname, "../core/src/index.ts"),
+			"@codemem/memory-tools": resolve(import.meta.dirname, "../memory-tools/src/index.ts"),
 		},
 		conditions: ["source"],
 	},
@@ -26,7 +27,7 @@ export default defineConfig({
 			fileName: "index",
 		},
 		rollupOptions: {
-			external: [/^@codemem\//, /^node:/, /^hono/, /^better-sqlite3/],
+			external: [/^@codemem\/(?!memory-tools$)/, /^node:/, /^hono/, /^better-sqlite3/],
 		},
 		outDir: "dist",
 		sourcemap: true,

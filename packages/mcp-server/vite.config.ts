@@ -27,7 +27,7 @@ export default defineConfig({
 		},
 		rollupOptions: {
 			external: [
-				/^@codemem\//,
+				/^@codemem\/(?!memory-tools$)/,
 				/^node:/,
 				/^@modelcontextprotocol\//,
 				/^express(?:\/.*)?$/,

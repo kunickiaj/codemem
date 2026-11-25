@@ -146,7 +146,7 @@
 	},
 	{
 		"name": "memory_search_index",
-		"description": "Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
+		"description": "Keyword-search memories when you know exact terms or identifiers. Returns compact entries without bodies: IDs, clipped titles, and widening labels when present. Expand selected IDs with memory_get or memory_get_observations.",
 		"input": {
 			"type": "object",
 			"properties": {
@@ -1204,7 +1204,7 @@
 	},
 	{
 		"name": "memory_get_observations",
-		"description": "Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
+		"description": "Fetch multiple memories by exact IDs. Returns full rows by default. Use compact for full body text without metadata. Does not inherit the default project. Missing or filtered-out IDs are omitted.",
 		"input": {
 			"type": "object",
 			"properties": {
@@ -1215,6 +1215,10 @@
 					},
 					"maxItems": 200,
 					"description": "Memory IDs to fetch"
+				},
+				"compact": {
+					"type": "boolean",
+					"description": "Return only id, kind, title, body_text, and project"
 				},
 				"kind": {
 					"type": "string",

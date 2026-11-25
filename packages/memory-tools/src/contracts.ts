@@ -21,6 +21,11 @@ import {
 	stringEnum,
 	withDefault,
 } from "./json-schema.js";
+import {
+	SEARCH_INDEX_DEFAULT_LIMIT,
+	SEARCH_INDEX_DESCRIPTION,
+	SEARCH_INDEX_MAX_LIMIT,
+} from "./search-index.js";
 
 export const MEMORY_TOOL_NAMES = [
 	"memory_search",
@@ -138,12 +143,14 @@ const searchContract: MemoryToolContract = {
 
 const searchIndexContract: MemoryToolContract = {
 	name: "memory_search_index",
-	description:
-		"Keyword-search memories when you know exact terms or identifiers. Returns compact entries with IDs and titles, without bodies; expand selected IDs with memory_get or memory_get_observations.",
+	description: SEARCH_INDEX_DESCRIPTION,
 	input: object(
 		{
 			query: string("Search query"),
-			limit: withDefault(integer({ minimum: 1, maximum: 50, description: "Max results" }), 8),
+			limit: withDefault(
+				integer({ minimum: 1, maximum: SEARCH_INDEX_MAX_LIMIT, description: "Max results" }),
+				SEARCH_INDEX_DEFAULT_LIMIT,
+			),
 			...FILTER_PROPERTIES,
 		},
 		["query"],
@@ -260,10 +267,11 @@ const getContract: MemoryToolContract = {
 const getObservationsContract: MemoryToolContract = {
 	name: "memory_get_observations",
 	description:
-		"Fetch multiple memories by exact IDs. Does not inherit the default project. Missing or filtered-out IDs are omitted from results, not reported as not_found.",
+		"Fetch multiple memories by exact IDs. Returns full rows by default. Use compact for full body text without metadata. Does not inherit the default project. Missing or filtered-out IDs are omitted.",
 	input: object(
 		{
 			ids: integerArray({ maxItems: 200, description: "Memory IDs to fetch" }),
+			compact: boolean("Return only id, kind, title, body_text, and project"),
 			...FILTER_PROPERTIES,
 		},
 		["ids"],

@@ -29,6 +29,7 @@
 	},
 	"devDependencies": {
 		"@codemem/core": "workspace:^",
+		"@codemem/memory-tools": "workspace:*",
 		"@earendil-works/pi-coding-agent": "1.4.0",
 		"@types/node": "^24.12.4",
 		"typebox": "^1.3.7",

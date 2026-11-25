@@ -28,6 +28,7 @@
 		"zod": "catalog:"
 	},
 	"devDependencies": {
+		"@codemem/memory-tools": "workspace:*",
 		"@types/better-sqlite3": "catalog:",
 		"@types/node": "^24.12.4",
 		"better-sqlite3": "13.0.3",

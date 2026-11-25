@@ -36,6 +36,13 @@ export {
 export type { JsonSchema, ObjectSchema } from "./json-schema.js";
 export { projectFromDirectory, resolveCallerProject } from "./project.js";
 export {
+	clampSearchIndexLimit,
+	projectSearchIndex,
+	SEARCH_INDEX_DEFAULT_LIMIT,
+	SEARCH_INDEX_DESCRIPTION,
+	SEARCH_INDEX_MAX_LIMIT,
+} from "./search-index.js";
+export {
 	buildViewerIdentityTarget,
 	canonicalJson,
 	isRecord,
