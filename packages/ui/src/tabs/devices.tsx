@@ -2438,6 +2438,9 @@ function ConfiguredFallbackInventory({
 							<p>
 								<strong>Owning Identity:</strong> {previousIdentityName}
 							</p>
+							{item.validatedFingerprint ? (
+								<DeviceRejoinNotice item={item} localDeviceId={directLocalDeviceId(options)} />
+							) : null}
 							<ConfiguredRebind
 								controlKey={item.deviceId}
 								intent={intent}

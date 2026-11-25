@@ -3,6 +3,7 @@ import { act } from "preact/test-utils";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DeviceIdentityInventoryV1 } from "../lib/api/sync";
 import { DeviceRejoinHistory } from "./device-rejoin-history";
+import { mountDevices } from "./devices";
 
 const scope = "a".repeat(64);
 const path = "/api/sync/devices/rejoin-events";
@@ -166,10 +167,10 @@ it("does not move the stored cursor backward when another tab displays a later p
 	expect(localStorage.getItem(key)).toBe(later);
 });
 
-it("does not duplicate live row markers or show a notice for conflicting keys", async () => {
+function matchingInventory(): DeviceIdentityInventoryV1 {
 	const visible = page.items[0];
 	if (!visible) throw new Error("Missing event");
-	const inventory: DeviceIdentityInventoryV1 = {
+	return {
 		version: 1,
 		items: [
 			{
@@ -190,6 +191,10 @@ it("does not duplicate live row markers or show a notice for conflicting keys", 
 		coordinatorEvidence: { availability: "available", safeErrorCode: null },
 		truncated: false,
 	};
+}
+
+it("does not duplicate live row markers or show a notice for conflicting keys", async () => {
+	const inventory = matchingInventory();
 	const remote = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(page));
 	vi.stubGlobal("fetch", remote);
 	mount(1, inventory);
@@ -199,4 +204,75 @@ it("does not duplicate live row markers or show a notice for conflicting keys", 
 	if (!item) throw new Error("Missing inventory row");
 	mount(1, { ...inventory, items: [{ ...item, rejoin: undefined, state: "conflicted" }] });
 	expect(host.textContent).toBe("");
+});
+
+it.each([true, false])(
+	"shows a missed rejoin with a mounted configured fallback (verified pin: %s)",
+	async (verified) => {
+		const remote = vi.fn<typeof fetch>().mockResolvedValue(Response.json(page));
+		vi.stubGlobal("fetch", remote);
+		const inventory = matchingInventory();
+		const item = inventory.items[0];
+		if (!item) throw new Error("Missing fallback inventory row");
+		if (!verified) item.validatedFingerprint = null;
+		act(() =>
+			mountDevices(
+				host,
+				{
+					version: 1,
+					identities: [],
+					teams: [],
+					teamMemberships: [],
+					identityDevices: [],
+					projectRecipients: [],
+				},
+				{ version: 1, items: [] },
+				[],
+				[],
+				{ inventory, localDeviceId: "viewer", rejoinHistoryRevision: 1 },
+			),
+		);
+		await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+		const card = host.querySelector("#device-identity-card-offline-device");
+		expect(card?.textContent).toContain("Configured · Availability unknown");
+		const container = verified ? card : host.querySelector('[aria-label="Device rejoin history"]');
+		expect(container?.querySelector(".device-rejoin-notice")?.textContent ?? "").toMatch(
+			/rejoined by Google sign-in/i,
+		);
+		expect(host.querySelectorAll(".device-rejoin-notice")).toHaveLength(1);
+	},
+);
+
+it("lets one slow history response complete across multiple ordinary refreshes", async () => {
+	let deliver: (response: Response) => void = () => {
+		throw new Error("No pending request");
+	};
+	const remote = vi.fn<typeof fetch>(
+		() =>
+			new Promise<Response>((resolve) => {
+				deliver = resolve;
+			}),
+	);
+	vi.stubGlobal("fetch", remote);
+	mount(1);
+	await vi.waitFor(() => expect(remote).toHaveBeenCalledOnce());
+	const firstSignal = remote.mock.calls[0]?.[1]?.signal;
+
+	mount(2);
+	mount(3);
+	expect(firstSignal?.aborted).toBe(false);
+	expect(remote).toHaveBeenCalledOnce();
+	deliver(Response.json(page));
+	await vi.waitFor(() => expect(host.textContent).toContain("rejoined by Google sign-in"));
+	await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+	expect(remote).toHaveBeenCalledOnce();
+
+	mount(4);
+	await vi.waitFor(() =>
+		expect(remote.mock.calls[1]?.[0]).toBe(`${path}?scope=${scope}&after=event-a`),
+	);
+	const nextSignal = remote.mock.calls[1]?.[1]?.signal;
+	expect(nextSignal?.aborted).toBe(false);
+	act(() => render(null, host));
+	expect(nextSignal?.aborted).toBe(true);
 });

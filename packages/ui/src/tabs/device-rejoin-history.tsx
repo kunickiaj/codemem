@@ -80,6 +80,20 @@ async function fetchPage(cursor: Cursor | null, signal: AbortSignal) {
 	});
 }
 
+function usePendingHistoryRead(storageKey: string) {
+	const pending = useRef<{ storageKey: string; controller: AbortController } | null>(null);
+	useLayoutEffect(
+		() => () => {
+			const read = pending.current;
+			if (read?.storageKey !== storageKey) return;
+			pending.current = null;
+			read.controller.abort();
+		},
+		[storageKey],
+	);
+	return pending;
+}
+
 function useRejoinHistory(options: {
 	localDeviceId?: string;
 	profile?: string;
@@ -91,9 +105,12 @@ function useRejoinHistory(options: {
 	const [view, setView] = useState<View | null>(null);
 	const safeView = view?.storageKey === storageKey ? view : null;
 	const lastShown = useRef<View | null>(null);
+	const pending = usePendingHistoryRead(storageKey);
 	useEffect(() => {
-		if (!localDeviceId) return;
+		if (!localDeviceId || pending.current) return;
 		const controller = new AbortController();
+		const read = { storageKey, controller };
+		pending.current = read;
 		const prior = readCursor(storageKey);
 		const last = lastShown.current;
 		const cursor = prior ?? (last?.storageKey === storageKey ? last : null);
@@ -115,9 +132,11 @@ function useRejoinHistory(options: {
 			})
 			.catch(() => {
 				if (!controller.signal.aborted) setView(null);
+			})
+			.finally(() => {
+				if (pending.current === read) pending.current = null;
 			});
-		return () => controller.abort();
-	}, [localDeviceId, refreshRevision, storageKey]);
+	}, [localDeviceId, pending, refreshRevision, storageKey]);
 	useLayoutEffect(() => {
 		if (!safeView) return;
 		const acknowledge = () => {
@@ -154,7 +173,9 @@ export function DeviceRejoinHistory({
 	const items = events.filter(({ deviceId, finalizedAtMs }) => {
 		if (deviceId === localDeviceId) return false;
 		const item = byDevice.get(deviceId);
-		return item?.state !== "conflicted" && item?.rejoin?.rejoinedAtMs !== finalizedAtMs;
+		if (item?.state === "conflicted") return false;
+		const live = item?.validatedFingerprint ? validRejoin(item) : null;
+		return live?.deviceId !== deviceId || live.rejoinedAtMs !== finalizedAtMs;
 	});
 	return (
 		<div ref={host}>
