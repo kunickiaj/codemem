@@ -189,7 +189,7 @@ export function removeFailure(cause: unknown, name: string): PersonActionFailure
 	if (message === "cannot deactivate this device's own local actor") {
 		return rejected(`${name} is you on this device, so it can't be removed here. Nothing changed.`);
 	}
-	return unconfirmed(`${name} was removed`);
+	return unconfirmed(`${name} was removed from all sharing`);
 }
 
 function MergeSection({
@@ -300,9 +300,9 @@ function confirmPanelProps(
 		};
 	}
 	return {
-		title: `Remove ${name}?`,
-		detail: `${name}'s devices stop receiving every Project shared with ${name}, directly or through a Team. Memories already on those devices stay there. This can't be undone.`,
-		confirmLabel: "Remove person",
+		title: `Remove ${name} from all sharing?`,
+		detail: `All of ${name}'s devices lose access to every Project shared with ${name}, including direct shares and access through any Team. Memories already on those devices stay there. This can't be undone.`,
+		confirmLabel: "Remove from all sharing",
 		cancelLabel: "Keep",
 	};
 }
@@ -366,7 +366,7 @@ function unguardedAccessChange(
 	}
 	return {
 		action: () => actions.deactivate(identityId),
-		success: `${displayName} was removed. Their devices stop receiving shared Projects once this device updates the coordinator.`,
+		success: `${displayName} was removed from all sharing. Their devices stop receiving shared Projects once this device updates the coordinator.`,
 		failure: (cause: unknown) => removeFailure(cause, displayName),
 	};
 }
@@ -557,7 +557,7 @@ function PersonSettingsCard({
 			</div>
 			<div className="modal-body">
 				<p className="small" id="recipient-policy-person-settings-description">
-					Rename {name}, merge a duplicate entry, or remove {name} from Sharing.
+					Rename {name}, merge a duplicate entry, or remove {name} from all sharing.
 				</p>
 				<PersonSettingsBody
 					input={input}
@@ -644,9 +644,9 @@ function PersonSettingsBody({
 				onReview={(target) => settings.setStage({ kind: "confirm-merge", target })}
 			/>
 			<section aria-labelledby="recipient-policy-person-remove-title">
-				<h3 id="recipient-policy-person-remove-title">Remove person</h3>
+				<h3 id="recipient-policy-person-remove-title">Remove from all sharing</h3>
 				<p className="small">
-					{name}'s devices stop receiving the Projects shared with {name}.
+					This affects all of {name}'s devices, direct shares, and access through every Team.
 				</p>
 				<button
 					className="settings-button danger"
@@ -654,7 +654,7 @@ function PersonSettingsBody({
 					onClick={() => settings.setStage({ kind: "confirm-remove" })}
 					type="button"
 				>
-					Remove {name}
+					Remove {name} from all sharing
 				</button>
 			</section>
 			{blockedReason ? <p className="small">{blockedReason}</p> : null}

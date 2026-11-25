@@ -17,7 +17,7 @@ const preview: DeviceRemovalPreview = {
 	coordinator_origin: "https://coordinator.example",
 };
 const body =
-	"Devices that support Remove stop syncing with Old laptop when they next check the coordinator. Memories already on Old laptop stay there, and memories it already sent stay on your devices. Your other devices keep syncing with each other.";
+	"Devices that support Remove stop syncing with Old laptop when they next check the coordinator. Your other devices keep syncing with each other, and Team membership stays the same. Memories already on Old laptop stay there, and memories it already sent stay on your devices.";
 const invitationAdvice =
 	"To bring Old laptop back, create a new invitation in Sharing and accept it on Old laptop.";
 
@@ -64,6 +64,27 @@ describe("runDeviceRemovalConfirmation", () => {
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(fetch.mock.calls[0]?.[0]).toBe("/api/sync/devices/old%2Flaptop%20%3F%23/remove/preview");
 	});
+
+	it.each(["local", "already_removed"] as const)(
+		"explains that %s cleanup is local and leaves Team membership unchanged",
+		async (mode) => {
+			const read = vi.fn().mockResolvedValue({
+				mode,
+				device_id: device.deviceId,
+				expected_digest: preview.expected_digest,
+			});
+
+			await runDeviceRemovalConfirmation(device, { preview: read });
+
+			expect(openSyncConfirmDialog).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					title: "Remove Old laptop from this device?",
+					description: expect.stringContaining("Team membership stays the same."),
+					confirmLabel: "Remove from this device",
+				}),
+			);
+		},
+	);
 
 	it.each([
 		["invitation", invitationAdvice],

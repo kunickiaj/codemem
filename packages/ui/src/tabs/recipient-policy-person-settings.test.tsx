@@ -200,16 +200,17 @@ describe("person settings merge", () => {
 });
 
 describe("person settings removal", () => {
-	it("removes the person after a confirmation that names the access change", async () => {
+	it("removes the person after a confirmation that names the scope across all sharing", async () => {
 		const personActions = actions();
 		const onChanged = vi.fn();
 		mount({ actions: personActions, onChanged });
 
-		act(() => button("Remove Brian").click());
+		act(() => button("Remove Brian from all sharing").click());
+		expect(document.body.textContent).toContain("Remove Brian from all sharing?");
 		expect(document.body.textContent).toContain(
-			"Brian's devices stop receiving every Project shared with Brian",
+			"All of Brian's devices lose access to every Project shared with Brian, including direct shares and access through any Team.",
 		);
-		await press("Remove person");
+		await press("Remove from all sharing");
 		act(() => button("Done").click());
 
 		expect(personActions.deactivate).toHaveBeenCalledWith("identity-brian");
@@ -219,7 +220,7 @@ describe("person settings removal", () => {
 	it("disables merge and removal with a plain reason on a device without the admin secret", () => {
 		mount({ accessChangesAllowed: false });
 
-		expect(button("Remove Brian").disabled).toBe(true);
+		expect(button("Remove Brian from all sharing").disabled).toBe(true);
 		expect(mergeSelect().disabled).toBe(true);
 		expect(button("Save name").disabled).toBe(true);
 		type(nameInput(), "Brian Smith");
@@ -238,14 +239,14 @@ describe("person settings when access changes become unavailable", () => {
 		// Arrange: the confirmation opened while changes were allowed.
 		const personActions = actions();
 		const rerender = mount({ actions: personActions });
-		act(() => button("Remove Brian").click());
+		act(() => button("Remove Brian from all sharing").click());
 
 		// Act
 		rerender(next);
-		await press("Remove person");
+		await press("Remove from all sharing");
 
 		// Assert
-		expect(button("Remove person").disabled).toBe(true);
+		expect(button("Remove from all sharing").disabled).toBe(true);
 		expect(personActions.deactivate).not.toHaveBeenCalled();
 	});
 
@@ -287,9 +288,9 @@ describe("person settings rechecks access when the change is confirmed", () => {
 			canChangeAccess: vi.fn().mockRejectedValue(new TypeError("network error")),
 		});
 		mount({ actions: personActions });
-		act(() => button("Remove Brian").click());
+		act(() => button("Remove Brian from all sharing").click());
 
-		await press("Remove person");
+		await press("Remove from all sharing");
 
 		expect(personActions.deactivate).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain(
@@ -319,8 +320,8 @@ describe("person settings with an unconfirmed outcome", () => {
 		mount({ actions: personActions, onChanged });
 
 		// Act
-		act(() => button("Remove Brian").click());
-		await press("Remove person");
+		act(() => button("Remove Brian from all sharing").click());
+		await press("Remove from all sharing");
 		act(() => button("Close").click());
 
 		// Assert
@@ -334,8 +335,8 @@ describe("person settings with an unconfirmed outcome", () => {
 		});
 		mount({ actions: personActions, onChanged });
 
-		act(() => button("Remove Brian").click());
-		await press("Remove person");
+		act(() => button("Remove Brian from all sharing").click());
+		await press("Remove from all sharing");
 		act(() => button("Close").click());
 
 		expect(onChanged).not.toHaveBeenCalled();
@@ -367,8 +368,8 @@ describe("person settings when the server response can't be read", () => {
 			await press("Merge people");
 		},
 		removal: async () => {
-			act(() => button("Remove Brian").click());
-			await press("Remove person");
+			act(() => button("Remove Brian from all sharing").click());
+			await press("Remove from all sharing");
 		},
 	};
 
@@ -394,7 +395,7 @@ describe("person settings when the server response can't be read", () => {
 	it.each([
 		["rename", '{"actor_id":"identity-brian","display_name":"Brian Lee"}', "Renamed to Brian Lee."],
 		["merge", '{"merged_count":1}', "Brian was merged into Casey."],
-		["removal", '{"ok":true}', "Brian was removed."],
+		["removal", '{"ok":true}', "Brian was removed from all sharing."],
 	])("reports the %s once the server confirms it", async (step, body, message) => {
 		respond(body);
 		mount({ actions: "api" });
@@ -438,7 +439,7 @@ describe("person settings error messages", () => {
 		[removeFailure(new Error("actor not active"), "Brian"), "Refresh Sharing", true],
 		[
 			removeFailure(new Error("boom"), "Brian"),
-			"couldn't confirm whether Brian was removed",
+			"couldn't confirm whether Brian was removed from all sharing",
 			false,
 		],
 	])("names what happened and the next step: %o", (failure, expected, outcomeKnown) => {
