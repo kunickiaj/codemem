@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { fetchJson } from "../lib/api/internal";
 import type { DeviceIdentityInventoryV1 } from "../lib/api/sync";
 import { DeviceRejoinNotice, validRejoin } from "./device-rejoin-notice";
@@ -9,7 +9,7 @@ const PAGE_SIZE = 50;
 type Cursor = { scope: string; nextCursor: string | null };
 type Event = { eventId: string; deviceId: string; finalizedAtMs: number };
 type Page = Cursor & { localDeviceId: string; items: Event[] };
-type View = Page & { prior: Cursor | null };
+type View = Page & { prior: Cursor | null; storageKey: string };
 
 function id(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0 && value.length <= 256;
@@ -89,14 +89,14 @@ function useRejoinHistory(options: {
 	const storageKey = `${CURSOR_KEY}:${JSON.stringify([localDeviceId, profile ?? ""])}`;
 	const host = useRef<HTMLDivElement>(null);
 	const [view, setView] = useState<View | null>(null);
-	const safeView = view?.localDeviceId === localDeviceId ? view : null;
+	const safeView = view?.storageKey === storageKey ? view : null;
 	const lastShown = useRef<View | null>(null);
 	useEffect(() => {
 		if (!localDeviceId) return;
 		const controller = new AbortController();
 		const prior = readCursor(storageKey);
 		const last = lastShown.current;
-		const cursor = prior ?? (last?.localDeviceId === localDeviceId ? last : null);
+		const cursor = prior ?? (last?.storageKey === storageKey ? last : null);
 		void fetchPage(cursor, controller.signal)
 			.then((page) => {
 				if (controller.signal.aborted) return;
@@ -105,11 +105,12 @@ function useRejoinHistory(options: {
 					return;
 				}
 				setView((previous) => {
-					const retained = previous?.scope === page.scope ? previous.items : [];
+					const sameView = previous?.storageKey === storageKey && previous.scope === page.scope;
+					const retained = sameView ? previous.items : [];
 					const combined = new Map(
 						[...retained, ...page.items].map((item) => [item.eventId, item]),
 					);
-					return { ...page, items: [...combined.values()].slice(-PAGE_SIZE), prior };
+					return { ...page, items: [...combined.values()].slice(-PAGE_SIZE), prior, storageKey };
 				});
 			})
 			.catch(() => {
@@ -117,11 +118,22 @@ function useRejoinHistory(options: {
 			});
 		return () => controller.abort();
 	}, [localDeviceId, refreshRevision, storageKey]);
-	useEffect(() => {
-		if (!safeView || !host.current || host.current.closest("[hidden]")) return;
-		lastShown.current = safeView;
-		rememberPage(storageKey, safeView);
-	}, [safeView, storageKey]);
+	useLayoutEffect(() => {
+		if (!safeView) return;
+		const acknowledge = () => {
+			if (
+				document.visibilityState !== "visible" ||
+				!host.current ||
+				host.current.closest("[hidden]")
+			)
+				return;
+			lastShown.current = safeView;
+			rememberPage(safeView.storageKey, safeView);
+		};
+		acknowledge();
+		document.addEventListener("visibilitychange", acknowledge);
+		return () => document.removeEventListener("visibilitychange", acknowledge);
+	}, [safeView]);
 	return { host, events: safeView?.items ?? [] };
 }
 

@@ -91,6 +91,69 @@ it("does not advance the historical cursor while the Devices tab is hidden", asy
 	expect(remote.mock.calls.at(-1)?.[0]).toBe(path);
 });
 
+it("does not acknowledge a pending request that finishes in a hidden browser tab until it becomes visible", async () => {
+	let deliver: (response: Response) => void = () => {
+		throw new Error("No pending request");
+	};
+	const remote = vi.fn<typeof fetch>(
+		() =>
+			new Promise<Response>((resolve) => {
+				deliver = resolve;
+			}),
+	);
+	const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+	vi.stubGlobal("fetch", remote);
+	try {
+		mount(1);
+		await vi.waitFor(() => expect(remote).toHaveBeenCalledOnce());
+		visibility.mockReturnValue("hidden");
+		document.dispatchEvent(new Event("visibilitychange"));
+		deliver(Response.json(page));
+		await vi.waitFor(() => expect(host.textContent).toContain("rejoined by Google sign-in"));
+		expect(localStorage.getItem(key)).toBeNull();
+
+		visibility.mockReturnValue("visible");
+		document.dispatchEvent(new Event("visibilitychange"));
+		await vi.waitFor(() => expect(localStorage.getItem(key)).toContain("event-a"));
+		expect(remote).toHaveBeenCalledOnce();
+	} finally {
+		visibility.mockRestore();
+	}
+});
+
+it("removes the deferred acknowledgement when the profile changes", async () => {
+	const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+	const remove = vi.spyOn(document, "removeEventListener");
+	const remote = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json(page));
+	remote.mockImplementation(() => new Promise<Response>(() => {}));
+	vi.stubGlobal("fetch", remote);
+	try {
+		mount(1);
+		await vi.waitFor(() => expect(host.textContent).toContain("rejoined by Google sign-in"));
+		act(() =>
+			render(
+				<DeviceRejoinHistory
+					localDeviceId="viewer"
+					profile="another-profile"
+					refreshRevision={2}
+				/>,
+				host,
+			),
+		);
+		expect(remove).toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+		visibility.mockReturnValue("visible");
+		document.dispatchEvent(new Event("visibilitychange"));
+		expect(localStorage.getItem(key)).toBeNull();
+		expect(
+			localStorage.getItem('codemem.device-rejoin-history.cursor.v1:["viewer","another-profile"]'),
+		).toBeNull();
+		expect(host.textContent).not.toContain("rejoined by Google sign-in");
+	} finally {
+		remove.mockRestore();
+		visibility.mockRestore();
+	}
+});
+
 it("does not move the stored cursor backward when another tab displays a later page", async () => {
 	const later = JSON.stringify({ scope, nextCursor: "event-b" });
 	const remote = vi.fn<typeof fetch>().mockImplementation(async () => {
