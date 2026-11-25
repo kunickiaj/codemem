@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_READ_DEADLINE_MS } from "../lib/read-request";
 import {
 	confirmAndCommitDeviceRemoval,
 	DeviceRemovalCommitError,
@@ -163,4 +164,57 @@ describe("confirmAndCommitDeviceRemoval", () => {
 		await expect(pending).rejects.toMatchObject({ code: "removal_outcome_unknown" });
 		expect(fetch).toHaveBeenCalledTimes(2);
 	});
+});
+
+it.each([
+	["coordinator_update_required", 503],
+	["device_removal_unavailable", 503],
+	["coordinator_admin_required", 409],
+] as const)(
+	"preserves a refused preview's %s code without opening confirmation",
+	async (code, statusCode) => {
+		const fetch = vi.fn().mockResolvedValue(Response.json({ error: code }, { status: statusCode }));
+		vi.stubGlobal("fetch", fetch);
+
+		await expect(confirmAndCommitDeviceRemoval(device)).rejects.toMatchObject({
+			code,
+			statusCode,
+		});
+		expect(fetch).toHaveBeenCalledExactlyOnceWith(
+			"/api/sync/devices/old%2Flaptop%20%3F%23/remove/preview",
+			{ method: "POST", signal: expect.any(AbortSignal) },
+		);
+		expect(openSyncConfirmDialog).not.toHaveBeenCalled();
+	},
+);
+
+it.each([
+	new Response("Service temporarily unavailable", { status: 503 }),
+	Response.json({ error: "private_server_detail" }, { status: 503 }),
+])("keeps unrecognized preview failures out of user-facing codes: %#", async (response) => {
+	const fetch = vi.fn().mockResolvedValue(response);
+	vi.stubGlobal("fetch", fetch);
+	await expect(confirmAndCommitDeviceRemoval(device)).rejects.toMatchObject({
+		code: "device_removal_unavailable",
+		statusCode: 503,
+	});
+	expect(fetch).toHaveBeenCalledOnce();
+	expect(openSyncConfirmDialog).not.toHaveBeenCalled();
+});
+
+it("keeps the preview read deadline without confirming or retrying", async () => {
+	vi.useFakeTimers();
+	const fetch = vi.fn(() => new Promise<Response>(() => {}));
+	vi.stubGlobal("fetch", fetch);
+	try {
+		const outcome = expect(confirmAndCommitDeviceRemoval(device)).rejects.toMatchObject({
+			code: "device_removal_unavailable",
+		});
+		await vi.advanceTimersByTimeAsync(DEFAULT_READ_DEADLINE_MS + 1);
+		await outcome;
+		expect(fetch).toHaveBeenCalledOnce();
+		expect(openSyncConfirmDialog).not.toHaveBeenCalled();
+	} finally {
+		vi.useRealTimers();
+	}
 });

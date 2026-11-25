@@ -1,4 +1,5 @@
-import { fetchJson, payloadError } from "../lib/api/internal";
+import { payloadError } from "../lib/api/internal";
+import { createReadDeadline, DEFAULT_READ_DEADLINE_MS, waitForAbort } from "../lib/read-request";
 import { openSyncConfirmDialog } from "./sync/sync-dialogs";
 
 export interface DeviceRemovalPreview {
@@ -22,10 +23,17 @@ export interface DeviceRemovalConfirmationDependencies {
 }
 
 export class DeviceRemovalPreviewError extends Error {
-	readonly code = "device_removal_preview_invalid";
-
-	constructor() {
-		super("The device removal preview is invalid.");
+	constructor(
+		readonly code:
+			| "device_removal_preview_invalid"
+			| DeviceRemovalErrorCode = "device_removal_preview_invalid",
+		readonly statusCode = 0,
+	) {
+		super(
+			code === "device_removal_preview_invalid"
+				? "The device removal preview is invalid."
+				: `Device removal preview failed: ${code} (${statusCode}).`,
+		);
 		this.name = "DeviceRemovalPreviewError";
 	}
 }
@@ -115,11 +123,39 @@ function confirmDescription(
 	return `${body}\n\n${removalCompatibilityNotice(name, olderDeviceNames)}`;
 }
 
+async function previewDeviceRemoval(deviceId: string): Promise<unknown> {
+	const deadline = createReadDeadline(DEFAULT_READ_DEADLINE_MS);
+	try {
+		const response = await waitForAbort(
+			fetch(`/api/sync/devices/${encodeURIComponent(deviceId)}/remove/preview`, {
+				method: "POST",
+				signal: deadline.signal,
+			}),
+			deadline.signal,
+		);
+		const payload = await waitForAbort(
+			response.json().catch(() => null),
+			deadline.signal,
+		);
+		if (!response.ok) {
+			const code = payloadError(payload);
+			const knownCode = removalErrorCodes.find((candidate) => candidate === code);
+			throw new DeviceRemovalPreviewError(
+				knownCode ?? "device_removal_unavailable",
+				response.status,
+			);
+		}
+		return payload;
+	} catch (error) {
+		if (error instanceof DeviceRemovalPreviewError) throw error;
+		throw new DeviceRemovalPreviewError("device_removal_unavailable");
+	} finally {
+		deadline.dispose();
+	}
+}
+
 const defaultDependencies: DeviceRemovalConfirmationDependencies = {
-	preview: (deviceId) =>
-		fetchJson<unknown>(`/api/sync/devices/${encodeURIComponent(deviceId)}/remove/preview`, {
-			method: "POST",
-		}),
+	preview: previewDeviceRemoval,
 	confirm: openSyncConfirmDialog,
 };
 

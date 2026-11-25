@@ -42,6 +42,7 @@ import {
 	confirmAndCommitDeviceRemoval,
 	DeviceRemovalCommitError,
 	type DeviceRemovalConfirmationDependencies,
+	DeviceRemovalPreviewError,
 	type DeviceRemovalResult,
 	removalCompatibilityNotice,
 } from "./device-removal-confirmation";
@@ -1497,11 +1498,8 @@ async function removeFromMenu(
 	try {
 		result = await confirmAndCommitDeviceRemoval(device, confirmation);
 	} catch (error) {
-		const message =
-			error instanceof DeviceRemovalCommitError && error.code === "removal_outcome_unknown"
-				? `Could not confirm the removal. Refresh Devices to see whether ${device.displayName} was removed before you try again.`
-				: `Could not remove ${device.displayName}. Refresh Devices before trying again.`;
-		setDeviceCommitStatus(message, "warning");
+		setDeviceCommitStatus(removalFailureMessage(device.displayName, error), "warning");
+		document.getElementById(DEVICE_COMMIT_STATUS_ID)?.focus();
 		return;
 	}
 	if (!result) return;
@@ -1523,6 +1521,26 @@ async function removeFromMenu(
 	const status = coordinatorRemovalStatus(device.displayName, result, refreshed === false);
 	setDeviceCommitStatus(status.message, status.tone);
 	document.getElementById("devices-heading")?.focus();
+}
+
+function removalFailureMessage(name: string, error: unknown): string {
+	if (error instanceof DeviceRemovalPreviewError) {
+		switch (error.code) {
+			case "coordinator_update_required":
+				return `Could not review removal of ${name}. Update the coordinator and apply its pending migrations, then try again. No removal was sent.`;
+			case "coordinator_admin_required":
+				return `Could not review removal of ${name}. This Viewer needs the coordinator admin secret. Contact your coordinator administrator. No removal was sent.`;
+			case "device_removal_unavailable":
+				if (error.statusCode === 0)
+					return `Could not load the removal preview for ${name}. Check your connection to the Viewer and refresh Devices before trying again. No removal was sent.`;
+				return `Could not review removal of ${name}. Ask your administrator to check the coordinator's version, migrations, and connectivity, then try again. No removal was sent.`;
+			default:
+				return `Could not review removal of ${name}. Refresh Devices before trying again. No removal was sent.`;
+		}
+	}
+	if (error instanceof DeviceRemovalCommitError && error.code === "removal_outcome_unknown")
+		return `Could not confirm the removal. Refresh Devices to see whether ${name} was removed before you try again.`;
+	return `Could not remove ${name}. Refresh Devices before trying again.`;
 }
 
 function coordinatorRemovalStatus(
@@ -2741,7 +2759,7 @@ function DevicesRoot({
 				options={options}
 				projection={projection}
 			/>
-			<p aria-live="polite" id={DEVICE_COMMIT_STATUS_ID} role="status" />
+			<p aria-live="polite" id={DEVICE_COMMIT_STATUS_ID} role="status" tabIndex={-1} />
 		</section>
 	);
 }
