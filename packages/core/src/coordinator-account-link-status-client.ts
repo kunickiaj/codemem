@@ -168,7 +168,11 @@ export async function abortable<T>(operation: Promise<T>, signal: AbortSignal): 
 export function discard(response: Response): void {
 	void response.body?.cancel().catch(() => {});
 }
-export async function boundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
+export async function boundedJson(
+	response: Response,
+	signal: AbortSignal,
+	maxBytes = 16_384,
+): Promise<unknown> {
 	if (!response.body) throw new Error("Invalid status.");
 	const reader = response.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -178,7 +182,7 @@ export async function boundedJson(response: Response, signal: AbortSignal): Prom
 			const { done, value } = await abortable(reader.read(), signal);
 			if (done) break;
 			size += value.byteLength;
-			if (size > 16384) throw new Error("Invalid status.");
+			if (size > maxBytes) throw new Error("Invalid status.");
 			chunks.push(value);
 		}
 		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));

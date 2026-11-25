@@ -193,6 +193,10 @@ export {
 	runDeviceRejoin,
 } from "./coordinator-device-rejoin-client.js";
 export {
+	type CoordinatorDeviceRejoinEvent,
+	readCoordinatorDeviceRejoinEvents,
+} from "./coordinator-device-rejoin-event-client.js";
+export {
 	COORDINATOR_DEVICE_REVOCATION_SCOPE,
 	type CoordinatorDeviceRevocationCommit,
 	type CoordinatorDeviceRevocationPreview,

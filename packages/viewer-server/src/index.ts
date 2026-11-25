@@ -31,6 +31,7 @@ import { accountStatusRoutes } from "./routes/account-status.js";
 import { type ConfigRouteOptions, configRoutes } from "./routes/config.js";
 import { enrolledDeviceBlockRoutes } from "./routes/device-block-enrolled.js";
 import { removedDeviceBlockRoutes } from "./routes/device-block-removed.js";
+import { deviceRejoinEventRoutes } from "./routes/device-rejoin-events.js";
 import {
 	type DeviceRemovalRefreshHooksFactory,
 	deviceRemovalCommitRoutes,
@@ -340,6 +341,10 @@ function registerViewerDeviceRemoval(
 	opts?: AppOptions,
 ) {
 	const createDeviceRemovalRefreshHooks = opts?.createDeviceRemovalRefreshHooks;
+	app.route(
+		"/",
+		deviceRejoinEventRoutes({ getStore: storeFactory, readConfig: opts?.readCoordinatorConfig }),
+	);
 	const options = { readCoordinatorConfig: opts?.readCoordinatorConfig };
 	const mounted = createDeviceRemovalRefreshHooks
 		? { getLocalStore: storeFactory, getSignedLookupStore: storeFactory }

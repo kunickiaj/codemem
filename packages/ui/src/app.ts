@@ -730,10 +730,14 @@ function deviceRendererActions(
 	| "onSyncDevice"
 	| "removalConfirmation"
 	| "enrolledDeviceBlock"
+	| "rejoinHistoryRevision"
+	| "rejoinHistoryProfile"
 > {
 	return {
 		...(lifecycleAvailable ? { removalConfirmation: {}, enrolledDeviceBlock: true } : {}),
 		localDeviceId: state.lastSyncStatus?.device_id ?? undefined,
+		rejoinHistoryRevision: state.lastSyncCoordinator?.configured ? devicesLoadRevision : undefined,
+		rejoinHistoryProfile: state.lastSyncCoordinator?.coordinator_url ?? undefined,
 		onCommitted: refreshDevicesAfterCommit,
 		onNavigate: navigateFromDevices,
 		onRetry: () => void loadDevicesData(),

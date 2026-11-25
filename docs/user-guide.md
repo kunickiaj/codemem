@@ -935,6 +935,8 @@ A device that came back through Google sign-in shows **Rejoined by Google sign-i
 
 Devices gets this notice from the coordinator's device list or from signed peer discovery when it can verify that the current enrollment matches the locally pinned key. The notice applies to the current enrollment.
 
+Devices linked to the same coordinator Identity can also see rejoin events they missed while offline. Devices remembers the last event it showed and resumes from there on the next refresh.
+
 ## Advanced operator and compatibility guidance
 
 **Sharing is the primary supported Team experience.** Use **Sharing → Teams** for Team membership, Team names, Identity relationships, and inherited Project access. Use **Projects** to choose exact Project recipients.
