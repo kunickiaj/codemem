@@ -2,14 +2,26 @@
 
 ## [Unreleased]
 
+## [0.50.0-beta.1] - 2026-11-24
+
 ### Added
 
+- Share Projects with Teams or individual people from the Viewer. Create a Team, review the Projects an invitation grants, and add another device without manually pairing it.
+- Devices offers **Remove device** and **Block device permanently**. An eligible removed device can return with a fresh invitation or, when linked to a Google account, `codemem sync rejoin`. Permanent Block prevents that device ID and key from returning.
+- Stop and resume a received Project on this device without changing access on your other devices.
 - OpenCode 2.2.6 and later can share one `codemem mcp` process across all projects instead of starting one per project directory. Run `codemem setup --opencode-only --opencode-mcp pooled` to opt in, and the same command with `--opencode-mcp stdio` to go back. Searches, writes, and sharing scopes still follow the project each call came from. Every project must load the codemem plugin, and the default is unchanged. See [Shared MCP server](docs/plugin-reference.md#shared-mcp-server-on-opencode-2-opt-in). ([#2765], [#2766], [#2768])
 - MCP clients can use `memory_session_search` to search stored Pi user/assistant transcripts with the same bounded results and project/session filters as Pi's existing native tool. Pi tool-mode defaults and OpenCode's native tool catalog are unchanged.
 
 ### Changed
 
 - `codemem coordinator invitation create` now creates Team or add-device invitations from a Team admin's own device and no longer creates connection-only codes. Run it with `--team <name>` or `--add-device` and `--review` to see the Projects the invitation shares, then again with `--reviewed-onboarding-digest <digest>` to create it. The old `invitation create <group>` form fails with that guidance. To connect a device without sharing Projects, use `codemem coordinator device enroll`. Older connection-only codes can still be imported in 0.50, and 0.51 stops accepting them. See [Invite-driven enrollment](docs/coordinator-deployment.md#invite-driven-enrollment-recommended).
+
+**Upgrade notes and limitations:**
+
+- This is an opt-in beta on npm's `beta` channel. Restart the Viewer and agent hosts after upgrading.
+- Upgrade the coordinator before using Google sign-in rejoin. Cloudflare operators must apply pending D1 migrations through `0051_add_device_rejoin.sql` before deploying the Worker. Back up the database and follow [Apply the D1 migrations](docs/cloudflare-coordinator-deployment.md#5-apply-the-d1-migrations).
+- Older peers may retain direct pairings after coordinator-wide Remove. Update those peers or unpair the removed device manually.
+- Remove and Block do not erase memories already copied to a device. Previously shared imports without a known author may remain on recipients after Project access is revoked.
 
 ## [0.49.1] - 2026-11-15
 
@@ -391,7 +403,8 @@ Supersedes the beta.1 candidate, which was tagged but not published to npm.
 - Pi does not persist recalled memory pastes in its session file, so restarting Pi does not restore earlier injection decisions. First loads of Health and coordinator administration can still be slow on large stores.
 - Revoking a shared Space stops new delivery but cannot erase copies already received by another device.
 
-[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.49.1...HEAD
+[Unreleased]: https://github.com/kunickiaj/codemem/compare/v0.50.0-beta.1...HEAD
+[0.50.0-beta.1]: https://github.com/kunickiaj/codemem/compare/v0.49.1...v0.50.0-beta.1
 [0.49.1]: https://github.com/kunickiaj/codemem/compare/v0.49.0...v0.49.1
 [0.49.0]: https://github.com/kunickiaj/codemem/compare/v0.48.1...v0.49.0
 [0.49.0-beta.7]: https://github.com/kunickiaj/codemem/compare/v0.49.0-beta.6...v0.49.0-beta.7
