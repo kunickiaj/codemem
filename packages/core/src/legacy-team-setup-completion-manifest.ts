@@ -23,6 +23,8 @@ import {
 	LEGACY_TEAM_SETUP_MAX_PROJECTS,
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
+import { removePairingState } from "./pairing-removal.js";
+import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { listProjectScopeCandidates } from "./project-scope-settings.js";
 import type { LegacyTeamSetupActivationResultV1 } from "./recipient-policy-contract.js";
@@ -41,6 +43,7 @@ import {
 	serializeRecipientPolicyPublicationMutation,
 	serializeRecipientPolicyTeamMutation,
 } from "./recipient-policy-team-metadata.js";
+import { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 import { getEffectiveCachedScopeAuthorization } from "./scope-membership-cache-read.js";
 import { scopeAuthorizationFailureReason } from "./sync-scope-protocol.js";
 
@@ -114,6 +117,21 @@ export interface LegacyTeamSetupDeviceRemovalRecord {
 	fingerprint: string;
 }
 
+/**
+ * The sync daemon's peer removal lookup: the devices the coordinator reports
+ * removed with no surviving enrollment for the same key, and the local pairing
+ * generation the lookup was made against. Or the fact that it gave no answer.
+ */
+export type LegacyTeamSetupPeerRemovalEvidence =
+	| {
+			status: "read";
+			removed: readonly string[];
+			/** Devices the coordinator still holds any enrollment for, under any key. */
+			enrolled: readonly string[];
+			generation: number | null;
+	  }
+	| { status: "unavailable" };
+
 /** Coordinator removal records, or the fact that they could not be read. */
 export type LegacyTeamSetupDeviceRemovalEvidence =
 	| { status: "read"; removals: readonly LegacyTeamSetupDeviceRemovalRecord[] }
@@ -157,6 +175,8 @@ interface ApplyCompletionManifestInput {
 	freshRoster: readonly LegacyTeamRosterDeviceSnapshot[];
 	/** Omitted when the caller has no removal records to consult. */
 	deviceRemovals?: LegacyTeamSetupDeviceRemovalEvidence;
+	/** Omitted when the caller cannot ask; treated like an unavailable lookup. */
+	peerRemovals?: LegacyTeamSetupPeerRemovalEvidence;
 	expectedDraftManifest?: CoordinatorLegacyTeamCompletionManifestV1;
 	recipientPolicyLocksHeld?: {
 		publication: true;
@@ -1164,9 +1184,84 @@ function replayAfterVerifiedRemoval(
 				removal.fingerprint === device.key_fingerprint,
 		),
 	);
-	// A removal permits a read-only replay of the already-installed setup. It
-	// must not recreate device bindings, memberships, or Project recipients.
-	return proven ? installed : undefined;
+	// A removal permits a replay of the already-installed setup. It must not
+	// recreate device bindings, memberships, or Project recipients. Otherwise
+	// the removal counts as unproven and the roster check quarantines.
+	if (!proven || !endRemovedDeviceAccessOrConfirmDenied(db, manifest, missing, input))
+		return undefined;
+	return installed;
+}
+
+/** The devices the daemon's lookup proves removed everywhere, read against the current pairings. */
+function removedEverywhere(db: Database, evidence: LegacyTeamSetupPeerRemovalEvidence | undefined) {
+	if (evidence?.status !== "read" || evidence.generation === null) return new Set<string>();
+	// Same rule as the daemon: a pairing or binding written since the lookup voids it.
+	if (readPeerRemovalCheckState(db)?.generation !== evidence.generation) return new Set<string>();
+	// The lookup matches removals by device ID as well as key, so an older key's
+	// removal can list a device whose current key is still enrolled elsewhere.
+	// The reply names no key, so a device in both lists is not proven removed.
+	const enrolled = new Set(evidence.enrolled);
+	return new Set(evidence.removed.filter((deviceId) => !enrolled.has(deviceId)));
+}
+
+/**
+ * A device removed from every group loses its local access here, as the sync
+ * daemon would remove it. A device that may still be enrolled in another
+ * group is left alone, which keeps the Team only while this machine already
+ * denies it.
+ */
+function endRemovedDeviceAccessOrConfirmDenied(
+	db: Database,
+	manifest: CoordinatorLegacyTeamCompletionManifestV1,
+	missing: readonly IncludedDeviceDecision[],
+	input: ApplyCompletionManifestInput,
+): boolean {
+	const everywhere = removedEverywhere(db, input.peerRemovals);
+	const elsewhere = missing
+		.filter((device) => !everywhere.has(device.device_id))
+		.map((device) => device.device_id);
+	if (elsewhere.length > 0 && !areDevicesDeniedLocallyForTeam(db, manifest, elsewhere))
+		return false;
+	const removed = missing.filter((device) => everywhere.has(device.device_id));
+	return removed.length === 0 || endVerifiedRemovedDeviceAccess(db, removed);
+}
+
+/**
+ * Ends local access for devices the coordinator proved removed everywhere, as
+ * this machine's own Viewer removal commit would: device-wide, for each device
+ * whose stored pin and binding match the removed key. Returns false, with its
+ * writes rolled back, when a device would keep access: a pin or binding for
+ * another key, or a failed write.
+ */
+function endVerifiedRemovedDeviceAccess(
+	db: Database,
+	devices: readonly IncludedDeviceDecision[],
+): boolean {
+	// Read only: replay must not create a signing identity. Without one, no
+	// removed device can be this machine.
+	const localDeviceId =
+		(db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get() as string | undefined) ??
+		"";
+	const removed = devices.filter((device) => device.device_id !== localDeviceId);
+	const deviceIds = localRemovedDeviceIds(
+		db,
+		{
+			enrollments: removed.map((device) => ({
+				device_id: device.device_id,
+				fingerprint: device.key_fingerprint,
+			})),
+			keyId: null,
+		},
+		localDeviceId,
+	);
+	if (removed.some((device) => !deviceIds.includes(device.device_id))) return false;
+	try {
+		// Its own savepoint: a failure rolls back every row it wrote.
+		removePairingState(db, { localDeviceId, reason: "removed", deviceIds });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function tryRemovalCompletionReplay(
@@ -1176,11 +1271,13 @@ function tryRemovalCompletionReplay(
 	actorIds: readonly string[],
 ) {
 	if (!input.deviceRemovals) return undefined;
-	return db.transaction(() => {
-		requireCompletionActorLocks(db, manifest, actorIds);
-		const result = replayAfterVerifiedRemoval(db, manifest, input);
-		if (result) return { manifest, result };
-	})();
+	return db
+		.transaction(() => {
+			requireCompletionActorLocks(db, manifest, actorIds);
+			const result = replayAfterVerifiedRemoval(db, manifest, input);
+			if (result) return { manifest, result };
+		})
+		.immediate();
 }
 
 function readProvenRenamedTeam(

@@ -19,6 +19,7 @@ import {
 	setLegacyTeamSetupDeviceDecision,
 } from "@codemem/core";
 import { describe, expect, it, vi } from "vitest";
+import { readPeerRemovalCheckState } from "../../../core/src/peer-removal-check-state.js";
 import { refreshTestScopeRows } from "../../../core/src/scope-membership-cache-test-fixtures.js";
 import { __teamSetupTestHooks, teamSetupRoutes } from "./team-setup.js";
 
@@ -2641,16 +2642,43 @@ function branchDependencies(
 	branch: ReconciliationBranch,
 	manifest: ReturnType<typeof deriveLegacyTeamSetupCompletionManifest>,
 	listRemovals: ReturnType<typeof vi.fn>,
+	lookupPeerRemovals?: LookupPeerRemovals,
 ) {
 	if (branch === "coordinator record") {
-		return { create: vi.fn(), list: async () => [{ group_id: GROUP_ID, manifest }], listRemovals };
+		return {
+			create: vi.fn(),
+			list: async () => [{ group_id: GROUP_ID, manifest }],
+			listRemovals,
+			lookupPeerRemovals,
+		};
 	}
 	return {
 		create: vi.fn().mockRejectedValue(new Error("completion_conflict")),
 		get: async () => manifest,
 		list: async () => [],
 		listRemovals,
+		lookupPeerRemovals,
 	};
+}
+
+type LookupPeerRemovals = NonNullable<
+	NonNullable<Parameters<typeof teamSetupRoutes>[0]["completionDependencies"]>["lookupPeerRemovals"]
+>;
+
+/** The only device of the single-device Team, which the coordinator removed. */
+const LAPTOP_DEVICE_ID = "device-a";
+
+/** The daemon's lookup reporting these devices removed, and these still enrolled, as of now. */
+function daemonLookup(removed: string[], enrolled: string[] = []): LookupPeerRemovals {
+	return async (store) => ({
+		status: "checked",
+		revoked: [],
+		removed,
+		enrolled,
+		removalSeq: 1,
+		generation: readPeerRemovalCheckState(store.db)?.generation ?? null,
+		removedFromGroups: [],
+	});
 }
 
 /** This machine applies the coordinator's removal: binding ended, pairing deleted. */
@@ -2837,6 +2865,159 @@ describe("Team setup terminal routing after device removal", () => {
 			store.close();
 		}
 	});
+});
+
+/** What this machine still gives the device: binding, pin, and retained scope proofs. */
+function deviceAccess(store: MemoryStore, deviceId: string) {
+	const count = (sql: string) => store.db.prepare(sql).pluck().get(deviceId);
+	return {
+		binding: count("SELECT status FROM identity_devices WHERE device_id = ?"),
+		pinned: count("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?"),
+		proofs: count(
+			"SELECT COUNT(*) FROM scope_membership_authorization_evidence WHERE device_id = ?",
+		),
+	};
+}
+
+/**
+ * The coordinator removed the device, but this machine still binds it and
+ * caches its scope proof. No pin is stored, so the Viewer removal rule
+ * applies to it by device ID.
+ */
+async function stillServedRemovedDevice(store: MemoryStore) {
+	const installed = await installCompletedTeam(store);
+	const deviceId = installed.removal.device_id;
+	await retainCachedTeamScopeMembership(store, deviceId);
+	expect(deviceAccess(store, deviceId)).toEqual({ binding: "active", pinned: 0, proofs: 1 });
+	return installed;
+}
+
+describe("Team setup terminal routing ends a verified-removed device's local access", () => {
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"keeps the Team active and ends the removed device's access: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				const listRemovals = vi.fn(async () => [removal]);
+				const lookup = daemonLookup([removal.device_id]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
+
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				expect(detail.status).toBe(200);
+				expect(listRemovals).toHaveBeenCalledOnce();
+				expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+				expect(deviceAccess(store, removal.device_id)).toEqual({
+					binding: "removed",
+					pinned: 0,
+					proofs: 0,
+				});
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"rolls back the cleanup and quarantines when ending access fails, then again on retry: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				// Arrange: ending the binding fails inside the keep-active replay.
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				store.db.exec(`CREATE TRIGGER fail_binding_end BEFORE UPDATE ON identity_devices
+					WHEN NEW.status = 'removed' BEGIN SELECT RAISE(ABORT, 'binding end failed'); END`);
+				const listRemovals = vi.fn(async () => [removal]);
+				const lookup = daemonLookup([removal.device_id]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
+
+				// Act
+				const failed = await app.request(REMOVAL_DETAIL_PATH);
+				const afterFailure = {
+					team: teamStatus(store),
+					access: deviceAccess(store, removal.device_id),
+				};
+				store.db.exec("DROP TRIGGER fail_binding_end");
+				const retried = await app.request(REMOVAL_DETAIL_PATH);
+
+				// Assert: the cleanup wrote nothing and the Team is quarantined, also on retry.
+				const recordBranch = branch === "coordinator record";
+				expect(failed.status).toBe(409);
+				expect(await failed.json()).toEqual({
+					error: recordBranch ? "team_setup_completion_invalid" : "team_setup_completion_conflict",
+				});
+				expect(afterFailure).toEqual({
+					team: { status: "inactive", migration_state: "needs_setup" },
+					access: { binding: "active", pinned: 0, proofs: 1 },
+				});
+				// A record retry fails the roster check again; after containment the
+				// conflict branch shows setup as needed.
+				if (recordBranch) {
+					expect(retried.status).toBe(409);
+					expect(await retried.json()).toEqual({ error: "team_setup_completion_invalid" });
+				} else {
+					expect(retried.status).toBe(200);
+					expect(await retried.json()).toMatchObject({ candidate: { status: "needs_setup" } });
+				}
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
+describe("Team setup terminal routing without proof of removal from every group", () => {
+	const lookups: Array<[string, LookupPeerRemovals]> = [
+		["the device stays enrolled in another group", daemonLookup([])],
+		[
+			"an older key's removal lists the still-enrolled device as removed",
+			daemonLookup([LAPTOP_DEVICE_ID], [LAPTOP_DEVICE_ID]),
+		],
+		[
+			"the daemon's lookup is unavailable",
+			async () => {
+				throw new Error("lookup failed");
+			},
+		],
+	];
+	it.each(
+		(["coordinator record", "publication conflict"] as const).flatMap((branch) =>
+			lookups.map(([reason, lookup]) => [branch, reason, lookup] as const),
+		),
+	)(
+		"quarantines and keeps the device's local records (%s, %s)",
+		async (branch, _reason, lookup) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				const listRemovals = vi.fn(async () => [removal]);
+				const app = appWithoutDevice(
+					store,
+					branchDependencies(branch, manifest, listRemovals, lookup),
+				);
+
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				expect(detail.status).toBe(409);
+				expect(teamStatus(store)).toEqual({ status: "inactive", migration_state: "needs_setup" });
+				expect(deviceAccess(store, removal.device_id)).toEqual({
+					binding: "active",
+					pinned: 0,
+					proofs: 1,
+				});
+			} finally {
+				store.close();
+			}
+		},
+	);
 });
 
 describe("Team setup terminal routing with draft edit authority", () => {

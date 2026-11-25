@@ -4,8 +4,7 @@ import { captureRemovalCommit } from "./coordinator-device-removal-commit.js";
 import type { Database } from "./db.js";
 import { type PairingRemovalCounts, removePairingState } from "./pairing-removal.js";
 import { readPeerRemovalCheckState } from "./peer-removal-check-state.js";
-import { canonicalKeyId } from "./retired-device-aliases.js";
-import { fingerprintPublicKey } from "./sync-fingerprint.js";
+import { localRemovedDeviceIds } from "./removed-device-local-ids.js";
 import { requestJson } from "./sync-http-client.js";
 import {
 	readViewerRemovalPreview,
@@ -142,53 +141,6 @@ async function readRecovery(target: CoordinatorTarget, preview: ViewerRemovalPre
 	}
 }
 
-interface Pairing {
-	peer_device_id: string;
-	public_key: string | null;
-	pinned_fingerprint: string | null;
-}
-
-function matchesRemovedKey(pair: Pairing, keyId: string | null, fingerprints?: Set<string>) {
-	const { public_key: publicKey, pinned_fingerprint: fingerprint } = pair;
-	if (!publicKey || !fingerprint || fingerprintPublicKey(publicKey) !== fingerprint) return false;
-	if (keyId !== null) return canonicalKeyId(publicKey) === keyId;
-	return fingerprints?.has(fingerprint) === true;
-}
-
-/** Local-only aliases must pin the verified canonical key. A replacement key under the same ID stays. */
-function matchingLocalIds(db: Database, preview: ViewerRemovalPreview, ownId: string): string[] {
-	const expected = new Map<string, Set<string>>();
-	for (const row of preview.enrollments) {
-		const fingerprints = expected.get(row.device_id) ?? new Set<string>();
-		fingerprints.add(row.fingerprint);
-		expected.set(row.device_id, fingerprints);
-	}
-	const aliases = new Set(expected.keys());
-	const pairs = db
-		.prepare("SELECT peer_device_id, public_key, pinned_fingerprint FROM sync_peers")
-		.all() as Pairing[];
-	for (const pair of pairs) {
-		const id = pair.peer_device_id;
-		if (matchesRemovedKey(pair, preview.key_id, expected.get(id))) {
-			aliases.add(id);
-			const fingerprint = pair.pinned_fingerprint;
-			if (fingerprint) {
-				const fingerprints = expected.get(id) ?? new Set<string>();
-				fingerprints.add(fingerprint);
-				expected.set(id, fingerprints);
-			}
-		} else aliases.delete(id);
-	}
-	aliases.delete(ownId);
-	const binding = db.prepare("SELECT source_fingerprint FROM identity_devices WHERE device_id = ?");
-	return [...aliases].filter((id) => {
-		const row = binding.get(id) as { source_fingerprint: string | null } | undefined;
-		return (
-			row?.source_fingerprint == null || expected.get(id)?.has(row.source_fingerprint) === true
-		);
-	});
-}
-
 async function cleanupAfterVerification(
 	options: ViewerRemovalOptions,
 	preview: ViewerRemovalPreview,
@@ -202,7 +154,11 @@ async function cleanupAfterVerification(
 			.transaction((): LocalCleanup => {
 				if (readPeerRemovalCheckState(options.db)?.generation !== snapshot.generation)
 					return { state: "deferred" };
-				const deviceIds = matchingLocalIds(options.db, preview, snapshot.deviceId);
+				const deviceIds = localRemovedDeviceIds(
+					options.db,
+					{ enrollments: preview.enrollments, keyId: preview.key_id },
+					snapshot.deviceId,
+				);
 				const counts = removePairingState(options.db, {
 					reason: "removed",
 					deviceIds,

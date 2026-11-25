@@ -299,7 +299,9 @@ export type {
 } from "./coordinator-owner-review-local.js";
 export { readCoordinatorOwnerReviewLocalEvidence } from "./coordinator-owner-review-local.js";
 export {
+	fetchPeerRemovalLookup,
 	type PeerRemovalAnswer,
+	type PeerRemovalLookup,
 	queryPeerRemoval,
 } from "./coordinator-peer-revocation.js";
 export { createCoordinatorRefreshLifecycle } from "./coordinator-refresh-lifecycle.js";
