@@ -23,6 +23,7 @@ import {
 	LEGACY_TEAM_SETUP_MAX_PROJECTS,
 	requireLegacyTeamSetupSnapshotWithinLimits,
 } from "./legacy-team-setup-limits.js";
+import { removePairingState } from "./pairing-removal.js";
 import { derivePolicyTeamDeviceEligibility } from "./policy-team-device-eligibility.js";
 import { listProjectScopeCandidates } from "./project-scope-settings.js";
 import type { LegacyTeamSetupActivationResultV1 } from "./recipient-policy-contract.js";
@@ -105,6 +106,20 @@ export class LegacyTeamSetupDeviceRemovalsUnavailableError extends Error {
 	constructor() {
 		super("team_setup_completion_unavailable");
 		this.name = "LegacyTeamSetupDeviceRemovalsUnavailableError";
+	}
+}
+
+/**
+ * The coordinator proved a device's removal, but this machine could not end
+ * that device's local access. The attempt wrote nothing and the Team is not
+ * reported as kept. Retrying can succeed; nothing shows the policy diverged.
+ */
+export class LegacyTeamSetupRemovedDeviceAccessError extends Error {
+	readonly code = "team_setup_completion_unavailable" as const;
+
+	constructor() {
+		super("team_setup_completion_unavailable");
+		this.name = "LegacyTeamSetupRemovedDeviceAccessError";
 	}
 }
 
@@ -1164,9 +1179,33 @@ function replayAfterVerifiedRemoval(
 				removal.fingerprint === device.key_fingerprint,
 		),
 	);
-	// A removal permits a read-only replay of the already-installed setup. It
-	// must not recreate device bindings, memberships, or Project recipients.
-	return proven ? installed : undefined;
+	if (!proven) return undefined;
+	// A removal permits a replay of the already-installed setup. It must not
+	// recreate device bindings, memberships, or Project recipients, and the
+	// removed devices must lose the access this machine still gives them.
+	endVerifiedRemovedDeviceAccess(
+		db,
+		missing.map((device) => device.device_id),
+	);
+	return installed;
+}
+
+/**
+ * Ends local access for devices the coordinator proved removed, as the sync
+ * daemon does once its own removal check succeeds. Runs inside the replay
+ * transaction, so a failure leaves every table unchanged.
+ */
+function endVerifiedRemovedDeviceAccess(db: Database, deviceIds: readonly string[]): void {
+	// Read only: replay must not create a signing identity. Without one, no
+	// removed device can be this machine.
+	const localDeviceId =
+		(db.prepare("SELECT device_id FROM sync_device LIMIT 1").pluck().get() as string | undefined) ??
+		"";
+	try {
+		removePairingState(db, { localDeviceId, reason: "removed", deviceIds: [...deviceIds] });
+	} catch {
+		throw new LegacyTeamSetupRemovedDeviceAccessError();
+	}
 }
 
 function tryRemovalCompletionReplay(
@@ -1176,11 +1215,13 @@ function tryRemovalCompletionReplay(
 	actorIds: readonly string[],
 ) {
 	if (!input.deviceRemovals) return undefined;
-	return db.transaction(() => {
-		requireCompletionActorLocks(db, manifest, actorIds);
-		const result = replayAfterVerifiedRemoval(db, manifest, input);
-		if (result) return { manifest, result };
-	})();
+	return db
+		.transaction(() => {
+			requireCompletionActorLocks(db, manifest, actorIds);
+			const result = replayAfterVerifiedRemoval(db, manifest, input);
+			if (result) return { manifest, result };
+		})
+		.immediate();
 }
 
 function readProvenRenamedTeam(

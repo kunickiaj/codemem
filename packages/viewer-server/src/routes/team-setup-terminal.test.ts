@@ -2839,6 +2839,86 @@ describe("Team setup terminal routing after device removal", () => {
 	});
 });
 
+/** What this machine still gives the device: binding, pin, and retained scope proofs. */
+function deviceAccess(store: MemoryStore, deviceId: string) {
+	const count = (sql: string) => store.db.prepare(sql).pluck().get(deviceId);
+	return {
+		binding: count("SELECT status FROM identity_devices WHERE device_id = ?"),
+		pinned: count("SELECT COUNT(*) FROM sync_peers WHERE peer_device_id = ?"),
+		proofs: count(
+			"SELECT COUNT(*) FROM scope_membership_authorization_evidence WHERE device_id = ?",
+		),
+	};
+}
+
+/** The coordinator removed the device, but this machine has not applied that yet. */
+async function stillServedRemovedDevice(store: MemoryStore) {
+	const installed = await installCompletedTeam(store);
+	const deviceId = installed.removal.device_id;
+	store.db
+		.prepare(
+			`INSERT INTO sync_peers(peer_device_id, public_key, pinned_fingerprint, created_at)
+			 VALUES (?, 'ssh-ed25519 fixture', 'fixture-pin', ?)`,
+		)
+		.run(deviceId, NOW);
+	await retainCachedTeamScopeMembership(store, deviceId);
+	expect(deviceAccess(store, deviceId)).toEqual({ binding: "active", pinned: 1, proofs: 1 });
+	return installed;
+}
+
+describe("Team setup terminal routing ends a verified-removed device's local access", () => {
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"keeps the Team active and ends the removed device's access: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				const listRemovals = vi.fn(async () => [removal]);
+				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				expect(detail.status).toBe(200);
+				expect(listRemovals).toHaveBeenCalledOnce();
+				expect(teamStatus(store)).toEqual({ status: "active", migration_state: "completed" });
+				expect(deviceAccess(store, removal.device_id)).toEqual({
+					binding: "removed",
+					pinned: 0,
+					proofs: 0,
+				});
+			} finally {
+				store.close();
+			}
+		},
+	);
+
+	it.each(["coordinator record", "publication conflict"] as const)(
+		"writes nothing and returns a retryable failure when ending access fails: %s",
+		async (branch) => {
+			const store = new MemoryStore(":memory:");
+			try {
+				// Arrange: the pairing delete fails inside the keep-active replay.
+				const { manifest, removal } = await stillServedRemovedDevice(store);
+				store.db.exec(`CREATE TRIGGER fail_pairing_delete BEFORE DELETE ON sync_peers
+					BEGIN SELECT RAISE(ABORT, 'pairing delete failed'); END`);
+				const listRemovals = vi.fn(async () => [removal]);
+				const app = appWithoutDevice(store, branchDependencies(branch, manifest, listRemovals));
+				const before = databaseSnapshot(store);
+
+				// Act
+				const detail = await app.request(REMOVAL_DETAIL_PATH);
+
+				// Assert
+				expect(detail.status).toBe(503);
+				expect(await detail.json()).toEqual({ error: "team_setup_completion_unavailable" });
+				expect(databaseSnapshot(store)).toEqual(before);
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
 describe("Team setup terminal routing with draft edit authority", () => {
 	it("rejects finish publication for a scope-backed group absent from configuration", async () => {
 		const store = new MemoryStore(":memory:");
