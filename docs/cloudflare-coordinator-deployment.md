@@ -1014,7 +1014,8 @@ and compound `SELECT` terms. `scripts/d1-statement-check/classify.mjs` lists the
 statements whose failure is excused because they never run on D1, such as test probes and
 the local memory store, each by the exact function and SQL that prepare it. The check prints
 every excused statement, and it fails when an excuse matches nothing. Statements that no
-captured test prepares are not checked.
+captured test prepares are not checked. Its report gives the seconds spent capturing and
+compiling separately.
 
 CI runs this check as its own job alongside the Worker tests. Pull requests that change
 neither `packages/core` nor the Worker package nor the lockfile skip it. Set
